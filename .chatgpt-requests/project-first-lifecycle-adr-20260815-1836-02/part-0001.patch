@@ -1,0 +1,86 @@
++- validating project/editor compatibility metadata before an editor workspace
++  is started.
++
++The Launcher and Editor are clients of this crate. CLI tooling MAY reuse it when
++it needs the same application-level project lifecycle, but ordinary authoring
++commands continue to use `engine-authoring` directly.
++
++`engine-authoring` remains the owner of `ProjectRoot`, `ProjectConfig`,
++`project.json`, path confinement, persisted authoring data, commands,
++transactions, and validation. The lifecycle crate does not become a generic
++project or authoring utility crate.
++
++### 3. Replace in-process project rebinding with process replacement
++
++An Editor process never changes from Project A to Project B by resetting and
++rebinding project-scoped state.
++
++A project switch follows this lifecycle:
++
++1. the current Editor resolves its dirty-document guard;
++2. the Launcher is activated (or started if the Editor was launched directly);
++3. cancel leaves the current Editor unchanged;
++4. after Project B is selected, a new Editor for B is started or an already
++   running Editor for B is activated;
++5. the current Editor stays alive until the B editor has acquired its lease,
++   opened its `ProjectRoot`, and reported minimum bootstrap readiness; and
++6. only then is the old Editor asked to close.
++
++Failure to select, validate, lease, spawn, or bootstrap Project B leaves the
++Project A editor running. Full asset import or complete subsystem health is not
++part of minimum bootstrap readiness.
++
++Launcher/Editor IPC is limited to application lifecycle coordination such as
++single-instance activation, switch requests, editor activation, readiness, and
++close-after-switch. It MUST NOT carry authoring mutations or become a second
++project-data API. The concrete IPC transport is an implementation detail.
++
++### 4. Enforce one Editor per canonical project location
++
++At most one Editor process may hold editing ownership of the same canonical
++project root at a time. This invariant applies even when `engine-editor` is
++started directly rather than through the Launcher.
++
++The lifecycle crate enforces ownership with two complementary mechanisms:
++
++- an **OS-backed exclusive lease** is authoritative for exclusion and is
++  released automatically when the owning process exits or crashes; and
++- **ephemeral ownership metadata** records diagnostic information such as the
++  owning process and start time.
++
++Metadata is not authoritative. If a previous process crashes and leaves stale
++metadata, availability of the OS lease proves that the old ownership is gone.
++Ownership metadata MUST live outside canonical project authoring data and MUST
++NOT be stored in `project.json`, `project_settings.json`, the asset manifest, or
++other packaged/project-versioned documents.
++
++The lease key is based on the canonical project location, not only on the
++stable project ID. Two independent working copies of the same logical project
++therefore do not incorrectly lock each other.
++
++When the Launcher is asked to open a project location whose Editor already owns
++the lease, it activates that Editor instead of starting a duplicate process.
++
++### 5. Separate project identity from project location
++
++`project.json` remains the minimal project identity document owned by
++`engine-authoring`, but its next schema revision MUST add a stable `ProjectId`
++and explicit engine-version association. `ProjectId` uses the existing stable
++identifier convention with the `project_` prefix and MUST survive directory
++moves and renames.
++
++The engine association identifies the GameEngine distribution/version for
++which the project identity contract is current. The Launcher uses it together
++with the project schema to choose or reject an Editor before launch, and the
++Editor validates compatibility again before constructing its workspace. Until
++a broader compatibility policy is explicitly defined, an Editor accepts only
++the current project schema and a compatible current engine association.
++
++A project location is the pair of logical identity and canonical root. Copies
++or independent working trees can therefore share a logical `ProjectId` while
++remaining distinct locations for locking and process ownership. User-state
++storage MUST distinguish simultaneously present locations when necessary and
++MUST NOT assume that `ProjectId` alone proves filesystem identity.
++
++### 6. Separate low-level project creation from the standard scaffold
++
