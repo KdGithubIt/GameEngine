@@ -19,9 +19,19 @@ use std::fmt;
 /// Bumped whenever unchanged humanoid inputs would bake to different clip bytes.
 pub const HUMANOID_RETARGET_ALGORITHM_VERSION: u32 = 1;
 
-const CACHE_SCHEMA_VERSION: u32 = 1;
-const CACHE_DOMAIN: &str = "humanoid_anim";
-const CACHE_EXTENSION: &str = "clip.json";
+/// Schema version embedded in packaged humanoid baked-clip envelopes.
+pub const HUMANOID_BAKED_CLIP_SCHEMA_VERSION: u32 = 1;
+/// Derived-cache domain used for humanoid target bakes.
+pub const HUMANOID_CACHE_DOMAIN: &str = "humanoid_anim";
+/// File extension used for serialized humanoid target bakes.
+pub const HUMANOID_BAKED_CLIP_FILE_EXTENSION: &str = "clip.json";
+/// Diagnostic emitted when a packaged Humanoid source has no staged target bake.
+pub const HUMANOID_BAKE_MISSING_FROM_PACKAGE_DIAGNOSTIC: &str =
+    "anim.humanoid_bake_missing_from_package";
+
+const CACHE_SCHEMA_VERSION: u32 = HUMANOID_BAKED_CLIP_SCHEMA_VERSION;
+const CACHE_DOMAIN: &str = HUMANOID_CACHE_DOMAIN;
+const CACHE_EXTENSION: &str = HUMANOID_BAKED_CLIP_FILE_EXTENSION;
 const QUAT_EPSILON: f32 = 1.0e-8;
 
 /// One portable model-space rotation-delta channel.
@@ -316,25 +326,54 @@ pub fn resolve_or_bake_humanoid_motion(
     validate_humanoid_profile(profile, target)?;
     let key = humanoid_bake_cache_key(motion, target, profile)?;
     if let Some(bytes) = cache.get(CACHE_DOMAIN, &key, CACHE_EXTENSION)
-        && let Ok(envelope) = serde_json::from_slice::<HumanoidBakeEnvelope>(&bytes)
-        && envelope.schema_version == CACHE_SCHEMA_VERSION
+        && let Ok(clip) = deserialize_humanoid_baked_clip(&bytes)
     {
         return Ok(HumanoidBakeResult {
-            clip: envelope.clip,
+            clip,
             diagnostics: Vec::new(),
         });
     }
 
     let baked = bake_humanoid_motion(motion, target, profile)?;
-    let bytes = serde_json::to_vec(&HumanoidBakeEnvelope {
-        schema_version: CACHE_SCHEMA_VERSION,
-        clip: baked.clip.clone(),
-    })
-    .map_err(cache_error)?;
+    let bytes = serialize_humanoid_baked_clip(&baked.clip)?;
     cache
         .put(CACHE_DOMAIN, &key, CACHE_EXTENSION, &bytes)
         .map_err(|error| HumanoidMotionError::Cache(error.to_string()))?;
     Ok(baked)
+}
+
+/// Serializes one target-bound humanoid bake for package staging.
+///
+/// # Errors
+///
+/// Returns [`HumanoidMotionError::Cache`] when the baked clip cannot be encoded.
+pub fn serialize_humanoid_baked_clip(
+    clip: &AnimationClip,
+) -> Result<Vec<u8>, HumanoidMotionError> {
+    serde_json::to_vec(&HumanoidBakeEnvelope {
+        schema_version: HUMANOID_BAKED_CLIP_SCHEMA_VERSION,
+        clip: clip.clone(),
+    })
+    .map_err(cache_error)
+}
+
+/// Decodes one packaged humanoid target bake.
+///
+/// # Errors
+///
+/// Returns [`HumanoidMotionError::Cache`] when the envelope is malformed or uses
+/// an unsupported schema version.
+pub fn deserialize_humanoid_baked_clip(
+    bytes: &[u8],
+) -> Result<AnimationClip, HumanoidMotionError> {
+    let envelope: HumanoidBakeEnvelope = serde_json::from_slice(bytes).map_err(cache_error)?;
+    if envelope.schema_version != HUMANOID_BAKED_CLIP_SCHEMA_VERSION {
+        return Err(HumanoidMotionError::Cache(format!(
+            "unsupported humanoid baked-clip schema version {}",
+            envelope.schema_version
+        )));
+    }
+    Ok(envelope.clip)
 }
 
 #[derive(Serialize, Deserialize)]
@@ -653,5 +692,11 @@ mod tests {
         let channel = baked.channels.iter().find(|channel| channel.target_bone == Some(target_bone)).expect("target channel");
         let actual = quat_from_value(lerp_channel(channel, 1.0).expect("sample"));
         assert!(actual.dot(expected).abs() > 0.99999);
+
+        let bytes = serialize_humanoid_baked_clip(&baked).expect("serialize bake");
+        let decoded = deserialize_humanoid_baked_clip(&bytes).expect("deserialize bake");
+        assert_eq!(decoded.skeleton, baked.skeleton);
+        assert_eq!(decoded.skeleton_identity, baked.skeleton_identity);
+        assert_eq!(decoded.channels.len(), baked.channels.len());
     }
 }
