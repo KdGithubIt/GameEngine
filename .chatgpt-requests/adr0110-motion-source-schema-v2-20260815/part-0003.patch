@@ -1,0 +1,61 @@
+diff --git a/crates/engine/src/scene_bridge/spawn.rs b/crates/engine/src/scene_bridge/spawn.rs
+--- a/crates/engine/src/scene_bridge/spawn.rs
++++ b/crates/engine/src/scene_bridge/spawn.rs
+@@ -1304,6 +1304,6 @@
+                         assets
+                             .get(handle)
+                             .cloned()
+                             .ok_or_else(|| SceneBridgeError::UnknownAsset {
+-                                asset: binding.clip.clone(),
++                                asset: binding.clip.asset.clone(),
+                             })
+                     })
+                     .collect::<Result<Vec<_>, _>>()?
+@@ -1332,6 +1332,6 @@
+                     .asset_state
+                     .animation_clip_sources
+                     .get(&layer_handle.id())
+                     .ok_or_else(|| SceneBridgeError::UnknownAsset {
+-                        asset: binding.clip.clone(),
++                        asset: binding.clip.asset.clone(),
+                     })?;
+                 let source_fingerprint = context
+diff --git a/crates/engine/src/scene_bridge/tests.rs b/crates/engine/src/scene_bridge/tests.rs
+--- a/crates/engine/src/scene_bridge/tests.rs
++++ b/crates/engine/src/scene_bridge/tests.rs
+@@ -3000,6 +3000,6 @@
+         motion_slot,
+         engine_authoring::AnimationBinding {
+             name: "spin".to_owned(),
+-            clip: imported.animations[0].id.clone(),
++            clip: engine_authoring::MotionSourceRef::native(imported.animations[0].id.clone()),
+             overlays: Vec::new(),
+             events: vec![engine_authoring::AnimationSetEvent {
+                 time: 0.1,
+@@ -4000,6 +4000,6 @@
+         motion_slot,
+         engine_authoring::AnimationBinding {
+             name: "hero_attack".to_owned(),
+-            clip: hero_imported.animations[1].id.clone(),
++            clip: engine_authoring::MotionSourceRef::native(hero_imported.animations[1].id.clone()),
+             overlays: Vec::new(),
+             events: Vec::new(),
+         },
+@@ -5000,6 +5000,6 @@
+         idle_slot,
+         engine_authoring::AnimationBinding {
+             name: "villain_idle".to_owned(),
+-            clip: villain_imported.animations[0].id.clone(),
++            clip: engine_authoring::MotionSourceRef::native(villain_imported.animations[0].id.clone()),
+             overlays: Vec::new(),
+             events: Vec::new(),
+         },
+@@ -5010,6 +5010,6 @@
+         attack_slot,
+         engine_authoring::AnimationBinding {
+             name: "hero_attack".to_owned(),
+-            clip: hero_imported.animations[1].id.clone(),
++            clip: engine_authoring::MotionSourceRef::native(hero_imported.animations[1].id.clone()),
+             overlays: Vec::new(),
+             events: Vec::new(),
+         },
