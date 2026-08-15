@@ -187,4 +187,4 @@ index c962245..0000000 100644
  rem 初回やソース更新後は最適化処理が行われるため、通常ビルドより時間がかかる場合があります。
  echo ========================================
 -echo engine-editor をリリースビルドして起動します
-+echo Launcher と Editor を 
++echo Launcher と Editor を
