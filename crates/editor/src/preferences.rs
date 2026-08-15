@@ -1,5 +1,6 @@
 //! Persistent editor preferences.
 
+use engine_authoring::ProjectRoot;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
@@ -7,7 +8,6 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
-const MAX_RECENT: usize = 10;
 const RUSTROVER_SOURCE_OPEN_DELAY: Duration = Duration::from_millis(1_200);
 
 /// Editor-local viewport selected while Play Mode is active.
@@ -24,11 +24,6 @@ pub enum PlayModeView {
 /// Editor-local persistent preferences stored in the platform data directory.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EditorPreferences {
-    /// Ordered list of recently opened project directories (newest first).
-    pub recent_projects: Vec<PathBuf>,
-    /// Last project that completed opening successfully.
-    #[serde(default)]
-    pub last_project: Option<PathBuf>,
     /// Authoring documents open as workspace tabs, in tab order.
     ///
     /// Reopening the same project restores this whole tab set. Paths outside
@@ -81,13 +76,14 @@ pub struct EditorPreferences {
     /// Central viewport restored when the next Play session starts.
     #[serde(default)]
     pub play_mode_view: PlayModeView,
+    /// User-local storage location selected from ProjectId + canonical root.
+    #[serde(skip)]
+    storage_path: Option<PathBuf>,
 }
 
 impl Default for EditorPreferences {
     fn default() -> Self {
         Self {
-            recent_projects: Vec::new(),
-            last_project: None,
             open_documents: Vec::new(),
             last_document: None,
             selected_asset_folder: PathBuf::new(),
@@ -100,6 +96,7 @@ impl Default for EditorPreferences {
             suppressed_problem_codes: Vec::new(),
             component_card_open: BTreeMap::new(),
             play_mode_view: PlayModeView::Game,
+            storage_path: None,
         }
     }
 }
@@ -116,25 +113,24 @@ impl EditorPreferences {
     /// Loads preferences from the platform data directory.
     ///
     /// Returns `default` preferences if the file is missing or unparseable.
-    pub fn load() -> Self {
-        let Some(path) = prefs_path() else {
+    pub fn load_for(project: &ProjectRoot) -> Self {
+        let Some(path) = prefs_path(project) else {
             return Self::default();
         };
         let data = match std::fs::read(&path) {
-            Ok(d) => d,
-            Err(_) => return Self::default(),
+            Ok(data) => data,
+            Err(_) => {
+                let mut preferences = Self::default();
+                preferences.storage_path = Some(path);
+                return preferences;
+            }
         };
         let Ok(mut preferences) = serde_json::from_slice::<Self>(&data) else {
-            return Self::default();
+            let mut preferences = Self::default();
+            preferences.storage_path = Some(path);
+            return preferences;
         };
-        preferences.recent_projects.retain(|path| path.exists());
-        if preferences
-            .last_project
-            .as_ref()
-            .is_some_and(|path| !path.exists())
-        {
-            preferences.last_project = None;
-        }
+        preferences.storage_path = Some(path);
         preferences
     }
 
@@ -143,22 +139,13 @@ impl EditorPreferences {
     /// Silently ignores I/O failures so a missing config directory does not
     /// crash the editor.
     pub fn save(&self) {
-        let Some(path) = prefs_path() else { return };
+        let Some(path) = self.storage_path.as_ref() else { return };
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
         if let Ok(text) = serde_json::to_string_pretty(self) {
             let _ = std::fs::write(&path, text);
         }
-    }
-
-    /// Adds `path` to the front of the recent list, deduplicating and capping
-    /// the list at `MAX_RECENT` entries.
-    pub fn push_recent(&mut self, path: &Path) {
-        self.recent_projects.retain(|p| p != path);
-        self.recent_projects.insert(0, path.to_path_buf());
-        self.recent_projects.truncate(MAX_RECENT);
-        self.last_project = Some(path.to_path_buf());
     }
 
     /// Launches the configured editor at a source location.
@@ -286,8 +273,22 @@ fn split_arguments(template: &str) -> Vec<String> {
     arguments
 }
 
-fn prefs_path() -> Option<PathBuf> {
-    dirs::data_local_dir().map(|d| d.join("engine_editor").join("preferences.json"))
+fn prefs_path(project: &ProjectRoot) -> Option<PathBuf> {
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    #[cfg(windows)]
+    let normalized = project.path().to_string_lossy().to_lowercase();
+    #[cfg(not(windows))]
+    let normalized = project.path().to_string_lossy().into_owned();
+    for byte in normalized.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    dirs::data_local_dir().map(|root| {
+        root.join("engine_editor").join("workspaces").join(format!(
+            "{}-{hash:016x}.json",
+            project.config().project_id.as_str()
+        ))
+    })
 }
 
 #[cfg(test)]

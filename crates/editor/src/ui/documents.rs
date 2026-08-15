@@ -3,6 +3,33 @@
 use super::*;
 
 impl EditorApp {
+    /// Creates the normal project-scoped Editor workspace.
+    ///
+    /// The Launcher or direct `--project` bootstrap has already validated and
+    /// leased this concrete [`ProjectRoot`]; recent-project selection never
+    /// participates in workspace construction.
+    pub fn from_project(root: ProjectRoot) -> Self {
+        let mut app = Self::new(EditorSession::empty_behavior_tree());
+        app.preferences = EditorPreferences::load_for(&root);
+        app.session.reset(EditorSession::empty_behavior_tree());
+        app.set_project_root(root.clone());
+        if app.restore_workspace_tabs(&root) {
+            app.on_active_document_changed(None);
+            app.restore_preferred_selection();
+        } else {
+            app.open_initial_project_scene(&root);
+        }
+        app.sync_workspace_preferences();
+        app
+    }
+
+    /// Returns the concrete project root of this normal Editor workspace.
+    pub fn project_root(&self) -> &ProjectRoot {
+        self.project_root
+            .as_ref()
+            .expect("project-scoped Editor workspace must have a ProjectRoot")
+    }
+
     pub(super) fn window_title(&self) -> String {
         let file_name = self
             .session
@@ -508,7 +535,9 @@ impl EditorApp {
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| "new_project".into());
         let config = ProjectConfig {
+            project_id: engine_authoring::ProjectId::generate(),
             name,
+            engine_version: engine_project_lifecycle::CURRENT_ENGINE_ASSOCIATION.to_owned(),
             schema_version: PROJECT_SCHEMA_VERSION,
         };
         match engine_authoring::ProjectRoot::create(&folder, config) {

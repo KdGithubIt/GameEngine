@@ -16,7 +16,6 @@ use crate::game_build::{
     engine_sdk_root, latest_shadow_module, prepare_cargo_sdk_config, GameBuildKind,
     GameBuildManager, GameBuildResult, GameBuildState,
 };
-use crate::hub::{show_hub, HubAction};
 use crate::material_editor::{show_material_editor_panel, MaterialEditorPanel};
 use crate::preferences::{EditorPreferences, PlayModeView};
 use crate::problems::ProblemsPanel;
@@ -538,8 +537,6 @@ impl EditorApp {
         self.asset_browser
             .set_selected_folder(self.preferences.selected_asset_folder.clone());
         self.component_source_index = ComponentSourceIndex::build(&root.rust_scripts_dir());
-        self.preferences.push_recent(root.path());
-        self.preferences.save();
         if let Some(error) = game_project_error {
             self.session
                 .push_diagnostic(engine_authoring::Diagnostic::error(
@@ -598,9 +595,9 @@ impl EditorApp {
 
 impl Default for EditorApp {
     fn default() -> Self {
-        let preferences = EditorPreferences::load();
+        let preferences = EditorPreferences::default();
         let mut app = Self::new(EditorSession::empty_behavior_tree());
-        app.startup_restore_project = preferences.last_project.clone();
+        app.startup_restore_project = None;
         app.ui_builder.preview_preset = preferences.ui_preview_preset;
         app.bottom_panel_open = preferences.bottom_panel_open;
         app.bottom_panel_tab = match preferences.bottom_panel_tab.as_str() {
@@ -839,16 +836,11 @@ impl eframe::App for EditorApp {
                 self.session.current_document(),
                 crate::document::CurrentDocument::None
             ) {
-                if let Some(action) = show_hub(ui, &self.preferences) {
-                    match action {
-                        HubAction::NewProject(folder) => {
-                            self.request_open(PendingOpen::NewProject(folder));
-                        }
-                        HubAction::OpenProject(folder) => {
-                            self.request_open(PendingOpen::Project(folder));
-                        }
-                    }
-                }
+                ui.vertical_centered(|ui| {
+                    ui.add_space(60.0);
+                    ui.heading("No document open");
+                    ui.label("Open or create an authoring document inside this project.");
+                });
             } else {
                 let actions = show_graph_canvas(
                     ui,

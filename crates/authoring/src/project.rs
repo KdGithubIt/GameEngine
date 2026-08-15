@@ -8,8 +8,10 @@
 //!
 //! ```json
 //! {
-//!   "schema_version": 1,
-//!   "name": "MyGame"
+//!   "schema_version": 2,
+//!   "project_id": "project_01K...",
+//!   "name": "MyGame",
+//!   "engine_version": "0.1.0"
 //! }
 //! ```
 //!
@@ -17,6 +19,7 @@
 //! `AI_FRIENDLY_AUTHORING_SPEC.md` for the rationale.
 
 use crate::persist::replace_file_contents;
+use crate::ProjectId;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::fs;
@@ -26,7 +29,7 @@ use std::path::{Component, Path, PathBuf};
 /// Schema version written into every `project.json`.
 ///
 /// `open` accepts only files whose `schema_version` equals this value.
-pub const PROJECT_SCHEMA_VERSION: u32 = 1;
+pub const PROJECT_SCHEMA_VERSION: u32 = 2;
 
 const PROJECT_JSON: &str = "project.json";
 
@@ -37,8 +40,12 @@ const PROJECT_JSON: &str = "project.json";
 /// Metadata stored in `project.json` for a project directory.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectConfig {
+    /// Stable logical identity of this project.
+    pub project_id: ProjectId,
     /// Human-readable project name.
     pub name: String,
+    /// Engine release association required to open the project.
+    pub engine_version: String,
     /// The `schema_version` read from (or written to) `project.json`.
     pub schema_version: u32,
 }
@@ -67,11 +74,11 @@ pub enum ProjectError {
     MissingProjectFile(PathBuf),
     /// `project.json` could not be parsed (or serialized).
     JsonParse(serde_json::Error),
-    /// The `schema_version` in `project.json` exceeds the supported version.
+    /// The `schema_version` in `project.json` differs from the current version.
     UnsupportedVersion {
         /// The version found in the file.
         found: u32,
-        /// The highest version this build supports.
+        /// The only version this build supports.
         supported: u32,
     },
     /// The requested relative path escapes the `assets/` subtree.
@@ -93,7 +100,7 @@ impl fmt::Display for ProjectError {
             Self::JsonParse(e) => write!(f, "project JSON error: {e}"),
             Self::UnsupportedVersion { found, supported } => write!(
                 f,
-                "project schema_version {found} is not supported by this build (max: {supported})"
+                "project schema_version {found} is not supported by this build (current: {supported})"
             ),
             Self::PathTraversal { requested } => {
                 write!(f, "path `{requested}` escapes the assets directory")
@@ -127,7 +134,9 @@ impl std::error::Error for ProjectError {
 #[derive(Serialize, Deserialize)]
 struct ProjectFile {
     schema_version: u32,
+    project_id: ProjectId,
     name: String,
+    engine_version: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -271,7 +280,9 @@ impl ProjectRoot {
         Ok(Self {
             path: canonical,
             config: ProjectConfig {
+                project_id: file.project_id,
                 name: file.name,
+                engine_version: file.engine_version,
                 schema_version: file.schema_version,
             },
         })
@@ -307,7 +318,9 @@ impl ProjectRoot {
 
         let file = ProjectFile {
             schema_version: PROJECT_SCHEMA_VERSION,
+            project_id: config.project_id.clone(),
             name: config.name.clone(),
+            engine_version: config.engine_version.clone(),
         };
         let json = serde_json::to_string_pretty(&file).map_err(ProjectError::JsonParse)?;
         let project_json = canonical.join(PROJECT_JSON);
@@ -317,7 +330,9 @@ impl ProjectRoot {
         Ok(Self {
             path: canonical,
             config: ProjectConfig {
+                project_id: config.project_id,
                 name: config.name,
+                engine_version: config.engine_version,
                 schema_version: PROJECT_SCHEMA_VERSION,
             },
         })
@@ -438,7 +453,9 @@ mod tests {
 
     fn make_config(name: &str) -> ProjectConfig {
         ProjectConfig {
+            project_id: ProjectId::generate(),
             name: name.to_string(),
+            engine_version: "test-engine".to_owned(),
             schema_version: PROJECT_SCHEMA_VERSION,
         }
     }
@@ -462,8 +479,12 @@ mod tests {
             "schema_version must appear in JSON: {json}"
         );
         assert!(
-            json.contains("\"schema_version\": 1"),
-            "schema_version must be 1: {json}"
+            json.contains("\"schema_version\": 2"),
+            "schema_version must be 2: {json}"
+        );
+        assert!(
+            json.contains("\"project_id\": \"project_"),
+            "project_id must appear in JSON: {json}"
         );
     }
 
@@ -503,7 +524,8 @@ mod tests {
 
         let root = ProjectRoot::open(dir.path()).expect("open must succeed");
         assert_eq!(root.config().name, "MyGame");
-        assert_eq!(root.config().schema_version, 1);
+        assert_eq!(root.config().engine_version, "test-engine");
+        assert_eq!(root.config().schema_version, 2);
     }
 
     #[test]
@@ -535,7 +557,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir must be created");
         fs::write(
             dir.path().join("project.json"),
-            r#"{"schema_version":0,"name":"OldGame"}"#,
+            r#"{"schema_version":0,"project_id":"project_01ARZ3NDEKTSV4RRFFQ69G5FAV","name":"OldGame","engine_version":"0.0.0"}"#,
         )
         .unwrap();
 
