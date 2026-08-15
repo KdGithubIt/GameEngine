@@ -1363,7 +1363,7 @@ mod tests {
         let source = AssetId::generate();
         let native =
             engine::imported_sub_asset_id(&source, ImportedSubAssetKind::Animation, 0);
-        let humanoid = engine::imported_humanoid_motion_sub_asset_id(&native);
+        let humanoid = engine::asset::imported_humanoid_motion_sub_asset_id(&native);
         let mut manifest = AssetManifest::default();
         manifest.insert(
             source,
