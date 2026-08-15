@@ -60,6 +60,7 @@ function Invoke-LintGate {
     Invoke-CargoGate -Name "formatting" -Arguments @("fmt", "--all", "--check")
 
     if ($plan.validation_mode -eq "full") {
+        Invoke-CargoGate -Name "check" -Arguments @("check", "--workspace")
         Invoke-CargoGate -Name "clippy" -Arguments @("clippy", "--workspace", "--all-targets", "--", "-D", "warnings")
     } elseif ($plan.validation_mode -eq "affected") {
         $clippyArgs = @("clippy") + (Get-PackageArgs $plan.clippy_packages) + @("--", "-D", "warnings")
