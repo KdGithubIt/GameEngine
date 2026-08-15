@@ -1,0 +1,83 @@
+diff --git a/crates/assets/src/asset.rs b/crates/assets/src/asset.rs
+--- a/crates/assets/src/asset.rs
++++ b/crates/assets/src/asset.rs
+@@ -504,7 +504,13 @@
+     pub target_model_source: Option<String>,
+ }
+ 
+-fn expected_imported_sub_asset_id(
++/// Derives the stable ID required for persisted imported sub-asset metadata.
++///
++/// # Errors
++///
++/// Returns [`AssetManifestError::InvalidAssetId`] when a targeted motion refers
++/// to an invalid persisted target model source ID.
++pub fn expected_imported_sub_asset_id(
+     source_id: &AssetId,
+     sub_asset: &ImportedSubAsset,
+ ) -> Result<AssetId, AssetManifestError> {
+diff --git a/crates/editor/src/build.rs b/crates/editor/src/build.rs
+--- a/crates/editor/src/build.rs
++++ b/crates/editor/src/build.rs
+@@ -187,16 +187,12 @@
+         for sub_asset in &entry.import_settings.sub_assets {
+-            match AssetId::from_stable_id(StableId::new(&sub_asset.id)) {
+-                Ok(id)
+-                    if id
+-                        == engine::imported_sub_asset_id(
+-                            source_id,
+-                            sub_asset.kind,
+-                            sub_asset.index as usize,
+-                        ) =>
+-                {
++            match (
++                AssetId::from_stable_id(StableId::new(&sub_asset.id)),
++                engine::expected_imported_sub_asset_id(source_id, sub_asset),
++            ) {
++                (Ok(id), Ok(expected)) if id == expected => {
+                     reachable_assets.insert(id);
+                 }
+-                Ok(_) | Err(_) => diagnostics.push(BuildDiagnostic::blocking(
++                _ => diagnostics.push(BuildDiagnostic::blocking(
+                     BuildDiagnosticKind::InvalidImportedAssetId {
+                         id: sub_asset.id.clone(),
+                     },
+@@ -1351,4 +1351,38 @@
+     }
+ 
+     #[test]
++    fn humanoid_motion_sub_assets_use_the_manifest_stable_id_contract() {
++        let source = AssetId::generate();
++        let native =
++            engine::imported_sub_asset_id(&source, ImportedSubAssetKind::Animation, 0);
++        let humanoid = engine::imported_humanoid_motion_sub_asset_id(&native);
++        let mut manifest = AssetManifest::default();
++        manifest.insert(
++            source,
++            ManifestEntry {
++                path: "characters/hero.glb".into(),
++                name: None,
++                import_settings: ImportSettings {
++                    sub_assets: vec![ImportedSubAsset {
++                        id: humanoid.as_str().to_owned(),
++                        kind: ImportedSubAssetKind::HumanoidMotion,
++                        name: "Walk (Humanoid)".into(),
++                        index: 0,
++                        target_model_source: None,
++                    }],
++                    ..ImportSettings::default()
++                },
++            },
++        );
++
++        let report = analyze_build(&config_with_scene(), &manifest);
++
++        assert!(report.reachable_assets.contains(&humanoid));
++        assert!(!report.diagnostics.iter().any(|diagnostic| matches!(
++            diagnostic.kind,
++            BuildDiagnosticKind::InvalidImportedAssetId { .. }
++        )));
++    }
++
++    #[test]
+     fn package_plan_includes_external_gltf_sidecars_once() {
