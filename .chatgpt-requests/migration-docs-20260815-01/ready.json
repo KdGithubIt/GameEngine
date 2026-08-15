@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "request_id": "migration-docs-20260815-01",
+  "target_branch": "chatgpt/gameengine-migration-docs",
+  "expected_head_sha": "666293782451e20a080f88717bebb01acfcd3904",
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Align documentation after public repository cutover",
+  "pr_title": "Align GameEngine docs with the public repository cutover",
+  "pr_body": "## Summary\n\nAligns repository guidance and migration records with the completed public cutover.\n\n- distinguishes the three-command local core gate from Windows full validation\n- corrects affected-mode planner and Clippy documentation to match implementation\n- updates canonical documentation paths for the standalone repository root\n- records the completed public cutover and the pending legacy private automation retirement in RustProject PR #72\n- marks the old OSS staging/publication-boundary instructions as historical while preserving unfinished licensing/release work\n\nThis is documentation-only and does not change product behavior or trusted workflow files."
+}
