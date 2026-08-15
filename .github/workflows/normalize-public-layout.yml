@@ -1,0 +1,101 @@
+name: Normalize Public Repository Layout
+
+on:
+  push:
+    branches:
+      - chatgpt/gameengine-public-bootstrap
+    paths:
+      - .github/workflows/normalize-public-layout.yml
+
+permissions:
+  contents: write
+
+jobs:
+  normalize:
+    if: github.repository == 'KdGithubIt/GameEngine'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Fetch exact bootstrap branch state
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git init --quiet repo
+          git -C repo remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git -C repo fetch --quiet --depth=1 origin "${GITHUB_SHA}"
+          git -C repo checkout --quiet --detach FETCH_HEAD
+          test "$(git -C repo rev-parse HEAD)" = "${GITHUB_SHA}"
+
+      - name: Normalize standalone repository contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          root = Path('repo')
+
+          def replace(path, pairs):
+              file = root / path
+              text = file.read_text(encoding='utf-8')
+              original = text
+              for old, new in pairs:
+                  text = text.replace(old, new)
+              if text == original:
+                  print(f'No changes needed: {path}')
+              else:
+                  file.write_text(text, encoding='utf-8', newline='\n')
+                  print(f'Updated: {path}')
+
+          replace('AGENTS.md', [('master', 'main')])
+
+          replace('docs/DEVELOPMENT_WORKFLOW.md', [
+              ('changes under `GameEngine/`', 'changes in this repository'),
+              ('`GameEngine/rust-toolchain.toml`', '`rust-toolchain.toml`'),
+              ('.\\GameEngine\\scripts\\validate.ps1', '.\\scripts\\validate.ps1'),
+              ('bash GameEngine/scripts/validate.sh', 'bash scripts/validate.sh'),
+              ('`GameEngine/Cargo.toml`, `GameEngine/Cargo.lock`, or `GameEngine/rust-toolchain.toml`', '`Cargo.toml`, `Cargo.lock`, or `rust-toolchain.toml`'),
+              ('complete `GameEngine/target` directory', 'complete `target` directory'),
+              ('master', 'main'),
+          ])
+
+          replace('docs/CHATGPT_AUTOMATION.md', [
+              ('Canonical location: `GameEngine/docs/CHATGPT_AUTOMATION.md`', 'Canonical location: `docs/CHATGPT_AUTOMATION.md`'),
+              ('The existing `gameengine-chatgpt-bridge.yml` workflow and the\n`GameEngine-ChatGPT-Apply` scripts remain manual fallback paths. They are not\nremoved by this protocol.', 'The public repository uses the dispatcher path directly. The legacy private-repository bridge, auto-merge workflow, and `GameEngine-ChatGPT-Apply` fallback are intentionally not installed here.'),
+              ('8. Rejects every changed path outside `GameEngine/`, including old paths of\n   renames by inspecting the diff with rename detection disabled.', '8. Rejects `.github/**` and `.chatgpt-requests/**`, and rejects every other\n   changed path outside the explicit public GameEngine allow-list, including old\n   paths of renames by inspecting the diff with rename detection disabled.'),
+              ('`gameengine-windows-validation.yml` also contains no merge step. The separate\nlegacy auto-merge workflow may remain for old fallback flows, but dispatcher PRs\nare not authorized for it.', '`gameengine-windows-validation.yml` also contains no merge step. The public\nrepository does not install the legacy auto-merge workflow.'),
+              ('## Fallback\n\nThe existing `gameengine-chatgpt-bridge.yml` and `GameEngine-ChatGPT-Apply`\nremain available when the branch-based dispatcher is unavailable. Fallback use\nmust still preserve the normal safety rules: work on `chatgpt/gameengine-*`,\nuse a Draft PR, validate the exact branch state, and do not merge to `master`\nautomatically.', '## Fallback\n\nNo write-capable fallback is installed in the public repository. If the dispatcher is unavailable, stop and repair the trusted dispatcher path rather than bypassing its branch, exact-head, Draft PR, or validation guarantees.'),
+              ('master', 'main'),
+          ])
+
+          for path in [
+              'scripts/ci/New-ValidationPlan.ps1',
+              'scripts/ci/Test-ValidationPlanner.ps1',
+              '.bootstrap-workflows/gameengine-chatgpt-dispatcher.yml',
+              '.bootstrap-workflows/gameengine-windows-validation.yml',
+              'docs/PUBLIC_REPOSITORY_MIGRATION.md',
+          ]:
+              replace(path, [('master', 'main')])
+          PY
+
+          git -C repo diff --check
+          git -C repo diff -- AGENTS.md docs/DEVELOPMENT_WORKFLOW.md docs/CHATGPT_AUTOMATION.md scripts/ci/New-ValidationPlan.ps1 scripts/ci/Test-ValidationPlanner.ps1 .bootstrap-workflows docs/PUBLIC_REPOSITORY_MIGRATION.md
+
+      - name: Commit normalized contracts
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git -C repo config user.name 'github-actions[bot]'
+          git -C repo config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git -C repo add AGENTS.md docs/DEVELOPMENT_WORKFLOW.md docs/CHATGPT_AUTOMATION.md docs/PUBLIC_REPOSITORY_MIGRATION.md scripts/ci/New-ValidationPlan.ps1 scripts/ci/Test-ValidationPlanner.ps1 .bootstrap-workflows
+          if git -C repo diff --cached --quiet; then
+            echo 'No normalization changes were required.'
+            exit 0
+          fi
+          git -C repo diff --cached --check
+          git -C repo commit -m 'Normalize standalone public repository contracts'
+          git -C repo push origin HEAD:refs/heads/chatgpt/gameengine-public-bootstrap
