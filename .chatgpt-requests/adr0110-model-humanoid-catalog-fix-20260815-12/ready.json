@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0110-model-humanoid-catalog-fix-20260815-12",
+  "target_branch": "chatgpt/gameengine-adr-0110-humanoid-motion",
+  "expected_head_sha": "5c0d4cbf80d8add9ba0bfcfdaa5577224f80a2b1",
+  "patch_parts": ["part-0000.patch"],
+  "commit_message": "Fix ADR 0110 Humanoid catalog ownership",
+  "pr_title": "Implement ADR 0110 humanoid profiles and motion",
+  "pr_body": "Fixes the engine-import Humanoid catalog borrow lifetime by indexing owned profile identities instead of storing references into the returned profile vector. This preserves the same ADR 0110 data flow while allowing the catalog to return its profiles by value."
+}
