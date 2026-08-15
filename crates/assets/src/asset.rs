@@ -505,7 +505,13 @@ pub struct ImportedSubAsset {
     pub target_model_source: Option<String>,
 }
 
-fn expected_imported_sub_asset_id(
+/// Derives the stable ID required for persisted imported sub-asset metadata.
+///
+/// # Errors
+///
+/// Returns [`AssetManifestError::InvalidAssetId`] when a targeted motion refers
+/// to an invalid persisted target model source ID.
+pub fn expected_imported_sub_asset_id(
     source_id: &AssetId,
     sub_asset: &ImportedSubAsset,
 ) -> Result<AssetId, AssetManifestError> {

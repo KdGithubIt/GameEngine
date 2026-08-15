@@ -186,18 +186,14 @@ pub fn analyze_build(config: &BuildConfig, manifest: &AssetManifest) -> BuildRep
             ));
         }
         for sub_asset in &entry.import_settings.sub_assets {
-            match AssetId::from_stable_id(StableId::new(&sub_asset.id)) {
-                Ok(id)
-                    if id
-                        == engine::imported_sub_asset_id(
-                            source_id,
-                            sub_asset.kind,
-                            sub_asset.index as usize,
-                        ) =>
-                {
+            match (
+                AssetId::from_stable_id(StableId::new(&sub_asset.id)),
+                engine::expected_imported_sub_asset_id(source_id, sub_asset),
+            ) {
+                (Ok(id), Ok(expected)) if id == expected => {
                     reachable_assets.insert(id);
                 }
-                Ok(_) | Err(_) => diagnostics.push(BuildDiagnostic::blocking(
+                _ => diagnostics.push(BuildDiagnostic::blocking(
                     BuildDiagnosticKind::InvalidImportedAssetId {
                         id: sub_asset.id.clone(),
                     },
@@ -1360,6 +1356,40 @@ mod tests {
         let report = analyze_build(&config_with_scene(), &manifest);
         assert!(report.reachable_assets.contains(&mesh));
         assert_eq!(report.reachable_assets.len(), 2);
+    }
+
+    #[test]
+    fn humanoid_motion_sub_assets_use_the_manifest_stable_id_contract() {
+        let source = AssetId::generate();
+        let native =
+            engine::imported_sub_asset_id(&source, ImportedSubAssetKind::Animation, 0);
+        let humanoid = engine::imported_humanoid_motion_sub_asset_id(&native);
+        let mut manifest = AssetManifest::default();
+        manifest.insert(
+            source,
+            ManifestEntry {
+                path: "characters/hero.glb".into(),
+                name: None,
+                import_settings: ImportSettings {
+                    sub_assets: vec![ImportedSubAsset {
+                        id: humanoid.as_str().to_owned(),
+                        kind: ImportedSubAssetKind::HumanoidMotion,
+                        name: "Walk (Humanoid)".into(),
+                        index: 0,
+                        target_model_source: None,
+                    }],
+                    ..ImportSettings::default()
+                },
+            },
+        );
+
+        let report = analyze_build(&config_with_scene(), &manifest);
+
+        assert!(report.reachable_assets.contains(&humanoid));
+        assert!(!report.diagnostics.iter().any(|diagnostic| matches!(
+            diagnostic.kind,
+            BuildDiagnosticKind::InvalidImportedAssetId { .. }
+        )));
     }
 
     #[test]
