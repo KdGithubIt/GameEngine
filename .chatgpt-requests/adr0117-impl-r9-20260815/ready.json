@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0117-impl-r9-20260815",
+  "target_branch": "chatgpt/gameengine-adr-0117",
+  "expected_head_sha": "aeab5474e7067f9f6e2810e90b8b1644ea7938ed",
+  "patch_parts": [
+    "part-0000.patch",
+    "part-0001.patch"
+  ],
+  "commit_message": "Complete ADR 0117 Editor process replacement",
+  "pr_title": "Implement ADR 0117 project-first Launcher and Editor lifecycle",
+  "pr_body": "Follow-up for ADR 0117: fix the lifecycle lock OpenOptions Clippy failure, remove the Editor's legacy in-process New/Open Project rebinding paths, route dirty-guarded project switching through the Launcher, remove startup project rebinding and duplicated Editor-side scaffold policy, and add lifecycle control regression tests. Re-run full Windows validation."
+}
