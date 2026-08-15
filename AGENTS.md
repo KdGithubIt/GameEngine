@@ -69,5 +69,7 @@ rustdoc examples, or public APIs where a documentation failure is plausible,
 and when diagnosing a documentation CI failure.
 
 The local core-validation entry points are `scripts/validate.ps1` on Windows
-and `scripts/validate.sh` on Linux/macOS. These scripts intentionally remain
-full local gates; the affected-path optimization is a CI scheduling policy.
+and `scripts/validate.sh` on Linux/macOS. These scripts intentionally run the
+full-workspace core local gate (formatting, Clippy, and tests); the affected-path
+optimization is a CI scheduling policy. Workspace Check and documentation remain
+part of Windows `full` validation rather than the local core scripts.

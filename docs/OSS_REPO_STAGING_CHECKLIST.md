@@ -1,11 +1,19 @@
 # OSS Repository Staging Checklist
 
-Status: Draft
-Purpose: Concrete checklist for preparing a clean public staging repository
-before publishing GameEngine under Apache-2.0.
+Status: Historical pre-cutover checklist
+Purpose: Preserve the original staging audit checklist used to reason about a
+clean public repository boundary before the 2026-08-15 cutover.
 
-This checklist assumes the public repository will be created from the current
-`GameEngine` directory, without importing the existing private git history.
+> The repository staging and publication-boundary work is complete. Current
+> repository operations use `KdGithubIt/GameEngine` with the workspace at the
+> repository root. See `docs/PUBLIC_REPOSITORY_MIGRATION.md` for the completed
+> cutover record. Paths, commands, unchecked boxes, and private-staging steps
+> below are historical unless they describe still-unfinished licensing, release,
+> contributor, or governance work.
+
+This checklist originally assumed the public repository would be created from
+the private `RustProject/GameEngine` directory without importing private Git
+history.
 
 ## 0. Decisions Before Copying
 
