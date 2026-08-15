@@ -700,13 +700,15 @@ fn runtime_material_from_asset(
     pending_sphere_texture: Option<Arc<DecodedTexture>>,
 ) -> Material {
     Material::from_authoring_asset(asset).with_pending_texture_slots(
-        pending_texture,
-        pending_normal_texture,
-        pending_metallic_roughness_texture,
-        pending_occlusion_texture,
-        pending_emissive_texture,
-        pending_ramp_texture,
-        pending_sphere_texture,
+        crate::material::PendingMaterialTextures {
+            base: pending_texture,
+            normal: pending_normal_texture,
+            metallic_roughness: pending_metallic_roughness_texture,
+            occlusion: pending_occlusion_texture,
+            emissive: pending_emissive_texture,
+            ramp: pending_ramp_texture,
+            sphere: pending_sphere_texture,
+        },
     )
 }
 

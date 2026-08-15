@@ -98,6 +98,26 @@ impl DecodedTexture {
     }
 }
 
+/// CPU-decoded material texture slots transferred from asset resolution into the renderer.
+#[doc(hidden)]
+#[derive(Debug, Default)]
+pub struct PendingMaterialTextures {
+    /// Base-color pixels awaiting sRGB GPU upload.
+    pub base: Option<Arc<DecodedTexture>>,
+    /// Tangent-space normal pixels awaiting linear GPU upload.
+    pub normal: Option<Arc<DecodedTexture>>,
+    /// Packed roughness/metallic pixels awaiting linear GPU upload.
+    pub metallic_roughness: Option<Arc<DecodedTexture>>,
+    /// Ambient-occlusion pixels awaiting linear GPU upload.
+    pub occlusion: Option<Arc<DecodedTexture>>,
+    /// Emissive-color pixels awaiting sRGB GPU upload.
+    pub emissive: Option<Arc<DecodedTexture>>,
+    /// Toon-ramp pixels awaiting sRGB GPU upload.
+    pub ramp: Option<Arc<DecodedTexture>>,
+    /// Sphere/matcap pixels awaiting sRGB GPU upload.
+    pub sphere: Option<Arc<DecodedTexture>>,
+}
+
 impl Texture {
     /// Decodes supported texture bytes and uploads the resulting texture.
     ///
@@ -739,23 +759,14 @@ impl Material {
 
     /// Attaches CPU-decoded slot data after manifest resolution.
     #[doc(hidden)]
-    pub fn with_pending_texture_slots(
-        mut self,
-        base: Option<Arc<DecodedTexture>>,
-        normal: Option<Arc<DecodedTexture>>,
-        metallic_roughness: Option<Arc<DecodedTexture>>,
-        occlusion: Option<Arc<DecodedTexture>>,
-        emissive: Option<Arc<DecodedTexture>>,
-        ramp: Option<Arc<DecodedTexture>>,
-        sphere: Option<Arc<DecodedTexture>>,
-    ) -> Self {
-        self.pending_texture = base;
-        self.pending_normal_texture = normal;
-        self.pending_metallic_roughness_texture = metallic_roughness;
-        self.pending_occlusion_texture = occlusion;
-        self.pending_emissive_texture = emissive;
-        self.toon.pending_ramp_texture = ramp;
-        self.toon.pending_sphere_texture = sphere;
+    pub fn with_pending_texture_slots(mut self, slots: PendingMaterialTextures) -> Self {
+        self.pending_texture = slots.base;
+        self.pending_normal_texture = slots.normal;
+        self.pending_metallic_roughness_texture = slots.metallic_roughness;
+        self.pending_occlusion_texture = slots.occlusion;
+        self.pending_emissive_texture = slots.emissive;
+        self.toon.pending_ramp_texture = slots.ramp;
+        self.toon.pending_sphere_texture = slots.sphere;
         self
     }
 
