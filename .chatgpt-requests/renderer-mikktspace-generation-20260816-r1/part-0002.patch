@@ -1,0 +1,71 @@
+diff --git a/crates/import/src/model_import.rs b/crates/import/src/model_import.rs
+--- a/crates/import/src/model_import.rs
++++ b/crates/import/src/model_import.rs
+@@ -1641,4 +1641,30 @@
+         }
+     }
+ 
++    fn tangent_vertex(position: [f32; 3], uv: [f32; 2]) -> IrVertex {
++        IrVertex {
++            position,
++            normal: [0.0, 0.0, 1.0],
++            color: [1.0, 1.0, 1.0],
++            uv,
++            outline_scale: 1.0,
++            additional_uv: [0.0; 2],
++        }
++    }
++
++    fn indexed_quad_geometry() -> IrMeshData {
++        IrMeshData {
++            vertices: vec![
++                tangent_vertex([0.0, 0.0, 0.0], [0.0, 0.0]),
++                tangent_vertex([1.0, 0.0, 0.0], [1.0, 0.0]),
++                tangent_vertex([1.0, 1.0, 0.0], [1.0, 1.0]),
++                tangent_vertex([0.0, 1.0, 0.0], [0.0, 1.0]),
++            ],
++            indices: Some(vec![0, 1, 2, 0, 2, 3]),
++            skinning: None,
++            tangents: None,
++            submeshes: Vec::new(),
++        }
++    }
++
+     /// A two-bone rig ("root" -> "tip") described directly as IR, with no
+@@ -1721,4 +1747,36 @@
+     }
+ 
+     #[test]
++    fn runtime_mesh_preserves_authored_tangents() {
++        let mut geometry = indexed_quad_geometry();
++        let authored = vec![[0.0, 1.0, 0.0, -1.0]; geometry.vertices.len()];
++        geometry.tangents = Some(authored.clone());
++
++        assert_eq!(build_runtime_mesh(&geometry).tangents, Some(authored));
++    }
++
++    #[test]
++    fn runtime_mesh_generates_mikktspace_tangents_for_indexed_quad() {
++        let tangents = build_runtime_mesh(&indexed_quad_geometry())
++            .tangents
++            .expect("valid indexed quad should receive generated tangents");
++
++        assert_eq!(tangents.len(), 4);
++        for tangent in tangents {
++            assert!((tangent[0] - 1.0).abs() < 1.0e-5);
++            assert!(tangent[1].abs() < 1.0e-5);
++            assert!(tangent[2].abs() < 1.0e-5);
++            assert!((tangent[3] - 1.0).abs() < 1.0e-5);
++        }
++    }
++
++    #[test]
++    fn runtime_mesh_leaves_tangents_absent_for_invalid_triangle_indices() {
++        let mut geometry = indexed_quad_geometry();
++        geometry.indices = Some(vec![0, 1, 99]);
++
++        assert!(build_runtime_mesh(&geometry).tangents.is_none());
++    }
++
++    #[test]
+     fn mesh_and_material_ids_use_the_original_source_selector() {
