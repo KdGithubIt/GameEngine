@@ -232,16 +232,15 @@ Full mode runs broad workspace validation:
 
 ```text
 cargo fmt --all --check
+cargo check --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 cargo doc --workspace --no-deps
 ```
 
-`cargo check --workspace` is intentionally not a separate required gate. The
-selected gates execute in one Windows executor instead of paying checkout,
-toolchain, dependency-fetch, and compiler-cache setup once per gate. This also
-allows Cargo artifacts produced by one gate to be reused by later gates in the
-same run.
+The explicit workspace check is part of full validation only. The normal
+affected path remains package-selected so ordinary pull requests do not pay for
+a redundant full-workspace compilation.
 
 ### Documentation-only mode
 
@@ -301,8 +300,8 @@ machine-readable aggregate result.
 1. Read `summary.json` and identify the selected validation mode and affected
    package scope before interpreting a success or failure.
 2. If every check required by that mode succeeds, stop and leave the PR Draft.
-3. If formatting, Clippy, tests, or documentation fail, inspect the executor log
-   and the failure-only diagnostics artifact when present.
+3. If formatting, workspace check, Clippy, tests, or documentation fail, inspect
+   the executor log and the failure-only diagnostics artifact when present.
 4. Separate code failures from runner, GitHub, network, or dependency-service
    failures before editing code.
 5. Re-read the current target branch HEAD and affected files.
