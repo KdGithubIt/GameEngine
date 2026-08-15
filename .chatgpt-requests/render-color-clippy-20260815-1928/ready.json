@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "request_id": "render-color-clippy-20260815-1928",
+  "target_branch": "chatgpt/gameengine-render-color-pipeline",
+  "expected_head_sha": "b9e25f19fa575b030c0c47284bcc84852beb7fcb",
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Gate foot IK fade source by physics feature",
+  "pr_title": "Renderer: establish color-space contract",
+  "pr_body": "## Summary\n\n- define explicit sRGB-color vs linear-data material texture semantics\n- guarantee exactly one SDR output transfer through sRGB or shader encoding\n- fix procedural shared-toon color texture source encoding\n- record the renderer color pipeline in ADR 0118\n\n## Scope\n\nThis is the first renderer-foundation phase only. It does not add MMD-specific rendering, expand the material schema, or introduce tangent/IBL/temporal features.\n\n\n<!-- gameengine-chatgpt-dispatcher -->\n"
+}
