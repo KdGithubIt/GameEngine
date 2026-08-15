@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "request_id": "renderer-pbr-runtime-20260816-01",
+  "target_branch": "chatgpt/gameengine-render-pbr-material-foundation",
+  "expected_head_sha": "8edcdbdbf16f4d3726b2ffb6f337d8d8583c3ca1",
+  "patch_parts": ["part-0000.patch", "part-0001.patch", "part-0002.patch", "part-0003.patch"],
+  "commit_message": "Renderer: consume PBR texture inputs in StandardLit",
+  "pr_title": "Renderer: add PBR material texture contract",
+  "pr_body": "Phase 2B renderer foundation. Material schema v3 and format-neutral import inputs now flow through runtime texture resolution. Metallic/roughness and occlusion are explicit linear-data slots, normal scale is applied in tangent space, and AO modulates only the StandardLit indirect term while ToonLit and Unlit stay independent."
+}
