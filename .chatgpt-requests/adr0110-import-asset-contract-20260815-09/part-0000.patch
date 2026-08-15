@@ -67,7 +67,7 @@ diff --git a/crates/assets/src/asset.rs b/crates/assets/src/asset.rs
 +}
 +
  fn is_default<T: Default + PartialEq>(value: &T) -> bool {
-@@ -690,12 +731,3 @@ impl AssetManifest {
+@@ -690,14 +731,5 @@ impl AssetManifest {
              let asset_id = AssetId::from_stable_id(stable)
                  .map_err(|source| AssetManifestError::InvalidAssetId { id: id_str, source })?;
              for sub_asset in &raw_entry.import_settings.sub_assets {
