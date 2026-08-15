@@ -10,6 +10,7 @@ use crate::humanoid::{validate_humanoid_profile, HumanoidError};
 use crate::skeleton_asset::{BoneId, SkeletonAsset};
 use engine_assets::asset::{HumanoidBone, HumanoidProfile};
 use engine_authoring::diagnostic::Diagnostic;
+use engine_authoring::id::AssetId;
 use glam::{Quat, Vec3};
 use hashbrown::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
@@ -28,6 +29,23 @@ pub const HUMANOID_BAKED_CLIP_FILE_EXTENSION: &str = "clip.json";
 /// Diagnostic emitted when a packaged Humanoid source has no staged target bake.
 pub const HUMANOID_BAKE_MISSING_FROM_PACKAGE_DIAGNOSTIC: &str =
     "anim.humanoid_bake_missing_from_package";
+
+/// Returns the deterministic package-relative file name for one Humanoid target bake.
+///
+/// Packaged playback derives this name only from persisted stable IDs. It can therefore
+/// load a build-time bake without importing the source model or reconstructing the
+/// portable motion at runtime.
+pub fn humanoid_packaged_bake_file_name(
+    motion_asset: &AssetId,
+    target_skeleton: &AssetId,
+) -> String {
+    format!(
+        "{}--{}.{}",
+        motion_asset.as_str(),
+        target_skeleton.as_str(),
+        HUMANOID_BAKED_CLIP_FILE_EXTENSION
+    )
+}
 
 const CACHE_DOMAIN: &str = HUMANOID_CACHE_DOMAIN;
 const CACHE_EXTENSION: &str = HUMANOID_BAKED_CLIP_FILE_EXTENSION;
