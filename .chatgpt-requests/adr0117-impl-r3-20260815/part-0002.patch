@@ -1,0 +1,202 @@
++#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
++pub struct EditorOwnerMetadata {
++    /// Operating-system process identifier.
++    pub process_id: u32,
++    /// Stable project identity read from the current `project.json`.
++    pub project_id: ProjectId,
++    /// Canonical location protected by the authoritative lease.
++    pub canonical_project: PathBuf,
++    /// Unix timestamp in milliseconds when the lease was acquired.
++    pub acquired_unix_ms: u64,
++}
++
++#[derive(Debug, Clone, Serialize, Deserialize)]
++struct EditorReadyMetadata {
++    process_id: u32,
++    ready_unix_ms: u64,
++}
++
++/// Outcome of asking lifecycle policy to open a project in the Editor.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum EditorLaunchOutcome {
++    /// A new Editor process was spawned.
++    Spawned,
++    /// The already-running Editor was asked to activate.
++    Activated,
++}
++
++/// Result of an Editor launch/activation request.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct EditorLaunch {
++    /// Whether lifecycle spawned or activated an Editor.
++    pub outcome: EditorLaunchOutcome,
++    /// Canonical location associated with the request.
++    pub canonical_project: PathBuf,
++}
++
++/// Request delivered to the single Launcher instance.
++#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
++pub struct LauncherRequest {
++    /// Project whose Editor should remain alive until a target is ready.
++    pub switch_from: Option<PathBuf>,
++    nonce: String,
++}
++
++/// Authoritative Editor lease held for the whole process lifetime.
++///
++/// The operating system releases the underlying file lock when the process
++/// exits or crashes. JSON files beside the lock are diagnostic/control state
++/// only and never determine ownership.
++pub struct EditorLease {
++    project: ProjectRoot,
++    _lock: File,
++    state_dir: PathBuf,
++    last_activate: Option<String>,
++    last_close: Option<String>,
++}
++
++impl EditorLease {
++    /// Returns the concrete project acquired for this Editor process.
++    pub fn project_root(&self) -> &ProjectRoot {
++        &self.project
++    }
++
++    /// Publishes that project opening and initial Editor bootstrap succeeded.
++    ///
++    /// # Errors
++    ///
++    /// Returns an error when readiness metadata cannot be written.
++    pub fn mark_ready(&self) -> Result<(), LifecycleError> {
++        write_json(
++            &self.state_dir.join(EDITOR_READY_FILE),
++            &EditorReadyMetadata {
++                process_id: std::process::id(),
++                ready_unix_ms: unix_millis(),
++            },
++        )
++    }
++
++    /// Returns `true` once for each new activation request.
++    pub fn take_activation_request(&mut self) -> bool {
++        take_control_request(
++            &self.state_dir.join(EDITOR_ACTIVATE_FILE),
++            &mut self.last_activate,
++        )
++    }
++
++    /// Returns `true` once for each new lifecycle close request.
++    pub fn take_close_request(&mut self) -> bool {
++        take_control_request(
++            &self.state_dir.join(EDITOR_CLOSE_FILE),
++            &mut self.last_close,
++        )
++    }
++}
++
++impl Drop for EditorLease {
++    fn drop(&mut self) {
++        remove_owned_metadata(
++            &self.state_dir.join(EDITOR_OWNER_FILE),
++            std::process::id(),
++        );
++        remove_owned_ready(
++            &self.state_dir.join(EDITOR_READY_FILE),
++            std::process::id(),
++        );
++    }
++}
++
++/// Exclusive single-instance lease and request channel for the Launcher.
++pub struct LauncherSession {
++    _lock: File,
++    request_path: PathBuf,
++    last_request: Option<String>,
++    initial_request: Option<LauncherRequest>,
++}
++
++impl LauncherSession {
++    /// Returns the next activation/switch request sent by another process.
++    pub fn take_request(&mut self) -> Option<LauncherRequest> {
++        if self.initial_request.is_some() {
++            return self.initial_request.take();
++        }
++        let text = fs::read_to_string(&self.request_path).ok()?;
++        if self.last_request.as_deref() == Some(text.as_str()) {
++            return None;
++        }
++        self.last_request = Some(text.clone());
++        serde_json::from_str(&text).ok()
++    }
++}
++
++impl Drop for LauncherSession {
++    fn drop(&mut self) {
++        let _ = fs::remove_file(&self.request_path);
++    }
++}
++
++/// Opens and validates the current project identity and engine association.
++///
++/// # Errors
++///
++/// Returns the underlying [`ProjectError`] or [`LifecycleError::IncompatibleEngine`].
++pub fn inspect_project(path: &Path) -> Result<ProjectRoot, LifecycleError> {
++    let project = ProjectRoot::open(path)?;
++    if project.config().engine_version != CURRENT_ENGINE_ASSOCIATION {
++        return Err(LifecycleError::IncompatibleEngine {
++            found: project.config().engine_version.clone(),
++            expected: CURRENT_ENGINE_ASSOCIATION,
++        });
++    }
++    Ok(project)
++}
++
++/// Creates a complete current-format project through a staging directory.
++///
++/// The final path is published with one rename only after project identity,
++/// standard directories, the Rust host, starter Scene, settings, and a final
++/// compatibility check all succeed.
++///
++/// # Errors
++///
++/// Returns an error without publishing `final_path` if any scaffold step fails.
++pub fn create_standard_project(
++    final_path: &Path,
++    name: &str,
++) -> Result<ProjectRoot, LifecycleError> {
++    validate_project_name(name)?;
++    if final_path.exists() {
++        return Err(LifecycleError::ProjectAlreadyExists(final_path.to_path_buf()));
++    }
++    let parent = final_path.parent().ok_or_else(|| LifecycleError::InvalidProjectName(name.into()))?;
++    if !parent.is_dir() {
++        return Err(LifecycleError::Io {
++            path: parent.to_path_buf(),
++            source: io::Error::new(io::ErrorKind::NotFound, "project parent directory does not exist"),
++        });
++    }
++
++    let staging = parent.join(format!(
++        ".gameengine-project-{}-{}-{}.staging",
++        std::process::id(),
++        unix_millis(),
++        name
++    ));
++    fs::create_dir(&staging).map_err(|source| LifecycleError::Io {
++        path: staging.clone(),
++        source,
++    })?;
++
++    let staged_result = (|| {
++        let project = ProjectRoot::create(
++            &staging,
++            ProjectConfig {
++                project_id: ProjectId::generate(),
++                name: name.to_owned(),
++                engine_version: CURRENT_ENGINE_ASSOCIATION.to_owned(),
++                schema_version: PROJECT_SCHEMA_VERSION,
++            },
++        )?;
++        initialize_game_project(&project).map_err(|error| LifecycleError::Scaffold {
++            step: "game_project",
++            message: error.to_string(),
