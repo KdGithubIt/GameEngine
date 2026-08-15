@@ -1,0 +1,37 @@
+diff --git a/crates/editor/src/ui/tests.rs b/crates/editor/src/ui/tests.rs
+--- a/crates/editor/src/ui/tests.rs
++++ b/crates/editor/src/ui/tests.rs
+@@ -1760,30 +1760,30 @@
+         super::assets::validate_animation_set_clip_references(&document, &manifest).is_ok()
+     );
+ 
+     // primaryを親VMDへ差し替えた場合は、保存可能なClipではないため拒否する。
+     document
+         .bindings
+         .get_mut(&slot)
+         .expect("the test binding must exist")
+-        .clip = motion_source.clone();
++        .clip = engine_authoring::MotionSourceRef::native(motion_source.clone());
+     let primary_error =
+         super::assets::validate_animation_set_clip_references(&document, &manifest)
+             .expect_err("a parent VMD source must not be accepted as a primary clip");
+     assert!(primary_error.contains("primary clip"));
+     assert!(primary_error.contains("source asset"));
+ 
+     // primaryを戻し、overlayだけを親VMDへした場合も同じ契約で拒否する。
+     let binding = document
+         .bindings
+         .get_mut(&slot)
+         .expect("the test binding must exist");
+-    binding.clip = primary_clip;
+-    binding.overlays = vec![motion_source];
++    binding.clip = engine_authoring::MotionSourceRef::native(primary_clip);
++    binding.overlays = vec![engine_authoring::MotionSourceRef::native(motion_source)];
+ 
+     let overlay_error =
+         super::assets::validate_animation_set_clip_references(&document, &manifest)
+             .expect_err("a parent VMD source must not be accepted as an overlay");
+     assert!(overlay_error.contains("overlay 1"));
+     assert!(overlay_error.contains("source asset"));
+ }
+ 
