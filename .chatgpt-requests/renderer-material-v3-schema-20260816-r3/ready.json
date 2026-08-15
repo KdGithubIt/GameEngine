@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "request_id": "renderer-material-v3-schema-20260816-r3",
+  "target_branch": "chatgpt/gameengine-render-pbr-material-foundation",
+  "expected_head_sha": "630e8f765f394675a9919c1d3d7e9356f80070fe",
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Renderer: advance material contract to schema v3",
+  "pr_title": "Renderer: add PBR material texture contract",
+  "pr_body": "Phase 2B renderer foundation. This first staged commit advances MaterialAsset to schema v3 and adds generic metallic/roughness, occlusion, normal scale, and occlusion strength fields with current-format-only validation. Follow-up dispatcher commits wire the format-neutral IR/importers, runtime shader inputs, documentation, and generated tangent basis."
+}
