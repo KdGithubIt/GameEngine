@@ -2,7 +2,7 @@
 
 Status: Accepted  
 Version: 1.0.0  
-Canonical location: `GameEngine/docs/RUST_CODE_STYLE.md`
+Canonical location: `docs/RUST_CODE_STYLE.md`
 
 ## 1. Purpose
 
@@ -44,10 +44,11 @@ Reasons:
 
 All Rust code MUST be formatted with the project's stable Rust toolchain.
 
-Required checks:
+Required full-validation checks:
 
 ```text
 cargo fmt --all --check
+cargo check --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 cargo doc --workspace --no-deps
@@ -322,7 +323,7 @@ work SHOULD be performed as a separate, reviewable change.
 Before considering a Rust change complete, verify:
 
 - Source code text is English.
-- `cargo fmt --all --check` passes.
+- The required full-validation checks pass when full validation is required.
 - No new compiler, Clippy, rustdoc, or test warnings were introduced.
 - Public API changes include rustdoc.
 - Recoverable failures return errors or diagnostics.
