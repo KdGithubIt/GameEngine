@@ -1,0 +1,196 @@
+diff --git a/crates/editor/src/material_editor.rs b/crates/editor/src/material_editor.rs
+--- a/crates/editor/src/material_editor.rs
++++ b/crates/editor/src/material_editor.rs
+@@ -114,3 +114,25 @@
+     });
+ 
+     changed |= texture_picker(
++        ui,
++        "Metallic / roughness texture",
++        &mut mat.metallic_roughness_texture,
++        texture_choices,
++    );
++    changed |= texture_picker(
++        ui,
++        "Ambient occlusion texture",
++        &mut mat.occlusion_texture,
++        texture_choices,
++    );
++    ui.horizontal(|ui| {
++        ui.label("Occlusion strength");
++        changed |= ui
++            .add(eframe::egui::Slider::new(
++                &mut mat.occlusion_strength,
++                0.0..=1.0,
++            ))
++            .changed();
++    });
++
++    changed |= texture_picker(
+@@ -129,4 +129,14 @@
+         &mut mat.normal_texture,
+         texture_choices,
+     );
++    ui.horizontal(|ui| {
++        ui.label("Normal scale");
++        changed |= ui
++            .add(
++                eframe::egui::DragValue::new(&mut mat.normal_scale)
++                    .speed(0.05)
++                    .range(-8.0..=8.0),
++            )
++            .changed();
++    });
+     changed |= texture_picker(
+diff --git a/crates/import/Cargo.toml b/crates/import/Cargo.toml
+--- a/crates/import/Cargo.toml
++++ b/crates/import/Cargo.toml
+@@ -14,3 +14,4 @@
+ image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "bmp"] }
+ gltf = "1"
++mikktspace = { version = "0.3", default-features = false, features = ["glam"] }
+ serde = { version = "1", features = ["derive"] }
+diff --git a/Cargo.lock b/Cargo.lock
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -1440,3 +1440,4 @@
+  "hashbrown 0.14.5",
+  "image",
++ "mikktspace",
+  "mmd-anim-format",
+@@ -1947,3 +1947,9 @@
++[[package]]
++name = "glam"
++version = "0.15.2"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "3abb554f8ee44336b72d522e0a7fe86a29e09f839a36022fa869a7dfe941a54b"
++
+ [[package]]
+ name = "glam"
+ version = "0.29.3"
+@@ -2760,2 +2760,11 @@
++[[package]]
++name = "mikktspace"
++version = "0.3.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "7d0b56b403871a8f992ca626d52cc0a690d4841baea8955dc4af6304ac62f8b0"
++dependencies = [
++ "glam 0.15.2",
++]
++
+ [[package]]
+ name = "mmd-anim-format"
+diff --git a/docs/adr/README.md b/docs/adr/README.md
+--- a/docs/adr/README.md
++++ b/docs/adr/README.md
+@@ -178,2 +178,3 @@
+ | [0118](0118-rendering-color-space-and-texture-semantics.md) | Rendering Color-Space and Texture-Semantics Contract |
+ | [0119](0119-tangent-space-gpu-contract-and-shared-material-fragment.md) | Tangent-Space GPU Contract and Shared Material Fragment Stage |
++| [0120](0120-standardlit-pbr-textures-and-generated-tangents.md) | StandardLit PBR Textures and Generated Tangents |
+diff --git a/docs/adr/0120-standardlit-pbr-textures-and-generated-tangents.md b/docs/adr/0120-standardlit-pbr-textures-and-generated-tangents.md
+new file mode 100644
+--- /dev/null
++++ b/docs/adr/0120-standardlit-pbr-textures-and-generated-tangents.md
+@@ -0,0 +1,102 @@
++# ADR 0120: StandardLit PBR Textures and Generated Tangents
++
++- Status: Accepted
++- Date: 2026-08-15
++
++## Context
++
++ADR 0119 established a generic tangent GPU stream and one authoritative
++material fragment stage for static and skinned meshes, but StandardLit still
++used scalar roughness/metallic values and ignored imported occlusion maps.
++Normal maps also had no authored scale, and meshes without source tangents
++always relied on derivative reconstruction.
++
++glTF already exposes the metallic-roughness, occlusion, and normal-scale
++semantics needed by the generic material model. These concepts are not glTF
++renderer features: FBX, procedural assets, editor-authored materials, and
++future formats need the same engine-level representation.
++
++ADR 0115 requires persisted formats to have one current schema rather than
++accumulating compatibility readers.
++
++## Decision
++
++### Material schema v3
++
++`.material.json` schema version 3 is the only accepted material document
++version. Version 2 is rejected explicitly and repository-authored fixtures and
++writers move to v3 in the same change.
++
++The generic material contract adds:
++
++- `metallic_roughness_texture`: optional linear-data texture,
++- `occlusion_texture`: optional linear-data texture,
++- `normal_scale`: finite scalar, default `1.0`,
++- `occlusion_strength`: scalar in `[0, 1]`, default `1.0`.
++
++Existing `roughness` and `metallic` remain scalar factors.
++
++For StandardLit, the packed metallic-roughness texture follows the common
++channel contract: green multiplies roughness and blue multiplies metallic.
++The occlusion texture uses red. A missing numeric texture behaves as white,
++so scalar-only materials are unchanged.
++
++`normal_scale` multiplies tangent-space X/Y before the sampled normal is
++normalized. It is allowed to be negative; only non-finite values are invalid.
++
++Per ADR 0118, normal, metallic-roughness, and occlusion textures are linear
++numeric data. Base color, emissive, toon ramp, and sphere/matcap textures keep
++their color-texture semantics.
++
++Ambient occlusion modulates ambient/indirect lighting only. It does not darken
++the direct directional-light term. `occlusion_strength` blends between no
++occlusion and the sampled red channel.
++
++ToonLit and Unlit keep their independent shading contracts and do not acquire
++StandardLit metallic-roughness or AO behavior.
++
++### Import normalization
++
++The format-independent model IR carries the four new generic material
++semantics. glTF maps its native packed metallic-roughness texture, occlusion
++texture/strength, and normal scale directly into that IR. Formats without a
++native equivalent emit the generic defaults. Renderer code never branches on
++the source format.
++
++Extracted imported materials use the same schema-v3 `MaterialAsset` contract
++as standalone author-authored materials, preserving ADR 0101's remap model.
++
++### Tangent generation
++
++Source tangents always win.
++
++When a mesh has no source tangents and at least one material using it has a
++normal map, the import builder runs the MikkTSpace reference algorithm before
++the mesh crosses into runtime rendering. The dependency is isolated to
++`engine-import`; renderer/runtime crates do not depend on MikkTSpace.
++
++MikkTSpace returns per-face-corner tangent frames. The engine does not silently
++split imported topology because doing so would require synchronized remapping
++of skinning, morphs, and other per-vertex data. A generated tangent is therefore
++accepted into the existing per-vertex stream only when all corners sharing
++that vertex agree on tangent direction and handedness. If generation fails or
++shared corners require incompatible frames, the mesh keeps no generated
++tangent stream and the renderer retains ADR 0119's derivative TBN fallback.
++The importer emits a diagnostic for that fallback instead of producing an
++incorrect indexed tangent basis.
++
++## Consequences
++
++- StandardLit can represent the core metallic-roughness texture contract of
++  glTF without a format-specific render path.
++- Numeric texture color space is explicit end-to-end.
++- Existing scalar-only materials preserve their appearance through white
++  fallback data textures.
++- Normal mapping quality improves automatically for suitable meshes without
++  changing the public `Vertex` layout or serialized mesh identity.
++- Some meshes with UV seams encoded through shared indices still use the
++  derivative fallback until a future topology-remapping import stage can split
++  vertices together with every dependent per-vertex channel.
++- Material schema v2 assets must be regenerated or rewritten as v3; no legacy
++  parser is retained.
++- Outline, shadow, Stable ID, and crate ownership contracts are unchanged.
