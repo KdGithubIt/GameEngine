@@ -1,0 +1,204 @@
+        })?;
++
++        let settings = ProjectSettings {
++            start_scene: Some("scenes/main.scene.json".to_owned()),
++            ..ProjectSettings::default()
++        };
++        settings
++            .save(project.path())
++            .map_err(|error| LifecycleError::Scaffold {
++                step: "project_settings",
++                message: error.to_string(),
++            })?;
++        inspect_project(&staging)?;
++        Ok::<(), LifecycleError>(())
++    })();
++
++    if let Err(error) = staged_result {
++        let _ = fs::remove_dir_all(&staging);
++        return Err(error);
++    }
++
++    fs::rename(&staging, final_path).map_err(|source| {
++        let _ = fs::remove_dir_all(&staging);
++        LifecycleError::Io {
++            path: final_path.to_path_buf(),
++            source,
++        }
++    })?;
++    inspect_project(final_path)
++}
++
++/// Acquires the authoritative exclusive lease for a direct or Launcher-spawned
++/// Editor process.
++///
++/// If another Editor already owns the canonical location, it receives an
++/// activation request and this call fails rather than opening a duplicate.
++///
++/// # Errors
++///
++/// Returns project/compatibility failures, lock I/O errors, or
++/// [`LifecycleError::EditorAlreadyOpen`].
++pub fn acquire_editor_project(path: &Path) -> Result<EditorLease, LifecycleError> {
++    let project = inspect_project(path)?;
++    let state_dir = project_state_dir(&project);
++    fs::create_dir_all(&state_dir).map_err(|source| LifecycleError::Io {
++        path: state_dir.clone(),
++        source,
++    })?;
++    let lock_path = state_dir.join(EDITOR_LOCK_FILE);
++    let lock = open_lock_file(&lock_path)?;
++    match lock.try_lock() {
++        Ok(()) => {}
++        Err(TryLockError::WouldBlock) => {
++            let _ = write_control_request(&state_dir.join(EDITOR_ACTIVATE_FILE));
++            return Err(LifecycleError::EditorAlreadyOpen(
++                project.path().to_path_buf(),
++            ));
++        }
++        Err(TryLockError::Error(source)) => {
++            return Err(LifecycleError::Io {
++                path: lock_path,
++                source,
++            });
++        }
++    }
++
++    let _ = fs::remove_file(state_dir.join(EDITOR_READY_FILE));
++    write_json(
++        &state_dir.join(EDITOR_OWNER_FILE),
++        &EditorOwnerMetadata {
++            process_id: std::process::id(),
++            project_id: project.config().project_id.clone(),
++            canonical_project: project.path().to_path_buf(),
++            acquired_unix_ms: unix_millis(),
++        },
++    )?;
++    Ok(EditorLease {
++        project,
++        _lock: lock,
++        state_dir,
++        last_activate: None,
++        last_close: None,
++    })
++}
++
++/// Returns diagnostic metadata for the active Editor owner, when the location
++/// is currently leased.
++///
++/// # Errors
++///
++/// Returns an error if project inspection or lock probing fails.
++pub fn editor_owner_metadata(
++    path: &Path,
++) -> Result<Option<EditorOwnerMetadata>, LifecycleError> {
++    let project = inspect_project(path)?;
++    let state_dir = project_state_dir(&project);
++    if !editor_lock_is_held(&state_dir)? {
++        return Ok(None);
++    }
++    read_json_optional(&state_dir.join(EDITOR_OWNER_FILE))
++}
++
++/// Returns whether the active Editor reported successful bootstrap.
++///
++/// Stale readiness JSON is ignored unless the OS lease is still held and its
++/// process ID matches current owner metadata.
++///
++/// # Errors
++///
++/// Returns an error if project inspection or lock probing fails.
++pub fn editor_is_ready(path: &Path) -> Result<bool, LifecycleError> {
++    let project = inspect_project(path)?;
++    let state_dir = project_state_dir(&project);
++    if !editor_lock_is_held(&state_dir)? {
++        return Ok(false);
++    }
++    let owner: Option<EditorOwnerMetadata> =
++        read_json_optional(&state_dir.join(EDITOR_OWNER_FILE))?;
++    let ready: Option<EditorReadyMetadata> =
++        read_json_optional(&state_dir.join(EDITOR_READY_FILE))?;
++    Ok(matches!(
++        (owner, ready),
++        (Some(owner), Some(ready)) if owner.process_id == ready.process_id
++    ))
++}
++
++/// Starts an Editor for `path`, or activates its existing Editor.
++///
++/// # Errors
++///
++/// Returns project/compatibility failures, lifecycle-state I/O failures, or
++/// an executable/spawn failure.
++pub fn launch_or_activate_editor(path: &Path) -> Result<EditorLaunch, LifecycleError> {
++    let project = inspect_project(path)?;
++    let state_dir = project_state_dir(&project);
++    if editor_lock_is_held(&state_dir)? {
++        write_control_request(&state_dir.join(EDITOR_ACTIVATE_FILE))?;
++        return Ok(EditorLaunch {
++            outcome: EditorLaunchOutcome::Activated,
++            canonical_project: project.path().to_path_buf(),
++        });
++    }
++
++    let editor = sibling_executable("engine-editor")?;
++    Command::new(&editor)
++        .arg("--project")
++        .arg(project.path())
++        .spawn()
++        .map_err(|source| LifecycleError::Io {
++            path: editor,
++            source,
++        })?;
++    Ok(EditorLaunch {
++        outcome: EditorLaunchOutcome::Spawned,
++        canonical_project: project.path().to_path_buf(),
++    })
++}
++
++/// Requests lifecycle-driven closure of an Editor after a replacement is ready.
++///
++/// # Errors
++///
++/// Returns an error when the project or control state cannot be resolved.
++pub fn request_editor_close(path: &Path) -> Result<(), LifecycleError> {
++    let project = inspect_project(path)?;
++    write_control_request(&project_state_dir(&project).join(EDITOR_CLOSE_FILE))
++}
++
++/// Acquires the user-session Launcher lease.
++///
++/// When another Launcher is active this forwards the request to it and returns
++/// `Ok(None)`. The primary Launcher receives `initial_switch_from` as its first
++/// request and remains alive until its window closes.
++///
++/// # Errors
++///
++/// Returns an error when lifecycle state cannot be created or locked.
++pub fn acquire_launcher(
++    initial_switch_from: Option<PathBuf>,
++) -> Result<Option<LauncherSession>, LifecycleError> {
++    let root = state_root();
++    fs::create_dir_all(&root).map_err(|source| LifecycleError::Io {
++        path: root.clone(),
++        source,
++    })?;
++    let lock_path = root.join(LAUNCHER_LOCK_FILE);
++    let lock = open_lock_file(&lock_path)?;
++    match lock.try_lock() {
++        Ok(()) => {
++            let request_path = root.join(LAUNCHER_REQUEST_FILE);
++            let _ = fs::remove_file(&request_path);
++            Ok(Some(LauncherSession {
++                _lock: lock,
++                request_path,
++                last_request: None,
++                initial_request: initial_switch_from.map(new_launcher_request),
++            }))
++        }
++        Err(TryLockError::WouldBlock) => {
++            write_launcher_request(initial_switch_from)?;
++            Ok(None)
++        }
++        Err(TryLockError::Error(source)) => Err(LifecycleError::Io {
++            pa
