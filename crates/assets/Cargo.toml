@@ -1,0 +1,14 @@
+[package]
+name = "engine-assets"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+engine-authoring = { path = "../authoring" }
+glam = "0.29"
+hashbrown = "0.14"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+tempfile = "3"

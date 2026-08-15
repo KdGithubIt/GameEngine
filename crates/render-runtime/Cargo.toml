@@ -1,0 +1,33 @@
+[package]
+name = "engine-render-runtime"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+engine-assets = { path = "../assets", optional = true }
+engine-authoring = { path = "../authoring", optional = true }
+engine-core = { path = "../core", optional = true }
+engine-ecs = { path = "../ecs", optional = true }
+engine-rig = { path = "../rig", optional = true }
+bytemuck = { version = "1.16", features = ["derive"] }
+glam = { version = "0.29", optional = true }
+hashbrown = "0.14"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "bmp"], optional = true }
+wgpu = { version = "29", optional = true }
+
+[features]
+default = ["gpu"]
+gpu = [
+    "dep:engine-assets",
+    "dep:engine-authoring",
+    "dep:engine-core",
+    "dep:engine-ecs",
+    "dep:engine-rig",
+    "dep:glam",
+    "dep:image",
+    "dep:wgpu",
+]
+
+[dev-dependencies]
+engine-renderer = { path = "../renderer", default-features = false }
+pollster = "0.3"

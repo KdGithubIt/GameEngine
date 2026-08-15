@@ -1,0 +1,13 @@
+[
+  {
+    "kind": "add_node",
+    "node": {
+      "id": "node_01234567890ABCDEFGHJKMNPQ1",
+      "node_type": "behavior_tree.action",
+      "properties": {
+        "behavior": "duplicate"
+      },
+      "annotations": {}
+    }
+  }
+]

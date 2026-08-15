@@ -1,0 +1,32 @@
+[workspace]
+members = [
+    "crates/ecs",
+    "crates/core",
+    "crates/assets",
+    "crates/rig",
+    "crates/physics",
+    "crates/animation",
+    "crates/gameplay",
+    "crates/render-runtime",
+    "crates/platform",
+    "crates/import",
+    "crates/scripting",
+    "crates/scene",
+    "crates/renderer",
+    "crates/engine",
+    "crates/authoring",
+    "crates/cli",
+    "crates/editor",
+    "crates/mcp",
+    "crates/game-component-macros",
+    "crates/game-macros",
+    "crates/game-system-macros",
+]
+resolver = "3"
+
+# Third-party crates are not stepped through in a debugger, but their debug
+# info dominates link time and `target/` size: the workspace test executables
+# link wgpu, rapier3d, egui, and rhai into every binary. Dropping it keeps full
+# debug info for workspace crates while removing the bulk of the linker input.
+[profile.dev.package."*"]
+debug = false

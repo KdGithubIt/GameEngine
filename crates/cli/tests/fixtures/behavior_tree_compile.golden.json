@@ -1,0 +1,25 @@
+{
+  "success": true,
+  "diagnostics": [],
+  "compiled_tree": {
+    "source": "graph_01234567890ABCDEFGHJKMNPQR",
+    "root": {
+      "source": "node_01234567890ABCDEFGHJKMNPQ1",
+      "kind": "root",
+      "children": [
+        {
+          "source": "node_01234567890ABCDEFGHJKMNPQ2",
+          "kind": "sequence",
+          "children": [
+            {
+              "source": "node_01234567890ABCDEFGHJKMNPQ3",
+              "kind": "action",
+              "behavior": "idle",
+              "children": []
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

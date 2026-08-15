@@ -1,0 +1,72 @@
+name: GameEngine ChatGPT Dispatch Signal
+
+run-name: >-
+  ChatGPT request ready ${{ github.sha }}
+
+on:
+  push:
+    branches:
+      - chatgpt-dispatch
+    paths:
+      - ".chatgpt-requests/**/ready.json"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gameengine-chatgpt-dispatch-signal
+  cancel-in-progress: false
+
+jobs:
+  signal:
+    name: Validate ready marker signal
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Check out the transport commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Validate ready marker shape
+        shell: bash
+        env:
+          EXPECTED_REPOSITORY: KdGithubIt/GameEngine
+        run: |
+          set -euo pipefail
+
+          fail() {
+            echo "::error::$1"
+            exit 1
+          }
+
+          [[ "$GITHUB_REPOSITORY" == "$EXPECTED_REPOSITORY" ]] ||
+            fail "This workflow is restricted to $EXPECTED_REPOSITORY."
+          [[ "$GITHUB_REF_NAME" == "chatgpt-dispatch" ]] ||
+            fail "This signal is restricted to chatgpt-dispatch."
+
+          mapfile -d '' changed_paths < <(
+            git diff-tree --no-commit-id --name-only -r -z "$GITHUB_SHA"
+          )
+          [[ ${#changed_paths[@]} -eq 1 ]] ||
+            fail "The ready commit must change exactly one file."
+
+          ready_path="${changed_paths[0]}"
+          [[ "$ready_path" =~ ^\.chatgpt-requests/[A-Za-z0-9][A-Za-z0-9._-]{0,63}/ready\.json$ ]] ||
+            fail "The only changed file must be .chatgpt-requests/<request-id>/ready.json."
+          [[ -f "$ready_path" && ! -L "$ready_path" ]] ||
+            fail "ready.json must be a regular file created by this commit."
+
+          change_status="$(git diff-tree --no-commit-id --name-status -r "$GITHUB_SHA")"
+          [[ "$change_status" == $'A\t'"$ready_path" ]] ||
+            fail "ready.json must be newly added in the final commit, not modified or deleted."
+
+          {
+            echo "### ChatGPT request signal accepted"
+            echo
+            echo "- Transport commit: \`$GITHUB_SHA\`"
+            echo "- Ready marker: \`$ready_path\`"
+            echo "- Mutation permissions: none"
+          } >> "$GITHUB_STEP_SUMMARY"
