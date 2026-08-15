@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "request_id": "renderer-skinned-vertex-only-20260816-01",
+  "target_branch": "chatgpt/gameengine-render-pbr-material-foundation",
+  "expected_head_sha": "df6c4f39706e2989782cd6c85f73c9f3514f9f84",
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Renderer: make skinned material shader vertex-only",
+  "pr_title": "Renderer: add PBR material texture contract",
+  "pr_body": "## Summary\n\nContinues the generic renderer PBR/material foundation. Removes the obsolete duplicate fragment/material/light/shadow implementation from `mesh_skinned.wgsl`, leaving skeletal deformation as its sole responsibility. Skinned material pipelines continue to pair this vertex stage with the authoritative `mesh.wgsl` fragment stage.\n\n## Validation\n\nWindows Validation is dispatched by the trusted GameEngine dispatcher. The cumulative PR still changes Cargo.lock, so full workspace validation is expected."
+}
