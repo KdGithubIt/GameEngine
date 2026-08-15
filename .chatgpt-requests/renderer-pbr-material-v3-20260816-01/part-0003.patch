@@ -1,0 +1,10 @@
+diff --git a/crates/import/src/gltf_import.rs b/crates/import/src/gltf_import.rs
+--- a/crates/import/src/gltf_import.rs
++++ b/crates/import/src/gltf_import.rs
+@@ -871,5 +871,5 @@ fn parse_materials(
+ fn parse_materials(
+     document: &gltf::Document,
+     texture_valid: &[bool],
+-    diagnostics: &mut Vec<Diagnostic>,
++    _diagnostics: &mut Vec<Diagnostic>,
+ ) -> Vec<IrMaterial> {
