@@ -1,0 +1,94 @@
+diff --git a/docs/adr/0117-project-first-launcher-and-editor-application-lifecycle.md b/docs/adr/0117-project-first-launcher-and-editor-application-lifecycle.md
+new file mode 100644
+index 0000000..c9b5686
+--- /dev/null
++++ b/docs/adr/0117-project-first-launcher-and-editor-application-lifecycle.md
+@@ -0,0 +1,324 @@
++# ADR 0117: Project-First Launcher and Editor Application Lifecycle
++
++Status: Accepted
++Date: 2026-08-15
++Amends: ADR 0023
++Related: ADR 0031, ADR 0115
++
++## Context
++
++The current editor owns both project selection and project editing. It can start
++without a `ProjectRoot`, restores a last project after the GUI has already been
++constructed, shows the Project Hub from a no-document state, and switches
++projects by rebinding a large set of project-scoped editor subsystems in place.
++Phase 26 intentionally added that Hub as UX over ADR 0023, but the resulting
++application lifecycle now conflates four distinct responsibilities:
++
++1. discovering or selecting a project;
++2. creating a complete GameEngine project;
++3. acquiring exclusive ownership of a project for editing; and
++4. running an editor workspace whose assets, documents, watchers, imports,
++   build state, and game module all belong to that project.
++
++That conflation weakens invariants. A normal editor workspace must repeatedly
++account for the absence of a project, project switching requires every
++project-scoped cache and service to be reset correctly, recent-project state is
++mixed with editor workspace state, and a second editor process can bypass a
++launcher-only duplicate-open check.
++
++ADR 0023 remains correct that `ProjectRoot`, `ProjectConfig`, `project.json`,
++and project path confinement are GUI-free authoring responsibilities. The new
++problem is above that boundary: process lifetime, project acquisition, project
++creation policy, exclusive editor ownership, and launcher/editor coordination.
++Those concerns need a shared application-lifecycle boundary without moving
++canonical authoring semantics into GUI code.
++
++## Decision
++
++### 1. Use a project-first two-application model
++
++GameEngine has two distinct desktop application roles:
++
++- **GameEngine Launcher / Project Manager** selects existing projects, creates
++  new projects, owns recent-project UI state, reports project/editor
++  compatibility, and starts or activates editor processes.
++- **GameEngine Editor** edits exactly one project for its process lifetime.
++
++The Launcher and Editor are separate executables. The Launcher remains running
++while editors that it started are running and is single-instance per user
++session. Multiple Editor processes MAY run concurrently when they edit distinct
++project locations.
++
++The normal Editor launch contract is an explicit project path, conceptually:
++
++```text
++engine-editor --project <path>
++```
++
++The Editor MUST NOT infer its active project from recent-project preferences.
++Starting the Editor without a project is not a normal editing state. Recovery
++or safe-start options MAY suppress optional project subsystems, but they MUST
++NOT create a project-less `EditorWorkspace`.
++
++The Editor performs the authoritative `ProjectRoot::open` validation at process
++startup even when the Launcher already inspected the path. Once that succeeds,
++the editing workspace is constructed with a concrete `ProjectRoot`; a normal
++workspace does not store the active project as `Option<ProjectRoot>`.
++
++`ProjectRoot::open` success means that the project identity/root contract is
++valid. It does not mean every editor subsystem is healthy. Failures in game
++module loading, assets, imports, shaders, or other recoverable project content
++are editor diagnostics and do not retroactively make the project root invalid.
++
++### 2. Add a shared project application-lifecycle crate
++
++A dedicated GUI-free shared crate, `engine-project-lifecycle`, owns application
++lifecycle around an authoring project. It sits above `engine-authoring` and MAY
++depend on `engine-authoring`, but it MUST NOT own authoring commands, runtime
++ECS semantics, editor GUI state, or Launcher UI.
++
++Its responsibilities are:
++
++- acquiring and validating a project for application use through
++  `ProjectRoot`;
++- coordinating the standard GameEngine new-project scaffold;
++- acquiring and holding the exclusive editor lease described below;
++- recording ephemeral ownership metadata for diagnostics;
++- exposing process-neutral lifecycle status/contracts needed by Launcher and
++  Editor; and
