@@ -182,12 +182,8 @@ impl EditorApp {
     pub(super) fn show_menu_bar(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         egui::MenuBar::new().ui(ui, |ui| {
             ui.menu_button("File", |ui| {
-                if ui.button("New Project...").clicked() {
-                    self.create_project();
-                    ui.close();
-                }
-                if ui.button("Open Project...").clicked() {
-                    self.open_project();
+                if ui.button("Switch Project...").clicked() {
+                    self.request_project_switch();
                     ui.close();
                 }
                 if ui.button("Open Document...    Ctrl+O").clicked() {

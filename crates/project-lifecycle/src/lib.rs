@@ -615,6 +615,8 @@ fn open_lock_file(path: &Path) -> Result<File, LifecycleError> {
         .read(true)
         .write(true)
         .create(true)
+        // Lease probing must not mutate shared state before ownership is known.
+        .truncate(false)
         .open(path)
         .map_err(|source| LifecycleError::Io {
             path: path.to_path_buf(),
@@ -789,6 +791,40 @@ mod tests {
         assert!(matches!(second, Err(LifecycleError::EditorAlreadyOpen(_))));
         drop(first);
         acquire_editor_project(&final_path).expect("lease must be released on drop");
+    }
+
+    #[test]
+    fn opening_lock_file_preserves_existing_contents() {
+        let parent = tempfile::tempdir().expect("temp directory must be created");
+        let lock_path = parent.path().join("editor.lock");
+        fs::write(&lock_path, "existing lifecycle state")
+            .expect("lock fixture must be written");
+
+        let lock = open_lock_file(&lock_path).expect("lock file must open");
+        drop(lock);
+
+        assert_eq!(
+            fs::read_to_string(&lock_path).expect("lock fixture must remain readable"),
+            "existing lifecycle state"
+        );
+    }
+
+    #[test]
+    fn ready_editor_accepts_activation_and_close_requests() {
+        let parent = tempfile::tempdir().expect("temp directory must be created");
+        let final_path = parent.path().join("ControlGame");
+        create_standard_project(&final_path, "ControlGame").expect("scaffold must succeed");
+
+        let mut lease = acquire_editor_project(&final_path).expect("editor lease must succeed");
+        lease.mark_ready().expect("editor readiness must publish");
+        assert!(editor_is_ready(&final_path).expect("readiness must be readable"));
+
+        let launch = launch_or_activate_editor(&final_path).expect("activation must succeed");
+        assert_eq!(launch.outcome, EditorLaunchOutcome::Activated);
+        assert!(lease.take_activation_request());
+
+        request_editor_close(&final_path).expect("close request must succeed");
+        assert!(lease.take_close_request());
     }
 
     #[test]
