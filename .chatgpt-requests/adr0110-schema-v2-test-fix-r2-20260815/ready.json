@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0110-schema-v2-test-fix-r2-20260815",
+  "target_branch": "chatgpt/gameengine-adr-0110-humanoid-motion",
+  "expected_head_sha": "413f42debd1ea059eca736c4d7c861520aa3c985",
+  "patch_parts": ["part-0000.patch"],
+  "commit_message": "Update Animation Set schema v2 UI tests",
+  "pr_title": "Implement ADR 0110 humanoid profiles and motion",
+  "pr_body": "Fixes the remaining schema-v2 test compile errors by making three existing UI contract-test assignments explicit Native MotionSourceRef values.\n\n<!-- gameengine-chatgpt-dispatcher -->\n"
+}
