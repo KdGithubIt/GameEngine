@@ -1,0 +1,138 @@
+diff --git a/crates/authoring/src/material_asset.rs b/crates/authoring/src/material_asset.rs
+--- a/crates/authoring/src/material_asset.rs
++++ b/crates/authoring/src/material_asset.rs
+@@ -13,5 +13,5 @@
+ 
+ /// Schema version for `.material.json` files.
+-pub const MATERIAL_SCHEMA_VERSION: u32 = 2;
++pub const MATERIAL_SCHEMA_VERSION: u32 = 3;
+ 
+ // ---------------------------------------------------------------------------
+@@ -244,9 +244,19 @@ pub struct MaterialAsset {
+     /// Optional [`AssetId`] of a base-color texture in the asset manifest.
+     #[serde(default, skip_serializing_if = "Option::is_none")]
+     pub base_color_texture: Option<AssetId>,
+     /// Optional tangent-space normal texture.
+     #[serde(default, skip_serializing_if = "Option::is_none")]
+     pub normal_texture: Option<AssetId>,
++    /// Scalar applied to tangent-space normal-map X/Y before normalization.
++    pub normal_scale: f32,
++    /// Optional packed StandardLit texture: green = roughness, blue = metallic.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub metallic_roughness_texture: Option<AssetId>,
++    /// Optional StandardLit ambient-occlusion texture sampled from red.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub occlusion_texture: Option<AssetId>,
++    /// Strength of the ambient-occlusion texture in [0, 1].
++    pub occlusion_strength: f32,
+     /// Optional emissive texture multiplied by `emissive_color`.
+     #[serde(default, skip_serializing_if = "Option::is_none")]
+     pub emissive_texture: Option<AssetId>,
+@@ -295,8 +305,10 @@ impl MaterialAsset {
+     /// Validates all scalar and color constraints shared by editor and runtime.
+     pub fn validate(&self) -> Result<(), MaterialAssetError> {
+         validate_unit_color("base_color", self.base_color)?;
++        validate_finite_scalar("normal_scale", self.normal_scale)?;
++        validate_unit_scalar("occlusion_strength", self.occlusion_strength)?;
+         validate_non_negative_color("emissive_color", self.emissive_color)?;
+         validate_unit_scalar("roughness", self.roughness)?;
+         validate_unit_scalar("metallic", self.metallic)?;
+         validate_unit_scalar("alpha_cutoff", self.alpha_cutoff)?;
+         validate_unit_color("toon.shadow_color", self.toon.shadow_color)?;
+@@ -322,6 +334,10 @@ impl Default for MaterialAsset {
+             schema_version: MATERIAL_SCHEMA_VERSION,
+             base_color: LinearRgba::WHITE,
+             base_color_texture: None,
+             normal_texture: None,
++            normal_scale: 1.0,
++            metallic_roughness_texture: None,
++            occlusion_texture: None,
++            occlusion_strength: 1.0,
+             emissive_texture: None,
+             emissive_color: Self::default_emissive_color(),
+@@ -339,7 +355,18 @@ impl Default for MaterialAsset {
+     }
+ }
+ 
++fn validate_finite_scalar(field: &'static str, value: f32) -> Result<(), MaterialAssetError> {
++    if value.is_finite() {
++        Ok(())
++    } else {
++        Err(MaterialAssetError::InvalidValue {
++            field,
++            expected: "a finite value",
++        })
++    }
++}
++
+ fn validate_non_negative_scalar(
+     field: &'static str,
+     value: f32,
+ ) -> Result<(), MaterialAssetError> {
+@@ -453,14 +480,21 @@ impl MaterialAsset {
+     /// - [`MaterialAssetError::UnsupportedVersion`] when `schema_version`
+     ///   differs from [`MATERIAL_SCHEMA_VERSION`].
+     pub fn from_json(json: &str) -> Result<Self, MaterialAssetError> {
+-        let asset: MaterialAsset = serde_json::from_str(json).map_err(MaterialAssetError::Json)?;
+-        if asset.schema_version != MATERIAL_SCHEMA_VERSION {
++        #[derive(Deserialize)]
++        struct SchemaVersionProbe {
++            schema_version: u32,
++        }
++
++        let probe: SchemaVersionProbe =
++            serde_json::from_str(json).map_err(MaterialAssetError::Json)?;
++        if probe.schema_version != MATERIAL_SCHEMA_VERSION {
+             return Err(MaterialAssetError::UnsupportedVersion {
+-                found: asset.schema_version,
++                found: probe.schema_version,
+             });
+         }
++        let asset: MaterialAsset = serde_json::from_str(json).map_err(MaterialAssetError::Json)?;
+         asset.validate()?;
+         Ok(asset)
+     }
+@@ -517,6 +551,10 @@ mod tests {
+             ..MaterialAsset::default()
+         };
+         mat.outline.internal_boundary_strength = 0.55;
++        mat.normal_scale = 0.75;
++        mat.metallic_roughness_texture = Some(id.clone());
++        mat.occlusion_texture = Some(id.clone());
++        mat.occlusion_strength = 0.6;
+ 
+         let json = mat.to_json().expect("must serialize");
+         let parsed = MaterialAsset::from_json(&json).expect("must parse");
+@@ -524,7 +562,11 @@ mod tests {
+         assert_eq!(parsed.schema_version, MATERIAL_SCHEMA_VERSION);
+         assert_eq!(parsed.base_color, mat.base_color);
+-        assert_eq!(parsed.base_color_texture, Some(id));
++        assert_eq!(parsed.base_color_texture, Some(id.clone()));
++        assert_eq!(parsed.metallic_roughness_texture, Some(id.clone()));
++        assert_eq!(parsed.occlusion_texture, Some(id));
++        assert!((parsed.normal_scale - 0.75).abs() < f32::EPSILON);
++        assert!((parsed.occlusion_strength - 0.6).abs() < f32::EPSILON);
+         assert!((parsed.roughness - 0.3).abs() < f32::EPSILON);
+         assert!((parsed.metallic - 0.7).abs() < f32::EPSILON);
+         assert_eq!(parsed.alpha_mode, MaterialAlphaMode::Mask);
+@@ -559,11 +601,20 @@ mod tests {
+     }
+ 
+     #[test]
++    fn previous_material_schema_is_rejected_before_current_field_decode() {
++        assert!(matches!(
++            MaterialAsset::from_json(r#"{"schema_version":2}"#),
++            Err(MaterialAssetError::UnsupportedVersion { found: 2 })
++        ));
++    }
++
++    #[test]
+     fn missing_current_material_fields_are_rejected() {
++        let json = format!(r#"{{"schema_version":{MATERIAL_SCHEMA_VERSION}}}"#);
+         assert!(matches!(
+-            MaterialAsset::from_json(r#"{"schema_version":2}"#),
++            MaterialAsset::from_json(&json),
+             Err(MaterialAssetError::Json(_))
+         ));
+     }
+ 
