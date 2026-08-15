@@ -1,0 +1,49 @@
+diff --git a/crates/engine/src/scene_bridge/spawn.rs b/crates/engine/src/scene_bridge/spawn.rs
+--- a/crates/engine/src/scene_bridge/spawn.rs
++++ b/crates/engine/src/scene_bridge/spawn.rs
+@@ -929,11 +929,17 @@ pub(crate) fn spawn_animation_controller_component(
+-    let resolved_clips = resolved_set.clips;
+-    let animation_set_events = resolved_set.events;
+-    if compiled_graph
++    let ResolvedAnimationSet {
++        clips: resolved_clips,
++        events: animation_set_events,
++        unresolved_motion_slots,
++    } = resolved_set;
++    if let Some(motion_key) = compiled_graph
+         .states
+         .iter()
+         .filter_map(|state| state.motion_key())
+-        .any(|motion_key| !resolved_clips.contains_key(motion_key))
++        .find(|motion_key| !resolved_clips.contains_key(*motion_key))
+     {
++        if unresolved_motion_slots.contains(motion_key) {
++            return Ok(());
++        }
+         return Err(fields
+             .invalid("an Animation Set binding for every graph motion slot")
+             .into());
+@@ -1250,4 +1256,5 @@ struct ResolvedAnimationSet {
+     clips: BTreeMap<String, Handle<AnimationClip>>,
+     events: Vec<(Handle<AnimationClip>, Vec<AnimEvent>)>,
++    unresolved_motion_slots: HashSet<String>,
+ }
+@@ -1324,3 +1331,4 @@ fn resolve_animation_set(
+     let mut clips = BTreeMap::new();
+     let mut events = Vec::<(Handle<AnimationClip>, Vec<AnimEvent>)>::new();
++    let mut unresolved_motion_slots = HashSet::new();
+     for (motion_slot, binding) in animation_set.bindings {
+@@ -1335,4 +1343,5 @@ fn resolve_animation_set(
+         )?
+         else {
++            unresolved_motion_slots.insert(motion_slot.as_str().to_owned());
+             continue;
+         };
+@@ -1457,2 +1466,6 @@ fn resolve_animation_set(
+-    Ok(ResolvedAnimationSet { clips, events })
++    Ok(ResolvedAnimationSet {
++        clips,
++        events,
++        unresolved_motion_slots,
++    })
+ }
