@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0110-build-stable-id-contract-20260816",
+  "target_branch": "chatgpt/gameengine-adr-0110-humanoid-motion",
+  "expected_head_sha": "f7d7067117467f104b6da034fa9ea15fc232cecd",
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Use manifest sub-asset ID contract during build analysis",
+  "pr_title": "ADR 0110: implement humanoid animation sources",
+  "pr_body": "## Summary\n\nImplements ADR 0110 humanoid profiles, portable Humanoid motion, typed Animation Set sources, target-aware resolution, and build/package support.\n\nThis request makes build analysis use the asset-manifest stable-ID contract instead of re-deriving generic IDs, so nested HumanoidMotion IDs and targeted motion IDs are validated consistently with manifest loading.\n\n<!-- gameengine-chatgpt-dispatcher -->"
+}
