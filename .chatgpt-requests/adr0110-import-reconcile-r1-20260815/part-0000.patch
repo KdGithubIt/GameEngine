@@ -1,0 +1,265 @@
+diff --git a/crates/import/src/humanoid_import.rs b/crates/import/src/humanoid_import.rs
+--- a/crates/import/src/humanoid_import.rs
++++ b/crates/import/src/humanoid_import.rs
+@@ -12,6 +12,8 @@
+ use crate::model_import::GltfImportResult;
+-use engine_animation::humanoid::detect_humanoid_profile;
++use engine_animation::humanoid::{detect_humanoid_profile, validate_humanoid_profile};
+ use engine_animation::humanoid_motion::{build_humanoid_motion, HumanoidMotion};
++use engine_assets::asset::HumanoidProfileOrigin;
+ use engine_authoring::diagnostic::Diagnostic;
+ use engine_authoring::id::AssetId;
++use engine_rig::skeleton_asset::SkeletonAsset;
+ use hashbrown::{HashMap, HashSet};
+@@ -42,36 +42,118 @@
++enum ReconciledProfile {
++    Usable(HumanoidProfile),
++    PreservedStaleAuthored(HumanoidProfile),
++    Unavailable,
++}
++
++fn reconcile_profile(
++    skeleton: &SkeletonAsset,
++    existing: Option<&HumanoidProfile>,
++    diagnostics: &mut Vec<Diagnostic>,
++) -> ReconciledProfile {
++    if let Some(profile) = existing {
++        match validate_humanoid_profile(profile, skeleton) {
++            Ok(()) => {
++                if !profile.uncertain_bones.is_empty() {
++                    diagnostics.push(Diagnostic::warning(
++                        "anim.humanoid_profile_uncertain",
++                        format!(
++                            "skeleton `{}` keeps a structurally valid Humanoid profile with uncertain mappings: {:?}",
++                            skeleton.name, profile.uncertain_bones
++                        ),
++                    ));
++                }
++                return ReconciledProfile::Usable(profile.clone());
++            }
++            Err(error) if profile.origin == HumanoidProfileOrigin::Authored => {
++                diagnostics.push(Diagnostic::warning(
++                    "anim.humanoid_profile_stale_authored",
++                    format!(
++                        "authored Humanoid profile for skeleton `{}` is stale and was preserved instead of replaced: {error}",
++                        skeleton.name
++                    ),
++                ));
++                return ReconciledProfile::PreservedStaleAuthored(profile.clone());
++            }
++            Err(_) => {
++                // Automatic profiles are generated metadata. A structural
++                // change invalidates them, so re-detection is the correct
++                // source of truth rather than preserving stale generated IDs.
++            }
++        }
++    }
++
++    let mut detection = detect_humanoid_profile(skeleton);
++    diagnostics.append(&mut detection.diagnostics);
++    detection
++        .profile
++        .map(ReconciledProfile::Usable)
++        .unwrap_or(ReconciledProfile::Unavailable)
++}
++
+ /// Builds model-owned Humanoid profiles and portable motion variants.
+ ///
+ /// Detection is conservative and happens only during import/authoring. Native
+ /// clips remain authoritative and usable when a profile or conversion is
+-/// unavailable.
+-pub fn build_humanoid_import_catalog(imported: &GltfImportResult) -> HumanoidImportCatalog {
++/// unavailable. Existing authored profiles are never silently replaced during
++/// reimport: structurally valid mappings are reused, while stale authored
++/// mappings are preserved with a diagnostic and excluded from Humanoid bake.
++pub fn build_humanoid_import_catalog(
++    imported: &GltfImportResult,
++    existing_profiles: &[HumanoidProfile],
++) -> HumanoidImportCatalog {
+     let mut profiles = Vec::new();
+     let mut diagnostics = Vec::new();
+     let mut seen_skeletons = HashSet::<AssetId>::new();
++    let mut consumed_existing = HashSet::<usize>::new();
++    let mut usable_profiles = HashMap::<AssetId, usize>::new();
+ 
+     for skin in &imported.skins {
+         if !seen_skeletons.insert(skin.skeleton.id.clone()) {
+             continue;
+         }
+-        let mut detection = detect_humanoid_profile(&skin.skeleton);
+-        diagnostics.append(&mut detection.diagnostics);
+-        if let Some(profile) = detection.profile {
+-            profiles.push(profile);
++        let existing = existing_profiles
++            .iter()
++            .enumerate()
++            .find(|(_, profile)| profile.skeleton == skin.skeleton.id.as_str());
++        if let Some((index, _)) = existing {
++            consumed_existing.insert(index);
++        }
++
++        match reconcile_profile(
++            &skin.skeleton,
++            existing.map(|(_, profile)| profile),
++            &mut diagnostics,
++        ) {
++            ReconciledProfile::Usable(profile) => {
++                let profile_index = profiles.len();
++                profiles.push(profile);
++                usable_profiles.insert(skin.skeleton.id.clone(), profile_index);
++            }
++            ReconciledProfile::PreservedStaleAuthored(profile) => profiles.push(profile),
++            ReconciledProfile::Unavailable => {}
+         }
+     }
+ 
+-    let profiles_by_skeleton = profiles
+-        .iter()
+-        .enumerate()
+-        .map(|(index, profile)| (profile.skeleton.clone(), index))
+-        .collect::<HashMap<_, _>>();
++    for (index, profile) in existing_profiles.iter().enumerate() {
++        if consumed_existing.contains(&index) || profile.origin != HumanoidProfileOrigin::Authored {
++            continue;
++        }
++        diagnostics.push(Diagnostic::warning(
++            "anim.humanoid_profile_orphaned_authored",
++            format!(
++                "authored Humanoid profile for skeleton `{}` no longer matches a skeleton imported by this model; the mapping was retained for manual repair",
++                profile.skeleton
++            ),
++        ));
++        profiles.push(profile.clone());
++    }
++
+     let mut motions = Vec::new();
+-
+     for animation in &imported.animations {
+         let Some(skin) = imported.skins.get(animation.skin_index) else {
+             continue;
+         };
+-        let Some(&profile_index) = profiles_by_skeleton.get(skin.skeleton.id.as_str()) else {
++        let Some(&profile_index) = usable_profiles.get(&skin.skeleton.id) else {
+             continue;
+         };
+         let profile = &profiles[profile_index];
+         match build_humanoid_motion(&animation.clip, &skin.skeleton, profile) {
+             Ok(mut built) => {
+                 diagnostics.append(&mut built.diagnostics);
+                 motions.push(GltfHumanoidMotionData {
+                     source_index: animation.source_index,
+                     id: imported_humanoid_motion_sub_asset_id(&animation.id),
+                     name: animation.name.clone(),
+                     skin_index: animation.skin_index,
+                     motion: built.motion,
+                 });
+             }
+             Err(error) => diagnostics.push(Diagnostic::warning(
+                 "anim.humanoid_conversion_unavailable",
+                 format!(
+                     "animation `{}` keeps its Native variant but has no Humanoid variant: {error}",
+                     animation.name
+                 ),
+             )),
+         }
+     }
+     motions.sort_by_key(|motion| motion.source_index);
+ 
+     HumanoidImportCatalog {
+         profiles,
+         motions,
+         diagnostics,
+     }
+ }
+diff --git a/crates/editor/src/asset_import.rs b/crates/editor/src/asset_import.rs
+--- a/crates/editor/src/asset_import.rs
++++ b/crates/editor/src/asset_import.rs
+@@ -218,3 +218,7 @@
++    /// `existing_humanoid_profiles` is this model source's persisted Humanoid
++    /// profile state. Valid authored mappings are reused and stale authored
++    /// mappings are preserved instead of being silently replaced (ADR 0110).
++    ///
+     /// `contact_bones` (ADR 0080 §1, AP-5) is normally this source's own
+     /// `ImportSettings::contact_bones`; an empty list keeps the default
+     /// foot/ankle/toe name heuristic.
+@@ -229,5 +233,6 @@
+         source_id: AssetId,
+         source_path: PathBuf,
+         existing_skeletons: Vec<SkeletonRecord>,
++        existing_humanoid_profiles: Vec<HumanoidProfile>,
+         contact_bones: Vec<String>,
+     ) -> Result<(), AssetImportStartError> {
+@@ -340 +340,2 @@
+-            let mut humanoid_catalog = build_humanoid_import_catalog(&imported);
++            let mut humanoid_catalog =
++                build_humanoid_import_catalog(&imported, &existing_humanoid_profiles);
+@@ -990,3 +990,4 @@
+                 Vec::new(),
+                 Vec::new(),
++                Vec::new(),
+             )
+@@ -1009,4 +1009,5 @@
+                 source_path,
+                 without_override.skeleton_records.clone(),
++                without_override.humanoid_profiles.clone(),
+                 vec!["tip_joint".to_owned()],
+             )
+@@ -1056,3 +1056,4 @@
+             Vec::new(),
+             Vec::new(),
++            Vec::new(),
+         );
+@@ -1117,3 +1117,4 @@
+                 Vec::new(),
+                 Vec::new(),
++                Vec::new(),
+             )
+@@ -1132,4 +1132,5 @@
+                 source_path,
+                 first.skeleton_records.clone(),
++                first.humanoid_profiles.clone(),
+                 Vec::new(),
+             )
+diff --git a/crates/editor/src/ui/assets.rs b/crates/editor/src/ui/assets.rs
+--- a/crates/editor/src/ui/assets.rs
++++ b/crates/editor/src/ui/assets.rs
+@@ -3435,9 +3435,15 @@
+         } else {
++            let existing_humanoid_profiles = self
++                .asset_manifest
++                .get(&asset_id)
++                .map(|entry| entry.import_settings.humanoid_profiles.clone())
++                .unwrap_or_default();
+             self.asset_import.start_gltf(
+                 project.path().to_path_buf(),
+                 asset_id,
+                 source_path.clone(),
+                 existing_skeletons,
++                existing_humanoid_profiles,
+                 contact_bones,
+             )
+         };
+@@ -3890,3 +3890,4 @@
+         entry.import_settings.sub_assets = result.sub_assets;
+         entry.import_settings.skeleton_records = result.skeleton_records.clone();
++        entry.import_settings.humanoid_profiles = result.humanoid_profiles.clone();
+         let sub_asset_count = entry.import_settings.sub_assets.len();
+diff --git a/crates/editor/src/ui/asset_inspector.rs b/crates/editor/src/ui/asset_inspector.rs
+--- a/crates/editor/src/ui/asset_inspector.rs
++++ b/crates/editor/src/ui/asset_inspector.rs
+@@ -1525,6 +1525,7 @@ fn imported_sub_asset_badge(kind: engine::ImportedSubAssetKind) -> &'static str
+         engine::ImportedSubAssetKind::Skeleton => "[skeleton]",
+         engine::ImportedSubAssetKind::Skin => "[skin]",
+         engine::ImportedSubAssetKind::Animation => "[clip]",
++        engine::ImportedSubAssetKind::HumanoidMotion => "[humanoid]",
+         engine::ImportedSubAssetKind::Morph => "[morph]",
+         engine::ImportedSubAssetKind::RigidBodyRig => "[physics]",
+     }
+@@ -1538,6 +1539,7 @@ fn imported_sub_asset_label(kind: engine::ImportedSubAssetKind) -> &'static str
+         engine::ImportedSubAssetKind::Skeleton => "Skeleton",
+         engine::ImportedSubAssetKind::Skin => "Skin",
+         engine::ImportedSubAssetKind::Animation => "Animation Clip",
++        engine::ImportedSubAssetKind::HumanoidMotion => "Humanoid Motion",
+         engine::ImportedSubAssetKind::Morph => "Morph",
+         engine::ImportedSubAssetKind::RigidBodyRig => "Rigid Body Rig",
+     }
