@@ -1,0 +1,80 @@
+{
+  "schema_version": 1,
+  "entities": [
+    {
+      "id": "entity_01M03SZ5TSEAW1RNDYCM05DH70",
+      "name": "sun",
+      "display_name": "Directional Light",
+      "description": "Provides a clear key light for the starter Scene.",
+      "components": {
+        "engine.directional_light": {
+          "color_b": 0.85,
+          "color_g": 0.95,
+          "color_r": 1.0,
+          "direction_x": -0.3,
+          "direction_y": -1.0,
+          "direction_z": -0.5,
+          "intensity": 1.0
+        }
+      }
+    },
+    {
+      "id": "entity_01M03SZ5TSP0RZRAJH69Q9DY46",
+      "name": "square",
+      "display_name": "Starter Square",
+      "description": "A visible built-in quad created with every new project.",
+      "components": {
+        "engine.static_mesh_renderer": {
+          "material": {
+            "$type": "asset_ref",
+            "id": "asset_01JP0000000000000000000201"
+          },
+          "material_slots": [],
+          "mesh": {
+            "$type": "asset_ref",
+            "id": "asset_01JP0000000000000000000102"
+          }
+        },
+        "engine.transform": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        }
+      }
+    },
+    {
+      "id": "entity_01M03SZ5TSRAYPYGD6YDGTSC0G",
+      "name": "main_camera",
+      "display_name": "Main Camera",
+      "description": "Looks toward the starter square from the positive Z axis.",
+      "components": {
+        "engine.camera": {
+          "enabled": true,
+          "far": 1000.0,
+          "fov_y_degrees": 60.000003814697266,
+          "near": 0.10000000149011612,
+          "priority": 0
+        },
+        "engine.transform": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 4.0
+        }
+      }
+    },
+    {
+      "id": "entity_01M03SZ5TTVQFHSTE1KEGGHPZZ",
+      "name": "ambient_light",
+      "display_name": "Ambient Light",
+      "description": "Keeps unlit faces visible in the starter Scene.",
+      "components": {
+        "engine.ambient_light": {
+          "color_b": 0.55,
+          "color_g": 0.45,
+          "color_r": 0.4,
+          "intensity": 0.35
+        }
+      }
+    }
+  ]
+}
