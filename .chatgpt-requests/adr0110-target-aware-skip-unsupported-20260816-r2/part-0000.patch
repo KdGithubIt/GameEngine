@@ -1,0 +1,120 @@
+diff --git a/crates/engine/src/scene_bridge/spawn.rs b/crates/engine/src/scene_bridge/spawn.rs
+--- a/crates/engine/src/scene_bridge/spawn.rs
++++ b/crates/engine/src/scene_bridge/spawn.rs
+@@ -1333,21 +1333,26 @@
+     let mut clips = BTreeMap::new();
+     let mut events = Vec::<(Handle<AnimationClip>, Vec<AnimEvent>)>::new();
+     for (motion_slot, binding) in animation_set.bindings {
+-        let primary_handle = resolve_animation_binding_clip(
++        let Some(primary_handle) = resolve_animation_binding_clip(
+             animation_set_asset,
+             &binding.clip,
+             &target_skeleton,
+             context,
+-        )?;
++        )?
++        else {
++            continue;
++        };
+         let mut layer_handles = Vec::with_capacity(binding.overlays.len() + 1);
+         layer_handles.push(primary_handle);
+         for overlay in &binding.overlays {
+-            layer_handles.push(resolve_animation_binding_clip(
++            if let Some(overlay_handle) = resolve_animation_binding_clip(
+                 animation_set_asset,
+                 overlay,
+                 &target_skeleton,
+                 context,
+-            )?);
++            )? {
++                layer_handles.push(overlay_handle);
++            }
+         }
+ 
+         let handle = if layer_handles.len() == 1 {
+@@ -1459,14 +1459,15 @@
+     source: &engine_authoring::MotionSourceRef,
+     target_skeleton: &SkeletonAsset,
+     context: &mut SpawnContext<'_>,
+-) -> Result<Handle<AnimationClip>, SceneBridgeError> {
++) -> Result<Option<Handle<AnimationClip>>, SceneBridgeError> {
+     if source.variant == engine_authoring::MotionSourceVariant::Humanoid {
+         return resolve_humanoid_animation_binding_clip(
+             animation_set_asset,
+             &source.asset,
+             target_skeleton,
+             context,
+-        );
++        )
++        .map(Some);
+     }
+ 
+     let resolved = resolve_animation_clip_source(&source.asset, context)?;
+@@ -1503,7 +1504,7 @@
+     })?;
+ 
+     if source_skeleton_id == target_skeleton.id {
+-        return Ok(native_handle);
++        return Ok(Some(native_handle));
+     }
+ 
+     if source.variant == engine_authoring::MotionSourceVariant::Auto {
+@@ -1523,7 +1524,8 @@
+                 &humanoid_asset,
+                 target_skeleton,
+                 context,
+-            );
++            )
++            .map(Some);
+         }
+     }
+ 
+@@ -1540,14 +1542,14 @@
+ 
+ #[allow(clippy::too_many_arguments)]
+ fn resolve_retargeted_animation_binding_clip(
+-    animation_set_asset: &AssetId,
++    _animation_set_asset: &AssetId,
+     source_asset: &AssetId,
+     native_handle: Handle<AnimationClip>,
+     native_clip: &AnimationClip,
+     source_skeleton_id: &AssetId,
+     target_skeleton: &SkeletonAsset,
+     context: &mut SpawnContext<'_>,
+-) -> Result<Handle<AnimationClip>, SceneBridgeError> {
++) -> Result<Option<Handle<AnimationClip>>, SceneBridgeError> {
+     let provenance = context
+         .asset_state
+         .animation_clip_sources
+@@ -1560,7 +1562,7 @@
+         .world
+         .get_resource::<crate::retarget::PackagedBakedClips>()
+         .cloned();
+-    let adapted = resolve_cross_skeleton_clip(
++    let adapted = match resolve_cross_skeleton_clip(
+         native_clip,
+         &native_handle,
+         source_skeleton_id,
+@@ -1569,12 +1571,15 @@
+         context.manifest,
+         context.asset_state,
+         packaged.as_ref(),
+-    )
+-    .map_err(|diagnostic| {
+-        let message = diagnostic.message.clone();
+-        context.asset_diagnostics.push(*diagnostic);
+-        animation_binding_error(animation_set_asset, source_asset, context, message)
+-    })?;
+-    Ok(store_animation_binding_clip(adapted, provenance, context))
++    ) {
++        Ok(adapted) => adapted,
++        Err(diagnostic) => {
++            context.asset_diagnostics.push(*diagnostic);
++            return Ok(None);
++        }
++    };
++    Ok(Some(store_animation_binding_clip(
++        adapted, provenance, context,
++    )))
+ }
+ 
