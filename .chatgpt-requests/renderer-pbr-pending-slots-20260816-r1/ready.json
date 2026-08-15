@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "request_id": "renderer-pbr-pending-slots-20260816-r1",
+  "target_branch": "chatgpt/gameengine-render-pbr-material-foundation",
+  "expected_head_sha": "eaf853bf4c9a680fe5c001739c4218586f47fa41",
+  "patch_parts": ["part-0000.patch"],
+  "commit_message": "Renderer: group pending material texture slots",
+  "pr_title": "Renderer: add PBR material texture contract",
+  "pr_body": "Phase 2B renderer foundation. CPU-decoded material textures crossing the asset-resolution/render-runtime boundary are grouped into a named PendingMaterialTextures value instead of an ever-growing positional argument list. This fixes the Clippy failure introduced when metallic/roughness and occlusion slots were added while making the cross-crate handoff explicit."
+}
