@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0110-profile-contract-20260815-04",
+  "target_branch": "chatgpt/gameengine-adr-0110-humanoid-motion",
+  "expected_head_sha": "04f5877ff5d2ec05782af6ca80d12f574c46f757",
+  "patch_parts": ["part-0000.patch"],
+  "commit_message": "Add ADR 0110 humanoid profile contract",
+  "pr_title": "Implement ADR 0110 humanoid profiles and motion",
+  "pr_body": "Implements ADR 0110 in staged dispatcher requests. This first applied stage adds the model-owned HumanoidProfile manifest contract and stable humanoid semantic IDs while preserving existing manifest schema compatibility rules. Subsequent requests add portable HumanoidMotion baking, import cataloging, Animation Set Auto/Native/Humanoid source selection, editor configuration, target resolution, and packaging."
+}
