@@ -225,13 +225,15 @@ pub(super) fn load_material_asset(
                     ) => (
                         runtime_material_from_asset(
                             parsed,
-                            base,
-                            normal,
-                            metallic_roughness,
-                            occlusion,
-                            emissive,
-                            ramp,
-                            sphere,
+                            crate::material::PendingMaterialTextures {
+                                base,
+                                normal,
+                                metallic_roughness,
+                                occlusion,
+                                emissive,
+                                ramp,
+                                sphere,
+                            },
                         ),
                         diagnostics,
                     ),
@@ -341,13 +343,15 @@ pub(super) fn load_material_asset(
         ) => (
             runtime_material_from_asset(
                 &parsed,
-                base,
-                normal,
-                metallic_roughness,
-                occlusion,
-                emissive,
-                ramp,
-                sphere,
+                crate::material::PendingMaterialTextures {
+                    base,
+                    normal,
+                    metallic_roughness,
+                    occlusion,
+                    emissive,
+                    ramp,
+                    sphere,
+                },
             ),
             Vec::new(),
         ),
@@ -691,25 +695,9 @@ fn decode_material_texture_inner(
 
 fn runtime_material_from_asset(
     asset: &engine_authoring::MaterialAsset,
-    pending_texture: Option<Arc<DecodedTexture>>,
-    pending_normal_texture: Option<Arc<DecodedTexture>>,
-    pending_metallic_roughness_texture: Option<Arc<DecodedTexture>>,
-    pending_occlusion_texture: Option<Arc<DecodedTexture>>,
-    pending_emissive_texture: Option<Arc<DecodedTexture>>,
-    pending_ramp_texture: Option<Arc<DecodedTexture>>,
-    pending_sphere_texture: Option<Arc<DecodedTexture>>,
+    pending_textures: crate::material::PendingMaterialTextures,
 ) -> Material {
-    Material::from_authoring_asset(asset).with_pending_texture_slots(
-        crate::material::PendingMaterialTextures {
-            base: pending_texture,
-            normal: pending_normal_texture,
-            metallic_roughness: pending_metallic_roughness_texture,
-            occlusion: pending_occlusion_texture,
-            emissive: pending_emissive_texture,
-            ramp: pending_ramp_texture,
-            sphere: pending_sphere_texture,
-        },
-    )
+    Material::from_authoring_asset(asset).with_pending_texture_slots(pending_textures)
 }
 
 fn fallback_material() -> Material {
