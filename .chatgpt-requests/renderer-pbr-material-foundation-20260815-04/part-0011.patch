@@ -1,0 +1,40 @@
+diff --git a/crates/import/src/model_import.rs b/crates/import/src/model_import.rs
+--- a/crates/import/src/model_import.rs
++++ b/crates/import/src/model_import.rs
+@@ -104,6 +104,6 @@ pub struct GltfTextureData {
+     pub rgba8: Vec<u8>,
+ }
+ 
+-/// One material sub-asset converted to the persisted material v2 contract.
++/// One material sub-asset converted to the current persisted material contract.
+ #[derive(Clone)]
+ pub struct GltfMaterialData {
+@@ -1643,4 +1643,18 @@ mod tests {
+         }
+     }
+ 
++    #[test]
++    fn mikktspace_generates_a_per_vertex_frame_for_simple_triangle() {
++        let mesh = Mesh::triangle();
++        let tangents = generate_mikktspace_tangents(&mesh)
++            .expect("simple triangle must admit one tangent frame per vertex");
++
++        assert_eq!(tangents.len(), mesh.vertices.len());
++        assert!(tangents.iter().all(|tangent| {
++            let direction = Vec3::from_array([tangent[0], tangent[1], tangent[2]]);
++            direction.length_squared() > 0.99
++                && (tangent[3] == -1.0 || tangent[3] == 1.0)
++        }));
++    }
++
+     /// A two-bone rig ("root" -> "tip") described directly as IR, with no
+@@ -1731,6 +1745,10 @@ mod tests {
+             base_color: LinearRgba::WHITE,
+             base_color_texture: None,
+             normal_texture: None,
++            normal_scale: 1.0,
++            metallic_roughness_texture: None,
++            occlusion_texture: None,
++            occlusion_strength: 1.0,
+             emissive_texture: None,
+             emissive_color: LinearRgba::WHITE,

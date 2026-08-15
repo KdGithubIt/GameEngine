@@ -1,0 +1,103 @@
+diff --git a/crates/render-runtime/src/material.rs b/crates/render-runtime/src/material.rs
+--- a/crates/render-runtime/src/material.rs
++++ b/crates/render-runtime/src/material.rs
+@@ -158,9 +158,9 @@ impl Texture {
+     }
+ 
+     /// Uploads decoded values without applying an sRGB transfer function.
+     ///
+-    /// Normal maps encode vector components rather than colors, so sampling
+-    /// them through an sRGB view would bend even a flat `(0.5, 0.5, 1.0)`
+-    /// normal. This explicit path keeps slot color-space behavior truthful.
++    /// Normal maps, metallic/roughness maps, ambient-occlusion maps, and
++    /// future masks encode numeric/vector data rather than display colors.
++    /// This explicit path keeps slot color-space behavior truthful.
+     pub fn from_decoded_linear(
+         device: &wgpu::Device,
+         queue: &wgpu::Queue,
+@@ -577,10 +577,22 @@ pub struct Material {
+     pub pending_texture: Option<Arc<DecodedTexture>>,
+     /// GPU normal texture, sampled as linear tangent-space data.
+     pub normal_texture: Option<Arc<Texture>>,
+     /// CPU-decoded normal texture uploaded lazily as a linear texture.
+     pub pending_normal_texture: Option<Arc<DecodedTexture>>,
++    /// Scale applied to tangent-space normal X/Y before normalization.
++    pub normal_scale: f32,
++    /// Packed StandardLit roughness/metallic texture sampled as linear data.
++    pub metallic_roughness_texture: Option<Arc<Texture>>,
++    /// CPU-decoded roughness/metallic texture uploaded lazily as linear data.
++    pub pending_metallic_roughness_texture: Option<Arc<DecodedTexture>>,
++    /// StandardLit ambient-occlusion texture sampled from the red channel.
++    pub occlusion_texture: Option<Arc<Texture>>,
++    /// CPU-decoded ambient-occlusion texture uploaded lazily as linear data.
++    pub pending_occlusion_texture: Option<Arc<DecodedTexture>>,
++    /// Blend strength for the ambient-occlusion texture.
++    pub occlusion_strength: f32,
+     /// GPU emissive texture, sampled in sRGB color space.
+     pub emissive_texture: Option<Arc<Texture>>,
+     /// CPU-decoded emissive texture uploaded lazily by the renderer.
+     pub pending_emissive_texture: Option<Arc<DecodedTexture>>,
+@@ -672,11 +684,13 @@ impl Material {
+             emissive_color: [
+                 asset.emissive_color.r,
+                 asset.emissive_color.g,
+                 asset.emissive_color.b,
+             ],
++            normal_scale: asset.normal_scale,
++            occlusion_strength: asset.occlusion_strength,
+             roughness: asset.roughness,
+             metallic: asset.metallic,
+             alpha_mode: match asset.alpha_mode {
+                 engine_authoring::MaterialAlphaMode::Opaque => AlphaMode::Opaque,
+                 engine_authoring::MaterialAlphaMode::Mask => AlphaMode::Mask,
+@@ -734,6 +748,18 @@ impl Material {
+         self.toon.pending_sphere_texture = sphere;
+         self
+     }
+ 
++    /// Attaches StandardLit numeric texture slots after manifest resolution.
++    #[doc(hidden)]
++    pub fn with_pending_standard_textures(
++        mut self,
++        metallic_roughness: Option<Arc<DecodedTexture>>,
++        occlusion: Option<Arc<DecodedTexture>>,
++    ) -> Self {
++        self.pending_metallic_roughness_texture = metallic_roughness;
++        self.pending_occlusion_texture = occlusion;
++        self
++    }
++
+     /// Returns fields shared by every convenience constructor.
+     fn default_surface() -> Self {
+         Self {
+@@ -744,6 +770,12 @@ impl Material {
+             pending_texture: None,
+             normal_texture: None,
+             pending_normal_texture: None,
++            normal_scale: 1.0,
++            metallic_roughness_texture: None,
++            pending_metallic_roughness_texture: None,
++            occlusion_texture: None,
++            pending_occlusion_texture: None,
++            occlusion_strength: 1.0,
+             emissive_texture: None,
+             pending_emissive_texture: None,
+             emissive_color: [0.0; 3],
+@@ -893,6 +925,8 @@ mod tests {
+                 b: 0.5,
+                 a: 1.0,
+             },
++            normal_scale: 0.4,
++            occlusion_strength: 0.65,
+             roughness: 0.25,
+             metallic: 0.75,
+             alpha_mode: engine_authoring::MaterialAlphaMode::Blend,
+@@ -908,6 +942,8 @@ mod tests {
+         let runtime = Material::from_authoring_asset(&asset);
+         assert_eq!(runtime.color, [0.1, 0.2, 0.3, 0.4]);
+         assert_eq!(runtime.emissive_color, [2.0, 1.0, 0.5]);
++        assert_eq!(runtime.normal_scale, 0.4);
++        assert_eq!(runtime.occlusion_strength, 0.65);
+         assert_eq!(runtime.roughness, 0.25);
+         assert_eq!(runtime.metallic, 0.75);
+         assert_eq!(runtime.alpha_mode, AlphaMode::Blend);

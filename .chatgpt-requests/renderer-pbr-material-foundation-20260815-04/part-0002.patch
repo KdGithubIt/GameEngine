@@ -1,0 +1,57 @@
+diff --git a/crates/import/src/gltf_import.rs b/crates/import/src/gltf_import.rs
+--- a/crates/import/src/gltf_import.rs
++++ b/crates/import/src/gltf_import.rs
+@@ -869,28 +869,16 @@ fn parse_materials(
+ fn parse_materials(
+     document: &gltf::Document,
+     texture_valid: &[bool],
+-    diagnostics: &mut Vec<Diagnostic>,
++    _diagnostics: &mut Vec<Diagnostic>,
+ ) -> Vec<IrMaterial> {
+     document
+         .materials()
+         .enumerate()
+         .map(|(index, source)| {
+             let pbr = source.pbr_metallic_roughness();
+-            if pbr.metallic_roughness_texture().is_some() {
+-                diagnostics.push(Diagnostic::warning(
+-                    "gltf.material_texture_unsupported",
+-                    format!(
+-                        "material {index} has a metallic-roughness texture; scalar metallic and roughness factors were imported instead"
+-                    ),
+-                ));
+-            }
+-            if source.occlusion_texture().is_some() {
+-                diagnostics.push(Diagnostic::warning(
+-                    "gltf.material_texture_unsupported",
+-                    format!("material {index} has an occlusion texture; it was ignored"),
+-                ));
+-            }
++            let normal = source.normal_texture();
++            let occlusion = source.occlusion_texture();
+             let base = pbr.base_color_factor();
+             let emissive = source.emissive_factor();
+             let texture_ref = |index: usize| {
+                 texture_valid
+@@ -905,9 +895,19 @@ fn parse_materials(
+                 base_color_texture: pbr
+                     .base_color_texture()
+                     .and_then(|texture| texture_ref(texture.texture().index())),
+-                normal_texture: source
+-                    .normal_texture()
++                normal_texture: normal
++                    .as_ref()
+                     .and_then(|texture| texture_ref(texture.texture().index())),
++                normal_scale: normal.as_ref().map_or(1.0, |texture| texture.scale()),
++                metallic_roughness_texture: pbr
++                    .metallic_roughness_texture()
++                    .and_then(|texture| texture_ref(texture.texture().index())),
++                occlusion_texture: occlusion
++                    .as_ref()
++                    .and_then(|texture| texture_ref(texture.texture().index())),
++                occlusion_strength: occlusion
++                    .as_ref()
++                    .map_or(1.0, |texture| texture.strength()),
+                 emissive_texture: source
+                     .emissive_texture()
+                     .and_then(|texture| texture_ref(texture.texture().index())),

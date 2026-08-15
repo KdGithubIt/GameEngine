@@ -1,0 +1,53 @@
+diff --git a/crates/editor/src/material_editor.rs b/crates/editor/src/material_editor.rs
+--- a/crates/editor/src/material_editor.rs
++++ b/crates/editor/src/material_editor.rs
+@@ -119,17 +119,49 @@ fn draw_material_fields(
+     changed |= texture_picker(
+         ui,
+         "Base color texture",
+         &mut mat.base_color_texture,
+         texture_choices,
+     );
++    changed |= texture_picker(
++        ui,
++        "Metallic / roughness texture",
++        &mut mat.metallic_roughness_texture,
++        texture_choices,
++    );
++    changed |= texture_picker(
++        ui,
++        "Ambient occlusion texture",
++        &mut mat.occlusion_texture,
++        texture_choices,
++    );
++    ui.horizontal(|ui| {
++        ui.label("Occlusion strength");
++        changed |= ui
++            .add(eframe::egui::Slider::new(
++                &mut mat.occlusion_strength,
++                0.0..=1.0,
++            ))
++            .changed();
++    });
++
+     changed |= texture_picker(
+         ui,
+         "Normal texture",
+         &mut mat.normal_texture,
+         texture_choices,
+     );
++    ui.horizontal(|ui| {
++        ui.label("Normal scale");
++        changed |= ui
++            .add(
++                eframe::egui::DragValue::new(&mut mat.normal_scale)
++                    .speed(0.05)
++                    .range(-8.0..=8.0),
++            )
++            .changed();
++    });
+     changed |= texture_picker(
+         ui,
+         "Emissive texture",
+         &mut mat.emissive_texture,
+         texture_choices,
