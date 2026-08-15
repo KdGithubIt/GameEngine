@@ -1,0 +1,56 @@
+diff --git a/crates/import/Cargo.toml b/crates/import/Cargo.toml
+--- a/crates/import/Cargo.toml
++++ b/crates/import/Cargo.toml
+@@ -12,8 +12,9 @@ engine-rig = { path = "../rig" }
+ glam = "0.29"
+ hashbrown = "0.14"
+ image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "bmp"] }
+ gltf = "1"
++mikktspace = { version = "0.3", default-features = false, features = ["glam"] }
+ serde = { version = "1", features = ["derive"] }
+ serde_json = "1"
+ 
+ [features]
+diff --git a/Cargo.lock b/Cargo.lock
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -1437,8 +1437,9 @@ dependencies = [
+  "engine-rig",
+  "glam 0.29.3",
+  "gltf",
+  "hashbrown 0.14.5",
+  "image",
++ "mikktspace",
+  "mmd-anim-format",
+  "mmd-anim-runtime",
+  "serde",
+@@ -1944,6 +1945,12 @@ dependencies = [
+  "xml-rs",
+ ]
+ 
++[[package]]
++name = "glam"
++version = "0.15.2"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "3abb554f8ee44336b72d522e0a7fe86a29e09f839a36022fa869a7dfe941a54b"
++
+ [[package]]
+ name = "glam"
+ version = "0.29.3"
+@@ -2768,6 +2775,15 @@ dependencies = [
+  "adler2",
+  "simd-adler32",
+ ]
+ 
++[[package]]
++name = "mikktspace"
++version = "0.3.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "7d0b56b403871a8f992ca626d52cc0a690d4841baea8955dc4af6304ac62f8b0"
++dependencies = [
++ "glam 0.15.2",
++]
++
+ [[package]]
+ name = "mmd-anim-format"
+ version = "0.4.0"
