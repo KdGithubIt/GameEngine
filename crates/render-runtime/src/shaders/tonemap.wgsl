@@ -17,7 +17,7 @@ struct PostProcessUniforms {
     grading_tint_r: f32,
     grading_tint_g: f32,
     grading_tint_b: f32,
-    _pad0: f32,
+    output_srgb_encode: u32,
     _pad1: f32,
     _pad2: f32,
 }
@@ -78,6 +78,13 @@ fn apply_tone_map(c: vec3<f32>, op: u32) -> vec3<f32> {
     return aces_fitted(c);
 }
 
+fn linear_to_srgb(c: vec3<f32>) -> vec3<f32> {
+    let clamped = clamp(c, vec3<f32>(0.0), vec3<f32>(1.0));
+    let low = clamped * 12.92;
+    let high = vec3<f32>(1.055) * pow(clamped, vec3<f32>(1.0 / 2.4)) - vec3<f32>(0.055);
+    return select(high, low, clamped <= vec3<f32>(0.0031308));
+}
+
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let hdr = textureSample(hdr_texture, hdr_sampler, in.uv).rgb;
@@ -111,6 +118,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         mapped = mix(gray, mapped, max(pp.grading_saturation, 0.0));
         mapped = (mapped - vec3<f32>(0.5)) * max(pp.grading_contrast, 0.0) + vec3<f32>(0.5);
         mapped = pow(max(mapped, vec3<f32>(0.0)), vec3<f32>(1.0 / max(pp.grading_gamma, 0.001)));
+    }
+    if pp.output_srgb_encode != 0u {
+        mapped = linear_to_srgb(mapped);
     }
     return vec4<f32>(mapped, 1.0);
 }

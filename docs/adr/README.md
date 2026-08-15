@@ -175,6 +175,7 @@ canonical specification MUST also update
 | [0115](0115-current-format-only-baseline.md) | Current-Format-Only Baseline |
 | [0116](0116-animation-events-owned-by-animation-set-bindings.md) | Animation Events Owned by Animation Set Bindings |
 | [0117](0117-project-first-launcher-and-editor-application-lifecycle.md) | Project-First Launcher and Editor Application Lifecycle |
+| [0118](0118-rendering-color-space-and-texture-semantics.md) | Rendering Color-Space and Texture-Semantics Contract |
 
 ## Phase 41+ ADR Targets
 
