@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0110-humanoid-core-20260815-05",
+  "target_branch": "chatgpt/gameengine-adr-0110-humanoid-motion",
+  "expected_head_sha": "990bb94ae86583b9fd3a4b6b0d5dd07f591a6c4b",
+  "patch_parts": ["part-0000.patch", "part-0001.patch"],
+  "commit_message": "Add ADR 0110 humanoid profile validation",
+  "pr_title": "Implement ADR 0110 humanoid profiles and motion",
+  "pr_body": "Implements ADR 0110 in staged dispatcher requests. This stage adds engine-animation profile validation and conservative import-time name/convention detection over stable BoneIds, including ancestry-based chain validation that permits helper/twist bones and non-blocking ambiguity diagnostics. The previous stage added the persisted model-owned profile contract. Follow-up stages add portable HumanoidMotion conversion/baking, imported variants, Animation Set source selection, editor configuration, target resolution, and packaging."
+}
