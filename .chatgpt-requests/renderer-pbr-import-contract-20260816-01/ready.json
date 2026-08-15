@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "request_id": "renderer-pbr-import-contract-20260816-01",
+  "target_branch": "chatgpt/gameengine-render-pbr-material-foundation",
+  "expected_head_sha": "1d4381519c5fae0a1ac4d6be193209fdfc0781f4",
+  "patch_parts": ["part-0000.patch"],
+  "commit_message": "Renderer: carry PBR texture inputs through model import",
+  "pr_title": "Renderer: add PBR material texture contract",
+  "pr_body": "Phase 2B renderer foundation. Material schema v3 is now followed by format-neutral IR/import wiring for packed metallic/roughness, ambient occlusion, normal scale, and occlusion strength. glTF preserves authored inputs; FBX and PMX normalize absent source semantics to generic defaults."
+}
