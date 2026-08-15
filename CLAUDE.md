@@ -12,7 +12,19 @@ docs/DEVELOPMENT_WORKFLOW.md
 `docs/AGENTS.md` を開き、作業場所に対応するグループを探す。
 そのグループに書かれたドキュメントだけを読む。それ以外は読まない。
 
-## 完了前に必ず実行する
+## ローカルでの引き渡し前ゲート
+
+```
+cargo fmt --all --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+```
+
+Windows では `scripts/validate.ps1`、Linux/macOS では `scripts/validate.sh` でこの full-workspace core gate を一括実行できる。
+
+## CIでの完了判定
+
+Windows Validation の `full` mode は次の5コマンドを実行する。
 
 ```
 cargo fmt --all --check
@@ -22,7 +34,7 @@ cargo test --workspace
 cargo doc --workspace --no-deps
 ```
 
-Windows では `scripts/validate.ps1`、Linux/macOS では `scripts/validate.sh` で同じ検証を一括実行できる。
+通常のPRは `affected`、文書のみのPRは `docs` になることがある。選択された mode と scope は `docs/DEVELOPMENT_WORKFLOW.md` を正とし、`affected` 成功を workspace 全体の5検証成功として扱わない。
 
 ## 絶対にやってはいけないこと
 

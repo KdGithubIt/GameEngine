@@ -2,10 +2,10 @@
 
 Status: Draft  
 Version: 0.1.0  
-Canonical location: `GameEngine/docs/AI_FRIENDLY_AUTHORING_SPEC.md`
+Canonical location: `docs/AI_FRIENDLY_AUTHORING_SPEC.md`
 
 Rust implementation and documentation style is defined separately in
-`GameEngine/docs/RUST_CODE_STYLE.md`.
+`docs/RUST_CODE_STYLE.md`.
 
 ## 1. Purpose
 

@@ -1,20 +1,23 @@
 # Public Repository Migration
 
-Status: Accepted implementation plan
+Status: Public cutover completed 2026-08-15; legacy private automation retirement prepared in `KdGithubIt/RustProject` PR #72
 Target repository: `KdGithubIt/GameEngine`
 Source repository: `KdGithubIt/RustProject`
+Audited source snapshot: `68e136f9a06b52f6e024b4f895f7db5c8510ad00`
 Source boundary: `GameEngine/`
-History policy: clean snapshot; do not import the private repository history
+History policy: clean snapshot; the private repository history was not imported
 
-## Goal
+## Result
 
-Move GameEngine development and its Windows GitHub Actions validation to a dedicated public repository without exposing unrelated private repository content or private development history.
+GameEngine development and Windows GitHub Actions validation now run from the dedicated public `KdGithubIt/GameEngine` repository. The public repository uses the former `GameEngine/` workspace as its repository root, while `KdGithubIt/RustProject` remains the private migration source.
 
-The source `RustProject` repository remains private. The public repository uses the current `GameEngine/` workspace as its repository root.
+The audited standalone snapshot was merged through public bootstrap PR #1. Its full Windows validation passed formatting, workspace Check, workspace Clippy with all targets and warnings denied, workspace tests, and workspace documentation. The repository-native ChatGPT Dispatcher was then exercised end to end with temporary PR #2; its `affected` validation selected `engine-ecs` and succeeded. PR #2 was closed without merge and its probe branch was reset to `main`.
+
+The remaining private-side cutover cleanup is represented by `KdGithubIt/RustProject` PR #72, which removes the five legacy GameEngine-specific workflows while leaving the unrelated private `deploy.yml` workflow and old `GameEngine/` source tree intact. That retirement becomes effective only after PR #72 is merged.
 
 ## Public snapshot contract
 
-`scripts/public/Export-PublicSnapshot.ps1` is the source of truth for the initial file boundary. It uses an allow-list rather than copying the whole `GameEngine/` directory and deleting files afterward.
+`scripts/public/Export-PublicSnapshot.ps1` records the initial publication boundary. It uses an allow-list rather than copying the whole former `GameEngine/` directory and deleting files afterward.
 
 The snapshot includes:
 
@@ -32,19 +35,19 @@ Model/media/font/archive files are rejected unless their repository-relative pat
 
 ## Public workflow set
 
-The public repository contains only these initial workflows:
+The public repository contains these GameEngine workflows:
 
 1. `gameengine-chatgpt-dispatch-trigger.yml` — read-only signal for immutable ChatGPT request records.
 2. `gameengine-chatgpt-dispatcher.yml` — trusted default-branch workflow that applies authorized patches and creates/updates Draft pull requests.
 3. `gameengine-windows-validation.yml` — exact-head Windows validation with affected/full/docs planning.
 
-The legacy bridge and auto-merge workflows are not exported. Public dispatcher pull requests remain Draft and require a human merge decision.
+The legacy bridge and auto-merge workflows were not migrated. Public dispatcher pull requests remain Draft and require a human merge decision.
 
-Third-party actions in these public workflow templates are pinned to full commit SHAs.
+Third-party actions in these public workflows are pinned to full commit SHAs.
 
 ## Public dispatcher trust boundary
 
-The `chatgpt-dispatch` branch remains transport data, not executable automation. The signal workflow has read-only repository access. The write-capable dispatcher is loaded from `main` via `workflow_run` and repeats all request validation.
+The `chatgpt-dispatch` branch is transport data, not executable automation. The signal workflow has read-only repository access. The write-capable dispatcher is loaded from `main` via `workflow_run` and repeats all request validation.
 
 In the standalone public repository, ChatGPT patch paths are explicitly allow-listed. Product/source/documentation paths are allowed, while `.github/**` and `.chatgpt-requests/**` are forbidden. This prevents a patch request from rewriting the trusted workflow definitions or its own transport records.
 
@@ -52,40 +55,47 @@ The dispatcher requires the exact target branch `expected_head_sha`, validates w
 
 ## Validation layout compatibility
 
-`scripts/ci/New-ValidationPlan.ps1` discovers the Git repository root independently from the workspace root. The same planner therefore supports both layouts:
+`scripts/ci/New-ValidationPlan.ps1` discovers the Git repository root independently from the workspace root. The planner retains compatibility with both layouts during cutover support:
 
 ```text
-RustProject/GameEngine/   # current private monorepo layout
-GameEngine/               # standalone public repository root
+RustProject/GameEngine/   # legacy private migration-source layout
+GameEngine/               # standalone repository root when cloned into GameEngine/
 ```
 
-`Test-ValidationPlanner.ps1` exercises both layouts so path-classification changes cannot silently break either migration phase.
+`Test-ValidationPlanner.ps1` exercises both layouts so path-classification changes cannot silently regress the retained migration compatibility.
 
-## Migration sequence
+## Completed cutover sequence
 
-1. Run `scripts/public/Test-PublicSnapshot.ps1` against the latest private `main` state.
-2. Export a fresh snapshot with `Export-PublicSnapshot.ps1`.
-3. Create `KdGithubIt/GameEngine` as a new private repository; do not fork or import old history.
-4. Commit only the exported snapshot as the new repository's initial history.
-5. Run the Windows validation workflow from the private staging repository.
-6. Configure default-branch protection/rules for pull-request-based changes and required validation.
-7. Confirm repository secrets/variables are empty except settings intentionally created for the new repository. Do not copy old repository secrets wholesale.
-8. Change the new repository visibility to public only after the snapshot boundary and validation result are clean.
-9. Run the public standard-hosted Windows validation once after publication.
-10. Exercise one ChatGPT dispatcher request end-to-end: request transport, Draft PR, exact-head Windows validation, and result inspection.
-11. After the standalone path is stable, disable GameEngine-specific validation/automation in the private monorepo. Do not delete the old GameEngine tree as part of the initial cutover.
+1. Selected and fixed the private source snapshot at `68e136f9a06b52f6e024b4f895f7db5c8510ad00`.
+2. Created the clean `KdGithubIt/GameEngine` repository without importing private Git history.
+3. Exported the allow-listed `GameEngine/` boundary and ran publication safety checks before publishing the snapshot branch.
+4. Installed only the approved public Dispatcher signal, Dispatcher, and Windows Validation workflows.
+5. Ran full public Windows validation and confirmed all five workspace commands succeeded.
+6. Merged bootstrap PR #1 to `main`.
+7. Enabled GitHub Actions to create Dispatcher Draft pull requests.
+8. Exercised the production Dispatcher path end to end with PR #2 and confirmed `affected` validation success for `engine-ecs`.
+9. Closed PR #2 without merge and reset its probe branch to `main`.
+10. Prepared `KdGithubIt/RustProject` PR #72 to retire the legacy private GameEngine workflows.
 
-## Stop conditions
+## Post-cutover requirements
 
-Do not make the staging repository public when any of the following is unresolved:
+- Merge `KdGithubIt/RustProject` PR #72 before treating private GameEngine Actions retirement as effective.
+- Keep the old private `GameEngine/` tree as migration history until a separate explicit cleanup decision is made.
+- Remove any temporary migration-only credential from the public repository if it is still configured; normal Dispatcher and validation workflows do not require it.
+- Continue to keep Dispatcher pull requests Draft and require a human merge decision.
+- Treat `affected`, `full`, and `docs` results according to their actual validation scope; never report an affected success as full-workspace success.
 
-- an unreviewed model/media/font/archive file is present;
-- the security scan reports a high-confidence finding;
-- the exported workflow set differs from the three approved workflows;
-- standalone Windows validation fails;
-- the dispatcher can mutate `.github/` or `.chatgpt-requests/`;
-- the source branch moved after the audited snapshot was selected.
+## Historical pre-public stop conditions
+
+The snapshot was not eligible for publication until all of the following were satisfied:
+
+- reviewed model/media/font/archive paths only;
+- no high-confidence credential or private-user-path findings;
+- exactly the approved public workflow set;
+- successful standalone Windows validation;
+- Dispatcher trust boundaries preventing `.github/` or `.chatgpt-requests/` mutation;
+- an unchanged audited private source SHA.
 
 ## Actions usage objective
 
-The standalone repository is designed to use standard GitHub-hosted `windows-latest` and `ubuntu-latest` runners by default. Self-hosted Windows runners remain an explicit repository-variable opt-in, and fork pull requests are never eligible for self-hosted runner selection.
+The standalone public repository uses standard GitHub-hosted `windows-latest` and `ubuntu-latest` runners by default. Self-hosted Windows runners remain an explicit repository-variable opt-in, and fork pull requests are never eligible for self-hosted runner selection. Retiring the legacy private GameEngine workflows prevents duplicate private-repository validation and nightly Actions usage after cutover.

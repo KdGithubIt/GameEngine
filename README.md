@@ -10,16 +10,15 @@ Use the Rust toolchain pinned by `rust-toolchain.toml`.
 
 ## Validation
 
-From the repository root:
+The local core gate from the repository root is:
 
 ```text
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
-cargo doc --workspace --no-deps
 ```
 
-Windows developers can run the repository validation script with:
+Windows developers can run that full-workspace core gate with:
 
 ```powershell
 .\scripts\validate.ps1
@@ -31,7 +30,7 @@ Linux and macOS developers can run:
 bash scripts/validate.sh
 ```
 
-GitHub Actions uses the same affected/full validation model documented in `docs/DEVELOPMENT_WORKFLOW.md`.
+Windows CI uses `affected`, `full`, and `docs` validation modes as documented in `docs/DEVELOPMENT_WORKFLOW.md`. Full validation additionally runs `cargo check --workspace` and `cargo doc --workspace --no-deps`; an affected or documentation-only success must not be reported as a full-workspace five-command result.
 
 ## Automation
 

@@ -197,17 +197,16 @@ Validation has three modes: `affected`, `full`, and `docs`.
 
 Normal pull requests, merge groups, and pushes to `main` use `affected` mode
 when changed paths can be classified safely. The planner runs
-`cargo metadata --format-version 1 --locked`, derives workspace membership and
-the workspace dependency graph, maps changed files to their owning packages,
-and selects the changed packages plus their transitive reverse-dependency
-closure.
+`cargo metadata --format-version 1 --locked`, derives workspace membership,
+maps changed files to their owning packages, and selects the changed packages
+for the normal PR critical path. Reverse dependents are intentionally not added;
+full validation on `main` and nightly provides the cross-workspace safety net.
 
-Package names, crate directories, and dependency relationships are not
-hard-coded in the workflow. New or split crates therefore participate as soon
-as they are workspace members visible in Cargo metadata. A package-local
-`Cargo.toml` change remains affected-mode when current metadata still resolves
-it safely. A removed package that cannot be reconstructed from current metadata
-falls back to `full` rather than guessing.
+Package names and crate directories are not hard-coded in the workflow. New or
+split crates therefore participate as soon as they are workspace members visible
+in Cargo metadata. A package-local `Cargo.toml` change remains affected-mode when
+current metadata still resolves it safely. A removed package that cannot be
+reconstructed from current metadata falls back to `full` rather than guessing.
 
 The planner emits a machine-readable plan containing validation mode, skip
 state, changed packages, affected packages, and the package sets selected for
@@ -215,8 +214,8 @@ tests, Clippy, and documentation. The Windows executor consumes that plan and
 does not repeat classification logic.
 
 Affected validation runs formatting plus package-selected Clippy, tests, and
-documentation. Clippy uses `--all-targets` for the selected packages so target
-coverage is not reduced merely because the run is affected-mode.
+documentation. Affected Clippy uses package selection without `--all-targets`;
+full mode retains `--all-targets` for workspace-wide target coverage.
 
 ### Full mode
 

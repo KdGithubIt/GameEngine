@@ -1,6 +1,6 @@
 # OSS Publication Plan
 
-Status: Draft
+Status: Historical publication plan; repository cutover completed 2026-08-15
 Target license: MIT OR Apache-2.0
 Target publication model: New public repository without importing the existing
 private development history
@@ -9,7 +9,14 @@ CLA: none
 DCO: required
 API stability: breaking changes allowed before 1.0
 Scene/project schema stability: best-effort compatibility
-Publication flow: private staging repository -> scan/CI/tag -> public
+Publication flow: repository-boundary cutover completed; remaining license/release work stays open
+
+> The repository-boundary and staging portions of this document are historical.
+> `docs/PUBLIC_REPOSITORY_MIGRATION.md` records the completed cutover to
+> `KdGithubIt/GameEngine`. References below to `GameEngine/...`, a private
+> staging repository, or pre-public copy steps describe the old source layout
+> and MUST NOT be used as current repository-operation instructions. Unfinished
+> licensing, release, contributor, and governance items remain planning work.
 
 ## Purpose
 
