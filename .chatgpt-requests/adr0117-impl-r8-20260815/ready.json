@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0117-impl-r8-20260815",
+  "target_branch": "chatgpt/gameengine-adr-0117",
+  "expected_head_sha": "fc6fe721e76472932ffc5926fa54d8e4418dd524",
+  "patch_parts": [
+    "part-0000.patch",
+    "part-0001.patch"
+  ],
+  "commit_message": "Preserve project config API for ADR 0117",
+  "pr_title": "Implement ADR 0117 project-first Launcher and Editor lifecycle",
+  "pr_body": "Follow-up for ADR 0117: preserve ProjectConfig's existing public struct-literal API by moving ProjectId and engine association into persisted ProjectRoot identity, remove the obsolete Hub module after recents moved to Launcher, and fix lifecycle lease tests. Re-run full Windows validation."
+}
