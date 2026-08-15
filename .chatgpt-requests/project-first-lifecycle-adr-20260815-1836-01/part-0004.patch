@@ -1,0 +1,61 @@
++lease and project lifecycle rules. Depending on Launcher code would invert the
++shared dependency direction.
++
++### Enforce duplicate-open prevention only in the Launcher
++
++Rejected. Direct `engine-editor --project` launch would bypass the invariant.
++
++### Use only a lock file or only ownership metadata
++
++Rejected. A persistent file alone requires unreliable stale-lock heuristics,
++while an OS lease alone provides poor diagnostics. The OS lease is authoritative
++and metadata is descriptive.
++
++### Leave project identity path-only
++
++Rejected. Directory moves would lose logical per-project user identity and make
++future Launcher/editor-version management depend on installation-specific
++paths.
++
++### Keep New Project creation in Editor GUI code
++
++Rejected. A separate Launcher would duplicate product scaffolding policy and
++other clients could create structurally different projects.
++
++## Compatibility and Migration
++
++This ADR is an architectural documentation change and does not itself modify
++on-disk project files or public Rust APIs.
++
++Implementation requires a new `engine-project-lifecycle` workspace crate, a
++Launcher executable, an explicit Editor project-launch contract, and a
++`project.json` schema revision for `ProjectId` and engine association. Those are
++deliberate contract changes authorized by this ADR and MUST be implemented with
++the repository's normal versioned-schema and validation rules.
++
++ADR 0023 remains authoritative for `ProjectRoot`, `ProjectConfig`,
++`project.json`, and path-safety ownership in `engine-authoring`; decision 4 is
++amended so recent-project history belongs to the Launcher/application rather
++than the Editor. ADR 0031 remains authoritative for `project_settings.json` and
++its separation from project identity. ADR 0115 remains authoritative for the
++current-format-only baseline: the implementation updates the current schema and
++repository-owned data together and does not add a legacy read/migration path.
+diff --git a/docs/adr/README.md b/docs/adr/README.md
+--- a/docs/adr/README.md
++++ b/docs/adr/README.md
+@@ -173,6 +173,7 @@ Use this template:
+ | [0114](0114-heavy-third-party-dependency-isolation.md) | Heavy Third-Party Dependency Isolation |
+ | [0115](0115-current-format-only-baseline.md) | Current-Format-Only Baseline |
+ | [0116](0116-animation-events-owned-by-animation-set-bindings.md) | Animation Events Owned by Animation Set Bindings |
++| [0117](0117-project-first-launcher-and-editor-application-lifecycle.md) | Project-First Launcher and Editor Application Lifecycle |
+ 
+ ## Phase 41+ ADR Targets
+ 
+diff --git a/docs/phases/phase-26-project-hub.md b/docs/phases/phase-26-project-hub.md
+--- a/docs/phases/phase-26-project-hub.md
++++ b/docs/phases/phase-26-project-hub.md
+@@ -1,5 +1,10 @@
+ # Phase 26 — Project Hub / Scene-first Startup
+ 
++> Historical implementation note: ADR 0117 supersedes this phase's placement
++> of the Project Hub and recent-project ownership inside the Editor. The
