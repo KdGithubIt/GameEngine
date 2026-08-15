@@ -1,0 +1,62 @@
+diff --git a/crates/editor/src/ui/assets.rs b/crates/editor/src/ui/assets.rs
+--- a/crates/editor/src/ui/assets.rs
++++ b/crates/editor/src/ui/assets.rs
+@@ -445,6 +445,6 @@
+                                             if ui
+                                                 .selectable_value(
+                                                     &mut selected_clip,
+-                                                    Some(choice.id.clone()),
++                                                    Some(engine_authoring::MotionSourceRef::native(choice.id.clone())),
+                                                     &choice.label,
+                                                 )
+                                                 .changed()
+@@ -527,5 +527,8 @@
+                                     .show_ui(ui, |ui| {
+                                         for choice in &clip_choices {
+                                             let duplicate = binding.clip == choice.id
+-                                                || binding.overlays.contains(&choice.id);
++                                                || binding
++                                                    .overlays
++                                                    .iter()
++                                                    .any(|overlay| overlay == &choice.id);
+                                             if ui
+                                                 .add_enabled(
+diff --git a/crates/editor/src/build.rs b/crates/editor/src/build.rs
+--- a/crates/editor/src/build.rs
++++ b/crates/editor/src/build.rs
+@@ -1704,6 +1704,6 @@
+             motion_slot,
+             engine_authoring::AnimationBinding {
+                 name: "retarget_motion".to_owned(),
+-                clip: clip.clone(),
++                clip: engine_authoring::MotionSourceRef::native(clip.clone()),
+                 overlays: Vec::new(),
+                 events: Vec::new(),
+             },
+diff --git a/crates/editor/src/ui/animation_preview.rs b/crates/editor/src/ui/animation_preview.rs
+--- a/crates/editor/src/ui/animation_preview.rs
++++ b/crates/editor/src/ui/animation_preview.rs
+@@ -1088,6 +1088,6 @@
+             slot.clone(),
+             engine_authoring::AnimationBinding {
+                 name: "Idle".to_owned(),
+-                clip: AssetId::generate(),
++                clip: engine_authoring::MotionSourceRef::native(AssetId::generate()),
+                 overlays: Vec::new(),
+                 events: Vec::new(),
+             },
+diff --git a/crates/editor/src/ui/tests.rs b/crates/editor/src/ui/tests.rs
+--- a/crates/editor/src/ui/tests.rs
++++ b/crates/editor/src/ui/tests.rs
+@@ -1000,7 +1000,9 @@
+         slot.clone(),
+         engine_authoring::AnimationBinding {
+             name: "Dance".into(),
+-            clip: primary_clip.clone(),
+-            overlays: vec![overlay_clip],
++            clip: engine_authoring::MotionSourceRef::native(primary_clip.clone()),
++            overlays: vec![engine_authoring::MotionSourceRef::native(
++                overlay_clip,
++            )],
+             events: Vec::new(),
+         },
