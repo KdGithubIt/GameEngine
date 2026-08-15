@@ -1,0 +1,212 @@
+name: GameEngine Editor Visual Validation
+
+run-name: >-
+  Editor visual validation PR #${{ github.event.pull_request.number }}
+  ${{ github.event.pull_request.head.sha }}
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, edited, reopened]
+
+permissions: {}
+
+concurrency:
+  group: gameengine-editor-visual-validation-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+  SCCACHE_GHA_ENABLED: "true"
+  RUSTC_WRAPPER: sccache
+
+jobs:
+  context:
+    name: Resolve visual validation request
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.base.ref == 'main' &&
+      startsWith(github.event.pull_request.head.ref, 'chatgpt/gameengine-') &&
+      github.event.pull_request.body != null &&
+      contains(github.event.pull_request.body, '<!-- gameengine-visual-validation:')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      target: ${{ steps.resolve.outputs.target }}
+      branch: ${{ steps.resolve.outputs.branch }}
+      head_sha: ${{ steps.resolve.outputs.head_sha }}
+      base_sha: ${{ steps.resolve.outputs.base_sha }}
+      runner_labels: ${{ steps.resolve.outputs.runner_labels }}
+
+    steps:
+      - name: Resolve exact PR context and requested target
+        id: resolve
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        env:
+          CONFIGURED_RUNNER_LABELS: ${{ vars.GAMEENGINE_WINDOWS_RUNNER_LABELS || '' }}
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            const body = pr.body || "";
+            const marker = /<!--\s*gameengine-visual-validation:\s*(auto|editor|launcher|both)\s*-->/gi;
+            const matches = [...body.matchAll(marker)];
+            if (matches.length !== 1) {
+              core.setFailed("PR body must contain exactly one valid GameEngine visual-validation marker.");
+              return;
+            }
+
+            const branch = pr.head.ref;
+            const headSha = pr.head.sha.toLowerCase();
+            const baseSha = pr.base.sha.toLowerCase();
+            const sameRepository = pr.head.repo?.full_name === `${context.repo.owner}/${context.repo.repo}`;
+            const safeBranch =
+              /^chatgpt\/gameengine-[a-z0-9][a-z0-9._/-]{0,80}$/.test(branch) &&
+              !branch.includes("..") &&
+              !branch.includes("//");
+            if (!sameRepository || pr.base.ref !== "main" || !safeBranch) {
+              core.setFailed("Visual validation accepts only same-repository chatgpt/gameengine-* PRs targeting main.");
+              return;
+            }
+            if (!/^[0-9a-f]{40}$/.test(headSha) || !/^[0-9a-f]{40}$/.test(baseSha)) {
+              core.setFailed("Visual validation requires exact 40-character PR SHAs.");
+              return;
+            }
+
+            let runnerLabels = ["windows-latest"];
+            const configured = (process.env.CONFIGURED_RUNNER_LABELS || "").trim();
+            if (configured) {
+              try {
+                const parsed = JSON.parse(configured);
+                if (!Array.isArray(parsed) || parsed.length === 0 || parsed.some(x => typeof x !== "string" || !x.trim())) {
+                  throw new Error("expected a non-empty JSON string array");
+                }
+                runnerLabels = parsed;
+              } catch (error) {
+                core.setFailed(`GAMEENGINE_WINDOWS_RUNNER_LABELS is invalid: ${error.message}`);
+                return;
+              }
+            }
+
+            core.setOutput("target", matches[0][1].toLowerCase());
+            core.setOutput("branch", branch);
+            core.setOutput("head_sha", headSha);
+            core.setOutput("base_sha", baseSha);
+            core.setOutput("runner_labels", JSON.stringify(runnerLabels));
+
+  capture:
+    name: Capture requested desktop UI
+    needs: context
+    runs-on: ${{ fromJSON(needs.context.outputs.runner_labels) }}
+    timeout-minutes: 120
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out exact visual-validation head
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.context.outputs.head_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify checked-out head
+        shell: pwsh
+        env:
+          EXPECTED_HEAD_SHA: ${{ needs.context.outputs.head_sha }}
+        run: |
+          $actual = (& git rev-parse HEAD).Trim().ToLowerInvariant()
+          if ($LASTEXITCODE -ne 0 -or $actual -ne $env:EXPECTED_HEAD_SHA) {
+              throw "Checked-out visual-validation head '$actual' does not match '$env:EXPECTED_HEAD_SHA'."
+          }
+
+      - name: Initialize pinned Rust and persistent cache paths
+        shell: pwsh
+        env:
+          RUNNER_ENVIRONMENT: ${{ runner.environment }}
+          GAMEENGINE_CI_CACHE_ROOT: ${{ vars.GAMEENGINE_CI_CACHE_ROOT || '' }}
+        run: |
+          $persistent = $env:RUNNER_ENVIRONMENT -eq "self-hosted"
+          ./scripts/ci/Initialize-CiEnvironment.ps1 -PersistentRunner:$persistent
+
+      - name: Set up sccache
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+
+      - name: Resolve automatic capture target
+        id: target
+        shell: pwsh
+        env:
+          REQUESTED_TARGET: ${{ needs.context.outputs.target }}
+          BASE_SHA: ${{ needs.context.outputs.base_sha }}
+          HEAD_SHA: ${{ needs.context.outputs.head_sha }}
+        run: |
+          $requested = $env:REQUESTED_TARGET
+          if ($requested -ne "auto") {
+              "target=$requested" >> $env:GITHUB_OUTPUT
+              exit 0
+          }
+
+          $changed = @(& git diff --name-only $env:BASE_SHA $env:HEAD_SHA --)
+          if ($LASTEXITCODE -ne 0) {
+              throw "Could not compute changed paths for automatic visual validation."
+          }
+          $editorChanged = @($changed | Where-Object { $_ -like "crates/editor/*" }).Count -gt 0
+          $launcherChanged = @($changed | Where-Object { $_ -like "crates/launcher/*" }).Count -gt 0
+
+          if ($editorChanged -and $launcherChanged) {
+              $resolved = "both"
+          } elseif ($editorChanged) {
+              $resolved = "editor"
+          } elseif ($launcherChanged) {
+              $resolved = "launcher"
+          } else {
+              # A caller explicitly requested visual validation but the changed
+              # path does not identify one desktop frontend. Capture both rather
+              # than silently skipping the requested human-visible evidence.
+              $resolved = "both"
+          }
+          "target=$resolved" >> $env:GITHUB_OUTPUT
+
+      - name: Build, launch, and capture UI
+        shell: pwsh
+        env:
+          CAPTURE_TARGET: ${{ steps.target.outputs.target }}
+        run: |
+          $output = Join-Path $env:RUNNER_TEMP "gameengine-editor-visual-validation"
+          ./scripts/ci/Invoke-EditorVisualValidation.ps1 `
+              -Target $env:CAPTURE_TARGET `
+              -WorkspaceRoot (Get-Location).Path `
+              -OutputDirectory $output
+
+      - name: Publish capture summary
+        if: ${{ always() }}
+        shell: pwsh
+        env:
+          CAPTURE_TARGET: ${{ steps.target.outputs.target }}
+        run: |
+          $summaryPath = Join-Path $env:RUNNER_TEMP "gameengine-editor-visual-validation\summary.json"
+          Add-Content $env:GITHUB_STEP_SUMMARY "### GameEngine desktop visual validation"
+          Add-Content $env:GITHUB_STEP_SUMMARY ""
+          Add-Content $env:GITHUB_STEP_SUMMARY "- PR: #${{ github.event.pull_request.number }}"
+          Add-Content $env:GITHUB_STEP_SUMMARY "- Commit: ``${{ needs.context.outputs.head_sha }}``"
+          Add-Content $env:GITHUB_STEP_SUMMARY "- Requested target: ``${{ needs.context.outputs.target }}``"
+          Add-Content $env:GITHUB_STEP_SUMMARY "- Resolved target: ``$env:CAPTURE_TARGET``"
+          if (Test-Path -LiteralPath $summaryPath -PathType Leaf) {
+              $summary = Get-Content -Raw -LiteralPath $summaryPath -Encoding utf8 | ConvertFrom-Json
+              foreach ($screenshot in $summary.screenshots) {
+                  Add-Content $env:GITHUB_STEP_SUMMARY "- Screenshot: ``$($screenshot.path)`` ($($screenshot.bytes) bytes)"
+              }
+          }
+
+      - name: Upload visual evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: gameengine-editor-visual-validation-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/gameengine-editor-visual-validation/**
+          if-no-files-found: warn
+          retention-days: 30
