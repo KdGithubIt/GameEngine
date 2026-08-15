@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0117-impl-r1-20260815",
+  "target_branch": "chatgpt/gameengine-adr-0117",
+  "expected_head_sha": "90e4575f2472eef06850af309c72ed72be86dba6",
+  "patch_parts": [
+    "part-0000.patch",
+    "part-0001.patch",
+    "part-0002.patch",
+    "part-0003.patch",
+    "part-0004.patch",
+    "part-0005.patch",
+    "part-0006.patch",
+    "part-0007.patch",
+    "part-0008.patch",
+    "part-0009.patch"
+  ],
+  "commit_message": "Implement ADR 0117 project-first lifecycle",
+  "pr_title": "Implement ADR 0117 project-first Launcher and Editor lifecycle",
+  "pr_body": "Implements ADR 0117 across authoring, application lifecycle, Launcher, and Editor startup.\n\n- BREAKING: bumps project.json to the next current-only schema and adds stable ProjectId plus explicit engine association. No legacy reader or migration is added, per ADR 0115.\n- Adds the GUI-free engine-project-lifecycle crate for current-format compatibility, transactional standard project scaffolding, OS-backed per-canonical-location Editor leases, ephemeral ownership/readiness metadata, Launcher single-instance control, and lifecycle-only activation/close requests.\n- Adds the separate engine-launcher executable with new/open/recent flows and process-replacement switching.\n- Makes normal Editor startup require --project, acquire the authoritative project/lease before GUI bootstrap, and moves recent-project ownership out of Editor preferences.\n- Updates the Windows launch scripts to build both desktop executables and start Launcher.\n\nCargo.toml and Cargo.lock change, so this PR requires full workspace Windows validation."
+}
