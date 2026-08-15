@@ -1,0 +1,111 @@
+diff --git a/crates/authoring/src/project.rs b/crates/authoring/src/project.rs
+index 7e7d24c..0000000 100644
+--- a/crates/authoring/src/project.rs
++++ b/crates/authoring/src/project.rs
+@@ -34,16 +34,12 @@ const PROJECT_JSON: &str = "project.json";
+ // Public types
+ // ---------------------------------------------------------------------------
+ 
+-/// Metadata stored in `project.json` for a project directory.
++/// Existing public project configuration contract.
+ #[derive(Debug, Clone, PartialEq, Eq)]
+ pub struct ProjectConfig {
+-    /// Stable logical identity of this project.
+-    pub project_id: ProjectId,
+     /// Human-readable project name.
+     pub name: String,
+-    /// Engine release association required to open the project.
+-    pub engine_version: String,
+     /// The `schema_version` read from (or written to) `project.json`.
+     pub schema_version: u32,
+ }
+@@ -60,6 +56,8 @@ pub struct ProjectConfig {
+ pub struct ProjectRoot {
+     path: PathBuf,
+     config: ProjectConfig,
++    project_id: ProjectId,
++    engine_version: String,
+ }
+@@ -142,6 +140,16 @@ impl ProjectRoot {
+         &self.config
+     }
+ 
++    /// Returns the stable logical identity persisted in `project.json`.
++    pub fn project_id(&self) -> &ProjectId {
++        &self.project_id
++    }
++
++    /// Returns the engine release association persisted in `project.json`.
++    pub fn engine_version(&self) -> &str {
++        &self.engine_version
++    }
++
+     /// Returns `<root>/assets/`.
+     pub fn assets_root(&self) -> PathBuf {
+         self.path.join("assets")
+@@ -268,11 +276,11 @@ impl ProjectRoot {
+         Ok(Self {
+             path: canonical,
+             config: ProjectConfig {
+-                project_id: file.project_id,
+                 name: file.name,
+-                engine_version: file.engine_version,
+                 schema_version: file.schema_version,
+             },
++            project_id: file.project_id,
++            engine_version: file.engine_version,
+         })
+     }
+@@ -299,6 +307,8 @@ impl ProjectRoot {
+         if !path.is_dir() {
+             return Err(ProjectError::NotADirectory(path.to_path_buf()));
+         }
++        let project_id = ProjectId::generate();
++        let engine_version = env!("CARGO_PKG_VERSION").to_owned();
+         let canonical = fs::canonicalize(path).map_err(ProjectError::Io)?;
+ 
+         let standard_dirs = [
+@@ -316,9 +326,9 @@ impl ProjectRoot {
+ 
+         let file = ProjectFile {
+             schema_version: PROJECT_SCHEMA_VERSION,
+-            project_id: config.project_id.clone(),
++            project_id: project_id.clone(),
+             name: config.name.clone(),
+-            engine_version: config.engine_version.clone(),
++            engine_version: engine_version.clone(),
+         };
+         let json = serde_json::to_string_pretty(&file).map_err(ProjectError::JsonParse)?;
+         let project_json = canonical.join(PROJECT_JSON);
+@@ -328,11 +338,11 @@ impl ProjectRoot {
+         Ok(Self {
+             path: canonical,
+             config: ProjectConfig {
+-                project_id: config.project_id,
+                 name: config.name,
+-                engine_version: config.engine_version,
+                 schema_version: PROJECT_SCHEMA_VERSION,
+             },
++            project_id,
++            engine_version,
+         })
+     }
+@@ -450,9 +460,7 @@ mod tests {
+ 
+     fn make_config(name: &str) -> ProjectConfig {
+         ProjectConfig {
+-            project_id: ProjectId::generate(),
+             name: name.to_string(),
+-            engine_version: "test-engine".to_owned(),
+             schema_version: PROJECT_SCHEMA_VERSION,
+         }
+     }
+@@ -512,7 +520,8 @@ mod tests {
+ 
+         let root = ProjectRoot::open(dir.path()).expect("open must succeed");
+         assert_eq!(root.config().name, "MyGame");
+-        assert_eq!(root.config().engine_version, "test-engine");
++        assert_eq!(root.engine_version(), env!("CARGO_PKG_VERSION"));
++        assert!(root.project_id().as_str().starts_with("project_"));
+         assert_eq!(root.config().schema_version, 2);
+     }
