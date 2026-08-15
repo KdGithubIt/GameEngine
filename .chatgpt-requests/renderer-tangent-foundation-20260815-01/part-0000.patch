@@ -1,0 +1,158 @@
+diff --git a/crates/render-runtime/src/mesh.rs b/crates/render-runtime/src/mesh.rs
+--- a/crates/render-runtime/src/mesh.rs
++++ b/crates/render-runtime/src/mesh.rs
+@@ -12,4 +12,28 @@
+     };
+ }
+ 
++/// Per-vertex tangent-space direction uploaded separately from [`Vertex`].
++///
++/// `xyz` is the object-space tangent and `w` is its bitangent handedness.
++/// A zero `w` is the renderer's explicit "source tangent unavailable" marker;
++/// material shaders retain the derivative-based TBN fallback for that case.
++#[repr(C)]
++#[derive(Debug, Clone, Copy, Pod, Zeroable)]
++pub struct TangentVertexData {
++    /// Object-space tangent direction and handedness.
++    pub tangent: [f32; 4],
++}
++
++impl TangentVertexData {
++    /// GPU vertex layout used by both static and skinned material pipelines.
++    ///
++    /// Location 15 is outside the existing mesh, instance, skinning, and
++    /// outline attribute ranges without changing [`Vertex::LAYOUT`].
++    pub const LAYOUT: wgpu::VertexBufferLayout<'static> = wgpu::VertexBufferLayout {
++        array_stride: std::mem::size_of::<Self>() as wgpu::BufferAddress,
++        step_mode: wgpu::VertexStepMode::Vertex,
++        attributes: &wgpu::vertex_attr_array![15 => Float32x4],
++    };
++}
++
+ /// Reports invalid mesh data that cannot be uploaded safely.
+@@ -25,8 +49,8 @@
+-    /// Optional glTF tangent vectors (`xyz`) and handedness (`w`).
++    /// Optional imported tangent vectors (`xyz`) and handedness (`w`).
+     ///
+     /// Tangents remain separate from [`Vertex`] so the stable built-in vertex
+-    /// layout is not changed. The material renderer currently constructs its
+-    /// TBN basis from screen-space derivatives, while retaining this source
+-    /// data allows a future tangent vertex path without losing import data.
++    /// layout and morph-position upload contract do not change. Material
++    /// pipelines consume this stream when present; meshes without source
++    /// tangents retain the derivative-based normal-map fallback.
+     pub tangents: Option<Vec<[f32; 4]>>,
+     /// Ranges drawn with independent material slots (ADR 0076).
+@@ -45,3 +69,19 @@
++}
++
++fn gpu_tangent_data(mesh: &Mesh) -> Vec<TangentVertexData> {
++    match &mesh.tangents {
++        Some(tangents) => tangents
++            .iter()
++            .copied()
++            .map(|tangent| TangentVertexData { tangent })
++            .collect(),
++        None => vec![
++            TangentVertexData {
++                tangent: [0.0; 4],
++            };
++            mesh.vertices.len()
++        ],
++    }
+ }
+ 
+ /// Stores GPU buffers for one uploaded [`Mesh`].
+@@ -60,4 +100,9 @@
+     /// The uploaded skinning attribute buffer (slot 2), when the source mesh
+     /// carries skinning data (ADR 0043).
+     pub skinning_buffer: Option<Arc<wgpu::Buffer>>,
++    /// Tangent-space data consumed only by material pipelines.
++    ///
++    /// This buffer is always present. Meshes without imported tangents carry
++    /// the zero-handedness sentinel defined by [`TangentVertexData`].
++    pub tangent_buffer: Arc<wgpu::Buffer>,
+     /// The number of vertices in the source mesh.
+@@ -92,8 +137,24 @@
+             None
+         };
+ 
++        let tangent_data = gpu_tangent_data(mesh);
++        let tangent_buffer_size =
++            u64::from(vertex_count) * std::mem::size_of::<TangentVertexData>() as u64;
++        if tangent_buffer_size > maximum_buffer_size {
++            return Err(MeshValidationError::VertexBufferTooLarge {
++                size: tangent_buffer_size,
++                maximum: maximum_buffer_size,
++            });
++        }
++        let tangent_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
++            label: Some("Tangent vertex buffer"),
++            contents: bytemuck::cast_slice(&tangent_data),
++            usage: wgpu::BufferUsages::VERTEX,
++        });
++
+         Ok(Self {
+             vertex_buffer: Arc::new(vertex_buffer),
+             index_buffer,
+             skinning_buffer,
++            tangent_buffer: Arc::new(tangent_buffer),
+             vertex_count,
+@@ -109,3 +170,26 @@
++    /// Records one static material draw with the tangent stream at slot 2.
++    pub(crate) fn draw_material_instanced_submesh<'a>(
++        &'a self,
++        pass: &mut wgpu::RenderPass<'a>,
++        instance_buffer: &'a wgpu::Buffer,
++        instance_count: u32,
++        submesh: Option<usize>,
++    ) {
++        pass.set_vertex_buffer(2, self.tangent_buffer.slice(..));
++        self.draw_instanced_submesh(pass, instance_buffer, instance_count, submesh);
++    }
++
++    /// Records one skinned material draw with the tangent stream at slot 3.
++    pub(crate) fn draw_material_skinned_submesh<'a>(
++        &'a self,
++        pass: &mut wgpu::RenderPass<'a>,
++        instance_buffer: &'a wgpu::Buffer,
++        submesh: Option<usize>,
++    ) -> bool {
++        pass.set_vertex_buffer(3, self.tangent_buffer.slice(..));
++        self.draw_skinned_submesh(pass, instance_buffer, submesh)
++    }
++
+     /// Records instanced draw commands using `instance_buffer` as vertex slot 1.
+     pub fn draw_instanced<'a>(
+         &'a self,
+@@ -141,4 +225,30 @@
+     }
+ 
+     #[test]
++    fn tangent_layout_uses_the_reserved_material_location() {
++        assert_eq!(std::mem::size_of::<TangentVertexData>(), 16);
++        assert_eq!(TangentVertexData::LAYOUT.attributes.len(), 1);
++        assert_eq!(TangentVertexData::LAYOUT.attributes[0].shader_location, 15);
++        assert_eq!(
++            TangentVertexData::LAYOUT.attributes[0].format,
++            wgpu::VertexFormat::Float32x4
++        );
++    }
++
++    #[test]
++    fn gpu_tangent_data_preserves_source_and_marks_missing_tangents() {
++        let missing = Mesh::triangle();
++        let missing_gpu = gpu_tangent_data(&missing);
++        assert_eq!(missing_gpu.len(), missing.vertices.len());
++        assert!(missing_gpu.iter().all(|entry| entry.tangent == [0.0; 4]));
++
++        let mut sourced = Mesh::triangle();
++        sourced.tangents = Some(vec![[1.0, 0.0, 0.0, -1.0]; sourced.vertices.len()]);
++        let sourced_gpu = gpu_tangent_data(&sourced);
++        assert!(sourced_gpu
++            .iter()
++            .all(|entry| entry.tangent == [1.0, 0.0, 0.0, -1.0]));
++    }
++
++    #[test]
+     fn cube_has_distinct_vertices_per_face() {
