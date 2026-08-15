@@ -1,0 +1,194 @@
+diff --git a/crates/assets/src/asset.rs b/crates/assets/src/asset.rs
+--- a/crates/assets/src/asset.rs
++++ b/crates/assets/src/asset.rs
+@@ -203,6 +203,9 @@ pub struct ImportSettings {
+     /// Bone-catalog ledger for skeletons bound to this source.
+     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+     pub skeleton_records: Vec<SkeletonRecord>,
++    /// Model-owned humanoid semantic mappings keyed by stable skeleton/bone IDs (ADR 0110).
++    #[serde(default, skip_serializing_if = "Vec::is_empty")]
++    pub humanoid_profiles: Vec<HumanoidProfile>,
+     /// Bone names that replace the default contact-detection heuristic.
+     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+     pub contact_bones: Vec<String>,
+@@ -270,6 +273,151 @@ pub struct SkeletonBoneRecord {
+     pub name: String,
+ }
+ 
++/// Stable humanoid body semantics shared by model profiles and portable motion.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case")]
++pub enum HumanoidBone {
++    /// Pelvis / body root semantic.
++    Hips,
++    /// Lower torso semantic.
++    Spine,
++    /// Upper torso semantic.
++    Chest,
++    /// Uppermost torso semantic.
++    UpperChest,
++    /// Neck semantic.
++    Neck,
++    /// Head semantic.
++    Head,
++    /// Left shoulder semantic.
++    LeftShoulder,
++    /// Left upper arm semantic.
++    LeftUpperArm,
++    /// Left lower arm semantic.
++    LeftLowerArm,
++    /// Left hand semantic.
++    LeftHand,
++    /// Right shoulder semantic.
++    RightShoulder,
++    /// Right upper arm semantic.
++    RightUpperArm,
++    /// Right lower arm semantic.
++    RightLowerArm,
++    /// Right hand semantic.
++    RightHand,
++    /// Left upper leg semantic.
++    LeftUpperLeg,
++    /// Left lower leg semantic.
++    LeftLowerLeg,
++    /// Left foot semantic.
++    LeftFoot,
++    /// Left toe semantic.
++    LeftToes,
++    /// Right upper leg semantic.
++    RightUpperLeg,
++    /// Right lower leg semantic.
++    RightLowerLeg,
++    /// Right foot semantic.
++    RightFoot,
++    /// Right toe semantic.
++    RightToes,
++    /// Left thumb proximal semantic.
++    LeftThumbProximal,
++    /// Left index proximal semantic.
++    LeftIndexProximal,
++    /// Left middle proximal semantic.
++    LeftMiddleProximal,
++    /// Left ring proximal semantic.
++    LeftRingProximal,
++    /// Left little-finger proximal semantic.
++    LeftLittleProximal,
++    /// Right thumb proximal semantic.
++    RightThumbProximal,
++    /// Right index proximal semantic.
++    RightIndexProximal,
++    /// Right middle proximal semantic.
++    RightMiddleProximal,
++    /// Right ring proximal semantic.
++    RightRingProximal,
++    /// Right little-finger proximal semantic.
++    RightLittleProximal,
++    /// Left eye semantic.
++    LeftEye,
++    /// Right eye semantic.
++    RightEye,
++    /// Jaw semantic.
++    Jaw,
++}
++
++impl HumanoidBone {
++    /// Semantics required for a profile to be structurally usable for humanoid conversion.
++    pub const REQUIRED: [Self; 15] = [
++        Self::Hips,
++        Self::Spine,
++        Self::Head,
++        Self::LeftUpperArm,
++        Self::LeftLowerArm,
++        Self::LeftHand,
++        Self::RightUpperArm,
++        Self::RightLowerArm,
++        Self::RightHand,
++        Self::LeftUpperLeg,
++        Self::LeftLowerLeg,
++        Self::LeftFoot,
++        Self::RightUpperLeg,
++        Self::RightLowerLeg,
++        Self::RightFoot,
++    ];
++}
++
++/// Whether a humanoid mapping was inferred by import or explicitly authored.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case")]
++pub enum HumanoidProfileOrigin {
++    /// Import-time convention/name/hierarchy detection produced the mapping.
++    Automatic,
++    /// An author explicitly confirmed or edited the mapping.
++    Authored,
++}
++
++/// Model-owned mapping from portable humanoid semantics to one skeleton's stable bone IDs.
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++pub struct HumanoidProfile {
++    /// Stable `SkeletonAsset` sub-asset ID this profile belongs to.
++    pub skeleton: String,
++    /// Canonical skeleton identity the mapping was validated against.
++    pub skeleton_identity: u64,
++    /// Semantic-to-`BoneId` mapping. Values are stable numeric BoneId payloads.
++    pub bones: BTreeMap<HumanoidBone, u32>,
++    /// Optional bone whose translation carries locomotion; deliberately distinct from Hips.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub motion_root: Option<u32>,
++    /// Semantics resolved with lower-confidence import heuristics.
++    #[serde(default, skip_serializing_if = "Vec::is_empty")]
++    pub uncertain_bones: Vec<HumanoidBone>,
++    /// Whether this mapping is import-generated or explicitly authored.
++    pub origin: HumanoidProfileOrigin,
++}
++
++impl HumanoidProfile {
++    /// Returns the persisted BoneId payload for `semantic`, when mapped.
++    pub fn bone_id(&self, semantic: HumanoidBone) -> Option<u32> {
++        self.bones.get(&semantic).copied()
++    }
++}
++
+ /// Persisted type of a deterministic imported sub-asset.
+ #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+ #[serde(rename_all = "snake_case")]
+diff --git a/crates/animation/src/lib.rs b/crates/animation/src/lib.rs
+--- a/crates/animation/src/lib.rs
++++ b/crates/animation/src/lib.rs
+@@ -14,8 +14,10 @@ pub mod contact_detect;
+ #[cfg(feature = "physics")]
+ pub mod foot_ik;
++/// Humanoid profiles, skeleton-independent motion, and target-specific baking (ADR 0110).
++pub mod humanoid;
+ /// Animation-side morph assets, bindings, and weights.
+ pub mod morph;
+ /// Pure pose sampling and blending.
+ pub mod pose_graph;
+ /// Skeleton retargeting and baked-clip cache integration.
+ pub mod retarget;
+diff --git a/crates/engine/src/lib.rs b/crates/engine/src/lib.rs
+--- a/crates/engine/src/lib.rs
++++ b/crates/engine/src/lib.rs
+@@ -194,8 +194,8 @@ pub use app::App;
+ pub use asset::{
+     imported_motion_sub_asset_id, imported_sub_asset_id, AssetLoadError, AssetManifest,
+     AssetManifestError, AssetPathError, AssetServer, Assets, Handle, ImportSettings,
+-    ImportedSubAsset, ImportedSubAssetKind, ManifestEntry, RuntimeAssetId, SkeletonBoneRecord,
+-    SkeletonRecord, SourceFileStamp, SourceStamp,
++    HumanoidBone, HumanoidProfile, HumanoidProfileOrigin, ImportedSubAsset, ImportedSubAssetKind,
++    ManifestEntry, RuntimeAssetId, SkeletonBoneRecord, SkeletonRecord, SourceFileStamp, SourceStamp,
+ };
+ pub use audio::{
+     authored_audio_system, AudioAsset, AudioEmitter, AudioError, AudioListener, AudioSystem,
+@@ -252,6 +252,13 @@ pub use game_prefab::{MAX_GAME_PREFAB_EVENTS, MAX_GAME_PREFAB_REQUESTS};
+ pub use game_timer::{MAX_GAME_TIMERS, MAX_GAME_TIMER_EVENTS};
+ pub use glam;
++pub use engine_animation::humanoid::{
++    bake_humanoid_motion, build_humanoid_motion, detect_humanoid_profile,
++    humanoid_bake_cache_key, resolve_or_bake_humanoid_motion, validate_humanoid_profile,
++    HumanoidBakeResult, HumanoidError, HumanoidMotion, HumanoidMotionBuildResult,
++    HumanoidProfileDetection, HumanoidRootMotion, HumanoidRotationChannel,
++    HUMANOID_RETARGET_ALGORITHM_VERSION,
++};
+ pub use gltf_import::{
+     fingerprint_gltf_source, gltf_source_dependencies, import_gltf_bytes, import_gltf_path,
+     import_gltf_path_with_contact_bones, parse_gltf, parse_gltf_path, GltfImportError,
