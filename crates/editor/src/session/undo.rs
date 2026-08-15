@@ -9,7 +9,6 @@ use crate::document::CurrentDocument;
 use engine_authoring::{AuthoringSession, Graph, GraphView, UiDocument};
 
 /// Maximum number of retained undo snapshots (ADR 0018).
-
 const UNDO_LIMIT: usize = 100;
 
 /// One snapshot entry in the session undo/redo history.
