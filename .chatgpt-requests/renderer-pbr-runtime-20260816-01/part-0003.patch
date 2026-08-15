@@ -1,0 +1,94 @@
+diff --git a/crates/engine/src/scene_bridge/asset_load.rs b/crates/engine/src/scene_bridge/asset_load.rs
+--- a/crates/engine/src/scene_bridge/asset_load.rs
++++ b/crates/engine/src/scene_bridge/asset_load.rs
+@@ -189,6 +189,9 @@ pub(super) fn load_material_asset(
+                 };
+                 let base = decode_slot(&parsed.base_color_texture, "base color");
+                 let normal = decode_slot(&parsed.normal_texture, "normal");
++                let metallic_roughness =
++                    decode_slot(&parsed.metallic_roughness_texture, "metallic/roughness");
++                let occlusion = decode_slot(&parsed.occlusion_texture, "occlusion");
+                 let emissive = decode_slot(&parsed.emissive_texture, "emissive");
+                 let ramp = decode_slot(&parsed.toon.ramp_texture, "toon ramp");
+                 let sphere = decode_slot(&parsed.toon.sphere_texture, "sphere map");
+@@ -204,8 +209,17 @@ pub(super) fn load_material_asset(
+                     })
+                     .collect::<Vec<_>>();
+-                match (base, normal, emissive, ramp, sphere) {
+-                    (Ok(base), Ok(normal), Ok(emissive), Ok(ramp), Ok(sphere)) => (
++                match (base, normal, metallic_roughness, occlusion, emissive, ramp, sphere) {
++                    (
++                        Ok(base),
++                        Ok(normal),
++                        Ok(metallic_roughness),
++                        Ok(occlusion),
++                        Ok(emissive),
++                        Ok(ramp),
++                        Ok(sphere),
++                    ) => (
+                         runtime_material_from_asset(
+-                            parsed, base, normal, emissive, ramp, sphere,
++                            parsed, base, normal, metallic_roughness, occlusion, emissive, ramp,
++                            sphere,
+                         ),
+                         diagnostics,
+@@ -221,5 +235,7 @@ pub(super) fn load_material_asset(
+                                 results.2.err(),
+                                 results.3.err(),
+                                 results.4.err(),
++                                results.5.err(),
++                                results.6.err(),
+                             ]
+                             .into_iter()
+@@ -289,11 +305,24 @@ pub(super) fn load_material_asset(
+     };
+     let base = decode_slot(&parsed.base_color_texture, "base color");
+     let normal = decode_slot(&parsed.normal_texture, "normal");
++    let metallic_roughness =
++        decode_slot(&parsed.metallic_roughness_texture, "metallic/roughness");
++    let occlusion = decode_slot(&parsed.occlusion_texture, "occlusion");
+     let emissive = decode_slot(&parsed.emissive_texture, "emissive");
+     let ramp = decode_slot(&parsed.toon.ramp_texture, "toon ramp");
+     let sphere = decode_slot(&parsed.toon.sphere_texture, "sphere map");
+-    match (base, normal, emissive, ramp, sphere) {
+-        (Ok(base), Ok(normal), Ok(emissive), Ok(ramp), Ok(sphere)) => (
+-            runtime_material_from_asset(&parsed, base, normal, emissive, ramp, sphere),
++    match (base, normal, metallic_roughness, occlusion, emissive, ramp, sphere) {
++        (
++            Ok(base),
++            Ok(normal),
++            Ok(metallic_roughness),
++            Ok(occlusion),
++            Ok(emissive),
++            Ok(ramp),
++            Ok(sphere),
++        ) => (
++            runtime_material_from_asset(
++                &parsed, base, normal, metallic_roughness, occlusion, emissive, ramp, sphere,
++            ),
+             Vec::new(),
+         ),
+@@ -306,5 +327,7 @@ pub(super) fn load_material_asset(
+                 results.2.err(),
+                 results.3.err(),
+                 results.4.err(),
++                results.5.err(),
++                results.6.err(),
+             ]
+                 .into_iter()
+@@ -633,11 +656,15 @@ fn runtime_material_from_asset(
+     asset: &engine_authoring::MaterialAsset,
+     pending_texture: Option<Arc<DecodedTexture>>,
+     pending_normal_texture: Option<Arc<DecodedTexture>>,
++    pending_metallic_roughness_texture: Option<Arc<DecodedTexture>>,
++    pending_occlusion_texture: Option<Arc<DecodedTexture>>,
+     pending_emissive_texture: Option<Arc<DecodedTexture>>,
+     pending_ramp_texture: Option<Arc<DecodedTexture>>,
+     pending_sphere_texture: Option<Arc<DecodedTexture>>,
+ ) -> Material {
+     Material::from_authoring_asset(asset).with_pending_texture_slots(
+         pending_texture,
+         pending_normal_texture,
++        pending_metallic_roughness_texture,
++        pending_occlusion_texture,
+         pending_emissive_texture,
