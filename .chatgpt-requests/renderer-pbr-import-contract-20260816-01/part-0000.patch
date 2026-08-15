@@ -1,0 +1,174 @@
+diff --git a/crates/assets/src/model_ir.rs b/crates/assets/src/model_ir.rs
+--- a/crates/assets/src/model_ir.rs
++++ b/crates/assets/src/model_ir.rs
+@@ -524,10 +524,20 @@ pub struct IrMaterial {
+     /// Original selector of the tangent-space normal texture, if any and if
+     /// it decoded successfully.
+     pub normal_texture: Option<usize>,
++    /// Original selector of the packed metallic/roughness texture, if any.
++    /// Green stores roughness and blue stores metallic.
++    pub metallic_roughness_texture: Option<usize>,
++    /// Original selector of the ambient-occlusion texture, if any.
++    /// Red stores occlusion.
++    pub occlusion_texture: Option<usize>,
+     /// Original selector of the emissive texture, if any and if it decoded
+     /// successfully.
+     pub emissive_texture: Option<usize>,
+     /// Linear HDR emissive multiplier.
+     pub emissive_color: LinearRgba,
++    /// Scale applied to tangent-space normal-map X/Y before normalization.
++    pub normal_scale: f32,
++    /// Ambient-occlusion texture strength in `[0, 1]`.
++    pub occlusion_strength: f32,
+     /// Roughness in `[0, 1]`.
+     pub roughness: f32,
+diff --git a/crates/import/src/gltf_import.rs b/crates/import/src/gltf_import.rs
+--- a/crates/import/src/gltf_import.rs
++++ b/crates/import/src/gltf_import.rs
+@@ -870,26 +870,12 @@ fn parse_materials(
+     document: &gltf::Document,
+     texture_valid: &[bool],
+-    diagnostics: &mut Vec<Diagnostic>,
++    _diagnostics: &mut Vec<Diagnostic>,
+ ) -> Vec<IrMaterial> {
+     document
+         .materials()
+         .enumerate()
+         .map(|(index, source)| {
+             let pbr = source.pbr_metallic_roughness();
+-            if pbr.metallic_roughness_texture().is_some() {
+-                diagnostics.push(Diagnostic::warning(
+-                    "gltf.material_texture_unsupported",
+-                    format!(
+-                        "material {index} has a metallic-roughness texture; scalar metallic and roughness factors were imported instead"
+-                    ),
+-                ));
+-            }
+-            if source.occlusion_texture().is_some() {
+-                diagnostics.push(Diagnostic::warning(
+-                    "gltf.material_texture_unsupported",
+-                    format!("material {index} has an occlusion texture; it was ignored"),
+-                ));
+-            }
+             let base = pbr.base_color_factor();
+             let emissive = source.emissive_factor();
+             let texture_ref = |index: usize| {
+@@ -909,14 +895,28 @@ fn parse_materials(
+                 normal_texture: source
+                     .normal_texture()
+                     .and_then(|texture| texture_ref(texture.texture().index())),
++                metallic_roughness_texture: pbr
++                    .metallic_roughness_texture()
++                    .and_then(|texture| texture_ref(texture.texture().index())),
++                occlusion_texture: source
++                    .occlusion_texture()
++                    .and_then(|texture| texture_ref(texture.texture().index())),
+                 emissive_texture: source
+                     .emissive_texture()
+                     .and_then(|texture| texture_ref(texture.texture().index())),
+                 emissive_color: LinearRgba {
+                     r: emissive[0],
+                     g: emissive[1],
+                     b: emissive[2],
+                     a: 1.0,
+                 },
++                normal_scale: source
++                    .normal_texture()
++                    .map(|texture| texture.scale())
++                    .unwrap_or(1.0),
++                occlusion_strength: source
++                    .occlusion_texture()
++                    .map(|texture| texture.strength())
++                    .unwrap_or(1.0),
+                 roughness: pbr.roughness_factor(),
+                 metallic: pbr.metallic_factor(),
+diff --git a/crates/import/src/fbx_import.rs b/crates/import/src/fbx_import.rs
+--- a/crates/import/src/fbx_import.rs
++++ b/crates/import/src/fbx_import.rs
+@@ -1037,7 +1037,11 @@ fn parse_materials(scene: &ufbx::Scene, texture_valid: &[bool]) -> Vec<IrMateria
+                 base_color,
+                 base_color_texture: texture_ref(material.pbr.base_color.texture.as_ref()),
+                 normal_texture: texture_ref(material.pbr.normal_map.texture.as_ref()),
++                metallic_roughness_texture: None,
++                occlusion_texture: None,
+                 emissive_texture: texture_ref(material.pbr.emission_color.texture.as_ref()),
+                 emissive_color,
++                normal_scale: 1.0,
++                occlusion_strength: 1.0,
+                 roughness: scalar(&material.pbr.roughness, 0.5),
+                 metallic: scalar(&material.pbr.metalness, 0.0),
+diff --git a/crates/import/src/pmx_import.rs b/crates/import/src/pmx_import.rs
+--- a/crates/import/src/pmx_import.rs
++++ b/crates/import/src/pmx_import.rs
+@@ -817,11 +817,15 @@ fn parse_materials(
+                 },
+                 base_color_texture,
+                 normal_texture: None,
++                metallic_roughness_texture: None,
++                occlusion_texture: None,
+                 emissive_texture: None,
+                 emissive_color: LinearRgba {
+                     r: 0.0,
+                     g: 0.0,
+                     b: 0.0,
+                     a: 1.0,
+                 },
++                normal_scale: 1.0,
++                occlusion_strength: 1.0,
+                 roughness: 0.5,
+@@ -2095,7 +2099,11 @@ fn opaque_toon_material(source_index: usize, base_color_texture: Option<usize>) -
+             base_color: LinearRgba { r: 1.0, g: 1.0, b: 1.0, a: 1.0 },
+             base_color_texture,
+             normal_texture: None,
++            metallic_roughness_texture: None,
++            occlusion_texture: None,
+             emissive_texture: None,
+             emissive_color: LinearRgba { r: 0.0, g: 0.0, b: 0.0, a: 1.0 },
++            normal_scale: 1.0,
++            occlusion_strength: 1.0,
+             roughness: 0.5,
+             metallic: 0.0,
+diff --git a/crates/import/src/model_import.rs b/crates/import/src/model_import.rs
+--- a/crates/import/src/model_import.rs
++++ b/crates/import/src/model_import.rs
+@@ -1276,7 +1276,11 @@ fn build_materials(source_id: &AssetId, document: &ModelDocument) -> Vec<GltfMat
+                 base_color: material.base_color,
+                 base_color_texture: material.base_color_texture.map(texture_id),
+                 normal_texture: material.normal_texture.map(texture_id),
++                metallic_roughness_texture: material.metallic_roughness_texture.map(texture_id),
++                occlusion_texture: material.occlusion_texture.map(texture_id),
+                 emissive_texture: material.emissive_texture.map(texture_id),
+                 emissive_color: material.emissive_color,
++                normal_scale: material.normal_scale,
++                occlusion_strength: material.occlusion_strength,
+                 roughness: material.roughness,
+                 metallic: material.metallic,
+@@ -1,7 +1,11 @@
+             base_color: LinearRgba::WHITE,
+             base_color_texture: None,
+             normal_texture: None,
++            metallic_roughness_texture: None,
++            occlusion_texture: None,
+             emissive_texture: None,
+             emissive_color: LinearRgba::WHITE,
++            normal_scale: 1.0,
++            occlusion_strength: 1.0,
+             roughness: 0.5,
+             metallic: 0.0,
+diff --git a/crates/engine/src/components/validation.rs b/crates/engine/src/components/validation.rs
+--- a/crates/engine/src/components/validation.rs
++++ b/crates/engine/src/components/validation.rs
+@@ -1318,5 +1318,13 @@ fn validate_material_dependencies(
+     for (slot, texture_id) in [
+         ("base_color_texture", material.base_color_texture.as_ref()),
+         ("normal_texture", material.normal_texture.as_ref()),
++        (
++            "metallic_roughness_texture",
++            material.metallic_roughness_texture.as_ref(),
++        ),
++        (
++            "occlusion_texture",
++            material.occlusion_texture.as_ref(),
++        ),
+         ("emissive_texture", material.emissive_texture.as_ref()),
+     ] {
