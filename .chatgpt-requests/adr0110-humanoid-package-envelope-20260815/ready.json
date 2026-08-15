@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0110-humanoid-package-envelope-20260815",
+  "target_branch": "chatgpt/gameengine-adr-0110-humanoid-motion",
+  "expected_head_sha": "0f9e4411bc01d473597527c4f46f3fd3466221f6",
+  "patch_parts": ["part-0000.patch"],
+  "commit_message": "Expose packaged Humanoid bake envelope",
+  "pr_title": "Implement ADR 0110 humanoid profiles and motion",
+  "pr_body": "Adds the package-safe Humanoid baked-clip envelope API and stable cache namespace/extension so packaged runtime can deserialize pre-baked target clips without running Humanoid adaptation or writing a cache.\n\n<!-- gameengine-chatgpt-dispatcher -->\n"
+}
