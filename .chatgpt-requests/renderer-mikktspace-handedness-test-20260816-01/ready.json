@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "request_id": "renderer-mikktspace-handedness-test-20260816-01",
+  "target_branch": "chatgpt/gameengine-render-pbr-material-foundation",
+  "expected_head_sha": "635e64426518388705a02e33d1a974307a79155a",
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Test: correct MikkTSpace handedness expectation",
+  "pr_title": "Renderer: add PBR material texture contract",
+  "pr_body": "## Summary\n\nContinues the generic renderer PBR material foundation. Corrects the MikkTSpace generated-tangent regression test to match the engine's right-handed bitangent reconstruction contract while preserving the production tangent conversion.\n\n## Validation\n\nWindows Validation is dispatched by the trusted GameEngine dispatcher. The branch still contains Cargo.lock changes, so full workspace validation is expected."
+}
