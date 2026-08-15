@@ -1,0 +1,705 @@
+diff --git a/crates/animation/src/humanoid.rs b/crates/animation/src/humanoid.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/animation/src/humanoid.rs
+@@ -0,0 +1,700 @@
++//! Skeleton-independent humanoid motion authoring and bake support (ADR 0110).
++//!
++//! A model-owned [`HumanoidProfile`] resolves stable humanoid semantics to that
++//! model's stable `BoneId`s. [`HumanoidMotion`] stores model-space rotation
++//! deltas against those semantics only. Target adaptation is an authoring/build
++//! operation that produces an ordinary target-bound [`AnimationClip`].
++
++use crate::animation::{lerp_channel, AnimChannel, AnimEvent, AnimProperty, AnimationClip, Keyframe};
++use crate::derived_cache::{CacheKey, DerivedCache};
++use crate::skeleton_asset::{BoneId, SkeletonAsset};
++use engine_assets::asset::{HumanoidBone, HumanoidProfile, HumanoidProfileOrigin};
++use engine_authoring::diagnostic::Diagnostic;
++use glam::{Quat, Vec3};
++use hashbrown::{HashMap, HashSet};
++use serde::{Deserialize, Serialize};
++use std::collections::{BTreeMap, BTreeSet};
++use std::fmt;
++
++/// Bumped whenever unchanged humanoid inputs would bake to different clip bytes.
++pub const HUMANOID_RETARGET_ALGORITHM_VERSION: u32 = 1;
++
++const HUMANOID_BAKE_SCHEMA_VERSION: u32 = 1;
++const HUMANOID_CACHE_DOMAIN: &str = "humanoid_anim";
++const HUMANOID_CACHE_EXTENSION: &str = "clip.json";
++const QUAT_EPSILON: f32 = 1.0e-8;
++
++/// One portable model-space rotation-delta channel.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++pub struct HumanoidRotationChannel {
++    /// Semantic body target, independent of any concrete skeleton.
++    pub bone: HumanoidBone,
++    /// Model-space delta samples as XYZW quaternions.
++    pub keyframes: Vec<Keyframe>,
++}
++
++/// Portable root-motion translation sampled in source model space.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++pub struct HumanoidRootMotion {
++    /// Model-space translation deltas from the source rest pose.
++    pub keyframes: Vec<Keyframe>,
++}
++
++/// Skeleton-independent derivative of one native skeletal animation.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++pub struct HumanoidMotion {
++    /// Total motion length in seconds.
++    pub duration: f32,
++    /// Portable model-space rotation deltas keyed by humanoid semantics.
++    pub rotations: Vec<HumanoidRotationChannel>,
++    /// Optional source-model locomotion metadata from the profile's motion root.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub root_motion: Option<HumanoidRootMotion>,
++    /// Timeline markers that are independent of concrete bone IDs.
++    #[serde(default, skip_serializing_if = "Vec::is_empty")]
++    pub events: Vec<AnimEvent>,
++    /// Source skeleton identity retained for provenance/staleness diagnostics.
++    pub source_skeleton_identity: u64,
++}
++
++/// Successful native-to-humanoid conversion and its non-blocking loss diagnostics.
++#[derive(Debug, Clone)]
++pub struct HumanoidMotionBuildResult {
++    /// Portable motion payload.
++    pub motion: HumanoidMotion,
++    /// Warnings for source-specific channels deliberately retained only by Native.
++    pub diagnostics: Vec<Diagnostic>,
++}
++
++/// Successful humanoid-to-target bake and its non-blocking diagnostics.
++#[derive(Debug, Clone)]
++pub struct HumanoidBakeResult {
++    /// Ordinary target-skeleton clip consumed by Animator.
++    pub clip: AnimationClip,
++    /// Warnings for portable data not applied by current policy.
++    pub diagnostics: Vec<Diagnostic>,
++}
++
++/// Why a humanoid profile or motion cannot be used safely.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub enum HumanoidError {
++    /// Profile belongs to another skeleton asset.
++    SkeletonMismatch,
++    /// Profile was validated against an older skeleton identity.
++    SkeletonIdentityMismatch,
++    /// A required semantic has no mapping.
++    MissingRequired(HumanoidBone),
++    /// A mapped stable BoneId is absent from the skeleton.
++    MissingBone {
++        /// Semantic whose mapping is invalid.
++        semantic: HumanoidBone,
++        /// Missing stable BoneId payload.
++        bone: u32,
++    },
++    /// Two semantics map to one concrete bone.
++    DuplicateBone {
++        /// Earlier semantic using the bone.
++        first: HumanoidBone,
++        /// Later semantic using the same bone.
++        second: HumanoidBone,
++        /// Duplicated stable BoneId payload.
++        bone: u32,
++    },
++    /// A required body chain violates ancestry order.
++    InvalidHierarchy {
++        /// Semantic that must be above the other semantic.
++        ancestor: HumanoidBone,
++        /// Semantic that must descend from the ancestor.
++        descendant: HumanoidBone,
++    },
++    /// Native clip does not match the source skeleton/profile pair.
++    ClipSkeletonMismatch,
++    /// Cache serialization or persistence failed.
++    Cache(String),
++}
++
++impl fmt::Display for HumanoidError {
++    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
++        match self {
++            Self::SkeletonMismatch => formatter.write_str("humanoid profile targets another skeleton"),
++            Self::SkeletonIdentityMismatch => formatter.write_str("humanoid profile is stale for the current skeleton identity"),
++            Self::MissingRequired(bone) => write!(formatter, "missing required humanoid semantic {bone:?}"),
++            Self::MissingBone { semantic, bone } => write!(formatter, "humanoid semantic {semantic:?} refers to missing BoneId({bone})"),
++            Self::DuplicateBone { first, second, bone } => write!(formatter, "humanoid semantics {first:?} and {second:?} both refer to BoneId({bone})"),
++            Self::InvalidHierarchy { ancestor, descendant } => write!(formatter, "humanoid semantic {ancestor:?} must be an ancestor of {descendant:?}"),
++            Self::ClipSkeletonMismatch => formatter.write_str("native clip does not match the humanoid source skeleton"),
++            Self::Cache(message) => write!(formatter, "humanoid derived-cache error: {message}"),
++        }
++    }
++}
++
++impl std::error::Error for HumanoidError {}
++
++/// Result of conservative import-time humanoid detection.
++#[derive(Debug, Clone)]
++pub struct HumanoidProfileDetection {
++    /// Valid profile when all required semantics resolved and passed structural checks.
++    pub profile: Option<HumanoidProfile>,
++    /// Diagnostics explaining ambiguity or why automatic conversion is unavailable.
++    pub diagnostics: Vec<Diagnostic>,
++}
++
++/// Validates a persisted model profile against its concrete skeleton.
++///
++/// Chains are checked by ancestry, not direct adjacency, so helper and twist
++/// bones may remain between mapped semantics.
++pub fn validate_humanoid_profile(
++    profile: &HumanoidProfile,
++    skeleton: &SkeletonAsset,
++) -> Result<(), HumanoidError> {
++    if profile.skeleton != skeleton.id.as_str() {
++        return Err(HumanoidError::SkeletonMismatch);
++    }
++    if profile.skeleton_identity != skeleton.identity.0 {
++        return Err(HumanoidError::SkeletonIdentityMismatch);
++    }
++    for semantic in HumanoidBone::REQUIRED {
++        if !profile.bones.contains_key(&semantic) {
++            return Err(HumanoidError::MissingRequired(semantic));
++        }
++    }
++    let mut assigned = HashMap::<u32, HumanoidBone>::new();
++    for (&semantic, &bone) in &profile.bones {
++        if skeleton.bone_index(BoneId(bone)).is_none() {
++            return Err(HumanoidError::MissingBone { semantic, bone });
++        }
++        if let Some(first) = assigned.insert(bone, semantic) {
++            return Err(HumanoidError::DuplicateBone { first, second: semantic, bone });
++        }
++    }
++    if let Some(root) = profile.motion_root
++        && skeleton.bone_index(BoneId(root)).is_none()
++    {
++        return Err(HumanoidError::MissingBone { semantic: HumanoidBone::Hips, bone: root });
++    }
++    for (ancestor, descendant) in required_ancestry_pairs() {
++        let ancestor_id = BoneId(profile.bones[&ancestor]);
++        let descendant_id = BoneId(profile.bones[&descendant]);
++        if !is_ancestor(skeleton, ancestor_id, descendant_id) {
++            return Err(HumanoidError::InvalidHierarchy { ancestor, descendant });
++        }
++    }
++    Ok(())
++}
++
++/// Detects a conservative profile from common PMX, Mixamo, and VRM-style names.
++///
++/// Detection is an import-time proposal only. It is immediately converted to
++/// stable BoneIds and structurally validated; runtime conversion never rebinds
++/// by name. Ambiguous aliases are reported rather than guessed.
++pub fn detect_humanoid_profile(skeleton: &SkeletonAsset) -> HumanoidProfileDetection {
++    let mut matches = BTreeMap::<HumanoidBone, Vec<BoneId>>::new();
++    for bone in &skeleton.bones {
++        let normalized = normalize_bone_name(&bone.name);
++        for semantic in all_semantics() {
++            if aliases(semantic).contains(&normalized.as_str()) {
++                matches.entry(semantic).or_default().push(bone.id);
++            }
++        }
++    }
++    let mut bones = BTreeMap::new();
++    let mut uncertain_bones = Vec::new();
++    let mut diagnostics = Vec::new();
++    for semantic in all_semantics() {
++        match matches.get(&semantic).map(Vec::as_slice) {
++            Some([bone]) => {
++                bones.insert(semantic, bone.0);
++            }
++            Some(found) if !found.is_empty() => {
++                uncertain_bones.push(semantic);
++                diagnostics.push(Diagnostic::warning(
++                    "anim.humanoid_mapping_ambiguous",
++                    format!("humanoid semantic {semantic:?} matched {} source bones; configure the model profile explicitly", found.len()),
++                ));
++            }
++            _ => {}
++        }
++    }
++    let motion_root = skeleton.bones.iter().find(|bone| {
++        matches!(normalize_bone_name(&bone.name).as_str(), "root" | "motionroot" | "全ての親" | "センター")
++    }).map(|bone| bone.id.0);
++    let profile = HumanoidProfile {
++        skeleton: skeleton.id.as_str().to_owned(),
++        skeleton_identity: skeleton.identity.0,
++        bones,
++        motion_root,
++        uncertain_bones,
++        origin: HumanoidProfileOrigin::Automatic,
++    };
++    match validate_humanoid_profile(&profile, skeleton) {
++        Ok(()) => HumanoidProfileDetection { profile: Some(profile), diagnostics },
++        Err(error) => {
++            diagnostics.push(Diagnostic::warning(
++                "anim.humanoid_profile_unavailable",
++                format!("skeleton `{}` cannot expose a Humanoid variant automatically: {error}", skeleton.name),
++            ));
++            HumanoidProfileDetection { profile: None, diagnostics }
++        }
++    }
++}
++
++/// Converts a source-bound native clip to portable humanoid body motion.
++pub fn build_humanoid_motion(
++    clip: &AnimationClip,
++    skeleton: &SkeletonAsset,
++    profile: &HumanoidProfile,
++) -> Result<HumanoidMotionBuildResult, HumanoidError> {
++    validate_humanoid_profile(profile, skeleton)?;
++    if clip.skeleton.as_ref() != Some(&skeleton.id) || clip.skeleton_identity != Some(skeleton.identity) {
++        return Err(HumanoidError::ClipSkeletonMismatch);
++    }
++    let rotation_channels = channels_by_bone(clip, AnimProperty::Rotation);
++    let rest_model_rotations = rest_model_rotations(skeleton);
++    let times = transform_sample_times(clip);
++    let mut rotations = Vec::new();
++    for (&semantic, &bone_value) in &profile.bones {
++        let bone = BoneId(bone_value);
++        let Some(index) = skeleton.bone_index(bone) else { continue };
++        let affected = ancestor_chain(skeleton, index)
++            .into_iter()
++            .any(|ancestor| rotation_channels.contains_key(&skeleton.bones[ancestor].id));
++        if !affected { continue; }
++        let keyframes = times.iter().map(|&time| {
++            let animated = animated_model_transforms(clip, skeleton, time).0;
++            let delta = normalized(animated[index] * rest_model_rotations[index].inverse());
++            Keyframe { time, value: quat_value(delta) }
++        }).collect::<Vec<_>>();
++        if !all_identity(&keyframes) {
++            rotations.push(HumanoidRotationChannel { bone: semantic, keyframes });
++        }
++    }
++    rotations.sort_by_key(|channel| channel.bone);
++
++    let mapped = profile.bones.values().copied().collect::<HashSet<_>>();
++    let excluded = clip.channels.iter().filter(|channel| {
++        channel.property != AnimProperty::Rotation
++            || channel.target_bone.is_none_or(|bone| !mapped.contains(&bone.0))
++    }).count() + clip.morph_channels.len();
++    let mut diagnostics = Vec::new();
++    if excluded != 0 {
++        diagnostics.push(Diagnostic::warning(
++            "anim.humanoid_source_channels_excluded",
++            format!("Humanoid keeps portable body rotation semantics; {excluded} source-specific transform/morph channels remain available on Native"),
++        ));
++    }
++    let root_motion = extract_model_space_root_motion(clip, skeleton, profile, &times);
++    if root_motion.is_some() {
++        diagnostics.push(Diagnostic::warning(
++            "anim.humanoid_root_motion_scaling_unspecified",
++            "portable root motion is recorded in source model space but target translation scaling is intentionally not inferred",
++        ));
++    }
++    Ok(HumanoidMotionBuildResult {
++        motion: HumanoidMotion {
++            duration: clip.duration,
++            rotations,
++            root_motion,
++            events: clip.events.clone(),
++            source_skeleton_identity: skeleton.identity.0,
++        },
++        diagnostics,
++    })
++}
++
++/// Bakes portable humanoid rotations onto one target profile/skeleton.
++///
++/// The result is an ordinary target-bound clip. Portable root translation is
++/// not copied because ADR 0110 deliberately leaves cross-proportion scaling to
++/// an explicit future policy.
++pub fn bake_humanoid_motion(
++    motion: &HumanoidMotion,
++    target: &SkeletonAsset,
++    profile: &HumanoidProfile,
++) -> Result<HumanoidBakeResult, HumanoidError> {
++    validate_humanoid_profile(profile, target)?;
++    let rest_model = rest_model_rotations(target);
++    let source = motion.rotations.iter().map(|channel| (channel.bone, channel)).collect::<BTreeMap<_, _>>();
++    let target_semantics = profile.bones.iter().filter_map(|(&semantic, &bone)| {
++        target.bone_index(BoneId(bone)).map(|index| (index, semantic))
++    }).collect::<HashMap<_, _>>();
++    let times = humanoid_sample_times(motion);
++    let mut output = BTreeMap::<HumanoidBone, Vec<Keyframe>>::new();
++
++    for time in times {
++        let mut model_rotations = Vec::<Quat>::with_capacity(target.bones.len());
++        let mut local_rotations = Vec::<Quat>::with_capacity(target.bones.len());
++        for (index, bone) in target.bones.iter().enumerate() {
++            let model = if let Some(semantic) = target_semantics.get(&index)
++                && let Some(channel) = source.get(semantic)
++            {
++                normalized(sample_humanoid_rotation(channel, time) * rest_model[index])
++            } else {
++                match bone.parent {
++                    Some(parent) => normalized(model_rotations[parent] * bone.rest_rotation),
++                    None => normalized(bone.rest_rotation),
++                }
++            };
++            let local = match bone.parent {
++                Some(parent) => normalized(model_rotations[parent].inverse() * model),
++                None => model,
++            };
++            model_rotations.push(model);
++            local_rotations.push(local);
++        }
++        for (&index, &semantic) in &target_semantics {
++            if source.contains_key(&semantic) {
++                output.entry(semantic).or_default().push(Keyframe {
++                    time,
++                    value: quat_value(local_rotations[index]),
++                });
++            }
++        }
++    }
++
++    let mut channels = output.into_iter().map(|(semantic, keyframes)| AnimChannel {
++        property: AnimProperty::Rotation,
++        target_bone: Some(BoneId(profile.bones[&semantic])),
++        keyframes,
++    }).collect::<Vec<_>>();
++    channels.sort_by_key(|channel| channel.target_bone.map_or(u32::MAX, |bone| bone.0));
++    let mut diagnostics = Vec::new();
++    if motion.root_motion.is_some() {
++        diagnostics.push(Diagnostic::warning(
++            "anim.humanoid_root_motion_not_applied",
++            "target bake omitted portable root translation because no cross-proportion translation policy is configured",
++        ));
++    }
++    Ok(HumanoidBakeResult {
++        clip: AnimationClip {
++            duration: motion.duration,
++            channels,
++            morph_channels: Vec::new(),
++            events: motion.events.clone(),
++            skeleton: Some(target.id.clone()),
++            skeleton_identity: Some(target.identity),
++            root_bone: profile.motion_root.map(BoneId),
++            contacts: Vec::new(),
++        },
++        diagnostics,
++    })
++}
++
++/// Computes the content-addressed key for one humanoid target bake.
++pub fn humanoid_bake_cache_key(
++    motion: &HumanoidMotion,
++    target: &SkeletonAsset,
++    profile: &HumanoidProfile,
++) -> Result<CacheKey, HumanoidError> {
++    let motion_json = serde_json::to_vec(motion).map_err(cache_error)?;
++    let profile_json = serde_json::to_vec(profile).map_err(cache_error)?;
++    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
++    hash_u64(&mut hash, u64::from(HUMANOID_RETARGET_ALGORITHM_VERSION));
++    hash_bytes(&mut hash, &motion_json);
++    hash_u64(&mut hash, target.identity.0);
++    hash_bytes(&mut hash, &profile_json);
++    Ok(CacheKey(hash))
++}
++
++/// Loads one target bake from Derived Cache or creates it on cache miss.
++pub fn resolve_or_bake_humanoid_motion(
++    cache: &DerivedCache,
++    motion: &HumanoidMotion,
++    target: &SkeletonAsset,
++    profile: &HumanoidProfile,
++) -> Result<HumanoidBakeResult, HumanoidError> {
++    validate_humanoid_profile(profile, target)?;
++    let key = humanoid_bake_cache_key(motion, target, profile)?;
++    if let Some(bytes) = cache.get(HUMANOID_CACHE_DOMAIN, &key, HUMANOID_CACHE_EXTENSION)
++        && let Ok(envelope) = serde_json::from_slice::<HumanoidBakeEnvelope>(&bytes)
++        && envelope.schema_version == HUMANOID_BAKE_SCHEMA_VERSION
++    {
++        return Ok(HumanoidBakeResult { clip: envelope.clip, diagnostics: Vec::new() });
++    }
++    let baked = bake_humanoid_motion(motion, target, profile)?;
++    let bytes = serde_json::to_vec(&HumanoidBakeEnvelope {
++        schema_version: HUMANOID_BAKE_SCHEMA_VERSION,
++        clip: baked.clip.clone(),
++    }).map_err(cache_error)?;
++    cache.put(HUMANOID_CACHE_DOMAIN, &key, HUMANOID_CACHE_EXTENSION, &bytes)
++        .map_err(|error| HumanoidError::Cache(error.to_string()))?;
++    Ok(baked)
++}
++
++#[derive(Serialize, Deserialize)]
++struct HumanoidBakeEnvelope {
++    schema_version: u32,
++    clip: AnimationClip,
++}
++
++fn cache_error(error: serde_json::Error) -> HumanoidError {
++    HumanoidError::Cache(error.to_string())
++}
++
++fn required_ancestry_pairs() -> [(HumanoidBone, HumanoidBone); 14] {
++    use HumanoidBone::*;
++    [
++        (Hips, Spine), (Spine, Head),
++        (Spine, LeftUpperArm), (LeftUpperArm, LeftLowerArm), (LeftLowerArm, LeftHand),
++        (Spine, RightUpperArm), (RightUpperArm, RightLowerArm), (RightLowerArm, RightHand),
++        (Hips, LeftUpperLeg), (LeftUpperLeg, LeftLowerLeg), (LeftLowerLeg, LeftFoot),
++        (Hips, RightUpperLeg), (RightUpperLeg, RightLowerLeg), (RightLowerLeg, RightFoot),
++    ]
++}
++
++fn is_ancestor(skeleton: &SkeletonAsset, ancestor: BoneId, descendant: BoneId) -> bool {
++    let Some(ancestor) = skeleton.bone_index(ancestor) else { return false };
++    let Some(mut current) = skeleton.bone_index(descendant) else { return false };
++    loop {
++        if current == ancestor { return true; }
++        let Some(parent) = skeleton.bones[current].parent else { return false };
++        current = parent;
++    }
++}
++
++fn all_semantics() -> [HumanoidBone; 35] {
++    use HumanoidBone::*;
++    [
++        Hips, Spine, Chest, UpperChest, Neck, Head,
++        LeftShoulder, LeftUpperArm, LeftLowerArm, LeftHand,
++        RightShoulder, RightUpperArm, RightLowerArm, RightHand,
++        LeftUpperLeg, LeftLowerLeg, LeftFoot, LeftToes,
++        RightUpperLeg, RightLowerLeg, RightFoot, RightToes,
++        LeftThumbProximal, LeftIndexProximal, LeftMiddleProximal, LeftRingProximal, LeftLittleProximal,
++        RightThumbProximal, RightIndexProximal, RightMiddleProximal, RightRingProximal, RightLittleProximal,
++        LeftEye, RightEye, Jaw,
++    ]
++}
++
++fn aliases(semantic: HumanoidBone) -> &'static [&'static str] {
++    use HumanoidBone::*;
++    match semantic {
++        Hips => &["hips", "hip", "pelvis", "下半身"],
++        Spine => &["spine", "spine1", "上半身"], Chest => &["chest", "spine2", "上半身2"],
++        UpperChest => &["upperchest", "spine3"], Neck => &["neck", "首"], Head => &["head", "頭"],
++        LeftShoulder => &["leftshoulder", "左肩"], LeftUpperArm => &["leftarm", "leftupperarm", "左腕"],
++        LeftLowerArm => &["leftforearm", "leftlowerarm", "左ひじ", "左肘"], LeftHand => &["lefthand", "leftwrist", "左手首"],
++        RightShoulder => &["rightshoulder", "右肩"], RightUpperArm => &["rightarm", "rightupperarm", "右腕"],
++        RightLowerArm => &["rightforearm", "rightlowerarm", "右ひじ", "右肘"], RightHand => &["righthand", "rightwrist", "右手首"],
++        LeftUpperLeg => &["leftupleg", "leftupperleg", "leftthigh", "左足"], LeftLowerLeg => &["leftleg", "leftlowerleg", "leftcalf", "左ひざ", "左膝"],
++        LeftFoot => &["leftfoot", "leftankle", "左足首"], LeftToes => &["lefttoe", "lefttoes", "左つま先"],
++        RightUpperLeg => &["rightupleg", "rightupperleg", "rightthigh", "右足"], RightLowerLeg => &["rightleg", "rightlowerleg", "rightcalf", "右ひざ", "右膝"],
++        RightFoot => &["rightfoot", "rightankle", "右足首"], RightToes => &["righttoe", "righttoes", "右つま先"],
++        LeftThumbProximal => &["leftthumb1", "leftthumbproximal"], LeftIndexProximal => &["leftindex1", "leftindexproximal"],
++        LeftMiddleProximal => &["leftmiddle1", "leftmiddleproximal"], LeftRingProximal => &["leftring1", "leftringproximal"],
++        LeftLittleProximal => &["leftlittle1", "leftpinky1", "leftlittleproximal"], RightThumbProximal => &["rightthumb1", "rightthumbproximal"],
++        RightIndexProximal => &["rightindex1", "rightindexproximal"], RightMiddleProximal => &["rightmiddle1", "rightmiddleproximal"],
++        RightRingProximal => &["rightring1", "rightringproximal"], RightLittleProximal => &["rightlittle1", "rightpinky1", "rightlittleproximal"],
++        LeftEye => &["lefteye", "左目"], RightEye => &["righteye", "右目"], Jaw => &["jaw", "あご", "顎"],
++    }
++}
++
++fn normalize_bone_name(name: &str) -> String {
++    name.rsplit([':', '|']).next().unwrap_or(name).chars()
++        .flat_map(char::to_lowercase)
++        .filter(|character| character.is_alphanumeric() || !character.is_ascii())
++        .collect()
++}
++
++fn ancestor_chain(skeleton: &SkeletonAsset, mut index: usize) -> Vec<usize> {
++    let mut chain = vec![index];
++    while let Some(parent) = skeleton.bones[index].parent {
++        chain.push(parent); index = parent;
++    }
++    chain
++}
++
++fn channels_by_bone(clip: &AnimationClip, property: AnimProperty) -> HashMap<BoneId, &AnimChannel> {
++    clip.channels.iter().filter(|channel| channel.property == property)
++        .filter_map(|channel| channel.target_bone.map(|bone| (bone, channel))).collect()
++}
++
++fn rest_model_rotations(skeleton: &SkeletonAsset) -> Vec<Quat> {
++    let mut result = Vec::<Quat>::with_capacity(skeleton.bones.len());
++    for bone in &skeleton.bones {
++        let rotation = match bone.parent {
++            Some(parent) => normalized(result[parent] * bone.rest_rotation),
++            None => normalized(bone.rest_rotation),
++        };
++        result.push(rotation);
++    }
++    result
++}
++
++fn rest_model_translations(skeleton: &SkeletonAsset) -> Vec<Vec3> {
++    let mut rotations = Vec::<Quat>::with_capacity(skeleton.bones.len());
++    let mut translations = Vec::<Vec3>::with_capacity(skeleton.bones.len());
++    for bone in &skeleton.bones {
++        match bone.parent {
++            Some(parent) => {
++                translations.push(translations[parent] + rotations[parent] * bone.rest_translation);
++                rotations.push(normalized(rotations[parent] * bone.rest_rotation));
++            }
++            None => { translations.push(bone.rest_translation); rotations.push(normalized(bone.rest_rotation)); }
++        }
++    }
++    translations
++}
++
++fn animated_model_transforms(clip: &AnimationClip, skeleton: &SkeletonAsset, time: f32) -> (Vec<Quat>, Vec<Vec3>) {
++    let rotations = channels_by_bone(clip, AnimProperty::Rotation);
++    let translations = channels_by_bone(clip, AnimProperty::Translation);
++    let mut model_rotations = Vec::<Quat>::with_capacity(skeleton.bones.len());
++    let mut model_translations = Vec::<Vec3>::with_capacity(skeleton.bones.len());
++    for bone in &skeleton.bones {
++        let local_rotation = rotations.get(&bone.id).and_then(|channel| lerp_channel(channel, time)).map(quat_from_value).unwrap_or(bone.rest_rotation);
++        let local_translation = translations.get(&bone.id).and_then(|channel| lerp_channel(channel, time)).map(vec3_from_value).unwrap_or(bone.rest_translation);
++        match bone.parent {
++            Some(parent) => {
++                model_translations.push(model_translations[parent] + model_rotations[parent] * local_translation);
++                model_rotations.push(normalized(model_rotations[parent] * local_rotation));
++            }
++            None => { model_translations.push(local_translation); model_rotations.push(normalized(local_rotation)); }
++        }
++    }
++    (model_rotations, model_translations)
++}
++
++fn transform_sample_times(clip: &AnimationClip) -> Vec<f32> {
++    let mut times = BTreeSet::<OrderedTime>::new();
++    times.insert(OrderedTime(0.0));
++    if clip.duration.is_finite() && clip.duration > 0.0 { times.insert(OrderedTime(clip.duration)); }
++    for keyframe in clip.channels.iter().flat_map(|channel| &channel.keyframes) {
++        if keyframe.time.is_finite() && keyframe.time >= 0.0 { times.insert(OrderedTime(keyframe.time)); }
++    }
++    times.into_iter().map(|time| time.0).collect()
++}
++
++fn humanoid_sample_times(motion: &HumanoidMotion) -> Vec<f32> {
++    let mut times = BTreeSet::<OrderedTime>::new();
++    times.insert(OrderedTime(0.0));
++    if motion.duration.is_finite() && motion.duration > 0.0 { times.insert(OrderedTime(motion.duration)); }
++    for keyframe in motion.rotations.iter().flat_map(|channel| &channel.keyframes) {
++        if keyframe.time.is_finite() && keyframe.time >= 0.0 { times.insert(OrderedTime(keyframe.time)); }
++    }
++    times.into_iter().map(|time| time.0).collect()
++}
++
++fn extract_model_space_root_motion(clip: &AnimationClip, skeleton: &SkeletonAsset, profile: &HumanoidProfile, times: &[f32]) -> Option<HumanoidRootMotion> {
++    let index = skeleton.bone_index(BoneId(profile.motion_root?))?;
++    let rest = rest_model_translations(skeleton)[index];
++    let animated_root_exists = clip.channels.iter().any(|channel| channel.property == AnimProperty::Translation && channel.target_bone == Some(skeleton.bones[index].id));
++    if !animated_root_exists { return None; }
++    Some(HumanoidRootMotion {
++        keyframes: times.iter().map(|&time| {
++            let (_, translations) = animated_model_transforms(clip, skeleton, time);
++            let delta = translations[index] - rest;
++            Keyframe { time, value: [delta.x, delta.y, delta.z, 0.0] }
++        }).collect(),
++    })
++}
++
++fn sample_humanoid_rotation(channel: &HumanoidRotationChannel, time: f32) -> Quat {
++    let Some(first) = channel.keyframes.first() else { return Quat::IDENTITY };
++    if time <= first.time { return quat_from_value(first.value); }
++    if let Some(last) = channel.keyframes.last()
++        && time >= last.time { return quat_from_value(last.value); }
++    for pair in channel.keyframes.windows(2) {
++        if time <= pair[1].time {
++            let span = pair[1].time - pair[0].time;
++            let alpha = if span <= f32::EPSILON { 0.0 } else { (time - pair[0].time) / span };
++            return normalized(quat_from_value(pair[0].value).slerp(quat_from_value(pair[1].value), alpha));
++        }
++    }
++    Quat::IDENTITY
++}
++
++fn all_identity(keyframes: &[Keyframe]) -> bool {
++    keyframes.iter().all(|keyframe| {
++        let rotation = quat_from_value(keyframe.value);
++        rotation.x.abs() < 1.0e-6 && rotation.y.abs() < 1.0e-6 && rotation.z.abs() < 1.0e-6 && (rotation.w.abs() - 1.0).abs() < 1.0e-6
++    })
++}
++
++fn vec3_from_value(value: [f32; 4]) -> Vec3 { Vec3::new(value[0], value[1], value[2]) }
++fn quat_from_value(value: [f32; 4]) -> Quat { normalized(Quat::from_xyzw(value[0], value[1], value[2], value[3])) }
++fn quat_value(rotation: Quat) -> [f32; 4] { let q = normalized(rotation); [q.x, q.y, q.z, q.w] }
++fn normalized(rotation: Quat) -> Quat { if rotation.length_squared() <= QUAT_EPSILON { Quat::IDENTITY } else { rotation.normalize() } }
++
++fn hash_bytes(hash: &mut u64, bytes: &[u8]) { hash_u64(hash, bytes.len() as u64); for &byte in bytes { *hash ^= u64::from(byte); *hash = hash.wrapping_mul(0x0000_0100_0000_01b3); } }
++fn hash_u64(hash: &mut u64, value: u64) { for byte in value.to_le_bytes() { *hash ^= u64::from(byte); *hash = hash.wrapping_mul(0x0000_0100_0000_01b3); } }
++
++#[derive(Clone, Copy)]
++struct OrderedTime(f32);
++impl PartialEq for OrderedTime { fn eq(&self, other: &Self) -> bool { self.0.to_bits() == other.0.to_bits() } }
++impl Eq for OrderedTime {}
++impl PartialOrd for OrderedTime { fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> { Some(self.cmp(other)) } }
++impl Ord for OrderedTime { fn cmp(&self, other: &Self) -> std::cmp::Ordering { self.0.total_cmp(&other.0) } }
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use crate::skeleton_asset::{compute_skeleton_identity, BoneDef};
++    use engine_authoring::id::AssetId;
++
++    fn skeleton(id: AssetId) -> SkeletonAsset {
++        let definitions = [
++            ("Hips", None), ("helper", Some(0)), ("Spine", Some(1)), ("Head", Some(2)),
++            ("LeftArm", Some(2)), ("LeftForeArm", Some(4)), ("LeftHand", Some(5)),
++            ("RightArm", Some(2)), ("RightForeArm", Some(7)), ("RightHand", Some(8)),
++            ("LeftUpLeg", Some(0)), ("LeftLeg", Some(10)), ("LeftFoot", Some(11)),
++            ("RightUpLeg", Some(0)), ("RightLeg", Some(13)), ("RightFoot", Some(14)),
++        ];
++        let bones = definitions.iter().enumerate().map(|(index, (name, parent))| BoneDef {
++            id: BoneId(index as u32), name: (*name).to_owned(), parent: *parent,
++            rest_translation: Vec3::ZERO, rest_rotation: Quat::IDENTITY, rest_scale: Vec3::ONE,
++        }).collect::<Vec<_>>();
++        SkeletonAsset { id, name: "test_humanoid".to_owned(), identity: compute_skeleton_identity(&bones), next_bone_id: bones.len() as u32, bones }
++    }
++
++    #[test]
++    fn detection_allows_helper_bones_between_semantics() {
++        let skeleton = skeleton(AssetId::generate());
++        let profile = detect_humanoid_profile(&skeleton).profile.expect("profile");
++        assert_eq!(profile.bone_id(HumanoidBone::Spine), Some(2));
++        assert!(validate_humanoid_profile(&profile, &skeleton).is_ok());
++    }
++
++    #[test]
++    fn duplicate_mapping_is_invalid() {
++        let skeleton = skeleton(AssetId::generate());
++        let mut profile = detect_humanoid_profile(&skeleton).profile.expect("profile");
++        profile.bones.insert(HumanoidBone::RightHand, profile.bones[&HumanoidBone::LeftHand]);
++        assert!(matches!(validate_humanoid_profile(&profile, &skeleton), Err(HumanoidError::DuplicateBone { .. })));
++    }
++
++    #[test]
++    fn model_space_rotation_delta_bakes_to_target() {
++        let source = skeleton(AssetId::generate());
++        let target = skeleton(AssetId::generate());
++        let source_profile = detect_humanoid_profile(&source).profile.expect("source profile");
++        let target_profile = detect_humanoid_profile(&target).profile.expect("target profile");
++        let expected = Quat::from_rotation_y(0.6);
++        let clip = AnimationClip {
++            duration: 1.0,
++            channels: vec![AnimChannel {
++                property: AnimProperty::Rotation,
++                target_bone: Some(BoneId(source_profile.bones[&HumanoidBone::LeftUpperArm])),
++                keyframes: vec![Keyframe { time: 0.0, value: quat_value(Quat::IDENTITY) }, Keyframe { time: 1.0, value: quat_value(expected) }],
++            }],
++            morph_channels: Vec::new(), events: Vec::new(), skeleton: Some(source.id.clone()),
++            skeleton_identity: Some(source.identity), root_bone: None, contacts: Vec::new(),
++        };
++        let portable = build_humanoid_motion(&clip, &source, &source_profile).expect("portable").motion;
++        let baked = bake_humanoid_motion(&portable, &target, &target_profile).expect("bake").clip;
++        let target_bone = BoneId(target_profile.bones[&HumanoidBone::LeftUpperArm]);
++        let channel = baked.channels.iter().find(|channel| channel.target_bone == Some(target_bone)).expect("target channel");
++        let actual = quat_from_value(lerp_channel(channel, 1.0).expect("sample"));
++        assert!(actual.dot(expected).abs() > 0.99999);
++    }
++
++    #[test]
++    fn cache_key_includes_target_profile_content() {
++        let target = skeleton(AssetId::generate());
++        let mut profile = detect_humanoid_profile(&target).profile.expect("profile");
++        let motion = HumanoidMotion { duration: 1.0, rotations: Vec::new(), root_motion: None, events: Vec::new(), source_skeleton_identity: 7 };
++        let first = humanoid_bake_cache_key(&motion, &target, &profile).expect("first");
++        profile.origin = HumanoidProfileOrigin::Authored;
++        let second = humanoid_bake_cache_key(&motion, &target, &profile).expect("second");
++        assert_ne!(first, second);
++    }
++}
