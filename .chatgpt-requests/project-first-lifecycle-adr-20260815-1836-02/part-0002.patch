@@ -1,0 +1,85 @@
++`ProjectRoot::create` remains the low-level operation that establishes the
++canonical project root contract. It does not absorb Launcher UI or template
++policy.
++
++The lifecycle layer coordinates the higher-level **standard GameEngine project
++scaffold**. The standard scaffold is the single reusable creation path for the
++Launcher and other application-level creators and includes the product policy
++needed for a newly created project to be editor-ready, such as project
++identity, standard directories, game-project initialization, project settings,
++and starter/template authoring content.
++
++Creation is transactional from the user's point of view. The lifecycle creates
++and validates the complete scaffold in a staging location and publishes the
++final project location only after all required creation steps succeed. A failed
++creation MUST NOT be presented as a valid new project and SHOULD clean up its
++staging data while preserving actionable diagnostics.
++
++Starter-scene or template policy MUST NOT be duplicated in Launcher and Editor
++GUI code.
++
++### 7. Split application preferences from project-scoped editor workspace state
++
++Recent projects and the last selected project are Launcher/application user
++state. They are not authoring data and no longer belong to Editor workspace
++preferences. This amends ADR 0023 decision 4 only with respect to which UI
++application owns those preferences; they still MUST NOT enter
++`engine-authoring` or canonical project files.
++
++Editor workspace state such as open documents, panel/layout state, selected
++asset folders, and other presentation/session restoration data is stored as
++per-project user data outside the project working tree. `ProjectId` is its
++logical identity anchor, while storage must also handle multiple simultaneous
++locations for the same ID without write collisions.
++
++No recent-project, window, selection, or workspace-restoration state is added
++to `project.json` or `project_settings.json`.
++
++### 8. Keep compatibility failure explicit and current-format-only
++
++This ADR does not restore compatibility readers or automatic migrations removed
++by ADR 0115. The Launcher owns the user-facing detection and explanation of an
++incompatible project, but normal project open does not silently rewrite it.
++
++When the `project.json` identity revision required by this ADR is implemented,
++its schema version is bumped and all repository-owned current projects,
++fixtures, and writers are updated in the same change. Once that new schema is
++the current format, the previous schema is rejected in accordance with ADR
++0115 rather than accepted through a fallback reader.
++
++A future explicit conversion facility, if desired, requires its own documented
++contract and must not turn Editor startup into an implicit irreversible
++migration path.
++
++## Consequences
++
++- The strongest normal editor invariant becomes `EditorWorkspace =>
++  ProjectRoot`; project absence is removed from ordinary editing state.
++- Project selection and no-document editing state are no longer conflated. A
++  project with no open document remains a valid project-scoped Editor
++  workspace, not a Project Hub.
++- Project switching becomes process lifecycle rather than a growing list of
++  per-subsystem reset operations, reducing cross-project state leakage.
++- Launcher and Editor gain a stable process boundary that can later support
++  installed Editor-version selection without moving project-selection logic out
++  of the Editor a second time.
++- A new workspace crate and two-application lifecycle add implementation and
++  IPC complexity, but that complexity is isolated from authoring semantics and
++  runtime ECS code.
++- Exclusive editor leases prevent silent same-working-tree write races across
++  scenes, settings, imports, generated files, build outputs, and other
++  project-scoped state.
++- Atomic scaffolding prevents half-created directories from being reported as
++  valid new projects.
++- Moving a project does not erase its logical identity, while canonical-path
++  location remains available for locking and distinguishing multiple working
++  copies.
++- Phase 26's Project Hub remains useful historical context, but its placement
++  inside the Editor and its ownership of recent-project state are superseded by
++  this ADR.
++
++## Alternatives Considered
++
++### Keep Project Hub and project switching inside the Editor
++
++Rejected. It preserves the weak project-optional workspace state and requires
