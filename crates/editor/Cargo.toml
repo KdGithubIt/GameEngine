@@ -5,6 +5,9 @@ edition = "2024"
 default-run = "engine-editor"
 autobins = false
 
+[features]
+visual-validation = ["eframe/__screenshot"]
+
 [[bin]]
 name = "engine-editor"
 path = "src/main.rs"
