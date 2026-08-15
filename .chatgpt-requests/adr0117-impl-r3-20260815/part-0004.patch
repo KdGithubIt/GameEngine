@@ -1,0 +1,222 @@
++    fs::create_dir_all(&root).map_err(|source| LifecycleError::Io {
++        path: root.clone(),
++        source,
++    })?;
++    let lock_path = root.join(LAUNCHER_LOCK_FILE);
++    let lock = open_lock_file(&lock_path)?;
++    match lock.try_lock() {
++        Ok(()) => {
++            let request_path = root.join(LAUNCHER_REQUEST_FILE);
++            let _ = fs::remove_file(&request_path);
++            Ok(Some(LauncherSession {
++                _lock: lock,
++                request_path,
++                last_request: None,
++                initial_request: initial_switch_from.map(new_launcher_request),
++            }))
++        }
++        Err(TryLockError::WouldBlock) => {
++            write_launcher_request(initial_switch_from)?;
++            Ok(None)
++        }
++        Err(TryLockError::Error(source)) => Err(LifecycleError::Io {
++            path: lock_path,
++            source,
++        }),
++    }
++}
++
++/// Activates the existing Launcher or starts its sibling executable.
++///
++/// `switch_from` is carried only as application lifecycle state; it is never
++/// written to the project.
++///
++/// # Errors
++///
++/// Returns a lifecycle-state or process-spawn error.
++pub fn activate_launcher(switch_from: Option<&Path>) -> Result<(), LifecycleError> {
++    if launcher_is_running()? {
++        return write_launcher_request(switch_from.map(Path::to_path_buf));
++    }
++    let launcher = sibling_executable("engine-launcher")?;
++    let mut command = Command::new(&launcher);
++    if let Some(path) = switch_from {
++        command.arg("--switch-from").arg(path);
++    }
++    command.spawn().map_err(|source| LifecycleError::Io {
++        path: launcher,
++        source,
++    })?;
++    Ok(())
++}
++
++fn validate_project_name(name: &str) -> Result<(), LifecycleError> {
++    let trimmed = name.trim();
++    let path = Path::new(trimmed);
++    if trimmed.is_empty()
++        || trimmed == "."
++        || trimmed == ".."
++        || path.components().count() != 1
++        || path.is_absolute()
++    {
++        return Err(LifecycleError::InvalidProjectName(name.to_owned()));
++    }
++    Ok(())
++}
++
++fn state_root() -> PathBuf {
++    std::env::temp_dir().join("gameengine-project-lifecycle")
++}
++
++fn project_state_dir(project: &ProjectRoot) -> PathBuf {
++    state_root().join(format!("{:016x}", location_hash(project.path())))
++}
++
++fn location_hash(path: &Path) -> u64 {
++    #[cfg(windows)]
++    let normalized = path.to_string_lossy().to_lowercase();
++    #[cfg(not(windows))]
++    let normalized = path.to_string_lossy().into_owned();
++    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
++    for byte in normalized.as_bytes() {
++        hash ^= u64::from(*byte);
++        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
++    }
++    hash
++}
++
++fn open_lock_file(path: &Path) -> Result<File, LifecycleError> {
++    OpenOptions::new()
++        .read(true)
++        .write(true)
++        .create(true)
++        .open(path)
++        .map_err(|source| LifecycleError::Io {
++            path: path.to_path_buf(),
++            source,
++        })
++}
++
++fn editor_lock_is_held(state_dir: &Path) -> Result<bool, LifecycleError> {
++    fs::create_dir_all(state_dir).map_err(|source| LifecycleError::Io {
++        path: state_dir.to_path_buf(),
++        source,
++    })?;
++    let lock_path = state_dir.join(EDITOR_LOCK_FILE);
++    let lock = open_lock_file(&lock_path)?;
++    match lock.try_lock() {
++        Ok(()) => Ok(false),
++        Err(TryLockError::WouldBlock) => Ok(true),
++        Err(TryLockError::Error(source)) => Err(LifecycleError::Io {
++            path: lock_path,
++            source,
++        }),
++    }
++}
++
++fn launcher_is_running() -> Result<bool, LifecycleError> {
++    let root = state_root();
++    fs::create_dir_all(&root).map_err(|source| LifecycleError::Io {
++        path: root.clone(),
++        source,
++    })?;
++    let lock_path = root.join(LAUNCHER_LOCK_FILE);
++    let lock = open_lock_file(&lock_path)?;
++    match lock.try_lock() {
++        Ok(()) => Ok(false),
++        Err(TryLockError::WouldBlock) => Ok(true),
++        Err(TryLockError::Error(source)) => Err(LifecycleError::Io {
++            path: lock_path,
++            source,
++        }),
++    }
++}
++
++fn write_control_request(path: &Path) -> Result<(), LifecycleError> {
++    fs::write(path, request_nonce()).map_err(|source| LifecycleError::Io {
++        path: path.to_path_buf(),
++        source,
++    })
++}
++
++fn take_control_request(path: &Path, last: &mut Option<String>) -> bool {
++    let Ok(text) = fs::read_to_string(path) else {
++        return false;
++    };
++    if last.as_deref() == Some(text.as_str()) {
++        return false;
++    }
++    *last = Some(text);
++    true
++}
++
++fn new_launcher_request(switch_from: PathBuf) -> LauncherRequest {
++    LauncherRequest {
++        switch_from: Some(switch_from),
++        nonce: request_nonce(),
++    }
++}
++
++fn write_launcher_request(switch_from: Option<PathBuf>) -> Result<(), LifecycleError> {
++    let request = LauncherRequest {
++        switch_from,
++        nonce: request_nonce(),
++    };
++    write_json(&state_root().join(LAUNCHER_REQUEST_FILE), &request)
++}
++
++fn request_nonce() -> String {
++    format!("{}-{}", std::process::id(), unix_millis())
++}
++
++fn unix_millis() -> u64 {
++    SystemTime::now()
++        .duration_since(UNIX_EPOCH)
++        .unwrap_or_default()
++        .as_millis()
++        .min(u128::from(u64::MAX)) as u64
++}
++
++fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), LifecycleError> {
++    let text = serde_json::to_string_pretty(value)?;
++    fs::write(path, text).map_err(|source| LifecycleError::Io {
++        path: path.to_path_buf(),
++        source,
++    })
++}
++
++fn read_json_optional<T: for<'de> Deserialize<'de>>(
++    path: &Path,
++) -> Result<Option<T>, LifecycleError> {
++    let text = match fs::read_to_string(path) {
++        Ok(text) => text,
++        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
++        Err(source) => {
++            return Err(LifecycleError::Io {
++                path: path.to_path_buf(),
++                source,
++            });
++        }
++    };
++    Ok(Some(serde_json::from_str(&text)?))
++}
++
++fn remove_owned_metadata(path: &Path, process_id: u32) {
++    let Ok(Some(metadata)) = read_json_optional::<EditorOwnerMetadata>(path) else {
++        return;
++    };
++    if metadata.process_id == process_id {
++        let _ = fs::remove_file(path);
++    }
++}
++
++fn remove_owned_ready(path: &Path, process_id: u32) {
++    let Ok(Some(metadata)) = read_json_optional::<EditorReadyMetadata>(path) else {
++        return;
++    };
++    if metadata.process_id == process_id {
++        let _ = fs::remove_file(path);
++    }
++}
++
++fn sibling_executable(name: &str) -> Result<PathBuf, LifecycleError> {
