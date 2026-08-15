@@ -1,0 +1,225 @@
+diff --git a/crates/authoring/src/animation_set.rs b/crates/authoring/src/animation_set.rs
+--- a/crates/authoring/src/animation_set.rs
++++ b/crates/authoring/src/animation_set.rs
+@@ -1,9 +1,8 @@
+ //! Author-owned animation-set assets.
+ //!
+ //! An animation set binds stable motion slots from one animation graph to
+-//! imported animation-clip sub-assets. The graph therefore describes reusable
+-//! behavior while the set chooses content, including clips imported from
+-//! different glTF, GLB, or FBX source files.
++//! explicitly tagged motion sources. The graph therefore describes reusable
++//! behavior while the set chooses content and adaptation policy independently.
+ 
+ use crate::id::{AssetId, MotionSlotId};
+ use serde::{Deserialize, Serialize};
+@@ -11,6 +10,6 @@
+ use std::fmt;
+ 
+ /// Current persisted animation-set schema version.
+-pub const ANIMATION_SET_SCHEMA_VERSION: u32 = 1;
++pub const ANIMATION_SET_SCHEMA_VERSION: u32 = 2;
+ 
+ /// File-name suffix used by persisted animation-set documents.
+@@ -83,4 +82,17 @@
+     pub fn from_json(json: &str) -> Result<Self, AnimationSetError> {
++        #[derive(Deserialize)]
++        struct VersionProbe {
++            schema_version: u32,
++        }
++
++        let version: VersionProbe =
++            serde_json::from_str(json).map_err(AnimationSetError::Json)?;
++        if version.schema_version != ANIMATION_SET_SCHEMA_VERSION {
++            return Err(AnimationSetError::UnsupportedVersion {
++                found: version.schema_version,
++            });
++        }
++
+         let set: Self = serde_json::from_str(json).map_err(AnimationSetError::Json)?;
+         set.validate()?;
+         Ok(set)
+@@ -129,8 +141,8 @@
+             for overlay in &binding.overlays {
+                 if !layers.insert(overlay.clone()) {
+                     return Err(AnimationSetError::DuplicateLayer {
+                         slot: slot.clone(),
+-                        clip: overlay.clone(),
++                        clip: overlay.asset.clone(),
+                     });
+                 }
+             }
+@@ -152,15 +164,98 @@
++/// Selection policy for one stable animation motion source (ADR 0110).
++#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case")]
++pub enum MotionSourceVariant {
++    /// Prefer Native on the same skeleton, then an explicit Retarget Map,
++    /// then Humanoid adaptation.
++    Auto,
++    /// Use the imported Native animation path and never silently fall back to Humanoid.
++    Native,
++    /// Use the skeleton-independent Humanoid motion path explicitly.
++    Humanoid,
++}
++
++/// Stable, explicitly tagged motion-source reference stored by an Animation Set.
++///
++/// `Auto` and `Native` reference an imported Native `Animation` sub-asset.
++/// `Humanoid` references the corresponding imported `HumanoidMotion` sub-asset.
++/// Variant selection is persisted and is never inferred from display names.
++#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
++pub struct MotionSourceRef {
++    /// Adaptation policy chosen by the author.
++    pub variant: MotionSourceVariant,
++    /// Stable imported sub-asset ID carrying this motion source.
++    pub asset: AssetId,
++}
++
++impl MotionSourceRef {
++    /// Creates a logical Auto reference rooted at a Native imported clip.
++    pub fn auto(asset: AssetId) -> Self {
++        Self {
++            variant: MotionSourceVariant::Auto,
++            asset,
++        }
++    }
++
++    /// Creates an explicit Native motion reference.
++    pub fn native(asset: AssetId) -> Self {
++        Self {
++            variant: MotionSourceVariant::Native,
++            asset,
++        }
++    }
++
++    /// Creates an explicit Humanoid motion reference.
++    pub fn humanoid(asset: AssetId) -> Self {
++        Self {
++            variant: MotionSourceVariant::Humanoid,
++            asset,
++        }
++    }
++
++    /// Returns the stable imported sub-asset ID carried by this reference.
++    pub fn asset(&self) -> &AssetId {
++        &self.asset
++    }
++}
++
++impl From<AssetId> for MotionSourceRef {
++    fn from(asset: AssetId) -> Self {
++        Self::native(asset)
++    }
++}
++
++impl std::ops::Deref for MotionSourceRef {
++    type Target = AssetId;
++
++    fn deref(&self) -> &Self::Target {
++        &self.asset
++    }
++}
++
++impl PartialEq<AssetId> for MotionSourceRef {
++    fn eq(&self, other: &AssetId) -> bool {
++        self.asset.eq(other)
++    }
++}
++
++impl PartialEq<MotionSourceRef> for AssetId {
++    fn eq(&self, other: &MotionSourceRef) -> bool {
++        self.eq(&other.asset)
++    }
++}
++
+ /// One graph motion-slot binding in an [`AnimationSet`].
+ #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+ pub struct AnimationBinding {
+     /// Human-readable slot label used by editors and diagnostics.
+     pub name: String,
+-    /// Imported animation-clip sub-asset selected for this slot.
+-    pub clip: AssetId,
+-    /// Ordered supplemental clips composed with [`Self::clip`]. Later
++    /// Tagged stable motion source selected for this slot.
++    pub clip: MotionSourceRef,
++    /// Ordered supplemental motion sources composed with [`Self::clip`]. Later
+     /// entries override earlier entries when they drive the same channel.
+     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+-    pub overlays: Vec<AssetId>,
++    pub overlays: Vec<MotionSourceRef>,
+     /// Author-owned timeline events layered over the imported clip.
+     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+     pub events: Vec<AnimationSetEvent>,
+ }
+@@ -267,7 +362,7 @@
+             idle_slot,
+             AnimationBinding {
+                 name: "idle".to_owned(),
+-                clip: AssetId::generate(),
++                clip: MotionSourceRef::auto(AssetId::generate()),
+                 overlays: Vec::new(),
+                 events: Vec::new(),
+             },
+@@ -276,7 +371,7 @@
+             attack_slot,
+             AnimationBinding {
+                 name: "attack".to_owned(),
+-                clip: AssetId::generate(),
++                clip: MotionSourceRef::native(AssetId::generate()),
+                 overlays: Vec::new(),
+                 events: vec![AnimationSetEvent {
+                     time: 0.25,
+@@ -308,6 +403,14 @@
+     fn animation_set_missing_graph_field_is_rejected() {
+         assert!(matches!(
+-            AnimationSet::from_json(r#"{"schema_version":1,"bindings":{}}"#),
++            AnimationSet::from_json(r#"{"schema_version":2,"bindings":{}}"#),
+             Err(AnimationSetError::Json(_))
+         ));
+     }
++
++    #[test]
++    fn animation_set_v1_is_rejected_instead_of_implicitly_migrated() {
++        assert!(matches!(
++            AnimationSet::from_json(r#"{"schema_version":1,"graph":null,"bindings":{}}"#),
++            Err(AnimationSetError::UnsupportedVersion { found: 1 })
++        ));
++    }
+@@ -321,7 +424,7 @@
+                 MotionSlotId::generate(),
+                 AnimationBinding {
+                     name: "idle".to_owned(),
+-                    clip: AssetId::generate(),
++                    clip: MotionSourceRef::native(AssetId::generate()),
+                     overlays: Vec::new(),
+                     events: Vec::new(),
+                 },
+@@ -341,7 +444,7 @@
+             slot,
+             AnimationBinding {
+                 name: "attack".to_owned(),
+-                clip: AssetId::generate(),
++                clip: MotionSourceRef::native(AssetId::generate()),
+                 overlays: Vec::new(),
+                 events: vec![AnimationSetEvent {
+                     time: -0.1,
+@@ -362,7 +465,7 @@
+         let slot = MotionSlotId::generate();
+         let clip = AssetId::generate();
+         let json = format!(
+-            "{{\"schema_version\":1,\"graph\":\"{}\",\"bindings\":{{\"{}\":{{\"name\":\"idle\",\"clip\":\"{}\",\"events\":[]}}}}}}",
++            "{{\"schema_version\":2,\"graph\":\"{}\",\"bindings\":{{\"{}\":{{\"name\":\"idle\",\"clip\":{{\"variant\":\"native\",\"asset\":\"{}\"}},\"events\":[]}}}}}}",
+             graph.as_str(),
+             slot.as_str(),
+             clip.as_str()
+@@ -380,7 +483,7 @@
+             slot,
+             AnimationBinding {
+                 name: "motion".to_owned(),
+-                clip: clip.clone(),
+-                overlays: vec![clip],
++                clip: MotionSourceRef::native(clip.clone()),
++                overlays: vec![MotionSourceRef::native(clip)],
+                 events: Vec::new(),
+             },
