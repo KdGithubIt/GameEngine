@@ -1,0 +1,4 @@
+# Repository-relative paths for non-text source/test assets intentionally allowed
+# in the public snapshot. Every new binary or model/media asset must be reviewed
+# before being added here.
+crates/editor/tests/fixtures/skinned_motion.gltf

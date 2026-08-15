@@ -1,0 +1,509 @@
+name: GameEngine Windows Validation
+
+run-name: >-
+  GameEngine validation ${{ inputs.request_id || inputs.target_branch || github.head_ref || github.ref_name }}
+  ${{ inputs.expected_head_sha || github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.sha }}
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  merge_group:
+    types: [checks_requested]
+  schedule:
+    - cron: "0 18 * * *"
+  workflow_dispatch:
+    inputs:
+      target_branch:
+        description: chatgpt/gameengine-* branch whose exact HEAD is validated
+        required: true
+        type: string
+      pr_number:
+        description: Open PR associated with the validated branch, when known
+        required: false
+        default: ""
+        type: string
+      expected_head_sha:
+        description: Exact branch HEAD expected by the dispatcher
+        required: true
+        type: string
+      request_id:
+        description: ChatGPT dispatcher request ID
+        required: false
+        default: ""
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: >-
+    gameengine-windows-validation-${{
+      github.event.pull_request.number || inputs.pr_number || github.event.merge_group.head_ref || inputs.target_branch || github.ref
+    }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+  SCCACHE_GHA_ENABLED: "true"
+  RUSTC_WRAPPER: sccache
+
+jobs:
+  context:
+    name: Resolve validation context
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      branch: ${{ steps.resolve.outputs.branch }}
+      head_sha: ${{ steps.resolve.outputs.head_sha }}
+      base_sha: ${{ steps.resolve.outputs.base_sha }}
+      pr_number: ${{ steps.resolve.outputs.pr_number }}
+      request_id: ${{ steps.resolve.outputs.request_id }}
+      context_valid: ${{ steps.resolve.outputs.context_valid }}
+      context_error: ${{ steps.resolve.outputs.context_error }}
+      runner_labels: ${{ steps.resolve.outputs.runner_labels }}
+      can_report: ${{ steps.resolve.outputs.can_report }}
+
+    steps:
+      - name: Resolve exact validation context
+        id: resolve
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        env:
+          DISPATCH_TARGET_BRANCH: ${{ inputs.target_branch || '' }}
+          DISPATCH_PR_NUMBER: ${{ inputs.pr_number || '' }}
+          EXPECTED_HEAD_SHA: ${{ inputs.expected_head_sha || '' }}
+          REQUEST_ID: ${{ inputs.request_id || '' }}
+          CONFIGURED_RUNNER_LABELS: ${{ vars.GAMEENGINE_WINDOWS_RUNNER_LABELS || '' }}
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const repository = `${owner}/${repo}`;
+            const eventName = context.eventName;
+            const expectedHead = (process.env.EXPECTED_HEAD_SHA || "").trim().toLowerCase();
+
+            let branch = "";
+            let headSha = "";
+            let baseSha = "";
+            let prNumber = null;
+            let pr = null;
+            let contextValid = true;
+            let contextError = "";
+            let trustedForSelfHosted = true;
+            let canReport = false;
+
+            if (eventName === "pull_request") {
+              pr = context.payload.pull_request;
+              branch = pr.head.ref;
+              headSha = pr.head.sha.toLowerCase();
+              baseSha = pr.base.sha.toLowerCase();
+              prNumber = pr.number;
+              trustedForSelfHosted = pr.head.repo?.full_name === repository;
+              canReport = trustedForSelfHosted;
+            } else if (eventName === "push") {
+              branch = context.ref.replace(/^refs\/heads\//, "");
+              headSha = context.sha.toLowerCase();
+              baseSha = (context.payload.before || "").toLowerCase();
+              if (branch !== "main") {
+                contextValid = false;
+                contextError = "Push validation is restricted to main.";
+              }
+            } else if (eventName === "merge_group") {
+              const group = context.payload.merge_group;
+              branch = group.head_ref || context.ref;
+              headSha = (group.head_sha || context.sha).toLowerCase();
+              baseSha = (group.base_sha || "").toLowerCase();
+            } else if (eventName === "schedule") {
+              branch = "main";
+              try {
+                const ref = await github.rest.git.getRef({ owner, repo, ref: "heads/main" });
+                headSha = ref.data.object.sha.toLowerCase();
+                baseSha = headSha;
+              } catch (error) {
+                contextValid = false;
+                contextError = `Could not resolve main: ${error.message}`;
+              }
+            } else if (eventName === "workflow_dispatch") {
+              branch = (process.env.DISPATCH_TARGET_BRANCH || "").trim();
+              headSha = expectedHead;
+              const safeBranch =
+                /^chatgpt\/gameengine-[a-z0-9][a-z0-9._/-]{0,80}$/.test(branch) &&
+                !branch.includes("..") && !branch.includes("//");
+              if (!safeBranch) {
+                contextValid = false;
+                contextError = "workflow_dispatch target_branch must be a safe chatgpt/gameengine-* branch.";
+              } else if (!/^[0-9a-f]{40}$/.test(expectedHead)) {
+                contextValid = false;
+                contextError = "workflow_dispatch expected_head_sha must be a full SHA.";
+              } else {
+                try {
+                  const ref = await github.rest.git.getRef({ owner, repo, ref: `heads/${branch}` });
+                  const observed = ref.data.object.sha.toLowerCase();
+                  if (observed !== expectedHead) {
+                    contextValid = false;
+                    contextError = `Branch ${branch} is at ${observed}, expected ${expectedHead}.`;
+                  }
+                } catch (error) {
+                  contextValid = false;
+                  contextError = `Could not resolve target branch: ${error.message}`;
+                }
+              }
+
+              const requestedPr = (process.env.DISPATCH_PR_NUMBER || "").trim();
+              if (requestedPr && !/^\d+$/.test(requestedPr)) {
+                contextValid = false;
+                contextError ||= "pr_number must be numeric when supplied.";
+              } else if (requestedPr) {
+                prNumber = Number(requestedPr);
+              }
+
+              if (prNumber) {
+                try {
+                  pr = (await github.rest.pulls.get({ owner, repo, pull_number: prNumber })).data;
+                } catch (error) {
+                  contextValid = false;
+                  contextError ||= `Could not read PR #${prNumber}: ${error.message}`;
+                }
+              } else if (branch && headSha) {
+                const candidates = await github.paginate(github.rest.pulls.list, {
+                  owner, repo, state: "open", base: "main", head: `${owner}:${branch}`, per_page: 100,
+                });
+                pr = candidates.find(candidate => candidate.head.sha.toLowerCase() === headSha) || null;
+                prNumber = pr?.number || null;
+              }
+
+              if (pr) {
+                baseSha = pr.base.sha.toLowerCase();
+                trustedForSelfHosted = pr.head.repo?.full_name === repository;
+                canReport = trustedForSelfHosted;
+              } else {
+                const main = await github.rest.git.getRef({ owner, repo, ref: "heads/main" });
+                baseSha = main.data.object.sha.toLowerCase();
+              }
+            } else {
+              contextValid = false;
+              contextError = `Unsupported validation event: ${eventName}`;
+            }
+
+            if (pr) {
+              if (pr.state !== "open" || pr.base.ref !== "main" || pr.head.ref !== branch) {
+                contextValid = false;
+                contextError ||= `PR #${pr.number} does not match the validated branch/base.`;
+              } else if (pr.head.sha.toLowerCase() !== headSha) {
+                contextValid = false;
+                contextError ||= `PR #${pr.number} head does not match ${headSha}.`;
+              }
+            }
+
+            let runnerLabels = ["windows-latest"];
+            const configured = (process.env.CONFIGURED_RUNNER_LABELS || "").trim();
+            if (configured && trustedForSelfHosted) {
+              try {
+                const parsed = JSON.parse(configured);
+                if (!Array.isArray(parsed) || parsed.length === 0 || parsed.some(x => typeof x !== "string" || !x.trim())) {
+                  throw new Error("expected a non-empty JSON string array");
+                }
+                runnerLabels = parsed;
+              } catch (error) {
+                contextValid = false;
+                contextError ||= `GAMEENGINE_WINDOWS_RUNNER_LABELS is invalid: ${error.message}`;
+              }
+            }
+
+            core.setOutput("branch", branch);
+            core.setOutput("head_sha", headSha);
+            core.setOutput("base_sha", baseSha);
+            core.setOutput("pr_number", prNumber ? String(prNumber) : "");
+            core.setOutput("request_id", process.env.REQUEST_ID || "");
+            core.setOutput("context_valid", contextValid ? "true" : "false");
+            core.setOutput("context_error", contextError);
+            core.setOutput("runner_labels", JSON.stringify(runnerLabels));
+            core.setOutput("can_report", canReport ? "true" : "false");
+
+      - name: Reject invalid validation context
+        if: ${{ steps.resolve.outputs.context_valid != 'true' }}
+        shell: bash
+        env:
+          CONTEXT_ERROR: ${{ steps.resolve.outputs.context_error }}
+        run: |
+          echo "::error::${CONTEXT_ERROR:-Invalid GameEngine validation context.}"
+          exit 1
+
+  planner:
+    name: Plan validation scope
+    needs: context
+    if: ${{ needs.context.outputs.context_valid == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      validation_mode: ${{ steps.plan.outputs.validation_mode }}
+      skip: ${{ steps.plan.outputs.skip }}
+      changed_packages: ${{ steps.plan.outputs.changed_packages }}
+      affected_packages: ${{ steps.plan.outputs.affected_packages }}
+      test_packages: ${{ steps.plan.outputs.test_packages }}
+      clippy_packages: ${{ steps.plan.outputs.clippy_packages }}
+      docs_packages: ${{ steps.plan.outputs.docs_packages }}
+      scope_reason: ${{ steps.plan.outputs.scope_reason }}
+      plan_base64: ${{ steps.plan.outputs.plan_base64 }}
+
+    steps:
+      - name: Check out exact validation head
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.context.outputs.head_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Compute changed paths
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ needs.context.outputs.base_sha }}
+          HEAD_SHA: ${{ needs.context.outputs.head_sha }}
+        run: |
+          set -euo pipefail
+          changed="$RUNNER_TEMP/gameengine-changed-files.txt"
+          : > "$changed"
+          if [[ "$EVENT_NAME" == "schedule" || -z "$BASE_SHA" || "$BASE_SHA" =~ ^0+$ ]]; then
+            echo "Cargo.lock" > "$changed"
+          else
+            git diff --name-only "$BASE_SHA" "$HEAD_SHA" -- > "$changed"
+          fi
+          cat "$changed"
+
+      - name: Test validation planner layouts
+        shell: pwsh
+        run: ./scripts/ci/Test-ValidationPlanner.ps1
+
+      - name: Build machine-readable validation plan
+        id: plan
+        shell: pwsh
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $changed = Join-Path $env:RUNNER_TEMP "gameengine-changed-files.txt"
+          $planPath = Join-Path $env:RUNNER_TEMP "gameengine-validation-plan.json"
+          ./scripts/ci/New-ValidationPlan.ps1 `
+              -EventName $env:EVENT_NAME `
+              -ChangedFilesPath $changed `
+              -WorkspaceRoot . `
+              -OutputPath $planPath | Out-Null
+          $plan = Get-Content -Raw -LiteralPath $planPath -Encoding utf8 | ConvertFrom-Json
+          $compact = $plan | ConvertTo-Json -Depth 8 -Compress
+          $base64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($compact))
+          "validation_mode=$($plan.validation_mode)" >> $env:GITHUB_OUTPUT
+          "skip=$($plan.skip.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+          "changed_packages=$($plan.changed_packages -join ',')" >> $env:GITHUB_OUTPUT
+          "affected_packages=$($plan.affected_packages -join ',')" >> $env:GITHUB_OUTPUT
+          "test_packages=$($plan.test_packages -join ',')" >> $env:GITHUB_OUTPUT
+          "clippy_packages=$($plan.clippy_packages -join ',')" >> $env:GITHUB_OUTPUT
+          "docs_packages=$($plan.docs_packages -join ',')" >> $env:GITHUB_OUTPUT
+          "scope_reason=$($plan.reason)" >> $env:GITHUB_OUTPUT
+          "plan_base64=$base64" >> $env:GITHUB_OUTPUT
+
+  executor:
+    name: Windows validation (${{ matrix.gate }})
+    needs: [context, planner]
+    if: ${{ needs.context.outputs.context_valid == 'true' && needs.planner.outputs.skip != 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        gate: [lint, tests, documentation]
+    runs-on: ${{ fromJSON(needs.context.outputs.runner_labels) }}
+    timeout-minutes: 120
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out exact validation head
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.context.outputs.head_sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Initialize pinned Rust and persistent cache paths
+        shell: pwsh
+        env:
+          RUNNER_ENVIRONMENT: ${{ runner.environment }}
+          GAMEENGINE_CI_CACHE_ROOT: ${{ vars.GAMEENGINE_CI_CACHE_ROOT || '' }}
+        run: |
+          $persistent = $env:RUNNER_ENVIRONMENT -eq "self-hosted"
+          ./scripts/ci/Initialize-CiEnvironment.ps1 -PersistentRunner:$persistent
+
+      - name: Set up sccache
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+
+      - name: Materialize validation plan
+        shell: pwsh
+        env:
+          PLAN_BASE64: ${{ needs.planner.outputs.plan_base64 }}
+        run: |
+          $bytes = [Convert]::FromBase64String($env:PLAN_BASE64)
+          [IO.File]::WriteAllBytes((Join-Path $env:RUNNER_TEMP "gameengine-validation-plan.json"), $bytes)
+
+      - name: Execute validation gate
+        shell: pwsh
+        run: |
+          ./scripts/ci/Invoke-ValidationPlan.ps1 `
+              -PlanPath (Join-Path $env:RUNNER_TEMP "gameengine-validation-plan.json") `
+              -WorkspaceRoot (Get-Location).Path `
+              -DiagnosticsDirectory (Join-Path $env:RUNNER_TEMP "gameengine-validation-diagnostics") `
+              -Gate "${{ matrix.gate }}"
+
+      - name: Upload failure diagnostics
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: gameengine-windows-validation-${{ matrix.gate }}-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/gameengine-validation-diagnostics/**
+          if-no-files-found: ignore
+          retention-days: 30
+
+  report:
+    name: Report aggregate validation result
+    needs: [context, planner, executor]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+
+    steps:
+      - name: Compute aggregate result
+        id: aggregate
+        shell: bash
+        env:
+          CONTEXT_RESULT: ${{ needs.context.result }}
+          PLANNER_RESULT: ${{ needs.planner.result }}
+          EXECUTOR_RESULT: ${{ needs.executor.result }}
+          SKIP: ${{ needs.planner.outputs.skip }}
+        run: |
+          set -euo pipefail
+          overall=failure
+          if [[ "$CONTEXT_RESULT" == "success" && "$PLANNER_RESULT" == "success" ]]; then
+            if [[ "$SKIP" == "true" && "$EXECUTOR_RESULT" == "skipped" ]]; then
+              overall=success
+            elif [[ "$SKIP" != "true" && "$EXECUTOR_RESULT" == "success" ]]; then
+              overall=success
+            fi
+          fi
+          echo "overall=$overall" >> "$GITHUB_OUTPUT"
+
+      - name: Write machine-readable validation summary
+        shell: bash
+        env:
+          OVERALL: ${{ steps.aggregate.outputs.overall }}
+          BRANCH: ${{ needs.context.outputs.branch }}
+          HEAD_SHA: ${{ needs.context.outputs.head_sha }}
+          BASE_SHA: ${{ needs.context.outputs.base_sha }}
+          PR_NUMBER: ${{ needs.context.outputs.pr_number }}
+          REQUEST_ID: ${{ needs.context.outputs.request_id }}
+          MODE: ${{ needs.planner.outputs.validation_mode }}
+          SKIP: ${{ needs.planner.outputs.skip }}
+          AFFECTED_PACKAGES: ${{ needs.planner.outputs.affected_packages }}
+          SCOPE_REASON: ${{ needs.planner.outputs.scope_reason }}
+        run: |
+          set -euo pipefail
+          result_dir="$RUNNER_TEMP/gameengine-windows-validation"
+          mkdir -p "$result_dir"
+          jq -n \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg branch "$BRANCH" \
+            --arg head_sha "$HEAD_SHA" \
+            --arg base_sha "$BASE_SHA" \
+            --arg pr_number "$PR_NUMBER" \
+            --arg request_id "$REQUEST_ID" \
+            --arg mode "$MODE" \
+            --argjson skip "${SKIP:-false}" \
+            --arg affected_packages "$AFFECTED_PACKAGES" \
+            --arg reason "$SCOPE_REASON" \
+            --arg overall "$OVERALL" \
+            '{
+              schema_version: 4,
+              repository: $repository,
+              workflow_run_id: env.GITHUB_RUN_ID,
+              workflow_run_attempt: env.GITHUB_RUN_ATTEMPT,
+              branch: $branch,
+              head_sha: $head_sha,
+              base_sha: $base_sha,
+              pr_number: (if $pr_number == "" then null else ($pr_number | tonumber) end),
+              request_id: (if $request_id == "" then null else $request_id end),
+              validation: {
+                mode: $mode,
+                skip: $skip,
+                affected_packages: (if $affected_packages == "" then [] else ($affected_packages | split(",")) end),
+                reason: $reason
+              },
+              overall: $overall
+            }' > "$result_dir/summary.json"
+
+      - name: Upload validation summary
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: gameengine-windows-validation-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/gameengine-windows-validation/summary.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Report concise result on same-repository pull request
+        if: ${{ needs.context.outputs.can_report == 'true' && needs.context.outputs.pr_number != '' }}
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        env:
+          PR_NUMBER: ${{ needs.context.outputs.pr_number }}
+          HEAD_SHA: ${{ needs.context.outputs.head_sha }}
+          MODE: ${{ needs.planner.outputs.validation_mode }}
+          SCOPE: ${{ needs.planner.outputs.affected_packages }}
+          OVERALL: ${{ steps.aggregate.outputs.overall }}
+        with:
+          script: |
+            const marker = "<!-- gameengine-windows-validation -->";
+            const prNumber = Number(process.env.PR_NUMBER);
+            const body = [
+              marker,
+              "### GameEngine Windows Validation",
+              "",
+              `- Result: **${process.env.OVERALL}**`,
+              `- Mode: \`${process.env.MODE || "unknown"}\``,
+              `- Head: \`${process.env.HEAD_SHA}\``,
+              `- Scope: ${process.env.SCOPE || "workspace"}`,
+            ].join("\n");
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              per_page: 100,
+            });
+            const existing = comments.find(comment => comment.user?.type === "Bot" && comment.body?.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: prNumber,
+                body,
+              });
+            }
+
+      - name: Fail workflow when aggregate validation failed
+        if: ${{ steps.aggregate.outputs.overall != 'success' }}
+        shell: bash
+        run: exit 1

@@ -1,0 +1,176 @@
+{
+  "schema_version": 1,
+  "assessed_on": "2026-07-18",
+  "scope": "single_player_rust_game_authoring",
+  "states": {
+    "ready": "Usable through the normal editor and player path with automated coverage.",
+    "partial": "Some path exists, but required behavior, tooling, or parity is incomplete.",
+    "code_only": "Runtime code exists but normal authoring cannot configure or reach it.",
+    "unreachable": "No supported editor-to-player workflow currently reaches the feature.",
+    "excluded": "Explicitly outside the current roadmap scope."
+  },
+  "features": [
+    {
+      "id": "project.open_save",
+      "state": "ready",
+      "target_phase": "ER-0",
+      "evidence": "ProjectRoot, editor session tests, and examples/coin_collision_loop"
+    },
+    {
+      "id": "scene.authoring",
+      "state": "ready",
+      "target_phase": "ER-0",
+      "evidence": "AuthoringScene transactions, scene loader, hierarchy and inspector"
+    },
+    {
+      "id": "rust.gameplay_module",
+      "state": "ready",
+      "target_phase": "ER-1",
+      "evidence": "Query-scoped native ABI, resources, engine views, typed deferred services, generation checks, and the examples/coin_collision_loop project module"
+    },
+    {
+      "id": "runtime.editor_player_parity",
+      "state": "ready",
+      "target_phase": "ER-2",
+      "evidence": "Shared runtime registration profile, GameModule path, scene bridge, input, collision, navigation, UI, save, and package player"
+    },
+    {
+      "id": "input.action_map",
+      "state": "ready",
+      "target_phase": "ER-3",
+      "evidence": "Keyboard, mouse, gamepad, and virtual input resolve through Project Settings into GameModule and character motor access"
+    },
+    {
+      "id": "input.gamepad",
+      "state": "ready",
+      "target_phase": "ER-3",
+      "evidence": "Desktop adapter, project bindings, diagnostics, editor Play polling, and Busters menu/gameplay bindings"
+    },
+    {
+      "id": "component.engine_authoring_coverage",
+      "state": "ready",
+      "target_phase": "ER-4",
+      "evidence": "Built-in registry exposes a subset of runtime components"
+    },
+    {
+      "id": "render.mesh_material_authoring",
+      "state": "partial",
+      "target_phase": "ER-4A",
+      "evidence": "Built-ins and OBJ work; common imported mesh/material workflows are incomplete"
+    },
+    {
+      "id": "asset.gltf_pipeline",
+      "state": "code_only",
+      "target_phase": "ER-5",
+      "evidence": "Importer exists but is disconnected from normal registration and picker workflows"
+    },
+    {
+      "id": "animation.clip_playback",
+      "state": "partial",
+      "target_phase": "ER-6",
+      "evidence": "Animator v2 is authorable and runs in the shared Editor/player profile with clip selection, playback controls, clip-scoped events, root motion, Scene View preview, and Play inspection; final proving-game visual/package acceptance remains"
+    },
+    {
+      "id": "animation.graph_events",
+      "state": "partial",
+      "target_phase": "ER-6",
+      "evidence": "Animation Graph assignment, boolean parameter editing, per-transition fade compilation, runtime evaluation, event delivery, and Play inspection are connected; proving-game attack graph acceptance remains"
+    },
+    {
+      "id": "collision.query_events",
+      "state": "ready",
+      "target_phase": "ER-7",
+      "evidence": "Phase 64: deterministic sweep-and-prune, engine-owned transitions, swept triggers, combat results, tests, and Scene View primitive gizmos"
+    },
+    {
+      "id": "physics.character_controller",
+      "state": "ready",
+      "target_phase": "ER-7",
+      "evidence": "Phase 64: shared player/root-motion motor, slopes, steps, snap, skin, ceiling, fast-dash subdivision, and symmetric character separation"
+    },
+    {
+      "id": "combat.targeting_camera",
+      "state": "partial",
+      "target_phase": "ER-7",
+      "evidence": "Authorable lock-on target/camera, wall obstruction, GameModule commands, combat integration, and Play overlays"
+    },
+    {
+      "id": "ai.navmesh",
+      "state": "ready",
+      "target_phase": "ER-8",
+      "evidence": "Phase 65: scene NavMesh Surface, Project/Bake NavMesh workflow, bake document/stale detection, status/repath/avoidance, Rust commands, and Scene/Play path overlays"
+    },
+    {
+      "id": "ai.behavior_tree",
+      "state": "ready",
+      "target_phase": "ER-8",
+      "evidence": "Phase 65: authorable compiled runner, stable project Rust result registration, typed blackboard, missing-implementation diagnostics, and live status/visited-leaf view"
+    },
+    {
+      "id": "ui.document_authoring",
+      "state": "partial",
+      "target_phase": "ER-9",
+      "evidence": "UI schema v2 runtime and command-backed visual Builder now cover create/open/save/undo, hierarchy, Inspector, responsive preview, image/nine-slice, progress, stack, grid, overlay, and scroll; typed binding/event discovery, direct canvas resize/reorder, focus-state preview, and full acceptance screens remain"
+    },
+    {
+      "id": "audio.authored_playback",
+      "state": "ready",
+      "target_phase": "ER-9",
+      "evidence": "Authorable emitter/listener/music, 2D/3D buses and crossfade, GameModule commands, preview, and headless diagnostics"
+    },
+    {
+      "id": "scene.runtime_transitions",
+      "state": "ready",
+      "target_phase": "ER-9",
+      "evidence": "Typed project requests/events, persistent resources, duplicate suppression, and title-to-result proving flow"
+    },
+    {
+      "id": "save.versioned_workflow",
+      "state": "ready",
+      "target_phase": "ER-9",
+      "evidence": "Versioned atomic slots, project Rust commands, corrupt metadata, OS distribution root, portable opt-in, and proving clear-count save"
+    },
+    {
+      "id": "prefab.authoring_runtime",
+      "state": "ready",
+      "target_phase": "ER-9",
+      "evidence": "Create/place/source/apply/revert/unpack authoring workflow, runtime spawn commands, broken-source diagnostics, and dependency cycles"
+    },
+    {
+      "id": "editor.game_view_debugging",
+      "state": "partial",
+      "target_phase": "ER-10",
+      "evidence": "Pause/resume/single-step, runtime entity/component/transform snapshots, frame timing, capture, input and animation debugging exist; arbitrary component reflection, event timeline, replay, and memory profiling remain"
+    },
+    {
+      "id": "editor.asset_workflow",
+      "state": "partial",
+      "target_phase": "ER-10",
+      "evidence": "Registration, reimport, rename/move with manifest rollback, recoverable trash, and texture preview exist; thumbnail grid, dependency graph, bulk operations, and broken-reference repair remain"
+    },
+    {
+      "id": "build.packaging",
+      "state": "partial",
+      "target_phase": "ER-11",
+      "evidence": "Single package flow, strict asset validation, module copy, deterministic report/notices, OS writable paths, and Unicode/space tests"
+    },
+    {
+      "id": "sample.editor_native_project",
+      "state": "partial",
+      "target_phase": "ER-12",
+      "evidence": "examples/coin_collision_loop is a Project Hub project with a local Rust module, four scenes, UI, replays, and an FBX-imported Skinned Model; the busters_lite proving project was removed by ADR 0091"
+    },
+    {
+      "id": "script.rhai_new_work",
+      "state": "excluded",
+      "target_phase": null,
+      "evidence": "Explicitly excluded by the approved roadmap"
+    },
+    {
+      "id": "network.multiplayer",
+      "state": "excluded",
+      "target_phase": null,
+      "evidence": "Explicitly excluded by the approved roadmap"
+    }
+  ]
+}

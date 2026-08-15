@@ -1,0 +1,21 @@
+[package]
+name = "engine-platform"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+engine-assets = { path = "../assets" }
+engine-core = { path = "../core" }
+engine-ecs = { path = "../ecs" }
+log = "0.4"
+winit = { version = "0.30", optional = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+gilrs = { version = "0.11", optional = true }
+rodio = { version = "0.20", default-features = false, features = ["wav", "vorbis"], optional = true }
+
+[features]
+default = ["window-input", "audio", "gamepad"]
+window-input = ["dep:winit"]
+audio = ["dep:rodio"]
+gamepad = ["dep:gilrs"]

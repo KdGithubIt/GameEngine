@@ -1,0 +1,34 @@
+{
+  "success": true,
+  "diagnostics": [],
+  "diff": [
+    {
+      "kind": "node_added",
+      "node": {
+        "id": "node_01234567890ABCDEFGHJKMNPQ4",
+        "node_type": "behavior_tree.action",
+        "properties": {
+          "behavior": "wave"
+        },
+        "annotations": {}
+      }
+    },
+    {
+      "kind": "edge_added",
+      "edge": {
+        "id": "edge_01234567890ABCDEFGHJKMNPQ3",
+        "from": {
+          "node": "node_01234567890ABCDEFGHJKMNPQ2",
+          "port": "port_01234567890ABCDEFGHJKMNS01"
+        },
+        "to": {
+          "node": "node_01234567890ABCDEFGHJKMNPQ4",
+          "port": "port_01234567890ABCDEFGHJKMNS00"
+        },
+        "annotations": {
+          "behavior_tree.order": 1
+        }
+      }
+    }
+  ]
+}

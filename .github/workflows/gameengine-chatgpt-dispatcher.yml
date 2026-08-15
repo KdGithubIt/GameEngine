@@ -1,0 +1,303 @@
+name: GameEngine ChatGPT Dispatcher
+
+run-name: >-
+  ChatGPT dispatcher ${{ github.event.workflow_run.head_sha }}
+
+on:
+  workflow_run:
+    workflows:
+      - GameEngine ChatGPT Dispatch Signal
+    types:
+      - completed
+    branches:
+      - chatgpt-dispatch
+
+permissions:
+  actions: write
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: gameengine-chatgpt-dispatcher
+  cancel-in-progress: false
+
+jobs:
+  dispatch:
+    name: Apply authorized GameEngine request
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out request transport branch as data
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: chatgpt-dispatch
+          fetch-depth: 0
+          path: request-source
+          persist-credentials: false
+
+      - name: Validate request envelope
+        id: request
+        shell: bash
+        env:
+          EXPECTED_REPOSITORY: KdGithubIt/GameEngine
+          REQUEST_COMMIT: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+
+          fail() {
+            echo "::error::$1"
+            exit 1
+          }
+
+          [[ "$GITHUB_REPOSITORY" == "$EXPECTED_REPOSITORY" ]] ||
+            fail "This workflow is restricted to $EXPECTED_REPOSITORY."
+          [[ "$GITHUB_REF_NAME" == "main" ]] ||
+            fail "The write-capable dispatcher must run from main."
+          [[ "${{ github.event.workflow_run.conclusion }}" == "success" ]] ||
+            fail "The read-only dispatch signal did not complete successfully."
+          [[ "${{ github.event.workflow_run.event }}" == "push" ]] ||
+            fail "The dispatch signal must originate from a push event."
+          [[ "${{ github.event.workflow_run.head_branch }}" == "chatgpt-dispatch" ]] ||
+            fail "The dispatch signal must originate from chatgpt-dispatch."
+          [[ "${{ github.event.workflow_run.head_repository.full_name }}" == "$EXPECTED_REPOSITORY" ]] ||
+            fail "The dispatch signal must originate from this repository."
+          [[ "$REQUEST_COMMIT" =~ ^[0-9a-fA-F]{40}$ ]] ||
+            fail "The signal head SHA must be a full commit SHA."
+
+          cd "$GITHUB_WORKSPACE/request-source"
+          git cat-file -e "$REQUEST_COMMIT^{commit}" 2>/dev/null ||
+            fail "request_commit is not present on chatgpt-dispatch."
+          git merge-base --is-ancestor "$REQUEST_COMMIT" HEAD ||
+            fail "request_commit is not reachable from chatgpt-dispatch."
+
+          mapfile -d '' changed_paths < <(
+            git diff-tree --no-commit-id --name-only -r -z "$REQUEST_COMMIT"
+          )
+          [[ ${#changed_paths[@]} -eq 1 ]] ||
+            fail "The request commit must change exactly one file."
+          ready_path="${changed_paths[0]}"
+          [[ "$ready_path" =~ ^\.chatgpt-requests/([A-Za-z0-9][A-Za-z0-9._-]{0,63})/ready\.json$ ]] ||
+            fail "The only changed file must be .chatgpt-requests/<request-id>/ready.json."
+          request_id_from_path="${BASH_REMATCH[1]}"
+
+          change_status="$(git diff-tree --no-commit-id --name-status -r "$REQUEST_COMMIT")"
+          [[ "$change_status" == $'A\t'"$ready_path" ]] ||
+            fail "ready.json must be newly added by request_commit."
+          ready_mode="$(git ls-tree "$REQUEST_COMMIT" -- "$ready_path" | awk '{print $1}')"
+          [[ "$ready_mode" == "100644" ]] || fail "ready.json must be a normal non-executable file."
+
+          manifest="$RUNNER_TEMP/chatgpt-ready.json"
+          git show "$REQUEST_COMMIT:$ready_path" > "$manifest"
+          jq -e . "$manifest" >/dev/null || fail "ready.json is not valid JSON."
+          jq -e '
+            (.schema_version | type) == "number" and
+            (.request_id | type) == "string" and
+            (.target_branch | type) == "string" and
+            (.expected_head_sha | type) == "string" and
+            (.patch_parts | type) == "array" and
+            (.commit_message | type) == "string" and
+            (.pr_title | type) == "string" and
+            (.pr_body | type) == "string"
+          ' "$manifest" >/dev/null || fail "ready.json contains an invalid field type."
+
+          schema_version="$(jq -r '.schema_version // empty' "$manifest")"
+          request_id="$(jq -r '.request_id // empty' "$manifest")"
+          target_branch="$(jq -r '.target_branch // empty' "$manifest")"
+          expected_head_sha="$(jq -r '.expected_head_sha // empty' "$manifest")"
+          commit_message="$(jq -r '.commit_message // empty' "$manifest")"
+          pr_title="$(jq -r '.pr_title // empty' "$manifest")"
+          pr_body="$(jq -r '.pr_body // empty' "$manifest")"
+          part_count="$(jq -r 'if (.patch_parts | type) == "array" then (.patch_parts | length) else 0 end' "$manifest")"
+
+          [[ "$schema_version" == "1" ]] || fail "schema_version must be 1."
+          [[ "$request_id" == "$request_id_from_path" ]] || fail "request_id must match its directory."
+          [[ "$request_id" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]] || fail "request_id contains invalid characters."
+          [[ "$target_branch" =~ ^chatgpt/gameengine-[a-z0-9][a-z0-9._/-]{0,80}$ ]] ||
+            fail "target_branch must use the chatgpt/gameengine-* namespace."
+          [[ "$target_branch" != *".."* && "$target_branch" != *"//"* ]] || fail "target_branch contains a forbidden sequence."
+          git check-ref-format --branch "$target_branch" >/dev/null || fail "target_branch is invalid."
+          [[ "$expected_head_sha" =~ ^[0-9a-fA-F]{40}$ ]] || fail "expected_head_sha must be a full SHA."
+          [[ -n "$commit_message" && ${#commit_message} -le 120 ]] || fail "commit_message is invalid."
+          [[ "$commit_message" != *$'\n'* && "$commit_message" != *$'\r'* ]] || fail "commit_message must be one line."
+          [[ -n "$pr_title" && ${#pr_title} -le 200 ]] || fail "pr_title is invalid."
+          [[ "$pr_title" != *$'\n'* && "$pr_title" != *$'\r'* ]] || fail "pr_title must be one line."
+          [[ ${#pr_body} -le 8000 ]] || fail "pr_body is too long."
+          [[ "$pr_body" != *"<!-- gameengine-chatgpt-automation -->"* ]] || fail "Legacy auto-merge authorization is forbidden."
+          [[ "$part_count" -ge 1 && "$part_count" -le 64 ]] || fail "patch_parts must contain 1 to 64 entries."
+          jq -e '.patch_parts | all(.[]; type == "string")' "$manifest" >/dev/null || fail "patch_parts entries must be strings."
+
+          request_dir="${ready_path%/ready.json}"
+          total_bytes=0
+          for ((index = 0; index < part_count; index += 1)); do
+            part_name="$(jq -r ".patch_parts[$index]" "$manifest")"
+            printf -v expected_name 'part-%04d.patch' "$index"
+            [[ "$part_name" == "$expected_name" ]] || fail "patch_parts must be contiguous part-NNNN.patch entries."
+            part_path="$request_dir/$part_name"
+            part_mode="$(git ls-tree "$REQUEST_COMMIT" -- "$part_path" | awk '{print $1}')"
+            [[ "$part_mode" == "100644" ]] || fail "$part_name must be a normal file."
+            part_bytes="$(git cat-file -s "$REQUEST_COMMIT:$part_path" 2>/dev/null || true)"
+            [[ "$part_bytes" =~ ^[0-9]+$ && "$part_bytes" -gt 0 && "$part_bytes" -le 60000 ]] ||
+              fail "$part_name must contain 1 to 60000 bytes."
+            total_bytes=$((total_bytes + part_bytes))
+          done
+          [[ "$total_bytes" -le 4194304 ]] || fail "The reconstructed patch may not exceed 4 MiB."
+
+          mapfile -t request_files < <(
+            git ls-tree -r --name-only "$REQUEST_COMMIT" -- "$request_dir" |
+              sed -n "s#^$request_dir/##p" |
+              sort
+          )
+          [[ ${#request_files[@]} -eq $((part_count + 1)) ]] || fail "The request directory contains unexpected files."
+          [[ "${request_files[-1]}" == "ready.json" ]] || fail "The request directory contains an unexpected file."
+          for ((index = 0; index < part_count; index += 1)); do
+            printf -v expected_name 'part-%04d.patch' "$index"
+            [[ "${request_files[$index]}" == "$expected_name" ]] || fail "The request directory contains an unexpected patch part."
+          done
+
+          {
+            echo "ready_path=$ready_path"
+            echo "request_id=$request_id"
+            echo "target_branch=$target_branch"
+            echo "expected_head_sha=${expected_head_sha,,}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Check out target branch
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ steps.request.outputs.target_branch }}
+          fetch-depth: 0
+          path: target
+
+      - name: Reconstruct and validate patch
+        id: patch
+        shell: bash
+        env:
+          REQUEST_COMMIT: ${{ github.event.workflow_run.head_sha }}
+          READY_PATH: ${{ steps.request.outputs.ready_path }}
+          TARGET_BRANCH: ${{ steps.request.outputs.target_branch }}
+          EXPECTED_HEAD_SHA: ${{ steps.request.outputs.expected_head_sha }}
+        run: |
+          set -euo pipefail
+
+          fail() {
+            echo "::error::$1"
+            exit 1
+          }
+          request_repo="$GITHUB_WORKSPACE/request-source"
+          target_repo="$GITHUB_WORKSPACE/target"
+          manifest="$RUNNER_TEMP/chatgpt-ready.json"
+          patch_file="$RUNNER_TEMP/chatgpt-request.patch"
+          : > "$patch_file"
+
+          cd "$request_repo"
+          while IFS= read -r part_name; do
+            git show "$REQUEST_COMMIT:${READY_PATH%/ready.json}/$part_name" >> "$patch_file"
+          done < <(jq -r '.patch_parts[]' "$manifest")
+
+          [[ -s "$patch_file" ]] || fail "The reconstructed patch is empty."
+          grep -q '^diff --git ' "$patch_file" || fail "The request is not a unified Git patch."
+
+          cd "$target_repo"
+          actual_head_sha="$(git rev-parse HEAD)"
+          [[ "${actual_head_sha,,}" == "$EXPECTED_HEAD_SHA" ]] || fail "The target branch changed after it was read."
+          git apply --check --whitespace=error-all "$patch_file" || fail "git apply --check rejected the patch."
+          git apply --index --whitespace=nowarn "$patch_file"
+          git diff --cached --check || fail "git diff --check rejected the staged patch."
+
+          changed_count=0
+          while IFS= read -r -d '' changed_path; do
+            changed_count=$((changed_count + 1))
+            case "$changed_path" in
+              .github/*|.chatgpt-requests/*)
+                fail "ChatGPT patches may not modify trusted automation or transport data: $changed_path"
+                ;;
+              Cargo.toml|Cargo.lock|rust-toolchain.toml|rustfmt.toml|.gitattributes|.gitignore|AGENTS.md|CLAUDE.md|README.md|crates/*|examples/*|docs/*|scripts/*)
+                ;;
+              *)
+                fail "Patch attempted to modify a path outside the public GameEngine allow-list: $changed_path"
+                ;;
+            esac
+          done < <(git diff --cached --name-only --no-renames -z)
+          [[ "$changed_count" -gt 0 ]] || fail "The patch produced no staged changes."
+
+          while IFS= read -r raw_line; do
+            if [[ "$raw_line" =~ ^:([0-9]{6})\ ([0-9]{6})\  ]]; then
+              old_mode="${BASH_REMATCH[1]}"
+              new_mode="${BASH_REMATCH[2]}"
+              [[ "$old_mode" != "120000" && "$new_mode" != "120000" ]] || fail "Symlink changes are forbidden."
+              [[ "$old_mode" != "160000" && "$new_mode" != "160000" ]] || fail "Submodule changes are forbidden."
+            fi
+          done < <(git diff --cached --raw --no-renames)
+
+          patch_sha256="$(sha256sum "$patch_file" | awk '{print $1}')"
+          echo "patch_sha256=$patch_sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Commit, push, and ensure Draft PR
+        id: publish
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_BRANCH: ${{ steps.request.outputs.target_branch }}
+          EXPECTED_HEAD_SHA: ${{ steps.request.outputs.expected_head_sha }}
+          REQUEST_ID: ${{ steps.request.outputs.request_id }}
+        run: |
+          set -euo pipefail
+
+          fail() {
+            echo "::error::$1"
+            exit 1
+          }
+          manifest="$RUNNER_TEMP/chatgpt-ready.json"
+          target_repo="$GITHUB_WORKSPACE/target"
+          pr_body_file="$RUNNER_TEMP/chatgpt-pr-body.md"
+          commit_message="$(jq -r '.commit_message' "$manifest")"
+          pr_title="$(jq -r '.pr_title' "$manifest")"
+          jq -r '.pr_body' "$manifest" > "$pr_body_file"
+          printf '\n\n<!-- gameengine-chatgpt-dispatcher -->\n' >> "$pr_body_file"
+
+          cd "$target_repo"
+          git config user.name "ChatGPT GameEngine Dispatcher"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          remote_head="$(git ls-remote origin "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
+          [[ "${remote_head,,}" == "$EXPECTED_HEAD_SHA" ]] || fail "The target branch moved before commit."
+          git commit --message "$commit_message"
+          pushed_head_sha="$(git rev-parse HEAD)"
+          git push --force-with-lease="refs/heads/$TARGET_BRANCH:$EXPECTED_HEAD_SHA" origin "HEAD:refs/heads/$TARGET_BRANCH"
+
+          pr_json="$(gh pr list --repo "$GITHUB_REPOSITORY" --state open --head "$TARGET_BRANCH" --limit 2 --json number,isDraft,baseRefName,url,headRefOid)"
+          pr_count="$(jq 'length' <<< "$pr_json")"
+          [[ "$pr_count" -le 1 ]] || fail "More than one open PR targets this branch."
+
+          if [[ "$pr_count" -eq 0 ]]; then
+            pr_url="$(gh pr create --repo "$GITHUB_REPOSITORY" --base main --head "$TARGET_BRANCH" --draft --title "$pr_title" --body-file "$pr_body_file")"
+            pr_number="${pr_url##*/}"
+          else
+            pr_number="$(jq -r '.[0].number' <<< "$pr_json")"
+            pr_url="$(jq -r '.[0].url' <<< "$pr_json")"
+            [[ "$(jq -r '.[0].baseRefName' <<< "$pr_json")" == "main" ]] || fail "Existing PR does not target main."
+            [[ "$(jq -r '.[0].headRefOid' <<< "$pr_json")" == "$pushed_head_sha" ]] || fail "Existing PR head does not match pushed commit."
+            gh pr edit "$pr_number" --repo "$GITHUB_REPOSITORY" --title "$pr_title" --body-file "$pr_body_file"
+            if [[ "$(jq -r '.[0].isDraft' <<< "$pr_json")" != "true" ]]; then
+              gh pr ready "$pr_number" --repo "$GITHUB_REPOSITORY" --undo
+            fi
+          fi
+
+          gh workflow run gameengine-windows-validation.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref main \
+            -f target_branch="$TARGET_BRANCH" \
+            -f pr_number="$pr_number" \
+            -f expected_head_sha="$pushed_head_sha" \
+            -f request_id="$REQUEST_ID"
+
+          {
+            echo "### GameEngine change published for review"
+            echo
+            echo "- Branch: \`$TARGET_BRANCH\`"
+            echo "- Commit: \`$pushed_head_sha\`"
+            echo "- Pull request: [#$pr_number]($pr_url)"
+            echo "- Draft: true"
+            echo "- Auto-merge: disabled by design"
+          } >> "$GITHUB_STEP_SUMMARY"

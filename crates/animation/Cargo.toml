@@ -1,0 +1,25 @@
+[package]
+name = "engine-animation"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+engine-assets = { path = "../assets" }
+engine-authoring = { path = "../authoring" }
+engine-core = { path = "../core" }
+engine-ecs = { path = "../ecs" }
+engine-physics = { path = "../physics", optional = true }
+engine-rig = { path = "../rig" }
+glam = "0.29"
+hashbrown = "0.14"
+log = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[features]
+default = ["physics"]
+physics = ["dep:engine-physics"]
+test-fixtures = []
+
+[dev-dependencies]
+tempfile = "3"

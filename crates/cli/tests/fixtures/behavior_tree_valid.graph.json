@@ -1,0 +1,62 @@
+{
+  "id": "graph_01234567890ABCDEFGHJKMNPQR",
+  "kind": "behavior_tree.graph",
+  "schema_version": 1,
+  "name": "golden_behavior_tree",
+  "display_name": "Golden Behavior Tree",
+  "description": "Fixed Behavior Tree fixture for CLI golden tests.",
+  "nodes": {
+    "node_01234567890ABCDEFGHJKMNPQ1": {
+      "id": "node_01234567890ABCDEFGHJKMNPQ1",
+      "node_type": "behavior_tree.root",
+      "properties": {},
+      "annotations": {}
+    },
+    "node_01234567890ABCDEFGHJKMNPQ2": {
+      "id": "node_01234567890ABCDEFGHJKMNPQ2",
+      "node_type": "behavior_tree.sequence",
+      "properties": {},
+      "annotations": {}
+    },
+    "node_01234567890ABCDEFGHJKMNPQ3": {
+      "id": "node_01234567890ABCDEFGHJKMNPQ3",
+      "node_type": "behavior_tree.action",
+      "properties": {
+        "behavior": "idle"
+      },
+      "annotations": {}
+    }
+  },
+  "edges": {
+    "edge_01234567890ABCDEFGHJKMNPQ1": {
+      "id": "edge_01234567890ABCDEFGHJKMNPQ1",
+      "from": {
+        "node": "node_01234567890ABCDEFGHJKMNPQ1",
+        "port": "port_01234567890ABCDEFGHJKMNS01"
+      },
+      "to": {
+        "node": "node_01234567890ABCDEFGHJKMNPQ2",
+        "port": "port_01234567890ABCDEFGHJKMNS00"
+      },
+      "annotations": {
+        "behavior_tree.order": 0
+      }
+    },
+    "edge_01234567890ABCDEFGHJKMNPQ2": {
+      "id": "edge_01234567890ABCDEFGHJKMNPQ2",
+      "from": {
+        "node": "node_01234567890ABCDEFGHJKMNPQ2",
+        "port": "port_01234567890ABCDEFGHJKMNS01"
+      },
+      "to": {
+        "node": "node_01234567890ABCDEFGHJKMNPQ3",
+        "port": "port_01234567890ABCDEFGHJKMNS00"
+      },
+      "annotations": {
+        "behavior_tree.order": 0
+      }
+    }
+  },
+  "groups": {},
+  "annotations": {}
+}

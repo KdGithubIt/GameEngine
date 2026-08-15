@@ -1,0 +1,17 @@
+/target/
+/.idea/
+/.vscode/
+/.codex_tmp/
+/.codex-task-*
+/build_errors.txt
+/crates.zip
+/docs.zip
+/outputs/
+*.log
+*.tmp
+*.pdb
+*.ilk
+
+# Import artifacts and asset trash are editor caches rebuilt on demand.
+examples/*/.engine/asset_trash/
+examples/*/.engine/imported/
