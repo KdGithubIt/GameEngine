@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "request_id": "renderer-pbr-runtime-bridge-20260816-r2",
+  "target_branch": "chatgpt/gameengine-render-pbr-material-foundation",
+  "expected_head_sha": "8c6158fda6e2441be43d1ec89080655a9b580321",
+  "patch_parts": ["part-0000.patch"],
+  "commit_message": "Renderer: bridge PBR texture slots into runtime materials",
+  "pr_title": "Renderer: add PBR material texture contract",
+  "pr_body": "Phase 2B renderer foundation. The scene bridge decodes packed metallic/roughness and ambient-occlusion textures and forwards both slots into runtime Material construction, completing the CPU-side path introduced by Material schema v3 and the format-neutral import contract."
+}
