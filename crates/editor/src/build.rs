@@ -188,7 +188,7 @@ pub fn analyze_build(config: &BuildConfig, manifest: &AssetManifest) -> BuildRep
         for sub_asset in &entry.import_settings.sub_assets {
             match (
                 AssetId::from_stable_id(StableId::new(&sub_asset.id)),
-                engine::expected_imported_sub_asset_id(source_id, sub_asset),
+                engine::asset::expected_imported_sub_asset_id(source_id, sub_asset),
             ) {
                 (Ok(id), Ok(expected)) if id == expected => {
                     reachable_assets.insert(id);
