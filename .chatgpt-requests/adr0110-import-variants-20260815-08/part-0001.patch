@@ -1,0 +1,141 @@
+diff --git a/crates/import/src/model_import.rs b/crates/import/src/model_import.rs
+--- a/crates/import/src/model_import.rs
++++ b/crates/import/src/model_import.rs
+@@ -19,8 +19,12 @@
+ use crate::animation::{AnimChannel, AnimProperty, AnimationClip, Keyframe};
+ use crate::asset::{
+-    imported_sub_asset_id, ImportedSubAssetKind, SkeletonBoneRecord, SkeletonRecord,
++    imported_humanoid_motion_sub_asset_id, imported_sub_asset_id, HumanoidProfile,
++    ImportedSubAssetKind, SkeletonBoneRecord, SkeletonRecord,
+ };
++use engine_animation::humanoid::detect_humanoid_profile;
++use engine_animation::humanoid_motion::{build_humanoid_motion, HumanoidMotion};
+ use crate::mesh::{Mesh, SkinningVertexData, Submesh, Vertex};
+@@ -151,6 +155,42 @@ pub struct GltfAnimationData {
+     pub clip: AnimationClip,
+ }
+ 
++/// One skeleton-independent Humanoid variant derived from a Native animation (ADR 0110).
++#[derive(Clone)]
++pub struct GltfHumanoidMotionData {
++    /// Original animation selector shared with the Native variant.
++    pub source_index: usize,
++    /// Stable ID derived from the Native clip ID.
++    pub id: AssetId,
++    /// Human-readable logical animation name.
++    pub name: String,
++    /// Index into [`GltfImportResult::skins`] that supplied the source profile.
++    pub skin_index: usize,
++    /// Portable skeleton-independent body motion.
++    pub motion: HumanoidMotion,
++}
++
++/// Derived Humanoid authoring data available from one imported model.
++///
++/// This is intentionally rebuilt from the canonical Native clips and skeletons instead of
++/// becoming another mutable field on [`GltfImportResult`]. The manifest persists profiles and
++/// stable sub-asset IDs; target-specific clips remain disposable Derived Cache data.
++#[derive(Clone, Default)]
++pub struct HumanoidImportCatalog {
++    /// One valid model-owned profile per resolved skeleton identity.
++    pub profiles: Vec<HumanoidProfile>,
++    /// Portable motion variants whose source skeleton has a valid profile.
++    pub motions: Vec<GltfHumanoidMotionData>,
++    /// Non-blocking mapping/conversion diagnostics. Native clips remain usable on warning.
++    pub diagnostics: Vec<Diagnostic>,
++}
++
+ /// One decoded texture sub-asset extracted from a glTF source.
+ #[derive(Clone)]
+ pub struct GltfTextureData {
+@@ -251,6 +291,77 @@ pub struct GltfImportResult {
+ }
+ 
+ impl GltfImportResult {
++    /// Derives valid model profiles and portable Humanoid variants from canonical Native data.
++    ///
++    /// Detection is conservative and runs only at import/authoring time. The returned profiles
++    /// already contain stable BoneIds; the portable motions never retain source bone names.
++    pub fn humanoid_catalog(&self) -> HumanoidImportCatalog {
++        let mut profiles = Vec::new();
++        let mut diagnostics = Vec::new();
++        let mut seen_skeletons = HashSet::<AssetId>::new();
++
++        for skin in &self.skins {
++            if !seen_skeletons.insert(skin.skeleton.id.clone()) {
++                continue;
++            }
++            let mut detection = detect_humanoid_profile(&skin.skeleton);
++            diagnostics.append(&mut detection.diagnostics);
++            if let Some(profile) = detection.profile {
++                profiles.push(profile);
++            }
++        }
++
++        let profiles_by_skeleton = profiles
++            .iter()
++            .map(|profile| (profile.skeleton.as_str(), profile))
++            .collect::<HashMap<_, _>>();
++        let mut motions = Vec::new();
++        for animation in &self.animations {
++            let Some(skin) = self.skins.get(animation.skin_index) else {
++                continue;
++            };
++            let Some(profile) = profiles_by_skeleton.get(skin.skeleton.id.as_str()) else {
++                continue;
++            };
++            match build_humanoid_motion(&animation.clip, &skin.skeleton, profile) {
++                Ok(mut built) => {
++                    diagnostics.append(&mut built.diagnostics);
++                    motions.push(GltfHumanoidMotionData {
++                        source_index: animation.source_index,
++                        id: imported_humanoid_motion_sub_asset_id(&animation.id),
++                        name: animation.name.clone(),
++                        skin_index: animation.skin_index,
++                        motion: built.motion,
++                    });
++                }
++                Err(error) => diagnostics.push(Diagnostic::warning(
++                    "anim.humanoid_conversion_unavailable",
++                    format!(
++                        "animation `{}` keeps its Native variant but has no Humanoid variant: {error}",
++                        animation.name
++                    ),
++                )),
++            }
++        }
++        motions.sort_by_key(|motion| motion.source_index);
++        HumanoidImportCatalog {
++            profiles,
++            motions,
++            diagnostics,
++        }
++    }
++
+     /// Builds the persistent stable-ID catalog for this imported document.
+@@ -319,6 +430,15 @@ impl GltfImportResult {
+                 asset.source_index,
+             )
+         }));
++        let humanoid_catalog = self.humanoid_catalog();
++        assets.extend(humanoid_catalog.motions.iter().map(|asset| {
++            make(
++                &asset.id,
++                ImportedSubAssetKind::HumanoidMotion,
++                format!("{} Humanoid", asset.name),
++                asset.source_index,
++            )
++        }));
+         // Morphs are catalogued per owning mesh, so a morph shared by
+diff --git a/crates/engine/src/lib.rs b/crates/engine/src/lib.rs
+--- a/crates/engine/src/lib.rs
++++ b/crates/engine/src/lib.rs
+@@ -299,8 +299,8 @@ pub use model_import::{
+     fingerprint_model_source, import_model_bytes, import_model_path,
+     import_model_path_with_contact_bones, model_source_dependencies, GltfAnimationData,
+-    GltfImportResult, GltfMaterialData, GltfMeshData, GltfNodeBinding, GltfSkinData,
+-    GltfTextureData, ModelImportError, SKELETON_REBIND_DIAGNOSTIC,
++    GltfHumanoidMotionData, GltfImportResult, GltfMaterialData, GltfMeshData, GltfNodeBinding,
++    GltfSkinData, GltfTextureData, HumanoidImportCatalog, ModelImportError,
++    SKELETON_REBIND_DIAGNOSTIC,
+ };
