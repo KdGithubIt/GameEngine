@@ -1,0 +1,14 @@
+リリースビルドして Launcher を起動します
+ echo ========================================
+ echo.
+ 
+-rem --releaseにより最適化されたreleaseプロファイルを選択します。
+-rem -pと--binで、ワークスペース内のengine-editor実行バイナリを明示的に指定します。
+-rem ビルドに成功すると、cargo runが生成されたエディタを続けて起動します。
+-cargo run --release -p engine-editor --bin engine-editor
++rem LauncherはProject選択を所有し、選択後に同じフォルダのEditorを起動します。
++rem 両方の実行ファイルを先にビルドし、releaseフォルダのLauncherを起動します。
++cargo build --release -p engine-launcher -p engine-editor
++if not errorlevel 1 target\release\engine-launcher.exe
+ 
+ rem Cargoの終了コードが0以外なら、コンパイルエラーまたはエディタ起動時の
