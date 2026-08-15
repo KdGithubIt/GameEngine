@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "request_id": "renderer-pbr-contract-adr-20260816-r1",
+  "target_branch": "chatgpt/gameengine-render-pbr-material-foundation",
+  "expected_head_sha": "3c06a4046ca3dacf69a0792c70338377e11870c9",
+  "patch_parts": ["part-0000.patch"],
+  "commit_message": "Docs: define generic PBR material texture contract",
+  "pr_title": "Renderer: add PBR material texture contract",
+  "pr_body": "Phase 2B renderer foundation. ADR 0120 records the generic schema-v3 PBR texture contract: packed roughness/metallic and ambient occlusion are linear data, scalar factors multiply texture values, AO belongs only to StandardLit indirect lighting, normal scale is tangent-space data, importers normalize to one shared contract, and ToonLit/Unlit/outline remain independent."
+}
