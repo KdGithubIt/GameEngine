@@ -277,7 +277,19 @@ jobs:
             pr_number="$(jq -r '.[0].number' <<< "$pr_json")"
             pr_url="$(jq -r '.[0].url' <<< "$pr_json")"
             [[ "$(jq -r '.[0].baseRefName' <<< "$pr_json")" == "main" ]] || fail "Existing PR does not target main."
-            [[ "$(jq -r '.[0].headRefOid' <<< "$pr_json")" == "$pushed_head_sha" ]] || fail "Existing PR head does not match pushed commit."
+
+            pr_head_sha="$(jq -r '.[0].headRefOid' <<< "$pr_json")"
+            for attempt in 1 2 3 4 5 6 7 8 9 10; do
+              if [[ "$pr_head_sha" == "$pushed_head_sha" ]]; then
+                break
+              fi
+              if [[ "$attempt" -eq 10 ]]; then
+                fail "Existing PR head did not converge to pushed commit."
+              fi
+              sleep 1
+              pr_head_sha="$(gh pr view "$pr_number" --repo "$GITHUB_REPOSITORY" --json headRefOid --jq '.headRefOid')"
+            done
+
             gh pr edit "$pr_number" --repo "$GITHUB_REPOSITORY" --title "$pr_title" --body-file "$pr_body_file"
             if [[ "$(jq -r '.[0].isDraft' <<< "$pr_json")" != "true" ]]; then
               gh pr ready "$pr_number" --repo "$GITHUB_REPOSITORY" --undo
