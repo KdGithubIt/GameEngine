@@ -1,0 +1,137 @@
+diff --git a/docs/adr/0055-render-authoring-and-material-v2-contract.md b/docs/adr/0055-render-authoring-and-material-v2-contract.md
+--- a/docs/adr/0055-render-authoring-and-material-v2-contract.md
++++ b/docs/adr/0055-render-authoring-and-material-v2-contract.md
+@@ -1,6 +1,13 @@
+ # ADR 0055: Render Authoring and Material v2 Contract
+ 
+ - Status: Accepted
+ - Date: 2026-06-30
++
++> **Persistence-policy supersession (2026-08-15):** the compatibility-reader
++> portions of this ADR were superseded by ADR 0115's current-format-only
++> baseline. ADR 0120 advances the one accepted `.material.json` format to
++> schema v3. The rendering-quality ownership and material-authoring decisions
++> below remain historical context, but v1/v2 compatibility readers are no
++> longer part of the engine contract.
+ 
+ ## Context
+ 
+diff --git a/docs/adr/README.md b/docs/adr/README.md
+--- a/docs/adr/README.md
++++ b/docs/adr/README.md
+@@ -177,6 +177,7 @@
+ | [0117](0117-project-first-launcher-and-editor-application-lifecycle.md) | Project-First Launcher and Editor Application Lifecycle |
+ | [0118](0118-rendering-color-space-and-texture-semantics.md) | Rendering Color-Space and Texture-Semantics Contract |
+ | [0119](0119-tangent-space-gpu-contract-and-shared-material-fragment.md) | Tangent-Space GPU Contract and Shared Material Fragment Stage |
++| [0120](0120-standardlit-pbr-textures-and-generated-tangents.md) | StandardLit PBR Textures and Generated Tangents |
+ 
+ ## Phase 41+ ADR Targets
+ 
+diff --git a/docs/adr/0120-standardlit-pbr-textures-and-generated-tangents.md b/docs/adr/0120-standardlit-pbr-textures-and-generated-tangents.md
+new file mode 100644
+--- /dev/null
++++ b/docs/adr/0120-standardlit-pbr-textures-and-generated-tangents.md
+@@ -0,0 +1,102 @@
++# ADR 0120: StandardLit PBR Textures and Generated Tangents
++
++- Status: Accepted
++- Date: 2026-08-15
++- Supersedes: material persistence compatibility portions of ADR 0055
++
++## Context
++
++ADR 0119 established a generic tangent GPU stream and one authoritative
++material fragment stage for static and skinned meshes, but StandardLit still
++used scalar roughness/metallic values and ignored imported occlusion maps.
++Normal maps also had no authored scale, and meshes without source tangents
++always relied on derivative reconstruction.
++
++glTF already exposes the metallic-roughness, occlusion, and normal-scale
++semantics needed by the generic material model. These concepts are not glTF
++renderer features: FBX, procedural assets, editor-authored materials, and
++future formats need the same engine-level representation.
++
++ADR 0115 requires persisted formats to have one current schema rather than
++accumulating compatibility readers.
++
++## Decision
++
++### Material schema v3
++
++`.material.json` schema version 3 is the only accepted material document
++version. Version 2 is rejected explicitly and repository-authored fixtures and
++writers move to v3 in the same change.
++
++The generic material contract adds:
++
++- `metallic_roughness_texture`: optional linear-data texture,
++- `occlusion_texture`: optional linear-data texture,
++- `normal_scale`: finite scalar, default `1.0`,
++- `occlusion_strength`: scalar in `[0, 1]`, default `1.0`.
++
++Existing `roughness` and `metallic` remain scalar factors.
++
++For StandardLit, the packed metallic-roughness texture follows the common
++channel contract: green multiplies roughness and blue multiplies metallic.
++The occlusion texture uses red. A missing numeric texture behaves as white,
++so scalar-only materials are unchanged.
++
++`normal_scale` multiplies tangent-space X/Y before the sampled normal is
++normalized. It is allowed to be negative; only non-finite values are invalid.
++
++Per ADR 0118, normal, metallic-roughness, and occlusion textures are linear
++numeric data. Base color, emissive, toon ramp, and sphere/matcap textures keep
++their color-texture semantics.
++
++Ambient occlusion modulates ambient/indirect lighting only. It does not darken
++the direct directional-light term. `occlusion_strength` blends between no
++occlusion and the sampled red channel.
++
++ToonLit and Unlit keep their independent shading contracts and do not acquire
++StandardLit metallic-roughness or AO behavior.
++
++### Import normalization
++
++The format-independent model IR carries the four new generic material
++semantics. glTF maps its native packed metallic-roughness texture, occlusion
++texture/strength, and normal scale directly into that IR. Formats without a
++native equivalent emit the generic defaults. Renderer code never branches on
++the source format.
++
++Extracted imported materials use the same schema-v3 `MaterialAsset` contract
++as standalone author-authored materials, preserving ADR 0101's remap model.
++
++### Tangent generation
++
++Source tangents always win.
++
++When a mesh has no source tangents and at least one material using it has a
++normal map, the import builder runs the MikkTSpace reference algorithm before
++the mesh crosses into runtime rendering. The dependency is isolated to
++`engine-import`; renderer/runtime crates do not depend on MikkTSpace.
++
++MikkTSpace returns per-face-corner tangent frames. The engine does not silently
++split imported topology because doing so would require synchronized remapping
++of skinning, morphs, and other per-vertex data. A generated tangent is therefore
++accepted into the existing per-vertex stream only when all corners sharing
++that vertex agree on tangent direction and handedness. If generation fails or
++shared corners require incompatible frames, the mesh keeps no generated
++tangent stream and the renderer retains ADR 0119's derivative TBN fallback.
++The importer emits a diagnostic for that fallback instead of producing an
++incorrect indexed tangent basis.
++
++## Consequences
++
++- StandardLit can represent the core metallic-roughness texture contract of
++  glTF without a format-specific render path.
++- Numeric texture color space is explicit end-to-end.
++- Existing scalar-only materials preserve their appearance through white
++  fallback data textures.
++- Normal mapping quality improves automatically for suitable meshes without
++  changing the public `Vertex` layout or serialized mesh identity.
++- Some meshes with UV seams encoded through shared indices still use the
++  derivative fallback until a future topology-remapping import stage can split
++  vertices together with every dependent per-vertex channel.
++- Material schema v2 assets must be regenerated or rewritten as v3; no legacy
++  parser is retained.
++- Outline, shadow, Stable ID, and crate ownership contracts are unchanged.

@@ -1,0 +1,23 @@
+diff --git a/crates/assets/src/model_ir.rs b/crates/assets/src/model_ir.rs
+--- a/crates/assets/src/model_ir.rs
++++ b/crates/assets/src/model_ir.rs
+@@ -520,11 +520,19 @@ pub struct IrMaterial {
+     /// Base color (albedo) multiplier.
+     pub base_color: LinearRgba,
+     /// Original selector of the base-color texture, if any and if it
+     /// decoded successfully.
+     pub base_color_texture: Option<usize>,
+     /// Original selector of the tangent-space normal texture, if any and if
+     /// it decoded successfully.
+     pub normal_texture: Option<usize>,
++    /// Scalar applied to tangent-space normal-map X/Y before normalization.
++    pub normal_scale: f32,
++    /// Packed StandardLit texture selector: green = roughness, blue = metallic.
++    pub metallic_roughness_texture: Option<usize>,
++    /// StandardLit ambient-occlusion texture selector sampled from red.
++    pub occlusion_texture: Option<usize>,
++    /// Strength of the ambient-occlusion texture in [0, 1].
++    pub occlusion_strength: f32,
+     /// Original selector of the emissive texture, if any and if it decoded
+     /// successfully.
+     pub emissive_texture: Option<usize>,
