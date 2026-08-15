@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0110-humanoid-package-envelope-lint-fix-20260816-r2",
+  "target_branch": "chatgpt/gameengine-adr-0110-humanoid-motion",
+  "expected_head_sha": "d4fc8d8ebe56f60cf98fa5b11f5c3fe955e4b591",
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Fix Humanoid package envelope lint",
+  "pr_title": "ADR 0110: implement humanoid animation sources",
+  "pr_body": "## Summary\n\nImplements ADR 0110 humanoid profiles, portable Humanoid motion, typed Animation Set sources, and the target-bake/package path.\n\nThis request removes a stale private schema-version alias reported by affected Windows Clippy after the packaged-bake envelope switched to the public schema constant.\n\n<!-- gameengine-chatgpt-dispatcher -->"
+}
