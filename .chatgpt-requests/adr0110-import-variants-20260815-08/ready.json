@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0110-import-variants-20260815-08",
+  "target_branch": "chatgpt/gameengine-adr-0110-humanoid-motion",
+  "expected_head_sha": "1d63e5e68a3f64f3c10bc7cabb649df248e08fef",
+  "patch_parts": ["part-0000.patch", "part-0001.patch", "part-0002.patch"],
+  "commit_message": "Wire ADR 0110 Humanoid import variants",
+  "pr_title": "Implement ADR 0110 humanoid profiles and motion",
+  "pr_body": "Implements ADR 0110 in staged dispatcher requests. This stage adds a stable HumanoidMotion imported-sub-asset kind nested under each Native clip ID, derives valid model-owned profiles and portable motion variants during model import, preserves Native clips and non-blocking diagnostics, persists detected profiles into model import settings, and preserves authored profiles across reimport rather than silently replacing stale mappings. Earlier stages added profile validation and pure portable motion bake/cache. Follow-up stages wire VMD Humanoid variants, Animation Set Auto/Native/Humanoid source selection, editor profile configuration/status, target resolution, and packaging."
+}
