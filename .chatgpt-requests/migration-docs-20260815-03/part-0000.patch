@@ -1,0 +1,320 @@
+diff --git a/README.md b/README.md
+--- a/README.md
++++ b/README.md
+@@ -10,16 +10,15 @@
+ 
+ ## Validation
+ 
+-From the repository root:
++The local core gate from the repository root is:
+ 
+ ```text
+ cargo fmt --all --check
+ cargo clippy --workspace --all-targets -- -D warnings
+ cargo test --workspace
+-cargo doc --workspace --no-deps
+ ```
+ 
+-Windows developers can run the repository validation script with:
++Windows developers can run that full-workspace core gate with:
+ 
+ ```powershell
+ .\scripts\validate.ps1
+@@ -31,7 +30,7 @@
+ bash scripts/validate.sh
+ ```
+ 
+-GitHub Actions uses the same affected/full validation model documented in `docs/DEVELOPMENT_WORKFLOW.md`.
++Windows CI uses `affected`, `full`, and `docs` validation modes as documented in `docs/DEVELOPMENT_WORKFLOW.md`. Full validation additionally runs `cargo check --workspace` and `cargo doc --workspace --no-deps`; an affected or documentation-only success must not be reported as a full-workspace five-command result.
+ 
+ ## Automation
+ 
+diff --git a/CLAUDE.md b/CLAUDE.md
+--- a/CLAUDE.md
++++ b/CLAUDE.md
+@@ -12,7 +12,19 @@
+ `docs/AGENTS.md` を開き、作業場所に対応するグループを探す。
+ そのグループに書かれたドキュメントだけを読む。それ以外は読まない。
+ 
+-## 完了前に必ず実行する
++## ローカルでの引き渡し前ゲート
++
++```
++cargo fmt --all --check
++cargo clippy --workspace --all-targets -- -D warnings
++cargo test --workspace
++```
++
++Windows では `scripts/validate.ps1`、Linux/macOS では `scripts/validate.sh` でこの full-workspace core gate を一括実行できる。
++
++## CIでの完了判定
++
++Windows Validation の `full` mode は次の5コマンドを実行する。
+ 
+ ```
+ cargo fmt --all --check
+@@ -22,7 +34,7 @@
+ cargo doc --workspace --no-deps
+ ```
+ 
+-Windows では `scripts/validate.ps1`、Linux/macOS では `scripts/validate.sh` で同じ検証を一括実行できる。
++通常のPRは `affected`、文書のみのPRは `docs` になることがある。選択された mode と scope は `docs/DEVELOPMENT_WORKFLOW.md` を正とし、`affected` 成功を workspace 全体の5検証成功として扱わない。
+ 
+ ## 絶対にやってはいけないこと
+ 
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -3,5 +3,7 @@
+ and when diagnosing a documentation CI failure.
+ 
+ The local core-validation entry points are `scripts/validate.ps1` on Windows
+-and `scripts/validate.sh` on Linux/macOS. These scripts intentionally remain
+-full local gates; the affected-path optimization is a CI scheduling policy.
++and `scripts/validate.sh` on Linux/macOS. These scripts intentionally run the
++full-workspace core local gate (formatting, Clippy, and tests); the affected-path
++optimization is a CI scheduling policy. Workspace Check and documentation remain
++part of Windows `full` validation rather than the local core scripts.
+diff --git a/docs/CHATGPT_AUTOMATION.md b/docs/CHATGPT_AUTOMATION.md
+--- a/docs/CHATGPT_AUTOMATION.md
++++ b/docs/CHATGPT_AUTOMATION.md
+@@ -194,30 +194,29 @@
+ Validation has three modes: `affected`, `full`, and `docs`.
+ 
+ ### Affected mode
+ 
+ Normal pull requests, merge groups, and pushes to `main` use `affected` mode
+ when changed paths can be classified safely. The planner runs
+-`cargo metadata --format-version 1 --locked`, derives workspace membership and
+-the workspace dependency graph, maps changed files to their owning packages,
+-and selects the changed packages plus their transitive reverse-dependency
+-closure.
++`cargo metadata --format-version 1 --locked`, derives workspace membership,
++maps changed files to their owning packages, and selects the changed packages
++for the normal PR critical path. Reverse dependents are intentionally not added;
++full validation on `main` and nightly provides the cross-workspace safety net.
+ 
+-Package names, crate directories, and dependency relationships are not
+-hard-coded in the workflow. New or split crates therefore participate as soon
+-as they are workspace members visible in Cargo metadata. A package-local
+-`Cargo.toml` change remains affected-mode when current metadata still resolves
+-it safely. A removed package that cannot be reconstructed from current metadata
+-falls back to `full` rather than guessing.
++Package names and crate directories are not hard-coded in the workflow. New or
++split crates therefore participate as soon as they are workspace members visible
++in Cargo metadata. A package-local `Cargo.toml` change remains affected-mode when
++current metadata still resolves it safely. A removed package that cannot be
++reconstructed from current metadata falls back to `full` rather than guessing.
+ 
+ The planner emits a machine-readable plan containing validation mode, skip
+ state, changed packages, affected packages, and the package sets selected for
+ tests, Clippy, and documentation. The Windows executor consumes that plan and
+ does not repeat classification logic.
+ 
+ Affected validation runs formatting plus package-selected Clippy, tests, and
+-documentation. Clippy uses `--all-targets` for the selected packages so target
+-coverage is not reduced merely because the run is affected-mode.
++documentation. Affected Clippy uses package selection without `--all-targets`;
++full mode retains `--all-targets` for workspace-wide target coverage.
+ 
+ ### Full mode
+ 
+ Full mode is mandatory when:
+diff --git a/docs/PUBLIC_REPOSITORY_MIGRATION.md b/docs/PUBLIC_REPOSITORY_MIGRATION.md
+--- a/docs/PUBLIC_REPOSITORY_MIGRATION.md
++++ b/docs/PUBLIC_REPOSITORY_MIGRATION.md
+@@ -1,20 +1,23 @@
+ # Public Repository Migration
+ 
+-Status: Accepted implementation plan
++Status: Public cutover completed 2026-08-15; legacy private automation retirement prepared in `KdGithubIt/RustProject` PR #72
+ Target repository: `KdGithubIt/GameEngine`
+ Source repository: `KdGithubIt/RustProject`
++Audited source snapshot: `68e136f9a06b52f6e024b4f895f7db5c8510ad00`
+ Source boundary: `GameEngine/`
+-History policy: clean snapshot; do not import the private repository history
++History policy: clean snapshot; the private repository history was not imported
+ 
+-## Goal
++## Result
+ 
+-Move GameEngine development and its Windows GitHub Actions validation to a dedicated public repository without exposing unrelated private repository content or private development history.
++GameEngine development and Windows GitHub Actions validation now run from the dedicated public `KdGithubIt/GameEngine` repository. The public repository uses the former `GameEngine/` workspace as its repository root, while `KdGithubIt/RustProject` remains the private migration source.
+ 
+-The source `RustProject` repository remains private. The public repository uses the current `GameEngine/` workspace as its repository root.
++The audited standalone snapshot was merged through public bootstrap PR #1. Its full Windows validation passed formatting, workspace Check, workspace Clippy with all targets and warnings denied, workspace tests, and workspace documentation. The repository-native ChatGPT Dispatcher was then exercised end to end with temporary PR #2; its `affected` validation selected `engine-ecs` and succeeded. PR #2 was closed without merge and its probe branch was reset to `main`.
++
++The remaining private-side cutover cleanup is represented by `KdGithubIt/RustProject` PR #72, which removes the five legacy GameEngine-specific workflows while leaving the unrelated private `deploy.yml` workflow and old `GameEngine/` source tree intact. That retirement becomes effective only after PR #72 is merged.
+ 
+ ## Public snapshot contract
+ 
+-`scripts/public/Export-PublicSnapshot.ps1` is the source of truth for the initial file boundary. It uses an allow-list rather than copying the whole `GameEngine/` directory and deleting files afterward.
++`scripts/public/Export-PublicSnapshot.ps1` records the initial publication boundary. It uses an allow-list rather than copying the whole former `GameEngine/` directory and deleting files afterward.
+ 
+ The snapshot includes:
+ 
+@@ -32,19 +35,19 @@
+ 
+ ## Public workflow set
+ 
+-The public repository contains only these initial workflows:
++The public repository contains these GameEngine workflows:
+ 
+ 1. `gameengine-chatgpt-dispatch-trigger.yml` — read-only signal for immutable ChatGPT request records.
+ 2. `gameengine-chatgpt-dispatcher.yml` — trusted default-branch workflow that applies authorized patches and creates/updates Draft pull requests.
+ 3. `gameengine-windows-validation.yml` — exact-head Windows validation with affected/full/docs planning.
+ 
+-The legacy bridge and auto-merge workflows are not exported. Public dispatcher pull requests remain Draft and require a human merge decision.
++The legacy bridge and auto-merge workflows were not migrated. Public dispatcher pull requests remain Draft and require a human merge decision.
+ 
+-Third-party actions in these public workflow templates are pinned to full commit SHAs.
++Third-party actions in these public workflows are pinned to full commit SHAs.
+ 
+ ## Public dispatcher trust boundary
+ 
+-The `chatgpt-dispatch` branch remains transport data, not executable automation. The signal workflow has read-only repository access. The write-capable dispatcher is loaded from `main` via `workflow_run` and repeats all request validation.
++The `chatgpt-dispatch` branch is transport data, not executable automation. The signal workflow has read-only repository access. The write-capable dispatcher is loaded from `main` via `workflow_run` and repeats all request validation.
+ 
+ In the standalone public repository, ChatGPT patch paths are explicitly allow-listed. Product/source/documentation paths are allowed, while `.github/**` and `.chatgpt-requests/**` are forbidden. This prevents a patch request from rewriting the trusted workflow definitions or its own transport records.
+ 
+@@ -52,40 +55,47 @@
+ 
+ ## Validation layout compatibility
+ 
+-`scripts/ci/New-ValidationPlan.ps1` discovers the Git repository root independently from the workspace root. The same planner therefore supports both layouts:
++`scripts/ci/New-ValidationPlan.ps1` discovers the Git repository root independently from the workspace root. The planner retains compatibility with both layouts during cutover support:
+ 
+ ```text
+-RustProject/GameEngine/   # current private monorepo layout
+-GameEngine/               # standalone public repository root
++RustProject/GameEngine/   # legacy private migration-source layout
++GameEngine/               # standalone repository root when cloned into GameEngine/
+ ```
+ 
+-`Test-ValidationPlanner.ps1` exercises both layouts so path-classification changes cannot silently break either migration phase.
++`Test-ValidationPlanner.ps1` exercises both layouts so path-classification changes cannot silently regress the retained migration compatibility.
+ 
+-## Migration sequence
++## Completed cutover sequence
+ 
+-1. Run `scripts/public/Test-PublicSnapshot.ps1` against the latest private `main` state.
+-2. Export a fresh snapshot with `Export-PublicSnapshot.ps1`.
+-3. Create `KdGithubIt/GameEngine` as a new private repository; do not fork or import old history.
+-4. Commit only the exported snapshot as the new repository's initial history.
+-5. Run the Windows validation workflow from the private staging repository.
+-6. Configure default-branch protection/rules for pull-request-based changes and required validation.
+-7. Confirm repository secrets/variables are empty except settings intentionally created for the new repository. Do not copy old repository secrets wholesale.
+-8. Change the new repository visibility to public only after the snapshot boundary and validation result are clean.
+-9. Run the public standard-hosted Windows validation once after publication.
+-10. Exercise one ChatGPT dispatcher request end-to-end: request transport, Draft PR, exact-head Windows validation, and result inspection.
+-11. After the standalone path is stable, disable GameEngine-specific validation/automation in the private monorepo. Do not delete the old GameEngine tree as part of the initial cutover.
++1. Selected and fixed the private source snapshot at `68e136f9a06b52f6e024b4f895f7db5c8510ad00`.
++2. Created the clean `KdGithubIt/GameEngine` repository without importing private Git history.
++3. Exported the allow-listed `GameEngine/` boundary and ran publication safety checks before publishing the snapshot branch.
++4. Installed only the approved public Dispatcher signal, Dispatcher, and Windows Validation workflows.
++5. Ran full public Windows validation and confirmed all five workspace commands succeeded.
++6. Merged bootstrap PR #1 to `main`.
++7. Enabled GitHub Actions to create Dispatcher Draft pull requests.
++8. Exercised the production Dispatcher path end to end with PR #2 and confirmed `affected` validation success for `engine-ecs`.
++9. Closed PR #2 without merge and reset its probe branch to `main`.
++10. Prepared `KdGithubIt/RustProject` PR #72 to retire the legacy private GameEngine workflows.
+ 
+-## Stop conditions
++## Post-cutover requirements
+ 
+-Do not make the staging repository public when any of the following is unresolved:
++- Merge `KdGithubIt/RustProject` PR #72 before treating private GameEngine Actions retirement as effective.
++- Keep the old private `GameEngine/` tree as migration history until a separate explicit cleanup decision is made.
++- Remove any temporary migration-only credential from the public repository if it is still configured; normal Dispatcher and validation workflows do not require it.
++- Continue to keep Dispatcher pull requests Draft and require a human merge decision.
++- Treat `affected`, `full`, and `docs` results according to their actual validation scope; never report an affected success as full-workspace success.
+ 
+-- an unreviewed model/media/font/archive file is present;
+-- the security scan reports a high-confidence finding;
+-- the exported workflow set differs from the three approved workflows;
+-- standalone Windows validation fails;
+-- the dispatcher can mutate `.github/` or `.chatgpt-requests/`;
+-- the source branch moved after the audited snapshot was selected.
++## Historical pre-public stop conditions
++
++The snapshot was not eligible for publication until all of the following were satisfied:
++
++- reviewed model/media/font/archive paths only;
++- no high-confidence credential or private-user-path findings;
++- exactly the approved public workflow set;
++- successful standalone Windows validation;
++- Dispatcher trust boundaries preventing `.github/` or `.chatgpt-requests/` mutation;
++- an unchanged audited private source SHA.
+ 
+ ## Actions usage objective
+ 
+-The standalone repository is designed to use standard GitHub-hosted `windows-latest` and `ubuntu-latest` runners by default. Self-hosted Windows runners remain an explicit repository-variable opt-in, and fork pull requests are never eligible for self-hosted runner selection.
++The standalone public repository uses standard GitHub-hosted `windows-latest` and `ubuntu-latest` runners by default. Self-hosted Windows runners remain an explicit repository-variable opt-in, and fork pull requests are never eligible for self-hosted runner selection. Retiring the legacy private GameEngine workflows prevents duplicate private-repository validation and nightly Actions usage after cutover.
+diff --git a/docs/OSS_PUBLICATION_PLAN.md b/docs/OSS_PUBLICATION_PLAN.md
+--- a/docs/OSS_PUBLICATION_PLAN.md
++++ b/docs/OSS_PUBLICATION_PLAN.md
+@@ -1,6 +1,6 @@
+ # OSS Publication Plan
+ 
+-Status: Draft
++Status: Historical publication plan; repository cutover completed 2026-08-15
+ Target license: MIT OR Apache-2.0
+ Target publication model: New public repository without importing the existing
+ private development history
+@@ -9,6 +9,13 @@
+ DCO: required
+ API stability: breaking changes allowed before 1.0
+ Scene/project schema stability: best-effort compatibility
+-Publication flow: private staging repository -> scan/CI/tag -> public
++Publication flow: repository-boundary cutover completed; remaining license/release work stays open
++
++> The repository-boundary and staging portions of this document are historical.
++> `docs/PUBLIC_REPOSITORY_MIGRATION.md` records the completed cutover to
++> `KdGithubIt/GameEngine`. References below to `GameEngine/...`, a private
++> staging repository, or pre-public copy steps describe the old source layout
++> and MUST NOT be used as current repository-operation instructions. Unfinished
++> licensing, release, contributor, and governance items remain planning work.
+ 
+ ## Purpose
+diff --git a/docs/OSS_REPO_STAGING_CHECKLIST.md b/docs/OSS_REPO_STAGING_CHECKLIST.md
+--- a/docs/OSS_REPO_STAGING_CHECKLIST.md
++++ b/docs/OSS_REPO_STAGING_CHECKLIST.md
+@@ -1,10 +1,18 @@
+ # OSS Repository Staging Checklist
+ 
+-Status: Draft
+-Purpose: Concrete checklist for preparing a clean public staging repository
+-before publishing GameEngine under Apache-2.0.
++Status: Historical pre-cutover checklist
++Purpose: Preserve the original staging audit checklist used to reason about a
++clean public repository boundary before the 2026-08-15 cutover.
+ 
+-This checklist assumes the public repository will be created from the current
+-`GameEngine` directory, without importing the existing private git history.
++> The repository staging and publication-boundary work is complete. Current
++> repository operations use `KdGithubIt/GameEngine` with the workspace at the
++> repository root. See `docs/PUBLIC_REPOSITORY_MIGRATION.md` for the completed
++> cutover record. Paths, commands, unchecked boxes, and private-staging steps
++> below are historical unless they describe still-unfinished licensing, release,
++> contributor, or governance work.
++
++This checklist originally assumed the public repository would be created from
++the private `RustProject/GameEngine` directory without importing private Git
++history.
+ 
+ ## 0. Decisions Before Copying
+diff --git a/docs/AI_FRIENDLY_AUTHORING_SPEC.md b/docs/AI_FRIENDLY_AUTHORING_SPEC.md
+--- a/docs/AI_FRIENDLY_AUTHORING_SPEC.md
++++ b/docs/AI_FRIENDLY_AUTHORING_SPEC.md
+@@ -2,9 +2,9 @@
+ 
+ Status: Draft  
+ Version: 0.1.0  
+-Canonical location: `GameEngine/docs/AI_FRIENDLY_AUTHORING_SPEC.md`
++Canonical location: `docs/AI_FRIENDLY_AUTHORING_SPEC.md`
+ 
+ Rust implementation and documentation style is defined separately in
+-`GameEngine/docs/RUST_CODE_STYLE.md`.
++`docs/RUST_CODE_STYLE.md`.
+ 
+ ## 1. Purpose
