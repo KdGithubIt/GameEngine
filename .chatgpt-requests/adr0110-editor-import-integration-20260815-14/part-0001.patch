@@ -1,0 +1,69 @@
+diff --git a/crates/editor/src/asset_import.rs b/crates/editor/src/asset_import.rs
+--- a/crates/editor/src/asset_import.rs
++++ b/crates/editor/src/asset_import.rs
+@@ -7,3 +7,7 @@
+-use engine::{ImportedSubAsset, SkeletonRecord};
++use engine::{
++    asset::HumanoidProfile,
++    humanoid_import::{build_humanoid_import_catalog, humanoid_imported_sub_assets},
++    ImportedSubAsset, SkeletonRecord,
++};
+ use engine_authoring::prefab::PrefabAsset;
+ use engine_authoring::{AssetId, Diagnostic};
+@@ -72,5 +76,8 @@
+     /// Bone-catalog ledger for every skeleton this import bound to (ADR 0077),
+     /// persisted into `ImportSettings::skeleton_records` alongside
+     /// [`Self::sub_assets`].
+     pub skeleton_records: Vec<SkeletonRecord>,
++    /// Valid model-owned Humanoid profiles detected from this model import (ADR 0110).
++    /// Motion-only sources leave this empty because the target model owns the profile.
++    pub humanoid_profiles: Vec<HumanoidProfile>,
+     /// Per-clip detected ground-contact intervals (ADR 0080 §1), reflecting
+@@ -336,18 +343,25 @@
+-            let sub_assets = imported.imported_sub_assets();
++            let mut humanoid_catalog = build_humanoid_import_catalog(&imported);
++            let mut sub_assets = imported.imported_sub_assets();
++            sub_assets.extend(humanoid_imported_sub_assets(&humanoid_catalog));
+             let skeleton_records = imported.skeleton_records.clone();
+             let animation_contacts = resolve_animation_contacts(&imported);
+             let _ = sender.send(WorkerMessage::Complete(Box::new(AssetImportResult {
+                 project_path,
+                 source_id,
+                 source_path,
+                 source_fingerprint: Some(fingerprint),
+                 source_stamp: Some(source_stamp),
+                 source_dependencies: dependencies,
+                 sub_assets,
+                 skeleton_records,
++                humanoid_profiles: humanoid_catalog.profiles,
+                 animation_contacts,
+                 prefab,
+-                diagnostics: imported.diagnostics,
++                diagnostics: {
++                    let mut diagnostics = imported.diagnostics;
++                    diagnostics.append(&mut humanoid_catalog.diagnostics);
++                    diagnostics
++                },
+                 error: None,
+                 cancelled: false,
+             })));
+@@ -675,3 +689,4 @@
+                 sub_assets,
+                 skeleton_records,
++                humanoid_profiles: Vec::new(),
+                 animation_contacts,
+@@ -709,3 +724,4 @@
+                             sub_assets: Vec::new(),
+                             skeleton_records: Vec::new(),
++                            humanoid_profiles: Vec::new(),
+                             animation_contacts: Vec::new(),
+@@ -858,3 +874,4 @@
+         sub_assets: Vec::new(),
+         skeleton_records: Vec::new(),
++        humanoid_profiles: Vec::new(),
+         animation_contacts: Vec::new(),
+@@ -886,3 +903,4 @@
+         sub_assets: Vec::new(),
+         skeleton_records: Vec::new(),
++        humanoid_profiles: Vec::new(),
+         animation_contacts: Vec::new(),
