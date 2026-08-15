@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0110-motion-source-schema-v2-r4-20260815",
+  "target_branch": "chatgpt/gameengine-adr-0110-humanoid-motion",
+  "expected_head_sha": "1c522791da3a3a81faa1c6b9d56254b00150fa3a",
+  "patch_parts": [
+    "part-0000.patch",
+    "part-0001.patch",
+    "part-0002.patch",
+    "part-0003.patch"
+  ],
+  "commit_message": "Generalize Animation Set motion source references",
+  "pr_title": "Implement ADR 0110 humanoid profiles and motion",
+  "pr_body": "Continues ADR 0110 implementation. This stage bumps Animation Set documents to schema v2 and persists explicit Auto, Native, or Humanoid motion-source policy together with stable imported asset IDs. Old v1 documents are rejected rather than silently migrated, matching ADR 0091. Editor Native selection remains a convenience over the tagged contract while runtime and packaging consumers are adapted to the new stable reference type.\n\n<!-- gameengine-chatgpt-dispatcher -->\n"
+}
