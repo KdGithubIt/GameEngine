@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0110-humanoid-package-path-20260816",
+  "target_branch": "chatgpt/gameengine-adr-0110-humanoid-motion",
+  "expected_head_sha": "23923bdb2704bb154a71c5652ac323017d065da3",
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Add stable Humanoid package lookup path",
+  "pr_title": "ADR 0110: implement humanoid animation sources",
+  "pr_body": "## Summary\n\nImplements ADR 0110 humanoid profiles, portable Humanoid motion, typed Animation Set sources, and target bake/package resolution.\n\nThis request adds a stable-ID package lookup name so shipped playback can load a pre-baked Humanoid clip without reimporting or solving source motion at runtime.\n\n<!-- gameengine-chatgpt-dispatcher -->"
+}
