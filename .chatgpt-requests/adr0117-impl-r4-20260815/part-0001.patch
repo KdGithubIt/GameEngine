@@ -1,0 +1,180 @@
+             "schema_version must appear in JSON: {json}"
+         );
+         assert!(
+-            json.contains("\"schema_version\": 1"),
+-            "schema_version must be 1: {json}"
++            json.contains("\"schema_version\": 2"),
++            "schema_version must be 2: {json}"
++        );
++        assert!(
++            json.contains("\"project_id\": \"project_"),
++            "project_id must appear in JSON: {json}"
+         );
+     }
+@@ -490,5 +511,6 @@ mod tests {
+ 
+         let root = ProjectRoot::open(dir.path()).expect("open must succeed");
+         assert_eq!(root.config().name, "MyGame");
+-        assert_eq!(root.config().schema_version, 1);
++        assert_eq!(root.config().engine_version, "test-engine");
++        assert_eq!(root.config().schema_version, 2);
+     }
+@@ -527,7 +549,7 @@ mod tests {
+         let dir = tempfile::tempdir().expect("temp dir must be created");
+         fs::write(
+             dir.path().join("project.json"),
+-            r#"{"schema_version":0,"name":"OldGame"}"#,
++            r#"{"schema_version":0,"project_id":"project_01ARZ3NDEKTSV4RRFFQ69G5FAV","name":"OldGame","engine_version":"0.0.0"}"#,
+         )
+         .unwrap();
+ 
+diff --git a/crates/project-lifecycle/Cargo.toml b/crates/project-lifecycle/Cargo.toml
+new file mode 100644
+index 0000000..0000000
+--- /dev/null
++++ b/crates/project-lifecycle/Cargo.toml
+@@ -0,0 +1,12 @@
++[package]
++name = "engine-project-lifecycle"
++version = "0.1.0"
++edition = "2024"
++
++[dependencies]
++engine-authoring = { path = "../authoring" }
++serde = { version = "1", features = ["derive"] }
++serde_json = "1"
++
++[dev-dependencies]
++tempfile = "3"
+diff --git a/crates/project-lifecycle/src/lib.rs b/crates/project-lifecycle/src/lib.rs
+new file mode 100644
+index 0000000..0000000
+--- /dev/null
++++ b/crates/project-lifecycle/src/lib.rs
+@@ -0,0 +1,811 @@
++//! GUI-free project acquisition and desktop application lifecycle.
++//!
++//! This crate sits above `engine-authoring`: it validates the engine
++//! association in `project.json`, creates complete project scaffolds, owns the
++//! authoritative per-location Editor lease, and carries only ephemeral
++//! Launcher/Editor process-control state outside the project working tree.
++
++#![warn(missing_docs)]
++#![warn(rustdoc::broken_intra_doc_links)]
++
++use engine_authoring::{
++    initialize_game_project, replace_file_contents, AuthoringScene, ProjectConfig, ProjectError,
++    ProjectId, ProjectRoot, ProjectSettings, PROJECT_SCHEMA_VERSION,
++};
++use serde::{Deserialize, Serialize};
++use std::fmt;
++use std::fs::{self, File, OpenOptions, TryLockError};
++use std::io;
++use std::path::{Path, PathBuf};
++use std::process::Command;
++use std::time::{SystemTime, UNIX_EPOCH};
++
++/// Engine release association written into new `project.json` files.
++pub const CURRENT_ENGINE_ASSOCIATION: &str = env!("CARGO_PKG_VERSION");
++
++const EDITOR_LOCK_FILE: &str = "editor.lock";
++const EDITOR_OWNER_FILE: &str = "editor-owner.json";
++const EDITOR_READY_FILE: &str = "editor-ready.json";
++const EDITOR_ACTIVATE_FILE: &str = "activate.request";
++const EDITOR_CLOSE_FILE: &str = "close.request";
++const LAUNCHER_LOCK_FILE: &str = "launcher.lock";
++const LAUNCHER_REQUEST_FILE: &str = "launcher.request.json";
++
++/// Describes a project/application lifecycle failure.
++#[derive(Debug)]
++pub enum LifecycleError {
++    /// The underlying canonical project is invalid.
++    Project(ProjectError),
++    /// The project was written for another engine association.
++    IncompatibleEngine {
++        /// Association persisted in `project.json`.
++        found: String,
++        /// Association required by this build.
++        expected: &'static str,
++    },
++    /// A complete project cannot be published over an existing path.
++    ProjectAlreadyExists(PathBuf),
++    /// A project name cannot be used as one directory component.
++    InvalidProjectName(String),
++    /// The canonical project location already has an Editor process.
++    EditorAlreadyOpen(PathBuf),
++    /// A sibling desktop executable could not be located.
++    ExecutableNotFound(PathBuf),
++    /// One filesystem operation failed.
++    Io {
++        /// Path involved in the operation.
++        path: PathBuf,
++        /// I/O failure returned by the operating system.
++        source: io::Error,
++    },
++    /// JSON lifecycle metadata could not be encoded or decoded.
++    Json(serde_json::Error),
++    /// A GUI-free scaffold step failed after staging started.
++    Scaffold {
++        /// Stable name of the failed scaffold step.
++        step: &'static str,
++        /// Underlying error text.
++        message: String,
++    },
++}
++
++impl fmt::Display for LifecycleError {
++    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
++        match self {
++            Self::Project(error) => error.fmt(f),
++            Self::IncompatibleEngine { found, expected } => write!(
++                f,
++                "project engine association `{found}` is incompatible with this build (`{expected}` required)"
++            ),
++            Self::ProjectAlreadyExists(path) => {
++                write!(f, "project destination already exists: {}", path.display())
++            }
++            Self::InvalidProjectName(name) => write!(f, "invalid project name `{name}`"),
++            Self::EditorAlreadyOpen(path) => {
++                write!(f, "an Editor already owns {}", path.display())
++            }
++            Self::ExecutableNotFound(path) => {
++                write!(f, "desktop executable not found: {}", path.display())
++            }
++            Self::Io { path, source } => write!(f, "{}: {source}", path.display()),
++            Self::Json(error) => write!(f, "lifecycle metadata JSON error: {error}"),
++            Self::Scaffold { step, message } => {
++                write!(f, "project scaffold step `{step}` failed: {message}")
++            }
++        }
++    }
++}
++
++impl std::error::Error for LifecycleError {
++    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
++        match self {
++            Self::Project(error) => Some(error),
++            Self::Io { source, .. } => Some(source),
++            Self::Json(error) => Some(error),
++            Self::IncompatibleEngine { .. }
++            | Self::ProjectAlreadyExists(_)
++            | Self::InvalidProjectName(_)
++            | Self::EditorAlreadyOpen(_)
++            | Self::ExecutableNotFound(_)
++            | Self::Scaffold { .. } => None,
++        }
++    }
++}
++
++impl From<ProjectError> for LifecycleError {
++    fn from(value: ProjectError) -> Self {
++        Self::Project(value)
++    }
++}
++
++impl From<serde_json::Error> for LifecycleError {
++    fn from(value: serde_json::Error) -> Self {
++        Self::Json(value)
++    }
++}
++
