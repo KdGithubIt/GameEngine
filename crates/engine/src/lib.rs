@@ -55,6 +55,10 @@ pub mod fbx_import;
 /// Runtime two-bone foot IK correction against detected ground contacts
 /// (ADR 0080 §2).
 pub mod foot_ik;
+/// Humanoid profile validation and conservative import-time detection (ADR 0110).
+pub mod humanoid;
+/// Skeleton-independent humanoid motion conversion and target baking (ADR 0110).
+pub mod humanoid_motion;
 /// Typed gameplay-facing System, Query, Resource, Input, Event, View, and Command API.
 pub mod game_api;
 /// Host-validated processors for deferred project Rust commands.
@@ -82,6 +86,8 @@ pub mod gamepad;
 pub mod gltf_import;
 /// Prefab generation from an imported glTF/GLB source (ADR 0074).
 pub mod gltf_prefab;
+/// Humanoid profiles and portable motion variants derived during model import (ADR 0110).
+pub mod humanoid_import;
 /// Runtime attack-hitbox metadata and activation state.
 pub mod hitbox;
 /// Keyboard and mouse input resources.
