@@ -1,0 +1,215 @@
+diff --git a/crates/import/src/model_import.rs b/crates/import/src/model_import.rs
+--- a/crates/import/src/model_import.rs
++++ b/crates/import/src/model_import.rs
+@@ -20,9 +20,10 @@
+ use crate::mesh::{Mesh, SkinningVertexData, Submesh, Vertex};
+ use crate::model_ir::{IrAnimProperty, IrMeshData, ModelDocument, SkeletonScope};
+ use crate::morph::{MaterialMorphOffset, MaterialMorphOperation, MorphAsset};
+ use crate::rigid_body_rig::{
+     JointDef, RigidBodyDef, RigidBodyMode, RigidBodyRigAsset, RigidBodyShape,
+ };
+ use crate::skeleton_asset::{compute_skeleton_identity, BoneDef, BoneId, SkeletonAsset};
+ use crate::skinning::SkeletonNodeDesc;
+ use engine_authoring::diagnostic::Diagnostic;
++use mikktspace::Geometry;
+@@ -768,7 +769,12 @@ pub(crate) fn build_import_result(
+         })
+         .collect();
+ 
+-    let meshes = build_meshes(source_id, document, &mesh_skin_bindings);
++    let meshes = build_meshes(
++        source_id,
++        document,
++        &mesh_skin_bindings,
++        &mut diagnostics,
++    );
+     let animations = build_animations(
+         source_id,
+         document,
+@@ -1046,26 +1052,52 @@ fn build_meshes(
+     source_id: &AssetId,
+     document: &ModelDocument,
+     mesh_skin_bindings: &HashMap<usize, usize>,
++    diagnostics: &mut Vec<Diagnostic>,
+ ) -> Vec<GltfMeshData> {
+     document
+         .meshes
+         .iter()
+-        .map(|ir_mesh| GltfMeshData {
+-            source_index: ir_mesh.source_index,
+-            id: imported_sub_asset_id(source_id, ImportedSubAssetKind::Mesh, ir_mesh.source_index),
+-            name: ir_mesh.name.clone(),
+-            mesh: build_runtime_mesh(&ir_mesh.mesh),
+-            materials: ir_mesh
+-                .submesh_materials
+-                .iter()
+-                .map(|material| {
+-                    material.map(|index| {
+-                        imported_sub_asset_id(source_id, ImportedSubAssetKind::Material, index)
++        .map(|ir_mesh| {
++            let mut mesh = build_runtime_mesh(&ir_mesh.mesh);
++            if mesh.tangents.is_none() && mesh_uses_normal_map(ir_mesh, document) {
++                if let Some(tangents) = generate_mikktspace_tangents(&mesh) {
++                    mesh.tangents = Some(tangents);
++                } else {
++                    diagnostics.push(Diagnostic::warning(
++                        "model_import.tangent_generation_failed",
++                        format!(
++                            "mesh '{}' needs tangent-space normal mapping but MikkTSpace could not preserve one tangent per existing vertex; derivative tangent reconstruction will be used",
++                            ir_mesh.name
++                        ),
++                    ));
++                }
++            }
++
++            GltfMeshData {
++                source_index: ir_mesh.source_index,
++                id: imported_sub_asset_id(
++                    source_id,
++                    ImportedSubAssetKind::Mesh,
++                    ir_mesh.source_index,
++                ),
++                name: ir_mesh.name.clone(),
++                mesh,
++                materials: ir_mesh
++                    .submesh_materials
++                    .iter()
++                    .map(|material| {
++                        material.map(|index| {
++                            imported_sub_asset_id(
++                                source_id,
++                                ImportedSubAssetKind::Material,
++                                index,
++                            )
++                        })
+                     })
+-                })
+-                .collect(),
+-            skin_index: mesh_skin_bindings.get(&ir_mesh.source_index).copied(),
+-            morphs: build_morphs(source_id, ir_mesh),
++                    .collect(),
++                skin_index: mesh_skin_bindings.get(&ir_mesh.source_index).copied(),
++                morphs: build_morphs(source_id, ir_mesh),
++            }
+         })
+         .collect()
+ }
+@@ -1071,3 +1103,106 @@ fn build_meshes(
+ }
+ 
++fn mesh_uses_normal_map(ir_mesh: &crate::model_ir::IrMesh, document: &ModelDocument) -> bool {
++    ir_mesh.submesh_materials.iter().flatten().any(|selector| {
++        document
++            .materials
++            .iter()
++            .find(|material| material.source_index == *selector)
++            .is_some_and(|material| material.normal_texture.is_some())
++    })
++}
++
++struct MikkGeometry<'a> {
++    mesh: &'a Mesh,
++    tangents: Vec<Option<[f32; 4]>>,
++    conflicted: bool,
++}
++
++impl MikkGeometry<'_> {
++    fn vertex_index(&self, face: usize, vert: usize) -> usize {
++        let corner = face * 3 + vert;
++        self.mesh
++            .indices
++            .as_ref()
++            .map_or(corner, |indices| indices[corner] as usize)
++    }
++}
++
++impl Geometry for MikkGeometry<'_> {
++    fn num_faces(&self) -> usize {
++        self.mesh
++            .indices
++            .as_ref()
++            .map_or(self.mesh.vertices.len(), Vec::len)
++            / 3
++    }
++
++    fn num_vertices_of_face(&self, _face: usize) -> usize {
++        3
++    }
++
++    fn position(&self, face: usize, vert: usize) -> [f32; 3] {
++        self.mesh.vertices[self.vertex_index(face, vert)].position
++    }
++
++    fn normal(&self, face: usize, vert: usize) -> [f32; 3] {
++        self.mesh.vertices[self.vertex_index(face, vert)].normal
++    }
++
++    fn tex_coord(&self, face: usize, vert: usize) -> [f32; 2] {
++        self.mesh.vertices[self.vertex_index(face, vert)].uv
++    }
++
++    fn set_tangent_encoded(&mut self, tangent: [f32; 4], face: usize, vert: usize) {
++        let index = self.vertex_index(face, vert);
++        let candidate = glam::Vec3::from_array([tangent[0], tangent[1], tangent[2]])
++            .normalize_or_zero();
++        if candidate == glam::Vec3::ZERO || !tangent[3].is_finite() {
++            self.conflicted = true;
++            return;
++        }
++        let encoded = [
++            candidate.x,
++            candidate.y,
++            candidate.z,
++            if tangent[3] < 0.0 { -1.0 } else { 1.0 },
++        ];
++        if let Some(previous) = self.tangents[index] {
++            let previous_direction =
++                glam::Vec3::from_array([previous[0], previous[1], previous[2]]);
++            if previous_direction.dot(candidate) < 0.99
++                || previous[3].is_sign_negative() != encoded[3].is_sign_negative()
++            {
++                self.conflicted = true;
++            }
++        } else {
++            self.tangents[index] = Some(encoded);
++        }
++    }
++}
++
++fn generate_mikktspace_tangents(mesh: &Mesh) -> Option<Vec<[f32; 4]>> {
++    let corner_count = mesh.indices.as_ref().map_or(mesh.vertices.len(), Vec::len);
++    if corner_count == 0 || corner_count % 3 != 0 {
++        return None;
++    }
++
++    let mut geometry = MikkGeometry {
++        mesh,
++        tangents: vec![None; mesh.vertices.len()],
++        conflicted: false,
++    };
++    if !mikktspace::generate_tangents(&mut geometry) || geometry.conflicted {
++        return None;
++    }
++
++    Some(
++        geometry
++            .tangents
++            .into_iter()
++            .map(|tangent| tangent.unwrap_or([0.0; 4]))
++            .collect(),
++    )
++}
++
+ /// Builds one [`MorphAsset`] per surviving morph target of `ir_mesh`
+@@ -1280,8 +1415,12 @@ fn build_materials(source_id: &AssetId, document: &ModelDocument) -> Vec<GltfMaterialData> {
+             let asset = MaterialAsset {
+                 base_color: material.base_color,
+                 base_color_texture: material.base_color_texture.map(texture_id),
+                 normal_texture: material.normal_texture.map(texture_id),
++                normal_scale: material.normal_scale,
++                metallic_roughness_texture: material.metallic_roughness_texture.map(texture_id),
++                occlusion_texture: material.occlusion_texture.map(texture_id),
++                occlusion_strength: material.occlusion_strength,
+                 emissive_texture: material.emissive_texture.map(texture_id),
+                 emissive_color: material.emissive_color,
+                 roughness: material.roughness,
