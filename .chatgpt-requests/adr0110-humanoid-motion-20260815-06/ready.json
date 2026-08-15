@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0110-humanoid-motion-20260815-06",
+  "target_branch": "chatgpt/gameengine-adr-0110-humanoid-motion",
+  "expected_head_sha": "78dccb6a6df260dae2e99f75011aba5aac5badec",
+  "patch_parts": ["part-0000.patch", "part-0001.patch"],
+  "commit_message": "Add ADR 0110 portable humanoid motion baking",
+  "pr_title": "Implement ADR 0110 humanoid profiles and motion",
+  "pr_body": "Implements ADR 0110 in staged dispatcher requests. This stage adds skeleton-independent HumanoidMotion using model-space rotation deltas, target-profile baking back to ordinary AnimationClip, root-motion metadata without implicit proportion scaling, loss diagnostics that preserve the Native variant, and content-addressed Derived Cache integration keyed by motion, target skeleton identity, target profile, and algorithm version. Earlier stages added the model-owned profile contract and structural validation/detection. Follow-up stages wire imported Humanoid variants, Animation Set Auto/Native/Humanoid source selection, editor configuration, target resolution, and packaging."
+}
