@@ -171,6 +171,17 @@ jobs:
               print(f'Missing required public paths: {missing}', file=sys.stderr)
               sys.exit(1)
 
+          expected_workflows = {
+              'gameengine-chatgpt-dispatch-trigger.yml',
+              'gameengine-chatgpt-dispatcher.yml',
+              'gameengine-windows-validation.yml',
+          }
+          workflow_dir = root / '.github' / 'workflows'
+          actual_workflows = {path.name for path in workflow_dir.glob('*.yml')}
+          if actual_workflows != expected_workflows:
+              print(f'Unexpected public workflow set: {sorted(actual_workflows)}', file=sys.stderr)
+              sys.exit(1)
+
           print('Public snapshot audit passed.')
           PY
 
@@ -178,8 +189,18 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          mkdir final-workflows
+          cp public-snapshot/.github/workflows/*.yml final-workflows/
+          cp destination/.github/workflows/bootstrap-public-migration.yml /tmp/bootstrap-public-migration.yml
+
           find destination -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf -- {} +
           cp -a public-snapshot/. destination/
+          rm -rf destination/.github/workflows
+          mkdir -p destination/.github/workflows
+          cp /tmp/bootstrap-public-migration.yml destination/.github/workflows/bootstrap-public-migration.yml
+          mkdir -p destination/.bootstrap-workflows
+          cp final-workflows/*.yml destination/.bootstrap-workflows/
+
           git -C destination diff --check || {
             echo 'Initial snapshot contains pre-existing whitespace that is not modified by the migration patch.'
             echo 'The reviewed migration patch itself already passed git diff --check against the source snapshot.'
