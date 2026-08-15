@@ -1,0 +1,455 @@
+diff --git a/crates/editor/src/ui/documents.rs b/crates/editor/src/ui/documents.rs
+--- a/crates/editor/src/ui/documents.rs
++++ b/crates/editor/src/ui/documents.rs
+@@ -1,4 +1,4 @@
+-//! Document and project lifecycle: open, save, filesystem sync, and undo history.
++//! Project-scoped document lifecycle: open, save, filesystem sync, and undo history.
+ 
+ use super::*;
+ 
+@@ -11,7 +11,7 @@ impl EditorApp {
+         let mut app = Self::new(EditorSession::empty_behavior_tree());
+         app.preferences = EditorPreferences::load_for(&root);
+         app.session.reset(EditorSession::empty_behavior_tree());
+-        app.set_project_root(root.clone());
++        app.initialize_project_root(root.clone());
+         if app.restore_workspace_tabs(&root) {
+             app.on_active_document_changed(None);
+             app.restore_preferred_selection();
+@@ -103,39 +103,54 @@ impl EditorApp {
+         self.request_open(PendingOpen::PickFile);
+     }
+ 
+-    /// Starts `pending`, first routing through the unsaved-changes dialog
+-    /// when the current document has edits that would be lost.
++    /// Starts a Launcher-coordinated project replacement.
++    ///
++    /// The current Editor never rebinds project-scoped state. Dirty documents
++    /// are resolved here before the Launcher is allowed to select a target;
++    /// the Launcher keeps this process alive until the target Editor is ready.
++    pub(super) fn request_project_switch(&mut self) {
++        if self.is_playing() {
++            self.session
++                .push_diagnostic(engine_authoring::Diagnostic::warning(
++                    "editor.project_switch_blocked_while_playing",
++                    "stop Play before switching projects",
++                ));
++            return;
++        }
++        if self.session.any_dirty() {
++            self.pending_unsaved_action = Some(PendingUnsavedAction::SwitchProject);
++        } else {
++            self.activate_launcher_for_project_switch();
++        }
++    }
++
++    fn activate_launcher_for_project_switch(&mut self) {
++        self.persist_editor_local_state();
++        let source = self.project_root().path().to_path_buf();
++        if let Err(error) = engine_project_lifecycle::activate_launcher(Some(&source)) {
++            self.session
++                .push_diagnostic(engine_authoring::Diagnostic::error(
++                    "editor.project_switch_launcher_failed",
++                    format!("could not activate Launcher for project switch: {error}"),
++                ));
++        }
++    }
++
++    /// Opens one project-local document action after the Play-mode guard.
+     pub(super) fn request_open(&mut self, pending: PendingOpen) {
+         if self.is_playing() {
+             self.session
+                 .push_diagnostic(engine_authoring::Diagnostic::warning(
+                     "editor.open_blocked_while_playing",
+-                    "stop Play before opening another document or project",
++                    "stop Play before opening another document",
+                 ));
+             return;
+         }
+-        let replaces_project = matches!(
+-            &pending,
+-            PendingOpen::Project(_) | PendingOpen::NewProject(_)
+-        );
+-        if replaces_project && self.session.any_dirty() {
+-            self.pending_unsaved_action = Some(PendingUnsavedAction::Open(pending));
+-        } else {
+-            self.perform_open(pending);
+-        }
++        self.perform_open(pending);
+     }
+ 
+-    /// Executes an open action whose data loss has already been resolved
+-    /// (document clean, changes saved, or discard confirmed).
++    /// Executes a project-local document open.
+     fn perform_open(&mut self, pending: PendingOpen) {
+-        if let PendingOpen::Project(folder) = &pending {
+-            self.do_open_project(folder.clone());
+-            return;
+-        }
+-        if let PendingOpen::NewProject(folder) = &pending {
+-            self.new_project(folder.clone());
+-            return;
+-        }
+         let previous_tab = self.session.active_tab_id();
+         let previous_path = self.session.current_document_path().map(Path::to_path_buf);
+         let result = match pending {
+@@ -148,9 +170,8 @@ impl EditorApp {
+                 .open_document(WorkspaceDocumentKind::Scene, path),
+             PendingOpen::Graph(path) => self
+                 .session
+                 .open_document(WorkspaceDocumentKind::Graph, path),
+             PendingOpen::Ui(path) => self.session.open_document(WorkspaceDocumentKind::Ui, path),
+-            PendingOpen::Project(_) | PendingOpen::NewProject(_) => unreachable!(),
+         };
+ 
+         match result {
+@@ -308,8 +329,8 @@ impl EditorApp {
+         };
+ 
+         let message = match pending {
+-            PendingUnsavedAction::Open(_) => {
+-                "One or more document tabs have unsaved changes. Save them before replacing the project?"
++            PendingUnsavedAction::SwitchProject => {
++                "One or more document tabs have unsaved changes. Save them before switching projects?"
+             }
+             PendingUnsavedAction::CloseTab(_) => {
+                 "This document has unsaved changes. Save it before closing the tab?"
+@@ -344,19 +365,19 @@ impl EditorApp {
+             Some(UnsavedChangesChoice::Save) => {
+                 if let Some(pending) = self.pending_unsaved_action.take() {
+                     match pending {
+-                        PendingUnsavedAction::Open(open) => {
++                        PendingUnsavedAction::SwitchProject => {
+                             if let Err(error) = self.session.save_all() {
+                                 self.session
+                                     .push_diagnostic(engine_authoring::Diagnostic::error(
+                                         "editor.save_all_failed",
+                                         format!("could not save every open document: {error}"),
+                                     ));
+                                 // A failed save leaves at least one tab dirty. Keep the
+-                                // dialog open so project replacement cannot lose it.
+-                                self.pending_unsaved_action =
+-                                    Some(PendingUnsavedAction::Open(open));
+-                            } else if !self.session.any_dirty() {
+-                                self.perform_open(open);
++                                // dialog open so project replacement cannot proceed.
++                                self.pending_unsaved_action =
++                                    Some(PendingUnsavedAction::SwitchProject);
++                            } else {
++                                self.activate_launcher_for_project_switch();
+                             }
+                         }
+                         PendingUnsavedAction::CloseTab(id) => {
+@@ -389,7 +408,9 @@ impl EditorApp {
+             Some(UnsavedChangesChoice::Discard) => {
+                 if let Some(pending) = self.pending_unsaved_action.take() {
+                     match pending {
+-                        PendingUnsavedAction::Open(open) => self.perform_open(open),
++                        PendingUnsavedAction::SwitchProject => {
++                            self.activate_launcher_for_project_switch();
++                        }
+                         PendingUnsavedAction::CloseTab(id) => {
+                             let was_active = self.session.active_tab_id() == id;
+                             if self.session.close_discarding_changes(id) {
+@@ -406,46 +427,6 @@ impl EditorApp {
+         }
+     }
+ 
+-    pub(super) fn open_project(&mut self) {
+-        let folder = rfd::FileDialog::new().pick_folder();
+-        let Some(folder) = folder else { return };
+-        self.request_open(PendingOpen::Project(folder));
+-    }
+-
+-    pub(super) fn create_project(&mut self) {
+-        let folder = rfd::FileDialog::new().pick_folder();
+-        let Some(folder) = folder else { return };
+-        self.request_open(PendingOpen::NewProject(folder));
+-    }
+-
+-    pub(super) fn do_open_project(&mut self, folder: std::path::PathBuf) {
+-        match engine_authoring::ProjectRoot::open(&folder) {
+-            Ok(root) => {
+-                self.session.reset(EditorSession::empty_behavior_tree());
+-                self.set_project_root(root.clone());
+-                if self.restore_workspace_tabs(&root) {
+-                    // Every presentation snapshot described the project being
+-                    // replaced, so none of it may be carried into this one.
+-                    self.on_active_document_changed(None);
+-                    self.restore_preferred_selection();
+-                } else {
+-                    self.open_initial_project_scene(&root);
+-                }
+-                // A project without any Scene asset opens no tab at all, so
+-                // persist unconditionally; otherwise the previous project's
+-                // tabs would stay recorded as this project's workspace.
+-                self.sync_workspace_preferences();
+-            }
+-            Err(error) => {
+-                self.session
+-                    .push_diagnostic(engine_authoring::Diagnostic::error(
+-                        "editor.open_project_failed",
+-                        format!("open project failed: {error}"),
+-                    ));
+-            }
+-        }
+-    }
+-
+     /// Reopens the tab set the previous session left in `root`.
+     ///
+     /// Returns whether at least one document was restored, so the caller can
+@@ -480,7 +463,7 @@ impl EditorApp {
+     /// Opens the scene users expect to see after selecting a project.
+     ///
+-    /// Project settings are authoritative when `start_scene` is present. Older
+-    /// projects often omit that field, so the first sorted Scene asset is used
++    /// Project settings are authoritative when `start_scene` is present. When
++    /// current settings omit it, the first sorted Scene asset is used
+     /// as a reversible editor-only fallback without changing project files.
+     fn open_initial_project_scene(&mut self, root: &ProjectRoot) {
+         let configured_scene = match ProjectSettings::load(root.path()) {
+@@ -532,50 +515,6 @@ impl EditorApp {
+         }
+     }
+ 
+-    pub(super) fn new_project(&mut self, folder: std::path::PathBuf) {
+-        let name = folder
+-            .file_name()
+-            .map(|n| n.to_string_lossy().into_owned())
+-            .unwrap_or_else(|| "new_project".into());
+-        let config = ProjectConfig {
+-            name,
+-            schema_version: PROJECT_SCHEMA_VERSION,
+-        };
+-        match engine_authoring::ProjectRoot::create(&folder, config) {
+-            Ok(root) => {
+-                if let Err(error) = engine_authoring::initialize_game_project(&root) {
+-                    self.session
+-                        .push_diagnostic(engine_authoring::Diagnostic::error(
+-                            "editor.game_project_init_failed",
+-                            error.to_string(),
+-                        ));
+-                }
+-                let starter_scene_result = create_starter_scene(&root);
+-                self.session.reset(EditorSession::empty_behavior_tree());
+-                self.set_project_root(root.clone());
+-                match starter_scene_result {
+-                    Ok(()) => self.open_initial_project_scene(&root),
+-                    Err(error) => {
+-                        self.session
+-                            .push_diagnostic(engine_authoring::Diagnostic::error(
+-                                "editor.starter_scene_create_failed",
+-                                format!(
+-                                    "project was created, but its starter Scene failed: {error}"
+-                                ),
+-                            ))
+-                    }
+-                }
+-            }
+-            Err(error) => {
+-                self.session
+-                    .push_diagnostic(engine_authoring::Diagnostic::error(
+-                        "editor.new_project_failed",
+-                        format!("create project failed: {error}"),
+-                    ));
+-            }
+-        }
+-    }
+-
+     pub(super) fn poll_project_filesystem(&mut self, context: &egui::Context) {
+         let (events, next_poll) = match self.file_watcher.as_mut() {
+             Some(watcher) => (watcher.poll(), watcher.time_until_poll()),
+@@ -982,16 +922,12 @@ pub(super) enum PendingOpen {
+     Graph(PathBuf),
+     /// Open this resolved `*.ui.json` document.
+     Ui(PathBuf),
+-    /// Replace the current project after resolving unsaved changes.
+-    Project(PathBuf),
+-    /// Create and open a project after resolving unsaved changes.
+-    NewProject(PathBuf),
+ }
+ 
+ /// Action deferred until the user resolves unsaved document changes.
+ pub(super) enum PendingUnsavedAction {
+-    /// Continue an open or project-replacement action.
+-    Open(PendingOpen),
++    /// Activate the Launcher to choose/create the replacement project.
++    SwitchProject,
+     /// Close one document tab after saving or explicitly discarding it.
+     CloseTab(WorkspaceTabId),
+ }
+@@ -1023,174 +959,6 @@ pub(super) fn newest_file_time(root: &Path) -> Option<std::time::SystemTime> {
+     newest
+ }
+ 
+-/// Creates the first editor-openable Scene for a newly scaffolded project.
+-///
+-/// The starter uses only built-in assets, so it remains valid before an asset
+-/// manifest or import pipeline has been configured. All semantic construction
+-/// still flows through [`AuthoringCommand`] and [`Transaction`].
+-fn create_starter_scene(root: &ProjectRoot) -> Result<(), String> {
+-    let mut scene = AuthoringScene::new();
+-    let mut transaction = Transaction::begin(&scene);
+-
+-    let square = EntityId::generate();
+-    enqueue_starter_entity(
+-        &mut transaction,
+-        square,
+-        "square",
+-        "Starter Square",
+-        "A visible built-in quad created with every new project.",
+-        vec![
+-            (
+-                ComponentTypeId::new(engine::scene_bridge::TRANSFORM_COMPONENT),
+-                numeric_object(&[("x", 0.0), ("y", 0.0), ("z", 0.0)]),
+-            ),
+-            (
+-                ComponentTypeId::new(engine::scene_bridge::STATIC_MESH_RENDERER_COMPONENT),
+-                Value::Object(std::collections::BTreeMap::from([
+-                    (
+-                        "mesh".to_owned(),
+-                        Value::AssetRef(builtin_asset_id(
+-                            engine::scene_bridge::BUILTIN_QUAD_ASSET_ID,
+-                        )),
+-                    ),
+-                    (
+-                        "material".to_owned(),
+-                        Value::AssetRef(builtin_asset_id(
+-                            engine::scene_bridge::BUILTIN_BLUE_MATERIAL_ASSET_ID,
+-                        )),
+-                    ),
+-                    ("material_slots".to_owned(), Value::Array(Vec::new())),
+-                ])),
+-            ),
+-        ],
+-    );
+-
+-    let camera = EntityId::generate();
+-    let camera_component_type = ComponentTypeId::new(engine::scene_bridge::CAMERA_COMPONENT);
+-    // Sourced from the built-in registry, not hand-typed, so the starter
+-    // scene cannot drift out of sync with `engine.camera`'s field schema.
+-    let camera_default = engine::builtin_registry()
+-        .get(&camera_component_type)
+-        .expect("engine.camera must be a registered built-in component")
+-        .schema
+-        .default_value();
+-    enqueue_starter_entity(
+-        &mut transaction,
+-        camera,
+-        "main_camera",
+-        "Main Camera",
+-        "Looks toward the starter square from the positive Z axis.",
+-        vec![
+-            (
+-                ComponentTypeId::new(engine::scene_bridge::TRANSFORM_COMPONENT),
+-                numeric_object(&[("x", 0.0), ("y", 0.0), ("z", 4.0)]),
+-            ),
+-            (camera_component_type, camera_default),
+-        ],
+-    );
+-
+-    let sun = EntityId::generate();
+-    enqueue_starter_entity(
+-        &mut transaction,
+-        sun,
+-        "sun",
+-        "Directional Light",
+-        "Provides a clear key light for the starter Scene.",
+-        vec![(
+-            ComponentTypeId::new(engine::scene_bridge::DIRECTIONAL_LIGHT_COMPONENT),
+-            numeric_object(&[
+-                ("direction_x", -0.3),
+-                ("direction_y", -1.0),
+-                ("direction_z", -0.5),
+-                ("color_r", 1.0),
+-                ("color_g", 0.95),
+-                ("color_b", 0.85),
+-                ("intensity", 1.0),
+-            ]),
+-        )],
+-    );
+-
+-    let ambient = EntityId::generate();
+-    enqueue_starter_entity(
+-        &mut transaction,
+-        ambient,
+-        "ambient_light",
+-        "Ambient Light",
+-        "Keeps unlit faces visible in the starter Scene.",
+-        vec![(
+-            ComponentTypeId::new(engine::scene_bridge::AMBIENT_LIGHT_COMPONENT),
+-            numeric_object(&[
+-                ("color_r", 0.4),
+-                ("color_g", 0.45),
+-                ("color_b", 0.55),
+-                ("intensity", 0.35),
+-            ]),
+-        )],
+-    );
+-
+-    transaction
+-        .commit(&mut scene)
+-        .map_err(|error| error.to_string())?;
+-    let scene_json = scene
+-        .to_canonical_json()
+-        .map_err(|error| error.to_string())?;
+-    let scene_path = root
+-        .resolve_asset_for_write("scenes/main.scene.json")
+-        .map_err(|error| error.to_string())?;
+-    replace_file_contents(&scene_path, &scene_json).map_err(|error| error.to_string())?;
+-
+-    let settings = ProjectSettings {
+-        start_scene: Some("scenes/main.scene.json".into()),
+-        ..ProjectSettings::default()
+-    };
+-    settings
+-        .save(root.path())
+-        .map_err(|error| error.to_string())?;
+-    Ok(())
+-}
+-
+-/// Queues one complete starter entity into the shared authoring transaction.
+-/// Display metadata is explicit so both humans and AI tools understand why
+-/// each generated entity exists before inspecting its components.
+-fn enqueue_starter_entity(
+-    transaction: &mut Transaction,
+-    id: EntityId,
+-    name: &str,
+-    display_name: &str,
+-    description: &str,
+-    components: Vec<(ComponentTypeId, Value)>,
+-) {
+-    transaction.apply(AuthoringCommand::CreateEntity {
+-        id: id.clone(),
+-        name: name.into(),
+-        parent: None,
+-    });
+-    transaction.apply(AuthoringCommand::SetEntityDisplayName {
+-        entity: id.clone(),
+-        display_name: display_name.into(),
+-    });
+-    transaction.apply(AuthoringCommand::SetEntityDescription {
+-        entity: id.clone(),
+-        description: description.into(),
+-    });
+-    for (component_type, value) in components {
+-        transaction.apply(AuthoringCommand::AddComponent {
+-            entity: id.clone(),
+-            component_type,
+-            value,
+-        });
+-    }
+-}
+-
+-fn numeric_object(fields: &[(&str, f64)]) -> Value {
+-    Value::Object(
+-        fields
+-            .iter()
+-            .map(|(name, value)| ((*name).into(), Value::F64(*value)))
+-            .collect(),
+-    )
+-}
+-
+ /// Maps an authoring document path to the workspace tab kind that opens it.
+ ///
+ /// Returns `None` for any other file, including a `.json` asset the workspace
