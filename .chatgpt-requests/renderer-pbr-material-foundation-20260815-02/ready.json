@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "request_id": "renderer-pbr-material-foundation-20260815-02",
+  "target_branch": "chatgpt/gameengine-render-pbr-material-foundation",
+  "expected_head_sha": "c3eecae96bdaed503f394831909aff93d136339e",
+  "patch_parts": [
+    "part-0000.patch",
+    "part-0001.patch",
+    "part-0002.patch",
+    "part-0003.patch",
+    "part-0004.patch",
+    "part-0005.patch",
+    "part-0006.patch",
+    "part-0007.patch",
+    "part-0008.patch",
+    "part-0009.patch",
+    "part-0010.patch",
+    "part-0011.patch",
+    "part-0012.patch"
+  ],
+  "commit_message": "Add StandardLit PBR material foundation",
+  "pr_title": "Renderer: add StandardLit PBR material foundation",
+  "pr_body": "## Summary\n\n- advance the current-only material contract to schema v3 with normal scale, packed metallic/roughness, and ambient occlusion\n- normalize glTF/FBX/PMX material data through the format-independent IR without source-specific renderer branches\n- upload numeric PBR textures as linear data and consume packed channel semantics in the shared StandardLit fragment stage\n- generate missing tangent frames in engine-import with MikkTSpace while preserving derivative fallback for incompatible indexed topology\n- expose the new generic fields in the material editor and record the contract in ADR 0120\n\n## Contracts\n\nStable IDs, public Vertex layout, independent Outline/Shadow passes, and generic StandardLit/ToonLit/Unlit ownership remain unchanged. Material schema v2 is intentionally rejected per ADR 0115 current-format-only policy.\n\n## Validation\n\nCargo.toml and Cargo.lock change, so this request requires full Windows workspace validation."
+}
