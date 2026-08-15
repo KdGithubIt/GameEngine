@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0110-model-humanoid-catalog-20260815-11",
+  "target_branch": "chatgpt/gameengine-adr-0110-humanoid-motion",
+  "expected_head_sha": "ce9b2a7b82a3aee39bdc0204402afbec26aad09f",
+  "patch_parts": ["part-0000.patch", "part-0001.patch"],
+  "commit_message": "Derive ADR 0110 model Humanoid variants",
+  "pr_title": "Implement ADR 0110 humanoid profiles and motion",
+  "pr_body": "Implements ADR 0110 in staged dispatcher requests. This stage adds an engine-import Humanoid catalog derived from canonical Native model clips: one valid model-owned profile per skeleton, stable portable HumanoidMotion variants nested under Native IDs, and non-blocking diagnostics when conversion is unavailable. Native clips remain authoritative."
+}
