@@ -1,0 +1,191 @@
+diff --git a/crates/render-runtime/src/render_backend.rs b/crates/render-runtime/src/render_backend.rs
+--- a/crates/render-runtime/src/render_backend.rs
++++ b/crates/render-runtime/src/render_backend.rs
+@@ -414,8 +414,9 @@ pub(crate) struct RenderState {
+     pub(crate) camera_bind_group: wgpu::BindGroup,
+     pub(crate) camera_bgl: wgpu::BindGroupLayout,
+     pub(crate) texture_bind_group_layout: wgpu::BindGroupLayout,
+     white_texture: Arc<Texture>,
++    white_data_texture: Arc<Texture>,
+     flat_normal_texture: Arc<Texture>,
+     light_buffer: wgpu::Buffer,
+     pub(crate) light_bind_group: wgpu::BindGroup,
+@@ -510,12 +511,13 @@ struct MaterialUniformData {
+     toon_specular: [f32; 4],
+     toon_rim: [f32; 4],
+     toon_params: [f32; 4],
+     outline: [f32; 4],
++    standard_params: [f32; 4],
+ }
+@@ -554,12 +556,19 @@ impl MaterialUniformData {
+                 material.outline.color[2],
+                 if material.outline.enabled { material.outline.width } else { 0.0 },
+             ],
++            standard_params: [
++                material.normal_scale,
++                material.occlusion_strength,
++                0.0,
++                0.0,
++            ],
+         }
+     }
+ 
+-    fn key(self) -> [u32; 24] {
++    fn key(self) -> [u32; 28] {
+         bytemuck::cast(self)
+     }
+ }
+@@ -640,19 +649,25 @@ struct MaterialBindGroupKey {
+     emissive: usize,
+     ramp: usize,
+     sphere: usize,
+-    uniform: [u32; 24],
++    metallic_roughness: usize,
++    occlusion: usize,
++    uniform: [u32; 28],
+ }
+ 
+ /// Borrowed resources used to construct one generic material bind group.
+ struct MaterialBindResources<'a> {
+     base: &'a Texture,
+     normal: &'a Texture,
+     emissive: &'a Texture,
+     ramp: &'a Texture,
+     sphere: &'a Texture,
++    metallic_roughness: &'a Texture,
++    occlusion: &'a Texture,
+     uniform_buffer: &'a wgpu::Buffer,
+ }
+@@ -751,10 +766,14 @@ struct CachedMaterialBindGroup {
+     emissive: Weak<Texture>,
+     ramp: Weak<Texture>,
+     sphere: Weak<Texture>,
++    metallic_roughness: Weak<Texture>,
++    occlusion: Weak<Texture>,
+     _uniform_buffer: wgpu::Buffer,
+     bind_group: Arc<wgpu::BindGroup>,
+ }
+@@ -1819,13 +1838,15 @@ impl WorldRenderer {
+         self.material_bind_group_cache.retain(|_, cached| {
+             cached.base.strong_count() > 0
+                 && cached.normal.strong_count() > 0
+                 && cached.emissive.strong_count() > 0
+                 && cached.ramp.strong_count() > 0
+                 && cached.sphere.strong_count() > 0
++                && cached.metallic_roughness.strong_count() > 0
++                && cached.occlusion.strong_count() > 0
+         });
+@@ -2050,6 +2071,7 @@ impl WorldRenderer {
+         // A missing emissive map behaves as white so the authored emissive
+         // factor still works on its own; the default factor is black.
+         let emissive_fallback = Arc::clone(&self.render.white_texture);
++        let data_fallback = Arc::clone(&self.render.white_data_texture);
+         let base = self.resolve_texture_slot(
+@@ -2070,6 +2092,22 @@ impl WorldRenderer {
+             emissive_fallback,
+             TextureSampleEncoding::SrgbColor,
+         );
++        let metallic_roughness = self.resolve_texture_slot(
++            device,
++            queue,
++            material.metallic_roughness_texture.as_ref(),
++            material.pending_metallic_roughness_texture.as_ref(),
++            Arc::clone(&data_fallback),
++            TextureSampleEncoding::LinearData,
++        );
++        let occlusion = self.resolve_texture_slot(
++            device,
++            queue,
++            material.occlusion_texture.as_ref(),
++            material.pending_occlusion_texture.as_ref(),
++            data_fallback,
++            TextureSampleEncoding::LinearData,
++        );
+         let ramp = self.resolve_texture_slot(
+@@ -2093,7 +2131,9 @@ impl WorldRenderer {
+             emissive: Arc::as_ptr(&emissive) as usize,
+             ramp: Arc::as_ptr(&ramp) as usize,
+             sphere: Arc::as_ptr(&sphere) as usize,
++            metallic_roughness: Arc::as_ptr(&metallic_roughness) as usize,
++            occlusion: Arc::as_ptr(&occlusion) as usize,
+             uniform: uniform.key(),
+         };
+@@ -2110,6 +2150,8 @@ impl WorldRenderer {
+                         emissive: &emissive,
+                         ramp: &ramp,
+                         sphere: &sphere,
++                        metallic_roughness: &metallic_roughness,
++                        occlusion: &occlusion,
+                         uniform_buffer: &uniform_buffer,
+                     },
+@@ -2120,6 +2162,8 @@ impl WorldRenderer {
+                     emissive: Arc::downgrade(&emissive),
+                     ramp: Arc::downgrade(&ramp),
+                     sphere: Arc::downgrade(&sphere),
++                    metallic_roughness: Arc::downgrade(&metallic_roughness),
++                    occlusion: Arc::downgrade(&occlusion),
+                     _uniform_buffer: uniform_buffer,
+@@ -2470,6 +2514,26 @@ impl RenderState {
+                             min_binding_size: None,
+                         },
+                         count: None,
+                     },
++                    wgpu::BindGroupLayoutEntry {
++                        binding: 7,
++                        visibility: wgpu::ShaderStages::FRAGMENT,
++                        ty: wgpu::BindingType::Texture {
++                            multisampled: false,
++                            view_dimension: wgpu::TextureViewDimension::D2,
++                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
++                        },
++                        count: None,
++                    },
++                    wgpu::BindGroupLayoutEntry {
++                        binding: 8,
++                        visibility: wgpu::ShaderStages::FRAGMENT,
++                        ty: wgpu::BindingType::Texture {
++                            multisampled: false,
++                            view_dimension: wgpu::TextureViewDimension::D2,
++                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
++                        },
++                        count: None,
++                    },
+                 ],
+             });
+ 
+@@ -2478,6 +2542,16 @@ impl RenderState {
+ 
+         let white_tex = Arc::new(Texture::white(device, queue));
++        let white_data_tex = Arc::new(
++            Texture::solid_rgba(
++                device,
++                queue,
++                [255, 255, 255, 255],
++                "white_data_texture",
++                false,
++            )
++            .expect("one-pixel white data texture must fit every valid GPU device"),
++        );
+         let flat_normal_tex = Arc::new(
+@@ -3068,6 +3142,7 @@ impl RenderState {
+             camera_bgl,
+             texture_bind_group_layout,
+             white_texture: white_tex,
++            white_data_texture: white_data_tex,
+             flat_normal_texture: flat_normal_tex,
+@@ -3140,6 +3215,16 @@ impl RenderState {
+                 wgpu::BindGroupEntry {
+                     binding: 6,
+                     resource: resources.uniform_buffer.as_entire_binding(),
+                 },
++                wgpu::BindGroupEntry {
++                    binding: 7,
++                    resource: wgpu::BindingResource::TextureView(
++                        &resources.metallic_roughness.view,
++                    ),
++                },
++                wgpu::BindGroupEntry {
++                    binding: 8,
++                    resource: wgpu::BindingResource::TextureView(&resources.occlusion.view),
++                },
+             ],
