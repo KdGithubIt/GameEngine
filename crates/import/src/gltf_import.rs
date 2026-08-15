@@ -871,27 +871,13 @@ fn image_rgba8(image: &gltf::image::Data) -> Option<Vec<u8>> {
 fn parse_materials(
     document: &gltf::Document,
     texture_valid: &[bool],
-    diagnostics: &mut Vec<Diagnostic>,
+    _diagnostics: &mut Vec<Diagnostic>,
 ) -> Vec<IrMaterial> {
     document
         .materials()
         .enumerate()
         .map(|(index, source)| {
             let pbr = source.pbr_metallic_roughness();
-            if pbr.metallic_roughness_texture().is_some() {
-                diagnostics.push(Diagnostic::warning(
-                    "gltf.material_texture_unsupported",
-                    format!(
-                        "material {index} has a metallic-roughness texture; scalar metallic and roughness factors were imported instead"
-                    ),
-                ));
-            }
-            if source.occlusion_texture().is_some() {
-                diagnostics.push(Diagnostic::warning(
-                    "gltf.material_texture_unsupported",
-                    format!("material {index} has an occlusion texture; it was ignored"),
-                ));
-            }
             let base = pbr.base_color_factor();
             let emissive = source.emissive_factor();
             let texture_ref = |index: usize| {
@@ -916,6 +902,12 @@ fn parse_materials(
                 normal_texture: source
                     .normal_texture()
                     .and_then(|texture| texture_ref(texture.texture().index())),
+                metallic_roughness_texture: pbr
+                    .metallic_roughness_texture()
+                    .and_then(|texture| texture_ref(texture.texture().index())),
+                occlusion_texture: source
+                    .occlusion_texture()
+                    .and_then(|texture| texture_ref(texture.texture().index())),
                 emissive_texture: source
                     .emissive_texture()
                     .and_then(|texture| texture_ref(texture.texture().index())),
@@ -925,6 +917,14 @@ fn parse_materials(
                     b: emissive[2],
                     a: 1.0,
                 },
+                normal_scale: source
+                    .normal_texture()
+                    .map(|texture| texture.scale())
+                    .unwrap_or(1.0),
+                occlusion_strength: source
+                    .occlusion_texture()
+                    .map(|texture| texture.strength())
+                    .unwrap_or(1.0),
                 roughness: pbr.roughness_factor(),
                 metallic: pbr.metallic_factor(),
                 alpha_mode: match source.alpha_mode() {
