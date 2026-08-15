@@ -1,0 +1,9 @@
+diff --git a/crates/animation/src/lib.rs b/crates/animation/src/lib.rs
+--- a/crates/animation/src/lib.rs
++++ b/crates/animation/src/lib.rs
+@@ -19,6 +19,8 @@ pub mod foot_ik;
+ pub mod humanoid;
++/// Skeleton-independent humanoid motion conversion and target-specific bake/cache (ADR 0110).
++pub mod humanoid_motion;
+ /// Animation-side morph assets, bindings, and weights.
+ pub mod morph;
