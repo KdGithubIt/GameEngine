@@ -1,0 +1,12 @@
+diff --git a/crates/animation/src/lib.rs b/crates/animation/src/lib.rs
+--- a/crates/animation/src/lib.rs
++++ b/crates/animation/src/lib.rs
+@@ -17,6 +17,8 @@ pub mod contact_detect;
+ /// may disable default features to avoid compiling the physics backend.
+ #[cfg(feature = "physics")]
+ pub mod foot_ik;
++/// Humanoid profile validation, portable motion, and target-specific baking (ADR 0110).
++pub mod humanoid;
+ /// Animation-side morph assets, bindings, and weights.
+ pub mod morph;
+ /// Pure pose sampling and blending.
