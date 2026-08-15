@@ -674,12 +674,17 @@ enum BlendDraw {
     Skinned(usize),
 }
 
+#[derive(Clone, Copy)]
+struct MaterialShaderStages<'a> {
+    vertex: &'a wgpu::ShaderModule,
+    fragment: &'a wgpu::ShaderModule,
+}
+
 fn create_material_pipeline(
     device: &wgpu::Device,
     label: &str,
     layout: &wgpu::PipelineLayout,
-    vertex_shader: &wgpu::ShaderModule,
-    fragment_shader: &wgpu::ShaderModule,
+    shaders: MaterialShaderStages<'_>,
     format: wgpu::TextureFormat,
     buffers: &[wgpu::VertexBufferLayout<'_>],
     key: MaterialPipelineKey,
@@ -688,13 +693,13 @@ fn create_material_pipeline(
         label: Some(label),
         layout: Some(layout),
         vertex: wgpu::VertexState {
-            module: vertex_shader,
+            module: shaders.vertex,
             entry_point: Some("vs_main"),
             buffers,
             compilation_options: Default::default(),
         },
         fragment: Some(wgpu::FragmentState {
-            module: fragment_shader,
+            module: shaders.fragment,
             entry_point: Some("fs_main"),
             targets: &[Some(wgpu::ColorTargetState {
                 format,
@@ -2622,8 +2627,10 @@ impl RenderState {
                     device,
                     "Mesh material pipeline",
                     &pipeline_layout,
-                    &shader,
-                    &shader,
+                    MaterialShaderStages {
+                        vertex: &shader,
+                        fragment: &shader,
+                    },
                     format,
                     &[
                         Vertex::LAYOUT,
@@ -2673,8 +2680,10 @@ impl RenderState {
                     device,
                     "Skinned material pipeline",
                     &skinned_pipeline_layout,
-                    &skinned_shader,
-                    &shader,
+                    MaterialShaderStages {
+                        vertex: &skinned_shader,
+                        fragment: &shader,
+                    },
                     format,
                     &[
                         Vertex::LAYOUT,
