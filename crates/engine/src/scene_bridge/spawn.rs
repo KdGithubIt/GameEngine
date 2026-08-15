@@ -926,14 +926,20 @@ pub(crate) fn spawn_animation_controller_component(
         entity,
         context,
     )?;
-    let resolved_clips = resolved_set.clips;
-    let animation_set_events = resolved_set.events;
-    if compiled_graph
+    let ResolvedAnimationSet {
+        clips: resolved_clips,
+        events: animation_set_events,
+        unresolved_motion_slots,
+    } = resolved_set;
+    if let Some(motion_key) = compiled_graph
         .states
         .iter()
         .filter_map(|state| state.motion_key())
-        .any(|motion_key| !resolved_clips.contains_key(motion_key))
+        .find(|motion_key| !resolved_clips.contains_key(*motion_key))
     {
+        if unresolved_motion_slots.contains(motion_key) {
+            return Ok(());
+        }
         return Err(fields
             .invalid("an Animation Set binding for every graph motion slot")
             .into());
@@ -1249,6 +1255,7 @@ struct ResolvedAnimationClipSource {
 struct ResolvedAnimationSet {
     clips: BTreeMap<String, Handle<AnimationClip>>,
     events: Vec<(Handle<AnimationClip>, Vec<AnimEvent>)>,
+    unresolved_motion_slots: HashSet<String>,
 }
 
 fn resolve_animation_set(
@@ -1332,6 +1339,7 @@ fn resolve_animation_set(
 
     let mut clips = BTreeMap::new();
     let mut events = Vec::<(Handle<AnimationClip>, Vec<AnimEvent>)>::new();
+    let mut unresolved_motion_slots = HashSet::new();
     for (motion_slot, binding) in animation_set.bindings {
         let Some(primary_handle) = resolve_animation_binding_clip(
             animation_set_asset,
@@ -1340,6 +1348,7 @@ fn resolve_animation_set(
             context,
         )?
         else {
+            unresolved_motion_slots.insert(motion_slot.as_str().to_owned());
             continue;
         };
         let mut layer_handles = Vec::with_capacity(binding.overlays.len() + 1);
@@ -1456,7 +1465,11 @@ fn resolve_animation_set(
             }
         }
     }
-    Ok(ResolvedAnimationSet { clips, events })
+    Ok(ResolvedAnimationSet {
+        clips,
+        events,
+        unresolved_motion_slots,
+    })
 }
 
 fn resolve_animation_binding_clip(
