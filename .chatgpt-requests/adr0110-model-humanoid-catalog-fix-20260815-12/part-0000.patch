@@ -1,0 +1,17 @@
+diff --git a/crates/import/src/humanoid_import.rs b/crates/import/src/humanoid_import.rs
+--- a/crates/import/src/humanoid_import.rs
++++ b/crates/import/src/humanoid_import.rs
+@@ -65,4 +65,5 @@ pub fn build_humanoid_import_catalog(imported: &GltfImportResult) -> HumanoidImportCatalog {
+     let profiles_by_skeleton = profiles
+         .iter()
+-        .map(|profile| (profile.skeleton.as_str(), profile))
++        .enumerate()
++        .map(|(index, profile)| (profile.skeleton.clone(), index))
+         .collect::<HashMap<_, _>>();
+@@ -77,4 +78,5 @@ pub fn build_humanoid_import_catalog(imported: &GltfImportResult) -> HumanoidImportCatalog {
+-        let Some(profile) = profiles_by_skeleton.get(skin.skeleton.id.as_str()) else {
++        let Some(&profile_index) = profiles_by_skeleton.get(skin.skeleton.id.as_str()) else {
+             continue;
+         };
++        let profile = &profiles[profile_index];
+         match build_humanoid_motion(&animation.clip, &skin.skeleton, profile) {
