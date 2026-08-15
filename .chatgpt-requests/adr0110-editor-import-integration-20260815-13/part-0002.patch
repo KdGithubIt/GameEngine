@@ -1,0 +1,27 @@
+diff --git a/crates/editor/src/ui/assets.rs b/crates/editor/src/ui/assets.rs
+--- a/crates/editor/src/ui/assets.rs
++++ b/crates/editor/src/ui/assets.rs
+@@ -1410,8 +1410,22 @@
+         // Captured before the overwrite so the skeleton bind report (ADR
+         // 0077 §6, AP-5) can compare the previous and current bone ledgers.
+         let previous_skeleton_records = entry.import_settings.skeleton_records.clone();
++        let previous_humanoid_profiles = entry.import_settings.humanoid_profiles.clone();
+         entry.import_settings.source_fingerprint = result.source_fingerprint;
+         entry.import_settings.source_stamp = result.source_stamp;
+         entry.import_settings.source_dependencies = dependencies;
+         entry.import_settings.sub_assets = result.sub_assets;
+         entry.import_settings.skeleton_records = result.skeleton_records.clone();
++        let mut humanoid_profiles = result.humanoid_profiles;
++        // Authored mappings own their stable BoneId choices. Reimport may refresh an
++        // automatic proposal, but it must never silently replace an authored profile.
++        // A stale authored profile is deliberately retained so Humanoid validation fails
++        // visibly until the author reconfigures it while Native remains usable.
++        for profile in previous_humanoid_profiles
++            .into_iter()
++            .filter(|profile| profile.origin == engine::asset::HumanoidProfileOrigin::Authored)
++        {
++            humanoid_profiles.retain(|candidate| candidate.skeleton != profile.skeleton);
++            humanoid_profiles.push(profile);
++        }
++        humanoid_profiles.sort_by(|left, right| left.skeleton.cmp(&right.skeleton));
++        entry.import_settings.humanoid_profiles = humanoid_profiles;
