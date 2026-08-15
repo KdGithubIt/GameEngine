@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "request_id": "renderer-pbr-backend-bindings-20260816-r1",
+  "target_branch": "chatgpt/gameengine-render-pbr-material-foundation",
+  "expected_head_sha": "bc6e84cf38ab62f9e0cd88d7397f57c428fc6f82",
+  "patch_parts": ["part-0000.patch"],
+  "commit_message": "Renderer: bind PBR material data for StandardLit",
+  "pr_title": "Renderer: add PBR material texture contract",
+  "pr_body": "Phase 2B renderer foundation. The GPU material contract now adds packed metallic/roughness and ambient-occlusion textures as linear-data bindings 7 and 8 while preserving existing bindings 0 through 6. Normal scale and occlusion strength travel through the material uniform, with white fallbacks preserving scalar factors and full ambient visibility when textures are absent."
+}
