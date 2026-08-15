@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0110-humanoid-package-bake-20260816",
+  "target_branch": "chatgpt/gameengine-adr-0110-humanoid-motion",
+  "expected_head_sha": "8e8e3e6eaaa6027b79f997ad1012e7af7a1de505",
+  "patch_parts": ["part-0000.patch"],
+  "commit_message": "Pre-bake Humanoid clips for packages",
+  "pr_title": "ADR 0110: implement humanoid animation sources",
+  "pr_body": "Implements ADR 0110 Humanoid profiles and skeleton-independent motion. This follow-up makes packaging pre-bake registered HumanoidMotion assets for usable persisted target profiles and stage them under deterministic packaged paths, so the shipped player never solves Humanoid adaptation at runtime. PR remains Draft; merge is manual."
+}
