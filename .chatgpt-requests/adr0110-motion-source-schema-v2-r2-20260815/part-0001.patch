@@ -1,0 +1,102 @@
+diff --git a/crates/editor/src/animation_set_editor.rs b/crates/editor/src/animation_set_editor.rs
+--- a/crates/editor/src/animation_set_editor.rs
++++ b/crates/editor/src/animation_set_editor.rs
+@@ -3,6 +3,6 @@
+ use engine_authoring::{
+     replace_file_contents, AnimationBinding, AnimationSet, AnimationSetEvent, AssetId, MotionSlot,
+-    MotionSlotId,
++    MotionSlotId, MotionSourceRef,
+ };
+ use std::collections::BTreeSet;
+ use std::path::PathBuf;
+@@ -116,11 +116,20 @@
+-    /// Assigns or clears the imported clip for one graph-owned slot.
++    /// Assigns or clears an explicit Native clip for one graph-owned slot.
+     pub fn set_binding(&mut self, slot: &MotionSlot, clip: Option<AssetId>) -> Result<(), String> {
++        self.set_binding_source(slot, clip.map(MotionSourceRef::native))
++    }
++
++    /// Assigns or clears one explicitly tagged motion source for a graph-owned slot.
++    pub fn set_binding_source(
++        &mut self,
++        slot: &MotionSlot,
++        motion: Option<MotionSourceRef>,
++    ) -> Result<(), String> {
+         if self.document.graph.is_none() {
+             return Err("assign an Animation Graph before editing bindings".to_owned());
+         }
+         self.push_undo();
+-        match clip {
+-            Some(clip) => {
++        match motion {
++            Some(motion) => {
+                 let events = self
+                     .document
+                     .bindings
+@@ -137,6 +146,6 @@
+                     AnimationBinding {
+                         name: slot.display_name.clone(),
+-                        clip,
++                        clip: motion,
+                         overlays,
+                         events,
+                     },
+@@ -150,9 +159,18 @@
+-    /// Appends one supplemental clip to a slot's ordered composition.
++    /// Appends one explicit Native clip to a slot's ordered composition.
+     pub fn add_overlay(&mut self, slot: &MotionSlotId, clip: AssetId) -> Result<(), String> {
++        self.add_overlay_source(slot, MotionSourceRef::native(clip))
++    }
++
++    /// Appends one explicitly tagged supplemental motion source.
++    pub fn add_overlay_source(
++        &mut self,
++        slot: &MotionSlotId,
++        motion: MotionSourceRef,
++    ) -> Result<(), String> {
+         let Some(binding) = self.document.bindings.get(slot) else {
+             return Err("assign a primary clip before adding overlays".to_owned());
+         };
+-        if binding.clip == clip || binding.overlays.contains(&clip) {
++        if binding.clip == motion || binding.overlays.contains(&motion) {
+             return Err("the selected clip is already present in this binding".to_owned());
+         }
+         self.push_undo();
+@@ -164,6 +182,6 @@
+             .get_mut(slot)
+             .expect("binding validated before recording undo")
+             .overlays
+-            .push(clip);
++            .push(motion);
+         Ok(())
+     }
+@@ -391,7 +409,7 @@
+                 motion.id.clone(),
+                 AnimationBinding {
+                     name: motion.display_name.clone(),
+-                    clip: AssetId::generate(),
++                    clip: MotionSourceRef::native(AssetId::generate()),
+                     overlays: Vec::new(),
+                     events: Vec::new(),
+                 },
+@@ -418,7 +436,7 @@
+             motion.id,
+             AnimationBinding {
+                 name: motion.display_name,
+-                clip: AssetId::generate(),
++                clip: MotionSourceRef::native(AssetId::generate()),
+                 overlays: Vec::new(),
+                 events: Vec::new(),
+             },
+@@ -455,7 +473,10 @@
+         state
+             .move_overlay(&motion.id, 1, 0)
+             .expect("overlay must move");
+         assert_eq!(
+             state.document.bindings[&motion.id].overlays,
+-            vec![second, first]
++            vec![
++                MotionSourceRef::native(second),
++                MotionSourceRef::native(first)
++            ]
+         );
