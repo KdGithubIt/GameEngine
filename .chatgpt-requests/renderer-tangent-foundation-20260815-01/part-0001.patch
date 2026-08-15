@@ -1,0 +1,112 @@
+diff --git a/crates/render-runtime/src/render_backend.rs b/crates/render-runtime/src/render_backend.rs
+--- a/crates/render-runtime/src/render_backend.rs
++++ b/crates/render-runtime/src/render_backend.rs
+@@ -1,2 +1,4 @@
+-use crate::mesh::{GpuMesh, GpuMeshCache, InstanceData, Mesh, MeshValidationError, Vertex};
++use crate::mesh::{
++    GpuMesh, GpuMeshCache, InstanceData, Mesh, MeshValidationError, TangentVertexData, Vertex,
++};
+ use crate::postprocess::{PostProcessSettings, ToneMapOperator};
+@@ -16,7 +18,8 @@
+     device: &wgpu::Device,
+     label: &str,
+     layout: &wgpu::PipelineLayout,
+-    shader: &wgpu::ShaderModule,
++    vertex_shader: &wgpu::ShaderModule,
++    fragment_shader: &wgpu::ShaderModule,
+     format: wgpu::TextureFormat,
+     buffers: &[wgpu::VertexBufferLayout<'_>],
+     key: MaterialPipelineKey,
+@@ -25,11 +28,11 @@
+         label: Some(label),
+         layout: Some(layout),
+         vertex: wgpu::VertexState {
+-            module: shader,
++            module: vertex_shader,
+             entry_point: Some("vs_main"),
+             buffers,
+             compilation_options: Default::default(),
+         },
+         fragment: Some(wgpu::FragmentState {
+-            module: shader,
++            module: fragment_shader,
+             entry_point: Some("fs_main"),
+@@ -45,3 +48,6 @@
++        // The static module owns the material fragment stage. Skinned material
++        // pipelines pair their deformation vertex stage with this same
++        // `fs_main`, so future surface/lighting work has one compiled source.
+         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+             label: Some("Mesh shader"),
+             source: wgpu::ShaderSource::Wgsl(include_str!("shaders/mesh.wgsl").into()),
+@@ -68,7 +74,12 @@
+                     "Mesh material pipeline",
+                     &pipeline_layout,
+                     &shader,
++                    &shader,
+                     format,
+-                    &[Vertex::LAYOUT, InstanceData::LAYOUT],
++                    &[
++                        Vertex::LAYOUT,
++                        InstanceData::LAYOUT,
++                        TangentVertexData::LAYOUT,
++                    ],
+                     key,
+                 )
+@@ -89,11 +100,13 @@
+                     "Skinned material pipeline",
+                     &skinned_pipeline_layout,
+                     &skinned_shader,
++                    &shader,
+                     format,
+                     &[
+                         Vertex::LAYOUT,
+                         InstanceData::LAYOUT,
+                         crate::mesh::SkinningVertexData::LAYOUT,
++                        TangentVertexData::LAYOUT,
+                     ],
+                     key,
+                 )
+@@ -110,5 +123,5 @@
+                     pass.set_bind_group(1, batch.texture_bind_group.as_ref(), &[]);
+-                    batch.gpu_mesh.draw_instanced_submesh(
++                    batch.gpu_mesh.draw_material_instanced_submesh(
+                         &mut pass,
+                         instance_buf,
+                         batch.instances.len() as u32,
+@@ -132,5 +145,5 @@
+                     pass.set_bind_group(1, draw.texture_bind_group.as_ref(), &[]);
+-                    draw.gpu_mesh.draw_instanced_submesh(
++                    draw.gpu_mesh.draw_material_instanced_submesh(
+                         &mut pass,
+                         &resources.instance_buffer,
+                         1,
+@@ -155,6 +168,6 @@
+                     pass.set_bind_group(1, draw.texture_bind_group.as_ref(), &[]);
+                     pass.set_bind_group(3, &resources.palette_bind_group, &[]);
+-                    draw.gpu_mesh.draw_skinned_submesh(
++                    draw.gpu_mesh.draw_material_skinned_submesh(
+                         &mut pass,
+                         &resources.instance_buffer,
+                         Some(draw.submesh),
+@@ -177,5 +190,5 @@
+                         pass.set_bind_group(1, batch.texture_bind_group.as_ref(), &[]);
+-                        batch.gpu_mesh.draw_instanced_submesh(
++                        batch.gpu_mesh.draw_material_instanced_submesh(
+                             &mut pass,
+                             instance_buffer,
+                             batch.instances.len() as u32,
+@@ -199,6 +212,6 @@
+                             pass.set_bind_group(1, draw.texture_bind_group.as_ref(), &[]);
+                             pass.set_bind_group(3, &resources.palette_bind_group, &[]);
+-                            draw.gpu_mesh.draw_skinned_submesh(
++                            draw.gpu_mesh.draw_material_skinned_submesh(
+                                 &mut pass,
+                                 &resources.instance_buffer,
+                                 Some(draw.submesh),
+@@ -218,5 +231,5 @@
+                             pass.set_bind_group(1, draw.texture_bind_group.as_ref(), &[]);
+-                            draw.gpu_mesh.draw_instanced_submesh(
++                            draw.gpu_mesh.draw_material_instanced_submesh(
+                                 &mut pass,
+                                 &resources.instance_buffer,
+                                 1,
