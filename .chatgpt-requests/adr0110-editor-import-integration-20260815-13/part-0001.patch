@@ -15,14 +15,14 @@ diff --git a/crates/editor/src/asset_import.rs b/crates/editor/src/asset_import.
 +    /// Motion-only sources leave this empty because the target model owns the profile.
 +    pub humanoid_profiles: Vec<HumanoidProfile>,
      /// Per-clip detected ground-contact intervals (ADR 0080 §1), reflecting
-@@ -336,3 +343,6 @@
+@@ -336,3 +343,5 @@
 -            let sub_assets = imported.imported_sub_assets();
 +            let mut humanoid_catalog = build_humanoid_import_catalog(&imported);
 +            let mut sub_assets = imported.imported_sub_assets();
 +            sub_assets.extend(humanoid_imported_sub_assets(&humanoid_catalog));
              let skeleton_records = imported.skeleton_records.clone();
              let animation_contacts = resolve_animation_contacts(&imported);
-@@ -347,4 +357,10 @@
+@@ -347,6 +356,11 @@
                  sub_assets,
                  skeleton_records,
 +                humanoid_profiles: humanoid_catalog.profiles,
@@ -35,22 +35,22 @@ diff --git a/crates/editor/src/asset_import.rs b/crates/editor/src/asset_import.
 +                    diagnostics
 +                },
                  error: None,
-@@ -675,3 +691,4 @@
+@@ -675,3 +689,4 @@
                  sub_assets,
                  skeleton_records,
 +                humanoid_profiles: Vec::new(),
                  animation_contacts,
-@@ -710,3 +727,4 @@
+@@ -710,3 +725,4 @@
                              sub_assets: Vec::new(),
                              skeleton_records: Vec::new(),
 +                            humanoid_profiles: Vec::new(),
                              animation_contacts: Vec::new(),
-@@ -855,3 +873,4 @@
+@@ -855,3 +871,4 @@
          sub_assets: Vec::new(),
          skeleton_records: Vec::new(),
 +        humanoid_profiles: Vec::new(),
          animation_contacts: Vec::new(),
-@@ -883,3 +902,4 @@
+@@ -883,3 +900,4 @@
          sub_assets: Vec::new(),
          skeleton_records: Vec::new(),
 +        humanoid_profiles: Vec::new(),
