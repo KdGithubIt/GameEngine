@@ -1,0 +1,190 @@
+or/src/ui/documents.rs
++++ b/crates/editor/src/ui/documents.rs
+@@ -2,5 +2,32 @@
+ 
+ use super::*;
+ 
+ impl EditorApp {
++    /// Creates the normal project-scoped Editor workspace.
++    ///
++    /// The Launcher or direct `--project` bootstrap has already validated and
++    /// leased this concrete [`ProjectRoot`]; recent-project selection never
++    /// participates in workspace construction.
++    pub fn from_project(root: ProjectRoot) -> Self {
++        let mut app = Self::new(EditorSession::empty_behavior_tree());
++        app.preferences = EditorPreferences::load_for(&root);
++        app.session.reset(EditorSession::empty_behavior_tree());
++        app.set_project_root(root.clone());
++        if app.restore_workspace_tabs(&root) {
++            app.on_active_document_changed(None);
++            app.restore_preferred_selection();
++        } else {
++            app.open_initial_project_scene(&root);
++        }
++        app.sync_workspace_preferences();
++        app
++    }
++
++    /// Returns the concrete project root of this normal Editor workspace.
++    pub fn project_root(&self) -> &ProjectRoot {
++        self.project_root
++            .as_ref()
++            .expect("project-scoped Editor workspace must have a ProjectRoot")
++    }
++
+     pub(super) fn window_title(&self) -> String {
+@@ -514,4 +537,6 @@ impl EditorApp {
+         let config = ProjectConfig {
++            project_id: engine_authoring::ProjectId::generate(),
+             name,
++            engine_version: engine_project_lifecycle::CURRENT_ENGINE_ASSOCIATION.to_owned(),
+             schema_version: PROJECT_SCHEMA_VERSION,
+         };
+diff --git a/crates/editor/src/main.rs b/crates/editor/src/main.rs
+index eeb2fa6..0000000 100644
+--- a/crates/editor/src/main.rs
++++ b/crates/editor/src/main.rs
+@@ -1,5 +1,6 @@
+ use std::path::PathBuf;
+ 
+ use engine_editor::{AuthoringTool, AuthoringWindows};
++use engine_project_lifecycle::{acquire_editor_project, EditorLease};
+ 
+ /// Keeps the native swapchain clear color aligned with the editor theme.
+@@ -12,20 +13,25 @@ use engine_editor::{AuthoringTool, AuthoringWindows};
+ /// covering the root viewport. A fixed dark clear color prevents a transient
+ /// backend clear frame from flashing through.
+-#[derive(Default)]
+ struct EditorShell {
+     app: engine_editor::EditorApp,
+     authoring_windows: AuthoringWindows,
+     show_authoring_tools: bool,
+     authoring_status: Option<String>,
++    project_lease: EditorLease,
+ }
+ 
+ impl EditorShell {
+-    fn authoring_project() -> Option<PathBuf> {
+-        let preferences = engine_editor::preferences::EditorPreferences::load();
+-        preferences
+-            .last_project
+-            .or_else(|| preferences.recent_projects.into_iter().next())
+-            .filter(|path| path.is_dir())
++    fn new(project_lease: EditorLease) -> Result<Self, String> {
++        let root = project_lease.project_root().clone();
++        let app = engine_editor::EditorApp::from_project(root);
++        project_lease.mark_ready().map_err(|error| error.to_string())?;
++        Ok(Self {
++            app,
++            authoring_windows: AuthoringWindows::default(),
++            show_authoring_tools: false,
++            authoring_status: None,
++            project_lease,
++        })
+     }
+ 
+     fn show_authoring_tools_launcher(&mut self, context: &eframe::egui::Context) {
+@@ -48,5 +51,5 @@ impl EditorShell {
+             return;
+         }
+ 
+-        let project = Self::authoring_project();
++        let project = Some(self.app.project_root().path().to_path_buf());
+         let mut requested_tool = None;
+@@ -103,5 +106,12 @@ impl eframe::App for EditorShell {
+ 
+ impl eframe::App for EditorShell {
+     fn logic(&mut self, context: &eframe::egui::Context, frame: &mut eframe::Frame) {
++        if self.project_lease.take_activation_request() {
++            context.send_viewport_cmd(eframe::egui::ViewportCommand::Focus);
++        }
++        if self.project_lease.take_close_request() {
++            context.send_viewport_cmd(eframe::egui::ViewportCommand::Close);
++            return;
++        }
+         eframe::App::logic(&mut self.app, context, frame);
+     }
+@@ -121,6 +131,31 @@ impl eframe::App for EditorShell {
+     }
+ }
+ 
+-fn main() -> eframe::Result {
++fn project_argument() -> Result<PathBuf, String> {
++    let mut arguments = std::env::args_os().skip(1);
++    let mut project = None;
++    while let Some(argument) = arguments.next() {
++        if argument == "--project" {
++            if project.is_some() {
++                return Err("--project may be specified only once".to_owned());
++            }
++            project = Some(PathBuf::from(
++                arguments
++                    .next()
++                    .ok_or_else(|| "--project requires a path".to_owned())?,
++            ));
++        } else {
++            return Err(format!(
++                "unknown Editor argument `{}`",
++                argument.to_string_lossy()
++            ));
++        }
++    }
++    project.ok_or_else(|| "Engine Editor requires `--project <path>`".to_owned())
++}
++
++fn run() -> Result<(), String> {
++    let project = project_argument()?;
++    let project_lease = acquire_editor_project(&project).map_err(|error| error.to_string())?;
+     let options = eframe::NativeOptions {
+         viewport: eframe::egui::ViewportBuilder::default()
+@@ -135,7 +176,20 @@ fn main() -> eframe::Result {
+         options,
+-        Box::new(|creation_context| {
++        Box::new(move |creation_context| {
+             engine_editor::install_editor_fonts(&creation_context.egui_ctx);
+-            Ok(Box::new(EditorShell::default()))
++            Ok(Box::new(
++                EditorShell::new(project_lease)
++                    .map_err(|error| -> Box<dyn std::error::Error + Send + Sync> {
++                        Box::new(std::io::Error::other(error))
++                    })?,
++            ))
+         }),
+     )
++    .map_err(|error| error.to_string())
++}
++
++fn main() {
++    if let Err(error) = run() {
++        eprintln!("[editor.startup_failed] {error}");
++        std::process::exit(1);
++    }
+ }
+diff --git a/エディタをビルドして起動.bat b/エディタをビルドして起動.bat
+index 89da7b2..0000000 100644
+--- a/エディタをビルドして起動.bat
++++ b/エディタをビルドして起動.bat
+@@ -20,10 +20,11 @@ if errorlevel 1 (
+ )
+ 
+ echo ========================================
+-echo engine-editor を最新ソースからビルドして起動します
++echo Launcher と Editor を最新ソースからビルドして Launcher を起動します
+ echo ========================================
+ echo.
+ 
+-cargo run -p engine-editor --bin engine-editor
++cargo build -p engine-launcher -p engine-editor
++if not errorlevel 1 target\debug\engine-launcher.exe
+ 
+ if errorlevel 1 (
+diff --git a/エディタをリリースビルドして起動.bat b/エディタをリリースビルドして起動.bat
+index c962245..0000000 100644
+--- a/エディタをリリースビルドして起動.bat
++++ b/エディタをリリースビルドして起動.bat
+@@ -35,13 +35,13 @@ if errorlevel 1 (
+ rem ここからreleaseプロファイルによるエディタのビルドと起動を開始します。
+ rem 初回やソース更新後は最適化処理が行われるため、通常ビルドより時間がかかる場合があります。
+ echo ========================================
+-echo engine-editor をリリースビルドして起動します
++echo Launcher と Editor を
