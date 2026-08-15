@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 
 /// Schema version for `.material.json` files.
-pub const MATERIAL_SCHEMA_VERSION: u32 = 2;
+pub const MATERIAL_SCHEMA_VERSION: u32 = 3;
 
 // ---------------------------------------------------------------------------
 // RGBA color helper
@@ -247,11 +247,21 @@ pub struct MaterialAsset {
     /// Optional tangent-space normal texture.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub normal_texture: Option<AssetId>,
+    /// Optional packed metallic/roughness texture. Green stores roughness and blue stores metallic.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metallic_roughness_texture: Option<AssetId>,
+    /// Optional ambient-occlusion texture. Red stores the occlusion value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub occlusion_texture: Option<AssetId>,
     /// Optional emissive texture multiplied by `emissive_color`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub emissive_texture: Option<AssetId>,
     /// Linear HDR emissive multiplier. RGB may exceed 1; alpha is ignored.
     pub emissive_color: LinearRgba,
+    /// Scale applied to tangent-space normal-map X/Y before normalization.
+    pub normal_scale: f32,
+    /// Strength of the ambient-occlusion texture in [0, 1].
+    pub occlusion_strength: f32,
     /// Roughness in [0, 1].  0 = mirror, 1 = fully diffuse.
     pub roughness: f32,
     /// Metallic factor in [0, 1].
@@ -296,6 +306,8 @@ impl MaterialAsset {
     pub fn validate(&self) -> Result<(), MaterialAssetError> {
         validate_unit_color("base_color", self.base_color)?;
         validate_non_negative_color("emissive_color", self.emissive_color)?;
+        validate_finite_scalar("normal_scale", self.normal_scale)?;
+        validate_unit_scalar("occlusion_strength", self.occlusion_strength)?;
         validate_unit_scalar("roughness", self.roughness)?;
         validate_unit_scalar("metallic", self.metallic)?;
         validate_unit_scalar("alpha_cutoff", self.alpha_cutoff)?;
@@ -323,8 +335,12 @@ impl Default for MaterialAsset {
             base_color: LinearRgba::WHITE,
             base_color_texture: None,
             normal_texture: None,
+            metallic_roughness_texture: None,
+            occlusion_texture: None,
             emissive_texture: None,
             emissive_color: Self::default_emissive_color(),
+            normal_scale: 1.0,
+            occlusion_strength: 1.0,
             roughness: Self::default_roughness(),
             metallic: 0.0,
             alpha_mode: MaterialAlphaMode::Opaque,
@@ -349,6 +365,20 @@ fn validate_non_negative_scalar(
         Err(MaterialAssetError::InvalidValue {
             field,
             expected: "a finite non-negative value",
+        })
+    }
+}
+
+fn validate_finite_scalar(
+    field: &'static str,
+    value: f32,
+) -> Result<(), MaterialAssetError> {
+    if value.is_finite() {
+        Ok(())
+    } else {
+        Err(MaterialAssetError::InvalidValue {
+            field,
+            expected: "a finite value",
         })
     }
 }
@@ -489,6 +519,8 @@ mod tests {
         assert!((mat.roughness - 0.5).abs() < f32::EPSILON);
         assert!((mat.metallic).abs() < f32::EPSILON);
         assert!(mat.base_color_texture.is_none());
+        assert!((mat.normal_scale - 1.0).abs() < f32::EPSILON);
+        assert!((mat.occlusion_strength - 1.0).abs() < f32::EPSILON);
     }
 
     #[test]
@@ -504,6 +536,8 @@ mod tests {
             },
             base_color_texture: Some(id.clone()),
             normal_texture: None,
+            metallic_roughness_texture: Some(id.clone()),
+            occlusion_texture: Some(id.clone()),
             emissive_texture: None,
             emissive_color: LinearRgba {
                 r: 2.0,
@@ -511,6 +545,8 @@ mod tests {
                 b: 0.1,
                 a: 1.0,
             },
+            normal_scale: 0.75,
+            occlusion_strength: 0.6,
             roughness: 0.3,
             metallic: 0.7,
             alpha_mode: MaterialAlphaMode::Mask,
@@ -526,6 +562,10 @@ mod tests {
         assert_eq!(parsed.schema_version, MATERIAL_SCHEMA_VERSION);
         assert_eq!(parsed.base_color, mat.base_color);
         assert_eq!(parsed.base_color_texture, Some(id));
+        assert!(parsed.metallic_roughness_texture.is_some());
+        assert!(parsed.occlusion_texture.is_some());
+        assert!((parsed.normal_scale - 0.75).abs() < f32::EPSILON);
+        assert!((parsed.occlusion_strength - 0.6).abs() < f32::EPSILON);
         assert!((parsed.roughness - 0.3).abs() < f32::EPSILON);
         assert!((parsed.metallic - 0.7).abs() < f32::EPSILON);
         assert_eq!(parsed.alpha_mode, MaterialAlphaMode::Mask);
@@ -535,13 +575,13 @@ mod tests {
     }
 
     #[test]
-    fn from_json_rejects_unsupported_version() {
+    fn from_json_rejects_previous_material_version() {
         let mut value = serde_json::to_value(MaterialAsset::default()).expect("serialize fixture");
-        value["schema_version"] = serde_json::Value::from(99);
+        value["schema_version"] = serde_json::Value::from(2);
         let json = serde_json::to_string(&value).expect("encode fixture");
         assert!(matches!(
             MaterialAsset::from_json(&json),
-            Err(MaterialAssetError::UnsupportedVersion { found: 99 })
+            Err(MaterialAssetError::UnsupportedVersion { found: 2 })
         ));
     }
 
@@ -564,7 +604,7 @@ mod tests {
     #[test]
     fn missing_current_material_fields_are_rejected() {
         assert!(matches!(
-            MaterialAsset::from_json(r#"{"schema_version":2}"#),
+            MaterialAsset::from_json(r#"{"schema_version":3}"#),
             Err(MaterialAssetError::Json(_))
         ));
     }
