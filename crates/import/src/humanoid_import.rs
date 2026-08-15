@@ -9,10 +9,12 @@ use crate::asset::{
     ImportedSubAssetKind,
 };
 use crate::model_import::GltfImportResult;
-use engine_animation::humanoid::detect_humanoid_profile;
+use engine_animation::humanoid::{detect_humanoid_profile, validate_humanoid_profile};
 use engine_animation::humanoid_motion::{build_humanoid_motion, HumanoidMotion};
+use engine_assets::asset::HumanoidProfileOrigin;
 use engine_authoring::diagnostic::Diagnostic;
 use engine_authoring::id::AssetId;
+use engine_rig::skeleton_asset::SkeletonAsset;
 use hashbrown::{HashMap, HashSet};
 
 /// One skeleton-independent Humanoid variant derived from a Native animation.
@@ -41,39 +43,122 @@ pub struct HumanoidImportCatalog {
     pub diagnostics: Vec<Diagnostic>,
 }
 
+enum ReconciledProfile {
+    Usable(HumanoidProfile),
+    PreservedStaleAuthored(HumanoidProfile),
+    Unavailable,
+}
+
+fn reconcile_profile(
+    skeleton: &SkeletonAsset,
+    existing: Option<&HumanoidProfile>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> ReconciledProfile {
+    if let Some(profile) = existing {
+        match validate_humanoid_profile(profile, skeleton) {
+            Ok(()) => {
+                if !profile.uncertain_bones.is_empty() {
+                    diagnostics.push(Diagnostic::warning(
+                        "anim.humanoid_profile_uncertain",
+                        format!(
+                            "skeleton `{}` keeps a structurally valid Humanoid profile with uncertain mappings: {:?}",
+                            skeleton.name, profile.uncertain_bones
+                        ),
+                    ));
+                }
+                return ReconciledProfile::Usable(profile.clone());
+            }
+            Err(error) if profile.origin == HumanoidProfileOrigin::Authored => {
+                diagnostics.push(Diagnostic::warning(
+                    "anim.humanoid_profile_stale_authored",
+                    format!(
+                        "authored Humanoid profile for skeleton `{}` is stale and was preserved instead of replaced: {error}",
+                        skeleton.name
+                    ),
+                ));
+                return ReconciledProfile::PreservedStaleAuthored(profile.clone());
+            }
+            Err(_) => {
+                // Automatic profiles are generated metadata. A structural
+                // change invalidates them, so re-detection is the correct
+                // source of truth rather than preserving stale generated IDs.
+            }
+        }
+    }
+
+    let mut detection = detect_humanoid_profile(skeleton);
+    diagnostics.append(&mut detection.diagnostics);
+    detection
+        .profile
+        .map(ReconciledProfile::Usable)
+        .unwrap_or(ReconciledProfile::Unavailable)
+}
+
 /// Builds model-owned Humanoid profiles and portable motion variants.
 ///
 /// Detection is conservative and happens only during import/authoring. Native
 /// clips remain authoritative and usable when a profile or conversion is
-/// unavailable.
-pub fn build_humanoid_import_catalog(imported: &GltfImportResult) -> HumanoidImportCatalog {
+/// unavailable. Existing authored profiles are never silently replaced during
+/// reimport: structurally valid mappings are reused, while stale authored
+/// mappings are preserved with a diagnostic and excluded from Humanoid bake.
+pub fn build_humanoid_import_catalog(
+    imported: &GltfImportResult,
+    existing_profiles: &[HumanoidProfile],
+) -> HumanoidImportCatalog {
     let mut profiles = Vec::new();
     let mut diagnostics = Vec::new();
     let mut seen_skeletons = HashSet::<AssetId>::new();
+    let mut consumed_existing = HashSet::<usize>::new();
+    let mut usable_profiles = HashMap::<AssetId, usize>::new();
 
     for skin in &imported.skins {
         if !seen_skeletons.insert(skin.skeleton.id.clone()) {
             continue;
         }
-        let mut detection = detect_humanoid_profile(&skin.skeleton);
-        diagnostics.append(&mut detection.diagnostics);
-        if let Some(profile) = detection.profile {
-            profiles.push(profile);
+        let existing = existing_profiles
+            .iter()
+            .enumerate()
+            .find(|(_, profile)| profile.skeleton == skin.skeleton.id.as_str());
+        if let Some((index, _)) = existing {
+            consumed_existing.insert(index);
+        }
+
+        match reconcile_profile(
+            &skin.skeleton,
+            existing.map(|(_, profile)| profile),
+            &mut diagnostics,
+        ) {
+            ReconciledProfile::Usable(profile) => {
+                let profile_index = profiles.len();
+                profiles.push(profile);
+                usable_profiles.insert(skin.skeleton.id.clone(), profile_index);
+            }
+            ReconciledProfile::PreservedStaleAuthored(profile) => profiles.push(profile),
+            ReconciledProfile::Unavailable => {}
         }
     }
 
-    let profiles_by_skeleton = profiles
-        .iter()
-        .enumerate()
-        .map(|(index, profile)| (profile.skeleton.clone(), index))
-        .collect::<HashMap<_, _>>();
+    for (index, profile) in existing_profiles.iter().enumerate() {
+        if consumed_existing.contains(&index) || profile.origin != HumanoidProfileOrigin::Authored {
+            continue;
+        }
+        diagnostics.push(Diagnostic::warning(
+            "anim.humanoid_profile_orphaned_authored",
+            format!(
+                "authored Humanoid profile for skeleton `{}` no longer matches a skeleton imported by this model; the mapping was retained for manual repair",
+                profile.skeleton
+            ),
+        ));
+        profiles.push(profile.clone());
+    }
+
     let mut motions = Vec::new();
 
     for animation in &imported.animations {
         let Some(skin) = imported.skins.get(animation.skin_index) else {
             continue;
         };
-        let Some(&profile_index) = profiles_by_skeleton.get(skin.skeleton.id.as_str()) else {
+        let Some(&profile_index) = usable_profiles.get(&skin.skeleton.id) else {
             continue;
         };
         let profile = &profiles[profile_index];

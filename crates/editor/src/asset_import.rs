@@ -217,6 +217,10 @@ impl AssetImportManager {
     /// registered source's `ImportSettings::skeleton_records` — so the
     /// dedupe rule can recognize a rig imported from a different source.
     ///
+    /// `existing_humanoid_profiles` is this model source's persisted Humanoid
+    /// profile state. Valid authored mappings are reused and stale authored
+    /// mappings are preserved instead of being silently replaced (ADR 0110).
+    ///
     /// `contact_bones` (ADR 0080 §1, AP-5) is normally this source's own
     /// `ImportSettings::contact_bones`; an empty list keeps the default
     /// foot/ankle/toe name heuristic.
@@ -231,6 +235,7 @@ impl AssetImportManager {
         source_id: AssetId,
         source_path: PathBuf,
         existing_skeletons: Vec<SkeletonRecord>,
+        existing_humanoid_profiles: Vec<HumanoidProfile>,
         contact_bones: Vec<String>,
     ) -> Result<(), AssetImportStartError> {
         if self.is_running() {
@@ -340,7 +345,8 @@ impl AssetImportManager {
                 .to_owned();
             let prefab = engine::build_gltf_prefab(&source_id, &imported, &prefab_name);
             progress(0.95, "Publishing import result");
-            let mut humanoid_catalog = build_humanoid_import_catalog(&imported);
+            let mut humanoid_catalog =
+                build_humanoid_import_catalog(&imported, &existing_humanoid_profiles);
             let mut sub_assets = imported.imported_sub_assets();
             sub_assets.extend(humanoid_imported_sub_assets(&humanoid_catalog));
             let skeleton_records = imported.skeleton_records.clone();
@@ -999,6 +1005,7 @@ mod tests {
                 source_path.clone(),
                 Vec::new(),
                 Vec::new(),
+                Vec::new(),
             )
             .expect("import without override starts");
         let without_override = wait_for_result(&mut manager);
@@ -1015,6 +1022,7 @@ mod tests {
                 source_id,
                 source_path,
                 without_override.skeleton_records.clone(),
+                without_override.humanoid_profiles.clone(),
                 vec!["tip_joint".to_owned()],
             )
             .expect("import with override starts");
@@ -1086,6 +1094,7 @@ mod tests {
             PathBuf::from("asset.glb"),
             Vec::new(),
             Vec::new(),
+            Vec::new(),
         );
         assert_eq!(result, Err(AssetImportStartError::AlreadyRunning));
     }
@@ -1131,6 +1140,7 @@ mod tests {
                 source_path.clone(),
                 Vec::new(),
                 Vec::new(),
+                Vec::new(),
             )
             .expect("first import starts");
         let first = wait_for_result(&mut manager);
@@ -1141,6 +1151,7 @@ mod tests {
                 source_id,
                 source_path,
                 first.skeleton_records.clone(),
+                first.humanoid_profiles.clone(),
                 Vec::new(),
             )
             .expect("reimport starts");
