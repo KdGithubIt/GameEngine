@@ -1,0 +1,18 @@
+diff --git a/crates/editor/src/ui/asset_inspector.rs b/crates/editor/src/ui/asset_inspector.rs
+--- a/crates/editor/src/ui/asset_inspector.rs
++++ b/crates/editor/src/ui/asset_inspector.rs
+@@ -1522,6 +1522,7 @@
+         engine::ImportedSubAssetKind::Skeleton => "[skeleton]",
+         engine::ImportedSubAssetKind::Skin => "[skin]",
+         engine::ImportedSubAssetKind::Animation => "[clip]",
++        engine::ImportedSubAssetKind::HumanoidMotion => "[humanoid]",
+         engine::ImportedSubAssetKind::Morph => "[morph]",
+         engine::ImportedSubAssetKind::RigidBodyRig => "[physics]",
+     }
+@@ -1535,5 +1536,6 @@
+         engine::ImportedSubAssetKind::Skeleton => "Skeleton",
+         engine::ImportedSubAssetKind::Skin => "Skin",
+         engine::ImportedSubAssetKind::Animation => "Animation Clip",
++        engine::ImportedSubAssetKind::HumanoidMotion => "Humanoid Motion",
+         engine::ImportedSubAssetKind::Morph => "Morph",
+         engine::ImportedSubAssetKind::RigidBodyRig => "Rigid Body Rig",
