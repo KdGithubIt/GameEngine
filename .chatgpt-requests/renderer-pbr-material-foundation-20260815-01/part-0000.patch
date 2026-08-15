@@ -1,0 +1,410 @@
+diff --git a/crates/authoring/src/material_asset.rs b/crates/authoring/src/material_asset.rs
+--- a/crates/authoring/src/material_asset.rs
++++ b/crates/authoring/src/material_asset.rs
+@@ -11,2 +11,2 @@
+ /// Schema version for `.material.json` files.
+-pub const MATERIAL_SCHEMA_VERSION: u32 = 2;
++pub const MATERIAL_SCHEMA_VERSION: u32 = 3;
+@@ -247,6 +247,16 @@
+     /// Optional tangent-space normal texture.
+     #[serde(default, skip_serializing_if = "Option::is_none")]
+     pub normal_texture: Option<AssetId>,
++    /// Scalar applied to tangent-space normal-map X/Y before normalization.
++    pub normal_scale: f32,
++    /// Optional packed StandardLit texture: green = roughness, blue = metallic.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub metallic_roughness_texture: Option<AssetId>,
++    /// Optional StandardLit ambient-occlusion texture sampled from red.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub occlusion_texture: Option<AssetId>,
++    /// Strength of the ambient-occlusion texture in [0, 1].
++    pub occlusion_strength: f32,
+     /// Optional emissive texture multiplied by `emissive_color`.
+     #[serde(default, skip_serializing_if = "Option::is_none")]
+     pub emissive_texture: Option<AssetId>,
+@@ -294,5 +294,7 @@
+     pub fn validate(&self) -> Result<(), MaterialAssetError> {
+         validate_unit_color("base_color", self.base_color)?;
++        validate_finite_scalar("normal_scale", self.normal_scale)?;
++        validate_unit_scalar("occlusion_strength", self.occlusion_strength)?;
+         validate_non_negative_color("emissive_color", self.emissive_color)?;
+         validate_unit_scalar("roughness", self.roughness)?;
+         validate_unit_scalar("metallic", self.metallic)?;
+@@ -321,5 +321,9 @@
+             base_color: LinearRgba::WHITE,
+             base_color_texture: None,
+             normal_texture: None,
++            normal_scale: 1.0,
++            metallic_roughness_texture: None,
++            occlusion_texture: None,
++            occlusion_strength: 1.0,
+             emissive_texture: None,
+             emissive_color: Self::default_emissive_color(),
+@@ -340,3 +340,14 @@
++fn validate_finite_scalar(field: &'static str, value: f32) -> Result<(), MaterialAssetError> {
++    if value.is_finite() {
++        Ok(())
++    } else {
++        Err(MaterialAssetError::InvalidValue {
++            field,
++            expected: "a finite value",
++        })
++    }
++}
++
+ fn validate_non_negative_scalar(
+     field: &'static str,
+     value: f32,
+@@ -448,10 +448,17 @@
+     pub fn from_json(json: &str) -> Result<Self, MaterialAssetError> {
+-        let asset: MaterialAsset = serde_json::from_str(json).map_err(MaterialAssetError::Json)?;
+-        if asset.schema_version != MATERIAL_SCHEMA_VERSION {
++        #[derive(Deserialize)]
++        struct SchemaVersionProbe {
++            schema_version: u32,
++        }
++
++        let probe: SchemaVersionProbe =
++            serde_json::from_str(json).map_err(MaterialAssetError::Json)?;
++        if probe.schema_version != MATERIAL_SCHEMA_VERSION {
+             return Err(MaterialAssetError::UnsupportedVersion {
+-                found: asset.schema_version,
++                found: probe.schema_version,
+             });
+         }
++        let asset: MaterialAsset = serde_json::from_str(json).map_err(MaterialAssetError::Json)?;
+         asset.validate()?;
+         Ok(asset)
+     }
+@@ -494,5 +494,9 @@
+             },
+             base_color_texture: Some(id.clone()),
+             normal_texture: None,
++            normal_scale: 0.75,
++            metallic_roughness_texture: Some(id.clone()),
++            occlusion_texture: Some(id.clone()),
++            occlusion_strength: 0.6,
+             emissive_texture: None,
+             emissive_color: LinearRgba {
+@@ -525,5 +525,9 @@
+         assert_eq!(parsed.schema_version, MATERIAL_SCHEMA_VERSION);
+         assert_eq!(parsed.base_color, mat.base_color);
+-        assert_eq!(parsed.base_color_texture, Some(id));
++        assert_eq!(parsed.base_color_texture, Some(id.clone()));
++        assert_eq!(parsed.metallic_roughness_texture, Some(id.clone()));
++        assert_eq!(parsed.occlusion_texture, Some(id));
++        assert!((parsed.normal_scale - 0.75).abs() < f32::EPSILON);
++        assert!((parsed.occlusion_strength - 0.6).abs() < f32::EPSILON);
+         assert!((parsed.roughness - 0.3).abs() < f32::EPSILON);
+         assert!((parsed.metallic - 0.7).abs() < f32::EPSILON);
+@@ -556,7 +556,16 @@
++    #[test]
++    fn previous_material_schema_is_rejected_before_current_field_decode() {
++        assert!(matches!(
++            MaterialAsset::from_json(r#"{"schema_version":2}"#),
++            Err(MaterialAssetError::UnsupportedVersion { found: 2 })
++        ));
++    }
++
+     #[test]
+     fn missing_current_material_fields_are_rejected() {
++        let json = format!(r#"{{"schema_version":{MATERIAL_SCHEMA_VERSION}}}"#);
+         assert!(matches!(
+-            MaterialAsset::from_json(r#"{"schema_version":2}"#),
++            MaterialAsset::from_json(&json),
+             Err(MaterialAssetError::Json(_))
+         ));
+     }
+diff --git a/crates/assets/src/model_ir.rs b/crates/assets/src/model_ir.rs
+--- a/crates/assets/src/model_ir.rs
++++ b/crates/assets/src/model_ir.rs
+@@ -497,5 +497,13 @@
+     pub base_color_texture: Option<usize>,
+     /// Optional tangent-space normal texture selector.
+     pub normal_texture: Option<usize>,
++    /// Scalar applied to tangent-space normal-map X/Y before normalization.
++    pub normal_scale: f32,
++    /// Optional packed StandardLit texture: green = roughness, blue = metallic.
++    pub metallic_roughness_texture: Option<usize>,
++    /// Optional StandardLit ambient-occlusion texture sampled from red.
++    pub occlusion_texture: Option<usize>,
++    /// Strength of the ambient-occlusion texture in [0, 1].
++    pub occlusion_strength: f32,
+     /// Optional emissive texture selector.
+     pub emissive_texture: Option<usize>,
+diff --git a/crates/import/src/gltf_import.rs b/crates/import/src/gltf_import.rs
+--- a/crates/import/src/gltf_import.rs
++++ b/crates/import/src/gltf_import.rs
+@@ -865,25 +865,13 @@
+ fn parse_materials(
+     document: &gltf::Document,
+     texture_valid: &[bool],
+-    diagnostics: &mut Vec<Diagnostic>,
++    _diagnostics: &mut Vec<Diagnostic>,
+ ) -> Vec<IrMaterial> {
+     document
+         .materials()
+         .enumerate()
+         .map(|(index, source)| {
+             let pbr = source.pbr_metallic_roughness();
+-            if pbr.metallic_roughness_texture().is_some() {
+-                diagnostics.push(Diagnostic::warning(
+-                    "gltf.material_texture_unsupported",
+-                    format!(
+-                        "material {index} has a metallic-roughness texture; scalar metallic and roughness factors were imported instead"
+-                    ),
+-                ));
+-            }
+-            if source.occlusion_texture().is_some() {
+-                diagnostics.push(Diagnostic::warning(
+-                    "gltf.material_texture_unsupported",
+-                    format!("material {index} has an occlusion texture; it was ignored"),
+-                ));
+-            }
++            let normal = source.normal_texture();
++            let occlusion = source.occlusion_texture();
+             let base = pbr.base_color_factor();
+@@ -899,7 +899,17 @@
+                 base_color_texture: pbr
+                     .base_color_texture()
+                     .and_then(|texture| texture_ref(texture.texture().index())),
+-                normal_texture: source
+-                    .normal_texture()
++                normal_texture: normal
++                    .as_ref()
+                     .and_then(|texture| texture_ref(texture.texture().index())),
++                normal_scale: normal.as_ref().map_or(1.0, |texture| texture.scale()),
++                metallic_roughness_texture: pbr
++                    .metallic_roughness_texture()
++                    .and_then(|texture| texture_ref(texture.texture().index())),
++                occlusion_texture: occlusion
++                    .as_ref()
++                    .and_then(|texture| texture_ref(texture.texture().index())),
++                occlusion_strength: occlusion
++                    .as_ref()
++                    .map_or(1.0, |texture| texture.strength()),
+                 emissive_texture: source
+diff --git a/crates/import/src/fbx_import.rs b/crates/import/src/fbx_import.rs
+--- a/crates/import/src/fbx_import.rs
++++ b/crates/import/src/fbx_import.rs
+@@ -1035,4 +1035,8 @@
+                 base_color,
+                 base_color_texture: texture_ref(material.pbr.base_color.texture.as_ref()),
+                 normal_texture: texture_ref(material.pbr.normal_map.texture.as_ref()),
++                normal_scale: 1.0,
++                metallic_roughness_texture: None,
++                occlusion_texture: None,
++                occlusion_strength: 1.0,
+                 emissive_texture: texture_ref(material.pbr.emission_color.texture.as_ref()),
+diff --git a/crates/import/src/pmx_import.rs b/crates/import/src/pmx_import.rs
+--- a/crates/import/src/pmx_import.rs
++++ b/crates/import/src/pmx_import.rs
+@@ -832,4 +832,8 @@
+                 },
+                 base_color_texture,
+                 normal_texture: None,
++                normal_scale: 1.0,
++                metallic_roughness_texture: None,
++                occlusion_texture: None,
++                occlusion_strength: 1.0,
+                 emissive_texture: None,
+diff --git a/crates/import/src/model_import.rs b/crates/import/src/model_import.rs
+--- a/crates/import/src/model_import.rs
++++ b/crates/import/src/model_import.rs
+@@ -21,2 +21,3 @@
+ use crate::model_ir::{IrAnimProperty, IrMeshData, ModelDocument, SkeletonScope};
+ use crate::morph::{MaterialMorphOffset, MaterialMorphOperation, MorphAsset};
++use mikktspace::Geometry;
+@@ -748 +748,6 @@
+-    let meshes = build_meshes(source_id, document, &mesh_skin_bindings);
++    let meshes = build_meshes(
++        source_id,
++        document,
++        &mesh_skin_bindings,
++        &mut diagnostics,
++    );
+@@ -1042,26 +1042,160 @@
+     source_id: &AssetId,
+     document: &ModelDocument,
+     mesh_skin_bindings: &HashMap<usize, usize>,
++    diagnostics: &mut Vec<Diagnostic>,
+ ) -> Vec<GltfMeshData> {
+     document
+         .meshes
+         .iter()
+-        .map(|ir_mesh| GltfMeshData {
+-            source_index: ir_mesh.source_index,
+-            id: imported_sub_asset_id(source_id, ImportedSubAssetKind::Mesh, ir_mesh.source_index),
+-            name: ir_mesh.name.clone(),
+-            mesh: build_runtime_mesh(&ir_mesh.mesh),
+-            materials: ir_mesh
+-                .submesh_materials
+-                .iter()
+-                .map(|material| {
+-                    material.map(|index| {
+-                        imported_sub_asset_id(source_id, ImportedSubAssetKind::Material, index)
++        .map(|ir_mesh| {
++            let mut mesh = build_runtime_mesh(&ir_mesh.mesh);
++            if mesh.tangents.is_none() && mesh_uses_normal_map(ir_mesh, document) {
++                if let Some(tangents) = generate_mikktspace_tangents(&mesh) {
++                    mesh.tangents = Some(tangents);
++                } else {
++                    diagnostics.push(Diagnostic::warning(
++                        "model_import.tangent_generation_failed",
++                        format!(
++                            "mesh '{}' needs tangent-space normal mapping but MikkTSpace could not preserve one tangent per existing vertex; derivative tangent reconstruction will be used",
++                            ir_mesh.name
++                        ),
++                    ));
++                }
++            }
++
++            GltfMeshData {
++                source_index: ir_mesh.source_index,
++                id: imported_sub_asset_id(
++                    source_id,
++                    ImportedSubAssetKind::Mesh,
++                    ir_mesh.source_index,
++                ),
++                name: ir_mesh.name.clone(),
++                mesh,
++                materials: ir_mesh
++                    .submesh_materials
++                    .iter()
++                    .map(|material| {
++                        material.map(|index| {
++                            imported_sub_asset_id(
++                                source_id,
++                                ImportedSubAssetKind::Material,
++                                index,
++                            )
++                        })
+                     })
+-                })
+-                .collect(),
+-            skin_index: mesh_skin_bindings.get(&ir_mesh.source_index).copied(),
+-            morphs: build_morphs(source_id, ir_mesh),
++                    .collect(),
++                skin_index: mesh_skin_bindings.get(&ir_mesh.source_index).copied(),
++                morphs: build_morphs(source_id, ir_mesh),
++            }
+         })
+         .collect()
+ }
++
++fn mesh_uses_normal_map(ir_mesh: &crate::model_ir::IrMesh, document: &ModelDocument) -> bool {
++    ir_mesh.submesh_materials.iter().flatten().any(|selector| {
++        document
++            .materials
++            .iter()
++            .find(|material| material.source_index == *selector)
++            .is_some_and(|material| material.normal_texture.is_some())
++    })
++}
++
++struct MikkGeometry<'a> {
++    mesh: &'a Mesh,
++    tangents: Vec<Option<[f32; 4]>>,
++    conflicted: bool,
++}
++
++impl MikkGeometry<'_> {
++    fn vertex_index(&self, face: usize, vert: usize) -> usize {
++        let corner = face * 3 + vert;
++        self.mesh
++            .indices
++            .as_ref()
++            .map_or(corner, |indices| indices[corner] as usize)
++    }
++}
++
++impl Geometry for MikkGeometry<'_> {
++    fn num_faces(&self) -> usize {
++        self.mesh
++            .indices
++            .as_ref()
++            .map_or(self.mesh.vertices.len(), Vec::len)
++            / 3
++    }
++
++    fn num_vertices_of_face(&self, _face: usize) -> usize {
++        3
++    }
++
++    fn position(&self, face: usize, vert: usize) -> [f32; 3] {
++        self.mesh.vertices[self.vertex_index(face, vert)].position
++    }
++
++    fn normal(&self, face: usize, vert: usize) -> [f32; 3] {
++        self.mesh.vertices[self.vertex_index(face, vert)].normal
++    }
++
++    fn tex_coord(&self, face: usize, vert: usize) -> [f32; 2] {
++        self.mesh.vertices[self.vertex_index(face, vert)].uv
++    }
++
++    fn set_tangent_encoded(&mut self, tangent: [f32; 4], face: usize, vert: usize) {
++        let index = self.vertex_index(face, vert);
++        let candidate = glam::Vec3::from_array([tangent[0], tangent[1], tangent[2]])
++            .normalize_or_zero();
++        if candidate == glam::Vec3::ZERO || !tangent[3].is_finite() {
++            self.conflicted = true;
++            return;
++        }
++        let encoded = [
++            candidate.x,
++            candidate.y,
++            candidate.z,
++            if tangent[3] < 0.0 { -1.0 } else { 1.0 },
++        ];
++        if let Some(previous) = self.tangents[index] {
++            let previous_direction =
++                glam::Vec3::from_array([previous[0], previous[1], previous[2]]);
++            if previous_direction.dot(candidate) < 0.99
++                || previous[3].is_sign_negative() != encoded[3].is_sign_negative()
++            {
++                // MikkTSpace returns per-face-corner results. If an existing
++                // index aliases corners that need different tangent frames,
++                // retaining that index would be incorrect. Keep the mesh
++                // topology intact and let the renderer's derivative fallback
++                // handle this mesh instead.
++                self.conflicted = true;
++            }
++        } else {
++            self.tangents[index] = Some(encoded);
++        }
++    }
++}
++
++fn generate_mikktspace_tangents(mesh: &Mesh) -> Option<Vec<[f32; 4]>> {
++    let corner_count = mesh.indices.as_ref().map_or(mesh.vertices.len(), Vec::len);
++    if corner_count == 0 || corner_count % 3 != 0 {
++        return None;
++    }
++
++    let mut geometry = MikkGeometry {
++        mesh,
++        tangents: vec![None; mesh.vertices.len()],
++        conflicted: false,
++    };
++    if !mikktspace::generate_tangents(&mut geometry) || geometry.conflicted {
++        return None;
++    }
++
++    Some(
++        geometry
++            .tangents
++            .into_iter()
++            .map(|tangent| tangent.unwrap_or([0.0; 4]))
++            .collect(),
++    )
++}
+@@ -1280,4 +1280,8 @@
+                 base_color: material.base_color,
+                 base_color_texture: material.base_color_texture.map(texture_id),
+                 normal_texture: material.normal_texture.map(texture_id),
++                normal_scale: material.normal_scale,
++                metallic_roughness_texture: material.metallic_roughness_texture.map(texture_id),
++                occlusion_texture: material.occlusion_texture.map(texture_id),
++                occlusion_strength: material.occlusion_strength,
+                 emissive_texture: material.emissive_texture.map(texture_id),
