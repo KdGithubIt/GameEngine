@@ -1,0 +1,167 @@
+         if let Some(error) = game_project_error {
+             self.session
+                 .push_diagnostic(engine_authoring::Diagnostic::error(
+@@ -591,6 +588,6 @@ impl Default for EditorApp {
+     fn default() -> Self {
+-        let preferences = EditorPreferences::load();
++        let preferences = EditorPreferences::default();
+         let mut app = Self::new(EditorSession::empty_behavior_tree());
+-        app.startup_restore_project = preferences.last_project.clone();
++        app.startup_restore_project = None;
+         app.ui_builder.preview_preset = preferences.ui_preview_preset;
+         app.bottom_panel_open = preferences.bottom_panel_open;
+@@ -771,16 +759,11 @@ impl eframe::App for EditorApp {
+             } else if matches!(
+                 self.session.current_document(),
+                 crate::document::CurrentDocument::None
+             ) {
+-                if let Some(action) = show_hub(ui, &self.preferences) {
+-                    match action {
+-                        HubAction::NewProject(folder) => {
+-                            self.request_open(PendingOpen::NewProject(folder));
+-                        }
+-                        HubAction::OpenProject(folder) => {
+-                            self.request_open(PendingOpen::Project(folder));
+-                        }
+-                    }
+-                }
++                ui.vertical_centered(|ui| {
++                    ui.add_space(60.0);
++                    ui.heading("No document open");
++                    ui.label("Open or create an authoring document inside this project.");
++                });
+             } else {
+                 let actions = show_graph_canvas(
+diff --git a/crates/editor/src/ui/documents.rs b/crates/editor/src/ui/documents.rs
+index 7183108..0000000 100644
+--- a/crates/editor/src/ui/documents.rs
++++ b/crates/editor/src/ui/documents.rs
+@@ -2,5 +2,32 @@
+ 
+ use super::*;
+ 
+ impl EditorApp {
++    /// Creates the normal project-scoped Editor workspace.
++    ///
++    /// The Launcher or direct `--project` bootstrap has already validated and
++    /// leased this concrete [`ProjectRoot`]; recent-project selection never
++    /// participates in workspace construction.
++    pub fn from_project(root: ProjectRoot) -> Self {
++        let mut app = Self::new(EditorSession::empty_behavior_tree());
++        app.preferences = EditorPreferences::load_for(&root);
++        app.session.reset(EditorSession::empty_behavior_tree());
++        app.set_project_root(root.clone());
++        if app.restore_workspace_tabs(&root) {
++            app.on_active_document_changed(None);
++            app.restore_preferred_selection();
++        } else {
++            app.open_initial_project_scene(&root);
++        }
++        app.sync_workspace_preferences();
++        app
++    }
++
++    /// Returns the concrete project root of this normal Editor workspace.
++    pub fn project_root(&self) -> &ProjectRoot {
++        self.project_root
++            .as_ref()
++            .expect("project-scoped Editor workspace must have a ProjectRoot")
++    }
++
+     pub(super) fn window_title(&self) -> String {
+@@ -514,4 +537,6 @@ impl EditorApp {
+         let config = ProjectConfig {
++            project_id: engine_authoring::ProjectId::generate(),
+             name,
++            engine_version: engine_project_lifecycle::CURRENT_ENGINE_ASSOCIATION.to_owned(),
+             schema_version: PROJECT_SCHEMA_VERSION,
+         };
+diff --git a/crates/editor/src/main.rs b/crates/editor/src/main.rs
+index eeb2fa6..0000000 100644
+--- a/crates/editor/src/main.rs
++++ b/crates/editor/src/main.rs
+@@ -1,5 +1,6 @@
+ use std::path::PathBuf;
+ 
+ use engine_editor::{AuthoringTool, AuthoringWindows};
++use engine_project_lifecycle::{acquire_editor_project, EditorLease};
+ 
+ /// Keeps the native swapchain clear color aligned with the editor theme.
+@@ -12,20 +13,25 @@ use engine_editor::{AuthoringTool, AuthoringWindows};
+ /// covering the root viewport. A fixed dark clear color prevents a transient
+ /// backend clear frame from flashing through.
+-#[derive(Default)]
+ struct EditorShell {
+     app: engine_editor::EditorApp,
+     authoring_windows: AuthoringWindows,
+     show_authoring_tools: bool,
+     authoring_status: Option<String>,
++    project_lease: EditorLease,
+ }
+ 
+ impl EditorShell {
+-    fn authoring_project() -> Option<PathBuf> {
+-        let preferences = engine_editor::preferences::EditorPreferences::load();
+-        preferences
+-            .last_project
+-            .or_else(|| preferences.recent_projects.into_iter().next())
+-            .filter(|path| path.is_dir())
++    fn new(project_lease: EditorLease) -> Result<Self, String> {
++        let root = project_lease.project_root().clone();
++        let app = engine_editor::EditorApp::from_project(root);
++        project_lease.mark_ready().map_err(|error| error.to_string())?;
++        Ok(Self {
++            app,
++            authoring_windows: AuthoringWindows::default(),
++            show_authoring_tools: false,
++            authoring_status: None,
++            project_lease,
++        })
+     }
+ 
+     fn show_authoring_tools_launcher(&mut self, context: &eframe::egui::Context) {
+@@ -48,5 +51,5 @@ impl EditorShell {
+             return;
+         }
+ 
+-        let project = Self::authoring_project();
++        let project = Some(self.app.project_root().path().to_path_buf());
+         let mut requested_tool = None;
+@@ -103,5 +106,12 @@ impl eframe::App for EditorShell {
+ 
+ impl eframe::App for EditorShell {
+     fn logic(&mut self, context: &eframe::egui::Context, frame: &mut eframe::Frame) {
++        if self.project_lease.take_activation_request() {
++            context.send_viewport_cmd(eframe::egui::ViewportCommand::Focus);
++        }
++        if self.project_lease.take_close_request() {
++            context.send_viewport_cmd(eframe::egui::ViewportCommand::Close);
++            return;
++        }
+         eframe::App::logic(&mut self.app, context, frame);
+     }
+@@ -121,6 +131,31 @@ impl eframe::App for EditorShell {
+     }
+ }
+ 
+-fn main() -> eframe::Result {
++fn project_argument() -> Result<PathBuf, String> {
++    let mut arguments = std::env::args_os().skip(1);
++    let mut project = None;
++    while let Some(argument) = arguments.next() {
++        if argument == "--project" {
++            if project.is_some() {
++                return Err("--project may be specified only once".to_owned());
++            }
++            project = Some(PathBuf::from(
++                arguments
++                    .next()
++                    .ok_or_else(|| "--project requires a path".to_owned())?,
++            ));
++        } else {
++            return Err(format!(
++                "unknown Editor argument `{}`",
++                argument.to_string_lossy()
++            ));
++        }
++    }
