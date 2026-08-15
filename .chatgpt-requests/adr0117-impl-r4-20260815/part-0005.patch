@@ -128,7 +128,7 @@ index 0000000..0000000
 +    }
 +
 +    fn push_recent(&mut self, path: &Path) {
-+        self.preferences.retain(|candidate| candidate != path);
++        self.recent_projects.retain(|candidate| candidate != path);
 +        self.recent_projects.insert(0, path.to_path_buf());
 +        self.recent_projects.truncate(MAX_RECENT_PROJECTS);
 +        self.save();
