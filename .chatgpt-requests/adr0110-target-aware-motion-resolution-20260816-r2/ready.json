@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0110-target-aware-motion-resolution-20260816-r2",
+  "target_branch": "chatgpt/gameengine-adr-0110-humanoid-motion",
+  "expected_head_sha": "b9abe080afa786641f99347b356744d61627d4fc",
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Resolve Animation Set motion sources against target rigs",
+  "pr_title": "ADR 0110: implement humanoid animation sources",
+  "pr_body": "## Summary\n\nImplements ADR 0110 humanoid profiles, portable Humanoid motion, typed Animation Set sources, and target bake/package resolution.\n\nThis request makes Animation Set resolution target-aware: Native remains explicit, Auto prefers an explicit RetargetMap before Humanoid fallback, Humanoid resolves the portable variant directly, every layer is target-bound before composition, and packaged Humanoid playback only reads pre-baked output.\n\n<!-- gameengine-chatgpt-dispatcher -->"
+}
