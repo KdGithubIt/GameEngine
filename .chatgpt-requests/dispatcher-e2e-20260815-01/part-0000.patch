@@ -1,0 +1,9 @@
+diff --git a/crates/ecs/CHATGPT_E2E_PROBE.md b/crates/ecs/CHATGPT_E2E_PROBE.md
+new file mode 100644
+--- /dev/null
++++ b/crates/ecs/CHATGPT_E2E_PROBE.md
+@@ -0,0 +1,4 @@
++# ChatGPT Dispatcher E2E Probe
++
++This temporary file verifies the public dispatcher-to-Draft-PR validation path.
++It is intentionally not meant to be merged into `main`.
