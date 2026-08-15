@@ -1,5 +1,10 @@
 # Phase 26 — Project Hub / Scene-first Startup
 
+> Historical implementation note: ADR 0117 supersedes this phase's placement
+> of the Project Hub and recent-project ownership inside the Editor. The
+> project-selection UX moves to the separate Launcher / Project Manager while
+> `ProjectRoot` remains owned by `engine-authoring` under ADR 0023.
+
 ## Goal
 
 Make the editor cold-start land on a Project Hub screen rather than directly
