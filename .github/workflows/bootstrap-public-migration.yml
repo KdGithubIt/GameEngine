@@ -1,6 +1,13 @@
 name: Bootstrap Public Migration
 
 on:
+  pull_request:
+    branches:
+      - main
+    types:
+      - opened
+      - synchronize
+      - reopened
   push:
     branches:
       - chatgpt/gameengine-public-bootstrap
@@ -16,13 +23,16 @@ concurrency:
 
 jobs:
   migrate:
-    if: github.repository == 'KdGithubIt/GameEngine'
+    if: >-
+      github.repository == 'KdGithubIt/GameEngine' &&
+      (github.event_name == 'push' || github.event.pull_request.head.ref == 'chatgpt/gameengine-public-bootstrap')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
       SOURCE_REPOSITORY: KdGithubIt/RustProject
       SOURCE_SHA: 68e136f9a06b52f6e024b4f895f7db5c8510ad00
       TARGET_BRANCH: chatgpt/gameengine-public-bootstrap
+      BOOTSTRAP_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
     steps:
       - name: Validate migration credential
         shell: bash
@@ -43,9 +53,9 @@ jobs:
           set -euo pipefail
           git init --quiet destination
           git -C destination remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
-          git -C destination fetch --quiet --depth=1 origin "${GITHUB_SHA}"
+          git -C destination fetch --quiet --depth=1 origin "${BOOTSTRAP_SHA}"
           git -C destination checkout --quiet --detach FETCH_HEAD
-          test "$(git -C destination rev-parse HEAD)" = "${GITHUB_SHA}"
+          test "$(git -C destination rev-parse HEAD)" = "${BOOTSTRAP_SHA}"
 
       - name: Fetch audited private source snapshot
         shell: bash
