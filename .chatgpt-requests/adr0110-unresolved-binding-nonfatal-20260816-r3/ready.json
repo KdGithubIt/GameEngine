@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0110-unresolved-binding-nonfatal-20260816-r3",
+  "target_branch": "chatgpt/gameengine-adr-0110-humanoid-motion",
+  "expected_head_sha": "021390e8c0c9aac51bbe8fb46314e7da3e825066",
+  "patch_parts": ["part-0000.patch"],
+  "commit_message": "Preserve nonfatal animation adaptation failures",
+  "pr_title": "ADR 0110: implement humanoid animation sources",
+  "pr_body": "Implements ADR 0110 Humanoid profiles and skeleton-independent motion. This follow-up preserves the existing SceneBridge contract where an unavailable cross-skeleton adaptation emits a diagnostic and leaves the Animator inactive instead of aborting scene conversion. PR remains Draft; merge is manual."
+}
