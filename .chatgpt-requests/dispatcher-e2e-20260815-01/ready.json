@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "request_id": "dispatcher-e2e-20260815-01",
+  "target_branch": "chatgpt/gameengine-dispatcher-e2e",
+  "expected_head_sha": "666293782451e20a080f88717bebb01acfcd3904",
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Add dispatcher E2E probe",
+  "pr_title": "E2E: verify public ChatGPT dispatcher",
+  "pr_body": "Temporary end-to-end probe for the public ChatGPT Patch Dispatcher. The probe intentionally adds a non-product Markdown file under crates/ecs so affected Windows validation runs for engine-ecs. Do not merge this PR; close it after validation succeeds."
+}
