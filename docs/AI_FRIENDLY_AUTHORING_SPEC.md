@@ -154,6 +154,25 @@ project settings. Standalone examples MAY exist as secondary launchers, but
 they MUST share the same runtime implementation and MUST NOT be the only path
 to the game.
 
+### 5.4 Project Application Lifecycle
+
+Project selection and editor process lifetime are application concerns, not
+authoring edit semantics. ADR 0117 defines the project-first desktop boundary:
+
+- the Launcher / Project Manager selects or creates projects and starts or
+  activates project-scoped Editor processes;
+- an Editor workspace always has a concrete `ProjectRoot` and edits one project
+  location for that process lifetime;
+- `engine-project-lifecycle` owns GUI-free project acquisition, standard
+  project scaffolding, exclusive editor leases, ephemeral ownership metadata,
+  and project/editor compatibility checks above `engine-authoring`; and
+- recent-project and editor workspace restoration state remain user data and
+  MUST NOT enter canonical project authoring files.
+
+`ProjectRoot`, `ProjectConfig`, `project.json`, authoring commands, persisted
+authoring schemas, and path confinement remain owned by `engine-authoring` as
+defined by ADR 0023.
+
 ## 6. Crate and Module Boundaries
 
 The preferred future workspace structure is:
@@ -167,6 +186,9 @@ crates/
   authoring/            # Authoring data, schemas, commands, transactions
   graph/                # Domain-neutral graph model and layout contracts
   graph_bt/             # Behavior Tree domain
+  project-lifecycle/    # GUI-free project application/process lifecycle
+  launcher/             # Project selection/creation and Editor launch UI
+  editor/               # Project-scoped human visual editor frontend
   cli/                  # Thin adapter over authoring API
   mcp/                  # Thin adapter over authoring API
 ```
@@ -186,6 +208,14 @@ the same ownership boundaries MUST be preserved with modules.
   duplicate low-level GPU or window surface initialization logic.
 - `authoring` MAY depend on schema and graph abstractions, but MUST NOT depend
   on a GUI framework.
+- `project-lifecycle` MAY depend on `authoring` for `ProjectRoot` and shared
+  authoring creation services. It MUST NOT own authoring command semantics,
+  runtime ECS behavior, Launcher UI, or Editor GUI state.
+- `launcher` owns project-selection UI, recent-project application state, and
+  Editor process launch/activation. It MUST NOT implement unique authoring
+  rules.
+- `editor` is project-scoped after bootstrap and MUST use shared authoring and
+  project-lifecycle contracts rather than duplicating them.
 - `cli` and `mcp` MUST be adapters. They MUST NOT contain unique editing logic.
 - Graph domains MUST NOT duplicate the domain-neutral graph storage model.
 
@@ -199,6 +229,7 @@ All persisted authoring objects MUST use stable identifiers.
 
 ```rust
 struct StableId(String);
+struct ProjectId(StableId);
 struct EntityId(StableId);
 struct GraphId(StableId);
 struct NodeId(StableId);
@@ -214,6 +245,7 @@ without coordination.
 
 | Identifier  | Prefix    | Uniqueness scope     |
 | ----------- | --------- | -------------------- |
+| `ProjectId` | `project_` | Logical project      |
 | `EntityId`  | `entity_` | Project-wide         |
 | `AssetId`   | `asset_`  | Project-wide         |
 | `GraphId`   | `graph_`  | Project-wide         |
