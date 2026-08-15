@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0110-build-test-facade-fix-20260816",
+  "target_branch": "chatgpt/gameengine-adr-0110-humanoid-motion",
+  "expected_head_sha": "e354f48cdae8006b5830676b7c3c110d6a1e68ea",
+  "patch_parts": ["part-0000.patch"],
+  "commit_message": "Fix Humanoid Stable ID test facade call",
+  "pr_title": "ADR 0110: implement humanoid animation sources",
+  "pr_body": "Implements ADR 0110 Humanoid profiles and skeleton-independent motion. This follow-up aligns the build test with the engine asset facade used by the Stable ID contract. PR remains Draft; merge is manual."
+}
