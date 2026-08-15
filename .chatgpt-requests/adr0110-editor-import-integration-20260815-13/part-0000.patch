@@ -9,7 +9,7 @@ diff --git a/crates/engine/src/lib.rs b/crates/engine/src/lib.rs
 +/// Skeleton-independent humanoid motion conversion and target baking (ADR 0110).
 +pub mod humanoid_motion;
  /// Typed gameplay-facing System, Query, Resource, Input, Event, View, and Command API.
-@@ -74,4 +78,6 @@
+@@ -74,3 +78,5 @@
  /// Prefab generation from an imported glTF/GLB source (ADR 0074).
  pub mod gltf_prefab;
 +/// Humanoid profiles and portable motion variants derived during model import (ADR 0110).
