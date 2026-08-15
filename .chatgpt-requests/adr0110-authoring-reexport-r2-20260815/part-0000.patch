@@ -1,0 +1,12 @@
+diff --git a/crates/authoring/src/lib.rs b/crates/authoring/src/lib.rs
+--- a/crates/authoring/src/lib.rs
++++ b/crates/authoring/src/lib.rs
+@@ -61,6 +61,7 @@
+ };
+ pub use animation_set::{
+-    AnimationBinding, AnimationSet, AnimationSetError, AnimationSetEvent,
++    AnimationBinding, AnimationSet, AnimationSetError, AnimationSetEvent, MotionSourceRef,
++    MotionSourceVariant,
+     ANIMATION_SET_FILE_SUFFIX, ANIMATION_SET_SCHEMA_VERSION,
+ };
+ pub use behavior_tree::{
