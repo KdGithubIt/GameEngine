@@ -38,11 +38,11 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
-`cargo check --workspace` is intentionally not a separate final gate. Clippy
-already performs workspace compilation with broader target coverage, and the
-test gate performs code generation and executes the tests. A targeted
-`cargo check -p <package>` remains available when it is the fastest useful
-feedback during implementation.
+The local core gate intentionally lets Clippy provide compile feedback instead
+of running a second full compilation. The permanent Windows full-validation
+path additionally runs `cargo check --workspace` explicitly before Clippy, and
+runs workspace documentation after tests. A targeted `cargo check -p <package>`
+remains available when it is the fastest useful feedback during implementation.
 
 Normal pull requests and merge-queue validation use affected-workspace planning.
 CI obtains the workspace package list from `cargo metadata`, maps changed files
@@ -59,10 +59,10 @@ manifest, lock file, pinned toolchain, CI/build configuration, deleted or
 otherwise unclassifiable package paths, and any other uncertain change force
 full validation.
 
-Pushes to `main` and nightly validation always run full workspace Clippy,
-tests, and documentation. Documentation-only changes recognized by the planner
-skip Rust compilation on PR and merge-group fast paths, but still receive full
-validation after landing on `main`.
+Pushes to `main` and nightly validation always run full workspace Check,
+Clippy, tests, and documentation. Documentation-only changes recognized by the
+planner skip Rust compilation on PR and merge-group fast paths, but still
+receive full validation after landing on `main`.
 
 Run documentation validation locally when changing public documentation,
 rustdoc examples, or public APIs where a documentation failure is plausible,
