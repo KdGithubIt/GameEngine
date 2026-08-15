@@ -549,6 +549,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9e1b586273c5702936fe7b7d6896644d8be71e6314cfe09d3167c95f712589e8"
 
 [[package]]
+name = "bevy_mikktspace"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0492b5e7b8ae317a6288ddfcc430145fc6d85586dcdd09e202232bec10568b17"
+
+[[package]]
 name = "bindgen"
 version = "0.72.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1446,6 +1452,7 @@ dependencies = [
 name = "engine-import"
 version = "0.1.0"
 dependencies = [
+ "bevy_mikktspace",
  "engine-animation",
  "engine-assets",
  "engine-authoring",

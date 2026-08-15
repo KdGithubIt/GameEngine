@@ -1006,7 +1006,89 @@ fn build_skins_shared_across_document(
         .collect()
 }
 
+struct MikktspaceGeometry<'a> {
+    vertices: &'a [crate::model_ir::IrVertex],
+    indices: Option<&'a [u32]>,
+    tangents: Vec<[f32; 4]>,
+}
+
+impl MikktspaceGeometry<'_> {
+    fn vertex_index(&self, face: usize, vertex: usize) -> usize {
+        let corner = face * 3 + vertex;
+        self.indices
+            .map(|indices| indices[corner] as usize)
+            .unwrap_or(corner)
+    }
+}
+
+impl bevy_mikktspace::Geometry for MikktspaceGeometry<'_> {
+    fn num_faces(&self) -> usize {
+        self.indices.map_or(self.vertices.len(), <[u32]>::len) / 3
+    }
+
+    fn num_vertices_of_face(&self, _face: usize) -> usize {
+        3
+    }
+
+    fn position(&self, face: usize, vertex: usize) -> [f32; 3] {
+        self.vertices[self.vertex_index(face, vertex)].position
+    }
+
+    fn normal(&self, face: usize, vertex: usize) -> [f32; 3] {
+        self.vertices[self.vertex_index(face, vertex)].normal
+    }
+
+    fn tex_coord(&self, face: usize, vertex: usize) -> [f32; 2] {
+        self.vertices[self.vertex_index(face, vertex)].uv
+    }
+
+    fn set_tangent(
+        &mut self,
+        tangent_space: Option<bevy_mikktspace::TangentSpace>,
+        face: usize,
+        vertex: usize,
+    ) {
+        let index = self.vertex_index(face, vertex);
+        self.tangents[index] = tangent_space.unwrap_or_default().tangent_encoded();
+    }
+}
+
+fn generate_missing_tangents(ir: &IrMeshData) -> Option<Vec<[f32; 4]>> {
+    let corner_count = ir
+        .indices
+        .as_deref()
+        .map_or(ir.vertices.len(), <[u32]>::len);
+    if corner_count == 0 || !corner_count.is_multiple_of(3) {
+        return None;
+    }
+    if let Some(indices) = ir.indices.as_deref()
+        && indices
+            .iter()
+            .any(|&index| index as usize >= ir.vertices.len())
+    {
+        return None;
+    }
+
+    let mut geometry = MikktspaceGeometry {
+        vertices: &ir.vertices,
+        indices: ir.indices.as_deref(),
+        tangents: vec![[0.0; 4]; ir.vertices.len()],
+    };
+    bevy_mikktspace::generate_tangents(&mut geometry).ok()?;
+
+    // MikkTSpace's encoded sign is opposite to the `cross(N, T) * w`
+    // convention used by the renderer and authored glTF tangents.
+    for tangent in &mut geometry.tangents {
+        tangent[3] = -tangent[3];
+    }
+    Some(geometry.tangents)
+}
+
 fn build_runtime_mesh(ir: &IrMeshData) -> Mesh {
+    let tangents = ir
+        .tangents
+        .clone()
+        .or_else(|| generate_missing_tangents(ir));
     Mesh {
         vertices: ir
             .vertices
@@ -1030,7 +1112,7 @@ fn build_runtime_mesh(ir: &IrMeshData) -> Mesh {
                 })
                 .collect()
         }),
-        tangents: ir.tangents.clone(),
+        tangents,
         submeshes: ir
             .submeshes
             .iter()
@@ -1641,6 +1723,32 @@ mod tests {
         }
     }
 
+    fn tangent_vertex(position: [f32; 3], uv: [f32; 2]) -> IrVertex {
+        IrVertex {
+            position,
+            normal: [0.0, 0.0, 1.0],
+            color: [1.0, 1.0, 1.0],
+            uv,
+            outline_scale: 1.0,
+            additional_uv: [0.0; 2],
+        }
+    }
+
+    fn indexed_quad_geometry() -> IrMeshData {
+        IrMeshData {
+            vertices: vec![
+                tangent_vertex([0.0, 0.0, 0.0], [0.0, 0.0]),
+                tangent_vertex([1.0, 0.0, 0.0], [1.0, 0.0]),
+                tangent_vertex([1.0, 1.0, 0.0], [1.0, 1.0]),
+                tangent_vertex([0.0, 1.0, 0.0], [0.0, 1.0]),
+            ],
+            indices: Some(vec![0, 1, 2, 0, 2, 3]),
+            skinning: None,
+            tangents: None,
+            submeshes: Vec::new(),
+        }
+    }
+
     /// A two-bone rig ("root" -> "tip") described directly as IR, with no
     /// glTF/GLB file involved, exercising the builder in isolation (ADR
     /// 0078's stated purpose for builder tests).
@@ -1719,6 +1827,38 @@ mod tests {
             inverse_bind_matrices: vec![Mat4::IDENTITY; 2],
         });
         document
+    }
+
+    #[test]
+    fn runtime_mesh_preserves_authored_tangents() {
+        let mut geometry = indexed_quad_geometry();
+        let authored = vec![[0.0, 1.0, 0.0, -1.0]; geometry.vertices.len()];
+        geometry.tangents = Some(authored.clone());
+
+        assert_eq!(build_runtime_mesh(&geometry).tangents, Some(authored));
+    }
+
+    #[test]
+    fn runtime_mesh_generates_mikktspace_tangents_for_indexed_quad() {
+        let tangents = build_runtime_mesh(&indexed_quad_geometry())
+            .tangents
+            .expect("valid indexed quad should receive generated tangents");
+
+        assert_eq!(tangents.len(), 4);
+        for tangent in tangents {
+            assert!((tangent[0] - 1.0).abs() < 1.0e-5);
+            assert!(tangent[1].abs() < 1.0e-5);
+            assert!(tangent[2].abs() < 1.0e-5);
+            assert!((tangent[3] - 1.0).abs() < 1.0e-5);
+        }
+    }
+
+    #[test]
+    fn runtime_mesh_leaves_tangents_absent_for_invalid_triangle_indices() {
+        let mut geometry = indexed_quad_geometry();
+        geometry.indices = Some(vec![0, 1, 99]);
+
+        assert!(build_runtime_mesh(&geometry).tangents.is_none());
     }
 
     #[test]
