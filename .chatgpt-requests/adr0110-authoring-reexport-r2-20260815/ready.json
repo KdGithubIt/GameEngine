@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0110-authoring-reexport-r2-20260815",
+  "target_branch": "chatgpt/gameengine-adr-0110-humanoid-motion",
+  "expected_head_sha": "8e6b7340cd6a7b5aadb444c1e267e1a86e36bc1d",
+  "patch_parts": ["part-0000.patch"],
+  "commit_message": "Export Animation Set motion source types",
+  "pr_title": "Implement ADR 0110 humanoid profiles and motion",
+  "pr_body": "Fixes the schema-v2 compile failure by exposing MotionSourceRef and MotionSourceVariant from the engine-authoring crate root, matching the crate's existing public Animation Set API surface.\n\n<!-- gameengine-chatgpt-dispatcher -->\n"
+}
