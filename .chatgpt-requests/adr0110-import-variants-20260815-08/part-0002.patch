@@ -1,0 +1,87 @@
+diff --git a/crates/editor/src/asset_import.rs b/crates/editor/src/asset_import.rs
+--- a/crates/editor/src/asset_import.rs
++++ b/crates/editor/src/asset_import.rs
+@@ -6,7 +6,7 @@
+-use engine::{ImportedSubAsset, SkeletonRecord};
++use engine::{HumanoidProfile, ImportedSubAsset, SkeletonRecord};
+@@ -67,6 +67,10 @@ pub struct AssetImportResult {
+     /// [`Self::sub_assets`].
+     pub skeleton_records: Vec<SkeletonRecord>,
++    /// Valid model-owned Humanoid profiles detected from this model import (ADR 0110).
++    /// Motion-only sources leave this empty because the target model owns the profile.
++    pub humanoid_profiles: Vec<HumanoidProfile>,
+     /// Per-clip detected ground-contact intervals (ADR 0080 §1), reflecting
+@@ -340,6 +344,7 @@ impl AssetImportManager {
+             let sub_assets = imported.imported_sub_assets();
+             let skeleton_records = imported.skeleton_records.clone();
++            let mut humanoid_catalog = imported.humanoid_catalog();
+             let animation_contacts = resolve_animation_contacts(&imported);
+             let _ = sender.send(WorkerMessage::Complete(Box::new(AssetImportResult {
+@@ -351,9 +356,14 @@ impl AssetImportManager {
+                 source_dependencies: dependencies,
+                 sub_assets,
+                 skeleton_records,
++                humanoid_profiles: humanoid_catalog.profiles,
+                 animation_contacts,
+                 prefab,
+-                diagnostics: imported.diagnostics,
++                diagnostics: {
++                    let mut diagnostics = imported.diagnostics;
++                    diagnostics.append(&mut humanoid_catalog.diagnostics);
++                    diagnostics
++                },
+                 error: None,
+                 cancelled: false,
+@@ -674,6 +684,7 @@ impl AssetImportManager {
+                 source_dependencies,
+                 sub_assets,
+                 skeleton_records,
++                humanoid_profiles: Vec::new(),
+                 animation_contacts,
+                 // A motion draws nothing, so there is no placement prefab.
+@@ -709,6 +720,7 @@ impl AssetImportManager {
+                             source_dependencies: Vec::new(),
+                             sub_assets: Vec::new(),
+                             skeleton_records: Vec::new(),
++                            humanoid_profiles: Vec::new(),
+                             animation_contacts: Vec::new(),
+@@ -843,6 +855,7 @@ fn send_cancelled(
+         source_dependencies: Vec::new(),
+         sub_assets: Vec::new(),
+         skeleton_records: Vec::new(),
++        humanoid_profiles: Vec::new(),
+         animation_contacts: Vec::new(),
+@@ -870,6 +883,7 @@ fn send_failed(
+         source_dependencies: Vec::new(),
+         sub_assets: Vec::new(),
+         skeleton_records: Vec::new(),
++        humanoid_profiles: Vec::new(),
+         animation_contacts: Vec::new(),
+diff --git a/crates/editor/src/ui/assets.rs b/crates/editor/src/ui/assets.rs
+--- a/crates/editor/src/ui/assets.rs
++++ b/crates/editor/src/ui/assets.rs
+@@ -1405,11 +1405,27 @@ impl EditorApp {
+         // Captured before the overwrite so the skeleton bind report (ADR
+         // 0077 §6, AP-5) can compare the previous and current bone ledgers.
+         let previous_skeleton_records = entry.import_settings.skeleton_records.clone();
++        let previous_humanoid_profiles = entry.import_settings.humanoid_profiles.clone();
+         entry.import_settings.source_fingerprint = result.source_fingerprint;
+         entry.import_settings.source_stamp = result.source_stamp;
+         entry.import_settings.source_dependencies = dependencies;
+         entry.import_settings.sub_assets = result.sub_assets;
+         entry.import_settings.skeleton_records = result.skeleton_records.clone();
++        let mut humanoid_profiles = result.humanoid_profiles;
++        // Explicit authoring owns the mapping. Reimport may refresh an automatic proposal,
++        // but it must never silently replace an authored profile, even when the skeleton
++        // identity changed. Keeping the stale authored profile makes Humanoid validation
++        // fail visibly until the author reconfigures it instead of guessing a new mapping.
++        for profile in previous_humanoid_profiles
++            .into_iter()
++            .filter(|profile| profile.origin == engine::HumanoidProfileOrigin::Authored)
++        {
++            humanoid_profiles.retain(|candidate| candidate.skeleton != profile.skeleton);
++            humanoid_profiles.push(profile);
++        }
++        humanoid_profiles.sort_by(|left, right| left.skeleton.cmp(&right.skeleton));
++        entry.import_settings.humanoid_profiles = humanoid_profiles;
+         let sub_asset_count = entry.import_settings.sub_assets.len();
