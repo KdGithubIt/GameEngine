@@ -1,0 +1,67 @@
+diff --git a/crates/editor/src/ui/mod.rs b/crates/editor/src/ui/mod.rs
+--- a/crates/editor/src/ui/mod.rs
++++ b/crates/editor/src/ui/mod.rs
+@@ -38,8 +38,8 @@ use engine::{InputCommand, InputSource, KeyCode};
+ use engine_authoring::id::{AssetId, StableId};
+ use engine_authoring::{
+     replace_file_contents, AuthoringCommand, AuthoringEntity, AuthoringScene, ComponentTypeId,
+-    EdgeId, EntityId, NodeId, ProjectConfig, ProjectRoot, ProjectSettings, PropertyPathSegment,
+-    RustScriptKind, RustScriptSchedule, Transaction, Value, PROJECT_SCHEMA_VERSION,
++    EdgeId, EntityId, NodeId, ProjectRoot, ProjectSettings, PropertyPathSegment, RustScriptKind,
++    RustScriptSchedule, Transaction, Value,
+ };
+ use std::sync::Arc;
+ use std::{
+@@ -590,6 +590,16 @@ impl EditorApp {
+         self.pending_model_imports.clear();
+         self.import_models_missing_catalogs();
+     }
++
++    /// Initializes project-scoped services in tests that exercise one
++    /// subsystem without constructing a full project-first workspace.
++    ///
++    /// This shim is never compiled into the shipping Editor and therefore
++    /// cannot reintroduce an in-process project switch path.
++    #[cfg(test)]
++    fn set_project_root(&mut self, root: ProjectRoot) {
++        self.initialize_project_root(root);
++    }
+ }
+ 
+ impl Default for EditorApp {
+diff --git a/crates/editor/src/preferences.rs b/crates/editor/src/preferences.rs
+--- a/crates/editor/src/preferences.rs
++++ b/crates/editor/src/preferences.rs
+@@ -120,15 +120,17 @@ impl EditorPreferences {
+         let data = match std::fs::read(&path) {
+             Ok(data) => data,
+             Err(_) => {
+-                let mut preferences = Self::default();
+-                preferences.storage_path = Some(path);
+-                return preferences;
++                return Self {
++                    storage_path: Some(path),
++                    ..Self::default()
++                };
+             }
+         };
+         let Ok(mut preferences) = serde_json::from_slice::<Self>(&data) else {
+-            let mut preferences = Self::default();
+-            preferences.storage_path = Some(path);
+-            return preferences;
++            return Self {
++                storage_path: Some(path),
++                ..Self::default()
++            };
+         };
+         preferences.storage_path = Some(path);
+         preferences
+@@ -144,7 +148,7 @@ impl EditorPreferences {
+             let _ = std::fs::create_dir_all(parent);
+         }
+         if let Ok(text) = serde_json::to_string_pretty(self) {
+-            let _ = std::fs::write(&path, text);
++            let _ = std::fs::write(path, text);
+         }
+     }
+ 
