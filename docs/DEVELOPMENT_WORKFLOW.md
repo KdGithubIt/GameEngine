@@ -22,7 +22,7 @@ This document defines the standard branch, validation, and CI workflow for chang
 9. Commit, push, and create a pull request.
 10. Confirm the permanent GameEngine CI result.
 
-`cargo check --workspace` is intentionally not a separate required final step. The Clippy gate checks the workspace with all Cargo targets, while the test gate performs code generation and executes the test suite. Keep targeted `cargo check` available as an implementation aid rather than paying for a second full-workspace compilation on every handoff.
+The local core gate intentionally lets Clippy provide compile feedback instead of paying for a second full-workspace compilation during local handoff. The permanent Windows `full` validation path additionally runs `cargo check --workspace` explicitly and validates workspace documentation. Keep targeted `cargo check` available during implementation when it is the fastest useful feedback.
 
 Windows developers can run the full local core gate from the repository root with:
 
@@ -93,7 +93,7 @@ Full validation is selected when any of the following is true:
 
 - the run is for a push to `main`;
 - the run is the nightly scheduled validation;
-- `GameEngine/Cargo.toml`, `GameEngine/Cargo.lock`, or `rust-toolchain.toml` changes;
+- `Cargo.toml`, `Cargo.lock`, or `rust-toolchain.toml` changes;
 - validation/build infrastructure changes, including the permanent validation workflow or validation scripts;
 - the changed path cannot be classified safely.
 
@@ -102,12 +102,14 @@ A package-local `Cargo.toml` change may remain affected-mode when current Cargo 
 Full validation uses the same three parallel Windows gates and runs:
 
 ```text
-Formatting + cargo clippy --workspace --all-targets -- -D warnings
+cargo fmt --all --check
+cargo check --workspace
+cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 cargo doc --workspace --no-deps
 ```
 
-`cargo check --workspace` is not a separate CI gate.
+The explicit workspace check runs only on `full` validation. Ordinary affected PRs keep the package-selected fast path instead of paying for a second full-workspace compilation.
 
 ### Documentation-only validation
 
