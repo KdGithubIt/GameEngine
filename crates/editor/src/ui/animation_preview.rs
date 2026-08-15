@@ -1087,7 +1087,7 @@ mod tests {
             slot.clone(),
             engine_authoring::AnimationBinding {
                 name: "Idle".to_owned(),
-                clip: AssetId::generate(),
+                clip: engine_authoring::MotionSourceRef::native(AssetId::generate()),
                 overlays: Vec::new(),
                 events: Vec::new(),
             },

@@ -1316,7 +1316,7 @@ fn resolve_animation_set(
                             .get(handle)
                             .cloned()
                             .ok_or_else(|| SceneBridgeError::UnknownAsset {
-                                asset: binding.clip.clone(),
+                                asset: binding.clip.asset.clone(),
                             })
                     })
                     .collect::<Result<Vec<_>, _>>()?
@@ -1340,7 +1340,7 @@ fn resolve_animation_set(
                     .animation_clip_sources
                     .get(&layer_handle.id())
                     .ok_or_else(|| SceneBridgeError::UnknownAsset {
-                        asset: binding.clip.clone(),
+                        asset: binding.clip.asset.clone(),
                     })?;
                 let source_fingerprint = context
                     .manifest

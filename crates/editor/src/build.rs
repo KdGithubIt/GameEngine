@@ -1706,7 +1706,7 @@ mod tests {
             motion_slot,
             engine_authoring::AnimationBinding {
                 name: "retarget_motion".to_owned(),
-                clip: clip.clone(),
+                clip: engine_authoring::MotionSourceRef::native(clip.clone()),
                 overlays: Vec::new(),
                 events: Vec::new(),
             },

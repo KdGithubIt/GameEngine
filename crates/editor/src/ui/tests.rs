@@ -1749,8 +1749,10 @@ fn animation_set_validation_accepts_only_imported_animation_clip_sub_assets() {
         slot.clone(),
         engine_authoring::AnimationBinding {
             name: "Dance".into(),
-            clip: primary_clip.clone(),
-            overlays: vec![overlay_clip],
+            clip: engine_authoring::MotionSourceRef::native(primary_clip.clone()),
+            overlays: vec![engine_authoring::MotionSourceRef::native(
+                overlay_clip,
+            )],
             events: Vec::new(),
         },
     );

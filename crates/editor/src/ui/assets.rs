@@ -495,7 +495,7 @@ impl EditorApp {
                                             if ui
                                                 .selectable_value(
                                                     &mut selected_clip,
-                                                    Some(choice.id.clone()),
+                                                    Some(engine_authoring::MotionSourceRef::native(choice.id.clone())),
                                                     &choice.label,
                                                 )
                                                 .changed()
@@ -574,7 +574,10 @@ impl EditorApp {
                                     .show_ui(ui, |ui| {
                                         for choice in &clip_choices {
                                             let duplicate = binding.clip == choice.id
-                                                || binding.overlays.contains(&choice.id);
+                                                || binding
+                                                    .overlays
+                                                    .iter()
+                                                    .any(|overlay| overlay == &choice.id);
                                             if ui
                                                 .add_enabled(
                                                     !duplicate,
