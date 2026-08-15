@@ -1,0 +1,98 @@
+diff --git a/crates/import/src/model_import.rs b/crates/import/src/model_import.rs
+--- a/crates/import/src/model_import.rs
++++ b/crates/import/src/model_import.rs
+@@ -1009,3 +1009,85 @@
++struct MikktspaceGeometry<'a> {
++    vertices: &'a [crate::model_ir::IrVertex],
++    indices: Option<&'a [u32]>,
++    tangents: Vec<[f32; 4]>,
++}
++
++impl MikktspaceGeometry<'_> {
++    fn vertex_index(&self, face: usize, vertex: usize) -> usize {
++        let corner = face * 3 + vertex;
++        self.indices
++            .map(|indices| indices[corner] as usize)
++            .unwrap_or(corner)
++    }
++}
++
++impl bevy_mikktspace::Geometry for MikktspaceGeometry<'_> {
++    fn num_faces(&self) -> usize {
++        self.indices.map_or(self.vertices.len(), <[u32]>::len) / 3
++    }
++
++    fn num_vertices_of_face(&self, _face: usize) -> usize {
++        3
++    }
++
++    fn position(&self, face: usize, vertex: usize) -> [f32; 3] {
++        self.vertices[self.vertex_index(face, vertex)].position
++    }
++
++    fn normal(&self, face: usize, vertex: usize) -> [f32; 3] {
++        self.vertices[self.vertex_index(face, vertex)].normal
++    }
++
++    fn tex_coord(&self, face: usize, vertex: usize) -> [f32; 2] {
++        self.vertices[self.vertex_index(face, vertex)].uv
++    }
++
++    fn set_tangent(
++        &mut self,
++        tangent_space: Option<bevy_mikktspace::TangentSpace>,
++        face: usize,
++        vertex: usize,
++    ) {
++        let index = self.vertex_index(face, vertex);
++        self.tangents[index] = tangent_space.unwrap_or_default().tangent_encoded();
++    }
++}
++
++fn generate_missing_tangents(ir: &IrMeshData) -> Option<Vec<[f32; 4]>> {
++    let corner_count = ir
++        .indices
++        .as_deref()
++        .map_or(ir.vertices.len(), <[u32]>::len);
++    if corner_count == 0 || !corner_count.is_multiple_of(3) {
++        return None;
++    }
++    if let Some(indices) = ir.indices.as_deref()
++        && indices
++            .iter()
++            .any(|&index| index as usize >= ir.vertices.len())
++    {
++        return None;
++    }
++
++    let mut geometry = MikktspaceGeometry {
++        vertices: &ir.vertices,
++        indices: ir.indices.as_deref(),
++        tangents: vec![[0.0; 4]; ir.vertices.len()],
++    };
++    bevy_mikktspace::generate_tangents(&mut geometry).ok()?;
++
++    // MikkTSpace's encoded sign is opposite to the `cross(N, T) * w`
++    // convention used by the renderer and authored glTF tangents.
++    for tangent in &mut geometry.tangents {
++        tangent[3] = -tangent[3];
++    }
++    Some(geometry.tangents)
++}
++
+ fn build_runtime_mesh(ir: &IrMeshData) -> Mesh {
++    let tangents = ir
++        .tangents
++        .clone()
++        .or_else(|| generate_missing_tangents(ir));
+     Mesh {
+         vertices: ir
+@@ -1030,7 +1112,7 @@
+                 })
+                 .collect()
+         }),
+-        tangents: ir.tangents.clone(),
++        tangents,
+         submeshes: ir
+             .submeshes
+             .iter()
