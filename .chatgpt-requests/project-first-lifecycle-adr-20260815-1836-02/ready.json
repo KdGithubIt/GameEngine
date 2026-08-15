@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "request_id": "project-first-lifecycle-adr-20260815-1836-02",
+  "target_branch": "chatgpt/gameengine-project-first-lifecycle-adr",
+  "expected_head_sha": "04f5877ff5d2ec05782af6ca80d12f574c46f757",
+  "patch_parts": [
+    "part-0000.patch",
+    "part-0001.patch",
+    "part-0002.patch",
+    "part-0003.patch",
+    "part-0004.patch"
+  ],
+  "commit_message": "Document project-first Launcher and Editor lifecycle",
+  "pr_title": "GameEngine: define project-first Launcher and Editor lifecycle",
+  "pr_body": "## Summary\n\n- Adds ADR 0117 for the separate Launcher, project-scoped Editor, and shared project lifecycle boundary.\n- Defines exclusive project leases, process-replacement switching, atomic project scaffolding, ProjectId, and user-state ownership.\n- Updates the canonical authoring specification and marks the Phase 26 in-Editor Hub placement as superseded.\n- Keeps ADR 0115 current-format-only behavior: compatibility is detected explicitly and old schemas are not silently migrated.\n\n## Validation\n\nDocumentation-only change; expected Windows Validation mode: docs."
+}
