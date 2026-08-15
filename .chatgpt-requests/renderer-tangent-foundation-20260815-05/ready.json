@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "request_id": "renderer-tangent-foundation-20260815-05",
+  "target_branch": "chatgpt/gameengine-render-tangent-foundation",
+  "expected_head_sha": "5a4640320a2f41509b104aa88177fb24862d9f20",
+  "patch_parts": ["part-0000.patch"],
+  "commit_message": "Group material shader stages",
+  "pr_title": "Renderer: establish tangent-space foundation",
+  "pr_body": "## Summary\n\n- promote imported mesh tangents and handedness into a dedicated material GPU stream\n- preserve derivative TBN reconstruction as the fallback for meshes without tangents\n- use one compiled material fragment stage for static and skinned meshes\n- group vertex/fragment shader stages into one pipeline helper input\n- record the tangent-space and shader-sharing contract in ADR 0119\n\n## Scope\n\nThis is renderer foundation Phase 2A. It preserves the serialized Material schema, Stable IDs, public Vertex layout, independent Outline/Shadow passes, and generic StandardLit/ToonLit/Unlit architecture."
+}
