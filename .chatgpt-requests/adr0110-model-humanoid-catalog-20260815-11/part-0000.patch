@@ -1,0 +1,9 @@
+diff --git a/crates/import/src/lib.rs b/crates/import/src/lib.rs
+--- a/crates/import/src/lib.rs
++++ b/crates/import/src/lib.rs
+@@ -13,3 +13,5 @@
+ /// Format-independent runtime-asset builder.
+ pub mod model_import;
++/// Humanoid profiles and portable motion variants derived from canonical Native model data.
++pub mod humanoid_import;
+ /// glTF / GLB parser and importer.
