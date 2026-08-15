@@ -1,0 +1,12 @@
+diff --git a/crates/editor/src/build.rs b/crates/editor/src/build.rs
+--- a/crates/editor/src/build.rs
++++ b/crates/editor/src/build.rs
+@@ -188,7 +188,7 @@ pub fn analyze_build(config: &BuildConfig) -> BuildReport {
+         for sub_asset in &entry.import_settings.sub_assets {
+             match (
+                 AssetId::from_stable_id(StableId::new(&sub_asset.id)),
+-                engine::expected_imported_sub_asset_id(source_id, sub_asset),
++                engine::asset::expected_imported_sub_asset_id(source_id, sub_asset),
+             ) {
+                 (Ok(id), Ok(expected)) if id == expected => {
+                     reachable_assets.insert(id);
