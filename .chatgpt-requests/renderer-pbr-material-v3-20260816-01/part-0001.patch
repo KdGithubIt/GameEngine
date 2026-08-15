@@ -1,0 +1,282 @@
+diff --git a/crates/render-runtime/src/material.rs b/crates/render-runtime/src/material.rs
+--- a/crates/render-runtime/src/material.rs
++++ b/crates/render-runtime/src/material.rs
+@@ -581,11 +581,23 @@ pub struct Material {
+     pub normal_texture: Option<Arc<Texture>>,
+     /// CPU-decoded normal texture uploaded lazily as a linear texture.
+     pub pending_normal_texture: Option<Arc<DecodedTexture>>,
++    /// GPU packed metallic/roughness texture sampled as linear data (G=roughness, B=metallic).
++    pub metallic_roughness_texture: Option<Arc<Texture>>,
++    /// CPU-decoded packed metallic/roughness texture uploaded lazily as linear data.
++    pub pending_metallic_roughness_texture: Option<Arc<DecodedTexture>>,
++    /// GPU ambient-occlusion texture sampled as linear data (R=occlusion).
++    pub occlusion_texture: Option<Arc<Texture>>,
++    /// CPU-decoded ambient-occlusion texture uploaded lazily as linear data.
++    pub pending_occlusion_texture: Option<Arc<DecodedTexture>>,
+     /// GPU emissive texture, sampled in sRGB color space.
+     pub emissive_texture: Option<Arc<Texture>>,
+     /// CPU-decoded emissive texture uploaded lazily by the renderer.
+     pub pending_emissive_texture: Option<Arc<DecodedTexture>>,
+     /// Linear HDR emissive RGB added after scene lighting.
+     pub emissive_color: [f32; 3],
++    /// Scale applied to tangent-space normal-map X/Y before normalization.
++    pub normal_scale: f32,
++    /// Strength of ambient occlusion in the StandardLit indirect term.
++    pub occlusion_strength: f32,
+     /// Micro-surface roughness used by the specular BRDF.
+     pub roughness: f32,
+@@ -667,5 +679,7 @@ impl Material {
+                 asset.emissive_color.g,
+                 asset.emissive_color.b,
+             ],
++            normal_scale: asset.normal_scale,
++            occlusion_strength: asset.occlusion_strength,
+             roughness: asset.roughness,
+             metallic: asset.metallic,
+@@ -727,6 +741,8 @@ impl Material {
+         mut self,
+         base: Option<Arc<DecodedTexture>>,
+         normal: Option<Arc<DecodedTexture>>,
++        metallic_roughness: Option<Arc<DecodedTexture>>,
++        occlusion: Option<Arc<DecodedTexture>>,
+         emissive: Option<Arc<DecodedTexture>>,
+         ramp: Option<Arc<DecodedTexture>>,
+         sphere: Option<Arc<DecodedTexture>>,
+@@ -734,5 +750,7 @@ impl Material {
+     ) -> Self {
+         self.pending_texture = base;
+         self.pending_normal_texture = normal;
++        self.pending_metallic_roughness_texture = metallic_roughness;
++        self.pending_occlusion_texture = occlusion;
+         self.pending_emissive_texture = emissive;
+         self.toon.pending_ramp_texture = ramp;
+@@ -748,8 +766,14 @@ impl Material {
+             pending_texture: None,
+             normal_texture: None,
+             pending_normal_texture: None,
++            metallic_roughness_texture: None,
++            pending_metallic_roughness_texture: None,
++            occlusion_texture: None,
++            pending_occlusion_texture: None,
+             emissive_texture: None,
+             pending_emissive_texture: None,
+             emissive_color: [0.0; 3],
++            normal_scale: 1.0,
++            occlusion_strength: 1.0,
+             roughness: 0.5,
+             metallic: 0.0,
+@@ -867,4 +891,6 @@ mod tests {
+             },
+             roughness: 0.25,
+             metallic: 0.75,
++            normal_scale: 0.6,
++            occlusion_strength: 0.4,
+             alpha_mode: engine_authoring::MaterialAlphaMode::Blend,
+@@ -883,4 +909,6 @@ mod tests {
+         assert_eq!(runtime.color, [0.1, 0.2, 0.3, 0.4]);
+         assert_eq!(runtime.emissive_color, [2.0, 1.0, 0.5]);
++        assert!((runtime.normal_scale - 0.6).abs() < f32::EPSILON);
++        assert!((runtime.occlusion_strength - 0.4).abs() < f32::EPSILON);
+         assert!((runtime.roughness - 0.25).abs() < f32::EPSILON);
+         assert!((runtime.metallic - 0.75).abs() < f32::EPSILON);
+diff --git a/crates/render-runtime/src/render_backend.rs b/crates/render-runtime/src/render_backend.rs
+--- a/crates/render-runtime/src/render_backend.rs
++++ b/crates/render-runtime/src/render_backend.rs
+@@ -511,4 +511,5 @@ struct MaterialUniformData {
+     toon_rim: [f32; 4],
+     toon_params: [f32; 4],
+     outline: [f32; 4],
++    pbr_params: [f32; 4],
+ }
+@@ -568,10 +569,16 @@ impl MaterialUniformData {
+                 material.outline.color[2],
+                 if material.outline.enabled { material.outline.width } else { 0.0 },
+             ],
++            pbr_params: [
++                material.normal_scale,
++                material.occlusion_strength,
++                0.0,
++                0.0,
++            ],
+         }
+     }
+ 
+-    fn key(self) -> [u32; 24] {
++    fn key(self) -> [u32; 28] {
+         bytemuck::cast(self)
+     }
+ }
+@@ -641,7 +648,9 @@ struct MaterialBindGroupKey {
+     base: usize,
+     normal: usize,
++    metallic_roughness: usize,
++    occlusion: usize,
+     emissive: usize,
+     ramp: usize,
+     sphere: usize,
+-    uniform: [u32; 24],
++    uniform: [u32; 28],
+ }
+@@ -662,4 +673,6 @@ struct MaterialBindResources<'a> {
+     base: &'a Texture,
+     normal: &'a Texture,
++    metallic_roughness: &'a Texture,
++    occlusion: &'a Texture,
+     emissive: &'a Texture,
+     ramp: &'a Texture,
+@@ -754,4 +767,6 @@ struct CachedMaterialBindGroup {
+     base: Weak<Texture>,
+     normal: Weak<Texture>,
++    metallic_roughness: Weak<Texture>,
++    occlusion: Weak<Texture>,
+     emissive: Weak<Texture>,
+     ramp: Weak<Texture>,
+@@ -1817,5 +1832,7 @@ impl WorldRenderer {
+         self.material_bind_group_cache.retain(|_, cached| {
+             cached.base.strong_count() > 0
+                 && cached.normal.strong_count() > 0
++                && cached.metallic_roughness.strong_count() > 0
++                && cached.occlusion.strong_count() > 0
+                 && cached.emissive.strong_count() > 0
+                 && cached.ramp.strong_count() > 0
+@@ -2062,4 +2079,20 @@ impl WorldRenderer {
+             normal_fallback,
+             TextureSampleEncoding::LinearData,
+         );
++        let metallic_roughness = self.resolve_texture_slot(
++            device,
++            queue,
++            material.metallic_roughness_texture.as_ref(),
++            material.pending_metallic_roughness_texture.as_ref(),
++            Arc::clone(&self.render.white_texture),
++            TextureSampleEncoding::LinearData,
++        );
++        let occlusion = self.resolve_texture_slot(
++            device,
++            queue,
++            material.occlusion_texture.as_ref(),
++            material.pending_occlusion_texture.as_ref(),
++            Arc::clone(&self.render.white_texture),
++            TextureSampleEncoding::LinearData,
++        );
+         let emissive = self.resolve_texture_slot(
+@@ -2091,4 +2124,6 @@ impl WorldRenderer {
+         let key = MaterialBindGroupKey {
+             base: Arc::as_ptr(&base) as usize,
+             normal: Arc::as_ptr(&normal) as usize,
++            metallic_roughness: Arc::as_ptr(&metallic_roughness) as usize,
++            occlusion: Arc::as_ptr(&occlusion) as usize,
+             emissive: Arc::as_ptr(&emissive) as usize,
+@@ -2111,4 +2146,6 @@ impl WorldRenderer {
+                     MaterialBindResources {
+                         base: &base,
+                         normal: &normal,
++                        metallic_roughness: &metallic_roughness,
++                        occlusion: &occlusion,
+                         emissive: &emissive,
+@@ -2122,4 +2159,6 @@ impl WorldRenderer {
+                 CachedMaterialBindGroup {
+                     base: Arc::downgrade(&base),
+                     normal: Arc::downgrade(&normal),
++                    metallic_roughness: Arc::downgrade(&metallic_roughness),
++                    occlusion: Arc::downgrade(&occlusion),
+                     emissive: Arc::downgrade(&emissive),
+@@ -2467,5 +2506,25 @@ impl RenderState {
+                         },
+                         count: None,
+                     },
++                    wgpu::BindGroupLayoutEntry {
++                        binding: 7,
++                        visibility: wgpu::ShaderStages::FRAGMENT,
++                        ty: wgpu::BindingType::Texture {
++                            multisampled: false,
++                            view_dimension: wgpu::TextureViewDimension::D2,
++                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
++                        },
++                        count: None,
++                    },
++                    wgpu::BindGroupLayoutEntry {
++                        binding: 8,
++                        visibility: wgpu::ShaderStages::FRAGMENT,
++                        ty: wgpu::BindingType::Texture {
++                            multisampled: false,
++                            view_dimension: wgpu::TextureViewDimension::D2,
++                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
++                        },
++                        count: None,
++                    },
+                 ],
+             });
+@@ -3144,6 +3203,14 @@ impl RenderState {
+                     binding: 6,
+                     resource: resources.uniform_buffer.as_entire_binding(),
+                 },
++                wgpu::BindGroupEntry {
++                    binding: 7,
++                    resource: wgpu::BindingResource::TextureView(&resources.metallic_roughness.view),
++                },
++                wgpu::BindGroupEntry {
++                    binding: 8,
++                    resource: wgpu::BindingResource::TextureView(&resources.occlusion.view),
++                },
+             ],
+         })
+     }
+diff --git a/crates/render-runtime/src/shaders/mesh.wgsl b/crates/render-runtime/src/shaders/mesh.wgsl
+--- a/crates/render-runtime/src/shaders/mesh.wgsl
++++ b/crates/render-runtime/src/shaders/mesh.wgsl
+@@ -17,4 +17,5 @@ struct MaterialUniform {
+     toon_rim: vec4<f32>,         // rgb=color, w=intensity
+     toon_params: vec4<f32>,      // x=rim power, y=sphere blend, z=coordinates, w=has sphere
+     outline: vec4<f32>,
++    pbr_params: vec4<f32>,       // x=normal scale, y=occlusion strength
+ }
+@@ -30,3 +31,5 @@ struct MaterialUniform {
+ @group(1) @binding(4) var t_sphere: texture_2d<f32>;
+ @group(1) @binding(5) var s_material: sampler;
+ @group(1) @binding(6) var<uniform> material: MaterialUniform;
++@group(1) @binding(7) var t_metallic_roughness: texture_2d<f32>;
++@group(1) @binding(8) var t_occlusion: texture_2d<f32>;
+@@ -117,4 +120,7 @@ fn mapped_normal(
+     uv: vec2<f32>,
+ ) -> vec3<f32> {
+     let normal = normalize(geometric_normal);
+-    let tangent_normal = textureSample(t_normal, s_material, uv).xyz * 2.0 - vec3<f32>(1.0);
++    var tangent_normal = textureSample(t_normal, s_material, uv).xyz * 2.0 - vec3<f32>(1.0);
++    tangent_normal.x *= material.pbr_params.x;
++    tangent_normal.y *= material.pbr_params.x;
++    tangent_normal = normalize(tangent_normal);
+@@ -141,4 +146,4 @@ fn mapped_normal(
+     return normalize(mat3x3<f32>(tangent, bitangent, normal) * tangent_normal);
+ }
+ 
+-fn standard_lit(base: vec3<f32>, n: vec3<f32>, l: vec3<f32>, v: vec3<f32>, surface: vec4<f32>, visibility: f32) -> vec3<f32> {
++fn standard_lit(base: vec3<f32>, n: vec3<f32>, l: vec3<f32>, v: vec3<f32>, surface: vec4<f32>, visibility: f32, occlusion: f32) -> vec3<f32> {
+@@ -159,5 +164,6 @@ fn standard_lit(base: vec3<f32>, n: vec3<f32>, l: vec3<f32>, v: vec3<f32>, surf
+     let diffuse_weight = (vec3<f32>(1.0) - fresnel) * (1.0 - metallic);
+     let direct = (diffuse_weight * base / 3.14159265 + specular)
+         * light.dir_color * light.dir_intensity * visibility * ndl;
+-    return light.ambient_color * light.ambient_intensity * base * (1.0 - metallic) + direct;
++    let indirect = light.ambient_color * light.ambient_intensity * base * (1.0 - metallic) * occlusion;
++    return indirect + direct;
+ }
+@@ -197,4 +203,12 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
+     if (alpha_mode > 0.5 && alpha_mode < 1.5 && base_color.a < input.surface.z) { discard; }
+     let n = mapped_normal(input.world_position, input.world_normal, input.world_tangent, input.uv);
+     let l = normalize(-light.dir_direction); let v = normalize(camera.world_position - input.world_position);
++    let metallic_roughness = textureSample(t_metallic_roughness, s_material, input.uv);
++    let surface = vec4<f32>(
++        input.surface.x * metallic_roughness.g,
++        input.surface.y * metallic_roughness.b,
++        input.surface.zw,
++    );
++    let occlusion_sample = textureSample(t_occlusion, s_material, input.uv).r;
++    let occlusion = mix(1.0, occlusion_sample, clamp(material.pbr_params.y, 0.0, 1.0));
+     let visibility = shadow_visibility(input.world_position, n);
+@@ -204,5 +216,5 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
+     let model = input.emissive_and_model.w;
+     var shaded = base_color.rgb;
+     if (model < 0.5) {
+-        shaded = standard_lit(base_color.rgb, n, l, v, input.surface, visibility);
++        shaded = standard_lit(base_color.rgb, n, l, v, surface, visibility, occlusion);
+     } else if (model < 1.5) {
