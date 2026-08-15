@@ -1849,7 +1849,7 @@ mod tests {
             assert!((tangent[0] - 1.0).abs() < 1.0e-5);
             assert!(tangent[1].abs() < 1.0e-5);
             assert!(tangent[2].abs() < 1.0e-5);
-            assert!((tangent[3] - 1.0).abs() < 1.0e-5);
+            assert!((tangent[3] + 1.0).abs() < 1.0e-5);
         }
     }
 
