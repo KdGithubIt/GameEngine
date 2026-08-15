@@ -1,0 +1,236 @@
+diff --git a/crates/engine/src/scene_bridge/asset_load.rs b/crates/engine/src/scene_bridge/asset_load.rs
+--- a/crates/engine/src/scene_bridge/asset_load.rs
++++ b/crates/engine/src/scene_bridge/asset_load.rs
+@@ -184,3 +184,8 @@ pub(super) fn load_material_asset(
+                 let base = decode_slot(&parsed.base_color_texture, "base color");
+                 let normal = decode_slot(&parsed.normal_texture, "normal");
++                let metallic_roughness = decode_slot(
++                    &parsed.metallic_roughness_texture,
++                    "metallic/roughness",
++                );
++                let occlusion = decode_slot(&parsed.occlusion_texture, "occlusion");
+                 let emissive = decode_slot(&parsed.emissive_texture, "emissive");
+@@ -198,6 +202,15 @@ pub(super) fn load_material_asset(
+-                match (base, normal, emissive, ramp, sphere) {
+-                    (Ok(base), Ok(normal), Ok(emissive), Ok(ramp), Ok(sphere)) => (
++                match (base, normal, metallic_roughness, occlusion, emissive, ramp, sphere) {
++                    (
++                        Ok(base),
++                        Ok(normal),
++                        Ok(metallic_roughness),
++                        Ok(occlusion),
++                        Ok(emissive),
++                        Ok(ramp),
++                        Ok(sphere),
++                    ) => (
+                         runtime_material_from_asset(
+-                            parsed, base, normal, emissive, ramp, sphere,
++                            parsed, base, normal, metallic_roughness, occlusion, emissive, ramp,
++                            sphere,
+                         ),
+                         diagnostics,
+@@ -212,5 +227,7 @@ pub(super) fn load_material_asset(
+                                 results.0.err(),
+                                 results.1.err(),
+                                 results.2.err(),
+                                 results.3.err(),
+                                 results.4.err(),
++                                results.5.err(),
++                                results.6.err(),
+@@ -278,3 +295,8 @@ pub(super) fn load_material_asset(
+     let base = decode_slot(&parsed.base_color_texture, "base color");
+     let normal = decode_slot(&parsed.normal_texture, "normal");
++    let metallic_roughness = decode_slot(
++        &parsed.metallic_roughness_texture,
++        "metallic/roughness",
++    );
++    let occlusion = decode_slot(&parsed.occlusion_texture, "occlusion");
+     let emissive = decode_slot(&parsed.emissive_texture, "emissive");
+@@ -285,5 +306,15 @@ pub(super) fn load_material_asset(
+-    match (base, normal, emissive, ramp, sphere) {
+-        (Ok(base), Ok(normal), Ok(emissive), Ok(ramp), Ok(sphere)) => (
+-            runtime_material_from_asset(&parsed, base, normal, emissive, ramp, sphere),
++    match (base, normal, metallic_roughness, occlusion, emissive, ramp, sphere) {
++        (
++            Ok(base),
++            Ok(normal),
++            Ok(metallic_roughness),
++            Ok(occlusion),
++            Ok(emissive),
++            Ok(ramp),
++            Ok(sphere),
++        ) => (
++            runtime_material_from_asset(
++                &parsed, base, normal, metallic_roughness, occlusion, emissive, ramp, sphere,
++            ),
+             Vec::new(),
+         ),
+@@ -301,3 +333,5 @@ pub(super) fn load_material_asset(
+                 results.2.err(),
+                 results.3.err(),
+                 results.4.err(),
++                results.5.err(),
++                results.6.err(),
+@@ -593,4 +627,6 @@ fn runtime_material_from_asset(
+     asset: &engine_authoring::MaterialAsset,
+     pending_texture: Option<Arc<DecodedTexture>>,
+     pending_normal_texture: Option<Arc<DecodedTexture>>,
++    pending_metallic_roughness_texture: Option<Arc<DecodedTexture>>,
++    pending_occlusion_texture: Option<Arc<DecodedTexture>>,
+     pending_emissive_texture: Option<Arc<DecodedTexture>>,
+@@ -603,3 +639,5 @@ fn runtime_material_from_asset(
+         pending_texture,
+         pending_normal_texture,
++        pending_metallic_roughness_texture,
++        pending_occlusion_texture,
+         pending_emissive_texture,
+diff --git a/crates/editor/src/material_editor.rs b/crates/editor/src/material_editor.rs
+--- a/crates/editor/src/material_editor.rs
++++ b/crates/editor/src/material_editor.rs
+@@ -124,6 +124,30 @@ fn show_material_fields(
+         &mut mat.normal_texture,
+         texture_choices,
+     );
++    ui.horizontal(|ui| {
++        ui.label("Normal scale");
++        changed |= ui
++            .add(eframe::egui::DragValue::new(&mut mat.normal_scale).speed(0.01))
++            .changed();
++    });
++    changed |= texture_picker(
++        ui,
++        "Metallic/Roughness texture",
++        &mut mat.metallic_roughness_texture,
++        texture_choices,
++    );
++    changed |= texture_picker(
++        ui,
++        "Occlusion texture",
++        &mut mat.occlusion_texture,
++        texture_choices,
++    );
++    ui.horizontal(|ui| {
++        ui.label("Occlusion strength");
++        changed |= ui
++            .add(eframe::egui::Slider::new(&mut mat.occlusion_strength, 0.0..=1.0))
++            .changed();
++    });
+     changed |= texture_picker(
+         ui,
+         "Emissive texture",
+diff --git a/docs/adr/0055-render-authoring-and-material-v2-contract.md b/docs/adr/0055-render-authoring-and-material-v2-contract.md
+--- a/docs/adr/0055-render-authoring-and-material-v2-contract.md
++++ b/docs/adr/0055-render-authoring-and-material-v2-contract.md
+@@ -3,4 +3,8 @@
+ Status: Accepted
+ Date: 2026-07-13
+ 
++Material persistence in this ADR is superseded by ADR 0115's current-format-only
++policy and ADR 0120's Material schema v3 PBR texture contract. The scene/runtime
++ownership decisions in this ADR remain accepted.
++
+ ## Context
+diff --git a/docs/adr/README.md b/docs/adr/README.md
+--- a/docs/adr/README.md
++++ b/docs/adr/README.md
+@@ -121,2 +121,3 @@
+ - [ADR 0118: Rendering Color-Space and Texture Semantics](0118-rendering-color-space-and-texture-semantics.md)
+ - [ADR 0119: Tangent-Space GPU Contract and Shared Material Fragment Stage](0119-tangent-space-gpu-contract-and-shared-material-fragment.md)
++- [ADR 0120: PBR Material Texture Inputs and Generated Tangent Basis](0120-pbr-material-textures-and-generated-tangent-basis.md)
+diff --git a/docs/adr/0120-pbr-material-textures-and-generated-tangent-basis.md b/docs/adr/0120-pbr-material-textures-and-generated-tangent-basis.md
+new file mode 100644
+--- /dev/null
++++ b/docs/adr/0120-pbr-material-textures-and-generated-tangent-basis.md
+@@ -0,0 +1,92 @@
++# ADR 0120: PBR Material Texture Inputs and Generated Tangent Basis
++
++Status: Accepted
++Date: 2026-08-16
++
++## Context
++
++ADR 0118 established the renderer's scene-linear color and texture-sampling
++contract. ADR 0119 then made imported tangent handedness an explicit GPU input
++and unified static and skinned material shading behind one fragment stage.
++StandardLit still exposes only scalar roughness/metallic values, however, and
++the glTF importer drops metallic-roughness textures, occlusion textures, normal
++scale, and occlusion strength. Assets without source tangents also fall back to
++screen-space derivatives instead of receiving a stable authored-style tangent
++basis.
++
++The next renderer foundation must remain format-independent: glTF, FBX, PMX,
++and engine-authored materials normalize into the same material and mesh
++contracts, and no source-format branch may enter the renderer.
++
++## Decision
++
++1. `MaterialAsset` advances from schema v2 to schema v3. Per ADR 0115, readers
++   accept exactly the current version; v2 is rejected rather than kept behind a
++   compatibility reader. Stable material Asset IDs do not change.
++2. StandardLit adds two optional linear-data texture slots:
++   `metallic_roughness_texture` and `occlusion_texture`. The packed
++   metallic/roughness contract uses green for roughness and blue for metallic;
++   occlusion uses red. Missing slots resolve to white so existing scalar factors
++   preserve their previous result.
++3. Material schema v3 also stores `normal_scale` and `occlusion_strength`.
++   Normal scale multiplies tangent-space X/Y before normalization. Occlusion
++   strength is clamped to `[0, 1]` by authoring validation and evaluates
++   `mix(1, texture.r, strength)`.
++4. StandardLit composes scalar factors with texture data as
++   `roughness = roughness_factor * texture.g` and
++   `metallic = metallic_factor * texture.b`. Occlusion modulates only the
++   indirect/ambient StandardLit contribution; direct lighting, ToonLit, and
++   Unlit are not darkened by AO.
++5. Normal, metallic/roughness, and occlusion slots are linear numeric data under
++   ADR 0118. Base color, emissive, toon ramp, and sphere/matcap remain sRGB color
++   slots. The GPU upload cache therefore uses the existing explicit
++   `LinearData` path for all three PBR data textures.
++6. Format parsers normalize source semantics into the generic IR. glTF maps its
++   packed metallic-roughness texture, occlusion texture, normal scale, and
++   occlusion strength directly. Formats without an equivalent input supply the
++   generic defaults (`None`, scale/strength `1.0`) rather than causing runtime
++   format checks.
++7. A missing source tangent may be generated with a MikkTSpace-compatible basis
++   at the generic renderer mesh-preparation boundary. Source tangents remain
++   authoritative. Generation failure or degenerate UV geometry retains ADR
++   0119's zero-handedness sentinel and derivative fallback instead of inventing
++   an arbitrary frame.
++8. The MikkTSpace implementation is a renderer GPU dependency and is isolated
++   behind `engine-render-runtime`'s `gpu` feature. Contract-only consumers such
++   as the importer continue to depend on render-runtime with default features
++   disabled, preserving ADR 0114's lightweight dependency graph.
++
++## Compatibility and Migration
++
++- Material schema v2 files are intentionally rejected after this change. The
++  repository's current writers, fixtures, and imported-material extraction all
++  emit schema v3 in the same change.
++- Existing Material/Texture stable IDs and imported sub-asset ID derivation are
++  unchanged.
++- `Vertex::LAYOUT`, the separate tangent stream from ADR 0119, and public
++  rendering APIs are unchanged.
++- The renderer receives only normalized material and mesh data; there is no
++  glTF-, FBX-, or MMD-specific shader or render path.
++
++## Consequences
++
++- StandardLit can consume the core metallic-roughness and occlusion inputs used
++  by modern content pipelines without waiting for IBL.
++- The same material contract becomes the future input to irradiance/prefiltered
++  environment lighting rather than requiring another importer-specific bridge.
++- Authored source tangents stay byte-for-byte authoritative while assets that do
++  not provide them can gain a stable basis without changing the public vertex
++  contract.
++
++## Verification
++
++- Material v3 round-trip tests cover the new texture IDs and scalar controls,
++  and v2 is explicitly rejected.
++- glTF import tests cover packed metallic/roughness, occlusion, normal scale,
++  and occlusion strength without the previous unsupported-texture diagnostic.
++- Runtime tests verify authoring-to-runtime scalar mapping and linear-data slot
++  classification.
++- Tangent-generation tests verify a UV-mapped quad produces a valid tangent and
++  that explicit source tangents remain authoritative.
++- Because the tangent generator changes the workspace lockfile, Windows
++  Validation runs in `full` mode after the dependency lands.
