@@ -1,0 +1,56 @@
+diff --git a/crates/animation/src/humanoid_motion.rs b/crates/animation/src/humanoid_motion.rs
+--- a/crates/animation/src/humanoid_motion.rs
++++ b/crates/animation/src/humanoid_motion.rs
+@@ -18,7 +18,18 @@
+ /// Bumped whenever unchanged humanoid inputs would bake to different clip bytes.
+ pub const HUMANOID_RETARGET_ALGORITHM_VERSION: u32 = 1;
+ 
+-const CACHE_SCHEMA_VERSION: u32 = 1;
+-const CACHE_DOMAIN: &str = "humanoid_anim";
+-const CACHE_EXTENSION: &str = "clip.json";
++/// Schema version for a serialized target-bound Humanoid bake.
++pub const HUMANOID_BAKED_CLIP_SCHEMA_VERSION: u32 = 1;
++/// Derived-cache namespace for Humanoid target bakes.
++pub const HUMANOID_CACHE_DOMAIN: &str = "humanoid_anim";
++/// File extension for one serialized Humanoid target bake.
++pub const HUMANOID_BAKED_CLIP_FILE_EXTENSION: &str = "clip.json";
++/// Blocking packaged-player diagnostic when a required Humanoid bake was not staged.
++pub const HUMANOID_BAKE_MISSING_FROM_PACKAGE_DIAGNOSTIC: &str =
++    "anim.humanoid_bake_missing_from_package";
++
++const CACHE_SCHEMA_VERSION: u32 = HUMANOID_BAKED_CLIP_SCHEMA_VERSION;
++const CACHE_DOMAIN: &str = HUMANOID_CACHE_DOMAIN;
++const CACHE_EXTENSION: &str = HUMANOID_BAKED_CLIP_FILE_EXTENSION;
+ const QUAT_EPSILON: f32 = 1.0e-8;
+@@ -310,6 +321,29 @@
+     Ok(baked)
+ }
+ 
++/// Serializes one ordinary target-bound clip using the Humanoid bake envelope.
++pub fn serialize_humanoid_baked_clip(
++    clip: &AnimationClip,
++) -> Result<Vec<u8>, HumanoidMotionError> {
++    serde_json::to_vec(&HumanoidBakeEnvelope {
++        schema_version: HUMANOID_BAKED_CLIP_SCHEMA_VERSION,
++        clip: clip.clone(),
++    })
++    .map_err(cache_error)
++}
++
++/// Deserializes one pre-baked Humanoid clip without performing adaptation.
++pub fn deserialize_humanoid_baked_clip(
++    bytes: &[u8],
++) -> Result<AnimationClip, HumanoidMotionError> {
++    let envelope: HumanoidBakeEnvelope = serde_json::from_slice(bytes).map_err(cache_error)?;
++    if envelope.schema_version != HUMANOID_BAKED_CLIP_SCHEMA_VERSION {
++        return Err(HumanoidMotionError::Cache(format!(
++            "unsupported Humanoid baked-clip schema version {}; expected {}",
++            envelope.schema_version, HUMANOID_BAKED_CLIP_SCHEMA_VERSION
++        )));
++    }
++    Ok(envelope.clip)
++}
++
+ #[derive(Serialize, Deserialize)]
+ struct HumanoidBakeEnvelope {
+     schema_version: u32,
