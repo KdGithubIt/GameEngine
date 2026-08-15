@@ -1,0 +1,169 @@
+ Vec<PathBuf>,
+-    /// Last project that completed opening successfully.
+-    #[serde(default)]
+-    pub last_project: Option<PathBuf>,
+     /// Authoring documents open as workspace tabs, in tab order.
+     ///
+     /// Reopening the same project restores this whole tab set. Paths outside
+@@ -86,12 +79,13 @@ pub struct EditorPreferences {
+     #[serde(default)]
+     pub play_mode_view: PlayModeView,
++    /// User-local storage location selected from ProjectId + canonical root.
++    #[serde(skip)]
++    storage_path: Option<PathBuf>,
+ }
+ 
+ impl Default for EditorPreferences {
+     fn default() -> Self {
+         Self {
+-            recent_projects: Vec::new(),
+-            last_project: None,
+             open_documents: Vec::new(),
+             last_document: None,
+             selected_asset_folder: PathBuf::new(),
+@@ -107,5 +101,6 @@ impl Default for EditorPreferences {
+             component_card_open: BTreeMap::new(),
+             play_mode_view: PlayModeView::Game,
++            storage_path: None,
+         }
+     }
+ }
+@@ -122,24 +117,23 @@ impl EditorPreferences {
+     /// Loads preferences from the platform data directory.
+     ///
+     /// Returns `default` preferences if the file is missing or unparseable.
+-    pub fn load() -> Self {
+-        let Some(path) = prefs_path() else {
++    pub fn load_for(project: &ProjectRoot) -> Self {
++        let Some(path) = prefs_path(project) else {
+             return Self::default();
+         };
+         let data = match std::fs::read(&path) {
+-            Ok(d) => d,
+-            Err(_) => return Self::default(),
++            Ok(data) => data,
++            Err(_) => {
++                let mut preferences = Self::default();
++                preferences.storage_path = Some(path);
++                return preferences;
++            }
+         };
+-        let Ok(mut preferences) = serde_json::from_slice::<Self>(&data) else {
+-            return Self::default();
++        let Ok(mut preferences) = serde_json::from_slice::<Self>(&data) else {
++            let mut preferences = Self::default();
++            preferences.storage_path = Some(path);
++            return preferences;
+         };
+-        preferences.recent_projects.retain(|path| path.exists());
+-        if preferences
+-            .last_project
+-            .as_ref()
+-            .is_some_and(|path| !path.exists())
+-        {
+-            preferences.last_project = None;
+-        }
++        preferences.storage_path = Some(path);
+         preferences
+     }
+@@ -140,8 +135,8 @@ impl EditorPreferences {
+     ///
+     /// Silently ignores I/O failures so a missing config directory does not
+     /// crash the editor.
+     pub fn save(&self) {
+-        let Some(path) = prefs_path() else { return };
++        let Some(path) = self.storage_path.as_ref() else { return };
+         if let Some(parent) = path.parent() {
+             let _ = std::fs::create_dir_all(parent);
+         }
+@@ -149,13 +144,4 @@ impl EditorPreferences {
+         }
+     }
+ 
+-    /// Adds `path` to the front of the recent list, deduplicating and capping
+-    /// the list at `MAX_RECENT` entries.
+-    pub fn push_recent(&mut self, path: &Path) {
+-        self.recent_projects.retain(|p| p != path);
+-        self.recent_projects.insert(0, path.to_path_buf());
+-        self.recent_projects.truncate(MAX_RECENT);
+-        self.last_project = Some(path.to_path_buf());
+-    }
+-
+     /// Launches the configured editor at a source location.
+@@ -291,6 +277,20 @@ fn split_arguments(template: &str) -> Vec<String> {
+     arguments
+ }
+ 
+-fn prefs_path() -> Option<PathBuf> {
+-    dirs::data_local_dir().map(|d| d.join("engine_editor").join("preferences.json"))
++fn prefs_path(project: &ProjectRoot) -> Option<PathBuf> {
++    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
++    #[cfg(windows)]
++    let normalized = project.path().to_string_lossy().to_lowercase();
++    #[cfg(not(windows))]
++    let normalized = project.path().to_string_lossy().into_owned();
++    for byte in normalized.as_bytes() {
++        hash ^= u64::from(*byte);
++        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
++    }
++    dirs::data_local_dir().map(|root| {
++        root.join("engine_editor").join("workspaces").join(format!(
++            "{}-{hash:016x}.json",
++            project.config().project_id.as_str()
++        ))
++    })
+ }
+diff --git a/crates/editor/src/ui/mod.rs b/crates/editor/src/ui/mod.rs
+index 3162a79..0000000 100644
+--- a/crates/editor/src/ui/mod.rs
++++ b/crates/editor/src/ui/mod.rs
+@@ -14,6 +14,5 @@ use crate::game_build::{
+     engine_sdk_root, latest_shadow_module, prepare_cargo_sdk_config, GameBuildKind,
+     GameBuildManager, GameBuildResult, GameBuildState,
+ };
+-use crate::hub::{show_hub, HubAction};
+ use crate::material_editor::{show_material_editor_panel, MaterialEditorPanel};
+ use crate::preferences::{EditorPreferences, PlayModeView};
+@@ -533,8 +532,6 @@ impl EditorApp {
+         self.asset_browser
+             .set_selected_folder(self.preferences.selected_asset_folder.clone());
+         self.component_source_index = ComponentSourceIndex::build(&root.rust_scripts_dir());
+-        self.preferences.push_recent(root.path());
+-        self.preferences.save();
+         if let Some(error) = game_project_error {
+             self.session
+                 .push_diagnostic(engine_authoring::Diagnostic::error(
+@@ -591,6 +588,6 @@ impl Default for EditorApp {
+     fn default() -> Self {
+-        let preferences = EditorPreferences::load();
++        let preferences = EditorPreferences::default();
+         let mut app = Self::new(EditorSession::empty_behavior_tree());
+-        app.startup_restore_project = preferences.last_project.clone();
++        app.startup_restore_project = None;
+         app.ui_builder.preview_preset = preferences.ui_preview_preset;
+         app.bottom_panel_open = preferences.bottom_panel_open;
+@@ -771,16 +759,11 @@ impl eframe::App for EditorApp {
+             } else if matches!(
+                 self.session.current_document(),
+                 crate::document::CurrentDocument::None
+             ) {
+-                if let Some(action) = show_hub(ui, &self.preferences) {
+-                    match action {
+-                        HubAction::NewProject(folder) => {
+-                            self.request_open(PendingOpen::NewProject(folder));
+-                        }
+-                        HubAction::OpenProject(folder) => {
+-                            self.request_open(PendingOpen::Project(folder));
+-                        }
+-                    }
+-                }
++                ui.vertical_centered(|ui| {
++                    ui.add_space(60.0);
++                    ui.heading("No document open");
++                    ui.label("Open or create an authoring document inside this project.");
++                });
+             } else {
+                 let actions = show_graph_canvas(
+diff --git a/crates/editor/src/ui/documents.rs b/crates/editor/src/ui/documents.rs
+index 7183108..0000000 100644
+--- a/crates/edit
