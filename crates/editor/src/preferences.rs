@@ -120,15 +120,17 @@ impl EditorPreferences {
         let data = match std::fs::read(&path) {
             Ok(data) => data,
             Err(_) => {
-                let mut preferences = Self::default();
-                preferences.storage_path = Some(path);
-                return preferences;
+                return Self {
+                    storage_path: Some(path),
+                    ..Self::default()
+                };
             }
         };
         let Ok(mut preferences) = serde_json::from_slice::<Self>(&data) else {
-            let mut preferences = Self::default();
-            preferences.storage_path = Some(path);
-            return preferences;
+            return Self {
+                storage_path: Some(path),
+                ..Self::default()
+            };
         };
         preferences.storage_path = Some(path);
         preferences
@@ -144,7 +146,7 @@ impl EditorPreferences {
             let _ = std::fs::create_dir_all(parent);
         }
         if let Ok(text) = serde_json::to_string_pretty(self) {
-            let _ = std::fs::write(&path, text);
+            let _ = std::fs::write(path, text);
         }
     }
 

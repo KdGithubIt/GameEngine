@@ -38,8 +38,8 @@ use engine::{InputCommand, InputSource, KeyCode};
 use engine_authoring::id::{AssetId, StableId};
 use engine_authoring::{
     replace_file_contents, AuthoringCommand, AuthoringEntity, AuthoringScene, ComponentTypeId,
-    EdgeId, EntityId, NodeId, ProjectConfig, ProjectRoot, ProjectSettings, PropertyPathSegment,
-    RustScriptKind, RustScriptSchedule, Transaction, Value, PROJECT_SCHEMA_VERSION,
+    EdgeId, EntityId, NodeId, ProjectRoot, ProjectSettings, PropertyPathSegment, RustScriptKind,
+    RustScriptSchedule, Transaction, Value,
 };
 use std::sync::Arc;
 use std::{
@@ -589,6 +589,16 @@ impl EditorApp {
         }
         self.pending_model_imports.clear();
         self.import_models_missing_catalogs();
+    }
+
+    /// Initializes project-scoped services in tests that exercise one
+    /// subsystem without constructing a full project-first workspace.
+    ///
+    /// This shim is never compiled into the shipping Editor and therefore
+    /// cannot reintroduce an in-process project switch path.
+    #[cfg(test)]
+    fn set_project_root(&mut self, root: ProjectRoot) {
+        self.initialize_project_root(root);
     }
 }
 

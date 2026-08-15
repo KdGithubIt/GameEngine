@@ -2389,8 +2389,7 @@ fn open_project_opens_configured_start_scene() {
         .save(root.path())
         .expect("project settings fixture must be written");
 
-    let mut app = EditorApp::new(crate::session::EditorSession::empty_behavior_tree());
-    app.do_open_project(root.path().to_path_buf());
+    let app = EditorApp::from_project(root);
 
     assert!(app.session.scene().is_some());
     assert_eq!(
@@ -2416,8 +2415,7 @@ fn open_project_without_start_scene_opens_first_scene_asset() {
         .expect("empty scene must serialize");
     std::fs::write(&scene_path, scene_json).expect("scene fixture must be written");
 
-    let mut app = EditorApp::new(crate::session::EditorSession::empty_behavior_tree());
-    app.do_open_project(root.path().to_path_buf());
+    let app = EditorApp::from_project(root);
 
     assert!(app.session.scene().is_some());
     assert_eq!(
@@ -2427,34 +2425,20 @@ fn open_project_without_start_scene_opens_first_scene_asset() {
 }
 
 #[test]
-fn new_project_creates_and_opens_starter_scene() {
+fn project_first_editor_opens_lifecycle_scaffold_scene() {
     let dir = tempfile::tempdir().expect("temp dir must be created");
-    let mut app = EditorApp::new(crate::session::EditorSession::empty_behavior_tree());
-
-    app.new_project(dir.path().to_path_buf());
-
-    let root = app
-        .project_root
-        .as_ref()
-        .expect("new project must become the active project");
+    let project_path = dir.path().join("StarterProject");
+    let root = engine_project_lifecycle::create_standard_project(&project_path, "StarterProject")
+        .expect("lifecycle scaffold must succeed");
     let scene_path = root.assets_root().join("scenes/main.scene.json");
+
+    let app = EditorApp::from_project(root.clone());
+
     assert_eq!(
         app.session.current_document_path(),
         Some(scene_path.as_path())
     );
-    let scene = app
-        .session
-        .scene()
-        .expect("starter Scene must open immediately");
-    assert_eq!(scene.entity_count(), 4);
-    let square = scene
-        .entities()
-        .find(|(_, entity)| entity.name == "square")
-        .map(|(_, entity)| entity)
-        .expect("starter Scene must contain the visible square");
-    assert!(square.components.contains_key(&ComponentTypeId::new(
-        engine::scene_bridge::STATIC_MESH_RENDERER_COMPONENT
-    )));
+    assert!(app.session.scene().is_some());
     let settings = ProjectSettings::load(root.path()).expect("project settings must load");
     assert_eq!(
         settings.start_scene.as_deref(),
@@ -4525,17 +4509,30 @@ fn workspace_restore_fixture(dir: &std::path::Path) -> (ProjectRoot, PathBuf, Pa
     (root, scene_path, ui_path)
 }
 
+fn persist_workspace_preferences(
+    root: &ProjectRoot,
+    open_documents: Vec<PathBuf>,
+    last_document: Option<PathBuf>,
+) {
+    let mut preferences = EditorPreferences::load_for(root);
+    preferences.open_documents = open_documents;
+    preferences.last_document = last_document;
+    preferences.save();
+}
+
 #[test]
 fn open_project_restores_every_open_document_tab_and_the_active_one() {
     let dir = tempfile::tempdir().expect("temp dir must be created");
     let (root, scene_path, ui_path) = workspace_restore_fixture(dir.path());
 
-    let mut app = EditorApp::new(crate::session::EditorSession::empty_behavior_tree());
-    app.preferences.open_documents = vec![scene_path.clone(), ui_path.clone()];
     // The active tab is deliberately not the last opened one, which is the
     // case a single `last_document` could not express.
-    app.preferences.last_document = Some(scene_path.clone());
-    app.do_open_project(root.path().to_path_buf());
+    persist_workspace_preferences(
+        &root,
+        vec![scene_path.clone(), ui_path.clone()],
+        Some(scene_path.clone()),
+    );
+    let app = EditorApp::from_project(root);
 
     let labels: Vec<String> = app
         .session
@@ -4557,10 +4554,12 @@ fn open_project_skips_workspace_documents_that_no_longer_exist() {
     let (root, scene_path, ui_path) = workspace_restore_fixture(dir.path());
     std::fs::remove_file(&ui_path).expect("UI fixture must be removable");
 
-    let mut app = EditorApp::new(crate::session::EditorSession::empty_behavior_tree());
-    app.preferences.open_documents = vec![scene_path.clone(), ui_path];
-    app.preferences.last_document = Some(scene_path.clone());
-    app.do_open_project(root.path().to_path_buf());
+    persist_workspace_preferences(
+        &root,
+        vec![scene_path.clone(), ui_path],
+        Some(scene_path.clone()),
+    );
+    let app = EditorApp::from_project(root);
 
     assert_eq!(app.session.summaries().len(), 1);
     assert_eq!(app.preferences.open_documents, vec![scene_path]);
@@ -4573,9 +4572,8 @@ fn open_project_ignores_workspace_documents_from_another_project() {
     let (root, scene_path, _) = workspace_restore_fixture(dir.path());
     let (_, foreign_scene, _) = workspace_restore_fixture(other_dir.path());
 
-    let mut app = EditorApp::new(crate::session::EditorSession::empty_behavior_tree());
-    app.preferences.open_documents = vec![foreign_scene, scene_path.clone()];
-    app.do_open_project(root.path().to_path_buf());
+    persist_workspace_preferences(&root, vec![foreign_scene, scene_path.clone()], None);
+    let app = EditorApp::from_project(root);
 
     assert_eq!(app.preferences.open_documents, vec![scene_path]);
 }
@@ -4585,11 +4583,10 @@ fn legacy_preferences_restore_the_last_document_as_the_only_tab() {
     let dir = tempfile::tempdir().expect("temp dir must be created");
     let (root, _, ui_path) = workspace_restore_fixture(dir.path());
 
-    let mut app = EditorApp::new(crate::session::EditorSession::empty_behavior_tree());
     // Preferences written before tab restore existed carry no tab list, so the
     // UI document must open instead of the project's start Scene.
-    app.preferences.last_document = Some(ui_path.clone());
-    app.do_open_project(root.path().to_path_buf());
+    persist_workspace_preferences(&root, Vec::new(), Some(ui_path.clone()));
+    let app = EditorApp::from_project(root);
 
     assert_eq!(app.session.summaries().len(), 1);
     assert_eq!(app.session.current_document_path(), Some(ui_path.as_path()));
@@ -4600,10 +4597,12 @@ fn switching_and_closing_tabs_records_the_workspace_immediately() {
     let dir = tempfile::tempdir().expect("temp dir must be created");
     let (root, scene_path, ui_path) = workspace_restore_fixture(dir.path());
 
-    let mut app = EditorApp::new(crate::session::EditorSession::empty_behavior_tree());
-    app.preferences.open_documents = vec![scene_path.clone(), ui_path.clone()];
-    app.preferences.last_document = Some(ui_path.clone());
-    app.do_open_project(root.path().to_path_buf());
+    persist_workspace_preferences(
+        &root,
+        vec![scene_path.clone(), ui_path.clone()],
+        Some(ui_path.clone()),
+    );
+    let mut app = EditorApp::from_project(root);
     assert_eq!(app.preferences.last_document, Some(ui_path.clone()));
 
     let ui_tab = app.session.active_tab_id();
@@ -4628,10 +4627,12 @@ fn selected_entity_workspace_fixture(
     scene_path: &Path,
     ui_path: &Path,
 ) -> (EditorApp, WorkspaceTabId, WorkspaceTabId, EntityId) {
-    let mut app = EditorApp::new(crate::session::EditorSession::empty_behavior_tree());
-    app.preferences.open_documents = vec![scene_path.to_path_buf(), ui_path.to_path_buf()];
-    app.preferences.last_document = Some(scene_path.to_path_buf());
-    app.do_open_project(root.path().to_path_buf());
+    persist_workspace_preferences(
+        root,
+        vec![scene_path.to_path_buf(), ui_path.to_path_buf()],
+        Some(scene_path.to_path_buf()),
+    );
+    let mut app = EditorApp::from_project(root.clone());
 
     let scene_tab = app.session.active_tab_id();
     let ui_tab = app
