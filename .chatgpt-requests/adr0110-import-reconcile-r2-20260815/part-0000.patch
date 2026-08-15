@@ -1,7 +1,9 @@
 diff --git a/crates/import/src/humanoid_import.rs b/crates/import/src/humanoid_import.rs
 --- a/crates/import/src/humanoid_import.rs
 +++ b/crates/import/src/humanoid_import.rs
-@@ -12,6 +12,8 @@
+@@ -9,10 +9,12 @@
+     ImportedSubAssetKind,
+ };
  use crate::model_import::GltfImportResult;
 -use engine_animation::humanoid::detect_humanoid_profile;
 +use engine_animation::humanoid::{detect_humanoid_profile, validate_humanoid_profile};
@@ -11,7 +13,9 @@ diff --git a/crates/import/src/humanoid_import.rs b/crates/import/src/humanoid_i
  use engine_authoring::id::AssetId;
 +use engine_rig::skeleton_asset::SkeletonAsset;
  use hashbrown::{HashMap, HashSet};
-@@ -42,36 +44,118 @@ pub struct HumanoidImportCatalog {
+ 
+ /// One skeleton-independent Humanoid variant derived from a Native animation.
+@@ -41,39 +43,122 @@
      pub diagnostics: Vec<Diagnostic>,
  }
  
