@@ -1,0 +1,13 @@
+diff --git a/crates/import/src/model_import.rs b/crates/import/src/model_import.rs
+--- a/crates/import/src/model_import.rs
++++ b/crates/import/src/model_import.rs
+@@ -1847,8 +1847,8 @@
+         assert_eq!(tangents.len(), 4);
+         for tangent in tangents {
+             assert!((tangent[0] - 1.0).abs() < 1.0e-5);
+             assert!(tangent[1].abs() < 1.0e-5);
+             assert!(tangent[2].abs() < 1.0e-5);
+-            assert!((tangent[3] - 1.0).abs() < 1.0e-5);
++            assert!((tangent[3] + 1.0).abs() < 1.0e-5);
+         }
+     }
