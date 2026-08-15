@@ -1,0 +1,11 @@
+diff --git a/crates/animation/src/humanoid_motion.rs b/crates/animation/src/humanoid_motion.rs
+--- a/crates/animation/src/humanoid_motion.rs
++++ b/crates/animation/src/humanoid_motion.rs
+@@ -27,7 +27,6 @@ pub const HUMANOID_BAKED_CLIP_FILE_EXTENSION: &str = "clip.json";
+ pub const HUMANOID_BAKE_MISSING_FROM_PACKAGE_DIAGNOSTIC: &str =
+     "anim.humanoid_bake_missing_from_package";
+ 
+-const CACHE_SCHEMA_VERSION: u32 = HUMANOID_BAKED_CLIP_SCHEMA_VERSION;
+ const CACHE_DOMAIN: &str = HUMANOID_CACHE_DOMAIN;
+ const CACHE_EXTENSION: &str = HUMANOID_BAKED_CLIP_FILE_EXTENSION;
+ const QUAT_EPSILON: f32 = 1.0e-8;
