@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0110-target-aware-skip-unsupported-20260816-r2",
+  "target_branch": "chatgpt/gameengine-adr-0110-humanoid-motion",
+  "expected_head_sha": "94a0b556ada52b0ee27216cca5989222b7006266",
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Keep unsupported motion bindings non-fatal",
+  "pr_title": "ADR 0110: implement humanoid animation sources",
+  "pr_body": "## Summary\n\nImplements ADR 0110 humanoid profiles, portable Humanoid motion, typed Animation Set sources, target-aware resolution, and build/package support.\n\nThis request restores the SceneBridge adaptation contract: unsupported cross-skeleton bindings emit diagnostics instead of aborting conversion. A failed primary omits the binding and a failed overlay omits only that layer.\n\n<!-- gameengine-chatgpt-dispatcher -->"
+}
