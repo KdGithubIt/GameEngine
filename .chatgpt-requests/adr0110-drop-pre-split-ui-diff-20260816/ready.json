@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0110-drop-pre-split-ui-diff-20260816",
+  "target_branch": "chatgpt/gameengine-adr-0110-humanoid-motion",
+  "expected_head_sha": "f51793b653597a0170f4d303bdfe06bb6b9b7651",
+  "patch_parts": ["part-0000.patch"],
+  "commit_message": "Drop pre-split ADR 0110 editor UI diffs",
+  "pr_title": "ADR 0110: implement humanoid animation sources",
+  "pr_body": "Implements ADR 0110 Humanoid profiles and skeleton-independent motion. This integration step removes only the old monolithic editor UI/test hunks so latest main's modular editor split can be merged into the work branch; equivalent ADR 0110 UI behavior will be added in the new modules. PR remains Draft; merge to main is manual."
+}
