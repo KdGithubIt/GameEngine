@@ -1,0 +1,276 @@
+diff --git a/crates/authoring/src/material_asset.rs b/crates/authoring/src/material_asset.rs
+--- a/crates/authoring/src/material_asset.rs
++++ b/crates/authoring/src/material_asset.rs
+@@ -12,4 +12,4 @@ use serde::{Deserialize, Serialize};
+ use std::fmt;
+ 
+ /// Schema version for `.material.json` files.
+-pub const MATERIAL_SCHEMA_VERSION: u32 = 2;
++pub const MATERIAL_SCHEMA_VERSION: u32 = 3;
+@@ -240,10 +240,20 @@ pub struct MaterialAsset {
+     /// Optional tangent-space normal texture.
+     #[serde(default, skip_serializing_if = "Option::is_none")]
+     pub normal_texture: Option<AssetId>,
++    /// Optional packed metallic/roughness texture. Green stores roughness and blue stores metallic.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub metallic_roughness_texture: Option<AssetId>,
++    /// Optional ambient-occlusion texture. Red stores the occlusion value.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub occlusion_texture: Option<AssetId>,
+     /// Optional emissive texture multiplied by `emissive_color`.
+     #[serde(default, skip_serializing_if = "Option::is_none")]
+     pub emissive_texture: Option<AssetId>,
+     /// Linear HDR emissive multiplier. RGB may exceed 1; alpha is ignored.
+     pub emissive_color: LinearRgba,
++    /// Scale applied to tangent-space normal-map X/Y before normalization.
++    pub normal_scale: f32,
++    /// Strength of the ambient-occlusion texture in [0, 1].
++    pub occlusion_strength: f32,
+     /// Roughness in [0, 1].  0 = mirror, 1 = fully diffuse.
+     pub roughness: f32,
+@@ -287,4 +301,6 @@ impl MaterialAsset {
+         validate_unit_color("base_color", self.base_color)?;
+         validate_non_negative_color("emissive_color", self.emissive_color)?;
++        validate_finite_scalar("normal_scale", self.normal_scale)?;
++        validate_unit_scalar("occlusion_strength", self.occlusion_strength)?;
+         validate_unit_scalar("roughness", self.roughness)?;
+         validate_unit_scalar("metallic", self.metallic)?;
+@@ -317,7 +333,11 @@ impl Default for MaterialAsset {
+             base_color: LinearRgba::WHITE,
+             base_color_texture: None,
+             normal_texture: None,
++            metallic_roughness_texture: None,
++            occlusion_texture: None,
+             emissive_texture: None,
+             emissive_color: Self::default_emissive_color(),
++            normal_scale: 1.0,
++            occlusion_strength: 1.0,
+             roughness: Self::default_roughness(),
+             metallic: 0.0,
+@@ -342,5 +362,19 @@ fn validate_non_negative_scalar(
+     }
+ }
+ 
++fn validate_finite_scalar(
++    field: &'static str,
++    value: f32,
++) -> Result<(), MaterialAssetError> {
++    if value.is_finite() {
++        Ok(())
++    } else {
++        Err(MaterialAssetError::InvalidValue {
++            field,
++            expected: "a finite value",
++        })
++    }
++}
++
+ /// Returns whether an optional normalized scalar is zero and can be omitted.
+ fn is_zero(value: &f32) -> bool {
+@@ -489,4 +521,6 @@ mod tests {
+         assert!((mat.roughness - 0.5).abs() < f32::EPSILON);
+         assert!((mat.metallic).abs() < f32::EPSILON);
+         assert!(mat.base_color_texture.is_none());
++        assert!((mat.normal_scale - 1.0).abs() < f32::EPSILON);
++        assert!((mat.occlusion_strength - 1.0).abs() < f32::EPSILON);
+     }
+@@ -508,12 +542,16 @@ mod tests {
+             },
+             base_color_texture: Some(id.clone()),
+             normal_texture: None,
++            metallic_roughness_texture: Some(id.clone()),
++            occlusion_texture: Some(id.clone()),
+             emissive_texture: None,
+             emissive_color: LinearRgba {
+                 r: 2.0,
+                 g: 0.5,
+                 b: 0.1,
+                 a: 1.0,
+             },
++            normal_scale: 0.75,
++            occlusion_strength: 0.6,
+             roughness: 0.3,
+             metallic: 0.7,
+@@ -532,5 +570,9 @@ mod tests {
+         assert_eq!(parsed.schema_version, MATERIAL_SCHEMA_VERSION);
+         assert_eq!(parsed.base_color, mat.base_color);
+         assert_eq!(parsed.base_color_texture, Some(id));
++        assert!(parsed.metallic_roughness_texture.is_some());
++        assert!(parsed.occlusion_texture.is_some());
++        assert!((parsed.normal_scale - 0.75).abs() < f32::EPSILON);
++        assert!((parsed.occlusion_strength - 0.6).abs() < f32::EPSILON);
+         assert!((parsed.roughness - 0.3).abs() < f32::EPSILON);
+         assert!((parsed.metallic - 0.7).abs() < f32::EPSILON);
+@@ -541,12 +583,21 @@ mod tests {
+     }
+ 
+     #[test]
+-    fn from_json_rejects_unsupported_version() {
++    fn from_json_rejects_previous_material_version() {
+         let mut value = serde_json::to_value(MaterialAsset::default()).expect("serialize fixture");
+-        value["schema_version"] = serde_json::Value::from(99);
++        value["schema_version"] = serde_json::Value::from(2);
+         let json = serde_json::to_string(&value).expect("encode fixture");
+         assert!(matches!(
+             MaterialAsset::from_json(&json),
+-            Err(MaterialAssetError::UnsupportedVersion { found: 99 })
++            Err(MaterialAssetError::UnsupportedVersion { found: 2 })
+         ));
+     }
++
++    #[test]
++    fn normal_scale_accepts_finite_signed_values() {
++        let material = MaterialAsset {
++            normal_scale: -0.5,
++            ..MaterialAsset::default()
++        };
++        assert!(material.validate().is_ok());
++    }
+@@ -570,6 +623,6 @@ mod tests {
+     fn missing_current_material_fields_are_rejected() {
+         assert!(matches!(
+-            MaterialAsset::from_json(r#"{"schema_version":2}"#),
++            MaterialAsset::from_json(r#"{"schema_version":3}"#),
+             Err(MaterialAssetError::Json(_))
+         ));
+     }
+diff --git a/crates/assets/src/model_ir.rs b/crates/assets/src/model_ir.rs
+--- a/crates/assets/src/model_ir.rs
++++ b/crates/assets/src/model_ir.rs
+@@ -524,9 +524,19 @@ pub struct IrMaterial {
+     /// it decoded successfully.
+     pub normal_texture: Option<usize>,
++    /// Original selector of the packed metallic/roughness texture, if any.
++    /// Green stores roughness and blue stores metallic.
++    pub metallic_roughness_texture: Option<usize>,
++    /// Original selector of the ambient-occlusion texture, if any.
++    /// Red stores occlusion.
++    pub occlusion_texture: Option<usize>,
+     /// Original selector of the emissive texture, if any and if it decoded
+     /// successfully.
+     pub emissive_texture: Option<usize>,
+     /// Linear HDR emissive multiplier.
+     pub emissive_color: LinearRgba,
++    /// Scale applied to tangent-space normal-map X/Y before normalization.
++    pub normal_scale: f32,
++    /// Ambient-occlusion texture strength in `[0, 1]`.
++    pub occlusion_strength: f32,
+     /// Roughness in `[0, 1]`.
+     pub roughness: f32,
+diff --git a/crates/import/src/gltf_import.rs b/crates/import/src/gltf_import.rs
+--- a/crates/import/src/gltf_import.rs
++++ b/crates/import/src/gltf_import.rs
+@@ -875,19 +875,5 @@ fn parse_materials(
+         .enumerate()
+         .map(|(index, source)| {
+             let pbr = source.pbr_metallic_roughness();
+-            if pbr.metallic_roughness_texture().is_some() {
+-                diagnostics.push(Diagnostic::warning(
+-                    "gltf.material_texture_unsupported",
+-                    format!(
+-                        "material {index} has a metallic-roughness texture; scalar metallic and roughness factors were imported instead"
+-                    ),
+-                ));
+-            }
+-            if source.occlusion_texture().is_some() {
+-                diagnostics.push(Diagnostic::warning(
+-                    "gltf.material_texture_unsupported",
+-                    format!("material {index} has an occlusion texture; it was ignored"),
+-                ));
+-            }
+             let base = pbr.base_color_factor();
+             let emissive = source.emissive_factor();
+@@ -910,6 +896,12 @@ fn parse_materials(
+                 normal_texture: source
+                     .normal_texture()
+                     .and_then(|texture| texture_ref(texture.texture().index())),
++                metallic_roughness_texture: pbr
++                    .metallic_roughness_texture()
++                    .and_then(|texture| texture_ref(texture.texture().index())),
++                occlusion_texture: source
++                    .occlusion_texture()
++                    .and_then(|texture| texture_ref(texture.texture().index())),
+                 emissive_texture: source
+                     .emissive_texture()
+                     .and_then(|texture| texture_ref(texture.texture().index())),
+@@ -920,5 +914,13 @@ fn parse_materials(
+                     b: emissive[2],
+                     a: 1.0,
+                 },
++                normal_scale: source
++                    .normal_texture()
++                    .map(|texture| texture.scale())
++                    .unwrap_or(1.0),
++                occlusion_strength: source
++                    .occlusion_texture()
++                    .map(|texture| texture.strength())
++                    .unwrap_or(1.0),
+                 roughness: pbr.roughness_factor(),
+                 metallic: pbr.metallic_factor(),
+diff --git a/crates/import/src/fbx_import.rs b/crates/import/src/fbx_import.rs
+--- a/crates/import/src/fbx_import.rs
++++ b/crates/import/src/fbx_import.rs
+@@ -918,7 +918,11 @@ fn parse_materials(scene: &ufbx::Scene, texture_valid: &[bool]) -> Vec<IrMateria
+                 base_color,
+                 base_color_texture: texture_ref(material.pbr.base_color.texture.as_ref()),
+                 normal_texture: texture_ref(material.pbr.normal_map.texture.as_ref()),
++                metallic_roughness_texture: None,
++                occlusion_texture: None,
+                 emissive_texture: texture_ref(material.pbr.emission_color.texture.as_ref()),
+                 emissive_color,
++                normal_scale: 1.0,
++                occlusion_strength: 1.0,
+                 roughness: scalar(&material.pbr.roughness, 0.5),
+                 metallic: scalar(&material.pbr.metalness, 0.0),
+diff --git a/crates/import/src/pmx_import.rs b/crates/import/src/pmx_import.rs
+--- a/crates/import/src/pmx_import.rs
++++ b/crates/import/src/pmx_import.rs
+@@ -1773,6 +1773,8 @@ fn parse_materials(
+                 },
+                 base_color_texture,
+                 normal_texture: None,
++                metallic_roughness_texture: None,
++                occlusion_texture: None,
+                 emissive_texture: None,
+                 emissive_color: LinearRgba {
+                     r: 0.0,
+@@ -1783,5 +1787,7 @@ fn parse_materials(
+                     b: 0.0,
+                     a: 1.0,
+                 },
++                normal_scale: 1.0,
++                occlusion_strength: 1.0,
+                 roughness: 0.5,
+                 metallic: 0.0,
+diff --git a/crates/import/src/model_import.rs b/crates/import/src/model_import.rs
+--- a/crates/import/src/model_import.rs
++++ b/crates/import/src/model_import.rs
+@@ -856,7 +856,11 @@ fn build_materials(source_id: &AssetId, document: &ModelDocument) -> Vec<GltfMat
+                 base_color: material.base_color,
+                 base_color_texture: material.base_color_texture.map(texture_id),
+                 normal_texture: material.normal_texture.map(texture_id),
++                metallic_roughness_texture: material.metallic_roughness_texture.map(texture_id),
++                occlusion_texture: material.occlusion_texture.map(texture_id),
+                 emissive_texture: material.emissive_texture.map(texture_id),
+                 emissive_color: material.emissive_color,
++                normal_scale: material.normal_scale,
++                occlusion_strength: material.occlusion_strength,
+                 roughness: material.roughness,
+                 metallic: material.metallic,
+diff --git a/crates/engine/src/components/validation.rs b/crates/engine/src/components/validation.rs
+--- a/crates/engine/src/components/validation.rs
++++ b/crates/engine/src/components/validation.rs
+@@ -1318,5 +1318,13 @@ fn validate_material_dependencies(
+     for (slot, texture_id) in [
+         ("base_color_texture", material.base_color_texture.as_ref()),
+         ("normal_texture", material.normal_texture.as_ref()),
++        (
++            "metallic_roughness_texture",
++            material.metallic_roughness_texture.as_ref(),
++        ),
++        (
++            "occlusion_texture",
++            material.occlusion_texture.as_ref(),
++        ),
+         ("emissive_texture", material.emissive_texture.as_ref()),
+     ] {
