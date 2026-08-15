@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "request_id": "renderer-pbr-runtime-material-20260816-r2",
+  "target_branch": "chatgpt/gameengine-render-pbr-material-foundation",
+  "expected_head_sha": "8edcdbdbf16f4d3726b2ffb6f337d8d8583c3ca1",
+  "patch_parts": ["part-0000.patch"],
+  "commit_message": "Renderer: add runtime PBR material inputs",
+  "pr_title": "Renderer: add PBR material texture contract",
+  "pr_body": "Phase 2B renderer foundation. Runtime Material now carries packed metallic/roughness and ambient-occlusion texture slots plus normal scale and occlusion strength, preserving explicit linear-data ownership for the following GPU binding and shader commits."
+}
