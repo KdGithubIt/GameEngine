@@ -27,7 +27,7 @@ function Invoke-CargoChecked {
     )
 
     Write-Host "==> cargo $($Arguments -join ' ')"
-    & cargo @Arguments
+    & cargo @Arguments | Out-Host
     if ($LASTEXITCODE -ne 0) {
         throw "cargo $($Arguments -join ' ') failed with exit code $LASTEXITCODE."
     }
