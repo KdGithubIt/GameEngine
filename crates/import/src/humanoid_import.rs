@@ -64,7 +64,8 @@ pub fn build_humanoid_import_catalog(imported: &GltfImportResult) -> HumanoidImp
 
     let profiles_by_skeleton = profiles
         .iter()
-        .map(|profile| (profile.skeleton.as_str(), profile))
+        .enumerate()
+        .map(|(index, profile)| (profile.skeleton.clone(), index))
         .collect::<HashMap<_, _>>();
     let mut motions = Vec::new();
 
@@ -72,9 +73,10 @@ pub fn build_humanoid_import_catalog(imported: &GltfImportResult) -> HumanoidImp
         let Some(skin) = imported.skins.get(animation.skin_index) else {
             continue;
         };
-        let Some(profile) = profiles_by_skeleton.get(skin.skeleton.id.as_str()) else {
+        let Some(&profile_index) = profiles_by_skeleton.get(skin.skeleton.id.as_str()) else {
             continue;
         };
+        let profile = &profiles[profile_index];
         match build_humanoid_motion(&animation.clip, &skin.skeleton, profile) {
             Ok(mut built) => {
                 diagnostics.append(&mut built.diagnostics);
