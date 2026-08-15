@@ -1,0 +1,236 @@
+diff --git a/crates/editor/src/build.rs b/crates/editor/src/build.rs
+--- a/crates/editor/src/build.rs
++++ b/crates/editor/src/build.rs
+@@ -100,4 +100,13 @@
+         /// Registered map path.
+         path: String,
+     },
++    /// Pre-baking or staging a skeleton-independent Humanoid motion failed.
++    HumanoidBakeFailed {
++        /// Stable HumanoidMotion sub-asset ID.
++        motion: String,
++        /// Target skeleton ID when the failure happened during target bake.
++        target_skeleton: Option<String>,
++        /// Import, validation, cache, or bake failure detail.
++        reason: String,
++    },
+ }
+@@ -461,8 +470,12 @@
+         let (retarget_copies, retarget_diagnostics) =
+             bake_registered_retarget_clips(config, manifest);
+         diagnostics.extend(retarget_diagnostics);
++        let (humanoid_copies, humanoid_diagnostics) =
++            bake_registered_humanoid_clips(config, manifest);
++        diagnostics.extend(humanoid_diagnostics);
+         if diagnostics.iter().any(|diagnostic| diagnostic.blocking) {
+             copies.clear();
+         } else {
+             copies.extend(retarget_copies);
++            copies.extend(humanoid_copies);
+         }
+@@ -683,3 +696,205 @@
++/// Pre-bakes every registered HumanoidMotion against every usable persisted
++/// HumanoidProfile and stages the resulting target-bound clips for packaged
++/// playback (ADR 0110).
++///
++/// This intentionally follows the packager's conservative v1 reachability
++/// policy instead of trying to infer every possible runtime `Auto`/`Humanoid`
++/// choice. The shipped player never imports a model or solves a Humanoid bake:
++/// it resolves the deterministic `(motion stable ID, target skeleton stable ID)`
++/// package path written here.
++fn bake_registered_humanoid_clips(
++    config: &BuildConfig,
++    manifest: &AssetManifest,
++) -> (Vec<PackageCopy>, Vec<BuildDiagnostic>) {
++    let assets_root = config.project_root.join("assets");
++    let cache = engine::DerivedCache::new(&config.project_root);
++    let mut imports: BTreeMap<AssetId, engine::GltfImportResult> = BTreeMap::new();
++    let mut diagnostics = Vec::new();
++
++    let mut first_profiles = BTreeMap::<AssetId, engine::asset::HumanoidProfile>::new();
++    let mut motion_sources = Vec::<(AssetId, Vec<AssetId>)>::new();
++    for (source_id, entry) in manifest.iter() {
++        for profile in &entry.import_settings.humanoid_profiles {
++            let Ok(skeleton_id) =
++                AssetId::from_stable_id(StableId::new(&profile.skeleton))
++            else {
++                continue;
++            };
++            first_profiles
++                .entry(skeleton_id)
++                .or_insert_with(|| profile.clone());
++        }
++
++        let motion_ids = entry
++            .import_settings
++            .sub_assets
++            .iter()
++            .filter(|sub_asset| {
++                sub_asset.kind == engine::ImportedSubAssetKind::HumanoidMotion
++            })
++            .filter_map(|sub_asset| {
++                AssetId::from_stable_id(StableId::new(&sub_asset.id)).ok()
++            })
++            .collect::<Vec<_>>();
++        if !motion_ids.is_empty() {
++            motion_sources.push((source_id.clone(), motion_ids));
++        }
++    }
++
++    if motion_sources.is_empty() || first_profiles.is_empty() {
++        return (Vec::new(), diagnostics);
++    }
++
++    let mut targets = BTreeMap::<
++        AssetId,
++        (
++            engine::skeleton_asset::SkeletonAsset,
++            engine::asset::HumanoidProfile,
++        ),
++    >::new();
++    for (target_id, profile) in first_profiles {
++        let Some(target_source_id) =
++            locate_skeleton_source_id(&target_id, manifest, &assets_root, &mut imports)
++        else {
++            continue;
++        };
++        let Some(target) = imports
++            .get(&target_source_id)
++            .and_then(|imported| {
++                imported
++                    .skins
++                    .iter()
++                    .find(|skin| skin.skeleton.id == target_id)
++            })
++            .map(|skin| skin.skeleton.clone())
++        else {
++            continue;
++        };
++        if engine::humanoid::validate_humanoid_profile(&profile, &target).is_ok() {
++            targets.insert(target_id, (target, profile));
++        }
++    }
++
++    if targets.is_empty() {
++        return (Vec::new(), diagnostics);
++    }
++
++    let mut motions = BTreeMap::<AssetId, engine::humanoid_motion::HumanoidMotion>::new();
++    for (source_id, registered_motion_ids) in motion_sources {
++        let Some(entry) = manifest.get(&source_id) else {
++            continue;
++        };
++        let existing_profiles = entry.import_settings.humanoid_profiles.clone();
++        let source_path = entry.path.clone();
++        let Some(imported) =
++            import_source_for_reachability(&source_id, manifest, &assets_root, &mut imports)
++        else {
++            for motion_id in registered_motion_ids {
++                diagnostics.push(BuildDiagnostic::blocking(
++                    BuildDiagnosticKind::HumanoidBakeFailed {
++                        motion: motion_id.as_str().to_owned(),
++                        target_skeleton: None,
++                        reason: "owning model source could not be imported".to_owned(),
++                    },
++                    format!(
++                        "Humanoid motion '{}' is registered by source '{}' but that model could not be imported during packaging",
++                        motion_id.as_str(),
++                        source_path
++                    ),
++                ));
++            }
++            continue;
++        };
++
++        let catalog =
++            engine::humanoid_import::build_humanoid_import_catalog(imported, &existing_profiles);
++        for motion_id in registered_motion_ids {
++            let Some(portable) = catalog
++                .motions
++                .iter()
++                .find(|motion| motion.id == motion_id)
++            else {
++                diagnostics.push(BuildDiagnostic::blocking(
++                    BuildDiagnosticKind::HumanoidBakeFailed {
++                        motion: motion_id.as_str().to_owned(),
++                        target_skeleton: None,
++                        reason: "registered HumanoidMotion is no longer produced by import".to_owned(),
++                    },
++                    format!(
++                        "Humanoid motion '{}' is registered by source '{}' but reimport no longer produces it; reimport the source before packaging",
++                        motion_id.as_str(),
++                        source_path
++                    ),
++                ));
++                continue;
++            };
++            motions.insert(motion_id, portable.motion.clone());
++        }
++    }
++
++    let mut copies = Vec::new();
++    for (motion_id, motion) in &motions {
++        for (target_id, (target, profile)) in &targets {
++            let key = match engine::humanoid_motion::humanoid_bake_cache_key(
++                motion, target, profile,
++            ) {
++                Ok(key) => key,
++                Err(error) => {
++                    diagnostics.push(BuildDiagnostic::blocking(
++                        BuildDiagnosticKind::HumanoidBakeFailed {
++                            motion: motion_id.as_str().to_owned(),
++                            target_skeleton: Some(target_id.as_str().to_owned()),
++                            reason: error.to_string(),
++                        },
++                        format!(
++                            "failed to compute Humanoid bake key for motion '{}' and target skeleton '{}': {error}",
++                            motion_id.as_str(),
++                            target_id.as_str()
++                        ),
++                    ));
++                    continue;
++                }
++            };
++            if let Err(error) = engine::humanoid_motion::resolve_or_bake_humanoid_motion(
++                &cache, motion, target, profile,
++            ) {
++                diagnostics.push(BuildDiagnostic::blocking(
++                    BuildDiagnosticKind::HumanoidBakeFailed {
++                        motion: motion_id.as_str().to_owned(),
++                        target_skeleton: Some(target_id.as_str().to_owned()),
++                        reason: error.to_string(),
++                    },
++                    format!(
++                        "failed to bake Humanoid motion '{}' for target skeleton '{}': {error}",
++                        motion_id.as_str(),
++                        target_id.as_str()
++                    ),
++                ));
++                continue;
++            }
++
++            let cache_file_name = format!(
++                "{}.{}",
++                key.file_stem(),
++                engine::humanoid_motion::HUMANOID_BAKED_CLIP_FILE_EXTENSION
++            );
++            let package_file_name =
++                engine::humanoid_motion::humanoid_packaged_bake_file_name(
++                    motion_id, target_id,
++                );
++            copies.push(PackageCopy {
++                source: PathBuf::from(".engine/cache")
++                    .join(engine::humanoid_motion::HUMANOID_CACHE_DOMAIN)
++                    .join(cache_file_name),
++                destination: PathBuf::from("baked_anim")
++                    .join("humanoid")
++                    .join(package_file_name),
++            });
++        }
++    }
++
++    (copies, diagnostics)
++}
+ // ---------------------------------------------------------------------------
+ // AP-7 reachability trace
+ // ---------------------------------------------------------------------------
