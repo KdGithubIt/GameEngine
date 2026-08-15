@@ -517,6 +517,7 @@ struct MaterialUniformData {
     toon_rim: [f32; 4],
     toon_params: [f32; 4],
     outline: [f32; 4],
+    pbr_params: [f32; 4],
 }
 
 impl MaterialUniformData {
@@ -568,10 +569,16 @@ impl MaterialUniformData {
                 material.outline.color[2],
                 if material.outline.enabled { material.outline.width } else { 0.0 },
             ],
+            pbr_params: [
+                material.normal_scale,
+                material.occlusion_strength,
+                0.0,
+                0.0,
+            ],
         }
     }
 
-    fn key(self) -> [u32; 24] {
+    fn key(self) -> [u32; 28] {
         bytemuck::cast(self)
     }
 }
@@ -641,16 +648,20 @@ fn outline_material_identity(
 struct MaterialBindGroupKey {
     base: usize,
     normal: usize,
+    metallic_roughness: usize,
+    occlusion: usize,
     emissive: usize,
     ramp: usize,
     sphere: usize,
-    uniform: [u32; 24],
+    uniform: [u32; 28],
 }
 
 /// Borrowed resources used to construct one generic material bind group.
 struct MaterialBindResources<'a> {
     base: &'a Texture,
     normal: &'a Texture,
+    metallic_roughness: &'a Texture,
+    occlusion: &'a Texture,
     emissive: &'a Texture,
     ramp: &'a Texture,
     sphere: &'a Texture,
@@ -754,6 +765,8 @@ struct CachedDecodedTexture {
 struct CachedMaterialBindGroup {
     base: Weak<Texture>,
     normal: Weak<Texture>,
+    metallic_roughness: Weak<Texture>,
+    occlusion: Weak<Texture>,
     emissive: Weak<Texture>,
     ramp: Weak<Texture>,
     sphere: Weak<Texture>,
@@ -1823,6 +1836,8 @@ impl WorldRenderer {
         self.material_bind_group_cache.retain(|_, cached| {
             cached.base.strong_count() > 0
                 && cached.normal.strong_count() > 0
+                && cached.metallic_roughness.strong_count() > 0
+                && cached.occlusion.strong_count() > 0
                 && cached.emissive.strong_count() > 0
                 && cached.ramp.strong_count() > 0
                 && cached.sphere.strong_count() > 0
@@ -2064,6 +2079,22 @@ impl WorldRenderer {
             normal_fallback,
             TextureSampleEncoding::LinearData,
         );
+        let metallic_roughness = self.resolve_texture_slot(
+            device,
+            queue,
+            material.metallic_roughness_texture.as_ref(),
+            material.pending_metallic_roughness_texture.as_ref(),
+            Arc::clone(&self.render.white_texture),
+            TextureSampleEncoding::LinearData,
+        );
+        let occlusion = self.resolve_texture_slot(
+            device,
+            queue,
+            material.occlusion_texture.as_ref(),
+            material.pending_occlusion_texture.as_ref(),
+            Arc::clone(&self.render.white_texture),
+            TextureSampleEncoding::LinearData,
+        );
         let emissive = self.resolve_texture_slot(
             device,
             queue,
@@ -2092,6 +2123,8 @@ impl WorldRenderer {
         let key = MaterialBindGroupKey {
             base: Arc::as_ptr(&base) as usize,
             normal: Arc::as_ptr(&normal) as usize,
+            metallic_roughness: Arc::as_ptr(&metallic_roughness) as usize,
+            occlusion: Arc::as_ptr(&occlusion) as usize,
             emissive: Arc::as_ptr(&emissive) as usize,
             ramp: Arc::as_ptr(&ramp) as usize,
             sphere: Arc::as_ptr(&sphere) as usize,
@@ -2111,6 +2144,8 @@ impl WorldRenderer {
                     MaterialBindResources {
                         base: &base,
                         normal: &normal,
+                        metallic_roughness: &metallic_roughness,
+                        occlusion: &occlusion,
                         emissive: &emissive,
                         ramp: &ramp,
                         sphere: &sphere,
@@ -2120,6 +2155,8 @@ impl WorldRenderer {
                 CachedMaterialBindGroup {
                     base: Arc::downgrade(&base),
                     normal: Arc::downgrade(&normal),
+                    metallic_roughness: Arc::downgrade(&metallic_roughness),
+                    occlusion: Arc::downgrade(&occlusion),
                     emissive: Arc::downgrade(&emissive),
                     ramp: Arc::downgrade(&ramp),
                     sphere: Arc::downgrade(&sphere),
@@ -2471,6 +2508,26 @@ impl RenderState {
                             ty: wgpu::BufferBindingType::Uniform,
                             has_dynamic_offset: false,
                             min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 7,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            multisampled: false,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 8,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            multisampled: false,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
                         },
                         count: None,
                     },
@@ -3140,6 +3197,14 @@ impl RenderState {
                 wgpu::BindGroupEntry {
                     binding: 6,
                     resource: resources.uniform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: wgpu::BindingResource::TextureView(&resources.metallic_roughness.view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 8,
+                    resource: wgpu::BindingResource::TextureView(&resources.occlusion.view),
                 },
             ],
         })
