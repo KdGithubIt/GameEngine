@@ -8,7 +8,7 @@ on:
   pull_request:
   push:
     branches:
-      - master
+      - main
   merge_group:
     types: [checks_requested]
   schedule:
@@ -110,9 +110,9 @@ jobs:
               branch = context.ref.replace(/^refs\/heads\//, "");
               headSha = context.sha.toLowerCase();
               baseSha = (context.payload.before || "").toLowerCase();
-              if (branch !== "master") {
+              if (branch !== "main") {
                 contextValid = false;
-                contextError = "Push validation is restricted to master.";
+                contextError = "Push validation is restricted to main.";
               }
             } else if (eventName === "merge_group") {
               const group = context.payload.merge_group;
@@ -120,14 +120,14 @@ jobs:
               headSha = (group.head_sha || context.sha).toLowerCase();
               baseSha = (group.base_sha || "").toLowerCase();
             } else if (eventName === "schedule") {
-              branch = "master";
+              branch = "main";
               try {
-                const ref = await github.rest.git.getRef({ owner, repo, ref: "heads/master" });
+                const ref = await github.rest.git.getRef({ owner, repo, ref: "heads/main" });
                 headSha = ref.data.object.sha.toLowerCase();
                 baseSha = headSha;
               } catch (error) {
                 contextValid = false;
-                contextError = `Could not resolve master: ${error.message}`;
+                contextError = `Could not resolve main: ${error.message}`;
               }
             } else if (eventName === "workflow_dispatch") {
               branch = (process.env.DISPATCH_TARGET_BRANCH || "").trim();
@@ -172,7 +172,7 @@ jobs:
                 }
               } else if (branch && headSha) {
                 const candidates = await github.paginate(github.rest.pulls.list, {
-                  owner, repo, state: "open", base: "master", head: `${owner}:${branch}`, per_page: 100,
+                  owner, repo, state: "open", base: "main", head: `${owner}:${branch}`, per_page: 100,
                 });
                 pr = candidates.find(candidate => candidate.head.sha.toLowerCase() === headSha) || null;
                 prNumber = pr?.number || null;
@@ -183,8 +183,8 @@ jobs:
                 trustedForSelfHosted = pr.head.repo?.full_name === repository;
                 canReport = trustedForSelfHosted;
               } else {
-                const master = await github.rest.git.getRef({ owner, repo, ref: "heads/master" });
-                baseSha = master.data.object.sha.toLowerCase();
+                const main = await github.rest.git.getRef({ owner, repo, ref: "heads/main" });
+                baseSha = main.data.object.sha.toLowerCase();
               }
             } else {
               contextValid = false;
@@ -192,7 +192,7 @@ jobs:
             }
 
             if (pr) {
-              if (pr.state !== "open" || pr.base.ref !== "master" || pr.head.ref !== branch) {
+              if (pr.state !== "open" || pr.base.ref !== "main" || pr.head.ref !== branch) {
                 contextValid = false;
                 contextError ||= `PR #${pr.number} does not match the validated branch/base.`;
               } else if (pr.head.sha.toLowerCase() !== headSha) {

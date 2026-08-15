@@ -123,7 +123,7 @@ if ($EventName -eq "schedule") {
         -ChangedPackages @() -AffectedPackages @()
 } elseif ($EventName -eq "push") {
     $plan = New-Plan -Mode "full" -Skip $false `
-        -Reason "Pushes to master always run the full workspace suite." `
+        -Reason "Pushes to main always run the full workspace suite." `
         -ChangedPackages @() -AffectedPackages @()
 } elseif ($changedPaths.Count -eq 0) {
     $plan = New-Plan -Mode "skip" -Skip $true `
@@ -258,7 +258,7 @@ if ($EventName -eq "schedule") {
             } else {
                 $changedNames = @($changedIds | ForEach-Object { $packagesById[$_].name })
                 $plan = New-Plan -Mode "affected" -Skip $false `
-                    -Reason "Changed workspace packages were selected from cargo metadata; reverse-dependent coverage runs on master and nightly." `
+                    -Reason "Changed workspace packages were selected from cargo metadata; reverse-dependent coverage runs on main and nightly." `
                     -ChangedPackages $changedNames -AffectedPackages $changedNames
             }
         }

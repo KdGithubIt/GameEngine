@@ -44,7 +44,7 @@ Third-party actions in these public workflow templates are pinned to full commit
 
 ## Public dispatcher trust boundary
 
-The `chatgpt-dispatch` branch remains transport data, not executable automation. The signal workflow has read-only repository access. The write-capable dispatcher is loaded from `master` via `workflow_run` and repeats all request validation.
+The `chatgpt-dispatch` branch remains transport data, not executable automation. The signal workflow has read-only repository access. The write-capable dispatcher is loaded from `main` via `workflow_run` and repeats all request validation.
 
 In the standalone public repository, ChatGPT patch paths are explicitly allow-listed. Product/source/documentation paths are allowed, while `.github/**` and `.chatgpt-requests/**` are forbidden. This prevents a patch request from rewriting the trusted workflow definitions or its own transport records.
 
@@ -63,7 +63,7 @@ GameEngine/               # standalone public repository root
 
 ## Migration sequence
 
-1. Run `scripts/public/Test-PublicSnapshot.ps1` against the latest private `master` state.
+1. Run `scripts/public/Test-PublicSnapshot.ps1` against the latest private `main` state.
 2. Export a fresh snapshot with `Export-PublicSnapshot.ps1`.
 3. Create `KdGithubIt/GameEngine` as a new private repository; do not fork or import old history.
 4. Commit only the exported snapshot as the new repository's initial history.

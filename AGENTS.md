@@ -52,17 +52,17 @@ workflow classifier.
 
 Affected Clippy, tests, and documentation all use the planner-selected changed
 package set. Reverse dependents are intentionally not added to the normal PR
-critical path; full validation on `master` and nightly is the safety net for
+critical path; full validation on `main` and nightly is the safety net for
 cross-workspace coverage. A package-local `Cargo.toml` change may remain
 affected-mode when current metadata can classify it safely. The workspace
 manifest, lock file, pinned toolchain, CI/build configuration, deleted or
 otherwise unclassifiable package paths, and any other uncertain change force
 full validation.
 
-Pushes to `master` and nightly validation always run full workspace Clippy,
+Pushes to `main` and nightly validation always run full workspace Clippy,
 tests, and documentation. Documentation-only changes recognized by the planner
 skip Rust compilation on PR and merge-group fast paths, but still receive full
-validation after landing on `master`.
+validation after landing on `main`.
 
 Run documentation validation locally when changing public documentation,
 rustdoc examples, or public APIs where a documentation failure is plausible,

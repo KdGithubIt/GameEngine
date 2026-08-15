@@ -2,7 +2,7 @@
 
 Status: Accepted
 Version: 1.3.0
-Canonical location: `GameEngine/docs/CHATGPT_AUTOMATION.md`
+Canonical location: `docs/CHATGPT_AUTOMATION.md`
 
 ## Purpose
 
@@ -23,9 +23,7 @@ ChatGPT
   -> optional corrected request
 ```
 
-The existing `gameengine-chatgpt-bridge.yml` workflow and the
-`GameEngine-ChatGPT-Apply` scripts remain manual fallback paths. They are not
-removed by this protocol.
+The public repository uses the dispatcher path directly. The legacy private-repository bridge, auto-merge workflow, and `GameEngine-ChatGPT-Apply` fallback are intentionally not installed here.
 
 ## Trust boundary
 
@@ -146,8 +144,9 @@ following:
 5. Requires its current HEAD to equal `expected_head_sha`.
 6. Reconstructs the patch and runs `git apply --check --whitespace=error-all`.
 7. Applies the patch to the local index only.
-8. Rejects every changed path outside `GameEngine/`, including old paths of
-   renames by inspecting the diff with rename detection disabled.
+8. Rejects `.github/**` and `.chatgpt-requests/**`, and rejects every other
+   changed path outside the explicit public GameEngine allow-list, including old
+   paths of renames by inspecting the diff with rename detection disabled.
 9. Rejects old or new Git modes `120000` (symlink) and `160000` (submodule).
 10. Runs `git diff --cached --check`.
 11. Re-reads the remote target HEAD immediately before commit/push.
@@ -166,21 +165,20 @@ from the latest branch state.
 After a successful push the dispatcher creates or reuses the one open PR whose
 head is the target branch.
 
-- base branch MUST be `master`;
+- base branch MUST be `main`;
 - PR MUST remain Draft;
 - existing non-Draft PRs are converted back to Draft before validation;
 - dispatcher PR body carries `<!-- gameengine-chatgpt-dispatcher -->`;
 - dispatcher PRs never carry the legacy auto-merge authorization marker;
 - dispatcher never calls merge or enables auto-merge.
 
-`gameengine-windows-validation.yml` also contains no merge step. The separate
-legacy auto-merge workflow may remain for old fallback flows, but dispatcher PRs
-are not authorized for it.
+`gameengine-windows-validation.yml` also contains no merge step. The public
+repository does not install the legacy auto-merge workflow.
 
 ## Windows validation
 
 The dispatcher explicitly starts `gameengine-windows-validation.yml` using
-`workflow_dispatch` **from `master`**, so an old or modified task branch cannot
+`workflow_dispatch` **from `main`**, so an old or modified task branch cannot
 select an older validation workflow definition. The dispatcher supplies:
 
 - target branch;
@@ -197,7 +195,7 @@ Validation has three modes: `affected`, `full`, and `docs`.
 
 ### Affected mode
 
-Normal pull requests, merge groups, and pushes to `master` use `affected` mode
+Normal pull requests, merge groups, and pushes to `main` use `affected` mode
 when changed paths can be classified safely. The planner runs
 `cargo metadata --format-version 1 --locked`, derives workspace membership and
 the workspace dependency graph, maps changed files to their owning packages,
@@ -248,7 +246,7 @@ same run.
 ### Documentation-only mode
 
 A change containing only explicitly recognized GameEngine documentation paths
-uses `docs` mode on pull-request, merge-group, and `master` fast paths. Rust
+uses `docs` mode on pull-request, merge-group, and `main` fast paths. Rust
 compilation is skipped. The nightly schedule still validates the full workspace.
 
 ### Classification safety and runner reuse
@@ -291,7 +289,7 @@ the selected validation mode and scope. The workflow run conclusion is the
 authoritative result for the checks required by that mode.
 
 The nightly schedule is the mandatory full-workspace safety net. Therefore an
-`affected` PR, merge-group, or `master` result MUST NOT be described as proof
+`affected` PR, merge-group, or `main` result MUST NOT be described as proof
 that every workspace package passed; it proves that the metadata-derived
 affected scope passed.
 
@@ -323,8 +321,4 @@ as sufficient.
 
 ## Fallback
 
-The existing `gameengine-chatgpt-bridge.yml` and `GameEngine-ChatGPT-Apply`
-remain available when the branch-based dispatcher is unavailable. Fallback use
-must still preserve the normal safety rules: work on `chatgpt/gameengine-*`,
-use a Draft PR, validate the exact branch state, and do not merge to `master`
-automatically.
+No write-capable fallback is installed in the public repository. If the dispatcher is unavailable, stop and repair the trusted dispatcher path rather than bypassing its branch, exact-head, Draft PR, or validation guarantees.

@@ -105,7 +105,7 @@ function Invoke-LayoutTests {
     Assert-Plan "cargo-lock" "pull_request" @((Path-InWorkspace "Cargo.lock")) "full"
     Assert-Plan "ci-workflow" "pull_request" @(".github/workflows/gameengine-windows-validation.yml") "full"
     Assert-Plan "nightly" "schedule" @((Path-InWorkspace "crates/leaf/src/lib.rs")) "full"
-    Assert-Plan "master-push" "push" @((Path-InWorkspace "crates/leaf/src/lib.rs")) "full"
+    Assert-Plan "main-push" "push" @((Path-InWorkspace "crates/leaf/src/lib.rs")) "full"
     Assert-Plan "pull-request" "pull_request" @((Path-InWorkspace "crates/leaf/src/lib.rs")) "affected" @("leaf")
     Assert-Plan "merge-group" "merge_group" @((Path-InWorkspace "crates/leaf/src/lib.rs")) "affected" @("leaf")
     Assert-Plan "dispatcher" "workflow_dispatch" @((Path-InWorkspace "crates/leaf/src/lib.rs")) "affected" @("leaf")

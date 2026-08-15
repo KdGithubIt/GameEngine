@@ -1,10 +1,10 @@
 # GameEngine Development and Validation Workflow
 
-This document defines the standard branch, validation, and CI workflow for changes under `GameEngine/`.
+This document defines the standard branch, validation, and CI workflow for changes in this repository.
 
 ## Toolchain
 
-`GameEngine/rust-toolchain.toml` is the source of truth for the Rust version and required components. Local development and CI must use that pinned toolchain. Do not update Rust only to match a runner default or the newest stable release; toolchain updates are separate, intentional changes.
+`rust-toolchain.toml` is the source of truth for the Rust version and required components. Local development and CI must use that pinned toolchain. Do not update Rust only to match a runner default or the newest stable release; toolchain updates are separate, intentional changes.
 
 ## Standard workflow
 
@@ -27,13 +27,13 @@ This document defines the standard branch, validation, and CI workflow for chang
 Windows developers can run the full local core gate from the repository root with:
 
 ```powershell
-.\GameEngine\scripts\validate.ps1
+.\scripts\validate.ps1
 ```
 
 Linux and macOS developers can run:
 
 ```bash
-bash GameEngine/scripts/validate.sh
+bash scripts/validate.sh
 ```
 
 Both scripts stop immediately and return a non-zero exit code when a command fails. The local scripts intentionally remain full-workspace validation; affected validation is a CI scheduling optimization.
@@ -57,9 +57,9 @@ Updating an existing text file as a complete file is allowed on a dedicated work
 2. Confirm that the same target file on the same work branch has not changed since it was read.
 3. Review the pull request diff after the update.
 4. Confirm there is no unintended large deletion, line-ending conversion, encoding conversion, or repository-wide formatting change.
-5. Never overwrite `master` directly.
+5. Never overwrite `main` directly.
 
-A later update to `master` does not by itself invalidate a complete-file edit already prepared on the work branch. The relevant concurrency check is whether the target file changed on that work branch after it was read. Resolve conflicts when the branch is merged or updated.
+A later update to `main` does not by itself invalidate a complete-file edit already prepared on the work branch. The relevant concurrency check is whether the target file changed on that work branch after it was read. Resolve conflicts when the branch is merged or updated.
 
 Prefer normal edits or content-based replacement over brittle line-number patches. Complete-file replacement is a practical fallback, not permission to skip diff review.
 
@@ -69,7 +69,7 @@ The permanent Windows validation workflow has three validation modes: `affected`
 
 ### Affected PR validation
 
-Normal pull requests and merge-group validation use changed-path classification. Known changes under one or more existing workspace crate directories select those changed packages only. Reverse dependents are deliberately excluded from the PR critical path; full validation on `master` and nightly recovers cross-workspace coverage.
+Normal pull requests and merge-group validation use changed-path classification. Known changes under one or more existing workspace crate directories select those changed packages only. Reverse dependents are deliberately excluded from the PR critical path; full validation on `main` and nightly recovers cross-workspace coverage.
 
 The executor runs three Windows matrix jobs in parallel:
 
@@ -91,9 +91,9 @@ Tests use normal selected-package tests with `cargo test -p <package>`, and docu
 
 Full validation is selected when any of the following is true:
 
-- the run is for a push to `master`;
+- the run is for a push to `main`;
 - the run is the nightly scheduled validation;
-- `GameEngine/Cargo.toml`, `GameEngine/Cargo.lock`, or `GameEngine/rust-toolchain.toml` changes;
+- `GameEngine/Cargo.toml`, `GameEngine/Cargo.lock`, or `rust-toolchain.toml` changes;
 - validation/build infrastructure changes, including the permanent validation workflow or validation scripts;
 - the changed path cannot be classified safely.
 
@@ -111,17 +111,17 @@ cargo doc --workspace --no-deps
 
 ### Documentation-only validation
 
-A PR that changes only explicitly recognized GameEngine documentation paths is classified as `docs`. Rust compilation is skipped for that PR. Full validation still runs after the documentation change lands on `master` and during the nightly run.
+A PR that changes only explicitly recognized GameEngine documentation paths is classified as `docs`. Rust compilation is skipped for that PR. Full validation still runs after the documentation change lands on `main` and during the nightly run.
 
 ### Exact-head and fallback safety
 
-Dispatcher-triggered validation still resolves the requested branch through the GitHub API, verifies its exact 40-character HEAD SHA, and validates that exact commit. If the dispatcher run cannot identify a matching PR, affected classification is not guessed; the run compares the requested head with the current `master` baseline and still falls back to full validation whenever the changed paths are workspace-wide or cannot be classified safely.
+Dispatcher-triggered validation still resolves the requested branch through the GitHub API, verifies its exact 40-character HEAD SHA, and validates that exact commit. If the dispatcher run cannot identify a matching PR, affected classification is not guessed; the run compares the requested head with the current `main` baseline and still falls back to full validation whenever the changed paths are workspace-wide or cannot be classified safely.
 
 Workspace package ownership comes from `cargo metadata`; package names and crate directories are not duplicated in the workflow classifier. Deleted or otherwise unclassifiable package paths force full validation.
 
 ### Caching and CI profiles
 
-CI disables Cargo incremental compilation so cacheable compiler work can be reused through sccache, and it disables debug information in the CI `dev` and `test` profiles without disabling debug assertions or overflow checks. Hosted jobs do not restore the complete `GameEngine/target` directory. Self-hosted runners may use the configured persistent Cargo, target, and sccache paths.
+CI disables Cargo incremental compilation so cacheable compiler work can be reused through sccache, and it disables debug information in the CI `dev` and `test` profiles without disabling debug assertions or overflow checks. Hosted jobs do not restore the complete `target` directory. Self-hosted runners may use the configured persistent Cargo, target, and sccache paths.
 
 The workflow does not run a separate `cargo fetch` step. Each gate lets Cargo fetch only what that command needs, avoiding a serialized dependency-fetch phase before compilation starts.
 
@@ -147,6 +147,6 @@ The workflow run conclusion is authoritative. A PR fast-path run succeeds only w
 
 ## Performance target
 
-For an ordinary PR that changes a known crate without Cargo/build configuration changes, the target wall-clock time is **2 to 5 minutes on a warm cache**. This is a target, not a correctness rule. Full `master`/nightly validation may take longer because broad workspace coverage is intentionally moved off the normal PR critical path.
+For an ordinary PR that changes a known crate without Cargo/build configuration changes, the target wall-clock time is **2 to 5 minutes on a warm cache**. This is a target, not a correctness rule. Full `main`/nightly validation may take longer because broad workspace coverage is intentionally moved off the normal PR critical path.
 
 The repository-native ChatGPT dispatcher protocol is defined in `CHATGPT_AUTOMATION.md`.
