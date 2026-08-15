@@ -1,0 +1,82 @@
+diff --git a/crates/render-runtime/src/material.rs b/crates/render-runtime/src/material.rs
+--- a/crates/render-runtime/src/material.rs
++++ b/crates/render-runtime/src/material.rs
+@@ -580,11 +580,23 @@ pub struct Material {
+     pub normal_texture: Option<Arc<Texture>>,
+     /// CPU-decoded normal texture uploaded lazily as a linear texture.
+     pub pending_normal_texture: Option<Arc<DecodedTexture>>,
++    /// GPU packed metallic/roughness texture sampled as linear data.
++    pub metallic_roughness_texture: Option<Arc<Texture>>,
++    /// CPU-decoded packed metallic/roughness texture uploaded lazily as linear data.
++    pub pending_metallic_roughness_texture: Option<Arc<DecodedTexture>>,
++    /// GPU ambient-occlusion texture sampled as linear data.
++    pub occlusion_texture: Option<Arc<Texture>>,
++    /// CPU-decoded ambient-occlusion texture uploaded lazily as linear data.
++    pub pending_occlusion_texture: Option<Arc<DecodedTexture>>,
+     /// GPU emissive texture, sampled in sRGB color space.
+     pub emissive_texture: Option<Arc<Texture>>,
+     /// CPU-decoded emissive texture uploaded lazily by the renderer.
+     pub pending_emissive_texture: Option<Arc<DecodedTexture>>,
+     /// Linear HDR emissive RGB added after scene lighting.
+     pub emissive_color: [f32; 3],
++    /// Scale applied to tangent-space normal-map X/Y before normalization.
++    pub normal_scale: f32,
++    /// Strength of ambient occlusion in the StandardLit indirect term.
++    pub occlusion_strength: f32,
+     /// Micro-surface roughness used by the specular BRDF.
+     pub roughness: f32,
+@@ -673,5 +685,7 @@ impl Material {
+                 asset.emissive_color.g,
+                 asset.emissive_color.b,
+             ],
++            normal_scale: asset.normal_scale,
++            occlusion_strength: asset.occlusion_strength,
+             roughness: asset.roughness,
+             metallic: asset.metallic,
+@@ -730,6 +744,8 @@ impl Material {
+         mut self,
+         base: Option<Arc<DecodedTexture>>,
+         normal: Option<Arc<DecodedTexture>>,
++        metallic_roughness: Option<Arc<DecodedTexture>>,
++        occlusion: Option<Arc<DecodedTexture>>,
+         emissive: Option<Arc<DecodedTexture>>,
+         ramp: Option<Arc<DecodedTexture>>,
+         sphere: Option<Arc<DecodedTexture>>,
+@@ -737,5 +753,7 @@ impl Material {
+     ) -> Self {
+         self.pending_texture = base;
+         self.pending_normal_texture = normal;
++        self.pending_metallic_roughness_texture = metallic_roughness;
++        self.pending_occlusion_texture = occlusion;
+         self.pending_emissive_texture = emissive;
+         self.toon.pending_ramp_texture = ramp;
+@@ -750,8 +768,14 @@ impl Material {
+             pending_texture: None,
+             normal_texture: None,
+             pending_normal_texture: None,
++            metallic_roughness_texture: None,
++            pending_metallic_roughness_texture: None,
++            occlusion_texture: None,
++            pending_occlusion_texture: None,
+             emissive_texture: None,
+             pending_emissive_texture: None,
+             emissive_color: [0.0; 3],
++            normal_scale: 1.0,
++            occlusion_strength: 1.0,
+             roughness: 0.5,
+             metallic: 0.0,
+@@ -884,4 +908,6 @@ mod tests {
+                 a: 1.0,
+             },
++            normal_scale: 0.6,
++            occlusion_strength: 0.4,
+             roughness: 0.25,
+             metallic: 0.75,
+@@ -896,5 +922,7 @@ mod tests {
+         let runtime = Material::from_authoring_asset(&asset);
+         assert_eq!(runtime.color, [0.1, 0.2, 0.3, 0.4]);
+         assert_eq!(runtime.emissive_color, [2.0, 1.0, 0.5]);
++        assert_eq!(runtime.normal_scale, 0.6);
++        assert_eq!(runtime.occlusion_strength, 0.4);
+         assert_eq!(runtime.roughness, 0.25);
+         assert_eq!(runtime.metallic, 0.75);
