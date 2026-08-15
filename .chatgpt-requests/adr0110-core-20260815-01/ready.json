@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0110-core-20260815-01",
+  "target_branch": "chatgpt/gameengine-adr-0110-humanoid-motion",
+  "expected_head_sha": "04f5877ff5d2ec05782af6ca80d12f574c46f757",
+  "patch_parts": ["part-0000.patch"],
+  "commit_message": "Implement ADR 0110 humanoid motion core",
+  "pr_title": "Implement ADR 0110 humanoid profiles and motion",
+  "pr_body": "Implements ADR 0110 in staged patches. This first dispatcher request adds persisted model-owned humanoid profile metadata, portable humanoid semantics, pure Native-to-Humanoid conversion, target-bound Humanoid baking, structural validation/detection, and Derived Cache keying. Follow-up requests on the same Draft PR wire import cataloging, Animation Set source selection, editor configuration, and packaging/runtime resolution."
+}
