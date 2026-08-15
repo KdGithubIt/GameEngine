@@ -16,7 +16,6 @@ use crate::game_build::{
     engine_sdk_root, latest_shadow_module, prepare_cargo_sdk_config, GameBuildKind,
     GameBuildManager, GameBuildResult, GameBuildState,
 };
-use crate::hub::{show_hub, HubAction};
 use crate::material_editor::{show_material_editor_panel, MaterialEditorPanel};
 use crate::preferences::{EditorPreferences, PlayModeView};
 use crate::problems::ProblemsPanel;
@@ -39,8 +38,8 @@ use engine::{InputCommand, InputSource, KeyCode};
 use engine_authoring::id::{AssetId, StableId};
 use engine_authoring::{
     replace_file_contents, AuthoringCommand, AuthoringEntity, AuthoringScene, ComponentTypeId,
-    EdgeId, EntityId, NodeId, ProjectConfig, ProjectRoot, ProjectSettings, PropertyPathSegment,
-    RustScriptKind, RustScriptSchedule, Transaction, Value, PROJECT_SCHEMA_VERSION,
+    EdgeId, EntityId, NodeId, ProjectRoot, ProjectSettings, PropertyPathSegment, RustScriptKind,
+    RustScriptSchedule, Transaction, Value,
 };
 use std::sync::Arc;
 use std::{
@@ -126,7 +125,8 @@ pub struct EditorApp {
     asset_content_scroll_reset: bool,
     /// Active full-height view inside the Assets utility dock.
     project_browser_tab: ProjectBrowserTab,
-    /// Open project root.  `None` until a project folder is opened.
+    /// Concrete root for a normal Editor workspace.
+    /// `None` exists only for project-less test/support construction.
     project_root: Option<ProjectRoot>,
     /// Asset manifest loaded from the open project root.
     asset_manifest: engine::AssetManifest,
@@ -215,7 +215,7 @@ pub struct EditorApp {
     forwarded_mouse_buttons: std::collections::HashSet<engine::MouseButton>,
     /// Whether debug lines are drawn in the runtime world.
     show_debug_lines: bool,
-    /// Persistent editor preferences (recent projects, etc.).
+    /// Project-scoped editor workspace preferences.
     preferences: EditorPreferences,
     /// Stable-ID project component lookup rebuilt after source changes.
     component_source_index: ComponentSourceIndex,
@@ -225,8 +225,6 @@ pub struct EditorApp {
     prefab_placement_source: Option<PathBuf>,
     /// Whether editor command preferences are visible.
     show_editor_preferences: bool,
-    /// Last project restored on the first frame unless safe-start is held.
-    startup_restore_project: Option<PathBuf>,
     /// Scene view offscreen renderer and editor orbit camera.
     scene_view: SceneView,
     /// Current Scene View conversion or rendering problem.
@@ -435,7 +433,6 @@ impl EditorApp {
             source_viewer: None,
             prefab_placement_source: None,
             show_editor_preferences: false,
-            startup_restore_project: None,
             scene_view: SceneView::new(),
             scene_view_problem: None,
             animation_preview: AnimationPreviewWindow::default(),
@@ -498,8 +495,11 @@ impl EditorApp {
         }
     }
 
-    /// Opens a project folder and refreshes the asset browser.
-    pub fn set_project_root(&mut self, root: ProjectRoot) {
+    /// Initializes project-scoped services for the concrete workspace root.
+    ///
+    /// This stays private because ADR 0117 forbids rebinding one Editor
+    /// process from one project to another after workspace construction.
+    fn initialize_project_root(&mut self, root: ProjectRoot) {
         self.flush_all_pending_material_saves();
         self.scene_view.clear_project_caches();
         self.material_scene_preview_deadline = None;
@@ -520,11 +520,9 @@ impl EditorApp {
         let settings = ProjectSettings::load(root.path()).unwrap_or_default();
         self.project_layers = settings.layers.clone();
         self.project_settings_panel = Some(ProjectSettingsPanel::new(settings));
-        // Relative asset paths are project-local, so thumbnails from the
-        // previously open project must not be reused for a new project.
+        // Project-local derived state starts empty for this concrete root.
         self.asset_thumbnails.clear();
-        // Entity and node identifiers only mean something inside the project
-        // that declared them, so no background tab state survives the switch.
+        // Entity and node identifiers are meaningful only inside this project.
         self.document_presentations.clear();
         self.asset_content_scroll_reset = true;
         self.project_browser_tab = ProjectBrowserTab::Assets;
@@ -538,8 +536,6 @@ impl EditorApp {
         self.asset_browser
             .set_selected_folder(self.preferences.selected_asset_folder.clone());
         self.component_source_index = ComponentSourceIndex::build(&root.rust_scripts_dir());
-        self.preferences.push_recent(root.path());
-        self.preferences.save();
         if let Some(error) = game_project_error {
             self.session
                 .push_diagnostic(engine_authoring::Diagnostic::error(
@@ -583,8 +579,8 @@ impl EditorApp {
             .map(|project| ProjectFileWatcher::new(project.path().to_path_buf()));
         self.asset_manifest = manifest;
         self.reconcile_sub_asset_display_names();
-        // Opening a project should immediately expose its content even when a
-        // diagnostic tab was active in the previous project.
+        // Project initialization should immediately expose its authoring
+        // content instead of leaving a diagnostic utility tab in front.
         self.left_panel_tab = LeftPanelTab::Hierarchy;
         self.bottom_panel_tab = BottomPanelTab::Assets;
         self.bottom_panel_open = true;
@@ -594,13 +590,22 @@ impl EditorApp {
         self.pending_model_imports.clear();
         self.import_models_missing_catalogs();
     }
+
+    /// Initializes project-scoped services in tests that exercise one
+    /// subsystem without constructing a full project-first workspace.
+    ///
+    /// This shim is never compiled into the shipping Editor and therefore
+    /// cannot reintroduce an in-process project switch path.
+    #[cfg(test)]
+    fn set_project_root(&mut self, root: ProjectRoot) {
+        self.initialize_project_root(root);
+    }
 }
 
 impl Default for EditorApp {
     fn default() -> Self {
-        let preferences = EditorPreferences::load();
+        let preferences = EditorPreferences::default();
         let mut app = Self::new(EditorSession::empty_behavior_tree());
-        app.startup_restore_project = preferences.last_project.clone();
         app.ui_builder.preview_preset = preferences.ui_preview_preset;
         app.bottom_panel_open = preferences.bottom_panel_open;
         app.bottom_panel_tab = match preferences.bottom_panel_tab.as_str() {
@@ -610,8 +615,8 @@ impl Default for EditorApp {
             "runtime" => BottomPanelTab::Runtime,
             _ => BottomPanelTab::Assets,
         };
-        // Problem suppressions are editor-local and apply before any project
-        // is restored, so a recurring import notice stays hidden on startup.
+        // Problem suppressions are editor-local and apply before project-scoped
+        // state is loaded, so a recurring import notice stays hidden on startup.
         app.problems_panel.set_suppressed_codes(
             preferences.suppressed_problem_codes.iter().cloned(),
         );
@@ -638,13 +643,6 @@ impl eframe::App for EditorApp {
             })
             .map(|(_, entry)| entry.path.clone())
             .collect();
-        if let Some(project) = self.startup_restore_project.take() {
-            let safe_start = ctx.input(|input| input.modifiers.shift)
-                || std::env::var_os("GAMEENGINE_SAFE_START").is_some();
-            if !safe_start {
-                self.do_open_project(project);
-            }
-        }
         if self.last_recovery_autosave.elapsed() >= std::time::Duration::from_secs(30) {
             self.last_recovery_autosave = std::time::Instant::now();
             self.persist_editor_local_state();
@@ -839,16 +837,11 @@ impl eframe::App for EditorApp {
                 self.session.current_document(),
                 crate::document::CurrentDocument::None
             ) {
-                if let Some(action) = show_hub(ui, &self.preferences) {
-                    match action {
-                        HubAction::NewProject(folder) => {
-                            self.request_open(PendingOpen::NewProject(folder));
-                        }
-                        HubAction::OpenProject(folder) => {
-                            self.request_open(PendingOpen::Project(folder));
-                        }
-                    }
-                }
+                ui.vertical_centered(|ui| {
+                    ui.add_space(60.0);
+                    ui.heading("No document open");
+                    ui.label("Open or create an authoring document inside this project.");
+                });
             } else {
                 let actions = show_graph_canvas(
                     ui,
