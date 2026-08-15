@@ -1,0 +1,44 @@
+diff --git a/crates/engine/src/lib.rs b/crates/engine/src/lib.rs
+--- a/crates/engine/src/lib.rs
++++ b/crates/engine/src/lib.rs
+@@ -55,5 +55,9 @@
+ /// Runtime two-bone foot IK correction against detected ground contacts
+ /// (ADR 0080 §2).
+ pub mod foot_ik;
++/// Humanoid profile validation and conservative import-time detection (ADR 0110).
++pub mod humanoid;
++/// Skeleton-independent humanoid motion conversion and target baking (ADR 0110).
++pub mod humanoid_motion;
+ /// Typed gameplay-facing System, Query, Resource, Input, Event, View, and Command API.
+ pub mod game_api;
+@@ -83,4 +87,6 @@
+ /// Prefab generation from an imported glTF/GLB source (ADR 0074).
+ pub mod gltf_prefab;
++/// Humanoid profiles and portable motion variants derived during model import (ADR 0110).
++pub mod humanoid_import;
+ /// Runtime attack-hitbox metadata and activation state.
+ pub mod hitbox;
+diff --git a/crates/engine/src/humanoid.rs b/crates/engine/src/humanoid.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/engine/src/humanoid.rs
+@@ -0,0 +1,3 @@
++//! Compatibility facade for humanoid profile validation and detection (ADR 0110).
++
++pub use engine_animation::humanoid::*;
+diff --git a/crates/engine/src/humanoid_motion.rs b/crates/engine/src/humanoid_motion.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/engine/src/humanoid_motion.rs
+@@ -0,0 +1,3 @@
++//! Compatibility facade for skeleton-independent humanoid motion baking (ADR 0110).
++
++pub use engine_animation::humanoid_motion::*;
+diff --git a/crates/engine/src/humanoid_import.rs b/crates/engine/src/humanoid_import.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/engine/src/humanoid_import.rs
+@@ -0,0 +1,3 @@
++//! Compatibility facade for model-owned Humanoid import variants (ADR 0110).
++
++pub use engine_import::humanoid_import::*;
