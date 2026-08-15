@@ -286,7 +286,7 @@ fn prefs_path(project: &ProjectRoot) -> Option<PathBuf> {
     dirs::data_local_dir().map(|root| {
         root.join("engine_editor").join("workspaces").join(format!(
             "{}-{hash:016x}.json",
-            project.config().project_id.as_str()
+            project.project_id().as_str()
         ))
     })
 }

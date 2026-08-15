@@ -27,7 +27,6 @@ pub mod filesystem_sync;
 pub mod game_build;
 pub mod geometry;
 pub mod gizmo;
-pub mod hub;
 pub mod material_editor;
 pub mod navmesh_bake;
 pub mod prefab_workflow;

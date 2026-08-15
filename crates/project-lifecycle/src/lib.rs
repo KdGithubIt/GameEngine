@@ -269,9 +269,9 @@ impl Drop for LauncherSession {
 /// Returns the underlying [`ProjectError`] or [`LifecycleError::IncompatibleEngine`].
 pub fn inspect_project(path: &Path) -> Result<ProjectRoot, LifecycleError> {
     let project = ProjectRoot::open(path)?;
-    if project.config().engine_version != CURRENT_ENGINE_ASSOCIATION {
+    if project.engine_version() != CURRENT_ENGINE_ASSOCIATION {
         return Err(LifecycleError::IncompatibleEngine {
-            found: project.config().engine_version.clone(),
+            found: project.engine_version().to_owned(),
             expected: CURRENT_ENGINE_ASSOCIATION,
         });
     }
@@ -318,9 +318,7 @@ pub fn create_standard_project(
         let project = ProjectRoot::create(
             &staging,
             ProjectConfig {
-                project_id: ProjectId::generate(),
                 name: name.to_owned(),
-                engine_version: CURRENT_ENGINE_ASSOCIATION.to_owned(),
                 schema_version: PROJECT_SCHEMA_VERSION,
             },
         )?;
@@ -415,7 +413,7 @@ pub fn acquire_editor_project(path: &Path) -> Result<EditorLease, LifecycleError
         &state_dir.join(EDITOR_OWNER_FILE),
         &EditorOwnerMetadata {
             process_id: std::process::id(),
-            project_id: project.config().project_id.clone(),
+            project_id: project.project_id().clone(),
             canonical_project: project.path().to_path_buf(),
             acquired_unix_ms: unix_millis(),
         },
@@ -773,11 +771,8 @@ mod tests {
             create_standard_project(&final_path, "SampleGame").expect("scaffold must succeed");
 
         assert_eq!(project.config().schema_version, PROJECT_SCHEMA_VERSION);
-        assert_eq!(
-            project.config().engine_version,
-            CURRENT_ENGINE_ASSOCIATION
-        );
-        assert!(project.config().project_id.as_str().starts_with("project_"));
+        assert_eq!(project.engine_version(), CURRENT_ENGINE_ASSOCIATION);
+        assert!(project.project_id().as_str().starts_with("project_"));
         assert!(project.scenes_dir().join("main.scene.json").is_file());
         assert!(project.path().join("project_settings.json").is_file());
         assert!(project.game_dir().join("Cargo.toml").is_file());
@@ -790,8 +785,8 @@ mod tests {
         create_standard_project(&final_path, "LeaseGame").expect("scaffold must succeed");
 
         let first = acquire_editor_project(&final_path).expect("first lease must succeed");
-        let second = acquire_editor_project(&final_path).expect_err("second lease must fail");
-        assert!(matches!(second, LifecycleError::EditorAlreadyOpen(_)));
+        let second = acquire_editor_project(&final_path);
+        assert!(matches!(second, Err(LifecycleError::EditorAlreadyOpen(_))));
         drop(first);
         acquire_editor_project(&final_path).expect("lease must be released on drop");
     }
@@ -802,10 +797,10 @@ mod tests {
         let original = parent.path().join("Original");
         let moved = parent.path().join("Moved");
         let project = create_standard_project(&original, "Original").expect("scaffold must succeed");
-        let id = project.config().project_id.clone();
+        let id = project.project_id().clone();
         drop(project);
         fs::rename(&original, &moved).expect("project move must succeed");
         let reopened = inspect_project(&moved).expect("moved project must open");
-        assert_eq!(reopened.config().project_id, id);
+        assert_eq!(reopened.project_id(), &id);
     }
 }

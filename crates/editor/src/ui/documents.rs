@@ -535,9 +535,7 @@ impl EditorApp {
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| "new_project".into());
         let config = ProjectConfig {
-            project_id: engine_authoring::ProjectId::generate(),
             name,
-            engine_version: engine_project_lifecycle::CURRENT_ENGINE_ASSOCIATION.to_owned(),
             schema_version: PROJECT_SCHEMA_VERSION,
         };
         match engine_authoring::ProjectRoot::create(&folder, config) {
