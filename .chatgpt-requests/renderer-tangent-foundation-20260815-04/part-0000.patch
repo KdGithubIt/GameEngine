@@ -1,0 +1,64 @@
+diff --git a/crates/render-runtime/src/render_backend.rs b/crates/render-runtime/src/render_backend.rs
+--- a/crates/render-runtime/src/render_backend.rs
++++ b/crates/render-runtime/src/render_backend.rs
+@@ -674,19 +674,24 @@ enum BlendDraw {
+     Skinned(usize),
+ }
+ 
++struct MaterialShaderStages<'a> {
++    vertex: &'a wgpu::ShaderModule,
++    fragment: &'a wgpu::ShaderModule,
++}
++
+ fn create_material_pipeline(
+     device: &wgpu::Device,
+     label: &str,
+     layout: &wgpu::PipelineLayout,
+-    vertex_shader: &wgpu::ShaderModule,
+-    fragment_shader: &wgpu::ShaderModule,
++    shaders: MaterialShaderStages<'_>,
+     format: wgpu::TextureFormat,
+     buffers: &[wgpu::VertexBufferLayout<'_>],
+     key: MaterialPipelineKey,
+ ) -> wgpu::RenderPipeline {
+     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+         label: Some(label),
+         layout: Some(layout),
+         vertex: wgpu::VertexState {
+-            module: vertex_shader,
++            module: shaders.vertex,
+             entry_point: Some("vs_main"),
+             buffers,
+             compilation_options: Default::default(),
+         },
+         fragment: Some(wgpu::FragmentState {
+-            module: fragment_shader,
++            module: shaders.fragment,
+             entry_point: Some("fs_main"),
+             targets: &[Some(wgpu::ColorTargetState {
+@@ -2619,8 +2624,10 @@ impl RenderState {
+                     device,
+                     "Mesh material pipeline",
+                     &pipeline_layout,
+-                    &shader,
+-                    &shader,
++                    MaterialShaderStages {
++                        vertex: &shader,
++                        fragment: &shader,
++                    },
+                     format,
+                     &[
+                         Vertex::LAYOUT,
+@@ -2674,8 +2681,10 @@ impl RenderState {
+                     device,
+                     "Skinned material pipeline",
+                     &skinned_pipeline_layout,
+-                    &skinned_shader,
+-                    &shader,
++                    MaterialShaderStages {
++                        vertex: &skinned_shader,
++                        fragment: &shader,
++                    },
+                     format,
+                     &[
+                         Vertex::LAYOUT,
