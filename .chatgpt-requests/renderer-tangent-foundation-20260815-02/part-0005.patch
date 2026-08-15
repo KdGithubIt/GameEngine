@@ -1,0 +1,148 @@
+diff --git a/docs/adr/0119-tangent-space-gpu-contract-and-shared-material-fragment.md b/docs/adr/0119-tangent-space-gpu-contract-and-shared-material-fragment.md
+new file mode 100644
+--- /dev/null
++++ b/docs/adr/0119-tangent-space-gpu-contract-and-shared-material-fragment.md
+@@ -0,0 +1,143 @@
++# ADR 0119: Tangent-Space GPU Contract and Shared Material Fragment Stage
++
++Status: Accepted
++
++## Context
++
++The generic mesh IR and runtime `Mesh` already retain optional source tangents
++as `xyz` plus bitangent handedness in `w`, but the GPU renderer does not consume
++them. Both static and skinned material shaders instead reconstruct a tangent
++basis from screen-space derivatives in every fragment. That fallback is useful
++for formats that do not provide tangents, but it discards higher-quality source
++tangent frames from glTF and FBX and makes mirrored UV handedness dependent on
++the derivative reconstruction.
++
++The static and skinned WGSL modules also each contain their own complete
++StandardLit, ToonLit, shadow, normal-map, and emissive fragment implementation.
++Adding richer PBR inputs or IBL to both copies would make surface behavior drift
++between static and animated versions of the same asset.
++
++ADR 0118 establishes the renderer color-space and texture-semantics contract.
++The next material features need a stable tangent-space input and one compiled
++surface fragment implementation before new texture slots are added.
++
++## Decision
++
++### Tangent stream
++
++`Mesh::tangents` remains optional CPU-side source data and remains separate from
++`Vertex`. The material GPU path adds a dedicated tangent vertex stream using
++shader location 15:
++
++- `xyz` is the object-space tangent direction;
++- `w` is the bitangent handedness supplied by the source;
++- the stream is bound at vertex slot 2 for static material draws and slot 3 for
++  skinned material draws.
++
++Every uploaded `GpuMesh` owns a tangent buffer. When source tangents are absent,
++the buffer contains zero vectors with `w = 0`. That value is an explicit
++"tangent unavailable" marker rather than a fabricated tangent frame.
++
++Keeping the stream separate preserves the existing public `Vertex` layout,
++morph-position upload contract, shadow/outline vertex layouts, and imported
++mesh representation.
++
++### Normal-map basis selection
++
++The material fragment stage consumes the source tangent when `w` is non-zero.
++It orthogonalizes the tangent against the interpolated geometric normal,
++constructs the bitangent from `cross(normal, tangent) * handedness`, and applies
++the sampled tangent-space normal through that TBN basis.
++
++The vertex stage flips handedness when the effective model/deformation matrix
++has negative orientation. This keeps mirrored object transforms consistent with
++the source tangent convention.
++
++When no source tangent is available, the existing derivative-based TBN
++reconstruction remains the fallback. Degenerate source tangents also fall back
++rather than producing NaNs. PMX, built-in geometry, and other current sources
++that do not provide tangents therefore keep their previous normal-map behavior.
++
++A later phase may generate MikkTSpace-compatible tangents for meshes that lack
++source data. This ADR deliberately does not invent a partial or format-specific
++tangent generator merely to remove the derivative fallback.
++
++### One compiled material fragment stage
++
++The static mesh shader module owns the authoritative material `fs_main` and its
++StandardLit/ToonLit/shadow/normal-map helpers. Static pipelines use that module
++for both vertex and fragment stages.
++
++Skinned material pipelines use `mesh_skinned.wgsl::vs_main` only for skeletal
++vertex deformation and pair it with the same `mesh.wgsl::fs_main` fragment
++module used by static meshes. Vertex/fragment linkage is the generic location
++contract, including the tangent frame at location 8.
++
++This makes future material, PBR, IBL, shadow-response, and ToonLit work a single
++compiled fragment implementation. Skinning remains a vertex-deformation
++responsibility rather than a second surface-shading implementation.
++
++The legacy fragment functions still present in `mesh_skinned.wgsl` are not
++selected by any material pipeline and are no longer authoritative. They may be
++removed in a later source-layout cleanup once WGSL source composition is
++restructured without changing runtime behavior.
++
++### Pass boundaries
++
++Shadow and Outline remain independent passes and do not bind the tangent stream.
++Only material pipelines require it. No MMD, PMX, glTF, or FBX-specific render
++path is introduced.
++
++## Compatibility
++
++- No serialized material schema changes.
++- No Stable ID changes.
++- No public `Vertex` layout change.
++- Existing meshes without tangents continue using derivative TBN reconstruction.
++- glTF/FBX meshes that already retain source tangents begin using those tangents
++  in material normal mapping.
++- PMX behavior remains generic and unchanged when no source tangents exist.
++- Static and skinned meshes use the same compiled material fragment stage.
++
++## Rejected alternatives
++
++### Add tangent directly to `Vertex`
++
++Rejected for this phase. `Vertex` is used by built-in meshes, import conversion,
++morph-position uploads, outline passes, and public runtime APIs. A separate
++stream adds the needed GPU contract without coupling unrelated passes to a
++layout expansion.
++
++### Keep derivative TBN for every mesh
++
++Rejected. It throws away already-retained source tangent frames and prevents the
++renderer from honoring tangent-space conventions authored by source tools.
++
++### Add format-specific tangent handling in glTF, FBX, or PMX render paths
++
++Rejected. Tangent-space interpretation is a renderer mesh/material contract.
++Format parsers only normalize and retain source data.
++
++### Continue compiling separate static and skinned material fragments
++
++Rejected. Richer material and lighting work would need to be implemented twice
++and could produce visible drift between static and animated instances of the
++same material.
++
++## Verification
++
++- Unit tests verify the tangent vertex layout and the explicit missing-tangent
++  sentinel.
++- Existing mesh validation continues to reject tangent-count mismatches.
++- Existing importer tests continue to verify retained source tangents.
++- The renderer's GPU material-pipeline matrix validation must accept static and
++  skinned pipelines with their new tangent stream and cross-module fragment
++  linkage.
++
++## Follow-up
++
++The next renderer-foundation step should add the generic Metallic/Roughness and
++Occlusion/AO material texture contract plus normal scale/occlusion strength,
++then add MikkTSpace-compatible tangent generation for assets that require normal
++mapping but do not provide source tangents. Those inputs should target this
++single material fragment stage before IBL is introduced.
