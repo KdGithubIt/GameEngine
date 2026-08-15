@@ -1,0 +1,55 @@
++the current project schema and a compatible current engine association.
++
++A project location is the pair of logical identity and canonical root. Copies
++or independent working trees can therefore share a logical `ProjectId` while
++remaining distinct locations for locking and process ownership. User-state
++storage MUST distinguish simultaneously present locations when necessary and
++MUST NOT assume that `ProjectId` alone proves filesystem identity.
++
++### 6. Separate low-level project creation from the standard scaffold
++
++`ProjectRoot::create` remains the low-level operation that establishes the
++canonical project root contract. It does not absorb Launcher UI or template
++policy.
++
++The lifecycle layer coordinates the higher-level **standard GameEngine project
++scaffold**. The standard scaffold is the single reusable creation path for the
++Launcher and other application-level creators and includes the product policy
++needed for a newly created project to be editor-ready, such as project
++identity, standard directories, game-project initialization, project settings,
++and starter/template authoring content.
++
++Creation is transactional from the user's point of view. The lifecycle creates
++and validates the complete scaffold in a staging location and publishes the
++final project location only after all required creation steps succeed. A failed
++creation MUST NOT be presented as a valid new project and SHOULD clean up its
++staging data while preserving actionable diagnostics.
++
++Starter-scene or template policy MUST NOT be duplicated in Launcher and Editor
++GUI code.
++
++### 7. Split application preferences from project-scoped editor workspace state
++
++Recent projects and the last selected project are Launcher/application user
++state. They are not authoring data and no longer belong to Editor workspace
++preferences. This amends ADR 0023 decision 4 only with respect to which UI
++application owns those preferences; they still MUST NOT enter
++`engine-authoring` or canonical project files.
++
++Editor workspace state such as open documents, panel/layout state, selected
++asset folders, and other presentation/session restoration data is stored as
++per-project user data outside the project working tree. `ProjectId` is its
++logical identity anchor, while storage must also handle multiple simultaneous
++locations for the same ID without write collisions.
++
++No recent-project, window, selection, or workspace-restoration state is added
++to `project.json` or `project_settings.json`.
++
++### 8. Keep compatibility failure explicit and current-format-only
++
++This ADR does not restore compatibility readers or automatic migrations removed
++by ADR 0115. The Launcher owns the user-facing detection and explanation of an
++incompatible project, but normal project open does not silently rewrite it.
++
++When the `project.json` identity revision required by this ADR is implemented,
++its schema version is bumped and all repository-owned current projects,
