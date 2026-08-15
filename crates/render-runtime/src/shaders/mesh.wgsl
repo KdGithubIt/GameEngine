@@ -19,6 +19,7 @@ struct MaterialUniform {
     toon_rim: vec4<f32>,         // rgb=color, w=intensity
     toon_params: vec4<f32>,      // x=rim power, y=sphere blend, z=coordinates, w=has sphere
     outline: vec4<f32>,
+    pbr_params: vec4<f32>,       // x=normal scale, y=occlusion strength
 }
 
 @group(0) @binding(0) var<uniform> camera: CameraUniform;
@@ -29,6 +30,8 @@ struct MaterialUniform {
 @group(1) @binding(4) var t_sphere: texture_2d<f32>;
 @group(1) @binding(5) var s_material: sampler;
 @group(1) @binding(6) var<uniform> material: MaterialUniform;
+@group(1) @binding(7) var t_metallic_roughness: texture_2d<f32>;
+@group(1) @binding(8) var t_occlusion: texture_2d<f32>;
 @group(2) @binding(0) var<uniform> light: LightUniform;
 @group(2) @binding(1) var<uniform> shadow: ShadowUniform;
 @group(2) @binding(2) var t_shadow: texture_depth_2d_array;
@@ -114,7 +117,10 @@ fn mapped_normal(
     uv: vec2<f32>,
 ) -> vec3<f32> {
     let normal = normalize(geometric_normal);
-    let tangent_normal = textureSample(t_normal, s_material, uv).xyz * 2.0 - vec3<f32>(1.0);
+    var tangent_normal = textureSample(t_normal, s_material, uv).xyz * 2.0 - vec3<f32>(1.0);
+    tangent_normal.x *= material.pbr_params.x;
+    tangent_normal.y *= material.pbr_params.x;
+    tangent_normal = normalize(tangent_normal);
     if (abs(tangent_frame.w) > 0.5) {
         let orthogonal = tangent_frame.xyz - normal * dot(normal, tangent_frame.xyz);
         if (dot(orthogonal, orthogonal) > 0.000001) {
@@ -133,7 +139,7 @@ fn mapped_normal(
     return normalize(mat3x3<f32>(tangent, bitangent, normal) * tangent_normal);
 }
 
-fn standard_lit(base: vec3<f32>, n: vec3<f32>, l: vec3<f32>, v: vec3<f32>, surface: vec4<f32>, visibility: f32) -> vec3<f32> {
+fn standard_lit(base: vec3<f32>, n: vec3<f32>, l: vec3<f32>, v: vec3<f32>, surface: vec4<f32>, visibility: f32, occlusion: f32) -> vec3<f32> {
     let h = normalize(l + v);
     let ndl = max(dot(n, l), 0.0); let ndv = max(dot(n, v), 0.0001);
     let ndh = max(dot(n, h), 0.0); let vdh = max(dot(v, h), 0.0);
@@ -149,7 +155,8 @@ fn standard_lit(base: vec3<f32>, n: vec3<f32>, l: vec3<f32>, v: vec3<f32>, surfa
     let diffuse_weight = (vec3<f32>(1.0) - fresnel) * (1.0 - metallic);
     let direct = (diffuse_weight * base / 3.14159265 + specular)
         * light.dir_color * light.dir_intensity * visibility * ndl;
-    return light.ambient_color * light.ambient_intensity * base * (1.0 - metallic) + direct;
+    let indirect = light.ambient_color * light.ambient_intensity * base * (1.0 - metallic) * occlusion;
+    return indirect + direct;
 }
 
 fn toon_lit(base: vec3<f32>, n: vec3<f32>, l: vec3<f32>, v: vec3<f32>, additional_uv: vec2<f32>, visibility: f32) -> vec3<f32> {
@@ -184,11 +191,20 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     if (alpha_mode > 0.5 && alpha_mode < 1.5 && base_color.a < input.surface.z) { discard; }
     let n = mapped_normal(input.world_position, input.world_normal, input.world_tangent, input.uv);
     let l = normalize(-light.dir_direction); let v = normalize(camera.world_position - input.world_position);
+    let metallic_roughness = textureSample(t_metallic_roughness, s_material, input.uv);
+    let pbr_surface = vec4<f32>(
+        input.surface.x * metallic_roughness.g,
+        input.surface.y * metallic_roughness.b,
+        input.surface.z,
+        input.surface.w,
+    );
+    let occlusion_sample = textureSample(t_occlusion, s_material, input.uv).r;
+    let occlusion = mix(1.0, occlusion_sample, clamp(material.pbr_params.y, 0.0, 1.0));
     let visibility = shadow_visibility(input.world_position, n);
     let model = input.emissive_and_model.w;
     var shaded = base_color.rgb;
     if (model < 0.5) {
-        shaded = standard_lit(base_color.rgb, n, l, v, input.surface, visibility);
+        shaded = standard_lit(base_color.rgb, n, l, v, pbr_surface, visibility, occlusion);
     } else if (model < 1.5) {
         shaded = toon_lit(base_color.rgb, n, l, v, input.additional_uv, visibility);
     }
