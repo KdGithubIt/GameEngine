@@ -1,0 +1,19 @@
+diff --git a/crates/editor/src/ui/tests.rs b/crates/editor/src/ui/tests.rs
+--- a/crates/editor/src/ui/tests.rs
++++ b/crates/editor/src/ui/tests.rs
+@@ -1765,7 +1765,7 @@
+         .bindings
+         .get_mut(&slot)
+         .expect("the test binding must exist")
+-        .clip = motion_source.clone();
++        .clip = engine_authoring::MotionSourceRef::native(motion_source.clone());
+@@ -1777,6 +1777,6 @@
+         .bindings
+         .get_mut(&slot)
+         .expect("the test binding must exist");
+-    binding.clip = primary_clip;
+-    binding.overlays = vec![motion_source];
++    binding.clip = engine_authoring::MotionSourceRef::native(primary_clip);
++    binding.overlays = vec![engine_authoring::MotionSourceRef::native(motion_source)];
+ 
+     let overlay_error =
