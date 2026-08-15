@@ -727,6 +727,17 @@ fn create_material_pipeline(
     })
 }
 
+/// Declares how one material texture slot interprets stored RGBA8 values.
+///
+/// Color textures are stored with the sRGB transfer function and decode to
+/// scene-linear RGB when sampled. Numeric/vector data textures must bypass
+/// that transfer function.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TextureSampleEncoding {
+    SrgbColor,
+    LinearData,
+}
+
 struct CachedDecodedTexture {
     source: Weak<DecodedTexture>,
     texture: Arc<Texture>,
@@ -2035,7 +2046,7 @@ impl WorldRenderer {
             material.texture.as_ref(),
             material.pending_texture.as_ref(),
             base_fallback,
-            false,
+            TextureSampleEncoding::SrgbColor,
         );
         let normal = self.resolve_texture_slot(
             device,
@@ -2043,7 +2054,7 @@ impl WorldRenderer {
             material.normal_texture.as_ref(),
             material.pending_normal_texture.as_ref(),
             normal_fallback,
-            true,
+            TextureSampleEncoding::LinearData,
         );
         let emissive = self.resolve_texture_slot(
             device,
@@ -2051,7 +2062,7 @@ impl WorldRenderer {
             material.emissive_texture.as_ref(),
             material.pending_emissive_texture.as_ref(),
             emissive_fallback,
-            false,
+            TextureSampleEncoding::SrgbColor,
         );
         let ramp = self.resolve_texture_slot(
             device,
@@ -2059,7 +2070,7 @@ impl WorldRenderer {
             material.toon.ramp_texture.as_ref(),
             material.toon.pending_ramp_texture.as_ref(),
             Arc::clone(&self.render.white_texture),
-            false,
+            TextureSampleEncoding::SrgbColor,
         );
         let sphere = self.resolve_texture_slot(
             device,
@@ -2067,7 +2078,7 @@ impl WorldRenderer {
             material.toon.sphere_texture.as_ref(),
             material.toon.pending_sphere_texture.as_ref(),
             Arc::clone(&self.render.white_texture),
-            false,
+            TextureSampleEncoding::SrgbColor,
         );
         let uniform = MaterialUniformData::from_material(material);
         let key = MaterialBindGroupKey {
@@ -2118,7 +2129,7 @@ impl WorldRenderer {
         texture: Option<&Arc<Texture>>,
         pending: Option<&Arc<DecodedTexture>>,
         fallback: Arc<Texture>,
-        linear: bool,
+        encoding: TextureSampleEncoding,
     ) -> Arc<Texture> {
         if let Some(texture) = texture {
             return Arc::clone(texture);
@@ -2126,17 +2137,17 @@ impl WorldRenderer {
         let Some(pending) = pending else {
             return fallback;
         };
-        let cache = if linear {
-            &mut self.decoded_linear_cache
-        } else {
-            &mut self.decoded_srgb_cache
+        let cache = match encoding {
+            TextureSampleEncoding::SrgbColor => &mut self.decoded_srgb_cache,
+            TextureSampleEncoding::LinearData => &mut self.decoded_linear_cache,
         };
         let key = Arc::as_ptr(pending) as usize;
         if let std::collections::hash_map::Entry::Vacant(entry) = cache.entry(key) {
-            let uploaded = if linear {
-                Texture::from_decoded_linear(device, queue, pending)
-            } else {
-                Texture::from_decoded(device, queue, pending)
+            let uploaded = match encoding {
+                TextureSampleEncoding::SrgbColor => Texture::from_decoded(device, queue, pending),
+                TextureSampleEncoding::LinearData => {
+                    Texture::from_decoded_linear(device, queue, pending)
+                }
             };
             let Ok(texture) = uploaded else {
                 return fallback;
@@ -3344,8 +3355,8 @@ pub(crate) fn upload_pending_meshes(
 
 /// Raw uniform data mirroring the WGSL `PostProcessUniforms` struct.
 ///
-/// Must be `repr(C)`, 16-byte aligned, and 32 bytes total so wgpu's minimum
-/// uniform buffer alignment is satisfied.
+/// Must be `repr(C)`, 16-byte aligned, and 64 bytes total so the Rust/WGSL
+/// layouts remain identical.
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 pub(crate) struct PostProcessUniformData {
@@ -3362,13 +3373,13 @@ pub(crate) struct PostProcessUniformData {
     pub grading_tint_r: f32,
     pub grading_tint_g: f32,
     pub grading_tint_b: f32,
-    pub _pad0: f32,
+    pub output_srgb_encode: u32,
     pub _pad1: f32,
     pub _pad2: f32,
 }
 
 impl PostProcessUniformData {
-    pub(crate) fn from_settings(s: &PostProcessSettings) -> Self {
+    pub(crate) fn from_settings(s: &PostProcessSettings, output_srgb_encode: bool) -> Self {
         Self {
             exposure: if s.enabled { s.exposure } else { 1.0 },
             tone_map_op: if s.enabled && s.tone_map == ToneMapOperator::Reinhard {
@@ -3387,11 +3398,15 @@ impl PostProcessUniformData {
             grading_tint_r: s.color_grading.tint[0],
             grading_tint_g: s.color_grading.tint[1],
             grading_tint_b: s.color_grading.tint[2],
-            _pad0: 0.0,
+            output_srgb_encode: u32::from(output_srgb_encode),
             _pad1: 0.0,
             _pad2: 0.0,
         }
     }
+}
+
+fn shader_encodes_srgb_output(swapchain_format: wgpu::TextureFormat) -> bool {
+    !swapchain_format.is_srgb()
 }
 
 /// Fullscreen post-processing pass: applies tone mapping and optional bloom.
@@ -3404,6 +3419,7 @@ pub(crate) struct ToneMapPass {
     bind_group: wgpu::BindGroup,
     uniform_buffer: wgpu::Buffer,
     sampler: wgpu::Sampler,
+    output_srgb_encode: bool,
 }
 
 impl ToneMapPass {
@@ -3423,7 +3439,11 @@ impl ToneMapPass {
             ..Default::default()
         });
 
-        let uniform_data = PostProcessUniformData::from_settings(&PostProcessSettings::default());
+        let output_srgb_encode = shader_encodes_srgb_output(swapchain_format);
+        let uniform_data = PostProcessUniformData::from_settings(
+            &PostProcessSettings::default(),
+            output_srgb_encode,
+        );
         let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("PostProcess uniform"),
             size: std::mem::size_of::<PostProcessUniformData>() as u64,
@@ -3520,6 +3540,7 @@ impl ToneMapPass {
             bind_group,
             uniform_buffer,
             sampler,
+            output_srgb_encode,
         })
     }
 
@@ -3573,7 +3594,8 @@ impl ToneMapPass {
         swapchain_view: &wgpu::TextureView,
         settings: &PostProcessSettings,
     ) {
-        let uniform_data = PostProcessUniformData::from_settings(settings);
+        let uniform_data =
+            PostProcessUniformData::from_settings(settings, self.output_srgb_encode);
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniform_data));
 
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -3607,6 +3629,36 @@ impl ToneMapPass {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn material_texture_slots_distinguish_color_from_numeric_data() {
+        assert_ne!(
+            TextureSampleEncoding::SrgbColor,
+            TextureSampleEncoding::LinearData
+        );
+    }
+
+    #[test]
+    fn output_transfer_is_applied_exactly_once() {
+        assert!(!shader_encodes_srgb_output(
+            wgpu::TextureFormat::Rgba8UnormSrgb
+        ));
+        assert!(!shader_encodes_srgb_output(
+            wgpu::TextureFormat::Bgra8UnormSrgb
+        ));
+        assert!(shader_encodes_srgb_output(wgpu::TextureFormat::Rgba8Unorm));
+        assert!(shader_encodes_srgb_output(wgpu::TextureFormat::Bgra8Unorm));
+
+        let settings = PostProcessSettings::default();
+        assert_eq!(
+            PostProcessUniformData::from_settings(&settings, false).output_srgb_encode,
+            0
+        );
+        assert_eq!(
+            PostProcessUniformData::from_settings(&settings, true).output_srgb_encode,
+            1
+        );
+    }
 
     #[test]
     fn main_pass_msaa_policy_matches_target_contract() {
