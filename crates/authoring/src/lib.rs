@@ -111,7 +111,7 @@ pub use graph_view::{
 };
 pub use id::{
     AssetId, ComponentTypeId, ComponentTypeIdError, EdgeId, EntityId, GraphId, GroupId, IdError,
-    MotionSlotId, NodeId, PortId, StableId,
+    MotionSlotId, NodeId, PortId, ProjectId, StableId,
 };
 pub use load::{load_scene_from_json, SceneLoadError};
 pub use material_asset::{

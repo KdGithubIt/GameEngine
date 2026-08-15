@@ -558,6 +558,7 @@ impl Animator {
     /// ([`Animator::clip`] / [`Animator::time`]); `1.0 - weight` applies to
     /// this fade source. See [`animation_system`]'s crossfade rustdoc for the
     /// full composition rule this mirrors.
+    #[cfg(feature = "physics")]
     pub(crate) fn fade_source(&self) -> Option<(Handle<AnimationClip>, f32)> {
         self.fade.as_ref().map(|fade| (fade.clip, fade.time))
     }

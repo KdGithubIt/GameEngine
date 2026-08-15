@@ -1391,6 +1391,7 @@ dependencies = [
  "eframe",
  "engine",
  "engine-authoring",
+ "engine-project-lifecycle",
  "open",
  "png",
  "pollster 0.3.0",
@@ -1464,6 +1465,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "engine-launcher"
+version = "0.1.0"
+dependencies = [
+ "dirs",
+ "eframe",
+ "engine-project-lifecycle",
+ "rfd",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "engine-mcp"
 version = "0.1.0"
 dependencies = [
@@ -1497,6 +1510,16 @@ dependencies = [
  "log",
  "rodio",
  "winit",
+]
+
+[[package]]
+name = "engine-project-lifecycle"
+version = "0.1.0"
+dependencies = [
+ "engine-authoring",
+ "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]

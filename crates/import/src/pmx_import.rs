@@ -716,9 +716,24 @@ fn append_shared_toon_textures(
     selector_of
 }
 
+fn linear_to_srgb_u8(linear: f32) -> u8 {
+    let linear = linear.clamp(0.0, 1.0);
+    let encoded = if linear <= 0.003_130_8 {
+        linear * 12.92
+    } else {
+        1.055 * linear.powf(1.0 / 2.4) - 0.055
+    };
+    (encoded.clamp(0.0, 1.0) * 255.0).round() as u8
+}
+
 /// Procedurally builds one approximation of a MikuMikuDance shared toon ramp
 /// (see [`append_shared_toon_textures`]). `shared_toon_index` is PMX's
 /// zero-based selector (`0` names the conventional `toon01.bmp`).
+///
+/// The palette below is authored in the engine's scene-linear color space.
+/// [`IrTexture::rgba8`] is later uploaded through the toon-ramp color slot,
+/// which is sRGB-decoded by the GPU, so generated RGB bytes must carry the
+/// sRGB source transfer function just like decoded PNG/BMP color textures.
 fn builtin_toon_texture(shared_toon_index: u8, selector: usize) -> IrTexture {
     const WIDTH: u32 = 4;
     const HEIGHT: u32 = 64;
@@ -750,9 +765,9 @@ fn builtin_toon_texture(shared_toon_index: u8, selector: usize) -> IrTexture {
             (1.0 + (shade[2] - 1.0) * t).clamp(0.0, 1.0),
         ];
         for _ in 0..WIDTH {
-            rgba8.push((pixel[0] * 255.0).round() as u8);
-            rgba8.push((pixel[1] * 255.0).round() as u8);
-            rgba8.push((pixel[2] * 255.0).round() as u8);
+            rgba8.push(linear_to_srgb_u8(pixel[0]));
+            rgba8.push(linear_to_srgb_u8(pixel[1]));
+            rgba8.push(linear_to_srgb_u8(pixel[2]));
             rgba8.push(255);
         }
     }
@@ -2046,6 +2061,15 @@ pub(crate) mod tests {
         assert_eq!(selector_of[&5], 10 + 5);
         assert!(textures.iter().any(|texture| texture.source_index == 12));
         assert!(textures.iter().any(|texture| texture.source_index == 15));
+    }
+
+    #[test]
+    fn synthesized_shared_toon_ramp_stores_srgb_encoded_color_bytes() {
+        assert_eq!(linear_to_srgb_u8(0.5), 188);
+
+        let texture = builtin_toon_texture(2, 0);
+        let bottom = &texture.rgba8[texture.rgba8.len() - 4..];
+        assert_eq!(bottom, &[196, 206, 229, 255]);
     }
 
     #[test]

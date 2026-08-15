@@ -174,6 +174,9 @@ canonical specification MUST also update
 | [0114](0114-heavy-third-party-dependency-isolation.md) | Heavy Third-Party Dependency Isolation |
 | [0115](0115-current-format-only-baseline.md) | Current-Format-Only Baseline |
 | [0116](0116-animation-events-owned-by-animation-set-bindings.md) | Animation Events Owned by Animation Set Bindings |
+| [0117](0117-project-first-launcher-and-editor-application-lifecycle.md) | Project-First Launcher and Editor Application Lifecycle |
+| [0118](0118-rendering-color-space-and-texture-semantics.md) | Rendering Color-Space and Texture-Semantics Contract |
+| [0119](0119-tangent-space-gpu-contract-and-shared-material-fragment.md) | Tangent-Space GPU Contract and Shared Material Fragment Stage |
 
 ## Phase 41+ ADR Targets
 

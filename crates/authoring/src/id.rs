@@ -191,6 +191,15 @@ macro_rules! define_id {
 }
 
 define_id!(
+    /// A stable logical identifier for one project.
+    ///
+    /// Format: `project_<ULID>`. It survives project directory moves and is
+    /// distinct from the canonical directory used for editor-process locking.
+    ProjectId,
+    "project"
+);
+
+define_id!(
     /// A project-wide stable identifier for an authoring entity.
     ///
     /// Format: `entity_<ULID>`. Never changes when the entity is renamed.
