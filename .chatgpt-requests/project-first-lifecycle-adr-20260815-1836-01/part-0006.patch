@@ -1,0 +1,19 @@
++  project-lifecycle contracts rather than duplicating them.
+ - `cli` and `mcp` MUST be adapters. They MUST NOT contain unique editing logic.
+ - Graph domains MUST NOT duplicate the domain-neutral graph storage model.
+ 
+@@ -197,6 +225,7 @@ All persisted authoring objects MUST use stable identifiers.
+ ```rust
+ struct StableId(String);
++struct ProjectId(StableId);
+ struct EntityId(StableId);
+ struct GraphId(StableId);
+ struct NodeId(StableId);
+@@ -210,6 +239,7 @@ identifies the object kind. ULID provides monotonic, time-ordered uniqueness
+ 
+ | Identifier  | Prefix    | Uniqueness scope     |
+ | ----------- | --------- | -------------------- |
++| `ProjectId` | `project_` | Logical project      |
+ | `EntityId`  | `entity_` | Project-wide         |
+ | `AssetId`   | `asset_`  | Project-wide         |
+ | `GraphId`   | `graph_`  | Project-wide         |
