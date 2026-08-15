@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "request_id": "renderer-pbr-standardlit-shader-20260816-r1",
+  "target_branch": "chatgpt/gameengine-render-pbr-material-foundation",
+  "expected_head_sha": "e84db7f9c4a590f2f83c29354242f8f79ac32e63",
+  "patch_parts": ["part-0000.patch"],
+  "commit_message": "Renderer: apply PBR texture inputs in StandardLit",
+  "pr_title": "Renderer: add PBR material texture contract",
+  "pr_body": "Phase 2B renderer foundation. StandardLit now consumes packed roughness/metallic from G/B, ambient occlusion from R, and normal scale in tangent space. AO modulates only the indirect ambient term; direct lighting, ToonLit, Unlit, emissive output, and the independent outline pass remain unchanged."
+}
