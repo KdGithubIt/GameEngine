@@ -1,0 +1,31 @@
++    project.ok_or_else(|| "Engine Editor requires `--project <path>`".to_owned())
++}
++
++fn run() -> Result<(), String> {
++    let project = project_argument()?;
++    let project_lease = acquire_editor_project(&project).map_err(|error| error.to_string())?;
+     let options = eframe::NativeOptions {
+         viewport: eframe::egui::ViewportBuilder::default()
+@@ -135,7 +176,20 @@ fn main() -> eframe::Result {
+         options,
+-        Box::new(|creation_context| {
++        Box::new(move |creation_context| {
+             engine_editor::install_editor_fonts(&creation_context.egui_ctx);
+-            Ok(Box::new(EditorShell::default()))
++            Ok(Box::new(
++                EditorShell::new(project_lease)
++                    .map_err(|error| -> Box<dyn std::error::Error + Send + Sync> {
++                        Box::new(std::io::Error::other(error))
++                    })?,
++            ))
+         }),
+     )
++    .map_err(|error| error.to_string())
++}
++
++fn main() {
++    if let Err(error) = run() {
++        eprintln!("[editor.startup_failed] {error}");
++        std::process::exit(1);
++    }
+ }
