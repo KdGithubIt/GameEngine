@@ -1,0 +1,189 @@
++fn sibling_executable(name: &str) -> Result<PathBuf, LifecycleError> {
++    let current = std::env::current_exe().map_err(|source| LifecycleError::Io {
++        path: PathBuf::from("<current executable>"),
++        source,
++    })?;
++    let parent = current.parent().ok_or_else(|| {
++        LifecycleError::ExecutableNotFound(PathBuf::from(name))
++    })?;
++    let path = parent.join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
++    if !path.is_file() {
++        return Err(LifecycleError::ExecutableNotFound(path));
++    }
++    Ok(path)
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn standard_scaffold_is_current_and_editor_openable() {
++        let parent = tempfile::tempdir().expect("temp directory must be created");
++        let final_path = parent.path().join("SampleGame");
++        let project =
++            create_standard_project(&final_path, "SampleGame").expect("scaffold must succeed");
++
++        assert_eq!(project.config().schema_version, PROJECT_SCHEMA_VERSION);
++        assert_eq!(
++            project.config().engine_version,
++            CURRENT_ENGINE_ASSOCIATION
++        );
++        assert!(project.config().project_id.as_str().starts_with("project_"));
++        assert!(project.scenes_dir().join("main.scene.json").is_file());
++        assert!(project.path().join("project_settings.json").is_file());
++        assert!(project.game_dir().join("Cargo.toml").is_file());
++    }
++
++    #[test]
++    fn editor_lease_is_exclusive_for_one_canonical_location() {
++        let parent = tempfile::tempdir().expect("temp directory must be created");
++        let final_path = parent.path().join("LeaseGame");
++        create_standard_project(&final_path, "LeaseGame").expect("scaffold must succeed");
++
++        let first = acquire_editor_project(&final_path).expect("first lease must succeed");
++        let second = acquire_editor_project(&final_path).expect_err("second lease must fail");
++        assert!(matches!(second, LifecycleError::EditorAlreadyOpen(_)));
++        drop(first);
++        acquire_editor_project(&final_path).expect("lease must be released on drop");
++    }
++
++    #[test]
++    fn logical_project_id_survives_directory_move() {
++        let parent = tempfile::tempdir().expect("temp directory must be created");
++        let original = parent.path().join("Original");
++        let moved = parent.path().join("Moved");
++        let project = create_standard_project(&original, "Original").expect("scaffold must succeed");
++        let id = project.config().project_id.clone();
++        drop(project);
++        fs::rename(&original, &moved).expect("project move must succeed");
++        let reopened = inspect_project(&moved).expect("moved project must open");
++        assert_eq!(reopened.config().project_id, id);
++    }
++}
+diff --git a/crates/launcher/Cargo.toml b/crates/launcher/Cargo.toml
+new file mode 100644
+index 0000000..0000000
+--- /dev/null
++++ b/crates/launcher/Cargo.toml
+@@ -0,0 +1,12 @@
++[package]
++name = "engine-launcher"
++version = "0.1.0"
++edition = "2024"
++
++[dependencies]
++dirs = "5"
++eframe = "0.34.3"
++engine-project-lifecycle = { path = "../project-lifecycle" }
++rfd = "0.15"
++serde = { version = "1", features = ["derive"] }
++serde_json = "1"
+diff --git a/crates/launcher/src/main.rs b/crates/launcher/src/main.rs
+new file mode 100644
+index 0000000..0000000
+--- /dev/null
++++ b/crates/launcher/src/main.rs
+@@ -0,0 +1,299 @@
++use eframe::egui;
++use engine_project_lifecycle::{
++    acquire_launcher, create_standard_project, editor_is_ready, launch_or_activate_editor,
++    request_editor_close, EditorLaunchOutcome, LauncherRequest, LauncherSession,
++};
++use serde::{Deserialize, Serialize};
++use std::path::{Path, PathBuf};
++
++const MAX_RECENT_PROJECTS: usize = 10;
++
++#[derive(Debug, Default, Serialize, Deserialize)]
++struct LauncherPreferences {
++    recent_projects: Vec<PathBuf>,
++}
++
++impl LauncherPreferences {
++    fn load() -> Self {
++        let Some(path) = preferences_path() else {
++            return Self::default();
++        };
++        let Ok(data) = std::fs::read(path) else {
++            return Self::default();
++        };
++        let Ok(mut preferences) = serde_json::from_slice::<Self>(&data) else {
++            return Self::default();
++        };
++        preferences.recent_projects.retain(|path| path.is_dir());
++        preferences
++    }
++
++    fn save(&self) {
++        let Some(path) = preferences_path() else {
++            return;
++        };
++        if let Some(parent) = path.parent() {
++            let _ = std::fs::create_dir_all(parent);
++        }
++        if let Ok(text) = serde_json::to_string_pretty(self) {
++            let _ = std::fs::write(path, text);
++        }
++    }
++
++    fn push_recent(&mut self, path: &Path) {
++        self.preferences.retain(|candidate| candidate != path);
++        self.recent_projects.insert(0, path.to_path_buf());
++        self.recent_projects.truncate(MAX_RECENT_PROJECTS);
++        self.save();
++    }
++}
++
++fn preferences_path() -> Option<PathBuf> {
++    dirs::data_local_dir().map(|root| root.join("engine_launcher").join("preferences.json"))
++}
++
++struct PendingSwitch {
++    source: PathBuf,
++    target: PathBuf,
++}
++
++struct LauncherApp {
++    session: LauncherSession,
++    preferences: LauncherPreferences,
++    new_project_name: String,
++    status: Option<String>,
++    switch_from: Option<PathBuf>,
++    pending_switch: Option<PendingSwitch>,
++}
++
++impl LauncherApp {
++    fn new(session: LauncherSession) -> Self {
++        Self {
++            session,
++            preferences: LauncherPreferences::load(),
++            new_project_name: "NewGame".to_owned(),
++            status: None,
++            switch_from: None,
++            pending_switch: None,
++        }
++    }
++
++    fn apply_request(&mut self, request: LauncherRequest, context: &egui::Context) {
++        self.switch_from = request.switch_from;
++        context.send_viewport_cmd(egui::ViewportCommand::Focus);
++    }
++
++    fn open_project(&mut self, path: PathBuf) {
++        match launch_or_activate_editor(&path) {
++            Ok(launch) => {
++                self.preferences.push_recent(&launch.canonical_project);
++                let verb = match launch.outcome {
++                    EditorLaunchOutcome::Spawned => "Started",
++                    EditorLaunchOutcome::Activated => "Activated",
++                };
++                self.status = Some(format!(
++                    "{verb} Editor for {}",
++                    launch.canonical_project.display()
++                ));
++
++                if let Some(source) = self.switch_from.take()
++                    && source != launch.canonical_project
++                {
++                    self.pending_switch = Some(PendingSwitch {
