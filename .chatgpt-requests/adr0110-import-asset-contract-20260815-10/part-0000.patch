@@ -1,0 +1,85 @@
+diff --git a/crates/assets/src/asset.rs b/crates/assets/src/asset.rs
+--- a/crates/assets/src/asset.rs
++++ b/crates/assets/src/asset.rs
+@@ -438,4 +438,6 @@ pub enum ImportedSubAssetKind {
+     /// Skeletal animation clip.
+     Animation,
++    /// Skeleton-independent humanoid motion derived from a Native animation (ADR 0110).
++    HumanoidMotion,
+     /// Named vertex or material deformation.
+     Morph,
+@@ -452,5 +454,6 @@ impl ImportedSubAssetKind {
+             Self::Skeleton => "skeleton",
+             Self::Skin => "skin",
+             Self::Animation => "animation",
++            Self::HumanoidMotion => "humanoid_motion",
+             Self::Morph => "morph",
+             Self::RigidBodyRig => "rigidbodyrig",
+@@ -476,7 +479,14 @@ pub fn imported_motion_sub_asset_id(
+     AssetId::derive(
+         motion_source,
+         &format!("animation:{}:{index}", model_source.as_str()),
+     )
+ }
+ 
++/// Derives the stable skeleton-independent Humanoid variant nested under a Native clip.
++///
++/// Basing the ID on the Native clip keeps a logical animation's variants grouped by identity.
++pub fn imported_humanoid_motion_sub_asset_id(native_clip: &AssetId) -> AssetId {
++    AssetId::derive(native_clip, "humanoid")
++}
++
+ /// Stable metadata exposed to asset pickers after import or reimport.
+@@ -496,4 +506,36 @@ pub struct ImportedSubAsset {
+     pub target_model_source: Option<String>,
+ }
+ 
++fn expected_imported_sub_asset_id(
++    source_id: &AssetId,
++    sub_asset: &ImportedSubAsset,
++) -> Result<AssetId, AssetManifestError> {
++    let native = if let Some(target) = &sub_asset.target_model_source {
++        let target_id = AssetId::from_stable_id(engine_authoring::StableId::new(target))
++            .map_err(|source| AssetManifestError::InvalidAssetId {
++                id: target.clone(),
++                source,
++            })?;
++        imported_motion_sub_asset_id(source_id, &target_id, sub_asset.index as usize)
++    } else {
++        imported_sub_asset_id(
++            source_id,
++            ImportedSubAssetKind::Animation,
++            sub_asset.index as usize,
++        )
++    };
++
++    if sub_asset.kind == ImportedSubAssetKind::HumanoidMotion {
++        Ok(imported_humanoid_motion_sub_asset_id(&native))
++    } else if sub_asset.target_model_source.is_some() {
++        Ok(native)
++    } else {
++        Ok(imported_sub_asset_id(
++            source_id,
++            sub_asset.kind,
++            sub_asset.index as usize,
++        ))
++    }
++}
++
+ fn is_default<T: Default + PartialEq>(value: &T) -> bool {
+@@ -690,14 +732,5 @@ impl AssetManifest {
+             let asset_id = AssetId::from_stable_id(stable)
+                 .map_err(|source| AssetManifestError::InvalidAssetId { id: id_str, source })?;
+             for sub_asset in &raw_entry.import_settings.sub_assets {
+-                let expected = if let Some(target) = &sub_asset.target_model_source {
+-                    let target_id = AssetId::from_stable_id(engine_authoring::StableId::new(target))
+-                        .map_err(|source| AssetManifestError::InvalidAssetId {
+-                            id: target.clone(),
+-                            source,
+-                        })?;
+-                    imported_motion_sub_asset_id(&asset_id, &target_id, sub_asset.index as usize)
+-                } else {
+-                    imported_sub_asset_id(&asset_id, sub_asset.kind, sub_asset.index as usize)
+-                };
++                let expected = expected_imported_sub_asset_id(&asset_id, sub_asset)?;
+                 if sub_asset.id != expected.as_str() {
