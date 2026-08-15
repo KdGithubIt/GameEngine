@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0110-editor-import-integration-20260815-13",
+  "target_branch": "chatgpt/gameengine-adr-0110-humanoid-motion",
+  "expected_head_sha": "01b4afaf641f0f335629ae3af85a60638324a725",
+  "patch_parts": ["part-0000.patch", "part-0001.patch", "part-0002.patch"],
+  "commit_message": "Persist ADR 0110 Humanoid import metadata",
+  "pr_title": "Implement ADR 0110 humanoid profiles and motion",
+  "pr_body": "Implements ADR 0110 in staged dispatcher requests. This stage connects the validated engine-import Humanoid catalog to the editor import pipeline, persists model-owned Humanoid profiles and portable HumanoidMotion sub-assets into import metadata, exposes engine facades for the new animation/import modules, and preserves explicitly authored profile mappings across reimport so stale mappings fail visibly instead of being silently replaced by automatic detection."
+}
