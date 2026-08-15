@@ -1,0 +1,490 @@
+diff --git a/crates/import/src/pmx_import.rs b/crates/import/src/pmx_import.rs
+index d7e2e4a..0c4faa6 100644
+--- a/crates/import/src/pmx_import.rs
++++ b/crates/import/src/pmx_import.rs
+@@ -716,9 +716,24 @@
+     selector_of
+ }
+ 
++fn linear_to_srgb_u8(linear: f32) -> u8 {
++    let linear = linear.clamp(0.0, 1.0);
++    let encoded = if linear <= 0.003_130_8 {
++        linear * 12.92
++    } else {
++        1.055 * linear.powf(1.0 / 2.4) - 0.055
++    };
++    (encoded.clamp(0.0, 1.0) * 255.0).round() as u8
++}
++
+ /// Procedurally builds one approximation of a MikuMikuDance shared toon ramp
+ /// (see [`append_shared_toon_textures`]). `shared_toon_index` is PMX's
+ /// zero-based selector (`0` names the conventional `toon01.bmp`).
++///
++/// The palette below is authored in the engine's scene-linear color space.
++/// [`IrTexture::rgba8`] is later uploaded through the toon-ramp color slot,
++/// which is sRGB-decoded by the GPU, so generated RGB bytes must carry the
++/// sRGB source transfer function just like decoded PNG/BMP color textures.
+ fn builtin_toon_texture(shared_toon_index: u8, selector: usize) -> IrTexture {
+     const WIDTH: u32 = 4;
+     const HEIGHT: u32 = 64;
+@@ -750,9 +765,9 @@ fn builtin_toon_texture(shared_toon_index: u8, selector: usize) -> IrTexture {
+             (1.0 + (shade[2] - 1.0) * t).clamp(0.0, 1.0),
+         ];
+         for _ in 0..WIDTH {
+-            rgba8.push((pixel[0] * 255.0).round() as u8);
+-            rgba8.push((pixel[1] * 255.0).round() as u8);
+-            rgba8.push((pixel[2] * 255.0).round() as u8);
++            rgba8.push(linear_to_srgb_u8(pixel[0]));
++            rgba8.push(linear_to_srgb_u8(pixel[1]));
++            rgba8.push(linear_to_srgb_u8(pixel[2]));
+             rgba8.push(255);
+         }
+     }
+@@ -2048,6 +2063,15 @@ fn parse_materials(
+         assert!(textures.iter().any(|texture| texture.source_index == 15));
+     }
+ 
++    #[test]
++    fn synthesized_shared_toon_ramp_stores_srgb_encoded_color_bytes() {
++        assert_eq!(linear_to_srgb_u8(0.5), 188);
++
++        let texture = builtin_toon_texture(2, 0);
++        let bottom = &texture.rgba8[texture.rgba8.len() - 4..];
++        assert_eq!(bottom, &[196, 206, 229, 255]);
++    }
++
+     #[test]
+     fn parse_materials_resolves_shared_toon_index_to_a_synthesized_ramp() {
+         let materials = vec![shared_toon_material("skin", 3)];
+diff --git a/crates/render-runtime/src/render_backend.rs b/crates/render-runtime/src/render_backend.rs
+index 3e74dcf..6a12640 100644
+--- a/crates/render-runtime/src/render_backend.rs
++++ b/crates/render-runtime/src/render_backend.rs
+@@ -727,6 +727,17 @@
+     })
+ }
+ 
++/// Declares how one material texture slot interprets stored RGBA8 values.
++///
++/// Color textures are stored with the sRGB transfer function and decode to
++/// scene-linear RGB when sampled. Numeric/vector data textures must bypass
++/// that transfer function.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++enum TextureSampleEncoding {
++    SrgbColor,
++    LinearData,
++}
++
+ struct CachedDecodedTexture {
+     source: Weak<DecodedTexture>,
+     texture: Arc<Texture>,
+@@ -2035,7 +2046,7 @@ struct OutlineTargets {
+             material.texture.as_ref(),
+             material.pending_texture.as_ref(),
+             base_fallback,
+-            false,
++            TextureSampleEncoding::SrgbColor,
+         );
+         let normal = self.resolve_texture_slot(
+             device,
+@@ -2043,7 +2054,7 @@ struct OutlineTargets {
+             material.normal_texture.as_ref(),
+             material.pending_normal_texture.as_ref(),
+             normal_fallback,
+-            true,
++            TextureSampleEncoding::LinearData,
+         );
+         let emissive = self.resolve_texture_slot(
+             device,
+@@ -2051,7 +2062,7 @@ struct OutlineTargets {
+             material.emissive_texture.as_ref(),
+             material.pending_emissive_texture.as_ref(),
+             emissive_fallback,
+-            false,
++            TextureSampleEncoding::SrgbColor,
+         );
+         let ramp = self.resolve_texture_slot(
+             device,
+@@ -2059,7 +2070,7 @@ struct OutlineTargets {
+             material.toon.ramp_texture.as_ref(),
+             material.toon.pending_ramp_texture.as_ref(),
+             Arc::clone(&self.render.white_texture),
+-            false,
++            TextureSampleEncoding::SrgbColor,
+         );
+         let sphere = self.resolve_texture_slot(
+             device,
+@@ -2067,7 +2078,7 @@ struct OutlineTargets {
+             material.toon.sphere_texture.as_ref(),
+             material.toon.pending_sphere_texture.as_ref(),
+             Arc::clone(&self.render.white_texture),
+-            false,
++            TextureSampleEncoding::SrgbColor,
+         );
+         let uniform = MaterialUniformData::from_material(material);
+         let key = MaterialBindGroupKey {
+@@ -2118,7 +2129,7 @@ struct OutlineTargets {
+         texture: Option<&Arc<Texture>>,
+         pending: Option<&Arc<DecodedTexture>>,
+         fallback: Arc<Texture>,
+-        linear: bool,
++        encoding: TextureSampleEncoding,
+     ) -> Arc<Texture> {
+         if let Some(texture) = texture {
+             return Arc::clone(texture);
+@@ -2126,17 +2137,17 @@ struct OutlineTargets {
+         let Some(pending) = pending else {
+             return fallback;
+         };
+-        let cache = if linear {
+-            &mut self.decoded_linear_cache
+-        } else {
+-            &mut self.decoded_srgb_cache
++        let cache = match encoding {
++            TextureSampleEncoding::SrgbColor => &mut self.decoded_srgb_cache,
++            TextureSampleEncoding::LinearData => &mut self.decoded_linear_cache,
+         };
+         let key = Arc::as_ptr(pending) as usize;
+         if let std::collections::hash_map::Entry::Vacant(entry) = cache.entry(key) {
+-            let uploaded = if linear {
+-                Texture::from_decoded_linear(device, queue, pending)
+-            } else {
+-                Texture::from_decoded(device, queue, pending)
++            let uploaded = match encoding {
++                TextureSampleEncoding::SrgbColor => Texture::from_decoded(device, queue, pending),
++                TextureSampleEncoding::LinearData => {
++                    Texture::from_decoded_linear(device, queue, pending)
++                }
+             };
+             let Ok(texture) = uploaded else {
+                 return fallback;
+@@ -3344,8 +3355,8 @@ struct OutlineTargets {
+ 
+ /// Raw uniform data mirroring the WGSL `PostProcessUniforms` struct.
+ ///
+-/// Must be `repr(C)`, 16-byte aligned, and 32 bytes total so wgpu's minimum
+-/// uniform buffer alignment is satisfied.
++/// Must be `repr(C)`, 16-byte aligned, and 64 bytes total so the Rust/WGSL
++/// layouts remain identical.
+ #[repr(C)]
+ #[derive(Clone, Copy, Pod, Zeroable)]
+ pub(crate) struct PostProcessUniformData {
+@@ -3362,13 +3373,13 @@ pub(crate) struct PostProcessUniformData {
+     pub grading_tint_r: f32,
+     pub grading_tint_g: f32,
+     pub grading_tint_b: f32,
+-    pub _pad0: f32,
++    pub output_srgb_encode: u32,
+     pub _pad1: f32,
+     pub _pad2: f32,
+ }
+ 
+ impl PostProcessUniformData {
+-    pub(crate) fn from_settings(s: &PostProcessSettings) -> Self {
++    pub(crate) fn from_settings(s: &PostProcessSettings, output_srgb_encode: bool) -> Self {
+         Self {
+             exposure: if s.enabled { s.exposure } else { 1.0 },
+             tone_map_op: if s.enabled && s.tone_map == ToneMapOperator::Reinhard {
+@@ -3387,13 +3398,17 @@ impl PostProcessUniformData {
+             grading_tint_r: s.color_grading.tint[0],
+             grading_tint_g: s.color_grading.tint[1],
+             grading_tint_b: s.color_grading.tint[2],
+-            _pad0: 0.0,
++            output_srgb_encode: u32::from(output_srgb_encode),
+             _pad1: 0.0,
+             _pad2: 0.0,
+         }
+     }
+ }
+ 
++fn shader_encodes_srgb_output(swapchain_format: wgpu::TextureFormat) -> bool {
++    !swapchain_format.is_srgb()
++}
++
+ /// Fullscreen post-processing pass: applies tone mapping and optional bloom.
+ ///
+ /// Reads an `Rgba16Float` HDR texture and outputs to the swapchain surface
+@@ -3404,6 +3419,7 @@ pub(crate) struct ToneMapPass {
+     bind_group: wgpu::BindGroup,
+     uniform_buffer: wgpu::Buffer,
+     sampler: wgpu::Sampler,
++    output_srgb_encode: bool,
+ }
+ 
+ impl ToneMapPass {
+@@ -3423,7 +3439,11 @@ impl ToneMapPass {
+             ..Default::default()
+         });
+ 
+-        let uniform_data = PostProcessUniformData::from_settings(&PostProcessSettings::default());
++        let output_srgb_encode = shader_encodes_srgb_output(swapchain_format);
++        let uniform_data = PostProcessUniformData::from_settings(
++            &PostProcessSettings::default(),
++            output_srgb_encode,
++        );
+         let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+             label: Some("PostProcess uniform"),
+             size: std::mem::size_of::<PostProcessUniformData>() as u64,
+@@ -3520,6 +3540,7 @@ impl ToneMapPass {
+             bind_group,
+             uniform_buffer,
+             sampler,
++            output_srgb_encode,
+         })
+     }
+ 
+@@ -3573,7 +3594,8 @@ impl ToneMapPass {
+         swapchain_view: &wgpu::TextureView,
+         settings: &PostProcessSettings,
+     ) {
+-        let uniform_data = PostProcessUniformData::from_settings(settings);
++        let uniform_data =
++            PostProcessUniformData::from_settings(settings, self.output_srgb_encode);
+         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniform_data));
+ 
+         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+@@ -3608,6 +3630,36 @@ impl ToneMapPass {
+ mod tests {
+     use super::*;
+ 
++    #[test]
++    fn material_texture_slots_distinguish_color_from_numeric_data() {
++        assert_ne!(
++            TextureSampleEncoding::SrgbColor,
++            TextureSampleEncoding::LinearData
++        );
++    }
++
++    #[test]
++    fn output_transfer_is_applied_exactly_once() {
++        assert!(!shader_encodes_srgb_output(
++            wgpu::TextureFormat::Rgba8UnormSrgb
++        ));
++        assert!(!shader_encodes_srgb_output(
++            wgpu::TextureFormat::Bgra8UnormSrgb
++        ));
++        assert!(shader_encodes_srgb_output(wgpu::TextureFormat::Rgba8Unorm));
++        assert!(shader_encodes_srgb_output(wgpu::TextureFormat::Bgra8Unorm));
++
++        let settings = PostProcessSettings::default();
++        assert_eq!(
++            PostProcessUniformData::from_settings(&settings, false).output_srgb_encode,
++            0
++        );
++        assert_eq!(
++            PostProcessUniformData::from_settings(&settings, true).output_srgb_encode,
++            1
++        );
++    }
++
+     #[test]
+     fn main_pass_msaa_policy_matches_target_contract() {
+         assert_eq!(MAIN_PASS_SAMPLE_COUNT, 4);
+diff --git a/crates/render-runtime/src/shaders/tonemap.wgsl b/crates/render-runtime/src/shaders/tonemap.wgsl
+index 2996e34..0c7a0b9 100644
+--- a/crates/render-runtime/src/shaders/tonemap.wgsl
++++ b/crates/render-runtime/src/shaders/tonemap.wgsl
+@@ -17,7 +17,7 @@ struct PostProcessUniforms {
+     grading_tint_r: f32,
+     grading_tint_g: f32,
+     grading_tint_b: f32,
+-    _pad0: f32,
++    output_srgb_encode: u32,
+     _pad1: f32,
+     _pad2: f32,
+ }
+@@ -78,6 +78,13 @@ fn apply_tone_map(c: vec3<f32>, op: u32) -> vec3<f32> {
+     return aces_fitted(c);
+ }
+ 
++fn linear_to_srgb(c: vec3<f32>) -> vec3<f32> {
++    let clamped = clamp(c, vec3<f32>(0.0), vec3<f32>(1.0));
++    let low = clamped * 12.92;
++    let high = vec3<f32>(1.055) * pow(clamped, vec3<f32>(1.0 / 2.4)) - vec3<f32>(0.055);
++    return select(high, low, clamped <= vec3<f32>(0.0031308));
++}
++
+ @fragment
+ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+     let hdr = textureSample(hdr_texture, hdr_sampler, in.uv).rgb;
+@@ -112,5 +119,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+         mapped = (mapped - vec3<f32>(0.5)) * max(pp.grading_contrast, 0.0) + vec3<f32>(0.5);
+         mapped = pow(max(mapped, vec3<f32>(0.0)), vec3<f32>(1.0 / max(pp.grading_gamma, 0.001)));
+     }
++    if pp.output_srgb_encode != 0u {
++        mapped = linear_to_srgb(mapped);
++    }
+     return vec4<f32>(mapped, 1.0);
+ }
+diff --git a/docs/adr/0118-rendering-color-space-and-texture-semantics.md b/docs/adr/0118-rendering-color-space-and-texture-semantics.md
+new file mode 100644
+index 0000000..83b40c2
+--- /dev/null
++++ b/docs/adr/0118-rendering-color-space-and-texture-semantics.md
+@@ -0,0 +1,154 @@
++# ADR 0118: Rendering Color-Space and Texture-Semantics Contract
++
++Status: Accepted
++
++## Context
++
++The renderer already has the core pieces of a physically coherent color path:
++color textures are uploaded through sRGB formats, normal textures use linear
++UNORM storage, material color values are represented by `LinearRgba`, scene
++lighting renders into `Rgba16Float`, and the final fullscreen pass performs
++exposure and tone mapping.
++
++Those rules are currently distributed across importer, runtime, shader, and
++surface code rather than stated as one invariant. In particular, material
++texture preparation selected sRGB versus linear sampling with an unnamed
++boolean, procedural color textures could write scene-linear values directly
++into byte storage that would later be sRGB-decoded, and the tone-map pass
++implicitly relied on an sRGB swapchain format even though the surface layer can
++fall back to a non-sRGB format.
++
++The renderer is expected to grow additional StandardLit textures, image-based
++lighting, stylized shading, temporal effects, and post-processing. Those
++features need one color-space contract before more texture slots or passes are
++added.
++
++## Decision
++
++### Scene color space
++
++The renderer uses **linear RGB scene values** for material arithmetic,
++lighting, environment contributions, emissive values, HDR intermediate
++targets, and render-pass composition.
++
++The normal SDR presentation path is:
++
++```text
++source color texture
++  -> sRGB decode
++  -> linear scene values
++  -> lighting / shading
++  -> linear Rgba16Float HDR scene color
++  -> exposure
++  -> tone mapping
++  -> artistic display-linear grading
++  -> sRGB output transfer
++  -> presentation surface
++```
++
++There must be exactly one sRGB output transfer. When the swapchain format is an
++sRGB format, the render target performs that transfer. When the selected
++presentation format does not perform sRGB encoding, the final presentation
++shader performs it explicitly.
++
++Tone mapping and the artistic `grading_gamma` control are not substitutes for
++the output transfer.
++
++### Material texture semantics
++
++Texture slots declare whether stored RGB bytes represent color or numeric data.
++
++**sRGB color textures**:
++- Base Color
++- Emissive
++- Toon Ramp
++- Sphere Map / Matcap
++
++These are uploaded with an sRGB texture format. Sampling returns linear RGB to
++the shader.
++
++**linear data textures**:
++- Normal
++- future Metallic/Roughness
++- future Occlusion/AO
++- other future masks or packed numeric channels unless their contract says
++  otherwise
++
++These bypass the sRGB transfer function.
++
++The runtime material preparation boundary must name this distinction. An
++unnamed boolean is not sufficient because future material slots must be
++reviewable against the contract.
++
++### Numeric material colors
++
++`LinearRgba` and runtime material color arrays are scene-linear values.
++Emissive RGB is linear HDR and may exceed one where the authoring contract
++allows it. Editor controls editing these values do not introduce an additional
++sRGB conversion into persisted values.
++
++### Procedural textures
++
++A producer that creates byte-backed **color** textures from scene-linear color
++values must apply the sRGB source transfer before quantizing the RGB bytes.
++Alpha remains linear coverage data. A producer of numeric/data textures must
++not apply that transfer.
++
++This rule applies to every producer. PMX shared-toon synthesis is one current
++producer affected by it; the rule itself is not MMD-specific.
++
++### HDR and pass composition
++
++The main scene color target remains `Rgba16Float` and linear. Independent
++render passes that composite into scene color, including Outline and future
++Bloom/Temporal passes, operate on values consistent with their declared
++intermediate formats and must not silently apply presentation gamma.
++
++Skybox/display background and environment-lighting source remain separate
++responsibilities even when they use the same source image in a future phase.
++
++## Consequences
++
++- Existing serialized material schema and Stable IDs do not change in this
++  phase.
++- Existing StandardLit, ToonLit, Unlit, Outline, MSAA, transparency, and CSM
++  architecture remains intact.
++- Adding Metallic/Roughness/Occlusion textures later has a defined linear-data
++  path instead of inheriting Base Color's sRGB behavior by accident.
++- Procedural color textures become consistent with file-decoded color
++  textures.
++- Non-sRGB presentation fallback no longer skips the SDR output transfer.
++- Full HDR display color management, wide-gamut output transforms, LUT color
++  management, and automatic exposure remain future work.
++
++## Rejected alternatives
++
++### Apply gamma in each material shader
++
++Rejected. Gamma is an output/encoding concern, not a lighting operation.
++Applying it before or during scene-linear lighting breaks energy relationships
++and compounds as passes are added.
++
++### Treat every RGBA texture as sRGB
++
++Rejected. Normal maps and packed PBR channels contain numeric data and are
++corrupted by sRGB decoding.
++
++### Treat every RGBA texture as linear
++
++Rejected. Ordinary authored color images are conventionally sRGB-encoded and
++would shade too dark if sampled as numeric UNORM values.
++
++### Add PMX-specific color compensation
++
++Rejected. The bug is the generic producer/consumer encoding contract. PMX
++shared-toon synthesis must obey the same color-texture rule as any future
++procedural color texture.
++
++## Follow-up
++
++The next renderer-foundation phase should extend the generic material contract
++with Metallic/Roughness/Occlusion texture semantics, promote retained mesh
++tangents and handedness into the GPU vertex contract with MikkTSpace-compatible
++fallback generation, and share surface-shading WGSL between static and skinned
++mesh paths before adding IBL and broader lighting.
+diff --git a/docs/adr/README.md b/docs/adr/README.md
+index 700bc7c..836b85c 100644
+--- a/docs/adr/README.md
++++ b/docs/adr/README.md
+@@ -175,6 +175,7 @@
+ | [0115](0115-current-format-only-baseline.md) | Current-Format-Only Baseline |
+ | [0116](0116-animation-events-owned-by-animation-set-bindings.md) | Animation Events Owned by Animation Set Bindings |
+ | [0117](0117-project-first-launcher-and-editor-application-lifecycle.md) | Project-First Launcher and Editor Application Lifecycle |
++| [0118](0118-rendering-color-space-and-texture-semantics.md) | Rendering Color-Space and Texture-Semantics Contract |
+ 
+ ## Phase 41+ ADR Targets
+ 
