@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "tags": [],
+  "layers": [
+    {
+      "index": 0,
+      "name": "Default"
+    }
+  ],
+  "input_actions": [
+    {
+      "name": "move_forward",
+      "keys": [
+        "KeyW"
+      ],
+      "mouse_buttons": [],
+      "gamepad_buttons": [],
+      "gamepad_axes": [],
+      "key_axes": []
+    },
+    {
+      "name": "move_back",
+      "keys": [
+        "KeyS"
+      ],
+      "mouse_buttons": [],
+      "gamepad_buttons": [],
+      "gamepad_axes": [],
+      "key_axes": []
+    },
+    {
+      "name": "move_left",
+      "keys": [
+        "KeyA"
+      ],
+      "mouse_buttons": [],
+      "gamepad_buttons": [],
+      "gamepad_axes": [],
+      "key_axes": []
+    },
+    {
+      "name": "move_right",
+      "keys": [
+        "KeyD"
+      ],
+      "mouse_buttons": [],
+      "gamepad_buttons": [],
+      "gamepad_axes": [],
+      "key_axes": []
+    }
+  ],
+  "start_scene": "scenes/main.scene.json"
+}
