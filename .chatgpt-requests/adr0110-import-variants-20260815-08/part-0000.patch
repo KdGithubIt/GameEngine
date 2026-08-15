@@ -1,0 +1,88 @@
+diff --git a/crates/assets/src/asset.rs b/crates/assets/src/asset.rs
+--- a/crates/assets/src/asset.rs
++++ b/crates/assets/src/asset.rs
+@@ -430,6 +430,8 @@ pub enum ImportedSubAssetKind {
+     Skin,
+     /// Skeletal animation clip.
+     Animation,
++    /// Skeleton-independent humanoid motion derived from a Native animation (ADR 0110).
++    HumanoidMotion,
+     /// Mesh-owned morph/deformation target (ADR 0097 §5).
+     Morph,
+@@ -447,6 +449,7 @@ impl ImportedSubAssetKind {
+             Self::Skeleton => "skeleton",
+             Self::Skin => "skin",
+             Self::Animation => "animation",
++            Self::HumanoidMotion => "humanoid_motion",
+             Self::Morph => "morph",
+             Self::RigidBodyRig => "rigid_body_rig",
+         }
+@@ -539,6 +542,14 @@ pub fn imported_motion_sub_asset_id(
+     AssetId::derive(&target_scope, &format!("animation:{index}"))
+ }
+ 
++/// Derives the stable skeleton-independent Humanoid variant nested under a Native clip.
++///
++/// Basing the ID on the Native clip keeps a logical animation's variants grouped by
++/// identity while remaining deterministic for both model-owned and VMD target clips.
++pub fn imported_humanoid_motion_sub_asset_id(native_clip: &AssetId) -> AssetId {
++    AssetId::derive(native_clip, "humanoid")
++}
++
+ /// Parsed in-memory asset manifest.
+ #[derive(Debug, Clone, Default)]
+ pub struct AssetManifest {
+@@ -700,7 +711,22 @@ impl AssetManifest {
+                         target_model_source,
+                     ))
+                 })?;
+-                let expected = if let Some(target_model_source) =
++                let expected = if sub_asset.kind == ImportedSubAssetKind::HumanoidMotion {
++                    let native = if let Some(target_model_source) =
++                        sub_asset.target_model_source.as_deref()
++                    {
++                        imported_motion_sub_asset_id(
++                            source_id,
++                            target_model_source,
++                            sub_asset.index as usize,
++                        )
++                    } else {
++                        imported_sub_asset_id(
++                            source_id,
++                            ImportedSubAssetKind::Animation,
++                            sub_asset.index as usize,
++                        )
++                    };
++                    imported_humanoid_motion_sub_asset_id(&native)
++                } else if let Some(target_model_source) =
+                     sub_asset.target_model_source.as_deref()
+                 {
+                     imported_motion_sub_asset_id(
+diff --git a/crates/engine/src/lib.rs b/crates/engine/src/lib.rs
+--- a/crates/engine/src/lib.rs
++++ b/crates/engine/src/lib.rs
+@@ -194,8 +194,9 @@ pub use app::App;
+ pub use asset::{
+-    imported_motion_sub_asset_id, imported_sub_asset_id, AssetLoadError, AssetManifest,
+-    AssetManifestError, AssetPathError, AssetServer, Assets, Handle, ImportSettings,
+-    ImportedSubAsset, ImportedSubAssetKind, ManifestEntry, RuntimeAssetId, SkeletonBoneRecord,
+-    SkeletonRecord, SourceFileStamp, SourceStamp,
++    imported_humanoid_motion_sub_asset_id, imported_motion_sub_asset_id, imported_sub_asset_id,
++    AssetLoadError, AssetManifest, AssetManifestError, AssetPathError, AssetServer, Assets, Handle,
++    HumanoidBone, HumanoidProfile, HumanoidProfileOrigin, ImportSettings, ImportedSubAsset,
++    ImportedSubAssetKind, ManifestEntry, RuntimeAssetId, SkeletonBoneRecord, SkeletonRecord,
++    SourceFileStamp, SourceStamp,
+ };
+@@ -252,6 +253,15 @@ pub use game_prefab::{MAX_GAME_PREFAB_EVENTS, MAX_GAME_PREFAB_REQUESTS};
+ pub use game_timer::{MAX_GAME_TIMERS, MAX_GAME_TIMER_EVENTS};
+ pub use glam;
++pub use humanoid::{
++    detect_humanoid_profile, validate_humanoid_profile, HumanoidError, HumanoidProfileDetection,
++};
++pub use humanoid_motion::{
++    bake_humanoid_motion, build_humanoid_motion, humanoid_bake_cache_key,
++    resolve_or_bake_humanoid_motion, HumanoidBakeResult, HumanoidMotion,
++    HumanoidMotionBuildResult, HumanoidMotionError, HumanoidRootMotion, HumanoidRotationChannel,
++    HUMANOID_RETARGET_ALGORITHM_VERSION,
++};
+ pub use gltf_import::{
