@@ -1,0 +1,22 @@
+diff --git a/crates/editor/src/session/undo.rs b/crates/editor/src/session/undo.rs
+--- a/crates/editor/src/session/undo.rs
++++ b/crates/editor/src/session/undo.rs
+@@ -9,7 +9,6 @@ use crate::document::CurrentDocument;
+ use engine_authoring::{AuthoringSession, Graph, GraphView, UiDocument};
+ 
+ /// Maximum number of retained undo snapshots (ADR 0018).
+-
+ const UNDO_LIMIT: usize = 100;
+ 
+ /// One snapshot entry in the session undo/redo history.
+diff --git a/crates/editor/src/session/scene_entities.rs b/crates/editor/src/session/scene_entities.rs
+--- a/crates/editor/src/session/scene_entities.rs
++++ b/crates/editor/src/session/scene_entities.rs
+@@ -205,7 +205,6 @@ impl EditorSession {
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+-    use std::collections::BTreeMap;
+ 
+     #[test]
+     fn scene_entity_create_delete_and_undo_redo_use_authoring_session() {
