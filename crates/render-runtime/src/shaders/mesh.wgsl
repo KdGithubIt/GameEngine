@@ -1,4 +1,4 @@
-// Generic static-mesh main pass: StandardLit, ToonLit, and Unlit.
+// Generic static-mesh main pass and authoritative material fragment stage.
 
 struct CameraUniform {
     view_proj: mat4x4<f32>, world_position: vec3<f32>, _pad: f32,
@@ -37,7 +37,7 @@ struct MaterialUniform {
 struct VertexInput {
     @location(0) position: vec3<f32>, @location(1) normal: vec3<f32>,
     @location(2) color: vec3<f32>, @location(3) uv: vec2<f32>,
-    @location(13) outline_and_uv: vec3<f32>,
+    @location(13) outline_and_uv: vec3<f32>, @location(15) tangent: vec4<f32>,
 }
 struct InstanceInput {
     @location(4) model_0: vec4<f32>, @location(5) model_1: vec4<f32>,
@@ -50,18 +50,25 @@ struct VertexOutput {
     @location(1) uv: vec2<f32>, @location(2) world_normal: vec3<f32>,
     @location(3) instance_color: vec4<f32>, @location(4) world_position: vec3<f32>,
     @location(5) emissive_and_model: vec4<f32>, @location(6) surface: vec4<f32>,
-    @location(7) additional_uv: vec2<f32>,
+    @location(7) additional_uv: vec2<f32>, @location(8) world_tangent: vec4<f32>,
 }
 
 @vertex
 fn vs_main(vertex: VertexInput, instance: InstanceInput) -> VertexOutput {
     let model = mat4x4<f32>(instance.model_0, instance.model_1, instance.model_2, instance.model_3);
+    let model_linear = mat3x3<f32>(instance.model_0.xyz, instance.model_1.xyz, instance.model_2.xyz);
     let world_position = model * vec4<f32>(vertex.position, 1.0);
     var output: VertexOutput;
     output.clip_position = camera.view_proj * world_position;
     output.color = vertex.color;
     output.uv = vertex.uv;
     output.world_normal = normalize((model * vec4<f32>(vertex.normal, 0.0)).xyz);
+    var world_tangent = vec3<f32>(0.0);
+    if (dot(vertex.tangent.xyz, vertex.tangent.xyz) > 0.000001) {
+        world_tangent = normalize(model_linear * vertex.tangent.xyz);
+    }
+    let orientation = select(-1.0, 1.0, determinant(model_linear) >= 0.0);
+    output.world_tangent = vec4<f32>(world_tangent, vertex.tangent.w * orientation);
     output.instance_color = instance.color;
     output.world_position = world_position.xyz;
     output.emissive_and_model = instance.emissive_and_model;
@@ -100,15 +107,30 @@ fn shadow_visibility(world_pos: vec3<f32>, normal: vec3<f32>) -> f32 {
     return 1.0;
 }
 
-fn mapped_normal(world_position: vec3<f32>, geometric_normal: vec3<f32>, uv: vec2<f32>) -> vec3<f32> {
+fn mapped_normal(
+    world_position: vec3<f32>,
+    geometric_normal: vec3<f32>,
+    tangent_frame: vec4<f32>,
+    uv: vec2<f32>,
+) -> vec3<f32> {
+    let normal = normalize(geometric_normal);
+    let tangent_normal = textureSample(t_normal, s_material, uv).xyz * 2.0 - vec3<f32>(1.0);
+    if (abs(tangent_frame.w) > 0.5) {
+        let orthogonal = tangent_frame.xyz - normal * dot(normal, tangent_frame.xyz);
+        if (dot(orthogonal, orthogonal) > 0.000001) {
+            let tangent = normalize(orthogonal);
+            let bitangent = normalize(cross(normal, tangent)) * tangent_frame.w;
+            return normalize(mat3x3<f32>(tangent, bitangent, normal) * tangent_normal);
+        }
+    }
+
     let q1 = dpdx(world_position); let q2 = dpdy(world_position);
     let st1 = dpdx(uv); let st2 = dpdy(uv);
     let determinant = st1.x * st2.y - st1.y * st2.x;
-    if (abs(determinant) < 0.000001) { return normalize(geometric_normal); }
+    if (abs(determinant) < 0.000001) { return normal; }
     let tangent = normalize((q1 * st2.y - q2 * st1.y) / determinant);
     let bitangent = normalize((-q1 * st2.x + q2 * st1.x) / determinant);
-    let tangent_normal = textureSample(t_normal, s_material, uv).xyz * 2.0 - vec3<f32>(1.0);
-    return normalize(mat3x3<f32>(tangent, bitangent, normalize(geometric_normal)) * tangent_normal);
+    return normalize(mat3x3<f32>(tangent, bitangent, normal) * tangent_normal);
 }
 
 fn standard_lit(base: vec3<f32>, n: vec3<f32>, l: vec3<f32>, v: vec3<f32>, surface: vec4<f32>, visibility: f32) -> vec3<f32> {
@@ -160,7 +182,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         * input.instance_color * vec4<f32>(input.color, 1.0);
     let alpha_mode = input.surface.w;
     if (alpha_mode > 0.5 && alpha_mode < 1.5 && base_color.a < input.surface.z) { discard; }
-    let n = mapped_normal(input.world_position, input.world_normal, input.uv);
+    let n = mapped_normal(input.world_position, input.world_normal, input.world_tangent, input.uv);
     let l = normalize(-light.dir_direction); let v = normalize(camera.world_position - input.world_position);
     let visibility = shadow_visibility(input.world_position, n);
     let model = input.emissive_and_model.w;
