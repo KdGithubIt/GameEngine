@@ -495,7 +495,7 @@ impl EditorApp {
                                             if ui
                                                 .selectable_value(
                                                     &mut selected_clip,
-                                                    Some(engine_authoring::MotionSourceRef::native(choice.id.clone())),
+                                                    Some(choice.id.clone()),
                                                     &choice.label,
                                                 )
                                                 .changed()
@@ -574,10 +574,7 @@ impl EditorApp {
                                     .show_ui(ui, |ui| {
                                         for choice in &clip_choices {
                                             let duplicate = binding.clip == choice.id
-                                                || binding
-                                                    .overlays
-                                                    .iter()
-                                                    .any(|overlay| overlay == &choice.id);
+                                                || binding.overlays.contains(&choice.id);
                                             if ui
                                                 .add_enabled(
                                                     !duplicate,
@@ -3450,17 +3447,11 @@ impl EditorApp {
                     contact_bones,
                 })
         } else {
-            let existing_humanoid_profiles = self
-                .asset_manifest
-                .get(&asset_id)
-                .map(|entry| entry.import_settings.humanoid_profiles.clone())
-                .unwrap_or_default();
             self.asset_import.start_gltf(
                 project.path().to_path_buf(),
                 asset_id,
                 source_path.clone(),
                 existing_skeletons,
-                existing_humanoid_profiles,
                 contact_bones,
             )
         };
@@ -3946,7 +3937,6 @@ impl EditorApp {
         entry.import_settings.source_dependencies = dependencies;
         entry.import_settings.sub_assets = result.sub_assets;
         entry.import_settings.skeleton_records = result.skeleton_records.clone();
-        entry.import_settings.humanoid_profiles = result.humanoid_profiles.clone();
         let sub_asset_count = entry.import_settings.sub_assets.len();
 
         let prefab_path = match result.prefab {

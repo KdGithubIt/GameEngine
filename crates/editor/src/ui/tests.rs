@@ -1749,10 +1749,8 @@ fn animation_set_validation_accepts_only_imported_animation_clip_sub_assets() {
         slot.clone(),
         engine_authoring::AnimationBinding {
             name: "Dance".into(),
-            clip: engine_authoring::MotionSourceRef::native(primary_clip.clone()),
-            overlays: vec![engine_authoring::MotionSourceRef::native(
-                overlay_clip,
-            )],
+            clip: primary_clip.clone(),
+            overlays: vec![overlay_clip],
             events: Vec::new(),
         },
     );
@@ -1765,7 +1763,7 @@ fn animation_set_validation_accepts_only_imported_animation_clip_sub_assets() {
         .bindings
         .get_mut(&slot)
         .expect("the test binding must exist")
-        .clip = engine_authoring::MotionSourceRef::native(motion_source.clone());
+        .clip = motion_source.clone();
     let primary_error =
         super::assets::validate_animation_set_clip_references(&document, &manifest)
             .expect_err("a parent VMD source must not be accepted as a primary clip");
@@ -1777,8 +1775,8 @@ fn animation_set_validation_accepts_only_imported_animation_clip_sub_assets() {
         .bindings
         .get_mut(&slot)
         .expect("the test binding must exist");
-    binding.clip = engine_authoring::MotionSourceRef::native(primary_clip);
-    binding.overlays = vec![engine_authoring::MotionSourceRef::native(motion_source)];
+    binding.clip = primary_clip;
+    binding.overlays = vec![motion_source];
 
     let overlay_error =
         super::assets::validate_animation_set_clip_references(&document, &manifest)
