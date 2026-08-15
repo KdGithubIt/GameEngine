@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "request_id": "20260816-0834-finalize-refactors-r2",
+  "target_branch": "chatgpt/gameengine-launcher-session-inspector-finalize",
+  "expected_head_sha": "ef4109311b2c074c5d7ef15a016fe9e72067b2be",
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Fix session module rustdoc warnings",
+  "pr_title": "Finalize Launcher and editor module refactors",
+  "pr_body": "Completes the remaining validation cleanup after the Launcher, EditorSession, and Inspector module refactors already merged to main.\n\n- removes the Clippy-triggering empty line after the ADR 0018 undo-limit doc comment\n- removes the unused test-only BTreeMap import introduced by the session split\n- keeps private session submodules private while removing broken public rustdoc links to them\n- preserves existing APIs, behavior, serialization, Stable IDs, and module boundaries\n- leaves rustfmt.toml unchanged because disable_all_formatting is a pre-existing temporary workspace-wide setting\n\nLauncher and Inspector were audited against the current main state; no additional source changes were warranted without introducing speculative UI or behavior changes."
+}
