@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "request_id": "automation-incident-byte-fidelity-20260816-01",
+  "target_branch": "chatgpt/gameengine-chatgpt-automation-incidents",
+  "expected_head_sha": "7cc2c38d61cadd4db825295fe1728caad4d9b44a",
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Record patch transport fidelity incident",
+  "pr_title": "Docs: record Dispatcher patch fidelity incidents",
+  "pr_body": "## Summary\n\n- add the ADR-audit recurrence to the existing unified-diff target-alignment incident\n- record INC-003 for published patch bytes differing from the preflight artifact\n- update the Dispatcher protocol so published patch blobs must be byte-identical to the artifact that passed strict preflight\n\n## Validation\n\nDocumentation-only automation protocol and incident-log change; validate with the repository Windows Validation docs mode."
+}
