@@ -1,0 +1,299 @@
++                    index,
++                    message: "field `spatial_blend` must be between zero and one".to_owned(),
++                });
++            }
++            if min_distance < 0.0 || max_distance < min_distance {
++                return Err(GameCommandError::InvalidPayload {
++                    index,
++                    message: "audio distances must satisfy 0 <= min_distance <= max_distance"
++                        .to_owned(),
++                });
++            }
++            let rolloff = match string_field(fields, "rolloff", index)? {
++                "linear" => AudioRolloff::Linear,
++                "inverse" => AudioRolloff::Inverse,
++                value => {
++                    return Err(GameCommandError::InvalidPayload {
++                        index,
++                        message: format!("field `rolloff` has unknown value `{value}`"),
++                    })
++                }
++            };
++            GameAudioCommand::PlaySpatialSoundEffect {
++                source,
++                asset_id: validate_audio_asset(world, fields, index)?,
++                params: AudioSpatialParams {
++                    volume,
++                    spatial_blend,
++                    min_distance,
++                    max_distance,
++                    rolloff,
++                },
++            }
++        }
++        "play_se" => {
++            require_targetless(command, index, "audio")?;
++            GameAudioCommand::PlaySoundEffect {
++                asset_id: validate_audio_asset(world, fields, index)?,
++            }
++        }
+@@ -825,5 +825,9 @@
+-        "play_bgm" => GameAudioCommand::PlayBackgroundMusic {
+-            asset_id: validate_audio_asset(world, fields, index)?,
+-            fade_seconds: 0.0,
+-        },
++        "play_bgm" => {
++            require_targetless(command, index, "audio")?;
++            GameAudioCommand::PlayBackgroundMusic {
++                asset_id: validate_audio_asset(world, fields, index)?,
++                fade_seconds: 0.0,
++            }
++        }
+         "crossfade_bgm" => {
++            require_targetless(command, index, "audio")?;
+@@ -842,10 +842,16 @@
+-        "stop_bgm" => GameAudioCommand::StopBackgroundMusic,
++        "stop_bgm" => {
++            require_targetless(command, index, "audio")?;
++            GameAudioCommand::StopBackgroundMusic
++        }
+         "set_master_volume" => {
++            require_targetless(command, index, "audio")?;
+             GameAudioCommand::SetMasterVolume(number_field(fields, "volume", index)?)
+         }
+         "set_bgm_volume" => {
++            require_targetless(command, index, "audio")?;
+             GameAudioCommand::SetBackgroundMusicVolume(number_field(fields, "volume", index)?)
+         }
+         "set_se_volume" => {
++            require_targetless(command, index, "audio")?;
+             GameAudioCommand::SetSoundEffectVolume(number_field(fields, "volume", index)?)
+         }
+
+diff --git a/crates/engine/src/components/builtins.rs b/crates/engine/src/components/builtins.rs
+--- a/crates/engine/src/components/builtins.rs
++++ b/crates/engine/src/components/builtins.rs
+@@ -5,17 +5,43 @@
+         20.0,
+         POSITIVE,
+     ),
++    enumeration(
++        "rolloff",
++        "Rolloff",
++        "Distance attenuation curve used by positional playback.",
++        "linear",
++        &["linear", "inverse"],
++    ),
+     boolean(
+         "autoplay",
+         "Autoplay",
+         "Submit one sound-effect request on the first runtime update.",
+         false,
+     ),
++    boolean(
++        "looping",
++        "Loop",
++        "Repeat the authored autoplay voice until the component is removed.",
++        false,
++    ),
+ ];
+ 
+-const AUDIO_LISTENER_FIELDS: &[FieldDef] = &[boolean(
+-    "enabled",
+-    "Enabled",
+-    "Whether this listener participates in positional mixing.",
+-    true,
+-)];
++const AUDIO_LISTENER_FIELDS: &[FieldDef] = &[
++    boolean(
++        "enabled",
++        "Enabled",
++        "Whether this listener participates in positional mixing.",
++        true,
++    ),
++    FieldDef::new(
++        "priority",
++        "Priority",
++        "Selection priority among enabled listeners; higher values win.",
++        FieldKind::I64,
++        FieldDefaultSpec::I64(0),
++    )
++    .with_control(InspectorFieldControl::Number(NumericRange::inclusive(
++        i32::MIN as f64,
++        i32::MAX as f64,
++    ))),
++];
+@@ -1,6 +1,6 @@
+             "Plays a registered sound from this entity's position.",
+             "Audio",
+-            1,
++            2,
+             AUDIO_EMITTER_FIELDS,
+             spawn_audio_emitter_component,
+         ),
+@@ -1,6 +1,6 @@
+             "Marks this entity as a positional-audio listener.",
+             "Audio",
+-            1,
++            2,
+             AUDIO_LISTENER_FIELDS,
+             spawn_audio_listener_component,
+         )
+
+diff --git a/crates/engine/src/scene_bridge.rs b/crates/engine/src/scene_bridge.rs
+--- a/crates/engine/src/scene_bridge.rs
++++ b/crates/engine/src/scene_bridge.rs
+@@ -1 +1 @@
+-use crate::audio::{AudioAsset, AudioEmitter, AudioListener, MusicController};
++use crate::audio::{AudioAsset, AudioEmitter, AudioListener, AudioRolloff, MusicController};
+
+diff --git a/crates/engine/src/scene_bridge/spawn.rs b/crates/engine/src/scene_bridge/spawn.rs
+--- a/crates/engine/src/scene_bridge/spawn.rs
++++ b/crates/engine/src/scene_bridge/spawn.rs
+@@ -1,3 +1,3 @@
+     let component_type = ComponentTypeId::new(AUDIO_EMITTER_COMPONENT);
+-    let expected = "an object with clip, volume, distance, spatial blend, and autoplay fields";
++    let expected = "an object with clip, volume, distance, spatial blend, rolloff, autoplay, and looping fields";
+     let fields = ComponentFields::new(context.authoring_entity, &component_type, value, expected)?;
+@@ -1,4 +1,10 @@
+     let spatial_blend = fields.f32("spatial_blend")?;
+     let min_distance = fields.f32("min_distance")?;
+     let max_distance = fields.f32("max_distance")?;
++    let rolloff = match fields.string("rolloff")? {
++        "linear" => AudioRolloff::Linear,
++        "inverse" => AudioRolloff::Inverse,
++        _ => return Err(fields.invalid("rolloff must be `linear` or `inverse`").into()),
++    };
+     let autoplay = fields.bool_or("autoplay", false)?;
++    let looping = fields.bool("looping")?;
+@@ -1,5 +1,7 @@
+             spatial_blend,
+             min_distance,
+             max_distance,
++            rolloff,
+             autoplay,
++            looping,
+         ),
+@@ -1,7 +1,9 @@
+     let component_type = ComponentTypeId::new(AUDIO_LISTENER_COMPONENT);
+-    let expected = "an object with an enabled boolean field";
++    let expected = "an object with enabled and priority fields";
+     let fields = ComponentFields::new(context.authoring_entity, &component_type, value, expected)?;
+     let enabled = fields.bool_or("enabled", true)?;
++    let priority = i32::try_from(fields.i64("priority")?)
++        .map_err(|_| fields.invalid("priority in the signed 32-bit integer range"))?;
+     context
+         .world
+-        .add_component(entity, AudioListener { enabled })?;
++        .add_component(entity, AudioListener { enabled, priority })?;
+
+diff --git a/crates/engine/src/components/validation.rs b/crates/engine/src/components/validation.rs
+--- a/crates/engine/src/components/validation.rs
++++ b/crates/engine/src/components/validation.rs
+@@ -1,4 +1,71 @@
++    diagnostics.extend(validate_spatial_audio_scene(scene));
+     diagnostics.extend(validate_skinned_models_without_renderers(scene));
+     diagnostics.extend(crate::render_limits::validate_scene_render_limits(scene));
+     diagnostics
+ }
++
++fn validate_spatial_audio_scene(scene: &AuthoringScene) -> Vec<Diagnostic> {
++    let listener_type = ComponentTypeId::new(AUDIO_LISTENER_COMPONENT);
++    let emitter_type = ComponentTypeId::new(AUDIO_EMITTER_COMPONENT);
++    let mut listeners = Vec::new();
++    for (entity_id, entity) in scene.entities() {
++        let Some(Value::Object(fields)) = entity.components.get(&listener_type) else {
++            continue;
++        };
++        if !matches!(fields.get("enabled"), Some(Value::Bool(true))) {
++            continue;
++        }
++        let priority = match fields.get("priority") {
++            Some(Value::I64(value)) => *value,
++            Some(Value::U64(value)) => i64::try_from(*value).unwrap_or(i64::MAX),
++            _ => continue,
++        };
++        listeners.push((entity_id.clone(), priority));
++    }
++
++    let mut diagnostics = Vec::new();
++    if let Some(highest) = listeners.iter().map(|(_, priority)| *priority).max() {
++        let highest_listeners: Vec<_> = listeners
++            .iter()
++            .filter(|(_, priority)| *priority == highest)
++            .collect();
++        if highest_listeners.len() > 1 {
++            for (entity, _) in highest_listeners {
++                diagnostics.push(
++                    Diagnostic::warning(
++                        "scene.audio_listener_priority_tie",
++                        format!(
++                            "multiple enabled Audio Listeners share highest priority {highest}; runtime selection falls back to deterministic entity order"
++                        ),
++                    )
++                    .with_target(DiagnosticTarget::Component {
++                        entity: entity.clone(),
++                        component_type: listener_type.clone(),
++                    }),
++                );
++            }
++        }
++    }
++
++    if listeners.is_empty() {
++        for (entity_id, entity) in scene.entities() {
++            let Some(Value::Object(fields)) = entity.components.get(&emitter_type) else {
++                continue;
++            };
++            let spatial_blend = fields.get("spatial_blend").and_then(value_as_f64);
++            if spatial_blend.is_some_and(|blend| blend.is_finite() && blend > 0.0) {
++                diagnostics.push(
++                    Diagnostic::warning(
++                        "scene.audio_spatial_listener_missing",
++                        "positional Audio Emitter has no enabled Audio Listener in the scene",
++                    )
++                    .with_target(DiagnosticTarget::Component {
++                        entity: entity_id.clone(),
++                        component_type: emitter_type.clone(),
++                    }),
++                );
++            }
++        }
++    }
++    diagnostics
++}
+
+diff --git a/crates/engine/src/scene_bridge/tests.rs b/crates/engine/src/scene_bridge/tests.rs
+--- a/crates/engine/src/scene_bridge/tests.rs
++++ b/crates/engine/src/scene_bridge/tests.rs
+@@ -1,4 +1,6 @@
+                     "max_distance": 12.0,
+-                    "autoplay": true
++                    "rolloff": "linear",
++                    "autoplay": true,
++                    "looping": false
+                 },
+-                (AUDIO_LISTENER_COMPONENT): {"enabled": true},
++                (AUDIO_LISTENER_COMPONENT): {"enabled": true, "priority": 0},
+@@ -1,4 +1,19 @@
+-    let mut system = crate::audio::authored_audio_system
++    world.insert_resource(crate::audio::SpatialAudioRuntime::default());
++    let mut transform_system = crate::transform::transform_propagation_system
++        .into_system()
++        .expect("transform system");
++    transform_system
++        .run(&mut world)
++        .expect("headless transform update");
++    let mut authored_system = crate::audio::authored_audio_system
+         .into_system()
+         .expect("authored audio system");
+-    system.run(&mut world).expect("headless audio update");
++    authored_system
++        .run(&mut world)
++        .expect("headless authored audio update");
++    let mut spatial_system = crate::audio::spatial_audio_system
++        .into_system()
++        .expect("spatial audio system");
++    spatial_system
++        .run(&mut world)
++        .expect("headless spatial audio update");
