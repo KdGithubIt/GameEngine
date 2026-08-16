@@ -6,6 +6,8 @@
 pub mod ability;
 /// Compiled Behavior Tree runtime execution.
 pub mod behavior_tree;
+/// Stateful Behavior Tree execution and runtime debugging.
+pub mod behavior_tree_stateful;
 /// Deterministic combat damage, hit results, and knockback processing.
 pub mod combat;
 /// Attack-hitbox metadata shared by collision and combat adapters.
