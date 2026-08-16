@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "request_id": "20260816-adr0124-editor-background-bake-adeea9b-r3",
+  "target_branch": "chatgpt/gameengine-adr-0124-production-navmesh-v6",
+  "expected_head_sha": "adeea9b1110c7d961ea3364ba9d1ecaa593ae026",
+  "patch_parts": [
+    "part-0000.patch",
+    "part-0001.patch"
+  ],
+  "commit_message": "Run Editor navigation baking in the background",
+  "pr_title": "GameEngine: implement ADR 0124 production navigation",
+  "pr_body": "Continues ADR 0124 by moving Editor navigation baking off the UI thread, wiring cancellation into the shared production bake service, and routing completion back to the source scene tab."
+}
