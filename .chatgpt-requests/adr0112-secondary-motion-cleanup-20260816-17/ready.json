@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0112-secondary-motion-cleanup-20260816-17",
+  "target_branch": "chatgpt/gameengine-adr-0112-secondary-motion-v2",
+  "expected_head_sha": "b396bef457a6d73aa1549568e1139dd1943a18e3",
+  "patch_parts": ["part-0000.patch"],
+  "commit_message": "Finish Secondary Motion runtime naming cleanup",
+  "pr_title": "Implement ADR 0112 engine-native secondary motion",
+  "pr_body": "## Summary\n\nImplements ADR 0112 engine-native Secondary Motion. This follow-up removes the temporary pre-cutover rigid-body aliases and compatibility facade, moves the remaining authoring/runtime Rust identifiers onto the current Secondary Motion names without changing the persisted `engine.secondary_motion` ID, and makes scene-bridge rollback restore the Secondary Motion rig registry exactly.\n\nThe PR remains Draft while the neutral model-IR/import naming cleanup, PMX best-effort conversion audit, documentation cleanup, and final validation are completed."
+}
