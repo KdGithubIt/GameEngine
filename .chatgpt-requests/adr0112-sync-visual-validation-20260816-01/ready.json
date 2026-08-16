@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0112-sync-visual-validation-20260816-01",
+  "target_branch": "chatgpt/gameengine-adr-0112-secondary-motion-v2",
+  "expected_head_sha": "47d77a2ca82d5b602fad4210d0d1f19d244e5508",
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Sync merged Editor visual validation capture",
+  "pr_title": "Implement ADR 0112 engine-native secondary motion",
+  "pr_body": "## Summary\n\nImplements ADR 0112 engine-native Secondary Motion. This documentation follow-up records the landed `engine.secondary_motion` authoring schema and explicitly documents the `secondary_motion_rig` imported kind and `secondarymotionrig` stable-ID namespace cutover. The PR remains Draft.\n\n<!-- gameengine-visual-validation: editor -->\n\n<!-- gameengine-chatgpt-dispatcher -->\n"
+}
