@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "request_id": "20260816-phase7-toonlit-fxc-312ed05-r3",
+  "target_branch": "chatgpt/gameengine-render-toonlit-quality-v2",
+  "expected_head_sha": "312ed058cc7dae426599afccb51a02e1747b80fe",
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Renderer: make ToonLit ramp sampling loop safe",
+  "pr_title": "Renderer: improve generic ToonLit quality",
+  "pr_body": "## Summary\n\n- evaluate generic ToonLit under directional, point, and spot lights through the shared material fragment stage\n- make directional color, intensity, and CSM visibility drive toon ramp and compact specular response\n- keep one material shadow floor so additional local lights do not stack dark terms\n- use explicit LOD sampling for toon ramps so dynamic local-light loops compile on the Windows D3D/FXC path\n- add a fixed-camera GPU regression for point/spot ToonLit\n- preserve the public Material, serialization, Stable ID, importer, outline, and sphere-map contracts"
+}
