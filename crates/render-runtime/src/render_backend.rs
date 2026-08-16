@@ -3492,7 +3492,7 @@ impl RenderState {
         queue.write_buffer(&self.camera_buffer, 0, bytemuck::bytes_of(&uniform));
     }
 
-    pub(crate) fn update_light(
+    fn update_light(
         &self,
         queue: &wgpu::Queue,
         ambient: &AmbientLight,
