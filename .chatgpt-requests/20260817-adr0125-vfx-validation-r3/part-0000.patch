@@ -1,0 +1,172 @@
+diff --git a/crates/editor/src/vfx_builder_completion.rs b/crates/editor/src/vfx_builder_completion.rs
+--- a/crates/editor/src/vfx_builder_completion.rs
++++ b/crates/editor/src/vfx_builder_completion.rs
+@@ -119,6 +119,7 @@
+         self.status = None;
+     }
+ 
++    #[cfg(feature = "visual-validation")]
+     fn seek_to(&mut self, seconds: f32) {
+         self.current_time = seconds.max(0.0);
+         if let Some(player) = self.player.as_mut() {
+@@ -145,13 +146,13 @@
+                 .player
+                 .as_ref()
+                 .is_some_and(VfxPlayer::is_playing);
+-            if ui.button(if is_playing { "Pause" } else { "Play" }).clicked() {
+-                if let Some(player) = self.player.as_mut() {
+-                    if is_playing {
+-                        player.pause();
+-                    } else {
+-                        player.play();
+-                    }
++            if ui.button(if is_playing { "Pause" } else { "Play" }).clicked()
++                && let Some(player) = self.player.as_mut()
++            {
++                if is_playing {
++                    player.pause();
++                } else {
++                    player.play();
+                 }
+             }
+             if ui.button("Restart").clicked() {
+@@ -160,13 +161,13 @@
+                 }
+                 self.current_time = 0.0;
+             }
+-            if ui.button("Step").clicked() {
+-                if let Some(player) = self.player.as_mut() {
+-                    player
+-                        .instance_mut()
+-                        .step(VFX_PREVIEW_STEP_SECONDS, Vec3::ZERO);
+-                    self.current_time = player.instance().elapsed_seconds();
+-                }
++            if ui.button("Step").clicked()
++                && let Some(player) = self.player.as_mut()
++            {
++                player
++                    .instance_mut()
++                    .step(VFX_PREVIEW_STEP_SECONDS, Vec3::ZERO);
++                self.current_time = player.instance().elapsed_seconds();
+             }
+             ui.separator();
+             ui.label("Speed");
+@@ -178,10 +179,9 @@
+                         .suffix("x"),
+                 )
+                 .changed()
++                && let Some(player) = self.player.as_mut()
+             {
+-                if let Some(player) = self.player.as_mut() {
+-                    player.time_scale = self.playback_speed;
+-                }
++                player.time_scale = self.playback_speed;
+             }
+             ui.label("Seed");
+             seed_changed = ui
+@@ -199,13 +199,13 @@
+ 
+         if seed_changed {
+             self.recompile(effect, true);
+-        } else if seek_requested {
+-            if let Some(player) = self.player.as_mut() {
+-                player
+-                    .instance_mut()
+-                    .seek_preview(self.current_time, Vec3::ZERO);
+-                self.current_time = player.instance().elapsed_seconds();
+-            }
++        } else if seek_requested
++            && let Some(player) = self.player.as_mut()
++        {
++            player
++                .instance_mut()
++                .seek_preview(self.current_time, Vec3::ZERO);
++            self.current_time = player.instance().elapsed_seconds();
+         }
+ 
+         if self
+@@ -230,21 +230,21 @@
+                 ui.label(format!("Spawned {}", stats.spawned_particles));
+                 ui.label(format!("Dropped {}", stats.dropped_particles));
+                 ui.label(format!("Backend {:?}", stats.backend));
+-                if let Some(emitter_id) = selected_emitter {
+-                    if let Some(runtime) = player
++                if let Some(emitter_id) = selected_emitter
++                    && let Some(runtime) = player
+                         .instance()
+                         .emitters()
+                         .iter()
+                         .find(|runtime| runtime.source() == emitter_id)
+-                    {
+-                        ui.label(format!("Emitter live {}", runtime.live_count()));
+-                    }
++                {
++                    ui.label(format!("Emitter live {}", runtime.live_count()));
+                 }
+             });
+         }
+-        if let Some(emitter_id) = selected_emitter {
+-            if let Some(emitter) = effect.emitters.iter().find(|emitter| &emitter.id == emitter_id) {
+-                egui::CollapsingHeader::new("Curve / Gradient Overview")
++        if let Some(emitter_id) = selected_emitter
++            && let Some(emitter) = effect.emitters.iter().find(|emitter| &emitter.id == emitter_id)
++        {
++            egui::CollapsingHeader::new("Curve / Gradient Overview")
+                     .default_open(true)
+                     .show(ui, |ui| {
+                         for module in &emitter.modules {
+@@ -276,7 +276,6 @@
+                             }
+                         }
+                     });
+-            }
+         }
+         if let Some(status) = &self.status {
+             ui.small(status);
+@@ -918,13 +917,13 @@
+     }
+ 
+     if let Some(emitter_id) = selected_emitter {
+-        if let Some(emitter) = effect.emitters.iter().find(|emitter| &emitter.id == emitter_id) {
+-            if let Some(shape) = emitter.modules.iter().find_map(|module| match &module.operation {
++        if let Some(emitter) = effect.emitters.iter().find(|emitter| &emitter.id == emitter_id)
++            && let Some(shape) = emitter.modules.iter().find_map(|module| match &module.operation {
+                 VfxModuleOperation::Shape { shape } if module.enabled => Some(shape),
+                 _ => None,
+-            }) {
+-                draw_shape(&painter, rect, center, scale, shape);
+-            }
++            })
++        {
++            draw_shape(&painter, rect, center, scale, shape);
+         }
+         if let Some(runtime) = player.and_then(|player| {
+             player
+@@ -932,10 +931,9 @@
+                 .emitters()
+                 .iter()
+                 .find(|runtime| runtime.source() == emitter_id)
+-        }) {
+-            if let Some((min, max)) = runtime.live_bounds() {
+-                draw_bounds(&painter, center, scale, min, max, egui::Color32::LIGHT_GREEN);
+-            }
++        }) && let Some((min, max)) = runtime.live_bounds()
++        {
++            draw_bounds(&painter, center, scale, min, max, egui::Color32::LIGHT_GREEN);
+         }
+     }
+ 
+diff --git a/crates/editor/src/main.rs b/crates/editor/src/main.rs
+--- a/crates/editor/src/main.rs
++++ b/crates/editor/src/main.rs
+@@ -271,7 +271,9 @@
+         #[cfg(not(feature = "visual-validation"))]
+         self.ai_studio.show(&context);
+         #[cfg(feature = "visual-validation")]
+-        if !self.visual_behavior_debug_capture {
++        if !self.visual_behavior_debug_capture
++            && std::env::var_os("GAMEENGINE_VISUAL_AUTHORING_TOOL").is_none()
++        {
+             self.ai_studio.show(&context);
+         }
+     }
