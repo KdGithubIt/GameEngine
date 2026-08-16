@@ -1,0 +1,167 @@
++                    format!("source path `{}` escapes the project root", relative.display()),
++                ));
++            }
++            let contents = fs::read_to_string(&source_canonical).map_err(CodeWorkspaceError::io)?;
++            let destination = workspace_root.join(&relative);
++            if let Some(parent) = destination.parent() {
++                fs::create_dir_all(parent).map_err(CodeWorkspaceError::io)?;
++            }
++            fs::write(&destination, contents.as_bytes()).map_err(CodeWorkspaceError::io)?;
++            baseline.insert(relative, contents);
++        }
++
++        Ok(Self {
++            project_root,
++            workspace_root,
++            baseline,
++        })
++    }
++
++    /// Returns the local isolated workspace root, never a canonical project path.
++    pub fn workspace_root(&self) -> &Path {
++        &self.workspace_root
++    }
++
++    /// Writes or creates one UTF-8 source file inside the isolated workspace.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`CodeWorkspaceError`] if the path escapes the workspace or I/O fails.
++    pub fn write_file(
++        &self,
++        relative: &Path,
++        contents: &str,
++    ) -> Result<(), CodeWorkspaceError> {
++        let relative = validated_relative_path(relative)?;
++        let target = self.workspace_root.join(&relative);
++        let parent = target.parent().ok_or_else(|| {
++            CodeWorkspaceError::new("agent.code_path_invalid", "source path has no parent")
++        })?;
++        fs::create_dir_all(parent).map_err(CodeWorkspaceError::io)?;
++        ensure_under_root(parent, &self.workspace_root)?;
++        fs::write(target, contents.as_bytes()).map_err(CodeWorkspaceError::io)
++    }
++
++    /// Removes one source file from the isolated workspace without touching the live project.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`CodeWorkspaceError`] when the path is invalid or removal fails.
++    pub fn remove_file(&self, relative: &Path) -> Result<(), CodeWorkspaceError> {
++        let relative = validated_relative_path(relative)?;
++        let target = self.workspace_root.join(relative);
++        if target.exists() {
++            fs::remove_file(target).map_err(CodeWorkspaceError::io)?;
++        }
++        Ok(())
++    }
++
++    /// Returns a reviewable source diff represented as before/after UTF-8 content.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`CodeWorkspaceError`] if the isolated workspace cannot be inspected safely.
++    pub fn preview_changes(&self) -> Result<Vec<CodeChange>, CodeWorkspaceError> {
++        let current = collect_workspace_text(&self.workspace_root)?;
++        let mut paths = self
++            .baseline
++            .keys()
++            .chain(current.keys())
++            .cloned()
++            .collect::<BTreeSet<_>>();
++        let mut changes = Vec::new();
++        for path in std::mem::take(&mut paths) {
++            let before = self.baseline.get(&path).cloned();
++            let after = current.get(&path).cloned();
++            if before != after {
++                changes.push(CodeChange { path, before, after });
++            }
++        }
++        Ok(changes)
++    }
++
++    /// Writes one run checkpoint beneath the local workspace history directory.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`CodeWorkspaceError`] if changes cannot be inspected or persisted.
++    pub fn checkpoint(&self, run_id: &AgentRunId) -> Result<PathBuf, CodeWorkspaceError> {
++        let checkpoint = CodeCheckpoint {
++            schema_version: CODE_CHECKPOINT_SCHEMA_VERSION,
++            run_id: run_id.clone(),
++            changes: self.preview_changes()?,
++        };
++        let path = self
++            .workspace_root
++            .join(".agent-history")
++            .join(format!("{}.json", run_id));
++        let bytes = serde_json::to_vec_pretty(&checkpoint).map_err(|error| {
++            CodeWorkspaceError::new("agent.code_checkpoint_serialize_failed", error.to_string())
++        })?;
++        atomic_write(&path, &bytes).map_err(CodeWorkspaceError::io)?;
++        Ok(path)
++    }
++
++    /// Applies the currently previewed source changes to the live project through
++    /// the managed code service boundary.
++    ///
++    /// This operation requires `AuthoringPermission::CodeWrite` but does not grant
++    /// raw filesystem or arbitrary shell capabilities.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`CodeWorkspaceError`] for missing permission, path escapes, or I/O failures.
++    pub fn apply_to_project(
++        &self,
++        permissions: &AuthoringPermissions,
++    ) -> Result<Vec<PathBuf>, CodeWorkspaceError> {
++        permissions
++            .require(AuthoringPermission::CodeWrite)
++            .map_err(|error| {
++                CodeWorkspaceError::new("agent.code_write_denied", error.to_string())
++            })?;
++        let changes = self.preview_changes()?;
++        let mut applied = Vec::new();
++        for change in changes {
++            let relative = validated_relative_path(&change.path)?;
++            let destination = self.project_root.join(&relative);
++            let parent = destination.parent().ok_or_else(|| {
++                CodeWorkspaceError::new("agent.code_path_invalid", "source path has no parent")
++            })?;
++            fs::create_dir_all(parent).map_err(CodeWorkspaceError::io)?;
++            ensure_under_root(parent, &self.project_root)?;
++            match change.after {
++                Some(contents) => {
++                    atomic_write(&destination, contents.as_bytes()).map_err(CodeWorkspaceError::io)?;
++                }
++                None if destination.exists() => {
++                    let canonical = destination.canonicalize().map_err(CodeWorkspaceError::io)?;
++                    if !canonical.starts_with(&self.project_root) {
++                        return Err(CodeWorkspaceError::new(
++                            "agent.code_path_escape",
++                            format!("destination `{}` escapes project root", relative.display()),
++                        ));
++                    }
++                    fs::remove_file(canonical).map_err(CodeWorkspaceError::io)?;
++                }
++                None => {}
++            }
++            applied.push(relative);
++        }
++        Ok(applied)
++    }
++}
++
++fn validated_relative_path(path: &Path) -> Result<PathBuf, CodeWorkspaceError> {
++    if path.as_os_str().is_empty() || path.is_absolute() {
++        return Err(CodeWorkspaceError::new(
++            "agent.code_path_invalid",
++            format!("source path `{}` must be project-relative", path.display()),
++        ));
++    }
++    let mut clean = PathBuf::new();
++    for component in path.components() {
++        match component {
++            Component::Normal(value) => clean.push(value),
++            Component::CurDir => {}
++            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
