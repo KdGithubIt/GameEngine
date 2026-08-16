@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0121-graph-ui-services-20260816-03",
+  "target_branch": "chatgpt/gameengine-adr-0121-graph-ui-services",
+  "expected_head_sha": "ab0cce914b4e64ce4e1cbe56ef08708dbaa1d402",
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Fix UI authoring rustdoc warning",
+  "pr_title": "GameEngine: add Graph and UI authoring service foundation",
+  "pr_body": "## Summary\n\nAdds the ADR 0121 shared authoring-service foundation for generic semantic Graph documents and declarative UI documents.\n\nThis correction removes the broken intra-doc link warning introduced by the new UI authoring module documentation. Runtime behavior and persisted Graph/UI formats are unchanged.\n\nEditor/CLI/MCP adapter routing and generic layout exposure remain follow-up work."
+}
