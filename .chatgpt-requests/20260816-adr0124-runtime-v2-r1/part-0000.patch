@@ -1,0 +1,202 @@
+diff --git a/crates/physics/src/lib.rs b/crates/physics/src/lib.rs
+index 1adab00..544d89b 100644
+--- a/crates/physics/src/lib.rs
++++ b/crates/physics/src/lib.rs
+@@ -22,7 +22,9 @@ pub mod collision;
+ #[cfg(not(feature = "solver"))]
+ #[path = "collision_contract.rs"]
+ pub mod collision;
+-/// Grid navigation baking, persistence, queries, and agents.
++/// Production tiled polygon navigation assets, baking, queries, and agents.
++pub mod navigation;
++/// Legacy grid navigation retained for focused compatibility tests and layered utilities.
+ pub mod navmesh;
+ /// Rapier-backed gameplay rigid-body integration.
+ #[cfg(feature = "solver")]
+diff --git a/crates/physics/src/navigation.rs b/crates/physics/src/navigation.rs
+new file mode 100644
+index 0000000..512d7e8
+--- /dev/null
++++ b/crates/physics/src/navigation.rs
+@@ -0,0 +1,2332 @@
++//! Production tiled polygon navigation, deterministic baking, typed queries, and path following.
++//!
++//! The serialized runtime asset is engine-owned and backend-neutral. Authoring
++//! adapters provide [`NavigationBuildInput`], while [`NavigationBaker`] hides the
++//! concrete bake implementation so Editor, CLI, MCP, and packaging can share the
++//! same stable navigation contract (ADR 0124).
++
++use std::cmp::Ordering;
++use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap};
++use std::fmt;
++use std::io;
++use std::path::{Path, PathBuf};
++
++use engine_ecs::{Query, Res};
++use glam::{Vec2, Vec3};
++use serde::{Deserialize, Serialize};
++
++use crate::time::FixedTime;
++use crate::transform::Transform;
++
++/// Current serialized production NavMesh schema.
++pub const NAV_MESH_SCHEMA_VERSION: u32 = 2;
++/// Stable profile ID used by compatibility APIs and newly created agents.
++pub const DEFAULT_NAVIGATION_PROFILE: &str = "default";
++const DEFAULT_NEAREST_DISTANCE: f32 = 2.0;
++const EDGE_QUANTIZATION: f32 = 10_000.0;
++const PORTAL_EPSILON: f32 = 1.0e-4;
++
++/// Stable project-local identity of one reusable navigation agent profile.
++#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
++pub struct NavigationProfileId(String);
++
++impl NavigationProfileId {
++    /// Creates a profile ID after trimming surrounding whitespace.
++    pub fn new(value: impl Into<String>) -> Self {
++        Self(value.into().trim().to_owned())
++    }
++
++    /// Returns the persisted profile identifier.
++    pub fn as_str(&self) -> &str {
++        &self.0
++    }
++}
++
++impl Default for NavigationProfileId {
++    fn default() -> Self {
++        Self(DEFAULT_NAVIGATION_PROFILE.to_owned())
++    }
++}
++
++/// Profile-specific bake constraints and runtime area costs.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++pub struct NavigationAgentProfile {
++    /// Stable ID referenced by agents, links, and modifiers.
++    pub id: NavigationProfileId,
++    /// Human-readable authoring label.
++    pub name: String,
++    /// Horizontal body radius in world units.
++    pub radius: f32,
++    /// Required vertical clearance in world units.
++    pub height: f32,
++    /// Steepest accepted surface slope in degrees.
++    pub max_slope_degrees: f32,
++    /// Maximum vertical portal step accepted during topology construction.
++    pub max_climb: f32,
++    /// Area-cost overrides; absent areas use a cost of `1.0`.
++    pub area_costs: BTreeMap<u16, f32>,
++}
++
++impl Default for NavigationAgentProfile {
++    fn default() -> Self {
++        Self {
++            id: NavigationProfileId::default(),
++            name: "Default".to_owned(),
++            radius: 0.4,
++            height: 1.8,
++            max_slope_degrees: 50.0,
++            max_climb: 0.4,
++            area_costs: BTreeMap::new(),
++        }
++    }
++}
++
++impl NavigationAgentProfile {
++    fn area_cost(&self, area: u16) -> f32 {
++        self.area_costs.get(&area).copied().unwrap_or(1.0)
++    }
++
++    fn validate(&self) -> Result<(), NavigationBakeError> {
++        if self.id.as_str().is_empty()
++            || self.name.trim().is_empty()
++            || !self.radius.is_finite()
++            || self.radius < 0.0
++            || !self.height.is_finite()
++            || self.height <= 0.0
++            || !self.max_slope_degrees.is_finite()
++            || !(0.0..90.0).contains(&self.max_slope_degrees)
++            || !self.max_climb.is_finite()
++            || self.max_climb < 0.0
++            || self
++                .area_costs
++                .values()
++                .any(|cost| !cost.is_finite() || *cost <= 0.0)
++        {
++            return Err(NavigationBakeError::InvalidProfile(
++                self.id.as_str().to_owned(),
++            ));
++        }
++        Ok(())
++    }
++}
++
++/// Engine-owned source triangle supplied to a navigation baker.
++#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
++pub struct NavigationTriangle {
++    /// First world-space vertex.
++    pub a: [f32; 3],
++    /// Second world-space vertex.
++    pub b: [f32; 3],
++    /// Third world-space vertex.
++    pub c: [f32; 3],
++    /// Default traversal area before modifiers are applied.
++    pub area: u16,
++}
++
++impl NavigationTriangle {
++    fn points(self) -> [Vec3; 3] {
++        [
++            Vec3::from_array(self.a),
++            Vec3::from_array(self.b),
++            Vec3::from_array(self.c),
++        ]
++    }
++
++    fn centroid(self) -> Vec3 {
++        let [a, b, c] = self.points();
++        (a + b + c) / 3.0
++    }
++}
++
++/// Operation performed by one world-space navigation modifier.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++pub enum NavigationModifierMode {
++    /// Removes matching geometry from the selected profile bakes.
++    Exclude,
++    /// Reclassifies matching geometry and multiplies its traversal cost.
++    Area {
++        /// Runtime area identifier.
++        area: u16,
++        /// Additional deterministic traversal-cost multiplier.
++        cost_multiplier: f32,
++    },
++}
++
++/// Backend-neutral area or exclusion modifier collected from authoring data.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++pub struct NavigationModifier {
++    /// Stable authoring identity used by diagnostics.
++    pub id: String,
++    /// Inclusive world-space minimum bound.
++    pub minimum: [f32; 3],
++    /// Inclusive world-space maximum bound.
++    pub maximum: [f32; 3],
++    /// Optional profile filter; an empty list applies to every profile.
++    pub profiles: Vec<NavigationProfileId>,
++    /// Modifier operation.
++    pub mode: NavigationModifierMode,
++}
++
++impl NavigationModifier {
++    fn applies_to(&self, profile: &NavigationProfileId, point: Vec3) -> bool {
++        let minimum = Vec3::from_array(self.minimum);
++        let maximum = Vec3::from_array(self.maximum);
++        (self.profiles.is_empty() || self.profiles.contains(profile))
++            && point.cmpge(minimum).all()
++            && point.cmple(maximum).all()
++    }
++}
++
++/// Backend-neutral explicit traversal collected from scene authoring.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
