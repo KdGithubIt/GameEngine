@@ -1,0 +1,12 @@
+diff --git a/crates/editor/src/bin/advanced_geometry_designer.rs b/crates/editor/src/bin/advanced_geometry_designer.rs
+--- a/crates/editor/src/bin/advanced_geometry_designer.rs
++++ b/crates/editor/src/bin/advanced_geometry_designer.rs
+@@ -6,7 +6,7 @@ use engine::advanced_geometry::{
+     LayeredNavMesh, NavMeshLayer, NavMeshLayerLink, StaticTriangleMesh,
+ };
+ use engine::glam::Vec3;
+-use engine::navmesh::{bake_from_obstacles, NavMeshSettings};
++use engine::navmesh::grid::{bake_from_obstacles, NavMeshSettings};
+ use serde::{Deserialize, Serialize};
+ 
+ const GEOMETRY_PROJECT_SCHEMA_VERSION: u32 = 1;
