@@ -1,0 +1,197 @@
++    ) -> Result<(), AgentHostError> {
++        let session = self.session_mut(session_id)?;
++        let run = session.run_mut(run_id).ok_or_else(|| {
++            AgentHostError::new(
++                "agent.run_not_found",
++                format!("agent run `{run_id}` does not exist"),
++            )
++        })?;
++        match operation {
++            AgentAuditOperation::AuthoringOperation => run.audit.authoring_operations += 1,
++            AgentAuditOperation::ExternalAcquisition => run.audit.external_acquisitions += 1,
++            AgentAuditOperation::RawFilesystemAccess => run.audit.raw_filesystem_accesses += 1,
++            AgentAuditOperation::CustomCommand => run.audit.custom_commands += 1,
++        }
++        Ok(())
++    }
++
++    /// Records a deterministic validation result and publishes a structured event.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`AgentHostError`] when the session or run is unknown.
++    pub fn record_validation(
++        &mut self,
++        session_id: &AgentSessionId,
++        run_id: &AgentRunId,
++        name: impl Into<String>,
++        passed: bool,
++    ) -> Result<(), AgentHostError> {
++        let name = name.into();
++        let session = self.session_mut(session_id)?;
++        let run = session.run_mut(run_id).ok_or_else(|| {
++            AgentHostError::new(
++                "agent.run_not_found",
++                format!("agent run `{run_id}` does not exist"),
++            )
++        })?;
++        run.audit.validation_records += 1;
++        session.emit(AgentEventKind::Validation { name, passed });
++        Ok(())
++    }
++
++    /// Records a runtime playtest result and publishes a structured event.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`AgentHostError`] when the session or run is unknown.
++    pub fn record_playtest(
++        &mut self,
++        session_id: &AgentSessionId,
++        run_id: &AgentRunId,
++        scenario: impl Into<String>,
++        passed: bool,
++    ) -> Result<(), AgentHostError> {
++        let scenario = scenario.into();
++        let session = self.session_mut(session_id)?;
++        let run = session.run_mut(run_id).ok_or_else(|| {
++            AgentHostError::new(
++                "agent.run_not_found",
++                format!("agent run `{run_id}` does not exist"),
++            )
++        })?;
++        run.audit.playtest_records += 1;
++        session.emit(AgentEventKind::Playtest { scenario, passed });
++        Ok(())
++    }
++
++    /// Requests an unavailable permission and records it in the semantic audit history.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`AgentHostError`] when the session or run is unknown.
++    pub fn request_permission(
++        &mut self,
++        session_id: &AgentSessionId,
++        run_id: &AgentRunId,
++        permission: AgentPermission,
++        reason: impl Into<String>,
++    ) -> Result<Option<PermissionRequestId>, AgentHostError> {
++        if self
++            .session(session_id)
++            .and_then(|session| session.run(run_id))
++            .is_none()
++        {
++            return Err(AgentHostError::new(
++                "agent.run_not_found",
++                format!("agent run `{run_id}` does not exist"),
++            ));
++        }
++        let request = self
++            .permissions
++            .request(run_id.clone(), permission, reason.into());
++        if let Some(request_id) = &request {
++            let session = self.session_mut(session_id)?;
++            if let Some(run) = session.run_mut(run_id) {
++                run.audit.permission_escalations += 1;
++            }
++            session.emit(AgentEventKind::PermissionRequested(request_id.clone()));
++        }
++        Ok(request)
++    }
++
++    /// Applies a human permission decision and records it in the audit timeline.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`AgentHostError`] when the request or session is unknown.
++    pub fn resolve_permission(
++        &mut self,
++        session_id: &AgentSessionId,
++        request_id: &PermissionRequestId,
++        scope: ApprovalScope,
++    ) -> Result<(), AgentHostError> {
++        self.permissions.resolve(request_id, scope)?;
++        self.session_mut(session_id)?
++            .emit(AgentEventKind::PermissionResolved {
++                request_id: request_id.clone(),
++                scope,
++            });
++        Ok(())
++    }
++
++    /// Cancels one non-terminal run without pretending external side effects were rolled back.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`AgentHostError`] when the run is unknown or already terminal.
++    pub fn cancel_run(
++        &mut self,
++        session_id: &AgentSessionId,
++        run_id: &AgentRunId,
++    ) -> Result<(), AgentHostError> {
++        let session = self.session_mut(session_id)?;
++        let run = session.run_mut(run_id).ok_or_else(|| {
++            AgentHostError::new(
++                "agent.run_not_found",
++                format!("agent run `{run_id}` does not exist"),
++            )
++        })?;
++        if run.state.is_terminal() {
++            return Err(AgentHostError::new(
++                "agent.run_already_terminal",
++                format!("agent run `{run_id}` is already terminal"),
++            ));
++        }
++        let from = run.state;
++        run.state = AgentRunState::Cancelled;
++        session.emit(AgentEventKind::StateChanged {
++            run_id: run_id.clone(),
++            from,
++            to: AgentRunState::Cancelled,
++        });
++        session.emit(AgentEventKind::Cancelled(run_id.clone()));
++        self.finish_writer(session_id, run_id);
++        Ok(())
++    }
++
++    /// Fails one non-terminal run with a structured semantic event.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`AgentHostError`] when the run is unknown or already terminal.
++    pub fn fail_run(
++        &mut self,
++        session_id: &AgentSessionId,
++        run_id: &AgentRunId,
++        message: impl Into<String>,
++    ) -> Result<(), AgentHostError> {
++        let message = message.into();
++        let session = self.session_mut(session_id)?;
++        let run = session.run_mut(run_id).ok_or_else(|| {
++            AgentHostError::new(
++                "agent.run_not_found",
++                format!("agent run `{run_id}` does not exist"),
++            )
++        })?;
++        if run.state.is_terminal() {
++            return Err(AgentHostError::new(
++                "agent.run_already_terminal",
++                format!("agent run `{run_id}` is already terminal"),
++            ));
++        }
++        let from = run.state;
++        run.state = AgentRunState::Failed;
++        session.emit(AgentEventKind::StateChanged {
++            run_id: run_id.clone(),
++            from,
++            to: AgentRunState::Failed,
++        });
++        session.emit(AgentEventKind::Failed {
++            run_id: run_id.clone(),
++            message,
++        });
++        self.finish_writer(session_id, run_id);
++        Ok(())
++    }
++
