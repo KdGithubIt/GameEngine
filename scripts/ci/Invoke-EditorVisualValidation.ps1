@@ -113,7 +113,9 @@ function Invoke-DesktopScreenshot {
     param(
         [Parameter(Mandatory = $true)][string]$Name,
         [Parameter(Mandatory = $true)][string]$Package,
-        [Parameter(Mandatory = $true)][string[]]$ProgramArguments
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
+        [string[]]$ProgramArguments
     )
 
     $outputPath = Join-Path $OutputDirectory "$Name.png"
