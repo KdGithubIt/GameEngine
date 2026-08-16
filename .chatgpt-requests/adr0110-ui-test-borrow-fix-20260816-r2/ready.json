@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0110-ui-test-borrow-fix-20260816-r2",
+  "target_branch": "chatgpt/gameengine-adr-0110-humanoid-motion",
+  "expected_head_sha": "ad7c9204c92ad712589446591634ad9f3d0cee80",
+  "patch_parts": ["part-0000.patch"],
+  "commit_message": "Fix ADR 0110 Animation Set UI borrow test",
+  "pr_title": "ADR 0110: implement humanoid animation sources",
+  "pr_body": "Implements ADR 0110 Humanoid profiles and skeleton-independent motion. This repair shortens mutable borrows in the Animation Set motion-source validation test so the document can be validated immutably between explicit variant mutations. PR remains Draft; merge is manual."
+}
