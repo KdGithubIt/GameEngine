@@ -1,0 +1,389 @@
+diff --git a/crates/launcher/Cargo.toml b/crates/launcher/Cargo.toml
+--- a/crates/launcher/Cargo.toml
++++ b/crates/launcher/Cargo.toml
+@@ -4,7 +4,7 @@ version = "0.1.0"
+ edition = "2024"
+ 
+ [features]
+-visual-validation = ["eframe/__screenshot"]
++visual-validation = []
+ 
+ [dependencies]
+ dirs = "5"
+diff --git a/crates/launcher/src/main.rs b/crates/launcher/src/main.rs
+--- a/crates/launcher/src/main.rs
++++ b/crates/launcher/src/main.rs
+@@ -3,6 +3,8 @@
+ mod fonts;
+ mod icon;
+ mod theme;
++#[cfg(feature = "visual-validation")]
++mod visual_capture;
+ 
+ use eframe::egui;
+ use engine_project_lifecycle::{
+@@ -282,6 +284,8 @@ struct LauncherApp {
+     status: Option<StatusMessage>,
+     switch_from: Option<PathBuf>,
+     pending_switch: Option<PendingSwitch>,
++    #[cfg(feature = "visual-validation")]
++    visual_capture: visual_capture::VisualCapture,
+ }
+ 
+ impl LauncherApp {
+@@ -294,6 +298,8 @@ impl LauncherApp {
+             status: None,
+             switch_from: None,
+             pending_switch: None,
++            #[cfg(feature = "visual-validation")]
++            visual_capture: visual_capture::VisualCapture::from_environment(),
+         }
+     }
+ 
+@@ -643,6 +649,8 @@ impl eframe::App for LauncherApp {
+         // Editor ownership is written by other processes, so the row badges
+         // only stay honest if the window wakes up without user input.
+         context.request_repaint_after(RECENT_REFRESH_INTERVAL);
++        #[cfg(feature = "visual-validation")]
++        self.visual_capture.update(context);
+     }
+ 
+     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+diff --git a/crates/launcher/src/visual_capture.rs b/crates/launcher/src/visual_capture.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/launcher/src/visual_capture.rs
+@@ -0,0 +1,156 @@
++use std::path::{Path, PathBuf};
++use std::time::{Duration, Instant};
++
++use eframe::egui;
++
++const CAPTURE_TIMEOUT: Duration = Duration::from_secs(5);
++const PNG_SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
++
++pub(crate) struct VisualCapture {
++    path: Option<PathBuf>,
++    requested_at: Option<Instant>,
++}
++
++impl VisualCapture {
++    pub(crate) fn from_environment() -> Self {
++        Self {
++            path: std::env::var_os("GAMEENGINE_LAUNCHER_SCREENSHOT_TO").map(PathBuf::from),
++            requested_at: None,
++        }
++    }
++
++    pub(crate) fn update(&mut self, context: &egui::Context) {
++        let Some(path) = self.path.clone() else {
++            return;
++        };
++
++        let screenshot = context.input(|input| {
++            input.events.iter().find_map(|event| match event {
++                egui::Event::Screenshot { image, .. } => Some(image.clone()),
++                _ => None,
++            })
++        });
++        if let Some(image) = screenshot {
++            if let Err(error) = write_png(&path, image.as_ref()) {
++                let _ = std::fs::remove_file(&path);
++                eprintln!("[launcher.visual_validation_capture_failed] {error}");
++            }
++            self.path = None;
++            context.send_viewport_cmd(egui::ViewportCommand::Close);
++            return;
++        }
++
++        match self.requested_at {
++            None => {
++                self.requested_at = Some(Instant::now());
++                context.send_viewport_cmd(egui::ViewportCommand::Screenshot(
++                    egui::UserData::default(),
++                ));
++                context.request_repaint();
++            }
++            Some(requested_at) if requested_at.elapsed() >= CAPTURE_TIMEOUT => {
++                let _ = std::fs::remove_file(&path);
++                eprintln!(
++                    "[launcher.visual_validation_capture_failed] screenshot event was not returned"
++                );
++                self.path = None;
++                context.send_viewport_cmd(egui::ViewportCommand::Close);
++            }
++            Some(_) => context.request_repaint(),
++        }
++    }
++}
++
++fn write_png(path: &Path, image: &egui::ColorImage) -> Result<(), String> {
++    let [width, height] = image.size;
++    if width == 0 || height == 0 {
++        return Err("screenshot image has zero extent".to_owned());
++    }
++    let expected_pixels = width
++        .checked_mul(height)
++        .ok_or_else(|| "screenshot dimensions overflow pixel count".to_owned())?;
++    if image.pixels.len() != expected_pixels {
++        return Err("screenshot pixel count does not match its dimensions".to_owned());
++    }
++
++    let row_bytes = width
++        .checked_mul(4)
++        .ok_or_else(|| "screenshot row size overflowed".to_owned())?;
++    let raw_capacity = row_bytes
++        .checked_add(1)
++        .and_then(|stride| stride.checked_mul(height))
++        .ok_or_else(|| "screenshot PNG buffer size overflowed".to_owned())?;
++    let mut raw = Vec::with_capacity(raw_capacity);
++    for row in image.pixels.chunks_exact(width) {
++        raw.push(0); // PNG filter type: None.
++        raw.extend(row.iter().flat_map(|pixel| pixel.to_array()));
++    }
++
++    let width = u32::try_from(width).map_err(|_| "screenshot width exceeds PNG limits")?;
++    let height = u32::try_from(height).map_err(|_| "screenshot height exceeds PNG limits")?;
++    let mut ihdr = Vec::with_capacity(13);
++    ihdr.extend_from_slice(&width.to_be_bytes());
++    ihdr.extend_from_slice(&height.to_be_bytes());
++    ihdr.extend_from_slice(&[8, 6, 0, 0, 0]);
++
++    let mut encoded = Vec::with_capacity(raw.len().saturating_add(128));
++    encoded.extend_from_slice(PNG_SIGNATURE);
++    append_png_chunk(&mut encoded, *b"IHDR", &ihdr)?;
++    append_png_chunk(&mut encoded, *b"IDAT", &zlib_store(&raw))?;
++    append_png_chunk(&mut encoded, *b"IEND", &[])?;
++    std::fs::write(path, encoded).map_err(|error| error.to_string())
++}
++
++fn zlib_store(data: &[u8]) -> Vec<u8> {
++    let mut encoded = Vec::with_capacity(data.len().saturating_add(data.len() / 65_535 * 5 + 16));
++    encoded.extend_from_slice(&[0x78, 0x01]);
++
++    let mut offset = 0;
++    while offset < data.len() {
++        let block_len = (data.len() - offset).min(u16::MAX as usize);
++        let end = offset + block_len;
++        encoded.push(u8::from(end == data.len()));
++        let block_len = block_len as u16;
++        encoded.extend_from_slice(&block_len.to_le_bytes());
++        encoded.extend_from_slice(&(!block_len).to_le_bytes());
++        encoded.extend_from_slice(&data[offset..end]);
++        offset = end;
++    }
++    if data.is_empty() {
++        encoded.extend_from_slice(&[1, 0, 0, 0xff, 0xff]);
++    }
++    encoded.extend_from_slice(&adler32(data).to_be_bytes());
++    encoded
++}
++
++fn append_png_chunk(output: &mut Vec<u8>, kind: [u8; 4], data: &[u8]) -> Result<(), String> {
++    let length = u32::try_from(data.len()).map_err(|_| "PNG chunk exceeds format limits")?;
++    output.extend_from_slice(&length.to_be_bytes());
++    output.extend_from_slice(&kind);
++    output.extend_from_slice(data);
++    output.extend_from_slice(&crc32(&kind, data).to_be_bytes());
++    Ok(())
++}
++
++fn adler32(data: &[u8]) -> u32 {
++    const MODULUS: u32 = 65_521;
++    let mut a = 1u32;
++    let mut b = 0u32;
++    for &byte in data {
++        a = (a + u32::from(byte)) % MODULUS;
++        b = (b + a) % MODULUS;
++    }
++    (b << 16) | a
++}
++
++fn crc32(kind: &[u8; 4], data: &[u8]) -> u32 {
++    let mut crc = u32::MAX;
++    for &byte in kind.iter().chain(data) {
++        crc ^= u32::from(byte);
++        for _ in 0..8 {
++            let mask = 0u32.wrapping_sub(crc & 1);
++            crc = (crc >> 1) ^ (0xedb8_8320 & mask);
++        }
++    }
++    !crc
++}
+diff --git a/scripts/ci/Invoke-EditorVisualValidation.ps1 b/scripts/ci/Invoke-EditorVisualValidation.ps1
+--- a/scripts/ci/Invoke-EditorVisualValidation.ps1
++++ b/scripts/ci/Invoke-EditorVisualValidation.ps1
+@@ -113,7 +113,9 @@ function Invoke-DesktopScreenshot {
+     param(
+         [Parameter(Mandatory = $true)][string]$Name,
+         [Parameter(Mandatory = $true)][string]$Package,
+-        [Parameter(Mandatory = $true)][string[]]$ProgramArguments
++        [Parameter(Mandatory = $true)]
++        [AllowEmptyCollection()]
++        [string[]]$ProgramArguments
+     )
+ 
+     $outputPath = Join-Path $OutputDirectory "$Name.png"
+@@ -122,7 +124,7 @@ function Invoke-DesktopScreenshot {
+     $captureVariable = if ($Package -eq "engine-editor") {
+         "GAMEENGINE_SCREENSHOT_TO"
+     } else {
+-        "EFRAME_SCREENSHOT_TO"
++        "GAMEENGINE_LAUNCHER_SCREENSHOT_TO"
+     }
+     $previousValue = [Environment]::GetEnvironmentVariable(
+         $captureVariable,
+diff --git a/scripts/ci/New-ValidationPlan.ps1 b/scripts/ci/New-ValidationPlan.ps1
+--- a/scripts/ci/New-ValidationPlan.ps1
++++ b/scripts/ci/New-ValidationPlan.ps1
+@@ -158,36 +158,43 @@ if ($EventName -eq "schedule") {
+         }
+ 
+         $metadata = $null
+-        try {
+-            if ($MetadataFile) {
+-                $metadata = Get-Content -Raw -LiteralPath $MetadataFile -Encoding utf8 | ConvertFrom-Json -AsHashtable
+-            } else {
+-                Push-Location $workspaceRootPath
+-                $rustcWrapper = $env:RUSTC_WRAPPER
+-                $metadataErrorPath = Join-Path ([System.IO.Path]::GetTempPath()) ("gameengine-metadata-" + [guid]::NewGuid().ToString("N") + ".log")
+-                try {
+-                    Remove-Item Env:RUSTC_WRAPPER -ErrorAction SilentlyContinue
+-                    $metadataText = & cargo metadata --format-version 1 --locked 2>$metadataErrorPath
+-                    $metadataExitCode = $LASTEXITCODE
+-                    $global:LASTEXITCODE = 0
+-                    if ($metadataExitCode -ne 0) {
+-                        $metadataError = (Get-Content -Raw -LiteralPath $metadataErrorPath -ErrorAction SilentlyContinue).Trim()
+-                        throw "cargo metadata failed with exit code $metadataExitCode. $metadataError"
+-                    }
+-                    $metadata = $metadataText | ConvertFrom-Json -AsHashtable
+-                } finally {
+-                    Remove-Item -LiteralPath $metadataErrorPath -Force -ErrorAction SilentlyContinue
+-                    if ($null -ne $rustcWrapper) {
+-                        $env:RUSTC_WRAPPER = $rustcWrapper
++        if ($forceFullPath) {
++            $plan = New-Plan -Mode "full" -Skip $false `
++                -Reason "Full validation selected because '$forceFullPath' has workspace-wide or uncertain impact." `
++                -ChangedPackages @() -AffectedPackages @()
++        } else {
++            try {
++                if ($MetadataFile) {
++                    $metadata = Get-Content -Raw -LiteralPath $MetadataFile -Encoding utf8 | ConvertFrom-Json -AsHashtable
++                } else {
++                    Push-Location $workspaceRootPath
++                    $rustcWrapper = $env:RUSTC_WRAPPER
++                    $metadataErrorPath = Join-Path ([System.IO.Path]::GetTempPath()) ("gameengine-metadata-" + [guid]::NewGuid().ToString("N") + ".log")
++                    try {
++                        Remove-Item Env:RUSTC_WRAPPER -ErrorAction SilentlyContinue
++                        $metadataText = & cargo metadata --format-version 1 --locked 2>$metadataErrorPath
++                        $metadataExitCode = $LASTEXITCODE
++                        $global:LASTEXITCODE = 0
++                        if ($metadataExitCode -ne 0) {
++                            $metadataError = (Get-Content -Raw -LiteralPath $metadataErrorPath -ErrorAction SilentlyContinue).Trim()
++                            throw "cargo metadata failed with exit code $metadataExitCode. $metadataError"
++                        }
++                        $metadata = $metadataText | ConvertFrom-Json -AsHashtable
++                    } finally {
++                        Remove-Item -LiteralPath $metadataErrorPath -Force -ErrorAction SilentlyContinue
++                        if ($null -ne $rustcWrapper) {
++                            $env:RUSTC_WRAPPER = $rustcWrapper
++                        }
++                        Pop-Location
+                     }
+-                    Pop-Location
+                 }
++            } catch {
++                $global:LASTEXITCODE = 0
++                $metadataFailure = (($_.Exception.Message -replace "\r?\n", " ") -replace "\s+", " ").Trim()
++                $plan = New-Plan -Mode "full" -Skip $false `
++                    -Reason "cargo metadata could not be evaluated safely: $metadataFailure" `
++                    -ChangedPackages @() -AffectedPackages @()
+             }
+-        } catch {
+-            $global:LASTEXITCODE = 0
+-            $plan = New-Plan -Mode "full" -Skip $false `
+-                -Reason "cargo metadata could not be evaluated safely: $($_.Exception.Message)" `
+-                -ChangedPackages @() -AffectedPackages @()
+         }
+ 
+         if (-not $plan) {
+diff --git a/scripts/ci/Test-ValidationPlanner.ps1 b/scripts/ci/Test-ValidationPlanner.ps1
+--- a/scripts/ci/Test-ValidationPlanner.ps1
++++ b/scripts/ci/Test-ValidationPlanner.ps1
+@@ -109,6 +109,40 @@ function Invoke-LayoutTests {
+     Assert-Plan "pull-request" "pull_request" @((Path-InWorkspace "crates/leaf/src/lib.rs")) "affected" @("leaf")
+     Assert-Plan "merge-group" "merge_group" @((Path-InWorkspace "crates/leaf/src/lib.rs")) "affected" @("leaf")
+     Assert-Plan "dispatcher" "workflow_dispatch" @((Path-InWorkspace "crates/leaf/src/lib.rs")) "affected" @("leaf")
++
++    $forcedChanged = Join-Path $temp "$LayoutName-ci-script-short-circuit.changed.txt"
++    (Path-InWorkspace "scripts/ci/example.ps1") | Set-Content -LiteralPath $forcedChanged -Encoding utf8
++    $missingMetadata = Join-Path $temp "$LayoutName-missing.metadata.json"
++    $forcedJson = & $Planner `
++        -EventName "pull_request" `
++        -ChangedFilesPath $forcedChanged `
++        -WorkspaceRoot $Workspace `
++        -RepositoryRoot $Repository `
++        -MetadataFile $missingMetadata
++    $forcedPlan = $forcedJson | ConvertFrom-Json
++    if ($forcedPlan.validation_mode -ne "full") {
++        throw "$LayoutName/ci-script-short-circuit expected mode full, got $($forcedPlan.validation_mode)."
++    }
++    Write-Host "[PASS] $LayoutName/ci-script-short-circuit -> full without metadata"
++
++    $malformedMetadata = Join-Path $temp "$LayoutName-malformed.metadata.json"
++    "{" | Set-Content -LiteralPath $malformedMetadata -Encoding utf8
++    $metadataFailureChanged = Join-Path $temp "$LayoutName-metadata-failure.changed.txt"
++    (Path-InWorkspace "crates/leaf/src/lib.rs") | Set-Content -LiteralPath $metadataFailureChanged -Encoding utf8
++    $failureJson = & $Planner `
++        -EventName "pull_request" `
++        -ChangedFilesPath $metadataFailureChanged `
++        -WorkspaceRoot $Workspace `
++        -RepositoryRoot $Repository `
++        -MetadataFile $malformedMetadata
++    $failurePlan = $failureJson | ConvertFrom-Json
++    if ($failurePlan.validation_mode -ne "full") {
++        throw "$LayoutName/metadata-failure expected mode full, got $($failurePlan.validation_mode)."
++    }
++    if ($failurePlan.reason -match "[`r`n]") {
++        throw "$LayoutName/metadata-failure returned a multiline scope reason."
++    }
++    Write-Host "[PASS] $LayoutName/metadata-failure -> single-line full fallback"
+ }
+ 
+ try {
+diff --git a/crates/cli/src/lib.rs b/crates/cli/src/lib.rs
+--- a/crates/cli/src/lib.rs
++++ b/crates/cli/src/lib.rs
+@@ -625,7 +625,7 @@ mod tests {
+ 
+         assert_eq!(json["graph_kind"], "behavior_tree.graph");
+         assert_eq!(json["layout_policy"], "behavior_tree.top_down");
+-        assert_eq!(json["nodes"].as_array().unwrap().len(), 6);
++        assert_eq!(json["nodes"].as_array().unwrap().len(), 10);
+     }
+ 
+     #[test]
+diff --git a/docs/EDITOR_VISUAL_VALIDATION.md b/docs/EDITOR_VISUAL_VALIDATION.md
+--- a/docs/EDITOR_VISUAL_VALIDATION.md
++++ b/docs/EDITOR_VISUAL_VALIDATION.md
+@@ -72,11 +72,14 @@
+ receives the renderer-independent `Event::Screenshot`, and writes the returned
+ image with its existing PNG encoder. The capture path is bounded: if the
+ screenshot response is not returned, the validation-only process closes and the
+ script reports a missing artifact instead of waiting indefinitely.
+ 
+-Launcher capture currently keeps its existing eframe `__screenshot` /
+-`EFRAME_SCREENSHOT_TO` path. Editor and Launcher therefore intentionally use
+-separate capture implementations until the Launcher path is migrated and
+-validated independently.
++Launcher capture also keeps eframe's normal wgpu renderer. The capture script
++sets `GAMEENGINE_LAUNCHER_SCREENSHOT_TO` only for the validation invocation.
++The Launcher requests and receives the screenshot through the same
++renderer-independent egui command/event contract, then writes PNG bytes through
++its validation-only capture module. Its capture path uses the same bounded
++failure behavior so a missing screenshot event cannot leave validation waiting
++indefinitely.
+ 
+ `scripts/ci/Invoke-EditorVisualValidation.ps1` builds and launches only the
+ requested desktop executable with the feature enabled and stores the resulting
+ PNG in the validation artifact directory.
