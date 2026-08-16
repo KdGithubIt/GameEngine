@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0124-validation-fix-20260816-2021-r1",
+  "target_branch": "chatgpt/gameengine-adr-0124-production-navmesh-v6",
+  "expected_head_sha": "997077adc4d87da8a5335642b345215e4d3ab66f",
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Fix ADR 0124 affected validation regressions",
+  "pr_title": "GameEngine: implement ADR 0124 production navigation",
+  "pr_body": "## Summary\n\nContinues ADR 0124 production navigation. Preserves existing serialized navigation agents by defaulting a missing profile ID to the stable default profile and fixes the confirmed affected Clippy failure without lint suppression.\n\n<!-- gameengine-chatgpt-dispatcher -->"
+}
