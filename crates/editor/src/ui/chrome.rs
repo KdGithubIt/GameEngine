@@ -459,12 +459,25 @@ impl EditorApp {
                 }
                 if ui
                     .add_enabled(
-                        self.session.scene().is_some() && !self.is_playing(),
+                        self.session.scene().is_some()
+                            && !self.is_playing()
+                            && !self.navigation_bake.is_running(),
                         egui::Button::new("Bake NavMesh"),
                     )
                     .clicked()
                 {
                     self.bake_current_navmesh();
+                    ui.close();
+                }
+                if self.navigation_bake.is_running()
+                    && ui
+                        .add_enabled(
+                            !self.navigation_bake.is_cancelling(),
+                            egui::Button::new("Cancel NavMesh Bake"),
+                        )
+                        .clicked()
+                {
+                    self.cancel_current_navmesh_bake();
                     ui.close();
                 }
             });
