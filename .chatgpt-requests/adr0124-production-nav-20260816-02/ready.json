@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0124-production-nav-20260816-02",
+  "target_branch": "chatgpt/gameengine-adr-0124-production-navmesh",
+  "expected_head_sha": "2d8abd994b66e1f46b9d630aa72985e133abd996",
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Update navigation scene bridge fixture",
+  "pr_title": "GameEngine: implement ADR 0124 production navigation",
+  "pr_body": "## Summary\n\nContinues ADR 0124 on the existing Draft PR. This repair updates the scene-bridge navigation fixture to construct the production NavMesh through the public bake API rather than the retired grid struct fields."
+}
