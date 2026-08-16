@@ -152,4 +152,4 @@ new file mode 100644
 +    /// Searches registered source assets and imported sub-assets.
 +    ///
 +    /// Matching is case-insensitive across stable ID, authoring name, source
-+    /// path, and imported kind. An empty query returns the 
++    /// path, and imported kind. An empty query returns the
