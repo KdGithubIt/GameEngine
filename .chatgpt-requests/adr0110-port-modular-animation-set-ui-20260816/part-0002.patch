@@ -1,0 +1,28 @@
+diff --git a/crates/editor/src/ui/tests.rs b/crates/editor/src/ui/tests.rs
+--- a/crates/editor/src/ui/tests.rs
++++ b/crates/editor/src/ui/tests.rs
+@@ -1749,7 +1749,7 @@ fn animation_set_validation_accepts_only_imported_animation_clip_sub_assets() {
+         slot.clone(),
+         engine_authoring::AnimationBinding {
+             name: "Dance".into(),
+-            clip: primary_clip.clone(),
+-            overlays: vec![overlay_clip],
++            clip: engine_authoring::MotionSourceRef::native(primary_clip.clone()),
++            overlays: vec![engine_authoring::MotionSourceRef::native(overlay_clip)],
+             events: Vec::new(),
+         },
+@@ -1763,4 +1763,4 @@ fn animation_set_validation_accepts_only_imported_animation_clip_sub_assets() {
+         .bindings
+         .get_mut(&slot)
+         .expect("the test binding must exist")
+-        .clip = motion_source.clone();
++        .clip = engine_authoring::MotionSourceRef::native(motion_source.clone());
+@@ -1775,6 +1775,6 @@ fn animation_set_validation_accepts_only_imported_animation_clip_sub_assets() {
+     let binding = document
+         .bindings
+         .get_mut(&slot)
+         .expect("the test binding must exist");
+-    binding.clip = primary_clip;
+-    binding.overlays = vec![motion_source];
++    binding.clip = engine_authoring::MotionSourceRef::native(primary_clip);
++    binding.overlays = vec![engine_authoring::MotionSourceRef::native(motion_source)];
