@@ -1,0 +1,7 @@
+diff --git a/crates/engine/src/mmd_physics.rs b/crates/engine/src/mmd_physics.rs
+deleted file mode 100644
+index a13bb99ec84aae1e3ac3ce7eafcd3cabfee28a31..0000000000000000000000000000000000000000
+GIT binary patch
+literal 0
+HcmV?d00001
+
