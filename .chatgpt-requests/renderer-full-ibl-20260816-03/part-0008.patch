@@ -1,0 +1,175 @@
+diff --git a/docs/adr/0121-full-image-based-lighting.md b/docs/adr/0121-full-image-based-lighting.md
+new file mode 100644
+--- /dev/null
++++ b/docs/adr/0121-full-image-based-lighting.md
+@@ -0,0 +1,145 @@
++# ADR 0121: Full Image-Based Lighting Contract
++
++**Status:** Accepted  
++**Date:** 2026-08-16
++
++## Context
++
++ADR 0036 introduced `EnvironmentLighting` as the generic scene-lighting
++contract but deliberately deferred split-sum specular image-based lighting,
++prefiltered environment maps, and a BRDF integration lookup table. The runtime
++therefore approximated environment illumination by replacing the ambient color
++for `StandardLit` materials.
++
++ADR 0118 later fixed the renderer's color-space pipeline and explicitly
++separated visible sky presentation from environment lighting. ADR 0119 made
++`mesh.wgsl::fs_main` the shared static/skinned material fragment stage. ADR 0120
++then established the generic metallic/roughness, normal, and occlusion material
++inputs and reserved ambient occlusion for indirect lighting only.
++
++The renderer now has the contracts needed to replace the ambient approximation
++without introducing a format-specific shading path or another material schema
++revision.
++
++## Decision
++
++### 1. Environment lighting remains a generic StandardLit responsibility
++
++Full image-based lighting is implemented only as the indirect-lighting model of
++the generic `StandardLit` shading model.
++
++`ToonLit` retains its authored ramp, ambient, rim, sphere/matcap, and shadow
++semantics. `Unlit` remains independent from scene lighting. PMX, glTF, FBX, and
++engine-authored materials continue to converge on those generic shading models;
++there is no importer-specific renderer path.
++
++### 2. Lighting source and visible sky remain separate
++
++The runtime exposes an `EnvironmentMap` lighting resource containing a decoded
++equirectangular sRGB image. The renderer converts that source into lighting
++products.
++
++`SkySettings` remains presentation-only. Enabling, disabling, or changing the
++procedural sky does not implicitly alter the image-based lighting source, and a
++lighting source does not automatically become the visible background.
++
++This phase does not revise the serialized `EnvironmentLighting` component or
++Stable IDs. Asset-resolution code may populate the runtime `EnvironmentMap`
++resource independently of the renderer. Existing scenes therefore remain
++current-format documents without migration.
++
++### 3. Precomputation produces three scene-linear resources
++
++When the `EnvironmentMap` content changes, the renderer converts its sRGB RGB
++channels to scene-linear values and deterministically derives:
++
++1. a cosine-convolved diffuse irradiance cubemap;
++2. a GGX-prefiltered specular cubemap whose mip chain represents increasing
++   perceptual roughness; and
++3. a split-sum BRDF integration LUT indexed by `NdotV` and roughness.
++
++The current quality baseline is:
++
++- diffuse irradiance cube: `16 x 16` per face, `Rgba16Float`;
++- prefiltered specular cube: `64 x 64` base per face with a full mip chain,
++  `Rgba16Float`;
++- BRDF LUT: `128 x 128`, `Rg16Float`;
++- deterministic Hammersley sampling with 64 samples for convolution/integration.
++
++These are renderer quality constants, not serialized authoring settings. They
++may be changed later without changing material or scene schemas as long as the
++lighting semantics remain equivalent.
++
++### 4. StandardLit uses split-sum indirect lighting
++
++The existing Cook-Torrance directional-light calculation remains unchanged.
++For indirect light, `StandardLit` computes:
++
++- dielectric `F0 = 0.04`, blended toward base color by metallic;
++- roughness-aware Schlick Fresnel for the indirect view term;
++- diffuse irradiance multiplied by base color, non-metal weight, and the
++  complementary Fresnel term;
++- reflected-direction lookup into the prefiltered specular cubemap at the
++  roughness-selected mip;
++- split-sum BRDF LUT scaling/bias for the specular contribution.
++
++Ambient occlusion multiplies the combined diffuse and specular **indirect**
++contribution. It does not alter direct directional light, emissive output,
++`ToonLit`, or `Unlit`, preserving ADR 0120.
++
++### 5. The legacy constant environment remains the fallback source
++
++`EnvironmentLighting.diffuse_color` and `intensity` remain meaningful when
++image-based environment lighting is enabled but no runtime `EnvironmentMap` is
++resolved. The color is treated as constant scene-linear incident radiance and
++is evaluated through the same StandardLit Fresnel/metalness indirect-lighting
++model rather than the old plain ambient multiplication.
++
++When `diffuse_ibl_enabled` is false, StandardLit keeps the historical
++`AmbientLight` approximation exactly. This preserves scenes that did not opt in
++to environment lighting.
++
++The effective environment intensity keeps the existing scene behavior:
++`AmbientLight.intensity * EnvironmentLighting.intensity`.
++
++### 6. GPU binding ownership stays with the light/environment group
++
++Material group 1 remains material-owned. Camera group 0 and skinned joint group
++3 remain unchanged.
++
++The existing light/shadow group 2 keeps bindings 0 through 3 and appends:
++
++- binding 4: diffuse irradiance cube;
++- binding 5: prefiltered specular cube;
++- binding 6: BRDF LUT;
++- binding 7: filtering sampler;
++- binding 8: IBL uniform state.
++
++The cubemap textures have fixed allocations. Source changes upload new contents
++into those allocations, so the shared light bind group does not need to be
++recreated every frame or every environment change.
++
++### 7. Precomputation is content-keyed, not frame-driven
++
++`EnvironmentMap` records a key derived from dimensions and pixel contents; its
++debug label is intentionally excluded. The renderer repeats environment
++convolution only when that content key changes. The BRDF LUT is source
++independent and its CPU data is generated once per process.
++
++This first implementation performs deterministic CPU precomputation and GPU
++upload at the environment-change boundary. Moving convolution to compute or an
++offline derived-asset cache is a performance evolution, not a shading-contract
++change.
++
++## Rejected alternatives
++
++### Reuse the visible sky gradient as the IBL source
++
++Rejected because it re-couples presentation and lighting, contradicting ADR
++0118 and preventing independent art direction.
++
++### Put irradiance/specular textures into each material bind group
++
++Rejected because environment lighting is scene-global rather than material
++state and would duplicate bindings/cache invalidation across every material.
++
++### Add PMX/glTF/FBX-specific environment paths
++
++Rejected because imported formats must converge on the generic shading models
++defined by ADR 0100.
++
++### Apply AO to direct and emissive light
++
++Rejected because it violates the generic material contract established by ADR
++0120 and produces non-physical darkening unrelated to local indirect
++occlusion.
++
++## Consequences
++
++- StandardLit now has diffuse and specular environment response across the full
++  metallic/roughness range.
++- Static and skinned meshes receive identical IBL through the shared fragment
++  stage.
++- Existing non-IBL scenes keep their previous ambient path.
++- Existing serialized scenes and material documents require no migration.
++- Environment source changes can incur a one-time CPU convolution cost; this is
++  deliberately isolated behind a content key so ordinary frames remain free of
++  that work.
++- GPU regression coverage must include a fixed-camera metallic surface lit only
++  by an environment map, so loss of the prefiltered specular path cannot be
++  hidden by directional or diffuse light.
