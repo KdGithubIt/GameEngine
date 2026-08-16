@@ -828,7 +828,7 @@ fn append_spatial_source<S>(sink: &rodio::Sink, source: S, gains: VoiceGainContr
 where
     S: Source + Send + 'static,
     f32: rodio::cpal::FromSample<S::Item>,
-    S::Item: rodio::cpal::Sample + Send,
+    S::Item: rodio::Sample + rodio::cpal::Sample + Send,
 {
     let initial = gains.load();
     let updates = gains.clone();
