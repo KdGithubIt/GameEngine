@@ -1,0 +1,311 @@
++        VfxModuleOperation::Billboard { texture_sheet, .. } => {
++            capabilities.billboard_rendering = true;
++            capabilities.texture_sheet_animation |= texture_sheet.is_some();
++        }
++        VfxModuleOperation::Mesh { texture_sheet, .. } => {
++            capabilities.mesh_rendering = true;
++            capabilities.texture_sheet_animation |= texture_sheet.is_some();
++        }
++        _ => {}
++    }
++}
++
++fn emitter_index(effect: &VfxEffect, id: &VfxEmitterId) -> Option<usize> {
++    effect.emitters.iter().position(|emitter| &emitter.id == id)
++}
++
++fn emitter_mut<'a>(effect: &'a mut VfxEffect, id: &VfxEmitterId) -> Option<&'a mut VfxEmitter> {
++    effect.emitters.iter_mut().find(|emitter| &emitter.id == id)
++}
++
++fn module_index(emitter: &VfxEmitter, id: &VfxModuleId) -> Option<usize> {
++    emitter.modules.iter().position(|module| &module.id == id)
++}
++
++fn edit_error(
++    code: &'static str,
++    message: impl Into<String>,
++    emitter: Option<&VfxEmitterId>,
++    module: Option<&VfxModuleId>,
++) -> VfxDiagnostic {
++    VfxDiagnostic::error(code, message, emitter, module)
++}
++
++fn module_mut<'a>(
++    effect: &'a mut VfxEffect,
++    emitter: &VfxEmitterId,
++    module: &VfxModuleId,
++) -> Result<&'a mut VfxModule, VfxDiagnostic> {
++    let target = emitter_mut(effect, emitter).ok_or_else(|| {
++        edit_error(
++            "vfx.edit.emitter_not_found",
++            format!("emitter `{emitter}` was not found"),
++            Some(emitter),
++            Some(module),
++        )
++    })?;
++    let index = module_index(target, module).ok_or_else(|| {
++        edit_error(
++            "vfx.edit.module_not_found",
++            format!("module `{module}` was not found"),
++            Some(emitter),
++            Some(module),
++        )
++    })?;
++    Ok(&mut target.modules[index])
++}
++
++fn operation_curve_mut(operation: &mut VfxModuleOperation) -> Option<&mut VfxCurve> {
++    match operation {
++        VfxModuleOperation::SizeOverLife { curve }
++        | VfxModuleOperation::RotationOverLife { curve } => Some(curve),
++        VfxModuleOperation::Billboard {
++            texture_sheet: Some(sheet),
++            ..
++        }
++        | VfxModuleOperation::Mesh {
++            texture_sheet: Some(sheet),
++            ..
++        } => Some(&mut sheet.frame_over_life),
++        _ => None,
++    }
++}
++
++fn operation_gradient_mut(operation: &mut VfxModuleOperation) -> Option<&mut VfxGradient> {
++    match operation {
++        VfxModuleOperation::ColorOverLife { gradient } => Some(gradient),
++        _ => None,
++    }
++}
++
++fn apply_command(effect: &mut VfxEffect, command: &VfxCommand) -> Result<VfxCommand, VfxDiagnostic> {
++    match command {
++        VfxCommand::SetEffectName { name } => {
++            let previous = std::mem::replace(&mut effect.name, name.clone());
++            Ok(VfxCommand::SetEffectName { name: previous })
++        }
++        VfxCommand::SetEffectSeed { seed } => {
++            let previous = std::mem::replace(&mut effect.seed, *seed);
++            Ok(VfxCommand::SetEffectSeed { seed: previous })
++        }
++        VfxCommand::SetEffectMaxParticles { max_particles } => {
++            let previous = std::mem::replace(&mut effect.max_particles, *max_particles);
++            Ok(VfxCommand::SetEffectMaxParticles {
++                max_particles: previous,
++            })
++        }
++        VfxCommand::AddEmitter { emitter, index } => {
++            if *index > effect.emitters.len() {
++                return Err(edit_error(
++                    "vfx.edit.index_out_of_range",
++                    format!("emitter insertion index {index} is out of range"),
++                    Some(&emitter.id),
++                    None,
++                ));
++            }
++            if effect.emitters.iter().any(|entry| entry.id == emitter.id) {
++                return Err(edit_error(
++                    "vfx.edit.duplicate_emitter_id",
++                    format!("emitter `{}` already exists", emitter.id),
++                    Some(&emitter.id),
++                    None,
++                ));
++            }
++            effect.emitters.insert(*index, emitter.clone());
++            Ok(VfxCommand::RemoveEmitter {
++                emitter: emitter.id.clone(),
++            })
++        }
++        VfxCommand::RemoveEmitter { emitter } => {
++            let index = emitter_index(effect, emitter).ok_or_else(|| {
++                edit_error(
++                    "vfx.edit.emitter_not_found",
++                    format!("emitter `{emitter}` was not found"),
++                    Some(emitter),
++                    None,
++                )
++            })?;
++            let removed = effect.emitters.remove(index);
++            Ok(VfxCommand::AddEmitter {
++                emitter: removed,
++                index,
++            })
++        }
++        VfxCommand::MoveEmitter { emitter, index } => {
++            let previous = emitter_index(effect, emitter).ok_or_else(|| {
++                edit_error(
++                    "vfx.edit.emitter_not_found",
++                    format!("emitter `{emitter}` was not found"),
++                    Some(emitter),
++                    None,
++                )
++            })?;
++            if *index >= effect.emitters.len() {
++                return Err(edit_error(
++                    "vfx.edit.index_out_of_range",
++                    format!("emitter destination index {index} is out of range"),
++                    Some(emitter),
++                    None,
++                ));
++            }
++            let moved = effect.emitters.remove(previous);
++            effect.emitters.insert(*index, moved);
++            Ok(VfxCommand::MoveEmitter {
++                emitter: emitter.clone(),
++                index: previous,
++            })
++        }
++        VfxCommand::RenameEmitter { emitter, name } => {
++            let target = emitter_mut(effect, emitter).ok_or_else(|| {
++                edit_error(
++                    "vfx.edit.emitter_not_found",
++                    format!("emitter `{emitter}` was not found"),
++                    Some(emitter),
++                    None,
++                )
++            })?;
++            let previous = std::mem::replace(&mut target.name, name.clone());
++            Ok(VfxCommand::RenameEmitter {
++                emitter: emitter.clone(),
++                name: previous,
++            })
++        }
++        VfxCommand::SetEmitterEnabled { emitter, enabled } => {
++            let target = emitter_mut(effect, emitter).ok_or_else(|| {
++                edit_error(
++                    "vfx.edit.emitter_not_found",
++                    format!("emitter `{emitter}` was not found"),
++                    Some(emitter),
++                    None,
++                )
++            })?;
++            let previous = std::mem::replace(&mut target.enabled, *enabled);
++            Ok(VfxCommand::SetEmitterEnabled {
++                emitter: emitter.clone(),
++                enabled: previous,
++            })
++        }
++        VfxCommand::SetEmitterMaxParticles {
++            emitter,
++            max_particles,
++        } => {
++            let target = emitter_mut(effect, emitter).ok_or_else(|| {
++                edit_error(
++                    "vfx.edit.emitter_not_found",
++                    format!("emitter `{emitter}` was not found"),
++                    Some(emitter),
++                    None,
++                )
++            })?;
++            let previous = std::mem::replace(&mut target.max_particles, *max_particles);
++            Ok(VfxCommand::SetEmitterMaxParticles {
++                emitter: emitter.clone(),
++                max_particles: previous,
++            })
++        }
++        VfxCommand::AddModule {
++            emitter,
++            module,
++            index,
++        } => {
++            let target = emitter_mut(effect, emitter).ok_or_else(|| {
++                edit_error(
++                    "vfx.edit.emitter_not_found",
++                    format!("emitter `{emitter}` was not found"),
++                    Some(emitter),
++                    Some(&module.id),
++                )
++            })?;
++            if *index > target.modules.len() {
++                return Err(edit_error(
++                    "vfx.edit.index_out_of_range",
++                    format!("module insertion index {index} is out of range"),
++                    Some(emitter),
++                    Some(&module.id),
++                ));
++            }
++            if target.modules.iter().any(|entry| entry.id == module.id) {
++                return Err(edit_error(
++                    "vfx.edit.duplicate_module_id",
++                    format!("module `{}` already exists in emitter", module.id),
++                    Some(emitter),
++                    Some(&module.id),
++                ));
++            }
++            target.modules.insert(*index, module.clone());
++            Ok(VfxCommand::RemoveModule {
++                emitter: emitter.clone(),
++                module: module.id.clone(),
++            })
++        }
++        VfxCommand::RemoveModule { emitter, module } => {
++            let target = emitter_mut(effect, emitter).ok_or_else(|| {
++                edit_error(
++                    "vfx.edit.emitter_not_found",
++                    format!("emitter `{emitter}` was not found"),
++                    Some(emitter),
++                    Some(module),
++                )
++            })?;
++            let index = module_index(target, module).ok_or_else(|| {
++                edit_error(
++                    "vfx.edit.module_not_found",
++                    format!("module `{module}` was not found"),
++                    Some(emitter),
++                    Some(module),
++                )
++            })?;
++            let removed = target.modules.remove(index);
++            Ok(VfxCommand::AddModule {
++                emitter: emitter.clone(),
++                module: removed,
++                index,
++            })
++        }
++        VfxCommand::MoveModule {
++            emitter,
++            module,
++            phase_index,
++        } => {
++            let target = emitter_mut(effect, emitter).ok_or_else(|| {
++                edit_error(
++                    "vfx.edit.emitter_not_found",
++                    format!("emitter `{emitter}` was not found"),
++                    Some(emitter),
++                    Some(module),
++                )
++            })?;
++            let current = module_index(target, module).ok_or_else(|| {
++                edit_error(
++                    "vfx.edit.module_not_found",
++                    format!("module `{module}` was not found"),
++                    Some(emitter),
++                    Some(module),
++                )
++            })?;
++            let phase = target.modules[current].phase;
++            let phase_positions: Vec<usize> = target
++                .modules
++                .iter()
++                .enumerate()
++                .filter_map(|(index, entry)| (entry.phase == phase).then_some(index))
++                .collect();
++            let previous_phase_index = phase_positions
++                .iter()
++                .position(|position| *position == current)
++                .expect("current module must be present in its own phase positions");
++            if *phase_index >= phase_positions.len() {
++                return Err(edit_error(
++                    "vfx.edit.index_out_of_range",
++                    format!("module phase destination index {phase_index} is out of range"),
++                    Some(emitter),
++                    Some(module),
++                ));
++            }
++            let moved = target.modules.remove(current);
++            let remaining_phase_positions: Vec<usize> = target
++                .modules
++                .iter()
++                .enumerate()
++                .filter_map(|(index, entry)| (entry.phase == phase).then_some(index))
++                .collect();
