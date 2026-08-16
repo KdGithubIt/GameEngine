@@ -1,0 +1,22 @@
+diff --git a/crates/editor/src/scene_view.rs b/crates/editor/src/scene_view.rs
+index 0ea23bd..a8bc299 100644
+--- a/crates/editor/src/scene_view.rs
++++ b/crates/editor/src/scene_view.rs
+@@ -3981,7 +3981,7 @@
+         assert!(
+             animation_only
+                 .world()
+-                .get_resource::<engine::MmdPhysicsWorlds>()
++                .get_resource::<engine::SecondaryMotionWorlds>()
+                 .is_none()
+         );
+         run_animation_preview_step(&mut animation_only, 0.0);
+@@ -3991,7 +3991,7 @@
+         assert!(
+             with_secondary_physics
+                 .world()
+-                .get_resource::<engine::MmdPhysicsWorlds>()
++                .get_resource::<engine::SecondaryMotionWorlds>()
+                 .is_some()
+         );
+         run_animation_preview_step(&mut with_secondary_physics, 0.0);
