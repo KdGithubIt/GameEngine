@@ -20,6 +20,8 @@ impl EditorApp {
             app.open_initial_project_scene(&root);
         }
         app.sync_workspace_preferences();
+        #[cfg(feature = "visual-validation")]
+        app.prepare_behavior_tree_visual_validation();
         app
     }
 

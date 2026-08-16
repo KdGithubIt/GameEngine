@@ -47,6 +47,7 @@ use std::{
     path::{Path, PathBuf},
 };
 mod animation_graph_parameters;
+mod behavior_debug;
 mod animation_preview;
 mod asset_inspector;
 mod assets;
@@ -85,6 +86,7 @@ struct MaterialTextureChoicesCache {
 }
 
 use animation_preview::*;
+use behavior_debug::*;
 use asset_inspector::*;
 use assets::*;
 use chrome::*;
@@ -189,6 +191,8 @@ pub struct EditorApp {
     editor_mode: EditorMode,
     /// Runtime world owned while Play is active.
     runtime_state: Option<RuntimePlayState>,
+    /// Transient read-only Behavior Tree live-debug presentation.
+    behavior_debug: BehaviorTreeDebugState,
     /// Most recently recorded or loaded deterministic input artifact.
     last_replay: Option<engine::InputReplay>,
     /// Desktop controller adapter created lazily when Play first starts.
@@ -419,6 +423,7 @@ impl EditorApp {
             hierarchy_filter: String::new(),
             editor_mode: EditorMode::Edit,
             runtime_state: None,
+            behavior_debug: BehaviorTreeDebugState::default(),
             last_replay: None,
             #[cfg(not(target_arch = "wasm32"))]
             gamepad_context: None,
@@ -796,30 +801,35 @@ impl eframe::App for EditorApp {
             });
         }
 
-        let inspector_maximum_width = inspector_max_width(ui.available_width());
-        show_inspector_panel(ui, inspector_maximum_width, |ui| {
-            self.show_data_asset_tools(ui);
-            ui.separator();
-            // The three inspector surfaces replace one another inside this
-            // panel, so each needs its own scope rather than the panel's.
-            let showed_asset_inspector = ui
-                .push_id(dock_surface_id("asset_inspector", active_tab), |ui| {
-                    self.show_asset_inspector(ui)
-                })
-                .inner;
-            if !showed_asset_inspector {
-                if self.session.is_animation_graph() {
-                    ui.push_id(
-                        dock_surface_id("animation_graph_inspector", active_tab),
-                        |ui| self.show_animation_graph_parameter_inspector(ui),
-                    );
-                } else {
-                    ui.push_id(dock_surface_id("entity_inspector", active_tab), |ui| {
-                        self.show_inspector(ui)
-                    });
+        // Behavior Tree live debug already owns a runtime-specific details pane.
+        // Hiding the generic Inspector here preserves enough horizontal graph
+        // space for node labels and badges instead of showing two inspectors.
+        if !self.behavior_debug.visible {
+            let inspector_maximum_width = inspector_max_width(ui.available_width());
+            show_inspector_panel(ui, inspector_maximum_width, |ui| {
+                self.show_data_asset_tools(ui);
+                ui.separator();
+                // The three inspector surfaces replace one another inside this
+                // panel, so each needs its own scope rather than the panel's.
+                let showed_asset_inspector = ui
+                    .push_id(dock_surface_id("asset_inspector", active_tab), |ui| {
+                        self.show_asset_inspector(ui)
+                    })
+                    .inner;
+                if !showed_asset_inspector {
+                    if self.session.is_animation_graph() {
+                        ui.push_id(
+                            dock_surface_id("animation_graph_inspector", active_tab),
+                            |ui| self.show_animation_graph_parameter_inspector(ui),
+                        );
+                    } else {
+                        ui.push_id(dock_surface_id("entity_inspector", active_tab), |ui| {
+                            self.show_inspector(ui)
+                        });
+                    }
                 }
-            }
-        });
+            });
+        }
 
         egui::CentralPanel::default().show_inside(ui, |ui| {
             self.show_workspace_header(ui);
