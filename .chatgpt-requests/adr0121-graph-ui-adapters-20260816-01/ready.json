@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0121-graph-ui-adapters-20260816-01",
+  "target_branch": "chatgpt/gameengine-adr-0121-graph-ui-adapters",
+  "expected_head_sha": "d5e2bd4e3ddf9e89aab80aa7fcd3d2c4961b0b1f",
+  "patch_parts": [
+    "part-0000.patch",
+    "part-0001.patch",
+    "part-0002.patch",
+    "part-0003.patch",
+    "part-0004.patch"
+  ],
+  "commit_message": "Add ADR 0121 Graph and UI adapters",
+  "pr_title": "GameEngine: connect Graph and UI authoring adapters",
+  "pr_body": "## Summary\n\nConnects the ADR 0121 shared semantic Graph and declarative UI authoring services to Editor-attached MCP and headless CLI adapters.\n\nThe live Editor remains authoritative: MCP mutations use the active document session, participate in Editor dirty/undo state, and do not write project files directly. CLI mutations use ProjectRoot-confined file selection and the same shared service semantics.\n\nGraphView presentation/layout mutation remains intentionally separate under ADR 0016 and is not folded into semantic Graph transactions. Persisted Graph/UI formats and Stable IDs are unchanged.\n\nIncludes adapter-equivalence coverage for CLI mutation diffs and persistence."
+}
