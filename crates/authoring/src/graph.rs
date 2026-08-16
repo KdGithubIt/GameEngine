@@ -6,6 +6,10 @@
 //! serialization. It does not contain graph view data, auto-layout, concrete
 //! graph domains, runtime execution, or renderer state.
 
+/// Shared structured authoring service for semantic Graph documents.
+#[path = "graph_authoring.rs"]
+pub mod authoring_service;
+
 use crate::diagnostic::{Diagnostic, DiagnosticTarget};
 use crate::id::{EdgeId, GraphId, GroupId, NodeId, PortId};
 use crate::value::Value;
