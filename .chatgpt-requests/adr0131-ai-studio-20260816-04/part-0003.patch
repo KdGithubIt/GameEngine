@@ -1,0 +1,65 @@
++an asset came from. Provider credentials and temporary download credentials are
++never project assets.
++
++### 11. Human editing remains available while an agent runs
++
++AI execution MUST NOT globally lock the Editor. The human user may continue to
++edit the Scene, graphs, assets, or source while an agent is working.
++
++Structured authoring retains ADR 0121 revision/generation checks. If a human or
++another operation changes the authoritative document after the agent inspected
++it, a stale apply is rejected. The agent SHOULD re-read the current state and
++repair or re-plan rather than force-applying stale commands.
++
++Multiple read-oriented sessions MAY coexist. At most one AI run per Editor
++project may hold the agent-host writer role at a time in the initial
++implementation. Human editing is not counted as an AI writer and remains
++allowed. A future multi-writer agent model requires an explicit conflict and
++ownership contract rather than implicit concurrent writes.
++
++### 12. AI sessions support local-private and project-shared persistence
++
++AI sessions survive Editor restarts. By default, session state is private user
++application data outside the project working tree, keyed by project identity and
++location consistently with ADR 0117.
++
++A user may explicitly mark a session as **project-shared**. Shared sessions are
++stored as collaboration metadata under a reserved project-local AI metadata
++area, conceptually:
++
++```text
++.gameengine/ai/sessions/<session-id>/
++```
++
++The shared representation contains portable conversation, proposal, run
++summary, and audit information needed to continue the collaboration from
++another machine. It MAY be tracked in Git or moved with the project directory.
++It is not canonical authoring data and MUST NOT be included in packaged game
++content.
++
++Shared records MUST NOT contain:
++
++- API keys, OAuth/session tokens, MCP bearer credentials, or other secrets;
++- provider credential-store contents;
++- machine-specific absolute paths when a project-relative identity is possible;
++- transient process identifiers or ports;
++- full agent workspace copies, build outputs, or caches; or
++- other data that cannot safely or portably cross machines.
++
++The session-scoped code workspace is local reconstructable state. Project-shared
++history records checkpoints and diffs or references needed for history, not a
++second checked-in copy of the complete working tree.
++
++AI Studio SHOULD make the local/private versus project-shared state obvious and
++allow the user to change it deliberately.
++
++### 13. Completion requires validation and observed playable behavior
++
++An autonomous run MUST NOT report the game or requested feature as completed
++solely because source compilation or one authoring mutation succeeded.
++
++When applicable to the proposal, completion requires all of the following:
++
++1. the proposal acceptance criteria are satisfied;
++2. blocking authoring validation passes;
++3. required source-code validation passes;
