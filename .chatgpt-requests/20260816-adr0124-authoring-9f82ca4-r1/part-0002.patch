@@ -1,0 +1,29 @@
+diff --git a/crates/engine/src/components/builtins.rs b/crates/engine/src/components/builtins.rs
+--- a/crates/engine/src/components/builtins.rs
++++ b/crates/engine/src/components/builtins.rs
+@@ -7,5 +7,25 @@
+             SPOT_LIGHT_FIELDS,
+             spawn_spot_light_component,
+         ),
++        BuiltinComponent::new(
++            NAVIGATION_LINK_COMPONENT,
++            "Navigation Link",
++            "Authors a stable off-mesh traversal consumed by the shared navigation bake service.",
++            "Navigation",
++            1,
++            NAVIGATION_LINK_FIELDS,
++            spawn_navigation_link_component,
++        )
++        .collapsed_by_default(),
++        BuiltinComponent::new(
++            NAVIGATION_MODIFIER_COMPONENT,
++            "Navigation Modifier",
++            "Excludes or reclassifies navigation source geometry for selected agent profiles.",
++            "Navigation",
++            1,
++            NAVIGATION_MODIFIER_FIELDS,
++            spawn_navigation_modifier_component,
++        )
++        .collapsed_by_default(),
+     ]
+ }

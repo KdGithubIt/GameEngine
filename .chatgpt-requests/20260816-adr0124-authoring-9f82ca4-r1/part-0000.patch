@@ -1,0 +1,126 @@
+diff --git a/crates/engine/src/components/builtins.rs b/crates/engine/src/components/builtins.rs
+--- a/crates/engine/src/components/builtins.rs
++++ b/crates/engine/src/components/builtins.rs
+@@ -4,6 +4,13 @@
+ };
+ 
+ const NAV_MESH_AGENT_FIELDS: &[FieldDef] = &[
++    text(
++        "profile_id",
++        "Agent Profile",
++        "Stable profile ID from the scene's .navmesh.bake.json document.",
++        crate::navmesh::DEFAULT_NAVIGATION_PROFILE,
++    )
++    .optional(),
+     FieldDef::new(
+         "speed",
+         "Speed",
+@@ -54,6 +61,108 @@
+     AssetKind::NavMesh,
+     FieldDefaultSpec::Unassigned,
+ )];
++const NAVIGATION_LINK_FIELDS: &[FieldDef] = &[
++    float("start_x", "Start X", "World-space link start X.", 0.0),
++    float("start_y", "Start Y", "World-space link start Y.", 0.0),
++    float("start_z", "Start Z", "World-space link start Z.", 0.0),
++    float("end_x", "End X", "World-space link end X.", 1.0),
++    float("end_y", "End Y", "World-space link end Y.", 0.0),
++    float("end_z", "End Z", "World-space link end Z.", 0.0),
++    boolean(
++        "bidirectional",
++        "Bidirectional",
++        "Whether the traversal may be used in both directions.",
++        true,
++    ),
++    list(
++        "profiles",
++        "Agent Profiles",
++        "Stable profile IDs allowed to use this link; empty means every profile.",
++        &STRING_KIND,
++    ),
++    integer(
++        "area",
++        "Area",
++        "Runtime navigation area identifier attached to the link.",
++        0,
++        NumericRange::inclusive(0.0, u16::MAX as f64),
++    ),
++    number(
++        "cost",
++        "Traversal Cost",
++        "Additional deterministic traversal cost for this link.",
++        1.0,
++        NON_NEGATIVE,
++    ),
++    text(
++        "traversal_tag",
++        "Traversal Tag",
++        "Stable gameplay tag used to choose jump, drop, ladder, door, or scripted traversal behavior.",
++        "link",
++    ),
++];
++
++const NAVIGATION_MODIFIER_AREA: InspectorFieldCondition = InspectorFieldCondition::String {
++    field: "mode",
++    equals: "area",
++};
++
++const NAVIGATION_MODIFIER_FIELDS: &[FieldDef] = &[
++    float("center_x", "Center X", "World-space modifier center X.", 0.0),
++    float("center_y", "Center Y", "World-space modifier center Y.", 0.0),
++    float("center_z", "Center Z", "World-space modifier center Z.", 0.0),
++    number(
++        "half_extents_x",
++        "Half Extent X",
++        "Modifier half extent along X.",
++        0.5,
++        NON_NEGATIVE,
++    ),
++    number(
++        "half_extents_y",
++        "Half Extent Y",
++        "Modifier half extent along Y.",
++        0.5,
++        NON_NEGATIVE,
++    ),
++    number(
++        "half_extents_z",
++        "Half Extent Z",
++        "Modifier half extent along Z.",
++        0.5,
++        NON_NEGATIVE,
++    ),
++    list(
++        "profiles",
++        "Agent Profiles",
++        "Stable profile IDs affected by this modifier; empty means every profile.",
++        &STRING_KIND,
++    ),
++    enumeration(
++        "mode",
++        "Mode",
++        "Exclude geometry or reclassify it to an area with a cost multiplier.",
++        "exclude",
++        &["exclude", "area"],
++    ),
++    integer(
++        "area",
++        "Area",
++        "Runtime navigation area identifier used by area mode.",
++        0,
++        NumericRange::inclusive(0.0, u16::MAX as f64),
++    )
++    .when(NAVIGATION_MODIFIER_AREA),
++    number(
++        "cost_multiplier",
++        "Cost Multiplier",
++        "Positive traversal multiplier used by area mode.",
++        1.0,
++        POSITIVE,
++    )
++    .when(NAVIGATION_MODIFIER_AREA),
++];
++
+ const RUNTIME_METADATA_FIELDS: &[FieldDef] = &[
+     text(
+         "name",

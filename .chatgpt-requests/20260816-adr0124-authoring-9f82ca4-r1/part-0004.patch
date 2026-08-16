@@ -1,0 +1,11 @@
+diff --git a/crates/engine/src/navigation_bake.rs b/crates/engine/src/navigation_bake.rs
+--- a/crates/engine/src/navigation_bake.rs
++++ b/crates/engine/src/navigation_bake.rs
+@@ -1,6 +1,3 @@
+-/// Stable authoring component used to emit one explicit off-mesh traversal.
+-pub const NAVIGATION_LINK_COMPONENT: &str = "engine.nav_link";
+-/// Stable authoring component used to exclude or reclassify navigation geometry.
+-pub const NAVIGATION_MODIFIER_COMPONENT: &str = "engine.nav_modifier";
++pub use crate::scene_bridge::{NAVIGATION_LINK_COMPONENT, NAVIGATION_MODIFIER_COMPONENT};
+ 
+ /// Successful scene bake output and registered stable asset ID.
