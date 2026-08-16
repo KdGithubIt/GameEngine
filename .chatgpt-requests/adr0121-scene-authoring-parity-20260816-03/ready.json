@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0121-scene-authoring-parity-20260816-03",
+  "target_branch": "chatgpt/gameengine-adr-0121-authoring-parity",
+  "expected_head_sha": "e30cb7a7ff365c2deb64b6bdffad8f140670e5ca",
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Fix ADR 0121 Scene MCP rustdoc link",
+  "pr_title": "Implement ADR 0121 Scene authoring parity",
+  "pr_body": "Implements the first executable ADR 0121 Scene authoring parity slice through the shared engine-authoring transaction boundary and exposes transport-agnostic Scene/project MCP handlers. Also removes a broken intra-doc link warning discovered by Windows Validation."
+}
