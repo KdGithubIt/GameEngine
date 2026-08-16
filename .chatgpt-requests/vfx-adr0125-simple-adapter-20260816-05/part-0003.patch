@@ -1,0 +1,74 @@
+@@ -369,7 +473,7 @@ mod tests {
+ 
+         emitter.step(1.0, Vec3::ZERO);
+ 
+-        assert_eq!(emitter.live_count(), MAX_SPAWNS_PER_FRAME as usize);
++        assert_eq!(emitter.live_count(), 256);
+     }
+ 
+     #[test]
+@@ -412,4 +516,41 @@ mod tests {
+         assert_eq!(emitter.live_count(), first_count);
+         assert_eq!(emitter.live_bounds(), Some(first_bounds));
+     }
++
++    #[test]
++    fn simple_emitter_uses_shared_vfx_reference_runtime() {
++        let mut emitter = test_emitter();
++        emitter.seed = 77;
++        emitter.spawn_rate = 16.0;
++        emitter.lifetime = (1.5, 2.0);
++        emitter.initial_speed = (3.0, 5.0);
++        emitter.direction = Vec3::new(1.0, 2.0, 3.0);
++        emitter.spread = 0.35;
++        emitter.gravity = Vec3::new(0.0, -4.0, 0.0);
++        emitter.max_particles = 128;
++        emitter.reset();
++
++        let definition = emitter.compiled_effect();
++        let mut direct = VfxInstance::new(definition, None);
++        let origin = Vec3::new(4.0, 5.0, 6.0);
++        for _ in 0..30 {
++            emitter.step(1.0 / 60.0, origin);
++            direct.step(1.0 / 60.0, origin);
++        }
++
++        let direct_particles = direct.emitters()[0].particles();
++        assert_eq!(emitter.particles.len(), direct_particles.len());
++        for (simple, shared) in emitter.particles.iter().zip(direct_particles) {
++            assert_eq!(simple.position, shared.position);
++            assert_eq!(simple.velocity, shared.velocity);
++            assert_eq!(simple.age, shared.age);
++            assert_eq!(simple.lifetime, shared.lifetime);
++        }
++    }
++
++    #[test]
++    fn simple_emitter_compilation_is_deterministic() {
++        let emitter = test_emitter();
++        assert_eq!(emitter.compiled_effect(), emitter.compiled_effect());
++    }
+ }
+diff --git a/crates/render-runtime/src/vfx.rs b/crates/render-runtime/src/vfx.rs
+index 700e9ae..cb87ae1 100644
+--- a/crates/render-runtime/src/vfx.rs
++++ b/crates/render-runtime/src/vfx.rs
+@@ -332,9 +332,15 @@ fn requested_spawns(runtime: &mut VfxEmitterRuntime, dt: f32, end_time: f32) ->
+         }
+     }
+ 
+-    runtime.spawn_accumulator += rate * dt;
+-    let continuous = runtime.spawn_accumulator.floor().max(0.0) as u64;
+-    runtime.spawn_accumulator -= continuous as f32;
++    let continuous = if rate > 0.0 {
++        runtime.spawn_accumulator += rate * dt;
++        let continuous = runtime.spawn_accumulator.floor().max(0.0) as u64;
++        runtime.spawn_accumulator -= continuous as f32;
++        continuous
++    } else {
++        runtime.spawn_accumulator = 0.0;
++        0
++    };
+     continuous
+         .saturating_add(bursts)
+         .min(u64::from(u32::MAX)) as u32
