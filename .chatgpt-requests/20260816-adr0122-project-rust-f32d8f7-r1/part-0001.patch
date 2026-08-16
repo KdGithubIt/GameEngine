@@ -1,0 +1,176 @@
+             if emitter.autoplay && emitter.state() == &AuthoredAudioState::Pending {
+                 emitter.mark_playback_unavailable();
+@@ -45,6 +77,9 @@ pub(crate) fn spatial_audio_system(
+     runtime
+         .voices
+         .retain(|_, voice_id| !completed.contains(voice_id));
++    runtime
++        .game_voices
++        .retain(|voice| !completed.contains(&voice.voice_id));
+ 
+     let listener = active_listener_pose(&mut listeners);
+     let mut live_emitters = HashSet::new();
+@@ -169,3 +204,8 @@ pub(crate) enum GameAudioCommand {
+     PlaySoundEffect { asset_id: String },
++    PlaySpatialSoundEffect {
++        asset_id: String,
++        source: Entity,
++        options: GameSpatialAudioOptions,
++    },
+     PlayBackgroundMusic { asset_id: String, fade_seconds: f32 },
+     StopBackgroundMusic,
+@@ -198,8 +238,35 @@ pub(crate) fn game_audio_effect_system(
+     mut queue: ResMut<GameAudioCommandQueue>,
++    mut transforms: Query<&GlobalTransform>,
++    mut listeners: Query<(&AudioListener, &GlobalTransform)>,
++    mut runtime: ResMut<SpatialAudioRuntime>,
+     mut audio_system: Option<ResMut<AudioSystem>>,
+     mut asset_server: Option<ResMut<AssetServer>>,
+     manifest: Option<Res<AssetManifest>>,
+     mut audio_assets: Option<ResMut<Assets<AudioAsset>>>,
+ ) {
++    let listener = active_listener_pose(&mut listeners);
++    let poses = (&mut transforms)
++        .into_iter()
++        .map(|(entity, transform)| (entity, emitter_pose(transform)))
++        .collect::<HashMap<_, _>>();
++
++    if let Some(audio) = audio_system.as_deref_mut() {
++        runtime.game_voices.retain(|voice| {
++            let Some(emitter) = poses.get(&voice.source).copied() else {
++                if let Err(error) = audio.stop_voice(voice.voice_id) {
++                    log::error!("failed to stop stale project spatial voice: {error}");
++                }
++                return false;
++            };
++            let gains = emitter_gains(listener, emitter, voice.options.settings());
++            if let Err(error) = audio.update_voice(voice.voice_id, gains) {
++                log::error!("failed to update project spatial voice: {error}");
++            }
++            true
++        });
++    } else {
++        runtime.game_voices.clear();
++    }
++
+     for command in queue.commands.drain(..) {
+         let result = match command {
+@@ -225,6 +292,37 @@ pub(crate) fn game_audio_effect_system(
+                 manifest.as_deref(),
+                 audio_assets.as_deref_mut(),
+             ),
++            GameAudioCommand::PlaySpatialSoundEffect {
++                asset_id,
++                source,
++                options,
++            } => {
++                let Some(emitter) = poses.get(&source).copied() else {
++                    log::warn!("project Rust spatial audio source {source} has no GlobalTransform");
++                    continue;
++                };
++                let gains = emitter_gains(listener, emitter, options.settings());
++                match resolve_and_start_spatial(
++                    &asset_id,
++                    gains,
++                    options.looping,
++                    audio_system.as_deref_mut(),
++                    asset_server.as_deref_mut(),
++                    manifest.as_deref(),
++                    audio_assets.as_deref_mut(),
++                ) {
++                    Some(Ok(voice_id)) => {
++                        runtime.game_voices.push(GameSpatialVoice {
++                            source,
++                            voice_id,
++                            options,
++                        });
++                        Some(Ok(()))
++                    }
++                    Some(Err(error)) => Some(Err(error)),
++                    None => None,
++                }
++            }
+             GameAudioCommand::PlayBackgroundMusic {
+                 asset_id,
+                 fade_seconds,
+@@ -247,6 +345,36 @@ pub(crate) fn game_audio_effect_system(
+     }
+ }
+ 
++fn resolve_and_start_spatial(
++    asset_id: &str,
++    gains: StereoGains,
++    looping: bool,
++    audio: Option<&mut AudioSystem>,
++    server: Option<&mut AssetServer>,
++    manifest: Option<&AssetManifest>,
++    assets: Option<&mut Assets<AudioAsset>>,
++) -> Option<Result<AudioVoiceId, AudioError>> {
++    let stable = StableId::new(asset_id);
++    let Ok(asset_id) = AssetId::from_stable_id(stable) else {
++        log::error!("project Rust audio asset ID `{asset_id}` became invalid after preflight");
++        return None;
++    };
++    let entry = manifest?.get(&asset_id)?;
++    let server = server?;
++    let assets = assets?;
++    let audio = audio?;
++    let handle = match server.load_audio(asset_id, &entry.path, assets) {
++        Ok(handle) => handle,
++        Err(error) => {
++            return Some(Err(AudioError::Playback {
++                message: error.to_string(),
++            }));
++        }
++    };
++    let asset = assets.get(&handle)?;
++    Some(audio.start_voice(asset, gains, looping))
++}
++
+ fn resolve_and_play(
+     asset_id: &str,
+     fade_seconds: Option<f32>,
+diff --git a/crates/engine/src/app.rs b/crates/engine/src/app.rs
+--- a/crates/engine/src/app.rs
++++ b/crates/engine/src/app.rs
+@@ -13,5 +13,7 @@ use winit::{
+ };
+ 
+ use crate::asset::{AssetServer, Assets};
+-use crate::audio::{game_audio_effect_system, AudioAsset, GameAudioCommandQueue};
++use crate::audio::{
++    game_audio_effect_system, AudioAsset, GameAudioCommandQueue, SpatialAudioRuntime,
++};
+ use crate::camera::{camera_aspect_system, ViewportSize};
+@@ -99,4 +101,5 @@ impl App {
+         ecs.insert_resource(Assets::<AudioAsset>::default());
+         ecs.insert_resource(GameAudioCommandQueue::default());
++        ecs.insert_resource(SpatialAudioRuntime::default());
+         ecs.insert_resource(Assets::<std::sync::Arc<Texture>>::default());
+         ecs.insert_resource(AssetServer::default());
+diff --git a/crates/engine/src/runtime_systems.rs b/crates/engine/src/runtime_systems.rs
+--- a/crates/engine/src/runtime_systems.rs
++++ b/crates/engine/src/runtime_systems.rs
+@@ -116,4 +116,6 @@ pub fn register_runtime_systems(app: &mut App) -> Result<(), SystemRegistrationError> {
+         )
+         .try_after("engine.transform_propagation")
++        .expect("built-in system IDs are valid")
++        .try_before("engine.game_audio_effect")
+         .expect("built-in system IDs are valid")
+         .try_before("engine.authored_audio")
+@@ -410,4 +412,9 @@ mod tests {
+             .before()
+             .iter()
+             .any(|id| id.as_str() == "engine.authored_audio"));
++        assert!(spatial_audio
++            .descriptor
++            .before()
++            .iter()
++            .any(|id| id.as_str() == "engine.game_audio_effect"));
+         let secondary_motion_presentation = update
+diff --git a/crates/engine/src/game_commands.rs b/crates/engine/src/game_commands.rs
+--- a/crates/engine/src/game_commands.rs
++++ b/crates/engine/src/game_commands.rs
+@@ -7,7 +7,10 @@
+ mod animation;
+ 
