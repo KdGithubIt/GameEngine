@@ -1,0 +1,23 @@
++        let mut runner = BehaviorTreeRunner::new(tree(decorator(
++            "engine.cooldown:0.5",
++            action("fire"),
++        )));
++
++        assert_eq!(runner.tick(&mut registry).unwrap(), BehaviorStatus::Success);
++        registry.clear_calls();
++        assert_eq!(runner.tick(&mut registry).unwrap(), BehaviorStatus::Failure);
++        assert!(registry.calls().is_empty());
++        assert_eq!(runner.tick(&mut registry).unwrap(), BehaviorStatus::Success);
++    }
++
++    #[test]
++    fn step_budget_stops_pathological_tick() {
++        let compiled = tree(sequence(vec![condition("a"), condition("b")]));
++        let mut executor = BehaviorTreeExecutor::new(compiled);
++        executor.set_step_budget(1);
++        let mut instance = executor.create_instance();
++        let mut registry = BehaviorTreeBehaviorRegistry::default();
++        registry
++            .set_condition("a", BehaviorStatus::Success)
++            .set_condition("b", BehaviorStatus::Success);
++

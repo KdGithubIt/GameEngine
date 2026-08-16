@@ -1,0 +1,224 @@
++            depth,
++            delta_seconds,
++            steps,
++            max_steps,
++            path,
++        ),
++        BehaviorTreeNodeKind::Condition => tick_condition(plan, instance, context, index),
++        BehaviorTreeNodeKind::Action => tick_action(plan, instance, context, index),
++        BehaviorTreeNodeKind::Decorator => tick_decorator(
++            plan,
++            instance,
++            context,
++            index,
++            depth,
++            delta_seconds,
++            steps,
++            max_steps,
++            path,
++        ),
++    }?;
++    if status == BehaviorStatus::Running {
++        instance.node_state[index].elapsed_seconds += delta_seconds;
++    } else {
++        if plan.nodes[index].kind != BehaviorTreeNodeKind::Decorator
++            || !matches!(
++                parse_decorator::<C::Error>(plan.nodes[index].behavior.as_deref()),
++                Ok(PreparedDecorator::Cooldown(_))
++            )
++        {
++            instance.node_state[index].elapsed_seconds = 0.0;
++        }
++        instance.record_node_terminal(plan, index, status);
++        path.pop();
++    }
++    Ok(status)
++}
++
++// Recursive evaluation keeps bounded tick state explicit instead of boxing it.
++#[allow(clippy::too_many_arguments)]
++fn tick_sequence<C: BehaviorTreeContext>(
++    plan: &PreparedBehaviorTree,
++    instance: &mut BehaviorTreeInstance,
++    context: &mut C,
++    index: usize,
++    depth: u32,
++    delta_seconds: f64,
++    steps: &mut usize,
++    max_steps: usize,
++    path: &mut Vec<usize>,
++) -> Result<BehaviorStatus, BehaviorTreeRuntimeError<C::Error>> {
++    let children = &plan.nodes[index].children;
++    if children.is_empty() {
++        return Err(BehaviorTreeRuntimeError::EmptyComposite {
++            node: plan.nodes[index].source.clone(),
++            kind: BehaviorTreeNodeKind::Sequence,
++        });
++    }
++    let mut cursor = instance.node_state[index].cursor.min(children.len() - 1);
++    while cursor < children.len() {
++        match tick_node(
++            plan,
++            instance,
++            context,
++            children[cursor],
++            depth.saturating_add(1),
++            delta_seconds,
++            steps,
++            max_steps,
++            path,
++        )? {
++            BehaviorStatus::Success => {
++                cursor += 1;
++                instance.node_state[index].cursor = cursor;
++            }
++            BehaviorStatus::Failure => {
++                instance.node_state[index].cursor = 0;
++                return Ok(BehaviorStatus::Failure);
++            }
++            BehaviorStatus::Running => {
++                instance.node_state[index].cursor = cursor;
++                return Ok(BehaviorStatus::Running);
++            }
++        }
++    }
++    instance.node_state[index].cursor = 0;
++    Ok(BehaviorStatus::Success)
++}
++
++// Recursive evaluation keeps bounded tick state explicit instead of boxing it.
++#[allow(clippy::too_many_arguments)]
++fn tick_selector<C: BehaviorTreeContext>(
++    plan: &PreparedBehaviorTree,
++    instance: &mut BehaviorTreeInstance,
++    context: &mut C,
++    index: usize,
++    depth: u32,
++    delta_seconds: f64,
++    steps: &mut usize,
++    max_steps: usize,
++    path: &mut Vec<usize>,
++) -> Result<BehaviorStatus, BehaviorTreeRuntimeError<C::Error>> {
++    let children = &plan.nodes[index].children;
++    if children.is_empty() {
++        return Err(BehaviorTreeRuntimeError::EmptyComposite {
++            node: plan.nodes[index].source.clone(),
++            kind: BehaviorTreeNodeKind::Selector,
++        });
++    }
++    let mut cursor = instance.node_state[index].cursor.min(children.len() - 1);
++    while cursor < children.len() {
++        match tick_node(
++            plan,
++            instance,
++            context,
++            children[cursor],
++            depth.saturating_add(1),
++            delta_seconds,
++            steps,
++            max_steps,
++            path,
++        )? {
++            BehaviorStatus::Success => {
++                instance.node_state[index].cursor = 0;
++                return Ok(BehaviorStatus::Success);
++            }
++            BehaviorStatus::Failure => {
++                cursor += 1;
++                instance.node_state[index].cursor = cursor;
++            }
++            BehaviorStatus::Running => {
++                instance.node_state[index].cursor = cursor;
++                return Ok(BehaviorStatus::Running);
++            }
++        }
++    }
++    instance.node_state[index].cursor = 0;
++    Ok(BehaviorStatus::Failure)
++}
++
++fn tick_condition<C: BehaviorTreeContext>(
++    plan: &PreparedBehaviorTree,
++    _instance: &mut BehaviorTreeInstance,
++    context: &mut C,
++    index: usize,
++) -> Result<BehaviorStatus, BehaviorTreeRuntimeError<C::Error>> {
++    ensure_leaf(plan, index)?;
++    let behavior_id = behavior_id(plan, index)?;
++    context.check_condition(behavior_id).map_err(|source| {
++        BehaviorTreeRuntimeError::BehaviorDispatchFailed {
++            dispatch: BehaviorDispatchKind::Condition,
++            behavior_id: behavior_id.to_owned(),
++            source,
++        }
++    })
++}
++
++fn tick_action<C: BehaviorTreeContext>(
++    plan: &PreparedBehaviorTree,
++    instance: &mut BehaviorTreeInstance,
++    context: &mut C,
++    index: usize,
++) -> Result<BehaviorStatus, BehaviorTreeRuntimeError<C::Error>> {
++    ensure_leaf(plan, index)?;
++    let behavior_id = behavior_id(plan, index)?;
++    if !instance.node_state[index].action_entered {
++        context
++            .action_enter(&plan.nodes[index].source, behavior_id)
++            .map_err(|source| BehaviorTreeRuntimeError::BehaviorDispatchFailed {
++                dispatch: BehaviorDispatchKind::Action,
++                behavior_id: behavior_id.to_owned(),
++                source,
++            })?;
++        instance.node_state[index].action_entered = true;
++        if !instance.active_actions.contains(&index) {
++            instance.active_actions.push(index);
++        }
++        instance.push_transition(BehaviorExecutionTransition {
++            generation: instance.execution_generation,
++            node: Some(plan.nodes[index].source.clone()),
++            behavior_id: Some(behavior_id.to_owned()),
++            kind: BehaviorExecutionTransitionKind::Enter,
++            reason: None,
++        });
++    }
++
++    let status = match context.tick_action(behavior_id) {
++        Ok(status) => status,
++        Err(source) => {
++            let _ = context.action_abort(
++                &plan.nodes[index].source,
++                behavior_id,
++                BehaviorResetReason::Interrupted,
++            );
++            instance.node_state[index].action_entered = false;
++            instance.active_actions.retain(|active| *active != index);
++            instance.push_transition(BehaviorExecutionTransition {
++                generation: instance.execution_generation,
++                node: Some(plan.nodes[index].source.clone()),
++                behavior_id: Some(behavior_id.to_owned()),
++                kind: BehaviorExecutionTransitionKind::Abort,
++                reason: Some(BehaviorResetReason::Interrupted),
++            });
++            return Err(BehaviorTreeRuntimeError::BehaviorDispatchFailed {
++                dispatch: BehaviorDispatchKind::Action,
++                behavior_id: behavior_id.to_owned(),
++                source,
++            });
++        }
++    };
++    if status != BehaviorStatus::Running {
++        instance.node_state[index].action_entered = false;
++        instance.active_actions.retain(|active| *active != index);
++        context
++            .action_complete(&plan.nodes[index].source, behavior_id, status)
++            .map_err(|source| BehaviorTreeRuntimeError::BehaviorDispatchFailed {
++                dispatch: BehaviorDispatchKind::Action,
++                behavior_id: behavior_id.to_owned(),
++                source,
++            })?;
++    }
++    Ok(status)
++}
++
++#[derive(Debug, Clone, Copy, PartialEq)]

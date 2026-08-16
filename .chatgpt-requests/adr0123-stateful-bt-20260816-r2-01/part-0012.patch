@@ -1,0 +1,108 @@
++        assert_eq!(registry.calls()[0].behavior_id, "search");
++    }
++
++    #[test]
++    fn action_lifecycle_is_balanced_across_running_and_completion() {
++        let mut registry = BehaviorTreeBehaviorRegistry::default();
++        registry.set_action("work", BehaviorStatus::Running);
++        let mut runner = BehaviorTreeRunner::new(tree(action("work")));
++
++        runner.tick(&mut registry).unwrap();
++        assert!(matches!(
++            registry.lifecycle_calls(),
++            [BehaviorTreeLifecycleEvent::Enter { .. }]
++        ));
++        registry.clear_calls();
++        registry.set_action("work", BehaviorStatus::Success);
++        runner.tick(&mut registry).unwrap();
++
++        assert!(matches!(
++            registry.lifecycle_calls(),
++            [BehaviorTreeLifecycleEvent::Complete {
++                status: BehaviorStatus::Success,
++                ..
++            }]
++        ));
++    }
++
++    #[test]
++    fn disabling_runner_aborts_running_action_once() {
++        let mut registry = BehaviorTreeBehaviorRegistry::default();
++        registry.set_action("work", BehaviorStatus::Running);
++        let mut runner = BehaviorTreeRunner::new(tree(action("work")));
++        runner.tick(&mut registry).unwrap();
++        registry.clear_calls();
++
++        runner.set_enabled(false);
++        runner.flush_pending_reset(&mut registry).unwrap();
++        runner.flush_pending_reset(&mut registry).unwrap();
++
++        assert_eq!(registry.lifecycle_calls().len(), 1);
++        assert!(matches!(
++            registry.lifecycle_calls()[0],
++            BehaviorTreeLifecycleEvent::Abort {
++                reason: BehaviorResetReason::RunnerDisabled,
++                ..
++            }
++        ));
++    }
++
++    #[test]
++    fn inverter_flips_terminal_status() {
++        let mut registry = BehaviorTreeBehaviorRegistry::default();
++        registry.set_condition("ready", BehaviorStatus::Success);
++        let mut runner = BehaviorTreeRunner::new(tree(decorator(
++            INVERTER_BEHAVIOR,
++            condition("ready"),
++        )));
++
++        assert_eq!(runner.tick(&mut registry).unwrap(), BehaviorStatus::Failure);
++    }
++
++    #[test]
++    fn wait_delays_child_until_duration_elapses() {
++        let mut registry = BehaviorTreeBehaviorRegistry::default();
++        registry
++            .set_delta_seconds(0.25)
++            .set_action("work", BehaviorStatus::Success);
++        let mut runner = BehaviorTreeRunner::new(tree(decorator(
++            "engine.wait:0.5",
++            action("work"),
++        )));
++
++        assert_eq!(runner.tick(&mut registry).unwrap(), BehaviorStatus::Running);
++        assert!(registry.calls().is_empty());
++        registry.clear_calls();
++        assert_eq!(runner.tick(&mut registry).unwrap(), BehaviorStatus::Success);
++        assert_eq!(registry.calls().len(), 1);
++    }
++
++    #[test]
++    fn timeout_aborts_running_child_and_fails() {
++        let mut registry = BehaviorTreeBehaviorRegistry::default();
++        registry
++            .set_delta_seconds(0.25)
++            .set_action("work", BehaviorStatus::Running);
++        let mut runner = BehaviorTreeRunner::new(tree(decorator(
++            "engine.timeout:0.5",
++            action("work"),
++        )));
++
++        assert_eq!(runner.tick(&mut registry).unwrap(), BehaviorStatus::Running);
++        registry.clear_calls();
++        assert_eq!(runner.tick(&mut registry).unwrap(), BehaviorStatus::Failure);
++        assert!(registry.lifecycle_calls().iter().any(|event| matches!(
++            event,
++            BehaviorTreeLifecycleEvent::Abort {
++                reason: BehaviorResetReason::Timeout,
++                ..
++            }
++        )));
++    }
++
++    #[test]
++    fn cooldown_blocks_successful_child_until_window_expires() {
++        let mut registry = BehaviorTreeBehaviorRegistry::default();
++        registry
++            .set_delta_seconds(0.25)
++            .set_action("fire", BehaviorStatus::Success);

@@ -1,0 +1,229 @@
++/// External behavior dispatch surface used by [`BehaviorTreeExecutor`].
++///
++/// Implementors own gameplay meaning of action and condition behavior IDs.
++/// Lifecycle methods default to no-ops so existing integrations remain source
++/// compatible while long-running actions can opt into balanced cleanup.
++pub trait BehaviorTreeContext {
++    /// Error type produced by this context's behavior dispatch implementation.
++    type Error: Error + Send + Sync + 'static;
++
++    /// Called exactly once before an action begins its first runtime tick.
++    fn action_enter(&mut self, _node: &NodeId, _behavior_id: &str) -> Result<(), Self::Error> {
++        Ok(())
++    }
++
++    /// Ticks an action behavior.
++    fn tick_action(&mut self, behavior_id: &str) -> Result<BehaviorStatus, Self::Error>;
++
++    /// Called exactly once when an entered action completes normally.
++    fn action_complete(
++        &mut self,
++        _node: &NodeId,
++        _behavior_id: &str,
++        _status: BehaviorStatus,
++    ) -> Result<(), Self::Error> {
++        Ok(())
++    }
++
++    /// Called exactly once when an entered action is aborted before completion.
++    fn action_abort(
++        &mut self,
++        _node: &NodeId,
++        _behavior_id: &str,
++        _reason: BehaviorResetReason,
++    ) -> Result<(), Self::Error> {
++        Ok(())
++    }
++
++    /// Checks a condition behavior.
++    fn check_condition(&mut self, behavior_id: &str) -> Result<BehaviorStatus, Self::Error>;
++
++    /// Returns the deterministic time step consumed by stateful decorators.
++    ///
++    /// Runtime hosts SHOULD override this with their fixed or frame delta. The
++    /// default preserves useful standalone behavior for existing contexts.
++    fn behavior_delta_seconds(&self) -> f64 {
++        1.0 / 60.0
++    }
++}
++
++/// Runtime errors produced by Behavior Tree execution.
++#[derive(Debug)]
++pub enum BehaviorTreeRuntimeError<E> {
++    /// The compiled tree root field did not contain a root node.
++    InvalidRootKind {
++        /// Source authoring node.
++        node: NodeId,
++        /// Runtime node kind found at the compiled tree root.
++        kind: BehaviorTreeNodeKind,
++    },
++    /// A non-root node had root kind.
++    NestedRoot {
++        /// Source authoring node.
++        node: NodeId,
++    },
++    /// A root node must have exactly one child.
++    InvalidRootChildCount {
++        /// Source authoring node.
++        node: NodeId,
++        /// Number of children found in the compiled tree.
++        count: usize,
++    },
++    /// A decorator node must have exactly one child.
++    InvalidDecoratorChildCount {
++        /// Source authoring node.
++        node: NodeId,
++        /// Number of children found in the compiled tree.
++        count: usize,
++    },
++    /// A leaf action or condition has child nodes.
++    LeafHasChildren {
++        /// Source authoring node.
++        node: NodeId,
++        /// Runtime node kind.
++        kind: BehaviorTreeNodeKind,
++        /// Number of children found in the compiled tree.
++        count: usize,
++    },
++    /// An action, condition, or generic decorator is missing its behavior ID.
++    MissingBehaviorId {
++        /// Source authoring node.
++        node: NodeId,
++        /// Runtime node kind.
++        kind: BehaviorTreeNodeKind,
++    },
++    /// A composite node has no children.
++    EmptyComposite {
++        /// Source authoring node.
++        node: NodeId,
++        /// Runtime node kind.
++        kind: BehaviorTreeNodeKind,
++    },
++    /// The compiled tree exceeds the runtime depth limit.
++    MaxDepthExceeded {
++        /// Source authoring node where the limit was exceeded.
++        node: NodeId,
++        /// Maximum allowed depth.
++        max_depth: u32,
++    },
++    /// A stateful decorator's compiled parameter is invalid.
++    InvalidDecoratorParameter {
++        /// Source authoring node.
++        node: NodeId,
++        /// Compiled decorator behavior identifier.
++        behavior_id: String,
++    },
++    /// One tick exhausted the configured hard node-step budget.
++    StepBudgetExceeded {
++        /// Maximum node visits allowed for one tick.
++        max_steps: usize,
++    },
++    /// A runtime context failed to dispatch behavior or lifecycle work.
++    BehaviorDispatchFailed {
++        /// Runtime dispatch kind.
++        dispatch: BehaviorDispatchKind,
++        /// Stable behavior identifier.
++        behavior_id: String,
++        /// Context-owned failure cause.
++        source: E,
++    },
++}
++
++impl<E: fmt::Display> fmt::Display for BehaviorTreeRuntimeError<E> {
++    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
++        match self {
++            Self::InvalidRootKind { kind, .. } => write!(
++                formatter,
++                "behavior tree compiled root must be Root, found {kind:?}"
++            ),
++            Self::NestedRoot { .. } => {
++                formatter.write_str("behavior tree root node may only appear at tree root")
++            }
++            Self::InvalidRootChildCount { count, .. } => write!(
++                formatter,
++                "behavior tree root must have exactly one child, found {count}"
++            ),
++            Self::InvalidDecoratorChildCount { count, .. } => write!(
++                formatter,
++                "behavior tree decorator must have exactly one child, found {count}"
++            ),
++            Self::LeafHasChildren { kind, count, .. } => write!(
++                formatter,
++                "behavior tree {kind:?} leaf must not have children, found {count}"
++            ),
++            Self::MissingBehaviorId { kind, .. } => {
++                write!(formatter, "behavior tree {kind:?} node is missing behavior id")
++            }
++            Self::EmptyComposite { kind, .. } => write!(
++                formatter,
++                "behavior tree {kind:?} composite must have at least one child"
++            ),
++            Self::MaxDepthExceeded { max_depth, .. } => write!(
++                formatter,
++                "behavior tree compiled depth exceeds runtime limit {max_depth}"
++            ),
++            Self::InvalidDecoratorParameter { behavior_id, .. } => write!(
++                formatter,
++                "behavior tree decorator `{behavior_id}` has an invalid numeric parameter"
++            ),
++            Self::StepBudgetExceeded { max_steps } => write!(
++                formatter,
++                "behavior tree tick exceeded node-step budget {max_steps}"
++            ),
++            Self::BehaviorDispatchFailed {
++                dispatch,
++                behavior_id,
++                source,
++            } => write!(
++                formatter,
++                "behavior tree {dispatch:?} behavior `{behavior_id}` failed: {source}"
++            ),
++        }
++    }
++}
++
++impl<E: Error + 'static> Error for BehaviorTreeRuntimeError<E> {
++    fn source(&self) -> Option<&(dyn Error + 'static)> {
++        match self {
++            Self::BehaviorDispatchFailed { source, .. } => Some(source),
++            _ => None,
++        }
++    }
++}
++
++#[derive(Debug, Clone)]
++struct PreparedBehaviorNode {
++    source: NodeId,
++    kind: BehaviorTreeNodeKind,
++    behavior: Option<String>,
++    children: Vec<usize>,
++    parent: Option<usize>,
++}
++
++#[derive(Debug, Clone)]
++struct PreparedBehaviorTree {
++    source: GraphId,
++    nodes: Vec<PreparedBehaviorNode>,
++    max_depth_node: Option<NodeId>,
++}
++
++impl PreparedBehaviorTree {
++    fn new(tree: &CompiledBehaviorTree) -> Self {
++        let mut plan = Self {
++            source: tree.source.clone(),
++            nodes: Vec::new(),
++            max_depth_node: None,
++        };
++        prepare_node(&tree.root, None, 0, &mut plan);
++        plan
++    }
++}
++
++fn prepare_node(
++    node: &CompiledBehaviorNode,
++    parent: Option<usize>,
++    depth: u32,
++    plan: &mut PreparedBehaviorTree,
++) -> usize {
++    let index = plan.nodes.len();
++    plan.nodes.push(PreparedBehaviorNode {

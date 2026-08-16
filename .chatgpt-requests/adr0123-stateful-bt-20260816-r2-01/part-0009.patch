@@ -1,0 +1,116 @@
++enum PreparedDecorator {
++    Generic,
++    Inverter,
++    Wait(f64),
++    Timeout(f64),
++    Cooldown(f64),
++}
++
++fn parse_decorator<E>(
++    behavior: Option<&str>,
++) -> Result<PreparedDecorator, BehaviorTreeRuntimeError<E>> {
++    let Some(behavior_id) = behavior.filter(|behavior| !behavior.is_empty()) else {
++        return Ok(PreparedDecorator::Generic);
++    };
++    if behavior_id == INVERTER_BEHAVIOR {
++        return Ok(PreparedDecorator::Inverter);
++    }
++    for (prefix, make) in [
++        (WAIT_BEHAVIOR_PREFIX, PreparedDecorator::Wait as fn(f64) -> PreparedDecorator),
++        (TIMEOUT_BEHAVIOR_PREFIX, PreparedDecorator::Timeout),
++        (COOLDOWN_BEHAVIOR_PREFIX, PreparedDecorator::Cooldown),
++    ] {
++        if let Some(raw) = behavior_id.strip_prefix(prefix) {
++            let duration = raw.parse::<f64>().ok().filter(|value| value.is_finite());
++            if let Some(duration) = duration.filter(|value| *value >= 0.0) {
++                return Ok(make(duration));
++            }
++        }
++    }
++    Ok(PreparedDecorator::Generic)
++}
++
++// Recursive evaluation keeps bounded tick state explicit instead of boxing it.
++#[allow(clippy::too_many_arguments)]
++fn tick_decorator<C: BehaviorTreeContext>(
++    plan: &PreparedBehaviorTree,
++    instance: &mut BehaviorTreeInstance,
++    context: &mut C,
++    index: usize,
++    depth: u32,
++    delta_seconds: f64,
++    steps: &mut usize,
++    max_steps: usize,
++    path: &mut Vec<usize>,
++) -> Result<BehaviorStatus, BehaviorTreeRuntimeError<C::Error>> {
++    if plan.nodes[index].children.len() != 1 {
++        return Err(BehaviorTreeRuntimeError::InvalidDecoratorChildCount {
++            node: plan.nodes[index].source.clone(),
++            count: plan.nodes[index].children.len(),
++        });
++    }
++    let behavior_id = behavior_id(plan, index)?;
++    let decorator = parse_decorator::<C::Error>(Some(behavior_id))?;
++    let child = plan.nodes[index].children[0];
++    match decorator {
++        PreparedDecorator::Generic => tick_node(
++            plan,
++            instance,
++            context,
++            child,
++            depth.saturating_add(1),
++            delta_seconds,
++            steps,
++            max_steps,
++            path,
++        ),
++        PreparedDecorator::Inverter => match tick_node(
++            plan,
++            instance,
++            context,
++            child,
++            depth.saturating_add(1),
++            delta_seconds,
++            steps,
++            max_steps,
++            path,
++        )? {
++            BehaviorStatus::Success => Ok(BehaviorStatus::Failure),
++            BehaviorStatus::Failure => Ok(BehaviorStatus::Success),
++            BehaviorStatus::Running => Ok(BehaviorStatus::Running),
++        },
++        PreparedDecorator::Wait(duration) => {
++            let elapsed = instance.node_state[index].elapsed_seconds + delta_seconds;
++            if elapsed < duration {
++                instance.node_state[index].elapsed_seconds = elapsed - delta_seconds;
++                return Ok(BehaviorStatus::Running);
++            }
++            instance.node_state[index].elapsed_seconds = 0.0;
++            tick_node(
++                plan,
++                instance,
++                context,
++                child,
++                depth.saturating_add(1),
++                delta_seconds,
++                steps,
++                max_steps,
++                path,
++            )
++        }
++        PreparedDecorator::Timeout(duration) => {
++            let status = tick_node(
++                plan,
++                instance,
++                context,
++                child,
++                depth.saturating_add(1),
++                delta_seconds,
++                steps,
++                max_steps,
++                path,
++            )?;
++            if status == BehaviorStatus::Running
++                && instance.node_state[index].elapsed_seconds + delta_seconds >= duration
++            {
++                abort_actions_in_subtree(

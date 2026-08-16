@@ -1,0 +1,225 @@
++pub struct BehaviorTreeRunner {
++    executor: BehaviorTreeExecutor,
++    instance: BehaviorTreeInstance,
++    blackboard: BTreeMap<String, Value>,
++    enabled: bool,
++    tree_generation: u64,
++    pending_reset: Option<BehaviorResetReason>,
++    last_status: Option<BehaviorStatus>,
++    last_error: Option<String>,
++    last_dispatches: Vec<BehaviorTreeDispatchRecord>,
++}
++
++impl BehaviorTreeRunner {
++    /// Creates a runner from a compiled Behavior Tree artifact.
++    #[must_use]
++    pub fn new(tree: CompiledBehaviorTree) -> Self {
++        Self::with_blackboard(tree, BTreeMap::new())
++    }
++
++    /// Creates a runner with author-defined blackboard defaults.
++    #[must_use]
++    pub fn with_blackboard(
++        tree: CompiledBehaviorTree,
++        blackboard: BTreeMap<String, Value>,
++    ) -> Self {
++        let executor = BehaviorTreeExecutor::new(tree);
++        let instance = executor.create_instance();
++        Self {
++            executor,
++            instance,
++            blackboard,
++            enabled: true,
++            tree_generation: 1,
++            pending_reset: None,
++            last_status: None,
++            last_error: None,
++            last_dispatches: Vec::new(),
++        }
++    }
++
++    /// Returns the executor owned by this runner.
++    #[must_use]
++    pub fn executor(&self) -> &BehaviorTreeExecutor {
++        &self.executor
++    }
++
++    /// Returns the runtime blackboard initialized from authoring defaults.
++    #[must_use]
++    pub fn blackboard(&self) -> &BTreeMap<String, Value> {
++        &self.blackboard
++    }
++
++    /// Returns mutable runtime blackboard state for gameplay integrations.
++    pub fn blackboard_mut(&mut self) -> &mut BTreeMap<String, Value> {
++        &mut self.blackboard
++    }
++
++    /// Enables or pauses this runner without discarding authored blackboard data.
++    pub fn set_enabled(&mut self, enabled: bool) {
++        if self.enabled && !enabled {
++            self.pending_reset = Some(BehaviorResetReason::RunnerDisabled);
++        }
++        self.enabled = enabled;
++    }
++
++    /// Returns whether the shared tick system should execute this runner.
++    #[must_use]
++    pub fn is_enabled(&self) -> bool {
++        self.enabled
++    }
++
++    /// Returns the most recent successful tick status.
++    #[must_use]
++    pub fn last_status(&self) -> Option<BehaviorStatus> {
++        self.last_status
++    }
++
++    /// Returns the most recent tick error message, if ticking failed.
++    #[must_use]
++    pub fn last_error(&self) -> Option<&str> {
++        self.last_error.as_deref()
++    }
++
++    /// Returns action/condition leaf nodes visited during the latest system tick.
++    #[must_use]
++    pub fn last_dispatches(&self) -> &[BehaviorTreeDispatchRecord] {
++        &self.last_dispatches
++    }
++
++    /// Returns a bounded read-only runtime snapshot for debugging and tools.
++    #[must_use]
++    pub fn snapshot(&self) -> BehaviorExecutionSnapshot {
++        BehaviorExecutionSnapshot {
++            tree_source: self.executor.plan.source.clone(),
++            tree_generation: self.tree_generation,
++            execution_generation: self.instance.execution_generation,
++            status: self.last_status,
++            active_path: self
++                .instance
++                .active_path
++                .iter()
++                .filter_map(|index| {
++                    self.executor.plan.nodes.get(*index).map(|node| {
++                        BehaviorActiveNodeSnapshot {
++                            node: node.source.clone(),
++                            elapsed_seconds: self.instance.node_state[*index].elapsed_seconds,
++                        }
++                    })
++                })
++                .collect(),
++            running_node: self
++                .instance
++                .active_path
++                .last()
++                .and_then(|index| self.executor.plan.nodes.get(*index))
++                .map(|node| node.source.clone()),
++            last_terminal_node: self
++                .instance
++                .last_terminal_node
++                .and_then(|index| self.executor.plan.nodes.get(index))
++                .map(|node| node.source.clone()),
++            last_terminal_status: self.instance.last_terminal_status,
++            last_reset_reason: self.instance.last_reset_reason,
++            recent_transitions: self.instance.recent_transitions.iter().cloned().collect(),
++            blackboard: self.blackboard.clone(),
++            error: self.last_error.clone(),
++        }
++    }
++
++    /// Ticks this runner with a caller-owned Behavior Tree context.
++    pub fn tick<C: BehaviorTreeContext>(
++        &mut self,
++        context: &mut C,
++    ) -> Result<BehaviorStatus, BehaviorTreeRuntimeError<C::Error>> {
++        self.flush_pending_reset(context)?;
++        let status = self.executor.tick_instance(&mut self.instance, context)?;
++        self.last_status = Some(status);
++        self.last_error = None;
++        Ok(status)
++    }
++
++    /// Aborts active work and resets execution state explicitly.
++    pub fn reset<C: BehaviorTreeContext>(
++        &mut self,
++        context: &mut C,
++        reason: BehaviorResetReason,
++    ) -> Result<(), BehaviorTreeRuntimeError<C::Error>> {
++        self.pending_reset = None;
++        self.executor
++            .reset_instance(&mut self.instance, context, reason)?;
++        self.last_status = None;
++        self.last_error = None;
++        Ok(())
++    }
++
++    /// Replaces the immutable compiled tree after aborting the current generation.
++    pub fn replace_tree<C: BehaviorTreeContext>(
++        &mut self,
++        tree: CompiledBehaviorTree,
++        context: &mut C,
++    ) -> Result<(), BehaviorTreeRuntimeError<C::Error>> {
++        self.reset(context, BehaviorResetReason::TreeReplaced)?;
++        let previous_generation = self.instance.execution_generation;
++        self.executor = BehaviorTreeExecutor::new(tree);
++        self.instance = self.executor.create_instance();
++        self.instance.execution_generation = previous_generation;
++        self.tree_generation = self.tree_generation.saturating_add(1);
++        self.last_status = None;
++        self.last_error = None;
++        Ok(())
++    }
++
++    fn flush_pending_reset<C: BehaviorTreeContext>(
++        &mut self,
++        context: &mut C,
++    ) -> Result<(), BehaviorTreeRuntimeError<C::Error>> {
++        if let Some(reason) = self.pending_reset.take() {
++            self.executor
++                .reset_instance(&mut self.instance, context, reason)?;
++            self.last_status = None;
++        }
++        Ok(())
++    }
++
++    fn record_error(&mut self, error: impl fmt::Display) {
++        self.last_status = None;
++        self.last_error = Some(error.to_string());
++    }
++}
++
++/// One behavior dispatch made by the ECS Behavior Tree system.
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++pub struct BehaviorTreeDispatchRecord {
++    /// Whether the dispatch targeted an action or condition behavior.
++    pub kind: BehaviorDispatchKind,
++    /// Stable behavior identifier passed to the runtime context.
++    pub behavior_id: String,
++}
++
++/// Lifecycle event captured by the registry-backed test/runtime context.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub enum BehaviorTreeLifecycleEvent {
++    /// An action was entered.
++    Enter {
++        /// Source authoring node.
++        node: NodeId,
++        /// Stable behavior identifier.
++        behavior_id: String,
++    },
++    /// An action completed normally.
++    Complete {
++        /// Source authoring node.
++        node: NodeId,
++        /// Stable behavior identifier.
++        behavior_id: String,
++        /// Terminal status returned by the action.
++        status: BehaviorStatus,
++    },
++    /// An action was aborted.
++    Abort {
++        /// Source authoring node.
++        node: NodeId,
++        /// Stable behavior identifier.
++        behavior_id: String,
++        /// Cancellation cause.

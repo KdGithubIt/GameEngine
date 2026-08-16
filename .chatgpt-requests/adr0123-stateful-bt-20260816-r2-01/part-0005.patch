@@ -1,0 +1,236 @@
++        source: node.source.clone(),
++        kind: node.kind,
++        behavior: node.behavior.clone(),
++        children: Vec::new(),
++        parent,
++    });
++    if depth > MAX_BEHAVIOR_TREE_RUNTIME_DEPTH {
++        plan.max_depth_node.get_or_insert_with(|| node.source.clone());
++        return index;
++    }
++    let children = node
++        .children
++        .iter()
++        .map(|child| prepare_node(child, Some(index), depth.saturating_add(1), plan))
++        .collect();
++    plan.nodes[index].children = children;
++    index
++}
++
++#[derive(Debug, Clone, Default)]
++struct NodeExecutionState {
++    cursor: usize,
++    action_entered: bool,
++    elapsed_seconds: f64,
++    cooldown_until_seconds: f64,
++}
++
++/// Mutable execution state for one prepared Behavior Tree runner.
++#[derive(Debug, Clone)]
++pub struct BehaviorTreeInstance {
++    node_state: Vec<NodeExecutionState>,
++    active_path: Vec<usize>,
++    active_actions: Vec<usize>,
++    recent_transitions: VecDeque<BehaviorExecutionTransition>,
++    execution_generation: u64,
++    total_seconds: f64,
++    last_terminal_node: Option<usize>,
++    last_terminal_status: Option<BehaviorStatus>,
++    last_reset_reason: Option<BehaviorResetReason>,
++}
++
++impl BehaviorTreeInstance {
++    fn for_plan(plan: &PreparedBehaviorTree) -> Self {
++        Self {
++            node_state: vec![NodeExecutionState::default(); plan.nodes.len()],
++            active_path: Vec::new(),
++            active_actions: Vec::new(),
++            recent_transitions: VecDeque::new(),
++            execution_generation: 1,
++            total_seconds: 0.0,
++            last_terminal_node: None,
++            last_terminal_status: None,
++            last_reset_reason: None,
++        }
++    }
++
++    /// Returns the current monotonic execution generation.
++    #[must_use]
++    pub fn execution_generation(&self) -> u64 {
++        self.execution_generation
++    }
++
++    fn ensure_plan(&mut self, plan: &PreparedBehaviorTree) {
++        if self.node_state.len() != plan.nodes.len() {
++            *self = Self::for_plan(plan);
++        }
++    }
++
++    fn push_transition(&mut self, transition: BehaviorExecutionTransition) {
++        if self.recent_transitions.len() == MAX_BEHAVIOR_TREE_DEBUG_TRANSITIONS {
++            self.recent_transitions.pop_front();
++        }
++        self.recent_transitions.push_back(transition);
++    }
++
++    fn record_node_terminal(
++        &mut self,
++        plan: &PreparedBehaviorTree,
++        index: usize,
++        status: BehaviorStatus,
++    ) {
++        if status == BehaviorStatus::Running {
++            return;
++        }
++        self.last_terminal_node = Some(index);
++        self.last_terminal_status = Some(status);
++        let kind = match status {
++            BehaviorStatus::Success => BehaviorExecutionTransitionKind::Success,
++            BehaviorStatus::Failure => BehaviorExecutionTransitionKind::Failure,
++            BehaviorStatus::Running => return,
++        };
++        self.push_transition(BehaviorExecutionTransition {
++            generation: self.execution_generation,
++            node: Some(plan.nodes[index].source.clone()),
++            behavior_id: plan.nodes[index].behavior.clone(),
++            kind,
++            reason: None,
++        });
++    }
++}
++
++/// Runtime executor for one immutable compiled Behavior Tree.
++pub struct BehaviorTreeExecutor {
++    tree: CompiledBehaviorTree,
++    plan: PreparedBehaviorTree,
++    step_budget: usize,
++}
++
++impl BehaviorTreeExecutor {
++    /// Creates an executor and prepares compact runtime indices once.
++    #[must_use]
++    pub fn new(tree: CompiledBehaviorTree) -> Self {
++        let plan = PreparedBehaviorTree::new(&tree);
++        Self {
++            tree,
++            plan,
++            step_budget: DEFAULT_BEHAVIOR_TREE_STEP_BUDGET,
++        }
++    }
++
++    /// Returns the compiled tree owned by this executor.
++    #[must_use]
++    pub fn tree(&self) -> &CompiledBehaviorTree {
++        &self.tree
++    }
++
++    /// Returns the hard node-step budget used by each tick.
++    #[must_use]
++    pub fn step_budget(&self) -> usize {
++        self.step_budget
++    }
++
++    /// Replaces the hard per-tick node-step budget.
++    pub fn set_step_budget(&mut self, step_budget: usize) {
++        self.step_budget = step_budget.max(1);
++    }
++
++    /// Creates fresh mutable state for this prepared plan.
++    #[must_use]
++    pub fn create_instance(&self) -> BehaviorTreeInstance {
++        BehaviorTreeInstance::for_plan(&self.plan)
++    }
++
++    /// Ticks with a fresh temporary instance for source compatibility.
++    ///
++    /// Stateful runtime users should keep a [`BehaviorTreeInstance`] and call
++    /// [`tick_instance`](Self::tick_instance). [`BehaviorTreeRunner`] does this
++    /// automatically.
++    pub fn tick<C: BehaviorTreeContext>(
++        &self,
++        context: &mut C,
++    ) -> Result<BehaviorStatus, BehaviorTreeRuntimeError<C::Error>> {
++        let mut instance = self.create_instance();
++        self.tick_instance(&mut instance, context)
++    }
++
++    /// Ticks one persistent instance of this prepared tree.
++    pub fn tick_instance<C: BehaviorTreeContext>(
++        &self,
++        instance: &mut BehaviorTreeInstance,
++        context: &mut C,
++    ) -> Result<BehaviorStatus, BehaviorTreeRuntimeError<C::Error>> {
++        instance.ensure_plan(&self.plan);
++        if let Some(node) = &self.plan.max_depth_node {
++            return Err(BehaviorTreeRuntimeError::MaxDepthExceeded {
++                node: node.clone(),
++                max_depth: MAX_BEHAVIOR_TREE_RUNTIME_DEPTH,
++            });
++        }
++        let root = &self.plan.nodes[0];
++        if root.kind != BehaviorTreeNodeKind::Root {
++            return Err(BehaviorTreeRuntimeError::InvalidRootKind {
++                node: root.source.clone(),
++                kind: root.kind,
++            });
++        }
++        if root.children.len() != 1 {
++            return Err(BehaviorTreeRuntimeError::InvalidRootChildCount {
++                node: root.source.clone(),
++                count: root.children.len(),
++            });
++        }
++
++        let delta_seconds = context.behavior_delta_seconds();
++        let delta_seconds = if delta_seconds.is_finite() && delta_seconds >= 0.0 {
++            delta_seconds
++        } else {
++            0.0
++        };
++        instance.total_seconds += delta_seconds;
++        instance.active_path.clear();
++        let mut path = vec![0_usize];
++        let mut steps = 0_usize;
++        let status = tick_node(
++            &self.plan,
++            instance,
++            context,
++            root.children[0],
++            1,
++            delta_seconds,
++            &mut steps,
++            self.step_budget,
++            &mut path,
++        )?;
++        if status == BehaviorStatus::Running {
++            instance.active_path = path;
++        } else {
++            instance.active_path.clear();
++            instance.record_node_terminal(&self.plan, 0, status);
++        }
++        Ok(status)
++    }
++
++    fn reset_instance<C: BehaviorTreeContext>(
++        &self,
++        instance: &mut BehaviorTreeInstance,
++        context: &mut C,
++        reason: BehaviorResetReason,
++    ) -> Result<(), BehaviorTreeRuntimeError<C::Error>> {
++        abort_actions_in_subtree(&self.plan, instance, context, 0, reason)?;
++        clear_subtree_state(&self.plan, instance, 0, false);
++        instance.active_path.clear();
++        instance.execution_generation = instance.execution_generation.saturating_add(1);
++        instance.last_reset_reason = Some(reason);
++        instance.push_transition(BehaviorExecutionTransition {
++            generation: instance.execution_generation,
++            node: None,
++            behavior_id: None,
++            kind: BehaviorExecutionTransitionKind::Reset,
++            reason: Some(reason),
++        });
++        Ok(())
++    }
++}
++
++/// ECS component that ticks one compiled Behavior Tree for an entity.

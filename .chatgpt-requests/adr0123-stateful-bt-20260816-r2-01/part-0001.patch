@@ -1,0 +1,213 @@
++    /// Creates a generic decorator node with a stable behavior identifier.
++    #[must_use]
++    pub fn decorator_node(&self, id: NodeId, behavior: impl Into<String>) -> Node {
++        self.inner.decorator_node(id, behavior)
++    }
++
++    /// Creates a typed Inverter decorator node.
++    #[must_use]
++    pub fn inverter_node(&self, id: NodeId) -> Node {
++        Node::new(id, self.inverter_type.clone(), Value::Object(BTreeMap::new()))
++    }
++
++    /// Creates a typed Wait decorator node.
++    #[must_use]
++    pub fn wait_node(&self, id: NodeId, duration_seconds: f64) -> Node {
++        duration_node(id, self.wait_type.clone(), duration_seconds)
++    }
++
++    /// Creates a typed Timeout decorator node.
++    #[must_use]
++    pub fn timeout_node(&self, id: NodeId, duration_seconds: f64) -> Node {
++        duration_node(id, self.timeout_type.clone(), duration_seconds)
++    }
++
++    /// Creates a typed Cooldown decorator node.
++    #[must_use]
++    pub fn cooldown_node(&self, id: NodeId, duration_seconds: f64) -> Node {
++        duration_node(id, self.cooldown_type.clone(), duration_seconds)
++    }
++
++    /// Creates a parent-to-child edge with explicit child order.
++    #[must_use]
++    pub fn child_edge(&self, id: EdgeId, parent: NodeId, child: NodeId, order: u32) -> Edge {
++        self.inner.child_edge(id, parent, child, order)
++    }
++
++    /// Compiles `graph` into the unchanged runtime Behavior Tree DTO.
++    pub fn compile(&self, graph: &Graph) -> Result<CompiledBehaviorTree, Vec<Diagnostic>> {
++        let diagnostics = validate_graph_with_domain(graph, self);
++        if diagnostics.iter().any(Diagnostic::is_blocking) {
++            return Err(diagnostics);
++        }
++        self.inner.compile(&self.normalized_graph(graph))
++    }
++
++    /// Produces a deterministic top-down graph view for `graph`.
++    pub fn auto_layout(&self, graph: &Graph) -> Result<GraphView, Vec<Diagnostic>> {
++        let diagnostics = validate_graph_with_domain(graph, self);
++        if diagnostics.iter().any(Diagnostic::is_blocking) {
++            return Err(diagnostics);
++        }
++        self.inner.auto_layout(&self.normalized_graph(graph))
++    }
++
++    fn normalized_graph(&self, graph: &Graph) -> Graph {
++        let mut normalized = Graph::new(graph.id.clone(), graph.kind.clone(), graph.name.clone());
++        normalized.schema_version = graph.schema_version;
++        normalized.display_name = graph.display_name.clone();
++        normalized.description = graph.description.clone();
++        normalized.nodes = graph.nodes.clone();
++        normalized.edges = graph.edges.clone();
++        normalized.groups = graph.groups.clone();
++        normalized.annotations = graph.annotations.clone();
++        for node in normalized.nodes.values_mut() {
++            let behavior = if node.node_type == self.inverter_type {
++                Some(INVERTER_BEHAVIOR.to_owned())
++            } else if node.node_type == self.wait_type {
++                duration_behavior(node, WAIT_BEHAVIOR_PREFIX)
++            } else if node.node_type == self.timeout_type {
++                duration_behavior(node, TIMEOUT_BEHAVIOR_PREFIX)
++            } else if node.node_type == self.cooldown_type {
++                duration_behavior(node, COOLDOWN_BEHAVIOR_PREFIX)
++            } else {
++                None
++            };
++            if let Some(behavior) = behavior {
++                node.node_type = self.inner.decorator_type().clone();
++                node.properties = behavior_properties(behavior);
++            }
++        }
++        normalized
++    }
++}
++
++impl Default for BehaviorTreeDomain {
++    fn default() -> Self {
++        Self::new()
++    }
++}
++
++impl GraphSchemaRegistry for BehaviorTreeDomain {
++    fn node_schema(&self, node_type: &NodeTypeId) -> Option<&NodeSchema> {
++        self.extra_schemas
++            .get(node_type)
++            .or_else(|| self.inner.node_schema(node_type))
++    }
++}
++
++impl GraphDomain for BehaviorTreeDomain {
++    fn graph_kind(&self) -> &GraphKind {
++        self.inner.graph_kind()
++    }
++
++    fn schema_registry(&self) -> &dyn GraphSchemaRegistry {
++        self
++    }
++
++    fn validate_domain(&self, graph: &Graph) -> Vec<Diagnostic> {
++        let mut diagnostics = validate_stateful_decorator_properties(self, graph);
++        diagnostics.extend(self.inner.validate_domain(&self.normalized_graph(graph)));
++        diagnostics
++    }
++}
++
++/// Shared Behavior Tree authoring service used by Editor, CLI, MCP, and tests.
++pub struct BehaviorTreeAuthoringService {
++    domain: BehaviorTreeDomain,
++}
++
++impl BehaviorTreeAuthoringService {
++    /// Creates a service with the production Behavior Tree domain.
++    #[must_use]
++    pub fn new() -> Self {
++        Self {
++            domain: BehaviorTreeDomain::new(),
++        }
++    }
++
++    /// Returns the underlying Behavior Tree domain.
++    #[must_use]
++    pub fn domain(&self) -> &BehaviorTreeDomain {
++        &self.domain
++    }
++
++    /// Returns schemas needed by authoring tools to create valid nodes.
++    #[must_use]
++    pub fn schemas(&self) -> BehaviorTreeSchemaCatalog {
++        let node_types = [
++            self.domain.root_type(),
++            self.domain.sequence_type(),
++            self.domain.selector_type(),
++            self.domain.condition_type(),
++            self.domain.action_type(),
++            self.domain.decorator_type(),
++            self.domain.inverter_type(),
++            self.domain.wait_type(),
++            self.domain.timeout_type(),
++            self.domain.cooldown_type(),
++        ];
++        let nodes = node_types
++            .into_iter()
++            .filter_map(|node_type| self.domain.node_schema(node_type).cloned())
++            .collect();
++        BehaviorTreeSchemaCatalog {
++            graph_kind: self.domain.graph_kind().clone(),
++            layout_policy: self.domain.layout_policy(),
++            nodes,
++        }
++    }
++
++    /// Builds the existing reference chase-or-patrol scenario.
++    pub fn example(&self) -> Result<BehaviorTreeExample, BehaviorTreeServiceError> {
++        legacy::BehaviorTreeAuthoringService::new().example()
++    }
++
++    /// Parses a Behavior Tree graph JSON document.
++    pub fn graph_from_json(&self, json: &str) -> Result<Graph, BehaviorTreeServiceError> {
++        let graph = serde_json::from_str::<Graph>(json)
++            .map_err(|source| BehaviorTreeServiceError::Json { source })?;
++        self.ensure_behavior_tree_graph(&graph)?;
++        Ok(graph)
++    }
++
++    /// Parses a JSON array of graph commands.
++    pub fn commands_from_json(
++        &self,
++        json: &str,
++    ) -> Result<Vec<GraphCommand>, BehaviorTreeServiceError> {
++        serde_json::from_str(json).map_err(|source| BehaviorTreeServiceError::Json { source })
++    }
++
++    /// Serializes a Behavior Tree graph to canonical JSON.
++    pub fn graph_to_canonical_json(
++        &self,
++        graph: &Graph,
++    ) -> Result<String, BehaviorTreeServiceError> {
++        self.ensure_behavior_tree_graph(graph)?;
++        graph
++            .to_canonical_json(&self.domain)
++            .map_err(|source| BehaviorTreeServiceError::Save { source })
++    }
++
++    /// Verifies that `graph` belongs to the Behavior Tree domain.
++    pub fn ensure_behavior_tree_graph(
++        &self,
++        graph: &Graph,
++    ) -> Result<(), BehaviorTreeServiceError> {
++        if graph.kind == *self.domain.graph_kind() {
++            Ok(())
++        } else {
++            Err(BehaviorTreeServiceError::WrongDomain {
++                expected: self.domain.graph_kind().clone(),
++                actual: graph.kind.clone(),
++            })
++        }
++    }
++
++    /// Validates a Behavior Tree graph.
++    #[must_use]
++    pub fn validate(&self, graph: &Graph) -> BehaviorTreeValidation {
++        let diagnostics = validate_graph_with_domain(graph, &self.domain);
++        BehaviorTreeValidation {
++            success: !diagnostics.iter().any(Diagnostic::is_blocking),

@@ -1,0 +1,24 @@
++        assert!(matches!(
++            executor.tick_instance(&mut instance, &mut registry),
++            Err(BehaviorTreeRuntimeError::StepBudgetExceeded { max_steps: 1 })
++        ));
++    }
++
++    #[test]
++    fn snapshot_maps_runtime_indices_back_to_source_ids() {
++        let running = action("work");
++        let running_id = running.source.clone();
++        let mut registry = BehaviorTreeBehaviorRegistry::default();
++        registry.set_action("work", BehaviorStatus::Running);
++        let mut runner = BehaviorTreeRunner::new(tree(running));
++
++        runner.tick(&mut registry).unwrap();
++        let snapshot = runner.snapshot();
++
++        assert_eq!(snapshot.status, Some(BehaviorStatus::Running));
++        assert_eq!(snapshot.running_node, Some(running_id));
++        assert!(!snapshot.active_path.is_empty());
++        assert!(snapshot.recent_transitions.len() <= MAX_BEHAVIOR_TREE_DEBUG_TRANSITIONS);
++    }
++
++    #[test]

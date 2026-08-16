@@ -1,0 +1,22 @@
++    fn compiled_authoring_tree_executes_with_persistent_runner() {
++        let domain = BehaviorTreeDomain::new();
++        let mut graph = Graph::new(
++            GraphId::generate(),
++            domain.graph_kind().clone(),
++            "runtime_smoke",
++        );
++        let root = NodeId::generate();
++        let action = NodeId::generate();
++        let mut transaction = GraphTransaction::begin(&graph);
++        transaction.apply(GraphCommand::AddNode {
++            node: domain.root_node(root.clone()),
++        });
++        transaction.apply(GraphCommand::AddNode {
++            node: domain.action_node(action.clone(), "idle"),
++        });
++        transaction.apply(GraphCommand::AddEdge {
++            edge: domain.child_edge(EdgeId::generate(), root, action, 0),
++        });
++        transaction
++            .commit(&mut graph, domain.schema_registry())
++            .expect("test graph must commit");
