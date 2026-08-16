@@ -1,6 +1,6 @@
 //! Runtime audio assets, authored playback components, and platform backend.
 
-pub use crate::spatial_audio::{AudioVoiceId, StereoGains};
+pub use crate::spatial_audio::{AudioRolloffMode, AudioVoiceId, StereoGains};
 
 use std::fmt;
 use std::io::Cursor;
@@ -120,7 +120,7 @@ pub enum AuthoredAudioState {
     Failed(String),
 }
 
-/// Authorable one-shot sound emitter attached to a spatial entity.
+/// Authorable sound emitter attached to a spatial entity.
 pub struct AudioEmitter {
     /// Decoded clip played when autoplay is enabled.
     pub clip: Handle<AudioAsset>,
@@ -132,13 +132,17 @@ pub struct AudioEmitter {
     pub min_distance: f32,
     /// Distance at which attenuation reaches its floor.
     pub max_distance: f32,
+    /// Distance attenuation curve selected by authoring.
+    pub rolloff: AudioRolloffMode,
+    /// Whether the managed voice repeats until stopped or despawned.
+    pub looping: bool,
     /// Whether conversion should produce one automatic playback request.
     pub autoplay: bool,
     state: AuthoredAudioState,
 }
 
 impl AudioEmitter {
-    /// Creates a validated pending emitter.
+    /// Creates a validated pending emitter with the default spatial policy.
     pub fn new(
         clip: Handle<AudioAsset>,
         volume: f32,
@@ -153,9 +157,18 @@ impl AudioEmitter {
             spatial_blend,
             min_distance,
             max_distance,
+            rolloff: AudioRolloffMode::Linear,
+            looping: false,
             autoplay,
             state: AuthoredAudioState::Pending,
         }
+    }
+
+    /// Applies the authorable spatial playback policy without exposing backend voice state.
+    pub fn with_spatial_playback(mut self, rolloff: AudioRolloffMode, looping: bool) -> Self {
+        self.rolloff = rolloff;
+        self.looping = looping;
+        self
     }
 
     /// Returns the latest automatic playback state.
@@ -184,6 +197,17 @@ impl AudioEmitter {
 pub struct AudioListener {
     /// Disabled listeners remain authored but do not participate in selection.
     pub enabled: bool,
+    /// Higher enabled priorities win; equal priorities use deterministic entity order.
+    pub priority: i64,
+}
+
+impl Default for AudioListener {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            priority: 0,
+        }
+    }
 }
 
 /// Authorable background-music startup policy.

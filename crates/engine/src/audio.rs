@@ -59,7 +59,7 @@ pub(crate) fn spatial_audio_system(
             spatial_blend: emitter.spatial_blend,
             min_distance: emitter.min_distance,
             max_distance: emitter.max_distance,
-            rolloff: AudioRolloffMode::Linear,
+            rolloff: emitter.rolloff,
         };
         let gains = emitter_gains(listener, emitter_pose(transform), settings);
 
@@ -77,7 +77,7 @@ pub(crate) fn spatial_audio_system(
             emitter.mark_playback_failed("decoded clip handle is missing");
             continue;
         };
-        match audio.start_voice(asset, gains, false) {
+        match audio.start_voice(asset, gains, emitter.looping) {
             Ok(voice_id) => {
                 runtime.voices.insert(entity, voice_id);
                 emitter.mark_playback_started();
@@ -104,21 +104,24 @@ pub(crate) fn spatial_audio_system(
 fn active_listener_pose(
     listeners: &mut Query<(&AudioListener, &GlobalTransform)>,
 ) -> Option<AudioListenerPose> {
-    let mut selected: Option<(Entity, AudioListenerPose)> = None;
+    let mut selected: Option<(i64, Entity, AudioListenerPose)> = None;
     for (entity, (listener, transform)) in listeners {
         if !listener.enabled {
             continue;
         }
         let pose = listener_pose(transform);
         let should_select = match selected.as_ref() {
-            Some((selected_entity, _)) => entity < *selected_entity,
+            Some((priority, selected_entity, _)) => {
+                listener.priority > *priority
+                    || (listener.priority == *priority && entity < *selected_entity)
+            }
             None => true,
         };
         if should_select {
-            selected = Some((entity, pose));
+            selected = Some((listener.priority, entity, pose));
         }
     }
-    selected.map(|(_, pose)| pose)
+    selected.map(|(_, _, pose)| pose)
 }
 
 fn listener_pose(transform: &GlobalTransform) -> AudioListenerPose {
@@ -298,7 +301,10 @@ mod tests {
 
         let mut world = engine_ecs::World::new();
         let first = world
-            .spawn_with(AudioListener { enabled: true })
+            .spawn_with(AudioListener {
+                enabled: true,
+                priority: 0,
+            })
             .expect("listener entity");
         world
             .add_component(
@@ -307,7 +313,10 @@ mod tests {
             )
             .expect("listener transform");
         let second = world
-            .spawn_with(AudioListener { enabled: true })
+            .spawn_with(AudioListener {
+                enabled: true,
+                priority: 10,
+            })
             .expect("listener entity");
         world
             .add_component(
@@ -316,7 +325,10 @@ mod tests {
             )
             .expect("listener transform");
         let disabled = world
-            .spawn_with(AudioListener { enabled: false })
+            .spawn_with(AudioListener {
+                enabled: false,
+                priority: 100,
+            })
             .expect("listener entity");
         world
             .add_component(
@@ -327,8 +339,8 @@ mod tests {
 
         let mut query = engine_ecs::Query::new(&mut world);
         let pose = active_listener_pose(&mut query).expect("enabled listener");
-        let expected_x = if first < second { 1.0 } else { 2.0 };
-        assert_eq!(pose.position, [expected_x, 0.0, 0.0]);
+        assert_eq!(pose.position, [2.0, 0.0, 0.0]);
+        assert!(first != second);
     }
 
     #[test]

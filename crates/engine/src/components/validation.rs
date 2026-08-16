@@ -111,6 +111,19 @@ pub fn validate_builtin_component_values(scene: &AuthoringScene) -> Vec<Diagnost
                     .with_target(target.clone()),
                 );
             }
+            if component_type.as_str() == AUDIO_LISTENER_COMPONENT
+                && !entity
+                    .components
+                    .contains_key(&ComponentTypeId::new(TRANSFORM_COMPONENT))
+            {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "scene.component_dependency_missing",
+                        "`engine.audio_listener` requires `engine.transform` on the same entity",
+                    )
+                    .with_target(target.clone()),
+                );
+            }
             if component_type.as_str() == FOOT_IK_COMPONENT
                 && !entity
                     .components
@@ -283,7 +296,80 @@ pub fn validate_builtin_component_values(scene: &AuthoringScene) -> Vec<Diagnost
         }
     }
     diagnostics.extend(validate_skinned_models_without_renderers(scene));
+    diagnostics.extend(validate_spatial_audio_scene(scene));
     diagnostics.extend(crate::render_limits::validate_scene_render_limits(scene));
+    diagnostics
+}
+
+fn validate_spatial_audio_scene(scene: &AuthoringScene) -> Vec<Diagnostic> {
+    let listener_type = ComponentTypeId::new(AUDIO_LISTENER_COMPONENT);
+    let emitter_type = ComponentTypeId::new(AUDIO_EMITTER_COMPONENT);
+    let mut enabled = Vec::new();
+
+    for (entity_id, entity) in scene.entities() {
+        let Some(Value::Object(fields)) = entity.components.get(&listener_type) else {
+            continue;
+        };
+        if fields.get("enabled") != Some(&Value::Bool(true)) {
+            continue;
+        }
+        let Some(priority) = fields.get("priority").and_then(|value| match value {
+            Value::I64(value) => Some(*value),
+            Value::U64(value) => i64::try_from(*value).ok(),
+            _ => None,
+        }) else {
+            continue;
+        };
+        enabled.push((entity_id.clone(), priority));
+    }
+
+    let highest = enabled.iter().map(|(_, priority)| *priority).max();
+    let tied_highest = highest
+        .map(|priority| enabled.iter().filter(|(_, value)| *value == priority).count())
+        .unwrap_or(0);
+    if tied_highest > 1 {
+        for (entity_id, priority) in &enabled {
+            if Some(*priority) != highest {
+                continue;
+            }
+            diagnostics.push(
+                Diagnostic::warning(
+                    "scene.audio_listener_priority_ambiguous",
+                    "Multiple enabled Audio Listeners share the highest priority; runtime selection falls back to deterministic entity order.",
+                )
+                .with_target(DiagnosticTarget::Component {
+                    entity: entity_id.clone(),
+                    component_type: listener_type.clone(),
+                }),
+            );
+        }
+    }
+
+    if enabled.is_empty() {
+        for (entity_id, entity) in scene.entities() {
+            let Some(Value::Object(fields)) = entity.components.get(&emitter_type) else {
+                continue;
+            };
+            let spatial_blend = fields
+                .get("spatial_blend")
+                .and_then(value_as_f64)
+                .unwrap_or(0.0);
+            if spatial_blend <= 0.0 {
+                continue;
+            }
+            diagnostics.push(
+                Diagnostic::warning(
+                    "scene.spatial_audio_listener_missing",
+                    "This spatial Audio Emitter has no enabled Audio Listener; only its non-spatial mix is audible.",
+                )
+                .with_target(DiagnosticTarget::Component {
+                    entity: entity_id.clone(),
+                    component_type: emitter_type.clone(),
+                }),
+            );
+        }
+    }
+
     diagnostics
 }
 

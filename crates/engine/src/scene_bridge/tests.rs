@@ -2156,9 +2156,11 @@ fn authorable_audio_components_decode_once_and_execute_headless_state() {
                     "spatial_blend": 1.0,
                     "min_distance": 1.0,
                     "max_distance": 12.0,
+                    "rolloff": "linear",
+                    "looping": false,
                     "autoplay": true
                 },
-                (AUDIO_LISTENER_COMPONENT): {"enabled": true},
+                (AUDIO_LISTENER_COMPONENT): {"enabled": true, "priority": 0},
                 (MUSIC_CONTROLLER_COMPONENT): {
                     "clip": {"$type": "asset_ref", "id": audio_asset.as_str()},
                     "volume": 0.6,
@@ -2180,12 +2182,16 @@ fn authorable_audio_components_decode_once_and_execute_headless_state() {
     let authoring_id = scene.entities().next().expect("fixture entity").0;
     let entity = bridge.get(authoring_id).expect("runtime entity mapping");
     assert!(bridge.asset(&audio_asset).is_some());
-    assert!(
-        world
-            .get_component::<AudioListener>(entity)
-            .expect("audio listener")
-            .enabled
-    );
+    let listener = world
+        .get_component::<AudioListener>(entity)
+        .expect("audio listener");
+    assert!(listener.enabled);
+    assert_eq!(listener.priority, 0);
+    let emitter = world
+        .get_component::<AudioEmitter>(entity)
+        .expect("audio emitter");
+    assert_eq!(emitter.rolloff, AudioRolloffMode::Linear);
+    assert!(!emitter.looping);
     assert_eq!(world.get_resource::<Assets<AudioAsset>>().unwrap().len(), 1);
 
     let mut system = crate::audio::authored_audio_system

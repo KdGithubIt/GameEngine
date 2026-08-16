@@ -606,6 +606,100 @@ fn numeric_range_preserves_exclusive_and_inclusive_bounds() {
 }
 
 #[test]
+fn spatial_audio_schema_exposes_current_authoring_policy() {
+    let registry = builtin_registry();
+    let emitter = registry
+        .get(&ComponentTypeId::new(AUDIO_EMITTER_COMPONENT))
+        .expect("audio emitter schema");
+    let listener = registry
+        .get(&ComponentTypeId::new(AUDIO_LISTENER_COMPONENT))
+        .expect("audio listener schema");
+
+    assert_eq!(emitter.schema.version, 2);
+    assert_eq!(listener.schema.version, 2);
+
+    let Value::Object(emitter_defaults) = emitter.schema.default_value() else {
+        panic!("audio emitter defaults must be an object");
+    };
+    assert_eq!(
+        emitter_defaults.get("rolloff"),
+        Some(&Value::String("linear".to_owned()))
+    );
+    assert_eq!(emitter_defaults.get("looping"), Some(&Value::Bool(false)));
+    assert_eq!(
+        emitter_defaults.get("spatial_blend"),
+        Some(&Value::F64(1.0))
+    );
+
+    let Value::Object(listener_defaults) = listener.schema.default_value() else {
+        panic!("audio listener defaults must be an object");
+    };
+    assert_eq!(listener_defaults.get("enabled"), Some(&Value::Bool(true)));
+    assert_eq!(listener_defaults.get("priority"), Some(&Value::I64(0)));
+}
+
+#[test]
+fn spatial_audio_validation_reports_missing_listener_and_priority_ties() {
+    let no_listener = load_scene_fixture(
+        r#"{
+            "entities": [{
+                "id": "entity_01JP0000000000000000000001",
+                "name": "emitter",
+                "components": {
+                    "engine.transform": {"x": 0.0, "y": 0.0, "z": 0.0},
+                    "engine.audio_emitter": {
+                        "volume": 1.0,
+                        "spatial_blend": 1.0,
+                        "min_distance": 1.0,
+                        "max_distance": 10.0,
+                        "rolloff": "linear",
+                        "looping": false,
+                        "autoplay": false
+                    }
+                }
+            }]
+        }"#,
+    )
+    .expect("spatial emitter fixture");
+    let diagnostics = validate_builtin_component_values(&no_listener);
+    assert!(diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.code == "scene.spatial_audio_listener_missing"));
+
+    let tied = load_scene_fixture(
+        r#"{
+            "entities": [
+                {
+                    "id": "entity_01JP0000000000000000000001",
+                    "name": "listener_a",
+                    "components": {
+                        "engine.transform": {"x": 0.0, "y": 0.0, "z": 0.0},
+                        "engine.audio_listener": {"enabled": true, "priority": 5}
+                    }
+                },
+                {
+                    "id": "entity_01JP0000000000000000000002",
+                    "name": "listener_b",
+                    "components": {
+                        "engine.transform": {"x": 1.0, "y": 0.0, "z": 0.0},
+                        "engine.audio_listener": {"enabled": true, "priority": 5}
+                    }
+                }
+            ]
+        }"#,
+    )
+    .expect("listener priority fixture");
+    let diagnostics = validate_builtin_component_values(&tied);
+    assert_eq!(
+        diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.code == "scene.audio_listener_priority_ambiguous")
+            .count(),
+        2
+    );
+}
+
+#[test]
 fn builtin_asset_validation_reports_category_and_graph_kind_mismatches() {
     let directory = tempfile::tempdir().expect("temporary asset root");
     std::fs::write(
@@ -646,6 +740,8 @@ fn builtin_asset_validation_reports_category_and_graph_kind_mismatches() {
                     "spatial_blend": 1.0,
                     "min_distance": 1.0,
                     "max_distance": 10.0,
+                    "rolloff": "linear",
+                    "looping": false,
                     "autoplay": false
                 },
                 (BEHAVIOR_TREE_RUNNER_COMPONENT): {
