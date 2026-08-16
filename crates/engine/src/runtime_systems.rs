@@ -102,8 +102,10 @@ pub fn register_runtime_systems(app: &mut App) -> Result<(), SystemRegistrationE
         engine_system(
             "engine.authored_audio",
             "Authored Audio",
-            "Applies one-shot emitter and music-controller autoplay requests.",
-        ),
+            "Starts authored audio and synchronizes spatial voices with world transforms.",
+        )
+        .try_after("engine.transform_propagation")
+        .expect("built-in system IDs are valid"),
         authored_audio_system,
     )?;
     app.try_add_system_with_descriptor(

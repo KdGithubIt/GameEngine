@@ -1131,9 +1131,13 @@ pub(crate) fn spawn_audio_listener_component(
     let expected = "an object with an enabled boolean field";
     let fields = ComponentFields::new(context.authoring_entity, &component_type, value, expected)?;
     let enabled = fields.bool_or("enabled", true)?;
-    context
-        .world
-        .add_component(entity, AudioListener { enabled })?;
+    context.world.add_component(
+        entity,
+        AudioListener {
+            enabled,
+            priority: 0,
+        },
+    )?;
     Ok(())
 }
 
