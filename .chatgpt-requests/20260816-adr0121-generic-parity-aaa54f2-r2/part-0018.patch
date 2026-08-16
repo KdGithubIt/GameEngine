@@ -1,0 +1,48 @@
+diff --git a/crates/cli/src/lib.rs b/crates/cli/src/lib.rs
+--- a/crates/cli/src/lib.rs
++++ b/crates/cli/src/lib.rs
+@@ -6,3 +6,4 @@
+ mod asset_cli;
++mod generic_cli;
+ mod prefab_cli;
+ mod scene_cli;
+@@ -57,4 +58,7 @@
+     if let Some(result) = asset_cli::dispatch(&args) {
+         return result;
+     }
++    if let Some(result) = generic_cli::dispatch(&args) {
++        return result;
++    }
+     if let Some(result) = prefab_cli::dispatch(&args) {
+diff --git a/crates/cli/src/generic_cli.rs b/crates/cli/src/generic_cli.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/cli/src/generic_cli.rs
+@@ -0,0 +1,322 @@
++//! Thin file-oriented CLI adapter for generic Graph, GraphView, and UI authoring.
++
++use super::{CliError, CliRunResult, to_json};
++use engine_authoring::{
++    AuthoringGraphDomain, AuthoringPermission, AuthoringPermissions, Diagnostic, Graph,
++    GraphAuthoringService, GraphCommand, GraphDomain, GraphView, GraphViewAuthoringService,
++    GraphViewCommand, UiAuthoringService, UiAuthoringSession, UiDocument, UiDocumentCommand,
++    replace_file_contents,
++};
++use serde::de::DeserializeOwned;
++use std::fs;
++use std::path::Path;
++
++pub(super) fn dispatch(args: &[String]) -> Option<Result<CliRunResult, CliError>> {
++    match args {
++        [domain, command, path] if domain == "graph" && command == "inspect" => {
++            Some(graph_inspect(Path::new(path)))
++        }
++        [domain, command, path] if domain == "graph" && command == "validate" => {
++            Some(graph_validate(Path::new(path)))
++        }
++        [domain, command, graph_path, commands_path]
++            if domain == "graph" && command == "preview" =>
++        {
++            Some(graph_mutate(
++                Path::new(graph_path),
++                Path::new(commands_path),

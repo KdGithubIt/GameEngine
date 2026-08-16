@@ -1,0 +1,58 @@
++fn descriptor(name: &'static str, description: &'static str, input_schema: serde_json::Value) -> McpToolDescriptor {
++    McpToolDescriptor {
++        name: name.into(),
++        description: description.into(),
++        input_schema,
++    }
++}
++
++fn empty_schema() -> serde_json::Value {
++    json!({"type":"object","properties":{},"additionalProperties":false})
++}
++
++fn graph_mutation_schema() -> serde_json::Value {
++    mutation_schema("GraphCommand")
++}
++
++fn graph_view_mutation_schema() -> serde_json::Value {
++    mutation_schema("GraphViewCommand")
++}
++
++fn ui_mutation_schema() -> serde_json::Value {
++    mutation_schema("UiDocumentCommand")
++}
++
++fn mutation_schema(command_title: &'static str) -> serde_json::Value {
++    json!({
++        "type": "object",
++        "required": ["expected_revision", "expected_generation", "commands"],
++        "properties": {
++            "expected_revision": {"type": "integer", "minimum": 0},
++            "expected_generation": {"type": "integer", "minimum": 0},
++            "commands": {
++                "type": "array",
++                "items": {"type": "object", "title": command_title}
++            }
++        },
++        "additionalProperties": false
++    })
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn descriptors_cover_generic_graph_layout_and_ui_surfaces() {
++        let names = GenericAuthoringMcpTools::new()
++            .tool_descriptors()
++            .into_iter()
++            .map(|descriptor| descriptor.name)
++            .collect::<Vec<_>>();
++
++        assert!(names.contains(&"graph.inspect".to_owned()));
++        assert!(names.contains(&"graph.layout.apply".to_owned()));
++        assert!(names.contains(&"ui.apply".to_owned()));
++        assert_eq!(names.len(), 12);
++    }
++}

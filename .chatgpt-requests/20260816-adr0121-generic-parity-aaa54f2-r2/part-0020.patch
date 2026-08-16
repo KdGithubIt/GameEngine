@@ -1,0 +1,53 @@
++        }
++        [domain, command, path] if domain == "ui" && command == "validate" => {
++            Some(ui_validate(Path::new(path)))
++        }
++        [domain, command, path, commands_path] if domain == "ui" && command == "preview" => {
++            Some(ui_mutate(
++                Path::new(path),
++                Path::new(commands_path),
++                false,
++            ))
++        }
++        [domain, command, path, commands_path] if domain == "ui" && command == "apply" => {
++            Some(ui_mutate(
++                Path::new(path),
++                Path::new(commands_path),
++                true,
++            ))
++        }
++        _ if args.first().is_some_and(|value| value == "graph" || value == "ui") => {
++            Some(Err(CliError::UnknownCommand {
++                args: args.join(" "),
++            }))
++        }
++        _ => None,
++    }
++}
++
++fn graph_inspect(path: &Path) -> Result<CliRunResult, CliError> {
++    let graph: Graph = load_json(path)?;
++    let output = GraphAuthoringService::new()
++        .inspect(&graph, &read_permissions())
++        .map_err(authoring_error)?;
++    Ok(CliRunResult::success(to_json(&output)?))
++}
++
++fn graph_validate(path: &Path) -> Result<CliRunResult, CliError> {
++    let graph: Graph = load_json(path)?;
++    let domain = AuthoringGraphDomain::for_graph(&graph).map_err(authoring_error)?;
++    let output = GraphAuthoringService::new()
++        .validate(&graph, &domain, &read_permissions())
++        .map_err(authoring_error)?;
++    Ok(CliRunResult::diagnostics(
++        to_json(&output)?,
++        !output.success,
++    ))
++}
++
++fn graph_mutate(
++    graph_path: &Path,
++    commands_path: &Path,
++    persist: bool,
++) -> Result<CliRunResult, CliError> {
++    let mut graph: Graph = load_json(graph_path)?;

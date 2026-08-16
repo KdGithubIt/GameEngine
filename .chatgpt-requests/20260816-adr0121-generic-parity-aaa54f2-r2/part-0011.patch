@@ -1,0 +1,46 @@
++pub struct GraphViewMutationInput {
++    /// Authoritative GraphView revision observed by the caller.
++    pub expected_revision: u64,
++    /// Authoritative in-memory GraphView generation observed by the caller.
++    pub expected_generation: u64,
++    /// Presentation commands to apply atomically.
++    pub commands: Vec<GraphViewCommand>,
++}
++
++/// Mutation request shared by declarative UI preview and apply tools.
++#[derive(Debug, Deserialize)]
++pub struct UiMutationInput {
++    /// Authoritative UI document revision observed by the caller.
++    pub expected_revision: u64,
++    /// Authoritative in-memory UI generation observed by the caller.
++    pub expected_generation: u64,
++    /// UI commands to apply atomically.
++    pub commands: Vec<UiDocumentCommand>,
++}
++
++/// Failure returned by generic structured authoring MCP handlers.
++#[derive(Debug)]
++pub enum GenericAuthoringMcpError {
++    /// No built-in Graph domain owns the supplied graph kind.
++    UnsupportedGraphKind(UnsupportedGraphKind),
++    /// Shared semantic Graph authoring rejected the request.
++    Graph(GraphAuthoringError),
++    /// Shared GraphView authoring rejected the request.
++    GraphView(GraphViewAuthoringError),
++    /// Shared declarative UI authoring rejected the request.
++    Ui(UiAuthoringError),
++}
++
++impl GenericAuthoringMcpError {
++    /// Returns the stable diagnostic-style code exposed to MCP clients.
++    pub fn code(&self) -> &'static str {
++        match self {
++            Self::UnsupportedGraphKind(error) => error.code(),
++            Self::Graph(error) => error.code(),
++            Self::GraphView(error) => error.code(),
++            Self::Ui(error) => error.code(),
++        }
++    }
++}
++
++impl fmt::Display for GenericAuthoringMcpError {

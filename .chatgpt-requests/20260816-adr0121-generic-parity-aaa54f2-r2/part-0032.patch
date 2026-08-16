@@ -1,0 +1,45 @@
++            let session = self
++                .ui_authoring_session
++                .as_mut()
++                .ok_or(StructuredAuthoringError::NoUiDocument)?;
++            let mutation = UiAuthoringService::new().apply(
++                session,
++                permissions,
++                expected_revision,
++                expected_generation,
++                commands,
++            )?;
++            let updated_document = (mutation.success && !mutation.diff.is_empty())
++                .then(|| session.document().clone());
++            (mutation, updated_document)
++        };
++        self.diagnostics = mutation.diagnostics.clone();
++        if let Some(updated_document) = updated_document {
++            if let Some(checkpoint) = checkpoint {
++                self.undo_stack.push(checkpoint);
++            }
++            if let CurrentDocument::Ui { document, .. } = &mut self.current_document {
++                *document = updated_document;
++            }
++            self.mark_dirty();
++        }
++        Ok(mutation)
++    }
++}
+diff --git a/crates/editor/src/session/documents.rs b/crates/editor/src/session/documents.rs
+--- a/crates/editor/src/session/documents.rs
++++ b/crates/editor/src/session/documents.rs
+@@ -14,2 +14,4 @@
+-use engine_authoring::{AuthoringSession, UiDocument, UiDocumentCommand, UiDocumentTransaction};
++use engine_authoring::{
++    AuthoringSession, UiAuthoringSession, UiDocument, UiDocumentCommand, UiDocumentTransaction,
++};
+ use std::path::{Path, PathBuf};
+@@ -26,3 +28,4 @@
+         self.current_document = CurrentDocument::None;
+         self.scene_session = None;
++        self.ui_authoring_session = None;
+         self.undo_stack.clear();
+@@ -68,2 +71,3 @@
+         self.current_document = doc;
++        self.ui_authoring_session = None;

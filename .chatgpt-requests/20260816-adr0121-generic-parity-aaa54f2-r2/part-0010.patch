@@ -1,0 +1,41 @@
++    GenericAuthoringMcpError, GenericAuthoringMcpTools, GraphMutationInput,
++    GraphViewMutationInput, UiMutationInput,
++};
+ pub use prefab::{PrefabCreateInput, PrefabInstantiateInput, PrefabMcpTools};
+diff --git a/crates/mcp/src/generic_authoring.rs b/crates/mcp/src/generic_authoring.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/mcp/src/generic_authoring.rs
+@@ -0,0 +1,370 @@
++//! Generic Graph, GraphView, and declarative UI MCP adapters.
++//!
++//! These handlers own only tool-shaped DTOs and delegate all authoring meaning
++//! to `engine-authoring` shared services.
++
++use crate::McpToolDescriptor;
++use engine_authoring::{
++    AuthoringGraphDomain, AuthoringPermissions, Graph, GraphAuthoringError,
++    GraphAuthoringMutation, GraphAuthoringService, GraphAuthoringSnapshot,
++    GraphAuthoringValidation, GraphCommand, GraphView, GraphViewAuthoringError,
++    GraphViewAuthoringMutation, GraphViewAuthoringService, GraphViewAuthoringSnapshot,
++    GraphViewAuthoringValidation, GraphViewCommand, UiAuthoringError, UiAuthoringMutation,
++    UiAuthoringService, UiAuthoringSession, UiAuthoringSnapshot, UiAuthoringValidation,
++    UiDocumentCommand, UnsupportedGraphKind,
++};
++use serde::Deserialize;
++use serde_json::json;
++use std::fmt;
++
++/// Mutation request shared by generic Graph preview and apply tools.
++#[derive(Debug, Deserialize)]
++pub struct GraphMutationInput {
++    /// Authoritative Graph revision observed by the caller.
++    pub expected_revision: u64,
++    /// Authoritative in-memory Graph generation observed by the caller.
++    pub expected_generation: u64,
++    /// Semantic commands to apply atomically.
++    pub commands: Vec<GraphCommand>,
++}
++
++/// Mutation request shared by GraphView preview and apply tools.
++#[derive(Debug, Deserialize)]

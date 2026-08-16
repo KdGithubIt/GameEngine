@@ -1,0 +1,46 @@
++        self.diagnostics = mutation.diagnostics.clone();
++        if mutation.success && !mutation.diff.is_empty() {
++            if let Some(checkpoint) = checkpoint {
++                self.undo_stack.push(checkpoint);
++            }
++            self.prune_graph_view();
++            self.mark_dirty();
++        }
++        Ok(mutation)
++    }
++
++    /// Inspects the active GraphView presentation document.
++    pub fn structured_graph_view_inspect(
++        &self,
++        permissions: &AuthoringPermissions,
++    ) -> Result<GraphViewAuthoringSnapshot, StructuredAuthoringError> {
++        self.require_structured_graph_document()?;
++        let view = self
++            .graph_view
++            .as_ref()
++            .ok_or(StructuredAuthoringError::NoGraphView)?;
++        Ok(GraphViewAuthoringService::new().inspect(view, permissions)?)
++    }
++
++    /// Validates the active GraphView against its semantic Graph.
++    pub fn structured_graph_view_validate(
++        &self,
++        permissions: &AuthoringPermissions,
++    ) -> Result<GraphViewAuthoringValidation, StructuredAuthoringError> {
++        self.require_structured_graph_document()?;
++        let view = self
++            .graph_view
++            .as_ref()
++            .ok_or(StructuredAuthoringError::NoGraphView)?;
++        Ok(GraphViewAuthoringService::new().validate(&self.graph, view, permissions)?)
++    }
++
++    /// Previews one GraphView presentation command batch.
++    pub fn structured_graph_view_preview(
++        &self,
++        permissions: &AuthoringPermissions,
++        expected_revision: u64,
++        expected_generation: u64,
++        commands: Vec<GraphViewCommand>,
++    ) -> Result<GraphViewAuthoringMutation, StructuredAuthoringError> {
++        self.require_structured_graph_document()?;

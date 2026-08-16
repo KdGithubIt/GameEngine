@@ -1,0 +1,55 @@
++    let output = GraphViewAuthoringService::new()
++        .validate(&graph, &view, &read_permissions())
++        .map_err(authoring_error)?;
++    Ok(CliRunResult::diagnostics(
++        to_json(&output)?,
++        !output.success,
++    ))
++}
++
++fn graph_view_mutate(
++    graph_path: &Path,
++    view_path: &Path,
++    commands_path: &Path,
++    persist: bool,
++) -> Result<CliRunResult, CliError> {
++    let graph: Graph = load_json(graph_path)?;
++    let mut view: GraphView = load_json(view_path)?;
++    let commands: Vec<GraphViewCommand> = load_json(commands_path)?;
++    let service = GraphViewAuthoringService::new();
++    let permissions = writable_permissions();
++    let base = service
++        .inspect(&view, &permissions)
++        .map_err(authoring_error)?;
++    let output = if persist {
++        service.apply(
++            &graph,
++            &mut view,
++            &permissions,
++            base.revision,
++            base.generation,
++            commands,
++        )
++    } else {
++        service.preview(
++            &graph,
++            &view,
++            &permissions,
++            base.revision,
++            base.generation,
++            commands,
++        )
++    }
++    .map_err(authoring_error)?;
++
++    if persist && output.success && !output.diff.is_empty() {
++        let json = view.to_canonical_json(&graph).map_err(authoring_error)?;
++        replace_file_contents(view_path, &json).map_err(|source| CliError::Persist { source })?;
++    }
++    Ok(CliRunResult::diagnostics(to_json(&output)?, !output.success))
++}
++
++fn ui_inspect(path: &Path) -> Result<CliRunResult, CliError> {
++    let session = UiAuthoringSession::new(load_ui(path)?);
++    let output = UiAuthoringService::new()
++        .inspect(&session, &read_permissions())

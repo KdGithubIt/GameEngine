@@ -1,0 +1,49 @@
++            .ui_authoring_session
++            .as_ref()
++            .ok_or(StructuredAuthoringError::NoUiDocument)?;
++        Ok(UiAuthoringService::new().inspect(session, permissions)?)
++    }
++
++    /// Validates the active declarative UI document through its live shared session.
++    pub fn structured_ui_validate(
++        &self,
++        permissions: &AuthoringPermissions,
++    ) -> Result<UiAuthoringValidation, StructuredAuthoringError> {
++        let session = self
++            .ui_authoring_session
++            .as_ref()
++            .ok_or(StructuredAuthoringError::NoUiDocument)?;
++        Ok(UiAuthoringService::new().validate(session, permissions)?)
++    }
++
++    /// Previews one declarative UI command batch.
++    pub fn structured_ui_preview(
++        &self,
++        permissions: &AuthoringPermissions,
++        expected_revision: u64,
++        expected_generation: u64,
++        commands: Vec<UiDocumentCommand>,
++    ) -> Result<UiAuthoringMutation, StructuredAuthoringError> {
++        let session = self
++            .ui_authoring_session
++            .as_ref()
++            .ok_or(StructuredAuthoringError::NoUiDocument)?;
++        Ok(UiAuthoringService::new().preview(
++            session,
++            permissions,
++            expected_revision,
++            expected_generation,
++            commands,
++        )?)
++    }
++
++    /// Applies one declarative UI batch as one Editor undo operation.
++    pub fn structured_ui_apply(
++        &mut self,
++        permissions: &AuthoringPermissions,
++        expected_revision: u64,
++        expected_generation: u64,
++        commands: Vec<UiDocumentCommand>,
++    ) -> Result<UiAuthoringMutation, StructuredAuthoringError> {
++        let checkpoint = self.snapshot();
++        let (mutation, updated_document) = {

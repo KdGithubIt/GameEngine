@@ -1,0 +1,42 @@
++                    &permissions,
++                    input.expected_revision,
++                    input.expected_generation,
++                    input.commands,
++                )?)
++            }
++            "graph.apply" => {
++                let input: GraphMutationInput = decode(arguments)?;
++                to_value(self.session.structured_graph_apply(
++                    &permissions,
++                    input.expected_revision,
++                    input.expected_generation,
++                    input.commands,
++                )?)
++            }
++            "graph.layout.inspect" => {
++                require_empty_arguments(arguments)?;
++                to_value(self.session.structured_graph_view_inspect(&permissions)?)
++            }
++            "graph.layout.validate" => {
++                require_empty_arguments(arguments)?;
++                to_value(self.session.structured_graph_view_validate(&permissions)?)
++            }
++            "graph.layout.preview" => {
++                let input: GraphViewMutationInput = decode(arguments)?;
++                to_value(self.session.structured_graph_view_preview(
++                    &permissions,
++                    input.expected_revision,
++                    input.expected_generation,
++                    input.commands,
++                )?)
++            }
++            "graph.layout.apply" => {
++                let input: GraphViewMutationInput = decode(arguments)?;
++                to_value(self.session.structured_graph_view_apply(
++                    &permissions,
++                    input.expected_revision,
++                    input.expected_generation,
++                    input.commands,
++                )?)
++            }
++            "ui.inspect" => {

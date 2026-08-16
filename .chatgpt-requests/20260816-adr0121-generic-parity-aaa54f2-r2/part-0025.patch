@@ -1,0 +1,36 @@
+     /// Scene edit history for the open scene document.
+     scene_session: Option<AuthoringSession>,
++    /// Shared structured authoring state for the open UI document.
++    ui_authoring_session: Option<UiAuthoringSession>,
+     /// Dirty state for a graph session that has not been saved to a document.
+@@ -158,3 +162,4 @@
+             current_document: CurrentDocument::None,
+             scene_session: None,
++            ui_authoring_session: None,
+             untitled_dirty: false,
+diff --git a/crates/editor/src/session/structured_authoring.rs b/crates/editor/src/session/structured_authoring.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/editor/src/session/structured_authoring.rs
+@@ -0,0 +1,335 @@
++//! Structured bulk authoring entry points owned by the live Editor session.
++//!
++//! These methods are used by non-widget adapters such as project-scoped MCP.
++//! Existing interactive micro-edits remain command-backed through their
++//! dedicated Editor operations so temporary domain-invalid construction states
++//! continue to be possible.
++
++use super::EditorSession;
++use crate::document::CurrentDocument;
++use engine_authoring::{
++    AuthoringGraphDomain, AuthoringPermissions, GraphAuthoringError, GraphAuthoringMutation,
++    GraphAuthoringService, GraphAuthoringSnapshot, GraphAuthoringValidation, GraphCommand,
++    GraphViewAuthoringError, GraphViewAuthoringMutation, GraphViewAuthoringService,
++    GraphViewAuthoringSnapshot, GraphViewAuthoringValidation, GraphViewCommand, UiAuthoringError,
++    UiAuthoringMutation, UiAuthoringService, UiAuthoringSnapshot, UiAuthoringValidation,
++    UiDocumentCommand, UnsupportedGraphKind,
++};
++use std::fmt;
++
++/// Failure returned by the Editor's structured authoring surface.
++#[derive(Debug)]

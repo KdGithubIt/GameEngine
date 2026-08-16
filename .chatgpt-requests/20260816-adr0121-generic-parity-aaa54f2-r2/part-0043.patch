@@ -1,0 +1,47 @@
++            .structured_ui_inspect(&permissions)
++            .expect("direct UI inspect");
++        let direct_preview = direct
++            .structured_ui_preview(
++                &permissions,
++                direct_base.revision,
++                direct_base.generation,
++                vec![command.clone()],
++            )
++            .expect("direct UI preview");
++        direct
++            .structured_ui_apply(
++                &permissions,
++                direct_base.revision,
++                direct_base.generation,
++                vec![command.clone()],
++            )
++            .expect("direct UI apply");
++        let direct_stale = direct
++            .structured_ui_apply(
++                &permissions,
++                direct_base.revision,
++                direct_base.generation,
++                Vec::new(),
++            )
++            .expect_err("direct stale UI base");
++        assert_eq!(direct_stale.code(), "authoring.stale_revision");
++
++        let (_project, mut app) = editor_app();
++        app.session
++            .open_ui_discarding_changes(ui_path.clone())
++            .expect("open MCP UI");
++        let mcp_base = app
++            .handle_mcp_tool_call("ui.inspect", json!({}))
++            .expect("MCP UI inspect");
++        let revision = mcp_base["revision"].as_u64().expect("UI revision");
++        let generation = mcp_base["generation"].as_u64().expect("UI generation");
++        let mcp_preview = app
++            .handle_mcp_tool_call(
++                "ui.preview",
++                json!({
++                    "expected_revision": revision,
++                    "expected_generation": generation,
++                    "commands": [command.clone()]
++                }),
++            )
++            .expect("MCP UI preview");

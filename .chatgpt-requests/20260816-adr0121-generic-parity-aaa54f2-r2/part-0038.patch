@@ -1,0 +1,44 @@
++                vec![graph_command.clone()],
++            )
++            .expect("direct preview");
++        let direct_apply = direct
++            .structured_graph_apply(
++                &permissions,
++                direct_base.revision,
++                direct_base.generation,
++                vec![graph_command.clone()],
++            )
++            .expect("direct apply");
++        assert!(direct_apply.success);
++        let stale = direct
++            .structured_graph_apply(
++                &permissions,
++                direct_base.revision,
++                direct_base.generation,
++                Vec::new(),
++            )
++            .expect_err("direct stale graph base");
++        assert_eq!(stale.code(), "authoring.stale_revision");
++
++        let (_project, mut app) = editor_app();
++        app.session = EditorSession::new(
++            serde_json::from_str(&graph_json).expect("MCP graph"),
++            Some(serde_json::from_str(&view_json).expect("MCP view")),
++        );
++        let mcp_base = app
++            .handle_mcp_tool_call("graph.inspect", json!({}))
++            .expect("MCP inspect");
++        let mcp_revision = mcp_base["revision"].as_u64().expect("MCP revision");
++        let mcp_generation = mcp_base["generation"].as_u64().expect("MCP generation");
++        let mcp_preview = app
++            .handle_mcp_tool_call(
++                "graph.preview",
++                json!({
++                    "expected_revision": mcp_revision,
++                    "expected_generation": mcp_generation,
++                    "commands": [graph_command.clone()]
++                }),
++            )
++            .expect("MCP preview");
++        assert_eq!(
++            mcp_preview["diff"],

@@ -1,0 +1,52 @@
++        let view = self
++            .graph_view
++            .as_ref()
++            .ok_or(StructuredAuthoringError::NoGraphView)?;
++        Ok(GraphViewAuthoringService::new().preview(
++            &self.graph,
++            view,
++            permissions,
++            expected_revision,
++            expected_generation,
++            commands,
++        )?)
++    }
++
++    /// Applies one GraphView batch as one Editor undo operation.
++    pub fn structured_graph_view_apply(
++        &mut self,
++        permissions: &AuthoringPermissions,
++        expected_revision: u64,
++        expected_generation: u64,
++        commands: Vec<GraphViewCommand>,
++    ) -> Result<GraphViewAuthoringMutation, StructuredAuthoringError> {
++        self.require_structured_graph_document()?;
++        let checkpoint = self.snapshot();
++        let view = self
++            .graph_view
++            .as_mut()
++            .ok_or(StructuredAuthoringError::NoGraphView)?;
++        let mutation = GraphViewAuthoringService::new().apply(
++            &self.graph,
++            view,
++            permissions,
++            expected_revision,
++            expected_generation,
++            commands,
++        )?;
++        self.diagnostics = mutation.diagnostics.clone();
++        if mutation.success && !mutation.diff.is_empty() {
++            if let Some(checkpoint) = checkpoint {
++                self.undo_stack.push(checkpoint);
++            }
++            self.mark_dirty();
++        }
++        Ok(mutation)
++    }
++
++    /// Inspects the active declarative UI document through its live shared session.
++    pub fn structured_ui_inspect(
++        &self,
++        permissions: &AuthoringPermissions,
++    ) -> Result<UiAuthoringSnapshot, StructuredAuthoringError> {
++        let session = self

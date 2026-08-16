@@ -1,0 +1,40 @@
++            serde_json::to_value(&direct_preview.diff).expect("direct preview diff")
++        );
++        assert_eq!(
++            mcp_preview["diagnostics"],
++            serde_json::to_value(&direct_preview.diagnostics).expect("direct diagnostics")
++        );
++        app.handle_mcp_tool_call(
++            "graph.apply",
++            json!({
++                "expected_revision": mcp_revision,
++                "expected_generation": mcp_generation,
++                "commands": [graph_command.clone()]
++            }),
++        )
++        .expect("MCP apply");
++        let mcp_stale = app
++            .handle_mcp_tool_call(
++                "graph.apply",
++                json!({
++                    "expected_revision": mcp_revision,
++                    "expected_generation": mcp_generation,
++                    "commands": []
++                }),
++            )
++            .expect_err("MCP stale graph base");
++        assert_eq!(mcp_stale.code(), "authoring.stale_revision");
++        assert_eq!(
++            serde_json::to_value(app.session.graph()).expect("MCP graph value"),
++            serde_json::to_value(direct.graph()).expect("direct graph value")
++        );
++
++        let cli_dir = tempfile::tempdir().expect("CLI parity directory");
++        let graph_path = cli_dir.path().join("parity.graph.json");
++        let view_path = cli_dir.path().join("parity.graph.view.json");
++        let graph_commands_path = cli_dir.path().join("graph-commands.json");
++        std::fs::write(&graph_path, &graph_json).expect("write CLI graph");
++        std::fs::write(&view_path, &view_json).expect("write CLI view");
++        std::fs::write(
++            &graph_commands_path,
++            serde_json::to_string_pretty(&vec![graph_command]).expect("graph command JSON"),

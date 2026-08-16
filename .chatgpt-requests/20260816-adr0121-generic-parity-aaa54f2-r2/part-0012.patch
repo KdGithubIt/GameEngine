@@ -1,0 +1,56 @@
++    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
++        match self {
++            Self::UnsupportedGraphKind(error) => error.fmt(formatter),
++            Self::Graph(error) => error.fmt(formatter),
++            Self::GraphView(error) => error.fmt(formatter),
++            Self::Ui(error) => error.fmt(formatter),
++        }
++    }
++}
++
++impl std::error::Error for GenericAuthoringMcpError {
++    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
++        match self {
++            Self::UnsupportedGraphKind(error) => Some(error),
++            Self::Graph(error) => Some(error),
++            Self::GraphView(error) => Some(error),
++            Self::Ui(error) => Some(error),
++        }
++    }
++}
++
++impl From<UnsupportedGraphKind> for GenericAuthoringMcpError {
++    fn from(error: UnsupportedGraphKind) -> Self {
++        Self::UnsupportedGraphKind(error)
++    }
++}
++
++impl From<GraphAuthoringError> for GenericAuthoringMcpError {
++    fn from(error: GraphAuthoringError) -> Self {
++        Self::Graph(error)
++    }
++}
++
++impl From<GraphViewAuthoringError> for GenericAuthoringMcpError {
++    fn from(error: GraphViewAuthoringError) -> Self {
++        Self::GraphView(error)
++    }
++}
++
++impl From<UiAuthoringError> for GenericAuthoringMcpError {
++    fn from(error: UiAuthoringError) -> Self {
++        Self::Ui(error)
++    }
++}
++
++/// Transport-neutral MCP handlers for generic Graph, GraphView, and UI authoring.
++#[derive(Debug, Default, Clone, Copy)]
++pub struct GenericAuthoringMcpTools;
++
++impl GenericAuthoringMcpTools {
++    /// Creates the stateless generic authoring MCP adapter.
++    pub fn new() -> Self {
++        Self
++    }
++
++    /// Returns descriptors for generic structured authoring tools.

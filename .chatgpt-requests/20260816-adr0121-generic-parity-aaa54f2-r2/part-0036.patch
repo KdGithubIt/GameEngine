@@ -1,0 +1,54 @@
++                require_empty_arguments(arguments)?;
++                to_value(self.session.structured_ui_inspect(&permissions)?)
++            }
++            "ui.validate" => {
++                require_empty_arguments(arguments)?;
++                to_value(self.session.structured_ui_validate(&permissions)?)
++            }
++            "ui.preview" => {
++                let input: UiMutationInput = decode(arguments)?;
++                to_value(self.session.structured_ui_preview(
++                    &permissions,
++                    input.expected_revision,
++                    input.expected_generation,
++                    input.commands,
++                )?)
++            }
++            "ui.apply" => {
++                let input: UiMutationInput = decode(arguments)?;
++                to_value(self.session.structured_ui_apply(
++                    &permissions,
++                    input.expected_revision,
++                    input.expected_generation,
++                    input.commands,
++                )?)
++            }
+             "behavior_tree.schemas" => {
+                 require_empty_arguments(arguments)?;
+                 to_value(behavior_tools.behavior_tree_schemas())
+             }
+@@ -292,7 +376,13 @@
+ impl From<McpToolError> for EditorMcpCallFailure {
+     fn from(error: McpToolError) -> Self {
+         Self::tool(error)
+     }
+ }
+ 
++impl From<StructuredAuthoringError> for EditorMcpCallFailure {
++    fn from(error: StructuredAuthoringError) -> Self {
++        Self::structured(error)
++    }
++}
++
+ #[cfg(test)]
+@@ -415,6 +505,356 @@
+         assert_eq!(
+             assets[0]["id"],
+             Value::String(asset_id.as_str().to_owned())
+         );
+     }
+ }
++
++#[cfg(test)]
++mod parity_tests {
++    use super::*;

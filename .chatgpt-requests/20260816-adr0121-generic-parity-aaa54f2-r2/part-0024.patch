@@ -1,0 +1,53 @@
++    AuthoringPermissions::read_only()
++        .with(AuthoringPermission::Preview)
++        .with(AuthoringPermission::ProjectDataWrite)
++}
++
++fn load_ui(path: &Path) -> Result<UiDocument, CliError> {
++    let json = fs::read_to_string(path).map_err(|source| CliError::Io {
++        path: path.to_owned(),
++        source,
++    })?;
++    UiDocument::from_json_str(&json).map_err(|error| CliError::Authoring {
++        diagnostics: vec![Diagnostic::error("ui.load_failed", error.to_string())],
++    })
++}
++
++fn load_json<T: DeserializeOwned>(path: &Path) -> Result<T, CliError> {
++    let json = fs::read_to_string(path).map_err(|source| CliError::Io {
++        path: path.to_owned(),
++        source,
++    })?;
++    serde_json::from_str(&json).map_err(|source| CliError::InvalidJson {
++        path: path.to_owned(),
++        source,
++    })
++}
++
++fn authoring_error(error: impl std::fmt::Display) -> CliError {
++    CliError::Authoring {
++        diagnostics: vec![Diagnostic::error(
++            "authoring.adapter_error",
++            error.to_string(),
++        )],
++    }
++}
+diff --git a/crates/editor/src/session/mod.rs b/crates/editor/src/session/mod.rs
+--- a/crates/editor/src/session/mod.rs
++++ b/crates/editor/src/session/mod.rs
+@@ -36,2 +36,3 @@
+ mod scene_transform;
++mod structured_authoring;
+ mod undo;
+@@ -45,4 +46,5 @@
+ pub use graph_edit::GraphNodeInsertKind;
+ pub use scene_transform::{SceneAlignment, SceneAxis};
++pub use structured_authoring::StructuredAuthoringError;
+ 
+ use self::undo::{CleanSnapshot, UndoStack};
+@@ -53,3 +55,3 @@
+     EntityId, Graph, GraphDomain, GraphId, GraphSchemaRegistry, GraphView, NodeId,
+-    TransactionError, UiDocument, Vec2,
++    TransactionError, UiAuthoringSession, UiDocument, Vec2,
+ };
+@@ -131,3 +133,5 @@

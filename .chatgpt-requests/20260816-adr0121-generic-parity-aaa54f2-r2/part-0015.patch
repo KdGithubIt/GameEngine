@@ -1,0 +1,52 @@
++        view: &GraphView,
++        permissions: &AuthoringPermissions,
++    ) -> Result<GraphViewAuthoringSnapshot, GenericAuthoringMcpError> {
++        Ok(GraphViewAuthoringService::new().inspect(view, permissions)?)
++    }
++
++    /// Validates GraphView presentation state against its semantic Graph.
++    pub fn graph_view_validate(
++        &self,
++        graph: &Graph,
++        view: &GraphView,
++        permissions: &AuthoringPermissions,
++    ) -> Result<GraphViewAuthoringValidation, GenericAuthoringMcpError> {
++        Ok(GraphViewAuthoringService::new().validate(graph, view, permissions)?)
++    }
++
++    /// Previews GraphView commands without changing presentation state.
++    pub fn graph_view_preview(
++        &self,
++        graph: &Graph,
++        view: &GraphView,
++        permissions: &AuthoringPermissions,
++        input: GraphViewMutationInput,
++    ) -> Result<GraphViewAuthoringMutation, GenericAuthoringMcpError> {
++        Ok(GraphViewAuthoringService::new().preview(
++            graph,
++            view,
++            permissions,
++            input.expected_revision,
++            input.expected_generation,
++            input.commands,
++        )?)
++    }
++
++    /// Applies GraphView commands to the authoritative presentation document.
++    pub fn graph_view_apply(
++        &self,
++        graph: &Graph,
++        view: &mut GraphView,
++        permissions: &AuthoringPermissions,
++        input: GraphViewMutationInput,
++    ) -> Result<GraphViewAuthoringMutation, GenericAuthoringMcpError> {
++        Ok(GraphViewAuthoringService::new().apply(
++            graph,
++            view,
++            permissions,
++            input.expected_revision,
++            input.expected_generation,
++            input.commands,
++        )?)
++    }
++
