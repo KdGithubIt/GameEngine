@@ -194,6 +194,18 @@ impl Transaction {
         &self.changes
     }
 
+    /// Returns the diagnostics that would be considered by a commit.
+    ///
+    /// This combines diagnostics produced while applying commands with
+    /// validation of the isolated working copy. The transaction remains open
+    /// and the source Scene is not mutated, which makes this suitable for
+    /// structured preview clients.
+    pub fn preview_diagnostics(&self) -> Vec<Diagnostic> {
+        let mut diagnostics = self.diagnostics.clone();
+        diagnostics.extend(self.working.validate());
+        diagnostics
+    }
+
     /// Returns all diagnostics accumulated during this transaction.
     pub fn diagnostics(&self) -> &[Diagnostic] {
         &self.diagnostics
