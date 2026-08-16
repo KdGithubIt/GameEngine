@@ -1,0 +1,166 @@
+(draw, resources) in
+                     skinned_draws.iter().zip(skinned_resources.iter())
+                 {
+-                    if draw.pipeline_key.cast_shadow && draw.gpu_mesh.skinning_buffer.is_none() {
+-                        draw.gpu_mesh.draw_instanced_submesh(
+-                            &mut pass,
+-                            &resources.instance_buffer,
+-                            1,
+-                            Some(draw.submesh),
+-                        );
++                    if !draw.pipeline_key.cast_shadow || draw.gpu_mesh.skinning_buffer.is_some() {
++                        continue;
+                     }
++                    pass.set_pipeline(
++                        &self.render.shadow_pipelines[draw.pipeline_key.cull_index()],
++                    );
++                    pass.set_bind_group(2, draw.texture_bind_group.as_ref(), &[]);
++                    draw.gpu_mesh.draw_instanced_submesh(
++                        &mut pass,
++                        &resources.instance_buffer,
++                        1,
++                        Some(draw.submesh),
++                    );
+                 }
+ 
+                 // Skinned casters deform with the same palette as the main
+-                // pass so shadows match the rendered pose (Phase 50-D).
+-                if skinned_draws
+-                    .iter()
+-                    .any(|draw| draw.gpu_mesh.skinning_buffer.is_some())
+-                {
+-                    pass.set_pipeline(&self.render.shadow_skinned_pipeline);
++                // pass so shadows match both pose and material coverage.
++                for (draw, resources) in skinned_draws.iter().zip(skinned_resources.iter()) {
++                    if !draw.pipeline_key.cast_shadow || draw.gpu_mesh.skinning_buffer.is_none() {
++                        continue;
++                    }
++                    pass.set_pipeline(
++                        &self.render.shadow_skinned_pipelines[draw.pipeline_key.cull_index()],
++                    );
+                     pass.set_bind_group(
+                         0,
+                         &self.render.shadow_cascade_bind_groups[cascade_index],
+                         &[],
+                     );
+-                    for (draw, resources) in
+-                        skinned_draws.iter().zip(skinned_resources.iter())
+-                    {
+-                        if !draw.pipeline_key.cast_shadow || draw.gpu_mesh.skinning_buffer.is_none() {
+-                            continue;
+-                        }
+-                        pass.set_bind_group(1, &resources.palette_bind_group, &[]);
+-                        draw.gpu_mesh.draw_skinned_submesh(
+-                            &mut pass,
+-                            &resources.instance_buffer,
+-                            Some(draw.submesh),
+-                        );
+-                    }
++                    pass.set_bind_group(1, &resources.palette_bind_group, &[]);
++                    pass.set_bind_group(2, draw.texture_bind_group.as_ref(), &[]);
++                    draw.gpu_mesh.draw_skinned_submesh(
++                        &mut pass,
++                        &resources.instance_buffer,
++                        Some(draw.submesh),
++                    );
+                 }
+             }
+         }
+@@ -1753,18 +1767,21 @@ fn create_material_pipeline(
+ 
+             for (draw, _) in &blend_draws {
+                 match *draw {
+-                    BlendDraw::StaticBatch(index) => {
+-                        let batch = &batches[index];
+-                        let instance_buffer = &instance_buffers[index];
++                    BlendDraw::StaticInstance {
++                        batch: batch_index,
++                        instance,
++                    } => {
++                        let batch = &batches[batch_index];
++                        let instance_buffer = &instance_buffers[batch_index];
+                         pass.set_pipeline(
+                             &self.render.pipelines[batch.pipeline_key.alpha_index()]
+                                 [batch.pipeline_key.cull_index()],
+                         );
+                         pass.set_bind_group(1, batch.texture_bind_group.as_ref(), &[]);
+-                        batch.gpu_mesh.draw_material_instanced_submesh(
++                        batch.gpu_mesh.draw_material_instanced_submesh_range(
+                             &mut pass,
+                             instance_buffer,
+-                            batch.instances.len() as u32,
++                            instance..instance + 1,
+                             Some(batch.submesh),
+                         );
+                     }
+@@ -1998,7 +2015,7 @@ fn create_material_pipeline(
+         world: &mut engine_ecs::World,
+         device: &wgpu::Device,
+         queue: &wgpu::Queue,
+-        camera_position: glam::Vec3,
++        _camera_position: glam::Vec3,
+     ) -> Vec<StaticBatch> {
+         use crate::asset::Handle;
+         use engine_ecs::{Query, Without};
+@@ -2197,18 +2214,9 @@ fn create_material_pipeline(
+         }
+ 
+         let mut batches: Vec<_> = batches.into_values().collect();
+-        for batch in &mut batches {
+-            if batch.pipeline_key.alpha_mode == AlphaMode::Blend {
+-                batch.instances.sort_by(|left, right| {
+-                    instance_distance_squared(right, camera_position)
+-                        .partial_cmp(&instance_distance_squared(left, camera_position))
+-                        .unwrap_or(std::cmp::Ordering::Equal)
+-                });
+-            }
+-        }
+         // Opaque/masked geometry must populate depth before blended geometry.
+-        // Transparent batches are then drawn back-to-front relative to the
+-        // active camera; ties retain deterministic material-key ordering.
++        // Blend instances are globally depth-sorted later, so the batch order
++        // only groups fixed pipeline state and must not mutate parallel payloads.
+         batches.sort_by(|left, right| {
+             match (
+                 left.pipeline_key.alpha_mode == AlphaMode::Blend,
+@@ -2216,11 +2224,7 @@ fn create_material_pipeline(
+             ) {
+                 (false, true) => std::cmp::Ordering::Less,
+                 (true, false) => std::cmp::Ordering::Greater,
+-                (false, false) => left.pipeline_key.cmp(&right.pipeline_key),
+-                (true, true) => batch_distance_squared(right, camera_position)
+-                    .partial_cmp(&batch_distance_squared(left, camera_position))
+-                    .unwrap_or(std::cmp::Ordering::Equal)
+-                    .then_with(|| left.pipeline_key.cmp(&right.pipeline_key)),
++                (false, false) | (true, true) => left.pipeline_key.cmp(&right.pipeline_key),
+             }
+         });
+         batches
+@@ -2562,14 +2566,6 @@ fn instance_distance_squared(instance: &InstanceData, camera_position: glam::Vec
+     translation.distance_squared(camera_position)
+ }
+ 
+-fn batch_distance_squared(batch: &StaticBatch, camera_position: glam::Vec3) -> f32 {
+-    batch
+-        .instances
+-        .first()
+-        .map(|instance| instance_distance_squared(instance, camera_position))
+-        .unwrap_or(0.0)
+-}
+-
+ /// Pads `palette` with identity matrices to the fixed uniform array size.
+ fn padded_palette(palette: &JointPalette) -> Vec<[f32; 16]> {
+     let mut matrices: Vec<[f32; 16]> = palette
+@@ -3170,42 +3166,58 @@ impl RenderState {
+         let shadow_pipeline_layout =
+             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                 label: Some("Shadow pipeline layout"),
+-                bind_group_layouts: &[Some(&shadow_camera_bgl)],
++                bind_group_layouts: &[
++                    Some(&shadow_camera_bgl),
++                    None,
++                    Some(&texture_bind_group_layout),
++                ],
+                 immediate_size: 0,
+             });
+-        let shadow_pipeline = device.create_render_pipeline(&wgpu::Ren
