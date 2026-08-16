@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0131-b8bad6c-02",
+  "target_branch": "chatgpt/gameengine-adr0131-ai-studio-impl-v3",
+  "expected_head_sha": "b8bad6cb6043025d53e83aca8ccc81fc580264b8",
+  "patch_parts": [
+    "part-0000.patch",
+    "part-0001.patch",
+    "part-0002.patch",
+    "part-0003.patch",
+    "part-0004.patch",
+    "part-0005.patch"
+  ],
+  "commit_message": "Implement conversational AI Studio foundation",
+  "pr_title": "GameEngine: implement ADR 0131 conversational AI Studio foundation",
+  "pr_body": "## Summary\n\n- accept ADR 0131 and implement the project-scoped conversational AI Studio foundation\n- add a GUI-free agent host with immutable proposal snapshots, resumable run/event state, scoped permissions, restartable sessions, sanitized project sharing, isolated code workspaces, and a generic external-agent process boundary\n- add a thin Editor AI Studio frontend that injects the active Editor MCP connection without persisting credentials\n- update the canonical AI authoring specification for agent adapters, permission policy, and collaboration\n\n## Validation\n\n- Windows affected validation\n- Editor visual validation\n\nProvider-specific Claude/Codex adapters, native/hosted model loops, asset acquisition providers, automatic managed validation execution, and the Play/frame/evaluate/repair loop remain later ADR 0131 capability slices; this change preserves those boundaries rather than embedding provider-specific behavior in the UI.\n\n<!-- gameengine-visual-validation: editor -->"
+}
