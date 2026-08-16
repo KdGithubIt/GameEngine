@@ -1,0 +1,127 @@
++            size: wgpu::Extent3d {
++                width: WIDTH,
++                height: HEIGHT,
++                depth_or_array_layers: 1,
++            },
++            mip_level_count: 1,
++            sample_count: MAIN_PASS_SAMPLE_COUNT,
++            dimension: wgpu::TextureDimension::D2,
++            format: wgpu::TextureFormat::Depth32Float,
++            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
++            view_formats: &[],
++        });
++        let depth_view = depth_texture.create_view(&wgpu::TextureViewDescriptor::default());
++
++        let mut world = engine_ecs::World::new();
++        world.insert_resource(AmbientLight {
++            color: glam::Vec3::ZERO,
++            intensity: 0.0,
++        });
++        world.insert_resource(DirectionalLight {
++            direction: glam::Vec3::NEG_Z,
++            color: glam::Vec3::ONE,
++            intensity: 0.0,
++        });
++        world.insert_resource(EnvironmentLighting {
++            intensity: 0.0,
++            diffuse_ibl_enabled: false,
++            ..EnvironmentLighting::default()
++        });
++        world.insert_resource(ShadowSettings {
++            enabled: false,
++            ..ShadowSettings::default()
++        });
++        world.insert_resource(SkySettings {
++            enabled: false,
++            ..SkySettings::default()
++        });
++
++        let reference_material = || Material {
++            color: [0.8, 0.8, 0.8, 1.0],
++            roughness: 0.8,
++            metallic: 0.0,
++            cull_mode: CullMode::None,
++            cast_shadow: false,
++            receive_shadow: false,
++            ..Material::default()
++        };
++        for x in [-0.7_f32, 0.7] {
++            let surface = world.spawn().expect("reference surface must spawn");
++            world
++                .add_component(surface, reference_quad())
++                .expect("reference mesh must insert");
++            world
++                .add_component(
++                    surface,
++                    GlobalTransform(glam::Mat4::from_translation(glam::Vec3::new(
++                        x, 0.0, 0.0,
++                    ))),
++                )
++                .expect("reference transform must insert");
++            world
++                .add_component(surface, reference_material())
++                .expect("reference material must insert");
++        }
++
++        let point = world.spawn().expect("point light must spawn");
++        world
++            .add_component(
++                point,
++                PointLight {
++                    color: glam::Vec3::ONE,
++                    intensity: 40.0,
++                    range: 1.25,
++                },
++            )
++            .expect("point light must insert");
++        world
++            .add_component(
++                point,
++                GlobalTransform(glam::Mat4::from_translation(glam::Vec3::new(
++                    -0.7, 0.0, 1.0,
++                ))),
++            )
++            .expect("point transform must insert");
++
++        let spot = world.spawn().expect("spot light must spawn");
++        world
++            .add_component(
++                spot,
++                SpotLight {
++                    color: glam::Vec3::ONE,
++                    intensity: 40.0,
++                    range: 1.25,
++                    inner_angle_radians: 20.0_f32.to_radians(),
++                    outer_angle_radians: 30.0_f32.to_radians(),
++                },
++            )
++            .expect("spot light must insert");
++        world
++            .add_component(
++                spot,
++                GlobalTransform(glam::Mat4::from_translation(glam::Vec3::new(
++                    0.7, 0.0, 1.0,
++                ))),
++            )
++            .expect("spot transform must insert");
++
++        let camera = Camera3D::new(60.0, 1.0, 0.1, 10.0);
++        let camera_transform = crate::transform::Transform::looking_at(
++            glam::Vec3::new(0.0, 0.0, 3.0),
++            glam::Vec3::ZERO,
++            glam::Vec3::Y,
++        );
++        renderer
++            .render_to_view_with_camera(
++                &mut world,
++                &camera,
++                &camera_transform,
++                device,
++                queue,
++                &color_view,
++                &depth_view,
++            )
++            .expect("point/spot reference scene must render");
++
++        let rgba8 = readback_rgba8(device, queue, &color_texture, WIDTH, HEIGHT);
++        let background = rgb_sum_at(&rgba8, WIDTH, 0, 0);
