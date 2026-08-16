@@ -513,8 +513,9 @@ impl EditorApp {
                     let _ = std::fs::create_dir_all(parent);
                 }
                 match document.to_canonical_json().and_then(|json| {
-                    std::fs::write(&document_path, json)
-                        .map_err(crate::navmesh_bake::NavMeshBakeError::Io)
+                    std::fs::write(&document_path, json).map_err(|error| {
+                        crate::navmesh_bake::NavMeshBakeError::Persist(error.to_string())
+                    })
                 }) {
                     Ok(()) => {}
                     Err(error) => {

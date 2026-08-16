@@ -30,6 +30,7 @@ pub mod game_build;
 pub mod geometry;
 pub mod gizmo;
 pub mod material_editor;
+#[path = "navmesh_shared.rs"]
 pub mod navmesh_bake;
 pub mod prefab_workflow;
 pub mod preferences;
