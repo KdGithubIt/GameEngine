@@ -1,0 +1,157 @@
+diff --git a/docs/CHATGPT_AUTOMATION.md b/docs/CHATGPT_AUTOMATION.md
+--- a/docs/CHATGPT_AUTOMATION.md
++++ b/docs/CHATGPT_AUTOMATION.md
+@@ -1,7 +1,7 @@
+ # ChatGPT GitHub Automation
+ 
+ Status: Accepted
+-Version: 1.4.2
++Version: 1.4.3
+ Canonical location: `docs/CHATGPT_AUTOMATION.md`
+ 
+ ## Purpose
+@@ -98,7 +98,9 @@
+    relevant to the requested change before constructing the patch.
+ 4. Build one complete unified Git patch against the exact target tree. Keep
+    product changes inside the public allow-list and never include `.github/**`
+-   or `.chatgpt-requests/**` in a normal dispatcher patch.
++   or `.chatgpt-requests/**` in a normal dispatcher patch. Patch paths MUST be
++   repository-root relative (for example, `a/crates/...`, not
++   `a/GameEngine/crates/...` copied from a checkout-directory name).
+ 5. Preflight the exact reconstructed patch bytes that will be published. Run
+    `git apply --check --whitespace=error-all <reconstructed-patch>` against the
+    captured target tree, then confirm that the patch contains only intended
+@@ -107,7 +109,9 @@
+    reject. Do not manually retype, reformat, or otherwise reconstruct a second
+    copy of the patch after this preflight.
+ 6. Split the preflighted patch only for transport size and publish those exact
+-   bytes as the declared `part-NNNN.patch` files. Before publishing `ready.json`,
++   bytes as the declared `part-NNNN.patch` files. When a text-valued publication
++   API is used, split only at newline boundaries so transport cannot normalize
++   terminal whitespace from a mid-line fragment. Before publishing `ready.json`,
+    verify the published part byte counts and blob hashes, or the reconstructed
+    content hash, against the preflight artifact. Never use `ready.json` as a
+    partial-progress marker.
+@@ -155,6 +159,10 @@
+   mismatch as the primary problem. Reconstruct the patch from the current
+   target files instead of editing product code merely to make old patch context
+   apply.
++- If `git apply --check` reports `No such file or directory` for otherwise
++  current target files, inspect the patch headers before changing code. Patch
++  paths are relative to the repository root and must not include the checkout
++  directory name or another transport-local prefix.
+ - If the dispatcher rejects a path, do not weaken the allow-list from the task
+   request. `.github/**` and `.chatgpt-requests/**` are trust-boundary paths and
+   require the separately reviewed automation-infrastructure workflow.
+diff --git a/docs/CHATGPT_AUTOMATION_INCIDENTS.md b/docs/CHATGPT_AUTOMATION_INCIDENTS.md
+--- a/docs/CHATGPT_AUTOMATION_INCIDENTS.md
++++ b/docs/CHATGPT_AUTOMATION_INCIDENTS.md
+@@ -45,6 +45,7 @@
+ INC-002  Unified-diff old coordinates drifted from target tree     Dispatcher  Resolved
+ INC-003  Published patch bytes differed from preflight artifact    Transport   Resolved
+ INC-004  Main advanced after task baseline and polluted validation  Validation  Resolved
++INC-005  Patch headers included checkout-directory prefix           Dispatcher  Resolved
+ ```
+ 
+ ## INC-001: Markdown trailing whitespace rejected by patch preflight
+@@ -194,6 +195,11 @@
+   matching byte counts and blob SHAs. Dispatcher run `31922738621` then passed,
+   produced commit `c689fff815f48ff2f56836fcfb096d443dee67ca` and Draft PR #30, and Windows
+   Validation run `31922746993` completed successfully in `docs` mode.
++- The same byte-divergence class recurred before `ready.json` in request
++  `20260816-phase5-stable-csm-e99d227a-r1`: a fixed-byte split ended inside a
++  whitespace-bearing line fragment, and the published part blob SHA differed
++  from the preflight artifact. The request was abandoned; newline-boundary
++  splitting restored exact blob equality before the next ready marker.
+ 
+ ### Root cause
+ 
+@@ -215,7 +221,9 @@
+ preflight artifact mechanically, verify the remote part blobs are byte-identical
+ before `ready.json`, and only then re-read the target HEAD and release the ready
+ marker. If any part hash or byte count differs, abandon that unpublished request
+-and create a new request from the verified artifact.
++and create a new request from the verified artifact. When the publication API
++accepts text rather than raw bytes, split parts on newline boundaries so a
++whitespace-bearing mid-line fragment never becomes terminal transport text.
+ 
+ ### References
+ 
+@@ -226,6 +234,7 @@
+ - Successful Dispatcher run: `31922738621`
+ - Validation run: `31922746993`
+ - Commit: `c689fff815f48ff2f56836fcfb096d443dee67ca`
++- Repeated unpublished request: `20260816-phase5-stable-csm-e99d227a-r1`
+ 
+ ## INC-004: Main advanced after task baseline and polluted validation scope
+ 
+@@ -293,6 +302,69 @@
+ - Polluted validation run: `31923487466`
+ - Successful validation run: `31923640542`
+ - Successful commit: `6f190a90cacb5aee2d48c6a13dbd39ba9e698946`
++
++## INC-005: Patch headers included checkout-directory prefix
++
++Status: Resolved
++Layer: Dispatcher
++First confirmed: 2026-08-16
++Last confirmed: 2026-08-16
++
++### Symptom
++
++Request `20260816-phase5-stable-csm-e99d227a-r2` passed the ready-marker
++signal and request-envelope checks, then failed in `Reconstruct and validate
++patch` before any product commit was created.
++
++### Evidence
++
++- Dispatcher run `31926298039` rejected all four changed files with
++  `No such file or directory`, including
++  `GameEngine/crates/render-runtime/src/shadow.rs`.
++- The target branch remained at
++  `e99d227ab40a7d839afa718e40ab372ec1899f32`, ruling out stale target state.
++- The failed patch headers used paths such as
++  `a/GameEngine/crates/render-runtime/src/shadow.rs`, carrying an old
++  checkout-directory name into the repository-relative Git patch path.
++- Replacement request `20260816-phase5-stable-csm-e99d227a-r3` kept the
++  product edits unchanged but regenerated headers as `a/crates/...` and
++  `a/docs/...`. Dispatcher run `31926476659` then passed reconstruction and
++  application, produced commit `7ce7997042802368886d8fe2db26ce7be98ed1af`
++  and Draft PR #39, and Windows Validation run `31926484133` completed
++  successfully in affected mode for `engine-render-runtime`.
++
++### Root cause
++
++The patch producer treated the local checkout directory name `GameEngine/` as
++part of the repository path. Dispatcher `git apply` runs at the repository
++root, so Git patch headers must be repository-root relative. The otherwise
++current patch therefore referenced paths that do not exist in the target tree.
++
++### Resolution
++
++Regenerate the same immutable product patch from the repository root, removing
++the checkout-directory prefix from every old/new path. Re-verify the published
++part blob hashes, use a new request ID, and release a new ready marker. The r3
++request passed Dispatcher application and Windows Validation without changing
++the Phase 5 product design.
++
++### Prevention / ChatGPT next action
++
++Generate and preflight patches from the repository root. Before `ready.json`,
++inspect every changed path and reject checkout-local prefixes such as
++`GameEngine/`. If `git apply` reports missing files while the target HEAD is
++current, validate patch path roots before editing code or adjusting hunk
++context.
++
++### References
++
++- Failed request: `20260816-phase5-stable-csm-e99d227a-r2`
++- Successful request: `20260816-phase5-stable-csm-e99d227a-r3`
++- PR: `#39`
++- Failed Dispatcher run: `31926298039`
++- Successful Dispatcher run: `31926476659`
++- Validation run: `31926484133`
++- Commit: `7ce7997042802368886d8fe2db26ce7be98ed1af`
+ 
+ ## Entry template
+ 
