@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "request_id": "20260816-adr0131-native-local-read-e8341ba-r1",
+  "target_branch": "chatgpt/gameengine-adr0131-native-local-read-v1",
+  "expected_head_sha": "e8341baef44ab4c2bdd0741acac06ddad8372178",
+  "patch_parts": [
+    "part-0000.patch",
+    "part-0001.patch",
+    "part-0002.patch",
+    "part-0003.patch",
+    "part-0004.patch"
+  ],
+  "commit_message": "Implement ADR 0131 native local read harness",
+  "pr_title": "Implement ADR 0131 native local read harness",
+  "pr_body": "## Summary\n- add a native read-only local-model question harness with loopback-only Ollama-compatible transport\n- retrieve current GameEngine/project evidence and retain source provenance plus harness metrics in conversation answers\n- expose local-model setup in AI Studio while keeping write-capable Go on the external AgentRuntime boundary\n\n## Validation\n- request Windows affected validation for the editor crate\n- request Editor visual validation for the AI Studio UI changes\n\n<!-- gameengine-visual-validation: editor -->"
+}
