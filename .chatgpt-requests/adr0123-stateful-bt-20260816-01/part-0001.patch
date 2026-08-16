@@ -1,0 +1,298 @@
++    pub fn from_plan(plan: PreparedBehaviorTree) -> Self {
++        let states = vec![NodeState::default(); plan.node_count()];
++        Self {
++            plan,
++            states,
++            generation: 0,
++            step_budget: DEFAULT_BEHAVIOR_TREE_STEP_BUDGET,
++            debug_capacity: DEFAULT_BEHAVIOR_TREE_DEBUG_CAPACITY,
++            transitions: VecDeque::new(),
++            last_status: None,
++            last_terminal_status: None,
++            last_reason: None,
++        }
++    }
++
++    /// Sets the hard node-step budget. Zero is clamped to one.
++    pub fn set_step_budget(&mut self, budget: usize) {
++        self.step_budget = budget.max(1);
++    }
++
++    /// Sets bounded transition history capacity.
++    pub fn set_debug_capacity(&mut self, capacity: usize) {
++        self.debug_capacity = capacity;
++        self.transitions.truncate(capacity);
++    }
++
++    /// Immutable plan used by this instance.
++    #[must_use]
++    pub fn plan(&self) -> &PreparedBehaviorTree {
++        &self.plan
++    }
++
++    /// Resumes execution from current memory-composite cursors.
++    pub fn tick<C: StatefulBehaviorTreeContext>(
++        &mut self,
++        context: &mut C,
++        delta_seconds: f32,
++    ) -> Result<BehaviorStatus, StatefulBehaviorTreeError<C::Error>> {
++        let mut steps = 0;
++        let status = self.tick_node(0, context, delta_seconds.max(0.0), &mut steps)?;
++        self.last_status = Some(status);
++        if status != BehaviorStatus::Running {
++            self.last_terminal_status = Some(status);
++        }
++        Ok(status)
++    }
++
++    /// Aborts active actions deepest-first, then clears mutable cursor state.
++    pub fn reset<C: StatefulBehaviorTreeContext>(
++        &mut self,
++        context: &mut C,
++        reason: BehaviorAbortReason,
++    ) -> Result<(), StatefulBehaviorTreeError<C::Error>> {
++        let mut active: Vec<_> = self
++            .plan
++            .nodes
++            .iter()
++            .enumerate()
++            .filter(|(index, node)| {
++                node.kind == BehaviorTreeNodeKind::Action && self.states[*index].action_entered
++            })
++            .map(|(index, node)| (index, node.depth))
++            .collect();
++        active.sort_by(|left, right| right.1.cmp(&left.1).then(right.0.cmp(&left.0)));
++        for (index, _) in active {
++            let node = self.plan.nodes[index].clone();
++            let behavior_id = node.behavior.as_deref().expect("validated action behavior");
++            context
++                .action_abort(&node.source, behavior_id, reason)
++                .map_err(|source| StatefulBehaviorTreeError::Lifecycle {
++                    node: node.source.clone(),
++                    behavior_id: behavior_id.to_owned(),
++                    source,
++                })?;
++            self.record(node.source, BehaviorTransitionKind::Abort, None, Some(reason));
++        }
++        self.states.fill(NodeState::default());
++        self.generation = self.generation.wrapping_add(1);
++        self.last_status = None;
++        self.last_reason = Some(reason);
++        let root = self.plan.nodes[0].source.clone();
++        self.record(root, BehaviorTransitionKind::Reset, None, Some(reason));
++        Ok(())
++    }
++
++    /// Validates a replacement first, then aborts the old generation and swaps plans.
++    pub fn replace_tree<C: StatefulBehaviorTreeContext>(
++        &mut self,
++        context: &mut C,
++        tree: CompiledBehaviorTree,
++    ) -> Result<(), StatefulBehaviorTreeError<C::Error>> {
++        let plan = PreparedBehaviorTree::prepare(&tree).map_err(StatefulBehaviorTreeError::Plan)?;
++        self.reset(context, BehaviorAbortReason::TreeReplaced)?;
++        self.plan = plan;
++        self.states = vec![NodeState::default(); self.plan.node_count()];
++        Ok(())
++    }
++
++    /// Returns current read-only runtime state.
++    #[must_use]
++    pub fn snapshot(&self) -> BehaviorInstanceSnapshot {
++        let mut active_path = Vec::new();
++        let mut active_nodes = Vec::new();
++        let mut running_leaf = None;
++        for (index, node) in self.plan.nodes.iter().enumerate() {
++            let state = &self.states[index];
++            if state.active {
++                active_path.push(node.source.clone());
++                active_nodes.push(BehaviorNodeExecutionState {
++                    node: node.source.clone(),
++                    elapsed_seconds: state.elapsed_seconds,
++                });
++                if node.children.is_empty() {
++                    running_leaf = Some(node.source.clone());
++                }
++            }
++        }
++        BehaviorInstanceSnapshot {
++            tree: self.plan.source.clone(),
++            generation: self.generation,
++            status: self.last_status,
++            active_path,
++            running_leaf,
++            active_nodes,
++            last_terminal_status: self.last_terminal_status,
++            last_reason: self.last_reason,
++            recent_transitions: self.transitions.iter().cloned().collect(),
++        }
++    }
++
++    fn tick_node<C: StatefulBehaviorTreeContext>(
++        &mut self,
++        index: usize,
++        context: &mut C,
++        delta_seconds: f32,
++        steps: &mut usize,
++    ) -> Result<BehaviorStatus, StatefulBehaviorTreeError<C::Error>> {
++        let node = self.plan.nodes[index].clone();
++        if *steps >= self.step_budget {
++            return Err(StatefulBehaviorTreeError::StepBudgetExceeded {
++                node: node.source,
++                budget: self.step_budget,
++            });
++        }
++        *steps += 1;
++        self.enter(index, delta_seconds);
++        match node.kind {
++            BehaviorTreeNodeKind::Root | BehaviorTreeNodeKind::Decorator => {
++                let status = self.tick_node(node.children[0], context, delta_seconds, steps)?;
++                if status != BehaviorStatus::Running {
++                    self.finish(index, status);
++                }
++                Ok(status)
++            }
++            BehaviorTreeNodeKind::Sequence => {
++                self.tick_sequence(index, &node, context, delta_seconds, steps)
++            }
++            BehaviorTreeNodeKind::Selector => {
++                self.tick_selector(index, &node, context, delta_seconds, steps)
++            }
++            BehaviorTreeNodeKind::Condition => {
++                let behavior_id = node.behavior.as_deref().expect("validated condition behavior");
++                let status = context.check_condition(behavior_id).map_err(|source| {
++                    StatefulBehaviorTreeError::Runtime(
++                        BehaviorTreeRuntimeError::BehaviorDispatchFailed {
++                            dispatch: BehaviorDispatchKind::Condition,
++                            behavior_id: behavior_id.to_owned(),
++                            source,
++                        },
++                    )
++                })?;
++                if status != BehaviorStatus::Running {
++                    self.finish(index, status);
++                }
++                Ok(status)
++            }
++            BehaviorTreeNodeKind::Action => self.tick_action(index, &node, context),
++        }
++    }
++
++    fn tick_sequence<C: StatefulBehaviorTreeContext>(
++        &mut self,
++        index: usize,
++        node: &PreparedNode,
++        context: &mut C,
++        delta: f32,
++        steps: &mut usize,
++    ) -> Result<BehaviorStatus, StatefulBehaviorTreeError<C::Error>> {
++        while self.states[index].cursor < node.children.len() {
++            let cursor = self.states[index].cursor;
++            match self.tick_node(node.children[cursor], context, delta, steps)? {
++                BehaviorStatus::Success => self.states[index].cursor += 1,
++                BehaviorStatus::Running => return Ok(BehaviorStatus::Running),
++                BehaviorStatus::Failure => {
++                    self.states[index].cursor = 0;
++                    self.finish(index, BehaviorStatus::Failure);
++                    return Ok(BehaviorStatus::Failure);
++                }
++            }
++        }
++        self.states[index].cursor = 0;
++        self.finish(index, BehaviorStatus::Success);
++        Ok(BehaviorStatus::Success)
++    }
++
++    fn tick_selector<C: StatefulBehaviorTreeContext>(
++        &mut self,
++        index: usize,
++        node: &PreparedNode,
++        context: &mut C,
++        delta: f32,
++        steps: &mut usize,
++    ) -> Result<BehaviorStatus, StatefulBehaviorTreeError<C::Error>> {
++        while self.states[index].cursor < node.children.len() {
++            let cursor = self.states[index].cursor;
++            match self.tick_node(node.children[cursor], context, delta, steps)? {
++                BehaviorStatus::Failure => self.states[index].cursor += 1,
++                BehaviorStatus::Running => return Ok(BehaviorStatus::Running),
++                BehaviorStatus::Success => {
++                    self.states[index].cursor = 0;
++                    self.finish(index, BehaviorStatus::Success);
++                    return Ok(BehaviorStatus::Success);
++                }
++            }
++        }
++        self.states[index].cursor = 0;
++        self.finish(index, BehaviorStatus::Failure);
++        Ok(BehaviorStatus::Failure)
++    }
++
++    fn tick_action<C: StatefulBehaviorTreeContext>(
++        &mut self,
++        index: usize,
++        node: &PreparedNode,
++        context: &mut C,
++    ) -> Result<BehaviorStatus, StatefulBehaviorTreeError<C::Error>> {
++        let behavior_id = node.behavior.as_deref().expect("validated action behavior");
++        if !self.states[index].action_entered {
++            context
++                .action_enter(&node.source, behavior_id)
++                .map_err(|source| StatefulBehaviorTreeError::Lifecycle {
++                    node: node.source.clone(),
++                    behavior_id: behavior_id.to_owned(),
++                    source,
++                })?;
++            self.states[index].action_entered = true;
++        }
++        let status = context.tick_action(behavior_id).map_err(|source| {
++            StatefulBehaviorTreeError::Runtime(BehaviorTreeRuntimeError::BehaviorDispatchFailed {
++                dispatch: BehaviorDispatchKind::Action,
++                behavior_id: behavior_id.to_owned(),
++                source,
++            })
++        })?;
++        if status != BehaviorStatus::Running {
++            context
++                .action_complete(&node.source, behavior_id, status)
++                .map_err(|source| StatefulBehaviorTreeError::Lifecycle {
++                    node: node.source.clone(),
++                    behavior_id: behavior_id.to_owned(),
++                    source,
++                })?;
++            self.states[index].action_entered = false;
++            self.finish(index, status);
++        }
++        Ok(status)
++    }
++
++    fn enter(&mut self, index: usize, delta: f32) {
++        if self.states[index].active {
++            self.states[index].elapsed_seconds += delta;
++        } else {
++            self.states[index].active = true;
++            self.states[index].elapsed_seconds = 0.0;
++            let node = self.plan.nodes[index].source.clone();
++            self.record(node, BehaviorTransitionKind::Enter, None, None);
++        }
++    }
++
++    fn finish(&mut self, index: usize, status: BehaviorStatus) {
++        self.states[index].active = false;
++        self.states[index].elapsed_seconds = 0.0;
++        let node = self.plan.nodes[index].source.clone();
++        self.record(node, BehaviorTransitionKind::Exit, Some(status), None);
++    }
++
++    fn record(
++        &mut self,
++        node: NodeId,
++        kind: BehaviorTransitionKind,
++        status: Option<BehaviorStatus>,
++        reason: Option<BehaviorAbortReason>,
++    ) {
++        if self.debug_capacity == 0 {
++            return;
++        }
++        while self.transitions.len() >= self.debug_capacity {
++            self.transitions.pop_front();
