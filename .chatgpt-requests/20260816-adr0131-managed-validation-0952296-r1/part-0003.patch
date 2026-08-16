@@ -1,0 +1,219 @@
++                    "Managed source validation passed; final evaluation remains required."
++                }
++                _ => unreachable!("post-validation state is fixed by the agent state machine"),
++            },
++        )
++    }
++
++    fn validation_attempt(
++        &self,
++        run_id: &str,
++        attempt_id: &str,
++    ) -> Result<&ManagedValidationAttempt, AgentHostError> {
++        self.run(run_id)?
++            .validation_attempts
++            .iter()
++            .find(|attempt| attempt.id == attempt_id)
++            .ok_or_else(|| AgentHostError::RunNotFound(run_id.to_owned()))
++    }
++
+     pub(crate) fn check_permission(
+         &mut self,
+         run_id: &str,
+@@ -719,6 +1292,18 @@ impl AgentHost {
+             .ok_or_else(|| AgentHostError::SessionNotFound(id.to_owned()))
+     }
+ 
++    fn run_mut_in_session(
++        &mut self,
++        session_id: &str,
++        run_id: &str,
++    ) -> Result<&mut AgentRun, AgentHostError> {
++        self.session_mut(session_id)?
++            .runs
++            .iter_mut()
++            .find(|run| run.id == run_id)
++            .ok_or_else(|| AgentHostError::RunNotFound(run_id.to_owned()))
++    }
++
+     fn run_location(&self, run_id: &str) -> Result<(String, AgentRunState), AgentHostError> {
+         for (session_id, session) in &self.sessions {
+             if let Some(run) = session.runs.iter().find(|run| run.id == run_id) {
+@@ -761,6 +1346,7 @@ fn valid_transition(from: AgentRunState, to: AgentRunState) -> bool {
+             | (AgentRunState::Executing, AgentRunState::Repairing)
+             | (AgentRunState::AwaitingUser, AgentRunState::Executing)
+             | (AgentRunState::AwaitingUser, AgentRunState::Validating)
++            | (AgentRunState::Validating, AgentRunState::AwaitingUser)
+             | (AgentRunState::Validating, AgentRunState::Playtesting)
+             | (AgentRunState::Validating, AgentRunState::Evaluating)
+             | (AgentRunState::Validating, AgentRunState::Repairing)
+@@ -782,9 +1368,196 @@ fn push_event(run: &mut AgentRun, kind: AgentEventKind, message: String) {
+         created_unix_ms: unix_ms(),
+         kind,
+         message,
++        validation: None,
+     });
+ }
+ 
++fn push_validation_event(
++    run: &mut AgentRun,
++    message: String,
++    validation: ManagedValidationEvent,
++) {
++    let sequence = run.events.last().map_or(1, |event| event.sequence + 1);
++    run.events.push(AgentEvent {
++        sequence,
++        created_unix_ms: unix_ms(),
++        kind: AgentEventKind::Validation,
++        message,
++        validation: Some(validation),
++    });
++}
++
++fn managed_validation_plan(
++    proposal: &AgentProposal,
++    code_changes_present: bool,
++) -> (Vec<ManagedValidationGate>, usize) {
++    let mut gates = BTreeSet::new();
++    let mut unmanaged_plan_items = 0;
++    for item in &proposal.validation_plan {
++        let normalized = item.trim().to_ascii_lowercase();
++        if normalized.is_empty() {
++            continue;
++        }
++        let all = normalized == "all"
++            || normalized == "full"
++            || normalized.contains("full validation")
++            || normalized.contains("source validation");
++        if all {
++            gates.extend(STANDARD_VALIDATION_GATES);
++            continue;
++        }
++        let mut matched = false;
++        for (gate, needles) in [
++            (ManagedValidationGate::Formatting, &["format", "fmt"][..]),
++            (ManagedValidationGate::Check, &["cargo check", "check"][..]),
++            (ManagedValidationGate::Clippy, &["clippy"][..]),
++            (ManagedValidationGate::Tests, &["test", "tests"][..]),
++            (
++                ManagedValidationGate::Documentation,
++                &["documentation", "rustdoc", "cargo doc"][..],
++            ),
++        ] {
++            if needles.iter().any(|needle| normalized.contains(needle)) {
++                gates.insert(gate);
++                matched = true;
++            }
++        }
++        if !matched {
++            unmanaged_plan_items += 1;
++        }
++    }
++    if gates.is_empty() && code_changes_present {
++        gates.extend(STANDARD_VALIDATION_GATES);
++    }
++    let ordered = STANDARD_VALIDATION_GATES
++        .into_iter()
++        .filter(|gate| gates.contains(gate))
++        .collect();
++    (ordered, unmanaged_plan_items)
++}
++
++fn recover_persisted_runs(
++    sessions: &mut BTreeMap<String, AgentSession>,
++) -> Result<(Option<String>, BTreeSet<String>), AgentHostError> {
++    let mut active_runs = Vec::new();
++    let mut recovered_sessions = BTreeSet::new();
++    for session in sessions.values_mut() {
++        let session_id = session.id.clone();
++        for run in &mut session.runs {
++            if run.state.is_terminal() {
++                continue;
++            }
++            active_runs.push(run.id.clone());
++            let Some(attempt) = run
++                .validation_attempts
++                .last_mut()
++                .filter(|attempt| attempt.status == ManagedValidationAttemptStatus::Running)
++            else {
++                continue;
++            };
++            recovered_sessions.insert(session_id.clone());
++            for result in &mut attempt.gate_results {
++                if result.status == ManagedValidationGateStatus::Running {
++                    result.status = ManagedValidationGateStatus::Interrupted;
++                    result.failure = Some(ManagedValidationFailure {
++                        kind: ManagedValidationFailureKind::Interrupted,
++                        exit_code: None,
++                        message: "Managed validation process did not survive the Editor restart."
++                            .to_owned(),
++                    });
++                }
++            }
++            attempt.status = ManagedValidationAttemptStatus::Interrupted;
++            attempt.finished_unix_ms = Some(unix_ms());
++            let attempt_id = attempt.id.clone();
++            run.completion.source_validation = CompletionStatus::Pending;
++            push_validation_event(
++                run,
++                "Previous managed validation attempt was interrupted by Editor restart; no process was resumed.".to_owned(),
++                ManagedValidationEvent::Finished {
++                    attempt_id,
++                    status: ManagedValidationAttemptStatus::Interrupted,
++                },
++            );
++            if run.state == AgentRunState::Validating {
++                run.state = AgentRunState::Repairing;
++                push_event(
++                    run,
++                    AgentEventKind::StateChanged,
++                    "Validation execution was interrupted; a new attempt is required before completion."
++                        .to_owned(),
++                );
++            }
++        }
++    }
++    active_runs.sort();
++    active_runs.dedup();
++    let active_writer_run = match active_runs.as_slice() {
++        [] => None,
++        [run_id] => Some(run_id.clone()),
++        _ => return Err(AgentHostError::MultipleActiveWriterRuns(active_runs)),
++    };
++    Ok((active_writer_run, recovered_sessions))
++}
++
++struct ManagedValidationProcess {
++    run_id: String,
++    attempt_id: String,
++    gate_index: usize,
++    child: Child,
++}
++
++impl ManagedValidationProcess {
++    fn spawn(
++        run_id: String,
++        attempt_id: String,
++        gate_index: usize,
++        gate: ManagedValidationGate,
++        working_directory: &Path,
++    ) -> io::Result<Self> {
++        let child = Command::new("cargo")
++            .args(gate.cargo_arguments())
++            .current_dir(working_directory)
++            .stdin(Stdio::null())
++            .stdout(Stdio::null())
++            .stderr(Stdio::null())
++            .spawn()?;
++        Ok(Self {
++            run_id,
++            attempt_id,
++            gate_index,
++            child,
++        })
++    }
++
++    fn poll_exit(&mut self) -> io::Result<Option<ExitStatus>> {
++        self.child.try_wait()
++    }
++
