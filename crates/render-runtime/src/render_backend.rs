@@ -3941,4 +3941,305 @@ mod tests {
         assert_eq!(renderer.decoded_linear_cache.len(), 1);
         assert_eq!(renderer.material_bind_group_cache.len(), 1);
     }
+
+    fn reference_quad() -> Mesh {
+        let vertices = vec![
+            Vertex {
+                position: [-0.5, -0.5, 0.0],
+                normal: [0.0, 0.0, 1.0],
+                color: [1.0; 3],
+                uv: [0.0, 1.0],
+                outline_scale: 1.0,
+                additional_uv: [0.0; 2],
+            },
+            Vertex {
+                position: [0.5, -0.5, 0.0],
+                normal: [0.0, 0.0, 1.0],
+                color: [1.0; 3],
+                uv: [1.0, 1.0],
+                outline_scale: 1.0,
+                additional_uv: [0.0; 2],
+            },
+            Vertex {
+                position: [0.5, 0.5, 0.0],
+                normal: [0.0, 0.0, 1.0],
+                color: [1.0; 3],
+                uv: [1.0, 0.0],
+                outline_scale: 1.0,
+                additional_uv: [0.0; 2],
+            },
+            Vertex {
+                position: [-0.5, 0.5, 0.0],
+                normal: [0.0, 0.0, 1.0],
+                color: [1.0; 3],
+                uv: [0.0, 0.0],
+                outline_scale: 1.0,
+                additional_uv: [0.0; 2],
+            },
+        ];
+        Mesh {
+            vertices,
+            indices: Some(vec![0, 1, 2, 0, 2, 3]),
+            skinning: None,
+            tangents: Some(vec![[1.0, 0.0, 0.0, 1.0]; 4]),
+            submeshes: Vec::new(),
+        }
+    }
+
+    fn readback_rgba8(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        texture: &wgpu::Texture,
+        width: u32,
+        height: u32,
+    ) -> Vec<u8> {
+        let unpadded_bytes_per_row = width * 4;
+        let alignment = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+        let padded_bytes_per_row = unpadded_bytes_per_row.div_ceil(alignment) * alignment;
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Fixed camera/light reference readback"),
+            size: u64::from(padded_bytes_per_row) * u64::from(height),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("Fixed camera/light reference readback encoder"),
+        });
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded_bytes_per_row),
+                    rows_per_image: None,
+                },
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        queue.submit(Some(encoder.finish()));
+
+        let slice = buffer.slice(..);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |result| {
+            let _ = sender.send(result);
+        });
+        device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .expect("reference readback device poll must succeed");
+        receiver
+            .recv()
+            .expect("reference readback callback must run")
+            .expect("reference readback buffer must map");
+
+        let mapped = slice.get_mapped_range();
+        let mut rgba8 = Vec::with_capacity((width * height * 4) as usize);
+        for row in mapped.chunks(padded_bytes_per_row as usize) {
+            rgba8.extend_from_slice(&row[..unpadded_bytes_per_row as usize]);
+        }
+        drop(mapped);
+        buffer.unmap();
+        rgba8
+    }
+
+    fn rgb_sum_at(rgba8: &[u8], width: u32, x: u32, y: u32) -> u32 {
+        let offset = ((y * width + x) * 4) as usize;
+        u32::from(rgba8[offset])
+            + u32::from(rgba8[offset + 1])
+            + u32::from(rgba8[offset + 2])
+    }
+
+    fn peak_rgb_sum(
+        rgba8: &[u8],
+        width: u32,
+        height: u32,
+        start_x: u32,
+        end_x: u32,
+    ) -> u32 {
+        let mut peak = 0;
+        for y in 0..height {
+            for x in start_x..end_x {
+                peak = peak.max(rgb_sum_at(rgba8, width, x, y));
+            }
+        }
+        peak
+    }
+
+    #[test]
+    fn fixed_camera_light_reference_scene_preserves_standard_lit_occlusion_contrast() {
+        const WIDTH: u32 = 64;
+        const HEIGHT: u32 = 64;
+        const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
+
+        let instance = wgpu::Instance::default();
+        let context = match pollster::block_on(engine_renderer::GpuContext::new(&instance, None)) {
+            Ok(context) => context,
+            Err(engine_renderer::GpuContextError::AdapterUnavailable) => return,
+            Err(error) => panic!("GPU device creation failed: {error}"),
+        };
+        let device = context.device();
+        let queue = context.queue();
+        let mut renderer = pollster::block_on(WorldRenderer::new(device, queue, FORMAT))
+            .expect("reference renderer pipelines must validate");
+
+        let color_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Fixed camera/light reference color"),
+            size: wgpu::Extent3d {
+                width: WIDTH,
+                height: HEIGHT,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let color_view = color_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let depth_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Fixed camera/light reference depth"),
+            size: wgpu::Extent3d {
+                width: WIDTH,
+                height: HEIGHT,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: MAIN_PASS_SAMPLE_COUNT,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Depth32Float,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let depth_view = depth_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        let flat_normal = Arc::new(DecodedTexture {
+            label: "reference_flat_normal".into(),
+            width: 1,
+            height: 1,
+            rgba8: vec![128, 128, 255, 255],
+        });
+        let dielectric_rough = Arc::new(DecodedTexture {
+            label: "reference_dielectric_rough".into(),
+            width: 1,
+            height: 1,
+            rgba8: vec![0, 255, 0, 255],
+        });
+        let occlusion = |label: &str, value: u8| {
+            Arc::new(DecodedTexture {
+                label: label.into(),
+                width: 1,
+                height: 1,
+                rgba8: vec![value, value, value, 255],
+            })
+        };
+        let material = |occlusion_texture: Arc<DecodedTexture>| Material {
+            color: [0.8, 0.8, 0.8, 1.0],
+            pending_normal_texture: Some(Arc::clone(&flat_normal)),
+            pending_metallic_roughness_texture: Some(Arc::clone(&dielectric_rough)),
+            pending_occlusion_texture: Some(occlusion_texture),
+            normal_scale: 0.0,
+            occlusion_strength: 1.0,
+            roughness: 1.0,
+            metallic: 0.0,
+            cull_mode: CullMode::None,
+            cast_shadow: false,
+            receive_shadow: false,
+            ..Material::default()
+        };
+
+        let mut world = engine_ecs::World::new();
+        world.insert_resource(AmbientLight {
+            color: glam::Vec3::ONE,
+            intensity: 0.6,
+        });
+        world.insert_resource(DirectionalLight {
+            direction: glam::Vec3::NEG_Z,
+            color: glam::Vec3::ONE,
+            intensity: 1.0,
+        });
+        world.insert_resource(ShadowSettings {
+            enabled: false,
+            ..ShadowSettings::default()
+        });
+        world.insert_resource(SkySettings {
+            enabled: false,
+            ..SkySettings::default()
+        });
+
+        let unoccluded = world.spawn().expect("reference entity must spawn");
+        world
+            .add_component(unoccluded, reference_quad())
+            .expect("reference mesh must insert");
+        world
+            .add_component(
+                unoccluded,
+                GlobalTransform(glam::Mat4::from_translation(glam::Vec3::new(
+                    -0.7, 0.0, 0.0,
+                ))),
+            )
+            .expect("reference transform must insert");
+        world
+            .add_component(
+                unoccluded,
+                material(occlusion("reference_ao_full", 255)),
+            )
+            .expect("reference material must insert");
+
+        let occluded = world.spawn().expect("reference entity must spawn");
+        world
+            .add_component(occluded, reference_quad())
+            .expect("reference mesh must insert");
+        world
+            .add_component(
+                occluded,
+                GlobalTransform(glam::Mat4::from_translation(glam::Vec3::new(
+                    0.7, 0.0, 0.0,
+                ))),
+            )
+            .expect("reference transform must insert");
+        world
+            .add_component(occluded, material(occlusion("reference_ao_zero", 0)))
+            .expect("reference material must insert");
+
+        let camera = Camera3D::new(60.0, 1.0, 0.1, 10.0);
+        let camera_transform = crate::transform::Transform::looking_at(
+            glam::Vec3::new(0.0, 0.0, 3.0),
+            glam::Vec3::ZERO,
+            glam::Vec3::Y,
+        );
+        renderer
+            .render_to_view_with_camera(
+                &mut world,
+                &camera,
+                &camera_transform,
+                device,
+                queue,
+                &color_view,
+                &depth_view,
+            )
+            .expect("fixed camera/light reference scene must render");
+
+        let rgba8 = readback_rgba8(device, queue, &color_texture, WIDTH, HEIGHT);
+        let background = rgb_sum_at(&rgba8, WIDTH, 0, 0);
+        let unoccluded_peak = peak_rgb_sum(&rgba8, WIDTH, HEIGHT, 0, WIDTH / 2);
+        let occluded_peak = peak_rgb_sum(&rgba8, WIDTH, HEIGHT, WIDTH / 2, WIDTH);
+        assert!(
+            occluded_peak > background + 100,
+            "directionally lit occluded quad must remain visibly above the clear color: background={background}, occluded={occluded_peak}"
+        );
+        assert!(
+            unoccluded_peak > occluded_peak + 120,
+            "full AO must preserve substantially more ambient StandardLit energy: unoccluded={unoccluded_peak}, occluded={occluded_peak}"
+        );
+    }
 }
