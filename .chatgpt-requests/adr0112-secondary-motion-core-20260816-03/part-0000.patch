@@ -1,0 +1,342 @@
+diff --git a/crates/rig/src/rigid_body_rig.rs b/crates/rig/src/rigid_body_rig.rs
+index e2f9ff65f1872d7c54a76e7689def7893c257a4c..492c3fec6374756162e474a781b93dd3a3ef992d 100644
+GIT binary patch
+literal 10324
+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
+Ef5f=kbpQYW
+
+literal 9
+QcmYc(&CRW3$j?au01>1EYybcN
+
+diff --git a/crates/physics/src/secondary_motion.rs b/crates/physics/src/secondary_motion.rs
+new file mode 100644
+index 0000000..649b95b
+--- /dev/null
++++ b/crates/physics/src/secondary_motion.rs
+@@ -0,0 +1,260 @@
++//! Fixed-step engine-native secondary-motion simulation (ADR 0112).
++//!
++//! Each opted-in entity owns an isolated Rapier world. Secondary-motion
++//! colliders therefore never enter gameplay collision events, hit tests,
++//! character-controller queries, or gameplay impulse exchange.
++
++use engine_core::time::FixedTime;
++use engine_ecs::{Entity, Query, Res, ResMut};
++use engine_rig::rig_pose::{PoseStage, RigPose};
++use engine_rig::rigid_body_rig::{
++    JointDef, RigidBodyDef, RigidBodyMode, RigidBodyShape, SecondaryMotion,
++    SecondaryMotionRigAsset, SecondaryMotionRigRegistry,
++};
++use engine_rig::skeleton_asset::BoneId;
++use engine_rig::skinning::Skeleton;
++use engine_rig::transform::{GlobalTransform, Transform};
++use glam::{Mat4, Quat, Vec3};
++use hashbrown::{HashMap, HashSet};
++use rapier3d::prelude::{
++    CoefficientCombineRule, ColliderBuilder, GenericJointBuilder, Group, InteractionGroups,
++    InteractionTestMode, JointAxesMask, JointAxis, MotorModel, PhysicsWorld, Pose,
++    RigidBodyBuilder, RigidBodyHandle, RigidBodyType, Rotation, SharedShape, Vector,
++};
++
++const STANDARD_GRAVITY_METERS_PER_SECOND_SQUARED: f32 = 9.81;
++
++type RigQuery<'a> = (
++    &'a SecondaryMotion,
++    &'a Skeleton,
++    Option<&'a GlobalTransform>,
++    &'a mut RigPose,
++);
++
++type PresentationRigQuery<'a> = (&'a SecondaryMotion, &'a Skeleton);
++
++/// Runtime-only collection of isolated per-character secondary-motion worlds.
++#[derive(Default)]
++pub struct SecondaryMotionWorlds {
++    characters: HashMap<Entity, CharacterPhysicsWorld>,
++}
++
++impl SecondaryMotionWorlds {
++    /// Creates an empty collection.
++    pub fn new() -> Self {
++        Self::default()
++    }
++
++    /// Returns the number of live isolated character solvers.
++    pub fn simulated_character_count(&self) -> usize {
++        self.characters.len()
++    }
++}
++
++struct CharacterPhysicsWorld {
++    rig_id: String,
++    world: PhysicsWorld,
++    body_handles: Vec<RigidBodyHandle>,
++    bone_driven: Vec<bool>,
++    presentation_previous: Vec<Transform>,
++    presentation_current: Vec<Transform>,
++}
++
++/// Interpolates the latest two fixed-step secondary-motion poses for rendering.
++///
++/// This presentation-only system never mutates Rapier or [`RigPose`].
++pub fn secondary_motion_presentation_system(
++    fixed_time: Res<FixedTime>,
++    worlds: Option<Res<SecondaryMotionWorlds>>,
++    mut rigs: Query<PresentationRigQuery<'_>>,
++    mut transforms: Query<&mut Transform>,
++) {
++    let Some(worlds) = worlds.as_deref() else {
++        return;
++    };
++    let alpha = fixed_time.interpolation_alpha();
++    let mut writes = HashMap::new();
++
++    for (entity, (marker, skeleton)) in &mut rigs {
++        let Some(state) = worlds.characters.get(&entity) else {
++            continue;
++        };
++        if state.rig_id != marker.rig.as_str()
++            || state.presentation_previous.len() != skeleton.joints.len()
++            || state.presentation_current.len() != skeleton.joints.len()
++        {
++            continue;
++        }
++
++        writes.extend(
++            skeleton
++                .joints
++                .iter()
++                .copied()
++                .zip(&state.presentation_previous)
++                .zip(&state.presentation_current)
++                .map(|((joint, previous), current)| {
++                    (
++                        joint,
++                        interpolate_presentation_transform(previous, current, alpha),
++                    )
++                }),
++        );
++    }
++
++    if writes.is_empty() {
++        return;
++    }
++    for (entity, transform) in transforms.iter_mut() {
++        if let Some(interpolated) = writes.get(&entity) {
++            *transform = interpolated.clone();
++        }
++    }
++}
++
++/// Advances every opted-in secondary-motion rig by one authoritative fixed step.
++///
++/// The system reads the resolved procedural pose, writes only the
++/// [`RigPose`] physics layer, and reseats bodies on any timeline discontinuity.
++/// It deliberately does not reconstruct animation history or pre-roll seeks.
++pub fn secondary_motion_system(
++    fixed_time: Res<FixedTime>,
++    registry: Option<Res<SecondaryMotionRigRegistry>>,
++    mut worlds: Option<ResMut<SecondaryMotionWorlds>>,
++    mut rigs: Query<RigQuery<'_>>,
++) {
++    let Some(registry) = registry else {
++        return;
++    };
++    let mut fallback_worlds = SecondaryMotionWorlds::new();
++    let worlds = worlds.as_deref_mut().unwrap_or(&mut fallback_worlds);
++    let fixed_delta = fixed_time.fixed_delta.max(f32::EPSILON);
++    let mut live = HashSet::new();
++
++    for (entity, (marker, skeleton, root_global, rig_pose)) in &mut rigs {
++        let Some(rig) = registry.get(&marker.rig) else {
++            continue;
++        };
++        if rig.dynamic_body_count() == 0 || !skeleton_matches(rig, skeleton) {
++            continue;
++        }
++        live.insert(entity);
++
++        let root_matrix = root_global
++            .map(GlobalTransform::matrix)
++            .unwrap_or(Mat4::IDENTITY);
++        let joint_indices = joint_indices(skeleton);
++        let procedural_worlds = rig_pose
++            .evaluate_world(PoseStage::Procedural, root_matrix)
++            .to_vec();
++
++        let needs_rebuild = worlds
++            .characters
++            .get(&entity)
++            .is_none_or(|state| state.rig_id != marker.rig.as_str());
++        if needs_rebuild {
++            let rest_worlds = rig_pose
++                .evaluate_world(PoseStage::Rest, root_matrix)
++                .to_vec();
++            worlds.characters.insert(
++                entity,
++                build_character_world(
++                    rig,
++                    &joint_indices,
++                    root_matrix,
++                    &rest_worlds,
++                    &procedural_worlds,
++                ),
++            );
++        }
++
++        let Some(state) = worlds.characters.get_mut(&entity) else {
++            continue;
++        };
++        state.world.integration_parameters.dt = fixed_delta;
++        let targets = resolved_body_poses(rig, &joint_indices, &procedural_worlds);
++        let discontinuous = rig_pose.is_discontinuous();
++        if discontinuous {
++            reseat_bodies(state, &targets);
++        }
++        drive_follow_bodies(state, rig, &targets);
++        state.world.step();
++        write_simulated_bones(
++            state,
++            rig,
++            &joint_indices,
++            root_matrix,
++            &procedural_worlds,
++            rig_pose,
++        );
++        capture_presentation_pose(state, rig_pose, discontinuous);
++    }
++
++    worlds.characters.retain(|entity, _| live.contains(entity));
++}
++
++fn capture_presentation_pose(
++    state: &mut CharacterPhysicsWorld,
++    rig_pose: &mut RigPose,
++    reset_history: bool,
++) {
++    rig_pose.compose();
++    let current = rig_pose.final_pose().local_transforms();
++    if reset_history
++        || state.presentation_current.len() != current.len()
++        || state.presentation_previous.len() != current.len()
++    {
++        state.presentation_previous.clear();
++        state.presentation_previous.extend_from_slice(current);
++        state.presentation_current.clear();
++        state.presentation_current.extend_from_slice(current);
++        return;
++    }
++
++    std::mem::swap(
++        &mut state.presentation_previous,
++        &mut state.presentation_current,
++    );
++    state.presentation_current.clear();
++    state.presentation_current.extend_from_slice(current);
++}
++
++fn interpolate_presentation_transform(
++    previous: &Transform,
++    current: &Transform,
++    alpha: f32,
++) -> Transform {
++    let alpha = alpha.clamp(0.0, 1.0);
++    Transform {
++        translation: previous.translation.lerp(current.translation, alpha),
++        rotation: normalized_quat(previous.rotation.slerp(current.rotation, alpha)),
++        scale: previous.scale.lerp(current.scale, alpha),
++    }
++}
++
++fn skeleton_matches(rig: &SecondaryMotionRigAsset, skeleton: &Skeleton) -> bool {
++    rig.skeleton
++        .as_ref()
++        .is_none_or(|expected| skeleton.asset.as_ref() == Some(expected))
++}
++
++fn joint_indices(skeleton: &Skeleton) -> HashMap<BoneId, usize> {
++    skeleton
++        .bone_ids
++        .iter()
++        .enumerate()
++        .map(|(index, bone)| (*bone, index))
++        .collect()
++}
++
++fn build_character_world(
++    rig: &SecondaryMotionRigAsset,
++    joint_indices: &HashMap<BoneId, usize>,
++    root_matrix: Mat4,
++    rest_worlds: &[Mat4],
++    procedural_worlds: &[Mat4],
++) -> CharacterPhysicsWorld {
++    let mut world = PhysicsWorld::new();
++    world.gravity = Vector::new(
++        0.0,
++        -STANDARD_GRAVITY_METERS_PER_SECOND_SQUARED,
