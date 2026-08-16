@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0124-main-sync-restore-20260816-r1",
+  "target_branch": "chatgpt/gameengine-adr-0124-production-navmesh-v6",
+  "expected_head_sha": "bdca41e822bad011343bf00f9c45f40e909191f3",
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Restore ADR 0124 navigation contracts after main sync",
+  "pr_title": "GameEngine: implement ADR 0124 production navigation",
+  "pr_body": "## Summary\n\nContinues ADR 0124 production navigation on the current main baseline. This request restores the production navigation module exposure and scene-bridge regression fixture that were intentionally left main-preferred while synchronizing Draft PR #67 with current main. Further authoring, background bake, Editor UX, runtime adapter, visualization, and validation slices follow on the same Draft PR.\n\n<!-- gameengine-chatgpt-dispatcher -->"
+}
