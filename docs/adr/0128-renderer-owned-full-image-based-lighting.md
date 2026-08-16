@@ -1,4 +1,4 @@
-# ADR 0122: Renderer-Owned Full Image-Based Lighting
+# ADR 0128: Renderer-Owned Full Image-Based Lighting
 
 Status: Accepted
 Date: 2026-08-16
