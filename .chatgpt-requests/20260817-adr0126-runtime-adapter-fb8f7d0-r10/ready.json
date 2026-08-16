@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "request_id": "20260817-adr0126-runtime-adapter-fb8f7d0-r10",
+  "target_branch": "chatgpt/gameengine-adr0126-timeline-sequencer-v2",
+  "expected_head_sha": "fb8f7d044bd6868232f9708c2bafd953b68c4a98",
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Add typed engine Timeline runtime adapter",
+  "pr_title": "Implement ADR 0126 Timeline and Sequencer runtime",
+  "pr_body": "Adds the concrete top-level engine adapter that dispatches neutral Timeline evaluations to strongly typed Animation, Transform, Camera, Audio, VFX, and Event domain operations without moving domain logic into engine-timeline. The PR remains Draft until ADR 0126 Definition of Done and required Windows/Visual validation complete.\n\n<!-- gameengine-chatgpt-dispatcher -->"
+}
