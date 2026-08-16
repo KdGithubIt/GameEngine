@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0112-validation-fixes-20260816-13",
+  "target_branch": "chatgpt/gameengine-adr-0112-secondary-motion-v2",
+  "expected_head_sha": "92a2664a4abdbaf441875b2a61ab2cb06e960691",
+  "patch_parts": ["part-0000.patch"],
+  "commit_message": "Fix Secondary Motion validation regressions",
+  "pr_title": "Implement ADR 0112 engine-native secondary motion",
+  "pr_body": "## Summary\n\nImplements ADR 0112 by replacing MMD-specific cosmetic physics runtime contracts with engine-native Secondary Motion.\n\nThis follow-up fixes the remaining Editor animation-preview references to the removed MMD physics resource/system and corrects Rapier 0.35 velocity assertions found by trusted Windows Validation. The PR remains Draft while the final compatibility cleanup, PMX best-effort conversion diagnostics, documentation, and visual validation are completed."
+}
