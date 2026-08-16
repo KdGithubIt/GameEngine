@@ -4,6 +4,8 @@
 //! transactions, validation, compilation, and layout are delegated to
 //! `engine-authoring`.
 
+mod scene_cli;
+
 use engine_authoring::{
     replace_file_contents, BehaviorTreeApply, BehaviorTreeAuthoringService,
     BehaviorTreeServiceError, Diagnostic, Graph, GraphChange, GraphCommand, PersistError,
@@ -51,6 +53,9 @@ where
     S: Into<String>,
 {
     let args: Vec<String> = args.into_iter().map(Into::into).collect();
+    if let Some(result) = scene_cli::dispatch(&args) {
+        return result;
+    }
     match args.as_slice() {
         [domain, command] if domain == "behavior-tree" && command == "schemas" => {
             Ok(CliRunResult::success(to_json(&behavior_tree_schemas())?))
@@ -594,7 +599,7 @@ fn ai_agent_capture_frame(inbox_path: &str) -> Result<CliRunResult, CliError> {
 }
 
 fn help_text() -> &'static str {
-    "Usage:\n  engine-cli behavior-tree schemas\n  engine-cli behavior-tree example\n  engine-cli behavior-tree validate <graph.json>\n  engine-cli behavior-tree compile <graph.json>\n  engine-cli behavior-tree layout <graph.json>\n  engine-cli behavior-tree nodes <graph.json>\n  engine-cli behavior-tree edges <graph.json>\n  engine-cli behavior-tree preview <graph.json> <commands.json>\n  engine-cli behavior-tree apply <graph.json> <commands.json>\n  engine-cli ai-agent describe-tools\n  engine-cli ai-agent validate-input <json>\n  engine-cli ai-agent inject-input <inbox_path> <json>\n  engine-cli ai-agent capture-frame <inbox_path>"
+    "Usage:\n  engine-cli project describe <project-root>\n  engine-cli scene inspect <project-root> <scene-relative-path>\n  engine-cli scene validate <project-root> <scene-relative-path>\n  engine-cli scene preview <project-root> <scene-relative-path> <commands.json>\n  engine-cli scene apply <project-root> <scene-relative-path> <commands.json>\n  engine-cli entity find <project-root> <scene-relative-path> [query]\n  engine-cli entity inspect <project-root> <scene-relative-path> <entity-id>\n  engine-cli component schemas\n  engine-cli behavior-tree schemas\n  engine-cli behavior-tree example\n  engine-cli behavior-tree validate <graph.json>\n  engine-cli behavior-tree compile <graph.json>\n  engine-cli behavior-tree layout <graph.json>\n  engine-cli behavior-tree nodes <graph.json>\n  engine-cli behavior-tree edges <graph.json>\n  engine-cli behavior-tree preview <graph.json> <commands.json>\n  engine-cli behavior-tree apply <graph.json> <commands.json>\n  engine-cli ai-agent describe-tools\n  engine-cli ai-agent validate-input <json>\n  engine-cli ai-agent inject-input <inbox_path> <json>\n  engine-cli ai-agent capture-frame <inbox_path>"
 }
 
 #[cfg(test)]
