@@ -1,0 +1,427 @@
++        emitter.modules.push(VfxModule::new(VfxModuleOperation::SpawnRate {
++            particles_per_second: 10.0,
++        }));
++        emitter.modules.push(VfxModule::new(VfxModuleOperation::Lifetime {
++            value: VfxScalarValue::Constant { value: 2.0 },
++        }));
++        emitter.modules.push(VfxModule::new(VfxModuleOperation::Billboard {
++            material: None,
++            texture_sheet: None,
++        }));
++        assert!(emitter.modules.iter().all(|module| module.phase == module.operation.required_phase()));
++        effect.emitters.push(emitter);
++
++        let mut preview = VfxPreviewState::default();
++        preview.open_effect(&effect);
++        preview.current_time = 0.75;
++        preview.recompile(&effect, true);
++
++        let compiled = VfxAuthoringService::new()
++            .compile(&effect)
++            .compiled_effect
++            .expect("valid effect compiles");
++        let mut expected = VfxPlayer::new(
++            compiled,
++            false,
++            false,
++            VfxRestartPolicy::Manual,
++            1.0,
++            Some(effect.seed),
++            BTreeMap::new(),
++        );
++        expected.instance_mut().seek_preview(0.75, Vec3::ZERO);
++
++        let actual = preview.player.expect("preview player exists");
++        assert_eq!(actual.instance().stats(), expected.instance().stats());
++        assert_eq!(actual.render_particles().len(), expected.render_particles().len());
++        assert_eq!(VfxPhase::Render, effect.emitters[0].modules[2].phase);
++    }
++}
+diff --git a/crates/cli/src/vfx_cli.rs b/crates/cli/src/vfx_cli.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/cli/src/vfx_cli.rs
+@@ -0,0 +1,184 @@
++//! Thin file-oriented CLI adapter for VFX authoring.
++
++use super::{to_json, CliError, CliRunResult};
++use engine_authoring::{
++    replace_file_contents, Diagnostic, VfxAuthoringService, VfxCommand, VfxEffect, VfxTemplate,
++};
++use serde::Serialize;
++use std::fs;
++use std::path::Path;
++
++#[derive(Serialize)]
++struct VfxInspectOutput {
++    success: bool,
++    effect: VfxEffect,
++    validation: engine_authoring::VfxValidation,
++    compilation: engine_authoring::VfxCompilation,
++}
++
++pub(super) fn dispatch(args: &[String]) -> Option<Result<CliRunResult, CliError>> {
++    match args {
++        [domain, command] if domain == "vfx" && command == "schemas" => Some(
++            to_json(&VfxAuthoringService::new().schemas()).map(CliRunResult::success),
++        ),
++        [domain, command, path] if domain == "vfx" && command == "inspect" => {
++            Some(inspect(Path::new(path)))
++        }
++        [domain, command, path] if domain == "vfx" && command == "validate" => {
++            Some(validate(Path::new(path)))
++        }
++        [domain, command, path, commands_path] if domain == "vfx" && command == "preview" => {
++            Some(mutate(Path::new(path), Path::new(commands_path), false))
++        }
++        [domain, command, path, commands_path] if domain == "vfx" && command == "apply" => {
++            Some(mutate(Path::new(path), Path::new(commands_path), true))
++        }
++        [domain, command, template, path] if domain == "vfx" && command == "create" => {
++            Some(create(template, Path::new(path)))
++        }
++        _ if args.first().is_some_and(|value| value == "vfx") => {
++            Some(Err(CliError::UnknownCommand {
++                args: args.join(" "),
++            }))
++        }
++        _ => None,
++    }
++}
++
++fn inspect(path: &Path) -> Result<CliRunResult, CliError> {
++    let effect = load_effect(path)?;
++    let service = VfxAuthoringService::new();
++    let validation = service.validate(&effect);
++    let success = validation.success;
++    let output = VfxInspectOutput {
++        success,
++        compilation: service.compile(&effect),
++        validation,
++        effect,
++    };
++    Ok(CliRunResult::diagnostics(to_json(&output)?, !success))
++}
++
++fn validate(path: &Path) -> Result<CliRunResult, CliError> {
++    let effect = load_effect(path)?;
++    let output = VfxAuthoringService::new().validate(&effect);
++    Ok(CliRunResult::diagnostics(to_json(&output)?, !output.success))
++}
++
++fn mutate(path: &Path, commands_path: &Path, persist: bool) -> Result<CliRunResult, CliError> {
++    let effect = load_effect(path)?;
++    let commands: Vec<VfxCommand> = load_json(commands_path)?;
++    let service = VfxAuthoringService::new();
++    let output = service.apply(&effect, &commands);
++    if persist && output.success {
++        let committed = output.effect.as_ref().ok_or_else(|| CliError::Authoring {
++            diagnostics: vec![Diagnostic::error(
++                "vfx.adapter_missing_commit",
++                "successful VFX apply returned no committed document",
++            )],
++        })?;
++        let json = service
++            .effect_to_canonical_json(committed)
++            .map_err(vfx_error)?;
++        replace_file_contents(path, &json).map_err(|source| CliError::Persist { source })?;
++    }
++    Ok(CliRunResult::diagnostics(to_json(&output)?, !output.success))
++}
++
++fn create(template: &str, path: &Path) -> Result<CliRunResult, CliError> {
++    let template = parse_template(template).ok_or_else(|| CliError::Authoring {
++        diagnostics: vec![Diagnostic::error(
++            "vfx.unknown_template",
++            format!("unknown VFX template `{template}`; expected spark, smoke, burst, or trail"),
++        )],
++    })?;
++    let service = VfxAuthoringService::new();
++    let effect = service.template(template);
++    let json = service.effect_to_canonical_json(&effect).map_err(vfx_error)?;
++    replace_file_contents(path, &json).map_err(|source| CliError::Persist { source })?;
++    Ok(CliRunResult::success(to_json(&effect)?))
++}
++
++fn load_effect(path: &Path) -> Result<VfxEffect, CliError> {
++    let json = fs::read_to_string(path).map_err(|source| CliError::Io {
++        path: path.to_owned(),
++        source,
++    })?;
++    VfxAuthoringService::new()
++        .effect_from_json(&json)
++        .map_err(vfx_error)
++}
++
++fn load_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, CliError> {
++    let json = fs::read_to_string(path).map_err(|source| CliError::Io {
++        path: path.to_owned(),
++        source,
++    })?;
++    serde_json::from_str(&json).map_err(|source| CliError::InvalidJson {
++        path: path.to_owned(),
++        source,
++    })
++}
++
++fn parse_template(value: &str) -> Option<VfxTemplate> {
++    match value {
++        "spark" => Some(VfxTemplate::Spark),
++        "smoke" => Some(VfxTemplate::Smoke),
++        "burst" => Some(VfxTemplate::Burst),
++        "trail" => Some(VfxTemplate::Trail),
++        _ => None,
++    }
++}
++
++fn vfx_error(error: impl std::fmt::Display) -> CliError {
++    CliError::Authoring {
++        diagnostics: vec![Diagnostic::error("vfx.adapter_error", error.to_string())],
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use engine_authoring::VfxCommand;
++    use std::time::{SystemTime, UNIX_EPOCH};
++
++    #[test]
++    fn preview_and_apply_share_transaction_semantics() {
++        let stamp = SystemTime::now()
++            .duration_since(UNIX_EPOCH)
++            .expect("clock after epoch")
++            .as_nanos();
++        let temp = std::env::temp_dir().join(format!("engine_cli_vfx_{stamp}"));
++        fs::create_dir_all(&temp).expect("create temp directory");
++        let effect_path = temp.join("effect.vfx.json");
++        let commands_path = temp.join("commands.json");
++        let service = VfxAuthoringService::new();
++        let effect = service.template(VfxTemplate::Spark);
++        fs::write(
++            &effect_path,
++            service
++                .effect_to_canonical_json(&effect)
++                .expect("fixture serializes"),
++        )
++        .expect("write effect");
++        fs::write(
++            &commands_path,
++            serde_json::to_string(&vec![VfxCommand::SetEffectSeed { seed: 77 }])
++                .expect("commands serialize"),
++        )
++        .expect("write commands");
++
++        let preview = mutate(&effect_path, &commands_path, false).expect("preview succeeds");
++        let after_preview = fs::read_to_string(&effect_path).expect("effect remains readable");
++        assert_eq!(preview.exit_code, 0);
++        assert_eq!(service.effect_from_json(&after_preview).expect("effect parses").seed, effect.seed);
++
++        let applied = mutate(&effect_path, &commands_path, true).expect("apply succeeds");
++        assert_eq!(applied.exit_code, 0);
++        let committed = service
++            .effect_from_json(&fs::read_to_string(&effect_path).expect("effect readable"))
++            .expect("effect parses");
++        assert_eq!(committed.seed, 77);
++        let _ = fs::remove_dir_all(temp);
++    }
++}
+diff --git a/crates/mcp/src/vfx.rs b/crates/mcp/src/vfx.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/mcp/src/vfx.rs
+@@ -0,0 +1,194 @@
++//! MCP adapters for VFX semantic authoring.
++
++use crate::McpToolDescriptor;
++use engine_authoring::{
++    VfxApply, VfxAuthoringService, VfxCommand, VfxCompilation, VfxEffect, VfxSchemaCatalog,
++    VfxTemplate, VfxValidation,
++};
++use serde::{Deserialize, Serialize};
++use serde_json::json;
++
++/// Input carrying one VFX document for read-only tools.
++#[derive(Debug, Clone, Deserialize)]
++pub struct VfxEffectInput {
++    /// Semantic VFX document to inspect or validate.
++    pub effect: VfxEffect,
++}
++
++/// Transaction input shared by VFX preview and apply tools.
++#[derive(Debug, Clone, Deserialize)]
++pub struct VfxMutationInput {
++    /// Source VFX document. The tool never mutates this value in place.
++    pub effect: VfxEffect,
++    /// Semantic commands applied as one transaction.
++    pub commands: Vec<VfxCommand>,
++}
++
++/// Input selecting a built-in VFX starting template.
++#[derive(Debug, Clone, Copy, Deserialize)]
++pub struct VfxTemplateInput {
++    /// Template to instantiate as ordinary editable VFX data.
++    pub template: VfxTemplate,
++}
++
++/// Shared VFX inspection result for MCP clients.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++pub struct VfxInspectOutput {
++    /// Whether the document has no blocking diagnostics.
++    pub success: bool,
++    /// Original semantic VFX document.
++    pub effect: VfxEffect,
++    /// Shared authoring validation output.
++    pub validation: VfxValidation,
++    /// Backend-neutral compilation and capability diagnostics.
++    pub compilation: VfxCompilation,
++}
++
++/// Transport-shaped VFX tools backed only by [`VfxAuthoringService`].
++pub struct VfxMcpTools {
++    service: VfxAuthoringService,
++}
++
++impl VfxMcpTools {
++    /// Creates VFX MCP handlers over the shared GUI-free service.
++    pub fn new() -> Self {
++        Self {
++            service: VfxAuthoringService::new(),
++        }
++    }
++
++    /// Returns the VFX tool family advertised to MCP transports.
++    pub fn tool_descriptors(&self) -> Vec<McpToolDescriptor> {
++        vec![
++            descriptor("vfx.schemas", "Discover stable VFX module schemas and execution phases.", json!({"type":"object","properties":{},"additionalProperties":false})),
++            descriptor("vfx.inspect", "Inspect one semantic VFX document and its compiled backend-neutral plan.", effect_schema()),
++            descriptor("vfx.validate", "Validate one semantic VFX document with stable-ID diagnostics.", effect_schema()),
++            descriptor("vfx.preview", "Preview a VFX command transaction without committing the source document.", mutation_schema()),
++            descriptor("vfx.apply", "Apply one atomic VFX command transaction and return the committed document plus undo commands.", mutation_schema()),
++            descriptor("vfx.template", "Create ordinary VFX document data from a built-in starting template.", json!({
++                "type":"object",
++                "required":["template"],
++                "properties":{"template":{"type":"string","enum":["spark","smoke","burst","trail"]}},
++                "additionalProperties":false
++            })),
++        ]
++    }
++
++    /// Returns the deterministic shared VFX module catalog.
++    pub fn schemas(&self) -> VfxSchemaCatalog {
++        self.service.schemas()
++    }
++
++    /// Inspects and compiles one VFX document without mutation.
++    pub fn inspect(&self, input: VfxEffectInput) -> VfxInspectOutput {
++        let validation = self.service.validate(&input.effect);
++        let success = validation.success;
++        VfxInspectOutput {
++            success,
++            compilation: self.service.compile(&input.effect),
++            validation,
++            effect: input.effect,
++        }
++    }
++
++    /// Validates one VFX document.
++    pub fn validate(&self, input: VfxEffectInput) -> VfxValidation {
++        self.service.validate(&input.effect)
++    }
++
++    /// Previews an atomic semantic mutation without changing the source document.
++    pub fn preview(&self, input: VfxMutationInput) -> VfxApply {
++        self.service.apply(&input.effect, &input.commands)
++    }
++
++    /// Applies an atomic semantic mutation and returns the committed document.
++    ///
++    /// Persistence remains the responsibility of the owning project/editor host;
++    /// MCP does not implement a second VFX file-mutation policy.
++    pub fn apply(&self, input: VfxMutationInput) -> VfxApply {
++        self.service.apply(&input.effect, &input.commands)
++    }
++
++    /// Creates an editable VFX document from a shared service template.
++    pub fn template(&self, input: VfxTemplateInput) -> VfxEffect {
++        self.service.template(input.template)
++    }
++}
++
++impl Default for VfxMcpTools {
++    fn default() -> Self {
++        Self::new()
++    }
++}
++
++fn descriptor(
++    name: &'static str,
++    description: &'static str,
++    input_schema: serde_json::Value,
++) -> McpToolDescriptor {
++    McpToolDescriptor {
++        name: name.to_owned(),
++        description: description.to_owned(),
++        input_schema,
++    }
++}
++
++fn effect_schema() -> serde_json::Value {
++    json!({
++        "type":"object",
++        "required":["effect"],
++        "properties":{"effect":{"type":"object"}},
++        "additionalProperties":false
++    })
++}
++
++fn mutation_schema() -> serde_json::Value {
++    json!({
++        "type":"object",
++        "required":["effect","commands"],
++        "properties":{
++            "effect":{"type":"object"},
++            "commands":{"type":"array","items":{"type":"object"}}
++        },
++        "additionalProperties":false
++    })
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn descriptors_expose_complete_vfx_authoring_family() {
++        let names = VfxMcpTools::new()
++            .tool_descriptors()
++            .into_iter()
++            .map(|descriptor| descriptor.name)
++            .collect::<Vec<_>>();
++        assert_eq!(
++            names,
++            [
++                "vfx.schemas",
++                "vfx.inspect",
++                "vfx.validate",
++                "vfx.preview",
++                "vfx.apply",
++                "vfx.template",
++            ]
++        );
++    }
++
++    #[test]
++    fn preview_and_apply_delegate_identical_semantic_transactions() {
++        let tools = VfxMcpTools::new();
++        let effect = VfxAuthoringService::new().template(VfxTemplate::Burst);
++        let commands = vec![VfxCommand::SetEffectSeed { seed: 99 }];
++        let preview = tools.preview(VfxMutationInput {
++            effect: effect.clone(),
++            commands: commands.clone(),
++        });
++        let applied = tools.apply(VfxMutationInput { effect, commands });
++        assert_eq!(preview, applied);
++        assert_eq!(preview.effect.expect("preview result").seed, 99);
++    }
++}
