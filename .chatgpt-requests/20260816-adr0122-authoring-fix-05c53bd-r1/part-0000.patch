@@ -1,0 +1,36 @@
+diff --git a/crates/engine/src/audio.rs b/crates/engine/src/audio.rs
+index 9c8e8cb..3e79c49 100644
+--- a/crates/engine/src/audio.rs
++++ b/crates/engine/src/audio.rs
+@@ -9,8 +9,7 @@ use crate::transform::GlobalTransform;
+ use engine_authoring::{AssetId, StableId};
+ use engine_ecs::{Entity, Query, Res, ResMut};
+ use engine_platform::spatial_audio::{
+-    spatial_stereo_gains, AudioEmitterPose, AudioListenerPose, AudioRolloffMode,
+-    AudioVoiceSpatialSettings,
++    spatial_stereo_gains, AudioEmitterPose, AudioListenerPose, AudioVoiceSpatialSettings,
+ };
+ 
+ /// Process-local ownership of active authored spatial-audio voices.
+diff --git a/crates/engine/src/components.rs b/crates/engine/src/components.rs
+index a1856d8..3d81d84 100644
+--- a/crates/engine/src/components.rs
++++ b/crates/engine/src/components.rs
+@@ -16,4 +16,5 @@ use crate::scene_bridge::{
+     SKINNED_MESH_RENDERER_COMPONENT, SKINNED_MODEL_COMPONENT, STATIC_MESH_RENDERER_COMPONENT,
+     TRANSFORM_COMPONENT,
+ };
++use crate::scene_bridge::AUDIO_LISTENER_COMPONENT;
+ use engine_authoring::id::{AssetId, ComponentTypeId, EntityId};
+diff --git a/crates/engine/src/components/validation.rs b/crates/engine/src/components/validation.rs
+index 7d7d689..b755df1 100644
+--- a/crates/engine/src/components/validation.rs
++++ b/crates/engine/src/components/validation.rs
+@@ -302,6 +302,7 @@
+ }
+ 
+ fn validate_spatial_audio_scene(scene: &AuthoringScene) -> Vec<Diagnostic> {
++    let mut diagnostics = Vec::new();
+     let listener_type = ComponentTypeId::new(AUDIO_LISTENER_COMPONENT);
+     let emitter_type = ComponentTypeId::new(AUDIO_EMITTER_COMPONENT);
+     let mut enabled = Vec::new();
