@@ -47,6 +47,7 @@ use std::{
     path::{Path, PathBuf},
 };
 mod animation_graph_parameters;
+mod behavior_debug;
 mod animation_preview;
 mod asset_inspector;
 mod assets;
@@ -85,6 +86,7 @@ struct MaterialTextureChoicesCache {
 }
 
 use animation_preview::*;
+use behavior_debug::*;
 use asset_inspector::*;
 use assets::*;
 use chrome::*;
@@ -189,6 +191,8 @@ pub struct EditorApp {
     editor_mode: EditorMode,
     /// Runtime world owned while Play is active.
     runtime_state: Option<RuntimePlayState>,
+    /// Transient read-only Behavior Tree live-debug presentation.
+    behavior_debug: BehaviorTreeDebugState,
     /// Most recently recorded or loaded deterministic input artifact.
     last_replay: Option<engine::InputReplay>,
     /// Desktop controller adapter created lazily when Play first starts.
@@ -419,6 +423,7 @@ impl EditorApp {
             hierarchy_filter: String::new(),
             editor_mode: EditorMode::Edit,
             runtime_state: None,
+            behavior_debug: BehaviorTreeDebugState::default(),
             last_replay: None,
             #[cfg(not(target_arch = "wasm32"))]
             gamepad_context: None,

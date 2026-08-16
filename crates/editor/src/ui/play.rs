@@ -121,18 +121,39 @@ impl EditorApp {
 
         control_row(ui, |ui| {
             ui.strong("View");
-            let mut selected = self.preferences.play_mode_view;
-            ui.selectable_value(&mut selected, PlayModeView::Game, "Game View");
-            ui.selectable_value(&mut selected, PlayModeView::Scene, "Scene View");
-            if selected != self.preferences.play_mode_view {
-                self.preferences.play_mode_view = selected;
-                self.preferences.save();
-                if selected == PlayModeView::Scene && self.game_view_focused {
-                    self.release_all_forwarded_input();
-                    self.game_view_focused = false;
-                }
+            let previous = self.preferences.play_mode_view;
+            if ui
+                .selectable_label(
+                    !self.behavior_debug.visible && previous == PlayModeView::Game,
+                    "Game View",
+                )
+                .clicked()
+            {
+                self.behavior_debug.visible = false;
+                self.preferences.play_mode_view = PlayModeView::Game;
             }
-            if selected == PlayModeView::Scene {
+            if ui
+                .selectable_label(
+                    !self.behavior_debug.visible && previous == PlayModeView::Scene,
+                    "Scene View",
+                )
+                .clicked()
+            {
+                self.behavior_debug.visible = false;
+                self.preferences.play_mode_view = PlayModeView::Scene;
+            }
+            if ui
+                .selectable_label(self.behavior_debug.visible, "Behavior Tree")
+                .clicked()
+            {
+                self.behavior_debug.visible = true;
+            }
+            if self.preferences.play_mode_view != previous {
+                self.preferences.save();
+            }
+            if !self.behavior_debug.visible
+                && self.preferences.play_mode_view == PlayModeView::Scene
+            {
                 ui.separator();
                 if ui.button("Reset Camera").clicked() {
                     self.scene_view.reset_camera();
@@ -141,6 +162,14 @@ impl EditorApp {
             }
         });
         ui.separator();
+        if self.behavior_debug.visible {
+            if self.game_view_focused {
+                self.release_all_forwarded_input();
+                self.game_view_focused = false;
+            }
+            self.show_behavior_tree_debug_workspace(ui);
+            return;
+        }
 
         // The image below fills all remaining panel space, so any widget
         // added after it would clip off the bottom edge.
@@ -611,6 +640,8 @@ impl EditorApp {
             Ok(start) => {
                 self.session.extend_diagnostics(start.diagnostics);
                 self.runtime_state = Some(start.state);
+                self.behavior_debug.clear();
+                self.selected_runtime_entity = None;
                 self.editor_mode = EditorMode::Playing;
                 self.game_view_focused = true;
             }
@@ -644,6 +675,8 @@ impl EditorApp {
                 }
                 self.session.extend_diagnostics(start.diagnostics);
                 self.runtime_state = Some(start.state);
+                self.behavior_debug.clear_observation();
+                self.selected_runtime_entity = None;
             }
             Err(error) => {
                 self.session.extend_diagnostics(error.into_diagnostics());
@@ -663,6 +696,8 @@ impl EditorApp {
             }
         }
         self.runtime_state = None;
+        self.behavior_debug.clear();
+        self.selected_runtime_entity = None;
         self.editor_mode = EditorMode::Edit;
         self.game_view_focused = false;
         self.forwarded_keys.clear();

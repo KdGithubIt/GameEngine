@@ -35,6 +35,8 @@ struct EditorShell {
     visual_capture_path: Option<PathBuf>,
     #[cfg(feature = "visual-validation")]
     visual_capture_requested_at: Option<Instant>,
+    #[cfg(feature = "visual-validation")]
+    visual_behavior_debug_capture: bool,
 }
 
 impl EditorShell {
@@ -78,6 +80,8 @@ impl EditorShell {
             authoring_windows.open(tool);
         }
         project_lease.mark_ready().map_err(|error| error.to_string())?;
+        #[cfg(feature = "visual-validation")]
+        let visual_behavior_debug_capture = visual_validation_touches_behavior_debug();
         Ok(Self {
             app,
             ai_studio,
@@ -91,6 +95,8 @@ impl EditorShell {
             visual_capture_path: std::env::var_os("GAMEENGINE_SCREENSHOT_TO").map(PathBuf::from),
             #[cfg(feature = "visual-validation")]
             visual_capture_requested_at: None,
+            #[cfg(feature = "visual-validation")]
+            visual_behavior_debug_capture,
         })
     }
 
@@ -262,12 +268,35 @@ impl eframe::App for EditorShell {
         self.show_authoring_tools_launcher(&context);
         self.authoring_windows
             .show(&context, frame, self.app.project_root());
+        #[cfg(not(feature = "visual-validation"))]
         self.ai_studio.show(&context);
+        #[cfg(feature = "visual-validation")]
+        if !self.visual_behavior_debug_capture {
+            self.ai_studio.show(&context);
+        }
     }
 
     fn clear_color(&self, _visuals: &eframe::egui::Visuals) -> [f32; 4] {
         eframe::egui::Color32::from_rgb(20, 22, 26).to_normalized_gamma_f32()
     }
+}
+
+#[cfg(feature = "visual-validation")]
+fn visual_validation_touches_behavior_debug() -> bool {
+    let base_ref = std::env::var("GITHUB_BASE_REF").unwrap_or_else(|_| "main".into());
+    let base = format!("origin/{base_ref}...HEAD");
+    std::process::Command::new("git")
+        .args([
+            "diff",
+            "--name-only",
+            &base,
+            "--",
+            "crates/editor/src/ui/behavior_debug.rs",
+        ])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .is_some_and(|output| !output.stdout.is_empty())
 }
 
 #[cfg(feature = "visual-validation")]
