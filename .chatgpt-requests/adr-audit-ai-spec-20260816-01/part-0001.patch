@@ -1,0 +1,100 @@
++  `engine`, renderer presentation, model importers, audio, or a physics solver.
++- `assets` and `core` MUST keep neutral contracts below higher runtime
++  implementations instead of importing format-specific or backend-specific
++  types to preserve an old implementation shape.
++- Heavy GPU, physics, windowing, audio, gamepad, GUI, and scripting-runtime
++  backends MUST remain at the owner or final composition boundary defined by
++  ADR 0114. Consumers that need only neutral contracts SHOULD disable those
++  backend features rather than inheriting them transitively.
++- `engine` is the final runtime composition and supported compatibility facade.
++  It MAY contain concrete cross-domain host adapters that would create an
++  upward dependency or cycle if pushed into a lower domain.
++- `authoring` owns persisted authoring semantics and MUST NOT depend on a GUI
++  framework. Domain-neutral graph storage and graph transaction contracts
++  remain authoring-owned rather than requiring separate graph workspace crates.
+ - `project-lifecycle` MAY depend on `authoring` for `ProjectRoot` and shared
+-  authoring creation services. It MUST NOT own authoring command semantics,
+-  runtime ECS behavior, Launcher UI, or Editor GUI state.
++  creation services. It MUST NOT own authoring command semantics, runtime ECS
++  behavior, Launcher UI, or Editor GUI state.
+ - `launcher` owns project-selection UI, recent-project application state, and
+   Editor process launch/activation. It MUST NOT implement unique authoring
+   rules.
+ - `editor` is project-scoped after bootstrap and MUST use shared authoring and
+   project-lifecycle contracts rather than duplicating them.
+-- `cli` and `mcp` MUST be adapters. They MUST NOT contain unique editing logic.
+-- Graph domains MUST NOT duplicate the domain-neutral graph storage model.
++- `cli` and `mcp` MUST remain adapters over shared GUI-free authoring services.
++  They MUST NOT contain unique editing logic.
++
++Compatibility facade modules or cross-domain composition code may remain in
++`engine` where ADR 0113 permits them. Their presence does not transfer ownership
++of the underlying domain contract back into the facade.
++
+ 
+ ## 7. Authoring Data Model
+@@ -300,9 +331,9 @@
+ - `description`: Extended documentation and AI context for the entity.
+ 
+ The `name`, `display_name`, and `description` fields MUST always be present
+-in canonical serialized output, even when empty. Files that predate these
+-fields MUST deserialize successfully with the fields defaulting to empty
+-strings.
++in canonical serialized output, even when empty. Per ADR 0115, input that
++predates these required fields is obsolete rather than a compatibility shape;
++the current reader MUST NOT infer missing values solely to load an older writer.
+ 
+ The runtime build or play pipeline converts `AuthoringEntity` values into
+ runtime ECS entities. A runtime `Entity` ID MUST NOT be persisted as an
+@@ -865,14 +896,14 @@
+ - Use stable formatting.
+ - Avoid persisting derived runtime-only data.
+ - Preserve unknown forward-compatible fields only when explicitly supported.
+-- Include schema versions for migratable documents.
++- Include schema versions for versioned documents.
+ - Write files atomically.
+ 
+-The save pipeline MUST be equivalent to:
++The current-format save pipeline MUST be equivalent to:
+ 
+ ```text
+ parse
+-  -> migrate
++  -> require current schema version
+   -> validate schema
+   -> validate semantics
+   -> canonicalize ordering
+@@ -881,12 +912,12 @@
+ ```
+ 
+ Direct code-based file edits are supported, but loading and saving through the
+-engine MUST normalize them through the same validation pipeline.
++engine MUST normalize them through the same validation pipeline. Per ADR 0115,
++normal load/save paths do not silently migrate obsolete schema versions.
+ 
+-The Phase 2 `AuthoringScene::to_canonical_json` API performs semantic
+-validation and deterministic JSON serialization only. It is not the complete
+-file save pipeline and does not write files. Atomic file replacement remains a
+-later persistence task to be implemented after the canonical persisted format
+-and persistence ownership are resolved.
++`AuthoringScene::to_canonical_json` performs semantic validation and
++deterministic JSON serialization; persistence is owned by the document or
++service that writes the validated canonical result. Historical phase sequencing
++must not be used to reintroduce a compatibility migration path.
+ 
+ ## 16. CLI and MCP Adapters
+@@ -1068,6 +1099,11 @@
+ 
+ ## 20. Implementation Phases
+ 
++The phase descriptions below preserve implementation history and sequencing.
++For completed phases, later Accepted ADRs and the current normative sections of
++this specification override historical migration, compatibility, crate-location,
++and temporary-ownership statements in these phase notes.
++
+ Implementation SHOULD proceed in this order. Phase numbers are sequential
+ except for Phase 2.5, which is a deliberate runtime validation slice
+ inserted before the Graph phases.
+@@ -1169,8 +1205,7 @@
+ - `ecs` crate does not import `authoring` types.
+-- The conversion code lives in `engine`, which MAY import `authoring` types
