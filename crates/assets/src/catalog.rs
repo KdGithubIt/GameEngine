@@ -256,7 +256,7 @@ fn source_file_exists(project: &ProjectRoot, relative: &str) -> Result<bool, Ass
     }
 }
 
-fn matches_query<'a>(query: &str, values: impl Iterator<Item = &'a str>) -> bool {
+fn matches_query<'a>(query: &str, mut values: impl Iterator<Item = &'a str>) -> bool {
     query.is_empty()
         || values.any(|value| value.to_ascii_lowercase().contains(query))
 }
