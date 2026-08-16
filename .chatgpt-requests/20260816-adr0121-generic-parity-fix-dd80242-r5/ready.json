@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "request_id": "20260816-adr0121-generic-parity-fix-dd80242-r5",
+  "target_branch": "chatgpt/gameengine-adr0121-generic-parity-v5",
+  "expected_head_sha": "dd80242f8e43acb88f596521398d593911a8f085",
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Fix ADR 0121 parity validation",
+  "pr_title": "GameEngine: connect generic Graph and UI authoring adapters",
+  "pr_body": "## Summary\n\nADR 0121 follow-up after #69. Connect the shared authoring services to Editor, CLI, and MCP without introducing adapter-owned authoring semantics.\n\nThis follow-up commit fixes Windows Validation findings on the parity tests and synchronizes Cargo.lock for the editor's engine-cli dev-dependency.\n\nGraphView remains a separate document/transaction from the semantic Graph. No persisted schema, Stable ID, or existing public serialization contract is changed."
+}
