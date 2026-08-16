@@ -1,0 +1,12 @@
+diff --git a/crates/cli/src/prefab_cli.rs b/crates/cli/src/prefab_cli.rs
+--- a/crates/cli/src/prefab_cli.rs
++++ b/crates/cli/src/prefab_cli.rs
+@@ -119,7 +119,7 @@ fn prefab_mutate(
+     parent_text: Option<&str>,
+     persist: bool,
+ ) -> Result<CliRunResult, CliError> {
+-    let parent = match parent_text.map(|parent| parse_entity_id(parent)).transpose() {
++    let parent = match parent_text.map(parse_entity_id).transpose() {
+         Ok(parent) => parent,
+         Err(result) => return Ok(result),
+     };
