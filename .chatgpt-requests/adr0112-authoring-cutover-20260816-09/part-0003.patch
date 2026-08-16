@@ -1,0 +1,60 @@
+diff --git a/crates/engine/src/scene_bridge.rs b/crates/engine/src/scene_bridge.rs
+--- a/crates/engine/src/scene_bridge.rs
++++ b/crates/engine/src/scene_bridge.rs
+@@ -86,6 +86,6 @@ pub const BONE_ATTACHMENT_COMPONENT: &str = "engine.bone_attachment";
+-/// The authoring component that opts an entity into simulating its imported
+-/// rigid-body rig (ADR 0097 §6).
+-pub const RIGID_BODY_PHYSICS_COMPONENT: &str = "engine.rigid_body_physics";
++/// The authoring component that opts an entity into engine-native secondary
++/// motion (ADR 0112).
++pub const RIGID_BODY_PHYSICS_COMPONENT: &str = "engine.secondary_motion";
+ 
+ /// The authorable distance-based mesh LOD group recognised by the bridge.
+diff --git a/crates/engine/src/scene_bridge/spawn.rs b/crates/engine/src/scene_bridge/spawn.rs
+--- a/crates/engine/src/scene_bridge/spawn.rs
++++ b/crates/engine/src/scene_bridge/spawn.rs
+@@ -344,15 +344,15 @@ fn register_rigid_body_rig(rig_asset: &AssetId, context: &mut SpawnContext<'_>) {
+     let Some((source_id, _, sub_asset)) = context.manifest.imported_sub_asset(rig_asset) else {
+         context.asset_diagnostics.push(Diagnostic::warning(
+-            "scene_bridge.rigid_body_rig_unresolved",
++            "scene_bridge.secondary_motion_rig_unresolved",
+             format!(
+-                "rigid-body rig `{}` is not an imported sub-asset of any registered model source",
++                "secondary-motion rig `{}` is not an imported sub-asset of any registered model source",
+                 rig_asset.as_str()
+             ),
+         ));
+         return;
+     };
+-    if sub_asset.kind != ImportedSubAssetKind::RigidBodyRig {
++    if sub_asset.kind != ImportedSubAssetKind::SecondaryMotionRig {
+         context.asset_diagnostics.push(Diagnostic::warning(
+-            "scene_bridge.rigid_body_rig_unresolved",
++            "scene_bridge.secondary_motion_rig_unresolved",
+             format!(
+-                "asset `{}` is {:?}, not a rigid-body rig",
++                "asset `{}` is {:?}, not a secondary-motion rig",
+                 rig_asset.as_str(),
+                 sub_asset.kind
+@@ -365,8 +365,8 @@ fn register_rigid_body_rig(rig_asset: &AssetId, context: &mut SpawnContext<'_>) {
+         Ok(imported) => imported,
+         Err(error) => {
+             context.asset_diagnostics.push(Diagnostic::warning(
+-                "scene_bridge.rigid_body_rig_unresolved",
++                "scene_bridge.secondary_motion_rig_unresolved",
+                 format!(
+-                    "could not import the model source owning rigid-body rig `{}`: {error}",
++                    "could not import the model source owning secondary-motion rig `{}`: {error}",
+                     rig_asset.as_str()
+                 ),
+@@ -380,8 +380,8 @@ fn register_rigid_body_rig(rig_asset: &AssetId, context: &mut SpawnContext<'_>) {
+         .filter(|rig| &rig.id == rig_asset)
+     else {
+         context.asset_diagnostics.push(Diagnostic::warning(
+-            "scene_bridge.rigid_body_rig_unresolved",
++            "scene_bridge.secondary_motion_rig_unresolved",
+             format!(
+-                "the model source no longer contains rigid-body rig `{}`; reimport it",
++                "the model source no longer contains secondary-motion rig `{}`; reimport it",
+                 rig_asset.as_str()
+             ),
