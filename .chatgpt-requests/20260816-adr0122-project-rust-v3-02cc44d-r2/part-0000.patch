@@ -1,0 +1,503 @@
+diff --git a/crates/scripting/src/game_io.rs b/crates/scripting/src/game_io.rs
+--- a/crates/scripting/src/game_io.rs
++++ b/crates/scripting/src/game_io.rs
+@@ -149,6 +149,46 @@ pub enum GameHitboxShape {
+     },
+ }
+ 
++/// Distance attenuation curve exposed to project Rust spatial-audio requests.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case")]
++pub enum GameAudioRolloffMode {
++    /// Linear attenuation from minimum to maximum distance.
++    Linear,
++    /// Inverse-distance attenuation normalized to the authored distance range.
++    Inverse,
++}
++
++/// Typed spatial-audio policy copied into a deferred project Rust command.
++#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
++pub struct GameSpatialAudioOptions {
++    /// Per-voice gain from 0.0 to 1.0.
++    pub volume: f32,
++    /// Blend from centered 2D (0.0) to positional 3D (1.0).
++    pub spatial_blend: f32,
++    /// Distance where positional attenuation begins.
++    pub min_distance: f32,
++    /// Distance where positional attenuation reaches silence.
++    pub max_distance: f32,
++    /// Distance attenuation curve.
++    pub rolloff: GameAudioRolloffMode,
++    /// Whether the managed voice repeats until its source disappears.
++    pub looping: bool,
++}
++
++impl Default for GameSpatialAudioOptions {
++    fn default() -> Self {
++        Self {
++            volume: 1.0,
++            spatial_blend: 1.0,
++            min_distance: 1.0,
++            max_distance: 20.0,
++            rolloff: GameAudioRolloffMode::Linear,
++            looping: false,
++        }
++    }
++}
++
+ /// Behavior Tree leaf result supplied by project Rust gameplay.
+ #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+ #[serde(rename_all = "snake_case")]
+@@ -945,7 +985,42 @@ impl GameCommand {
+     pub fn play_sound_effect(asset_id: impl Into<String>) -> Self {
+         audio_asset_command("play_se", asset_id.into(), None)
+     }
++
++    /// Queues a spatial sound effect attached to a generation-checked runtime entity.
++    pub fn play_spatial_sound_effect(
++        target: GameEntityHandle,
++        asset_id: impl Into<String>,
++        options: GameSpatialAudioOptions,
++    ) -> Self {
++        let mut command = audio_asset_command("play_spatial_se", asset_id.into(), None);
++        command.target = Some(target);
++        let Value::Object(payload) = &mut command.payload else {
++            unreachable!("audio asset command always has an object payload");
++        };
++        payload.insert("volume".to_owned(), Value::F64(f64::from(options.volume)));
++        payload.insert(
++            "spatial_blend".to_owned(),
++            Value::F64(f64::from(options.spatial_blend)),
++        );
++        payload.insert(
++            "min_distance".to_owned(),
++            Value::F64(f64::from(options.min_distance)),
++        );
++        payload.insert(
++            "max_distance".to_owned(),
++            Value::F64(f64::from(options.max_distance)),
++        );
++        payload.insert(
++            "rolloff".to_owned(),
++            Value::String(match options.rolloff {
++                GameAudioRolloffMode::Linear => "linear",
++                GameAudioRolloffMode::Inverse => "inverse",
++            }.to_owned()),
++        );
++        payload.insert("looping".to_owned(), Value::Bool(options.looping));
++        command
++    }
+ 
+     /// Replaces the active background music by stable authoring asset ID.
+     pub fn play_background_music(asset_id: impl Into<String>) -> Self {
+         audio_asset_command("play_bgm", asset_id.into(), None)
+diff --git a/crates/scripting/src/game_api.rs b/crates/scripting/src/game_api.rs
+--- a/crates/scripting/src/game_api.rs
++++ b/crates/scripting/src/game_api.rs
+@@ -8,7 +8,7 @@
+ use crate::game_io::{
+     EngineViewKind, GameAccessMode, GameBehaviorStatus, GameClock, GameCommand, GameCommandFamily,
+-    GameComponentAccess, GameEngineViewAccess, GameEntityHandle, GameEventEmission,
+-    GameEventStream, GameHitboxShape, GameHostViewKind, GameInvocation, GameInvocationOutput,
+-    GameQueryAccess, GameQueryRow, GameResourceAccess, GameResourcePatch, GameSystemAccess,
++    GameComponentAccess, GameEngineViewAccess, GameEntityHandle, GameEventEmission, GameEventStream,
++    GameHitboxShape, GameHostViewKind, GameInvocation, GameInvocationOutput, GameQueryAccess,
++    GameQueryRow, GameResourceAccess, GameResourcePatch, GameSpatialAudioOptions, GameSystemAccess,
+ };
+ use crate::game_contracts::{GameComponent, GameField, GameResource};
+@@ -1884,6 +1884,15 @@ impl Commands {
+     pub fn play_sound_effect(&mut self, asset_id: impl Into<String>) {
+         self.push(GameCommand::play_sound_effect(asset_id));
+     }
++    /// Queues a sound effect whose position follows a generation-checked entity.
++    pub fn play_spatial_sound_effect(
++        &mut self,
++        target: GameEntityHandle,
++        asset_id: impl Into<String>,
++        options: GameSpatialAudioOptions,
++    ) {
++        self.push(GameCommand::play_spatial_sound_effect(target, asset_id, options));
++    }
+     /// Replaces background music.
+     pub fn play_background_music(&mut self, asset_id: impl Into<String>) {
+         self.push(GameCommand::play_background_music(asset_id));
+diff --git a/crates/engine/src/audio.rs b/crates/engine/src/audio.rs
+--- a/crates/engine/src/audio.rs
++++ b/crates/engine/src/audio.rs
+@@ -13,11 +13,42 @@ use engine_platform::spatial_audio::{
+     spatial_stereo_gains, AudioEmitterPose, AudioListenerPose, AudioVoiceSpatialSettings,
+ };
+ 
++/// Validated spatial policy for one project Rust sound request.
++#[derive(Debug, Clone, Copy, PartialEq)]
++pub(crate) struct GameSpatialAudioOptions {
++    pub(crate) volume: f32,
++    pub(crate) spatial_blend: f32,
++    pub(crate) min_distance: f32,
++    pub(crate) max_distance: f32,
++    pub(crate) rolloff: AudioRolloffMode,
++    pub(crate) looping: bool,
++}
++
++impl GameSpatialAudioOptions {
++    fn settings(self) -> AudioVoiceSpatialSettings {
++        AudioVoiceSpatialSettings {
++            volume: self.volume,
++            spatial_blend: self.spatial_blend,
++            min_distance: self.min_distance,
++            max_distance: self.max_distance,
++            rolloff: self.rolloff,
++        }
++    }
++}
++
++#[derive(Debug, Clone, Copy)]
++struct GameSpatialVoice {
++    source: Entity,
++    voice_id: AudioVoiceId,
++    options: GameSpatialAudioOptions,
++}
++
+ /// Process-local ownership of active authored spatial-audio voices.
+ ///
+ /// Runtime entity and backend voice identities never cross the authoring or
+ /// project-Rust boundaries.
+ #[derive(Debug, Default)]
+ pub(crate) struct SpatialAudioRuntime {
+     voices: HashMap<Entity, AudioVoiceId>,
++    game_voices: Vec<GameSpatialVoice>,
+ }
+@@ -33,6 +64,7 @@ pub(crate) fn spatial_audio_system(
+ ) {
+     let Some(audio) = audio.as_deref_mut() else {
+         runtime.voices.clear();
++        runtime.game_voices.clear();
+         for (_, (emitter, _)) in &mut emitters {
+             if emitter.autoplay && emitter.state() == &AuthoredAudioState::Pending {
+                 emitter.mark_playback_unavailable();
+@@ -45,6 +77,9 @@ pub(crate) fn spatial_audio_system(
+     runtime
+         .voices
+         .retain(|_, voice_id| !completed.contains(voice_id));
++    runtime
++        .game_voices
++        .retain(|voice| !completed.contains(&voice.voice_id));
+ 
+     let listener = active_listener_pose(&mut listeners);
+     let mut live_emitters = HashSet::new();
+@@ -169,3 +204,8 @@ pub(crate) enum GameAudioCommand {
+     PlaySoundEffect { asset_id: String },
++    PlaySpatialSoundEffect {
++        asset_id: String,
++        source: Entity,
++        options: GameSpatialAudioOptions,
++    },
+     PlayBackgroundMusic { asset_id: String, fade_seconds: f32 },
+     StopBackgroundMusic,
+@@ -198,8 +238,35 @@ pub(crate) fn game_audio_effect_system(
+     mut queue: ResMut<GameAudioCommandQueue>,
++    mut transforms: Query<&GlobalTransform>,
++    mut listeners: Query<(&AudioListener, &GlobalTransform)>,
++    mut runtime: ResMut<SpatialAudioRuntime>,
+     mut audio_system: Option<ResMut<AudioSystem>>,
+     mut asset_server: Option<ResMut<AssetServer>>,
+     manifest: Option<Res<AssetManifest>>,
+     mut audio_assets: Option<ResMut<Assets<AudioAsset>>>,
+ ) {
++    let listener = active_listener_pose(&mut listeners);
++    let poses = (&mut transforms)
++        .into_iter()
++        .map(|(entity, transform)| (entity, emitter_pose(transform)))
++        .collect::<HashMap<_, _>>();
++
++    if let Some(audio) = audio_system.as_deref_mut() {
++        runtime.game_voices.retain(|voice| {
++            let Some(emitter) = poses.get(&voice.source).copied() else {
++                if let Err(error) = audio.stop_voice(voice.voice_id) {
++                    log::error!("failed to stop stale project spatial voice: {error}");
++                }
++                return false;
++            };
++            let gains = emitter_gains(listener, emitter, voice.options.settings());
++            if let Err(error) = audio.update_voice(voice.voice_id, gains) {
++                log::error!("failed to update project spatial voice: {error}");
++            }
++            true
++        });
++    } else {
++        runtime.game_voices.clear();
++    }
++
+     for command in queue.commands.drain(..) {
+         let result = match command {
+@@ -225,6 +292,37 @@ pub(crate) fn game_audio_effect_system(
+                 manifest.as_deref(),
+                 audio_assets.as_deref_mut(),
+             ),
++            GameAudioCommand::PlaySpatialSoundEffect {
++                asset_id,
++                source,
++                options,
++            } => {
++                let Some(emitter) = poses.get(&source).copied() else {
++                    log::warn!("project Rust spatial audio source {source} has no GlobalTransform");
++                    continue;
++                };
++                let gains = emitter_gains(listener, emitter, options.settings());
++                match resolve_and_start_spatial(
++                    &asset_id,
++                    gains,
++                    options.looping,
++                    audio_system.as_deref_mut(),
++                    asset_server.as_deref_mut(),
++                    manifest.as_deref(),
++                    audio_assets.as_deref_mut(),
++                ) {
++                    Some(Ok(voice_id)) => {
++                        runtime.game_voices.push(GameSpatialVoice {
++                            source,
++                            voice_id,
++                            options,
++                        });
++                        Some(Ok(()))
++                    }
++                    Some(Err(error)) => Some(Err(error)),
++                    None => None,
++                }
++            }
+             GameAudioCommand::PlayBackgroundMusic {
+                 asset_id,
+                 fade_seconds,
+@@ -247,6 +345,36 @@ pub(crate) fn game_audio_effect_system(
+     }
+ }
+ 
++fn resolve_and_start_spatial(
++    asset_id: &str,
++    gains: StereoGains,
++    looping: bool,
++    audio: Option<&mut AudioSystem>,
++    server: Option<&mut AssetServer>,
++    manifest: Option<&AssetManifest>,
++    assets: Option<&mut Assets<AudioAsset>>,
++) -> Option<Result<AudioVoiceId, AudioError>> {
++    let stable = StableId::new(asset_id);
++    let Ok(asset_id) = AssetId::from_stable_id(stable) else {
++        log::error!("project Rust audio asset ID `{asset_id}` became invalid after preflight");
++        return None;
++    };
++    let entry = manifest?.get(&asset_id)?;
++    let server = server?;
++    let assets = assets?;
++    let audio = audio?;
++    let handle = match server.load_audio(asset_id, &entry.path, assets) {
++        Ok(handle) => handle,
++        Err(error) => {
++            return Some(Err(AudioError::Playback {
++                message: error.to_string(),
++            }));
++        }
++    };
++    let asset = assets.get(&handle)?;
++    Some(audio.start_voice(asset, gains, looping))
++}
++
+ fn resolve_and_play(
+     asset_id: &str,
+     fade_seconds: Option<f32>,
+diff --git a/crates/engine/src/app.rs b/crates/engine/src/app.rs
+--- a/crates/engine/src/app.rs
++++ b/crates/engine/src/app.rs
+@@ -13,5 +13,7 @@ use winit::{
+ };
+ 
+ use crate::asset::{AssetServer, Assets};
+-use crate::audio::{game_audio_effect_system, AudioAsset, GameAudioCommandQueue};
++use crate::audio::{
++    game_audio_effect_system, AudioAsset, GameAudioCommandQueue, SpatialAudioRuntime,
++};
+ use crate::camera::{camera_aspect_system, ViewportSize};
+@@ -100,4 +102,5 @@ impl App {
+         ecs.insert_resource(Assets::<AudioAsset>::default());
+         ecs.insert_resource(GameAudioCommandQueue::default());
++        ecs.insert_resource(SpatialAudioRuntime::default());
+         ecs.insert_resource(Assets::<std::sync::Arc<Texture>>::default());
+         ecs.insert_resource(AssetServer::default());
+diff --git a/crates/engine/src/runtime_systems.rs b/crates/engine/src/runtime_systems.rs
+--- a/crates/engine/src/runtime_systems.rs
++++ b/crates/engine/src/runtime_systems.rs
+@@ -116,4 +116,6 @@ pub fn register_runtime_systems(app: &mut App) -> Result<(), SystemRegistrationError> {
+         )
+         .try_after("engine.transform_propagation")
++        .expect("built-in system IDs are valid")
++        .try_before("engine.game_audio_effect")
+         .expect("built-in system IDs are valid")
+         .try_before("engine.authored_audio")
+@@ -410,4 +412,9 @@ mod tests {
+             .before()
+             .iter()
+             .any(|id| id.as_str() == "engine.authored_audio"));
++        assert!(spatial_audio
++            .descriptor
++            .before()
++            .iter()
++            .any(|id| id.as_str() == "engine.game_audio_effect"));
+         let secondary_motion_presentation = update
+diff --git a/crates/engine/src/game_commands.rs b/crates/engine/src/game_commands.rs
+--- a/crates/engine/src/game_commands.rs
++++ b/crates/engine/src/game_commands.rs
+@@ -7,7 +7,10 @@
+ mod animation;
+ 
+ use crate::asset::AssetManifest;
+-use crate::audio::{GameAudioCommand, GameAudioCommandQueue, MAX_GAME_AUDIO_COMMANDS};
++use crate::audio::{
++    AudioRolloffMode, GameAudioCommand, GameAudioCommandQueue, GameSpatialAudioOptions,
++    MAX_GAME_AUDIO_COMMANDS,
++};
+ use crate::behavior_tree::{BehaviorStatus, BehaviorTreeBehaviorRegistry};
+ use crate::character_controller::KinematicCharacterController;
+ use crate::collision::{Collider, CollisionLayers, PhysicsBody, TriggerVolume};
+@@ -292,4 +295,5 @@ pub(crate) fn prepare_game_commands(
+                     command,
+                     index,
++                    &despawned,
+                     &mut pending_audio_commands,
+                 )?));
+@@ -781,8 +785,8 @@ fn parse_audio_command(
+     world: &World,
+     command: &GameCommand,
+     index: usize,
++    despawned: &BTreeSet<(u32, u32)>,
+     pending_audio_commands: &mut usize,
+ ) -> Result<GameAudioCommand, GameCommandError> {
+-    require_targetless(command, index, "audio")?;
+     let queue = world
+         .get_resource::<GameAudioCommandQueue>()
+@@ -796,9 +800,55 @@ fn parse_audio_command(
+     }
+ 
+     let fields = object(&command.payload, index, "audio payload")?;
+-    let prepared = match string_field(fields, "operation", index)? {
++    let operation = string_field(fields, "operation", index)?;
++    if operation != "play_spatial_se" {
++        require_targetless(command, index, "audio")?;
++    }
++    let prepared = match operation {
+         "play_se" => GameAudioCommand::PlaySoundEffect {
+             asset_id: validate_audio_asset(world, fields, index)?,
+         },
++        "play_spatial_se" => {
++            let (target, source) = targeted_entity(world, command, index, despawned)?;
++            if world.get_component::<Transform>(source).is_none() {
++                return Err(GameCommandError::MissingTransform { index, target });
++            }
++            let volume = number_field(fields, "volume", index)?;
++            let spatial_blend = number_field(fields, "spatial_blend", index)?;
++            let min_distance = number_field(fields, "min_distance", index)?;
++            let max_distance = number_field(fields, "max_distance", index)?;
++            if !(0.0..=1.0).contains(&volume)
++                || !(0.0..=1.0).contains(&spatial_blend)
++                || min_distance < 0.0
++                || max_distance < min_distance
++            {
++                return Err(GameCommandError::InvalidPayload {
++                    index,
++                    message: "spatial audio requires volume/spatial_blend in 0..=1 and 0 <= min_distance <= max_distance".to_owned(),
++                });
++            }
++            let rolloff = match string_field(fields, "rolloff", index)? {
++                "linear" => AudioRolloffMode::Linear,
++                "inverse" => AudioRolloffMode::Inverse,
++                other => {
++                    return Err(GameCommandError::InvalidPayload {
++                        index,
++                        message: format!("unknown spatial audio rolloff `{other}`"),
++                    })
++                }
++            };
++            GameAudioCommand::PlaySpatialSoundEffect {
++                asset_id: validate_audio_asset(world, fields, index)?,
++                source,
++                options: GameSpatialAudioOptions {
++                    volume,
++                    spatial_blend,
++                    min_distance,
++                    max_distance,
++                    rolloff,
++                    looping: bool_field(fields, "looping", index)?,
++                },
++            }
++        }
+         "play_bgm" => GameAudioCommand::PlayBackgroundMusic {
+             asset_id: validate_audio_asset(world, fields, index)?,
+@@ -2645,4 +2695,13 @@ mod tests {
+         );
++        let source = world.spawn_with(Transform::default()).unwrap();
+         let commands = vec![
+             GameCommand::play_sound_effect("asset_01JP0000000000000000000601"),
++            GameCommand::play_spatial_sound_effect(
++                handle(source),
++                "asset_01JP0000000000000000000601",
++                crate::game_io::GameSpatialAudioOptions {
++                    looping: true,
++                    ..crate::game_io::GameSpatialAudioOptions::default()
++                },
++            ),
+             GameCommand::play_background_music("asset_01JP0000000000000000000602"),
+@@ -2662,8 +2721,54 @@ mod tests {
+         assert_eq!(
+             world.get_resource::<GameAudioCommandQueue>().unwrap().len(),
+-            7
++            8
+         );
+     }
++
++    #[test]
++    fn spatial_audio_command_rejects_stale_target_and_invalid_distances() {
++        let mut world = World::new();
++        world.insert_resource(GameAudioCommandQueue::default());
++        world.insert_resource(
++            AssetManifest::from_json(
++                r#"{"schema_version":2,"assets":{"asset_01JP0000000000000000000601":{"path":"audio/hit.wav"}}}"#,
++            )
++            .unwrap(),
++        );
++        let source = world.spawn_with(Transform::default()).unwrap();
++        let stale = GameEntityHandle {
++            id: source.id(),
++            generation: source.generation().wrapping_add(1),
++        };
++        assert!(matches!(
++            prepare_game_commands(
++                &world,
++                &[GameCommand::play_spatial_sound_effect(
++                    stale,
++                    "asset_01JP0000000000000000000601",
++                    crate::game_io::GameSpatialAudioOptions::default(),
++                )],
++            ),
++            Err(GameCommandError::StaleTarget { .. })
++        ));
++
++        let invalid = crate::game_io::GameSpatialAudioOptions {
++            min_distance: 5.0,
++            max_distance: 1.0,
++            ..crate::game_io::GameSpatialAudioOptions::default()
++        };
++        assert!(matches!(
++            prepare_game_commands(
++                &world,
++                &[GameCommand::play_spatial_sound_effect(
++                    handle(source),
++                    "asset_01JP0000000000000000000601",
++                    invalid,
++                )],
++            ),
++            Err(GameCommandError::InvalidPayload { .. })
++        ));
++        assert_eq!(world.get_resource::<GameAudioCommandQueue>().unwrap().len(), 0);
++    }
+ 
+     #[test]
+     fn unknown_audio_asset_rejects_without_enqueuing_prior_commands() {
