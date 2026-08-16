@@ -1,0 +1,71 @@
++            return Err(NavMeshBakeError::Scene(format!(
++                "navigation field `{key}` must be numeric"
++            )))
++        }
++    };
++    if value.is_finite() {
++        Ok(value)
++    } else {
++        Err(NavMeshBakeError::Scene(format!(
++            "navigation field `{key}` must be finite"
++        )))
++    }
++}
++
++fn u16_field(fields: ObjectFields<'_>, key: &str) -> Result<u16, NavMeshBakeError> {
++    match fields.get(key) {
++        Some(Value::I64(value)) => u16::try_from(*value).map_err(|_| {
++            NavMeshBakeError::Scene(format!("navigation field `{key}` must fit u16"))
++        }),
++        Some(Value::U64(value)) => u16::try_from(*value).map_err(|_| {
++            NavMeshBakeError::Scene(format!("navigation field `{key}` must fit u16"))
++        }),
++        _ => Err(NavMeshBakeError::Scene(format!(
++            "navigation field `{key}` must be an integer"
++        ))),
++    }
++}
++
++fn string_field<'a>(
++    fields: ObjectFields<'a>,
++    key: &str,
++) -> Result<&'a str, NavMeshBakeError> {
++    match fields.get(key) {
++        Some(Value::String(value)) if !value.trim().is_empty() => Ok(value),
++        _ => Err(NavMeshBakeError::Scene(format!(
++            "navigation field `{key}` must be a non-empty string"
++        ))),
++    }
++}
++
++fn bool_field(fields: ObjectFields<'_>, key: &str) -> Result<bool, NavMeshBakeError> {
++    match fields.get(key) {
++        Some(Value::Bool(value)) => Ok(*value),
++        _ => Err(NavMeshBakeError::Scene(format!(
++            "navigation field `{key}` must be boolean"
++        ))),
++    }
++}
++
++fn string_array_field(
++    fields: ObjectFields<'_>,
++    key: &str,
++) -> Result<Vec<String>, NavMeshBakeError> {
++    match fields.get(key) {
++        None => Ok(Vec::new()),
++        Some(Value::Array(values)) => values
++            .iter()
++            .map(|value| match value {
++                Value::String(value) if !value.trim().is_empty() => Ok(value.clone()),
++                _ => Err(NavMeshBakeError::Scene(format!(
++                    "navigation field `{key}` must contain only non-empty strings"
++                ))),
++            })
++            .collect(),
++        _ => Err(NavMeshBakeError::Scene(format!(
++            "navigation field `{key}` must be an array"
++        ))),
++    }
++}
++
++/// Error from scene collection, shared baking, project resolution, or registration.

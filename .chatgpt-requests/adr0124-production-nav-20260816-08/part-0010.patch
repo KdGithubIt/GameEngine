@@ -1,0 +1,51 @@
++                    .collect();
++                Ok(NavigationBuildLink {
++                    id: entity_id.as_str().to_owned(),
++                    start: vector_field(fields, "start")?.to_array(),
++                    end: vector_field(fields, "end")?.to_array(),
++                    bidirectional: bool_field(fields, "bidirectional")?,
++                    profiles,
++                    area: u16_field(fields, "area")?,
++                    cost: f32_field(fields, "cost")?,
++                    traversal_tag: string_field(fields, "traversal_tag")?.to_owned(),
++                })
++            })
++        })
++        .collect()
++}
++
++fn collect_authored_modifiers(
++    scene: &AuthoringScene,
++) -> Result<Vec<NavigationModifier>, NavMeshBakeError> {
++    let component = ComponentTypeId::new(NAVIGATION_MODIFIER_COMPONENT);
++    scene
++        .entities()
++        .filter_map(|(entity_id, entity)| {
++            entity.components.get(&component).map(|value| {
++                let fields = object_fields(value, NAVIGATION_MODIFIER_COMPONENT)?;
++                let center = vector_field(fields, "center")?;
++                let half = vector_field(fields, "half_extents")?;
++                if half.min_element() < 0.0 {
++                    return Err(NavMeshBakeError::Scene(
++                        "navigation modifier half extents must be non-negative".to_owned(),
++                    ));
++                }
++                let profiles = string_array_field(fields, "profiles")?
++                    .into_iter()
++                    .map(NavigationProfileId::new)
++                    .collect();
++                let mode = match string_field(fields, "mode")? {
++                    "exclude" => NavigationModifierMode::Exclude,
++                    "area" => NavigationModifierMode::Area {
++                        area: u16_field(fields, "area")?,
++                        cost_multiplier: f32_field(fields, "cost_multiplier")?,
++                    },
++                    other => {
++                        return Err(NavMeshBakeError::Scene(format!(
++                            "unsupported navigation modifier mode `{other}`"
++                        )))
++                    }
++                };
++                Ok(NavigationModifier {
++                    id: entity_id.as_str().to_owned(),
++                    minimum: (center - half).to_array(),

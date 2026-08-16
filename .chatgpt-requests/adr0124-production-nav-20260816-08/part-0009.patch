@@ -1,0 +1,62 @@
++/// Returns [`NavMeshBakeError`] for collection, cancellation, bake, project,
++/// asset replacement, or manifest persistence failure.
++pub fn bake_scene_navmesh(
++    scene: &AuthoringScene,
++    project_root: &ProjectRoot,
++    manifest: &mut AssetManifest,
++    document: &mut NavMeshBakeDocument,
++    cancelled: &AtomicBool,
++) -> Result<NavMeshBakeResult, NavMeshBakeError> {
++    let source = collect_navigation_source(scene, project_root, manifest)?;
++    let output_path = project_root
++        .resolve_asset_for_write(&document.output_asset)
++        .map_err(|error| NavMeshBakeError::Project(error.to_string()))?;
++    let output = NavigationBakeService
++        .bake_to_path(&source, document, &output_path, cancelled)
++        .map_err(NavMeshBakeError::Shared)?;
++
++    let asset_id = manifest
++        .iter()
++        .find(|(_, entry)| entry.path == document.output_asset)
++        .map(|(id, _)| id.clone())
++        .unwrap_or_else(AssetId::generate);
++    let mut next_manifest = manifest.clone();
++    next_manifest.insert(
++        asset_id.clone(),
++        ManifestEntry {
++            path: document.output_asset.clone(),
++            name: Some("Navigation Mesh".to_owned()),
++            import_settings: Default::default(),
++        },
++    );
++    let manifest_json = next_manifest
++        .to_canonical_json()
++        .map_err(NavMeshBakeError::Json)?;
++    replace_file_contents(
++        &project_root.path().join("asset_manifest.json"),
++        &manifest_json,
++    )
++    .map_err(|error| NavMeshBakeError::Persist(error.to_string()))?;
++    *manifest = next_manifest;
++    document.source_fingerprint = Some(output.source_fingerprint.clone());
++
++    Ok(NavMeshBakeResult {
++        nav_mesh: output.nav_mesh,
++        asset_id,
++        output_path,
++        stats: output.stats,
++    })
++}
++
++fn collect_authored_links(
++    scene: &AuthoringScene,
++) -> Result<Vec<NavigationBuildLink>, NavMeshBakeError> {
++    let component = ComponentTypeId::new(NAVIGATION_LINK_COMPONENT);
++    scene
++        .entities()
++        .filter_map(|(entity_id, entity)| {
++            entity.components.get(&component).map(|value| {
++                let fields = object_fields(value, NAVIGATION_LINK_COMPONENT)?;
++                let profiles = string_array_field(fields, "profiles")?
++                    .into_iter()
++                    .map(NavigationProfileId::new)
