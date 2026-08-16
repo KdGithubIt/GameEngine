@@ -117,6 +117,8 @@ pub fn register_runtime_systems(app: &mut App) -> Result<(), SystemRegistrationE
         )
         .try_after("engine.transform_propagation")
         .expect("built-in system IDs are valid")
+        .try_before("engine.game_audio_effect")
+        .expect("built-in system IDs are valid")
         .try_before("engine.authored_audio")
         .expect("built-in system IDs are valid"),
         spatial_audio_system,
@@ -415,6 +417,11 @@ mod tests {
             .before()
             .iter()
             .any(|id| id.as_str() == "engine.authored_audio"));
+        assert!(spatial_audio
+            .descriptor
+            .before()
+            .iter()
+            .any(|id| id.as_str() == "engine.game_audio_effect"));
         let secondary_motion_presentation = update
             .iter()
             .find(|info| info.descriptor.id().as_str() == "engine.secondary_motion_presentation")

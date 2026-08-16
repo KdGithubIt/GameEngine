@@ -12,6 +12,36 @@ use engine_platform::spatial_audio::{
     spatial_stereo_gains, AudioEmitterPose, AudioListenerPose, AudioVoiceSpatialSettings,
 };
 
+/// Validated spatial policy for one project Rust sound request.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct GameSpatialAudioOptions {
+    pub(crate) volume: f32,
+    pub(crate) spatial_blend: f32,
+    pub(crate) min_distance: f32,
+    pub(crate) max_distance: f32,
+    pub(crate) rolloff: AudioRolloffMode,
+    pub(crate) looping: bool,
+}
+
+impl GameSpatialAudioOptions {
+    fn settings(self) -> AudioVoiceSpatialSettings {
+        AudioVoiceSpatialSettings {
+            volume: self.volume,
+            spatial_blend: self.spatial_blend,
+            min_distance: self.min_distance,
+            max_distance: self.max_distance,
+            rolloff: self.rolloff,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct GameSpatialVoice {
+    source: Entity,
+    voice_id: AudioVoiceId,
+    options: GameSpatialAudioOptions,
+}
+
 /// Process-local ownership of active authored spatial-audio voices.
 ///
 /// Runtime entity and backend voice identities never cross the authoring or
@@ -19,6 +49,7 @@ use engine_platform::spatial_audio::{
 #[derive(Debug, Default)]
 pub(crate) struct SpatialAudioRuntime {
     voices: HashMap<Entity, AudioVoiceId>,
+    game_voices: Vec<GameSpatialVoice>,
 }
 
 /// Selects the active listener and synchronizes authored emitters to managed voices.
@@ -35,6 +66,7 @@ pub(crate) fn spatial_audio_system(
 ) {
     let Some(audio) = audio.as_deref_mut() else {
         runtime.voices.clear();
+        runtime.game_voices.clear();
         for (_, (emitter, _)) in &mut emitters {
             if emitter.autoplay && emitter.state() == &AuthoredAudioState::Pending {
                 emitter.mark_playback_unavailable();
@@ -47,6 +79,9 @@ pub(crate) fn spatial_audio_system(
     runtime
         .voices
         .retain(|_, voice_id| !completed.contains(voice_id));
+    runtime
+        .game_voices
+        .retain(|voice| !completed.contains(&voice.voice_id));
 
     let listener = active_listener_pose(&mut listeners);
     let mut live_emitters = HashSet::new();
@@ -170,6 +205,11 @@ pub const MAX_GAME_AUDIO_COMMANDS: usize = 256;
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum GameAudioCommand {
     PlaySoundEffect { asset_id: String },
+    PlaySpatialSoundEffect {
+        asset_id: String,
+        source: Entity,
+        options: GameSpatialAudioOptions,
+    },
     PlayBackgroundMusic { asset_id: String, fade_seconds: f32 },
     StopBackgroundMusic,
     SetMasterVolume(f32),
@@ -200,11 +240,38 @@ impl GameAudioCommandQueue {
 /// Resolves and applies queued project-Rust audio requests.
 pub(crate) fn game_audio_effect_system(
     mut queue: ResMut<GameAudioCommandQueue>,
+    mut transforms: Query<&GlobalTransform>,
+    mut listeners: Query<(&AudioListener, &GlobalTransform)>,
+    mut runtime: ResMut<SpatialAudioRuntime>,
     mut audio_system: Option<ResMut<AudioSystem>>,
     mut asset_server: Option<ResMut<AssetServer>>,
     manifest: Option<Res<AssetManifest>>,
     mut audio_assets: Option<ResMut<Assets<AudioAsset>>>,
 ) {
+    let listener = active_listener_pose(&mut listeners);
+    let poses = (&mut transforms)
+        .into_iter()
+        .map(|(entity, transform)| (entity, emitter_pose(transform)))
+        .collect::<HashMap<_, _>>();
+
+    if let Some(audio) = audio_system.as_deref_mut() {
+        runtime.game_voices.retain(|voice| {
+            let Some(emitter) = poses.get(&voice.source).copied() else {
+                if let Err(error) = audio.stop_voice(voice.voice_id) {
+                    log::error!("failed to stop stale project spatial voice: {error}");
+                }
+                return false;
+            };
+            let gains = emitter_gains(listener, emitter, voice.options.settings());
+            if let Err(error) = audio.update_voice(voice.voice_id, gains) {
+                log::error!("failed to update project spatial voice: {error}");
+            }
+            true
+        });
+    } else {
+        runtime.game_voices.clear();
+    }
+
     for command in queue.commands.drain(..) {
         let result = match command {
             GameAudioCommand::StopBackgroundMusic => {
@@ -228,6 +295,37 @@ pub(crate) fn game_audio_effect_system(
                 manifest.as_deref(),
                 audio_assets.as_deref_mut(),
             ),
+            GameAudioCommand::PlaySpatialSoundEffect {
+                asset_id,
+                source,
+                options,
+            } => {
+                let Some(emitter) = poses.get(&source).copied() else {
+                    log::warn!("project Rust spatial audio source {source} has no GlobalTransform");
+                    continue;
+                };
+                let gains = emitter_gains(listener, emitter, options.settings());
+                match resolve_and_start_spatial(
+                    &asset_id,
+                    gains,
+                    options.looping,
+                    audio_system.as_deref_mut(),
+                    asset_server.as_deref_mut(),
+                    manifest.as_deref(),
+                    audio_assets.as_deref_mut(),
+                ) {
+                    Some(Ok(voice_id)) => {
+                        runtime.game_voices.push(GameSpatialVoice {
+                            source,
+                            voice_id,
+                            options,
+                        });
+                        Some(Ok(()))
+                    }
+                    Some(Err(error)) => Some(Err(error)),
+                    None => None,
+                }
+            }
             GameAudioCommand::PlayBackgroundMusic {
                 asset_id,
                 fade_seconds,
@@ -249,6 +347,36 @@ pub(crate) fn game_audio_effect_system(
             Some(Ok(())) => {}
         }
     }
+}
+
+fn resolve_and_start_spatial(
+    asset_id: &str,
+    gains: StereoGains,
+    looping: bool,
+    audio: Option<&mut AudioSystem>,
+    server: Option<&mut AssetServer>,
+    manifest: Option<&AssetManifest>,
+    assets: Option<&mut Assets<AudioAsset>>,
+) -> Option<Result<AudioVoiceId, AudioError>> {
+    let stable = StableId::new(asset_id);
+    let Ok(asset_id) = AssetId::from_stable_id(stable) else {
+        log::error!("project Rust audio asset ID `{asset_id}` became invalid after preflight");
+        return None;
+    };
+    let entry = manifest?.get(&asset_id)?;
+    let server = server?;
+    let assets = assets?;
+    let audio = audio?;
+    let handle = match server.load_audio(asset_id, &entry.path, assets) {
+        Ok(handle) => handle,
+        Err(error) => {
+            return Some(Err(AudioError::Playback {
+                message: error.to_string(),
+            }));
+        }
+    };
+    let asset = assets.get(&handle)?;
+    Some(audio.start_voice(asset, gains, looping))
 }
 
 fn resolve_and_play(
