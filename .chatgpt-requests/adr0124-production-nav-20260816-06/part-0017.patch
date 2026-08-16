@@ -1,0 +1,72 @@
+@@ -1086,55 +1141,60 @@ impl PartialOrd for OpenEntry {
+     }
+ }
+ 
++#[derive(Debug, Clone)]
++enum SearchOutcome {
++    Complete(SearchResult),
++    Partial(SearchResult),
++}
++
+ fn astar_polygons(
+     profile: &NavigationProfileMesh,
+     start: NavigationPolygonRef,
+     end: NavigationPolygonRef,
+-) -> Option<SearchResult> {
++) -> Option<SearchOutcome> {
+     let index = polygon_index(&profile.tiles);
+     let centers = polygon_centers(profile, &index);
++    let end_center = *centers.get(&end)?;
+     let mut open = BinaryHeap::new();
+     let mut costs = HashMap::new();
+     let mut previous: HashMap<NavigationPolygonRef, (NavigationPolygonRef, SearchEdge)> =
+         HashMap::new();
++    let mut best_partial = start;
++    let mut best_distance = centers.get(&start)?.distance_squared(end_center);
+     costs.insert(start, 0.0_f32);
+     open.push(OpenEntry {
+-        estimated_total: 0.0,
++        estimated_total: best_distance.sqrt(),
+         cost: 0.0,
+         node: start,
+     });
+ 
+     while let Some(entry) = open.pop() {
+-        if entry.node == end {
+-            let mut corridor = vec![end];
+-            let mut edges = Vec::new();
+-            let mut current = end;
+-            while let Some((parent, edge)) = previous.get(&current).cloned() {
+-                corridor.push(parent);
+-                edges.push(edge);
+-                current = parent;
+-            }
+-            corridor.reverse();
+-            edges.reverse();
+-            return Some(SearchResult {
+-                corridor,
+-                edges,
+-                total_cost: entry.cost,
+-            });
+-        }
+         if costs
+             .get(&entry.node)
+             .is_some_and(|best| entry.cost > *best + 1e-5)
+         {
+             continue;
+         }
++        let distance = centers.get(&entry.node)?.distance_squared(end_center);
++        if distance + 1e-5 < best_distance
++            || ((distance - best_distance).abs() <= 1e-5 && entry.node < best_partial)
++        {
++            best_distance = distance;
++            best_partial = entry.node;
++        }
++        if entry.node == end {
++            return Some(SearchOutcome::Complete(reconstruct_search(
++                end,
++                entry.cost,
++                &previous,
++            )));
++        }
+         let (tile_index, polygon_index) = *index.get(&entry.node)?;

@@ -1,0 +1,73 @@
++            };
++            generated_modifiers.push(NavigationModifier {
++                id: format!("runtime-collider-{}-{}", entity.id(), entity.generation()),
++                minimum: [minimum.x, minimum.y, minimum.z],
++                maximum: [maximum.x, exclusion_maximum_y, maximum.z],
++                profiles: Vec::new(),
++                mode: NavigationModifierMode::Exclude,
++            });
++        }
++    }
++
++    let mut modifiers = collect_authored_modifiers(scene)?;
++    modifiers.extend(generated_modifiers);
++    let links = collect_authored_links(scene)?;
++    Ok(NavigationSource {
++        triangles,
++        modifiers,
++        links,
++    })
++}
++
++fn world_triangle(
++    matrix: glam::Mat4,
++    a: [f32; 3],
++    b: [f32; 3],
++    c: [f32; 3],
++) -> NavigationTriangle {
++    NavigationTriangle {
++        a: matrix.transform_point3(Vec3::from_array(a)).to_array(),
++        b: matrix.transform_point3(Vec3::from_array(b)).to_array(),
++        c: matrix.transform_point3(Vec3::from_array(c)).to_array(),
++        area: 0,
++    }
++}
++
++/// Prepares deterministic shared build input for one scene/document pair.
++///
++/// # Errors
++///
++/// Returns [`NavMeshBakeError`] for collection or shared-service validation failure.
++pub fn prepare_scene_navmesh(
++    scene: &AuthoringScene,
++    project_root: &ProjectRoot,
++    manifest: &AssetManifest,
++    document: &NavMeshBakeDocument,
++) -> Result<engine_physics::navigation::NavigationBuildInput, NavMeshBakeError> {
++    let source = collect_navigation_source(scene, project_root, manifest)?;
++    NavigationBakeService
++        .prepare(&source, document)
++        .map_err(NavMeshBakeError::Shared)
++}
++
++/// Returns whether navigation-relevant scene data/settings differ from the last bake.
++///
++/// # Errors
++///
++/// Returns [`NavMeshBakeError`] when collection or shared preparation fails.
++pub fn is_scene_navmesh_stale(
++    scene: &AuthoringScene,
++    project_root: &ProjectRoot,
++    manifest: &AssetManifest,
++    document: &NavMeshBakeDocument,
++) -> Result<bool, NavMeshBakeError> {
++    let source = collect_navigation_source(scene, project_root, manifest)?;
++    NavigationBakeService
++        .is_stale(&source, document)
++        .map_err(NavMeshBakeError::Shared)
++}
++
++/// Bakes, safely replaces, registers, and fingerprints one scene NavMesh.
++///
++/// # Errors
++///
