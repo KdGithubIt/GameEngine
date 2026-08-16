@@ -915,8 +915,24 @@ impl GpuMesh {
         instance_count: u32,
         submesh: Option<usize>,
     ) {
+        self.draw_material_instanced_submesh_range(
+            pass,
+            instance_buffer,
+            0..instance_count,
+            submesh,
+        );
+    }
+
+    /// Records a static material draw for an exact range in an instance buffer.
+    pub(crate) fn draw_material_instanced_submesh_range<'a>(
+        &'a self,
+        pass: &mut wgpu::RenderPass<'a>,
+        instance_buffer: &'a wgpu::Buffer,
+        instance_range: std::ops::Range<u32>,
+        submesh: Option<usize>,
+    ) {
         pass.set_vertex_buffer(2, self.tangent_buffer.slice(..));
-        self.draw_instanced_submesh(pass, instance_buffer, instance_count, submesh);
+        self.draw_instanced_submesh_range(pass, instance_buffer, instance_range, submesh);
     }
 
     /// Records one skinned material draw with the tangent stream at slot 3.
@@ -948,17 +964,28 @@ impl GpuMesh {
         instance_count: u32,
         submesh: Option<usize>,
     ) {
+        self.draw_instanced_submesh_range(pass, instance_buffer, 0..instance_count, submesh);
+    }
+
+    /// Records a precise instance range without rebasing instance indices.
+    pub(crate) fn draw_instanced_submesh_range<'a>(
+        &'a self,
+        pass: &mut wgpu::RenderPass<'a>,
+        instance_buffer: &'a wgpu::Buffer,
+        instance_range: std::ops::Range<u32>,
+        submesh: Option<usize>,
+    ) {
         let range = self.range(submesh);
-        if range.is_empty() {
+        if range.is_empty() || instance_range.is_empty() {
             return;
         }
         pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
         pass.set_vertex_buffer(1, instance_buffer.slice(..));
         if let Some(index_buffer) = &self.index_buffer {
             pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-            pass.draw_indexed(range, 0, 0..instance_count);
+            pass.draw_indexed(range, 0, instance_range);
         } else {
-            pass.draw(range, 0..instance_count);
+            pass.draw(range, instance_range);
         }
     }
 }

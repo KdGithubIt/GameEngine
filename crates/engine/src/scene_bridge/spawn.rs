@@ -310,12 +310,12 @@ fn import_source_cached(
     .map_err(|error| error.to_string())
 }
 
-pub(crate) fn spawn_secondary_motion_component(
+pub(crate) fn spawn_rigid_body_physics_component(
     entity: Entity,
     value: &Value,
     context: &mut SpawnContext<'_>,
 ) -> Result<(), ComponentSpawnError> {
-    let component_type = ComponentTypeId::new(SECONDARY_MOTION_COMPONENT);
+    let component_type = ComponentTypeId::new(RIGID_BODY_PHYSICS_COMPONENT);
     const EXPECTED: &str = "an object with a rig AssetRef field";
     let fields = ComponentFields::new(context.authoring_entity, &component_type, value, EXPECTED)?;
     let Some(rig_asset) = fields.assignable_asset_ref("rig")?.cloned() else {
@@ -329,29 +329,29 @@ pub(crate) fn spawn_secondary_motion_component(
         return Ok(());
     };
 
-    register_secondary_motion_rig(&rig_asset, context);
+    register_rigid_body_rig(&rig_asset, context);
     context
         .world
-        .add_component(entity, SecondaryMotion::new(rig_asset))?;
+        .add_component(entity, RigidBodyPhysics::new(rig_asset))?;
     Ok(())
 }
 
-fn register_secondary_motion_rig(rig_asset: &AssetId, context: &mut SpawnContext<'_>) {
+fn register_rigid_body_rig(rig_asset: &AssetId, context: &mut SpawnContext<'_>) {
     let Some((source_id, _, sub_asset)) = context.manifest.imported_sub_asset(rig_asset) else {
         context.asset_diagnostics.push(Diagnostic::warning(
-            "scene_bridge.secondary_motion_rig_unresolved",
+            "scene_bridge.rigid_body_rig_unresolved",
             format!(
-                "secondary-motion rig `{}` is not an imported sub-asset of any registered model source",
+                "rigid-body rig `{}` is not an imported sub-asset of any registered model source",
                 rig_asset.as_str()
             ),
         ));
         return;
     };
-    if sub_asset.kind != ImportedSubAssetKind::SecondaryMotionRig {
+    if sub_asset.kind != ImportedSubAssetKind::RigidBodyRig {
         context.asset_diagnostics.push(Diagnostic::warning(
-            "scene_bridge.secondary_motion_rig_unresolved",
+            "scene_bridge.rigid_body_rig_unresolved",
             format!(
-                "asset `{}` is {:?}, not a secondary-motion rig",
+                "asset `{}` is {:?}, not a rigid-body rig",
                 rig_asset.as_str(),
                 sub_asset.kind
             ),
@@ -363,9 +363,9 @@ fn register_secondary_motion_rig(rig_asset: &AssetId, context: &mut SpawnContext
         Ok(imported) => imported,
         Err(error) => {
             context.asset_diagnostics.push(Diagnostic::warning(
-                "scene_bridge.secondary_motion_rig_unresolved",
+                "scene_bridge.rigid_body_rig_unresolved",
                 format!(
-                    "could not import the model source owning secondary-motion rig `{}`: {error}",
+                    "could not import the model source owning rigid-body rig `{}`: {error}",
                     rig_asset.as_str()
                 ),
             ));
@@ -378,34 +378,28 @@ fn register_secondary_motion_rig(rig_asset: &AssetId, context: &mut SpawnContext
         .filter(|rig| &rig.id == rig_asset)
     else {
         context.asset_diagnostics.push(Diagnostic::warning(
-            "scene_bridge.secondary_motion_rig_unresolved",
+            "scene_bridge.rigid_body_rig_unresolved",
             format!(
-                "the model source no longer contains secondary-motion rig `{}`; reimport it",
+                "the model source no longer contains rigid-body rig `{}`; reimport it",
                 rig_asset.as_str()
             ),
         ));
         return;
     };
-    if context
-        .world
-        .get_resource::<SecondaryMotionRigRegistry>()
-        .is_none()
-    {
-        context
-            .world
-            .insert_resource(SecondaryMotionRigRegistry::new());
-        context.asset_state.remove_secondary_motion_registry_store = true;
-    }
     let registry = context
         .world
-        .get_resource_mut::<SecondaryMotionRigRegistry>()
-        .expect("scene bridge must install the Secondary Motion registry before registration");
-    let previous = registry.remove(&rig.id);
-    registry.insert(rig.clone());
-    context
-        .asset_state
-        .secondary_motion_rig_rollbacks
-        .push((rig.id.clone(), previous));
+        .get_resource_mut::<RigidBodyRigRegistry>()
+        .is_none();
+    if registry {
+        context.world.insert_resource(RigidBodyRigRegistry::new());
+    }
+    if let Some(registry) = context.world.get_resource_mut::<RigidBodyRigRegistry>() {
+        registry.insert(rig.clone());
+        context
+            .asset_state
+            .added_rigid_body_rig_ids
+            .push(rig.id.clone());
+    }
 }
 
 pub(crate) fn spawn_bone_attachment_component(
@@ -2331,6 +2325,78 @@ pub(crate) fn spawn_directional_light_component(
         intensity,
     };
     context.world.add_component(entity, light)?;
+    Ok(())
+}
+
+pub(crate) fn spawn_point_light_component(
+    entity: Entity,
+    value: &Value,
+    context: &mut SpawnContext<'_>,
+) -> Result<(), ComponentSpawnError> {
+    const EXPECTED: &str = "an object with unit-range color, non-negative intensity, and positive range";
+    let component_type = ComponentTypeId::new(POINT_LIGHT_COMPONENT);
+    let fields = ComponentFields::new(context.authoring_entity, &component_type, value, EXPECTED)?;
+    let color = fields.color()?;
+    let intensity = fields.f32("intensity")?;
+    let range = fields.f32("range")?;
+    if color.min_element() < 0.0
+        || color.max_element() > 1.0
+        || !intensity.is_finite()
+        || intensity < 0.0
+        || !range.is_finite()
+        || range <= 0.0
+    {
+        return Err(fields.invalid(EXPECTED).into());
+    }
+    context.world.add_component(
+        entity,
+        PointLight {
+            color,
+            intensity,
+            range,
+        },
+    )?;
+    Ok(())
+}
+
+pub(crate) fn spawn_spot_light_component(
+    entity: Entity,
+    value: &Value,
+    context: &mut SpawnContext<'_>,
+) -> Result<(), ComponentSpawnError> {
+    const EXPECTED: &str =
+        "an object with unit-range color, non-negative intensity, positive range, and 0 <= inner_angle_degrees < outer_angle_degrees < 90";
+    let component_type = ComponentTypeId::new(SPOT_LIGHT_COMPONENT);
+    let fields = ComponentFields::new(context.authoring_entity, &component_type, value, EXPECTED)?;
+    let color = fields.color()?;
+    let intensity = fields.f32("intensity")?;
+    let range = fields.f32("range")?;
+    let inner_angle_degrees = fields.f32("inner_angle_degrees")?;
+    let outer_angle_degrees = fields.f32("outer_angle_degrees")?;
+    if color.min_element() < 0.0
+        || color.max_element() > 1.0
+        || !intensity.is_finite()
+        || intensity < 0.0
+        || !range.is_finite()
+        || range <= 0.0
+        || !inner_angle_degrees.is_finite()
+        || !outer_angle_degrees.is_finite()
+        || inner_angle_degrees < 0.0
+        || inner_angle_degrees >= outer_angle_degrees
+        || outer_angle_degrees >= 90.0
+    {
+        return Err(fields.invalid(EXPECTED).into());
+    }
+    context.world.add_component(
+        entity,
+        SpotLight {
+            color,
+            intensity,
+            range,
+            inner_angle_radians: inner_angle_degrees.to_radians(),
+            outer_angle_radians: outer_angle_degrees.to_radians(),
+        },
+    )?;
     Ok(())
 }
 

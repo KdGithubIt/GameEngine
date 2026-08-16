@@ -1,7 +1,7 @@
 # ChatGPT GitHub Automation
 
 Status: Accepted
-Version: 1.4.1
+Version: 1.4.3
 Canonical location: `docs/CHATGPT_AUTOMATION.md`
 
 ## Purpose
@@ -98,25 +98,33 @@ informal file upload. For every new implementation or correction request:
    relevant to the requested change before constructing the patch.
 4. Build one complete unified Git patch against the exact target tree. Keep
    product changes inside the public allow-list and never include `.github/**`
-   or `.chatgpt-requests/**` in a normal dispatcher patch.
-5. Preflight the reconstructed patch before publication whenever the producer
-   has a local Git worktree available. Run
+   or `.chatgpt-requests/**` in a normal dispatcher patch. Patch paths MUST be
+   repository-root relative (for example, `a/crates/...`, not
+   `a/GameEngine/crates/...` copied from a checkout-directory name).
+5. Preflight the exact reconstructed patch bytes that will be published. Run
    `git apply --check --whitespace=error-all <reconstructed-patch>` against the
    captured target tree, then confirm that the patch contains only intended
    paths and no symlink or submodule changes. Using plain `git apply --check`
    is not equivalent because it can miss whitespace errors the dispatcher will
-   reject. Applicability preflight MUST use an exact snapshot of the captured
-   target tree, or exact contiguous target-file ranges for every hunk when a
-   complete worktree is unavailable. Do not build a synthetic preflight tree by
-   joining unrelated source fragments with blank, placeholder, or filler lines;
-   that can validate patch context that does not exist on the remote target.
-6. Split the patch only for transport size. Publish every declared
-   `part-NNNN.patch` before publishing `ready.json`; never use `ready.json` as a
+   reject. Do not manually retype, reformat, or otherwise reconstruct a second
+   copy of the patch after this preflight.
+6. Split the preflighted patch only for transport size and publish those exact
+   bytes as the declared `part-NNNN.patch` files. When a text-valued publication
+   API is used, split only at newline boundaries so transport cannot normalize
+   terminal whitespace from a mid-line fragment. Before publishing `ready.json`,
+   verify the published part byte counts and blob hashes, or the reconstructed
+   content hash, against the preflight artifact. Never use `ready.json` as a
    partial-progress marker.
 7. Immediately before creating `ready.json`, re-read the remote target branch
    HEAD. If it differs from `expected_head_sha`, abandon the unpublished
    request, regenerate the patch from the new target tree, and use a new request
    ID. Do not update `expected_head_sha` without regenerating the patch.
+   For a normal task branch whose intended baseline is `main`, also re-read
+   `main`. If `main` advanced after that task branch's baseline and the branch
+   does not already contain the new baseline, create a new task branch and
+   regenerate the request from current `main` before publishing `ready.json`,
+   unless the task intentionally targets the older baseline. A stable target
+   HEAD alone does not guarantee clean PR validation scope.
 8. Add `ready.json` in its own final transport commit and change no other file in
    that commit. After this point the request is immutable.
 9. Follow the signal, dispatcher, Draft PR, and Windows validation through to a
@@ -148,11 +156,13 @@ changes:
   Re-read the target branch, regenerate the patch from that exact tree, and use
   a new request ID. Never force-apply or reuse the stale request.
 - If `git apply --check` rejects the reconstructed patch, treat the patch/tree
-  mismatch as the primary problem. Verify that every hunk came from exact
-  contiguous content in the captured target tree; separated fragments joined
-  with synthetic filler are not a valid applicability preflight. Reconstruct
-  the patch from the current target files instead of editing product code merely
-  to make old patch context apply.
+  mismatch as the primary problem. Reconstruct the patch from the current
+  target files instead of editing product code merely to make old patch context
+  apply.
+- If `git apply --check` reports `No such file or directory` for otherwise
+  current target files, inspect the patch headers before changing code. Patch
+  paths are relative to the repository root and must not include the checkout
+  directory name or another transport-local prefix.
 - If the dispatcher rejects a path, do not weaken the allow-list from the task
   request. `.github/**` and `.chatgpt-requests/**` are trust-boundary paths and
   require the separately reviewed automation-infrastructure workflow.
@@ -171,7 +181,10 @@ does not override it.
 
 Patch transport is byte-preserving concatenation. The dispatcher concatenates
 parts in the order declared by `patch_parts`; it does not add separators.
-Parts therefore do not need to be independently applicable patches.
+Parts therefore do not need to be independently applicable patches. The
+published blobs MUST reconstruct byte-for-byte to the artifact that passed
+producer preflight; a patch that was retyped or transformed after preflight has
+not been preflighted.
 
 Constraints:
 

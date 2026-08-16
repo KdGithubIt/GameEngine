@@ -37,6 +37,11 @@
 pub mod access;
 pub mod animation_graph;
 pub mod animation_set;
+// The stateful wrapper delegates only part of this compatibility surface.
+#[allow(dead_code)]
+#[path = "behavior_tree.rs"]
+mod behavior_tree_legacy;
+#[path = "behavior_tree_stateful.rs"]
 pub mod behavior_tree;
 pub mod command;
 pub mod component_metadata;

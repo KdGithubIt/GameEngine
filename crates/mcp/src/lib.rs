@@ -2,13 +2,15 @@
 //!
 //! This crate intentionally owns only tool-shaped inputs and outputs. It does
 //! not own MCP transport lifecycle, process management, or editing rules. Each
-//! tool delegates structured authoring work to `engine-authoring`.
+//! tool delegates structured work to the shared domain service that owns it.
 
 #![warn(missing_docs)]
 #![warn(rustdoc::broken_intra_doc_links)]
 
 /// AI Agent Bridge tool handlers (Phase 40, ADR 0035).
 pub mod ai_agent;
+/// Asset discovery and inspection tool handlers backed by the shared asset catalog.
+pub mod asset;
 /// Scene/project tool handlers backed by the shared authoring services.
 pub mod scene;
 
@@ -16,6 +18,7 @@ pub use ai_agent::{
     ai_agent_tool_descriptors, describe_session, handle_describe_session, handle_validate_input,
     validate_ai_agent_input, AiAgentInput, AiAgentOutput,
 };
+pub use asset::{AssetInspectInput, AssetMcpTools, AssetSearchInput};
 pub use scene::{
     ComponentSchemasOutput, EntityFindInput, EntityFindOutput, EntityInspectInput,
     EntityInspectOutput, ProjectDescribeOutput, SceneMcpTools, SceneMutationInput,
@@ -27,6 +30,7 @@ use engine_authoring::{
     BehaviorTreeSchemaCatalog, BehaviorTreeServiceError, BehaviorTreeValidation, Graph,
     GraphCommand, SceneAuthoringError,
 };
+use engine_assets::catalog::AssetCatalogError;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::fmt;
@@ -89,6 +93,11 @@ pub enum McpToolError {
         /// Source Scene authoring error.
         source: SceneAuthoringError,
     },
+    /// The shared asset catalog service rejected the request.
+    AssetCatalog {
+        /// Source asset catalog error.
+        source: AssetCatalogError,
+    },
 }
 
 impl fmt::Display for McpToolError {
@@ -96,6 +105,7 @@ impl fmt::Display for McpToolError {
         match self {
             Self::Authoring { source } => source.fmt(formatter),
             Self::SceneAuthoring { source } => source.fmt(formatter),
+            Self::AssetCatalog { source } => source.fmt(formatter),
         }
     }
 }
@@ -105,6 +115,7 @@ impl std::error::Error for McpToolError {
         match self {
             Self::Authoring { source } => Some(source),
             Self::SceneAuthoring { source } => Some(source),
+            Self::AssetCatalog { source } => Some(source),
         }
     }
 }
@@ -121,12 +132,19 @@ impl From<SceneAuthoringError> for McpToolError {
     }
 }
 
+impl From<AssetCatalogError> for McpToolError {
+    fn from(source: AssetCatalogError) -> Self {
+        Self::AssetCatalog { source }
+    }
+}
+
 impl McpToolError {
     /// Returns a stable diagnostic-style code when the source exposes one.
     pub fn code(&self) -> &'static str {
         match self {
             Self::Authoring { .. } => "mcp.authoring_error",
             Self::SceneAuthoring { source } => source.code(),
+            Self::AssetCatalog { source } => source.code(),
         }
     }
 }

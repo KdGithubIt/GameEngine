@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+engine-assets = { path = "../assets" }
 engine-authoring = { path = "../authoring" }
 engine-mcp = { path = "../mcp" }
 serde = { version = "1", features = ["derive"] }

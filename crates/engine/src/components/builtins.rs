@@ -20,7 +20,7 @@ use crate::camera::{Camera3D, OrbitCamera};
 use crate::character_controller::KinematicCharacterController;
 use crate::combat::DamageReceiver;
 use crate::foot_ik::FootIk;
-use crate::light::{AmbientLight, DirectionalLight};
+use crate::light::{AmbientLight, DirectionalLight, PointLight, SpotLight};
 use crate::lock_on::LockOnTarget;
 use crate::mesh::Mesh;
 use crate::navmesh::NavMeshAgent;
@@ -181,11 +181,11 @@ const LOD_GROUP_FIELDS: &[FieldDef] = &[FieldDef::new(
 )
 .with_control(InspectorFieldControl::LodLevels)];
 
-const SECONDARY_MOTION_FIELDS: &[FieldDef] = &[asset_ref(
+const RIGID_BODY_PHYSICS_FIELDS: &[FieldDef] = &[asset_ref(
     "rig",
     "Rig",
-    "The Secondary Motion Rig sub-asset imported from this character's model. Bodies and joints are editable engine-native starting values produced by import.",
-    AssetKind::SecondaryMotionRig,
+    "The Rigid Body Rig sub-asset imported from this character's model. The rig's author already tuned every body and joint, so there is nothing else to configure here.",
+    AssetKind::RigidBodyRig,
     FieldDefaultSpec::Unassigned,
 )];
 
@@ -267,6 +267,76 @@ const DIRECTIONAL_LIGHT_FIELDS: &[FieldDef] = &[
         FieldDefaultSpec::Computed(default_sun_intensity),
     )
     .with_control(InspectorFieldControl::Number(NON_NEGATIVE)),
+];
+
+const POINT_LIGHT_FIELDS: &[FieldDef] = &[
+    color("color_r", "Color R", default_point_color_r)
+        .with_control(InspectorFieldControl::Number(UNIT_INTERVAL)),
+    color("color_g", "Color G", default_point_color_g)
+        .with_control(InspectorFieldControl::Number(UNIT_INTERVAL)),
+    color("color_b", "Color B", default_point_color_b)
+        .with_control(InspectorFieldControl::Number(UNIT_INTERVAL)),
+    FieldDef::new(
+        "intensity",
+        "Intensity",
+        "Local-light radiant intensity multiplier before distance attenuation.",
+        FieldKind::F64,
+        FieldDefaultSpec::Computed(default_point_intensity),
+    )
+    .with_control(InspectorFieldControl::Number(NON_NEGATIVE)),
+    FieldDef::new(
+        "range",
+        "Range",
+        "Maximum world-space influence distance.",
+        FieldKind::F64,
+        FieldDefaultSpec::Computed(default_point_range),
+    )
+    .with_control(InspectorFieldControl::Number(POSITIVE)),
+];
+
+const SPOT_LIGHT_FIELDS: &[FieldDef] = &[
+    color("color_r", "Color R", default_spot_color_r)
+        .with_control(InspectorFieldControl::Number(UNIT_INTERVAL)),
+    color("color_g", "Color G", default_spot_color_g)
+        .with_control(InspectorFieldControl::Number(UNIT_INTERVAL)),
+    color("color_b", "Color B", default_spot_color_b)
+        .with_control(InspectorFieldControl::Number(UNIT_INTERVAL)),
+    FieldDef::new(
+        "intensity",
+        "Intensity",
+        "Local-light radiant intensity multiplier before distance and cone attenuation.",
+        FieldKind::F64,
+        FieldDefaultSpec::Computed(default_spot_intensity),
+    )
+    .with_control(InspectorFieldControl::Number(NON_NEGATIVE)),
+    FieldDef::new(
+        "range",
+        "Range",
+        "Maximum world-space influence distance.",
+        FieldKind::F64,
+        FieldDefaultSpec::Computed(default_spot_range),
+    )
+    .with_control(InspectorFieldControl::Number(POSITIVE)),
+    FieldDef::new(
+        "inner_angle_degrees",
+        "Inner Angle",
+        "Full-intensity spot-cone half-angle in degrees.",
+        FieldKind::F64,
+        FieldDefaultSpec::Computed(default_spot_inner_angle),
+    )
+    .with_control(InspectorFieldControl::Number(NumericRange::inclusive(
+        0.0, 89.0,
+    ))),
+    FieldDef::new(
+        "outer_angle_degrees",
+        "Outer Angle",
+        "Zero-intensity spot-cone half-angle in degrees; must exceed Inner Angle.",
+        FieldKind::F64,
+        FieldDefaultSpec::Computed(default_spot_outer_angle),
+    )
+    .with_control(InspectorFieldControl::Number(NumericRange::inclusive(
+        0.0, 89.0,
+    ))),
 ];
 
 const AMBIENT_LIGHT_FIELDS: &[FieldDef] = &[
@@ -1292,6 +1362,20 @@ defaults! {
     default_sun_color_b => Value::F64(DirectionalLight::default().color.z as f64);
     default_sun_intensity => Value::F64(DirectionalLight::default().intensity as f64);
 
+    default_point_color_r => Value::F64(PointLight::default().color.x as f64);
+    default_point_color_g => Value::F64(PointLight::default().color.y as f64);
+    default_point_color_b => Value::F64(PointLight::default().color.z as f64);
+    default_point_intensity => Value::F64(PointLight::default().intensity as f64);
+    default_point_range => Value::F64(PointLight::default().range as f64);
+
+    default_spot_color_r => Value::F64(SpotLight::default().color.x as f64);
+    default_spot_color_g => Value::F64(SpotLight::default().color.y as f64);
+    default_spot_color_b => Value::F64(SpotLight::default().color.z as f64);
+    default_spot_intensity => Value::F64(SpotLight::default().intensity as f64);
+    default_spot_range => Value::F64(SpotLight::default().range as f64);
+    default_spot_inner_angle => Value::F64(SpotLight::default().inner_angle_radians.to_degrees() as f64);
+    default_spot_outer_angle => Value::F64(SpotLight::default().outer_angle_radians.to_degrees() as f64);
+
     default_ambient_color_r => Value::F64(AmbientLight::default().color.x as f64);
     default_ambient_color_g => Value::F64(AmbientLight::default().color.y as f64);
     default_ambient_color_b => Value::F64(AmbientLight::default().color.z as f64);
@@ -1728,13 +1812,31 @@ pub(super) fn builtin_components() -> Vec<BuiltinComponent> {
             spawn_foot_ik_component,
         ),
         BuiltinComponent::new(
-            SECONDARY_MOTION_COMPONENT,
-            "Secondary Motion",
-            "Simulates the assigned engine-native Secondary Motion Rig for hair, skirts, and accessories.",
+            RIGID_BODY_PHYSICS_COMPONENT,
+            "Rigid Body Physics",
+            "Simulates this Skinned Model's imported rigid-body rig, so hair, skirts, and accessories move on their own.",
             "Physics",
             1,
-            SECONDARY_MOTION_FIELDS,
-            spawn_secondary_motion_component,
+            RIGID_BODY_PHYSICS_FIELDS,
+            spawn_rigid_body_physics_component,
+        ),
+        BuiltinComponent::new(
+            POINT_LIGHT_COMPONENT,
+            "Point Light",
+            "Finite-range omnidirectional light positioned by this entity's Transform.",
+            "Rendering",
+            1,
+            POINT_LIGHT_FIELDS,
+            spawn_point_light_component,
+        ),
+        BuiltinComponent::new(
+            SPOT_LIGHT_COMPONENT,
+            "Spot Light",
+            "Finite-range cone light positioned by this entity's Transform and aimed along local -Z.",
+            "Rendering",
+            1,
+            SPOT_LIGHT_FIELDS,
+            spawn_spot_light_component,
         ),
     ]
 }

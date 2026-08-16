@@ -4,7 +4,8 @@ use std::sync::{Arc, Weak};
 
 use crate::camera::{select_active_game_camera, Camera3D, ViewportSize};
 use crate::debug_draw::{DebugLine, DebugLines};
-use crate::light::{AmbientLight, DirectionalLight, SkySettings};
+use crate::environment::EnvironmentGpuState;
+use crate::light::{AmbientLight, DirectionalLight, PointLight, SkySettings, SpotLight};
 use crate::lod::InstanceStats;
 use crate::material::{
     AlphaMode, CullMode, Material, MaterialSlots, ShadingModel, SphereBlendMode,
@@ -15,6 +16,7 @@ use crate::mesh::{
     GpuMesh, GpuMeshCache, InstanceData, Mesh, MeshValidationError, TangentVertexData, Vertex,
 };
 use crate::postprocess::{PostProcessSettings, ToneMapOperator};
+use crate::render_limits::{MAX_POINT_LIGHTS, MAX_SPOT_LIGHTS};
 use crate::shadow::{
     cascade_view_projections, EnvironmentLighting, ShadowSettings, SHADOW_CASCADE_COUNT,
 };
@@ -98,6 +100,8 @@ struct ShadowUniform {
     light_view_proj: [[[f32; 4]; 4]; SHADOW_CASCADE_COUNT],
     /// x: depth bias, y: normal bias, z: enabled (>0.5), w: shadow texel size.
     params: [f32; 4],
+    /// x: blend start, y: first cascade far depth, z/w: reserved.
+    cascade_depths: [f32; 4],
 }
 
 impl ShadowUniform {
@@ -105,14 +109,96 @@ impl ShadowUniform {
         Self {
             light_view_proj: [glam::Mat4::IDENTITY.to_cols_array_2d(); SHADOW_CASCADE_COUNT],
             params: [0.0; 4],
+            cascade_depths: [0.0; 4],
         }
     }
 }
 
-// Must match the LightUniform struct in mesh.wgsl — 48 bytes, stride 16.
-// ambient_color[0-11], ambient_intensity[12-15],
-// dir_direction[16-27], dir_intensity[28-31],
-// dir_color[32-43], _padding[44-47]
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, Pod, Zeroable)]
+struct PointLightUniform {
+    position_range: [f32; 4],
+    color_intensity: [f32; 4],
+}
+
+impl PointLightUniform {
+    fn from_component(light: &PointLight, transform: &GlobalTransform) -> Option<Self> {
+        let position = transform.0.w_axis.truncate();
+        if !position.is_finite()
+            || !light.color.is_finite()
+            || light.color.min_element() < 0.0
+            || !light.intensity.is_finite()
+            || light.intensity < 0.0
+            || !light.range.is_finite()
+            || light.range <= 0.0
+        {
+            return None;
+        }
+        Some(Self {
+            position_range: [position.x, position.y, position.z, light.range],
+            color_intensity: [
+                light.color.x,
+                light.color.y,
+                light.color.z,
+                light.intensity,
+            ],
+        })
+    }
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, Pod, Zeroable)]
+struct SpotLightUniform {
+    position_range: [f32; 4],
+    direction_outer: [f32; 4],
+    color_intensity: [f32; 4],
+    params: [f32; 4],
+}
+
+impl SpotLightUniform {
+    fn from_component(light: &SpotLight, transform: &GlobalTransform) -> Option<Self> {
+        let matrix = transform.0;
+        let position = matrix.w_axis.truncate();
+        let direction = matrix
+            .transform_vector3(glam::Vec3::NEG_Z)
+            .normalize_or_zero();
+        if !position.is_finite()
+            || direction == glam::Vec3::ZERO
+            || !light.color.is_finite()
+            || light.color.min_element() < 0.0
+            || !light.intensity.is_finite()
+            || light.intensity < 0.0
+            || !light.range.is_finite()
+            || light.range <= 0.0
+            || !light.inner_angle_radians.is_finite()
+            || !light.outer_angle_radians.is_finite()
+            || light.inner_angle_radians < 0.0
+            || light.inner_angle_radians >= light.outer_angle_radians
+            || light.outer_angle_radians >= std::f32::consts::FRAC_PI_2
+        {
+            return None;
+        }
+        Some(Self {
+            position_range: [position.x, position.y, position.z, light.range],
+            direction_outer: [
+                direction.x,
+                direction.y,
+                direction.z,
+                light.outer_angle_radians.cos(),
+            ],
+            color_intensity: [
+                light.color.x,
+                light.color.y,
+                light.color.z,
+                light.intensity,
+            ],
+            params: [light.inner_angle_radians.cos(), 0.0, 0.0, 0.0],
+        })
+    }
+}
+
+// Must match the LightUniform struct in mesh.wgsl. Every local-light record is
+// vec4-packed so the Rust/WGSL uniform layouts have identical 16-byte strides.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 struct LightUniform {
@@ -122,11 +208,25 @@ struct LightUniform {
     dir_intensity: f32,
     dir_color: [f32; 3],
     _padding: f32,
+    counts: [u32; 4],
+    point_lights: [PointLightUniform; MAX_POINT_LIGHTS],
+    spot_lights: [SpotLightUniform; MAX_SPOT_LIGHTS],
 }
 
 impl LightUniform {
-    fn from_resources(ambient: &AmbientLight, directional: &DirectionalLight) -> Self {
+    fn from_resources(
+        ambient: &AmbientLight,
+        directional: &DirectionalLight,
+        point_lights: &[PointLightUniform],
+        spot_lights: &[SpotLightUniform],
+    ) -> Self {
         let dir = directional.direction.normalize_or_zero();
+        let mut points = [PointLightUniform::default(); MAX_POINT_LIGHTS];
+        let point_count = point_lights.len().min(MAX_POINT_LIGHTS);
+        points[..point_count].copy_from_slice(&point_lights[..point_count]);
+        let mut spots = [SpotLightUniform::default(); MAX_SPOT_LIGHTS];
+        let spot_count = spot_lights.len().min(MAX_SPOT_LIGHTS);
+        spots[..spot_count].copy_from_slice(&spot_lights[..spot_count]);
         Self {
             ambient_color: ambient.color.to_array(),
             ambient_intensity: ambient.intensity,
@@ -134,6 +234,9 @@ impl LightUniform {
             dir_intensity: directional.intensity,
             dir_color: directional.color.to_array(),
             _padding: 0.0,
+            counts: [point_count as u32, spot_count as u32, 0, 0],
+            point_lights: points,
+            spot_lights: spots,
         }
     }
 }
@@ -418,8 +521,12 @@ pub(crate) struct RenderState {
     pub(crate) texture_bind_group_layout: wgpu::BindGroupLayout,
     white_texture: Arc<Texture>,
     flat_normal_texture: Arc<Texture>,
+    environment: EnvironmentGpuState,
     light_buffer: wgpu::Buffer,
+    light_bind_group_layout: wgpu::BindGroupLayout,
     pub(crate) light_bind_group: wgpu::BindGroup,
+    shadow_sample_view: wgpu::TextureView,
+    shadow_sampler: wgpu::Sampler,
     pipelines: [[wgpu::RenderPipeline; 3]; 3],
     skinned_pipelines: [[wgpu::RenderPipeline; 3]; 3],
     outline_mask_pipelines: [wgpu::RenderPipeline; 3],
@@ -427,8 +534,8 @@ pub(crate) struct RenderState {
     outline_composite_bgl: wgpu::BindGroupLayout,
     outline_composite_pipeline: wgpu::RenderPipeline,
     joint_palette_bgl: wgpu::BindGroupLayout,
-    shadow_pipeline: wgpu::RenderPipeline,
-    shadow_skinned_pipeline: wgpu::RenderPipeline,
+    shadow_pipelines: [wgpu::RenderPipeline; 3],
+    shadow_skinned_pipelines: [wgpu::RenderPipeline; 3],
     shadow_uniform_buffer: wgpu::Buffer,
     shadow_cascade_buffers: Vec<wgpu::Buffer>,
     shadow_cascade_bind_groups: Vec<wgpu::BindGroup>,
@@ -679,10 +786,19 @@ struct StaticBatch {
     outline_instances: Vec<OutlineInstanceData>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BlendDraw {
-    StaticBatch(usize),
+    StaticInstance { batch: usize, instance: u32 },
     Skinned(usize),
+}
+
+fn sort_blend_draws_back_to_front(draws: &mut [(BlendDraw, f32)]) {
+    draws.sort_by(|left, right| {
+        right
+            .1
+            .partial_cmp(&left.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 }
 
 #[derive(Clone, Copy)]
@@ -963,6 +1079,40 @@ impl WorldRenderer {
         })
     }
 
+    fn collect_point_lights(world: &mut engine_ecs::World) -> Vec<PointLightUniform> {
+        let query = engine_ecs::Query::<(&PointLight, &GlobalTransform)>::new(world);
+        let mut lights = query
+            .iter()
+            .filter_map(|(entity, (light, transform))| {
+                PointLightUniform::from_component(light, transform)
+                    .map(|uniform| (entity.id(), entity.generation(), uniform))
+            })
+            .collect::<Vec<_>>();
+        lights.sort_by_key(|(id, generation, _)| (*id, *generation));
+        lights
+            .into_iter()
+            .take(MAX_POINT_LIGHTS)
+            .map(|(_, _, uniform)| uniform)
+            .collect()
+    }
+
+    fn collect_spot_lights(world: &mut engine_ecs::World) -> Vec<SpotLightUniform> {
+        let query = engine_ecs::Query::<(&SpotLight, &GlobalTransform)>::new(world);
+        let mut lights = query
+            .iter()
+            .filter_map(|(entity, (light, transform))| {
+                SpotLightUniform::from_component(light, transform)
+                    .map(|uniform| (entity.id(), entity.generation(), uniform))
+            })
+            .collect::<Vec<_>>();
+        lights.sort_by_key(|(id, generation, _)| (*id, *generation));
+        lights
+            .into_iter()
+            .take(MAX_SPOT_LIGHTS)
+            .map(|(_, _, uniform)| uniform)
+            .collect()
+    }
+
     /// Validates the caller-owned resolve/depth pair and (re)allocates the
     /// transient multisampled color attachment when the viewport size changes.
     fn ensure_main_pass_target(
@@ -1115,18 +1265,33 @@ impl WorldRenderer {
             .unwrap_or_default();
         self.render.update_sky(queue, vp, &sky);
 
-        let mut ambient = world
+        let environment = world
+            .get_resource::<EnvironmentLighting>()
+            .cloned()
+            .unwrap_or_default();
+        let skybox = Self::environment_texture(world, environment.skybox);
+        let diffuse_irradiance =
+            Self::environment_texture(world, environment.diffuse_irradiance);
+        self.render.update_environment(
+            device,
+            queue,
+            &environment,
+            skybox.as_ref(),
+            diffuse_irradiance.as_ref(),
+        );
+
+        let ambient = world
             .get_resource::<AmbientLight>()
             .cloned()
             .unwrap_or_default();
-        if let Some(environment) = world.get_resource::<EnvironmentLighting>() {
-            ambient = environment.apply_to_ambient(&ambient);
-        }
         let directional = world
             .get_resource::<DirectionalLight>()
             .cloned()
             .unwrap_or_default();
-        self.render.update_light(queue, &ambient, &directional);
+        let point_lights = Self::collect_point_lights(world);
+        let spot_lights = Self::collect_spot_lights(world);
+        self.render
+            .update_light(queue, &ambient, &directional, &point_lights, &spot_lights);
 
         let shadow_settings = world
             .get_resource::<ShadowSettings>()
@@ -1136,17 +1301,25 @@ impl WorldRenderer {
             && directional.intensity > 0.0
             && shadow_camera.is_some()
             && directional.direction.normalize_or_zero() != glam::Vec3::ZERO;
-        let cascade_matrices = match (shadow_camera, shadows_enabled) {
-            (Some((camera, camera_transform)), true) => cascade_view_projections(
-                camera,
-                camera_transform,
-                directional.direction,
-                &shadow_settings,
+        let (cascade_matrices, cascade_blend_depths) = match (shadow_camera, shadows_enabled) {
+            (Some((camera, camera_transform)), true) => (
+                cascade_view_projections(
+                    camera,
+                    camera_transform,
+                    directional.direction,
+                    &shadow_settings,
+                ),
+                shadow_settings.cascade_blend_depths(camera.near, camera.far),
             ),
-            _ => [glam::Mat4::IDENTITY; SHADOW_CASCADE_COUNT],
+            _ => ([glam::Mat4::IDENTITY; SHADOW_CASCADE_COUNT], [0.0; 2]),
         };
-        self.render
-            .update_shadows(queue, &cascade_matrices, &shadow_settings, shadows_enabled);
+        self.render.update_shadows(
+            queue,
+            &cascade_matrices,
+            cascade_blend_depths,
+            &shadow_settings,
+            shadows_enabled,
+        );
 
         let batches = self.collect_batches(world, device, queue, camera_position);
         let skinned_draws = self.collect_skinned_draws(world, device, queue, camera_position);
@@ -1233,18 +1406,23 @@ impl WorldRenderer {
             })
             .collect();
 
-        // Blended static batches and skinned draws share one back-to-front
-        // order. Sorting each family independently is insufficient when, for
-        // example, a transparent environment mesh overlaps a character.
+        // Every blended static instance and skinned draw shares one global
+        // back-to-front order. Batch-level ordering is insufficient when the
+        // depth ranges of two transparent materials overlap.
         let mut blend_draws = batches
             .iter()
             .enumerate()
             .filter(|(_, batch)| batch.pipeline_key.alpha_mode == AlphaMode::Blend)
-            .map(|(index, batch)| {
-                (
-                    BlendDraw::StaticBatch(index),
-                    batch_distance_squared(batch, camera_position),
-                )
+            .flat_map(|(batch_index, batch)| {
+                batch.instances.iter().enumerate().map(move |(instance_index, instance)| {
+                    (
+                        BlendDraw::StaticInstance {
+                            batch: batch_index,
+                            instance: instance_index as u32,
+                        },
+                        instance_distance_squared(instance, camera_position),
+                    )
+                })
             })
             .chain(
                 skinned_draws
@@ -1259,12 +1437,7 @@ impl WorldRenderer {
                     }),
             )
             .collect::<Vec<_>>();
-        blend_draws.sort_by(|left, right| {
-            right
-                .1
-                .partial_cmp(&left.1)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+        sort_blend_draws_back_to_front(&mut blend_draws);
 
         self.ensure_main_pass_target(device, color_view, depth_view)
             .map_err(RenderFrameError::Target)?;
@@ -1274,8 +1447,9 @@ impl WorldRenderer {
         });
 
         // Depth-only shadow passes, one per cascade (Phase 50, ADR 0036).
-        // Skinned meshes do not cast shadows in v1; batched static and
-        // particle instances do.
+        // Directional shadow coverage follows the same material alpha and
+        // culling contract as the visible surface. Mask keeps hard cutouts;
+        // Blend uses deterministic dither coverage in the single-sample map.
         if shadows_enabled {
             for (cascade_index, layer_view) in self.render.shadow_layer_views.iter().enumerate() {
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1293,7 +1467,6 @@ impl WorldRenderer {
                     occlusion_query_set: None,
                     multiview_mask: None,
                 });
-                pass.set_pipeline(&self.render.shadow_pipeline);
                 pass.set_bind_group(
                     0,
                     &self.render.shadow_cascade_bind_groups[cascade_index],
@@ -1303,6 +1476,10 @@ impl WorldRenderer {
                     if batch.instances.is_empty() || !batch.pipeline_key.cast_shadow {
                         continue;
                     }
+                    pass.set_pipeline(
+                        &self.render.shadow_pipelines[batch.pipeline_key.cull_index()],
+                    );
+                    pass.set_bind_group(2, batch.texture_bind_group.as_ref(), &[]);
                     batch.gpu_mesh.draw_instanced_submesh(
                         &mut pass,
                         instance_buf,
@@ -1311,46 +1488,47 @@ impl WorldRenderer {
                     );
                 }
 
-                // Skinned entities whose mesh has no skinning data cast a
-                // static shadow while the static pipeline is still bound.
+                // A selected skinned primitive may have no skin attributes.
+                // It still uses the material-aware static shadow path.
                 for (draw, resources) in
                     skinned_draws.iter().zip(skinned_resources.iter())
                 {
-                    if draw.pipeline_key.cast_shadow && draw.gpu_mesh.skinning_buffer.is_none() {
-                        draw.gpu_mesh.draw_instanced_submesh(
-                            &mut pass,
-                            &resources.instance_buffer,
-                            1,
-                            Some(draw.submesh),
-                        );
+                    if !draw.pipeline_key.cast_shadow || draw.gpu_mesh.skinning_buffer.is_some() {
+                        continue;
                     }
+                    pass.set_pipeline(
+                        &self.render.shadow_pipelines[draw.pipeline_key.cull_index()],
+                    );
+                    pass.set_bind_group(2, draw.texture_bind_group.as_ref(), &[]);
+                    draw.gpu_mesh.draw_instanced_submesh(
+                        &mut pass,
+                        &resources.instance_buffer,
+                        1,
+                        Some(draw.submesh),
+                    );
                 }
 
                 // Skinned casters deform with the same palette as the main
-                // pass so shadows match the rendered pose (Phase 50-D).
-                if skinned_draws
-                    .iter()
-                    .any(|draw| draw.gpu_mesh.skinning_buffer.is_some())
-                {
-                    pass.set_pipeline(&self.render.shadow_skinned_pipeline);
+                // pass so shadows match both pose and material coverage.
+                for (draw, resources) in skinned_draws.iter().zip(skinned_resources.iter()) {
+                    if !draw.pipeline_key.cast_shadow || draw.gpu_mesh.skinning_buffer.is_none() {
+                        continue;
+                    }
+                    pass.set_pipeline(
+                        &self.render.shadow_skinned_pipelines[draw.pipeline_key.cull_index()],
+                    );
                     pass.set_bind_group(
                         0,
                         &self.render.shadow_cascade_bind_groups[cascade_index],
                         &[],
                     );
-                    for (draw, resources) in
-                        skinned_draws.iter().zip(skinned_resources.iter())
-                    {
-                        if !draw.pipeline_key.cast_shadow || draw.gpu_mesh.skinning_buffer.is_none() {
-                            continue;
-                        }
-                        pass.set_bind_group(1, &resources.palette_bind_group, &[]);
-                        draw.gpu_mesh.draw_skinned_submesh(
-                            &mut pass,
-                            &resources.instance_buffer,
-                            Some(draw.submesh),
-                        );
-                    }
+                    pass.set_bind_group(1, &resources.palette_bind_group, &[]);
+                    pass.set_bind_group(2, draw.texture_bind_group.as_ref(), &[]);
+                    draw.gpu_mesh.draw_skinned_submesh(
+                        &mut pass,
+                        &resources.instance_buffer,
+                        Some(draw.submesh),
+                    );
                 }
             }
         }
@@ -1490,11 +1668,12 @@ impl WorldRenderer {
             pass.set_bind_group(0, &self.render.camera_bind_group, &[]);
             pass.set_bind_group(2, &self.render.light_bind_group, &[]);
 
-            if sky.enabled {
-                // The gradient replaces the flat clear color; drawn first
-                // with depth writes off so all geometry covers it.
+            if sky.enabled || self.render.environment.has_skybox() {
+                // A resolved skybox replaces the procedural gradient. Both
+                // draw before geometry with depth writes disabled.
                 pass.set_pipeline(&self.render.sky_pipeline);
                 pass.set_bind_group(0, &self.render.sky_bind_group, &[]);
+                pass.set_bind_group(1, self.render.environment.sky_bind_group(), &[]);
                 pass.draw(0..3, 0..1);
                 pass.set_bind_group(0, &self.render.camera_bind_group, &[]);
             }
@@ -1588,18 +1767,21 @@ impl WorldRenderer {
 
             for (draw, _) in &blend_draws {
                 match *draw {
-                    BlendDraw::StaticBatch(index) => {
-                        let batch = &batches[index];
-                        let instance_buffer = &instance_buffers[index];
+                    BlendDraw::StaticInstance {
+                        batch: batch_index,
+                        instance,
+                    } => {
+                        let batch = &batches[batch_index];
+                        let instance_buffer = &instance_buffers[batch_index];
                         pass.set_pipeline(
                             &self.render.pipelines[batch.pipeline_key.alpha_index()]
                                 [batch.pipeline_key.cull_index()],
                         );
                         pass.set_bind_group(1, batch.texture_bind_group.as_ref(), &[]);
-                        batch.gpu_mesh.draw_material_instanced_submesh(
+                        batch.gpu_mesh.draw_material_instanced_submesh_range(
                             &mut pass,
                             instance_buffer,
-                            batch.instances.len() as u32,
+                            instance..instance + 1,
                             Some(batch.submesh),
                         );
                     }
@@ -1673,6 +1855,16 @@ impl WorldRenderer {
 
         queue.submit(std::iter::once(encoder.finish()));
         Ok(())
+    }
+
+    fn environment_texture(
+        world: &engine_ecs::World,
+        runtime_id: Option<crate::asset::RuntimeAssetId>,
+    ) -> Option<Arc<Texture>> {
+        let runtime_id = runtime_id?;
+        let assets = world.get_resource::<crate::asset::Assets<Arc<Texture>>>()?;
+        let handle = assets.handle(runtime_id)?;
+        assets.get(&handle).cloned()
     }
 
     /// Returns a clone of the selected Game View camera and its transform.
@@ -1823,7 +2015,7 @@ impl WorldRenderer {
         world: &mut engine_ecs::World,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        camera_position: glam::Vec3,
+        _camera_position: glam::Vec3,
     ) -> Vec<StaticBatch> {
         use crate::asset::Handle;
         use engine_ecs::{Query, Without};
@@ -2022,18 +2214,9 @@ impl WorldRenderer {
         }
 
         let mut batches: Vec<_> = batches.into_values().collect();
-        for batch in &mut batches {
-            if batch.pipeline_key.alpha_mode == AlphaMode::Blend {
-                batch.instances.sort_by(|left, right| {
-                    instance_distance_squared(right, camera_position)
-                        .partial_cmp(&instance_distance_squared(left, camera_position))
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                });
-            }
-        }
         // Opaque/masked geometry must populate depth before blended geometry.
-        // Transparent batches are then drawn back-to-front relative to the
-        // active camera; ties retain deterministic material-key ordering.
+        // Blend instances are globally depth-sorted later, so the batch order
+        // only groups fixed pipeline state and must not mutate parallel payloads.
         batches.sort_by(|left, right| {
             match (
                 left.pipeline_key.alpha_mode == AlphaMode::Blend,
@@ -2041,11 +2224,7 @@ impl WorldRenderer {
             ) {
                 (false, true) => std::cmp::Ordering::Less,
                 (true, false) => std::cmp::Ordering::Greater,
-                (false, false) => left.pipeline_key.cmp(&right.pipeline_key),
-                (true, true) => batch_distance_squared(right, camera_position)
-                    .partial_cmp(&batch_distance_squared(left, camera_position))
-                    .unwrap_or(std::cmp::Ordering::Equal)
-                    .then_with(|| left.pipeline_key.cmp(&right.pipeline_key)),
+                (false, false) | (true, true) => left.pipeline_key.cmp(&right.pipeline_key),
             }
         });
         batches
@@ -2387,14 +2566,6 @@ fn instance_distance_squared(instance: &InstanceData, camera_position: glam::Vec
     translation.distance_squared(camera_position)
 }
 
-fn batch_distance_squared(batch: &StaticBatch, camera_position: glam::Vec3) -> f32 {
-    batch
-        .instances
-        .first()
-        .map(|instance| instance_distance_squared(instance, camera_position))
-        .unwrap_or(0.0)
-}
-
 /// Pads `palette` with identity matrices to the fixed uniform array size.
 fn padded_palette(palette: &JointPalette) -> Vec<[f32; 16]> {
     let mut matrices: Vec<[f32; 16]> = palette
@@ -2545,9 +2716,14 @@ impl RenderState {
             )
             .expect("one-pixel flat normal must fit every valid GPU device"),
         );
+        let environment = EnvironmentGpuState::new(device, queue);
 
-        let default_light =
-            LightUniform::from_resources(&AmbientLight::default(), &DirectionalLight::default());
+        let default_light = LightUniform::from_resources(
+            &AmbientLight::default(),
+            &DirectionalLight::default(),
+            &[],
+            &[],
+        );
         let light_buffer =
             Self::make_uniform_buffer(device, bytemuck::bytes_of(&default_light), "Light");
 
@@ -2633,31 +2809,65 @@ impl RenderState {
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        multisampled: false,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 5,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        multisampled: false,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 6,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        multisampled: false,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 7,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 8,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         });
 
-        let light_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Light BG"),
-            layout: &light_bgl,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: light_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: shadow_uniform_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::TextureView(&shadow_sample_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: wgpu::BindingResource::Sampler(&shadow_sampler),
-                },
-            ],
-        });
+        let light_bind_group = Self::make_light_bind_group(
+            device,
+            &light_bgl,
+            &light_buffer,
+            &shadow_uniform_buffer,
+            &shadow_sample_view,
+            &shadow_sampler,
+            &environment,
+            None,
+        );
 
         // The static module owns the material fragment stage. Skinned material
         // pipelines pair their deformation vertex stage with this same
@@ -2956,42 +3166,58 @@ impl RenderState {
         let shadow_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Shadow pipeline layout"),
-                bind_group_layouts: &[Some(&shadow_camera_bgl)],
+                bind_group_layouts: &[
+                    Some(&shadow_camera_bgl),
+                    None,
+                    Some(&texture_bind_group_layout),
+                ],
                 immediate_size: 0,
             });
-        let shadow_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Shadow depth pipeline"),
-            layout: Some(&shadow_pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shadow_shader,
-                entry_point: Some("vs_main"),
-                buffers: &[Vertex::LAYOUT, InstanceData::LAYOUT],
-                compilation_options: Default::default(),
-            },
-            fragment: None,
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                strip_index_format: None,
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode: Some(wgpu::Face::Back),
-                ..Default::default()
-            },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: shadow_descriptor.format.to_wgpu(),
-                depth_write_enabled: Some(true),
-                depth_compare: Some(wgpu::CompareFunction::Less),
-                stencil: wgpu::StencilState::default(),
-                // Hardware slope-scaled bias combats acne; the shader-side
-                // depth bias from ShadowSettings stacks on top.
-                bias: wgpu::DepthBiasState {
-                    constant: 2,
-                    slope_scale: 2.0,
-                    clamp: 0.0,
+        let shadow_pipelines = std::array::from_fn(|cull_index| {
+            let cull_mode = [CullMode::Back, CullMode::Front, CullMode::None][cull_index];
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("Shadow depth pipeline"),
+                layout: Some(&shadow_pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &shadow_shader,
+                    entry_point: Some("vs_main"),
+                    buffers: &[Vertex::LAYOUT, InstanceData::LAYOUT],
+                    compilation_options: Default::default(),
                 },
-            }),
-            multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
-            cache: None,
+                fragment: Some(wgpu::FragmentState {
+                    module: &shadow_shader,
+                    entry_point: Some("fs_main"),
+                    targets: &[],
+                    compilation_options: Default::default(),
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    strip_index_format: None,
+                    front_face: wgpu::FrontFace::Ccw,
+                    cull_mode: match cull_mode {
+                        CullMode::Back => Some(wgpu::Face::Back),
+                        CullMode::Front => Some(wgpu::Face::Front),
+                        CullMode::None => None,
+                    },
+                    ..Default::default()
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: shadow_descriptor.format.to_wgpu(),
+                    depth_write_enabled: Some(true),
+                    depth_compare: Some(wgpu::CompareFunction::Less),
+                    stencil: wgpu::StencilState::default(),
+                    // Hardware slope-scaled bias combats acne; the shader-side
+                    // depth bias from ShadowSettings stacks on top.
+                    bias: wgpu::DepthBiasState {
+                        constant: 2,
+                        slope_scale: 2.0,
+                        clamp: 0.0,
+                    },
+                }),
+                multisample: wgpu::MultisampleState::default(),
+                multiview_mask: None,
+                cache: None,
+            })
         });
 
         let shadow_skinned_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -3003,10 +3229,15 @@ impl RenderState {
         let shadow_skinned_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Shadow skinned pipeline layout"),
-                bind_group_layouts: &[Some(&shadow_camera_bgl), Some(&joint_palette_bgl)],
+                bind_group_layouts: &[
+                    Some(&shadow_camera_bgl),
+                    Some(&joint_palette_bgl),
+                    Some(&texture_bind_group_layout),
+                ],
                 immediate_size: 0,
             });
-        let shadow_skinned_pipeline =
+        let shadow_skinned_pipelines = std::array::from_fn(|cull_index| {
+            let cull_mode = [CullMode::Back, CullMode::Front, CullMode::None][cull_index];
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("Shadow skinned depth pipeline"),
                 layout: Some(&shadow_skinned_pipeline_layout),
@@ -3020,12 +3251,21 @@ impl RenderState {
                     ],
                     compilation_options: Default::default(),
                 },
-                fragment: None,
+                fragment: Some(wgpu::FragmentState {
+                    module: &shadow_skinned_shader,
+                    entry_point: Some("fs_main"),
+                    targets: &[],
+                    compilation_options: Default::default(),
+                }),
                 primitive: wgpu::PrimitiveState {
                     topology: wgpu::PrimitiveTopology::TriangleList,
                     strip_index_format: None,
                     front_face: wgpu::FrontFace::Ccw,
-                    cull_mode: Some(wgpu::Face::Back),
+                    cull_mode: match cull_mode {
+                        CullMode::Back => Some(wgpu::Face::Back),
+                        CullMode::Front => Some(wgpu::Face::Front),
+                        CullMode::None => None,
+                    },
                     ..Default::default()
                 },
                 depth_stencil: Some(wgpu::DepthStencilState {
@@ -3042,7 +3282,8 @@ impl RenderState {
                 multisample: wgpu::MultisampleState::default(),
                 multiview_mask: None,
                 cache: None,
-            });
+            })
+        });
 
         let sky_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Sky shader"),
@@ -3079,7 +3320,10 @@ impl RenderState {
         });
         let sky_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Sky pipeline layout"),
-            bind_group_layouts: &[Some(&sky_bgl)],
+            bind_group_layouts: &[
+                Some(&sky_bgl),
+                Some(environment.sky_bind_group_layout()),
+            ],
             immediate_size: 0,
         });
         let sky_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -3127,8 +3371,12 @@ impl RenderState {
             texture_bind_group_layout,
             white_texture: white_tex,
             flat_normal_texture: flat_normal_tex,
+            environment,
             light_buffer,
+            light_bind_group_layout: light_bgl,
             light_bind_group,
+            shadow_sample_view,
+            shadow_sampler,
             pipelines,
             skinned_pipelines,
             outline_mask_pipelines,
@@ -3136,8 +3384,8 @@ impl RenderState {
             outline_composite_bgl,
             outline_composite_pipeline,
             joint_palette_bgl,
-            shadow_pipeline,
-            shadow_skinned_pipeline,
+            shadow_pipelines,
+            shadow_skinned_pipelines,
             shadow_uniform_buffer,
             shadow_cascade_buffers,
             shadow_cascade_bind_groups,
@@ -3150,6 +3398,65 @@ impl RenderState {
             return Err(RenderStateError(error));
         }
         Ok(state)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn make_light_bind_group(
+        device: &wgpu::Device,
+        layout: &wgpu::BindGroupLayout,
+        light_buffer: &wgpu::Buffer,
+        shadow_uniform_buffer: &wgpu::Buffer,
+        shadow_sample_view: &wgpu::TextureView,
+        shadow_sampler: &wgpu::Sampler,
+        environment: &EnvironmentGpuState,
+        diffuse_override: Option<&Texture>,
+    ) -> wgpu::BindGroup {
+        let diffuse_view = match diffuse_override {
+            Some(texture) => &texture.view,
+            None => environment.diffuse_view(),
+        };
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Scene lighting BG"),
+            layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: light_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: shadow_uniform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(shadow_sample_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::Sampler(shadow_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::TextureView(diffuse_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: wgpu::BindingResource::TextureView(environment.specular_view()),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: wgpu::BindingResource::TextureView(environment.brdf_view()),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: wgpu::BindingResource::Sampler(environment.sampler()),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 8,
+                    resource: environment.uniform_buffer().as_entire_binding(),
+                },
+            ],
+        })
     }
 
     fn make_uniform_buffer(device: &wgpu::Device, data: &[u8], label: &str) -> wgpu::Buffer {
@@ -3223,14 +3530,42 @@ impl RenderState {
         queue.write_buffer(&self.camera_buffer, 0, bytemuck::bytes_of(&uniform));
     }
 
-    pub(crate) fn update_light(
+    fn update_light(
         &self,
         queue: &wgpu::Queue,
         ambient: &AmbientLight,
         directional: &DirectionalLight,
+        point_lights: &[PointLightUniform],
+        spot_lights: &[SpotLightUniform],
     ) {
-        let uniform = LightUniform::from_resources(ambient, directional);
+        let uniform =
+            LightUniform::from_resources(ambient, directional, point_lights, spot_lights);
         queue.write_buffer(&self.light_buffer, 0, bytemuck::bytes_of(&uniform));
+    }
+
+    pub(crate) fn update_environment(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        settings: &EnvironmentLighting,
+        skybox: Option<&Arc<Texture>>,
+        diffuse_irradiance: Option<&Arc<Texture>>,
+    ) {
+        let bindings_changed =
+            self.environment
+                .update(device, queue, settings, skybox, diffuse_irradiance);
+        if bindings_changed {
+            self.light_bind_group = Self::make_light_bind_group(
+                device,
+                &self.light_bind_group_layout,
+                &self.light_buffer,
+                &self.shadow_uniform_buffer,
+                &self.shadow_sample_view,
+                &self.shadow_sampler,
+                &self.environment,
+                diffuse_irradiance.map(Arc::as_ref),
+            );
+        }
     }
 
     pub(crate) fn update_sky(&self, queue: &wgpu::Queue, vp: glam::Mat4, sky: &SkySettings) {
@@ -3242,6 +3577,7 @@ impl RenderState {
         &self,
         queue: &wgpu::Queue,
         matrices: &[glam::Mat4; SHADOW_CASCADE_COUNT],
+        cascade_blend_depths: [f32; 2],
         settings: &ShadowSettings,
         enabled: bool,
     ) {
@@ -3256,6 +3592,12 @@ impl RenderState {
                 settings.normal_bias,
                 if enabled { 1.0 } else { 0.0 },
                 1.0 / settings.resolution.max(1) as f32,
+            ],
+            cascade_depths: [
+                cascade_blend_depths[0],
+                cascade_blend_depths[1],
+                0.0,
+                0.0,
             ],
         };
         queue.write_buffer(&self.shadow_uniform_buffer, 0, bytemuck::bytes_of(&uniform));
@@ -3718,6 +4060,27 @@ mod tests {
     use super::*;
 
     #[test]
+    fn blended_draws_sort_globally_by_instance_depth() {
+        let far_static = BlendDraw::StaticInstance { batch: 0, instance: 0 };
+        let near_static = BlendDraw::StaticInstance { batch: 0, instance: 1 };
+        let middle_static = BlendDraw::StaticInstance { batch: 1, instance: 0 };
+        let middle_skinned = BlendDraw::Skinned(0);
+        let mut draws = vec![
+            (near_static, 1.0),
+            (middle_skinned, 64.0),
+            (far_static, 100.0),
+            (middle_static, 81.0),
+        ];
+
+        sort_blend_draws_back_to_front(&mut draws);
+
+        assert_eq!(
+            draws.into_iter().map(|(draw, _)| draw).collect::<Vec<_>>(),
+            vec![far_static, middle_static, middle_skinned, near_static]
+        );
+    }
+
+    #[test]
     fn material_texture_slots_distinguish_color_from_numeric_data() {
         assert_ne!(
             TextureSampleEncoding::SrgbColor,
@@ -3906,6 +4269,22 @@ mod tests {
     }
 
     #[test]
+    fn local_light_uniforms_follow_global_transform_contract() {
+        let transform = GlobalTransform(glam::Mat4::from_translation(glam::Vec3::new(
+            1.0, 2.0, 3.0,
+        )));
+        let point = PointLightUniform::from_component(&PointLight::default(), &transform)
+            .expect("default point light must upload");
+        assert_eq!(point.position_range[..3], [1.0, 2.0, 3.0]);
+
+        let spot = SpotLightUniform::from_component(&SpotLight::default(), &transform)
+            .expect("default spot light must upload");
+        assert_eq!(spot.position_range[..3], [1.0, 2.0, 3.0]);
+        assert_eq!(&spot.direction_outer[..3], &[0.0, 0.0, -1.0]);
+        assert!(spot.direction_outer[3] < spot.params[0]);
+    }
+
+    #[test]
     fn material_shader_pipeline_matrix_validates_when_a_gpu_adapter_is_available() {
         let instance = wgpu::Instance::default();
         let context = match pollster::block_on(engine_renderer::GpuContext::new(&instance, None)) {
@@ -4075,6 +4454,358 @@ mod tests {
     }
 
     #[test]
+    fn fixed_camera_reference_scene_receives_point_and_spot_direct_lighting() {
+        const WIDTH: u32 = 64;
+        const HEIGHT: u32 = 64;
+        const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
+
+        let instance = wgpu::Instance::default();
+        let context = match pollster::block_on(engine_renderer::GpuContext::new(&instance, None)) {
+            Ok(context) => context,
+            Err(engine_renderer::GpuContextError::AdapterUnavailable) => return,
+            Err(error) => panic!("GPU device creation failed: {error}"),
+        };
+        let device = context.device();
+        let queue = context.queue();
+        let mut renderer = pollster::block_on(WorldRenderer::new(device, queue, FORMAT))
+            .expect("local-light reference renderer pipelines must validate");
+
+        let color_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Point/spot reference color"),
+            size: wgpu::Extent3d {
+                width: WIDTH,
+                height: HEIGHT,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let color_view = color_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let depth_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Point/spot reference depth"),
+            size: wgpu::Extent3d {
+                width: WIDTH,
+                height: HEIGHT,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: MAIN_PASS_SAMPLE_COUNT,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Depth32Float,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let depth_view = depth_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        let mut world = engine_ecs::World::new();
+        world.insert_resource(AmbientLight {
+            color: glam::Vec3::ZERO,
+            intensity: 0.0,
+        });
+        world.insert_resource(DirectionalLight {
+            direction: glam::Vec3::NEG_Z,
+            color: glam::Vec3::ONE,
+            intensity: 0.0,
+        });
+        world.insert_resource(EnvironmentLighting {
+            intensity: 0.0,
+            diffuse_ibl_enabled: false,
+            ..EnvironmentLighting::default()
+        });
+        world.insert_resource(ShadowSettings {
+            enabled: false,
+            ..ShadowSettings::default()
+        });
+        world.insert_resource(SkySettings {
+            enabled: false,
+            ..SkySettings::default()
+        });
+
+        let reference_material = || Material {
+            color: [0.8, 0.8, 0.8, 1.0],
+            roughness: 0.8,
+            metallic: 0.0,
+            cull_mode: CullMode::None,
+            cast_shadow: false,
+            receive_shadow: false,
+            ..Material::default()
+        };
+        for x in [-0.7_f32, 0.7] {
+            let surface = world.spawn().expect("reference surface must spawn");
+            world
+                .add_component(surface, reference_quad())
+                .expect("reference mesh must insert");
+            world
+                .add_component(
+                    surface,
+                    GlobalTransform(glam::Mat4::from_translation(glam::Vec3::new(
+                        x, 0.0, 0.0,
+                    ))),
+                )
+                .expect("reference transform must insert");
+            world
+                .add_component(surface, reference_material())
+                .expect("reference material must insert");
+        }
+
+        let point = world.spawn().expect("point light must spawn");
+        world
+            .add_component(
+                point,
+                PointLight {
+                    color: glam::Vec3::ONE,
+                    intensity: 40.0,
+                    range: 1.25,
+                },
+            )
+            .expect("point light must insert");
+        world
+            .add_component(
+                point,
+                GlobalTransform(glam::Mat4::from_translation(glam::Vec3::new(
+                    -0.7, 0.0, 1.0,
+                ))),
+            )
+            .expect("point transform must insert");
+
+        let spot = world.spawn().expect("spot light must spawn");
+        world
+            .add_component(
+                spot,
+                SpotLight {
+                    color: glam::Vec3::ONE,
+                    intensity: 40.0,
+                    range: 1.25,
+                    inner_angle_radians: 20.0_f32.to_radians(),
+                    outer_angle_radians: 30.0_f32.to_radians(),
+                },
+            )
+            .expect("spot light must insert");
+        world
+            .add_component(
+                spot,
+                GlobalTransform(glam::Mat4::from_translation(glam::Vec3::new(
+                    0.7, 0.0, 1.0,
+                ))),
+            )
+            .expect("spot transform must insert");
+
+        let camera = Camera3D::new(60.0, 1.0, 0.1, 10.0);
+        let camera_transform = crate::transform::Transform::looking_at(
+            glam::Vec3::new(0.0, 0.0, 3.0),
+            glam::Vec3::ZERO,
+            glam::Vec3::Y,
+        );
+        renderer
+            .render_to_view_with_camera(
+                &mut world,
+                &camera,
+                &camera_transform,
+                device,
+                queue,
+                &color_view,
+                &depth_view,
+            )
+            .expect("point/spot reference scene must render");
+
+        let rgba8 = readback_rgba8(device, queue, &color_texture, WIDTH, HEIGHT);
+        let background = rgb_sum_at(&rgba8, WIDTH, 0, 0);
+        let point_peak = peak_rgb_sum(&rgba8, WIDTH, HEIGHT, 0, WIDTH / 2);
+        let spot_peak = peak_rgb_sum(&rgba8, WIDTH, HEIGHT, WIDTH / 2, WIDTH);
+        assert!(
+            point_peak > background + 100,
+            "point light must illuminate its local StandardLit surface: background={background}, point={point_peak}"
+        );
+        assert!(
+            spot_peak > background + 100,
+            "spot light must illuminate the surface inside its cone: background={background}, spot={spot_peak}"
+        );
+    }
+
+    #[test]
+    fn fixed_camera_reference_scene_receives_point_and_spot_toon_lighting() {
+        const WIDTH: u32 = 64;
+        const HEIGHT: u32 = 64;
+        const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
+
+        let instance = wgpu::Instance::default();
+        let context = match pollster::block_on(engine_renderer::GpuContext::new(&instance, None)) {
+            Ok(context) => context,
+            Err(engine_renderer::GpuContextError::AdapterUnavailable) => return,
+            Err(error) => panic!("GPU device creation failed: {error}"),
+        };
+        let device = context.device();
+        let queue = context.queue();
+        let mut renderer = pollster::block_on(WorldRenderer::new(device, queue, FORMAT))
+            .expect("ToonLit local-light reference renderer pipelines must validate");
+
+        let color_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("ToonLit point/spot reference color"),
+            size: wgpu::Extent3d {
+                width: WIDTH,
+                height: HEIGHT,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let color_view = color_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let depth_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("ToonLit point/spot reference depth"),
+            size: wgpu::Extent3d {
+                width: WIDTH,
+                height: HEIGHT,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: MAIN_PASS_SAMPLE_COUNT,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Depth32Float,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let depth_view = depth_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        let mut world = engine_ecs::World::new();
+        world.insert_resource(AmbientLight {
+            color: glam::Vec3::ZERO,
+            intensity: 0.0,
+        });
+        world.insert_resource(DirectionalLight {
+            direction: glam::Vec3::NEG_Z,
+            color: glam::Vec3::ONE,
+            intensity: 0.0,
+        });
+        world.insert_resource(EnvironmentLighting {
+            intensity: 0.0,
+            diffuse_ibl_enabled: false,
+            ..EnvironmentLighting::default()
+        });
+        world.insert_resource(ShadowSettings {
+            enabled: false,
+            ..ShadowSettings::default()
+        });
+        world.insert_resource(SkySettings {
+            enabled: false,
+            ..SkySettings::default()
+        });
+
+        let reference_material = || Material {
+            color: [0.8, 0.8, 0.8, 1.0],
+            cull_mode: CullMode::None,
+            shading_model: ShadingModel::ToonLit,
+            toon: crate::material::ToonMaterial {
+                shadow_color: [0.0; 3],
+                ambient_color: [0.0; 3],
+                specular_color: [0.0; 3],
+                rim_intensity: 0.0,
+                ..crate::material::ToonMaterial::default()
+            },
+            cast_shadow: false,
+            receive_shadow: false,
+            ..Material::default()
+        };
+        for x in [-0.7_f32, 0.7] {
+            let surface = world.spawn().expect("ToonLit reference surface must spawn");
+            world
+                .add_component(surface, reference_quad())
+                .expect("ToonLit reference mesh must insert");
+            world
+                .add_component(
+                    surface,
+                    GlobalTransform(glam::Mat4::from_translation(glam::Vec3::new(
+                        x, 0.0, 0.0,
+                    ))),
+                )
+                .expect("ToonLit reference transform must insert");
+            world
+                .add_component(surface, reference_material())
+                .expect("ToonLit reference material must insert");
+        }
+
+        let point = world.spawn().expect("ToonLit point light must spawn");
+        world
+            .add_component(
+                point,
+                PointLight {
+                    color: glam::Vec3::ONE,
+                    intensity: 40.0,
+                    range: 1.25,
+                },
+            )
+            .expect("ToonLit point light must insert");
+        world
+            .add_component(
+                point,
+                GlobalTransform(glam::Mat4::from_translation(glam::Vec3::new(
+                    -0.7, 0.0, 1.0,
+                ))),
+            )
+            .expect("ToonLit point transform must insert");
+
+        let spot = world.spawn().expect("ToonLit spot light must spawn");
+        world
+            .add_component(
+                spot,
+                SpotLight {
+                    color: glam::Vec3::ONE,
+                    intensity: 40.0,
+                    range: 1.25,
+                    inner_angle_radians: 20.0_f32.to_radians(),
+                    outer_angle_radians: 30.0_f32.to_radians(),
+                },
+            )
+            .expect("ToonLit spot light must insert");
+        world
+            .add_component(
+                spot,
+                GlobalTransform(glam::Mat4::from_translation(glam::Vec3::new(
+                    0.7, 0.0, 1.0,
+                ))),
+            )
+            .expect("ToonLit spot transform must insert");
+
+        let camera = Camera3D::new(60.0, 1.0, 0.1, 10.0);
+        let camera_transform = crate::transform::Transform::looking_at(
+            glam::Vec3::new(0.0, 0.0, 3.0),
+            glam::Vec3::ZERO,
+            glam::Vec3::Y,
+        );
+        renderer
+            .render_to_view_with_camera(
+                &mut world,
+                &camera,
+                &camera_transform,
+                device,
+                queue,
+                &color_view,
+                &depth_view,
+            )
+            .expect("ToonLit point/spot reference scene must render");
+
+        let rgba8 = readback_rgba8(device, queue, &color_texture, WIDTH, HEIGHT);
+        let background = rgb_sum_at(&rgba8, WIDTH, 0, 0);
+        let point_peak = peak_rgb_sum(&rgba8, WIDTH, HEIGHT, 0, WIDTH / 2);
+        let spot_peak = peak_rgb_sum(&rgba8, WIDTH, HEIGHT, WIDTH / 2, WIDTH);
+        assert!(
+            point_peak > background + 100,
+            "point light must illuminate its local ToonLit surface: background={background}, point={point_peak}"
+        );
+        assert!(
+            spot_peak > background + 100,
+            "spot light must illuminate the ToonLit surface inside its cone: background={background}, spot={spot_peak}"
+        );
+    }
+
+    #[test]
     fn fixed_camera_light_reference_scene_preserves_standard_lit_occlusion_contrast() {
         const WIDTH: u32 = 64;
         const HEIGHT: u32 = 64;
@@ -4240,6 +4971,161 @@ mod tests {
         assert!(
             unoccluded_peak > occluded_peak + 120,
             "full AO must preserve substantially more ambient StandardLit energy: unoccluded={unoccluded_peak}, occluded={occluded_peak}"
+        );
+    }
+
+    #[test]
+    fn fixed_camera_reference_scene_receives_environment_specular_ibl() {
+        const WIDTH: u32 = 64;
+        const HEIGHT: u32 = 64;
+        const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
+
+        let instance = wgpu::Instance::default();
+        let context = match pollster::block_on(engine_renderer::GpuContext::new(&instance, None)) {
+            Ok(context) => context,
+            Err(engine_renderer::GpuContextError::AdapterUnavailable) => return,
+            Err(error) => panic!("GPU device creation failed: {error}"),
+        };
+        let device = context.device();
+        let queue = context.queue();
+        let mut renderer = pollster::block_on(WorldRenderer::new(device, queue, FORMAT))
+            .expect("environment reference renderer pipelines must validate");
+
+        let color_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Environment specular reference color"),
+            size: wgpu::Extent3d {
+                width: WIDTH,
+                height: HEIGHT,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let color_view = color_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let depth_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Environment specular reference depth"),
+            size: wgpu::Extent3d {
+                width: WIDTH,
+                height: HEIGHT,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: MAIN_PASS_SAMPLE_COUNT,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Depth32Float,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let depth_view = depth_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        // The camera sees -Z at the screen center, while a +Z-facing metal
+        // reflects +Z. Keep -Z black and put a compact white source around
+        // +Z so this reference isolates the specular environment term.
+        let sky_width = 8u32;
+        let sky_height = 4u32;
+        let mut sky_pixels = vec![0u8; (sky_width * sky_height * 4) as usize];
+        for pixel in sky_pixels.chunks_exact_mut(4) {
+            pixel[3] = 255;
+        }
+        for y in 1..=2u32 {
+            for x in 5..=6u32 {
+                let offset = ((y * sky_width + x) * 4) as usize;
+                sky_pixels[offset..offset + 4].copy_from_slice(&[255, 255, 255, 255]);
+            }
+        }
+        let skybox = Arc::new(
+            Texture::from_decoded(
+                device,
+                queue,
+                &DecodedTexture {
+                    label: "environment_specular_reference".into(),
+                    width: sky_width,
+                    height: sky_height,
+                    rgba8: sky_pixels,
+                },
+            )
+            .expect("reference environment texture must upload"),
+        );
+        let mut texture_assets = crate::asset::Assets::<Arc<Texture>>::default();
+        let skybox_id = texture_assets.add(skybox).id();
+
+        let mut world = engine_ecs::World::new();
+        world.insert_resource(texture_assets);
+        world.insert_resource(AmbientLight {
+            color: glam::Vec3::ZERO,
+            intensity: 0.0,
+        });
+        world.insert_resource(DirectionalLight {
+            direction: glam::Vec3::NEG_Z,
+            color: glam::Vec3::ONE,
+            intensity: 0.0,
+        });
+        world.insert_resource(ShadowSettings {
+            enabled: false,
+            ..ShadowSettings::default()
+        });
+        world.insert_resource(SkySettings {
+            enabled: false,
+            ..SkySettings::default()
+        });
+        world.insert_resource(EnvironmentLighting {
+            skybox: Some(skybox_id),
+            diffuse_irradiance: None,
+            diffuse_color: glam::Vec3::ZERO,
+            intensity: 2.0,
+            diffuse_ibl_enabled: false,
+        });
+
+        let reflective = world.spawn().expect("reference entity must spawn");
+        world
+            .add_component(reflective, reference_quad())
+            .expect("reference mesh must insert");
+        world
+            .add_component(reflective, GlobalTransform(glam::Mat4::IDENTITY))
+            .expect("reference transform must insert");
+        world
+            .add_component(
+                reflective,
+                Material {
+                    color: [1.0; 4],
+                    roughness: 0.05,
+                    metallic: 1.0,
+                    cull_mode: CullMode::None,
+                    cast_shadow: false,
+                    receive_shadow: false,
+                    ..Material::default()
+                },
+            )
+            .expect("reference material must insert");
+
+        let camera = Camera3D::new(60.0, 1.0, 0.1, 10.0);
+        let camera_transform = crate::transform::Transform::looking_at(
+            glam::Vec3::new(0.0, 0.0, 3.0),
+            glam::Vec3::ZERO,
+            glam::Vec3::Y,
+        );
+        renderer
+            .render_to_view_with_camera(
+                &mut world,
+                &camera,
+                &camera_transform,
+                device,
+                queue,
+                &color_view,
+                &depth_view,
+            )
+            .expect("environment reference scene must render");
+
+        let rgba8 = readback_rgba8(device, queue, &color_texture, WIDTH, HEIGHT);
+        let background = rgb_sum_at(&rgba8, WIDTH, 4, 4);
+        let reflection = rgb_sum_at(&rgba8, WIDTH, WIDTH / 2, HEIGHT / 2);
+        assert!(
+            reflection > background + 80,
+            "metallic StandardLit must receive skybox specular IBL: background={background}, reflection={reflection}"
         );
     }
 }

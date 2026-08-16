@@ -39,6 +39,12 @@ fn registry_returns_registered_definition() {
         .get(&ComponentTypeId::new(AMBIENT_LIGHT_COMPONENT))
         .is_some());
     assert!(registry
+        .get(&ComponentTypeId::new(POINT_LIGHT_COMPONENT))
+        .is_some());
+    assert!(registry
+        .get(&ComponentTypeId::new(SPOT_LIGHT_COMPONENT))
+        .is_some());
+    assert!(registry
         .get(&ComponentTypeId::new(SHADOW_SETTINGS_COMPONENT))
         .is_some());
     assert!(registry
@@ -195,7 +201,9 @@ fn registry_iterates_in_registration_order() {
             AUDIO_LISTENER_COMPONENT,
             MUSIC_CONTROLLER_COMPONENT,
             FOOT_IK_COMPONENT,
-            SECONDARY_MOTION_COMPONENT,
+            RIGID_BODY_PHYSICS_COMPONENT,
+            POINT_LIGHT_COMPONENT,
+            SPOT_LIGHT_COMPONENT,
         ]
     );
 }

@@ -92,7 +92,7 @@ pub mod humanoid_import;
 pub mod hitbox;
 /// Keyboard and mouse input resources.
 pub mod input;
-/// Ambient and directional light resources.
+/// Ambient, directional, point, and spot light resources.
 pub mod light;
 /// Lock-on targeting: target selection, persistence, and validation (Phase 58).
 pub mod lock_on;
@@ -102,8 +102,8 @@ pub mod lod;
 pub mod material;
 /// CPU and GPU mesh types.
 pub mod mesh;
-/// Engine-native secondary-motion facade (ADR 0112).
-pub mod secondary_motion;
+/// Isolated Rapier secondary-motion bridge for imported MMD rigid-body rigs.
+pub mod mmd_physics;
 /// Format-independent asset builder consuming [`model_ir`] (ADR 0078):
 /// sub-asset IDs, skeleton identity/dedupe/rebind, and clip BoneId
 /// resolution.
@@ -124,8 +124,8 @@ pub mod physics;
 pub mod player;
 /// Pure skeletal clip sampling and pose blending.
 pub mod pose_graph;
-/// PMX model import pipeline for mesh, skin, material, morph, and best-effort
-/// engine-native Secondary Motion hints via `mmd-anim-format` (ADR 0097, ADR 0112).
+/// PMX (MMD model) static mesh / skin / material import pipeline via
+/// `mmd-anim-format` (ADR 0097 §1, §2, §4).
 ///
 /// Desktop-only, same rationale as [`fbx_import`]: PMX import is an
 /// authoring-time operation, so this module is absent from wasm32 builds
@@ -144,10 +144,8 @@ pub mod replay;
 /// Retarget maps, the pure FK retarget function, and the baked-clip cache
 /// wiring (ADR 0079).
 pub mod retarget;
-/// Public rigid-body rig facade owned by `engine-rig` (ADR 0111).
-///
-/// The facade exposes the current engine-native rig contract only; obsolete
-/// pre-ADR-0112 type aliases are intentionally not retained.
+/// Imported secondary-motion rigid-body rigs and the marker component that
+/// opts an entity into simulating one (ADR 0097 §6).
 pub mod rigid_body_rig;
 /// Layered rig pose buffers and deterministic world-space pose evaluation.
 pub mod rig_pose;
@@ -292,7 +290,9 @@ pub use input::{
     InputCommand, InputSource, KeyCode, MouseButton, MouseInput, VirtualInputQueue,
 };
 pub use inventory;
-pub use light::{light_resource_mirror_system, AmbientLight, DirectionalLight, SkySettings};
+pub use light::{
+    light_resource_mirror_system, AmbientLight, DirectionalLight, PointLight, SkySettings, SpotLight,
+};
 pub use lock_on::{lock_on_system, LockOnTarget, TargetLock};
 pub use lod::{lod_selection_system, InstanceStats, LodGroup, LodLevel};
 pub use material::{
@@ -303,11 +303,7 @@ pub use mesh::{
     extract_baked_submesh, mesh_to_obj, GpuMesh, GpuMeshCache, InstanceData, Mesh,
     MeshValidationError, SharedGpuMeshCache, SkinningVertexData, Submesh, Vertex,
 };
-pub use secondary_motion::{
-    secondary_motion_presentation_system, secondary_motion_system, JointDef, RigidBodyDef,
-    RigidBodyMode, RigidBodyShape, SecondaryMotion, SecondaryMotionRigAsset,
-    SecondaryMotionRigRegistry, SecondaryMotionWorlds, SECONDARY_MOTION_RIG_SCHEMA_VERSION,
-};
+pub use mmd_physics::{mmd_rigid_body_physics_system, MmdPhysicsWorlds};
 pub use model_import::{
     fingerprint_model_source, import_model_bytes, import_model_path,
     import_model_path_with_contact_bones, model_source_dependencies, GltfAnimationData,
@@ -348,6 +344,10 @@ pub use morph::{
     MaterialMorphOffset, MaterialMorphOperation, MorphAsset, MorphBaseColor, MorphDirtyVertices,
     MorphTargets, MorphWeights,
 };
+pub use rigid_body_rig::{
+    JointDef, RigidBodyDef, RigidBodyMode, RigidBodyPhysics, RigidBodyRigAsset,
+    RigidBodyRigRegistry, RigidBodyShape, RIGID_BODY_RIG_SCHEMA_VERSION,
+};
 pub use rig_pose::{
     publish_final_rig_pose_system, rig_pose_clear_transient_system, PoseBlend, PoseBuffer,
     PoseChannels, PoseLayer, PoseStage, RigPose,
@@ -358,7 +358,8 @@ pub use preview::{
 };
 pub use render_limits::{
     validate_scene_render_limits, MATERIAL_TEXTURE_SLOTS, MAX_AMBIENT_LIGHTS,
-    MAX_DIRECTIONAL_LIGHTS, MAX_PARTICLES_PER_EMITTER, MAX_RENDER_INSTANCES, MAX_TEXTURE_DIMENSION,
+    MAX_DIRECTIONAL_LIGHTS, MAX_PARTICLES_PER_EMITTER, MAX_POINT_LIGHTS, MAX_RENDER_INSTANCES,
+    MAX_SPOT_LIGHTS, MAX_TEXTURE_DIMENSION,
 };
 pub use replay::{
     InputReplay, ReplayCheckpoint, ReplayCommand, ReplayError, ReplayPlayer, ReplayRecorder,
