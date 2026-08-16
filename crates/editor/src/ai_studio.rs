@@ -10,10 +10,9 @@ use crate::agent_host::{
     ExternalAgentProcess, PermissionCheck, ProcessStream,
 };
 use eframe::egui;
-use engine_authoring::id::StableId;
 use engine_authoring::ProjectRoot;
 use std::ffi::{OsStr, OsString};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// Ephemeral Editor-owned MCP connection injected into compatible agent runtimes.
 ///
@@ -179,10 +178,9 @@ impl AiStudioPanel {
                         if ui
                             .selectable_value(&mut self.selected_session, id.clone(), title)
                             .changed()
+                            && let Ok(session) = self.host.session(&id)
                         {
-                            if let Ok(session) = self.host.session(&id) {
-                                self.proposal_draft = session.proposal.clone();
-                            }
+                            self.proposal_draft = session.proposal.clone();
                         }
                     }
                 });
@@ -334,16 +332,16 @@ impl AiStudioPanel {
         });
         if stop_requested {
             let run_id = self.active_run_id.clone();
-            if let Some(process) = self.process.as_mut() {
-                if let Err(error) = process.cancel() {
-                    self.status = Some(format!("Could not stop agent process: {error}"));
-                }
+            if let Some(process) = self.process.as_mut()
+                && let Err(error) = process.cancel()
+            {
+                self.status = Some(format!("Could not stop agent process: {error}"));
             }
             self.process = None;
-            if let Some(run_id) = run_id {
-                if let Err(error) = self.host.cancel_run(&run_id) {
-                    self.status = Some(error.to_string());
-                }
+            if let Some(run_id) = run_id
+                && let Err(error) = self.host.cancel_run(&run_id)
+            {
+                self.status = Some(error.to_string());
             }
         }
     }
