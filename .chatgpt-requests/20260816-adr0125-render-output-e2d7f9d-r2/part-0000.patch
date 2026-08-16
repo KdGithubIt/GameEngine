@@ -1,0 +1,304 @@
+diff --git a/crates/render-runtime/src/mesh.rs b/crates/render-runtime/src/mesh.rs
+--- a/crates/render-runtime/src/mesh.rs
++++ b/crates/render-runtime/src/mesh.rs
+@@ -1000,12 +1000,14 @@ pub struct InstanceData {
+     pub emissive_and_model: [f32; 4],
+     /// Roughness, metallic, alpha cutoff, and alpha-mode numeric code.
+     pub surface: [f32; 4],
++    /// UV scale XY and offset ZW applied after mesh UV lookup.
++    pub uv_transform: [f32; 4],
+ }
+ 
+ impl InstanceData {
+     /// Vertex buffer layout for per-instance data (step mode = Instance).
+     ///
+-    /// Shader locations 4–8 and 11–12: matrix, color, and material properties.
++    /// Shader locations 4–8 and 11–12/14: matrix, color, material, and UV data.
+     pub const LAYOUT: wgpu::VertexBufferLayout<'static> = wgpu::VertexBufferLayout {
+         array_stride: std::mem::size_of::<InstanceData>() as wgpu::BufferAddress,
+         step_mode: wgpu::VertexStepMode::Instance,
+@@ -1019,6 +1021,7 @@ impl InstanceData {
+             8 => Float32x4,  // color
+             11 => Float32x4, // emissive RGB + unlit flag
+             12 => Float32x4, // roughness + metallic + alpha cutoff/mode
++            14 => Float32x4, // UV scale.xy + offset.zw
+         ],
+     };
+ 
+@@ -1030,6 +1033,7 @@ impl InstanceData {
+             color,
+             emissive_and_model: [0.0, 0.0, 0.0, 0.0],
+             surface: [0.5, 0.0, 0.5, 0.0],
++            uv_transform: [1.0, 1.0, 0.0, 0.0],
+         }
+     }
+ 
+@@ -1045,6 +1049,24 @@ impl InstanceData {
+             color,
+             emissive_and_model,
+             surface,
++            uv_transform: [1.0, 1.0, 0.0, 0.0],
++        }
++    }
++
++    /// Constructs an instance with material payload and a per-instance UV transform.
++    pub fn from_transform_material_uv(
++        matrix: glam::Mat4,
++        color: [f32; 4],
++        emissive_and_model: [f32; 4],
++        surface: [f32; 4],
++        uv_transform: [f32; 4],
++    ) -> Self {
++        Self {
++            model: matrix.to_cols_array_2d(),
++            color,
++            emissive_and_model,
++            surface,
++            uv_transform,
+         }
+     }
+ }
+diff --git a/crates/render-runtime/src/shaders/mesh.wgsl b/crates/render-runtime/src/shaders/mesh.wgsl
+--- a/crates/render-runtime/src/shaders/mesh.wgsl
++++ b/crates/render-runtime/src/shaders/mesh.wgsl
+@@ -64,4 +64,5 @@ struct InstanceInput {
+     @location(6) model_2: vec4<f32>, @location(7) model_3: vec4<f32>,
+     @location(8) color: vec4<f32>, @location(11) emissive_and_model: vec4<f32>,
+     @location(12) surface: vec4<f32>,
++    @location(14) uv_transform: vec4<f32>,
+ }
+@@ -80,5 +81,5 @@ fn vs_main(vertex: VertexInput, instance: InstanceInput) -> VertexOutput {
+     var output: VertexOutput;
+     output.clip_position = camera.view_proj * world_position;
+     output.color = vertex.color;
+-    output.uv = vertex.uv;
++    output.uv = vertex.uv * instance.uv_transform.xy + instance.uv_transform.zw;
+     output.world_normal = normalize((model * vec4<f32>(vertex.normal, 0.0)).xyz);
+diff --git a/crates/render-runtime/src/shaders/mesh_skinned.wgsl b/crates/render-runtime/src/shaders/mesh_skinned.wgsl
+--- a/crates/render-runtime/src/shaders/mesh_skinned.wgsl
++++ b/crates/render-runtime/src/shaders/mesh_skinned.wgsl
+@@ -19,4 +19,5 @@ struct InstanceInput {
+     @location(6) model_2: vec4<f32>, @location(7) model_3: vec4<f32>,
+     @location(8) color: vec4<f32>, @location(11) emissive_and_model: vec4<f32>,
+     @location(12) surface: vec4<f32>,
++    @location(14) uv_transform: vec4<f32>,
+ }
+@@ -55,5 +56,5 @@ fn vs_main(vertex: VertexInput, instance: InstanceInput, skin: SkinInput) -> VertexOutput {
+     let world_position = deformed_model * vec4<f32>(vertex.position, 1.0);
+     var output: VertexOutput;
+     output.clip_position = camera.view_proj * world_position;
+-    output.color = vertex.color; output.uv = vertex.uv;
++    output.color = vertex.color; output.uv = vertex.uv * instance.uv_transform.xy + instance.uv_transform.zw;
+     output.world_normal = normalize((deformed_model * vec4<f32>(vertex.normal, 0.0)).xyz);
+diff --git a/crates/render-runtime/src/vfx.rs b/crates/render-runtime/src/vfx.rs
+--- a/crates/render-runtime/src/vfx.rs
++++ b/crates/render-runtime/src/vfx.rs
+@@ -7,14 +7,63 @@
+ 
+ use std::collections::{BTreeMap, BTreeSet};
+ 
+ use engine_authoring::{
+     CompiledVfxEffect, CompiledVfxEmitter, CompiledVfxOperation, VfxEmitterId, VfxModuleId,
+     VfxModuleOperation, VfxScalarValue, VfxShape, VfxVectorValue,
+ };
+ use engine_ecs::{Query, Res};
+ use glam::Vec3;
+ 
++use crate::asset::Handle;
++use crate::material::Material;
++use crate::mesh::Mesh;
+ use crate::time::Time;
+ use crate::transform::GlobalTransform;
+ 
++/// Runtime render binding resolved from one authored Render module.
++#[derive(Clone)]
++pub struct VfxRenderBinding {
++    /// Mesh used by this output. Billboard outputs resolve to the built-in quad.
++    pub mesh: Handle<Mesh>,
++    /// Runtime material used by this output.
++    pub material: Material,
++    /// Whether the mesh must face the active camera.
++    pub billboard: bool,
++}
++
++/// Runtime-only bindings from stable Render module IDs to resolved render assets.
++#[derive(Clone, Default)]
++pub struct VfxRenderBindings {
++    bindings: BTreeMap<VfxModuleId, VfxRenderBinding>,
++}
++
++impl VfxRenderBindings {
++    /// Inserts or replaces one render-module binding.
++    pub fn insert(&mut self, module: VfxModuleId, binding: VfxRenderBinding) {
++        self.bindings.insert(module, binding);
++    }
++
++    /// Resolves the runtime binding for a compiled Render operation.
++    pub fn get(&self, module: &VfxModuleId) -> Option<&VfxRenderBinding> {
++        self.bindings.get(module)
++    }
++}
++
++/// One presentation record derived from live simulation without GPU handles.
++#[derive(Debug, Clone)]
++pub struct VfxRenderParticle {
++    /// Stable Render module that produces this presentation record.
++    pub module: VfxModuleId,
++    /// World-space particle position.
++    pub position: Vec3,
++    /// Linear RGBA particle color.
++    pub color: [f32; 4],
++    /// Uniform particle scale.
++    pub size: f32,
++    /// Authored particle rotation in radians.
++    pub rotation: f32,
++    /// UV scale XY and offset ZW for texture-sheet animation.
++    pub uv_transform: [f32; 4],
++}
++
+ /// Maximum number of particles one emitter may request in one runtime step.
+@@ -423,5 +477,34 @@ impl VfxPlayer {
+     pub fn is_playing(&self) -> bool {
+         self.playing
+     }
+ 
++    /// Extracts backend-neutral presentation records for every live Render output.
++    pub fn render_particles(&self) -> Vec<VfxRenderParticle> {
++        let mut output = Vec::new();
++        for emitter in self.instance.emitters() {
++            for operation in emitter.render_operations() {
++                let VfxModuleOperation::Billboard { texture_sheet, .. }
++                | VfxModuleOperation::Mesh { texture_sheet, .. } = &operation.operation
++                else {
++                    continue;
++                };
++                for particle in emitter.particles() {
++                    output.push(VfxRenderParticle {
++                        module: operation.source_module.clone(),
++                        position: particle.position,
++                        color: particle.color,
++                        size: particle.size,
++                        rotation: particle.rotation,
++                        uv_transform: texture_sheet
++                            .as_ref()
++                            .map_or([1.0, 1.0, 0.0, 0.0], |sheet| {
++                                texture_sheet_uv(sheet, particle.life_factor())
++                            }),
++                    });
++                }
++            }
++        }
++        output
++    }
++
+     /// Resumes playback without resetting transient state.
+@@ -489,4 +569,22 @@ pub fn vfx_update_system(time: Res<'_, Time>, mut query: Query<'_, (&mut VfxPlayer, &GlobalTransform)>) {
+     }
+ }
+ 
++fn texture_sheet_uv(sheet: &engine_authoring::VfxTextureSheet, life: f32) -> [f32; 4] {
++    let columns = sheet.columns.max(1);
++    let rows = sheet.rows.max(1);
++    let frame_count = columns.saturating_mul(rows).max(1);
++    let normalized = sheet.frame_over_life.evaluate(life).clamp(0.0, 1.0);
++    let frame = ((normalized * frame_count as f32).floor() as u32).min(frame_count - 1);
++    let column = frame % columns;
++    let row = frame / columns;
++    let scale_x = 1.0 / columns as f32;
++    let scale_y = 1.0 / rows as f32;
++    [
++        scale_x,
++        scale_y,
++        column as f32 * scale_x,
++        row as f32 * scale_y,
++    ]
++}
++
+ fn requested_spawns(runtime: &mut VfxEmitterRuntime, dt: f32, end_time: f32) -> u32 {
+diff --git a/crates/render-runtime/src/render_backend.rs b/crates/render-runtime/src/render_backend.rs
+--- a/crates/render-runtime/src/render_backend.rs
++++ b/crates/render-runtime/src/render_backend.rs
+@@ -2126,4 +2126,83 @@
+             }
+         }
+ 
++        // -- VFX players: compiled render outputs share the material instancing path (ADR 0125) --
++        {
++            use crate::vfx::{VfxPlayer, VfxRenderBindings};
++            type VfxQuery<'w> = Query<'w, (&'w VfxPlayer, &'w VfxRenderBindings)>;
++            let q = VfxQuery::new(world);
++            let entries: Vec<_> = q
++                .iter()
++                .flat_map(|(entity, (player, bindings))| {
++                    player
++                        .render_particles()
++                        .into_iter()
++                        .filter_map(|particle| {
++                            bindings.get(&particle.module).cloned().map(|binding| {
++                                (entity, particle, binding)
++                            })
++                        })
++                        .collect::<Vec<_>>()
++                })
++                .collect();
++
++            for (entity, particle, binding) in entries {
++                let Some(gpu_mesh) = world
++                    .get_resource::<GpuMeshCache>()
++                    .and_then(|cache| cache.get(binding.mesh.id()).cloned())
++                else {
++                    continue;
++                };
++                let facing = camera_position - particle.position;
++                let orientation = if binding.billboard && facing.length_squared() > 0.000001 {
++                    glam::Quat::from_rotation_arc(glam::Vec3::Z, facing.normalize())
++                        * glam::Quat::from_rotation_z(particle.rotation)
++                } else {
++                    glam::Quat::from_rotation_z(particle.rotation)
++                };
++                let matrix = glam::Mat4::from_scale_rotation_translation(
++                    glam::Vec3::splat(particle.size.max(0.0)),
++                    orientation,
++                    particle.position,
++                );
++                let tint = binding.material.color;
++                let color = [
++                    particle.color[0] * tint[0],
++                    particle.color[1] * tint[1],
++                    particle.color[2] * tint[2],
++                    particle.color[3] * tint[3],
++                ];
++                let mut instance = instance_from_material(matrix, color, &binding.material);
++                instance.uv_transform = particle.uv_transform;
++                let texture_bind_group =
++                    self.resolve_material_bind_group(device, queue, &binding.material);
++                let mesh_key = Arc::as_ptr(&gpu_mesh.vertex_buffer) as usize;
++                let tex_key = Arc::as_ptr(&texture_bind_group) as usize;
++                let pipeline_key = MaterialPipelineKey::from_material(&binding.material);
++                let batch = batches
++                    .entry((mesh_key, 0, tex_key, pipeline_key))
++                    .or_insert_with(|| StaticBatch {
++                        pipeline_key,
++                        gpu_mesh: gpu_mesh.clone(),
++                        submesh: 0,
++                        texture_bind_group: Arc::clone(&texture_bind_group),
++                        instances: Vec::new(),
++                        outline_instances: Vec::new(),
++                    });
++                let outline_group = Self::outline_group_id(world, entity);
++                let outline_material = outline_material_identity(
++                    &texture_bind_group,
++                    binding.material.outline.internal_boundary_strength,
++                );
++                batch
++                    .outline_instances
++                    .push(OutlineInstanceData::from_instance(
++                        instance,
++                        outline_group,
++                        outline_material,
++                    ));
++                batch.instances.push(instance);
++            }
++        }
++
+         // -- Particle emitters: one instance per live particle (ADR 0044) --
