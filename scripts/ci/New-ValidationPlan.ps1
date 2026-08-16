@@ -158,36 +158,43 @@ if ($EventName -eq "schedule") {
         }
 
         $metadata = $null
-        try {
-            if ($MetadataFile) {
-                $metadata = Get-Content -Raw -LiteralPath $MetadataFile -Encoding utf8 | ConvertFrom-Json -AsHashtable
-            } else {
-                Push-Location $workspaceRootPath
-                $rustcWrapper = $env:RUSTC_WRAPPER
-                $metadataErrorPath = Join-Path ([System.IO.Path]::GetTempPath()) ("gameengine-metadata-" + [guid]::NewGuid().ToString("N") + ".log")
-                try {
-                    Remove-Item Env:RUSTC_WRAPPER -ErrorAction SilentlyContinue
-                    $metadataText = & cargo metadata --format-version 1 --locked 2>$metadataErrorPath
-                    $metadataExitCode = $LASTEXITCODE
-                    $global:LASTEXITCODE = 0
-                    if ($metadataExitCode -ne 0) {
-                        $metadataError = (Get-Content -Raw -LiteralPath $metadataErrorPath -ErrorAction SilentlyContinue).Trim()
-                        throw "cargo metadata failed with exit code $metadataExitCode. $metadataError"
-                    }
-                    $metadata = $metadataText | ConvertFrom-Json -AsHashtable
-                } finally {
-                    Remove-Item -LiteralPath $metadataErrorPath -Force -ErrorAction SilentlyContinue
-                    if ($null -ne $rustcWrapper) {
-                        $env:RUSTC_WRAPPER = $rustcWrapper
-                    }
-                    Pop-Location
-                }
-            }
-        } catch {
-            $global:LASTEXITCODE = 0
+        if ($forceFullPath) {
             $plan = New-Plan -Mode "full" -Skip $false `
-                -Reason "cargo metadata could not be evaluated safely: $($_.Exception.Message)" `
+                -Reason "Full validation selected because '$forceFullPath' has workspace-wide or uncertain impact." `
                 -ChangedPackages @() -AffectedPackages @()
+        } else {
+            try {
+                if ($MetadataFile) {
+                    $metadata = Get-Content -Raw -LiteralPath $MetadataFile -Encoding utf8 | ConvertFrom-Json -AsHashtable
+                } else {
+                    Push-Location $workspaceRootPath
+                    $rustcWrapper = $env:RUSTC_WRAPPER
+                    $metadataErrorPath = Join-Path ([System.IO.Path]::GetTempPath()) ("gameengine-metadata-" + [guid]::NewGuid().ToString("N") + ".log")
+                    try {
+                        Remove-Item Env:RUSTC_WRAPPER -ErrorAction SilentlyContinue
+                        $metadataText = & cargo metadata --format-version 1 --locked 2>$metadataErrorPath
+                        $metadataExitCode = $LASTEXITCODE
+                        $global:LASTEXITCODE = 0
+                        if ($metadataExitCode -ne 0) {
+                            $metadataError = (Get-Content -Raw -LiteralPath $metadataErrorPath -ErrorAction SilentlyContinue).Trim()
+                            throw "cargo metadata failed with exit code $metadataExitCode. $metadataError"
+                        }
+                        $metadata = $metadataText | ConvertFrom-Json -AsHashtable
+                    } finally {
+                        Remove-Item -LiteralPath $metadataErrorPath -Force -ErrorAction SilentlyContinue
+                        if ($null -ne $rustcWrapper) {
+                            $env:RUSTC_WRAPPER = $rustcWrapper
+                        }
+                        Pop-Location
+                    }
+                }
+            } catch {
+                $global:LASTEXITCODE = 0
+                $metadataFailure = (($_.Exception.Message -replace "\r?\n", " ") -replace "\s+", " ").Trim()
+                $plan = New-Plan -Mode "full" -Skip $false `
+                    -Reason "cargo metadata could not be evaluated safely: $metadataFailure" `
+                    -ChangedPackages @() -AffectedPackages @()
+            }
         }
 
         if (-not $plan) {
