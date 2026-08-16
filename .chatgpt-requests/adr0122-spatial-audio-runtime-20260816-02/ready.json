@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0122-spatial-audio-runtime-20260816-02",
+  "target_branch": "chatgpt/gameengine-adr-0122-spatial-audio-v2",
+  "expected_head_sha": "2c26874cd1a590a5e3700a70a185ce0e0c33dbe1",
+  "patch_parts": [
+    "part-0000.patch",
+    "part-0001.patch",
+    "part-0002.patch",
+    "part-0003.patch",
+    "part-0004.patch",
+    "part-0005.patch"
+  ],
+  "commit_message": "Implement ADR 0122 spatial audio runtime",
+  "pr_title": "Implement ADR 0122 spatial audio",
+  "pr_body": "Implements ADR 0122 on the current main baseline. This first slice adds deterministic spatial mixer math, bounded live voice lifecycle, engine-owned listener/emitter synchronization, and spatial project-audio runtime plumbing while preserving the existing 2D sound-effect semantics. Follow-up commits on this Draft PR complete authoring and Editor UX before final validation."
+}
