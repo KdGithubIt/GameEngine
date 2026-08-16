@@ -1,0 +1,160 @@
+diff --git a/crates/physics/src/navigation_bake.rs b/crates/physics/src/navigation_bake.rs
+index 5cb7f29..0e0f11e 100644
+--- a/crates/physics/src/navigation_bake.rs
++++ b/crates/physics/src/navigation_bake.rs
+@@ -67,27 +67,19 @@ impl Default for NavMeshBakeDocument {
+ }
+ 
+ impl NavMeshBakeDocument {
+-    /// Parses schema v2, migrating the previous planar schema v1 in memory.
++    /// Parses exactly the current production bake-document schema.
+     ///
+     /// # Errors
+     ///
+-    /// Returns [`NavigationBakeServiceError`] when JSON or settings are invalid.
++    /// Returns [`NavigationBakeServiceError`] when JSON, version, or settings are invalid.
+     pub fn from_json(json: &str) -> Result<Self, NavigationBakeServiceError> {
+-        let value: serde_json::Value =
++        let document: Self =
+             serde_json::from_str(json).map_err(NavigationBakeServiceError::Json)?;
+-        let version = value
+-            .get("schema_version")
+-            .and_then(serde_json::Value::as_u64)
+-            .unwrap_or(1) as u32;
+-        let document = match version {
+-            1 => migrate_v1_document(
+-                serde_json::from_value(value).map_err(NavigationBakeServiceError::Json)?,
+-            ),
+-            NAVMESH_BAKE_SCHEMA_VERSION => {
+-                serde_json::from_value(value).map_err(NavigationBakeServiceError::Json)?
+-            }
+-            other => return Err(NavigationBakeServiceError::UnsupportedVersion(other)),
+-        };
++        if document.schema_version != NAVMESH_BAKE_SCHEMA_VERSION {
++            return Err(NavigationBakeServiceError::UnsupportedVersion(
++                document.schema_version,
++            ));
++        }
+         document.validate()?;
+         Ok(document)
+     }
+@@ -145,50 +137,6 @@ impl NavMeshBakeDocument {
+     }
+ }
+ 
+-#[derive(Debug, Deserialize)]
+-struct LegacyBakeVector3([f32; 3]);
+-
+-#[derive(Debug, Deserialize)]
+-struct LegacyNavMeshBakeSettings {
+-    cell_size: f32,
+-    agent_radius: f32,
+-    world_min: LegacyBakeVector3,
+-    world_max: LegacyBakeVector3,
+-    walkable_height: f32,
+-    agent_height: f32,
+-}
+-
+-#[derive(Debug, Deserialize)]
+-struct LegacyNavMeshBakeDocument {
+-    output_asset: String,
+-    source_fingerprint: Option<String>,
+-    settings: LegacyNavMeshBakeSettings,
+-}
+-
+-fn migrate_v1_document(legacy: LegacyNavMeshBakeDocument) -> NavMeshBakeDocument {
+-    let extent_x = (legacy.settings.world_max.0[0] - legacy.settings.world_min.0[0]).abs();
+-    let extent_z = (legacy.settings.world_max.0[2] - legacy.settings.world_min.0[2]).abs();
+-    let extent = extent_x.max(extent_z).max(1.0);
+-    let _legacy_height = legacy.settings.walkable_height;
+-    NavMeshBakeDocument {
+-        schema_version: NAVMESH_BAKE_SCHEMA_VERSION,
+-        output_asset: legacy.output_asset,
+-        // A v1 fingerprint describes the retired planar input contract. Retain
+-        // only the information that a bake existed; never mark it current.
+-        source_fingerprint: legacy
+-            .source_fingerprint
+-            .map(|_| "legacy-v1-stale".to_owned()),
+-        settings: NavMeshBakeSettings {
+-            tile_size: (legacy.settings.cell_size.max(0.01) * 32.0)
+-                .clamp(4.0, extent.max(4.0)),
+-            profiles: vec![NavigationAgentProfile {
+-                radius: legacy.settings.agent_radius.max(0.0),
+-                height: legacy.settings.agent_height.max(0.01),
+-                ..NavigationAgentProfile::default()
+-            }],
+-        },
+-    }
+-}
+ 
+ 
+ 
+@@ -410,13 +358,7 @@ fn replace_preserving_previous(
+         return Err(NavigationBakeServiceError::Io(error));
+     }
+ 
+-    let had_previous = path.exists();
+-    if had_previous {
+-        if let Err(error) = fs::rename(path, &backup) {
+-            let _ = fs::remove_file(&temporary);
+-            return Err(NavigationBakeServiceError::Io(error));
+-        }
+-    }
++    let had_previous = move_previous_to_backup(path, &backup, &temporary)?;
+     match fs::rename(&temporary, path) {
+         Ok(()) => {
+             if had_previous {
+@@ -434,6 +376,21 @@ fn replace_preserving_previous(
+     }
+ }
+ 
++fn move_previous_to_backup(
++    path: &Path,
++    backup: &Path,
++    temporary: &Path,
++) -> Result<bool, NavigationBakeServiceError> {
++    if !path.exists() {
++        return Ok(false);
++    }
++    if let Err(error) = fs::rename(path, backup) {
++        let _ = fs::remove_file(temporary);
++        return Err(NavigationBakeServiceError::Io(error));
++    }
++    Ok(true)
++}
++
+ /// Error from shared bake-document validation, normalization, execution, or persistence.
+ #[derive(Debug)]
+ pub enum NavigationBakeServiceError {
+@@ -498,24 +455,20 @@ mod tests {
+     }
+ 
+     #[test]
+-    fn schema_v1_migrates_to_production_profile_and_stays_stale() {
++    fn schema_v1_is_rejected_by_current_format_only_reader() {
+         let json = r#"{
+             "schema_version": 1,
+             "output_asset": "navigation/arena.navmesh.json",
+             "source_fingerprint": "old",
+             "settings": {
+-                "cell_size": 0.5,
+-                "agent_radius": 0.6,
+-                "world_min": [-10.0, 0.0, -10.0],
+-                "world_max": [10.0, 0.0, 10.0],
+-                "walkable_height": 0.0,
+-                "agent_height": 2.0
++                "tile_size": 16.0,
++                "profiles": []
+             }
+         }"#;
+-        let migrated = NavMeshBakeDocument::from_json(json).expect("v1 must migrate");
+-        assert_eq!(migrated.schema_version, NAVMESH_BAKE_SCHEMA_VERSION);
+-        assert_eq!(migrated.settings.profiles[0].radius, 0.6);
+-        assert_eq!(migrated.source_fingerprint.as_deref(), Some("legacy-v1-stale"));
++        assert!(matches!(
++            NavMeshBakeDocument::from_json(json),
++            Err(NavigationBakeServiceError::UnsupportedVersion(1))
++        ));
+     }
+ 
+     #[test]
