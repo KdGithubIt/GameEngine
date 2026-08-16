@@ -1,0 +1,50 @@
++When a workflow cannot be completed through managed services, the agent may
++request scoped low-level access with a reason and the requested capability.
++AI Studio SHOULD distinguish workspace-scoped access from unrestricted process
++execution and make elevated access visible in the run audit history.
++
++GameEngine permission policy is an application-level authorization boundary.
++When an external agent process runs with the user's normal operating-system
++identity, GameEngine MUST NOT claim that application policy alone prevents that
++process from accessing every path or capability available to the user. Strong
++confinement requires a provider or OS sandbox, container, restricted token, VM,
++or equivalent mechanism. Implementations SHOULD use available provider/OS
++sandbox features, but the initial architecture does not require GameEngine to
++provide a universal OS sandbox.
++
++### 9. Code changes use a session-scoped agent workspace with run checkpoints
++
++Normal AI source-code mutation does not write directly into the live project
++working tree. The agent code workspace maintains a session-scoped working copy
++or equivalent isolated source state that the coding agent can inspect and edit.
++Each run creates logical before/after checkpoints and a reviewable diff.
++
++The workspace persists for the lifetime of the AI session so later requests can
++build on earlier code changes. Checkpoints are GameEngine agent history, not Git
++commits, and MUST NOT silently modify Git history.
++
++Applying code changes to the live project goes through the code workspace
++service, which owns diff review, policy checks, project-root confinement, and
++integration with validation. A run MUST retain enough provenance to report
++which source files it changed and to support run-level comparison or revert
++when technically possible.
++
++Engine-managed validation commands such as formatting, metadata/check, Clippy,
++tests, documentation, and other repository-defined validators may be allowed
++without granting arbitrary shell execution. Custom scripts or commands outside
++the managed allow-list require the corresponding elevated capability.
++
++### 10. External asset acquisition is provider-based and explicitly enabled
++
++Network asset acquisition is optional and disabled unless the user enables the
++corresponding AI Studio capability or approves it for the relevant scope.
++
++Asset search and acquisition use a GUI-free provider service rather than
++unstructured `curl` or arbitrary filesystem writes. Providers may represent
++web asset catalogs, local libraries, generated images, generated audio,
++generated 3D content, or future sources. Acquired content enters the existing
++import/manifest pipeline and remains subject to normal path and asset-write
++rules.
++
++Where a provider exposes source or license metadata, the acquisition service
++SHOULD retain reviewable provenance sufficient for the user to understand where
