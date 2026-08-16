@@ -1,0 +1,382 @@
+diff --git a/docs/adr/0121-ai-native-authoring-parity-and-project-scoped-mcp-lifecycle.md b/docs/adr/0121-ai-native-authoring-parity-and-project-scoped-mcp-lifecycle.md
+new file mode 100644
+--- /dev/null
++++ b/docs/adr/0121-ai-native-authoring-parity-and-project-scoped-mcp-lifecycle.md
+@@ -0,0 +1,319 @@
++# ADR 0121: AI-Native Authoring Parity and Project-Scoped MCP Lifecycle
++
++Status: Accepted
++Date: 2026-08-16
++Amends: ADR 0015
++Relates to: ADR 0016, ADR 0023, ADR 0035, ADR 0117
++Resolves: `AI_FRIENDLY_AUTHORING_SPEC.md` Open Decision #7
++
++## Context
++
++GameEngine already defines authoring as a shared typed and transactional model
++for the human Editor, AI agents, CLI tools, scripts, and tests. The shared
++`engine-authoring` layer contains stable IDs, schemas, commands, transactions,
++diagnostics, scenes, graphs, prefabs, UI documents, materials, project
++settings, and animation data. The Editor already routes important Scene edits
++through `AuthoringCommand`, and Behavior Tree authoring already proves that CLI
++and MCP adapters can share one GUI-free authoring service.
++
++The current AI-facing surface is nevertheless incomplete. `engine-mcp` exposes
++Behavior Tree tool handlers and the AI Agent Bridge, but it does not expose the
++same general Scene, entity, schema, asset, prefab, UI, graph, material, project
++settings, or animation-set authoring capabilities that the Editor can reach.
++ADR 0015 intentionally deferred the MCP transport and process lifecycle, file
++persistence policy, and transaction identity across multiple MCP calls.
++
++ADR 0035's AI Agent Bridge is a different concern. It provides virtual input
++and frame capture so an external agent can observe and drive a running Editor.
++Using mouse coordinates and screenshots as the primary authoring path would
++reintroduce UI-specific behavior and would not satisfy the shared command and
++query contract.
++
++ADR 0117 also strengthens the project-first desktop lifecycle: one Editor
++process owns one concrete `ProjectRoot` for its lifetime. An MCP implementation
++must not bypass that Editor and mutate the same project files behind an active
++in-memory authoring session.
++
++A project-wide decision is therefore required for the standard AI authoring
++entry point, MCP transport ownership, transaction boundaries, parity scope,
++and the implementation order for completing the missing adapters.
++
++## Decision
++
++### 1. MCP is the standard structured AI authoring interface
++
++For a project that is open in the Editor, MCP is the standard structured
++interface used by AI agents to inspect and change authoring data. CLI remains a
++first-class thin adapter for headless scripting, CI, deterministic automation,
++and environments where an MCP client is not available.
++
++The AI Agent Bridge from ADR 0035 remains available for runtime interaction,
++frame observation, visual validation, and genuinely presentation-only Editor
++operations. It is not an alternative authoring model and MUST NOT be used as
++proof that a semantic Editor capability has AI authoring parity.
++
++The intended paths are:
++
++```text
++Human -> Editor UI -> shared authoring service -> command/query -> transaction
++AI    -> MCP       -> shared authoring service -> command/query -> transaction
++Script-> CLI       -> shared authoring service -> command/query -> transaction
++```
++
++MCP MUST NOT invoke CLI commands, parse CLI stdout, or introduce MCP-specific
++editing rules.
++
++### 2. The active Editor owns the initial project-scoped MCP lifecycle
++
++The initial write-capable MCP lifecycle is Editor-attached and project-scoped.
++Each normal Editor process MAY expose one MCP server endpoint for the concrete
++`ProjectRoot` owned by that process.
++
++The endpoint MUST:
++
++- bind only to the local machine in the initial implementation;
++- be associated with exactly one active Editor project;
++- use ephemeral endpoint and session-authentication metadata stored outside
++  canonical project authoring files;
++- disappear when that Editor process exits; and
++- route requests to the live Editor authoring host rather than reopening and
++  rewriting the same project independently.
++
++`engine-mcp` remains the transport-agnostic tool-handler adapter. MCP protocol
++binding, endpoint startup/shutdown, discovery metadata, and request routing
++belong above `engine-mcp` in the Editor/application layer or a dedicated thin
++transport crate that the Editor owns. They MUST NOT move transport or process
++lifecycle dependencies into `engine-authoring`.
++
++The first transport implementation uses a loopback-only MCP endpoint with an
++ephemeral per-Editor session credential. The exact loopback port is not
++persisted in project data. Remote-network authoring is outside this ADR.
++
++When no Editor is open, headless automation uses CLI in the first parity
++implementation. A future headless write-capable MCP host requires an explicit
++project-writer ownership contract before it may edit project data. It MUST NOT
++silently become a second writer beside a live Editor.
++
++### 3. The live Editor authoring session is authoritative
++
++When MCP is attached to an Editor, loaded authoring documents and their session
++revisions are authoritative. MCP write tools MUST call the same GUI-free
++services and transaction semantics used by the Editor and MUST NOT directly
++replace Scene, Graph, UI, Prefab, Material, settings, or animation files behind
++the Editor session.
++
++Persistence still occurs through the owning document's normal save pipeline.
++An MCP mutation may make an Editor document dirty in exactly the same sense as
++an equivalent human edit. Saving is a separate application concern unless a
++tool explicitly represents the existing shared save operation.
++
++### 4. One mutation tool call is one authoring transaction
++
++The first MCP authoring contract does not expose an open transaction that spans
++multiple MCP calls. Meaningful edits use bulk command tools so one request can
++carry all commands that must commit or roll back atomically.
++
++A successful mutation call:
++
++- starts from one authoritative document revision;
++- applies its complete command sequence to a private transaction working copy;
++- returns structured diagnostics and semantic diff information;
++- commits only when blocking validation succeeds; and
++- creates one undo history entry when attached to an interactive Editor
++  session.
++
++Preview and apply operations MUST carry enough document revision or generation
++identity to reject stale apply attempts rather than silently committing against
++a different source state.
++
++This resolves the previous question of transaction identity across multiple MCP
++calls: there is no cross-call transaction identity in the initial contract.
++Bulk single-call transactions are the supported mutation boundary.
++
++### 5. Shared domain services own authoring behavior
++
++Every parity implementation starts at the GUI-free shared layer, not in MCP or
++CLI. A domain that already has an authoritative service reuses it. A domain
++whose editing logic still lives only in Editor orchestration first extracts or
++adds the smallest coherent authoring service or command/query API at the owner
++layer.
++
++The service owns validation, command application, diff generation, and domain
++rules. Adapters own only transport-shaped DTOs, argument/file selection, and
++error/result formatting.
++
++The first new shared service is the Scene authoring service because the Scene
++model, `AuthoringCommand`, `Transaction`, schema registry, and Editor command
++path already exist. Behavior Tree remains the reference example through
++`BehaviorTreeAuthoringService`.
++
++### 6. Capability parity is semantic, not widget-for-tool mirroring
++
++The project does not require one MCP tool for every Editor button. It requires
++that every semantic project-authoring capability exposed by the Editor be
++reachable through the same shared authoring meaning from MCP, unless an ADR
++explicitly scopes it out.
++
++Parity-required capabilities include persisted semantic operations over:
++
++- project description and schema discovery;
++- scenes, entities, hierarchy, components, and properties;
++- asset discovery and inspection;
++- prefabs;
++- domain-neutral graphs and graph domains;
++- UI documents;
++- materials;
++- project settings; and
++- animation sets and other persisted animation authoring documents.
++
++Parity does not require MCP equivalents for transient Editor presentation such
++as window placement, hover state, current selection, panel layout, OS dialogs,
++or pointer coordinates. Runtime control and frame observation remain the AI
++Agent Bridge concern when they are not authoring mutations.
++
++### 7. Initial MCP and CLI surface is implemented in capability slices
++
++Implementation proceeds in the following order.
++
++1. **MCP lifecycle foundation**
++   - start and stop the project-scoped loopback MCP endpoint with the Editor;
++   - publish ephemeral discovery/authentication metadata outside project data;
++   - route tool calls to the live project authoring host; and
++   - enforce permission and stale-revision checks at shared boundaries.
++2. **Scene, entity, and schema parity**
++   - add shared Scene query/apply services;
++   - expose `project.describe`, Scene inspection/validation/preview/apply,
++     entity find/inspect, and component-schema discovery through MCP; and
++   - add equivalent CLI operations where headless use is meaningful.
++3. **Asset and Prefab parity**
++   - expose asset search/inspection; and
++   - route prefab creation and instantiation through existing shared prefab and
++     Scene command semantics.
++4. **Generic Graph and UI parity**
++   - expose domain-neutral graph inspect/validate/preview/apply/layout tools;
++   - keep Behavior Tree compile/domain tools as domain-specific extensions; and
++   - expose `UiDocumentCommand`/`UiDocumentTransaction` capabilities through
++     shared UI services.
++5. **Remaining typed document parity**
++   - add transactional service boundaries for Material, Project Settings,
++     Animation Set, and other persisted typed documents before adding MCP
++     write tools for them.
++6. **Parity guardrails**
++   - add capability coverage declarations and adapter-equivalence tests so
++     future Editor-only semantic authoring additions are detected by CI.
++
++The exact public tool inventory may evolve as bulk-operation ergonomics are
++validated, but tool design MUST preserve the shared service and transaction
++boundaries above.
++
++### 8. Adapter equivalence is a required test contract
++
++For authoring capabilities exposed through more than one adapter, tests MUST
++prove behavior equivalence at the shared semantic boundary. Given the same
++fixture and intent, Editor session orchestration, MCP, and CLI paths must not
++produce divergent business rules.
++
++Tests SHOULD compare the applicable combination of:
++
++- emitted command or command-sequence meaning;
++- validation diagnostics and stable diagnostic codes;
++- semantic preview diff;
++- committed document state;
++- deterministic serialized result when persistence is part of the operation;
++  and
++- stale-revision rejection.
++
++A shared capability identifier or registry SHOULD be owned by the authoring
++service layer so adapter coverage tests do not become an independently
++maintained list of Editor menu items.
++
++### 9. Permissions and path safety remain shared concerns
++
++The permission model from the authoring specification applies before mutation
++is committed. Read-only, preview-only, project-data write, asset write, code
++write, and command-execution capabilities MUST NOT be enforced only by MCP UI
++or transport code.
++
++All project paths continue to use the existing `ProjectRoot` confinement and
++canonical save/import rules. The loopback transport does not grant permission
++to escape the project root, overwrite arbitrary filesystem locations, or bypass
++approval requirements for destructive or elevated operations.
++
++## Consequences
++
++AI authoring becomes a first-class semantic client of the same model used by
++the human Editor instead of a screenshot-and-click automation layer. The active
++Editor remains the single in-memory authority for its project, so MCP edits can
++participate in normal dirty-state, validation, diff, and undo behavior without
++creating a competing file writer.
++
++Bulk single-call transactions keep MCP stateless enough to recover cleanly from
++client disconnects and avoid a server-side transaction registry. The tradeoff
++is that clients must group atomic edits before calling apply; large workflows
++may use several committed transactions rather than holding one transaction open
++across a conversation.
++
++The Editor gains local MCP endpoint lifecycle and authentication
++responsibilities. Headless MCP writing is intentionally not part of the first
++implementation, so CLI remains the supported headless mutation path until a
++future project-writer ownership decision permits another host safely.
++
++Completing parity is a multi-PR program rather than one adapter patch. Some
++domains, such as Material and Project Settings, require a proper transactional
++shared service before their MCP write surface can be considered complete.
++
++## Alternatives Considered
++
++### Use the AI Agent Bridge as the primary authoring interface
++
++Rejected. Mouse coordinates, key events, and screenshots are valuable for
++runtime and visual interaction but do not provide typed schemas, stable IDs,
++semantic diffs, deterministic validation, or command equivalence.
++
++### Make CLI the primary AI interface
++
++Rejected. CLI remains useful for headless and scripted operation, but MCP
++provides typed tool discovery and structured request/response semantics suited
++to interactive AI agents. Both adapters should converge on the same authoring
++services rather than choosing separate business logic.
++
++### Make MCP tools call CLI commands
++
++Rejected for the same reason as ADR 0015. Routing structured authoring through
++argv, stdout, and temporary files would add serialization layers and duplicate
++error mapping instead of sharing authoring services directly.
++
++### Run an independent write-capable MCP process against project files while the Editor is open
++
++Rejected. The Editor may contain dirty authoritative document state. A second
++writer could overwrite, lose, or conflict with unsaved human or AI edits. The
++initial MCP lifecycle therefore routes through the active Editor session.
++
++### Keep transactions open across multiple MCP calls
++
++Rejected for the initial contract. It would require server-side transaction
++identity, expiry, ownership, disconnect recovery, conflict policy, and undo
++semantics. Bulk command application already expresses the required atomicity
++without that lifecycle complexity.
++
++### Add MCP-specific mutation APIs for domains that lack shared commands
++
++Rejected. That would create the exact parity drift this ADR is intended to
++remove. The correct sequence is shared domain service first, then thin Editor,
++MCP, and CLI adapters.
++
++## Compatibility and Migration
++
++This ADR and its accompanying specification updates do not change persisted
++project data, stable IDs, serialized schemas, existing CLI output, or existing
++MCP tool names.
++
++Implementation will add MCP tools and internal authoring service APIs
++incrementally. Existing Behavior Tree MCP tools remain valid domain-specific
++operations. ADR 0035 AI Agent Bridge actions remain valid for input and frame
++observation.
++
++The new project-scoped MCP endpoint publishes only ephemeral application state
++outside the canonical project tree. No endpoint address, credential, or MCP
++session identifier may be written into `project.json`, project settings, asset
++manifests, Scene files, Graph files, or packaged game data.
+diff --git a/docs/AI_FRIENDLY_AUTHORING_SPEC.md b/docs/AI_FRIENDLY_AUTHORING_SPEC.md
+--- a/docs/AI_FRIENDLY_AUTHORING_SPEC.md
++++ b/docs/AI_FRIENDLY_AUTHORING_SPEC.md
+@@ -895,4 +895,20 @@
+ CLI and MCP are adapters over the command and query API. They MUST NOT implement
+ their own authoring rules.
+ 
++For a project open in the Editor, MCP is the standard structured AI authoring
++interface. CLI remains the headless scripting and automation adapter. ADR 0121
++defines the MCP lifecycle: the active project-scoped Editor owns the initial
++write-capable loopback endpoint, while `engine-mcp` remains a transport-agnostic
++tool-handler crate. Endpoint discovery and credentials are ephemeral
++application state and MUST NOT enter canonical project files.
++
++Each MCP mutation call is one authoring transaction. Tools SHOULD accept bulk
++command sequences when an edit must commit atomically; the initial contract does
++not keep transactions open across multiple MCP calls. Preview/apply flows MUST
++carry document revision or generation identity so stale applies are rejected.
++
++The ADR 0035 AI Agent Bridge remains the input, frame-observation, and visual
++interaction path. It MUST NOT be treated as a substitute for semantic authoring
++parity when a capability changes persisted project data.
++
+ Example CLI:
+@@ -1546,6 +1546,7 @@
+ - Runtime ECS execution.
+ 
+-ADR 0015 records the adapter boundary. Open Decision #7 still covers the final
+-transport and process lifecycle.
++ADR 0015 records the adapter boundary. ADR 0121 resolves the project-scoped MCP
++transport/process lifecycle and the cross-call transaction policy; implementing
++that lifecycle remains follow-up work beyond the completed Phase 6 handler crate.
+ 
+ ### Phase 7: ECS Behavior Tree Integration
+@@ -1746,6 +1746,4 @@
+ 6. Authoring-to-runtime build artifact format and the crate that owns the
+    build pipeline.
+-7. MCP transport and process lifecycle, including transaction identity across
+-   multiple MCP tool calls.
+ 
+ ADRs SHOULD be stored under:
+@@ -1765,3 +1765,7 @@
+ - ADR 0015 defines the Phase 6 MCP Behavior Tree tool adapter boundary.
+ - ADR 0016 defines the Phase 8 human visual editor command and presentation
+   boundary.
++- ADR 0121 makes MCP the standard structured AI authoring interface for an
++  active Editor project, defines the project-scoped Editor-owned loopback
++  lifecycle, and uses bulk single-call transactions instead of cross-call
++  transaction identity.
+diff --git a/docs/adr/README.md b/docs/adr/README.md
+--- a/docs/adr/README.md
++++ b/docs/adr/README.md
+@@ -173,4 +173,5 @@
+ | [0119](0119-tangent-space-gpu-contract-and-shared-material-fragment.md) | Tangent-Space GPU Contract and Shared Material Fragment Stage |
+ | [0120](0120-generic-pbr-material-texture-contract.md) | Generic PBR Material Texture Contract |
++| [0121](0121-ai-native-authoring-parity-and-project-scoped-mcp-lifecycle.md) | AI-Native Authoring Parity and Project-Scoped MCP Lifecycle |
+ 
+ ## Phase 41+ ADR Targets
