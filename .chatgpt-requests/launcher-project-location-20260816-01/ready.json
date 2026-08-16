@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "request_id": "launcher-project-location-20260816-01",
+  "target_branch": "chatgpt/gameengine-launcher-project-location",
+  "expected_head_sha": "d7eef1c618d7435ce8c8902b7a9f42d2e902c872",
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Remember Launcher project creation location",
+  "pr_title": "GameEngine: remember project creation location",
+  "pr_body": "## Summary\n\n- persist the last parent folder selected for new project creation in Launcher user preferences\n- start the next new-project folder picker from that location when it still exists\n- keep first-run behavior unchanged and preserve compatibility with existing preference files\n\n## Tests\n\n- add preference JSON compatibility and round-trip coverage"
+}
