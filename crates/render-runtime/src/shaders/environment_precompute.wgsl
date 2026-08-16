@@ -3,8 +3,7 @@ const TWO_PI: f32 = 6.28318530717958647692;
 const SAMPLE_COUNT: u32 = 64u;
 
 struct BakeUniform {
-    roughness: f32,
-    _padding: vec3<f32>,
+    params: vec4<f32>, // x=roughness; matches the 16-byte CPU payload.
 };
 
 @group(0) @binding(0) var source_texture: texture_2d<f32>;
@@ -125,7 +124,7 @@ fn fs_diffuse(in: VsOut) -> @location(0) vec4<f32> {
 @fragment
 fn fs_specular(in: VsOut) -> @location(0) vec4<f32> {
     let normal = equirect_direction(in.uv);
-    let roughness = clamp(bake.roughness, 0.0, 1.0);
+    let roughness = clamp(bake.params.x, 0.0, 1.0);
     if (roughness <= 0.0001) {
         return vec4<f32>(
             textureSampleLevel(source_texture, source_sampler, direction_uv(normal), 0.0).rgb,
