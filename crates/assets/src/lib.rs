@@ -5,6 +5,8 @@
 
 /// Runtime asset handles and persisted import metadata.
 pub mod asset;
+/// Shared read-only project asset discovery and inspection.
+pub mod catalog;
 /// Generic author-owned data assets and stable component references.
 pub mod data_asset;
 /// Content-addressed storage for disposable derived assets.
