@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "request_id": "20260817-adr0123-visual-closure-2d049b2-r2",
+  "target_branch": "chatgpt/gameengine-adr0123-visual-closure-v2",
+  "expected_head_sha": "2d049b22c6127212d0b6419d50bd194a1b6f67d0",
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Close ADR 0123 Behavior Tree visual validation",
+  "pr_title": "ADR 0123: close Behavior Tree visual validation",
+  "pr_body": "## Summary\n\n- reuse the actual schema-driven Behavior Tree node catalog renderer in a deterministic visual-validation fixture\n- show the full catalog and a live search-filter preview together with the Play-mode Behavior Tree debugger\n- include an explicit Failure transition alongside Running, Success, abort/reset reason, elapsed state, runner identity, and generation fields\n- keep runtime semantics, persisted Graph/GraphView formats, stable IDs, and normal Editor behavior unchanged\n\n## Validation\n\nRun repository-selected Windows Validation and Editor Visual Validation. The visual artifact must be reviewed directly for the palette, categories/search, stateful decorators, runtime path/status, identity/generation fields, and layout/clipping.\n\n<!-- gameengine-visual-validation: editor -->\n\n<!-- gameengine-chatgpt-dispatcher -->"
+}
