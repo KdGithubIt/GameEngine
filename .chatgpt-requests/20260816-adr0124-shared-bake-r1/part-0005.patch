@@ -1,0 +1,213 @@
++#[cfg(not(windows))]
++fn atomic_replace(from: &Path, to: &Path) -> io::Result<()> {
++    fs::rename(from, to)
++}
++
++/// Error from shared navigation bake validation, execution, or persistence.
++#[derive(Debug)]
++pub enum NavigationBakeServiceError {
++    /// JSON parsing or serialization failed.
++    Json(serde_json::Error),
++    /// Document schema is newer than this engine.
++    UnsupportedVersion(u32),
++    /// Output path or profile settings are invalid.
++    InvalidSettings,
++    /// No navigation-eligible world geometry was supplied.
++    MissingGeometry,
++    /// Production baker rejected the normalized build input.
++    Bake(NavigationBakeError),
++    /// Cancellation was observed before replacing the output.
++    Cancelled,
++    /// Filesystem persistence failed.
++    Io(io::Error),
++}
++
++impl fmt::Display for NavigationBakeServiceError {
++    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
++        match self {
++            Self::Json(error) => write!(formatter, "navigation bake JSON error: {error}"),
++            Self::UnsupportedVersion(version) => {
++                write!(formatter, "unsupported navigation bake schema version {version}")
++            }
++            Self::InvalidSettings => formatter.write_str("invalid navigation bake settings"),
++            Self::MissingGeometry => formatter.write_str("navigation bake source has no geometry"),
++            Self::Bake(error) => write!(formatter, "navigation production bake failed: {error}"),
++            Self::Cancelled => formatter.write_str("navigation bake cancelled"),
++            Self::Io(error) => write!(formatter, "navigation bake persistence failed: {error}"),
++        }
++    }
++}
++
++impl std::error::Error for NavigationBakeServiceError {
++    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
++        match self {
++            Self::Json(error) => Some(error),
++            Self::Bake(error) => Some(error),
++            Self::Io(error) => Some(error),
++            Self::UnsupportedVersion(_)
++            | Self::InvalidSettings
++            | Self::MissingGeometry
++            | Self::Cancelled => None,
++        }
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use std::sync::atomic::AtomicBool;
++
++    use super::*;
++    use crate::navigation::{NavigationProfileId, DEFAULT_NAVIGATION_PROFILE};
++
++    fn source() -> NavigationSource {
++        NavigationSource {
++            triangles: vec![NavigationTriangle {
++                a: [0.0, 0.0, 0.0],
++                b: [2.0, 0.0, 0.0],
++                c: [0.0, 0.0, 2.0],
++                area: 0,
++            }],
++            modifiers: Vec::new(),
++            links: Vec::new(),
++        }
++    }
++
++    #[test]
++    fn source_order_does_not_change_fingerprint() {
++        let first = source();
++        let mut second = first.clone();
++        second.triangles.reverse();
++        let document = NavMeshBakeDocument::default();
++        let service = NavigationBakeService;
++        assert_eq!(
++            service
++                .prepare(&first, &document)
++                .expect("first input")
++                .source_fingerprint,
++            service
++                .prepare(&second, &document)
++                .expect("second input")
++                .source_fingerprint
++        );
++    }
++
++    #[test]
++    fn v1_migration_forces_one_production_rebake() {
++        let json = r#"{
++            "schema_version": 1,
++            "output_asset": "navigation/arena.navmesh.json",
++            "source_fingerprint": "old",
++            "settings": {
++                "cell_size": 0.5,
++                "agent_radius": 0.6,
++                "world_min": [-10.0, 0.0, -10.0],
++                "world_max": [10.0, 0.0, 10.0],
++                "walkable_height": 0.0,
++                "agent_height": 2.0
++            }
++        }"#;
++        let migrated = NavMeshBakeDocument::from_json(json).expect("v1 must migrate");
++        assert_eq!(migrated.schema_version, NAVMESH_BAKE_SCHEMA_VERSION);
++        assert_eq!(migrated.settings.profiles[0].radius, 0.6);
++        assert_eq!(
++            migrated.source_fingerprint.as_deref(),
++            Some("legacy-v1-stale")
++        );
++    }
++
++    #[test]
++    fn cancelled_bake_does_not_replace_last_good_file() {
++        let directory = std::env::temp_dir().join(format!(
++            "gameengine-nav-bake-{}-{}",
++            std::process::id(),
++            SystemTime::now()
++                .duration_since(UNIX_EPOCH)
++                .unwrap_or_default()
++                .as_nanos()
++        ));
++        fs::create_dir_all(&directory).expect("temp dir");
++        let output_path = directory.join("arena.navmesh.json");
++        fs::write(&output_path, b"last-good").expect("last-good fixture");
++        let cancelled = AtomicBool::new(true);
++        let result = NavigationBakeService.bake_to_path(
++            &source(),
++            &NavMeshBakeDocument::default(),
++            &output_path,
++            &cancelled,
++        );
++        assert!(matches!(
++            result,
++            Err(NavigationBakeServiceError::Cancelled)
++        ));
++        assert_eq!(fs::read(&output_path).expect("read output"), b"last-good");
++        let _ = fs::remove_dir_all(directory);
++    }
++
++    #[test]
++    fn failed_bake_does_not_replace_last_good_file() {
++        let directory = std::env::temp_dir().join(format!(
++            "gameengine-nav-bake-failed-{}-{}",
++            std::process::id(),
++            SystemTime::now()
++                .duration_since(UNIX_EPOCH)
++                .unwrap_or_default()
++                .as_nanos()
++        ));
++        fs::create_dir_all(&directory).expect("temp dir");
++        let output_path = directory.join("arena.navmesh.json");
++        fs::write(&output_path, b"last-good").expect("last-good fixture");
++        let mut invalid = source();
++        invalid.triangles.clear();
++        let result = NavigationBakeService.bake_to_path(
++            &invalid,
++            &NavMeshBakeDocument::default(),
++            &output_path,
++            &AtomicBool::new(false),
++        );
++        assert!(matches!(
++            result,
++            Err(NavigationBakeServiceError::MissingGeometry)
++        ));
++        assert_eq!(fs::read(&output_path).expect("read output"), b"last-good");
++        let _ = fs::remove_dir_all(directory);
++    }
++
++    #[test]
++    fn successful_bake_replaces_output_with_production_schema() {
++        let directory = std::env::temp_dir().join(format!(
++            "gameengine-nav-bake-success-{}-{}",
++            std::process::id(),
++            SystemTime::now()
++                .duration_since(UNIX_EPOCH)
++                .unwrap_or_default()
++                .as_nanos()
++        ));
++        fs::create_dir_all(&directory).expect("temp dir");
++        let output_path = directory.join("arena.navmesh.json");
++        fs::write(&output_path, b"last-good").expect("last-good fixture");
++        let result = NavigationBakeService
++            .bake_to_path(
++                &source(),
++                &NavMeshBakeDocument::default(),
++                &output_path,
++                &AtomicBool::new(false),
++            )
++            .expect("successful bake");
++        assert_eq!(result.nav_mesh.schema_version, crate::navigation::NAV_MESH_SCHEMA_VERSION);
++        let loaded: NavMesh = serde_json::from_slice(&fs::read(&output_path).expect("read output"))
++            .expect("production navmesh json");
++        assert!(loaded.profile(DEFAULT_NAVIGATION_PROFILE).is_some());
++        let _ = fs::remove_dir_all(directory);
++    }
++
++    #[test]
++    fn current_document_round_trips_canonically() {
++        let mut document = NavMeshBakeDocument::default();
++        document.settings.profiles[0].id = NavigationProfileId::new("humanoid");
++        let json = document.to_canonical_json().expect("serialize document");
++        assert_eq!(
++            NavMeshBakeDocument::from_json(&json).expect("parse document"),
++            document
++        );
++    }
++}
