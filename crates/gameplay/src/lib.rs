@@ -4,7 +4,8 @@
 
 /// Data-driven ability timing and state machines.
 pub mod ability;
-/// Compiled Behavior Tree runtime execution.
+/// Stateful compiled Behavior Tree runtime execution.
+#[path = "behavior_tree_stateful.rs"]
 pub mod behavior_tree;
 /// Deterministic combat damage, hit results, and knockback processing.
 pub mod combat;
