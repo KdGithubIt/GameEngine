@@ -1,0 +1,12 @@
+diff --git a/crates/engine/src/components/validation.rs b/crates/engine/src/components/validation.rs
+--- a/crates/engine/src/components/validation.rs
++++ b/crates/engine/src/components/validation.rs
+@@ -980,7 +980,7 @@ fn imported_sub_asset_matches_kind(kind: ImportedSubAssetKind, expected: AssetKi
+             // 正常な同種参照なのでカテゴリー互換として受け入れる。
+             | (ImportedSubAssetKind::Skeleton, AssetKind::Skeleton)
+             | (ImportedSubAssetKind::Morph, AssetKind::Morph)
+-            | (ImportedSubAssetKind::RigidBodyRig, AssetKind::RigidBodyRig)
++            | (ImportedSubAssetKind::SecondaryMotionRig, AssetKind::SecondaryMotionRig)
+     )
+ }
+ 
