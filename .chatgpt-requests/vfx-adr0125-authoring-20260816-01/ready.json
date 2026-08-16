@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "request_id": "vfx-adr0125-authoring-20260816-01",
+  "target_branch": "chatgpt/gameengine-vfx-adr0125",
+  "expected_head_sha": "ce777a7ecf572001e727e10f470c7a1bebae6714",
+  "patch_parts": [
+    "part-0000.patch",
+    "part-0001.patch",
+    "part-0002.patch",
+    "part-0003.patch",
+    "part-0004.patch",
+    "part-0005.patch",
+    "part-0006.patch",
+    "part-0007.patch"
+  ],
+  "commit_message": "Add ADR 0125 VFX authoring architecture",
+  "pr_title": "GameEngine: implement ADR 0125 VFX architecture",
+  "pr_body": "Implements ADR 0125 in staged commits. This first dispatch adds the GUI-free VFX authoring document, stable source IDs, typed phase modules, shared curve/gradient semantics, transactional authoring commands, deterministic validation, capacity diagnostics, templates, and backend-neutral CompiledVfxEffect IR. Runtime integration and Builder work follow on the same task branch and Draft PR."
+}
