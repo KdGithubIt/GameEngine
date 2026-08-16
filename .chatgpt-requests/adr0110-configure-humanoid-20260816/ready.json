@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0110-configure-humanoid-20260816",
+  "target_branch": "chatgpt/gameengine-adr-0110-humanoid-motion",
+  "expected_head_sha": "4281e4e652cec3faf5afa2b303fe46204d6eaa8e",
+  "patch_parts": ["part-0000.patch", "part-0001.patch"],
+  "commit_message": "Add ADR 0110 Configure Humanoid editor",
+  "pr_title": "ADR 0110: implement humanoid animation sources",
+  "pr_body": "Implements ADR 0110 Humanoid profiles and skeleton-independent motion. This follow-up adds a dedicated Configure Humanoid editor inside model Import Settings, exposes all Humanoid semantics, persists explicit stable BoneId mappings as Authored profiles, retains stale/orphaned authored mappings for repair, and reimports through the existing model import workflow. PR remains Draft; merge is manual."
+}
