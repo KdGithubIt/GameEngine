@@ -970,6 +970,28 @@ command sequences when an edit must commit atomically; the initial contract does
 not keep transactions open across multiple MCP calls. Preview/apply flows MUST
 carry document revision or generation identity so stale applies are rejected.
 
+ADR 0132 makes the authoring-owned capability registry the canonical discovery
+contract for semantic authoring operations. A capability is declared once at the
+shared service, command, query, or schema boundary with a stable capability ID,
+machine-readable input/output contract, required permission, and transaction or
+stale-revision requirements when applicable. Rust visibility, reflection, or an
+Editor widget does not by itself make an operation externally callable.
+
+MCP MUST provide a registry-driven generic structured surface for capability
+discovery and common inspect, validate, preview, and apply operations. CLI MUST
+provide an equivalent generic path where headless use is meaningful. A new
+component or schema already expressible through an existing generic authoring
+command therefore becomes available to structured AI clients through shared
+schema discovery without a component-specific MCP handler. A new authoring
+domain still requires one explicit shared semantic service and capability
+registration before adapters may expose it.
+
+Specialized tools such as domain compilation, layout, import, build, runtime
+control, or frame capture MAY remain explicit ergonomic extensions. They MUST
+reuse authoritative shared services and MUST NOT become a second authoring
+implementation. Runtime interaction remains under ADR 0035, while agent, code,
+shell, network, and provider lifecycle remain under ADR 0131.
+
 ADR 0131 adds AI Studio above MCP as a project-scoped conversational frontend.
 AI Studio MUST be a client of a GUI-free agent host rather than a second
 authoring implementation. A session owns conversation history and a versioned
@@ -1865,6 +1887,10 @@ A new authoring feature is complete only when:
 - Its changes can participate in transactions and diffs.
 - Its serialization is deterministic if persisted.
 - It has focused tests.
+- Its semantic capability is registered once in the authoring-owned capability
+  registry when it is intended for structured external authoring.
+- The standard structured AI surface can reach it through registry-driven
+  generic exposure or an explicitly declared specialized path.
 - CLI, MCP, and editor adapters do not duplicate its business rules.
 - This specification or an ADR documents any new cross-cutting contract.
 
@@ -1910,6 +1936,9 @@ Resolved authoring, adapter, and runtime decisions:
   active Editor project, defines the project-scoped Editor-owned loopback
   lifecycle, and uses bulk single-call transactions instead of cross-call
   transaction identity.
+- ADR 0132 makes an authoring-owned capability registry the canonical semantic
+  discovery contract and requires registry-driven generic MCP/CLI exposure so
+  ordinary new authoring features do not need parallel AI-specific handlers.
 - ADR 0017 defines the Phase 8-A human editor GUI toolkit and crate boundary.
 - ADR 0018 defines the Phase 8-B undo/redo snapshot strategy (JSON snapshots, 100-step limit).
 - ADR 0019 records the historical Phase 8-C combined-file persistence format;
