@@ -4,6 +4,7 @@ use std::sync::{Arc, Weak};
 
 use crate::camera::{select_active_game_camera, Camera3D, ViewportSize};
 use crate::debug_draw::{DebugLine, DebugLines};
+use crate::environment::EnvironmentGpuState;
 use crate::light::{AmbientLight, DirectionalLight, SkySettings};
 use crate::lod::InstanceStats;
 use crate::material::{
@@ -418,6 +419,7 @@ pub(crate) struct RenderState {
     pub(crate) texture_bind_group_layout: wgpu::BindGroupLayout,
     white_texture: Arc<Texture>,
     flat_normal_texture: Arc<Texture>,
+    environment: EnvironmentGpuState,
     light_buffer: wgpu::Buffer,
     pub(crate) light_bind_group: wgpu::BindGroup,
     pipelines: [[wgpu::RenderPipeline; 3]; 3],
@@ -1115,13 +1117,25 @@ impl WorldRenderer {
             .unwrap_or_default();
         self.render.update_sky(queue, vp, &sky);
 
-        let mut ambient = world
+        let environment = world
+            .get_resource::<EnvironmentLighting>()
+            .cloned()
+            .unwrap_or_default();
+        let skybox = Self::environment_texture(world, environment.skybox);
+        let diffuse_irradiance =
+            Self::environment_texture(world, environment.diffuse_irradiance);
+        self.render.update_environment(
+            device,
+            queue,
+            &environment,
+            skybox.as_ref(),
+            diffuse_irradiance.as_ref(),
+        );
+
+        let ambient = world
             .get_resource::<AmbientLight>()
             .cloned()
             .unwrap_or_default();
-        if let Some(environment) = world.get_resource::<EnvironmentLighting>() {
-            ambient = environment.apply_to_ambient(&ambient);
-        }
         let directional = world
             .get_resource::<DirectionalLight>()
             .cloned()
@@ -1490,14 +1504,16 @@ impl WorldRenderer {
             pass.set_bind_group(0, &self.render.camera_bind_group, &[]);
             pass.set_bind_group(2, &self.render.light_bind_group, &[]);
 
-            if sky.enabled {
-                // The gradient replaces the flat clear color; drawn first
-                // with depth writes off so all geometry covers it.
+            if sky.enabled || self.render.environment.has_skybox() {
+                // A resolved skybox replaces the procedural gradient. Both
+                // draw before geometry with depth writes disabled.
                 pass.set_pipeline(&self.render.sky_pipeline);
                 pass.set_bind_group(0, &self.render.sky_bind_group, &[]);
+                pass.set_bind_group(1, self.render.environment.bind_group(), &[]);
                 pass.draw(0..3, 0..1);
                 pass.set_bind_group(0, &self.render.camera_bind_group, &[]);
             }
+            pass.set_bind_group(4, self.render.environment.bind_group(), &[]);
 
             // Opaque and masked geometry from every mesh path writes depth
             // before any blended draw. Keeping static and skinned paths in
@@ -1673,6 +1689,16 @@ impl WorldRenderer {
 
         queue.submit(std::iter::once(encoder.finish()));
         Ok(())
+    }
+
+    fn environment_texture(
+        world: &engine_ecs::World,
+        runtime_id: Option<crate::asset::RuntimeAssetId>,
+    ) -> Option<Arc<Texture>> {
+        let runtime_id = runtime_id?;
+        let assets = world.get_resource::<crate::asset::Assets<Arc<Texture>>>()?;
+        let handle = assets.handle(runtime_id)?;
+        assets.get(&handle).cloned()
     }
 
     /// Returns a clone of the selected Game View camera and its transform.
@@ -2545,6 +2571,7 @@ impl RenderState {
             )
             .expect("one-pixel flat normal must fit every valid GPU device"),
         );
+        let environment = EnvironmentGpuState::new(device, queue);
 
         let default_light =
             LightUniform::from_resources(&AmbientLight::default(), &DirectionalLight::default());
@@ -2673,6 +2700,8 @@ impl RenderState {
                 Some(&camera_bgl),
                 Some(&texture_bind_group_layout),
                 Some(&light_bgl),
+                None,
+                Some(environment.bind_group_layout()),
             ],
             immediate_size: 0,
         });
@@ -2726,6 +2755,7 @@ impl RenderState {
                     Some(&texture_bind_group_layout),
                     Some(&light_bgl),
                     Some(&joint_palette_bgl),
+                    Some(environment.bind_group_layout()),
                 ],
                 immediate_size: 0,
             });
@@ -3079,7 +3109,7 @@ impl RenderState {
         });
         let sky_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Sky pipeline layout"),
-            bind_group_layouts: &[Some(&sky_bgl)],
+            bind_group_layouts: &[Some(&sky_bgl), Some(environment.bind_group_layout())],
             immediate_size: 0,
         });
         let sky_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -3127,6 +3157,7 @@ impl RenderState {
             texture_bind_group_layout,
             white_texture: white_tex,
             flat_normal_texture: flat_normal_tex,
+            environment,
             light_buffer,
             light_bind_group,
             pipelines,
@@ -3231,6 +3262,18 @@ impl RenderState {
     ) {
         let uniform = LightUniform::from_resources(ambient, directional);
         queue.write_buffer(&self.light_buffer, 0, bytemuck::bytes_of(&uniform));
+    }
+
+    pub(crate) fn update_environment(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        settings: &EnvironmentLighting,
+        skybox: Option<&Arc<Texture>>,
+        diffuse_irradiance: Option<&Arc<Texture>>,
+    ) {
+        self.environment
+            .update(device, queue, settings, skybox, diffuse_irradiance);
     }
 
     pub(crate) fn update_sky(&self, queue: &wgpu::Queue, vp: glam::Mat4, sky: &SkySettings) {
@@ -4240,6 +4283,161 @@ mod tests {
         assert!(
             unoccluded_peak > occluded_peak + 120,
             "full AO must preserve substantially more ambient StandardLit energy: unoccluded={unoccluded_peak}, occluded={occluded_peak}"
+        );
+    }
+
+    #[test]
+    fn fixed_camera_reference_scene_receives_environment_specular_ibl() {
+        const WIDTH: u32 = 64;
+        const HEIGHT: u32 = 64;
+        const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
+
+        let instance = wgpu::Instance::default();
+        let context = match pollster::block_on(engine_renderer::GpuContext::new(&instance, None)) {
+            Ok(context) => context,
+            Err(engine_renderer::GpuContextError::AdapterUnavailable) => return,
+            Err(error) => panic!("GPU device creation failed: {error}"),
+        };
+        let device = context.device();
+        let queue = context.queue();
+        let mut renderer = pollster::block_on(WorldRenderer::new(device, queue, FORMAT))
+            .expect("environment reference renderer pipelines must validate");
+
+        let color_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Environment specular reference color"),
+            size: wgpu::Extent3d {
+                width: WIDTH,
+                height: HEIGHT,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let color_view = color_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let depth_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Environment specular reference depth"),
+            size: wgpu::Extent3d {
+                width: WIDTH,
+                height: HEIGHT,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: MAIN_PASS_SAMPLE_COUNT,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Depth32Float,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let depth_view = depth_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        // The camera sees -Z at the screen center, while a +Z-facing metal
+        // reflects +Z. Keep -Z black and put a compact white source around
+        // +Z so this reference isolates the specular environment term.
+        let sky_width = 8u32;
+        let sky_height = 4u32;
+        let mut sky_pixels = vec![0u8; (sky_width * sky_height * 4) as usize];
+        for pixel in sky_pixels.chunks_exact_mut(4) {
+            pixel[3] = 255;
+        }
+        for y in 1..=2u32 {
+            for x in 5..=6u32 {
+                let offset = ((y * sky_width + x) * 4) as usize;
+                sky_pixels[offset..offset + 4].copy_from_slice(&[255, 255, 255, 255]);
+            }
+        }
+        let skybox = Arc::new(
+            Texture::from_decoded(
+                device,
+                queue,
+                &DecodedTexture {
+                    label: "environment_specular_reference".into(),
+                    width: sky_width,
+                    height: sky_height,
+                    rgba8: sky_pixels,
+                },
+            )
+            .expect("reference environment texture must upload"),
+        );
+        let mut texture_assets = crate::asset::Assets::<Arc<Texture>>::default();
+        let skybox_id = texture_assets.add(skybox).id();
+
+        let mut world = engine_ecs::World::new();
+        world.insert_resource(texture_assets);
+        world.insert_resource(AmbientLight {
+            color: glam::Vec3::ZERO,
+            intensity: 0.0,
+        });
+        world.insert_resource(DirectionalLight {
+            direction: glam::Vec3::NEG_Z,
+            color: glam::Vec3::ONE,
+            intensity: 0.0,
+        });
+        world.insert_resource(ShadowSettings {
+            enabled: false,
+            ..ShadowSettings::default()
+        });
+        world.insert_resource(SkySettings {
+            enabled: false,
+            ..SkySettings::default()
+        });
+        world.insert_resource(EnvironmentLighting {
+            skybox: Some(skybox_id),
+            diffuse_irradiance: None,
+            diffuse_color: glam::Vec3::ZERO,
+            intensity: 2.0,
+            diffuse_ibl_enabled: false,
+        });
+
+        let reflective = world.spawn().expect("reference entity must spawn");
+        world
+            .add_component(reflective, reference_quad())
+            .expect("reference mesh must insert");
+        world
+            .add_component(reflective, GlobalTransform(glam::Mat4::IDENTITY))
+            .expect("reference transform must insert");
+        world
+            .add_component(
+                reflective,
+                Material {
+                    color: [1.0; 4],
+                    roughness: 0.05,
+                    metallic: 1.0,
+                    cull_mode: CullMode::None,
+                    cast_shadow: false,
+                    receive_shadow: false,
+                    ..Material::default()
+                },
+            )
+            .expect("reference material must insert");
+
+        let camera = Camera3D::new(60.0, 1.0, 0.1, 10.0);
+        let camera_transform = crate::transform::Transform::looking_at(
+            glam::Vec3::new(0.0, 0.0, 3.0),
+            glam::Vec3::ZERO,
+            glam::Vec3::Y,
+        );
+        renderer
+            .render_to_view_with_camera(
+                &mut world,
+                &camera,
+                &camera_transform,
+                device,
+                queue,
+                &color_view,
+                &depth_view,
+            )
+            .expect("environment reference scene must render");
+
+        let rgba8 = readback_rgba8(device, queue, &color_texture, WIDTH, HEIGHT);
+        let background = rgb_sum_at(&rgba8, WIDTH, 4, 4);
+        let reflection = rgb_sum_at(&rgba8, WIDTH, WIDTH / 2, HEIGHT / 2);
+        assert!(
+            reflection > background + 80,
+            "metallic StandardLit must receive skybox specular IBL: background={background}, reflection={reflection}"
         );
     }
 }
