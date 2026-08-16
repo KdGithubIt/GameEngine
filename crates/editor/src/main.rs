@@ -142,7 +142,9 @@ impl EditorShell {
                 // 40-point toolbar below the 28-point menu bar.
                 eframe::egui::vec2(-12.0, 36.0),
             )
-            .order(eframe::egui::Order::Foreground)
+            // Stay above the docked editor surface while allowing modeless
+            // windows to cover the launcher when their bounds overlap it.
+            .order(eframe::egui::Order::Middle)
             .show(context, |ui| {
                 ui.horizontal(|ui| {
                     if ui.button("AI Studio").clicked() {
