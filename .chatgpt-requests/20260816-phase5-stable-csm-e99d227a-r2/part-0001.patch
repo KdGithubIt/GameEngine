@@ -1,0 +1,127 @@
+             let light_space = light_view.transform_point3(corner);
+-            minimum = minimum.min(light_space);
+-            maximum = maximum.max(light_space);
++            minimum_z = minimum_z.min(light_space.z);
++            maximum_z = maximum_z.max(light_space.z);
+         }
+ 
+         // look_to_rh looks down -Z: nearer points have larger z. Pull the
+         // near plane back so off-slice casters still occlude.
+-        let depth_backup = (maximum.z - minimum.z).max(1.0);
++        let depth_backup = (maximum_z - minimum_z).max(1.0);
+         let projection = Mat4::orthographic_rh(
+-            minimum.x,
+-            maximum.x,
+-            minimum.y,
+-            maximum.y,
+-            -(maximum.z + depth_backup),
+-            -minimum.z,
++            -radius,
++            radius,
++            -radius,
++            radius,
++            -(maximum_z + depth_backup),
++            -minimum_z,
+         );
+         projection * light_view
+     })
+@@ -320,2 +373,20 @@
++    #[test]
++    fn cascade_blend_region_overlaps_the_second_projection() {
++        let settings = ShadowSettings::default();
++        let [blend_start, split] = settings.cascade_blend_depths(1.0, 101.0);
++        let fitting = settings.fitting_cascades(1.0, 101.0);
++
++        assert!((blend_start - 19.0).abs() < 1.0e-6);
++        assert!((split - 21.0).abs() < 1.0e-6);
++        assert_eq!(fitting[0], ShadowCascade { near: 1.0, far: 21.0 });
++        assert_eq!(
++            fitting[1],
++            ShadowCascade {
++                near: 19.0,
++                far: 101.0,
++            }
++        );
++    }
++
+     #[test]
+     fn cascade_matrices_enclose_every_frustum_corner() {
+@@ -385,2 +456,34 @@
++    #[test]
++    fn cascade_matrices_ignore_sub_texel_camera_translation() {
++        let camera = Camera3D::new(60.0, 1.0, 0.1, 100.0);
++        let settings = ShadowSettings::default();
++        let light_direction = Vec3::NEG_Z;
++        let first_transform =
++            Transform::looking_at(Vec3::new(0.0, 0.0, 5.0), Vec3::ZERO, Vec3::Y);
++        let second_transform = Transform::looking_at(
++            Vec3::new(0.001, 0.0, 5.0),
++            Vec3::new(0.001, 0.0, 0.0),
++            Vec3::Y,
++        );
++
++        let first =
++            cascade_view_projections(&camera, &first_transform, light_direction, &settings);
++        let second =
++            cascade_view_projections(&camera, &second_transform, light_direction, &settings);
++
++        for (first_matrix, second_matrix) in first.iter().zip(second) {
++            for (first_value, second_value) in first_matrix
++                .to_cols_array()
++                .iter()
++                .zip(second_matrix.to_cols_array())
++            {
++                assert!(
++                    (first_value - second_value).abs() < 1.0e-5,
++                    "sub-texel translation must keep the snapped shadow matrix stable: {first_matrix:?} vs {second_matrix:?}"
++                );
++            }
++        }
++    }
++
+     #[test]
+     fn zero_light_direction_degrades_to_downward_shadows() {
+diff --git a/GameEngine/crates/render-runtime/src/render_backend.rs b/GameEngine/crates/render-runtime/src/render_backend.rs
+--- a/GameEngine/crates/render-runtime/src/render_backend.rs
++++ b/GameEngine/crates/render-runtime/src/render_backend.rs
+@@ -76,6 +76,8 @@
+     light_view_proj: [[[f32; 4]; 4]; SHADOW_CASCADE_COUNT],
+     /// x: depth bias, y: normal bias, z: enabled (>0.5), w: shadow texel size.
+     params: [f32; 4],
++    /// x: blend start, y: first cascade far depth, z/w: reserved.
++    cascade_depths: [f32; 4],
+ }
+ 
+ impl ShadowUniform {
+@@ -83,6 +85,7 @@
+         Self {
+             light_view_proj: [glam::Mat4::IDENTITY.to_cols_array_2d(); SHADOW_CASCADE_COUNT],
+             params: [0.0; 4],
++            cascade_depths: [0.0; 4],
+         }
+     }
+ }
+@@ -647,16 +650,24 @@
+             && directional.intensity > 0.0
+             && shadow_camera.is_some()
+             && directional.direction.normalize_or_zero() != glam::Vec3::ZERO;
+-        let cascade_matrices = match (shadow_camera, shadows_enabled) {
+-            (Some((camera, camera_transform)), true) => cascade_view_projections(
+-                camera,
+-                camera_transform,
+-                directional.direction,
+-                &shadow_settings,
++        let (cascade_matrices, cascade_blend_depths) = match (shadow_camera, shadows_enabled) {
++            (Some((camera, camera_transform)), true) => (
++                cascade_view_projections(
++                    camera,
++                    camera_transform,
++                    directional.direction,
++                    &shadow_settings,
++                ),
++                shadow_settings.cascade_blend_depths(camera.near, camera.far),
+             ),
+-            _ => [glam::Mat4::IDENTITY; SHADOW_CASCADE_COUNT],
++            _ => ([glam::Mat4::IDENTITY; SHADOW_CASCADE_COUNT], [0.0; 2]),
+         };
+-        self.render
