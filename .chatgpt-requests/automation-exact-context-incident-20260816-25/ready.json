@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "request_id": "automation-exact-context-incident-20260816-25",
+  "target_branch": "chatgpt/gameengine-adr-0112-secondary-motion-v2",
+  "expected_head_sha": "2b60caaf12f60ec4f88428344811e7825fa19cfc",
+  "patch_parts": ["part-0000.patch"],
+  "commit_message": "Document exact-context Dispatcher preflight",
+  "pr_title": "Implement ADR 0112 engine-native secondary motion",
+  "pr_body": "## Summary\n\nImplements ADR 0112 engine-native Secondary Motion. This documentation follow-up records the confirmed synthetic-fragment preflight incident as INC-002 and strengthens the producer protocol so every patch hunk is preflighted against exact target content. The PR remains Draft."
+}
