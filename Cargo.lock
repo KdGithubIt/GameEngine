@@ -1299,6 +1299,7 @@ dependencies = [
  "engine-rig",
  "engine-scene",
  "engine-scripting",
+ "engine-timeline",
  "env_logger",
  "getrandom 0.3.4",
  "gilrs",
@@ -1358,6 +1359,7 @@ dependencies = [
 name = "engine-authoring"
 version = "0.1.0"
 dependencies = [
+ "engine-timeline",
  "serde",
  "serde_json",
  "tempfile",
@@ -1598,6 +1600,13 @@ dependencies = [
  "inventory",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "engine-timeline"
+version = "0.1.0"
+dependencies = [
+ "serde",
 ]
 
 [[package]]

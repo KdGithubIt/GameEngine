@@ -175,6 +175,8 @@ pub mod skeleton_asset;
 pub mod skinning;
 /// Frame timing resources.
 pub mod time;
+/// Timeline authoring and dependency-neutral runtime orchestration (ADR 0126).
+pub mod timeline;
 /// Local and global transform components.
 pub mod transform;
 /// Runtime HUD and in-game menu UI integration.

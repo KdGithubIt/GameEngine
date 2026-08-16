@@ -265,6 +265,38 @@ define_id!(
     "motion"
 );
 
+define_id!(
+    /// A stable identity for one Timeline authoring document.
+    ///
+    /// Format: `timeline_<ULID>`. It survives file renames and Editor reopen.
+    TimelineId,
+    "timeline"
+);
+
+define_id!(
+    /// A Timeline-local stable track identifier.
+    ///
+    /// Format: `track_<ULID>`. Moving or renaming a track never changes it.
+    TimelineTrackId,
+    "track"
+);
+
+define_id!(
+    /// A Timeline-local stable interval-clip identifier.
+    ///
+    /// Format: `clip_<ULID>`. Trimming or moving a clip never changes it.
+    TimelineClipId,
+    "clip"
+);
+
+define_id!(
+    /// A Timeline-local stable marker/event identifier.
+    ///
+    /// Format: `marker_<ULID>`. Moving a marker never changes it.
+    TimelineMarkerId,
+    "marker"
+);
+
 // ---------------------------------------------------------------------------
 // Deterministic sub-asset ID derivation (ADR 0032)
 // ---------------------------------------------------------------------------
