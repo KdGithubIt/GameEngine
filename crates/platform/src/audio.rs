@@ -5,9 +5,19 @@ use std::io::Cursor;
 use std::sync::Arc;
 use std::time::Duration;
 
-use engine_assets::asset::{Assets, Handle};
-use engine_ecs::{Query, Res, ResMut};
+use engine_assets::asset::Handle;
 
+mod spatial;
+
+pub use spatial::{
+    attenuation_gain, spatial_stereo_gains, AudioEmitterPose, AudioListenerPose, AudioVoiceId,
+    SpatialRolloff, StereoGains, VoiceSpatialParams,
+};
+
+#[cfg(not(target_arch = "wasm32"))]
+use std::collections::HashMap;
+#[cfg(not(target_arch = "wasm32"))]
+use std::sync::atomic::{AtomicU32, Ordering};
 #[cfg(not(target_arch = "wasm32"))]
 use std::sync::{mpsc, Mutex};
 #[cfg(not(target_arch = "wasm32"))]
@@ -20,6 +30,8 @@ use rodio::Source;
 
 #[cfg(not(target_arch = "wasm32"))]
 const AUDIO_POLL_INTERVAL: Duration = Duration::from_millis(10);
+#[cfg(not(target_arch = "wasm32"))]
+const AUDIO_COMMAND_CAPACITY: usize = 256;
 
 #[derive(Clone, Copy)]
 enum AudioBus {
@@ -114,7 +126,7 @@ pub enum AuthoredAudioState {
     Failed(String),
 }
 
-/// Authorable one-shot sound emitter attached to a spatial entity.
+/// Authorable sound emitter attached to a spatial entity.
 pub struct AudioEmitter {
     /// Decoded clip played when autoplay is enabled.
     pub clip: Handle<AudioAsset>,
@@ -126,6 +138,10 @@ pub struct AudioEmitter {
     pub min_distance: f32,
     /// Distance at which attenuation reaches its floor.
     pub max_distance: f32,
+    /// Engine-owned distance attenuation curve.
+    pub rolloff: SpatialRolloff,
+    /// Whether this emitter repeats until it is stopped or despawned.
+    pub looping: bool,
     /// Whether conversion should produce one automatic playback request.
     pub autoplay: bool,
     state: AuthoredAudioState,
@@ -147,6 +163,8 @@ impl AudioEmitter {
             spatial_blend,
             min_distance,
             max_distance,
+            rolloff: SpatialRolloff::Linear,
+            looping: false,
             autoplay,
             state: AuthoredAudioState::Pending,
         }
@@ -156,6 +174,12 @@ impl AudioEmitter {
     pub fn state(&self) -> &AuthoredAudioState {
         &self.state
     }
+
+    /// Updates runtime-only autoplay state without exposing mutable storage.
+    #[doc(hidden)]
+    pub fn set_runtime_state(&mut self, state: AuthoredAudioState) {
+        self.state = state;
+    }
 }
 
 /// Marks the transform used as the positional-audio listener.
@@ -163,6 +187,8 @@ impl AudioEmitter {
 pub struct AudioListener {
     /// Disabled listeners remain authored but do not participate in selection.
     pub enabled: bool,
+    /// Selection priority among enabled listeners; higher values win.
+    pub priority: i32,
 }
 
 /// Authorable background-music startup policy.
@@ -199,54 +225,11 @@ impl MusicController {
     pub fn state(&self) -> &AuthoredAudioState {
         &self.state
     }
-}
 
-/// Applies author-authored emitter and music autoplay requests once.
-pub fn authored_audio_system(
-    mut emitters: Query<&mut AudioEmitter>,
-    mut music: Query<&mut MusicController>,
-    assets: Res<Assets<AudioAsset>>,
-    mut audio: Option<ResMut<AudioSystem>>,
-) {
-    for (_, emitter) in &mut emitters {
-        if !emitter.autoplay || emitter.state != AuthoredAudioState::Pending {
-            continue;
-        }
-        let Some(asset) = assets.get(&emitter.clip) else {
-            emitter.state = AuthoredAudioState::Failed("decoded clip handle is missing".into());
-            continue;
-        };
-        emitter.state = match audio.as_deref_mut() {
-            Some(audio) => audio
-                .play_se(asset)
-                .map(|()| AuthoredAudioState::Playing)
-                .unwrap_or_else(|error| AuthoredAudioState::Failed(error.to_string())),
-            None => AuthoredAudioState::Unavailable,
-        };
-    }
-    for (_, controller) in &mut music {
-        if !controller.autoplay || controller.state != AuthoredAudioState::Pending {
-            continue;
-        }
-        let Some(asset) = assets.get(&controller.clip) else {
-            controller.state = AuthoredAudioState::Failed("decoded music handle is missing".into());
-            continue;
-        };
-        controller.state = match audio.as_deref_mut() {
-            Some(audio) => {
-                let result = audio.set_bgm_volume(controller.volume).and_then(|()| {
-                    if controller.fade_in_seconds > 0.0 {
-                        audio.crossfade_bgm(asset, controller.fade_in_seconds)
-                    } else {
-                        audio.play_bgm(asset)
-                    }
-                });
-                result
-                    .map(|()| AuthoredAudioState::Playing)
-                    .unwrap_or_else(|error| AuthoredAudioState::Failed(error.to_string()))
-            }
-            None => AuthoredAudioState::Unavailable,
-        };
+    /// Updates runtime-only autoplay state without exposing mutable storage.
+    #[doc(hidden)]
+    pub fn set_runtime_state(&mut self, state: AuthoredAudioState) {
+        self.state = state;
     }
 }
 
@@ -320,6 +303,13 @@ pub enum AudioError {
         /// Human-readable source error.
         message: String,
     },
+    /// A voice completed before an update reached the backend.
+    UnknownVoice {
+        /// Runtime-only voice identifier that was no longer active.
+        voice: AudioVoiceId,
+    },
+    /// The process-local voice identifier space was exhausted.
+    VoiceIdExhausted,
     /// Runtime audio playback is not available for this target.
     UnsupportedTarget,
 }
@@ -334,6 +324,12 @@ impl fmt::Display for AudioError {
             Self::Playback { message } => write!(formatter, "audio playback failed: {message}"),
             Self::Decode { message } => write!(formatter, "failed to decode audio: {message}"),
             Self::AudioThread { message } => write!(formatter, "audio thread failed: {message}"),
+            Self::UnknownVoice { voice } => write!(
+                formatter,
+                "audio voice {} is no longer active",
+                voice.raw()
+            ),
+            Self::VoiceIdExhausted => formatter.write_str("audio voice identifier space exhausted"),
             Self::UnsupportedTarget => {
                 formatter.write_str("runtime audio playback is not available for this target")
             }
@@ -346,9 +342,10 @@ impl std::error::Error for AudioError {}
 /// Sends playback commands to the audio worker thread.
 #[cfg(not(target_arch = "wasm32"))]
 pub struct AudioSystem {
-    command_sender: mpsc::Sender<AudioCommand>,
+    command_sender: mpsc::SyncSender<AudioCommand>,
     worker: Mutex<Option<thread::JoinHandle<()>>>,
     volumes: AudioBusVolumes,
+    next_voice_id: u64,
 }
 
 /// Target stub for builds where desktop audio playback is unavailable.
@@ -361,7 +358,7 @@ pub struct AudioSystem {
 impl AudioSystem {
     /// Opens the platform default audio output stream.
     pub fn new() -> Result<Self, AudioError> {
-        let (command_sender, command_receiver) = mpsc::channel();
+        let (command_sender, command_receiver) = mpsc::sync_channel(AUDIO_COMMAND_CAPACITY);
         let (init_sender, init_receiver) = mpsc::channel();
         let worker = thread::Builder::new()
             .name("engine-audio".into())
@@ -388,6 +385,7 @@ impl AudioSystem {
             command_sender,
             worker: Mutex::new(Some(worker)),
             volumes: AudioBusVolumes::default(),
+            next_voice_id: 1,
         })
     }
 
@@ -397,6 +395,51 @@ impl AudioSystem {
             encoded: asset.encoded(),
             respond_to,
         })
+    }
+
+    /// Starts a spatially mixed sound-effect voice from an already-loaded asset.
+    ///
+    /// The returned identifier is runtime-only and exists solely so engine
+    /// composition can update or stop this voice while the source entity moves.
+    pub fn start_voice(
+        &mut self,
+        asset: &AudioAsset,
+        looping: bool,
+        params: VoiceSpatialParams,
+    ) -> Result<AudioVoiceId, AudioError> {
+        let voice = AudioVoiceId(self.next_voice_id);
+        self.next_voice_id = self
+            .next_voice_id
+            .checked_add(1)
+            .ok_or(AudioError::VoiceIdExhausted)?;
+        let gains = spatial_stereo_gains(params);
+        self.send_command(|respond_to| AudioCommand::StartVoice {
+            voice,
+            encoded: asset.encoded(),
+            looping,
+            gains,
+            respond_to,
+        })?;
+        Ok(voice)
+    }
+
+    /// Updates an existing spatial voice without decoding or restarting it.
+    pub fn update_voice(
+        &self,
+        voice: AudioVoiceId,
+        params: VoiceSpatialParams,
+    ) -> Result<(), AudioError> {
+        let gains = spatial_stereo_gains(params);
+        self.send_command(|respond_to| AudioCommand::UpdateVoice {
+            voice,
+            gains,
+            respond_to,
+        })
+    }
+
+    /// Explicitly stops a spatial voice. Stopping an already-retired voice is idempotent.
+    pub fn stop_voice(&self, voice: AudioVoiceId) -> Result<(), AudioError> {
+        self.send_command(|respond_to| AudioCommand::StopVoice { voice, respond_to })
     }
 
     /// Replaces the current background music with an infinitely looping asset.
@@ -509,6 +552,27 @@ impl AudioSystem {
         Err(AudioError::UnsupportedTarget)
     }
     /// Returns an error because this phase does not support WASM audio.
+    pub fn start_voice(
+        &mut self,
+        _asset: &AudioAsset,
+        _looping: bool,
+        _params: VoiceSpatialParams,
+    ) -> Result<AudioVoiceId, AudioError> {
+        Err(AudioError::UnsupportedTarget)
+    }
+    /// Returns an error because this phase does not support WASM audio.
+    pub fn update_voice(
+        &self,
+        _voice: AudioVoiceId,
+        _params: VoiceSpatialParams,
+    ) -> Result<(), AudioError> {
+        Err(AudioError::UnsupportedTarget)
+    }
+    /// Returns an error because this phase does not support WASM audio.
+    pub fn stop_voice(&self, _voice: AudioVoiceId) -> Result<(), AudioError> {
+        Err(AudioError::UnsupportedTarget)
+    }
+    /// Returns an error because this phase does not support WASM audio.
     pub fn play_bgm(&mut self, _asset: &AudioAsset) -> Result<(), AudioError> {
         Err(AudioError::UnsupportedTarget)
     }
@@ -559,6 +623,22 @@ enum AudioCommand {
         encoded: Arc<[u8]>,
         respond_to: mpsc::Sender<Result<(), AudioError>>,
     },
+    StartVoice {
+        voice: AudioVoiceId,
+        encoded: Arc<[u8]>,
+        looping: bool,
+        gains: StereoGains,
+        respond_to: mpsc::Sender<Result<(), AudioError>>,
+    },
+    UpdateVoice {
+        voice: AudioVoiceId,
+        gains: StereoGains,
+        respond_to: mpsc::Sender<Result<(), AudioError>>,
+    },
+    StopVoice {
+        voice: AudioVoiceId,
+        respond_to: mpsc::Sender<Result<(), AudioError>>,
+    },
     PlayBgm {
         encoded: Arc<[u8]>,
         fade_duration: Duration,
@@ -597,6 +677,7 @@ fn run_audio_thread(
 
     let mut bgm = BgmPlayback::Silent;
     let mut se_sinks = Vec::new();
+    let mut voices = HashMap::<AudioVoiceId, ActiveVoice>::new();
     let mut volumes = AudioBusVolumes::default();
 
     loop {
@@ -613,6 +694,42 @@ fn run_audio_thread(
                 let result = play_se_on_thread(&stream_handle, encoded, volumes.sound_effects())
                     .map(|sink| se_sinks.push(sink));
                 let _ = respond_to.send(result);
+            }
+            Some(AudioCommand::StartVoice {
+                voice,
+                encoded,
+                looping,
+                gains,
+                respond_to,
+            }) => {
+                let result = start_voice_on_thread(
+                    &stream_handle,
+                    encoded,
+                    looping,
+                    gains,
+                    volumes.sound_effects(),
+                )
+                .map(|active| {
+                    voices.insert(voice, active);
+                });
+                let _ = respond_to.send(result);
+            }
+            Some(AudioCommand::UpdateVoice {
+                voice,
+                gains,
+                respond_to,
+            }) => {
+                let result = voices
+                    .get(&voice)
+                    .ok_or(AudioError::UnknownVoice { voice })
+                    .map(|active| active.gains.set(gains));
+                let _ = respond_to.send(result);
+            }
+            Some(AudioCommand::StopVoice { voice, respond_to }) => {
+                if let Some(active) = voices.remove(&voice) {
+                    active.sink.stop();
+                }
+                let _ = respond_to.send(Ok(()));
             }
             Some(AudioCommand::PlayBgm {
                 encoded,
@@ -633,7 +750,7 @@ fn run_audio_thread(
             }
             Some(AudioCommand::SetMasterVolume { volume, respond_to }) => {
                 volumes.master = sanitize_volume(volume);
-                apply_bus_volumes(&mut bgm, &se_sinks, volumes);
+                apply_bus_volumes(&mut bgm, &se_sinks, &voices, volumes);
                 let _ = respond_to.send(Ok(()));
             }
             Some(AudioCommand::SetBusVolume {
@@ -642,7 +759,7 @@ fn run_audio_thread(
                 respond_to,
             }) => {
                 volumes.set(bus, volume);
-                apply_bus_volumes(&mut bgm, &se_sinks, volumes);
+                apply_bus_volumes(&mut bgm, &se_sinks, &voices, volumes);
                 let _ = respond_to.send(Ok(()));
             }
             Some(AudioCommand::Shutdown) => break,
@@ -651,15 +768,77 @@ fn run_audio_thread(
 
         bgm.tick(volumes.background_music());
         se_sinks.retain(|sink| !sink.empty());
+        voices.retain(|_, active| !active.sink.empty());
     }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn apply_bus_volumes(bgm: &mut BgmPlayback, se_sinks: &[rodio::Sink], volumes: AudioBusVolumes) {
+fn apply_bus_volumes(
+    bgm: &mut BgmPlayback,
+    se_sinks: &[rodio::Sink],
+    voices: &HashMap<AudioVoiceId, ActiveVoice>,
+    volumes: AudioBusVolumes,
+) {
     bgm.apply_volume(volumes.background_music());
     for sink in se_sinks {
         sink.set_volume(volumes.sound_effects());
     }
+    for active in voices.values() {
+        active.sink.set_volume(volumes.sound_effects());
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone)]
+struct VoiceGainControl {
+    left: Arc<AtomicU32>,
+    right: Arc<AtomicU32>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl VoiceGainControl {
+    fn new(gains: StereoGains) -> Self {
+        Self {
+            left: Arc::new(AtomicU32::new(gains.left.to_bits())),
+            right: Arc::new(AtomicU32::new(gains.right.to_bits())),
+        }
+    }
+
+    fn set(&self, gains: StereoGains) {
+        self.left.store(gains.left.to_bits(), Ordering::Relaxed);
+        self.right.store(gains.right.to_bits(), Ordering::Relaxed);
+    }
+
+    fn load(&self) -> StereoGains {
+        StereoGains {
+            left: f32::from_bits(self.left.load(Ordering::Relaxed)),
+            right: f32::from_bits(self.right.load(Ordering::Relaxed)),
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+struct ActiveVoice {
+    sink: rodio::Sink,
+    gains: VoiceGainControl,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn append_spatial_source<S>(sink: &rodio::Sink, source: S, gains: VoiceGainControl)
+where
+    S: Source + Send + 'static,
+    f32: rodio::cpal::FromSample<S::Item>,
+    S::Item: rodio::cpal::Sample + Send,
+{
+    let initial = gains.load();
+    let updates = gains.clone();
+    let source = rodio::source::ChannelVolume::new(source, vec![initial.left, initial.right])
+        .periodic_access(AUDIO_POLL_INTERVAL, move |source| {
+            let current = updates.load();
+            source.set_volume(0, current.left);
+            source.set_volume(1, current.right);
+        });
+    sink.append(source);
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -809,6 +988,31 @@ fn play_se_on_thread(
     sink.set_volume(bus_volume);
     sink.append(decoder);
     Ok(sink)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn start_voice_on_thread(
+    stream_handle: &rodio::OutputStreamHandle,
+    encoded: Arc<[u8]>,
+    looping: bool,
+    gains: StereoGains,
+    bus_volume: f32,
+) -> Result<ActiveVoice, AudioError> {
+    let decoder = decoder_for_encoded(encoded)?;
+    let sink = rodio::Sink::try_new(stream_handle).map_err(|source| AudioError::Playback {
+        message: source.to_string(),
+    })?;
+    sink.set_volume(bus_volume);
+    let control = VoiceGainControl::new(gains);
+    if looping {
+        append_spatial_source(&sink, decoder.repeat_infinite(), control.clone());
+    } else {
+        append_spatial_source(&sink, decoder, control.clone());
+    }
+    Ok(ActiveVoice {
+        sink,
+        gains: control,
+    })
 }
 
 #[cfg(not(target_arch = "wasm32"))]

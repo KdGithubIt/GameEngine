@@ -13,7 +13,10 @@ use winit::{
 };
 
 use crate::asset::{AssetServer, Assets};
-use crate::audio::{game_audio_effect_system, AudioAsset, GameAudioCommandQueue};
+use crate::audio::{
+    game_audio_effect_system, AudioAsset, AuthoredAudioVoices, GameAudioCommandQueue,
+    GameSpatialAudioVoices,
+};
 use crate::camera::{camera_aspect_system, ViewportSize};
 use crate::game_module::{
     GameComponentDefaults, GameModule, GameModuleResource, GameModuleRunError, GameSystemSchedule,
@@ -99,6 +102,8 @@ impl App {
         ecs.insert_resource(Assets::<Material>::default());
         ecs.insert_resource(Assets::<AudioAsset>::default());
         ecs.insert_resource(GameAudioCommandQueue::default());
+        ecs.insert_resource(GameSpatialAudioVoices::default());
+        ecs.insert_resource(AuthoredAudioVoices::default());
         ecs.insert_resource(Assets::<std::sync::Arc<Texture>>::default());
         ecs.insert_resource(AssetServer::default());
         ecs.insert_resource(AmbientLight::default());
@@ -321,6 +326,8 @@ impl App {
                 "Resolves and applies bounded project Rust audio requests.",
             )
             .try_after("engine.script_audio_effect")
+            .expect("built-in system IDs are valid")
+            .try_after("engine.transform_propagation")
             .expect("built-in system IDs are valid"),
             game_audio_effect_system,
         );
