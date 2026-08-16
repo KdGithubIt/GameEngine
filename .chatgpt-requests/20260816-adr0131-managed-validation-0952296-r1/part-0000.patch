@@ -1,0 +1,239 @@
+diff --git a/crates/editor/src/agent_host.rs b/crates/editor/src/agent_host.rs
+index 872508c..e14c4a1 100644
+--- a/crates/editor/src/agent_host.rs
++++ b/crates/editor/src/agent_host.rs
+@@ -37,6 +37,7 @@ pub(crate) enum AgentHostError {
+     UnsupportedCodeDeletion(PathBuf),
+     StaleCodeFile(PathBuf),
+     NonUtf8CodeFile(PathBuf),
++    MultipleActiveWriterRuns(Vec<String>),
+     Serialization(serde_json::Error),
+     Io(io::Error),
+ }
+@@ -73,6 +74,11 @@ impl fmt::Display for AgentHostError {
+             Self::NonUtf8CodeFile(path) => {
+                 write!(formatter, "managed code file `{}` is not UTF-8 text", path.display())
+             }
++            Self::MultipleActiveWriterRuns(run_ids) => write!(
++                formatter,
++                "agent state contains multiple non-terminal writer runs: {}",
++                run_ids.join(", ")
++            ),
+             Self::Serialization(error) => write!(formatter, "agent state JSON error: {error}"),
+             Self::Io(error) => write!(formatter, "agent state I/O error: {error}"),
+         }
+@@ -346,6 +352,128 @@ pub(crate) struct AgentEvent {
+     pub(crate) created_unix_ms: u64,
+     pub(crate) kind: AgentEventKind,
+     pub(crate) message: String,
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub(crate) validation: Option<ManagedValidationEvent>,
++}
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case")]
++pub(crate) enum ManagedValidationGate {
++    Formatting,
++    Check,
++    Clippy,
++    Tests,
++    Documentation,
++}
++
++impl ManagedValidationGate {
++    fn label(self) -> &'static str {
++        match self {
++            Self::Formatting => "formatting",
++            Self::Check => "check",
++            Self::Clippy => "clippy",
++            Self::Tests => "tests",
++            Self::Documentation => "documentation",
++        }
++    }
++
++    fn cargo_arguments(self) -> &'static [&'static str] {
++        match self {
++            Self::Formatting => &["fmt", "--all", "--check"],
++            Self::Check => &["check", "--all-targets"],
++            Self::Clippy => &["clippy", "--all-targets", "--", "-D", "warnings"],
++            Self::Tests => &["test", "--all-targets"],
++            Self::Documentation => &["doc", "--no-deps"],
++        }
++    }
++}
++
++const STANDARD_VALIDATION_GATES: [ManagedValidationGate; 5] = [
++    ManagedValidationGate::Formatting,
++    ManagedValidationGate::Check,
++    ManagedValidationGate::Clippy,
++    ManagedValidationGate::Tests,
++    ManagedValidationGate::Documentation,
++];
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case")]
++pub(crate) enum ManagedValidationGateStatus {
++    Pending,
++    Running,
++    Passed,
++    Failed,
++    Cancelled,
++    Interrupted,
++}
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case")]
++pub(crate) enum ManagedValidationFailureKind {
++    Preparation,
++    Spawn,
++    ProcessExit,
++    Poll,
++    Cancelled,
++    Interrupted,
++}
++
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++pub(crate) struct ManagedValidationFailure {
++    pub(crate) kind: ManagedValidationFailureKind,
++    pub(crate) exit_code: Option<i32>,
++    pub(crate) message: String,
++}
++
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++pub(crate) struct ManagedValidationGateResult {
++    pub(crate) gate: ManagedValidationGate,
++    pub(crate) status: ManagedValidationGateStatus,
++    pub(crate) exit_code: Option<i32>,
++    pub(crate) failure: Option<ManagedValidationFailure>,
++}
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case")]
++pub(crate) enum ManagedValidationAttemptStatus {
++    Running,
++    Passed,
++    Failed,
++    Cancelled,
++    Interrupted,
++    NotApplicable,
++}
++
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++pub(crate) struct ManagedValidationAttempt {
++    pub(crate) id: String,
++    pub(crate) gate_results: Vec<ManagedValidationGateResult>,
++    pub(crate) unmanaged_plan_items: usize,
++    pub(crate) status: ManagedValidationAttemptStatus,
++    pub(crate) started_unix_ms: u64,
++    pub(crate) finished_unix_ms: Option<u64>,
++}
++
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(tag = "event", rename_all = "snake_case")]
++pub(crate) enum ManagedValidationEvent {
++    Started {
++        attempt_id: String,
++        gates: Vec<ManagedValidationGate>,
++        unmanaged_plan_items: usize,
++    },
++    GateStarted {
++        attempt_id: String,
++        gate: ManagedValidationGate,
++    },
++    GateFinished {
++        attempt_id: String,
++        result: ManagedValidationGateResult,
++    },
++    Finished {
++        attempt_id: String,
++        status: ManagedValidationAttemptStatus,
++    },
+ }
+ 
+ #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+@@ -406,6 +534,8 @@ pub(crate) struct AgentRun {
+     pub(crate) state: AgentRunState,
+     pub(crate) events: Vec<AgentEvent>,
+     pub(crate) completion: CompletionReport,
++    #[serde(default)]
++    pub(crate) validation_attempts: Vec<ManagedValidationAttempt>,
+     pub(crate) started_unix_ms: u64,
+     pub(crate) finished_unix_ms: Option<u64>,
+ }
+@@ -441,6 +571,7 @@ pub(crate) struct AgentHost {
+     sessions: BTreeMap<String, AgentSession>,
+     active_writer_run: Option<String>,
+     permissions: PermissionBroker,
++    active_validation: Option<ManagedValidationProcess>,
+ }
+ 
+ impl AgentHost {
+@@ -464,19 +595,29 @@ impl AgentHost {
+                 sessions.insert(session.id.clone(), session);
+             }
+         }
+-        Ok(Self {
++        let (active_writer_run, recovered_sessions) = recover_persisted_runs(&mut sessions)?;
++        let host = Self {
+             project_root,
+             storage_root,
+             sessions,
+-            active_writer_run: None,
++            active_writer_run,
+             permissions,
+-        })
++            active_validation: None,
++        };
++        for id in recovered_sessions {
++            host.persist_session(&id)?;
++        }
++        Ok(host)
+     }
+ 
+     pub(crate) fn session_ids(&self) -> Vec<String> {
+         self.sessions.keys().cloned().collect()
+     }
+ 
++    pub(crate) fn active_writer_run_id(&self) -> Option<&str> {
++        self.active_writer_run.as_deref()
++    }
++
+     pub(crate) fn session(&self, id: &str) -> Result<&AgentSession, AgentHostError> {
+         self.sessions
+             .get(id)
+@@ -545,6 +686,7 @@ impl AgentHost {
+             state: AgentRunState::Inspecting,
+             events: Vec::new(),
+             completion: CompletionReport::default(),
++            validation_attempts: Vec::new(),
+             started_unix_ms: unix_ms(),
+             finished_unix_ms: None,
+         };
+@@ -618,6 +760,40 @@ impl AgentHost {
+     }
+ 
+     pub(crate) fn cancel_run(&mut self, run_id: &str) -> Result<(), AgentHostError> {
++        if self
++            .active_validation
++            .as_ref()
++            .is_some_and(|process| process.run_id == run_id)
++        {
++            let mut process = self
++                .active_validation
++                .take()
++                .ok_or_else(|| AgentHostError::RunNotFound(run_id.to_owned()))?;
++            let exit_code = process.cancel()?.and_then(|status| status.code());
++            self.finish_validation_gate(
++                run_id,
++                &process.attempt_id,
++                process.gate_index,
++                ManagedValidationGateStatus::Cancelled,
++                exit_code,
++                Some(ManagedValidationFailure {
++                    kind: ManagedValidationFailureKind::Cancelled,
++                    exit_code,
++                    message: "Managed validation was cancelled by the user.".to_owned(),
++                }),
++            )?;
++            self.finish_validation_attempt(
++                run_id,
