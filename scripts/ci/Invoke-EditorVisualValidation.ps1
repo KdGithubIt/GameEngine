@@ -113,7 +113,9 @@ function Invoke-DesktopScreenshot {
     param(
         [Parameter(Mandatory = $true)][string]$Name,
         [Parameter(Mandatory = $true)][string]$Package,
-        [Parameter(Mandatory = $true)][string[]]$ProgramArguments
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
+        [string[]]$ProgramArguments
     )
 
     $outputPath = Join-Path $OutputDirectory "$Name.png"
@@ -122,7 +124,7 @@ function Invoke-DesktopScreenshot {
     $captureVariable = if ($Package -eq "engine-editor") {
         "GAMEENGINE_SCREENSHOT_TO"
     } else {
-        "EFRAME_SCREENSHOT_TO"
+        "GAMEENGINE_LAUNCHER_SCREENSHOT_TO"
     }
     $previousValue = [Environment]::GetEnvironmentVariable(
         $captureVariable,
