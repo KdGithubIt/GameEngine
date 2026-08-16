@@ -1,0 +1,43 @@
+diff --git a/crates/editor/src/runtime.rs b/crates/editor/src/runtime.rs
+--- a/crates/editor/src/runtime.rs
++++ b/crates/editor/src/runtime.rs
+@@ -598,6 +598,7 @@ impl RuntimePlayState {
+                 component!(engine::UiDocumentRef, "UiDocument");
+                 component!(engine::ParticleEmitter, "ParticleEmitter");
+                 component!(engine::Animator, "Animator");
++                component!(engine::behavior_tree::BehaviorTreeRunner, "BehaviorTreeRunner");
+                 component!(engine::NavMeshAgent, "NavMeshAgent");
+                 component!(engine::DamageReceiver, "DamageReceiver");
+                 component!(engine::AttackHitbox, "AttackHitbox");
+@@ -706,6 +707,31 @@ impl RuntimePlayState {
+         collect_animation_debug_snapshot(self.app.world_mut(), authoring_id)
+     }
+ 
++    /// Captures one runtime Behavior Tree runner without mutating its execution state.
++    pub(crate) fn behavior_tree_debug_snapshot(
++        &self,
++        key: (u32, u32),
++    ) -> Option<engine::behavior_tree::BehaviorExecutionSnapshot> {
++        let world = self.app.world();
++        let entity = world
++            .entities()
++            .find(|entity| (entity.id(), entity.generation()) == key)?;
++        world
++            .get_component::<engine::behavior_tree::BehaviorTreeRunner>(entity)
++            .map(engine::behavior_tree::BehaviorTreeRunner::snapshot)
++    }
++
++    /// Returns the first runtime entity that currently owns a Behavior Tree runner.
++    pub(crate) fn first_behavior_tree_entity_key(&self) -> Option<(u32, u32)> {
++        let world = self.app.world();
++        world
++            .entities()
++            .find(|entity| {
++                world.has_component::<engine::behavior_tree::BehaviorTreeRunner>(*entity)
++            })
++            .map(|entity| (entity.id(), entity.generation()))
++    }
++
+     /// Returns the number of authoring entities mapped into runtime entities.
+     pub fn mapped_entity_count(&self) -> usize {
+         self.mapped_entity_count
