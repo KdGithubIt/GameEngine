@@ -1,0 +1,48 @@
++        assert_eq!(
++            mcp_preview["diff"],
++            serde_json::to_value(&direct_preview.diff).expect("direct UI diff")
++        );
++        app.handle_mcp_tool_call(
++            "ui.apply",
++            json!({
++                "expected_revision": revision,
++                "expected_generation": generation,
++                "commands": [command]
++            }),
++        )
++        .expect("MCP UI apply");
++        let mcp_stale = app
++            .handle_mcp_tool_call(
++                "ui.apply",
++                json!({
++                    "expected_revision": revision,
++                    "expected_generation": generation,
++                    "commands": []
++                }),
++            )
++            .expect_err("MCP stale UI base");
++        assert_eq!(mcp_stale.code(), "authoring.stale_revision");
++        assert_eq!(
++            serde_json::to_value(app.session.ui_document()).expect("MCP UI value"),
++            serde_json::to_value(direct.ui_document()).expect("direct UI value")
++        );
++
++        let cli_ui = engine_cli::run_cli_with_status([
++            "ui".to_owned(),
++            "apply".to_owned(),
++            ui_path.to_string_lossy().into_owned(),
++            commands_path.to_string_lossy().into_owned(),
++        ])
++        .expect("CLI UI apply");
++        assert_eq!(cli_ui.exit_code, 0, "{}", cli_ui.output);
++        let cli_ui_value: Value = serde_json::from_str(
++            &std::fs::read_to_string(&ui_path).expect("read CLI UI"),
++        )
++        .expect("CLI UI value");
++        assert_eq!(
++            cli_ui_value,
++            serde_json::to_value(direct.ui_document().expect("direct UI")).expect("UI value")
++        );
++    }
++}
+diff --git a/crates/editor/Cargo.toml b/crates/editor/Cargo.toml

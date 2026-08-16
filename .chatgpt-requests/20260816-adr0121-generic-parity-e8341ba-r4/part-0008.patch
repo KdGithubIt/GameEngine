@@ -1,0 +1,185 @@
++            actual_generation: actual_identity,
++        })
++    }
++}
++
++fn ensure_current(
++    view: &GraphView,
++    expected_revision: u64,
++    expected_generation: u64,
++) -> Result<(), GraphViewAuthoringError> {
++    let actual_revision = view.revision();
++    let actual_generation = view.identity();
++    if actual_revision == expected_revision && actual_generation == expected_generation {
++        return Ok(());
++    }
++    Err(GraphViewAuthoringError::Stale {
++        expected_revision,
++        expected_generation,
++        actual_revision,
++        actual_generation,
++    })
++}
+diff --git a/crates/mcp/src/lib.rs b/crates/mcp/src/lib.rs
+--- a/crates/mcp/src/lib.rs
++++ b/crates/mcp/src/lib.rs
+@@ -11,5 +11,7 @@
+ pub mod ai_agent;
+ /// Asset discovery and inspection tool handlers backed by the shared asset catalog.
+ pub mod asset;
++/// Generic Graph, GraphView, and declarative UI authoring tool handlers.
++pub mod generic_authoring;
+ /// Prefab creation and instantiation tool handlers backed by shared services.
+ pub mod prefab;
+@@ -23,2 +25,6 @@
+ pub use asset::{AssetInspectInput, AssetMcpTools, AssetSearchInput};
++pub use generic_authoring::{
++    GenericAuthoringMcpError, GenericAuthoringMcpTools, GraphMutationInput,
++    GraphViewMutationInput, UiMutationInput,
++};
+ pub use prefab::{PrefabCreateInput, PrefabInstantiateInput, PrefabMcpTools};
+diff --git a/crates/mcp/src/generic_authoring.rs b/crates/mcp/src/generic_authoring.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/mcp/src/generic_authoring.rs
+@@ -0,0 +1,370 @@
++//! Generic Graph, GraphView, and declarative UI MCP adapters.
++//!
++//! These handlers own only tool-shaped DTOs and delegate all authoring meaning
++//! to `engine-authoring` shared services.
++
++use crate::McpToolDescriptor;
++use engine_authoring::{
++    AuthoringGraphDomain, AuthoringPermissions, Graph, GraphAuthoringError,
++    GraphAuthoringMutation, GraphAuthoringService, GraphAuthoringSnapshot,
++    GraphAuthoringValidation, GraphCommand, GraphView, GraphViewAuthoringError,
++    GraphViewAuthoringMutation, GraphViewAuthoringService, GraphViewAuthoringSnapshot,
++    GraphViewAuthoringValidation, GraphViewCommand, UiAuthoringError, UiAuthoringMutation,
++    UiAuthoringService, UiAuthoringSession, UiAuthoringSnapshot, UiAuthoringValidation,
++    UiDocumentCommand, UnsupportedGraphKind,
++};
++use serde::Deserialize;
++use serde_json::json;
++use std::fmt;
++
++/// Mutation request shared by generic Graph preview and apply tools.
++#[derive(Debug, Deserialize)]
++pub struct GraphMutationInput {
++    /// Authoritative Graph revision observed by the caller.
++    pub expected_revision: u64,
++    /// Authoritative in-memory Graph generation observed by the caller.
++    pub expected_generation: u64,
++    /// Semantic commands to apply atomically.
++    pub commands: Vec<GraphCommand>,
++}
++
++/// Mutation request shared by GraphView preview and apply tools.
++#[derive(Debug, Deserialize)]
++pub struct GraphViewMutationInput {
++    /// Authoritative GraphView revision observed by the caller.
++    pub expected_revision: u64,
++    /// Authoritative in-memory GraphView generation observed by the caller.
++    pub expected_generation: u64,
++    /// Presentation commands to apply atomically.
++    pub commands: Vec<GraphViewCommand>,
++}
++
++/// Mutation request shared by declarative UI preview and apply tools.
++#[derive(Debug, Deserialize)]
++pub struct UiMutationInput {
++    /// Authoritative UI document revision observed by the caller.
++    pub expected_revision: u64,
++    /// Authoritative in-memory UI generation observed by the caller.
++    pub expected_generation: u64,
++    /// UI commands to apply atomically.
++    pub commands: Vec<UiDocumentCommand>,
++}
++
++/// Failure returned by generic structured authoring MCP handlers.
++#[derive(Debug)]
++pub enum GenericAuthoringMcpError {
++    /// No built-in Graph domain owns the supplied graph kind.
++    UnsupportedGraphKind(UnsupportedGraphKind),
++    /// Shared semantic Graph authoring rejected the request.
++    Graph(GraphAuthoringError),
++    /// Shared GraphView authoring rejected the request.
++    GraphView(GraphViewAuthoringError),
++    /// Shared declarative UI authoring rejected the request.
++    Ui(UiAuthoringError),
++}
++
++impl GenericAuthoringMcpError {
++    /// Returns the stable diagnostic-style code exposed to MCP clients.
++    pub fn code(&self) -> &'static str {
++        match self {
++            Self::UnsupportedGraphKind(error) => error.code(),
++            Self::Graph(error) => error.code(),
++            Self::GraphView(error) => error.code(),
++            Self::Ui(error) => error.code(),
++        }
++    }
++}
++
++impl fmt::Display for GenericAuthoringMcpError {
++    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
++        match self {
++            Self::UnsupportedGraphKind(error) => error.fmt(formatter),
++            Self::Graph(error) => error.fmt(formatter),
++            Self::GraphView(error) => error.fmt(formatter),
++            Self::Ui(error) => error.fmt(formatter),
++        }
++    }
++}
++
++impl std::error::Error for GenericAuthoringMcpError {
++    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
++        match self {
++            Self::UnsupportedGraphKind(error) => Some(error),
++            Self::Graph(error) => Some(error),
++            Self::GraphView(error) => Some(error),
++            Self::Ui(error) => Some(error),
++        }
++    }
++}
++
++impl From<UnsupportedGraphKind> for GenericAuthoringMcpError {
++    fn from(error: UnsupportedGraphKind) -> Self {
++        Self::UnsupportedGraphKind(error)
++    }
++}
++
++impl From<GraphAuthoringError> for GenericAuthoringMcpError {
++    fn from(error: GraphAuthoringError) -> Self {
++        Self::Graph(error)
++    }
++}
++
++impl From<GraphViewAuthoringError> for GenericAuthoringMcpError {
++    fn from(error: GraphViewAuthoringError) -> Self {
++        Self::GraphView(error)
++    }
++}
++
++impl From<UiAuthoringError> for GenericAuthoringMcpError {
++    fn from(error: UiAuthoringError) -> Self {
++        Self::Ui(error)
++    }
++}
++
++/// Transport-neutral MCP handlers for generic Graph, GraphView, and UI authoring.
++#[derive(Debug, Default, Clone, Copy)]
++pub struct GenericAuthoringMcpTools;
++
++impl GenericAuthoringMcpTools {
++    /// Creates the stateless generic authoring MCP adapter.
++    pub fn new() -> Self {
++        Self
++    }
++
++    /// Returns descriptors for generic structured authoring tools.
++    pub fn tool_descriptors(&self) -> Vec<McpToolDescriptor> {
++        vec![
++            descriptor("graph.inspect", "Inspect the active semantic Graph.", empty_schema()),
++            descriptor("graph.validate", "Validate the active semantic Graph with its built-in domain.", empty_schema()),
++            descriptor("graph.preview", "Preview one atomic semantic Graph command batch.", graph_mutation_schema()),
++            descriptor("graph.apply", "Apply one atomic semantic Graph command batch.", graph_mutation_schema()),

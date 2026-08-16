@@ -1,0 +1,41 @@
++            .expect("MCP layout inspect");
++        let layout_revision = mcp_layout_base["revision"].as_u64().expect("layout revision");
++        let layout_generation = mcp_layout_base["generation"].as_u64().expect("layout generation");
++        let mcp_layout_preview = app
++            .handle_mcp_tool_call(
++                "graph.layout.preview",
++                json!({
++                    "expected_revision": layout_revision,
++                    "expected_generation": layout_generation,
++                    "commands": [viewport_command.clone()]
++                }),
++            )
++            .expect("MCP layout preview");
++        assert_eq!(
++            mcp_layout_preview["diff"],
++            serde_json::to_value(&direct_layout_preview.diff).expect("layout preview diff")
++        );
++        app.handle_mcp_tool_call(
++            "graph.layout.apply",
++            json!({
++                "expected_revision": layout_revision,
++                "expected_generation": layout_generation,
++                "commands": [viewport_command.clone()]
++            }),
++        )
++        .expect("MCP layout apply");
++        assert_eq!(
++            serde_json::to_value(app.session.graph_view()).expect("MCP layout value"),
++            serde_json::to_value(direct.graph_view()).expect("direct layout value")
++        );
++
++        let layout_commands_path = cli_dir.path().join("layout-commands.json");
++        std::fs::write(
++            &layout_commands_path,
++            serde_json::to_string_pretty(&vec![viewport_command]).expect("layout command JSON"),
++        )
++        .expect("write layout commands");
++        let cli_layout = engine_cli::run_cli_with_status([
++            "graph".to_owned(),
++            "layout".to_owned(),
++            "apply".to_owned(),

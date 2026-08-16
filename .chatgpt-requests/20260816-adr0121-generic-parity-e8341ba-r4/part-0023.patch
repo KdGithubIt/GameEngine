@@ -1,0 +1,19 @@
+--- a/crates/editor/Cargo.toml
++++ b/crates/editor/Cargo.toml
+@@ -31,2 +31,3 @@
+ [dev-dependencies]
++engine-cli = { path = "../cli" }
+ tempfile = "3"
+diff --git a/crates/editor/src/mcp_transport.rs b/crates/editor/src/mcp_transport.rs
+--- a/crates/editor/src/mcp_transport.rs
++++ b/crates/editor/src/mcp_transport.rs
+@@ -8,3 +8,4 @@
+ use engine_mcp::{
+-    AssetMcpTools, BehaviorTreeMcpTools, McpToolDescriptor, PrefabMcpTools, SceneMcpTools,
++    AssetMcpTools, BehaviorTreeMcpTools, GenericAuthoringMcpTools, McpToolDescriptor,
++    PrefabMcpTools, SceneMcpTools,
+ };
+@@ -412,2 +413,3 @@
+     let mut descriptors = BehaviorTreeMcpTools::new().tool_descriptors();
++    descriptors.extend(GenericAuthoringMcpTools::new().tool_descriptors());
+     descriptors.extend(SceneMcpTools::new().tool_descriptors());
