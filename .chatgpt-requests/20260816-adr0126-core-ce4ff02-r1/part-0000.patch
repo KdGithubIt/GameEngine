@@ -1,0 +1,189 @@
+diff --git a/Cargo.lock b/Cargo.lock
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -1600,6 +1600,13 @@ dependencies = [
+  "serde_json",
+ ]
+ 
++[[package]]
++name = "engine-timeline"
++version = "0.1.0"
++dependencies = [
++ "serde",
++]
++
+ [[package]]
+ name = "enumflags2"
+ version = "0.7.12"
+diff --git a/Cargo.toml b/Cargo.toml
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -6,6 +6,7 @@ members = [
+     "crates/rig",
+     "crates/physics",
+     "crates/animation",
++    "crates/timeline",
+     "crates/gameplay",
+     "crates/render-runtime",
+     "crates/platform",
+diff --git a/crates/timeline/Cargo.toml b/crates/timeline/Cargo.toml
+new file mode 100644
+--- /dev/null
++++ b/crates/timeline/Cargo.toml
+@@ -0,0 +1,11 @@
++[package]
++name = "engine-timeline"
++version = "0.1.0"
++edition = "2024"
++
++[features]
++default = []
++serde = ["dep:serde"]
++
++[dependencies]
++serde = { version = "1", features = ["derive"], optional = true }
+diff --git a/crates/timeline/src/lib.rs b/crates/timeline/src/lib.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/timeline/src/lib.rs
+@@ -0,0 +1,915 @@
++//! Dependency-neutral Timeline scheduling and playback contracts (ADR 0126).
++//!
++//! This crate owns canonical integer time, immutable compiled schedule
++//! traversal, per-player clocks, seek-policy reporting, and the typed adapter
++//! boundary. It intentionally has no dependency on animation, rendering,
++//! audio, VFX, physics, authoring, or editor implementations.
++//!
++//! [`CompiledTimeline`] is generic over its payload. The payload type is the
++//! typed extension point for composition layers: a host defines a closed Rust
++//! type containing only the domain payloads it actually supports, and an
++//! implementation of [`TimelineEvaluationAdapter`] consumes those payloads.
++//! The neutral scheduler therefore never needs stringly-typed payloads,
++//! `serde_json::Value`, or runtime downcasts.
++
++#![warn(missing_docs)]
++#![warn(rustdoc::broken_intra_doc_links)]
++
++use std::fmt;
++use std::sync::Arc;
++
++/// Canonical Timeline clock rate in integer ticks per second.
++pub const TIMELINE_TICKS_PER_SECOND: i64 = 48_000;
++
++/// One exact position on the canonical Timeline clock.
++///
++/// Persisted clip boundaries and markers use this integer type. Floating-point
++/// seconds are presentation or host-clock inputs only; they are never the
++/// canonical stored position.
++#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
++#[cfg_attr(feature = "serde", serde(transparent))]
++pub struct TimelineTick(i64);
++
++impl TimelineTick {
++    /// Tick zero, the start of a Timeline.
++    pub const ZERO: Self = Self(0);
++
++    /// Creates an exact Timeline tick.
++    pub const fn new(value: i64) -> Self {
++        Self(value)
++    }
++
++    /// Returns the integer tick value.
++    pub const fn get(self) -> i64 {
++        self.0
++    }
++
++    /// Converts this position to seconds for a target-domain API.
++    pub fn to_seconds_f64(self) -> f64 {
++        self.0 as f64 / TIMELINE_TICKS_PER_SECOND as f64
++    }
++
++    /// Adds an integer delta, saturating at the integer limits.
++    pub const fn saturating_add(self, delta: i64) -> Self {
++        Self(self.0.saturating_add(delta))
++    }
++
++    /// Returns this tick clamped to the inclusive range `[minimum, maximum]`.
++    pub fn clamp(self, minimum: Self, maximum: Self) -> Self {
++        Self(self.0.clamp(minimum.0, maximum.0))
++    }
++}
++
++impl fmt::Display for TimelineTick {
++    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
++        self.0.fmt(formatter)
++    }
++}
++
++/// How a track payload can reconstruct state after discontinuous time.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
++pub enum SeekCapability {
++    /// Evaluation is a pure function of the requested target tick.
++    Stateless,
++    /// The target domain exposes a deterministic seek or sample operation.
++    Seekable,
++    /// State must be reconstructed by replaying from a known earlier point.
++    ReplayRequired,
++    /// The target domain cannot provide a meaningful discontinuous sample.
++    NonSeekable,
++}
++
++/// The reason a compiled schedule is being evaluated.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum EvaluationMode {
++    /// Normal forward playback from the previous tick to the current tick.
++    Playback,
++    /// A discontinuous seek/scrub to the current tick.
++    Seek {
++        /// Whether point-event side effects may be previewed while seeking.
++        preview_events: bool,
++    },
++}
++
++impl EvaluationMode {
++    /// Returns whether event side effects may be previewed in this evaluation.
++    pub const fn preview_events(self) -> bool {
++        match self {
++            Self::Playback => true,
++            Self::Seek { preview_events } => preview_events,
++        }
++    }
++}
++
++/// One immutable interval or point in a compiled Timeline.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum CompiledSpan {
++    /// An active half-open clip interval `[start, end)`.
++    Interval {
++        /// Inclusive first tick of the clip.
++        start: TimelineTick,
++        /// Exclusive tick at which the clip is no longer active.
++        end: TimelineTick,
++    },
++    /// An exact point marker.
++    Point {
++        /// Exact marker tick.
++        tick: TimelineTick,
++    },
++}
++
++impl CompiledSpan {
++    /// Returns the first tick represented by this span.
++    pub const fn start(self) -> TimelineTick {
++        match self {
++            Self::Interval { start, .. } => start,
++            Self::Point { tick } => tick,
++        }
++    }
++
++    /// Returns whether this span is active at `tick` as sampled state.
++    pub const fn contains_sample(self, tick: TimelineTick) -> bool {
++        match self {
++            Self::Interval { start, end } => tick.0 >= start.0 && tick.0 < end.0,
++            Self::Point { tick: point } => tick.0 == point.0,
++        }
++    }
++}
++
++/// 
