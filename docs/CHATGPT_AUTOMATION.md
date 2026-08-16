@@ -1,7 +1,7 @@
 # ChatGPT GitHub Automation
 
 Status: Accepted
-Version: 1.4.3
+Version: 1.5.0
 Canonical location: `docs/CHATGPT_AUTOMATION.md`
 
 ## Purpose
@@ -13,8 +13,10 @@ The normal path is:
 
 ```text
 ChatGPT
+  -> chatgpt-dispatch-stage-<request-id> staging branch
+  -> read-only GitHub Actions stage signal
+  -> trusted default-branch transport publisher
   -> chatgpt-dispatch transport branch
-  -> read-only GitHub Actions dispatch signal
   -> trusted default-branch dispatcher
   -> chatgpt/gameengine-* task branch
   -> Draft pull request
@@ -23,39 +25,81 @@ ChatGPT
   -> optional corrected request
 ```
 
-The public repository uses the dispatcher path directly. The legacy private-repository bridge, auto-merge workflow, and `GameEngine-ChatGPT-Apply` fallback are intentionally not installed here.
+The public repository uses the dispatcher path directly. The legacy
+private-repository bridge, auto-merge workflow, and `GameEngine-ChatGPT-Apply`
+fallback are intentionally not installed here.
 
 ## Trust boundary
 
-`chatgpt-dispatch` is a transport branch. Request files on that branch are data,
-not executable automation.
+Request producers do not write the shared `chatgpt-dispatch` ref directly.
+Each request is first written to a dedicated
+`chatgpt-dispatch-stage-<request-id>` branch as data. The staging branch may
+contain only immutable `.chatgpt-requests/<request-id>/part-NNNN.patch` additions
+followed by one final `ready.json` addition.
 
-A small push-triggered signal workflow notices a newly-created `ready.json`.
-That signal has only `contents: read` and cannot mutate repository or Actions
-state. Its completion triggers `gameengine-chatgpt-dispatcher.yml` through
-`workflow_run`. GitHub loads the `workflow_run` workflow from the default branch,
-so the write-capable dispatcher is not supplied by the transport branch.
+A small push-triggered staging signal notices a newly-created `ready.json` on a
+staging branch. That signal has only `contents: read` and cannot mutate
+repository or Actions state. Its completion triggers the write-capable transport
+publisher through `workflow_run`. GitHub loads the `workflow_run` workflow from
+the default branch, so the write-capable publisher is not supplied by the
+producer-controlled staging branch.
 
-The trusted dispatcher repeats the ready-commit validation; it does not trust
-the signal workflow's checks as authorization.
+The trusted transport publisher validates the complete staged commit range,
+then globally serializes publication. It cherry-picks the staged request commits
+onto the latest `chatgpt-dispatch` head and pushes with an exact lease. This
+makes the publisher the normal single writer for the shared transport ref. A
+human, fallback tool, or old producer that writes `chatgpt-dispatch` directly is
+an external writer; the publisher must reject the stale lease instead of
+force-updating over that change.
 
-The producer of requests MUST modify only `.chatgpt-requests/` on the transport
-branch. Workflow files, product code, and repository configuration MUST NOT be
-changed as part of a request transport commit.
+GitHub does not start ordinary push-triggered workflows for pushes made with a
+workflow's own `GITHUB_TOKEN`. Therefore the publisher explicitly starts the
+trusted dispatcher with `workflow_dispatch` after the transport push. The
+dispatcher is loaded from `main`, requires the supplied full request commit SHA
+to be reachable from `chatgpt-dispatch`, and repeats the ready-commit and request
+envelope validation before applying any product patch.
+
+The existing read-only `chatgpt-dispatch` push signal remains a compatibility
+path for an externally-created valid transport record. It is not the normal
+producer publication path. Request producers MUST use staging branches and MUST
+NOT directly advance `chatgpt-dispatch`.
+
+Workflow files, product code, and repository configuration MUST NOT be changed
+as part of request staging or transport publication. Normal request data is
+limited to `.chatgpt-requests/<request-id>/`.
 
 ## Branches
 
+### `chatgpt-dispatch-stage-<request-id>`
+
+Per-request staging branch used to remove producer contention from the shared
+transport ref. The branch name MUST be exactly
+`chatgpt-dispatch-stage-<request-id>`, where `<request-id>` satisfies the same
+request ID rules as `ready.json`.
+
+A producer creates a fresh staging branch from current `main`, publishes one or
+more patch-part addition commits, and finally adds `ready.json` in its own commit.
+All staged commits after the `main` base MUST be linear non-merge commits. Before
+`ready.json`, each staged commit may only add normal
+`.chatgpt-requests/<request-id>/part-NNNN.patch` files. The final commit MUST add
+exactly `.chatgpt-requests/<request-id>/ready.json` and no other file.
+
+After the ready commit is pushed, the staging branch is immutable. If it moves
+before the serialized publisher runs, publication is rejected. Corrections use
+a new request ID and therefore a new staging branch.
+
 ### `chatgpt-dispatch`
 
-Long-lived transport branch used only for immutable ChatGPT request records.
-Each request is stored under:
+Long-lived shared transport branch used only for immutable ChatGPT request
+records. Each request is stored under:
 
 ```text
 .chatgpt-requests/<request-id>/
 ```
 
-Request records are retained. The dispatcher does not delete or rewrite them,
-which avoids a cleanup push retriggering the ready-marker workflow.
+The trusted transport publisher is the normal single writer. Producers MUST NOT
+create commits on this branch or update its ref directly. Request records are
+retained. The publisher does not delete or rewrite them.
 
 ### `chatgpt/gameengine-*`
 
@@ -70,19 +114,33 @@ records its exact 40-character HEAD SHA in `expected_head_sha`.
 A request is published in this order:
 
 1. Read the current target branch and capture its exact HEAD SHA.
-2. Create a unique request ID.
+2. Create a unique request ID and a fresh
+   `chatgpt-dispatch-stage-<request-id>` branch from current `main`.
 3. Split the complete unified Git patch into one or more transport parts.
-4. Commit all `part-NNNN.patch` files to
-   `.chatgpt-requests/<request-id>/` on `chatgpt-dispatch`.
-5. Re-read the target branch. If its HEAD changed, abandon this request and
-   build a new request from the new HEAD.
-6. Create `ready.json` in a separate final commit. That commit MUST add exactly
-   one file: the request's `ready.json`.
-7. The read-only signal completes; the default-branch `workflow_run` dispatcher starts.
+4. Add the exact preflighted `part-NNNN.patch` blobs under
+   `.chatgpt-requests/<request-id>/` on the staging branch. The producer may use
+   one or more commits, but those commits may only add patch-part files for this
+   request.
+5. Re-read the target branch. If its HEAD changed, abandon this unpublished
+   request and build a new request from the new HEAD.
+6. Create `ready.json` in a separate final staging commit. That commit MUST add
+   exactly one file: the request's `ready.json`.
+7. The read-only stage signal completes. The trusted default-branch publisher
+   validates the immutable stage history, waits for the global publisher
+   concurrency group, and cherry-picks the staged request commits onto the
+   latest `chatgpt-dispatch` head.
+8. Immediately before updating `chatgpt-dispatch`, the publisher re-reads its
+   remote head and pushes with an exact lease. An unexpected external writer
+   makes the publication fail rather than overwrite the new transport history.
+9. After a successful or idempotently detected publication, the publisher starts
+   `gameengine-chatgpt-dispatcher.yml` from `main` with the exact published ready
+   commit SHA.
+10. The dispatcher revalidates that commit and continues to the target task
+    branch, Draft PR, and Windows validation.
 
-A `ready.json` modification, deletion, or a commit that changes any additional
-file is rejected. Once ready, a request is immutable. Corrections use a new
-request ID.
+A `ready.json` modification, deletion, staging-branch rewrite after ready, or a
+staged commit that changes any non-request path is rejected. Once ready, a
+request is immutable. Corrections use a new request ID.
 
 ## Producer operating checklist
 
@@ -108,13 +166,14 @@ informal file upload. For every new implementation or correction request:
    is not equivalent because it can miss whitespace errors the dispatcher will
    reject. Do not manually retype, reformat, or otherwise reconstruct a second
    copy of the patch after this preflight.
-6. Split the preflighted patch only for transport size and publish those exact
-   bytes as the declared `part-NNNN.patch` files. When a text-valued publication
-   API is used, split only at newline boundaries so transport cannot normalize
-   terminal whitespace from a mid-line fragment. Before publishing `ready.json`,
-   verify the published part byte counts and blob hashes, or the reconstructed
-   content hash, against the preflight artifact. Never use `ready.json` as a
-   partial-progress marker.
+6. Split the preflighted patch only for transport size. Create a fresh staging
+   branch named `chatgpt-dispatch-stage-<request-id>` from current `main` and
+   publish those exact bytes as contiguous `part-NNNN.patch` additions for this
+   request. When a text-valued publication API is used, split only at newline
+   boundaries so transport cannot normalize terminal whitespace from a mid-line
+   fragment. Verify the staged part byte counts and blob hashes, or the
+   reconstructed content hash, against the preflight artifact. Never use
+   `ready.json` as a partial-progress marker.
 7. Immediately before creating `ready.json`, re-read the remote target branch
    HEAD. If it differs from `expected_head_sha`, abandon the unpublished
    request, regenerate the patch from the new target tree, and use a new request
@@ -125,30 +184,43 @@ informal file upload. For every new implementation or correction request:
    regenerate the request from current `main` before publishing `ready.json`,
    unless the task intentionally targets the older baseline. A stable target
    HEAD alone does not guarantee clean PR validation scope.
-8. Add `ready.json` in its own final transport commit and change no other file in
-   that commit. After this point the request is immutable.
-9. Follow the signal, dispatcher, Draft PR, and Windows validation through to a
-   terminal result. Read the validation mode and scope before interpreting the
-   individual gate results.
-10. On failure, identify the failing layer before changing code: transport
-    envelope, dispatcher/preflight, target-branch concurrency, Rust/docs
-    validation, visual validation, or external runner/service failure.
+8. Add `ready.json` in its own final staging commit and change no other file in
+   that commit. After this point the staging branch and request are immutable.
+   Do not advance `chatgpt-dispatch` yourself.
+9. Follow the stage signal, transport publisher, dispatcher, Draft PR, and
+   Windows validation through to a terminal result. Read the validation mode
+   and scope before interpreting the individual gate results.
+10. On failure, identify the failing layer before changing code: staging signal,
+    transport publisher, request envelope, dispatcher/preflight, target-branch
+    concurrency, Rust/docs validation, visual validation, or external
+    runner/service failure.
 11. After a confirmed recovery, apply the incident-learning rules below so the
     same root cause does not need to be rediscovered on a later request.
 
-The producer MUST NOT work around a dispatcher failure by pushing the intended
-product patch directly to the task branch. Fix the request or, when the trusted
-automation itself is defective, use the separately reviewed automation-
-infrastructure path described by the repository policy.
+The producer MUST NOT work around a staging, publisher, or dispatcher failure by
+pushing the intended product patch directly to the task branch or by directly
+advancing `chatgpt-dispatch`. Fix the request or, when trusted automation itself
+is defective, use the separately reviewed automation-infrastructure path
+described by the repository policy.
 
 ## Failure diagnosis before retry
 
 Use the failing layer to choose the recovery instead of making speculative code
 changes:
 
-- If the dispatch signal does not accept the ready commit, verify that the push
-  was to `chatgpt-dispatch` and that the final commit newly added exactly one
-  `.chatgpt-requests/<request-id>/ready.json` file.
+- If the staging signal does not accept the ready commit, verify that the push
+  was to `chatgpt-dispatch-stage-<request-id>` and that the final commit newly
+  added exactly one matching `.chatgpt-requests/<request-id>/ready.json` file.
+- If the transport publisher rejects the stage branch, verify that the branch
+  still points at the signaled ready commit, that it was based on `main`, that
+  all staged commits are linear, and that every pre-ready change only adds patch
+  parts for the same request ID.
+- If the publisher reports an existing request ID with different content, do
+  not overwrite or reuse that ID. Create a new request ID and staging branch.
+- If the publisher reports that `chatgpt-dispatch` moved outside the serialized
+  publisher, classify the other writer before retrying. Do not force-update the
+  transport ref. Old producer logic that writes the shared ref directly must be
+  migrated to staging instead of compensated for with a retry loop.
 - If request-envelope validation fails, compare the request directory and
   `ready.json` with the schema, contiguous part naming, size limits, and exact
   file list in this document.
@@ -227,13 +299,43 @@ Required validation:
 - the legacy `<!-- gameengine-chatgpt-automation -->` auto-merge marker is
   forbidden in dispatcher PR bodies.
 
+## Transport publisher safety checks
+
+Before advancing the shared transport branch, the trusted publisher performs all
+of the following:
+
+1. Verifies the staging signal succeeded, came from a push on this repository,
+   and the branch is exactly `chatgpt-dispatch-stage-<request-id>`.
+2. Re-fetches the staging ref and requires it still to equal the signaled full
+   ready commit SHA.
+3. Finds the staging branch's `main` base and rejects merge commits or any
+   staged change outside `.chatgpt-requests/<request-id>/`.
+4. Requires every pre-ready change to add only immutable `part-NNNN.patch`
+   files and the final commit to add only `ready.json`.
+5. Verifies contiguous part naming, normal file modes, per-part size limits,
+   total patch size, and matching `request_id`.
+6. Rejects request ID reuse when the existing transport request tree differs.
+   An identical existing tree is treated idempotently.
+7. Reads the latest `chatgpt-dispatch` head only after entering the global
+   publisher concurrency group.
+8. Cherry-picks the validated staging commits onto that exact head.
+9. Re-reads the remote transport head immediately before push and uses an exact
+   `--force-with-lease` for the captured head.
+10. Starts the trusted dispatcher from `main` with the exact published ready
+    commit SHA instead of relying on a push event generated by `GITHUB_TOKEN`.
+
+The transport publisher is globally serialized with `cancel-in-progress: false`.
+This is the concurrency boundary that prevents ChatGPT request producers from
+racing one another on the shared transport ref.
+
 ## Dispatcher safety checks
 
-Before publishing a change, the trusted dispatcher performs all of the
+Before publishing a product change, the trusted dispatcher performs all of the
 following:
 
-1. Verifies the triggering signal succeeded, came from a push on this repository
-   and `chatgpt-dispatch`, and the request commit is reachable from that branch.
+1. Accepts either the legacy read-only `chatgpt-dispatch` signal or an explicit
+   trusted `workflow_dispatch` request commit, and requires the selected full
+   commit SHA to be reachable from `chatgpt-dispatch`.
 2. Verifies the final commit newly added only the declared `ready.json`.
 3. Verifies request schema, part names, file modes, counts, and size limits.
 4. Checks out the declared target branch.
@@ -248,10 +350,9 @@ following:
 11. Re-reads the remote target HEAD immediately before commit/push.
 12. Pushes with an exact `--force-with-lease` for `expected_head_sha`.
 
-The workflow is globally serialized with `cancel-in-progress: false`. The
-serialization prevents dispatcher requests from racing one another; the HEAD
-checks and lease still reject changes made by humans, fallback automation, or
-other external writers.
+The dispatcher itself remains globally serialized with `cancel-in-progress:
+false`. The target HEAD checks and lease still reject changes made by humans,
+fallback automation, or other external writers.
 
 No stale request is force-applied. A stale request fails and must be rebuilt
 from the latest branch state.
@@ -446,4 +547,7 @@ to repair that trust boundary through a normal dispatcher patch; use a separate
 
 ## Fallback
 
-No write-capable fallback is installed in the public repository. If the dispatcher is unavailable, stop and repair the trusted dispatcher path rather than bypassing its branch, exact-head, Draft PR, or validation guarantees.
+No write-capable fallback is installed in the public repository. If the
+publisher or dispatcher is unavailable, stop and repair the trusted path rather
+than bypassing its staging, single-writer transport, exact-head, Draft PR, or
+validation guarantees.
