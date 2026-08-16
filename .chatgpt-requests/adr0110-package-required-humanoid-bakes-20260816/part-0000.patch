@@ -1,0 +1,329 @@
+diff --git a/crates/editor/src/build.rs b/crates/editor/src/build.rs
+--- a/crates/editor/src/build.rs
++++ b/crates/editor/src/build.rs
+@@ -700,4 +700,5 @@
+     let mut imports: BTreeMap<AssetId, engine::GltfImportResult> = BTreeMap::new();
+     let mut diagnostics = Vec::new();
++    let required_bakes = collect_needed_humanoid_bakes(manifest, &assets_root, &mut imports);
+ 
+     let mut first_profiles = BTreeMap::<AssetId, engine::asset::HumanoidProfile>::new();
+@@ -745,5 +746,1 @@
+-    if motion_sources.is_empty() || first_profiles.is_empty() {
+-        return (Vec::new(), diagnostics);
+-    }
+-
+     let mut targets = BTreeMap::<
+@@ -780,5 +777,1 @@
+-    if targets.is_empty() {
+-        return (Vec::new(), diagnostics);
+-    }
+-
+     let mut motions = BTreeMap::<AssetId, engine::humanoid_motion::HumanoidMotion>::new();
+@@ -840,2 +833,33 @@
++    for (motion_id, target_id) in &required_bakes {
++        if !motions.contains_key(motion_id) {
++            diagnostics.push(BuildDiagnostic::blocking(
++                BuildDiagnosticKind::HumanoidBakeFailed {
++                    motion: motion_id.as_str().to_owned(),
++                    target_skeleton: Some(target_id.as_str().to_owned()),
++                    reason: "required HumanoidMotion is unavailable".to_owned(),
++                },
++                format!(
++                    "Animation Set requires Humanoid motion '{}' for target skeleton '{}', but the owning source does not expose a usable HumanoidMotion; configure the source Humanoid profile and reimport before packaging",
++                    motion_id.as_str(),
++                    target_id.as_str()
++                ),
++            ));
++        }
++        if !targets.contains_key(target_id) {
++            diagnostics.push(BuildDiagnostic::blocking(
++                BuildDiagnosticKind::HumanoidBakeFailed {
++                    motion: motion_id.as_str().to_owned(),
++                    target_skeleton: Some(target_id.as_str().to_owned()),
++                    reason: "target skeleton has no usable persisted HumanoidProfile".to_owned(),
++                },
++                format!(
++                    "Animation Set requires Humanoid motion '{}' for target skeleton '{}', but that target has no usable persisted HumanoidProfile; repair Configure Humanoid mappings and reimport before packaging",
++                    motion_id.as_str(),
++                    target_id.as_str()
++                ),
++            ));
++        }
++    }
++
+     let mut copies = Vec::new();
+     for (motion_id, motion) in &motions {
+@@ -900,4 +924,178 @@
+     (copies, diagnostics)
++}
++
++/// Returns the HumanoidMotion asset that must exist for one persisted motion-source
++/// selection after applying ADR 0110's explicit source priority.
++fn required_humanoid_motion_asset(
++    source: &engine_authoring::MotionSourceRef,
++    same_skeleton_native: bool,
++    explicit_retarget_map: bool,
++) -> Option<AssetId> {
++    match source.variant {
++        engine_authoring::MotionSourceVariant::Native => None,
++        engine_authoring::MotionSourceVariant::Humanoid => Some(source.asset.clone()),
++        engine_authoring::MotionSourceVariant::Auto
++            if !same_skeleton_native && !explicit_retarget_map =>
++        {
++            Some(engine::asset::imported_humanoid_motion_sub_asset_id(
++                &source.asset,
++            ))
++        }
++        engine_authoring::MotionSourceVariant::Auto => None,
++    }
++}
++
++/// Finds Humanoid target bakes that statically reachable scene/prefab controllers
++/// require in a packaged player.
++///
++/// The packager still stages every valid registered HumanoidMotion/profile
++/// combination for conservative dynamic reachability. This trace only adds a
++/// stronger guarantee: a persisted explicit Humanoid source, or an Auto source
++/// that reaches the Humanoid fallback after same-skeleton Native and explicit
++/// RetargetMap priority, must not ship without its required target bake.
++fn collect_needed_humanoid_bakes(
++    manifest: &AssetManifest,
++    assets_root: &Path,
++    imports: &mut BTreeMap<AssetId, engine::GltfImportResult>,
++) -> BTreeSet<(AssetId, AssetId)> {
++    let retarget_maps = engine::load_registered_retarget_maps(assets_root, manifest);
++    let mut needed = BTreeSet::new();
++
++    for path in animation_controller_document_paths(manifest, assets_root) {
++        let Some(entities) = load_animation_document_entities(&path) else {
++            continue;
++        };
++        for entity in &entities {
++            let Some(controller) = entity.components.get(
++                &engine_authoring::id::ComponentTypeId::new(
++                    engine::scene_bridge::ANIMATION_CONTROLLER_COMPONENT,
++                ),
++            ) else {
++                continue;
++            };
++            let Some(model) = entity.components.get(
++                &engine_authoring::id::ComponentTypeId::new(
++                    engine::scene_bridge::SKINNED_MODEL_COMPONENT,
++                ),
++            ) else {
++                continue;
++            };
++            if matches!(
++                controller,
++                engine_authoring::Value::Object(fields)
++                    if fields.get("enabled") == Some(&engine_authoring::Value::Bool(false))
++            ) {
++                continue;
++            }
++
++            let Some(target_skeleton) =
++                resolve_target_skeleton_id(model, manifest, assets_root, imports)
++            else {
++                continue;
++            };
++            let engine_authoring::Value::Object(fields) = controller else {
++                continue;
++            };
++            let Some(engine_authoring::Value::AssetRef(animation_set_id)) =
++                fields.get("animation_set")
++            else {
++                continue;
++            };
++            let Some(entry) = manifest.get(animation_set_id) else {
++                continue;
++            };
++            let Ok(json) = std::fs::read_to_string(assets_root.join(&entry.path)) else {
++                continue;
++            };
++            let Ok(animation_set) = engine_authoring::AnimationSet::from_json(&json) else {
++                continue;
++            };
++
++            for binding in animation_set.bindings.values() {
++                for source in std::iter::once(&binding.clip).chain(&binding.overlays) {
++                    let (same_skeleton_native, explicit_retarget_map) =
++                        if source.variant == engine_authoring::MotionSourceVariant::Auto {
++                            let source_skeletons = resolve_clip_source_skeleton_ids(
++                                &source.asset,
++                                manifest,
++                                assets_root,
++                                imports,
++                            );
++                            let same_skeleton_native = source_skeletons
++                                .iter()
++                                .any(|source_skeleton| source_skeleton == &target_skeleton);
++                            let explicit_retarget_map =
++                                !same_skeleton_native
++                                    && source_skeletons.iter().any(|source_skeleton| {
++                                        engine::find_retarget_map_for_pair(
++                                            &retarget_maps,
++                                            source_skeleton,
++                                            &target_skeleton,
++                                        )
++                                        .is_some()
++                                    });
++                            (same_skeleton_native, explicit_retarget_map)
++                        } else {
++                            (false, false)
++                        };
++
++                    if let Some(motion) = required_humanoid_motion_asset(
++                        source,
++                        same_skeleton_native,
++                        explicit_retarget_map,
++                    ) {
++                        needed.insert((motion, target_skeleton.clone()));
++                    }
++                }
++            }
++        }
++    }
++
++    needed
++}
++
++fn animation_controller_document_paths(
++    manifest: &AssetManifest,
++    assets_root: &Path,
++) -> BTreeSet<PathBuf> {
++    let mut document_paths = BTreeSet::new();
++    for (_, entry) in manifest.iter() {
++        let lower = entry.path.to_ascii_lowercase();
++        if lower.ends_with(".scene.json") || lower.ends_with(".prefab.json") {
++            document_paths.insert(assets_root.join(&entry.path));
++        }
++    }
++    let scenes_root = assets_root.join("scenes");
++    if scenes_root.is_dir() {
++        for path in collect_regular_files(&scenes_root) {
++            if path
++                .to_string_lossy()
++                .to_ascii_lowercase()
++                .ends_with(".scene.json")
++            {
++                document_paths.insert(path);
++            }
++        }
++    }
++    document_paths
++}
++
++fn load_animation_document_entities(
++    path: &Path,
++) -> Option<Vec<engine_authoring::AuthoringEntity>> {
++    let json = std::fs::read_to_string(path).ok()?;
++    let lower = path.to_string_lossy().to_ascii_lowercase();
++    if lower.ends_with(".scene.json") {
++        engine_authoring::load_scene_from_json(&json)
++            .ok()
++            .map(|scene| scene.entities().map(|(_, entity)| entity.clone()).collect())
++    } else if lower.ends_with(".prefab.json") {
++        engine_authoring::PrefabAsset::from_json(&json)
++            .ok()
++            .map(|prefab| prefab.entities.into_values().collect())
++    } else {
++        None
++    }
+ }
+ // ---------------------------------------------------------------------------
+ // AP-7 reachability trace
+@@ -970,40 +1168,6 @@
+-    let mut document_paths: BTreeSet<PathBuf> = BTreeSet::new();
+-    for (_, entry) in manifest.iter() {
+-        let lower = entry.path.to_ascii_lowercase();
+-        if lower.ends_with(".scene.json") || lower.ends_with(".prefab.json") {
+-            document_paths.insert(assets_root.join(&entry.path));
+-        }
+-    }
+-    let scenes_root = assets_root.join("scenes");
+-    if scenes_root.is_dir() {
+-        for path in collect_regular_files(&scenes_root) {
+-            if path
+-                .to_string_lossy()
+-                .to_ascii_lowercase()
+-                .ends_with(".scene.json")
+-            {
+-                document_paths.insert(path);
+-            }
+-        }
+-    }
+-
+     let mut needed = BTreeSet::new();
+-    for path in document_paths {
+-        let Ok(json) = std::fs::read_to_string(&path) else {
+-            continue;
+-        };
+-        let lower = path.to_string_lossy().to_ascii_lowercase();
+-        let entities: Vec<engine_authoring::AuthoringEntity> = if lower.ends_with(".scene.json") {
+-            match engine_authoring::load_scene_from_json(&json) {
+-                Ok(scene) => scene.entities().map(|(_, entity)| entity.clone()).collect(),
+-                Err(_) => continue,
+-            }
+-        } else if lower.ends_with(".prefab.json") {
+-            match engine_authoring::PrefabAsset::from_json(&json) {
+-                Ok(prefab) => prefab.entities.into_values().collect(),
+-                Err(_) => continue,
+-            }
+-        } else {
++    for path in animation_controller_document_paths(manifest, assets_root) {
++        let Some(entities) = load_animation_document_entities(&path) else {
+             continue;
+         };
+         for entity in &entities {
+@@ -1450,2 +1614,51 @@
++    #[test]
++    fn humanoid_package_requirement_respects_motion_source_priority() {
++        let native = AssetId::generate();
++        let explicit_humanoid = AssetId::generate();
++
++        assert_eq!(
++            required_humanoid_motion_asset(
++                &engine_authoring::MotionSourceRef::native(native.clone()),
++                false,
++                false,
++            ),
++            None
++        );
++        assert_eq!(
++            required_humanoid_motion_asset(
++                &engine_authoring::MotionSourceRef::auto(native.clone()),
++                true,
++                false,
++            ),
++            None
++        );
++        assert_eq!(
++            required_humanoid_motion_asset(
++                &engine_authoring::MotionSourceRef::auto(native.clone()),
++                false,
++                true,
++            ),
++            None
++        );
++        assert_eq!(
++            required_humanoid_motion_asset(
++                &engine_authoring::MotionSourceRef::auto(native.clone()),
++                false,
++                false,
++            ),
++            Some(engine::asset::imported_humanoid_motion_sub_asset_id(
++                &native,
++            ))
++        );
++        assert_eq!(
++            required_humanoid_motion_asset(
++                &engine_authoring::MotionSourceRef::humanoid(explicit_humanoid.clone()),
++                false,
++                false,
++            ),
++            Some(explicit_humanoid)
++        );
++    }
++
+     #[test]
+     fn package_plan_includes_external_gltf_sidecars_once() {
