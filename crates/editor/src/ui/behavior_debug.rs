@@ -212,6 +212,7 @@ impl BehaviorTreeDebugState {
 
 #[derive(Debug)]
 struct BehaviorTreeDebugPresentation {
+    runtime_entity: Option<(u32, u32)>,
     graph: GraphId,
     tree_generation: u64,
     execution_generation: u64,
@@ -224,7 +225,10 @@ struct BehaviorTreeDebugPresentation {
 }
 
 impl BehaviorTreeDebugPresentation {
-    fn from_snapshot(snapshot: &BehaviorExecutionSnapshot) -> Self {
+    fn from_snapshot(
+        runtime_entity: Option<(u32, u32)>,
+        snapshot: &BehaviorExecutionSnapshot,
+    ) -> Self {
         let mut nodes: BTreeMap<NodeId, GraphDebugNodePresentation> = BTreeMap::new();
         for active in &snapshot.active_path {
             let entry = nodes.entry(active.node.clone()).or_default();
@@ -291,6 +295,7 @@ impl BehaviorTreeDebugPresentation {
             .collect();
 
         Self {
+            runtime_entity,
             graph: snapshot.tree_source.clone(),
             tree_generation: snapshot.tree_generation,
             execution_generation: snapshot.execution_generation,
@@ -325,7 +330,7 @@ impl EditorApp {
         });
         let is_fixture = fixture.is_some();
         let (runtime_entity, snapshot) = match fixture {
-            Some(snapshot) => (None, Some(snapshot)),
+            Some(snapshot) => (Some((42, 7)), Some(snapshot)),
             None => match runtime_observation {
                 Some((key, snapshot)) => {
                     self.selected_runtime_entity = Some(key);
@@ -349,7 +354,7 @@ impl EditorApp {
             self.behavior_debug
                 .sync(key, self.project_root.as_ref(), &snapshot);
         }
-        let presentation = BehaviorTreeDebugPresentation::from_snapshot(&snapshot);
+        let presentation = BehaviorTreeDebugPresentation::from_snapshot(runtime_entity, &snapshot);
 
         egui::Panel::right("behavior_tree_debug_details")
             .resizable(true)
@@ -376,6 +381,11 @@ impl EditorApp {
 
 fn show_behavior_debug_details(ui: &mut egui::Ui, presentation: &BehaviorTreeDebugPresentation) {
     ui.heading("Behavior Tree Debug");
+    if let Some((id, generation)) = presentation.runtime_entity {
+        ui.label(format!(
+            "Runner entity {id}  |  Entity generation {generation}"
+        ));
+    }
     ui.monospace(presentation.graph.as_str());
     ui.label(format!(
         "Tree gen {}  |  Execution gen {}",
@@ -549,9 +559,11 @@ mod tests {
         };
         let before = snapshot.clone();
 
-        let presentation = BehaviorTreeDebugPresentation::from_snapshot(&snapshot);
+        let presentation =
+            BehaviorTreeDebugPresentation::from_snapshot(Some((5, 2)), &snapshot);
 
         assert_eq!(snapshot, before);
+        assert_eq!(presentation.runtime_entity, Some((5, 2)));
         assert_eq!(presentation.graph, session.graph().id);
         assert_eq!(
             presentation.overlay.nodes[&nodes[0]].badge,
@@ -588,8 +600,61 @@ mod tests {
             error: None,
         };
 
-        let presentation = BehaviorTreeDebugPresentation::from_snapshot(&snapshot);
+        let presentation = BehaviorTreeDebugPresentation::from_snapshot(None, &snapshot);
 
         assert!(!presentation.overlay.nodes.contains_key(&node));
+    }
+
+    #[test]
+    fn clear_observation_drops_runner_state_but_preserves_debug_view_visibility() {
+        let mut state = BehaviorTreeDebugState {
+            visible: true,
+            source_key: Some(BehaviorDebugSourceKey {
+                runtime_entity: (1, 3),
+                graph: GraphId::generate(),
+                tree_generation: 4,
+            }),
+            graph_session: Some(EditorSession::empty_behavior_tree()),
+            invalidated: true,
+            message: Some("stale".into()),
+            ..BehaviorTreeDebugState::default()
+        };
+
+        state.clear_observation();
+
+        assert!(state.visible);
+        assert!(state.source_key.is_none());
+        assert!(state.graph_session.is_none());
+        assert!(!state.invalidated);
+        assert!(state.message.is_none());
+    }
+
+    #[test]
+    fn runner_tree_generation_change_rejects_stale_debug_observation() {
+        let session = EditorSession::behavior_tree_example().expect("reference tree");
+        let mut snapshot = BehaviorExecutionSnapshot {
+            tree_source: session.graph().id.clone(),
+            tree_generation: 1,
+            execution_generation: 1,
+            status: None,
+            active_path: Vec::new(),
+            running_node: None,
+            last_terminal_node: None,
+            last_terminal_status: None,
+            last_reset_reason: None,
+            recent_transitions: Vec::new(),
+            blackboard: BTreeMap::new(),
+            error: None,
+        };
+        let mut state = BehaviorTreeDebugState::default();
+        state.sync((2, 5), None, &snapshot);
+        state.invalidated = true;
+        snapshot.tree_generation = 2;
+
+        state.sync((2, 5), None, &snapshot);
+
+        assert_eq!(state.source_key.as_ref().unwrap().tree_generation, 2);
+        assert!(!state.invalidated);
+        assert!(state.graph_session.is_none());
     }
 }

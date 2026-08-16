@@ -93,8 +93,17 @@ impl EditorApp {
     }
 
     pub(super) fn show_add_node_menu(&mut self, ui: &mut egui::Ui) {
+        let mut last_category = String::new();
         for kind in self.session.available_graph_node_kinds() {
-            if ui.button(kind.label()).clicked() {
+            if kind.category() != last_category.as_str() {
+                if !last_category.is_empty() {
+                    ui.separator();
+                }
+                last_category = kind.category().to_owned();
+                ui.strong(&last_category);
+            }
+            let label = kind.label().to_owned();
+            if ui.button(label).clicked() {
                 self.add_graph_node(kind, None);
                 ui.close();
             }

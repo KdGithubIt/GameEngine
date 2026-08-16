@@ -51,8 +51,8 @@ use self::undo::{CleanSnapshot, UndoStack};
 use crate::document::CurrentDocument;
 use engine_authoring::{
     AnimationGraphDomain, AuthoringCommand, AuthoringEntity, AuthoringScene, AuthoringSession,
-    BehaviorTreeAuthoringService, BehaviorTreeDomain, BehaviorTreeServiceError, Diagnostic, EdgeId,
-    EntityId, Graph, GraphDomain, GraphId, GraphSchemaRegistry, GraphView, NodeId,
+    BehaviorTreeAuthoringService, BehaviorTreeServiceError, Diagnostic, EdgeId, EntityId, Graph,
+    GraphDomain, GraphId, GraphSchemaRegistry, GraphView, NodeId,
     TransactionError, UiAuthoringSession, UiDocument, Vec2,
 };
 use std::path::Path;
@@ -79,7 +79,7 @@ static DOCUMENT_REVISION_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 /// command-backed editing surface.
 enum EditorGraphDomain {
     /// Behavior Tree authoring and ordered child edges.
-    BehaviorTree(BehaviorTreeDomain),
+    BehaviorTree(BehaviorTreeAuthoringService),
     /// Animation state-machine authoring and directed transitions.
     Animation(AnimationGraphDomain),
 }
@@ -91,14 +91,14 @@ impl EditorGraphDomain {
         if graph.kind == *animation.graph_kind() {
             Self::Animation(animation)
         } else {
-            Self::BehaviorTree(BehaviorTreeDomain::new())
+            Self::BehaviorTree(BehaviorTreeAuthoringService::new())
         }
     }
 
     /// Returns the schema registry used by structural graph transactions.
     fn schema_registry(&self) -> &dyn GraphSchemaRegistry {
         match self {
-            Self::BehaviorTree(domain) => domain.schema_registry(),
+            Self::BehaviorTree(service) => service.domain().schema_registry(),
             Self::Animation(domain) => domain.schema_registry(),
         }
     }
@@ -106,7 +106,7 @@ impl EditorGraphDomain {
     /// Runs semantic validation owned by the selected concrete domain.
     fn validate_domain(&self, graph: &Graph) -> Vec<Diagnostic> {
         match self {
-            Self::BehaviorTree(domain) => domain.validate_domain(graph),
+            Self::BehaviorTree(service) => service.domain().validate_domain(graph),
             Self::Animation(domain) => domain.validate_domain(graph),
         }
     }
@@ -169,9 +169,10 @@ impl EditorSession {
 
     /// Creates a minimal empty Behavior Tree editor session.
     pub fn empty_behavior_tree() -> Self {
+        let service = BehaviorTreeAuthoringService::new();
         let graph = Graph::new(
             GraphId::generate(),
-            BehaviorTreeDomain::new().graph_kind().clone(),
+            service.domain().graph_kind().clone(),
             "untitled_behavior_tree",
         );
         Self::new(graph, None)
