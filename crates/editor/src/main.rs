@@ -204,7 +204,7 @@ impl EditorShell {
 
                 ui.separator();
                 ui.small(
-                    "All four tools now share this editor process. Runtime Event Timeline keeps its existing live-capture launch flow inside the embedded viewer window.",
+                    "All authoring tools share this editor process. Runtime Event Timeline keeps its existing live-capture launch flow inside the embedded viewer window.",
                 );
                 if let Some(status) = &self.authoring_status {
                     ui.separator();
@@ -243,7 +243,8 @@ impl eframe::App for EditorShell {
         let context = ui.ctx().clone();
         eframe::App::ui(&mut self.app, ui, frame);
         self.show_authoring_tools_launcher(&context);
-        self.authoring_windows.show(&context, frame);
+        self.authoring_windows
+            .show(&context, frame, self.app.project_root());
         self.ai_studio.show(&context);
     }
 

@@ -95,6 +95,7 @@ pub(in crate::ui) fn asset_reference_browser_kind(
         engine::AssetKind::AnimationClip => BrowserKind::AnimationClip,
         engine::AssetKind::MotionSource => BrowserKind::MotionSource,
         engine::AssetKind::AnimationGraph | engine::AssetKind::BehaviorTree => BrowserKind::Graph,
+        engine::AssetKind::VfxEffect => BrowserKind::Graph,
         engine::AssetKind::AnimationSet => BrowserKind::AnimationSet,
         engine::AssetKind::Audio => BrowserKind::Audio,
         engine::AssetKind::NavMesh => BrowserKind::NavMesh,

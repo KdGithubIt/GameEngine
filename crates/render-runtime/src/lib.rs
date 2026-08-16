@@ -45,6 +45,9 @@ pub mod morph;
 /// CPU particle simulation rendered through runtime mesh instancing.
 #[cfg(feature = "gpu")]
 pub mod particles;
+/// Backend-neutral compiled VFX CPU reference runtime (ADR 0125).
+#[cfg(feature = "gpu")]
+pub mod vfx;
 /// HDR, bloom, tone-mapping, and color-grading settings.
 #[cfg(feature = "gpu")]
 pub mod postprocess;

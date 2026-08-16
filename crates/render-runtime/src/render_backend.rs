@@ -2015,7 +2015,7 @@ impl WorldRenderer {
         world: &mut engine_ecs::World,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        _camera_position: glam::Vec3,
+        camera_position: glam::Vec3,
     ) -> Vec<StaticBatch> {
         use crate::asset::Handle;
         use engine_ecs::{Query, Without};
@@ -2123,6 +2123,85 @@ impl WorldRenderer {
                     &slots,
                     Self::outline_group_id(world, entity),
                 );
+            }
+        }
+
+        // -- VFX players: compiled render outputs share the material instancing path (ADR 0125) --
+        {
+            use crate::vfx::{VfxPlayer, VfxRenderBindings};
+            type VfxQuery<'w> = Query<'w, (&'w VfxPlayer, &'w VfxRenderBindings)>;
+            let q = VfxQuery::new(world);
+            let entries: Vec<_> = q
+                .iter()
+                .flat_map(|(entity, (player, bindings))| {
+                    player
+                        .render_particles()
+                        .into_iter()
+                        .filter_map(|particle| {
+                            bindings.get(&particle.module).cloned().map(|binding| {
+                                (entity, particle, binding)
+                            })
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .collect();
+
+            for (entity, particle, binding) in entries {
+                let Some(gpu_mesh) = world
+                    .get_resource::<GpuMeshCache>()
+                    .and_then(|cache| cache.get(binding.mesh.id()).cloned())
+                else {
+                    continue;
+                };
+                let facing = camera_position - particle.position;
+                let orientation = if binding.billboard && facing.length_squared() > 0.000001 {
+                    glam::Quat::from_rotation_arc(glam::Vec3::Z, facing.normalize())
+                        * glam::Quat::from_rotation_z(particle.rotation)
+                } else {
+                    glam::Quat::from_rotation_z(particle.rotation)
+                };
+                let matrix = glam::Mat4::from_scale_rotation_translation(
+                    glam::Vec3::splat(particle.size.max(0.0)),
+                    orientation,
+                    particle.position,
+                );
+                let tint = binding.material.color;
+                let color = [
+                    particle.color[0] * tint[0],
+                    particle.color[1] * tint[1],
+                    particle.color[2] * tint[2],
+                    particle.color[3] * tint[3],
+                ];
+                let mut instance = instance_from_material(matrix, color, &binding.material);
+                instance.uv_transform = particle.uv_transform;
+                let texture_bind_group =
+                    self.resolve_material_bind_group(device, queue, &binding.material);
+                let mesh_key = Arc::as_ptr(&gpu_mesh.vertex_buffer) as usize;
+                let tex_key = Arc::as_ptr(&texture_bind_group) as usize;
+                let pipeline_key = MaterialPipelineKey::from_material(&binding.material);
+                let batch = batches
+                    .entry((mesh_key, 0, tex_key, pipeline_key))
+                    .or_insert_with(|| StaticBatch {
+                        pipeline_key,
+                        gpu_mesh: gpu_mesh.clone(),
+                        submesh: 0,
+                        texture_bind_group: Arc::clone(&texture_bind_group),
+                        instances: Vec::new(),
+                        outline_instances: Vec::new(),
+                    });
+                let outline_group = Self::outline_group_id(world, entity);
+                let outline_material = outline_material_identity(
+                    &texture_bind_group,
+                    binding.material.outline.internal_boundary_strength,
+                );
+                batch
+                    .outline_instances
+                    .push(OutlineInstanceData::from_instance(
+                        instance,
+                        outline_group,
+                        outline_material,
+                    ));
+                batch.instances.push(instance);
             }
         }
 

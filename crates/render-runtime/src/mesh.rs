@@ -1006,12 +1006,14 @@ pub struct InstanceData {
     pub emissive_and_model: [f32; 4],
     /// Roughness, metallic, alpha cutoff, and alpha-mode numeric code.
     pub surface: [f32; 4],
+    /// UV scale XY and offset ZW applied after mesh UV lookup.
+    pub uv_transform: [f32; 4],
 }
 
 impl InstanceData {
     /// Vertex buffer layout for per-instance data (step mode = Instance).
     ///
-    /// Shader locations 4–8 and 11–12: matrix, color, and material properties.
+    /// Shader locations 4–8 and 11–12/14: matrix, color, material, and UV data.
     pub const LAYOUT: wgpu::VertexBufferLayout<'static> = wgpu::VertexBufferLayout {
         array_stride: std::mem::size_of::<InstanceData>() as wgpu::BufferAddress,
         step_mode: wgpu::VertexStepMode::Instance,
@@ -1023,6 +1025,7 @@ impl InstanceData {
             8 => Float32x4,  // color
             11 => Float32x4, // emissive RGB + unlit flag
             12 => Float32x4, // roughness + metallic + alpha cutoff/mode
+            14 => Float32x4, // UV scale.xy + offset.zw
         ],
     };
 
@@ -1033,6 +1036,7 @@ impl InstanceData {
             color,
             emissive_and_model: [0.0, 0.0, 0.0, 0.0],
             surface: [0.5, 0.0, 0.5, 0.0],
+            uv_transform: [1.0, 1.0, 0.0, 0.0],
         }
     }
 
@@ -1048,6 +1052,24 @@ impl InstanceData {
             color,
             emissive_and_model,
             surface,
+            uv_transform: [1.0, 1.0, 0.0, 0.0],
+        }
+    }
+
+    /// Constructs an instance with material payload and a per-instance UV transform.
+    pub fn from_transform_material_uv(
+        matrix: glam::Mat4,
+        color: [f32; 4],
+        emissive_and_model: [f32; 4],
+        surface: [f32; 4],
+        uv_transform: [f32; 4],
+    ) -> Self {
+        Self {
+            model: matrix.to_cols_array_2d(),
+            color,
+            emissive_and_model,
+            surface,
+            uv_transform,
         }
     }
 }

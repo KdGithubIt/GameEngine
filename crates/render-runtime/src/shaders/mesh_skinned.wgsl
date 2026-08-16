@@ -20,6 +20,7 @@ struct InstanceInput {
     @location(6) model_2: vec4<f32>, @location(7) model_3: vec4<f32>,
     @location(8) color: vec4<f32>, @location(11) emissive_and_model: vec4<f32>,
     @location(12) surface: vec4<f32>,
+    @location(14) uv_transform: vec4<f32>,
 }
 struct SkinInput { @location(9) joints: vec4<u32>, @location(10) weights: vec4<f32> }
 struct VertexOutput {
@@ -53,7 +54,7 @@ fn vs_main(vertex: VertexInput, instance: InstanceInput, skin: SkinInput) -> Ver
     let world_position = deformed_model * vec4<f32>(vertex.position, 1.0);
     var output: VertexOutput;
     output.clip_position = camera.view_proj * world_position;
-    output.color = vertex.color; output.uv = vertex.uv;
+    output.color = vertex.color; output.uv = vertex.uv * instance.uv_transform.xy + instance.uv_transform.zw;
     output.world_normal = normalize((deformed_model * vec4<f32>(vertex.normal, 0.0)).xyz);
     var world_tangent = vec3<f32>(0.0);
     if (dot(vertex.tangent.xyz, vertex.tangent.xyz) > 0.000001) {

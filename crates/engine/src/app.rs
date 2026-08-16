@@ -30,6 +30,7 @@ use crate::lod::{lod_selection_system, InstanceStats};
 use crate::material::{Material, Texture};
 use crate::mesh::{GpuMeshCache, Mesh};
 use crate::particles::particle_update_system;
+use crate::vfx::vfx_update_system;
 use crate::physics::{GameplayPhysicsWorld, Gravity};
 use crate::player::PlayerMovementIntents;
 use crate::postprocess::PostProcessSettings;
@@ -204,6 +205,16 @@ impl App {
                 "Advances engine-owned CPU particle emitters.",
             ),
             particle_update_system,
+        );
+        ecs.add_system_with_descriptor(
+            builtin_system(
+                "engine.vfx_update",
+                "VFX Update",
+                "Advances scene VFX players from the frame clock.",
+            )
+            .try_after("engine.transform_propagation")
+            .expect("built-in system IDs are valid"),
+            vfx_update_system,
         );
         ecs.add_system_with_descriptor(
             builtin_system(
