@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0112-current-id-test-sync-20260816-16",
+  "target_branch": "chatgpt/gameengine-adr-0112-secondary-motion-v2",
+  "expected_head_sha": "4bb80fc10aca6fa42915043dcbd5a75033a5fb2f",
+  "patch_parts": ["part-0000.patch"],
+  "commit_message": "Sync Secondary Motion ID expectations",
+  "pr_title": "Implement ADR 0112 engine-native secondary motion",
+  "pr_body": "## Summary\n\nImplements ADR 0112 engine-native Secondary Motion. This follow-up updates the remaining Editor test fixture and Systems panel expectation to the current `engine.secondary_motion` component ID and `engine.secondary_motion_transform_propagation` runtime system ID.\n\nThe PR remains Draft while current-format-only alias cleanup, PMX best-effort conversion diagnostics, documentation updates, final Windows Validation, and Visual Validation are completed."
+}
