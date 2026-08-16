@@ -1,7 +1,13 @@
+mod mcp_transport;
+
 use std::path::PathBuf;
+use std::sync::mpsc;
 
 use engine_editor::{AuthoringTool, AuthoringWindows};
 use engine_project_lifecycle::{acquire_editor_project, EditorLease};
+use mcp_transport::{
+    EditorMcpHostResult, EditorMcpRequest, EditorMcpServer, MCP_PROTOCOL_VERSION,
+};
 
 /// Keeps the native swapchain clear color aligned with the editor theme.
 ///
@@ -14,12 +20,26 @@ struct EditorShell {
     show_authoring_tools: bool,
     authoring_status: Option<String>,
     project_lease: EditorLease,
+    _mcp_server: EditorMcpServer,
+    mcp_requests: mpsc::Receiver<EditorMcpRequest>,
 }
 
 impl EditorShell {
-    fn new(project_lease: EditorLease) -> Result<Self, String> {
+    fn new(
+        project_lease: EditorLease,
+        context: &eframe::egui::Context,
+    ) -> Result<Self, String> {
         let root = project_lease.project_root().clone();
         let app = engine_editor::EditorApp::from_project(root);
+        let (mcp_server, mcp_requests) =
+            EditorMcpServer::start(context.clone()).map_err(|error| error.to_string())?;
+        project_lease
+            .publish_mcp_endpoint(
+                mcp_server.endpoint(),
+                MCP_PROTOCOL_VERSION,
+                mcp_server.authorization_token(),
+            )
+            .map_err(|error| error.to_string())?;
         project_lease.mark_ready().map_err(|error| error.to_string())?;
         Ok(Self {
             app,
@@ -27,7 +47,24 @@ impl EditorShell {
             show_authoring_tools: false,
             authoring_status: None,
             project_lease,
+            _mcp_server: mcp_server,
+            mcp_requests,
         })
+    }
+
+    fn handle_mcp_requests(&mut self) {
+        while let Ok(request) = self.mcp_requests.try_recv() {
+            let result = self
+                .app
+                .handle_mcp_tool_call(request.name(), request.arguments().clone());
+            request.respond(match result {
+                Ok(value) => EditorMcpHostResult::Success(value),
+                Err(error) => EditorMcpHostResult::ToolError {
+                    code: error.code().to_owned(),
+                    message: error.message().to_owned(),
+                },
+            });
+        }
     }
 
     fn show_authoring_tools_launcher(&mut self, context: &eframe::egui::Context) {
@@ -115,6 +152,7 @@ impl EditorShell {
 
 impl eframe::App for EditorShell {
     fn logic(&mut self, context: &eframe::egui::Context, frame: &mut eframe::Frame) {
+        self.handle_mcp_requests();
         if self.project_lease.take_activation_request() {
             context.send_viewport_cmd(eframe::egui::ViewportCommand::Focus);
         }
@@ -175,7 +213,7 @@ fn run() -> Result<(), String> {
         Box::new(move |creation_context| {
             engine_editor::install_editor_fonts(&creation_context.egui_ctx);
             Ok(Box::new(
-                EditorShell::new(project_lease)
+                EditorShell::new(project_lease, &creation_context.egui_ctx)
                     .map_err(|error| -> Box<dyn std::error::Error + Send + Sync> {
                         Box::new(std::io::Error::other(error))
                     })?,

@@ -17,7 +17,9 @@ dirs = "5"
 eframe = "0.34.3"
 engine = { path = "../engine" }
 engine-authoring = { path = "../authoring" }
+engine-mcp = { path = "../mcp" }
 engine-project-lifecycle = { path = "../project-lifecycle" }
+getrandom = "0.3"
 pollster = "0.3"
 png = "0.18"
 open = "5"
