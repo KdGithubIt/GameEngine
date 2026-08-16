@@ -1077,15 +1077,14 @@ fn sample_alpha(texture: &IrTexture, uv: [f32; 2]) -> u8 {
 }
 
 // ---------------------------------------------------------------------------
-// Rigid-body rig (ADR 0097 §6)
+// Secondary Motion import hints (ADR 0097 §6, ADR 0112)
 // ---------------------------------------------------------------------------
 
-/// Captures PMX's rigid bodies and joints as an [`IrRigidBodyRig`].
+/// Converts PMX rigid bodies and joints into format-independent Secondary Motion hints.
 ///
-/// Nothing here simulates: this is a faithful, unit- and axis-converted
-/// record of what the model's author tuned in their own tool, so a physics
-/// backend (ADR 0096) can build a simulation from an engine-native asset
-/// without ever linking a PMX parser.
+/// The conversion is deliberately best effort (ADR 0112): stable source intent is
+/// preserved where possible, while unsupported or lossy inputs emit diagnostics
+/// instead of failing an otherwise usable model import. Nothing here simulates.
 ///
 /// Returns `None` for a model that declares no bodies, so the common
 /// non-MMD case never carries an empty rig.
@@ -1096,6 +1095,15 @@ fn parse_rigid_body_rig(
 ) -> Option<IrRigidBodyRig> {
     report_unsupported_soft_bodies(model.soft_bodies.len(), diagnostics);
     if model.rigid_bodies.is_empty() {
+        if !model.joints.is_empty() {
+            diagnostics.push(Diagnostic::warning(
+                "pmx.joint_without_bodies",
+                format!(
+                    "{} PMX joints cannot form Secondary Motion constraints because the model declares no rigid bodies; those joints were omitted",
+                    model.joints.len()
+                ),
+            ));
+        }
         return None;
     }
 
@@ -1151,7 +1159,7 @@ fn parse_rigid_body_rig(
         diagnostics.push(Diagnostic::warning(
             "pmx.rigid_body_shape_unsupported",
             format!(
-                "{unsupported_shapes} rigid bodies declare a shape this importer does not represent; they were imported as spheres"
+                "{unsupported_shapes} rigid bodies declare a shape this importer does not represent; they were imported as spheres. Review those Secondary Motion colliders before enabling simulation"
             ),
         ));
     }
@@ -1167,10 +1175,15 @@ fn parse_rigid_body_rig(
 
     let body_count = bodies.len();
     let mut dangling_joints = 0usize;
+    let mut unsupported_joint_kinds = 0usize;
     let joints: Vec<IrJoint> = model
         .joints
         .iter()
-        .map(|joint| {
+        .filter_map(|joint| {
+            if joint.kind != "spring6dof" {
+                unsupported_joint_kinds += 1;
+                return None;
+            }
             let resolve = |index: i32, dangling: &mut usize| {
                 if index >= 0 && (index as usize) < body_count {
                     Some(index as usize)
@@ -1179,7 +1192,7 @@ fn parse_rigid_body_rig(
                     None
                 }
             };
-            IrJoint {
+            Some(IrJoint {
                 name: joint.name.clone(),
                 body_a: resolve(joint.rigid_body_index_a, &mut dangling_joints),
                 body_b: resolve(joint.rigid_body_index_b, &mut dangling_joints),
@@ -1211,15 +1224,24 @@ fn parse_rigid_body_rig(
                 // Stiffnesses are magnitudes: no sign, no scale.
                 spring_translation: Vec3::from_array(joint.spring_translation_factor),
                 spring_rotation: Vec3::from_array(joint.spring_rotation_factor),
-            }
+            })
         })
         .collect();
+
+    if unsupported_joint_kinds > 0 {
+        diagnostics.push(Diagnostic::warning(
+            "pmx.joint_kind_unsupported",
+            format!(
+                "{unsupported_joint_kinds} PMX joints use a constraint kind Secondary Motion does not represent and were omitted. Recreate equivalent engine-native constraints if needed"
+            ),
+        ));
+    }
 
     if dangling_joints > 0 {
         diagnostics.push(Diagnostic::warning(
             "pmx.joint_body_out_of_range",
             format!(
-                "{dangling_joints} joint endpoints reference a rigid body that does not exist; those endpoints were left unbound"
+                "{dangling_joints} joint endpoints reference a rigid body that does not exist; those endpoints were left unbound. Reconnect or remove those Secondary Motion constraints before enabling simulation"
             ),
         ));
     }
@@ -2373,7 +2395,7 @@ pub(crate) mod tests {
     }
 
     // -----------------------------------------------------------------
-    // Rigid-body rig (ADR 0097 §6)
+    // Secondary Motion import hints (ADR 0097 §6, ADR 0112)
     // -----------------------------------------------------------------
 
     #[test]
@@ -2409,6 +2431,39 @@ pub(crate) mod tests {
         report_unsupported_soft_bodies(2, &mut diagnostics);
         assert_eq!(diagnostics.len(), 1);
         assert_eq!(diagnostics[0].code, "pmx.soft_body_unsupported");
+    }
+
+    #[test]
+    fn unsupported_joint_kind_is_omitted_with_diagnostic() {
+        let mut model = empty_pmx_model();
+        model.rigid_bodies = fixture_rigid_bodies();
+        for body in &mut model.rigid_bodies {
+            body.bone_index = -1;
+        }
+        model.joints = fixture_joints();
+        model.joints[0].kind = "hinge".to_owned();
+        let mut diagnostics = Vec::new();
+
+        let rig = parse_rigid_body_rig(&model, &[], &mut diagnostics)
+            .expect("best-effort conversion must retain supported rigid bodies");
+
+        assert_eq!(rig.bodies.len(), 2);
+        assert!(rig.joints.is_empty());
+        assert!(diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "pmx.joint_kind_unsupported"));
+    }
+
+    #[test]
+    fn orphaned_pmx_joints_report_diagnostic_instead_of_failing_import() {
+        let mut model = empty_pmx_model();
+        model.joints = fixture_joints();
+        let mut diagnostics = Vec::new();
+
+        assert!(parse_rigid_body_rig(&model, &[], &mut diagnostics).is_none());
+        assert!(diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "pmx.joint_without_bodies"));
     }
 
     #[test]
