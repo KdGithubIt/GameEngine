@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "request_id": "automation-docs-20260816-02",
+  "target_branch": "chatgpt/gameengine-chatgpt-automation-docs",
+  "expected_head_sha": "d7eef1c618d7435ce8c8902b7a9f42d2e902c872",
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Document ChatGPT dispatcher recovery and incidents",
+  "pr_title": "GameEngine: document ChatGPT dispatcher recovery",
+  "pr_body": "## Summary\n\n- add an operator checklist and failure diagnosis guide to the canonical ChatGPT automation protocol\n- add a root-cause-oriented incident log for confirmed dispatcher and validation failures\n- record INC-001 for the whitespace-strict patch preflight failure found while implementing this workflow\n- make AGENTS.md require incident review and durable recovery recording after confirmed failures\n\n## Validation\n\nDocumentation-only change; expect docs-mode Windows validation."
+}
