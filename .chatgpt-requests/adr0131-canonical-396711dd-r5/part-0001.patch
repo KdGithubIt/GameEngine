@@ -1,0 +1,563 @@
++            self.release_writer(run_id);
++        }
++        self.persist_session(&session_id)
++    }
++
++    pub(crate) fn record_event(
++        &mut self,
++        run_id: &str,
++        kind: AgentEventKind,
++        message: impl Into<String>,
++    ) -> Result<(), AgentHostError> {
++        let (session_id, _) = self.run_location(run_id)?;
++        let session = self.session_mut(&session_id)?;
++        let run = session
++            .runs
++            .iter_mut()
++            .find(|run| run.id == run_id)
++            .ok_or_else(|| AgentHostError::RunNotFound(run_id.to_owned()))?;
++        push_event(run, kind, message.into());
++        self.persist_session(&session_id)
++    }
++
++    pub(crate) fn cancel_run(&mut self, run_id: &str) -> Result<(), AgentHostError> {
++        self.transition_run(
++            run_id,
++            AgentRunState::Cancelled,
++            "Run cancelled. Already-applied side effects remain reviewable.",
++        )
++    }
++
++    pub(crate) fn set_completion_status(
++        &mut self,
++        run_id: &str,
++        update: impl FnOnce(&mut CompletionReport),
++    ) -> Result<(), AgentHostError> {
++        let (session_id, _) = self.run_location(run_id)?;
++        let session = self.session_mut(&session_id)?;
++        let run = session
++            .runs
++            .iter_mut()
++            .find(|run| run.id == run_id)
++            .ok_or_else(|| AgentHostError::RunNotFound(run_id.to_owned()))?;
++        update(&mut run.completion);
++        self.persist_session(&session_id)
++    }
++
++    pub(crate) fn complete_run(&mut self, run_id: &str) -> Result<(), AgentHostError> {
++        if !self.run(run_id)?.completion.is_complete() {
++            return Err(AgentHostError::CompletionPending);
++        }
++        self.transition_run(run_id, AgentRunState::Completed, "Completion contract satisfied.")?;
++        self.record_event(run_id, AgentEventKind::Completion, "Run completed.")
++    }
++
++    pub(crate) fn check_permission(
++        &mut self,
++        run_id: &str,
++        capability: AgentCapability,
++    ) -> Result<PermissionCheck, AgentHostError> {
++        self.run(run_id)?;
++        let check = self.permissions.check(run_id, capability);
++        if check == PermissionCheck::RequiresApproval {
++            self.record_event(
++                run_id,
++                AgentEventKind::PermissionRequested,
++                format!("Permission requested: {}.", capability.label()),
++            )?;
++        }
++        Ok(check)
++    }
++
++    pub(crate) fn resolve_permission(
++        &mut self,
++        run_id: &str,
++        capability: AgentCapability,
++        scope: ApprovalScope,
++    ) -> Result<(), AgentHostError> {
++        self.run(run_id)?;
++        self.permissions.resolve(run_id, capability, scope);
++        if matches!(scope, ApprovalScope::Project) {
++            self.permissions.save(&self.storage_root.join("permissions.json"))?;
++        }
++        self.record_event(
++            run_id,
++            AgentEventKind::PermissionResolved,
++            format!("Permission {} resolved as {scope:?}.", capability.label()),
++        )
++    }
++
++    pub(crate) fn export_shared_session(&mut self, session_id: &str) -> Result<PathBuf, AgentHostError> {
++        let mut portable = self.session(session_id)?.clone();
++        portable.shared_with_project = true;
++        for run in &mut portable.runs {
++            for event in &mut run.events {
++                if event.kind == AgentEventKind::ProviderOutput {
++                    event.message = "[provider output omitted from project-shared history]".to_owned();
++                }
++            }
++        }
++        let path = self
++            .project_root
++            .join(".gameengine")
++            .join("ai")
++            .join("sessions")
++            .join(session_id)
++            .join("session.json");
++        write_json_atomic(&path, &portable)?;
++        if let Some(session) = self.sessions.get_mut(session_id) {
++            session.shared_with_project = true;
++        }
++        self.persist_session(session_id)?;
++        Ok(path)
++    }
++
++    pub(crate) fn workspace_root(&self, run_id: &str) -> PathBuf {
++        self.storage_root.join("workspaces").join(run_id)
++    }
++
++    fn session_mut(&mut self, id: &str) -> Result<&mut AgentSession, AgentHostError> {
++        self.sessions
++            .get_mut(id)
++            .ok_or_else(|| AgentHostError::SessionNotFound(id.to_owned()))
++    }
++
++    fn run_location(&self, run_id: &str) -> Result<(String, AgentRunState), AgentHostError> {
++        for (session_id, session) in &self.sessions {
++            if let Some(run) = session.runs.iter().find(|run| run.id == run_id) {
++                return Ok((session_id.clone(), run.state));
++            }
++        }
++        Err(AgentHostError::RunNotFound(run_id.to_owned()))
++    }
++
++    fn release_writer(&mut self, run_id: &str) {
++        if self.active_writer_run.as_deref() == Some(run_id) {
++            self.active_writer_run = None;
++        }
++        self.permissions.clear_run(run_id);
++    }
++
++    fn persist_session(&self, id: &str) -> Result<(), AgentHostError> {
++        let session = self.session(id)?;
++        let path = self.storage_root.join("sessions").join(format!("{id}.json"));
++        write_json_atomic(&path, session)
++    }
++}
++
++fn valid_transition(from: AgentRunState, to: AgentRunState) -> bool {
++    if from.is_terminal() {
++        return false;
++    }
++    if matches!(to, AgentRunState::Failed | AgentRunState::Cancelled) {
++        return true;
++    }
++    matches!(
++        (from, to),
++        (AgentRunState::Inspecting, AgentRunState::Planning)
++            | (AgentRunState::Inspecting, AgentRunState::Executing)
++            | (AgentRunState::Inspecting, AgentRunState::AwaitingUser)
++            | (AgentRunState::Planning, AgentRunState::Executing)
++            | (AgentRunState::Planning, AgentRunState::AwaitingUser)
++            | (AgentRunState::Executing, AgentRunState::AwaitingUser)
++            | (AgentRunState::Executing, AgentRunState::Validating)
++            | (AgentRunState::Executing, AgentRunState::Repairing)
++            | (AgentRunState::AwaitingUser, AgentRunState::Executing)
++            | (AgentRunState::AwaitingUser, AgentRunState::Validating)
++            | (AgentRunState::Validating, AgentRunState::Playtesting)
++            | (AgentRunState::Validating, AgentRunState::Evaluating)
++            | (AgentRunState::Validating, AgentRunState::Repairing)
++            | (AgentRunState::Playtesting, AgentRunState::Evaluating)
++            | (AgentRunState::Playtesting, AgentRunState::Repairing)
++            | (AgentRunState::Evaluating, AgentRunState::Repairing)
++            | (AgentRunState::Evaluating, AgentRunState::Completed)
++            | (AgentRunState::Repairing, AgentRunState::Executing)
++            | (AgentRunState::Repairing, AgentRunState::Validating)
++            | (AgentRunState::Repairing, AgentRunState::Playtesting)
++            | (AgentRunState::Repairing, AgentRunState::Evaluating)
++    )
++}
++
++fn push_event(run: &mut AgentRun, kind: AgentEventKind, message: String) {
++    let sequence = run.events.last().map_or(1, |event| event.sequence + 1);
++    run.events.push(AgentEvent {
++        sequence,
++        created_unix_ms: unix_ms(),
++        kind,
++        message,
++    });
++}
++
++fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), AgentHostError> {
++    let parent = path.parent().ok_or_else(|| {
++        AgentHostError::Io(io::Error::new(
++            io::ErrorKind::InvalidInput,
++            "JSON path has no parent",
++        ))
++    })?;
++    fs::create_dir_all(parent)?;
++    let bytes = serde_json::to_vec_pretty(value)?;
++    let temporary = parent.join(format!(".{}.tmp", next_id("write")));
++    {
++        let mut file = fs::File::create(&temporary)?;
++        file.write_all(&bytes)?;
++        file.write_all(b"\n")?;
++        file.sync_all()?;
++    }
++    if path.exists() {
++        fs::remove_file(path)?;
++    }
++    fs::rename(&temporary, path)?;
++    Ok(())
++}
++
++fn unix_ms() -> u64 {
++    SystemTime::now()
++        .duration_since(UNIX_EPOCH)
++        .unwrap_or_default()
++        .as_millis()
++        .min(u128::from(u64::MAX)) as u64
++}
++
++fn next_id(prefix: &str) -> String {
++    let counter = ID_COUNTER.fetch_add(1, Ordering::Relaxed);
++    let nanos = SystemTime::now()
++        .duration_since(UNIX_EPOCH)
++        .unwrap_or_default()
++        .as_nanos();
++    format!("{prefix}_{nanos:032x}{counter:016x}")
++}
++
++pub(crate) fn project_storage_key(project_id: &str, project_root: &Path) -> String {
++    let mut hasher = std::collections::hash_map::DefaultHasher::new();
++    project_id.hash(&mut hasher);
++    project_root.hash(&mut hasher);
++    format!("{project_id}-{:016x}", hasher.finish())
++}
++
++#[derive(Debug, Clone)]
++pub(crate) struct CodeChange {
++    pub(crate) relative_path: PathBuf,
++    pub(crate) before: Option<String>,
++    pub(crate) after: Option<String>,
++}
++
++pub(crate) struct CodeWorkspace {
++    project_root: PathBuf,
++    workspace_root: PathBuf,
++    baseline: BTreeMap<PathBuf, Option<String>>,
++}
++
++impl CodeWorkspace {
++    pub(crate) fn create(
++        project_root: &Path,
++        workspace_root: PathBuf,
++    ) -> Result<Self, AgentHostError> {
++        if workspace_root.exists() {
++            fs::remove_dir_all(&workspace_root)?;
++        }
++        fs::create_dir_all(&workspace_root)?;
++        let mut baseline = BTreeMap::new();
++        for relative in [
++            Path::new("game"),
++            Path::new("assets/scripts/rust"),
++            Path::new("assets/scripts/rhai"),
++        ] {
++            let source = project_root.join(relative);
++            if source.exists() {
++                copy_code_tree(project_root, &workspace_root, relative, &mut baseline)?;
++            }
++        }
++        Ok(Self {
++            project_root: project_root.to_path_buf(),
++            workspace_root,
++            baseline,
++        })
++    }
++
++    pub(crate) fn root(&self) -> &Path {
++        &self.workspace_root
++    }
++
++    pub(crate) fn collect_changes(&self) -> Result<Vec<CodeChange>, AgentHostError> {
++        let mut paths = self.baseline.keys().cloned().collect::<BTreeSet<_>>();
++        collect_workspace_code_paths(&self.workspace_root, &mut paths)?;
++        let mut changes = Vec::new();
++        for relative in paths {
++            validate_code_relative_path(&relative)?;
++            let before = self.baseline.get(&relative).cloned().flatten();
++            let after = read_optional_utf8(&self.workspace_root.join(&relative), &relative)?;
++            if before != after {
++                changes.push(CodeChange {
++                    relative_path: relative,
++                    before,
++                    after,
++                });
++            }
++        }
++        Ok(changes)
++    }
++
++    pub(crate) fn apply_changes(&mut self, changes: &[CodeChange]) -> Result<(), AgentHostError> {
++        for change in changes {
++            validate_code_relative_path(&change.relative_path)?;
++            if change.after.is_none() {
++                return Err(AgentHostError::UnsupportedCodeDeletion(
++                    change.relative_path.clone(),
++                ));
++            }
++            let live = read_optional_utf8(
++                &self.project_root.join(&change.relative_path),
++                &change.relative_path,
++            )?;
++            if live != change.before {
++                return Err(AgentHostError::StaleCodeFile(change.relative_path.clone()));
++            }
++        }
++        for change in changes {
++            let destination = self.project_root.join(&change.relative_path);
++            let after = change.after.as_deref().ok_or_else(|| {
++                AgentHostError::UnsupportedCodeDeletion(change.relative_path.clone())
++            })?;
++            write_text_atomic(&destination, after)?;
++            self.baseline
++                .insert(change.relative_path.clone(), Some(after.to_owned()));
++        }
++        Ok(())
++    }
++}
++
++fn copy_code_tree(
++    project_root: &Path,
++    workspace_root: &Path,
++    relative: &Path,
++    baseline: &mut BTreeMap<PathBuf, Option<String>>,
++) -> Result<(), AgentHostError> {
++    validate_code_relative_path(relative)?;
++    let source = project_root.join(relative);
++    if source.is_file() {
++        let text = read_utf8(&source, relative)?;
++        let destination = workspace_root.join(relative);
++        if let Some(parent) = destination.parent() {
++            fs::create_dir_all(parent)?;
++        }
++        fs::write(&destination, text.as_bytes())?;
++        baseline.insert(relative.to_path_buf(), Some(text));
++        return Ok(());
++    }
++    for entry in fs::read_dir(&source)? {
++        let entry = entry?;
++        let child_relative = relative.join(entry.file_name());
++        if entry.file_type()?.is_dir() {
++            if entry.file_name() == OsStr::new("target") || entry.file_name() == OsStr::new(".git") {
++                continue;
++            }
++            copy_code_tree(project_root, workspace_root, &child_relative, baseline)?;
++        } else if entry.file_type()?.is_file() && is_managed_code_file(&child_relative) {
++            copy_code_tree(project_root, workspace_root, &child_relative, baseline)?;
++        }
++    }
++    Ok(())
++}
++
++fn collect_workspace_code_paths(
++    workspace_root: &Path,
++    paths: &mut BTreeSet<PathBuf>,
++) -> Result<(), AgentHostError> {
++    for relative in [
++        Path::new("game"),
++        Path::new("assets/scripts/rust"),
++        Path::new("assets/scripts/rhai"),
++    ] {
++        let root = workspace_root.join(relative);
++        if root.exists() {
++            collect_files_recursive(workspace_root, &root, paths)?;
++        }
++    }
++    Ok(())
++}
++
++fn collect_files_recursive(
++    workspace_root: &Path,
++    directory: &Path,
++    paths: &mut BTreeSet<PathBuf>,
++) -> Result<(), AgentHostError> {
++    if directory.is_file() {
++        let relative = directory
++            .strip_prefix(workspace_root)
++            .map_err(|_| AgentHostError::InvalidRelativePath(directory.to_path_buf()))?
++            .to_path_buf();
++        validate_code_relative_path(&relative)?;
++        paths.insert(relative);
++        return Ok(());
++    }
++    for entry in fs::read_dir(directory)? {
++        let entry = entry?;
++        if entry.file_type()?.is_dir() {
++            if entry.file_name() == OsStr::new("target") || entry.file_name() == OsStr::new(".git") {
++                continue;
++            }
++            collect_files_recursive(workspace_root, &entry.path(), paths)?;
++        } else if entry.file_type()?.is_file() {
++            let relative = entry
++                .path()
++                .strip_prefix(workspace_root)
++                .map_err(|_| AgentHostError::InvalidRelativePath(entry.path()))?
++                .to_path_buf();
++            if is_managed_code_file(&relative) {
++                collect_files_recursive(workspace_root, &entry.path(), paths)?;
++            }
++        }
++    }
++    Ok(())
++}
++
++
++fn is_managed_code_file(path: &Path) -> bool {
++    let file_name = path.file_name().and_then(OsStr::to_str).unwrap_or_default();
++    if matches!(file_name, "Cargo.toml" | "Cargo.lock" | "build.rs" | "config.toml") {
++        return true;
++    }
++    matches!(
++        path.extension().and_then(OsStr::to_str),
++        Some("rs" | "rhai" | "toml" | "json" | "ron" | "yaml" | "yml" | "txt" | "md" | "lock")
++    )
++}
++
++fn validate_code_relative_path(path: &Path) -> Result<(), AgentHostError> {
++    if path.is_absolute()
++        || path
++            .components()
++            .any(|component| matches!(component, Component::ParentDir | Component::RootDir | Component::Prefix(_)))
++    {
++        return Err(AgentHostError::InvalidRelativePath(path.to_path_buf()));
++    }
++    let allowed = path.starts_with("game")
++        || path.starts_with("assets/scripts/rust")
++        || path.starts_with("assets/scripts/rhai");
++    if !allowed {
++        return Err(AgentHostError::InvalidRelativePath(path.to_path_buf()));
++    }
++    Ok(())
++}
++
++fn read_utf8(path: &Path, relative: &Path) -> Result<String, AgentHostError> {
++    let bytes = fs::read(path)?;
++    String::from_utf8(bytes).map_err(|_| AgentHostError::NonUtf8CodeFile(relative.to_path_buf()))
++}
++
++fn read_optional_utf8(path: &Path, relative: &Path) -> Result<Option<String>, AgentHostError> {
++    if !path.exists() {
++        return Ok(None);
++    }
++    read_utf8(path, relative).map(Some)
++}
++
++fn write_text_atomic(path: &Path, text: &str) -> Result<(), AgentHostError> {
++    let parent = path.parent().ok_or_else(|| {
++        AgentHostError::Io(io::Error::new(
++            io::ErrorKind::InvalidInput,
++            "code path has no parent",
++        ))
++    })?;
++    fs::create_dir_all(parent)?;
++    let temporary = parent.join(format!(".{}.tmp", next_id("code")));
++    {
++        let mut file = fs::File::create(&temporary)?;
++        file.write_all(text.as_bytes())?;
++        file.sync_all()?;
++    }
++    if path.exists() {
++        fs::remove_file(path)?;
++    }
++    fs::rename(temporary, path)?;
++    Ok(())
++}
++
++#[derive(Debug)]
++pub(crate) enum ProcessStream {
++    Stdout,
++    Stderr,
++}
++
++#[derive(Debug)]
++pub(crate) struct ProcessLine {
++    pub(crate) stream: ProcessStream,
++    pub(crate) text: String,
++}
++
++pub(crate) struct ExternalAgentProcess {
++    child: Child,
++    output: Receiver<ProcessLine>,
++    exit_status: Option<ExitStatus>,
++}
++
++impl ExternalAgentProcess {
++    pub(crate) fn spawn<I, S>(
++        program: &OsStr,
++        args: I,
++        working_directory: &Path,
++        environment: &[(OsString, OsString)],
++    ) -> io::Result<Self>
++    where
++        I: IntoIterator<Item = S>,
++        S: AsRef<OsStr>,
++    {
++        let mut child = Command::new(program)
++            .args(args)
++            .current_dir(working_directory)
++            .envs(environment.iter().cloned())
++            .stdin(Stdio::null())
++            .stdout(Stdio::piped())
++            .stderr(Stdio::piped())
++            .spawn()?;
++        let stdout = child.stdout.take();
++        let stderr = child.stderr.take();
++        let (sender, output) = mpsc::channel();
++        if let Some(stdout) = stdout {
++            let sender = sender.clone();
++            std::thread::Builder::new()
++                .name("ai-agent-stdout".to_owned())
++                .spawn(move || {
++                    for line in BufReader::new(stdout).lines().map_while(Result::ok) {
++                        let _ = sender.send(ProcessLine {
++                            stream: ProcessStream::Stdout,
++                            text: truncate_provider_output(line),
++                        });
++                    }
++                })?;
++        }
++        if let Some(stderr) = stderr {
++            std::thread::Builder::new()
++                .name("ai-agent-stderr".to_owned())
++                .spawn(move || {
++                    for line in BufReader::new(stderr).lines().map_while(Result::ok) {
++                        let _ = sender.send(ProcessLine {
++                            stream: ProcessStream::Stderr,
++                            text: truncate_provider_output(line),
++                        });
++                    }
++                })?;
++        }
++        Ok(Self {
++            child,
++            output,
++            exit_status: None,
++        })
++    }
++
++    pub(crate) fn drain_output(&self) -> Vec<ProcessLine> {
++        self.output.try_iter().collect()
++    }
++
++    pub(crate) fn poll_exit(&mut self) -> io::Result<Option<ExitStatus>> {
++        if let Some(status) = self.exit_status {
++            return Ok(Some(status));
++        }
++        let Some(status) = self.child.try_wait()? else {
++            return Ok(None);
++        };
++        self.exit_status = Some(status);
++        Ok(Some(status))
++    }
++
