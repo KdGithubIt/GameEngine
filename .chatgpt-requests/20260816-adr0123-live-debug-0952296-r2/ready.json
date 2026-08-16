@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "request_id": "20260816-adr0123-live-debug-0952296-r2",
+  "target_branch": "chatgpt/gameengine-adr0123-live-debug",
+  "expected_head_sha": "095229624db5f72cbf581896e3fa7ba0c19e7341",
+  "patch_parts": [
+    "part-0000.patch",
+    "part-0001.patch",
+    "part-0002.patch",
+    "part-0003.patch",
+    "part-0004.patch"
+  ],
+  "commit_message": "Complete ADR 0123 live Behavior Tree debugging",
+  "pr_title": "GameEngine: complete ADR 0123 live Behavior Tree debugging",
+  "pr_body": "## Summary\n\n- add a transient Play-mode Behavior Tree view driven only by the bounded runtime snapshot\n- map runtime GraphId/NodeId state onto a read-only graph canvas with Running, terminal and lifecycle overlays\n- clear stale presentation on Play stop, runtime reload, runner loss, generation changes and source graph replacement\n- add deterministic Editor visual-validation presentation for this live overlay\n\n## Data path\n\nBehaviorTreeRunner::snapshot() -> RuntimePlayState read-only query -> source GraphId/NodeId lookup -> detached EditorSession -> transient GraphDebugOverlay. The Editor does not execute or reinterpret Behavior Tree semantics and never writes debug state into Graph or GraphView.\n\n## Scope\n\nNo Audio, Navigation or VFX implementation files are changed. Serialized Graph/GraphView formats, Stable IDs, compiled DTOs, Cargo manifests and production public APIs are unchanged. PR #84 remains separate; its CLI schema-count fix is not duplicated here.\n\n<!-- gameengine-visual-validation: editor -->"
+}
