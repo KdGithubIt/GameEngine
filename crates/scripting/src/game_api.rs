@@ -9,7 +9,8 @@ use crate::game_io::{
     EngineViewKind, GameAccessMode, GameBehaviorStatus, GameClock, GameCommand, GameCommandFamily,
     GameComponentAccess, GameEngineViewAccess, GameEntityHandle, GameEventEmission,
     GameEventStream, GameHitboxShape, GameHostViewKind, GameInvocation, GameInvocationOutput,
-    GameQueryAccess, GameQueryRow, GameResourceAccess, GameResourcePatch, GameSystemAccess,
+    GameQueryAccess, GameQueryRow, GameResourceAccess, GameResourcePatch, GameSpatialAudioOptions,
+    GameSystemAccess,
 };
 use crate::game_contracts::{GameComponent, GameField, GameResource};
 use engine_authoring::{ComponentTypeId, EntityId, StableId, Value};
@@ -1892,9 +1893,18 @@ impl Commands {
     pub fn request_scene(&mut self, path: impl Into<String>) {
         self.push(GameCommand::request_scene(path));
     }
-    /// Queues a sound effect.
+    /// Queues a one-shot 2D sound effect.
     pub fn play_sound_effect(&mut self, asset_id: impl Into<String>) {
         self.push(GameCommand::play_sound_effect(asset_id));
+    }
+    /// Queues a spatial sound attached to a generation-checked source entity.
+    pub fn play_spatial_sound_effect(
+        &mut self,
+        source: GameEntityHandle,
+        asset_id: impl Into<String>,
+        options: GameSpatialAudioOptions,
+    ) {
+        self.push(GameCommand::play_spatial_sound_effect(source, asset_id, options));
     }
     /// Replaces background music.
     pub fn play_background_music(&mut self, asset_id: impl Into<String>) {
