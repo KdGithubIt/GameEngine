@@ -1,0 +1,426 @@
+diff --git a/crates/editor/src/vfx_builder.rs b/crates/editor/src/vfx_builder.rs
+--- a/crates/editor/src/vfx_builder.rs
++++ b/crates/editor/src/vfx_builder.rs
+@@ -1,6 +1,9 @@
+ //! Typed visual authoring surface for `*.vfx.json` effect assets.
+ //!
+ //! The window translates gestures into [`VfxCommand`] values and applies them
+ //! through [`VfxAuthoringService`]. It never edits raw JSON as business logic.
+ 
++#[path = "vfx_builder_completion.rs"]
++mod completion;
++
+ use eframe::egui;
+@@ -15,6 +18,7 @@
+ #[derive(Default)]
+ pub(crate) struct VfxBuilderState {
+     effect: Option<VfxEffect>,
+     path: Option<PathBuf>,
+     selected_emitter: Option<VfxEmitterId>,
++    completion: completion::VfxCompletionState,
+     module_filter: String,
+@@ -55,11 +59,12 @@
+         let Some(effect) = self.effect.clone() else {
+             ui.separator();
+             ui.vertical_centered(|ui| {
+                 ui.add_space(60.0);
+                 ui.heading("VFX Builder");
+                 ui.label("Open a project-local *.vfx.json asset to begin authoring.");
+                 ui.small("All edits use the shared typed VFX authoring service.");
++                self.show_completion_empty(ui, project);
+             });
+             self.show_status(ui);
+             return;
+         };
+@@ -238,6 +243,9 @@
+                                     let label = display_names
+                                         .get(module.operation.type_id())
+                                         .map(String::as_str)
+                                         .unwrap_or_else(|| module.operation.type_id());
+-                                    ui.label(label);
++                                    let selected = self.completion.is_selected(module);
++                                    if ui.selectable_label(selected, label).clicked() {
++                                        self.completion.select_module(module);
++                                    }
+                                     ui.with_layout(
+@@ -294,8 +302,11 @@
+                             ui.add_space(4.0);
+                         }
+                         ui.add_space(8.0);
+                     }
+                 });
++            self.show_completion_properties(&mut columns[1], &effect);
+         });
+ 
++        self.show_completion_preview(ui, &effect);
++
+         if let Some(command) = pending_command {
+diff --git a/crates/editor/src/authoring_windows.rs b/crates/editor/src/authoring_windows.rs
+--- a/crates/editor/src/authoring_windows.rs
++++ b/crates/editor/src/authoring_windows.rs
+@@ -28,10 +28,14 @@
+     /// Makes the selected authoring window visible.
+     pub fn open(&mut self, tool: AuthoringTool) {
+         match tool {
+             AuthoringTool::AbilityDesigner => self.ability_open = true,
+             AuthoringTool::RuntimeEventTimeline => self.runtime_event_open = true,
+             AuthoringTool::UiContractDesigner => self.ui_contract_open = true,
+             AuthoringTool::AdvancedGeometryDesigner => self.advanced_geometry_open = true,
+-            AuthoringTool::VfxBuilder => self.vfx_open = true,
++            AuthoringTool::VfxBuilder => {
++                self.vfx_open = true;
++                #[cfg(feature = "visual-validation")]
++                self.vfx.prepare_visual_validation();
++            }
+         }
+     }
+diff --git a/crates/cli/src/lib.rs b/crates/cli/src/lib.rs
+--- a/crates/cli/src/lib.rs
++++ b/crates/cli/src/lib.rs
+@@ -6,6 +6,7 @@
+ mod asset_cli;
+ mod generic_cli;
+ mod prefab_cli;
+ mod scene_cli;
++mod vfx_cli;
+ 
+ use engine_authoring::{
+@@ -48,4 +49,7 @@
+     if let Some(result) = scene_cli::dispatch(&args) {
+         return result;
+     }
++    if let Some(result) = vfx_cli::dispatch(&args) {
++        return result;
++    }
+     match args.as_slice() {
+diff --git a/crates/mcp/src/lib.rs b/crates/mcp/src/lib.rs
+--- a/crates/mcp/src/lib.rs
++++ b/crates/mcp/src/lib.rs
+@@ -8,4 +8,6 @@
+ /// Scene/project tool handlers backed by the shared authoring services.
+ pub mod scene;
++/// VFX semantic authoring tool handlers backed by the shared VFX service.
++pub mod vfx;
+ 
+ pub use ai_agent::{
+@@ -24,6 +26,9 @@
+ pub use scene::{
+     ComponentSchemasOutput, EntityFindInput, EntityFindOutput, EntityInspectInput,
+     EntityInspectOutput, ProjectDescribeOutput, SceneMcpTools, SceneMutationInput,
+ };
++pub use vfx::{
++    VfxEffectInput, VfxInspectOutput, VfxMcpTools, VfxMutationInput, VfxTemplateInput,
++};
+ 
+ use engine_authoring::{
+diff --git a/crates/editor/src/mcp_transport.rs b/crates/editor/src/mcp_transport.rs
+--- a/crates/editor/src/mcp_transport.rs
++++ b/crates/editor/src/mcp_transport.rs
+@@ -7,4 +7,4 @@
+ use engine_mcp::{
+     AssetMcpTools, BehaviorTreeMcpTools, GenericAuthoringMcpTools, McpToolDescriptor,
+-    PrefabMcpTools, SceneMcpTools,
++    PrefabMcpTools, SceneMcpTools, VfxMcpTools,
+ };
+@@ -326,4 +326,5 @@
+     descriptors.extend(SceneMcpTools::new().tool_descriptors());
+     descriptors.extend(AssetMcpTools::new().tool_descriptors());
+     descriptors.extend(PrefabMcpTools::new().tool_descriptors());
++    descriptors.extend(VfxMcpTools::new().tool_descriptors());
+     json!({
+diff --git a/crates/editor/src/ui/mcp.rs b/crates/editor/src/ui/mcp.rs
+--- a/crates/editor/src/ui/mcp.rs
++++ b/crates/editor/src/ui/mcp.rs
+@@ -8,6 +8,7 @@
+ use engine_mcp::{
+     AssetInspectInput, AssetMcpTools, AssetSearchInput, BehaviorTreeApplyInput,
+     BehaviorTreeGraphInput, BehaviorTreeMcpTools, EntityFindInput, EntityInspectInput,
+     GraphMutationInput, GraphViewMutationInput, McpToolError, PrefabCreateInput,
+     PrefabInstantiateInput, PrefabMcpTools, SceneMcpTools, SceneMutationInput, UiMutationInput,
++    VfxEffectInput, VfxMcpTools, VfxMutationInput, VfxTemplateInput,
+ };
+@@ -82,4 +83,5 @@
+         let prefab_tools = PrefabMcpTools::new();
+         let behavior_tools = BehaviorTreeMcpTools::new();
++        let vfx_tools = VfxMcpTools::new();
+ 
+         match name {
+@@ -260,4 +262,28 @@
++            "vfx.schemas" => {
++                require_empty_arguments(arguments)?;
++                to_value(vfx_tools.schemas())
++            }
++            "vfx.inspect" => {
++                let input: VfxEffectInput = decode(arguments)?;
++                to_value(vfx_tools.inspect(input))
++            }
++            "vfx.validate" => {
++                let input: VfxEffectInput = decode(arguments)?;
++                to_value(vfx_tools.validate(input))
++            }
++            "vfx.preview" => {
++                let input: VfxMutationInput = decode(arguments)?;
++                to_value(vfx_tools.preview(input))
++            }
++            "vfx.apply" => {
++                let input: VfxMutationInput = decode(arguments)?;
++                to_value(vfx_tools.apply(input))
++            }
++            "vfx.template" => {
++                let input: VfxTemplateInput = decode(arguments)?;
++                to_value(vfx_tools.template(input))
++            }
+             "behavior_tree.schemas" => {
+                 require_empty_arguments(arguments)?;
+                 to_value(behavior_tools.behavior_tree_schemas())
+             }
+diff --git a/crates/editor/src/vfx_builder_completion.rs b/crates/editor/src/vfx_builder_completion.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/editor/src/vfx_builder_completion.rs
+@@ -0,0 +1,1109 @@
++//! Completion surface for ADR 0125 VFX authoring and deterministic preview.
++
++use super::replace_file_contents;
++use eframe::egui;
++use engine::glam::Vec3;
++use engine::vfx::{VfxPlayer, VfxRestartPolicy, VFX_PREVIEW_STEP_SECONDS};
++use engine_authoring::{
++    AssetId, StableId, VfxAuthoringService, VfxCommand, VfxCurve, VfxCurveInterpolation,
++    ProjectRoot, VfxCurveKey, VfxCurveKeyId, VfxEffect, VfxEmitterId, VfxGradient, VfxGradientKey,
++    VfxGradientKeyId, VfxModule, VfxModuleId, VfxModuleOperation, VfxRandomChannel,
++    VfxScalarValue, VfxShape, VfxTemplate, VfxTextureSheet, VfxVectorValue,
++};
++use std::collections::BTreeMap;
++
++const PREVIEW_DURATION_SECONDS: f32 = 10.0;
++
++/// Transient editor-only draft for one module inspector.
++struct VfxModuleDraft {
++    module_id: VfxModuleId,
++    operation: VfxModuleOperation,
++    mesh_asset: String,
++    material_asset: String,
++}
++
++impl VfxModuleDraft {
++    fn from_module(module: &VfxModule) -> Self {
++        let (mesh_asset, material_asset) = asset_strings(&module.operation);
++        Self {
++            module_id: module.id.clone(),
++            operation: module.operation.clone(),
++            mesh_asset,
++            material_asset,
++        }
++    }
++
++    fn matches(&self, module: &VfxModule) -> bool {
++        self.module_id == module.id && self.operation == module.operation
++    }
++}
++
++/// Transient deterministic preview state. The simulation is the production VFX runtime.
++struct VfxPreviewState {
++    player: Option<VfxPlayer>,
++    playback_speed: f32,
++    preview_seed: u32,
++    current_time: f32,
++    status: Option<String>,
++    last_effect: Option<VfxEffect>,
++}
++
++impl Default for VfxPreviewState {
++    fn default() -> Self {
++        Self {
++            player: None,
++            playback_speed: 1.0,
++            preview_seed: 0,
++            current_time: 0.0,
++            status: None,
++            last_effect: None,
++        }
++    }
++}
++
++impl VfxPreviewState {
++    fn open_effect(&mut self, effect: &VfxEffect) {
++        self.preview_seed = effect.seed;
++        self.current_time = 0.0;
++        self.recompile(effect, false);
++        self.last_effect = Some(effect.clone());
++    }
++
++    fn sync_effect(&mut self, effect: &VfxEffect) {
++        if self.last_effect.as_ref() == Some(effect) {
++            return;
++        }
++        let same_document = self.last_effect.as_ref().is_some_and(|previous| {
++            previous.emitters.len() == effect.emitters.len()
++                && previous
++                    .emitters
++                    .iter()
++                    .zip(&effect.emitters)
++                    .all(|(left, right)| left.id == right.id)
++        });
++        if !same_document {
++            self.preview_seed = effect.seed;
++            self.current_time = 0.0;
++        }
++        self.recompile(effect, same_document);
++        self.last_effect = Some(effect.clone());
++    }
++
++    fn recompile(&mut self, effect: &VfxEffect, preserve_time: bool) {
++        let target_time = if preserve_time { self.current_time } else { 0.0 };
++        let was_playing = preserve_time
++            && self
++                .player
++                .as_ref()
++                .is_some_and(VfxPlayer::is_playing);
++        let compilation = VfxAuthoringService::new().compile(effect);
++        let Some(compiled) = compilation.compiled_effect else {
++            self.player = None;
++            self.status = Some("Preview unavailable until blocking VFX diagnostics are fixed.".into());
++            return;
++        };
++        let mut player = VfxPlayer::new(
++            compiled,
++            was_playing,
++            false,
++            VfxRestartPolicy::Manual,
++            self.playback_speed,
++            Some(self.preview_seed),
++            BTreeMap::new(),
++        );
++        player
++            .instance_mut()
++            .seek_preview(target_time, Vec3::ZERO);
++        self.current_time = player.instance().elapsed_seconds();
++        self.player = Some(player);
++        self.status = None;
++    }
++
++    fn seek_to(&mut self, seconds: f32) {
++        self.current_time = seconds.max(0.0);
++        if let Some(player) = self.player.as_mut() {
++            player
++                .instance_mut()
++                .seek_preview(self.current_time, Vec3::ZERO);
++            self.current_time = player.instance().elapsed_seconds();
++        }
++    }
++
++    fn show(
++        &mut self,
++        ui: &mut egui::Ui,
++        effect: &VfxEffect,
++        selected_emitter: Option<&VfxEmitterId>,
++    ) {
++        ui.separator();
++        ui.heading("Preview");
++
++        let mut seek_requested = false;
++        let mut seed_changed = false;
++        ui.horizontal_wrapped(|ui| {
++            let is_playing = self
++                .player
++                .as_ref()
++                .is_some_and(VfxPlayer::is_playing);
++            if ui.button(if is_playing { "Pause" } else { "Play" }).clicked() {
++                if let Some(player) = self.player.as_mut() {
++                    if is_playing {
++                        player.pause();
++                    } else {
++                        player.play();
++                    }
++                }
++            }
++            if ui.button("Restart").clicked() {
++                if let Some(player) = self.player.as_mut() {
++                    player.restart();
++                }
++                self.current_time = 0.0;
++            }
++            if ui.button("Step").clicked() {
++                if let Some(player) = self.player.as_mut() {
++                    player
++                        .instance_mut()
++                        .step(VFX_PREVIEW_STEP_SECONDS, Vec3::ZERO);
++                    self.current_time = player.instance().elapsed_seconds();
++                }
++            }
++            ui.separator();
++            ui.label("Speed");
++            if ui
++                .add(
++                    egui::DragValue::new(&mut self.playback_speed)
++                        .speed(0.05)
++                        .range(0.05..=8.0)
++                        .suffix("x"),
++                )
++                .changed()
++            {
++                if let Some(player) = self.player.as_mut() {
++                    player.time_scale = self.playback_speed;
++                }
++            }
++            ui.label("Seed");
++            seed_changed = ui
++                .add(egui::DragValue::new(&mut self.preview_seed))
++                .changed();
++            ui.label("Time");
++            seek_requested = ui
++                .add(
++                    egui::Slider::new(&mut self.current_time, 0.0..=PREVIEW_DURATION_SECONDS)
++                        .show_value(true)
++                        .suffix(" s"),
++                )
++                .changed();
++        });
++
++        if seed_changed {
++            self.recompile(effect, true);
++        } else if seek_requested {
++            if let Some(player) = self.player.as_mut() {
++                player
++                    .instance_mut()
++                    .seek_preview(self.current_time, Vec3::ZERO);
++                self.current_time = player.instance().elapsed_seconds();
++            }
++        }
++
++        if self
++            .player
++            .as_ref()
++            .is_some_and(VfxPlayer::is_playing)
++        {
++            let dt = ui.ctx().input(|input| input.stable_dt).min(0.1);
++            if let Some(player) = self.player.as_mut() {
++                player.step(dt, Vec3::ZERO);
++                self.current_time = player.instance().elapsed_seconds();
++            }
++            ui.ctx().request_repaint();
++        }
++
++        draw_preview_viewport(ui, self.player.as_ref(), effect, selected_emitter);
++
++        if let Some(player) = self.player.as_ref() {
++            let stats = player.instance().stats();
++            ui.horizontal_wrapped(|ui| {
++                ui.label(format!("Live {}", stats.live_particles));
++                ui.label(format!("Spawned {}", stats.spawned_particles));
++                ui.label(format!("Dropped {}", stats.dropped_particles));
++                ui.label(format!("Backend {:?}", stats.backend));
++                if let Some(emitter_id) = selected_emitter {
++                    if let Some(runtime) = player
++                        .instance()
++                        .emitters()
++                        .iter()
++                        .find(|runtime| runtime.source() == emitter_id)
++                    {
++                        ui.label(format!("Emitter live {}", runtime.live_count()));
++                    }
++                }
++            });
++        }
++        if let Some(emitter_id) = selected_emitter {
