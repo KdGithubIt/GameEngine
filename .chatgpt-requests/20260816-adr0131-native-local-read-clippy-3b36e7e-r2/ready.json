@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "request_id": "20260816-adr0131-native-local-read-clippy-3b36e7e-r2",
+  "target_branch": "chatgpt/gameengine-adr0131-native-local-read-v1",
+  "expected_head_sha": "3b36e7ef7cab2b2568c1784b18ec250be4236be9",
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Fix ADR 0131 native harness Clippy warning",
+  "pr_title": "Implement ADR 0131 native local read harness",
+  "pr_body": "## Summary\n- fix the native read harness Clippy single-character append warning discovered by affected Windows validation\n- preserve the ADR 0131 implementation semantics and rerun affected + Editor visual validation\n\n## Validation\n- request Windows affected validation for engine-editor\n- request Editor visual validation for AI Studio\n\n<!-- gameengine-visual-validation: editor -->"
+}
