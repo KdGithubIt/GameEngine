@@ -1,0 +1,70 @@
+diff --git a/docs/adr/0112-engine-native-secondary-motion-and-pmx-physics-conversion.md b/docs/adr/0112-engine-native-secondary-motion-and-pmx-physics-conversion.md
+--- a/docs/adr/0112-engine-native-secondary-motion-and-pmx-physics-conversion.md
++++ b/docs/adr/0112-engine-native-secondary-motion-and-pmx-physics-conversion.md
+@@ -356,37 +356,35 @@ the clip originated from VMD, FBX, glTF, or another format.
+ 
+ ## Compatibility and Migration
+ 
+-This ADR is an architecture/documentation decision. It does not by itself
+-change the currently implemented serialized schemas, stable IDs, component
+-names, or runtime APIs.
+-
+-Until implementation lands, existing `RigidBodyRigAsset`,
+-`RigidBodyPhysics`, `crate::mmd_physics`, and their generated PMX sub-assets
+-continue to describe the current code. Accepting this ADR does not make the
+-repository partially migrate those types.
+-
+-Implementation must migrate the affected contract atomically:
+-
+-- replace or generalize MMD-specific runtime/asset names with engine-native
+-  Secondary Motion concepts;
+-- update PMX import to generate best-effort Secondary Motion data and
+-  diagnostics;
+-- preserve VMD-derived `AnimationClip` behavior and IDs unless another
+-  explicitly documented migration requires otherwise;
+-- preserve PMX mesh, skeleton, material, morph, and non-physics import behavior;
+-- update component registration, scene spawning, editor/Asset Browser
+-  authoring, packaging, and documentation in the same migration where required;
+-- remove MMD-specific seek pre-roll and Bullet-equivalence requirements from
+-  runtime tests while adding tests for generic reset/isolation behavior; and
+-- decide any serialized identity/schema change explicitly rather than silently
+-  reinterpreting an existing `RigidBodyRigAsset` reference as a different
+-  asset type.
+-
+-If the implementation introduces or changes canonical editable authoring
+-schemas, it must update `docs/AI_FRIENDLY_AUTHORING_SPEC.md` in the same change.
+-If existing generated/imported asset documents need a single-version schema
+-change, the migration must follow ADR 0091's no-permanent-compatibility-surface
+-policy.
++The implementation of this ADR intentionally changes the Secondary Motion
++authoring/import identity instead of reinterpreting the former MMD-specific
++contract in place. The current contract is:
++
++- runtime and asset APIs use `SecondaryMotion`, `SecondaryMotionRigAsset`, and
++  `SecondaryMotionRigRegistry`; the ADR 0111 `engine::rigid_body_rig` umbrella
++  module remains a supported facade but exposes the current types only;
++- the authoring component ID is `engine.secondary_motion`, schema version 1,
++  with one `rig` asset reference constrained to a Secondary Motion Rig; the
++  field may remain unassigned while editing, and assigning it is the explicit
++  opt-in to simulation;
++- a generated model rig is catalogued as imported sub-asset kind
++  `secondary_motion_rig`; its deterministic ID uses derivation prefix
++  `secondarymotionrig` and selector index 0;
++- the former `RigidBodyRig` / `rigid_body_rig` imported kind and
++  `rigidbodyrig` derivation namespace are not aliases for the current kind. A
++  persisted reference to an ID derived under that old namespace is stale and is
++  not silently reinterpreted as a Secondary Motion Rig; and
++- VMD-derived `AnimationClip` behavior and IDs remain unchanged by this
++  migration.
++
++The migration preserves PMX mesh, skeleton, material, morph, and other
++non-physics import behavior. PMX physics records are converted best-effort into
++engine-native data with structured diagnostics, while the MMD-specific solver,
++seek pre-roll, and Bullet-equivalence runtime contract are removed.
++
++This explicit identity cutover follows ADR 0115's current-format-only baseline
++and ADR 0091's rule against permanent compatibility surfaces. The canonical
++editable component schema is recorded in `docs/AI_FRIENDLY_AUTHORING_SPEC.md`.
+ 
+ ADR 0096 remains authoritative for gameplay Rapier collision/dynamics and the
+ custom character-controller boundary; its MMD-specific §5 contract is amended

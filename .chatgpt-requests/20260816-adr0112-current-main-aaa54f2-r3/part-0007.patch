@@ -1,0 +1,27 @@
+diff --git a/crates/editor/src/ui/inspector/asset_reference.rs b/crates/editor/src/ui/inspector/asset_reference.rs
+--- a/crates/editor/src/ui/inspector/asset_reference.rs
++++ b/crates/editor/src/ui/inspector/asset_reference.rs
+@@ -86,10 +86,10 @@ pub(in crate::ui) fn asset_reference_browser_kind(
+         | engine::AssetKind::GltfSource
+         | engine::AssetKind::Skin
+         | engine::AssetKind::Skeleton
+-        // Morphs and rigid-body rigs have no file of their own; they are
++        // Morphs and secondary-motion rigs have no file of their own; they are
+         // revealed on their owning model's row, so they inherit its icon.
+         | engine::AssetKind::Morph
+-        | engine::AssetKind::RigidBodyRig => BrowserKind::Mesh,
++        | engine::AssetKind::SecondaryMotionRig => BrowserKind::Mesh,
+         engine::AssetKind::Material => BrowserKind::Material,
+         engine::AssetKind::Texture => BrowserKind::Texture,
+         engine::AssetKind::AnimationClip => BrowserKind::AnimationClip,
+@@ -292,8 +292,8 @@ pub(in crate::ui) fn imported_sub_asset_matches_picker_kind(
+             )
+             | (engine::ImportedSubAssetKind::Skin, engine::AssetKind::Skin)
+             | (
+-                engine::ImportedSubAssetKind::RigidBodyRig,
+-                engine::AssetKind::RigidBodyRig
++                engine::ImportedSubAssetKind::SecondaryMotionRig,
++                engine::AssetKind::SecondaryMotionRig
+             )
+     )
+ }

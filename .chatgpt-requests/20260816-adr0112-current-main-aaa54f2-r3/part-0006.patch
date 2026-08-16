@@ -1,0 +1,21 @@
+diff --git a/crates/editor/src/ui/asset_inspector.rs b/crates/editor/src/ui/asset_inspector.rs
+--- a/crates/editor/src/ui/asset_inspector.rs
++++ b/crates/editor/src/ui/asset_inspector.rs
+@@ -1529,7 +1529,7 @@ fn imported_sub_asset_badge(kind: engine::ImportedSubAssetKind) -> &'static str
+         engine::ImportedSubAssetKind::Animation => "[clip]",
+         engine::ImportedSubAssetKind::HumanoidMotion => "[humanoid]",
+         engine::ImportedSubAssetKind::Morph => "[morph]",
+-        engine::ImportedSubAssetKind::RigidBodyRig => "[physics]",
++        engine::ImportedSubAssetKind::SecondaryMotionRig => "[secondary]",
+     }
+ }
+ 
+@@ -1543,7 +1543,7 @@ fn imported_sub_asset_label(kind: engine::ImportedSubAssetKind) -> &'static str
+         engine::ImportedSubAssetKind::Animation => "Animation Clip",
+         engine::ImportedSubAssetKind::HumanoidMotion => "Humanoid Motion",
+         engine::ImportedSubAssetKind::Morph => "Morph",
+-        engine::ImportedSubAssetKind::RigidBodyRig => "Rigid Body Rig",
++        engine::ImportedSubAssetKind::SecondaryMotionRig => "Secondary Motion Rig",
+     }
+ }
+ 
