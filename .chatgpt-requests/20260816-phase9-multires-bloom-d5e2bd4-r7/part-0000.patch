@@ -1,0 +1,204 @@
+diff --git a/crates/render-runtime/src/bloom.rs b/crates/render-runtime/src/bloom.rs
+new file mode 100644
+index 0000000..6abaae7
+--- /dev/null
++++ b/crates/render-runtime/src/bloom.rs
+@@ -0,0 +1,573 @@
++//! Renderer-owned multi-resolution bloom resources.
++
++use bytemuck::{Pod, Zeroable};
++
++use crate::postprocess::BloomSettings;
++
++const MAX_BLOOM_LEVELS: usize = 5;
++
++#[repr(C)]
++#[derive(Clone, Copy, Pod, Zeroable)]
++struct BloomUniformData {
++    threshold: f32,
++    intensity: f32,
++    radius: f32,
++    _padding: f32,
++}
++
++impl BloomUniformData {
++    fn from_settings(settings: &BloomSettings) -> Self {
++        Self {
++            threshold: finite_nonnegative(settings.threshold),
++            intensity: finite_nonnegative(settings.intensity),
++            radius: finite_nonnegative(settings.radius),
++            _padding: 0.0,
++        }
++    }
++}
++
++fn finite_nonnegative(value: f32) -> f32 {
++    if value.is_finite() {
++        value.max(0.0)
++    } else {
++        0.0
++    }
++}
++
++struct BloomImage {
++    _texture: wgpu::Texture,
++    view: wgpu::TextureView,
++}
++
++impl BloomImage {
++    fn new(
++        device: &wgpu::Device,
++        label: &str,
++        size: [u32; 2],
++        format: wgpu::TextureFormat,
++    ) -> Self {
++        let texture = device.create_texture(&wgpu::TextureDescriptor {
++            label: Some(label),
++            size: wgpu::Extent3d {
++                width: size[0],
++                height: size[1],
++                depth_or_array_layers: 1,
++            },
++            mip_level_count: 1,
++            sample_count: 1,
++            dimension: wgpu::TextureDimension::D2,
++            format,
++            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
++                | wgpu::TextureUsages::TEXTURE_BINDING,
++            view_formats: &[],
++        });
++        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
++        Self {
++            _texture: texture,
++            view,
++        }
++    }
++}
++
++struct BloomTargets {
++    downsampled: Vec<BloomImage>,
++    upsampled: Vec<BloomImage>,
++    composite: BloomImage,
++    prefilter_bind_group: wgpu::BindGroup,
++    downsample_bind_groups: Vec<wgpu::BindGroup>,
++    upsample_bind_groups: Vec<wgpu::BindGroup>,
++    composite_bind_group: wgpu::BindGroup,
++}
++
++impl BloomTargets {
++    fn new(
++        device: &wgpu::Device,
++        source_view: &wgpu::TextureView,
++        format: wgpu::TextureFormat,
++        bgl: &wgpu::BindGroupLayout,
++        sampler: &wgpu::Sampler,
++        uniform_buffer: &wgpu::Buffer,
++    ) -> Self {
++        let extent = source_view.texture().size();
++        let source_size = [extent.width.max(1), extent.height.max(1)];
++        let level_sizes = bloom_level_extents(source_size);
++
++        let downsampled = level_sizes
++            .iter()
++            .enumerate()
++            .map(|(index, size)| {
++                BloomImage::new(device, &format!("Bloom downsample {index}"), *size, format)
++            })
++            .collect::<Vec<_>>();
++        let upsampled = level_sizes
++            .iter()
++            .take(level_sizes.len().saturating_sub(1))
++            .enumerate()
++            .map(|(index, size)| {
++                BloomImage::new(device, &format!("Bloom upsample {index}"), *size, format)
++            })
++            .collect::<Vec<_>>();
++        let composite = BloomImage::new(device, "Bloom HDR composite", source_size, format);
++
++        let prefilter_bind_group = make_bind_group(
++            device,
++            bgl,
++            source_view,
++            source_view,
++            sampler,
++            uniform_buffer,
++            "Bloom prefilter BG",
++        );
++        let downsample_bind_groups = downsampled
++            .windows(2)
++            .enumerate()
++            .map(|(index, pair)| {
++                make_bind_group(
++                    device,
++                    bgl,
++                    &pair[0].view,
++                    &pair[0].view,
++                    sampler,
++                    uniform_buffer,
++                    &format!("Bloom downsample BG {index}"),
++                )
++            })
++            .collect::<Vec<_>>();
++
++        let mut upsample_bind_groups = Vec::with_capacity(upsampled.len());
++        for index in 0..upsampled.len() {
++            let coarse_view = if index + 1 == downsampled.len() - 1 {
++                &downsampled[index + 1].view
++            } else {
++                &upsampled[index + 1].view
++            };
++            upsample_bind_groups.push(make_bind_group(
++                device,
++                bgl,
++                &downsampled[index].view,
++                coarse_view,
++                sampler,
++                uniform_buffer,
++                &format!("Bloom upsample BG {index}"),
++            ));
++        }
++
++        let bloom_view = upsampled
++            .first()
++            .map(|image| &image.view)
++            .unwrap_or(&downsampled[0].view);
++        let composite_bind_group = make_bind_group(
++            device,
++            bgl,
++            source_view,
++            bloom_view,
++            sampler,
++            uniform_buffer,
++            "Bloom composite BG",
++        );
++
++        Self {
++            downsampled,
++            upsampled,
++            composite,
++            prefilter_bind_group,
++            downsample_bind_groups,
++            upsample_bind_groups,
++            composite_bind_group,
++        }
++    }
++}
++
++fn bloom_level_extents(source_size: [u32; 2]) -> Vec<[u32; 2]> {
++    let mut size = [
++        source_size[0].max(1).div_ceil(2),
++        source_size[1].max(1).div_ceil(2),
++    ];
++    let mut levels = Vec::with_capacity(MAX_BLOOM_LEVELS);
++    for _ in 0..MAX_BLOOM_LEVELS {
++        levels.push(size);
++        if size == [1, 1] {
++            break;
++        }
++        size = [size[0].div_ceil(2), size[1].div_ceil(2)];
++    }
++    levels
++}
++
++fn make_bind_group(
++    device: &wgpu::Device,
