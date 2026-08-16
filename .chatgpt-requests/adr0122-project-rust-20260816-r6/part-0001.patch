@@ -1,0 +1,25 @@
+diff --git a/crates/engine/src/game_commands.rs b/crates/engine/src/game_commands.rs
+--- a/crates/engine/src/game_commands.rs
++++ b/crates/engine/src/game_commands.rs
+@@ -7,7 +7,10 @@
+ mod animation;
+ 
+ use crate::asset::AssetManifest;
+-use crate::audio::{GameAudioCommand, GameAudioCommandQueue, MAX_GAME_AUDIO_COMMANDS};
++use crate::audio::{
++    GameAudioCommand, GameAudioCommandQueue, GameSpatialAudioOptions, SpatialRolloff,
++    MAX_GAME_AUDIO_COMMANDS,
++};
+ use crate::behavior_tree::{BehaviorStatus, BehaviorTreeBehaviorRegistry};
+ use crate::character_controller::KinematicCharacterController;
+ use crate::collision::{Collider, CollisionLayers, PhysicsBody, TriggerVolume};
+@@ -296,8 +299,9 @@ pub(crate) fn prepare_game_commands(
+             GameCommandFamily::Audio => {
+                 prepared.push(PreparedGameCommand::Audio(parse_audio_command(
+                     world,
+                     command,
+                     index,
++                    &despawned,
+                     &mut pending_audio_commands,
+                 )?));
+             }
