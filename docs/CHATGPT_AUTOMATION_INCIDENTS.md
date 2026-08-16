@@ -143,6 +143,15 @@ between those attempts.
   that hunk against the exact target EOF. Dispatcher run `31931372697` passed
   reconstruction/application and produced commit
   `b3421b3c454ca7ebde31a2a9585e441d91ea7802` in Draft PR #49.
+- The same target-alignment class recurred in ADR 0124 request
+  `20260816-adr0124-current-main-ce4ff02-r3`: Dispatcher run `31951395004`
+  rejected `crates/editor/src/ui/game_tools.rs` while the request envelope and
+  expected target HEAD were valid and unchanged.
+- Recovery request `20260816-adr0124-current-main-ce4ff02-r4` regenerated the
+  `game_tools.rs` diff from the exact `ce4ff02883046c9853a8966e165e53b4118e33c0`
+  target blob, reused the other preflighted patch blobs unchanged, and
+  Dispatcher run `31951685268` passed strict reconstruction/application and
+  produced commit `d7637f22edce8508639c9e2fd55c1a8ef7cfaab7` in Draft PR #97.
 
 ### Root cause
 
@@ -187,6 +196,10 @@ preflight; EOF presence and blank-line context are part of patch applicability.
 - Recovery Dispatcher run: `31931372697`
 - Recovery PR: `#49`
 - Recovery commit: `b3421b3c454ca7ebde31a2a9585e441d91ea7802`
+- Repeated failed request: `20260816-adr0124-current-main-ce4ff02-r3`
+- Recovery request: `20260816-adr0124-current-main-ce4ff02-r4`
+- Repeated failed Dispatcher run: `31951395004`
+- Recovery Dispatcher run / PR / commit: `31951685268` / `#97` / `d7637f22edce8508639c9e2fd55c1a8ef7cfaab7`
 
 ## INC-003: Published patch bytes differed from preflight artifact
 
