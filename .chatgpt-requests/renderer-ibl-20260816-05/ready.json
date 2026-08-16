@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "request_id": "renderer-ibl-20260816-05",
+  "target_branch": "chatgpt/gameengine-render-ibl",
+  "expected_head_sha": "ee35811de7f10a0bb8c24039d61a2c4c08f32cf5",
+  "patch_parts": ["part-0000.patch"],
+  "commit_message": "Fix IBL light bind group layout",
+  "pr_title": "Renderer: add split-sum image-based lighting",
+  "pr_body": "## Summary\n\nAdds a generic runtime EnvironmentMap source, renderer-owned diffuse irradiance/GGX specular preprocessing, a split-sum BRDF LUT, and shared StandardLit IBL while preserving the legacy ambient fallback and keeping the visible sky independent. Fixes the light bind-group layout so the IBL resources are declared by Light BGL rather than Tonemap BGL."
+}
