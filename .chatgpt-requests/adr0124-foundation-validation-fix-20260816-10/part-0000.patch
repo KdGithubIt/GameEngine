@@ -1,0 +1,252 @@
+diff --git a/crates/engine/src/game_host/core.rs b/crates/engine/src/game_host/core.rs
+--- a/crates/engine/src/game_host/core.rs
++++ b/crates/engine/src/game_host/core.rs
+@@ -1094,7 +1094,11 @@
+             let status = match agent.status {
+                 crate::navmesh::NavMeshAgentStatus::Idle => "idle",
+                 crate::navmesh::NavMeshAgentStatus::MissingNavMesh => "missing_navmesh",
++                crate::navmesh::NavMeshAgentStatus::MissingProfile => "missing_profile",
++                crate::navmesh::NavMeshAgentStatus::StartOutside => "start_outside",
++                crate::navmesh::NavMeshAgentStatus::EndOutside => "end_outside",
+                 crate::navmesh::NavMeshAgentStatus::NoPath => "no_path",
+                 crate::navmesh::NavMeshAgentStatus::Moving => "moving",
++                crate::navmesh::NavMeshAgentStatus::PartialPath => "partial_path",
+                 crate::navmesh::NavMeshAgentStatus::Arrived => "arrived",
+             };
+diff --git a/crates/engine/src/navigation_bake.rs b/crates/engine/src/navigation_bake.rs
+--- a/crates/engine/src/navigation_bake.rs
++++ b/crates/engine/src/navigation_bake.rs
+@@ -10,1 +10,1 @@
+-use std::path::{Path, PathBuf};
++use std::path::PathBuf;
+diff --git a/crates/physics/src/navigation.rs b/crates/physics/src/navigation.rs
+--- a/crates/physics/src/navigation.rs
++++ b/crates/physics/src/navigation.rs
+@@ -3,3 +3,4 @@
+ //! The runtime asset is engine-owned and backend-neutral. Authoring/build code
+-//! supplies [`NavigationBuildInput`]; [`NavigationBaker`] produces a versioned
+-//! tiled polygon asset that runtime queries can load without any bake backend.
++//! supplies [`crate::navigation::NavigationBuildInput`];
++//! [`crate::navigation::NavigationBaker`] produces a versioned tiled polygon asset
++//! that runtime queries can load without any bake backend.
+@@ -1147,6 +1148,39 @@ enum SearchOutcome {
+     Partial(SearchResult),
+ }
+ 
++struct SearchFrontier<'a> {
++    end_center: Vec3,
++    centers: &'a HashMap<NavigationPolygonRef, Vec3>,
++    costs: HashMap<NavigationPolygonRef, f32>,
++    previous: HashMap<NavigationPolygonRef, (NavigationPolygonRef, SearchEdge)>,
++    open: BinaryHeap<OpenEntry>,
++}
++
++impl SearchFrontier<'_> {
++    fn relax(
++        &mut self,
++        next: NavigationPolygonRef,
++        current: NavigationPolygonRef,
++        edge: SearchEdge,
++        new_cost: f32,
++    ) {
++        if new_cost + 1e-5 >= self.costs.get(&next).copied().unwrap_or(f32::INFINITY) {
++            return;
++        }
++        self.costs.insert(next, new_cost);
++        self.previous.insert(next, (current, edge));
++        let heuristic = self
++            .centers
++            .get(&next)
++            .map_or(0.0, |center| center.distance(self.end_center));
++        self.open.push(OpenEntry {
++            estimated_total: new_cost + heuristic,
++            cost: new_cost,
++            node: next,
++        });
++    }
++}
++
+ fn astar_polygons(
+     profile: &NavigationProfileMesh,
+     start: NavigationPolygonRef,
+@@ -1155,21 +1189,24 @@ fn astar_polygons(
+     let index = polygon_index(&profile.tiles);
+     let centers = polygon_centers(profile, &index);
+     let end_center = *centers.get(&end)?;
+-    let mut open = BinaryHeap::new();
+-    let mut costs = HashMap::new();
+-    let mut previous: HashMap<NavigationPolygonRef, (NavigationPolygonRef, SearchEdge)> =
+-        HashMap::new();
++    let mut frontier = SearchFrontier {
++        end_center,
++        centers: &centers,
++        costs: HashMap::new(),
++        previous: HashMap::new(),
++        open: BinaryHeap::new(),
++    };
+     let mut best_partial = start;
+     let mut best_distance = centers.get(&start)?.distance_squared(end_center);
+-    costs.insert(start, 0.0_f32);
+-    open.push(OpenEntry {
++    frontier.costs.insert(start, 0.0_f32);
++    frontier.open.push(OpenEntry {
+         estimated_total: best_distance.sqrt(),
+         cost: 0.0,
+         node: start,
+     });
+ 
+-    while let Some(entry) = open.pop() {
+-        if costs
++    while let Some(entry) = frontier.open.pop() {
++        if frontier.costs
+             .get(&entry.node)
+             .is_some_and(|best| entry.cost > *best + 1e-5)
+         {
+@@ -1186,7 +1223,7 @@ fn astar_polygons(
+             return Some(SearchOutcome::Complete(reconstruct_search(
+                 end,
+                 entry.cost,
+-                &previous,
++                &frontier.previous,
+             )));
+         }
+         let (tile_index, polygon_index) = *index.get(&entry.node)?;
+@@ -1200,21 +1237,16 @@ fn astar_polygons(
+             let step = from_center.distance(to_center)
+                 * profile.profile.area_cost(destination_polygon.area)
+                 * destination_polygon.cost_multiplier;
+-            relax(
++            frontier.relax(
+                 portal.to,
+                 entry.node,
+                 SearchEdge::Portal(portal.clone()),
+                 entry.cost + step,
+-                end_center,
+-                &centers,
+-                &mut costs,
+-                &mut previous,
+-                &mut open,
+             );
+         }
+         for link in &profile.links {
+             if link.from == entry.node {
+-                relax(
++                frontier.relax(
+                     link.to,
+                     entry.node,
+                     SearchEdge::Link(link.clone(), false),
+@@ -1222,15 +1254,10 @@ fn astar_polygons(
+                         + link.cost
+                         + profile.profile.area_cost(link.area)
+                             * Vec3::from_array(link.start).distance(Vec3::from_array(link.end)),
+-                    end_center,
+-                    &centers,
+-                    &mut costs,
+-                    &mut previous,
+-                    &mut open,
+                 );
+             }
+             if link.bidirectional && link.to == entry.node {
+-                relax(
++                frontier.relax(
+                     link.from,
+                     entry.node,
+                     SearchEdge::Link(link.clone(), true),
+@@ -1238,11 +1265,6 @@ fn astar_polygons(
+                         + link.cost
+                         + profile.profile.area_cost(link.area)
+                             * Vec3::from_array(link.start).distance(Vec3::from_array(link.end)),
+-                    end_center,
+-                    &centers,
+-                    &mut costs,
+-                    &mut previous,
+-                    &mut open,
+                 );
+             }
+         }
+@@ -1250,11 +1272,11 @@ fn astar_polygons(
+     if best_partial == start {
+         return None;
+     }
+-    let cost = costs.get(&best_partial).copied()?;
++    let cost = frontier.costs.get(&best_partial).copied()?;
+     Some(SearchOutcome::Partial(reconstruct_search(
+         best_partial,
+         cost,
+-        &previous,
++        &frontier.previous,
+     )))
+ }
+ 
+@@ -1280,31 +1302,5 @@ fn reconstruct_search(
+     }
+ }
+ 
+-fn relax(
+-    next: NavigationPolygonRef,
+-    current: NavigationPolygonRef,
+-    edge: SearchEdge,
+-    new_cost: f32,
+-    end_center: Vec3,
+-    centers: &HashMap<NavigationPolygonRef, Vec3>,
+-    costs: &mut HashMap<NavigationPolygonRef, f32>,
+-    previous: &mut HashMap<NavigationPolygonRef, (NavigationPolygonRef, SearchEdge)>,
+-    open: &mut BinaryHeap<OpenEntry>,
+-) {
+-    if new_cost + 1e-5 >= costs.get(&next).copied().unwrap_or(f32::INFINITY) {
+-        return;
+-    }
+-    costs.insert(next, new_cost);
+-    previous.insert(next, (current, edge));
+-    let heuristic = centers
+-        .get(&next)
+-        .map_or(0.0, |center| center.distance(end_center));
+-    open.push(OpenEntry {
+-        estimated_total: new_cost + heuristic,
+-        cost: new_cost,
+-        node: next,
+-    });
+-}
+-
+ fn polygon_centers(
+     profile: &NavigationProfileMesh,
+     index: &HashMap<NavigationPolygonRef, (usize, usize)>,
+diff --git a/crates/physics/src/navigation_bake.rs b/crates/physics/src/navigation_bake.rs
+--- a/crates/physics/src/navigation_bake.rs
++++ b/crates/physics/src/navigation_bake.rs
+@@ -415,6 +415,6 @@
+-    if had_previous {
+-        if let Err(error) = fs::rename(path, &backup) {
+-            let _ = fs::remove_file(&temporary);
+-            return Err(NavigationBakeServiceError::Io(error));
+-        }
++    if had_previous
++        && let Err(error) = fs::rename(path, &backup)
++    {
++        let _ = fs::remove_file(&temporary);
++        return Err(NavigationBakeServiceError::Io(error));
+     }
+diff --git a/crates/physics/src/navmesh.rs b/crates/physics/src/navmesh.rs
+--- a/crates/physics/src/navmesh.rs
++++ b/crates/physics/src/navmesh.rs
+@@ -2,13 +2,15 @@
+ //!
+ //! ## Quick start
+ //!
+-//! 1. Build a [`NavMesh`] with [`bake_from_obstacles`] (or the ECS-aware
+-//!    [`bake_navmesh`] helper) and save it with [`save_navmesh`].
+-//! 2. Load it at runtime with [`load_navmesh`] and insert the result wrapped
+-//!    in a [`NavMeshQuery`] as a world resource.
+-//! 3. Add [`NavMeshAgent`] to entities you want to path-find; set
+-//!    [`NavMeshAgent::target`] to a world-space destination.
+-//! 4. Register [`nav_mesh_agent_system`] with
++//! 1. Build a [`crate::navmesh::NavMesh`] with
++//!    [`crate::navmesh::bake_from_obstacles`] (or the ECS-aware
++//!    [`crate::navmesh::bake_navmesh`] helper) and save it with
++//!    [`crate::navmesh::save_navmesh`].
++//! 2. Load it at runtime with [`crate::navmesh::load_navmesh`] and insert the
++//!    result wrapped in a [`crate::navmesh::NavMeshQuery`] as a world resource.
++//! 3. Add [`crate::navmesh::NavMeshAgent`] to entities you want to path-find;
++//!    set [`crate::navmesh::NavMeshAgent::target`] to a world-space destination.
++//! 4. Register [`crate::navmesh::nav_mesh_agent_system`] with
+ //!    [`engine_ecs::App::add_fixed_system`].
