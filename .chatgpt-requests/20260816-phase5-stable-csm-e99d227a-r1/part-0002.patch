@@ -1,0 +1,116 @@
+       self.render.update_shadows(
++            queue,
++            &cascade_matrices,
++            cascade_blend_depths,
++            &shadow_settings,
++            shadows_enabled,
++        );
+ 
+         let batches = self.collect_batches(world, device, queue, camera_position);
+@@ -758,6 +769,6 @@
+         });
+ 
+         // Depth-only shadow passes, one per cascade (Phase 50, ADR 0036).
+-        // Skinned meshes do not cast shadows in v1; batched static and
+-        // particle instances do.
++        // Static, particle, and skinned casters share the same stabilized
++        // cascade matrices.
+         if shadows_enabled {
+@@ -2101,6 +2112,7 @@
+         &self,
+         queue: &wgpu::Queue,
+         matrices: &[glam::Mat4; SHADOW_CASCADE_COUNT],
++        cascade_blend_depths: [f32; 2],
+         settings: &ShadowSettings,
+         enabled: bool,
+     ) {
+@@ -2116,4 +2128,10 @@
+                 if enabled { 1.0 } else { 0.0 },
+                 1.0 / settings.resolution.max(1) as f32,
+             ],
++            cascade_depths: [
++                cascade_blend_depths[0],
++                cascade_blend_depths[1],
++                0.0,
++                0.0,
++            ],
+         };
+diff --git a/GameEngine/crates/render-runtime/src/shaders/mesh.wgsl b/GameEngine/crates/render-runtime/src/shaders/mesh.wgsl
+--- a/GameEngine/crates/render-runtime/src/shaders/mesh.wgsl
++++ b/GameEngine/crates/render-runtime/src/shaders/mesh.wgsl
+@@ -25,3 +25,4 @@
+ struct ShadowUniform {
+     light_view_proj_0: mat4x4<f32>, light_view_proj_1: mat4x4<f32>, params: vec4<f32>,
++    cascade_depths: vec4<f32>, // x=blend start, y=first cascade far depth
+ }
+@@ -116,23 +117,43 @@
+     let uv = vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
+     let reference = ndc.z - shadow.params.x;
+     var sum = 0.0;
++    var weight_sum = 0.0;
+     for (var dy: i32 = -1; dy <= 1; dy++) {
+         for (var dx: i32 = -1; dx <= 1; dx++) {
++            let weight_x = select(1.0, 2.0, dx == 0);
++            let weight_y = select(1.0, 2.0, dy == 0);
++            let weight = weight_x * weight_y;
+             sum += textureSampleCompareLevel(
+                 t_shadow, s_shadow, uv + vec2<f32>(f32(dx), f32(dy)) * shadow.params.w,
+                 layer, reference,
+-            );
++            ) * weight;
++            weight_sum += weight;
+         }
+     }
+-    return vec2<f32>(sum / 9.0, 1.0);
++    return vec2<f32>(sum / weight_sum, 1.0);
+ }
+ 
+ fn shadow_visibility(world_pos: vec3<f32>, normal: vec3<f32>) -> f32 {
+     if (shadow.params.z < 0.5 || material.toon_ambient.w < 0.5) { return 1.0; }
+     let biased = world_pos + normal * shadow.params.y;
++    let view_depth = max(-(camera.view * vec4<f32>(world_pos, 1.0)).z, 0.0);
++    let blend_start = shadow.cascade_depths.x;
++    let first_far = shadow.cascade_depths.y;
++
+     let first = sample_shadow_cascade(0, shadow.light_view_proj_0, biased);
++    if (view_depth < blend_start) {
++        if (first.y > 0.5) { return first.x; }
++        let second = sample_shadow_cascade(1, shadow.light_view_proj_1, biased);
++        return select(1.0, second.x, second.y > 0.5);
++    }
++
++    let second = sample_shadow_cascade(1, shadow.light_view_proj_1, biased);
++    if (view_depth <= first_far && first.y > 0.5 && second.y > 0.5 && first_far > blend_start) {
++        let blend = smoothstep(blend_start, first_far, view_depth);
++        return mix(first.x, second.x, blend);
++    }
++    if (view_depth <= first_far && first.y > 0.5) { return first.x; }
++    if (second.y > 0.5) { return second.x; }
+     if (first.y > 0.5) { return first.x; }
+-    let second = sample_shadow_cascade(1, shadow.light_view_proj_1, biased);
+-    if (second.y > 0.5) { return second.x; }
+     return 1.0;
+ }
+diff --git a/GameEngine/docs/phases/phase-50-shadow-pass.md b/GameEngine/docs/phases/phase-50-shadow-pass.md
+--- a/GameEngine/docs/phases/phase-50-shadow-pass.md
++++ b/GameEngine/docs/phases/phase-50-shadow-pass.md
+@@ -1,9 +1,8 @@
+ # Phase 50: Directional Shadow Pass
+ 
+-Status: 実装完了（2026-07-05）。自動テスト・4 ゲートすべてパス。
++Status: 実装完了（2026-07-05）。2026-08-16 に CSM の安定化・品質改善を追加。
+ `particles` / `skinned_mesh` example とも 10 秒以上の起動確認済み
+ （シャドウパス含む全パイプラインが wgpu バリデーション通過）。
+-影の見た目の最終確認のみ目視待ち。
+ 
+ ## Goal
+ 
+@@ -24,10 +23,13 @@
+   `mesh.wgsl`・`mesh_skinned.wgsl` での comparison sampling（light bind
+   group 拡張）/ `ShadowSettings.enabled` の尊重
+ - Out: 解像度のランタイム変更 / ポイント・スポットライト影 /
+-  specular IBL / カスケードブレンド
++  specular IBL
+ - 50-D/50-E 追加（2026-07-05）: スキンドメッシュのシャドウキャスト
+   （`shadow_depth_skinned.wgsl`・メインパスと同一 palette で変形一致）と
+-  3x3 PCF フィルタ（`params.w` = シャドウテクセルサイズ）を実装済
