@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "request_id": "20260816-phase8-temporal-history-ce777a7-r2",
+  "target_branch": "chatgpt/gameengine-render-temporal-infrastructure",
+  "expected_head_sha": "ce777a7ecf572001e727e10f470c7a1bebae6714",
+  "patch_parts": [
+    "part-0000.patch",
+    "part-0001.patch",
+    "part-0002.patch",
+    "part-0003.patch",
+    "part-0004.patch",
+    "part-0005.patch",
+    "part-0006.patch",
+    "part-0007.patch",
+    "part-0008.patch",
+    "part-0009.patch",
+    "part-0010.patch",
+    "part-0011.patch",
+    "part-0012.patch",
+    "part-0013.patch",
+    "part-0014.patch",
+    "part-0015.patch",
+    "part-0016.patch",
+    "part-0017.patch",
+    "part-0018.patch"
+  ],
+  "commit_message": "Renderer: add temporal history infrastructure",
+  "pr_title": "Renderer: add temporal history infrastructure",
+  "pr_body": "## Summary\n\nAdds renderer-owned temporal scene-color ping-pong history, deterministic Halton jitter metadata, previous-camera continuity tracking, explicit temporal reset semantics, and an exact fullscreen copy back into the existing caller-owned render target. Keeps projection unjittered and defers TAA/motion vectors while preserving caller texture usage contracts.\n\nAdds ADR 0130 for the temporal history boundary."
+}
