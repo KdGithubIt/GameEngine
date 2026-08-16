@@ -1,0 +1,380 @@
+diff --git a/crates/gameplay/src/behavior_tree_stateful.rs b/crates/gameplay/src/behavior_tree_stateful.rs
+new file mode 100644
+index 0000000..41661d9
+--- /dev/null
++++ b/crates/gameplay/src/behavior_tree_stateful.rs
+@@ -0,0 +1,1038 @@
++//! Stateful Behavior Tree execution and runtime debugging for ADR 0123.
++
++use crate::behavior_tree::{
++    BehaviorDispatchKind, BehaviorStatus, BehaviorTreeBehaviorRegistry, BehaviorTreeContext,
++    BehaviorTreeRuntimeError, MAX_BEHAVIOR_TREE_RUNTIME_DEPTH,
++};
++use engine_authoring::{
++    BehaviorTreeNodeKind, CompiledBehaviorNode, CompiledBehaviorTree, GraphId, NodeId, Value,
++};
++use engine_ecs::{Query, ResMut};
++use std::collections::{BTreeMap, VecDeque};
++use std::error::Error;
++use std::fmt;
++
++/// Default hard node-step budget for one tick.
++pub const DEFAULT_BEHAVIOR_TREE_STEP_BUDGET: usize = 4096;
++/// Default number of recent debug transitions retained by an instance.
++pub const DEFAULT_BEHAVIOR_TREE_DEBUG_CAPACITY: usize = 128;
++
++/// Reason an active execution was reset.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum BehaviorAbortReason {
++    /// Runner was disabled.
++    RunnerDisabled,
++    /// Caller explicitly requested reset.
++    ExplicitReset,
++    /// Compiled tree generation was replaced.
++    TreeReplaced,
++    /// Owning runner/entity is being removed.
++    RunnerRemoved,
++    /// Runtime policy interrupted the branch.
++    Interrupted,
++}
++
++/// Stateful action lifecycle extension over the existing gameplay dispatch boundary.
++pub trait StatefulBehaviorTreeContext: BehaviorTreeContext {
++    /// Called once when an action becomes active.
++    fn action_enter(&mut self, _node: &NodeId, _behavior_id: &str) -> Result<(), Self::Error> {
++        Ok(())
++    }
++
++    /// Called once when an active action becomes terminal.
++    fn action_complete(
++        &mut self,
++        _node: &NodeId,
++        _behavior_id: &str,
++        _status: BehaviorStatus,
++    ) -> Result<(), Self::Error> {
++        Ok(())
++    }
++
++    /// Called once when an active action is aborted.
++    fn action_abort(
++        &mut self,
++        _node: &NodeId,
++        _behavior_id: &str,
++        _reason: BehaviorAbortReason,
++    ) -> Result<(), Self::Error> {
++        Ok(())
++    }
++}
++
++impl StatefulBehaviorTreeContext for BehaviorTreeBehaviorRegistry {}
++
++/// Invalid compiled shape rejected while preparing a runtime plan.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct BehaviorTreePlanError {
++    /// Source node associated with the invalid shape.
++    pub node: NodeId,
++    /// Human-readable structural reason.
++    pub reason: String,
++}
++
++impl fmt::Display for BehaviorTreePlanError {
++    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
++        formatter.write_str(&self.reason)
++    }
++}
++
++impl Error for BehaviorTreePlanError {}
++
++/// Stateful execution failure.
++#[derive(Debug)]
++pub enum StatefulBehaviorTreeError<E> {
++    /// Invalid prepared plan.
++    Plan(BehaviorTreePlanError),
++    /// Existing action/condition dispatch failure.
++    Runtime(BehaviorTreeRuntimeError<E>),
++    /// Action lifecycle hook failed.
++    Lifecycle {
++        /// Source action node.
++        node: NodeId,
++        /// Stable action behavior identifier.
++        behavior_id: String,
++        /// Context-owned failure.
++        source: E,
++    },
++    /// Hard per-tick node-step budget was exhausted.
++    StepBudgetExceeded {
++        /// Source node that would exceed the budget.
++        node: NodeId,
++        /// Configured budget.
++        budget: usize,
++    },
++}
++
++impl<E: fmt::Display> fmt::Display for StatefulBehaviorTreeError<E> {
++    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
++        match self {
++            Self::Plan(source) => source.fmt(formatter),
++            Self::Runtime(source) => source.fmt(formatter),
++            Self::Lifecycle {
++                behavior_id, source, ..
++            } => write!(
++                formatter,
++                "behavior tree action `{behavior_id}` lifecycle failed: {source}"
++            ),
++            Self::StepBudgetExceeded { budget, .. } => {
++                write!(formatter, "behavior tree tick exceeded node-step budget {budget}")
++            }
++        }
++    }
++}
++
++impl<E: Error + 'static> Error for StatefulBehaviorTreeError<E> {
++    fn source(&self) -> Option<&(dyn Error + 'static)> {
++        match self {
++            Self::Plan(source) => Some(source),
++            Self::Runtime(source) => Some(source),
++            Self::Lifecycle { source, .. } => Some(source),
++            Self::StepBudgetExceeded { .. } => None,
++        }
++    }
++}
++
++/// Immutable deterministic pre-order execution plan.
++#[derive(Debug, Clone)]
++pub struct PreparedBehaviorTree {
++    source: GraphId,
++    nodes: Vec<PreparedNode>,
++}
++
++#[derive(Debug, Clone)]
++struct PreparedNode {
++    source: NodeId,
++    kind: BehaviorTreeNodeKind,
++    behavior: Option<String>,
++    children: Vec<usize>,
++    depth: u32,
++}
++
++impl PreparedBehaviorTree {
++    /// Validates and flattens a compiled tree.
++    pub fn prepare(tree: &CompiledBehaviorTree) -> Result<Self, BehaviorTreePlanError> {
++        if tree.root.kind != BehaviorTreeNodeKind::Root {
++            return Err(plan_error(
++                &tree.root,
++                format!(
++                    "behavior tree compiled root must be Root, found {:?}",
++                    tree.root.kind
++                ),
++            ));
++        }
++        let mut plan = Self {
++            source: tree.source.clone(),
++            nodes: Vec::new(),
++        };
++        plan.push(&tree.root, 0, true)?;
++        Ok(plan)
++    }
++
++    /// Source graph identity.
++    #[must_use]
++    pub fn source(&self) -> &GraphId {
++        &self.source
++    }
++
++    /// Number of runtime plan nodes.
++    #[must_use]
++    pub fn node_count(&self) -> usize {
++        self.nodes.len()
++    }
++
++    fn push(
++        &mut self,
++        node: &CompiledBehaviorNode,
++        depth: u32,
++        root: bool,
++    ) -> Result<usize, BehaviorTreePlanError> {
++        validate_node(node, depth, root)?;
++        let index = self.nodes.len();
++        self.nodes.push(PreparedNode {
++            source: node.source.clone(),
++            kind: node.kind,
++            behavior: node.behavior.clone(),
++            children: Vec::new(),
++            depth,
++        });
++        let mut children = Vec::with_capacity(node.children.len());
++        for child in &node.children {
++            children.push(self.push(child, depth + 1, false)?);
++        }
++        self.nodes[index].children = children;
++        Ok(index)
++    }
++}
++
++fn plan_error(node: &CompiledBehaviorNode, reason: String) -> BehaviorTreePlanError {
++    BehaviorTreePlanError {
++        node: node.source.clone(),
++        reason,
++    }
++}
++
++fn validate_node(
++    node: &CompiledBehaviorNode,
++    depth: u32,
++    root: bool,
++) -> Result<(), BehaviorTreePlanError> {
++    if depth > MAX_BEHAVIOR_TREE_RUNTIME_DEPTH {
++        return Err(plan_error(
++            node,
++            format!(
++                "behavior tree compiled depth exceeds runtime limit {MAX_BEHAVIOR_TREE_RUNTIME_DEPTH}"
++            ),
++        ));
++    }
++    if !root && node.kind == BehaviorTreeNodeKind::Root {
++        return Err(plan_error(
++            node,
++            "behavior tree root node may only appear at tree root".into(),
++        ));
++    }
++    match node.kind {
++        BehaviorTreeNodeKind::Root if node.children.len() != 1 => Err(plan_error(
++            node,
++            format!(
++                "behavior tree root must have exactly one child, found {}",
++                node.children.len()
++            ),
++        )),
++        BehaviorTreeNodeKind::Sequence | BehaviorTreeNodeKind::Selector
++            if node.children.is_empty() =>
++        {
++            Err(plan_error(
++                node,
++                format!(
++                    "behavior tree {:?} composite must have at least one child",
++                    node.kind
++                ),
++            ))
++        }
++        BehaviorTreeNodeKind::Condition | BehaviorTreeNodeKind::Action
++            if !node.children.is_empty() =>
++        {
++            Err(plan_error(
++                node,
++                format!(
++                    "behavior tree {:?} leaf must not have children, found {}",
++                    node.kind,
++                    node.children.len()
++                ),
++            ))
++        }
++        BehaviorTreeNodeKind::Decorator if node.children.len() != 1 => Err(plan_error(
++            node,
++            format!(
++                "behavior tree decorator must have exactly one child, found {}",
++                node.children.len()
++            ),
++        )),
++        BehaviorTreeNodeKind::Condition
++        | BehaviorTreeNodeKind::Action
++        | BehaviorTreeNodeKind::Decorator
++            if node.behavior.as_deref().map_or(true, str::is_empty) =>
++        {
++            Err(plan_error(
++                node,
++                format!("behavior tree {:?} node is missing behavior id", node.kind),
++            ))
++        }
++        _ => Ok(()),
++    }
++}
++
++#[derive(Debug, Clone, Default)]
++struct NodeState {
++    cursor: usize,
++    active: bool,
++    action_entered: bool,
++    elapsed_seconds: f32,
++}
++
++/// Debug transition kind.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum BehaviorTransitionKind {
++    /// Node became active.
++    Enter,
++    /// Node became terminal.
++    Exit,
++    /// Active action was aborted.
++    Abort,
++    /// Instance state was reset.
++    Reset,
++}
++
++/// Bounded recent transition.
++#[derive(Debug, Clone)]
++pub struct BehaviorTransition {
++    /// Execution generation.
++    pub generation: u64,
++    /// Source node.
++    pub node: NodeId,
++    /// Transition kind.
++    pub kind: BehaviorTransitionKind,
++    /// Terminal status for exit transitions.
++    pub status: Option<BehaviorStatus>,
++    /// Abort/reset reason when relevant.
++    pub reason: Option<BehaviorAbortReason>,
++}
++
++/// Active node elapsed-time state.
++#[derive(Debug, Clone)]
++pub struct BehaviorNodeExecutionState {
++    /// Source node.
++    pub node: NodeId,
++    /// Seconds continuously active.
++    pub elapsed_seconds: f32,
++}
++
++/// Observation-only snapshot shared by debugging adapters.
++#[derive(Debug, Clone)]
++pub struct BehaviorInstanceSnapshot {
++    /// Source tree identity.
++    pub tree: GraphId,
++    /// Execution generation.
++    pub generation: u64,
++    /// Latest overall status.
++    pub status: Option<BehaviorStatus>,
++    /// Active source-node path in deterministic plan order.
++    pub active_path: Vec<NodeId>,
++    /// Current running leaf, when present.
++    pub running_leaf: Option<NodeId>,
++    /// Active-node elapsed state.
++    pub active_nodes: Vec<BehaviorNodeExecutionState>,
++    /// Most recent terminal overall status.
++    pub last_terminal_status: Option<BehaviorStatus>,
++    /// Most recent abort/reset reason.
++    pub last_reason: Option<BehaviorAbortReason>,
++    /// Bounded transition history.
++    pub recent_transitions: Vec<BehaviorTransition>,
++}
++
++/// Mutable per-runner Behavior Tree execution state.
++pub struct BehaviorTreeInstance {
++    plan: PreparedBehaviorTree,
++    states: Vec<NodeState>,
++    generation: u64,
++    step_budget: usize,
++    debug_capacity: usize,
++    transitions: VecDeque<BehaviorTransition>,
++    last_status: Option<BehaviorStatus>,
++    last_terminal_status: Option<BehaviorStatus>,
++    last_reason: Option<BehaviorAbortReason>,
++}
++
++impl BehaviorTreeInstance {
++    /// Creates an independent instance from one compiled tree.
++    pub fn new(tree: CompiledBehaviorTree) -> Result<Self, BehaviorTreePlanError> {
++        Ok(Self::from_plan(PreparedBehaviorTree::prepare(&tree)?))
++    }
++
++    /// Creates an independent instance from a reusable prepared plan.
++    #[must_use]
