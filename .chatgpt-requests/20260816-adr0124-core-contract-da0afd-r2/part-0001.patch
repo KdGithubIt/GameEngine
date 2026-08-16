@@ -1,0 +1,57 @@
+diff --git a/crates/engine/src/navigation_bake.rs b/crates/engine/src/navigation_bake.rs
+index 02f2231..0007fb0 100644
+--- a/crates/engine/src/navigation_bake.rs
++++ b/crates/engine/src/navigation_bake.rs
+@@ -7,7 +7,7 @@
+ 
+ use std::collections::{BTreeMap, BTreeSet};
+ use std::fmt;
+-use std::path::{Path, PathBuf};
++use std::path::PathBuf;
+ use std::sync::atomic::AtomicBool;
+ 
+ use engine_authoring::{
+@@ -20,6 +20,7 @@ use glam::Vec3;
+ use crate::asset::{Assets, Handle};
+ use crate::collision::{Collider, PhysicsBody, TriggerVolume};
+ use crate::mesh::Mesh;
++use crate::script_api::RuntimeEntityIdentity;
+ use crate::transform::GlobalTransform;
+ use crate::{AssetManifest, AssetServer, ManifestEntry};
+ use engine_physics::navigation::{
+@@ -33,9 +34,9 @@ pub use engine_physics::navigation_bake::{
+ };
+ 
+ /// Stable authoring component used to emit one explicit off-mesh traversal.
+-pub const NAVIGATION_LINK_COMPONENT: &str = "engine.nav_mesh_link";
++pub const NAVIGATION_LINK_COMPONENT: &str = "engine.nav_link";
+ /// Stable authoring component used to exclude or reclassify navigation geometry.
+-pub const NAVIGATION_MODIFIER_COMPONENT: &str = "engine.nav_mesh_modifier";
++pub const NAVIGATION_MODIFIER_COMPONENT: &str = "engine.nav_modifier";
+ 
+ /// Successful scene bake output and registered stable asset ID.
+ pub struct NavMeshBakeResult {
+@@ -124,12 +125,13 @@ pub fn collect_navigation_source(
+ 
+     let mut generated_modifiers = Vec::new();
+     if let Ok(query) = world.query::<(
++        &RuntimeEntityIdentity,
+         &GlobalTransform,
+         &Collider,
+         Option<&PhysicsBody>,
+         Option<&TriggerVolume>,
+     )>() {
+-        for (entity, (transform, collider, body, trigger)) in query.iter() {
++        for (entity, (identity, transform, collider, body, trigger)) in query.iter() {
+             if body != Some(&PhysicsBody::Static) || trigger.is_some() {
+                 continue;
+             }
+@@ -158,7 +160,7 @@ pub fn collect_navigation_source(
+                 maximum.y
+             };
+             generated_modifiers.push(NavigationModifier {
+-                id: format!("runtime-collider-{}-{}", entity.id(), entity.generation()),
++                id: format!("collider:{}", identity.authoring_id.as_str()),
+                 minimum: [minimum.x, minimum.y, minimum.z],
+                 maximum: [maximum.x, exclusion_maximum_y, maximum.z],
+                 profiles: Vec::new(),
