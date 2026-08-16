@@ -1,0 +1,328 @@
++pub struct TimelineTransactionCommit {
++    /// Validated replacement document.
++    pub document: TimelineDocument,
++    /// Deterministic semantic changes.
++    pub changes: Vec<TimelineChange>,
++    /// Non-blocking diagnostics retained after validation.
++    pub diagnostics: Vec<Diagnostic>,
++}
++
++/// Whole-document Timeline transaction validation failure.
++#[derive(Debug)]
++pub struct TimelineCommitError {
++    /// Deterministic diagnostics; at least one is blocking.
++    pub diagnostics: Vec<Diagnostic>,
++}
++
++impl fmt::Display for TimelineCommitError {
++    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
++        write!(
++            formatter,
++            "Timeline transaction failed with {} validation diagnostic(s)",
++            self.diagnostics.len()
++        )
++    }
++}
++
++impl std::error::Error for TimelineCommitError {}
++
++/// Stable granular Timeline edit failure.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub enum TimelineEditError {
++    /// Track ID does not exist.
++    TrackNotFound(TimelineTrackId),
++    /// New track duplicates an existing stable ID.
++    DuplicateTrackId(TimelineTrackId),
++    /// New clip duplicates an existing stable ID anywhere in the document.
++    DuplicateClipId(TimelineClipId),
++    /// New marker duplicates an existing stable ID anywhere in the document.
++    DuplicateMarkerId(TimelineMarkerId),
++    /// Clip ID does not exist on the addressed track.
++    ClipNotFound(TimelineClipId),
++    /// Marker ID does not exist on the addressed Event Track.
++    MarkerNotFound(TimelineMarkerId),
++    /// A typed clip was sent to the wrong track family.
++    TrackTypeMismatch {
++        /// Actual destination track family.
++        track_type: TimelineTrackType,
++        /// Family required by the payload.
++        payload_type: TimelineTrackType,
++    },
++    /// Marker command addressed a non-Event track.
++    MarkerRequiresEventTrack {
++        /// Actual destination family.
++        track_type: TimelineTrackType,
++    },
++    /// Replacement clip attempted to change stable identity.
++    ReplacementClipIdMismatch {
++        /// Addressed stable ID.
++        expected: TimelineClipId,
++        /// ID carried by replacement payload.
++        actual: TimelineClipId,
++    },
++    /// Replacement marker attempted to change stable identity.
++    ReplacementMarkerIdMismatch {
++        /// Addressed stable ID.
++        expected: TimelineMarkerId,
++        /// ID carried by replacement payload.
++        actual: TimelineMarkerId,
++    },
++}
++
++impl fmt::Display for TimelineEditError {
++    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
++        match self {
++            Self::TrackNotFound(id) => write!(formatter, "Timeline track `{id}` was not found"),
++            Self::DuplicateTrackId(id) => write!(formatter, "Timeline track `{id}` already exists"),
++            Self::DuplicateClipId(id) => write!(formatter, "Timeline clip `{id}` already exists"),
++            Self::DuplicateMarkerId(id) => write!(formatter, "Timeline marker `{id}` already exists"),
++            Self::ClipNotFound(id) => write!(formatter, "Timeline clip `{id}` was not found"),
++            Self::MarkerNotFound(id) => write!(formatter, "Timeline marker `{id}` was not found"),
++            Self::TrackTypeMismatch {
++                track_type,
++                payload_type,
++            } => write!(
++                formatter,
++                "Timeline payload type {payload_type:?} cannot be inserted into {track_type:?} track"
++            ),
++            Self::MarkerRequiresEventTrack { track_type } => write!(
++                formatter,
++                "Timeline marker command requires Event track, found {track_type:?}"
++            ),
++            Self::ReplacementClipIdMismatch { expected, actual } => write!(
++                formatter,
++                "replacement Timeline clip ID `{actual}` does not match addressed ID `{expected}`"
++            ),
++            Self::ReplacementMarkerIdMismatch { expected, actual } => write!(
++                formatter,
++                "replacement Timeline marker ID `{actual}` does not match addressed ID `{expected}`"
++            ),
++        }
++    }
++}
++
++impl std::error::Error for TimelineEditError {}
++
++/// Live Timeline authoring state used by structured adapters.
++///
++/// Generation is process-local and intentionally not serialized. Reopening the
++/// same file receives a new generation even when its logical revision is zero,
++/// so stale previews cannot apply across reload/undo ABA cycles.
++pub struct TimelineAuthoringSession {
++    document: TimelineDocument,
++    generation: u64,
++    revision: u64,
++}
++
++impl TimelineAuthoringSession {
++    /// Creates a live session around one committed Timeline document.
++    pub fn new(document: TimelineDocument) -> Self {
++        Self {
++            document,
++            generation: next_timeline_generation(),
++            revision: 0,
++        }
++    }
++
++    /// Returns the committed Timeline document.
++    pub fn document(&self) -> &TimelineDocument {
++        &self.document
++    }
++
++    fn commit(&mut self, document: TimelineDocument) {
++        self.document = document;
++        self.revision = self.revision.saturating_add(1);
++    }
++}
++
++/// Immutable committed Timeline snapshot returned to adapters.
++#[derive(Debug, Clone, PartialEq, Serialize)]
++pub struct TimelineAuthoringSnapshot {
++    /// Logical content revision.
++    pub revision: u64,
++    /// Process-local generation protecting against stale reload/undo bases.
++    pub generation: u64,
++    /// Complete committed current-format document.
++    pub document: TimelineDocument,
++}
++
++/// Whole-document Timeline validation result.
++#[derive(Debug, Clone, PartialEq, Serialize)]
++pub struct TimelineAuthoringValidation {
++    /// Revision validated by this result.
++    pub revision: u64,
++    /// Generation validated by this result.
++    pub generation: u64,
++    /// Whether no blocking diagnostic was produced.
++    pub success: bool,
++    /// Deterministic structural diagnostics.
++    pub diagnostics: Vec<Diagnostic>,
++}
++
++/// Result of previewing or applying one atomic Timeline command batch.
++#[derive(Debug, Clone, PartialEq, Serialize)]
++pub struct TimelineAuthoringMutation {
++    /// Whether the complete batch validated successfully.
++    pub success: bool,
++    /// Revision supplied by the caller.
++    pub base_revision: u64,
++    /// Generation supplied by the caller.
++    pub base_generation: u64,
++    /// Current committed revision after this operation.
++    pub revision: u64,
++    /// Current generation after this operation.
++    pub generation: u64,
++    /// Structured command/whole-document diagnostics.
++    pub diagnostics: Vec<Diagnostic>,
++    /// Deterministic semantic changes proposed or committed.
++    pub diff: Vec<TimelineChange>,
++}
++
++/// Shared GUI-free Timeline authoring service failure.
++#[derive(Debug)]
++pub enum TimelineAuthoringError {
++    /// Shared authoring permission failure.
++    Permission(AuthoringPermissionError),
++    /// Caller revision/generation no longer names the live document state.
++    Stale {
++        /// Revision supplied by caller.
++        expected_revision: u64,
++        /// Generation supplied by caller.
++        expected_generation: u64,
++        /// Current live revision.
++        actual_revision: u64,
++        /// Current live generation.
++        actual_generation: u64,
++    },
++}
++
++impl TimelineAuthoringError {
++    /// Returns a stable diagnostic-style adapter error code.
++    pub fn code(&self) -> &'static str {
++        match self {
++            Self::Permission(error) => error.code(),
++            Self::Stale { .. } => "authoring.stale_revision",
++        }
++    }
++}
++
++impl fmt::Display for TimelineAuthoringError {
++    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
++        match self {
++            Self::Permission(error) => error.fmt(formatter),
++            Self::Stale {
++                expected_revision,
++                expected_generation,
++                actual_revision,
++                actual_generation,
++            } => write!(
++                formatter,
++                "stale Timeline base: expected revision {expected_revision} generation {expected_generation}, current revision {actual_revision} generation {actual_generation}"
++            ),
++        }
++    }
++}
++
++impl std::error::Error for TimelineAuthoringError {
++    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
++        match self {
++            Self::Permission(error) => Some(error),
++            Self::Stale { .. } => None,
++        }
++    }
++}
++
++impl From<AuthoringPermissionError> for TimelineAuthoringError {
++    fn from(value: AuthoringPermissionError) -> Self {
++        Self::Permission(value)
++    }
++}
++
++/// Stateless GUI-free Timeline authoring behavior shared by all adapters.
++#[derive(Debug, Default, Clone, Copy)]
++pub struct TimelineAuthoringService;
++
++impl TimelineAuthoringService {
++    /// Creates the stateless service.
++    pub const fn new() -> Self {
++        Self
++    }
++
++    /// Inspects committed Timeline state.
++    ///
++    /// # Errors
++    ///
++    /// Returns a permission error when read access is absent.
++    pub fn inspect(
++        &self,
++        session: &TimelineAuthoringSession,
++        permissions: &AuthoringPermissions,
++    ) -> Result<TimelineAuthoringSnapshot, TimelineAuthoringError> {
++        permissions.require(AuthoringPermission::Read)?;
++        Ok(TimelineAuthoringSnapshot {
++            revision: session.revision,
++            generation: session.generation,
++            document: session.document.clone(),
++        })
++    }
++
++    /// Validates the committed Timeline without mutation.
++    ///
++    /// # Errors
++    ///
++    /// Returns a permission error when read access is absent.
++    pub fn validate(
++        &self,
++        session: &TimelineAuthoringSession,
++        permissions: &AuthoringPermissions,
++    ) -> Result<TimelineAuthoringValidation, TimelineAuthoringError> {
++        permissions.require(AuthoringPermission::Read)?;
++        let diagnostics = session.document.validate();
++        let success = !diagnostics.iter().any(Diagnostic::is_blocking);
++        Ok(TimelineAuthoringValidation {
++            revision: session.revision,
++            generation: session.generation,
++            success,
++            diagnostics,
++        })
++    }
++
++    /// Previews one atomic command batch without mutating live state.
++    ///
++    /// # Errors
++    ///
++    /// Returns a permission or stale revision/generation error.
++    pub fn preview(
++        &self,
++        session: &TimelineAuthoringSession,
++        permissions: &AuthoringPermissions,
++        expected_revision: u64,
++        expected_generation: u64,
++        commands: Vec<TimelineCommand>,
++    ) -> Result<TimelineAuthoringMutation, TimelineAuthoringError> {
++        permissions.require(AuthoringPermission::Preview)?;
++        ensure_current(session, expected_revision, expected_generation)?;
++        Ok(evaluate(&session.document, commands).mutation(
++            expected_revision,
++            expected_generation,
++            false,
++        ))
++    }
++
++    /// Applies one atomic command batch to live Timeline state.
++    ///
++    /// Invalid commands/final validation leave the committed document
++    /// unchanged. A successful empty/no-op batch does not advance revision.
++    ///
++    /// # Errors
++    ///
++    /// Returns a permission or stale revision/generation error.
++    pub fn apply(
++        &self,
++        session: &mut TimelineAuthoringSession,
++        permissions: &AuthoringPermissions,
++        expected_revision: u64,
++        expected_generation: u64,
++        commands: Vec<TimelineCommand>,
++    ) -> Result<TimelineAuthoringMutation, TimelineAuthoringError> {
++        permissions.require(AuthoringPermission::ProjectDataWrite)?;

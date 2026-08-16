@@ -1,0 +1,305 @@
++        TimelineDocument::new(TimelineId::generate(), "sequence", TimelineTick::new(1_000))
++    }
++
++    fn camera_track() -> TimelineTrack {
++        TimelineTrack {
++            id: TimelineTrackId::generate(),
++            name: "camera".into(),
++            enabled: true,
++            order: 0,
++            kind: TimelineTrackKind::CameraCut { clips: Vec::new() },
++        }
++    }
++
++    fn camera_clip(id: TimelineClipId) -> TimelineEditableClip {
++        TimelineEditableClip::CameraCut(TimelineCameraCutClip {
++            timing: TimelineClipTiming {
++                id,
++                start_tick: TimelineTick::new(10),
++                end_tick: TimelineTick::new(100),
++                blend: Default::default(),
++            },
++            camera: EntityId::generate(),
++            override_priority: 7,
++        })
++    }
++
++    #[test]
++    fn preview_is_non_destructive_and_apply_is_one_revision() {
++        let service = TimelineAuthoringService::new();
++        let mut session = TimelineAuthoringSession::new(document());
++        let base = service.inspect(&session, &writable()).expect("inspect");
++        let track = camera_track();
++        let track_id = track.id.clone();
++        let command = TimelineCommand::AddTrack { track };
++
++        let preview = service
++            .preview(
++                &session,
++                &writable(),
++                base.revision,
++                base.generation,
++                vec![command.clone()],
++            )
++            .expect("preview");
++        assert!(preview.success);
++        assert_eq!(preview.diff.len(), 1);
++        assert!(session.document().track(&track_id).is_none());
++
++        let applied = service
++            .apply(
++                &mut session,
++                &writable(),
++                base.revision,
++                base.generation,
++                vec![command],
++            )
++            .expect("apply");
++        assert!(applied.success);
++        assert_eq!(applied.revision, base.revision + 1);
++        assert_eq!(applied.generation, base.generation);
++        assert!(session.document().track(&track_id).is_some());
++    }
++
++    #[test]
++    fn command_batch_is_atomic_on_final_validation_failure() {
++        let service = TimelineAuthoringService::new();
++        let mut session = TimelineAuthoringSession::new(document());
++        let base = service.inspect(&session, &writable()).expect("inspect");
++        let result = service
++            .apply(
++                &mut session,
++                &writable(),
++                base.revision,
++                base.generation,
++                vec![TimelineCommand::SetDuration {
++                    duration_ticks: TimelineTick::new(-1),
++                }],
++            )
++            .expect("validation is structured result");
++        assert!(!result.success);
++        assert_eq!(session.document().duration_ticks, TimelineTick::new(1_000));
++        assert_eq!(result.revision, base.revision);
++        assert!(result
++            .diagnostics
++            .iter()
++            .any(|diagnostic| diagnostic.code == "timeline.negative_duration"));
++    }
++
++    #[test]
++    fn stale_generation_rejects_reopened_document() {
++        let service = TimelineAuthoringService::new();
++        let session = TimelineAuthoringSession::new(document());
++        let base = service.inspect(&session, &writable()).expect("inspect");
++        let mut reopened = TimelineAuthoringSession::new(session.document().clone());
++        let error = service
++            .apply(
++                &mut reopened,
++                &writable(),
++                base.revision,
++                base.generation,
++                Vec::new(),
++            )
++            .expect_err("reopened generation must reject stale base");
++        assert_eq!(error.code(), "authoring.stale_revision");
++    }
++
++    #[test]
++    fn clip_commands_preserve_stable_identity_and_track_type() {
++        let mut transaction = TimelineTransaction::begin(&document());
++        let track = camera_track();
++        let track_id = track.id.clone();
++        transaction
++            .apply(TimelineCommand::AddTrack { track })
++            .expect("add track");
++        let clip_id = TimelineClipId::generate();
++        transaction
++            .apply(TimelineCommand::AddClip {
++                track: track_id.clone(),
++                clip: camera_clip(clip_id.clone()),
++            })
++            .expect("add camera clip");
++        let replacement = camera_clip(clip_id.clone());
++        transaction
++            .apply(TimelineCommand::ReplaceClip {
++                track: track_id.clone(),
++                clip: clip_id.clone(),
++                replacement,
++            })
++            .expect("replace same ID");
++        let commit = transaction.commit().expect("valid commit");
++        assert!(commit.document.track(&track_id).unwrap().kind.clip(&clip_id).is_some());
++    }
++
++    #[test]
++    fn wrong_track_family_rejects_typed_clip_without_mutating() {
++        let mut base = document();
++        let event_track = TimelineTrack {
++            id: TimelineTrackId::generate(),
++            name: "events".into(),
++            enabled: true,
++            order: 0,
++            kind: TimelineTrackKind::Event { markers: Vec::new() },
++        };
++        let track_id = event_track.id.clone();
++        base.tracks.push(event_track);
++        let mut transaction = TimelineTransaction::begin(&base);
++        let error = transaction
++            .apply(TimelineCommand::AddClip {
++                track: track_id,
++                clip: camera_clip(TimelineClipId::generate()),
++            })
++            .expect_err("camera clip cannot enter event track");
++        assert!(matches!(error, TimelineEditError::TrackTypeMismatch { .. }));
++        assert!(transaction.changes().is_empty());
++    }
++}
+diff --git a/crates/engine/Cargo.toml b/crates/engine/Cargo.toml
+index 9a199fe..37aac23 100644
+--- a/crates/engine/Cargo.toml
++++ b/crates/engine/Cargo.toml
+@@ -5,6 +5,7 @@ edition = "2024"
+ 
+ [dependencies]
+ engine-animation = { path = "../animation" }
++engine-timeline = { path = "../timeline" }
+ engine-authoring = { path = "../authoring" }
+ engine-assets = { path = "../assets" }
+ engine-core = { path = "../core" }
+diff --git a/crates/engine/src/lib.rs b/crates/engine/src/lib.rs
+index 0dd7e7d..d2201a8 100644
+--- a/crates/engine/src/lib.rs
++++ b/crates/engine/src/lib.rs
+@@ -3,6 +3,8 @@ pub mod skeleton_asset;
+ pub mod skinning;
+ /// Frame timing resources.
+ pub mod time;
++/// Timeline authoring and dependency-neutral runtime orchestration (ADR 0126).
++pub mod timeline;
+ /// Local and global transform components.
+ pub mod transform;
+ /// Runtime HUD and in-game menu UI integration.
+diff --git a/crates/engine/src/timeline.rs b/crates/engine/src/timeline.rs
+new file mode 100644
+index 0000000..07b55a4
+--- /dev/null
++++ b/crates/engine/src/timeline.rs
+@@ -0,0 +1,30 @@
++//! Timeline authoring and dependency-neutral runtime orchestration (ADR 0126).
++//!
++//! The concrete Animation, Camera, Transform, and Event domains remain owned
++//! by their existing modules. This facade exposes the stable authoring model
++//! and neutral evaluation requests; composition-layer adapters may translate
++//! those requests into domain operations without moving domain logic into the
++//! Timeline scheduler.
++
++pub use engine_authoring::timeline::{
++    compile_timeline, CompiledAnimationPayload, CompiledCameraCutPayload, CompiledEventPayload,
++    CompiledTimelinePayload, CompiledTransformPayload, TimelineAnimationClip,
++    TimelineBindingResolver, TimelineBlend, TimelineCameraCutClip, TimelineClipRef,
++    TimelineClipTiming, TimelineCompileError, TimelineDisplayRate, TimelineDocument,
++    TimelineDocumentError, TimelineEventMarker, TimelineQuatKey, TimelineTrack, TimelineTrackKind,
++    TimelineTrackType, TimelineTransformClip, TimelineTransformCurve, TimelineTransformSample,
++    TimelineVec3Key, TIMELINE_FILE_SUFFIX, TIMELINE_SCHEMA_VERSION,
++};
++pub use engine_authoring::timeline_authoring::{
++    TimelineAuthoringError, TimelineAuthoringMutation, TimelineAuthoringService,
++    TimelineAuthoringSession, TimelineAuthoringSnapshot, TimelineAuthoringValidation,
++    TimelineChange, TimelineCommand, TimelineCommitError, TimelineEditError, TimelineEditableClip,
++    TimelineTransaction, TimelineTransactionCommit,
++};
++pub use engine_authoring::{TimelineClipId, TimelineId, TimelineMarkerId, TimelineTrackId};
++pub use engine_timeline::{
++    evaluate_with_adapter, CompiledEntry, CompiledSpan, CompiledTimeline, CompiledTimelineError,
++    EvaluationDecision, EvaluationItem, EvaluationMode, EvaluationRequest, PlaybackRateError,
++    SeekCapability, TimelineEvaluationAdapter, TimelinePlaybackState, TimelinePlayer, TimelineTick,
++    TIMELINE_TICKS_PER_SECOND,
++};
+diff --git a/crates/timeline/Cargo.toml b/crates/timeline/Cargo.toml
+new file mode 100644
+index 0000000..2962449
+--- /dev/null
++++ b/crates/timeline/Cargo.toml
+@@ -0,0 +1,11 @@
++[package]
++name = "engine-timeline"
++version = "0.1.0"
++edition = "2024"
++
++[features]
++default = []
++serde = ["dep:serde"]
++
++[dependencies]
++serde = { version = "1", features = ["derive"], optional = true }
+diff --git a/crates/timeline/src/lib.rs b/crates/timeline/src/lib.rs
+new file mode 100644
+index 0000000..7d53ab2
+--- /dev/null
++++ b/crates/timeline/src/lib.rs
+@@ -0,0 +1,915 @@
++//! Dependency-neutral Timeline scheduling and playback contracts (ADR 0126).
++//!
++//! This crate owns canonical integer time, immutable compiled schedule
++//! traversal, per-player clocks, seek-policy reporting, and the typed adapter
++//! boundary. It intentionally has no dependency on animation, rendering,
++//! audio, VFX, physics, authoring, or editor implementations.
++//!
++//! [`CompiledTimeline`] is generic over its payload. The payload type is the
++//! typed extension point for composition layers: a host defines a closed Rust
++//! type containing only the domain payloads it actually supports, and an
++//! implementation of [`TimelineEvaluationAdapter`] consumes those payloads.
++//! The neutral scheduler therefore never needs stringly-typed payloads,
++//! `serde_json::Value`, or runtime downcasts.
++
++#![warn(missing_docs)]
++#![warn(rustdoc::broken_intra_doc_links)]
++
++use std::fmt;
++use std::sync::Arc;
++
++/// Canonical Timeline clock rate in integer ticks per second.
++pub const TIMELINE_TICKS_PER_SECOND: i64 = 48_000;
++
++/// One exact position on the canonical Timeline clock.
++///
++/// Persisted clip boundaries and markers use this integer type. Floating-point
++/// seconds are presentation or host-clock inputs only; they are never the
++/// canonical stored position.
++#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
++#[cfg_attr(feature = "serde", serde(transparent))]
++pub struct TimelineTick(i64);
++
++impl TimelineTick {
++    /// Tick zero, the start of a Timeline.
++    pub const ZERO: Self = Self(0);
++
++    /// Creates an exact Timeline tick.
++    pub const fn new(value: i64) -> Self {
++        Self(value)
++    }
++
++    /// Returns the integer tick value.
++    pub const fn get(self) -> i64 {
++        self.0
++    }
++
++    /// Converts this position to seconds for a target-domain API.
++    pub fn to_seconds_f64(self) -> f64 {
++        self.0 as f64 / TIMELINE_TICKS_PER_SECOND as f64
++    }
++
++    /// Adds an integer delta, saturating at the integer limits.
++    pub const fn saturating_add(self, delta: i64) -> Self {
++        Self(self.0.saturating_add(delta))
++    }
++
++    /// Returns this tick clamped to the inclusive range `[minimum, maximum]`.
++    pub fn clamp(self, minimum: Self, maximum: Self) -> Self {
++        Self(self.0.clamp(minimum.0, maximum.0))
++    }
++}
++
++impl fmt::Display for TimelineTick {
++    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {

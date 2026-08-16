@@ -1,0 +1,281 @@
++                            clip: clip.timing.id.clone(),
++                            target: clip.target.clone(),
++                            curve: clip.curve.clone(),
++                        }),
++                    ));
++                }
++            }
++            TimelineTrackKind::CameraCut { clips } => {
++                let mut clips = clips.iter().collect::<Vec<_>>();
++                clips.sort_by_key(|clip| (clip.timing.start_tick, clip.timing.id.clone()));
++                for (item_order, clip) in clips.into_iter().enumerate() {
++                    entries.push(CompiledEntry::interval(
++                        track_order,
++                        u32::try_from(item_order).unwrap_or(u32::MAX),
++                        clip.timing.start_tick,
++                        clip.timing.end_tick,
++                        SeekCapability::Stateless,
++                        CompiledTimelinePayload::CameraCut(CompiledCameraCutPayload {
++                            track: track.id.clone(),
++                            clip: clip.timing.id.clone(),
++                            camera: clip.camera.clone(),
++                            override_priority: clip.override_priority,
++                        }),
++                    ));
++                }
++            }
++            TimelineTrackKind::Event { markers } => {
++                let mut markers = markers.iter().collect::<Vec<_>>();
++                markers.sort_by_key(|marker| (marker.tick, marker.id.clone()));
++                for (item_order, marker) in markers.into_iter().enumerate() {
++                    entries.push(CompiledEntry::point(
++                        track_order,
++                        u32::try_from(item_order).unwrap_or(u32::MAX),
++                        marker.tick,
++                        SeekCapability::Stateless,
++                        true,
++                        CompiledTimelinePayload::Event(CompiledEventPayload {
++                            track: track.id.clone(),
++                            marker: marker.id.clone(),
++                            name: marker.name.clone(),
++                        }),
++                    ));
++                }
++            }
++        }
++    }
++
++    CompiledTimeline::new(document.duration_ticks, entries).map_err(TimelineCompileError::Schedule)
++}
++
++fn validate_track(
++    track: &TimelineTrack,
++    timeline_duration: TimelineTick,
++    clip_ids: &mut BTreeSet<TimelineClipId>,
++    marker_ids: &mut BTreeSet<TimelineMarkerId>,
++    diagnostics: &mut Vec<Diagnostic>,
++) {
++    match &track.kind {
++        TimelineTrackKind::Animation { clips } => {
++            let mut ordered = clips.iter().collect::<Vec<_>>();
++            ordered.sort_by_key(|clip| (clip.timing.start_tick, clip.timing.id.clone()));
++            for clip in ordered {
++                validate_clip_timing(&track.id, &clip.timing, timeline_duration, clip_ids, diagnostics);
++                if clip.source_start_tick < TimelineTick::ZERO {
++                    diagnostics.push(Diagnostic::error(
++                        "timeline.animation_negative_source_tick",
++                        format!(
++                            "Animation clip `{}` has negative source start tick {}",
++                            clip.timing.id, clip.source_start_tick
++                        ),
++                    ));
++                }
++            }
++        }
++        TimelineTrackKind::TransformProperty { clips } => {
++            let mut ordered = clips.iter().collect::<Vec<_>>();
++            ordered.sort_by_key(|clip| (clip.timing.start_tick, clip.timing.id.clone()));
++            for clip in ordered {
++                validate_clip_timing(&track.id, &clip.timing, timeline_duration, clip_ids, diagnostics);
++                diagnostics.extend(clip.curve.validate(&clip.timing));
++            }
++        }
++        TimelineTrackKind::CameraCut { clips } => {
++            let mut ordered = clips.iter().collect::<Vec<_>>();
++            ordered.sort_by_key(|clip| (clip.timing.start_tick, clip.timing.id.clone()));
++            for clip in ordered {
++                validate_clip_timing(&track.id, &clip.timing, timeline_duration, clip_ids, diagnostics);
++            }
++            warn_camera_cut_priority_ties(track, clips, diagnostics);
++        }
++        TimelineTrackKind::Event { markers } => {
++            let mut ordered = markers.iter().collect::<Vec<_>>();
++            ordered.sort_by_key(|marker| (marker.tick, marker.id.clone()));
++            for marker in ordered {
++                if !marker_ids.insert(marker.id.clone()) {
++                    diagnostics.push(Diagnostic::error(
++                        "timeline.duplicate_marker_id",
++                        format!("Timeline marker ID `{}` is duplicated", marker.id),
++                    ));
++                }
++                if marker.tick < TimelineTick::ZERO || marker.tick > timeline_duration {
++                    diagnostics.push(Diagnostic::error(
++                        "timeline.marker_out_of_range",
++                        format!(
++                            "Event marker `{}` tick {} is outside Timeline [0, {}]",
++                            marker.id, marker.tick, timeline_duration
++                        ),
++                    ));
++                }
++                if marker.name.trim().is_empty() {
++                    diagnostics.push(Diagnostic::error(
++                        "timeline.blank_event_name",
++                        format!("Event marker `{}` has a blank event name", marker.id),
++                    ));
++                }
++            }
++        }
++    }
++}
++
++fn validate_clip_timing(
++    track: &TimelineTrackId,
++    clip: &TimelineClipTiming,
++    timeline_duration: TimelineTick,
++    clip_ids: &mut BTreeSet<TimelineClipId>,
++    diagnostics: &mut Vec<Diagnostic>,
++) {
++    if !clip_ids.insert(clip.id.clone()) {
++        diagnostics.push(Diagnostic::error(
++            "timeline.duplicate_clip_id",
++            format!("Timeline clip ID `{}` is duplicated", clip.id),
++        ));
++    }
++    if clip.start_tick < TimelineTick::ZERO
++        || clip.start_tick >= clip.end_tick
++        || clip.end_tick > timeline_duration
++    {
++        diagnostics.push(Diagnostic::error(
++            "timeline.invalid_clip_range",
++            format!(
++                "Timeline track `{track}` clip `{}` interval [{}, {}) is outside [0, {}]",
++                clip.id, clip.start_tick, clip.end_tick, timeline_duration
++            ),
++        ));
++    }
++    let duration = clip.duration_ticks();
++    if clip.blend.in_ticks < TimelineTick::ZERO
++        || clip.blend.out_ticks < TimelineTick::ZERO
++        || clip.blend.in_ticks.get().saturating_add(clip.blend.out_ticks.get()) > duration
++    {
++        diagnostics.push(Diagnostic::error(
++            "timeline.invalid_clip_blend",
++            format!(
++                "Timeline clip `{}` blend durations do not fit its {} tick interval",
++                clip.id, duration
++            ),
++        ));
++    }
++}
++
++fn warn_camera_cut_priority_ties(
++    track: &TimelineTrack,
++    clips: &[TimelineCameraCutClip],
++    diagnostics: &mut Vec<Diagnostic>,
++) {
++    let mut ordered = clips.iter().collect::<Vec<_>>();
++    ordered.sort_by_key(|clip| (clip.timing.start_tick, clip.timing.id.clone()));
++    for (index, left) in ordered.iter().enumerate() {
++        for right in ordered.iter().skip(index + 1) {
++            if right.timing.start_tick >= left.timing.end_tick {
++                break;
++            }
++            if left.override_priority == right.override_priority {
++                diagnostics.push(Diagnostic::warning(
++                    "timeline.camera_override_priority_tie",
++                    format!(
++                        "Camera Cut track `{}` clips `{}` and `{}` overlap with override priority {}; compiled order remains deterministic",
++                        track.id, left.timing.id, right.timing.id, left.override_priority
++                    ),
++                ));
++            }
++        }
++    }
++}
++
++fn validate_vec3_keys(keys: &[TimelineVec3Key], clip: &TimelineClipTiming) -> Vec<Diagnostic> {
++    let mut diagnostics = Vec::new();
++    if keys.is_empty() {
++        diagnostics.push(Diagnostic::error(
++            "timeline.empty_transform_curve",
++            format!("Transform clip `{}` has no curve keys", clip.id),
++        ));
++        return diagnostics;
++    }
++    let max_tick = TimelineTick::new(clip.duration_ticks());
++    let mut previous = None;
++    for key in keys {
++        if key.tick < TimelineTick::ZERO || key.tick > max_tick {
++            diagnostics.push(Diagnostic::error(
++                "timeline.transform_key_out_of_range",
++                format!(
++                    "Transform clip `{}` key tick {} is outside [0, {}]",
++                    clip.id, key.tick, max_tick
++                ),
++            ));
++        }
++        if previous.is_some_and(|tick| key.tick <= tick) {
++            diagnostics.push(Diagnostic::error(
++                "timeline.transform_keys_not_strictly_ordered",
++                format!("Transform clip `{}` keys must be strictly increasing", clip.id),
++            ));
++        }
++        if key.value.iter().any(|component| !component.is_finite()) {
++            diagnostics.push(Diagnostic::error(
++                "timeline.non_finite_transform_value",
++                format!("Transform clip `{}` contains a non-finite Vec3 value", clip.id),
++            ));
++        }
++        previous = Some(key.tick);
++    }
++    diagnostics
++}
++
++fn validate_quat_keys(keys: &[TimelineQuatKey], clip: &TimelineClipTiming) -> Vec<Diagnostic> {
++    let mut diagnostics = Vec::new();
++    if keys.is_empty() {
++        diagnostics.push(Diagnostic::error(
++            "timeline.empty_transform_curve",
++            format!("Transform clip `{}` has no rotation keys", clip.id),
++        ));
++        return diagnostics;
++    }
++    let max_tick = TimelineTick::new(clip.duration_ticks());
++    let mut previous = None;
++    for key in keys {
++        if key.tick < TimelineTick::ZERO || key.tick > max_tick {
++            diagnostics.push(Diagnostic::error(
++                "timeline.transform_key_out_of_range",
++                format!(
++                    "Transform clip `{}` rotation key tick {} is outside [0, {}]",
++                    clip.id, key.tick, max_tick
++                ),
++            ));
++        }
++        if previous.is_some_and(|tick| key.tick <= tick) {
++            diagnostics.push(Diagnostic::error(
++                "timeline.transform_keys_not_strictly_ordered",
++                format!("Transform clip `{}` rotation keys must be strictly increasing", clip.id),
++            ));
++        }
++        if key.value.iter().any(|component| !component.is_finite()) {
++            diagnostics.push(Diagnostic::error(
++                "timeline.non_finite_transform_value",
++                format!("Transform clip `{}` contains a non-finite quaternion", clip.id),
++            ));
++        } else {
++            let length_squared = key.value.iter().map(|value| value * value).sum::<f32>();
++            if length_squared <= f32::EPSILON {
++                diagnostics.push(Diagnostic::error(
++                    "timeline.zero_rotation_quaternion",
++                    format!("Transform clip `{}` contains a zero quaternion", clip.id),
++                ));
++            }
++        }
++        previous = Some(key.tick);
++    }
++    diagnostics
++}
++
++fn sample_vec3(keys: &[TimelineVec3Key], tick: TimelineTick) -> Option<[f32; 3]> {
++    let first = keys.first()?;
++    if tick <= first.tick || keys.len() == 1 {
++        return Some(first.value);
++    }
++    let last = keys.last()?;
++    if tick >= last.tick {
++        return Some(last.value);
++    }
++    let right = keys.partition_point(|key| key.tick <= tick);
++    let left_key = &keys[right - 1];
++    let right_key = &keys[right];

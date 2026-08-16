@@ -1,0 +1,304 @@
++/// override; this document never edits Camera3D enabled/priority fields.
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++pub struct TimelineCameraCutClip {
++    /// Stable Timeline interval.
++    pub timing: TimelineClipTiming,
++    /// Stable authored game-camera entity.
++    pub camera: EntityId,
++    /// Explicit priority among overlapping Timeline camera overrides.
++    pub override_priority: i32,
++}
++
++/// One stable sequence-level Event marker.
++///
++/// `id` is the stable event identity used for ordering and source attribution.
++/// `name` is the authored event name passed to the later bounded host adapter;
++/// it is not used to resolve an entity, asset, or track implementation.
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++pub struct TimelineEventMarker {
++    /// Stable marker/event identity.
++    pub id: TimelineMarkerId,
++    /// Exact marker tick.
++    pub tick: TimelineTick,
++    /// Human/project-facing event name.
++    pub name: String,
++}
++
++/// Persisted, typed track family.
++///
++/// Audio and VFX are intentionally absent from the current-format enum until
++/// ADR 0122 / ADR 0125 runtime contracts are stable. Future support must add a
++/// concrete typed variant rather than serializing an opaque JSON payload.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++#[serde(tag = "type", content = "data", rename_all = "snake_case")]
++pub enum TimelineTrackKind {
++    /// Animation Set motion-slot clips.
++    Animation {
++        /// Ordered source clips; deterministic compilation reorders ties by
++        /// exact time and stable clip ID rather than Vec iteration identity.
++        clips: Vec<TimelineAnimationClip>,
++    },
++    /// Explicitly supported Transform property curves.
++    TransformProperty {
++        /// Typed transform clips.
++        clips: Vec<TimelineTransformClip>,
++    },
++    /// Transient game-camera cuts.
++    CameraCut {
++        /// Camera cut intervals.
++        clips: Vec<TimelineCameraCutClip>,
++    },
++    /// Sequence-level event marker lane.
++    Event {
++        /// Stable sequence Event markers.
++        markers: Vec<TimelineEventMarker>,
++    },
++}
++
++/// Stable built-in Timeline track type identifier.
++///
++/// This is a closed typed identifier, not a user-provided string. Future track
++/// families extend it only when their authoring/runtime contract is explicit.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
++pub enum TimelineTrackType {
++    /// Animation Set motion-slot track.
++    Animation,
++    /// Explicit Transform property track.
++    TransformProperty,
++    /// Camera Cut track.
++    CameraCut,
++    /// Sequence Event track.
++    Event,
++}
++
++impl TimelineTrackKind {
++    /// Returns the stable typed family identifier.
++    pub const fn track_type(&self) -> TimelineTrackType {
++        match self {
++            Self::Animation { .. } => TimelineTrackType::Animation,
++            Self::TransformProperty { .. } => TimelineTrackType::TransformProperty,
++            Self::CameraCut { .. } => TimelineTrackType::CameraCut,
++            Self::Event { .. } => TimelineTrackType::Event,
++        }
++    }
++
++    /// Returns the clip with `id`, when this family owns interval clips.
++    pub fn clip(&self, id: &TimelineClipId) -> Option<TimelineClipRef<'_>> {
++        match self {
++            Self::Animation { clips } => clips
++                .iter()
++                .find(|clip| &clip.timing.id == id)
++                .map(TimelineClipRef::Animation),
++            Self::TransformProperty { clips } => clips
++                .iter()
++                .find(|clip| &clip.timing.id == id)
++                .map(TimelineClipRef::TransformProperty),
++            Self::CameraCut { clips } => clips
++                .iter()
++                .find(|clip| &clip.timing.id == id)
++                .map(TimelineClipRef::CameraCut),
++            Self::Event { .. } => None,
++        }
++    }
++}
++
++/// Borrowed typed interval clip returned by inspection helpers.
++#[derive(Debug, Clone, Copy)]
++pub enum TimelineClipRef<'a> {
++    /// Animation clip.
++    Animation(&'a TimelineAnimationClip),
++    /// Transform/property clip.
++    TransformProperty(&'a TimelineTransformClip),
++    /// Camera Cut clip.
++    CameraCut(&'a TimelineCameraCutClip),
++}
++
++impl TimelineClipRef<'_> {
++    /// Returns common stable timing.
++    pub const fn timing(self) -> &TimelineClipTiming {
++        match self {
++            Self::Animation(clip) => &clip.timing,
++            Self::TransformProperty(clip) => &clip.timing,
++            Self::CameraCut(clip) => &clip.timing,
++        }
++    }
++}
++
++/// One persisted Timeline track.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++pub struct TimelineTrack {
++    /// Stable track identity.
++    pub id: TimelineTrackId,
++    /// Human-readable track name; never used for binding resolution.
++    pub name: String,
++    /// Whether this track participates in compiled/runtime evaluation.
++    pub enabled: bool,
++    /// Explicit persisted ordering key. Equal keys remain deterministic via
++    /// stable track ID but produce a validation warning.
++    pub order: i32,
++    /// Closed typed track payload.
++    pub kind: TimelineTrackKind,
++}
++
++/// Canonical versioned Timeline authoring document.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++pub struct TimelineDocument {
++    /// Persisted schema version.
++    pub schema_version: u32,
++    /// Stable document identity.
++    pub id: TimelineId,
++    /// Human-readable Timeline name.
++    pub name: String,
++    /// Inclusive final playhead tick. Interval clips end at or before it.
++    pub duration_ticks: TimelineTick,
++    /// Rational display frame rate; does not change canonical tick time.
++    pub display_rate: TimelineDisplayRate,
++    /// Authored typed tracks.
++    pub tracks: Vec<TimelineTrack>,
++}
++
++impl TimelineDocument {
++    /// Creates an empty current-format Timeline document.
++    pub fn new(id: TimelineId, name: impl Into<String>, duration_ticks: TimelineTick) -> Self {
++        Self {
++            schema_version: TIMELINE_SCHEMA_VERSION,
++            id,
++            name: name.into(),
++            duration_ticks,
++            display_rate: TimelineDisplayRate::default(),
++            tracks: Vec::new(),
++        }
++    }
++
++    /// Parses and structurally validates a current-format Timeline JSON file.
++    ///
++    /// # Errors
++    ///
++    /// Returns malformed JSON, an unsupported version, or deterministic
++    /// structural diagnostics.
++    pub fn from_json(json: &str) -> Result<Self, TimelineDocumentError> {
++        #[derive(Deserialize)]
++        struct VersionProbe {
++            schema_version: u32,
++        }
++
++        let version: VersionProbe =
++            serde_json::from_str(json).map_err(TimelineDocumentError::Json)?;
++        if version.schema_version != TIMELINE_SCHEMA_VERSION {
++            return Err(TimelineDocumentError::UnsupportedVersion {
++                found: version.schema_version,
++            });
++        }
++        let document: Self = serde_json::from_str(json).map_err(TimelineDocumentError::Json)?;
++        let diagnostics = document.validate();
++        if diagnostics.iter().any(Diagnostic::is_blocking) {
++            return Err(TimelineDocumentError::Validation { diagnostics });
++        }
++        Ok(document)
++    }
++
++    /// Serializes deterministic pretty current-format JSON with a final newline.
++    ///
++    /// # Errors
++    ///
++    /// Returns structural validation or serialization failure.
++    pub fn to_canonical_json(&self) -> Result<String, TimelineDocumentError> {
++        let diagnostics = self.validate();
++        if diagnostics.iter().any(Diagnostic::is_blocking) {
++            return Err(TimelineDocumentError::Validation { diagnostics });
++        }
++        let mut json = serde_json::to_string_pretty(self).map_err(TimelineDocumentError::Json)?;
++        json.push('\n');
++        Ok(json)
++    }
++
++    /// Returns deterministic structural diagnostics.
++    pub fn validate(&self) -> Vec<Diagnostic> {
++        let mut diagnostics = Vec::new();
++        if self.schema_version != TIMELINE_SCHEMA_VERSION {
++            diagnostics.push(Diagnostic::error(
++                "timeline.unsupported_version",
++                format!(
++                    "Timeline schema version {} is unsupported; expected {}",
++                    self.schema_version, TIMELINE_SCHEMA_VERSION
++                ),
++            ));
++        }
++        if self.name.trim().is_empty() {
++            diagnostics.push(Diagnostic::error(
++                "timeline.blank_name",
++                "Timeline name must not be blank",
++            ));
++        }
++        if self.duration_ticks < TimelineTick::ZERO {
++            diagnostics.push(Diagnostic::error(
++                "timeline.negative_duration",
++                format!("Timeline duration {} is negative", self.duration_ticks),
++            ));
++        }
++        if self.display_rate.numerator == 0 || self.display_rate.denominator == 0 {
++            diagnostics.push(Diagnostic::error(
++                "timeline.invalid_display_rate",
++                "Timeline display rate numerator and denominator must be non-zero",
++            ));
++        }
++
++        let mut track_ids = BTreeSet::new();
++        let mut clip_ids = BTreeSet::new();
++        let mut marker_ids = BTreeSet::new();
++        let mut order_owners = BTreeMap::<i32, TimelineTrackId>::new();
++        for track in self.tracks_in_evaluation_order() {
++            if !track_ids.insert(track.id.clone()) {
++                diagnostics.push(Diagnostic::error(
++                    "timeline.duplicate_track_id",
++                    format!("Timeline track ID `{}` is duplicated", track.id),
++                ));
++            }
++            if track.name.trim().is_empty() {
++                diagnostics.push(Diagnostic::error(
++                    "timeline.blank_track_name",
++                    format!("Timeline track `{}` has a blank name", track.id),
++                ));
++            }
++            if let Some(previous) = order_owners.insert(track.order, track.id.clone()) {
++                diagnostics.push(Diagnostic::warning(
++                    "timeline.track_order_tie",
++                    format!(
++                        "Timeline tracks `{previous}` and `{}` share order {}; stable track ID breaks the tie deterministically",
++                        track.id, track.order
++                    ),
++                ));
++            }
++            validate_track(
++                track,
++                self.duration_ticks,
++                &mut clip_ids,
++                &mut marker_ids,
++                &mut diagnostics,
++            );
++        }
++        diagnostics
++    }
++
++    /// Returns binding-existence diagnostics using a project/scene-owned
++    /// resolver. No display-name fallback is attempted.
++    pub fn validate_bindings(
++        &self,
++        resolver: &dyn TimelineBindingResolver,
++    ) -> Vec<Diagnostic> {
++        let mut diagnostics = Vec::new();
++        for track in self.tracks_in_evaluation_order() {
++            match &track.kind {
++                TimelineTrackKind::Animation { clips } => {
++                    let mut clips = clips.iter().collect::<Vec<_>>();
++                    clips.sort_by_key(|clip| (clip.timing.start_tick, clip.timing.id.clone()));
++                    for clip in clips {
++                        if !resolver.entity_exists(&clip.target) {
++                            diagnostics.push(missing_entity_binding(
++                                &track.id,
++                                &clip.timing.id,
++                                &clip.target,
++                            ));
++                        }
++                        if !resolver.asset_exists(&clip.animation_set) {
++                            diagnostics.push(Diagnostic::error(

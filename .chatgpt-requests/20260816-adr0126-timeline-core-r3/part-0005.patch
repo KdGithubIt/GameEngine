@@ -1,0 +1,331 @@
++    pub fn id(&self) -> &TimelineClipId {
++        match self {
++            Self::Animation(clip) => &clip.timing.id,
++            Self::TransformProperty(clip) => &clip.timing.id,
++            Self::CameraCut(clip) => &clip.timing.id,
++        }
++    }
++
++    /// Returns the required destination track family.
++    pub const fn track_type(&self) -> TimelineTrackType {
++        match self {
++            Self::Animation(_) => TimelineTrackType::Animation,
++            Self::TransformProperty(_) => TimelineTrackType::TransformProperty,
++            Self::CameraCut(_) => TimelineTrackType::CameraCut,
++        }
++    }
++}
++
++/// Granular Timeline document edit command.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++#[serde(tag = "op", rename_all = "snake_case")]
++pub enum TimelineCommand {
++    /// Changes the human-readable document name.
++    Rename {
++        /// New document name.
++        name: String,
++    },
++    /// Changes the exact Timeline duration.
++    SetDuration {
++        /// New inclusive final tick.
++        duration_ticks: TimelineTick,
++    },
++    /// Changes frame/timecode presentation without changing canonical ticks.
++    SetDisplayRate {
++        /// New rational display frame rate.
++        display_rate: TimelineDisplayRate,
++    },
++    /// Adds one complete typed track.
++    AddTrack {
++        /// Track to add.
++        track: TimelineTrack,
++    },
++    /// Removes one track and its owned clips/markers.
++    RemoveTrack {
++        /// Stable track ID.
++        track: TimelineTrackId,
++    },
++    /// Renames one track without changing its stable identity.
++    SetTrackName {
++        /// Stable track ID.
++        track: TimelineTrackId,
++        /// New human-readable name.
++        name: String,
++    },
++    /// Enables or disables runtime compilation of one track.
++    SetTrackEnabled {
++        /// Stable track ID.
++        track: TimelineTrackId,
++        /// New persisted enabled state.
++        enabled: bool,
++    },
++    /// Changes one track's persisted ordering key.
++    SetTrackOrder {
++        /// Stable track ID.
++        track: TimelineTrackId,
++        /// New ordering key.
++        order: i32,
++    },
++    /// Adds one typed interval clip to a matching track family.
++    AddClip {
++        /// Destination track.
++        track: TimelineTrackId,
++        /// Strongly typed clip.
++        clip: TimelineEditableClip,
++    },
++    /// Replaces one interval clip while preserving the addressed stable ID.
++    ReplaceClip {
++        /// Owning track.
++        track: TimelineTrackId,
++        /// Replacement typed clip. Its ID must match `clip`.
++        clip: TimelineClipId,
++        /// New clip data.
++        replacement: TimelineEditableClip,
++    },
++    /// Removes one interval clip.
++    RemoveClip {
++        /// Owning track.
++        track: TimelineTrackId,
++        /// Stable clip ID.
++        clip: TimelineClipId,
++    },
++    /// Adds one sequence-level Event marker to an Event Track.
++    AddEventMarker {
++        /// Destination Event Track.
++        track: TimelineTrackId,
++        /// Typed stable marker.
++        marker: TimelineEventMarker,
++    },
++    /// Replaces one Event marker while preserving its stable ID.
++    ReplaceEventMarker {
++        /// Owning Event Track.
++        track: TimelineTrackId,
++        /// Stable marker ID being replaced.
++        marker: TimelineMarkerId,
++        /// Replacement marker data. Its ID must match `marker`.
++        replacement: TimelineEventMarker,
++    },
++    /// Removes one Event marker.
++    RemoveEventMarker {
++        /// Owning Event Track.
++        track: TimelineTrackId,
++        /// Stable marker ID.
++        marker: TimelineMarkerId,
++    },
++}
++
++/// Deterministic semantic diff item produced by a Timeline transaction.
++#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
++#[serde(tag = "kind", rename_all = "snake_case")]
++pub enum TimelineChange {
++    /// Document name changed.
++    DocumentRenamed,
++    /// Document duration changed.
++    DurationChanged,
++    /// Display frame rate changed.
++    DisplayRateChanged,
++    /// Track was added.
++    TrackAdded {
++        /// Stable track ID.
++        track: TimelineTrackId,
++    },
++    /// Track was removed.
++    TrackRemoved {
++        /// Stable track ID.
++        track: TimelineTrackId,
++    },
++    /// Track metadata changed.
++    TrackChanged {
++        /// Stable track ID.
++        track: TimelineTrackId,
++    },
++    /// Interval clip was added.
++    ClipAdded {
++        /// Owning track.
++        track: TimelineTrackId,
++        /// Stable clip ID.
++        clip: TimelineClipId,
++    },
++    /// Interval clip was replaced.
++    ClipChanged {
++        /// Owning track.
++        track: TimelineTrackId,
++        /// Stable clip ID.
++        clip: TimelineClipId,
++    },
++    /// Interval clip was removed.
++    ClipRemoved {
++        /// Owning track.
++        track: TimelineTrackId,
++        /// Stable clip ID.
++        clip: TimelineClipId,
++    },
++    /// Event marker was added.
++    MarkerAdded {
++        /// Owning Event Track.
++        track: TimelineTrackId,
++        /// Stable marker ID.
++        marker: TimelineMarkerId,
++    },
++    /// Event marker was replaced.
++    MarkerChanged {
++        /// Owning Event Track.
++        track: TimelineTrackId,
++        /// Stable marker ID.
++        marker: TimelineMarkerId,
++    },
++    /// Event marker was removed.
++    MarkerRemoved {
++        /// Owning Event Track.
++        track: TimelineTrackId,
++        /// Stable marker ID.
++        marker: TimelineMarkerId,
++    },
++}
++
++/// One GUI-free atomic edit transaction over a Timeline document.
++pub struct TimelineTransaction {
++    working: TimelineDocument,
++    changes: Vec<TimelineChange>,
++}
++
++impl TimelineTransaction {
++    /// Begins a transaction from a committed document snapshot.
++    pub fn begin(document: &TimelineDocument) -> Self {
++        Self {
++            working: document.clone(),
++            changes: Vec::new(),
++        }
++    }
++
++    /// Returns the transaction's current working document.
++    pub fn document(&self) -> &TimelineDocument {
++        &self.working
++    }
++
++    /// Returns the deterministic semantic changes accumulated so far.
++    pub fn changes(&self) -> &[TimelineChange] {
++        &self.changes
++    }
++
++    /// Applies one typed granular edit to the working copy.
++    ///
++    /// # Errors
++    ///
++    /// Returns a stable edit error without changing the working copy when the
++    /// addressed object is missing, duplicated, or the clip/track family is
++    /// incompatible.
++    pub fn apply(&mut self, command: TimelineCommand) -> Result<(), TimelineEditError> {
++        match command {
++            TimelineCommand::Rename { name } => {
++                self.working.name = name;
++                self.changes.push(TimelineChange::DocumentRenamed);
++            }
++            TimelineCommand::SetDuration { duration_ticks } => {
++                self.working.duration_ticks = duration_ticks;
++                self.changes.push(TimelineChange::DurationChanged);
++            }
++            TimelineCommand::SetDisplayRate { display_rate } => {
++                self.working.display_rate = display_rate;
++                self.changes.push(TimelineChange::DisplayRateChanged);
++            }
++            TimelineCommand::AddTrack { track } => {
++                if self.working.tracks.iter().any(|candidate| candidate.id == track.id) {
++                    return Err(TimelineEditError::DuplicateTrackId(track.id));
++                }
++                let id = track.id.clone();
++                self.working.tracks.push(track);
++                self.changes.push(TimelineChange::TrackAdded { track: id });
++            }
++            TimelineCommand::RemoveTrack { track } => {
++                let index = track_index(&self.working, &track)?;
++                self.working.tracks.remove(index);
++                self.changes.push(TimelineChange::TrackRemoved { track });
++            }
++            TimelineCommand::SetTrackName { track, name } => {
++                track_mut(&mut self.working, &track)?.name = name;
++                self.changes.push(TimelineChange::TrackChanged { track });
++            }
++            TimelineCommand::SetTrackEnabled { track, enabled } => {
++                track_mut(&mut self.working, &track)?.enabled = enabled;
++                self.changes.push(TimelineChange::TrackChanged { track });
++            }
++            TimelineCommand::SetTrackOrder { track, order } => {
++                track_mut(&mut self.working, &track)?.order = order;
++                self.changes.push(TimelineChange::TrackChanged { track });
++            }
++            TimelineCommand::AddClip { track, clip } => {
++                ensure_clip_id_absent(&self.working, clip.id())?;
++                let id = clip.id().clone();
++                insert_clip(track_mut(&mut self.working, &track)?, clip)?;
++                self.changes.push(TimelineChange::ClipAdded { track, clip: id });
++            }
++            TimelineCommand::ReplaceClip {
++                track,
++                clip,
++                replacement,
++            } => {
++                if replacement.id() != &clip {
++                    return Err(TimelineEditError::ReplacementClipIdMismatch {
++                        expected: clip,
++                        actual: replacement.id().clone(),
++                    });
++                }
++                replace_clip(track_mut(&mut self.working, &track)?, &clip, replacement)?;
++                self.changes.push(TimelineChange::ClipChanged { track, clip });
++            }
++            TimelineCommand::RemoveClip { track, clip } => {
++                remove_clip(track_mut(&mut self.working, &track)?, &clip)?;
++                self.changes.push(TimelineChange::ClipRemoved { track, clip });
++            }
++            TimelineCommand::AddEventMarker { track, marker } => {
++                ensure_marker_id_absent(&self.working, &marker.id)?;
++                let marker_id = marker.id.clone();
++                insert_marker(track_mut(&mut self.working, &track)?, marker)?;
++                self.changes.push(TimelineChange::MarkerAdded {
++                    track,
++                    marker: marker_id,
++                });
++            }
++            TimelineCommand::ReplaceEventMarker {
++                track,
++                marker,
++                replacement,
++            } => {
++                if replacement.id != marker {
++                    return Err(TimelineEditError::ReplacementMarkerIdMismatch {
++                        expected: marker,
++                        actual: replacement.id.clone(),
++                    });
++                }
++                replace_marker(track_mut(&mut self.working, &track)?, &marker, replacement)?;
++                self.changes.push(TimelineChange::MarkerChanged { track, marker });
++            }
++            TimelineCommand::RemoveEventMarker { track, marker } => {
++                remove_marker(track_mut(&mut self.working, &track)?, &marker)?;
++                self.changes.push(TimelineChange::MarkerRemoved { track, marker });
++            }
++        }
++        Ok(())
++    }
++
++    /// Finalizes this transaction after whole-document validation.
++    ///
++    /// # Errors
++    ///
++    /// Returns deterministic blocking diagnostics and no document when the
++    /// final working copy is invalid.
++    pub fn commit(self) -> Result<TimelineTransactionCommit, TimelineCommitError> {
++        let diagnostics = self.working.validate();
++        if diagnostics.iter().any(Diagnostic::is_blocking) {
++            return Err(TimelineCommitError { diagnostics });
++        }
++        Ok(TimelineTransactionCommit {
++            document: self.working,
++            changes: self.changes,
++            diagnostics,
++        })
++    }
++}
++
++/// Successful transaction output consumed by preview/apply services.
