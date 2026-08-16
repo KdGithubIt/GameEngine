@@ -1,0 +1,116 @@
+-        // Age and integrate existing particles, dropping expired ones.
+-        let gravity = self.gravity;
+-        for particle in &mut self.particles {
+-            particle.age += dt;
+-            particle.velocity += gravity * dt;
+-            let velocity = particle.velocity;
+-            particle.position += velocity * dt;
++    /// Compiles the convenience API into the backend-neutral ADR 0125 IR.
++    ///
++    /// Stable source/module IDs intentionally do not change as public fields
++    /// are edited. This lets [`VfxInstance::reconfigure`] preserve the live pool
++    /// and keeps shape random channels deterministic across property updates.
++    fn compiled_effect(&self) -> CompiledVfxEffect {
++        let max_particles = u32::try_from(self.max_particles).unwrap_or(u32::MAX);
++        let spawn_operations = vec![
++            compiled_operation(
++                1,
++                VfxModuleOperation::SpawnRate {
++                    particles_per_second: self.spawn_rate,
++                },
++            ),
++            compiled_operation(
++                2,
++                VfxModuleOperation::Shape {
++                    shape: VfxShape::Cone {
++                        direction: self.direction.to_array(),
++                        angle_radians: self.spread,
++                        radius: 0.0,
++                    },
++                },
++            ),
++            compiled_operation(
++                3,
++                VfxModuleOperation::Lifetime {
++                    value: VfxScalarValue::Range {
++                        min: self.lifetime.0,
++                        max: self.lifetime.1,
++                        channel: VfxRandomChannel::new(0),
++                    },
++                },
++            ),
++            compiled_operation(
++                4,
++                VfxModuleOperation::InitialSpeed {
++                    value: VfxScalarValue::Range {
++                        min: self.initial_speed.0,
++                        max: self.initial_speed.1,
++                        channel: VfxRandomChannel::new(1),
++                    },
++                },
++            ),
++            compiled_operation(
++                5,
++                VfxModuleOperation::InitialColor {
++                    color: self.start_color,
++                },
++            ),
++            compiled_operation(
++                6,
++                VfxModuleOperation::InitialSize {
++                    value: VfxScalarValue::Constant { value: 1.0 },
++                },
++            ),
++        ];
++        let update_operations = vec![
++            compiled_operation(
++                7,
++                VfxModuleOperation::Force {
++                    acceleration: self.gravity.to_array(),
++                },
++            ),
++            compiled_operation(
++                8,
++                VfxModuleOperation::ColorOverLife {
++                    gradient: simple_color_gradient(self.start_color, self.end_color),
++                },
++            ),
++            compiled_operation(
++                9,
++                VfxModuleOperation::SizeOverLife {
++                    curve: simple_size_curve(self.start_size, self.end_size),
++                },
++            ),
++        ];
++
++        CompiledVfxEffect {
++            source_schema_version: VFX_SCHEMA_VERSION,
++            seed: self.seed,
++            max_particles,
++            emitters: vec![CompiledVfxEmitter {
++                source: simple_emitter_id(),
++                name: "ParticleEmitter".to_owned(),
++                max_particles,
++                attribute_layout: VfxAttributeLayout {
++                    velocity: true,
++                    color: true,
++                    size: true,
++                    rotation: false,
++                },
++                spawn_operations,
++                update_operations,
++                // The legacy convenience API keeps its mesh Handle in the
++                // render adapter; only simulation semantics are compiled here.
++                render_operations: Vec::new(),
++                estimated_capacity: max_particles,
++            }],
++            capabilities: VfxCapabilityRequirements::default(),
+         }
+-        self.particles
+-            .retain(|particle| particle.age < particle.lifetime);
++    }
+ 
+-        if self.spawn_rate <= 0.0 {
+-            self.spawn_accumulator = 0.0;
+-            return;
++    /// Advances the pool by `dt` seconds, spawning from `origin`.
