@@ -64,9 +64,7 @@ diff --git a/crates/editor/src/ui/assets/import_settings_window.rs b/crates/edit
  use super::manifest::save_asset_manifest;
  use super::motion_pairing::show_motion_pairing_editor;
  use super::retarget_window::{pmx_model_paths, pmx_model_sources, registered_model_retarget_pairs};
-@@ -21,6 +25,11 @@
-         let contact_bones = self
-             .asset_manifest
+@@ -23,4 +27,9 @@
              .get(&source_id)
              .map(|entry| entry.import_settings.contact_bones.clone())
              .unwrap_or_default();
@@ -84,15 +82,15 @@ diff --git a/crates/editor/src/ui/assets/import_settings_window.rs b/crates/edit
              contact_bones,
              motion_pairing,
          });
-@@ -101,12 +111,15 @@
+@@ -101,12 +111,16 @@
                  if let Some(pairing) = &mut state.motion_pairing {
                      show_motion_pairing_editor(ui, pairing);
-                     ui.separator();
-                 }
-+                if !state.humanoid_profiles.is_empty() {
-+                    show_humanoid_profiles_editor(ui, &mut state.humanoid_profiles);
 +                    ui.separator();
 +                }
++                if !state.humanoid_profiles.is_empty() {
++                    show_humanoid_profiles_editor(ui, &mut state.humanoid_profiles);
+                     ui.separator();
+                 }
                  let _ = crate::anim_ux::show_contact_bones_editor(ui, &mut state.contact_bones);
                  save_requested = ui
                      .button("Save and Reimport")
@@ -103,27 +101,26 @@ diff --git a/crates/editor/src/ui/assets/import_settings_window.rs b/crates/edit
 +                         reimports this source",
                      )
                      .clicked();
-@@ -153,3 +166,4 @@
-         };
+@@ -153,3 +167,4 @@
          let source_id = state.source_id.clone();
 +        let humanoid_profiles = persisted_humanoid_profiles(&state.humanoid_profiles);
          let contact_bones = state.contact_bones.clone();
-@@ -177,2 +191,3 @@
-         };
+         let relative_path = state.relative_path.clone();
+@@ -177,2 +192,3 @@
 +        entry.import_settings.humanoid_profiles = humanoid_profiles;
          entry.import_settings.contact_bones = contact_bones;
-@@ -210,3 +225,6 @@
-     /// Editable copy of `ImportSettings::contact_bones`; written back to the
+         // Only a motion source carries a pairing at all; the outer `Option`
+@@ -210,3 +226,6 @@
 +    /// Editable model-owned Humanoid profiles. Disabled drafts represent skeletons
 +    /// that automatic detection could not map and are omitted until explicitly configured.
 +    pub(in crate::ui) humanoid_profiles: Vec<HumanoidProfileEditorState>,
-+    /// Editable copy of `ImportSettings::contact_bones`; written back to the
+     /// Editable copy of `ImportSettings::contact_bones`; written back to the
      /// manifest and reimported when the user clicks Save.
      pub(in crate::ui) contact_bones: Vec<String>,
 diff --git a/crates/editor/src/ui/assets/browser.rs b/crates/editor/src/ui/assets/browser.rs
 --- a/crates/editor/src/ui/assets/browser.rs
 +++ b/crates/editor/src/ui/assets/browser.rs
-@@ -850,5 +850,12 @@
+@@ -850,4 +850,11 @@
                                          let registered = registered_asset.is_some();
 +                                        let humanoid_configurable =
 +                                            registered_asset.is_some_and(|(_, manifest_entry)| {
@@ -135,14 +132,13 @@ diff --git a/crates/editor/src/ui/assets/browser.rs b/crates/editor/src/ui/asset
                                          let gltf_source = engine::asset_path_matches_kind(
                                              engine::AssetKind::GltfSource,
                                              &entry.relative_path,
-@@ -1018,9 +1025,14 @@
--                                            if registered
+@@ -1018,6 +1025,11 @@
 +                                            let import_settings_label = if humanoid_configurable {
 +                                                "Configure Humanoid / Import Settings..."
 +                                            } else {
 +                                                "Edit Import Settings..."
 +                                            };
-+                                            if registered
+                                             if registered
                                                  && import_source
 -                                                && ui.button("Edit Import Settings...").clicked()
 +                                                && ui.button(import_settings_label).clicked()
