@@ -14,5 +14,9 @@ pub const MAX_RENDER_INSTANCES: usize = 100_000;
 pub const MATERIAL_TEXTURE_SLOTS: usize = 3;
 /// The renderer mirrors only one directional light resource.
 pub const MAX_DIRECTIONAL_LIGHTS: usize = 1;
+/// Maximum point lights evaluated by the forward StandardLit pass.
+pub const MAX_POINT_LIGHTS: usize = 16;
+/// Maximum spot lights evaluated by the forward StandardLit pass.
+pub const MAX_SPOT_LIGHTS: usize = 8;
 /// The renderer mirrors only one ambient light resource.
 pub const MAX_AMBIENT_LIGHTS: usize = 1;

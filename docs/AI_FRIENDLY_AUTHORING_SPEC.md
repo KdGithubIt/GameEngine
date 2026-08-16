@@ -384,6 +384,13 @@ A component type ID:
 A `ComponentTypeId` identifies the component type. It is not an identifier
 for a specific component instance on an entity.
 
+Engine-owned render-light component IDs are stable authoring contracts.
+`engine.directional_light` and `engine.ambient_light` preserve their existing
+global-light semantics. `engine.point_light` and `engine.spot_light` are
+finite-range local lights whose runtime position comes from the owning entity's
+transform; spot-light orientation is the transformed local `-Z` axis. Their
+renderer budgets and shading semantics are defined by ADR 0123.
+
 Project Rust component identity is stored in a JSON sidecar beside its source:
 `player.rs.meta.json` for `player.rs`. Sidecar schema version 1 contains only
 `schema_version` and `component_id` and MUST NOT contain an absolute path. The

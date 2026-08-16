@@ -4,10 +4,23 @@ struct CameraUniform {
     view_proj: mat4x4<f32>, world_position: vec3<f32>, _pad: f32,
     view: mat4x4<f32>,
 }
+struct PointLightData {
+    position_range: vec4<f32>,
+    color_intensity: vec4<f32>,
+}
+struct SpotLightData {
+    position_range: vec4<f32>,
+    direction_outer: vec4<f32>,
+    color_intensity: vec4<f32>,
+    params: vec4<f32>, // x=cos(inner angle)
+}
 struct LightUniform {
     ambient_color: vec3<f32>, ambient_intensity: f32,
     dir_direction: vec3<f32>, dir_intensity: f32,
     dir_color: vec3<f32>, _pad: f32,
+    counts: vec4<u32>, // x=point count, y=spot count
+    point_lights: array<PointLightData, 16>,
+    spot_lights: array<SpotLightData, 8>,
 }
 struct ShadowUniform {
     light_view_proj_0: mat4x4<f32>, light_view_proj_1: mat4x4<f32>, params: vec4<f32>,
@@ -161,9 +174,19 @@ fn fresnel_schlick_roughness(cos_theta: f32, f0: vec3<f32>, roughness: f32) -> v
     return f0 + (grazing - f0) * pow(1.0 - cos_theta, 5.0);
 }
 
-fn standard_lit(base: vec3<f32>, n: vec3<f32>, l: vec3<f32>, v: vec3<f32>, surface: vec4<f32>, visibility: f32, occlusion: f32) -> vec3<f32> {
+fn standard_direct(
+    base: vec3<f32>,
+    n: vec3<f32>,
+    l: vec3<f32>,
+    v: vec3<f32>,
+    surface: vec4<f32>,
+    radiance: vec3<f32>,
+    visibility: f32,
+) -> vec3<f32> {
+    let ndl = max(dot(n, l), 0.0);
+    if (ndl <= 0.0) { return vec3<f32>(0.0); }
     let h = normalize(l + v);
-    let ndl = max(dot(n, l), 0.0); let ndv = max(dot(n, v), 0.0001);
+    let ndv = max(dot(n, v), 0.0001);
     let ndh = max(dot(n, h), 0.0); let vdh = max(dot(v, h), 0.0);
     let roughness = clamp(surface.x, 0.04, 1.0); let metallic = clamp(surface.y, 0.0, 1.0);
     let alpha = roughness * roughness; let alpha2 = alpha * alpha;
@@ -175,8 +198,58 @@ fn standard_lit(base: vec3<f32>, n: vec3<f32>, l: vec3<f32>, v: vec3<f32>, surfa
     let fresnel = f0 + (vec3<f32>(1.0) - f0) * pow(1.0 - vdh, 5.0);
     let specular = distribution * geometry * fresnel / max(4.0 * ndv * ndl, 0.0001);
     let diffuse_weight = (vec3<f32>(1.0) - fresnel) * (1.0 - metallic);
-    let direct = (diffuse_weight * base / 3.14159265 + specular)
-        * light.dir_color * light.dir_intensity * visibility * ndl;
+    return (diffuse_weight * base / 3.14159265 + specular) * radiance * visibility * ndl;
+}
+
+fn local_light_attenuation(distance: f32, range: f32) -> f32 {
+    if (distance >= range || range <= 0.0) { return 0.0; }
+    let normalized = distance / range;
+    let cutoff = max(1.0 - normalized * normalized * normalized * normalized, 0.0);
+    return cutoff * cutoff / max(distance * distance, 0.01);
+}
+
+fn standard_lit(
+    base: vec3<f32>,
+    n: vec3<f32>,
+    l: vec3<f32>,
+    v: vec3<f32>,
+    world_position: vec3<f32>,
+    surface: vec4<f32>,
+    visibility: f32,
+    occlusion: f32,
+) -> vec3<f32> {
+    var direct = standard_direct(
+        base, n, l, v, surface, light.dir_color * light.dir_intensity, visibility,
+    );
+
+    for (var i: u32 = 0u; i < light.counts.x; i = i + 1u) {
+        let point = light.point_lights[i];
+        let to_light = point.position_range.xyz - world_position;
+        let distance = length(to_light);
+        if (distance > 0.0001) {
+            let attenuation = local_light_attenuation(distance, point.position_range.w);
+            let radiance = point.color_intensity.rgb * point.color_intensity.w * attenuation;
+            direct += standard_direct(base, n, to_light / distance, v, surface, radiance, 1.0);
+        }
+    }
+
+    for (var i: u32 = 0u; i < light.counts.y; i = i + 1u) {
+        let spot = light.spot_lights[i];
+        let to_light = spot.position_range.xyz - world_position;
+        let distance = length(to_light);
+        if (distance > 0.0001) {
+            let l_local = to_light / distance;
+            let cone_cosine = dot(normalize(spot.direction_outer.xyz), -l_local);
+            let cone = smoothstep(spot.direction_outer.w, spot.params.x, cone_cosine);
+            let attenuation = local_light_attenuation(distance, spot.position_range.w) * cone;
+            let radiance = spot.color_intensity.rgb * spot.color_intensity.w * attenuation;
+            direct += standard_direct(base, n, l_local, v, surface, radiance, 1.0);
+        }
+    }
+
+    let ndv = max(dot(n, v), 0.0001);
+    let roughness = clamp(surface.x, 0.04, 1.0); let metallic = clamp(surface.y, 0.0, 1.0);
+    let f0 = mix(vec3<f32>(0.04), base, vec3<f32>(metallic));
 
     var indirect_diffuse = light.ambient_color * light.ambient_intensity * base * (1.0 - metallic);
     if (environment.params.x > 0.5) {
@@ -264,7 +337,16 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let model = input.emissive_and_model.w;
     var shaded = base_color.rgb;
     if (model < 0.5) {
-        shaded = standard_lit(base_color.rgb, n, l, v, pbr_surface, visibility, occlusion);
+        shaded = standard_lit(
+            base_color.rgb,
+            n,
+            l,
+            v,
+            input.world_position,
+            pbr_surface,
+            visibility,
+            occlusion,
+        );
     } else if (model < 1.5) {
         shaded = toon_lit(base_color.rgb, n, l, v, input.additional_uv, visibility);
     }

@@ -6,13 +6,14 @@
 
 use crate::scene_bridge::{
     AMBIENT_LIGHT_COMPONENT, DIRECTIONAL_LIGHT_COMPONENT, LOD_GROUP_COMPONENT,
-    PARTICLE_EMITTER_COMPONENT, SKINNED_MESH_RENDERER_COMPONENT, STATIC_MESH_RENDERER_COMPONENT,
+    PARTICLE_EMITTER_COMPONENT, POINT_LIGHT_COMPONENT, SKINNED_MESH_RENDERER_COMPONENT,
+    SPOT_LIGHT_COMPONENT, STATIC_MESH_RENDERER_COMPONENT,
 };
 use engine_authoring::{AuthoringScene, ComponentTypeId, Diagnostic, DiagnosticTarget, Value};
 
 pub use engine_render_runtime::render_limits::{
-    MATERIAL_TEXTURE_SLOTS, MAX_AMBIENT_LIGHTS, MAX_DIRECTIONAL_LIGHTS,
-    MAX_PARTICLES_PER_EMITTER, MAX_RENDER_INSTANCES, MAX_TEXTURE_DIMENSION,
+    MATERIAL_TEXTURE_SLOTS, MAX_AMBIENT_LIGHTS, MAX_DIRECTIONAL_LIGHTS, MAX_PARTICLES_PER_EMITTER,
+    MAX_POINT_LIGHTS, MAX_RENDER_INSTANCES, MAX_SPOT_LIGHTS, MAX_TEXTURE_DIMENSION,
 };
 
 /// Reports deterministic scene budgets before runtime/GPU preparation.
@@ -22,10 +23,14 @@ pub fn validate_scene_render_limits(scene: &AuthoringScene) -> Vec<Diagnostic> {
     let skinned_renderer = ComponentTypeId::new(SKINNED_MESH_RENDERER_COMPONENT);
     let particles = ComponentTypeId::new(PARTICLE_EMITTER_COMPONENT);
     let directional = ComponentTypeId::new(DIRECTIONAL_LIGHT_COMPONENT);
+    let point = ComponentTypeId::new(POINT_LIGHT_COMPONENT);
+    let spot = ComponentTypeId::new(SPOT_LIGHT_COMPONENT);
     let ambient = ComponentTypeId::new(AMBIENT_LIGHT_COMPONENT);
     let mut diagnostics = Vec::new();
     let mut worst_case_instances = 0_usize;
     let mut directional_count = 0_usize;
+    let mut point_count = 0_usize;
+    let mut spot_count = 0_usize;
     let mut ambient_count = 0_usize;
 
     for (entity_id, entity) in scene.entities() {
@@ -36,6 +41,8 @@ pub fn validate_scene_render_limits(scene: &AuthoringScene) -> Vec<Diagnostic> {
             worst_case_instances = worst_case_instances.saturating_add(1);
         }
         directional_count += usize::from(entity.components.contains_key(&directional));
+        point_count += usize::from(entity.components.contains_key(&point));
+        spot_count += usize::from(entity.components.contains_key(&spot));
         ambient_count += usize::from(entity.components.contains_key(&ambient));
 
         let Some(Value::Object(fields)) = entity.components.get(&particles) else {
@@ -73,6 +80,18 @@ pub fn validate_scene_render_limits(scene: &AuthoringScene) -> Vec<Diagnostic> {
         directional_count,
         MAX_DIRECTIONAL_LIGHTS,
         "directional",
+        &mut diagnostics,
+    );
+    push_light_limit(
+        point_count,
+        MAX_POINT_LIGHTS,
+        "point",
+        &mut diagnostics,
+    );
+    push_light_limit(
+        spot_count,
+        MAX_SPOT_LIGHTS,
+        "spot",
         &mut diagnostics,
     );
     push_light_limit(

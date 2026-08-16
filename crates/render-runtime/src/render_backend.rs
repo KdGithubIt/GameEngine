@@ -5,7 +5,7 @@ use std::sync::{Arc, Weak};
 use crate::camera::{select_active_game_camera, Camera3D, ViewportSize};
 use crate::debug_draw::{DebugLine, DebugLines};
 use crate::environment::EnvironmentGpuState;
-use crate::light::{AmbientLight, DirectionalLight, SkySettings};
+use crate::light::{AmbientLight, DirectionalLight, PointLight, SkySettings, SpotLight};
 use crate::lod::InstanceStats;
 use crate::material::{
     AlphaMode, CullMode, Material, MaterialSlots, ShadingModel, SphereBlendMode,
@@ -16,6 +16,7 @@ use crate::mesh::{
     GpuMesh, GpuMeshCache, InstanceData, Mesh, MeshValidationError, TangentVertexData, Vertex,
 };
 use crate::postprocess::{PostProcessSettings, ToneMapOperator};
+use crate::render_limits::{MAX_POINT_LIGHTS, MAX_SPOT_LIGHTS};
 use crate::shadow::{
     cascade_view_projections, EnvironmentLighting, ShadowSettings, SHADOW_CASCADE_COUNT,
 };
@@ -110,10 +111,91 @@ impl ShadowUniform {
     }
 }
 
-// Must match the LightUniform struct in mesh.wgsl — 48 bytes, stride 16.
-// ambient_color[0-11], ambient_intensity[12-15],
-// dir_direction[16-27], dir_intensity[28-31],
-// dir_color[32-43], _padding[44-47]
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, Pod, Zeroable)]
+struct PointLightUniform {
+    position_range: [f32; 4],
+    color_intensity: [f32; 4],
+}
+
+impl PointLightUniform {
+    fn from_component(light: &PointLight, transform: &GlobalTransform) -> Option<Self> {
+        let position = transform.0.w_axis.truncate();
+        if !position.is_finite()
+            || !light.color.is_finite()
+            || light.color.min_element() < 0.0
+            || !light.intensity.is_finite()
+            || light.intensity < 0.0
+            || !light.range.is_finite()
+            || light.range <= 0.0
+        {
+            return None;
+        }
+        Some(Self {
+            position_range: [position.x, position.y, position.z, light.range],
+            color_intensity: [
+                light.color.x,
+                light.color.y,
+                light.color.z,
+                light.intensity,
+            ],
+        })
+    }
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, Pod, Zeroable)]
+struct SpotLightUniform {
+    position_range: [f32; 4],
+    direction_outer: [f32; 4],
+    color_intensity: [f32; 4],
+    params: [f32; 4],
+}
+
+impl SpotLightUniform {
+    fn from_component(light: &SpotLight, transform: &GlobalTransform) -> Option<Self> {
+        let matrix = transform.0;
+        let position = matrix.w_axis.truncate();
+        let direction = matrix
+            .transform_vector3(glam::Vec3::NEG_Z)
+            .normalize_or_zero();
+        if !position.is_finite()
+            || direction == glam::Vec3::ZERO
+            || !light.color.is_finite()
+            || light.color.min_element() < 0.0
+            || !light.intensity.is_finite()
+            || light.intensity < 0.0
+            || !light.range.is_finite()
+            || light.range <= 0.0
+            || !light.inner_angle_radians.is_finite()
+            || !light.outer_angle_radians.is_finite()
+            || light.inner_angle_radians < 0.0
+            || light.inner_angle_radians >= light.outer_angle_radians
+            || light.outer_angle_radians >= std::f32::consts::FRAC_PI_2
+        {
+            return None;
+        }
+        Some(Self {
+            position_range: [position.x, position.y, position.z, light.range],
+            direction_outer: [
+                direction.x,
+                direction.y,
+                direction.z,
+                light.outer_angle_radians.cos(),
+            ],
+            color_intensity: [
+                light.color.x,
+                light.color.y,
+                light.color.z,
+                light.intensity,
+            ],
+            params: [light.inner_angle_radians.cos(), 0.0, 0.0, 0.0],
+        })
+    }
+}
+
+// Must match the LightUniform struct in mesh.wgsl. Every local-light record is
+// vec4-packed so the Rust/WGSL uniform layouts have identical 16-byte strides.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 struct LightUniform {
@@ -123,11 +205,25 @@ struct LightUniform {
     dir_intensity: f32,
     dir_color: [f32; 3],
     _padding: f32,
+    counts: [u32; 4],
+    point_lights: [PointLightUniform; MAX_POINT_LIGHTS],
+    spot_lights: [SpotLightUniform; MAX_SPOT_LIGHTS],
 }
 
 impl LightUniform {
-    fn from_resources(ambient: &AmbientLight, directional: &DirectionalLight) -> Self {
+    fn from_resources(
+        ambient: &AmbientLight,
+        directional: &DirectionalLight,
+        point_lights: &[PointLightUniform],
+        spot_lights: &[SpotLightUniform],
+    ) -> Self {
         let dir = directional.direction.normalize_or_zero();
+        let mut points = [PointLightUniform::default(); MAX_POINT_LIGHTS];
+        let point_count = point_lights.len().min(MAX_POINT_LIGHTS);
+        points[..point_count].copy_from_slice(&point_lights[..point_count]);
+        let mut spots = [SpotLightUniform::default(); MAX_SPOT_LIGHTS];
+        let spot_count = spot_lights.len().min(MAX_SPOT_LIGHTS);
+        spots[..spot_count].copy_from_slice(&spot_lights[..spot_count]);
         Self {
             ambient_color: ambient.color.to_array(),
             ambient_intensity: ambient.intensity,
@@ -135,6 +231,9 @@ impl LightUniform {
             dir_intensity: directional.intensity,
             dir_color: directional.color.to_array(),
             _padding: 0.0,
+            counts: [point_count as u32, spot_count as u32, 0, 0],
+            point_lights: points,
+            spot_lights: spots,
         }
     }
 }
@@ -968,6 +1067,40 @@ impl WorldRenderer {
         })
     }
 
+    fn collect_point_lights(world: &mut engine_ecs::World) -> Vec<PointLightUniform> {
+        let query = engine_ecs::Query::<(&PointLight, &GlobalTransform)>::new(world);
+        let mut lights = query
+            .iter()
+            .filter_map(|(entity, (light, transform))| {
+                PointLightUniform::from_component(light, transform)
+                    .map(|uniform| (entity.id(), entity.generation(), uniform))
+            })
+            .collect::<Vec<_>>();
+        lights.sort_by_key(|(id, generation, _)| (*id, *generation));
+        lights
+            .into_iter()
+            .take(MAX_POINT_LIGHTS)
+            .map(|(_, _, uniform)| uniform)
+            .collect()
+    }
+
+    fn collect_spot_lights(world: &mut engine_ecs::World) -> Vec<SpotLightUniform> {
+        let query = engine_ecs::Query::<(&SpotLight, &GlobalTransform)>::new(world);
+        let mut lights = query
+            .iter()
+            .filter_map(|(entity, (light, transform))| {
+                SpotLightUniform::from_component(light, transform)
+                    .map(|uniform| (entity.id(), entity.generation(), uniform))
+            })
+            .collect::<Vec<_>>();
+        lights.sort_by_key(|(id, generation, _)| (*id, *generation));
+        lights
+            .into_iter()
+            .take(MAX_SPOT_LIGHTS)
+            .map(|(_, _, uniform)| uniform)
+            .collect()
+    }
+
     /// Validates the caller-owned resolve/depth pair and (re)allocates the
     /// transient multisampled color attachment when the viewport size changes.
     fn ensure_main_pass_target(
@@ -1143,7 +1276,10 @@ impl WorldRenderer {
             .get_resource::<DirectionalLight>()
             .cloned()
             .unwrap_or_default();
-        self.render.update_light(queue, &ambient, &directional);
+        let point_lights = Self::collect_point_lights(world);
+        let spot_lights = Self::collect_spot_lights(world);
+        self.render
+            .update_light(queue, &ambient, &directional, &point_lights, &spot_lights);
 
         let shadow_settings = world
             .get_resource::<ShadowSettings>()
@@ -2575,8 +2711,12 @@ impl RenderState {
         );
         let environment = EnvironmentGpuState::new(device, queue);
 
-        let default_light =
-            LightUniform::from_resources(&AmbientLight::default(), &DirectionalLight::default());
+        let default_light = LightUniform::from_resources(
+            &AmbientLight::default(),
+            &DirectionalLight::default(),
+            &[],
+            &[],
+        );
         let light_buffer =
             Self::make_uniform_buffer(device, bytemuck::bytes_of(&default_light), "Light");
 
@@ -3357,8 +3497,11 @@ impl RenderState {
         queue: &wgpu::Queue,
         ambient: &AmbientLight,
         directional: &DirectionalLight,
+        point_lights: &[PointLightUniform],
+        spot_lights: &[SpotLightUniform],
     ) {
-        let uniform = LightUniform::from_resources(ambient, directional);
+        let uniform =
+            LightUniform::from_resources(ambient, directional, point_lights, spot_lights);
         queue.write_buffer(&self.light_buffer, 0, bytemuck::bytes_of(&uniform));
     }
 
@@ -4060,6 +4203,22 @@ mod tests {
     }
 
     #[test]
+    fn local_light_uniforms_follow_global_transform_contract() {
+        let transform = GlobalTransform(glam::Mat4::from_translation(glam::Vec3::new(
+            1.0, 2.0, 3.0,
+        )));
+        let point = PointLightUniform::from_component(&PointLight::default(), &transform)
+            .expect("default point light must upload");
+        assert_eq!(point.position_range[..3], [1.0, 2.0, 3.0]);
+
+        let spot = SpotLightUniform::from_component(&SpotLight::default(), &transform)
+            .expect("default spot light must upload");
+        assert_eq!(spot.position_range[..3], [1.0, 2.0, 3.0]);
+        assert_eq!(&spot.direction_outer[..3], &[0.0, 0.0, -1.0]);
+        assert!(spot.direction_outer[3] < spot.params[0]);
+    }
+
+    #[test]
     fn material_shader_pipeline_matrix_validates_when_a_gpu_adapter_is_available() {
         let instance = wgpu::Instance::default();
         let context = match pollster::block_on(engine_renderer::GpuContext::new(&instance, None)) {
@@ -4226,6 +4385,179 @@ mod tests {
             }
         }
         peak
+    }
+
+    #[test]
+    fn fixed_camera_reference_scene_receives_point_and_spot_direct_lighting() {
+        const WIDTH: u32 = 64;
+        const HEIGHT: u32 = 64;
+        const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
+
+        let instance = wgpu::Instance::default();
+        let context = match pollster::block_on(engine_renderer::GpuContext::new(&instance, None)) {
+            Ok(context) => context,
+            Err(engine_renderer::GpuContextError::AdapterUnavailable) => return,
+            Err(error) => panic!("GPU device creation failed: {error}"),
+        };
+        let device = context.device();
+        let queue = context.queue();
+        let mut renderer = pollster::block_on(WorldRenderer::new(device, queue, FORMAT))
+            .expect("local-light reference renderer pipelines must validate");
+
+        let color_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Point/spot reference color"),
+            size: wgpu::Extent3d {
+                width: WIDTH,
+                height: HEIGHT,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let color_view = color_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let depth_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Point/spot reference depth"),
+            size: wgpu::Extent3d {
+                width: WIDTH,
+                height: HEIGHT,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: MAIN_PASS_SAMPLE_COUNT,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Depth32Float,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let depth_view = depth_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        let mut world = engine_ecs::World::new();
+        world.insert_resource(AmbientLight {
+            color: glam::Vec3::ZERO,
+            intensity: 0.0,
+        });
+        world.insert_resource(DirectionalLight {
+            direction: glam::Vec3::NEG_Z,
+            color: glam::Vec3::ONE,
+            intensity: 0.0,
+        });
+        world.insert_resource(EnvironmentLighting {
+            intensity: 0.0,
+            diffuse_ibl_enabled: false,
+            ..EnvironmentLighting::default()
+        });
+        world.insert_resource(ShadowSettings {
+            enabled: false,
+            ..ShadowSettings::default()
+        });
+        world.insert_resource(SkySettings {
+            enabled: false,
+            ..SkySettings::default()
+        });
+
+        let reference_material = || Material {
+            color: [0.8, 0.8, 0.8, 1.0],
+            roughness: 0.8,
+            metallic: 0.0,
+            cull_mode: CullMode::None,
+            cast_shadow: false,
+            receive_shadow: false,
+            ..Material::default()
+        };
+        for x in [-0.7_f32, 0.7] {
+            let surface = world.spawn().expect("reference surface must spawn");
+            world
+                .add_component(surface, reference_quad())
+                .expect("reference mesh must insert");
+            world
+                .add_component(
+                    surface,
+                    GlobalTransform(glam::Mat4::from_translation(glam::Vec3::new(
+                        x, 0.0, 0.0,
+                    ))),
+                )
+                .expect("reference transform must insert");
+            world
+                .add_component(surface, reference_material())
+                .expect("reference material must insert");
+        }
+
+        let point = world.spawn().expect("point light must spawn");
+        world
+            .add_component(
+                point,
+                PointLight {
+                    color: glam::Vec3::ONE,
+                    intensity: 40.0,
+                    range: 1.25,
+                },
+            )
+            .expect("point light must insert");
+        world
+            .add_component(
+                point,
+                GlobalTransform(glam::Mat4::from_translation(glam::Vec3::new(
+                    -0.7, 0.0, 1.0,
+                ))),
+            )
+            .expect("point transform must insert");
+
+        let spot = world.spawn().expect("spot light must spawn");
+        world
+            .add_component(
+                spot,
+                SpotLight {
+                    color: glam::Vec3::ONE,
+                    intensity: 40.0,
+                    range: 1.25,
+                    inner_angle_radians: 20.0_f32.to_radians(),
+                    outer_angle_radians: 30.0_f32.to_radians(),
+                },
+            )
+            .expect("spot light must insert");
+        world
+            .add_component(
+                spot,
+                GlobalTransform(glam::Mat4::from_translation(glam::Vec3::new(
+                    0.7, 0.0, 1.0,
+                ))),
+            )
+            .expect("spot transform must insert");
+
+        let camera = Camera3D::new(60.0, 1.0, 0.1, 10.0);
+        let camera_transform = crate::transform::Transform::looking_at(
+            glam::Vec3::new(0.0, 0.0, 3.0),
+            glam::Vec3::ZERO,
+            glam::Vec3::Y,
+        );
+        renderer
+            .render_to_view_with_camera(
+                &mut world,
+                &camera,
+                &camera_transform,
+                device,
+                queue,
+                &color_view,
+                &depth_view,
+            )
+            .expect("point/spot reference scene must render");
+
+        let rgba8 = readback_rgba8(device, queue, &color_texture, WIDTH, HEIGHT);
+        let background = rgb_sum_at(&rgba8, WIDTH, 0, 0);
+        let point_peak = peak_rgb_sum(&rgba8, WIDTH, HEIGHT, 0, WIDTH / 2);
+        let spot_peak = peak_rgb_sum(&rgba8, WIDTH, HEIGHT, WIDTH / 2, WIDTH);
+        assert!(
+            point_peak > background + 100,
+            "point light must illuminate its local StandardLit surface: background={background}, point={point_peak}"
+        );
+        assert!(
+            spot_peak > background + 100,
+            "spot light must illuminate the surface inside its cone: background={background}, spot={spot_peak}"
+        );
     }
 
     #[test]
