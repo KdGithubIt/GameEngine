@@ -56,9 +56,12 @@ mod documents;
 mod game_tools;
 mod hierarchy;
 mod inspector;
+mod mcp;
 mod play;
 mod presentation;
 mod viewport;
+
+pub use mcp::EditorMcpCallFailure;
 
 const SCENE_FILESYSTEM_VALIDATION_DEBOUNCE: std::time::Duration =
     std::time::Duration::from_millis(200);
