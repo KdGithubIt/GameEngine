@@ -1,0 +1,130 @@
+rom the same project.
++
++A Rust-only example does not prove native 2D authoring usability.
++
++### 15. Implementation proceeds in playable dependency-safe slices
++
++1. **Shared contracts:** project 2D settings/sorting layers, Sprite Atlas/
++   SpriteRef, SpriteRenderer2D, Camera2D, generalized camera arbitration.
++2. **Basic sprite workflow:** GPU batching, import/slicing, 2D Scene View,
++   pivot/sorting tools, drag/drop, minimal editor-playable sprite project.
++3. **Physics:** 2D contracts/backend, bodies/colliders/queries/events/joints,
++   controller/one-way platform, debug gizmos, gameplay commands/views.
++4. **Animation:** Sprite Animation service/player, SpriteAnimator2D, events,
++   preview and gameplay control.
++5. **Tiles:** Tile Set/Map documents, chunk renderer/collision extraction,
++   paint/palette/layer/collider tools with gesture-level undo.
++6. **Production polish:** proving template/level, performance verification,
++   then optional Light2D/parallax/VFX/Timeline integration.
++
++Each slice introduces persisted/public contracts only together with the owner
++and runtime path needed to make them meaningful.
++
++## Verification
++
++The accepted implementation must prove at least:
++
++- 2D and 3D share one Transform/Hierarchy authority;
++- SpriteId survives rename/reorder/repack and SpriteRef retains logical identity;
++- sprite ordering is deterministic without Z-position edits and batching does
++  not change that order;
++- Camera2D projection/pixel policy is deterministic, with visual warning for an
++  intentionally incompatible pixel-perfect fixture;
++- Camera2D and Camera3D share one deterministic active-camera rule;
++- entities sharing one Sprite Animation asset keep independent playback state;
++- 2D bodies never interact with the 3D world implicitly;
++- non-planar 2D-physics hierarchy state produces a structured diagnostic;
++- one-way platform approach/pass/drop-through follows one documented policy;
++- 2D queries/events preserve shared collision-layer and fixed-step semantics;
++- one Tile Map stroke is one undo entry and cancel restores exact prior cells;
++- a changed Tile Map chunk does not rebuild unrelated chunks;
++- TileId remains stable across tile rename/palette reorder;
++- Editor/CLI/MCP produce equivalent persisted validation/results;
++- Editor preview, Play, and packaged Player resolve the same authored 2D data;
++- the first-party 2D proving project opens, plays, and packages through the
++  normal authoring-first path; and
++- heavy 2D solver/GPU dependencies do not leak into ADR 0114 contract-only
++  dependency graphs.
++
++Sprite rendering, Camera2D pixel framing, 2D Scene View, pivots, Tile Map tools,
++physics gizmos, sprite animation preview, and the proving project require Visual
++Validation when implemented. ChatGPT must inspect the screenshots themselves.
++
++Performance verification records sprite count/draw batches, Tile Map visible
++chunk/rebuild counts, large-map edit latency, and representative 2D physics step
++cost. Editor interaction must remain responsive while derived work is pending.
++
++## Consequences
++
++GameEngine gains a native production path for platformers, top-down action,
++puzzle, pixel-art, tile-based RPG, and similar 2D games while preserving the
++same project, scene, prefab, input, UI, audio, save, scripting, and packaging
++foundations as 3D projects.
++
++The design adds several explicit data/component contracts because 2D has real
++semantics a generic MeshRenderer/3D collider workflow cannot express cleanly.
++Those contracts remain in the existing domain owners rather than creating a
++second monolithic engine.
++
++Stable SpriteId/TileId/sorting identity and the shared Transform hierarchy make
++future lighting, parallax, streaming Tile Maps, VFX, and Timeline integration
++additive instead of replacement work.
++
++## Alternatives Considered
++
++### Treat 2D as textured MeshRenderer quads
++
++Rejected. It does not provide sprite identity/pivots, batching/order semantics,
++pixel-aware cameras, Tile Map authoring, or a practical 2D Editor workflow.
++
++### Add one `engine-2d` crate containing every 2D feature
++
++Rejected. Rendering, physics, animation, assets, and scene conversion have
++separate existing owners; a mega-crate would recreate the dependency problem
++ADR 0113 removed.
++
++### Add a separate Transform2D hierarchy
++
++Rejected. Scenes/prefabs would have two spatial truths and hierarchy, selection,
++attachment, Timeline, and mixed 2D/3D behavior would require synchronization.
++
++### Constrain Rapier 3D to a plane
++
++Rejected. It retains 3D solver cost/semantics and complicates ordinary 2D
++queries, joints, and platform behavior. A dedicated neutral 2D contract and
++isolated solver backend is clearer.
++
++### Use Transform Z as sprite sorting
++
++Rejected. Visual order is authoring intent. Stable named sorting layers plus
++explicit order keep presentation semantics inspectable without magic positions.
++
++### Use one ECS entity per tile
++
++Rejected. Large maps would create unnecessary entity, draw, and collision
++overhead. Chunked tile data is the correct edit/render/collision unit; special
++interactive objects remain ordinary entities placed over the map.
++
++### Build a separate 2D Editor
++
++Rejected. It would duplicate project lifecycle, Scene/Prefab operations,
++Inspector/undo, Play, validation, and AI parity. The existing Editor gains 2D
++mode and specialized document workspaces instead.
++
++## Compatibility and Migration
++
++Sprite Atlas, Sprite Animation, Tile Set, Tile Map, SpriteRenderer2D,
++SpriteAnimator2D, Camera2D, Rigidbody2D, Collider2D, joints, and the 2D controller
++are additive current-format capabilities.
++
++Project Settings advances when 2D defaults/sorting layers land. Per ADR 0115,
++in-repository projects/fixtures move to that canonical current format rather
++than gaining compatibility-only readers for older engine revisions.
++
++Existing 3D component IDs, 3D physics semantics, mesh/material assets, Camera3D,
++UI, input, audio, save, and package layout are not redefined. Generalized active
++camera selection preserves Camera3D enabled/priority meaning.
++
++No runtime entity, GPU/Rapier handle, packed UV/page index, Tile Map buffer
++offset, or Editor selection state is persisted. Stable authoring IDs and shared
++command/transaction semantics remain authoritative.
