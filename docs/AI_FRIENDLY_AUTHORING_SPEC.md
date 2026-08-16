@@ -536,6 +536,32 @@ Each graph node type MUST expose:
 
 Tools MUST be able to query schemas before creating or connecting nodes.
 
+### 8.3 Engine-Native Secondary Motion Schema
+
+ADR 0112 defines one engine-owned authoring component for cosmetic secondary
+motion. Its current schema is:
+
+| Property | Current contract |
+| --- | --- |
+| Component type ID | `engine.secondary_motion` |
+| Schema version | 1 |
+| Category | `Physics` |
+| Field | `rig` |
+| Field type | `AssetRef` constrained to `SecondaryMotionRig` |
+| Default | Unassigned |
+
+An unassigned `rig` is a valid authoring state. Assigning a Secondary Motion Rig
+opts the entity into runtime Secondary Motion; merely importing a model that can
+produce a rig does not make the imported character simulate automatically. The
+serialized field value follows the tagged `AssetRef` form in §7.4.
+
+When model import produces a generated Secondary Motion Rig, the imported
+sub-asset kind serializes as `secondary_motion_rig`. Its deterministic imported
+ID derives from prefix `secondarymotionrig`; the model-level generated rig uses
+selector index 0. The former `rigid_body_rig` kind and `rigidbodyrig` derivation
+namespace are not compatibility aliases and MUST NOT be silently interpreted as
+the current kind (ADR 0112, ADR 0115).
+
 ## 9. Domain-Neutral Graph Model
 
 Shader Graph, Behavior Tree, Animation Graph, and future graph types MUST share

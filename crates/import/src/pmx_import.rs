@@ -1,26 +1,23 @@
-//! PMX (MMD model) parser via the `mmd-anim-format` crate (ADR 0097 §1, §2,
-//! §4).
+//! PMX model parser via `mmd-anim-format` (ADR 0097, ADR 0112).
 //!
 //! Parses `.pmx` byte slices and files into a format-independent
 //! `ModelDocument` (see `crate::model_ir` for the exact normalization
 //! contract), mirroring `crate::fbx_import`'s structure. This module owns
-//! every `mmd_anim_format::pmx` symbol — bone/mesh/material/texture
-//! extraction and the multi-skin split (ADR 0097 §4) — and assigns no
-//! sub-asset IDs and no skeleton identity; that remains
-//! `crate::model_import`'s job, unchanged by which parser produced its
-//! input (ADR 0078).
+//! every `mmd_anim_format::pmx` symbol and normalizes model data before the
+//! format-independent builder assigns sub-asset IDs and skeleton identity;
+//! that remains `crate::model_import`'s job, unchanged by which parser
+//! produced its input (ADR 0078).
 //!
 //! # Scope
 //!
-//! This module implements ADR 0097 §1, §2, and §4 only: PMX mesh, skeleton,
-//! material, and multi-skin splitting. VMD motion baking (§3) lives in
-//! `crate::vmd_import`, which consumes the same `.pmx` bytes to build its
-//! evaluator rig; morph targets (§5) and rigid-body/physics assets (§6) are
-//! later work and are not
-//! represented here at all — PMX morphs, rigid bodies, joints, soft bodies,
-//! and IK/appended-parent bone constraints are read by
-//! `mmd_anim_format::pmx::parse_pmx_model` but never touched by this module,
-//! so `ModelDocument::clips` is always empty for a PMX source.
+//! This module imports PMX mesh, skeleton, material, morph, and rigid-body/joint
+//! data into the format-independent model IR (ADR 0097 §1, §2, §4, §5, §6).
+//! Rigid bodies and joints are best-effort source hints for an engine-native
+//! Secondary Motion rig (ADR 0112): unsupported or lossy constructs emit
+//! actionable diagnostics instead of making otherwise usable model content fail.
+//! VMD motion baking (§3) remains in `crate::vmd_import`, which consumes the
+//! same `.pmx` bytes to build its evaluator rig, so `ModelDocument::clips` is
+//! always empty for a PMX source.
 //!
 //! # Normalization contract
 //!
@@ -144,8 +141,14 @@
 //!   `pmx_source_dependencies` returns the resolved texture paths.
 //!   Base, sphere-map, and non-shared toon textures use the same imported
 //!   texture path.
-//! - **Morphs, rigid bodies, joints, soft bodies**: never read beyond what
-//!   `parse_pmx_model` itself returns; nothing about them reaches the IR.
+//! - **Morphs**: PMX vertex, material, and group morphs are normalized into
+//!   format-independent morph targets.
+//! - **Secondary Motion hints**: PMX rigid bodies and joints are converted
+//!   best-effort into generic `IrRigidBodyRig` data. Invalid body bindings,
+//!   unsupported body modes/shapes, and dangling joint endpoints produce
+//!   actionable warnings while preserving the rest of the import.
+//! - **Soft bodies**: PMX soft bodies have no Secondary Motion representation
+//!   and are omitted with `pmx.soft_body_unsupported` diagnostics.
 //! - **Clips**: `ModelDocument::clips` is always empty; PMX carries no
 //!   animation on its own — motion is a separate `.vmd` source imported
 //!   through `crate::vmd_import` (ADR 0097 §3).
@@ -181,12 +184,6 @@ use std::path::{Path, PathBuf};
 /// convention-based heuristic documented here, not a value derived from any
 /// per-file data — a model authored at a different internal scale imports at
 /// a correspondingly different real-world size.
-///
-/// [`crate::mmd_physics`] needs this same factor to express a rig's authored
-/// physical constants in the meters it simulates in (ADR 0108), but it
-/// compiles on targets this importer does not, so it keeps its own copy;
-/// `the_secondary_motion_bridge_uses_the_same_scale_as_this_importer` pins
-/// the two together.
 pub const PMX_TO_METERS: f32 = 0.08;
 
 /// Tolerated deviation of a vertex weight sum from 1.0 before the importer
@@ -1080,15 +1077,14 @@ fn sample_alpha(texture: &IrTexture, uv: [f32; 2]) -> u8 {
 }
 
 // ---------------------------------------------------------------------------
-// Rigid-body rig (ADR 0097 §6)
+// Secondary Motion import hints (ADR 0097 §6, ADR 0112)
 // ---------------------------------------------------------------------------
 
-/// Captures PMX's rigid bodies and joints as an [`IrRigidBodyRig`].
+/// Converts PMX rigid bodies and joints into format-independent Secondary Motion hints.
 ///
-/// Nothing here simulates: this is a faithful, unit- and axis-converted
-/// record of what the model's author tuned in their own tool, so a physics
-/// backend (ADR 0096) can build a simulation from an engine-native asset
-/// without ever linking a PMX parser.
+/// The conversion is deliberately best effort (ADR 0112): stable source intent is
+/// preserved where possible, while unsupported or lossy inputs emit diagnostics
+/// instead of failing an otherwise usable model import. Nothing here simulates.
 ///
 /// Returns `None` for a model that declares no bodies, so the common
 /// non-MMD case never carries an empty rig.
@@ -1097,18 +1093,33 @@ fn parse_rigid_body_rig(
     world_positions: &[Vec3],
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<IrRigidBodyRig> {
+    report_unsupported_soft_bodies(model.soft_bodies.len(), diagnostics);
     if model.rigid_bodies.is_empty() {
+        if !model.joints.is_empty() {
+            diagnostics.push(Diagnostic::warning(
+                "pmx.joint_without_bodies",
+                format!(
+                    "{} PMX joints cannot form Secondary Motion constraints because the model declares no rigid bodies; those joints were omitted",
+                    model.joints.len()
+                ),
+            ));
+        }
         return None;
     }
 
     let bone_count = model.skeleton.bones.len();
+    let mut invalid_bone_bindings = 0usize;
     let mut unsupported_shapes = 0usize;
+    let mut unsupported_modes = 0usize;
     let bodies: Vec<IrRigidBody> = model
         .rigid_bodies
         .iter()
         .map(|body| {
-            let bone_node = (body.bone_index >= 0 && (body.bone_index as usize) < bone_count)
-                .then_some(body.bone_index as usize);
+            let bone_node = resolve_rigid_body_bone_index(
+                body.bone_index,
+                bone_count,
+                &mut invalid_bone_bindings,
+            );
             // PMX stores a body's rest transform in model space, while the
             // simulation needs it relative to the bone it rides; the bone's
             // own rest position is the only anchor either side agrees on.
@@ -1126,7 +1137,7 @@ fn parse_rigid_body_rig(
                 angular_damping: body.angular_damping,
                 restitution: body.restitution,
                 friction: body.friction,
-                mode: convert_rigid_body_mode(&body.mode),
+                mode: convert_rigid_body_mode(&body.mode, &mut unsupported_modes),
                 group: body.group,
                 // mmd-anim-format exposes this field as the groups this body
                 // is allowed to contact, matching the engine IR contract.
@@ -1135,21 +1146,45 @@ fn parse_rigid_body_rig(
         })
         .collect();
 
+    if invalid_bone_bindings > 0 {
+        diagnostics.push(Diagnostic::warning(
+            "pmx.rigid_body_bone_out_of_range",
+            format!(
+                "{invalid_bone_bindings} rigid bodies reference a PMX bone that does not exist; those bodies were imported unbound. Rebind them to a valid skeleton bone before enabling Secondary Motion"
+            ),
+        ));
+    }
+
     if unsupported_shapes > 0 {
         diagnostics.push(Diagnostic::warning(
             "pmx.rigid_body_shape_unsupported",
             format!(
-                "{unsupported_shapes} rigid bodies declare a shape this importer does not represent; they were imported as spheres"
+                "{unsupported_shapes} rigid bodies declare a shape this importer does not represent; they were imported as spheres. Review those Secondary Motion colliders before enabling simulation"
+            ),
+        ));
+    }
+
+    if unsupported_modes > 0 {
+        diagnostics.push(Diagnostic::warning(
+            "pmx.rigid_body_mode_unsupported",
+            format!(
+                "{unsupported_modes} rigid bodies use an unsupported PMX mode; they were imported as FollowBone. Review those Secondary Motion bodies before enabling simulation"
             ),
         ));
     }
 
     let body_count = bodies.len();
     let mut dangling_joints = 0usize;
+    let mut unsupported_joint_kinds = 0usize;
     let joints: Vec<IrJoint> = model
         .joints
         .iter()
-        .map(|joint| {
+        .filter_map(|joint| {
+            // mmd-anim-format normalizes PMX joint type 0 to this canonical name.
+            if joint.kind != "generic6dofSpring" {
+                unsupported_joint_kinds += 1;
+                return None;
+            }
             let resolve = |index: i32, dangling: &mut usize| {
                 if index >= 0 && (index as usize) < body_count {
                     Some(index as usize)
@@ -1158,7 +1193,7 @@ fn parse_rigid_body_rig(
                     None
                 }
             };
-            IrJoint {
+            Some(IrJoint {
                 name: joint.name.clone(),
                 body_a: resolve(joint.rigid_body_index_a, &mut dangling_joints),
                 body_b: resolve(joint.rigid_body_index_b, &mut dangling_joints),
@@ -1190,15 +1225,24 @@ fn parse_rigid_body_rig(
                 // Stiffnesses are magnitudes: no sign, no scale.
                 spring_translation: Vec3::from_array(joint.spring_translation_factor),
                 spring_rotation: Vec3::from_array(joint.spring_rotation_factor),
-            }
+            })
         })
         .collect();
+
+    if unsupported_joint_kinds > 0 {
+        diagnostics.push(Diagnostic::warning(
+            "pmx.joint_kind_unsupported",
+            format!(
+                "{unsupported_joint_kinds} PMX joints use a constraint kind Secondary Motion does not represent and were omitted. Recreate equivalent engine-native constraints if needed"
+            ),
+        ));
+    }
 
     if dangling_joints > 0 {
         diagnostics.push(Diagnostic::warning(
             "pmx.joint_body_out_of_range",
             format!(
-                "{dangling_joints} joint endpoints reference a rigid body that does not exist; those endpoints were left unbound"
+                "{dangling_joints} joint endpoints reference a rigid body that does not exist; those endpoints were left unbound. Reconnect or remove those Secondary Motion constraints before enabling simulation"
             ),
         ));
     }
@@ -1236,18 +1280,47 @@ fn convert_rigid_body_shape(
     }
 }
 
+fn report_unsupported_soft_bodies(count: usize, diagnostics: &mut Vec<Diagnostic>) {
+    if count > 0 {
+        diagnostics.push(Diagnostic::warning(
+            "pmx.soft_body_unsupported",
+            format!(
+                "{count} PMX soft bodies cannot be represented by Secondary Motion and were omitted. Recreate equivalent motion with an engine-native Secondary Motion rig if needed"
+            ),
+        ));
+    }
+}
+
+fn resolve_rigid_body_bone_index(
+    index: i32,
+    bone_count: usize,
+    invalid: &mut usize,
+) -> Option<usize> {
+    if index == -1 {
+        None
+    } else if index >= 0 && (index as usize) < bone_count {
+        Some(index as usize)
+    } else {
+        *invalid += 1;
+        None
+    }
+}
+
 /// Converts PMX's rigid-body mode name to [`IrRigidBodyMode`].
 ///
-/// An unrecognized name falls back to [`IrRigidBodyMode::FollowBone`], the
-/// mode that cannot make a character explode: a body that should have
-/// simulated simply stays rigid.
-fn convert_rigid_body_mode(mode: &str) -> IrRigidBodyMode {
+/// Unknown modes are counted for a structured import diagnostic and fall back
+/// to [`IrRigidBodyMode::FollowBone`], the safest non-simulating behavior.
+fn convert_rigid_body_mode(mode: &str, unsupported: &mut usize) -> IrRigidBodyMode {
     match mode {
+        "static" => IrRigidBodyMode::FollowBone,
         "dynamic" => IrRigidBodyMode::Dynamic,
         "dynamicBone" | "dynamicBonePosition" | "dynamic_bone_position" => {
             IrRigidBodyMode::DynamicWithBonePosition
         }
-        _ => IrRigidBodyMode::FollowBone,
+        _ => {
+            *unsupported += 1;
+            IrRigidBodyMode::FollowBone
+        }
     }
 }
 
@@ -1912,16 +1985,6 @@ pub(crate) mod tests {
         );
     }
 
-    /// The secondary-motion bridge converts a rig's authored physical
-    /// constants with its own copy of this scale, because it compiles on
-    /// targets this importer does not (ADR 0096 §1, ADR 0108). Changing
-    /// one without the other would silently retune every imported rig's
-    /// gravity and rotation springs.
-    #[test]
-    fn the_secondary_motion_bridge_uses_the_same_scale_as_this_importer() {
-        assert_eq!(PMX_TO_METERS, crate::mmd_physics::PMX_AUTHORING_SCALE);
-    }
-
     #[test]
     fn parse_pmx_extracts_a_normalized_bone_translation() {
         let bytes = skinned_pmx_fixture();
@@ -2333,15 +2396,75 @@ pub(crate) mod tests {
     }
 
     // -----------------------------------------------------------------
-    // Rigid-body rig (ADR 0097 §6)
+    // Secondary Motion import hints (ADR 0097 §6, ADR 0112)
     // -----------------------------------------------------------------
 
     #[test]
     fn parser_dynamic_bone_mode_maps_to_dynamic_with_bone_position() {
+        let mut unsupported = 0;
         assert_eq!(
-            convert_rigid_body_mode("dynamicBone"),
+            convert_rigid_body_mode("dynamicBone", &mut unsupported),
             IrRigidBodyMode::DynamicWithBonePosition
         );
+        assert_eq!(unsupported, 0);
+    }
+
+    #[test]
+    fn invalid_secondary_motion_hints_are_counted_without_failing_import() {
+        let mut invalid_bones = 0;
+        assert_eq!(
+            resolve_rigid_body_bone_index(-1, 2, &mut invalid_bones),
+            None,
+            "PMX -1 is the valid unbound-body sentinel"
+        );
+        assert_eq!(resolve_rigid_body_bone_index(1, 2, &mut invalid_bones), Some(1));
+        assert_eq!(resolve_rigid_body_bone_index(5, 2, &mut invalid_bones), None);
+        assert_eq!(invalid_bones, 1);
+
+        let mut unsupported_modes = 0;
+        assert_eq!(
+            convert_rigid_body_mode("future_mode", &mut unsupported_modes),
+            IrRigidBodyMode::FollowBone
+        );
+        assert_eq!(unsupported_modes, 1);
+
+        let mut diagnostics = Vec::new();
+        report_unsupported_soft_bodies(2, &mut diagnostics);
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].code, "pmx.soft_body_unsupported");
+    }
+
+    #[test]
+    fn unsupported_joint_kind_is_omitted_with_diagnostic() {
+        let mut model = empty_pmx_model();
+        model.rigid_bodies = fixture_rigid_bodies();
+        for body in &mut model.rigid_bodies {
+            body.bone_index = -1;
+        }
+        model.joints = fixture_joints();
+        model.joints[0].kind = "hinge".to_owned();
+        let mut diagnostics = Vec::new();
+
+        let rig = parse_rigid_body_rig(&model, &[], &mut diagnostics)
+            .expect("best-effort conversion must retain supported rigid bodies");
+
+        assert_eq!(rig.bodies.len(), 2);
+        assert!(rig.joints.is_empty());
+        assert!(diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "pmx.joint_kind_unsupported"));
+    }
+
+    #[test]
+    fn orphaned_pmx_joints_report_diagnostic_instead_of_failing_import() {
+        let mut model = empty_pmx_model();
+        model.joints = fixture_joints();
+        let mut diagnostics = Vec::new();
+
+        assert!(parse_rigid_body_rig(&model, &[], &mut diagnostics).is_none());
+        assert!(diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "pmx.joint_without_bodies"));
     }
 
     #[test]
@@ -2448,7 +2571,7 @@ pub(crate) mod tests {
             imported
                 .imported_sub_assets()
                 .iter()
-                .filter(|asset| asset.kind == ImportedSubAssetKind::RigidBodyRig)
+                .filter(|asset| asset.kind == ImportedSubAssetKind::SecondaryMotionRig)
                 .count(),
             1
         );
@@ -3082,7 +3205,7 @@ pub(crate) mod tests {
         vec![PmxParsedJoint {
             name: "hair_joint".to_owned(),
             english_name: "hair_joint".to_owned(),
-            kind: "spring6dof".to_owned(),
+            kind: "generic6dofSpring".to_owned(),
             rigid_body_index_a: 0,
             rigid_body_index_b: 1,
             position: [0.0, 1.0, 2.0],

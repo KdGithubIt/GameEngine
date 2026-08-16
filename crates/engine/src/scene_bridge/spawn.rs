@@ -310,12 +310,12 @@ fn import_source_cached(
     .map_err(|error| error.to_string())
 }
 
-pub(crate) fn spawn_rigid_body_physics_component(
+pub(crate) fn spawn_secondary_motion_component(
     entity: Entity,
     value: &Value,
     context: &mut SpawnContext<'_>,
 ) -> Result<(), ComponentSpawnError> {
-    let component_type = ComponentTypeId::new(RIGID_BODY_PHYSICS_COMPONENT);
+    let component_type = ComponentTypeId::new(SECONDARY_MOTION_COMPONENT);
     const EXPECTED: &str = "an object with a rig AssetRef field";
     let fields = ComponentFields::new(context.authoring_entity, &component_type, value, EXPECTED)?;
     let Some(rig_asset) = fields.assignable_asset_ref("rig")?.cloned() else {
@@ -329,29 +329,29 @@ pub(crate) fn spawn_rigid_body_physics_component(
         return Ok(());
     };
 
-    register_rigid_body_rig(&rig_asset, context);
+    register_secondary_motion_rig(&rig_asset, context);
     context
         .world
-        .add_component(entity, RigidBodyPhysics::new(rig_asset))?;
+        .add_component(entity, SecondaryMotion::new(rig_asset))?;
     Ok(())
 }
 
-fn register_rigid_body_rig(rig_asset: &AssetId, context: &mut SpawnContext<'_>) {
+fn register_secondary_motion_rig(rig_asset: &AssetId, context: &mut SpawnContext<'_>) {
     let Some((source_id, _, sub_asset)) = context.manifest.imported_sub_asset(rig_asset) else {
         context.asset_diagnostics.push(Diagnostic::warning(
-            "scene_bridge.rigid_body_rig_unresolved",
+            "scene_bridge.secondary_motion_rig_unresolved",
             format!(
-                "rigid-body rig `{}` is not an imported sub-asset of any registered model source",
+                "secondary-motion rig `{}` is not an imported sub-asset of any registered model source",
                 rig_asset.as_str()
             ),
         ));
         return;
     };
-    if sub_asset.kind != ImportedSubAssetKind::RigidBodyRig {
+    if sub_asset.kind != ImportedSubAssetKind::SecondaryMotionRig {
         context.asset_diagnostics.push(Diagnostic::warning(
-            "scene_bridge.rigid_body_rig_unresolved",
+            "scene_bridge.secondary_motion_rig_unresolved",
             format!(
-                "asset `{}` is {:?}, not a rigid-body rig",
+                "asset `{}` is {:?}, not a secondary-motion rig",
                 rig_asset.as_str(),
                 sub_asset.kind
             ),
@@ -363,9 +363,9 @@ fn register_rigid_body_rig(rig_asset: &AssetId, context: &mut SpawnContext<'_>) 
         Ok(imported) => imported,
         Err(error) => {
             context.asset_diagnostics.push(Diagnostic::warning(
-                "scene_bridge.rigid_body_rig_unresolved",
+                "scene_bridge.secondary_motion_rig_unresolved",
                 format!(
-                    "could not import the model source owning rigid-body rig `{}`: {error}",
+                    "could not import the model source owning secondary-motion rig `{}`: {error}",
                     rig_asset.as_str()
                 ),
             ));
@@ -378,28 +378,34 @@ fn register_rigid_body_rig(rig_asset: &AssetId, context: &mut SpawnContext<'_>) 
         .filter(|rig| &rig.id == rig_asset)
     else {
         context.asset_diagnostics.push(Diagnostic::warning(
-            "scene_bridge.rigid_body_rig_unresolved",
+            "scene_bridge.secondary_motion_rig_unresolved",
             format!(
-                "the model source no longer contains rigid-body rig `{}`; reimport it",
+                "the model source no longer contains secondary-motion rig `{}`; reimport it",
                 rig_asset.as_str()
             ),
         ));
         return;
     };
+    if context
+        .world
+        .get_resource::<SecondaryMotionRigRegistry>()
+        .is_none()
+    {
+        context
+            .world
+            .insert_resource(SecondaryMotionRigRegistry::new());
+        context.asset_state.remove_secondary_motion_registry_store = true;
+    }
     let registry = context
         .world
-        .get_resource_mut::<RigidBodyRigRegistry>()
-        .is_none();
-    if registry {
-        context.world.insert_resource(RigidBodyRigRegistry::new());
-    }
-    if let Some(registry) = context.world.get_resource_mut::<RigidBodyRigRegistry>() {
-        registry.insert(rig.clone());
-        context
-            .asset_state
-            .added_rigid_body_rig_ids
-            .push(rig.id.clone());
-    }
+        .get_resource_mut::<SecondaryMotionRigRegistry>()
+        .expect("scene bridge must install the Secondary Motion registry before registration");
+    let previous = registry.remove(&rig.id);
+    registry.insert(rig.clone());
+    context
+        .asset_state
+        .secondary_motion_rig_rollbacks
+        .push((rig.id.clone(), previous));
 }
 
 pub(crate) fn spawn_bone_attachment_component(
