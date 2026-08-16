@@ -189,7 +189,7 @@ jobs:
             fail "The reconstructed patch may not exceed 4 MiB."
 
           stage_tree="$(git rev-parse "$REQUEST_COMMIT:$request_dir")"
-          existing_tree="$(git rev-parse "$transport_head:$request_dir" 2>/dev/null || true)"
+          existing_tree="$(git rev-parse --verify "$transport_head:$request_dir" 2>/dev/null || true)"
 
           if [[ -n "$existing_tree" ]]; then
             [[ "$existing_tree" == "$stage_tree" ]] ||
