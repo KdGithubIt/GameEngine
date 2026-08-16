@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0121-mcp-lifecycle-20260816-01",
+  "target_branch": "chatgpt/gameengine-adr-0121-mcp-lifecycle",
+  "expected_head_sha": "f36e98ae65d0c3728a9d1f224536b4a3ff8d40ff",
+  "patch_parts": [
+    "part-0000.patch",
+    "part-0001.patch",
+    "part-0002.patch",
+    "part-0003.patch",
+    "part-0004.patch"
+  ],
+  "commit_message": "Implement ADR 0121 project-scoped MCP lifecycle",
+  "pr_title": "Implement ADR 0121 project-scoped MCP lifecycle",
+  "pr_body": "Implements the ADR 0121 MCP lifecycle foundation: a loopback-only Streamable HTTP endpoint, ephemeral lifecycle discovery/authentication metadata outside project data, and request routing into the live Editor authoring session. Scene/entity/schema and existing Behavior Tree MCP tools share the live host. Cargo.lock changes only because engine-editor gains direct engine-mcp and getrandom dependencies, so full Windows validation is expected. Visual validation is not required because this change does not alter Editor presentation."
+}
