@@ -1,0 +1,222 @@
+diff --git a/crates/physics/src/secondary_motion.rs b/crates/physics/src/secondary_motion.rs
+index 7e09005faf9a3f116d4f2a6eef0eaef0468dc4e8..a5183295f79c4c5afd8573f4d92800b7a9034906 100644
+GIT binary patch
+literal 26376
+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
+
+literal 11
+ScmZQbDb3BT)XmRH;Q{~^`~#x^
+
+diff --git a/crates/physics/src/lib.rs b/crates/physics/src/lib.rs
+--- a/crates/physics/src/lib.rs
++++ b/crates/physics/src/lib.rs
+@@ -22,6 +22,9 @@ pub mod navmesh;
+ /// Rapier-backed gameplay rigid-body integration.
+ #[cfg(feature = "solver")]
+ pub mod physics;
++/// Isolated engine-native secondary-motion simulation (ADR 0112).
++#[cfg(feature = "solver")]
++pub mod secondary_motion;
+ 
+ // Keep the feature-off contract implementations in the normal compiler/Clippy
+ // path as well. Cargo feature unification can otherwise make an affected CI run
+diff --git a/crates/engine/src/secondary_motion.rs b/crates/engine/src/secondary_motion.rs
+new file mode 100644
+index 0000000..f876ba4f7aaa5db01d3a2eb053bd65313acb2c0d
+--- /dev/null
++++ b/crates/engine/src/secondary_motion.rs
+@@ -0,0 +1,9 @@
++//! Engine-native secondary-motion facade (ADR 0112).
++
++pub use engine_physics::secondary_motion::{
++    secondary_motion_presentation_system, secondary_motion_system, SecondaryMotionWorlds,
++};
++pub use engine_rig::rigid_body_rig::{
++    JointDef, RigidBodyDef, RigidBodyMode, RigidBodyShape, SecondaryMotion,
++    SecondaryMotionRigAsset, SecondaryMotionRigRegistry, SECONDARY_MOTION_RIG_SCHEMA_VERSION,
++};
+diff --git a/crates/engine/src/lib.rs b/crates/engine/src/lib.rs
+--- a/crates/engine/src/lib.rs
++++ b/crates/engine/src/lib.rs
+@@ -91,8 +91,8 @@ pub mod material;
+ /// CPU and GPU mesh types.
+ pub mod mesh;
+-/// Isolated Rapier secondary-motion bridge for imported MMD rigid-body rigs.
+-pub mod mmd_physics;
++/// Engine-native secondary-motion facade (ADR 0112).
++pub mod secondary_motion;
+ /// Format-independent asset builder consuming [`model_ir`] (ADR 0078):
+ /// sub-asset IDs, skeleton identity/dedupe/rebind, and clip BoneId
+ /// resolution.
+@@ -295,7 +295,10 @@ pub use mesh::{
+     extract_baked_submesh, mesh_to_obj, GpuMesh, GpuMeshCache, InstanceData, Mesh,
+     MeshValidationError, SharedGpuMeshCache, SkinningVertexData, Submesh, Vertex,
+ };
+-pub use mmd_physics::{mmd_rigid_body_physics_system, MmdPhysicsWorlds};
++pub use secondary_motion::{
++    secondary_motion_presentation_system, secondary_motion_system, SecondaryMotion,
++    SecondaryMotionRigAsset, SecondaryMotionRigRegistry, SecondaryMotionWorlds,
++    SECONDARY_MOTION_RIG_SCHEMA_VERSION,
++};
+ pub use model_import::{
+     fingerprint_model_source, import_model_bytes, import_model_path,
+     import_model_path_with_contact_bones, model_source_dependencies, GltfAnimationData,
+diff --git a/crates/import/src/model_import.rs b/crates/import/src/model_import.rs
+--- a/crates/import/src/model_import.rs
++++ b/crates/import/src/model_import.rs
+@@ -1269,6 +1269,7 @@ fn build_rigid_body_rig(
+                 mass: body.mass,
+                 linear_damping: body.linear_damping,
+                 angular_damping: body.angular_damping,
++                gravity_scale: 1.0,
+                 restitution: body.restitution,
+                 friction: body.friction,
+                 mode: match body.mode {
