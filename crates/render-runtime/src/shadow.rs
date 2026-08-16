@@ -208,15 +208,18 @@ pub fn cascade_view_projections(
 /// Runtime environment-lighting settings consumed by the renderer.
 #[derive(Debug, Clone, PartialEq)]
 pub struct EnvironmentLighting {
-    /// Optional skybox texture asset used for the background.
+    /// Optional equirectangular skybox texture used for the background and
+    /// StandardLit specular image-based lighting.
     pub skybox: Option<RuntimeAssetId>,
-    /// Optional diffuse irradiance texture asset.
+    /// Optional equirectangular Lambert-normalized diffuse irradiance texture.
+    /// When absent, the renderer derives diffuse irradiance from `skybox`.
     pub diffuse_irradiance: Option<RuntimeAssetId>,
     /// Fallback diffuse irradiance color when no texture is bound.
     pub diffuse_color: glam::Vec3,
     /// Environment-lighting intensity multiplier.
     pub intensity: f32,
-    /// Whether diffuse image-based lighting is enabled.
+    /// Whether diffuse image-based lighting is enabled. A resolved skybox can
+    /// still contribute StandardLit specular IBL when this is `false`.
     pub diffuse_ibl_enabled: bool,
 }
 
@@ -233,7 +236,7 @@ impl Default for EnvironmentLighting {
 }
 
 impl EnvironmentLighting {
-    /// Applies diffuse environment lighting to the ambient light contract.
+    /// Applies the color-only diffuse fallback to the ambient-light contract.
     pub fn apply_to_ambient(&self, ambient: &AmbientLight) -> AmbientLight {
         if !self.diffuse_ibl_enabled {
             return ambient.clone();

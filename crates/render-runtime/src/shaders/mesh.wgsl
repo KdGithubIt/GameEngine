@@ -12,6 +12,11 @@ struct LightUniform {
 struct ShadowUniform {
     light_view_proj_0: mat4x4<f32>, light_view_proj_1: mat4x4<f32>, params: vec4<f32>,
 }
+struct EnvironmentUniform {
+    diffuse_color: vec3<f32>,
+    intensity: f32,
+    params: vec4<f32>, // x=diffuse enabled, y=has diffuse, z=specular enabled, w=has skybox
+}
 struct MaterialUniform {
     toon_shadow: vec4<f32>,      // rgb=shadow color, w=has ramp
     toon_ambient: vec4<f32>,     // rgb=ambient, w=receive shadow
@@ -36,6 +41,11 @@ struct MaterialUniform {
 @group(2) @binding(1) var<uniform> shadow: ShadowUniform;
 @group(2) @binding(2) var t_shadow: texture_depth_2d_array;
 @group(2) @binding(3) var s_shadow: sampler_comparison;
+@group(2) @binding(4) var t_environment_diffuse: texture_2d<f32>;
+@group(2) @binding(5) var t_environment_specular: texture_2d<f32>;
+@group(2) @binding(6) var t_environment_brdf: texture_2d<f32>;
+@group(2) @binding(7) var s_environment: sampler;
+@group(2) @binding(8) var<uniform> environment: EnvironmentUniform;
 
 struct VertexInput {
     @location(0) position: vec3<f32>, @location(1) normal: vec3<f32>,
@@ -139,6 +149,18 @@ fn mapped_normal(
     return normalize(mat3x3<f32>(tangent, bitangent, normal) * tangent_normal);
 }
 
+fn direction_uv(direction: vec3<f32>) -> vec2<f32> {
+    let normalized = normalize(direction);
+    let u = fract(atan2(normalized.z, normalized.x) / 6.283185307179586 + 0.5);
+    let v = acos(clamp(normalized.y, -1.0, 1.0)) / 3.141592653589793;
+    return vec2<f32>(u, v);
+}
+
+fn fresnel_schlick_roughness(cos_theta: f32, f0: vec3<f32>, roughness: f32) -> vec3<f32> {
+    let grazing = max(vec3<f32>(1.0 - roughness), f0);
+    return f0 + (grazing - f0) * pow(1.0 - cos_theta, 5.0);
+}
+
 fn standard_lit(base: vec3<f32>, n: vec3<f32>, l: vec3<f32>, v: vec3<f32>, surface: vec4<f32>, visibility: f32, occlusion: f32) -> vec3<f32> {
     let h = normalize(l + v);
     let ndl = max(dot(n, l), 0.0); let ndv = max(dot(n, v), 0.0001);
@@ -155,8 +177,46 @@ fn standard_lit(base: vec3<f32>, n: vec3<f32>, l: vec3<f32>, v: vec3<f32>, surfa
     let diffuse_weight = (vec3<f32>(1.0) - fresnel) * (1.0 - metallic);
     let direct = (diffuse_weight * base / 3.14159265 + specular)
         * light.dir_color * light.dir_intensity * visibility * ndl;
-    let indirect = light.ambient_color * light.ambient_intensity * base * (1.0 - metallic) * occlusion;
-    return indirect + direct;
+
+    var indirect_diffuse = light.ambient_color * light.ambient_intensity * base * (1.0 - metallic);
+    if (environment.params.x > 0.5) {
+        if (environment.params.y > 0.5) {
+            let irradiance = textureSample(
+                t_environment_diffuse,
+                s_environment,
+                direction_uv(n),
+            ).rgb;
+            let environment_fresnel = fresnel_schlick_roughness(ndv, f0, roughness);
+            let environment_diffuse_weight = (vec3<f32>(1.0) - environment_fresnel) * (1.0 - metallic);
+            indirect_diffuse = irradiance * base * environment_diffuse_weight * environment.intensity;
+        } else {
+            indirect_diffuse = environment.diffuse_color
+                * light.ambient_intensity
+                * environment.intensity
+                * base
+                * (1.0 - metallic);
+        }
+    }
+
+    var indirect_specular = vec3<f32>(0.0);
+    if (environment.params.z > 0.5) {
+        let reflection = reflect(-v, n);
+        let max_lod = f32(textureNumLevels(t_environment_specular) - 1u);
+        let prefiltered = textureSampleLevel(
+            t_environment_specular,
+            s_environment,
+            direction_uv(reflection),
+            roughness * max_lod,
+        ).rgb;
+        let brdf = textureSample(
+            t_environment_brdf,
+            s_environment,
+            vec2<f32>(ndv, roughness),
+        ).rg;
+        indirect_specular = prefiltered * (f0 * brdf.x + vec3<f32>(brdf.y)) * environment.intensity;
+    }
+
+    return (indirect_diffuse + indirect_specular) * occlusion + direct;
 }
 
 fn toon_lit(base: vec3<f32>, n: vec3<f32>, l: vec3<f32>, v: vec3<f32>, additional_uv: vec2<f32>, visibility: f32) -> vec3<f32> {
