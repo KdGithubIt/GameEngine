@@ -1,0 +1,215 @@
+          max_particles,
++                attribute_layout: VfxAttributeLayout {
++                    velocity: true,
++                    color: true,
++                    size: true,
++                    rotation: false,
++                },
++                spawn_operations,
++                update_operations,
++                // The legacy convenience API keeps its mesh Handle in the
++                // render adapter; only simulation semantics are compiled here.
++                render_operations: Vec::new(),
++                estimated_capacity: max_particles,
++            }],
++            capabilities: VfxCapabilityRequirements::default(),
+         }
+-        self.particles
+-            .retain(|particle| particle.age < particle.lifetime);
++    }
+ 
+-        if self.spawn_rate <= 0.0 {
+-            self.spawn_accumulator = 0.0;
+-            return;
++    /// Advances the pool by `dt` seconds, spawning from `origin`.
++    fn step(&mut self, dt: f32, origin: Vec3) {
++        let definition = self.compiled_effect();
++        match &mut self.runtime {
++            Some(runtime) => runtime.reconfigure(definition),
++            None => self.runtime = Some(VfxInstance::new(definition, None)),
+         }
+-        self.spawn_accumulator += self.spawn_rate * dt;
+-        let mut to_spawn = self.spawn_accumulator.floor() as u32;
+-        self.spawn_accumulator -= to_spawn as f32;
+-        to_spawn = to_spawn.min(MAX_SPAWNS_PER_FRAME);
+-
+-        for _ in 0..to_spawn {
+-            if self.particles.len() >= self.max_particles {
+-                break;
+-            }
+-            let particle = self.spawn_one(origin);
+-            self.particles.push(particle);
++        let runtime = self
++            .runtime
++            .as_mut()
++            .expect("ParticleEmitter runtime is initialized above");
++        runtime.step(dt, origin);
++        self.particles.clear();
++        if let Some(emitter) = runtime.emitters().first() {
++            self.particles.extend(emitter.particles().iter().map(|particle| Particle {
++                position: particle.position,
++                velocity: particle.velocity,
++                age: particle.age,
++                lifetime: particle.lifetime,
++            }));
+         }
+     }
++}
+ 
+-    /// Creates one particle at `origin` using the emitter's random stream.
+-    fn spawn_one(&mut self, origin: Vec3) -> Particle {
+-        let lifetime = self.rng.range(self.lifetime.0, self.lifetime.1).max(0.01);
+-        let speed = self.rng.range(self.initial_speed.0, self.initial_speed.1);
+-
+-        // Build an orthonormal basis around the emission direction and tilt
+-        // by a random angle within the cone.
+-        let axis = self.direction.normalize_or_zero();
+-        let axis = if axis == Vec3::ZERO { Vec3::Y } else { axis };
+-        let ortho = if axis.x.abs() < 0.9 { Vec3::X } else { Vec3::Z };
+-        let tangent = axis.cross(ortho).normalize();
+-        let bitangent = axis.cross(tangent);
+-        let tilt = self.rng.range(0.0, self.spread);
+-        let around = self.rng.range(0.0, std::f32::consts::TAU);
+-        let direction = (axis * tilt.cos()
+-            + (tangent * around.cos() + bitangent * around.sin()) * tilt.sin())
+-        .normalize_or_zero();
+-
+-        Particle {
+-            position: origin,
+-            velocity: direction * speed,
+-            age: 0.0,
+-            lifetime,
+-        }
++fn simple_emitter_id() -> VfxEmitterId {
++    VfxEmitterId::try_new("vfxemitter_00000000000000000000000000")
++        .expect("hard-coded simple VFX emitter ID must be valid")
++}
++
++fn simple_module_id(index: u8) -> VfxModuleId {
++    VfxModuleId::try_new(format!("vfxmodule_0000000000000000000000000{index:X}"))
++        .expect("hard-coded simple VFX module ID must be valid")
++}
++
++fn compiled_operation(index: u8, operation: VfxModuleOperation) -> CompiledVfxOperation {
++    CompiledVfxOperation {
++        source_module: simple_module_id(index),
++        operation,
++    }
++}
++
++fn simple_curve_key_id(index: u8) -> VfxCurveKeyId {
++    VfxCurveKeyId::try_new(format!("vfxkey_0000000000000000000000000{index:X}"))
++        .expect("hard-coded simple VFX curve key ID must be valid")
++}
++
++fn simple_gradient_key_id(index: u8) -> VfxGradientKeyId {
++    VfxGradientKeyId::try_new(format!("vfxgradient_0000000000000000000000000{index:X}"))
++        .expect("hard-coded simple VFX gradient key ID must be valid")
++}
++
++fn simple_size_curve(start: f32, end: f32) -> VfxCurve {
++    VfxCurve {
++        keys: vec![
++            VfxCurveKey {
++                id: simple_curve_key_id(0),
++                time: 0.0,
++                value: start,
++                interpolation: VfxCurveInterpolation::Linear,
++            },
++            VfxCurveKey {
++                id: simple_curve_key_id(1),
++                time: 1.0,
++                value: end,
++                interpolation: VfxCurveInterpolation::Linear,
++            },
++        ],
++    }
++}
++
++fn simple_color_gradient(start: [f32; 4], end: [f32; 4]) -> VfxGradient {
++    VfxGradient {
++        keys: vec![
++            VfxGradientKey {
++                id: simple_gradient_key_id(0),
++                time: 0.0,
++                color: start,
++            },
++            VfxGradientKey {
++                id: simple_gradient_key_id(1),
++                time: 1.0,
++                color: end,
++            },
++        ],
+     }
+ }
+ 
+@@ -369,7 +473,7 @@ mod tests {
+ 
+         emitter.step(1.0, Vec3::ZERO);
+ 
+-        assert_eq!(emitter.live_count(), MAX_SPAWNS_PER_FRAME as usize);
++        assert_eq!(emitter.live_count(), 256);
+     }
+ 
+     #[test]
+@@ -412,4 +516,41 @@ mod tests {
+         assert_eq!(emitter.live_count(), first_count);
+         assert_eq!(emitter.live_bounds(), Some(first_bounds));
+     }
++
++    #[test]
++    fn simple_emitter_uses_shared_vfx_reference_runtime() {
++        let mut emitter = test_emitter();
++        emitter.seed = 77;
++        emitter.spawn_rate = 16.0;
++        emitter.lifetime = (1.5, 2.0);
++        emitter.initial_speed = (3.0, 5.0);
++        emitter.direction = Vec3::new(1.0, 2.0, 3.0);
++        emitter.spread = 0.35;
++        emitter.gravity = Vec3::new(0.0, -4.0, 0.0);
++        emitter.max_particles = 128;
++        emitter.reset();
++
++        let definition = emitter.compiled_effect();
++        let mut direct = VfxInstance::new(definition, None);
++        let origin = Vec3::new(4.0, 5.0, 6.0);
++        for _ in 0..30 {
++            emitter.step(1.0 / 60.0, origin);
++            direct.step(1.0 / 60.0, origin);
++        }
++
++        let direct_particles = direct.emitters()[0].particles();
++        assert_eq!(emitter.particles.len(), direct_particles.len());
++        for (simple, shared) in emitter.particles.iter().zip(direct_particles) {
++            assert_eq!(simple.position, shared.position);
++            assert_eq!(simple.velocity, shared.velocity);
++            assert_eq!(simple.age, shared.age);
++            assert_eq!(simple.lifetime, shared.lifetime);
++        }
++    }
++
++    #[test]
++    fn simple_emitter_compilation_is_deterministic() {
++        let emitter = test_emitter();
++        assert_eq!(emitter.compiled_effect(), emitter.compiled_effect());
++    }
+ }
+ diff --git a/crates/render-runtime/src/vfx.rs b/crates/render-runtime/src/vfx.rs
+index 700e9ae..cb87ae1 100644
+--- a/crates/render-runtime/src/vfx.rs
++++ b/crates/render-runtime/src/vfx.rs
+@@ -332,9 +332,15 @@ fn requested_spawns(runtime: &mut VfxEmitterRuntime, dt: f32, end_time: f32) ->
+         }
+     }
+ 
+-    runtime.spawn_accumulator += rate * dt;
+-    let continuous = runtime.spawn_accumulator.floor().max(0.0) as u64;
+-    runtime.spawn_accumulator -= continuous as f32;
++    let continuous = if rate > 0.0 {
++        runtime.spawn_accumulator += rate * dt;
++        let continuous = runtime.spawn_accumulator.floor().max(0.0) as u64;
++        runtime.spawn_accumulator -= continuous as f32;
++        continuous
++    } else {
++        runtime.spawn_accumulator = 0.0;
++     
