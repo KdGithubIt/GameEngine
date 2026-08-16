@@ -1,0 +1,35 @@
+diff --git a/docs/CHATGPT_AUTOMATION_INCIDENTS.md b/docs/CHATGPT_AUTOMATION_INCIDENTS.md
+--- a/docs/CHATGPT_AUTOMATION_INCIDENTS.md
++++ b/docs/CHATGPT_AUTOMATION_INCIDENTS.md
+@@ -142,7 +142,15 @@
+ - Replacement request `20260816-phase8-temporal-history-ce777a7-r2` regenerated
+   that hunk against the exact target EOF. Dispatcher run `31931372697` passed
+   reconstruction/application and produced commit
+   `b3421b3c454ca7ebde31a2a9585e441d91ea7802` in Draft PR #49.
++- The same target-alignment class recurred in ADR 0131 managed-validation
++  request `20260816-adr0131-managed-validation-0b2191a-r2`: Dispatcher run
++  `31944776376` rejected `crates/editor/src/agent_host.rs` because preflighted
++  hunk coordinates came from a synthetic stitched-file fixture rather than the
++  exact target file at `0b2191a06a4ec7311937327c425c76fdea2a4956`.
++- Recovery request `20260816-adr0131-mv-fix-r3` regenerated the same correction
++  against exact target line coordinates. Dispatcher run `31944910663` passed
++  reconstruction/application and produced commit
++  `d047d7ab89d668b5324869b3aaf9a92329f15182` in Draft PR #88.
+ 
+ ### Root cause
+ 
+@@ -184,8 +192,14 @@
+ - Repeated failed request: `20260816-phase8-temporal-history-ce777a7-r1`
+ - Recovery request: `20260816-phase8-temporal-history-ce777a7-r2`
+ - Repeated failed Dispatcher run: `31931155985`
+ - Recovery Dispatcher run: `31931372697`
+ - Recovery PR: `#49`
+ - Recovery commit: `b3421b3c454ca7ebde31a2a9585e441d91ea7802`
++- Repeated failed request: `20260816-adr0131-managed-validation-0b2191a-r2`
++- Repeated failed Dispatcher run: `31944776376`
++- Recovery request: `20260816-adr0131-mv-fix-r3`
++- Recovery Dispatcher run: `31944910663`
++- Recovery PR: `#88`
++- Recovery commit: `d047d7ab89d668b5324869b3aaf9a92329f15182`
+ 
+ ## INC-003: Published patch bytes differed from preflight artifact
