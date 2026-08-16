@@ -124,7 +124,7 @@ function Invoke-DesktopScreenshot {
     $captureVariable = if ($Package -eq "engine-editor") {
         "GAMEENGINE_SCREENSHOT_TO"
     } else {
-        "EFRAME_SCREENSHOT_TO"
+        "GAMEENGINE_LAUNCHER_SCREENSHOT_TO"
     }
     $previousValue = [Environment]::GetEnvironmentVariable(
         $captureVariable,
