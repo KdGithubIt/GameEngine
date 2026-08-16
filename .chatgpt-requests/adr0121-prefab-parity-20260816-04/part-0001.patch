@@ -1,0 +1,37 @@
+diff --git a/crates/cli/src/asset_cli.rs b/crates/cli/src/asset_cli.rs
+--- a/crates/cli/src/asset_cli.rs
++++ b/crates/cli/src/asset_cli.rs
+@@ -58,7 +58,9 @@ fn asset_inspect(project_path: &Path, asset_id: &str) -> Result<CliRunResult, Cl
+     }
+ }
+ 
+-fn load_catalog(project_path: &Path) -> Result<(ProjectRoot, AssetManifest), CliRunResult> {
++pub(super) fn load_catalog(
++    project_path: &Path,
++) -> Result<(ProjectRoot, AssetManifest), CliRunResult> {
+     let project = ProjectRoot::open(project_path).map_err(|error| {
+         input_error("project_error", project_path, &error.to_string())
+     })?;
+diff --git a/crates/cli/src/scene_cli.rs b/crates/cli/src/scene_cli.rs
+--- a/crates/cli/src/scene_cli.rs
++++ b/crates/cli/src/scene_cli.rs
+@@ -52,7 +52,7 @@ struct AuthoringErrorBody {
+     message: String,
+ }
+ 
+-struct SceneContext {
+-    path: PathBuf,
+-    session: AuthoringSession,
++pub(super) struct SceneContext {
++    pub(super) path: PathBuf,
++    pub(super) session: AuthoringSession,
+ }
+@@ -276,7 +276,7 @@ fn component_schemas() -> Result<CliRunResult, CliError> {
+     Ok(CliRunResult::success(to_json(&output)?))
+ }
+ 
+-fn load_scene_context(
++pub(super) fn load_scene_context(
+     project_path: &Path,
+     scene_relative: &str,
+ ) -> Result<SceneContext, CliRunResult> {

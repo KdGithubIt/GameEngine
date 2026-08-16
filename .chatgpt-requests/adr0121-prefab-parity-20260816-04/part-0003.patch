@@ -1,0 +1,42 @@
+diff --git a/crates/mcp/src/lib.rs b/crates/mcp/src/lib.rs
+--- a/crates/mcp/src/lib.rs
++++ b/crates/mcp/src/lib.rs
+@@ -11,6 +11,8 @@
+ pub mod ai_agent;
+ /// Asset discovery and inspection tool handlers backed by the shared asset catalog.
+ pub mod asset;
++/// Prefab creation and instantiation tool handlers backed by shared services.
++pub mod prefab;
+ /// Scene/project tool handlers backed by the shared authoring services.
+ pub mod scene;
+ 
+@@ -19,6 +21,7 @@ pub use ai_agent::{
+     validate_ai_agent_input, AiAgentInput, AiAgentOutput,
+ };
+ pub use asset::{AssetInspectInput, AssetMcpTools, AssetSearchInput};
++pub use prefab::{PrefabCreateInput, PrefabInstantiateInput, PrefabMcpTools};
+ pub use scene::{
+     ComponentSchemasOutput, EntityFindInput, EntityFindOutput, EntityInspectInput,
+     EntityInspectOutput, ProjectDescribeOutput, SceneMcpTools, SceneMutationInput,
+@@ -28,9 +31,10 @@ use engine_authoring::{
+     BehaviorTreeApply, BehaviorTreeAuthoringService, BehaviorTreeCompilation,
+     BehaviorTreeEdgeSummary, BehaviorTreeLayout, BehaviorTreeNodeSummary,
+     BehaviorTreeSchemaCatalog, BehaviorTreeServiceError, BehaviorTreeValidation, Graph,
+-    GraphCommand, SceneAuthoringError,
++    GraphCommand, PrefabAuthoringError, SceneAuthoringError,
+ };
+ use engine_assets::catalog::AssetCatalogError;
++use engine_assets::prefab::PrefabAssetError;
+ use serde::{Deserialize, Serialize};
+ use serde_json::json;
+ use std::fmt;
+@@ -53,6 +57,16 @@ pub enum McpToolError {
+         /// Source asset catalog error.
+         source: AssetCatalogError,
+     },
++    /// The shared prefab asset service rejected the request.
++    PrefabAsset {
++        /// Source prefab asset error.
++        source: PrefabAssetError,
++    },
++    /// The shared prefab Scene authoring service rejected the request.

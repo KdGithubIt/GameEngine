@@ -1,0 +1,265 @@
+diff --git a/crates/authoring/src/lib.rs b/crates/authoring/src/lib.rs
+index b936312..7488ef1 100644
+--- a/crates/authoring/src/lib.rs
++++ b/crates/authoring/src/lib.rs
+@@ -52,6 +52,7 @@ pub mod load;
+ pub mod material_asset;
+ pub mod persist;
+ pub mod prefab;
++pub mod prefab_authoring;
+ pub mod project;
+ pub mod project_settings;
+ pub mod scene;
+@@ -126,6 +127,10 @@ pub use material_asset::{
+ };
+ pub use persist::{replace_file_contents, PersistError, PersistOperation};
+ pub use prefab::{PrefabAsset, PrefabError, PrefabInstantiation, PREFAB_SCHEMA_VERSION};
++pub use prefab_authoring::{
++    PrefabAuthoringError, PrefabAuthoringService, PrefabInstantiationMutation,
++    PREFAB_INSTANCE_COMPONENT,
++};
+ pub use project::{ProjectConfig, ProjectError, ProjectRoot, PROJECT_SCHEMA_VERSION};
+ pub use project_settings::{
+     AxisBinding, InputAction, KeyAxisBinding, Layer, ProjectSettings, ProjectSettingsError,
+diff --git a/crates/authoring/src/prefab.rs b/crates/authoring/src/prefab.rs
+--- a/crates/authoring/src/prefab.rs
++++ b/crates/authoring/src/prefab.rs
+@@ -138,7 +138,7 @@ impl PrefabAsset {
+     pub fn from_selection<'a>(
+         selection: impl IntoIterator<Item = (&'a EntityId, &'a AuthoringEntity)>,
+     ) -> Result<Self, PrefabError> {
+-        let entities: BTreeMap<EntityId, AuthoringEntity> = selection
++        let mut entities: BTreeMap<EntityId, AuthoringEntity> = selection
+             .into_iter()
+             .map(|(id, e)| (id.clone(), e.clone()))
+             .collect();
+@@ -161,6 +161,13 @@ impl PrefabAsset {
+             _ => return Err(PrefabError::MultipleRoots),
+         };
+ 
++        // A prefab is a standalone subtree. If the selected root was nested in
++        // the source Scene, its external parent must not leak into the prefab.
++        entities
++            .get_mut(&root)
++            .expect("the selected root is present in the cloned selection")
++            .parent = None;
++
+         Ok(Self {
+             schema_version: PREFAB_SCHEMA_VERSION,
+             root,
+diff --git a/crates/assets/src/lib.rs b/crates/assets/src/lib.rs
+index 415dd8c..38f69b2 100644
+--- a/crates/assets/src/lib.rs
++++ b/crates/assets/src/lib.rs
+@@ -13,3 +13,5 @@ pub mod data_asset;
+ pub mod derived_cache;
+ /// Format-independent model intermediate representation.
+ pub mod model_ir;
++/// Shared prefab creation and loading within a project asset boundary.
++pub mod prefab;
+diff --git a/crates/editor/Cargo.toml b/crates/editor/Cargo.toml
+index 3f57885..852121b 100644
+--- a/crates/editor/Cargo.toml
++++ b/crates/editor/Cargo.toml
+@@ -16,6 +16,7 @@ path = "src/main.rs"
+ dirs = "5"
+ eframe = "0.34.3"
+ engine = { path = "../engine" }
++engine-assets = { path = "../assets" }
+ engine-authoring = { path = "../authoring" }
+ engine-mcp = { path = "../mcp" }
+ engine-project-lifecycle = { path = "../project-lifecycle" }
+diff --git a/Cargo.lock b/Cargo.lock
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -1393,11 +1393,12 @@
+ [[package]]
+ name = "engine-editor"
+ version = "0.1.0"
+ dependencies = [
+  "dirs",
+  "eframe",
+  "engine",
++ "engine-assets",
+  "engine-authoring",
+  "engine-mcp",
+  "engine-project-lifecycle",
+  "getrandom 0.3.4",
+diff --git a/crates/editor/src/mcp_transport.rs b/crates/editor/src/mcp_transport.rs
+--- a/crates/editor/src/mcp_transport.rs
++++ b/crates/editor/src/mcp_transport.rs
+@@ -5,7 +5,9 @@
+ //! project authoring session remains authoritative.
+ 
+ use eframe::egui;
+-use engine_mcp::{AssetMcpTools, BehaviorTreeMcpTools, McpToolDescriptor, SceneMcpTools};
++use engine_mcp::{
++    AssetMcpTools, BehaviorTreeMcpTools, McpToolDescriptor, PrefabMcpTools, SceneMcpTools,
++};
+ use serde_json::{json, Value};
+ use std::collections::BTreeMap;
+ use std::fmt;
+@@ -409,6 +411,7 @@ fn tools_list_result() -> Value {
+     let mut descriptors = BehaviorTreeMcpTools::new().tool_descriptors();
+     descriptors.extend(SceneMcpTools::new().tool_descriptors());
+     descriptors.extend(AssetMcpTools::new().tool_descriptors());
++    descriptors.extend(PrefabMcpTools::new().tool_descriptors());
+     json!({
+         "tools": descriptors.into_iter().map(tool_descriptor_json).collect::<Vec<_>>()
+     })
+diff --git a/crates/editor/src/ui/assets/instantiate.rs b/crates/editor/src/ui/assets/instantiate.rs
+--- a/crates/editor/src/ui/assets/instantiate.rs
++++ b/crates/editor/src/ui/assets/instantiate.rs
+@@ -5,5 +5,4 @@
+ //! Entity back out as a prefab asset.
+ 
+ use crate::ui::*;
+-use super::manifest::save_asset_manifest;
+ 
+@@ -260,42 +259,37 @@ impl EditorApp {
+                 ));
+             return;
+         };
+-        match crate::prefab_workflow::create_prefab_from_selection(scene, selection, &destination) {
+-            Ok(_) => {
+-                let asset_id = AssetId::generate();
+-                let mut manifest = self.asset_manifest.clone();
+-                let name = unique_asset_name(
+-                    destination
+-                        .file_stem()
+-                        .and_then(|stem| stem.to_str())
+-                        .unwrap_or("prefab"),
+-                    &manifest,
+-                );
+-                manifest.insert(
+-                    asset_id.clone(),
+-                    engine::ManifestEntry {
+-                        path: relative.clone(),
+-                        name: Some(name),
+-                        import_settings: engine::ImportSettings::default(),
+-                    },
+-                );
+-                if let Err(error) = save_asset_manifest(project, &manifest) {
+-                    let _ = fs::remove_file(&destination);
+-                    self.session
+-                        .push_diagnostic(engine_authoring::Diagnostic::error(
+-                            "editor.prefab_manifest_save_failed",
+-                            error,
+-                        ));
+-                    return;
+-                }
+-                self.asset_manifest = manifest;
++        let Some(root) = selection.first() else {
++            self.session
++                .push_diagnostic(engine_authoring::Diagnostic::error(
++                    "editor.prefab_create_failed",
++                    "prefab creation requires one root entity",
++                ));
++            return;
++        };
++        let scene = scene.clone();
++        let permissions = engine_authoring::AuthoringPermissions::read_only()
++            .with(engine_authoring::AuthoringPermission::AssetWrite);
++        match engine_assets::prefab::PrefabAssetService::new().create_from_root(
++            project,
++            &mut self.asset_manifest,
++            &permissions,
++            &scene,
++            root,
++            &relative,
++        ) {
++            Ok(creation) => {
+                 self.asset_browser.refresh(&project.assets_root());
+                 self.asset_browser
+-                    .select_relative_path(Path::new(&relative));
++                    .select_relative_path(Path::new(&creation.path));
+                 self.session
+                     .push_diagnostic(engine_authoring::Diagnostic::info(
+                         "editor.prefab_created",
+-                        format!("created prefab `{relative}` as `{}`", asset_id.as_str()),
++                        format!(
++                            "created prefab `{}` as `{}`",
++                            creation.path,
++                            creation.asset_id.as_str()
++                        ),
+                     ));
+             }
+             Err(error) => self
+diff --git a/crates/editor/src/prefab_workflow.rs b/crates/editor/src/prefab_workflow.rs
+--- a/crates/editor/src/prefab_workflow.rs
++++ b/crates/editor/src/prefab_workflow.rs
+@@ -8,5 +8,6 @@
+ use crate::session::{EditorSession, EditorSessionError};
+ use engine_authoring::{
+     replace_file_contents, AuthoringCommand, AuthoringEntity, AuthoringScene, ComponentTypeId,
+-    EntityId, PersistError, PrefabAsset, PrefabError, Value,
++    AuthoringPermission, AuthoringPermissions, EntityId, PersistError, PrefabAsset,
++    PrefabAuthoringError, PrefabAuthoringService, PrefabError, Value,
+ };
+@@ -17,2 +18,2 @@
+ /// Editor-only component that records the source asset of a prefab instance.
+-pub const EDITOR_PREFAB_INSTANCE_COMPONENT: &str = "editor.prefab_instance";
++pub const EDITOR_PREFAB_INSTANCE_COMPONENT: &str = engine_authoring::PREFAB_INSTANCE_COMPONENT;
+@@ -33,4 +34,6 @@ pub enum PrefabWorkflowError {
+     /// No scene is open or an authoring transaction failed.
+     Session(EditorSessionError),
++    /// Shared prefab authoring semantics rejected an instantiation.
++    Authoring(PrefabAuthoringError),
+     /// Prefab structure or JSON was invalid.
+     Prefab(PrefabError),
+@@ -51,3 +54,4 @@ impl fmt::Display for PrefabWorkflowError {
+         match self {
+             Self::Session(error) => write!(formatter, "prefab scene transaction failed: {error}"),
++            Self::Authoring(error) => write!(formatter, "prefab authoring failed: {error}"),
+             Self::Prefab(error) => write!(formatter, "prefab asset is invalid: {error}"),
+@@ -79,4 +83,9 @@ impl From<EditorSessionError> for PrefabWorkflowError {
+         Self::Session(value)
+     }
+ }
++impl From<PrefabAuthoringError> for PrefabWorkflowError {
++    fn from(value: PrefabAuthoringError) -> Self {
++        Self::Authoring(value)
++    }
++}
+ impl From<PrefabError> for PrefabWorkflowError {
+@@ -110,12 +119,32 @@ pub fn instantiate_prefab(
+     parent: Option<EntityId>,
+ ) -> Result<EntityId, PrefabWorkflowError> {
+     let prefab = load_prefab(source)?;
+-    let mut instance = prefab.instantiate_with_root(parent)?;
+-    instance.commands.push(AuthoringCommand::AddComponent {
+-        entity: instance.root.clone(),
+-        component_type: ComponentTypeId::new(EDITOR_PREFAB_INSTANCE_COMPONENT),
+-        value: marker_value(source),
+-    });
+-    session.apply_scene_commands(instance.commands)?;
+-    Ok(instance.root)
++    let permissions = AuthoringPermissions::read_only()
++        .with(AuthoringPermission::ProjectDataWrite);
++    let (revision, generation) = {
++        let authoring = session
++            .scene_authoring_session()
++            .ok_or(EditorSessionError::NoSceneDocument)?;
++        (authoring.scene().revision(), authoring.scene().generation())
++    };
++    let result = {
++        let authoring = session
++            .scene_authoring_session_mut()
++            .ok_or(EditorSessionError::NoSceneDocument)?;
++        PrefabAuthoringService::new().apply_instantiation(
++            authoring,
++            &permissions,
++            &prefab,
++            source,
++            parent,
++            revision,
++            generation,
++        )?
++    };
++    session.extend_diagnostics(result.mutation.diagnostics.iter().cloned());
++    if !result.mutation.success {
++        return Err(EditorSessionError::Diagnostics.into());
++    }
++    session.finish_external_scene_mutation();
++    Ok(result.proposed_root)
+ }

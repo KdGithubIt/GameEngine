@@ -1,0 +1,238 @@
++    PrefabAuthoring {
++        /// Source prefab authoring error.
++        source: PrefabAuthoringError,
++    },
+ }
+ 
+ impl fmt::Display for McpToolError {
+@@ -61,6 +75,8 @@ impl fmt::Display for McpToolError {
+             Self::Authoring { source } => source.fmt(formatter),
+             Self::SceneAuthoring { source } => source.fmt(formatter),
+             Self::AssetCatalog { source } => source.fmt(formatter),
++            Self::PrefabAsset { source } => source.fmt(formatter),
++            Self::PrefabAuthoring { source } => source.fmt(formatter),
+         }
+     }
+ }
+@@ -71,6 +87,8 @@ impl std::error::Error for McpToolError {
+             Self::Authoring { source } => Some(source),
+             Self::SceneAuthoring { source } => Some(source),
+             Self::AssetCatalog { source } => Some(source),
++            Self::PrefabAsset { source } => Some(source),
++            Self::PrefabAuthoring { source } => Some(source),
+         }
+     }
+ }
+@@ -93,6 +111,18 @@ impl From<AssetCatalogError> for McpToolError {
+     }
+ }
+ 
++impl From<PrefabAssetError> for McpToolError {
++    fn from(source: PrefabAssetError) -> Self {
++        Self::PrefabAsset { source }
++    }
++}
++
++impl From<PrefabAuthoringError> for McpToolError {
++    fn from(source: PrefabAuthoringError) -> Self {
++        Self::PrefabAuthoring { source }
++    }
++}
++
+ impl McpToolError {
+     /// Returns a stable diagnostic-style code when the source exposes one.
+     pub fn code(&self) -> &'static str {
+@@ -100,6 +130,8 @@ impl McpToolError {
+             Self::Authoring { .. } => "mcp.authoring_error",
+             Self::SceneAuthoring { source } => source.code(),
+             Self::AssetCatalog { source } => source.code(),
++            Self::PrefabAsset { source } => source.code(),
++            Self::PrefabAuthoring { source } => source.code(),
+         }
+     }
+ }
+diff --git a/crates/editor/src/ui/mcp.rs b/crates/editor/src/ui/mcp.rs
+--- a/crates/editor/src/ui/mcp.rs
++++ b/crates/editor/src/ui/mcp.rs
+@@ -7,7 +7,8 @@ use engine_authoring::{
+ use engine_mcp::{
+     AssetInspectInput, AssetMcpTools, AssetSearchInput, BehaviorTreeApplyInput,
+     BehaviorTreeGraphInput, BehaviorTreeMcpTools, EntityFindInput, EntityInspectInput,
+-    McpToolError, SceneMcpTools, SceneMutationInput,
++    McpToolError, PrefabCreateInput, PrefabInstantiateInput, PrefabMcpTools, SceneMcpTools,
++    SceneMutationInput,
+ };
+ use serde::de::DeserializeOwned;
+ use serde::Serialize;
+@@ -23,6 +24,7 @@ impl EditorApp {
+         let permissions = mcp_authoring_permissions();
+         let scene_tools = SceneMcpTools::new();
+         let asset_tools = AssetMcpTools::new();
++        let prefab_tools = PrefabMcpTools::new();
+         let behavior_tools = BehaviorTreeMcpTools::new();
+ 
+         match name {
+@@ -91,6 +93,50 @@ impl EditorApp {
+                     input,
+                 )?)
+             }
++            "prefab.create" => {
++                let input: PrefabCreateInput = decode(arguments)?;
++                let project = self.project_root().clone();
++                let scene = self.scene_authoring_session()?.scene().clone();
++                let creation = prefab_tools.prefab_create(
++                    &project,
++                    &mut self.asset_manifest,
++                    &permissions,
++                    &scene,
++                    input,
++                )?;
++                self.asset_browser.refresh(&project.assets_root());
++                to_value(creation)
++            }
++            "prefab.preview" => {
++                let input: PrefabInstantiateInput = decode(arguments)?;
++                let project = self.project_root().clone();
++                let session = self.scene_authoring_session()?;
++                to_value(prefab_tools.prefab_preview(
++                    &project,
++                    session,
++                    &permissions,
++                    input,
++                )?)
++            }
++            "prefab.instantiate" => {
++                let input: PrefabInstantiateInput = decode(arguments)?;
++                let project = self.project_root().clone();
++                let mutation = {
++                    let session = self.scene_authoring_session_mut()?;
++                    prefab_tools.prefab_instantiate(
++                        &project,
++                        session,
++                        &permissions,
++                        input,
++                    )?
++                };
++                self.session
++                    .extend_diagnostics(mutation.mutation.diagnostics.iter().cloned());
++                if mutation.mutation.success {
++                    self.session.finish_external_scene_mutation();
++                }
++                to_value(mutation)
++            }
+             "behavior_tree.schemas" => {
+                 require_empty_arguments(arguments)?;
+                 to_value(behavior_tools.behavior_tree_schemas())
+@@ -131,4 +177,5 @@ fn mcp_authoring_permissions() -> AuthoringPermissions {
+     AuthoringPermissions::read_only()
+         .with(AuthoringPermission::Preview)
+         .with(AuthoringPermission::ProjectDataWrite)
++        .with(AuthoringPermission::AssetWrite)
+ }
+diff --git a/crates/authoring/src/prefab_authoring.rs b/crates/authoring/src/prefab_authoring.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/authoring/src/prefab_authoring.rs
+@@ -0,0 +1,275 @@
++//! Shared prefab instantiation semantics over the Scene authoring transaction API.
++//!
++//! The prefab schema owns reusable entity templates, while this service owns the
++//! authoring command batch used to preview or apply one instance. Editor, CLI,
++//! and MCP adapters must not add their own ID-remap or instance-marker rules.
++
++use crate::{
++    AuthoringCommand, AuthoringPermissions, AuthoringSession, ComponentTypeId, EntityId,
++    PrefabAsset, PrefabError, SceneAuthoringError, SceneAuthoringMutation,
++    SceneAuthoringService, Value,
++};
++use serde::Serialize;
++use std::collections::BTreeMap;
++use std::fmt;
++use std::path::Path;
++
++/// Persisted editor-only component that records the source of a prefab instance.
++pub const PREFAB_INSTANCE_COMPONENT: &str = "editor.prefab_instance";
++
++/// Result of previewing or applying one prefab instantiation.
++#[derive(Debug, Clone, PartialEq, Serialize)]
++pub struct PrefabInstantiationMutation {
++    /// Fresh root ID proposed for this independent instantiation call.
++    pub proposed_root: EntityId,
++    /// Shared Scene mutation result, including diagnostics and semantic diff.
++    pub mutation: SceneAuthoringMutation,
++}
++
++/// Failure from shared prefab instantiation semantics.
++#[derive(Debug)]
++pub enum PrefabAuthoringError {
++    /// The prefab definition cannot produce a valid command batch.
++    Prefab(PrefabError),
++    /// The shared Scene authoring service rejected the operation.
++    Scene(SceneAuthoringError),
++}
++
++impl PrefabAuthoringError {
++    /// Returns the stable diagnostic-style code for this failure.
++    pub fn code(&self) -> &'static str {
++        match self {
++            Self::Prefab(_) => "prefab.invalid_definition",
++            Self::Scene(source) => source.code(),
++        }
++    }
++}
++
++impl fmt::Display for PrefabAuthoringError {
++    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
++        match self {
++            Self::Prefab(source) => write!(formatter, "prefab definition is invalid: {source}"),
++            Self::Scene(source) => source.fmt(formatter),
++        }
++    }
++}
++
++impl std::error::Error for PrefabAuthoringError {
++    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
++        match self {
++            Self::Prefab(source) => Some(source),
++            Self::Scene(source) => Some(source),
++        }
++    }
++}
++
++impl From<PrefabError> for PrefabAuthoringError {
++    fn from(source: PrefabError) -> Self {
++        Self::Prefab(source)
++    }
++}
++
++impl From<SceneAuthoringError> for PrefabAuthoringError {
++    fn from(source: SceneAuthoringError) -> Self {
++        Self::Scene(source)
++    }
++}
++
++/// GUI-free prefab instantiation behavior shared by structured authoring clients.
++#[derive(Debug, Default, Clone, Copy)]
++pub struct PrefabAuthoringService;
++
++impl PrefabAuthoringService {
++    /// Creates the stateless prefab authoring service.
++    pub fn new() -> Self {
++        Self
++    }
++
++    /// Previews one prefab instantiation without changing the Scene or undo history.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`PrefabAuthoringError`] when the prefab is structurally invalid,
++    /// preview permission is absent, or the supplied revision/generation is stale.
++    pub fn preview_instantiation(
++        &self,
++        session: &AuthoringSession,
++        permissions: &AuthoringPermissions,
++        prefab: &PrefabAsset,
++        source: &Path,
++        parent: Option<EntityId>,
++        expected_revision: u64,
++        expected_generation: u64,
