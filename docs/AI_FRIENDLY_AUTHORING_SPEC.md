@@ -132,8 +132,10 @@ state. During conversion:
 This mapping MUST be discarded when the play session ends. Runtime `Entity`
 and `RuntimeAssetId` values MUST NOT be persisted in project files.
 
-The runtime ECS crate MUST NOT depend on authoring types. The crate that owns
-the build pipeline is deferred to Open Decision #6.
+The runtime ECS crate MUST NOT depend on authoring types. Runtime-domain
+ownership and the final `engine` composition boundary follow ADR 0113. Open
+Decision #6 is limited to the packaged build-artifact format and related build
+pipeline policy that ADR 0113 does not define.
 
 ### 5.3 Authoring-First Game Creation
 
@@ -175,49 +177,77 @@ defined by ADR 0023.
 
 ## 6. Crate and Module Boundaries
 
-The preferred future workspace structure is:
+The current workspace is decomposed into runtime domain packages plus
+application and authoring packages. ADR 0113 defines the runtime ownership
+target, ADR 0114 defines heavyweight backend isolation, ADR 0117 defines the
+project application lifecycle, and ADR 0121 defines AI/MCP application
+integration.
 
 ```text
 crates/
   ecs/                 # Runtime ECS only
-  rig/                 # Low-level transform, skeleton, skin, and pose runtime
-  engine/              # Runtime engine systems and build integration
-  renderer/            # Runtime rendering
-  authoring/            # Authoring data, schemas, commands, transactions
-  graph/                # Domain-neutral graph model and layout contracts
-  graph_bt/             # Behavior Tree domain
-  project-lifecycle/    # GUI-free project application/process lifecycle
-  launcher/             # Project selection/creation and Editor launch UI
-  editor/               # Project-scoped human visual editor frontend
-  cli/                  # Thin adapter over authoring API
-  mcp/                  # Thin adapter over authoring API
+  core/                # Shared runtime primitives and small contracts
+  assets/              # Runtime asset contracts and format-neutral model IR
+  rig/                 # Transform, skeleton, skin, pose, and rig contracts
+  animation/           # Clips, animator, animation graph, pose, retargeting
+  physics/             # Collision, controller, navigation, solver boundary
+  render-runtime/      # Runtime mesh/material/light/UI/render-pass behavior
+  import/              # Format-neutral import orchestration and parsers
+  gameplay/            # Ability, behavior, combat, hitbox, gameplay control
+  platform/            # Native input, audio, gamepad, platform adapters
+  scripting/           # Host-independent project scripting/game SDK contracts
+  scene/               # Scene load/management, save, and replay ownership
+  renderer/            # Low-level GPU context and optional surface integration
+  engine/              # Final composition and compatibility facade
+  authoring/           # Authoring data, schemas, commands, transactions
+  project-lifecycle/   # GUI-free project application/process lifecycle
+  launcher/            # Project selection/creation and Editor launch UI
+  editor/              # Project-scoped human visual editor frontend
+  cli/                 # Thin headless adapter over shared authoring services
+  mcp/                 # Transport-agnostic AI authoring tool handlers
+  game-*-macros/       # Project Rust derive/attribute support
 ```
 
-This structure MAY be introduced incrementally. Until separate crates exist,
-the same ownership boundaries MUST be preserved with modules.
+The package list is not itself a complete dependency graph. The normative
+ownership and dependency rules are:
 
-- `ecs` MUST NOT depend on editor, MCP, graph view, or serialized authoring
-  types.
-- `renderer` owns low-level GPU context and window surface initialization. It
-  MUST NOT depend on `engine`, ECS, authoring, editor GUI, CLI, or MCP types.
+- `ecs` MUST NOT depend on editor, MCP, serialized authoring types, or higher
+  runtime domains.
+- No runtime domain package below `engine` may depend on `engine`, and circular
+  workspace package dependencies are forbidden.
+- `renderer` owns low-level GPU context and optional window-surface integration.
+  `render-runtime` MAY depend on it; `renderer` MUST NOT depend on
+  `render-runtime`, `engine`, authoring, editor, CLI, or MCP.
 - `rig` owns transform hierarchy primitives, skeleton identity, skin binding,
-  layered rig poses, and rigid-body rig descriptions. It MAY depend on `ecs`
-  and stable authoring identifiers, but MUST NOT depend on `engine`, `renderer`,
-  windowing, audio, model importers, or a physics solver.
-- `engine` MAY depend on `renderer` for runtime rendering, but MUST NOT
-  duplicate low-level GPU or window surface initialization logic.
-- `authoring` MAY depend on schema and graph abstractions, but MUST NOT depend
-  on a GUI framework.
+  layered rig poses, and rigid-body rig descriptions. It MUST NOT depend on
+  `engine`, renderer presentation, model importers, audio, or a physics solver.
+- `assets` and `core` MUST keep neutral contracts below higher runtime
+  implementations instead of importing format-specific or backend-specific
+  types to preserve an old implementation shape.
+- Heavy GPU, physics, windowing, audio, gamepad, GUI, and scripting-runtime
+  backends MUST remain at the owner or final composition boundary defined by
+  ADR 0114. Consumers that need only neutral contracts SHOULD disable those
+  backend features rather than inheriting them transitively.
+- `engine` is the final runtime composition and supported compatibility facade.
+  It MAY contain concrete cross-domain host adapters that would create an
+  upward dependency or cycle if pushed into a lower domain.
+- `authoring` owns persisted authoring semantics and MUST NOT depend on a GUI
+  framework. Domain-neutral graph storage and graph transaction contracts
+  remain authoring-owned rather than requiring separate graph workspace crates.
 - `project-lifecycle` MAY depend on `authoring` for `ProjectRoot` and shared
-  authoring creation services. It MUST NOT own authoring command semantics,
-  runtime ECS behavior, Launcher UI, or Editor GUI state.
+  creation services. It MUST NOT own authoring command semantics, runtime ECS
+  behavior, Launcher UI, or Editor GUI state.
 - `launcher` owns project-selection UI, recent-project application state, and
   Editor process launch/activation. It MUST NOT implement unique authoring
   rules.
 - `editor` is project-scoped after bootstrap and MUST use shared authoring and
   project-lifecycle contracts rather than duplicating them.
-- `cli` and `mcp` MUST be adapters. They MUST NOT contain unique editing logic.
-- Graph domains MUST NOT duplicate the domain-neutral graph storage model.
+- `cli` and `mcp` MUST remain adapters over shared GUI-free authoring services.
+  They MUST NOT contain unique editing logic.
+
+Compatibility facade modules or cross-domain composition code may remain in
+`engine` where ADR 0113 permits them. Their presence does not transfer ownership
+of the underlying domain contract back into the facade.
 
 ## 7. Authoring Data Model
 
@@ -300,9 +330,9 @@ and independent of `id`, consistent with the separation described in §7.1:
 - `description`: Extended documentation and AI context for the entity.
 
 The `name`, `display_name`, and `description` fields MUST always be present
-in canonical serialized output, even when empty. Files that predate these
-fields MUST deserialize successfully with the fields defaulting to empty
-strings.
+in canonical serialized output, even when empty. Per ADR 0115, input that
+predates these required fields is obsolete rather than a compatibility shape;
+the current reader MUST NOT infer missing values solely to load an older writer.
 
 The runtime build or play pipeline converts `AuthoringEntity` values into
 runtime ECS entities. A runtime `Entity` ID MUST NOT be persisted as an
@@ -383,6 +413,13 @@ A component type ID:
 
 A `ComponentTypeId` identifies the component type. It is not an identifier
 for a specific component instance on an entity.
+
+Engine-owned render-light component IDs are stable authoring contracts.
+`engine.directional_light` and `engine.ambient_light` preserve their existing
+global-light semantics. `engine.point_light` and `engine.spot_light` are
+finite-range local lights whose runtime position comes from the owning entity's
+transform; spot-light orientation is the transformed local `-Z` axis. Their
+renderer budgets and shading semantics are defined by ADR 0129.
 
 Project Rust component identity is stored in a JSON sidecar beside its source:
 `player.rs.meta.json` for `player.rs`. Sidecar schema version 1 contains only
@@ -866,14 +903,14 @@ Serialization MUST:
 - Use stable formatting.
 - Avoid persisting derived runtime-only data.
 - Preserve unknown forward-compatible fields only when explicitly supported.
-- Include schema versions for migratable documents.
+- Include schema versions for versioned documents.
 - Write files atomically.
 
-The save pipeline MUST be equivalent to:
+The current-format save pipeline MUST be equivalent to:
 
 ```text
 parse
-  -> migrate
+  -> require current schema version
   -> validate schema
   -> validate semantics
   -> canonicalize ordering
@@ -882,13 +919,13 @@ parse
 ```
 
 Direct code-based file edits are supported, but loading and saving through the
-engine MUST normalize them through the same validation pipeline.
+engine MUST normalize them through the same validation pipeline. Per ADR 0115,
+normal load/save paths do not silently migrate obsolete schema versions.
 
-The Phase 2 `AuthoringScene::to_canonical_json` API performs semantic
-validation and deterministic JSON serialization only. It is not the complete
-file save pipeline and does not write files. Atomic file replacement remains a
-later persistence task to be implemented after the canonical persisted format
-and persistence ownership are resolved.
+`AuthoringScene::to_canonical_json` performs semantic validation and
+deterministic JSON serialization; persistence is owned by the document or
+service that writes the validated canonical result. Historical phase sequencing
+must not be used to reintroduce a compatibility migration path.
 
 ## 16. CLI and MCP Adapters
 
@@ -1068,6 +1105,11 @@ The first version does not need arbitrary scripting inside nodes.
 
 ## 20. Implementation Phases
 
+The phase descriptions below preserve implementation history and sequencing.
+For completed phases, later Accepted ADRs and the current normative sections of
+this specification override historical migration, compatibility, crate-location,
+and temporary-ownership statements in these phase notes.
+
 Implementation SHOULD proceed in this order. Phase numbers are sequential
 except for Phase 2.5, which is a deliberate runtime validation slice
 inserted before the Graph phases.
@@ -1169,10 +1211,9 @@ Completion criteria:
 - WASD keyboard input moves the player entity's transform.
 - `authoring` crate does not import runtime ECS or renderer types.
 - `ecs` crate does not import `authoring` types.
-- The conversion code lives in `engine`, which MAY import `authoring` types
-  as a minimal implementation of the build integration responsibility in §6.
-  This is a temporary home; the full pipeline crate is deferred to Open
-  Decision #7.
+- The conversion code initially lived in `engine` as the minimal build
+  integration prototype. Current runtime-domain ownership and final composition
+  follow ADR 0113 rather than this historical temporary-placement note.
 - `engine` uses `engine-renderer` for GPU and surface initialization without
   re-implementing it (ADR 0003).
 - Authoring validation and conversion planning complete before runtime world
@@ -1180,10 +1221,9 @@ Completion criteria:
   or partially added runtime assets.
 - The example compiles and runs with no Graph or Behavior Tree crates present.
 
-Note: The authoring-to-runtime conversion here is a minimal prototype. It
-addresses Open Decision #8 at the smallest viable scale. The crate that
-formally owns the conversion layer, the full artifact format, and build
-pipeline optimization remain deferred.
+Note: The authoring-to-runtime conversion here is a historical minimal
+prototype. ADR 0113 now defines runtime-domain and composition ownership;
+the packaged artifact format and build optimization policy remain open.
 
 #### Built-in Transform Authoring Contract
 
@@ -1763,8 +1803,9 @@ an Architecture Decision Record before broad implementation depends on them:
    history is implemented.
 5. Graph layout library versus custom layout implementation for general graph
    layout beyond the Phase 8 editor merge policy accepted in ADR 0016.
-6. Authoring-to-runtime build artifact format and the crate that owns the
-   build pipeline.
+6. Packaged authoring-to-runtime build artifact format and build optimization
+   policy not already fixed by ADR 0113's runtime-domain ownership and
+   composition boundary.
 
 ADRs SHOULD be stored under:
 
@@ -1788,7 +1829,9 @@ Resolved authoring, adapter, and runtime decisions:
   transaction identity.
 - ADR 0017 defines the Phase 8-A human editor GUI toolkit and crate boundary.
 - ADR 0018 defines the Phase 8-B undo/redo snapshot strategy (JSON snapshots, 100-step limit).
-- ADR 0019 defines the Phase 8-C editor combined-file persistence format (superseded by ADR 0022).
+- ADR 0019 records the historical Phase 8-C combined-file persistence format;
+  ADR 0022 supersedes it, and ADR 0115 does not retain the obsolete combined
+  format as a current compatibility reader.
 - ADR 0020 defines the scene document `schema_version` field policy.
 - ADR 0021 defines the asset reference model (`asset_ref` only) and the `asset_manifest.json` format.
 - ADR 0022 returns the editor to the ADR 0008 separate-file layout (`.graph.json` / `.graph.view.json`).
@@ -1860,9 +1903,9 @@ Resolved authoring, adapter, and runtime decisions:
 - ADR 0099 lets one registered VMD source target multiple PMX model sources.
   Each baked clip ID includes the stable PMX source ID and source clip index;
   picker labels resolve the target's current display name dynamically, so
-  renaming a model changes presentation without changing references. Legacy
-  singular VMD pairings retain a hidden old-ID alias for existing Animation
-  Sets, while new selections use only target-specific IDs.
+  renaming a model changes presentation without changing references. ADR 0115
+  removes the pre-0099 singular model-source field and hidden old-ID alias;
+  the current contract uses only target-specific IDs.
 - ADR 0110 adds model-owned `HumanoidProfile` metadata and a distinct
   skeleton-independent `HumanoidMotion` variant while preserving every
   skeleton-bound Native `AnimationClip`. Asset Browser and animation pickers
@@ -1897,19 +1940,22 @@ Resolved authoring, adapter, and runtime decisions:
 
 ### Single-version document policy
 
-ADR 0091 removes every old-version reader. A document whose `schema_version` is
-below the current version is an error, not an input to migrate:
+ADR 0115 establishes the current-format-only baseline. A versioned document
+whose `schema_version` differs from the current version is an error, not an
+input to migrate:
 
 | Document | Accepted `schema_version` |
 | --- | --- |
 | `*.ui.json` | 3 |
-| `*.material.json` | 2 |
+| `*.material.json` | 3 |
 | `asset_manifest.json` | 2 |
+| `project.json` | 2 |
 
-`*.ui.json` MUST state its `schema_version`; the field has no default.
-Documents whose current version is 1 — scene, prefab, project, project
-settings, graph, graph view, animation set, and component sidecar — are
-unaffected.
+Versioned documents MUST state the current schema version required by their
+owner. Scene, prefab, project settings, graph, graph view, animation set, and
+component-sidecar documents remain on their current owner-defined versions;
+this specification MUST NOT be read as permission to accept an older or missing
+version.
 
 Authoring components have exactly one shape each. The removed authoring
 components `engine.mesh`, `engine.material`, `engine.material_slots`,
@@ -1920,9 +1966,10 @@ through `motion_slot` only.
 
 ### Editor-ready document extensions
 
-`*.ui.json` schema version 2 adds image/nine-slice, progress, stack, grid,
-overlay, and scroll-view nodes. Version 1 documents MUST migrate without
-changing existing node meaning. UI mutations MUST use `UiDocumentCommand` and
+`*.ui.json` schema version 2 historically added image/nine-slice, progress,
+stack, grid, overlay, and scroll-view nodes. The current UI document is schema
+version 3; per ADR 0115, versions 1 and 2 are obsolete inputs rather than
+normal-load migration sources. UI mutations MUST use `UiDocumentCommand` and
 whole-document validation before commit.
 
 Scene hierarchy reparenting MUST use `AuthoringCommand::SetEntityParent`.

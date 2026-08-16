@@ -4,10 +4,6 @@ Status: Accepted
 Date: 2026-06-14
 Target Phase: Phase 41
 
-Amendment: ADR 0122 completes the split-sum image-based-lighting work that this
-MVP explicitly deferred. The shadow-map compatibility contract in this ADR is
-unchanged.
-
 ## Context
 
 Phase 41 introduces directional shadows and environment lighting. The renderer

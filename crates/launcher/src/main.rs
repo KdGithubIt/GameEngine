@@ -31,6 +31,8 @@ const RECENT_REFRESH_INTERVAL: Duration = Duration::from_millis(1500);
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct LauncherPreferences {
     recent_projects: Vec<PathBuf>,
+    #[serde(default)]
+    new_project_parent: Option<PathBuf>,
 }
 
 impl LauncherPreferences {
@@ -45,6 +47,13 @@ impl LauncherPreferences {
             return Self::default();
         };
         preferences.recent_projects.retain(|path| path.is_dir());
+        if preferences
+            .new_project_parent
+            .as_ref()
+            .is_some_and(|path| !path.is_dir())
+        {
+            preferences.new_project_parent = None;
+        }
         preferences
     }
 
@@ -58,6 +67,11 @@ impl LauncherPreferences {
         if let Ok(text) = serde_json::to_string_pretty(self) {
             let _ = std::fs::write(path, text);
         }
+    }
+
+    fn remember_new_project_parent(&mut self, path: &Path) {
+        self.new_project_parent = Some(path.to_path_buf());
+        self.save();
     }
 
     /// Moves `path` to the front of the recent list without touching disk.
@@ -324,9 +338,16 @@ impl LauncherApp {
             self.status = Some(StatusMessage::failure("Enter a project name first."));
             return;
         }
-        let Some(parent) = rfd::FileDialog::new().pick_folder() else {
+        let mut dialog = rfd::FileDialog::new();
+        if let Some(parent) = self.preferences.new_project_parent.as_deref()
+            && parent.is_dir()
+        {
+            dialog = dialog.set_directory(parent);
+        }
+        let Some(parent) = dialog.pick_folder() else {
             return;
         };
+        self.preferences.remember_new_project_parent(&parent);
         let final_path = parent.join(name);
         match create_standard_project(&final_path, name) {
             Ok(project) => {
@@ -880,6 +901,33 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Preference files written before the project-parent setting existed must
+    /// remain readable after the setting is introduced.
+    #[test]
+    fn legacy_preferences_without_new_project_parent_remain_readable() {
+        let preferences: LauncherPreferences =
+            serde_json::from_str(r#"{"recent_projects":[]}"#).expect("legacy preferences parse");
+
+        assert!(preferences.new_project_parent.is_none());
+    }
+
+    /// The selected parent is persisted as Launcher user state so a later
+    /// create dialog can start from the same location.
+    #[test]
+    fn new_project_parent_round_trips_through_preferences_json() {
+        let expected = PathBuf::from("D:/GameProjects");
+        let preferences = LauncherPreferences {
+            new_project_parent: Some(expected.clone()),
+            ..LauncherPreferences::default()
+        };
+
+        let json = serde_json::to_string(&preferences).expect("serialize preferences");
+        let decoded: LauncherPreferences =
+            serde_json::from_str(&json).expect("deserialize preferences");
+
+        assert_eq!(decoded.new_project_parent, Some(expected));
+    }
 
     /// Reopening a remembered project must move it to the front instead of
     /// adding a second row for the same location.

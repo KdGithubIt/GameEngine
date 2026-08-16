@@ -1,7 +1,7 @@
 # ChatGPT GitHub Automation
 
 Status: Accepted
-Version: 1.3.0
+Version: 1.4.3
 Canonical location: `docs/CHATGPT_AUTOMATION.md`
 
 ## Purpose
@@ -84,11 +84,107 @@ A `ready.json` modification, deletion, or a commit that changes any additional
 file is rejected. Once ready, a request is immutable. Corrections use a new
 request ID.
 
+## Producer operating checklist
+
+The request producer MUST treat patch publication as a protocol, not as an
+informal file upload. For every new implementation or correction request:
+
+1. Start from the latest intended baseline and create or select one dedicated
+   `chatgpt/gameengine-*` target branch.
+2. Read the target branch itself, not a remembered or previously cached copy.
+   Capture its current 40-character HEAD SHA and use that exact tree when
+   generating the patch.
+3. Read `AGENTS.md` and every specification, ADR, or workflow document it makes
+   relevant to the requested change before constructing the patch.
+4. Build one complete unified Git patch against the exact target tree. Keep
+   product changes inside the public allow-list and never include `.github/**`
+   or `.chatgpt-requests/**` in a normal dispatcher patch. Patch paths MUST be
+   repository-root relative (for example, `a/crates/...`, not
+   `a/GameEngine/crates/...` copied from a checkout-directory name).
+5. Preflight the exact reconstructed patch bytes that will be published. Run
+   `git apply --check --whitespace=error-all <reconstructed-patch>` against the
+   captured target tree, then confirm that the patch contains only intended
+   paths and no symlink or submodule changes. Using plain `git apply --check`
+   is not equivalent because it can miss whitespace errors the dispatcher will
+   reject. Do not manually retype, reformat, or otherwise reconstruct a second
+   copy of the patch after this preflight.
+6. Split the preflighted patch only for transport size and publish those exact
+   bytes as the declared `part-NNNN.patch` files. When a text-valued publication
+   API is used, split only at newline boundaries so transport cannot normalize
+   terminal whitespace from a mid-line fragment. Before publishing `ready.json`,
+   verify the published part byte counts and blob hashes, or the reconstructed
+   content hash, against the preflight artifact. Never use `ready.json` as a
+   partial-progress marker.
+7. Immediately before creating `ready.json`, re-read the remote target branch
+   HEAD. If it differs from `expected_head_sha`, abandon the unpublished
+   request, regenerate the patch from the new target tree, and use a new request
+   ID. Do not update `expected_head_sha` without regenerating the patch.
+   For a normal task branch whose intended baseline is `main`, also re-read
+   `main`. If `main` advanced after that task branch's baseline and the branch
+   does not already contain the new baseline, create a new task branch and
+   regenerate the request from current `main` before publishing `ready.json`,
+   unless the task intentionally targets the older baseline. A stable target
+   HEAD alone does not guarantee clean PR validation scope.
+8. Add `ready.json` in its own final transport commit and change no other file in
+   that commit. After this point the request is immutable.
+9. Follow the signal, dispatcher, Draft PR, and Windows validation through to a
+   terminal result. Read the validation mode and scope before interpreting the
+   individual gate results.
+10. On failure, identify the failing layer before changing code: transport
+    envelope, dispatcher/preflight, target-branch concurrency, Rust/docs
+    validation, visual validation, or external runner/service failure.
+11. After a confirmed recovery, apply the incident-learning rules below so the
+    same root cause does not need to be rediscovered on a later request.
+
+The producer MUST NOT work around a dispatcher failure by pushing the intended
+product patch directly to the task branch. Fix the request or, when the trusted
+automation itself is defective, use the separately reviewed automation-
+infrastructure path described by the repository policy.
+
+## Failure diagnosis before retry
+
+Use the failing layer to choose the recovery instead of making speculative code
+changes:
+
+- If the dispatch signal does not accept the ready commit, verify that the push
+  was to `chatgpt-dispatch` and that the final commit newly added exactly one
+  `.chatgpt-requests/<request-id>/ready.json` file.
+- If request-envelope validation fails, compare the request directory and
+  `ready.json` with the schema, contiguous part naming, size limits, and exact
+  file list in this document.
+- If the target HEAD no longer equals `expected_head_sha`, the request is stale.
+  Re-read the target branch, regenerate the patch from that exact tree, and use
+  a new request ID. Never force-apply or reuse the stale request.
+- If `git apply --check` rejects the reconstructed patch, treat the patch/tree
+  mismatch as the primary problem. Reconstruct the patch from the current
+  target files instead of editing product code merely to make old patch context
+  apply.
+- If `git apply --check` reports `No such file or directory` for otherwise
+  current target files, inspect the patch headers before changing code. Patch
+  paths are relative to the repository root and must not include the checkout
+  directory name or another transport-local prefix.
+- If the dispatcher rejects a path, do not weaken the allow-list from the task
+  request. `.github/**` and `.chatgpt-requests/**` are trust-boundary paths and
+  require the separately reviewed automation-infrastructure workflow.
+- If Windows validation fails after a successful patch application, use the
+  repair loop below. Read `summary.json`, mode, scope, failing gate logs, and any
+  diagnostics artifact before deciding whether another code patch is justified.
+- If GitHub, a runner, the network, or a dependency service is the root cause,
+  do not create speculative product changes to compensate for that external
+  failure.
+
+Confirmed failures and their durable recovery knowledge live in
+`docs/CHATGPT_AUTOMATION_INCIDENTS.md`. That log supplements this protocol; it
+does not override it.
+
 ## Patch parts
 
 Patch transport is byte-preserving concatenation. The dispatcher concatenates
 parts in the order declared by `patch_parts`; it does not add separators.
-Parts therefore do not need to be independently applicable patches.
+Parts therefore do not need to be independently applicable patches. The
+published blobs MUST reconstruct byte-for-byte to the artifact that passed
+producer preflight; a patch that was retyped or transformed after preflight has
+not been preflighted.
 
 Constraints:
 
@@ -316,6 +412,37 @@ An `affected` result must never be rewritten or summarized as a full-workspace
 result. If the changed paths should have forced `full` but classification did
 not, fix the planner/validation contract instead of treating the narrower run
 as sufficient.
+
+## Incident learning
+
+`docs/CHATGPT_AUTOMATION_INCIDENTS.md` is the durable operational memory for
+confirmed ChatGPT/Dispatcher/validation mistakes and failures.
+
+After a failure is understood and a recovery has been validated, ChatGPT MUST:
+
+1. Search the incident log by symptom, failing layer, and root cause.
+2. Update an existing entry when the root cause is already represented. Add new
+   evidence, a clearer diagnosis, or a stronger prevention rule instead of
+   creating a duplicate incident.
+3. Add a new incident only when the root cause is materially different from
+   existing entries.
+4. Record at least the symptom, failing layer, confirmed root cause, successful
+   resolution, and prevention/next-action rule.
+5. Distinguish observed evidence from inference. Do not record a guessed root
+   cause as confirmed merely because one retry happened to succeed.
+6. Keep secrets, credentials, private machine paths, and large raw logs out of
+   the document. Link to a durable PR, workflow run, commit, or request ID when
+   useful instead of copying entire logs.
+
+The incident log is organized by root cause rather than chronology. Repeated
+occurrences of the same problem belong in the same entry so that the repository
+accumulates reusable recovery knowledge instead of an ever-growing run diary.
+
+If learning from an incident shows that the protocol itself is incomplete or
+incorrect, update this canonical document in the same or a follow-up change.
+If it shows that trusted automation under `.github/**` is defective, do not try
+to repair that trust boundary through a normal dispatcher patch; use a separate
+`chatgpt/gameengine-*` automation-infrastructure branch and Draft PR.
 
 ## Fallback
 

@@ -1,9 +1,8 @@
 # Phase 50: Directional Shadow Pass
 
-Status: 実装完了（2026-07-05）。自動テスト・4 ゲートすべてパス。
+Status: 実装完了（2026-07-05）。2026-08-16 に CSM の安定化・品質改善を追加。
 `particles` / `skinned_mesh` example とも 10 秒以上の起動確認済み
 （シャドウパス含む全パイプラインが wgpu バリデーション通過）。
-影の見た目の最終確認のみ目視待ち。
 
 ## Goal
 
@@ -24,10 +23,13 @@ Depth32Float・2048px）を実際に GPU で描画する。
   `mesh.wgsl`・`mesh_skinned.wgsl` での comparison sampling（light bind
   group 拡張）/ `ShadowSettings.enabled` の尊重
 - Out: 解像度のランタイム変更 / ポイント・スポットライト影 /
-  specular IBL / カスケードブレンド
+  specular IBL
 - 50-D/50-E 追加（2026-07-05）: スキンドメッシュのシャドウキャスト
   （`shadow_depth_skinned.wgsl`・メインパスと同一 palette で変形一致）と
-  3x3 PCF フィルタ（`params.w` = シャドウテクセルサイズ）を実装済み
+  3x3 PCF フィルタを実装済み
+- 50-F 追加（2026-08-16）: bounding-sphere 由来の固定正方形 extent +
+  light-space texel snapping、カスケード overlap/blend、tent-weighted
+  3x3 PCF を実装
 
 ## Design Decisions
 
@@ -35,9 +37,16 @@ Depth32Float・2048px）を実際に GPU で描画する。
   追加する（binding 1: light VP + params uniform、binding 2: depth array、
   binding 3: comparison sampler）。新しい bind group index を増やさない
   ので、静的・skinned 両パイプラインの group 構成が変わらない。
-- カスケード選択はフラグメント側で「cascade 0 の光空間範囲内なら 0、
-  外れたら 1、両方外なら影なし」の単純判定。
-- 影はディフューズ項のみ減衰させ、アンビエント項には影響しない。
+- カスケード投影はフラスタム slice の bounding sphere を正方形 extent
+  として使い、light-space center を shadow texel 単位へ snap する。
+  カメラの微小移動や回転で投影サイズ/texel grid が揺れないようにする。
+- cascade 1 は cascade 0 の末尾 10% から重ねて描画する。receiver は
+  camera view depth で cascade を選び、その overlap 内を smoothstep で
+  blend するため、split 境界で visibility が不連続に切り替わらない。
+- 3x3 comparison sampling は 1-2-1 の separable tent weight を使う。
+  tap 数は増やさず、既存の linear comparison sampler と組み合わせる。
+- 影は Directional の direct-light contribution を減衰させ、Ambient / IBL /
+  Point / Spot の寄与には影響しない。
 - シャドウマップ解像度は起動時の `ShadowSettings::default()`（2048）で
   固定。ランタイム変更は将来課題。
 - スキンドメッシュは 50-D で専用 depth-only パイプラインによりキャスト
@@ -52,6 +61,8 @@ Depth32Float・2048px）を実際に GPU で描画する。
   depth-only pipeline）と light BGL 拡張、シャドウパス実行
 - 50-C: `mesh.wgsl` / `mesh_skinned.wgsl` のサンプリング、example
   起動確認、4 ゲート、docs 更新
+- 50-F: cascade の固定 square extent + texel snapping、transition overlap、
+  camera-depth blend、tent-weighted PCF と安定性回帰テスト
 
 ## Cautions
 
@@ -69,7 +80,7 @@ Depth32Float・2048px）を実際に GPU で描画する。
 
 ## Completion Criteria
 
-- ディレクショナルライト下で静的メッシュ・パーティクルが影を落とす。
+- ディレクショナルライト下で静的・skinned メッシュ、パーティクルが影を落とす。
 - `ShadowSettings.enabled = false` で影が消え、描画は従来どおり。
 - カスケード行列のフィット（全フラスタム角が光クリップ空間に収まる）が
   テストで保証される。
@@ -77,4 +88,4 @@ Depth32Float・2048px）を実際に GPU で描画する。
 
 ## Feeds Into
 
-- カスケードブレンド / 解像度設定のランタイム反映 / SSAO
+- 解像度設定のランタイム反映 / Point・Spot shadow / SSAO

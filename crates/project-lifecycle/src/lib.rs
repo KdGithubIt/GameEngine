@@ -15,7 +15,7 @@ use engine_authoring::{
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::fs::{self, File, OpenOptions, TryLockError};
-use std::io;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -26,6 +26,7 @@ pub const CURRENT_ENGINE_ASSOCIATION: &str = env!("CARGO_PKG_VERSION");
 const EDITOR_LOCK_FILE: &str = "editor.lock";
 const EDITOR_OWNER_FILE: &str = "editor-owner.json";
 const EDITOR_READY_FILE: &str = "editor-ready.json";
+const EDITOR_MCP_FILE: &str = "editor-mcp.json";
 const EDITOR_ACTIVATE_FILE: &str = "activate.request";
 const EDITOR_CLOSE_FILE: &str = "close.request";
 const LAUNCHER_LOCK_FILE: &str = "launcher.lock";
@@ -143,6 +144,28 @@ struct EditorReadyMetadata {
     ready_unix_ms: u64,
 }
 
+/// Ephemeral discovery and authentication metadata for one Editor MCP endpoint.
+///
+/// This record is application state stored beside the Editor lease, never
+/// canonical project authoring data.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EditorMcpEndpointMetadata {
+    /// Operating-system process identifier that owns the endpoint.
+    pub process_id: u32,
+    /// Stable logical project identity served by this endpoint.
+    pub project_id: ProjectId,
+    /// Canonical project location owned by the Editor process.
+    pub canonical_project: PathBuf,
+    /// Loopback-only Streamable HTTP endpoint URL.
+    pub endpoint: String,
+    /// MCP protocol version spoken by the endpoint.
+    pub protocol_version: String,
+    /// Ephemeral bearer credential required by the endpoint.
+    pub authorization_token: String,
+    /// Unix timestamp in milliseconds when the endpoint was published.
+    pub published_unix_ms: u64,
+}
+
 /// Outcome of asking lifecycle policy to open a project in the Editor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EditorLaunchOutcome {
@@ -188,6 +211,33 @@ impl EditorLease {
         &self.project
     }
 
+    /// Publishes the loopback MCP endpoint owned by this Editor process.
+    ///
+    /// Endpoint and credential metadata is written only to ephemeral lifecycle
+    /// state outside the project working tree.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when endpoint metadata cannot be serialized or written.
+    pub fn publish_mcp_endpoint(
+        &self,
+        endpoint: &str,
+        protocol_version: &str,
+        authorization_token: &str,
+    ) -> Result<EditorMcpEndpointMetadata, LifecycleError> {
+        let metadata = EditorMcpEndpointMetadata {
+            process_id: std::process::id(),
+            project_id: self.project.project_id().clone(),
+            canonical_project: self.project.path().to_path_buf(),
+            endpoint: endpoint.to_owned(),
+            protocol_version: protocol_version.to_owned(),
+            authorization_token: authorization_token.to_owned(),
+            published_unix_ms: unix_millis(),
+        };
+        write_private_json(&self.state_dir.join(EDITOR_MCP_FILE), &metadata)?;
+        Ok(metadata)
+    }
+
     /// Publishes that project opening and initial Editor bootstrap succeeded.
     ///
     /// # Errors
@@ -228,6 +278,10 @@ impl Drop for EditorLease {
         );
         remove_owned_ready(
             &self.state_dir.join(EDITOR_READY_FILE),
+            std::process::id(),
+        );
+        remove_owned_mcp_endpoint(
+            &self.state_dir.join(EDITOR_MCP_FILE),
             std::process::id(),
         );
     }
@@ -409,6 +463,7 @@ pub fn acquire_editor_project(path: &Path) -> Result<EditorLease, LifecycleError
     }
 
     let _ = fs::remove_file(state_dir.join(EDITOR_READY_FILE));
+    let _ = fs::remove_file(state_dir.join(EDITOR_MCP_FILE));
     write_json(
         &state_dir.join(EDITOR_OWNER_FILE),
         &EditorOwnerMetadata {
@@ -466,6 +521,41 @@ pub fn editor_is_ready(path: &Path) -> Result<bool, LifecycleError> {
         (owner, ready),
         (Some(owner), Some(ready)) if owner.process_id == ready.process_id
     ))
+}
+
+/// Returns the active Editor's MCP discovery/authentication metadata.
+///
+/// Stale metadata is ignored unless the authoritative Editor lease is still
+/// held and the metadata matches the current owner and canonical project.
+///
+/// # Errors
+///
+/// Returns an error if project inspection, lock probing, or metadata reading
+/// fails.
+pub fn editor_mcp_endpoint(
+    path: &Path,
+) -> Result<Option<EditorMcpEndpointMetadata>, LifecycleError> {
+    let project = inspect_project(path)?;
+    let state_dir = project_state_dir(&project);
+    if !editor_lock_is_held(&state_dir)? {
+        return Ok(None);
+    }
+    let owner: Option<EditorOwnerMetadata> =
+        read_json_optional(&state_dir.join(EDITOR_OWNER_FILE))?;
+    let metadata: Option<EditorMcpEndpointMetadata> =
+        read_json_optional(&state_dir.join(EDITOR_MCP_FILE))?;
+    Ok(match (owner, metadata) {
+        (Some(owner), Some(metadata))
+            if owner.process_id == metadata.process_id
+                && owner.project_id == metadata.project_id
+                && owner.canonical_project == metadata.canonical_project
+                && metadata.project_id.as_str() == project.project_id().as_str()
+                && metadata.canonical_project.as_path() == project.path() =>
+        {
+            Some(metadata)
+        }
+        _ => None,
+    })
 }
 
 /// Starts an Editor for `path`, or activates its existing Editor.
@@ -712,6 +802,26 @@ fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), LifecycleError
     })
 }
 
+fn write_private_json<T: Serialize>(path: &Path, value: &T) -> Result<(), LifecycleError> {
+    let text = serde_json::to_string_pretty(value)?;
+    let mut options = OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(path).map_err(|source| LifecycleError::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    file.write_all(text.as_bytes())
+        .map_err(|source| LifecycleError::Io {
+            path: path.to_path_buf(),
+            source,
+        })
+}
+
 fn read_json_optional<T: for<'de> Deserialize<'de>>(
     path: &Path,
 ) -> Result<Option<T>, LifecycleError> {
@@ -739,6 +849,15 @@ fn remove_owned_metadata(path: &Path, process_id: u32) {
 
 fn remove_owned_ready(path: &Path, process_id: u32) {
     let Ok(Some(metadata)) = read_json_optional::<EditorReadyMetadata>(path) else {
+        return;
+    };
+    if metadata.process_id == process_id {
+        let _ = fs::remove_file(path);
+    }
+}
+
+fn remove_owned_mcp_endpoint(path: &Path, process_id: u32) {
+    let Ok(Some(metadata)) = read_json_optional::<EditorMcpEndpointMetadata>(path) else {
         return;
     };
     if metadata.process_id == process_id {
@@ -825,6 +944,47 @@ mod tests {
 
         request_editor_close(&final_path).expect("close request must succeed");
         assert!(lease.take_close_request());
+    }
+
+    #[test]
+    fn mcp_discovery_metadata_exists_only_for_the_live_editor_lease() {
+        let parent = tempfile::tempdir().expect("temp directory must be created");
+        let final_path = parent.path().join("McpLifecycleGame");
+        create_standard_project(&final_path, "McpLifecycleGame").expect("scaffold must succeed");
+
+        let lease = acquire_editor_project(&final_path).expect("editor lease must succeed");
+        assert!(
+            editor_mcp_endpoint(&final_path)
+                .expect("discovery lookup")
+                .is_none(),
+            "lease acquisition alone must not publish an endpoint"
+        );
+        let published = lease
+            .publish_mcp_endpoint(
+                "http://127.0.0.1:43123/mcp",
+                "2025-11-25",
+                "ephemeral-test-token",
+            )
+            .expect("endpoint metadata must publish");
+        let discovered = editor_mcp_endpoint(&final_path)
+            .expect("discovery lookup")
+            .expect("published endpoint must be discoverable");
+
+        assert_eq!(published, discovered);
+        assert_eq!(&discovered.project_id, lease.project_root().project_id());
+        assert_eq!(discovered.canonical_project.as_path(), lease.project_root().path());
+        assert!(
+            !project_state_dir(lease.project_root()).starts_with(lease.project_root().path()),
+            "MCP discovery metadata must remain outside canonical project data"
+        );
+
+        drop(lease);
+        assert!(
+            editor_mcp_endpoint(&final_path)
+                .expect("post-drop discovery lookup")
+                .is_none(),
+            "endpoint metadata must not survive its owning Editor lease"
+        );
     }
 
     #[test]

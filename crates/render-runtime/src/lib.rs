@@ -13,11 +13,11 @@ pub mod camera;
 /// Immediate-mode runtime debug line presentation.
 #[cfg(feature = "gpu")]
 pub mod debug_draw;
+#[cfg(feature = "gpu")]
+mod environment;
 /// Runtime light resources and authored light mirroring.
 #[cfg(feature = "gpu")]
 pub mod light;
-#[cfg(feature = "gpu")]
-mod ibl;
 /// Level-of-detail selection and render-instancing statistics.
 #[cfg(feature = "gpu")]
 pub mod lod;

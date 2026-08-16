@@ -92,7 +92,7 @@ pub mod humanoid_import;
 pub mod hitbox;
 /// Keyboard and mouse input resources.
 pub mod input;
-/// Ambient and directional light resources.
+/// Ambient, directional, point, and spot light resources.
 pub mod light;
 /// Lock-on targeting: target selection, persistence, and validation (Phase 58).
 pub mod lock_on;
@@ -290,7 +290,9 @@ pub use input::{
     InputCommand, InputSource, KeyCode, MouseButton, MouseInput, VirtualInputQueue,
 };
 pub use inventory;
-pub use light::{light_resource_mirror_system, AmbientLight, DirectionalLight, SkySettings};
+pub use light::{
+    light_resource_mirror_system, AmbientLight, DirectionalLight, PointLight, SkySettings, SpotLight,
+};
 pub use lock_on::{lock_on_system, LockOnTarget, TargetLock};
 pub use lod::{lod_selection_system, InstanceStats, LodGroup, LodLevel};
 pub use material::{
@@ -356,7 +358,8 @@ pub use preview::{
 };
 pub use render_limits::{
     validate_scene_render_limits, MATERIAL_TEXTURE_SLOTS, MAX_AMBIENT_LIGHTS,
-    MAX_DIRECTIONAL_LIGHTS, MAX_PARTICLES_PER_EMITTER, MAX_RENDER_INSTANCES, MAX_TEXTURE_DIMENSION,
+    MAX_DIRECTIONAL_LIGHTS, MAX_PARTICLES_PER_EMITTER, MAX_POINT_LIGHTS, MAX_RENDER_INSTANCES,
+    MAX_SPOT_LIGHTS, MAX_TEXTURE_DIMENSION,
 };
 pub use replay::{
     InputReplay, ReplayCheckpoint, ReplayCommand, ReplayError, ReplayPlayer, ReplayRecorder,

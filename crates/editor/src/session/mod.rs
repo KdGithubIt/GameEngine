@@ -271,6 +271,19 @@ impl EditorSession {
         }
     }
 
+    pub(crate) fn scene_authoring_session(&self) -> Option<&AuthoringSession> {
+        self.scene_session.as_ref()
+    }
+
+    pub(crate) fn scene_authoring_session_mut(&mut self) -> Option<&mut AuthoringSession> {
+        self.scene_session.as_mut()
+    }
+
+    pub(crate) fn finish_external_scene_mutation(&mut self) {
+        self.sync_scene_document_from_session();
+        self.mark_dirty();
+    }
+
     /// Returns the open declarative UI document.
     pub fn ui_document(&self) -> Option<&UiDocument> {
         match &self.current_document {
