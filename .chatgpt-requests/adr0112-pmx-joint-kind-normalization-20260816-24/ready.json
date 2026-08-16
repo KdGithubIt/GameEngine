@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0112-pmx-joint-kind-normalization-20260816-24",
+  "target_branch": "chatgpt/gameengine-adr-0112-secondary-motion-v2",
+  "expected_head_sha": "0b966e71ac64e6f64b6cd2be73bff3cca219649b",
+  "patch_parts": ["part-0000.patch"],
+  "commit_message": "Normalize PMX spring joint kind",
+  "pr_title": "Implement ADR 0112 engine-native secondary motion",
+  "pr_body": "## Summary\n\nImplements ADR 0112 engine-native Secondary Motion. This correction aligns the PMX joint filter and fixture with mmd-anim-format's canonical `generic6dofSpring` name so supported spring joints survive best-effort conversion while unsupported kinds still emit diagnostics. The PR remains Draft while final ADR 0112 validation and documentation cleanup are completed."
+}
