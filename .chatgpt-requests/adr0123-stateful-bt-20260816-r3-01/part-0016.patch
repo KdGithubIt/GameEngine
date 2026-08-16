@@ -1,0 +1,22 @@
++        let compiled = domain.compile(&graph).expect("test graph must compile");
++        let mut registry = BehaviorTreeBehaviorRegistry::default();
++        registry.set_action("idle", BehaviorStatus::Success);
++        let mut runner = BehaviorTreeRunner::new(compiled);
++
++        assert_eq!(runner.tick(&mut registry).unwrap(), BehaviorStatus::Success);
++    }
++}
+diff --git a/crates/gameplay/src/lib.rs b/crates/gameplay/src/lib.rs
+index e51a3152b539ddc250ab16f68e7b68bcc7b00802..534a20bb8912df8752ca8eaac48e00f9c17b2925 100644
+--- a/crates/gameplay/src/lib.rs
++++ b/crates/gameplay/src/lib.rs
+@@ -4,7 +4,8 @@
+ 
+ /// Data-driven ability timing and state machines.
+ pub mod ability;
+-/// Compiled Behavior Tree runtime execution.
++/// Stateful compiled Behavior Tree runtime execution.
++#[path = "behavior_tree_stateful.rs"]
+ pub mod behavior_tree;
+ /// Deterministic combat damage, hit results, and knockback processing.
+ pub mod combat;

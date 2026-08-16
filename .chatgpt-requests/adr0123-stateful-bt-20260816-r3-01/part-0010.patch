@@ -1,0 +1,123 @@
++                    plan,
++                    instance,
++                    context,
++                    child,
++                    BehaviorResetReason::Timeout,
++                )?;
++                clear_subtree_state(plan, instance, child, false);
++                instance.node_state[index].elapsed_seconds = 0.0;
++                instance.last_reset_reason = Some(BehaviorResetReason::Timeout);
++                while path.last().is_some_and(|path_index| *path_index != index) {
++                    path.pop();
++                }
++                return Ok(BehaviorStatus::Failure);
++            }
++            Ok(status)
++        }
++        PreparedDecorator::Cooldown(duration) => {
++            if instance.node_state[index].cooldown_until_seconds > instance.total_seconds {
++                return Ok(BehaviorStatus::Failure);
++            }
++            let status = tick_node(
++                plan,
++                instance,
++                context,
++                child,
++                depth.saturating_add(1),
++                delta_seconds,
++                steps,
++                max_steps,
++                path,
++            )?;
++            if status == BehaviorStatus::Success {
++                instance.node_state[index].cooldown_until_seconds =
++                    instance.total_seconds + duration;
++            }
++            Ok(status)
++        }
++    }
++}
++
++fn ensure_leaf<E>(
++    plan: &PreparedBehaviorTree,
++    index: usize,
++) -> Result<(), BehaviorTreeRuntimeError<E>> {
++    if plan.nodes[index].children.is_empty() {
++        Ok(())
++    } else {
++        Err(BehaviorTreeRuntimeError::LeafHasChildren {
++            node: plan.nodes[index].source.clone(),
++            kind: plan.nodes[index].kind,
++            count: plan.nodes[index].children.len(),
++        })
++    }
++}
++
++fn behavior_id<E>(
++    plan: &PreparedBehaviorTree,
++    index: usize,
++) -> Result<&str, BehaviorTreeRuntimeError<E>> {
++    plan.nodes[index]
++        .behavior
++        .as_deref()
++        .filter(|behavior| !behavior.is_empty())
++        .ok_or_else(|| BehaviorTreeRuntimeError::MissingBehaviorId {
++            node: plan.nodes[index].source.clone(),
++            kind: plan.nodes[index].kind,
++        })
++}
++
++fn is_descendant(plan: &PreparedBehaviorTree, mut node: usize, ancestor: usize) -> bool {
++    loop {
++        if node == ancestor {
++            return true;
++        }
++        let Some(parent) = plan.nodes[node].parent else {
++            return false;
++        };
++        node = parent;
++    }
++}
++
++fn clear_subtree_state(
++    plan: &PreparedBehaviorTree,
++    instance: &mut BehaviorTreeInstance,
++    root: usize,
++    preserve_cooldown: bool,
++) {
++    for index in 0..plan.nodes.len() {
++        if !is_descendant(plan, index, root) {
++            continue;
++        }
++        let cooldown = instance.node_state[index].cooldown_until_seconds;
++        instance.node_state[index] = NodeExecutionState::default();
++        if preserve_cooldown {
++            instance.node_state[index].cooldown_until_seconds = cooldown;
++        }
++    }
++    instance
++        .active_actions
++        .retain(|index| !is_descendant(plan, *index, root));
++}
++
++fn abort_actions_in_subtree<C: BehaviorTreeContext>(
++    plan: &PreparedBehaviorTree,
++    instance: &mut BehaviorTreeInstance,
++    context: &mut C,
++    root: usize,
++    reason: BehaviorResetReason,
++) -> Result<(), BehaviorTreeRuntimeError<C::Error>> {
++    let targets = instance
++        .active_actions
++        .iter()
++        .copied()
++        .filter(|index| is_descendant(plan, *index, root))
++        .rev()
++        .collect::<Vec<_>>();
++    let mut first_error = None;
++    for index in targets {
++        let Some(behavior_id) = plan.nodes[index].behavior.as_deref() else {
++            continue;
++        };
++        if let Err(source) = context.action_abort(&plan.nodes[index].source, behavior_id, reason) {
++            if first_error.is_none() {

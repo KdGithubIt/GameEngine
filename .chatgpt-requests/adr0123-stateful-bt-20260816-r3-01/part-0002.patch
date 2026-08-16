@@ -1,0 +1,245 @@
++            diagnostics,
++        }
++    }
++
++    /// Compiles a Behavior Tree graph into a runtime tree artifact.
++    #[must_use]
++    pub fn compile(&self, graph: &Graph) -> BehaviorTreeCompilation {
++        match self.domain.compile(graph) {
++            Ok(compiled_tree) => BehaviorTreeCompilation {
++                success: true,
++                diagnostics: Vec::new(),
++                compiled_tree: Some(compiled_tree),
++            },
++            Err(diagnostics) => BehaviorTreeCompilation {
++                success: false,
++                diagnostics,
++                compiled_tree: None,
++            },
++        }
++    }
++
++    /// Generates a deterministic graph view for a Behavior Tree graph.
++    #[must_use]
++    pub fn layout(&self, graph: &Graph) -> BehaviorTreeLayout {
++        match self.domain.auto_layout(graph) {
++            Ok(graph_view) => BehaviorTreeLayout {
++                success: true,
++                diagnostics: Vec::new(),
++                graph_view: Some(graph_view),
++            },
++            Err(diagnostics) => BehaviorTreeLayout {
++                success: false,
++                diagnostics,
++                graph_view: None,
++            },
++        }
++    }
++
++    /// Returns deterministic node summaries for a Behavior Tree graph.
++    #[must_use]
++    pub fn nodes(&self, graph: &Graph) -> Vec<BehaviorTreeNodeSummary> {
++        graph
++            .nodes
++            .values()
++            .map(|node| BehaviorTreeNodeSummary {
++                id: node.id.clone(),
++                node_type: node.node_type.clone(),
++                name: node.name.clone(),
++                properties: node.properties.clone(),
++            })
++            .collect()
++    }
++
++    /// Returns deterministic edge summaries for a Behavior Tree graph.
++    #[must_use]
++    pub fn edges(&self, graph: &Graph) -> Vec<BehaviorTreeEdgeSummary> {
++        graph
++            .edges
++            .values()
++            .map(|edge| BehaviorTreeEdgeSummary {
++                id: edge.id.clone(),
++                from: edge.from.clone(),
++                to: edge.to.clone(),
++            })
++            .collect()
++    }
++
++    /// Applies graph commands to a private copy and validates the result.
++    #[must_use]
++    pub fn apply(
++        &self,
++        graph: &Graph,
++        commands: impl IntoIterator<Item = GraphCommand>,
++    ) -> BehaviorTreeApply {
++        BehaviorTreeApply::from_application(apply_graph_commands_with_domain(
++            graph,
++            &self.domain,
++            commands,
++        ))
++    }
++}
++
++impl Default for BehaviorTreeAuthoringService {
++    fn default() -> Self {
++        Self::new()
++    }
++}
++
++fn stateful_decorator_schema(
++    base: &NodeSchema,
++    node_type: NodeTypeId,
++    display_name: &str,
++    description: &str,
++    search_tags: Vec<String>,
++    property_schema: Value,
++) -> NodeSchema {
++    let mut schema = base.clone();
++    schema.node_type = node_type;
++    schema.display_name = display_name.into();
++    schema.description = description.into();
++    schema.search_tags = search_tags;
++    schema.property_schema = property_schema;
++    schema
++}
++
++fn duration_property_schema(description: &str) -> Value {
++    Value::Object(BTreeMap::from([(
++        DURATION_SECONDS_KEY.into(),
++        Value::String(description.into()),
++    )]))
++}
++
++fn duration_node(id: NodeId, node_type: NodeTypeId, duration_seconds: f64) -> Node {
++    Node::new(
++        id,
++        node_type,
++        Value::Object(BTreeMap::from([(
++            DURATION_SECONDS_KEY.into(),
++            Value::F64(duration_seconds),
++        )])),
++    )
++}
++
++fn duration_value(node: &Node) -> Option<f64> {
++    let Value::Object(properties) = &node.properties else {
++        return None;
++    };
++    match properties.get(DURATION_SECONDS_KEY) {
++        Some(Value::F64(value)) => Some(*value),
++        Some(Value::I64(value)) => Some(*value as f64),
++        Some(Value::U64(value)) => Some(*value as f64),
++        _ => None,
++    }
++}
++
++fn duration_behavior(node: &Node, prefix: &str) -> Option<String> {
++    duration_value(node).map(|duration| format!("{prefix}{duration}"))
++}
++
++fn behavior_properties(behavior: String) -> Value {
++    Value::Object(BTreeMap::from([(
++        "behavior".into(),
++        Value::String(behavior),
++    )]))
++}
++
++fn validate_stateful_decorator_properties(
++    domain: &BehaviorTreeDomain,
++    graph: &Graph,
++) -> Vec<Diagnostic> {
++    let mut diagnostics = Vec::new();
++    for (node_id, node) in &graph.nodes {
++        let rule = if node.node_type == domain.wait_type {
++            Some(false)
++        } else if node.node_type == domain.timeout_type || node.node_type == domain.cooldown_type {
++            Some(true)
++        } else {
++            None
++        };
++        let Some(require_positive) = rule else {
++            continue;
++        };
++        let duration = duration_value(node);
++        let valid = duration.is_some_and(|value| {
++            value.is_finite() && if require_positive { value > 0.0 } else { value >= 0.0 }
++        });
++        if valid {
++            continue;
++        }
++        diagnostics.push(
++            Diagnostic::error(
++                "behavior_tree.invalid_decorator_parameter",
++                format!(
++                    "stateful decorator node `{}` requires `{}` to be {}",
++                    node_id.as_str(),
++                    DURATION_SECONDS_KEY,
++                    if require_positive {
++                        "a positive finite number"
++                    } else {
++                        "a non-negative finite number"
++                    }
++                ),
++            )
++            .with_target(DiagnosticTarget::Node {
++                graph: graph.id.clone(),
++                node: node_id.clone(),
++            }),
++        );
++    }
++    diagnostics
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use crate::id::GraphId;
++
++    #[test]
++    fn schema_catalog_exposes_typed_stateful_decorators() {
++        let service = BehaviorTreeAuthoringService::new();
++        let node_types = service
++            .schemas()
++            .nodes
++            .into_iter()
++            .map(|schema| schema.node_type)
++            .collect::<Vec<_>>();
++
++        assert!(node_types.contains(service.domain().inverter_type()));
++        assert!(node_types.contains(service.domain().wait_type()));
++        assert!(node_types.contains(service.domain().timeout_type()));
++        assert!(node_types.contains(service.domain().cooldown_type()));
++    }
++
++    #[test]
++    fn typed_wait_compiles_to_unchanged_decorator_dto() {
++        let domain = BehaviorTreeDomain::new();
++        let mut graph = Graph::new(
++            GraphId::generate(),
++            domain.graph_kind().clone(),
++            "wait_tree",
++        );
++        let root = NodeId::generate();
++        let wait = NodeId::generate();
++        let action = NodeId::generate();
++        graph.nodes.insert(root.clone(), domain.root_node(root.clone()));
++        graph
++            .nodes
++            .insert(wait.clone(), domain.wait_node(wait.clone(), 0.5));
++        graph
++            .nodes
++            .insert(action.clone(), domain.action_node(action.clone(), "work"));
++        let root_edge = domain.child_edge(EdgeId::generate(), root, wait.clone(), 0);
++        graph.edges.insert(root_edge.id.clone(), root_edge);
++        let action_edge = domain.child_edge(EdgeId::generate(), wait, action, 0);
++        graph.edges.insert(action_edge.id.clone(), action_edge);
++
++        let compiled = domain.compile(&graph).expect("typed wait must compile");
++        let wait = &compiled.root.children[0];
++        assert_eq!(wait.kind, BehaviorTreeNodeKind::Decorator);
++        assert_eq!(wait.behavior.as_deref(), Some("engine.wait:0.5"));
++    }
++
++    #[test]
++    fn invalid_timeout_duration_is_blocking_diagnostic() {
++        let domain = BehaviorTreeDomain::new();

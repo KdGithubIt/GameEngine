@@ -1,0 +1,249 @@
++        reason: BehaviorResetReason,
++    },
++}
++
++/// Registry-backed Behavior Tree context used by the minimal ECS integration.
++#[derive(Debug)]
++pub struct BehaviorTreeBehaviorRegistry {
++    conditions: HashMap<String, BehaviorStatus>,
++    actions: HashMap<String, BehaviorStatus>,
++    calls: Vec<BehaviorTreeDispatchRecord>,
++    lifecycle_calls: Vec<BehaviorTreeLifecycleEvent>,
++    delta_seconds: f64,
++}
++
++impl Default for BehaviorTreeBehaviorRegistry {
++    fn default() -> Self {
++        Self {
++            conditions: HashMap::new(),
++            actions: HashMap::new(),
++            calls: Vec::new(),
++            lifecycle_calls: Vec::new(),
++            delta_seconds: 1.0 / 60.0,
++        }
++    }
++}
++
++impl BehaviorTreeBehaviorRegistry {
++    /// Registers or replaces a condition behavior result.
++    pub fn set_condition(
++        &mut self,
++        behavior_id: impl Into<String>,
++        status: BehaviorStatus,
++    ) -> &mut Self {
++        self.conditions.insert(behavior_id.into(), status);
++        self
++    }
++
++    /// Registers or replaces an action behavior result.
++    pub fn set_action(
++        &mut self,
++        behavior_id: impl Into<String>,
++        status: BehaviorStatus,
++    ) -> &mut Self {
++        self.actions.insert(behavior_id.into(), status);
++        self
++    }
++
++    /// Sets the deterministic delta consumed by stateful decorators.
++    pub fn set_delta_seconds(&mut self, delta_seconds: f64) -> &mut Self {
++        self.delta_seconds = delta_seconds.max(0.0);
++        self
++    }
++
++    /// Returns dispatches observed since the last call to [`clear_calls`](Self::clear_calls).
++    #[must_use]
++    pub fn calls(&self) -> &[BehaviorTreeDispatchRecord] {
++        &self.calls
++    }
++
++    /// Returns lifecycle calls observed during the current system update.
++    #[must_use]
++    pub fn lifecycle_calls(&self) -> &[BehaviorTreeLifecycleEvent] {
++        &self.lifecycle_calls
++    }
++
++    /// Clears current-tick dispatch and lifecycle records.
++    pub fn clear_calls(&mut self) {
++        self.calls.clear();
++        self.lifecycle_calls.clear();
++    }
++}
++
++impl BehaviorTreeContext for BehaviorTreeBehaviorRegistry {
++    type Error = BehaviorTreeRegistryError;
++
++    fn action_enter(&mut self, node: &NodeId, behavior_id: &str) -> Result<(), Self::Error> {
++        self.lifecycle_calls.push(BehaviorTreeLifecycleEvent::Enter {
++            node: node.clone(),
++            behavior_id: behavior_id.to_owned(),
++        });
++        Ok(())
++    }
++
++    fn tick_action(&mut self, behavior_id: &str) -> Result<BehaviorStatus, Self::Error> {
++        self.calls.push(BehaviorTreeDispatchRecord {
++            kind: BehaviorDispatchKind::Action,
++            behavior_id: behavior_id.to_owned(),
++        });
++        self.actions.get(behavior_id).copied().ok_or_else(|| {
++            BehaviorTreeRegistryError::MissingAction {
++                behavior_id: behavior_id.to_owned(),
++            }
++        })
++    }
++
++    fn action_complete(
++        &mut self,
++        node: &NodeId,
++        behavior_id: &str,
++        status: BehaviorStatus,
++    ) -> Result<(), Self::Error> {
++        self.lifecycle_calls
++            .push(BehaviorTreeLifecycleEvent::Complete {
++                node: node.clone(),
++                behavior_id: behavior_id.to_owned(),
++                status,
++            });
++        Ok(())
++    }
++
++    fn action_abort(
++        &mut self,
++        node: &NodeId,
++        behavior_id: &str,
++        reason: BehaviorResetReason,
++    ) -> Result<(), Self::Error> {
++        self.lifecycle_calls.push(BehaviorTreeLifecycleEvent::Abort {
++            node: node.clone(),
++            behavior_id: behavior_id.to_owned(),
++            reason,
++        });
++        Ok(())
++    }
++
++    fn check_condition(&mut self, behavior_id: &str) -> Result<BehaviorStatus, Self::Error> {
++        self.calls.push(BehaviorTreeDispatchRecord {
++            kind: BehaviorDispatchKind::Condition,
++            behavior_id: behavior_id.to_owned(),
++        });
++        self.conditions.get(behavior_id).copied().ok_or_else(|| {
++            BehaviorTreeRegistryError::MissingCondition {
++                behavior_id: behavior_id.to_owned(),
++            }
++        })
++    }
++
++    fn behavior_delta_seconds(&self) -> f64 {
++        self.delta_seconds
++    }
++}
++
++/// Registry dispatch errors produced by [`BehaviorTreeBehaviorRegistry`].
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub enum BehaviorTreeRegistryError {
++    /// No action behavior is registered for the behavior ID.
++    MissingAction {
++        /// Stable behavior identifier.
++        behavior_id: String,
++    },
++    /// No condition behavior is registered for the behavior ID.
++    MissingCondition {
++        /// Stable behavior identifier.
++        behavior_id: String,
++    },
++}
++
++impl fmt::Display for BehaviorTreeRegistryError {
++    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
++        match self {
++            Self::MissingAction { behavior_id } => {
++                write!(formatter, "missing action behavior `{behavior_id}`")
++            }
++            Self::MissingCondition { behavior_id } => {
++                write!(formatter, "missing condition behavior `{behavior_id}`")
++            }
++        }
++    }
++}
++
++impl Error for BehaviorTreeRegistryError {}
++
++/// ECS system that ticks every [`BehaviorTreeRunner`] once.
++pub fn behavior_tree_tick_system(
++    mut runners: Query<&mut BehaviorTreeRunner>,
++    mut registry: ResMut<BehaviorTreeBehaviorRegistry>,
++) {
++    registry.clear_calls();
++    for (_, runner) in &mut runners {
++        let first_call = registry.calls.len();
++        if !runner.is_enabled() {
++            if let Err(error) = runner.flush_pending_reset(&mut *registry) {
++                runner.record_error(error);
++            }
++            runner.last_dispatches = registry.calls[first_call..].to_vec();
++            continue;
++        }
++        if let Err(error) = runner.tick(&mut *registry) {
++            runner.record_error(error);
++        }
++        runner.last_dispatches = registry.calls[first_call..].to_vec();
++    }
++}
++
++/// Adds the Behavior Tree ECS resource and tick system to an ECS app.
++pub fn register_behavior_tree_system(
++    app: &mut engine_ecs::App,
++) -> Result<&mut engine_ecs::App, engine_ecs::SystemBuildError> {
++    if app
++        .world()
++        .get_resource::<BehaviorTreeBehaviorRegistry>()
++        .is_none()
++    {
++        app.insert_resource(BehaviorTreeBehaviorRegistry::default());
++    }
++    app.try_add_system(behavior_tree_tick_system)
++}
++
++fn tick_node<C: BehaviorTreeContext>(
++    plan: &PreparedBehaviorTree,
++    instance: &mut BehaviorTreeInstance,
++    context: &mut C,
++    index: usize,
++    depth: u32,
++    delta_seconds: f64,
++    steps: &mut usize,
++    max_steps: usize,
++    path: &mut Vec<usize>,
++) -> Result<BehaviorStatus, BehaviorTreeRuntimeError<C::Error>> {
++    if depth > MAX_BEHAVIOR_TREE_RUNTIME_DEPTH {
++        return Err(BehaviorTreeRuntimeError::MaxDepthExceeded {
++            node: plan.nodes[index].source.clone(),
++            max_depth: MAX_BEHAVIOR_TREE_RUNTIME_DEPTH,
++        });
++    }
++    *steps = steps.saturating_add(1);
++    if *steps > max_steps {
++        return Err(BehaviorTreeRuntimeError::StepBudgetExceeded { max_steps });
++    }
++    path.push(index);
++    let status = match plan.nodes[index].kind {
++        BehaviorTreeNodeKind::Root => Err(BehaviorTreeRuntimeError::NestedRoot {
++            node: plan.nodes[index].source.clone(),
++        }),
++        BehaviorTreeNodeKind::Sequence => tick_sequence(
++            plan,
++            instance,
++            context,
++            index,
++            depth,
++            delta_seconds,
++            steps,
++            max_steps,
++            path,
++        ),
++        BehaviorTreeNodeKind::Selector => tick_selector(
++            plan,
++            instance,
++            context,
++            index,

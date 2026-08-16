@@ -1,0 +1,110 @@
++                first_error = Some((behavior_id.to_owned(), source));
++            }
++        }
++        instance.node_state[index].action_entered = false;
++        instance.push_transition(BehaviorExecutionTransition {
++            generation: instance.execution_generation,
++            node: Some(plan.nodes[index].source.clone()),
++            behavior_id: Some(behavior_id.to_owned()),
++            kind: BehaviorExecutionTransitionKind::Abort,
++            reason: Some(reason),
++        });
++    }
++    instance
++        .active_actions
++        .retain(|index| !is_descendant(plan, *index, root));
++    if let Some((behavior_id, source)) = first_error {
++        return Err(BehaviorTreeRuntimeError::BehaviorDispatchFailed {
++            dispatch: BehaviorDispatchKind::Action,
++            behavior_id,
++            source,
++        });
++    }
++    Ok(())
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use engine_authoring::{BehaviorTreeDomain, EdgeId, Graph, GraphCommand, GraphDomain, GraphTransaction};
++
++    fn node(
++        kind: BehaviorTreeNodeKind,
++        behavior: Option<&str>,
++        children: Vec<CompiledBehaviorNode>,
++    ) -> CompiledBehaviorNode {
++        CompiledBehaviorNode {
++            source: NodeId::generate(),
++            kind,
++            behavior: behavior.map(str::to_owned),
++            children,
++        }
++    }
++
++    fn action(behavior: &str) -> CompiledBehaviorNode {
++        node(BehaviorTreeNodeKind::Action, Some(behavior), vec![])
++    }
++
++    fn condition(behavior: &str) -> CompiledBehaviorNode {
++        node(BehaviorTreeNodeKind::Condition, Some(behavior), vec![])
++    }
++
++    fn sequence(children: Vec<CompiledBehaviorNode>) -> CompiledBehaviorNode {
++        node(BehaviorTreeNodeKind::Sequence, None, children)
++    }
++
++    fn selector(children: Vec<CompiledBehaviorNode>) -> CompiledBehaviorNode {
++        node(BehaviorTreeNodeKind::Selector, None, children)
++    }
++
++    fn decorator(behavior: &str, child: CompiledBehaviorNode) -> CompiledBehaviorNode {
++        node(BehaviorTreeNodeKind::Decorator, Some(behavior), vec![child])
++    }
++
++    fn tree(child: CompiledBehaviorNode) -> CompiledBehaviorTree {
++        CompiledBehaviorTree {
++            source: GraphId::generate(),
++            root: node(BehaviorTreeNodeKind::Root, None, vec![child]),
++        }
++    }
++
++    #[test]
++    fn memory_sequence_resumes_running_child_without_restarting_prefix() {
++        let mut registry = BehaviorTreeBehaviorRegistry::default();
++        registry
++            .set_condition("ready", BehaviorStatus::Success)
++            .set_action("work", BehaviorStatus::Running);
++        let mut runner = BehaviorTreeRunner::new(tree(sequence(vec![
++            condition("ready"),
++            action("work"),
++        ])));
++
++        assert_eq!(runner.tick(&mut registry).unwrap(), BehaviorStatus::Running);
++        registry.clear_calls();
++        assert_eq!(runner.tick(&mut registry).unwrap(), BehaviorStatus::Running);
++
++        assert_eq!(
++            registry.calls(),
++            [BehaviorTreeDispatchRecord {
++                kind: BehaviorDispatchKind::Action,
++                behavior_id: "work".into(),
++            }]
++        );
++    }
++
++    #[test]
++    fn memory_selector_resumes_running_child_without_restarting_failures() {
++        let mut registry = BehaviorTreeBehaviorRegistry::default();
++        registry
++            .set_condition("visible", BehaviorStatus::Failure)
++            .set_action("search", BehaviorStatus::Running);
++        let mut runner = BehaviorTreeRunner::new(tree(selector(vec![
++            condition("visible"),
++            action("search"),
++        ])));
++
++        assert_eq!(runner.tick(&mut registry).unwrap(), BehaviorStatus::Running);
++        registry.clear_calls();
++        assert_eq!(runner.tick(&mut registry).unwrap(), BehaviorStatus::Running);
++
++        assert_eq!(registry.calls().len(), 1);

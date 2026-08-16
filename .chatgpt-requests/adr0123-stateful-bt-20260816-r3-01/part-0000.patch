@@ -1,0 +1,225 @@
+diff --git a/crates/authoring/src/behavior_tree_stateful.rs b/crates/authoring/src/behavior_tree_stateful.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..afc6f834a75ed93762881f22642aee9b3299740e
+--- /dev/null
++++ b/crates/authoring/src/behavior_tree_stateful.rs
+@@ -0,0 +1,702 @@
++//! Stateful Behavior Tree authoring extensions from ADR 0123.
++//!
++//! The legacy Behavior Tree domain remains the compatibility implementation for
++//! existing node types and compiled DTOs. This wrapper adds schema-driven
++//! stateful decorator nodes while normalizing them to deterministic compiled
++//! decorator behavior identifiers, so serialized runtime DTO shapes and stable
++//! graph identities do not change.
++
++use crate::behavior_tree_legacy as legacy;
++use crate::diagnostic::{Diagnostic, DiagnosticTarget};
++use crate::graph::{
++    Edge, Graph, GraphCommand, GraphKind, GraphSchemaRegistry, Node, NodeSchema,
++    NodeTypeId,
++};
++use crate::graph_domain::{
++    apply_graph_commands_with_domain, validate_graph_with_domain, GraphDomain,
++};
++use crate::graph_view::{GraphView, LayoutPolicyId};
++use crate::id::{EdgeId, NodeId};
++use crate::value::Value;
++use std::collections::BTreeMap;
++
++pub use legacy::{
++    BehaviorTreeApply, BehaviorTreeCompilation, BehaviorTreeEdgeSummary, BehaviorTreeExample,
++    BehaviorTreeLayout, BehaviorTreeNodeKind, BehaviorTreeNodeSummary, BehaviorTreeSchemaCatalog,
++    BehaviorTreeServiceError, BehaviorTreeValidation, CompiledBehaviorNode, CompiledBehaviorTree,
++};
++
++const DURATION_SECONDS_KEY: &str = "duration_seconds";
++const INVERTER_TYPE: &str = "behavior_tree.inverter";
++const WAIT_TYPE: &str = "behavior_tree.wait";
++const TIMEOUT_TYPE: &str = "behavior_tree.timeout";
++const COOLDOWN_TYPE: &str = "behavior_tree.cooldown";
++const INVERTER_BEHAVIOR: &str = "engine.inverter";
++const WAIT_BEHAVIOR_PREFIX: &str = "engine.wait:";
++const TIMEOUT_BEHAVIOR_PREFIX: &str = "engine.timeout:";
++const COOLDOWN_BEHAVIOR_PREFIX: &str = "engine.cooldown:";
++
++/// Behavior Tree graph domain extended with typed stateful decorators.
++pub struct BehaviorTreeDomain {
++    inner: legacy::BehaviorTreeDomain,
++    inverter_type: NodeTypeId,
++    wait_type: NodeTypeId,
++    timeout_type: NodeTypeId,
++    cooldown_type: NodeTypeId,
++    extra_schemas: BTreeMap<NodeTypeId, NodeSchema>,
++}
++
++impl BehaviorTreeDomain {
++    /// Creates the production Behavior Tree domain and ADR 0123 decorator schemas.
++    #[must_use]
++    pub fn new() -> Self {
++        let inner = legacy::BehaviorTreeDomain::new();
++        let inverter_type = NodeTypeId::new(INVERTER_TYPE);
++        let wait_type = NodeTypeId::new(WAIT_TYPE);
++        let timeout_type = NodeTypeId::new(TIMEOUT_TYPE);
++        let cooldown_type = NodeTypeId::new(COOLDOWN_TYPE);
++        let decorator_schema = inner
++            .node_schema(inner.decorator_type())
++            .expect("legacy Behavior Tree domain must define decorator schema")
++            .clone();
++        let extra_schemas = BTreeMap::from([
++            (
++                inverter_type.clone(),
++                stateful_decorator_schema(
++                    &decorator_schema,
++                    inverter_type.clone(),
++                    "Inverter",
++                    "Inverts Success and Failure while preserving Running.",
++                    vec!["inverter".into(), "not".into(), "decorator".into()],
++                    Value::Object(BTreeMap::new()),
++                ),
++            ),
++            (
++                wait_type.clone(),
++                stateful_decorator_schema(
++                    &decorator_schema,
++                    wait_type.clone(),
++                    "Wait",
++                    "Waits for a duration before ticking its child.",
++                    vec!["wait".into(), "delay".into(), "decorator".into()],
++                    duration_property_schema("non-negative duration in seconds"),
++                ),
++            ),
++            (
++                timeout_type.clone(),
++                stateful_decorator_schema(
++                    &decorator_schema,
++                    timeout_type.clone(),
++                    "Timeout",
++                    "Fails and aborts its running child when the duration expires.",
++                    vec!["timeout".into(), "deadline".into(), "decorator".into()],
++                    duration_property_schema("positive timeout duration in seconds"),
++                ),
++            ),
++            (
++                cooldown_type.clone(),
++                stateful_decorator_schema(
++                    &decorator_schema,
++                    cooldown_type.clone(),
++                    "Cooldown",
++                    "Blocks a successful child until its cooldown duration expires.",
++                    vec!["cooldown".into(), "rate".into(), "decorator".into()],
++                    duration_property_schema("positive cooldown duration in seconds"),
++                ),
++            ),
++        ]);
++        Self {
++            inner,
++            inverter_type,
++            wait_type,
++            timeout_type,
++            cooldown_type,
++            extra_schemas,
++        }
++    }
++
++    /// Returns the Behavior Tree graph kind.
++    #[must_use]
++    pub fn graph_kind(&self) -> &GraphKind {
++        self.inner.graph_kind()
++    }
++
++    /// Returns the root node type.
++    #[must_use]
++    pub fn root_type(&self) -> &NodeTypeId {
++        self.inner.root_type()
++    }
++
++    /// Returns the sequence node type.
++    #[must_use]
++    pub fn sequence_type(&self) -> &NodeTypeId {
++        self.inner.sequence_type()
++    }
++
++    /// Returns the selector node type.
++    #[must_use]
++    pub fn selector_type(&self) -> &NodeTypeId {
++        self.inner.selector_type()
++    }
++
++    /// Returns the condition node type.
++    #[must_use]
++    pub fn condition_type(&self) -> &NodeTypeId {
++        self.inner.condition_type()
++    }
++
++    /// Returns the action node type.
++    #[must_use]
++    pub fn action_type(&self) -> &NodeTypeId {
++        self.inner.action_type()
++    }
++
++    /// Returns the generic decorator node type.
++    #[must_use]
++    pub fn decorator_type(&self) -> &NodeTypeId {
++        self.inner.decorator_type()
++    }
++
++    /// Returns the typed Inverter decorator node type.
++    #[must_use]
++    pub fn inverter_type(&self) -> &NodeTypeId {
++        &self.inverter_type
++    }
++
++    /// Returns the typed Wait decorator node type.
++    #[must_use]
++    pub fn wait_type(&self) -> &NodeTypeId {
++        &self.wait_type
++    }
++
++    /// Returns the typed Timeout decorator node type.
++    #[must_use]
++    pub fn timeout_type(&self) -> &NodeTypeId {
++        &self.timeout_type
++    }
++
++    /// Returns the typed Cooldown decorator node type.
++    #[must_use]
++    pub fn cooldown_type(&self) -> &NodeTypeId {
++        &self.cooldown_type
++    }
++
++    /// Returns the default Behavior Tree layout policy.
++    #[must_use]
++    pub fn layout_policy(&self) -> LayoutPolicyId {
++        self.inner.layout_policy()
++    }
++
++    /// Creates a root node.
++    #[must_use]
++    pub fn root_node(&self, id: NodeId) -> Node {
++        self.inner.root_node(id)
++    }
++
++    /// Creates a sequence node.
++    #[must_use]
++    pub fn sequence_node(&self, id: NodeId) -> Node {
++        self.inner.sequence_node(id)
++    }
++
++    /// Creates a selector node.
++    #[must_use]
++    pub fn selector_node(&self, id: NodeId) -> Node {
++        self.inner.selector_node(id)
++    }
++
++    /// Creates a condition node with a stable behavior identifier.
++    #[must_use]
++    pub fn condition_node(&self, id: NodeId, behavior: impl Into<String>) -> Node {
++        self.inner.condition_node(id, behavior)
++    }
++
++    /// Creates an action node with a stable behavior identifier.
++    #[must_use]
++    pub fn action_node(&self, id: NodeId, behavior: impl Into<String>) -> Node {
++        self.inner.action_node(id, behavior)
++    }
++

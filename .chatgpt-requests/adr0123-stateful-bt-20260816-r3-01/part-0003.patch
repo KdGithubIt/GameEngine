@@ -1,0 +1,192 @@
++        let root = NodeId::generate();
++        let timeout = NodeId::generate();
++        let action = NodeId::generate();
++        let mut graph = Graph::new(
++            GraphId::generate(),
++            domain.graph_kind().clone(),
++            "invalid_timeout",
++        );
++        graph.nodes.insert(root.clone(), domain.root_node(root.clone()));
++        graph
++            .nodes
++            .insert(timeout.clone(), domain.timeout_node(timeout.clone(), 0.0));
++        graph
++            .nodes
++            .insert(action.clone(), domain.action_node(action.clone(), "work"));
++        let root_edge = domain.child_edge(EdgeId::generate(), root, timeout.clone(), 0);
++        graph.edges.insert(root_edge.id.clone(), root_edge);
++        let action_edge = domain.child_edge(EdgeId::generate(), timeout, action, 0);
++        graph.edges.insert(action_edge.id.clone(), action_edge);
++
++        assert!(validate_graph_with_domain(&graph, &domain).iter().any(|diagnostic| {
++            diagnostic.code == "behavior_tree.invalid_decorator_parameter"
++        }));
++    }
++}
+diff --git a/crates/authoring/src/lib.rs b/crates/authoring/src/lib.rs
+index b936312bb018a3c80497746ff51497dc61e3df47..039d2fdeefe8415d25dbeba19ede2908c9dfa8f4 100644
+--- a/crates/authoring/src/lib.rs
++++ b/crates/authoring/src/lib.rs
+@@ -37,6 +37,9 @@
+ pub mod access;
+ pub mod animation_graph;
+ pub mod animation_set;
++#[path = "behavior_tree.rs"]
++mod behavior_tree_legacy;
++#[path = "behavior_tree_stateful.rs"]
+ pub mod behavior_tree;
+ pub mod command;
+ pub mod component_metadata;
+diff --git a/crates/gameplay/src/behavior_tree_stateful.rs b/crates/gameplay/src/behavior_tree_stateful.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..fd4ebb672e3703d0beeed89176b6a2be59c062b5
+--- /dev/null
++++ b/crates/gameplay/src/behavior_tree_stateful.rs
+@@ -0,0 +1,1844 @@
++//! Stateful runtime execution and observation for compiled Behavior Trees.
++//!
++//! Authoring graphs remain immutable [`CompiledBehaviorTree`] artifacts. A
++//! [`BehaviorTreeExecutor`] prepares that artifact once into compact runtime
++//! indices, while each [`BehaviorTreeInstance`] owns mutable execution state.
++
++use engine_authoring::{
++    BehaviorTreeNodeKind, CompiledBehaviorNode, CompiledBehaviorTree, GraphId, NodeId, Value,
++};
++use engine_ecs::{Query, ResMut};
++use serde::{Deserialize, Serialize};
++use std::collections::{BTreeMap, HashMap, VecDeque};
++use std::error::Error;
++use std::fmt;
++
++/// Maximum compiled Behavior Tree depth accepted by the runtime executor.
++pub const MAX_BEHAVIOR_TREE_RUNTIME_DEPTH: u32 = 1024;
++/// Default upper bound on node visits performed by one tree tick.
++pub const DEFAULT_BEHAVIOR_TREE_STEP_BUDGET: usize = 4096;
++/// Maximum number of recent execution transitions retained for debugging.
++pub const MAX_BEHAVIOR_TREE_DEBUG_TRANSITIONS: usize = 64;
++
++const INVERTER_BEHAVIOR: &str = "engine.inverter";
++const WAIT_BEHAVIOR_PREFIX: &str = "engine.wait:";
++const TIMEOUT_BEHAVIOR_PREFIX: &str = "engine.timeout:";
++const COOLDOWN_BEHAVIOR_PREFIX: &str = "engine.cooldown:";
++
++/// Runtime result of ticking one Behavior Tree node.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case")]
++pub enum BehaviorStatus {
++    /// The node completed successfully.
++    Success,
++    /// The node completed unsuccessfully.
++    Failure,
++    /// The node is still executing and should be ticked again later.
++    Running,
++}
++
++/// Identifies which external behavior dispatch failed.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case")]
++pub enum BehaviorDispatchKind {
++    /// An action dispatch failed.
++    Action,
++    /// A condition dispatch failed.
++    Condition,
++}
++
++/// Explains why active Behavior Tree work was aborted or reset.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case")]
++pub enum BehaviorResetReason {
++    /// The runner was disabled.
++    RunnerDisabled,
++    /// The caller explicitly reset the runner.
++    ExplicitReset,
++    /// A new compiled tree replaced the current tree generation.
++    TreeReplaced,
++    /// A timeout decorator interrupted its running child subtree.
++    Timeout,
++    /// A future higher-priority interruption requested cancellation.
++    Interrupted,
++    /// The runner component is being removed.
++    RunnerRemoved,
++    /// The owning runtime entity is being despawned.
++    EntityDespawned,
++}
++
++/// Kind of lifecycle transition retained by runtime debugging.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case")]
++pub enum BehaviorExecutionTransitionKind {
++    /// A long-running action was entered.
++    Enter,
++    /// A node completed with success.
++    Success,
++    /// A node completed with failure.
++    Failure,
++    /// Active work was aborted before normal completion.
++    Abort,
++    /// The instance state was reset.
++    Reset,
++}
++
++/// One bounded runtime transition used by debugger snapshots.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++pub struct BehaviorExecutionTransition {
++    /// Execution generation in which this transition occurred.
++    pub generation: u64,
++    /// Source authoring node when the transition belongs to one node.
++    #[serde(skip_serializing_if = "Option::is_none")]
++    pub node: Option<NodeId>,
++    /// Stable behavior identifier for action transitions, when applicable.
++    #[serde(skip_serializing_if = "Option::is_none")]
++    pub behavior_id: Option<String>,
++    /// Transition category.
++    pub kind: BehaviorExecutionTransitionKind,
++    /// Reset or abort reason when applicable.
++    #[serde(skip_serializing_if = "Option::is_none")]
++    pub reason: Option<BehaviorResetReason>,
++}
++
++/// One currently active node and its accumulated active time.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++pub struct BehaviorActiveNodeSnapshot {
++    /// Stable source authoring node identifier.
++    pub node: NodeId,
++    /// Time accumulated while this node has remained active.
++    pub elapsed_seconds: f64,
++}
++
++/// Read-only bounded execution state shared by debugger integrations.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++pub struct BehaviorExecutionSnapshot {
++    /// Source authoring graph of the compiled tree.
++    pub tree_source: GraphId,
++    /// Monotonic tree generation incremented when the runner changes tree.
++    pub tree_generation: u64,
++    /// Monotonic execution generation incremented by explicit resets.
++    pub execution_generation: u64,
++    /// Most recent overall tick status, if a tick completed normally.
++    #[serde(skip_serializing_if = "Option::is_none")]
++    pub status: Option<BehaviorStatus>,
++    /// Current root-to-running-node path using source authoring IDs.
++    pub active_path: Vec<BehaviorActiveNodeSnapshot>,
++    /// Deepest currently running node, which may be a stateful decorator.
++    #[serde(skip_serializing_if = "Option::is_none")]
++    pub running_node: Option<NodeId>,
++    /// Most recently completed node.
++    #[serde(skip_serializing_if = "Option::is_none")]
++    pub last_terminal_node: Option<NodeId>,
++    /// Most recently observed terminal status.
++    #[serde(skip_serializing_if = "Option::is_none")]
++    pub last_terminal_status: Option<BehaviorStatus>,
++    /// Most recent reset or abort reason.
++    #[serde(skip_serializing_if = "Option::is_none")]
++    pub last_reset_reason: Option<BehaviorResetReason>,
++    /// Bounded recent execution transition history.
++    pub recent_transitions: Vec<BehaviorExecutionTransition>,
++    /// Runtime blackboard owned by the runner.
++    pub blackboard: BTreeMap<String, Value>,
++    /// Most recent execution error rendered for observation surfaces.
++    #[serde(skip_serializing_if = "Option::is_none")]
++    pub error: Option<String>,
++}
++
