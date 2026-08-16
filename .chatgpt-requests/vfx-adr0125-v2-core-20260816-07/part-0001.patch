@@ -1,0 +1,344 @@
++                return match left.interpolation {
++                    VfxCurveInterpolation::Step => left.value,
++                    VfxCurveInterpolation::Linear => {
++                        let span = right.time - left.time;
++                        if span <= f32::EPSILON {
++                            right.value
++                        } else {
++                            let factor = ((time - left.time) / span).clamp(0.0, 1.0);
++                            left.value + (right.value - left.value) * factor
++                        }
++                    }
++                };
++            }
++        }
++        last.value
++    }
++
++    fn is_valid(&self) -> bool {
++        if self.keys.is_empty() {
++            return false;
++        }
++        let mut ids = BTreeSet::new();
++        let mut previous = -1.0_f32;
++        for key in &self.keys {
++            if !ids.insert(key.id.clone())
++                || !key.time.is_finite()
++                || !(0.0..=1.0).contains(&key.time)
++                || key.time <= previous
++                || !key.value.is_finite()
++            {
++                return false;
++            }
++            previous = key.time;
++        }
++        true
++    }
++}
++
++/// One stable color-gradient key on normalized particle lifetime.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++pub struct VfxGradientKey {
++    /// Stable key identifier preserved when the key is moved.
++    pub id: VfxGradientKeyId,
++    /// Normalized lifetime position in `[0, 1]`.
++    pub time: f32,
++    /// Linear RGBA color at this key.
++    pub color: [f32; 4],
++}
++
++/// Ordered color gradient evaluated over normalized particle lifetime.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++pub struct VfxGradient {
++    /// Strictly time-ordered color keys.
++    pub keys: Vec<VfxGradientKey>,
++}
++
++impl VfxGradient {
++    /// Creates a two-key gradient between `start` and `end`.
++    pub fn linear(start: [f32; 4], end: [f32; 4]) -> Self {
++        Self {
++            keys: vec![
++                VfxGradientKey {
++                    id: VfxGradientKeyId::generate(),
++                    time: 0.0,
++                    color: start,
++                },
++                VfxGradientKey {
++                    id: VfxGradientKeyId::generate(),
++                    time: 1.0,
++                    color: end,
++                },
++            ],
++        }
++    }
++
++    /// Evaluates the gradient at normalized lifetime `time`.
++    ///
++    /// Values outside `[0, 1]` are clamped to the gradient's endpoints. Invalid
++    /// gradients return transparent black; callers should validate first.
++    pub fn evaluate(&self, time: f32) -> [f32; 4] {
++        let Some(first) = self.keys.first() else {
++            return [0.0; 4];
++        };
++        if time <= first.time {
++            return first.color;
++        }
++        let Some(last) = self.keys.last() else {
++            return first.color;
++        };
++        if time >= last.time {
++            return last.color;
++        }
++        for pair in self.keys.windows(2) {
++            let left = &pair[0];
++            let right = &pair[1];
++            if time <= right.time {
++                let span = right.time - left.time;
++                let factor = if span <= f32::EPSILON {
++                    1.0
++                } else {
++                    ((time - left.time) / span).clamp(0.0, 1.0)
++                };
++                let mut color = [0.0; 4];
++                for (index, value) in color.iter_mut().enumerate() {
++                    *value = left.color[index] + (right.color[index] - left.color[index]) * factor;
++                }
++                return color;
++            }
++        }
++        last.color
++    }
++
++    fn is_valid(&self) -> bool {
++        if self.keys.is_empty() {
++            return false;
++        }
++        let mut ids = BTreeSet::new();
++        let mut previous = -1.0_f32;
++        for key in &self.keys {
++            if !ids.insert(key.id.clone())
++                || !key.time.is_finite()
++                || !(0.0..=1.0).contains(&key.time)
++                || key.time <= previous
++                || !finite4(key.color)
++            {
++                return false;
++            }
++            previous = key.time;
++        }
++        true
++    }
++}
++
++/// Spawn volume used by the shape module.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++#[serde(tag = "shape", rename_all = "snake_case")]
++pub enum VfxShape {
++    /// Spawns at the emitter origin.
++    Point,
++    /// Spawns inside an axis-aligned box centered on the emitter.
++    Box {
++        /// Positive XYZ half-extents.
++        half_extents: [f32; 3],
++    },
++    /// Spawns inside a sphere centered on the emitter.
++    Sphere {
++        /// Non-negative sphere radius.
++        radius: f32,
++    },
++    /// Spawns inside a cone oriented by a local direction.
++    Cone {
++        /// Local cone axis; zero vectors are invalid.
++        direction: [f32; 3],
++        /// Half-angle in radians in `[0, pi/2)`.
++        angle_radians: f32,
++        /// Non-negative radius at the cone base.
++        radius: f32,
++    },
++}
++
++impl VfxShape {
++    fn validate(&self) -> bool {
++        match self {
++            Self::Point => true,
++            Self::Box { half_extents } => {
++                finite3(*half_extents) && half_extents.iter().all(|value| *value >= 0.0)
++            }
++            Self::Sphere { radius } => radius.is_finite() && *radius >= 0.0,
++            Self::Cone {
++                direction,
++                angle_radians,
++                radius,
++            } => {
++                finite3(*direction)
++                    && direction.iter().any(|value| value.abs() > f32::EPSILON)
++                    && angle_radians.is_finite()
++                    && (0.0..std::f32::consts::FRAC_PI_2).contains(angle_radians)
++                    && radius.is_finite()
++                    && *radius >= 0.0
++            }
++        }
++    }
++}
++
++/// Texture-sheet playback data shared by billboard and mesh render modules.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++pub struct VfxTextureSheet {
++    /// Number of horizontal cells.
++    pub columns: u32,
++    /// Number of vertical cells.
++    pub rows: u32,
++    /// Normalized frame selection over particle lifetime, where `0` is the
++    /// first cell and `1` is the last cell.
++    pub frame_over_life: VfxCurve,
++}
++
++impl VfxTextureSheet {
++    fn is_valid(&self) -> bool {
++        self.columns > 0 && self.rows > 0 && self.frame_over_life.is_valid()
++    }
++}
++
++/// Typed operation carried by one VFX module.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++#[serde(tag = "type", rename_all = "snake_case")]
++pub enum VfxModuleOperation {
++    /// Continuously emits particles at a rate per second.
++    SpawnRate {
++        /// Authored emission rate in particles per second.
++        particles_per_second: f32,
++    },
++    /// Emits one deterministic burst at an emitter-local time.
++    Burst {
++        /// Emitter-local burst time in seconds.
++        time: f32,
++        /// Number of particles requested by the burst.
++        count: u32,
++    },
++    /// Chooses the spawn volume for subsequent particles.
++    Shape {
++        /// Authored spawn shape.
++        shape: VfxShape,
++    },
++    /// Chooses particle lifetime at spawn.
++    Lifetime {
++        /// Lifetime in seconds.
++        value: VfxScalarValue,
++    },
++    /// Chooses initial speed along the direction produced by the active shape.
++    ///
++    /// This keeps the simple-emitter cone contract on the same compiled IR as
++    /// advanced effects without introducing a second runtime simulator.
++    InitialSpeed {
++        /// Initial speed in units per second.
++        value: VfxScalarValue,
++    },
++    /// Chooses initial local velocity at spawn, replacing shape-directed speed.
++    InitialVelocity {
++        /// Initial XYZ velocity in units per second.
++        value: VfxVectorValue,
++    },
++    /// Chooses initial linear RGBA color.
++    InitialColor {
++        /// Linear RGBA spawn color.
++        color: [f32; 4],
++    },
++    /// Chooses initial uniform size.
++    InitialSize {
++        /// Uniform spawn size.
++        value: VfxScalarValue,
++    },
++    /// Chooses initial billboard or mesh rotation in radians.
++    InitialRotation {
++        /// Spawn rotation in radians.
++        value: VfxScalarValue,
++    },
++    /// Applies a constant world-space acceleration every update.
++    Force {
++        /// XYZ acceleration in units per second squared.
++        acceleration: [f32; 3],
++    },
++    /// Applies velocity-proportional drag every update.
++    Drag {
++        /// Non-negative drag coefficient.
++        coefficient: f32,
++    },
++    /// Replaces particle color from a normalized-lifetime gradient.
++    ColorOverLife {
++        /// Linear RGBA gradient.
++        gradient: VfxGradient,
++    },
++    /// Multiplies particle size by a normalized-lifetime curve.
++    SizeOverLife {
++        /// Uniform size multiplier curve.
++        curve: VfxCurve,
++    },
++    /// Adds rotation sampled from a normalized-lifetime curve.
++    RotationOverLife {
++        /// Rotation in radians over normalized lifetime.
++        curve: VfxCurve,
++    },
++    /// Renders particles as camera-facing quads.
++    Billboard {
++        /// Optional material asset used by this output.
++        material: Option<AssetId>,
++        /// Optional texture-sheet animation.
++        texture_sheet: Option<VfxTextureSheet>,
++    },
++    /// Renders particles as instanced meshes.
++    Mesh {
++        /// Mesh asset drawn for each particle.
++        mesh: AssetId,
++        /// Optional material asset used by this output.
++        material: Option<AssetId>,
++        /// Optional texture-sheet animation.
++        texture_sheet: Option<VfxTextureSheet>,
++    },
++}
++
++impl VfxModuleOperation {
++    /// Returns the stable engine-owned module type identifier.
++    pub fn type_id(&self) -> &'static str {
++        match self {
++            Self::SpawnRate { .. } => "engine.vfx.spawn_rate",
++            Self::Burst { .. } => "engine.vfx.burst",
++            Self::Shape { .. } => "engine.vfx.shape",
++            Self::Lifetime { .. } => "engine.vfx.lifetime",
++            Self::InitialSpeed { .. } => "engine.vfx.initial_speed",
++            Self::InitialVelocity { .. } => "engine.vfx.initial_velocity",
++            Self::InitialColor { .. } => "engine.vfx.initial_color",
++            Self::InitialSize { .. } => "engine.vfx.initial_size",
++            Self::InitialRotation { .. } => "engine.vfx.initial_rotation",
++            Self::Force { .. } => "engine.vfx.force",
++            Self::Drag { .. } => "engine.vfx.drag",
++            Self::ColorOverLife { .. } => "engine.vfx.color_over_life",
++            Self::SizeOverLife { .. } => "engine.vfx.size_over_life",
++            Self::RotationOverLife { .. } => "engine.vfx.rotation_over_life",
++            Self::Billboard { .. } => "engine.vfx.billboard",
++            Self::Mesh { .. } => "engine.vfx.mesh",
++        }
++    }
++
++    /// Returns the only valid execution phase for this operation.
++    pub fn required_phase(&self) -> VfxPhase {
++        match self {
++            Self::SpawnRate { .. }
++            | Self::Burst { .. }
++            | Self::Shape { .. }
++            | Self::Lifetime { .. }
++            | Self::InitialSpeed { .. }
++            | Self::InitialVelocity { .. }
++            | Self::InitialColor { .. }
++            | Self::InitialSize { .. }
++            | Self::InitialRotation { .. } => VfxPhase::Spawn,
++            Self::Force { .. }
++            | Self::Drag { .. }
++            | Self::ColorOverLife { .. }
++            | Self::SizeOverLife { .. }
++            | Self::RotationOverLife { .. } => VfxPhase::Update,
++            Self::Billboard { .. } | Self::Mesh { .. } => VfxPhase::Render,
++        }
++    }
++}
++
