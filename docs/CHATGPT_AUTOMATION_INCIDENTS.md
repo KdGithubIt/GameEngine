@@ -42,6 +42,7 @@ required by `docs/CHATGPT_AUTOMATION.md`.
 
 ```text
 INC-001  Markdown trailing whitespace rejected by patch preflight  Dispatcher  Resolved
+INC-002  Synthetic fragment preflight validated nonexistent context  Dispatcher  Resolved
 ```
 
 ## INC-001: Markdown trailing whitespace rejected by patch preflight
@@ -93,6 +94,66 @@ new or changed lines; use a blank line when a visual line break is needed.
 - PR: N/A; patch application failed before PR creation
 - Workflow run: `31920548068`
 - Commit: N/A; target branch was not changed
+
+## INC-002: Synthetic fragment preflight validated nonexistent patch context
+
+Status: Resolved
+Layer: Dispatcher / patch applicability
+First confirmed: 2026-08-16
+Last confirmed: 2026-08-16
+
+### Symptom
+
+Request `adr0112-pmx-joint-diagnostics-20260816-22` passed ready-marker signal,
+request-envelope validation, and target checkout, then failed in
+`Reconstruct and validate patch` because `git apply --check` could not apply the
+patch to the declared target HEAD.
+
+### Evidence
+
+- Dispatcher run `31928677650`, job `95120141349`, reported
+  `patch failed: crates/import/src/pmx_import.rs` and
+  `git apply --check rejected the patch.`
+- The producer's earlier whitespace-strict preflight had passed, but it ran
+  against a synthetic file assembled from separately fetched source fragments
+  with blank filler between them rather than the exact target file.
+- The failing hunk therefore contained context adjacency created by that
+  synthetic layout and absent from the target branch.
+- Corrected request `adr0112-pmx-joint-diagnostics-20260816-23` regenerated the
+  patch from exact contiguous target context. Dispatcher run `31928914736`
+  passed `Reconstruct and validate patch`, applied the patch, and created commit
+  `0b966e71ac64e6f64b6cd2be73bff3cca219649b` on Draft PR #28.
+
+### Root cause
+
+The producer validated applicability against a fabricated preflight tree instead
+of the captured target tree. Although the fragments came from the target branch,
+joining non-contiguous fragments with filler changed their adjacency. Git
+therefore validated a different file layout from the trusted dispatcher.
+
+### Resolution
+
+Abandon the failed request, re-read the current target HEAD, and regenerate a
+new immutable request whose hunk context comes from exact contiguous target
+content. The corrected request passed the dispatcher's reconstruction and
+applicability checks before commit and push.
+
+### Prevention / ChatGPT next action
+
+Never treat a fragment-and-filler synthetic file as proof that a dispatcher
+patch applies. Preflight against a complete exact target snapshot when
+available; otherwise ensure every hunk's context comes from one contiguous
+range of the captured target file and verify the transported patch blob before
+publishing `ready.json`.
+
+### References
+
+- Request: `adr0112-pmx-joint-diagnostics-20260816-22`
+- PR: #28
+- Workflow run: `31928677650`
+- Corrected request: `adr0112-pmx-joint-diagnostics-20260816-23`
+- Corrected dispatcher run: `31928914736`
+- Commit: `0b966e71ac64e6f64b6cd2be73bff3cca219649b`
 
 ## Entry template
 

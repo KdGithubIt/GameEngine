@@ -1,7 +1,7 @@
 # ChatGPT GitHub Automation
 
 Status: Accepted
-Version: 1.4.0
+Version: 1.4.1
 Canonical location: `docs/CHATGPT_AUTOMATION.md`
 
 ## Purpose
@@ -105,7 +105,11 @@ informal file upload. For every new implementation or correction request:
    captured target tree, then confirm that the patch contains only intended
    paths and no symlink or submodule changes. Using plain `git apply --check`
    is not equivalent because it can miss whitespace errors the dispatcher will
-   reject.
+   reject. Applicability preflight MUST use an exact snapshot of the captured
+   target tree, or exact contiguous target-file ranges for every hunk when a
+   complete worktree is unavailable. Do not build a synthetic preflight tree by
+   joining unrelated source fragments with blank, placeholder, or filler lines;
+   that can validate patch context that does not exist on the remote target.
 6. Split the patch only for transport size. Publish every declared
    `part-NNNN.patch` before publishing `ready.json`; never use `ready.json` as a
    partial-progress marker.
@@ -144,9 +148,11 @@ changes:
   Re-read the target branch, regenerate the patch from that exact tree, and use
   a new request ID. Never force-apply or reuse the stale request.
 - If `git apply --check` rejects the reconstructed patch, treat the patch/tree
-  mismatch as the primary problem. Reconstruct the patch from the current
-  target files instead of editing product code merely to make old patch context
-  apply.
+  mismatch as the primary problem. Verify that every hunk came from exact
+  contiguous content in the captured target tree; separated fragments joined
+  with synthetic filler are not a valid applicability preflight. Reconstruct
+  the patch from the current target files instead of editing product code merely
+  to make old patch context apply.
 - If the dispatcher rejects a path, do not weaken the allow-list from the task
   request. `.github/**` and `.chatgpt-requests/**` are trust-boundary paths and
   require the separately reviewed automation-infrastructure workflow.
