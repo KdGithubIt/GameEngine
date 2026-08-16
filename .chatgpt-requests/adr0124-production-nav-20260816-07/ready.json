@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0124-production-nav-20260816-07",
+  "target_branch": "chatgpt/gameengine-adr-0124-production-navmesh-v4",
+  "expected_head_sha": "76622c2ff1f8e44985766891240e47d3816f3ac9",
+  "patch_parts": ["part-0000.patch"],
+  "commit_message": "Fix ADR 0124 navigation lint findings",
+  "pr_title": "GameEngine: implement ADR 0124 production navigation",
+  "pr_body": "## Summary\n\nContinues the ADR 0124 production navigation Draft PR on the latest main baseline. This correction addresses the two confirmed Clippy findings from the previous affected validation run without changing runtime behavior: the internal A* relaxation helper is explicitly scoped for its cohesive argument set, and the last-good artifact replacement branch uses the Rust let-chain form required by Clippy."
+}
