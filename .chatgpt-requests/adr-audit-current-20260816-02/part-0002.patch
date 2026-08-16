@@ -1,0 +1,154 @@
++### Canonical authoring specification
++
++`docs/AI_FRIENDLY_AUTHORING_SPEC.md` had accumulated current-contract drift:
++
++- Section 6 still presented the pre-0113 `graph`/`graph_bt` future workspace
++  sketch instead of the current runtime-domain package structure.
++- Section 7.2 still required compatibility loading for entities missing fields
++  that ADR 0115 makes mandatory in the current format.
++- Section 15 still described migration as part of the normal save pipeline even
++  though ADR 0115 establishes current-format-only loading.
++- Historical Phase 2.5 text referred to a nonexistent `Open Decision #7`.
++- Section 23 still summarized ADR 0099 as retaining the legacy singular
++  VMD/old-ID compatibility path that ADR 0115 removes.
++- The single-version table still listed material schema version 2 even though
++  ADR 0120 and the current authoring code use material schema version 3.
++- The same table treated `project.json` as version 1 even though the current
++  project identity contract is schema version 2 with `ProjectId` and
++  `engine_version`.
++
++Those contradictions were corrected. Historical phase descriptions remain in
++the specification, but they are now explicitly subordinate to later Accepted
++ADRs and current normative sections.
++
++### Representative implementation checks
++
++The following current surfaces were sampled because they exercise recent
++cross-cutting decisions:
++
++- ADR 0116: animation event installation is present through the animation
++  runtime and scene-spawn integration rather than a separate component-level
++  authoring event contract.
++- ADR 0117: `ProjectId`, project schema version 2, and
++  `engine-project-lifecycle` are present.
++- ADRs 0118–0120: material schema version 3 and the generic
++  metallic/roughness, occlusion, normal-scale, and occlusion-strength fields
++  are present across authoring/runtime/import boundaries.
++- ADR 0121: Editor MCP transport and shared Scene MCP/CLI authoring slices are
++  present; the baseline includes the Scene CLI work merged immediately before
++  the first audit pass.
++- ADRs 0122–0126 are Proposed and were status/index audited only. Their decisions
++  are not treated as current implementation requirements and were not scored as
++  implementation drift.
++- ADR 0128 is Accepted and its renderer-owned full-IBL implementation is present
++  in the baseline render-runtime changes that introduced the decision.
++
++These checks support the conclusion that the recent architecture is broadly
++tracking implementation. They do not certify every historical phase-specific
++statement as current.
++
++## What was deliberately not changed
++
++- Historical ADR numbers and file names were not renumbered except for the
++  later colliding renderer record, which moved from 0122 to the next free number
++  0128 without changing its decision or status.
++- Accepted ADRs were not marked Superseded merely because their implementation
++  details are old; a later decision must actually replace the decision.
++- Historical metadata formatting (`Status:` versus `- Status:` and title
++  punctuation) was not normalized across 121 files, because that would create
++  large review noise without changing the contract.
++- No serialized schema, Stable ID, public Rust API, crate dependency, or runtime
++  behavior changed in this audit.
++- No `.github/**` or Dispatcher trust-boundary file changed.
++
++## Follow-up
++
++A lightweight ADR-registry checker would be useful to prevent future duplicate
++numeric prefixes, index omissions, and invalid status values. That should be implemented separately if
++it is made a CI requirement, because CI/build infrastructure has a different
++validation and trust-boundary impact from this documentation cleanup.
++
++A second future cleanup may move long completed phase narratives out of the
++canonical authoring specification into historical phase documentation. This
++audit only corrected statements that could mislead a contributor about the
++current contract.
+diff --git a/docs/adr/README.md b/docs/adr/README.md
+index 74055283d8a85aefcaedee45b38016e0ba50fcd8..246ba88e4332f56302efac96f3ea26d43b5f4131 100644
+--- a/docs/adr/README.md
++++ b/docs/adr/README.md
+@@ -1,9 +1,11 @@
+ # Architecture Decision Records
+ 
+-- [ADR 0052: Project Rust Gameplay Queries and Deferred Commands](0052-project-rust-gameplay-io.md)
+-
+ Use this directory for decisions that change contracts shared across crates,
+ serialized project data, authoring commands, graph behavior, CLI, MCP, or the
+ visual editor.
+ 
++For the current architecture, start with
++[`docs/ARCHITECTURE_OVERVIEW.md`](../ARCHITECTURE_OVERVIEW.md). This directory
++keeps the decision history that explains why the current architecture exists.
++
+ ADR file names SHOULD use:
+@@ -59,7 +61,76 @@
+ canonical specification MUST also update
+ `docs/AI_FRIENDLY_AUTHORING_SPEC.md`.
+ 
+-## Accepted Decisions
++Later Accepted ADRs may amend an earlier Accepted ADR without changing the
++earlier record's status. A `Superseded` record is historical and is not part of
++the current implementation contract. See
++[`AUDIT_2026-08-16.md`](AUDIT_2026-08-16.md) for the latest full registry audit.
++
++## Current Decision Map
++
++Use these as entry points rather than reading the chronological register from
++the beginning:
++
++- **Runtime boundaries:** [0001](0001-runtime-ecs-access-and-safety-model.md),
++  [0003](0003-runtime-renderer-ownership-boundary.md),
++  [0111](0111-runtime-rig-crate-boundary.md),
++  [0113](0113-runtime-domain-crate-decomposition.md), and
++  [0114](0114-heavy-third-party-dependency-isolation.md).
++- **Authoring, persistence, and compatibility:**
++  [0002](0002-runtime-and-authoring-identifier-boundary.md),
++  [0004](0004-stable-identifier-format.md),
++  [0005](0005-authoring-transaction-and-undo-strategy.md),
++  [0091](0091-remove-authoring-compatibility-surface.md), and
++  [0115](0115-current-format-only-baseline.md).
++- **Project and Editor lifecycle:**
++  [0023](0023-project-root-ownership.md),
++  [0103](0103-play-mode-editor-viewport.md),
++  [0104](0104-editor-edit-responsiveness.md), and
++  [0117](0117-project-first-launcher-and-editor-application-lifecycle.md).
++- **Assets and import:** [0021](0021-asset-reference-model-and-manifest.md),
++  [0078](0078-format-independent-model-ir.md),
++  [0081](0081-fbx-import-via-ufbx.md),
++  [0094](0094-generic-data-assets.md),
++  [0101](0101-imported-material-extraction-and-remap.md), and
++  [0105](0105-model-level-material-and-texture-sub-asset-overrides.md).
++- **Rendering and materials:**
++  [0055](0055-render-authoring-and-material-v2-contract.md),
++  [0100](0100-generic-shading-models-and-outline-pass.md),
++  [0118](0118-rendering-color-space-and-texture-semantics.md),
++  [0119](0119-tangent-space-gpu-contract-and-shared-material-fragment.md),
++  [0120](0120-generic-pbr-material-texture-contract.md), and
++  [0128](0128-renderer-owned-full-image-based-lighting.md).
++- **Animation, rig, and physics:**
++  [0077](0077-skeleton-assets-and-stable-bone-ids.md),
++  [0085](0085-animation-sets-and-motion-slots.md),
++  [0096](0096-rapier-physics-adoption-and-mmd-rigid-body-bridge.md),
++  [0106](0106-layered-rig-pose-and-pose-graph-boundary.md),
++  [0110](0110-humanoid-profiles-and-skeleton-independent-motion.md),
++  [0112](0112-engine-native-secondary-motion-and-pmx-physics-conversion.md), and
++  [0116](0116-animation-events-owned-by-animation-set-bindings.md).
++- **AI, CLI, and MCP:** [0015](0015-mcp-behavior-tree-tool-adapter.md),
++  [0035](0035-ai-agent-bridge-ipc.md), and
++  [0121](0121-ai-native-authoring-parity-and-project-scoped-mcp-lifecycle.md).
++
++
++## Proposed Decisions
++
++These records are design proposals, not part of the current implementation
++contract unless and until their status becomes `Accepted`:
++

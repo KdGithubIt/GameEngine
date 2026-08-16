@@ -1,0 +1,329 @@
++overview conflicts with an Accepted ADR or a canonical specification, fix the
++overview or explicitly revise the contract; do not create a third competing
++architecture.
++
++The ADR register and domain entry points are in
++[`docs/adr/README.md`](adr/README.md). The audit that produced this overview is
++[`docs/adr/AUDIT_2026-08-16.md`](adr/AUDIT_2026-08-16.md).
++
++ADR 0122 through ADR 0126 are `Proposed` at this audit baseline. They describe
++possible future spatial-audio, Behavior Tree, navigation, VFX, and Timeline
++contracts and are intentionally not treated as current architecture here.
++ADR 0128 is the Accepted renderer-owned full image-based-lighting decision;
++it was renumbered from a colliding later ADR 0122 record during this audit.
++
++## 1. Workspace shape
++
++The current workspace contains these runtime-domain packages:
++
++| Package | Current architectural role |
++| --- | --- |
++| `engine-ecs` | Runtime ECS storage, queries, resources, and scheduling primitives |
++| `engine-core` | Small shared runtime contracts such as time/input primitives and metadata |
++| `engine-assets` | Neutral runtime asset contracts, cache data, and format-independent model IR |
++| `engine-rig` | Transform hierarchy, skeleton identity, skin binding, layered pose, rig descriptions |
++| `engine-animation` | Clips, animator, animation graph/runtime parameters, pose/retargeting contracts |
++| `engine-physics` | Collision, controller/navigation, solver-backed physics, secondary motion |
++| `engine-renderer` | Low-level GPU context and optional presentation-surface integration |
++| `engine-render-runtime` | Runtime mesh/material/light/UI/render passes and presentation behavior |
++| `engine-import` | Format-independent import orchestration plus glTF, FBX, PMX, and VMD import |
++| `engine-gameplay` | Ability, behavior, combat, hitbox, lock-on, and gameplay control |
++| `engine-platform` | Native input, audio, gamepad, and target-specific adapters |
++| `engine-scripting` | Host-independent project scripting and game SDK contracts |
++| `engine-scene` | Scene loading/management, save, and replay domain ownership |
++| `engine` | Final runtime composition, concrete cross-domain adapters, and compatibility facade |
++
++The application and authoring side contains `engine-authoring`,
++`engine-project-lifecycle`, `engine-launcher`, `engine-editor`, `engine-cli`,
++`engine-mcp`, and the project Rust macro crates.
++
++This is an ownership map, not a declaration that every package depends on the
++package above it. Actual dependencies should be narrower than the conceptual
++architecture whenever possible.
++
++## 2. Runtime dependency rules
++
++ADR 0113 and ADR 0114 define the main runtime rules:
++
++1. A runtime package below `engine` must not depend on the `engine` facade.
++2. Circular workspace package dependencies are forbidden.
++3. `engine-renderer` owns low-level GPU/surface integration.
++   `engine-render-runtime` may depend on it, never the reverse.
++4. Neutral contracts belong below heavyweight implementations. Asset/model IR,
++   input primitives, rig descriptions, and similar data must not acquire
++   higher-domain or source-format dependencies merely to preserve an old code
++   shape.
++5. Heavy GPU, physics, windowing, audio, gamepad, GUI, and scripting-runtime
++   backends stay behind the owner or composition boundary. Lightweight
++   consumers request contract-only feature sets where the owner supports them.
++6. `engine` is allowed to retain compatibility re-exports and concrete
++   cross-domain composition that would otherwise create an upward dependency or
++   cycle. A facade module is not a second owner of the concrete type.
++
++The workspace already has the domain packages accepted by ADR 0113. Some
++engine-facing modules remain as re-export facades, and some genuinely
++cross-domain runtime integration remains in `engine`; those are evaluated by
++the composition rule above rather than by file name alone.
++
++## 3. Authoring versus runtime
++
++`engine-authoring` is the editable source-of-truth layer. Runtime ECS state is
++derived from validated authoring data and is not persisted as the authoring
++identity model.
++
++The durable invariants are:
++
++- persisted authoring objects use stable IDs;
++- runtime ECS entity IDs and process-local runtime asset handles are not
++  project-file identities;
++- Editor, CLI, and MCP semantic edits use shared GUI-free authoring
++  commands/services rather than separate business rules;
++- current-format-only loading follows ADR 0115;
++- project selection/process lifetime is outside authoring semantics.
++
++Domain-neutral graph storage remains part of the authoring model. There is no
++requirement for separate `graph` or `graph_bt` workspace crates in the current
++architecture.
++
++## 4. Project applications and AI authoring
++
++ADR 0117 defines a project-first desktop lifecycle:
++
++- Launcher selects/creates projects and starts or activates Editors.
++- A normal Editor process owns one concrete `ProjectRoot` for its lifetime.
++- `engine-project-lifecycle` owns GUI-free application lifecycle, standard
++  scaffolding, compatibility checks, and exclusive Editor ownership.
++- Recent-project and Editor workspace restoration data are user/application
++  state, not canonical project data.
++
++ADR 0121 defines the structured AI boundary:
++
++- MCP is the structured AI authoring interface for a project open in the
++  Editor.
++- The active Editor owns the initial project-scoped loopback MCP endpoint.
++- `engine-mcp` remains a transport-agnostic adapter over shared authoring
++  services.
++- CLI is the supported headless authoring/automation adapter.
++- The AI Agent Bridge is for runtime observation/input and visual interaction,
++  not a replacement semantic authoring model.
++
++## 5. Asset, animation, physics, and rendering boundaries
++
++Import formats normalize into shared engine contracts instead of creating
++format-specific runtime architecture.
++
++- glTF, FBX, PMX, and VMD parsing/import belong to the import boundary.
++- Model IR is format-independent and belongs to the neutral asset layer.
++- Skeleton/skin/rig identity belongs to `engine-rig`.
++- Animation playback, graph, pose, retargeting, and binding events belong to
++  the animation domain.
++- Engine-native secondary motion and collision/solver behavior belong to the
++  physics domain; PMX data is converted at import rather than leaking MMD
++  concepts into lower runtime contracts.
++- `StandardLit`, `ToonLit`, and `Unlit` share generic material/rendering
++  contracts. Outline remains an independent pass.
++- Scene-lighting arithmetic and HDR composition are linear; color/data texture
++  semantics follow ADR 0118.
++- Tangent-space material shading follows ADR 0119.
++- Material schema v3 PBR inputs follow ADR 0120.
++- Full image-based-lighting precomputation and process-local derived resources
++  are renderer-owned per ADR 0128.
++
++## 6. CI and validation architecture
++
++Package ownership for affected validation comes from Cargo metadata. The CI
++classifier must not duplicate workspace package names and crate directories in
++a second hard-coded table.
++
++The authoritative validation contract is
++[`docs/DEVELOPMENT_WORKFLOW.md`](DEVELOPMENT_WORKFLOW.md):
++
++- `affected` validates planner-selected package scope;
++- `full` validates the workspace, including Check and documentation;
++- `docs` skips Rust compilation for recognized documentation-only PRs.
++
++An affected success is not a full-workspace five-command success.
++
++## 7. How to maintain this overview
++
++Update this document when an Accepted ADR changes a current ownership boundary
++or when an accepted migration reaches a materially different steady state.
++Do not rewrite historical ADRs merely to make them read like current prose.
++
++When reviewing architecture:
++
++1. read this overview for the current map;
++2. follow the relevant links in `docs/adr/README.md` for rationale and
++   amendments;
++3. confirm implementation ownership in the current workspace; and
++4. update the canonical specification when the current contract changes.
+diff --git a/docs/adr/0113-runtime-domain-crate-decomposition.md b/docs/adr/0113-runtime-domain-crate-decomposition.md
+index 4eebb0b826c2ed7a5358e4e8580434add232c87d..8c79a58c47a1ebdebe8a5c8aefd81ad7dfbab738 100644
+--- a/docs/adr/0113-runtime-domain-crate-decomposition.md
++++ b/docs/adr/0113-runtime-domain-crate-decomposition.md
+@@ -4,4 +4,10 @@
+ Date: 2026-08-14
+ Builds on: ADR 0111, ADR 0112
+ 
++Current-status note (2026-08-16): the domain packages described here are now
++present in the workspace. The current CI package-selection contract is defined
++by `docs/DEVELOPMENT_WORKFLOW.md`: package ownership is derived from Cargo
++metadata, not from a duplicated hard-coded crate/path table. References below
++have been updated to that current operational contract.
++
+ ## Context
+@@ -211,6 +217,6 @@
+ 9. Reduce `engine` to application/runtime-system composition, cross-domain
+    registration, and compatibility re-exports.
+-10. Update CI changed-path classification so every new known crate selects its
+-    own package instead of falling back to full validation.
++10. Verify that affected-package planning discovers every new package through
++    Cargo metadata without adding a second hard-coded package/path table.
+ 
+ A temporary facade in `engine` is acceptable during this sequence. A temporary
+@@ -230,11 +236,12 @@
+ ### 8. CI must preserve the latency benefit
+ 
+-The changed-path classifier must recognize the new crate directories and map
+-them to their package names. Workspace/Cargo/build-infrastructure changes still
+-select full validation as defined by `DEVELOPMENT_WORKFLOW.md`.
++Affected-package planning must derive package ownership from Cargo metadata.
++Workspace/Cargo/build-infrastructure changes still select full validation as
++defined by `DEVELOPMENT_WORKFLOW.md`; unclassifiable paths also fall back to
++full validation.
+ 
+ Domain-only changes should be able to use affected-package validation without
+-compiling unrelated high-level domains. Full validation on `master` and nightly
++compiling unrelated high-level domains. Full validation on `main` and nightly
+ continues to provide reverse-dependent workspace coverage.
+ 
+ ## Consequences
+@@ -251,6 +258,6 @@
+ - The compatibility `engine` crate remains convenient for downstream users while
+   compile ownership moves to smaller packages.
+-- Cargo manifests and CI classification become part of the architectural change,
+-  because an unrecognized crate would otherwise erase much of the expected PR
+-  latency improvement.
++- Cargo manifests and metadata-derived CI planning are part of the architectural
++  change, because an unclassifiable package path would otherwise erase much of
++  the expected PR latency improvement.
+ - The migration produces several commits but one coherent final dependency DAG.
+diff --git a/docs/adr/AUDIT_2026-08-16.md b/docs/adr/AUDIT_2026-08-16.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..5e80fff1a92c8ef204f3abe7f3355b4b66ad1326
+--- /dev/null
++++ b/docs/adr/AUDIT_2026-08-16.md
+@@ -0,0 +1,187 @@
++# ADR Audit — 2026-08-16
++
++Status: Completed
++Repository: `KdGithubIt/GameEngine`
++Baseline: `e9c1a060b63b8b2ff93e1f45115047f69d0a1a15`
++
++## Scope
++
++This audit separates two questions that had become mixed together after the ADR
++sequence passed 100 records:
++
++1. **Registry integrity:** Does every ADR exist, have a usable status, and appear
++   in the chronological index with supersession represented correctly?
++2. **Current-contract alignment:** Do the recent/cross-cutting ADRs, canonical
++   specification, workspace structure, and representative implementation
++   surfaces still describe the same architecture?
++
++Registry integrity was checked across every numbered ADR file in the baseline.
++Implementation alignment was intentionally risk-based rather than a claim that
++every line of every historical ADR was re-proven against code.
++
++## Registry result
++
++The baseline contains 127 ADR files but only 126 distinct ADR numbers: two
++concurrent branches both introduced ADR 0122. This audit keeps the first-merged
++Proposed spatial-audio record as ADR 0122 and renumbers the later Accepted
++renderer-owned full-IBL record to ADR 0128. ADR 0127 was already allocated by
++concurrent draft work when this correction was prepared, so uniqueness is
++prioritized over compact numbering.
++
++After that correction:
++
++- 118 records are Accepted.
++- 4 records are Superseded.
++- 5 records are Proposed.
++- No Rejected ADR file is present.
++
++The Superseded records are:
++
++| ADR | Replaced by |
++| --- | --- |
++| 0019 | ADR 0022 |
++| 0093 | ADR 0095 |
++| 0108 | ADR 0112 |
++| 0109 | ADR 0112 |
++
++The Proposed records are:
++
++| ADR | Proposal area |
++| --- | --- |
++| 0122 | Spatial audio mixer and authoring UX |
++| 0123 | Stateful Behavior Tree execution and debugging |
++| 0124 | Production navigation mesh and bake workflow |
++| 0125 | VFX effect authoring and runtime architecture |
++| 0126 | Timeline / Sequencer authoring and runtime |
++
++These five proposals are deliberately excluded from the current-decision map
++and from implementation-conformance claims in this audit.
++
++### Concurrent ADR-number collision
++
++The Proposed 0122–0126 bundle reached `main` before the renderer full-IBL change.
++The later renderer merge then introduced another file titled ADR 0122 and added
++that renderer record to the README. Renumbering the later renderer record to
++0128 is the smallest collision-free repair: it leaves the already-numbered
++proposal bundle and its cross-references intact, avoids reusing ADR 0127 while
++concurrent work owns that number, and changes only the colliding later record's
++ADR identity. The renderer decision, status, and implementation semantics are
++unchanged.
++
++The previous `docs/adr/README.md` was not a faithful registry:
++
++- it omitted ADRs 0093, 0094, 0095, 0102, 0105, and the Proposed ADRs 0122
++  through 0126;
++- it contained two different ADR 0122 files after concurrent merges, while only
++  the renderer-owned record appeared in the README;
++- it placed 0019, 0108, and 0109 under a heading named `Accepted Decisions`;
++- it contained a one-off ADR 0052 link above the index; and
++- it retained a `Phase 41+ ADR Targets` table that duplicated a small historical
++  slice after the repository had progressed to ADR 0126.
++
++The reorganized index now distinguishes the current decision map from the full
++chronological history, includes all previously missing records, keeps Proposed
++records visibly separate from the current contract, and resolves the duplicate
++number as ADR 0128.
++
++## Current-contract alignment
++
++### ADR-number repair
++
++The renderer-owned full-IBL ADR is now ADR 0128. The audit found no reason to
++change its Accepted decision: the same merge added the renderer-side environment
++precompute/cache path and StandardLit IBL integration, so this is an identifier
++repair rather than an architecture reversal.
++
++### Runtime decomposition
++
++ADR 0113's package set is present in the workspace: `core`, `assets`, `rig`,
++`physics`, `animation`, `gameplay`, `render-runtime`, `platform`, `import`,
++`scripting`, and `scene` exist alongside `renderer`, `engine`, `ecs`, and
++`authoring`.
++
++The audit does **not** interpret that as "every old `engine` file must be gone".
++The `engine` package still contains compatibility facade modules and concrete
++cross-domain composition, which ADR 0113 explicitly allows when moving the code
++downward would introduce the wrong dependency direction or a cycle.
++
++One real documentation drift was found inside ADR 0113 itself: its CI section
++still described per-crate changed-path mapping and referred to full validation
++on `master`. The current workflow derives package ownership from Cargo metadata,
++forbids a duplicated package/path table, and uses `main`. The operational text
++was updated without changing the runtime architecture decision.
++
