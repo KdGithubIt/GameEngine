@@ -64,7 +64,9 @@ fn asset_inspect(project_path: &Path, asset_id: &str) -> Result<CliRunResult, Cl
     }
 }
 
-fn load_catalog(project_path: &Path) -> Result<(ProjectRoot, AssetManifest), CliRunResult> {
+pub(super) fn load_catalog(
+    project_path: &Path,
+) -> Result<(ProjectRoot, AssetManifest), CliRunResult> {
     let project = ProjectRoot::open(project_path).map_err(|error| {
         input_error("project_error", project_path, &error.to_string())
     })?;

@@ -138,7 +138,7 @@ impl PrefabAsset {
     pub fn from_selection<'a>(
         selection: impl IntoIterator<Item = (&'a EntityId, &'a AuthoringEntity)>,
     ) -> Result<Self, PrefabError> {
-        let entities: BTreeMap<EntityId, AuthoringEntity> = selection
+        let mut entities: BTreeMap<EntityId, AuthoringEntity> = selection
             .into_iter()
             .map(|(id, e)| (id.clone(), e.clone()))
             .collect();
@@ -160,6 +160,13 @@ impl PrefabAsset {
             [r] => (*r).clone(),
             _ => return Err(PrefabError::MultipleRoots),
         };
+
+        // A prefab is a standalone subtree. If the selected root was nested in
+        // the source Scene, its external parent must not leak into the prefab.
+        entities
+            .get_mut(&root)
+            .expect("the selected root is present in the cloned selection")
+            .parent = None;
 
         Ok(Self {
             schema_version: PREFAB_SCHEMA_VERSION,

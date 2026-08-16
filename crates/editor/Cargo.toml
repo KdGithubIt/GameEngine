@@ -16,6 +16,7 @@ path = "src/main.rs"
 dirs = "5"
 eframe = "0.34.3"
 engine = { path = "../engine" }
+engine-assets = { path = "../assets" }
 engine-authoring = { path = "../authoring" }
 engine-mcp = { path = "../mcp" }
 engine-project-lifecycle = { path = "../project-lifecycle" }
