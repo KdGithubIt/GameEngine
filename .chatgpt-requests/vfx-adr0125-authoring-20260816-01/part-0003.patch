@@ -1,0 +1,325 @@
++
++/// Transactional VFX command application result.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++pub struct VfxApply {
++    /// `true` when all commands applied and the resulting document validated.
++    pub success: bool,
++    /// Structured validation or edit diagnostics.
++    pub diagnostics: Vec<VfxDiagnostic>,
++    /// Resulting document when the transaction commits.
++    pub effect: Option<VfxEffect>,
++    /// Commands that restore the input document when applied in this order.
++    pub undo_commands: Vec<VfxCommand>,
++}
++
++/// Built-in data-generation templates for common starting effects.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case")]
++pub enum VfxTemplate {
++    /// Short bright mesh/billboard particles with downward force.
++    Spark,
++    /// Slow expanding particles suitable for smoke textures.
++    Smoke,
++    /// One-shot radial burst.
++    Burst,
++    /// Continuous short-lived particles that form a motion trail.
++    Trail,
++}
++
++/// Reports why a VFX JSON document could not be parsed or serialized.
++#[derive(Debug)]
++pub enum VfxDocumentError {
++    /// JSON parsing or serialization failed.
++    Json(serde_json::Error),
++    /// The document uses a schema version unsupported by this build.
++    UnsupportedVersion {
++        /// Version found in the input document.
++        found: u32,
++    },
++    /// Semantic validation rejected the document.
++    Invalid {
++        /// Structured blocking diagnostics.
++        diagnostics: Vec<VfxDiagnostic>,
++    },
++}
++
++impl fmt::Display for VfxDocumentError {
++    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
++        match self {
++            Self::Json(error) => write!(formatter, "invalid VFX JSON: {error}"),
++            Self::UnsupportedVersion { found } => write!(
++                formatter,
++                "unsupported VFX schema version {found}; expected {VFX_SCHEMA_VERSION}"
++            ),
++            Self::Invalid { diagnostics } => write!(
++                formatter,
++                "VFX document has {} blocking diagnostic(s)",
++                diagnostics.len()
++            ),
++        }
++    }
++}
++
++impl std::error::Error for VfxDocumentError {
++    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
++        match self {
++            Self::Json(error) => Some(error),
++            Self::UnsupportedVersion { .. } | Self::Invalid { .. } => None,
++        }
++    }
++}
++
++/// GUI-free VFX authoring service shared by human and automation frontends.
++#[derive(Debug, Default, Clone, Copy)]
++pub struct VfxAuthoringService;
++
++impl VfxAuthoringService {
++    /// Creates the shared authoring service.
++    pub fn new() -> Self {
++        Self
++    }
++
++    /// Returns the deterministic VFX module schema catalog.
++    pub fn schemas(&self) -> VfxSchemaCatalog {
++        let modules = [
++            ("engine.vfx.spawn_rate", "Spawn Rate", "Emission", VfxPhase::Spawn),
++            ("engine.vfx.burst", "Burst", "Emission", VfxPhase::Spawn),
++            ("engine.vfx.shape", "Shape", "Spawn", VfxPhase::Spawn),
++            ("engine.vfx.lifetime", "Lifetime", "Spawn", VfxPhase::Spawn),
++            (
++                "engine.vfx.initial_velocity",
++                "Initial Velocity",
++                "Spawn",
++                VfxPhase::Spawn,
++            ),
++            (
++                "engine.vfx.initial_color",
++                "Initial Color",
++                "Spawn",
++                VfxPhase::Spawn,
++            ),
++            (
++                "engine.vfx.initial_size",
++                "Initial Size",
++                "Spawn",
++                VfxPhase::Spawn,
++            ),
++            (
++                "engine.vfx.initial_rotation",
++                "Initial Rotation",
++                "Spawn",
++                VfxPhase::Spawn,
++            ),
++            ("engine.vfx.force", "Force", "Motion", VfxPhase::Update),
++            ("engine.vfx.drag", "Drag", "Motion", VfxPhase::Update),
++            (
++                "engine.vfx.color_over_life",
++                "Color Over Life",
++                "Over Life",
++                VfxPhase::Update,
++            ),
++            (
++                "engine.vfx.size_over_life",
++                "Size Over Life",
++                "Over Life",
++                VfxPhase::Update,
++            ),
++            (
++                "engine.vfx.rotation_over_life",
++                "Rotation Over Life",
++                "Over Life",
++                VfxPhase::Update,
++            ),
++            (
++                "engine.vfx.billboard",
++                "Billboard Renderer",
++                "Render",
++                VfxPhase::Render,
++            ),
++            (
++                "engine.vfx.mesh",
++                "Mesh Renderer",
++                "Render",
++                VfxPhase::Render,
++            ),
++        ]
++        .into_iter()
++        .map(|(type_id, display_name, category, phase)| VfxModuleSchema {
++            type_id: type_id.to_owned(),
++            display_name: display_name.to_owned(),
++            category: category.to_owned(),
++            phase,
++        })
++        .collect();
++        VfxSchemaCatalog {
++            schema_version: VFX_SCHEMA_VERSION,
++            modules,
++        }
++    }
++
++    /// Parses and validates a current-format VFX JSON document.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`VfxDocumentError`] for malformed JSON, unsupported versions,
++    /// or blocking semantic diagnostics.
++    pub fn effect_from_json(&self, json: &str) -> Result<VfxEffect, VfxDocumentError> {
++        #[derive(Deserialize)]
++        struct VersionProbe {
++            schema_version: u32,
++        }
++
++        let version: VersionProbe = serde_json::from_str(json).map_err(VfxDocumentError::Json)?;
++        if version.schema_version != VFX_SCHEMA_VERSION {
++            return Err(VfxDocumentError::UnsupportedVersion {
++                found: version.schema_version,
++            });
++        }
++        let effect: VfxEffect = serde_json::from_str(json).map_err(VfxDocumentError::Json)?;
++        let validation = self.validate(&effect);
++        if validation.success {
++            Ok(effect)
++        } else {
++            Err(VfxDocumentError::Invalid {
++                diagnostics: validation
++                    .diagnostics
++                    .into_iter()
++                    .filter(VfxDiagnostic::is_blocking)
++                    .collect(),
++            })
++        }
++    }
++
++    /// Serializes a validated VFX document as deterministic pretty JSON.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`VfxDocumentError::Invalid`] when semantic validation fails or
++    /// [`VfxDocumentError::Json`] if serialization unexpectedly fails.
++    pub fn effect_to_canonical_json(&self, effect: &VfxEffect) -> Result<String, VfxDocumentError> {
++        let validation = self.validate(effect);
++        if !validation.success {
++            return Err(VfxDocumentError::Invalid {
++                diagnostics: validation
++                    .diagnostics
++                    .into_iter()
++                    .filter(VfxDiagnostic::is_blocking)
++                    .collect(),
++            });
++        }
++        let mut json = serde_json::to_string_pretty(effect).map_err(VfxDocumentError::Json)?;
++        json.push('\n');
++        Ok(json)
++    }
++
++    /// Validates one VFX document and returns stable-ID-addressable diagnostics.
++    pub fn validate(&self, effect: &VfxEffect) -> VfxValidation {
++        let mut diagnostics = Vec::new();
++        if effect.schema_version != VFX_SCHEMA_VERSION {
++            diagnostics.push(VfxDiagnostic::error(
++                "vfx.unsupported_version",
++                format!(
++                    "schema version {} is unsupported; expected {VFX_SCHEMA_VERSION}",
++                    effect.schema_version
++                ),
++                None,
++                None,
++            ));
++        }
++        if effect.name.trim().is_empty() {
++            diagnostics.push(VfxDiagnostic::error(
++                "vfx.blank_name",
++                "effect name must not be blank",
++                None,
++                None,
++            ));
++        }
++        if effect.max_particles == 0 {
++            diagnostics.push(VfxDiagnostic::error(
++                "vfx.zero_effect_budget",
++                "effect max_particles must be greater than zero",
++                None,
++                None,
++            ));
++        }
++        if effect.emitters.is_empty() {
++            diagnostics.push(VfxDiagnostic::warning(
++                "vfx.no_emitters",
++                "effect contains no emitters",
++                None,
++                None,
++            ));
++        }
++
++        let mut emitter_ids = BTreeSet::new();
++        let mut module_ids = BTreeSet::new();
++        let mut total_budget = 0_u64;
++        for emitter in &effect.emitters {
++            if !emitter_ids.insert(emitter.id.clone()) {
++                diagnostics.push(VfxDiagnostic::error(
++                    "vfx.duplicate_emitter_id",
++                    format!("emitter ID `{}` is duplicated", emitter.id),
++                    Some(&emitter.id),
++                    None,
++                ));
++            }
++            if emitter.name.trim().is_empty() {
++                diagnostics.push(VfxDiagnostic::error(
++                    "vfx.blank_emitter_name",
++                    "emitter name must not be blank",
++                    Some(&emitter.id),
++                    None,
++                ));
++            }
++            if emitter.max_particles == 0 {
++                diagnostics.push(VfxDiagnostic::error(
++                    "vfx.zero_emitter_budget",
++                    "emitter max_particles must be greater than zero",
++                    Some(&emitter.id),
++                    None,
++                ));
++            }
++            total_budget = total_budget.saturating_add(u64::from(emitter.max_particles));
++
++            let mut render_count = 0_u32;
++            for module in &emitter.modules {
++                if !module_ids.insert(module.id.clone()) {
++                    diagnostics.push(VfxDiagnostic::error(
++                        "vfx.duplicate_module_id",
++                        format!("module ID `{}` is duplicated", module.id),
++                        Some(&emitter.id),
++                        Some(&module.id),
++                    ));
++                }
++                if module.phase != module.operation.required_phase() {
++                    diagnostics.push(VfxDiagnostic::error(
++                        "vfx.phase_mismatch",
++                        format!(
++                            "module `{}` is in {:?} but `{}` requires {:?}",
++                            module.id,
++                            module.phase,
++                            module.operation.type_id(),
++                            module.operation.required_phase()
++                        ),
++                        Some(&emitter.id),
++                        Some(&module.id),
++                    ));
++                }
++                validate_operation(emitter, module, &mut diagnostics);
++                if module.enabled && module.phase == VfxPhase::Render {
++                    render_count = render_count.saturating_add(1);
++                }
++            }
++            if emitter.enabled && render_count == 0 {
++                diagnostics.push(VfxDiagnostic::warning(
++                    "vfx.no_renderer",
++                    "enabled emitter has no enabled render module",
++                    Some(&emitter.id),
++                    None,
++                ));
++            }
++
++            let estimated = estimate_capacity(emitter);
++            if estimated > emitter.max_particles {
++                diagnostics.push(VfxDiagnostic::warning(
++                    "vfx.emitter_budget_exceeded",
