@@ -6,6 +6,8 @@ param(
 
     [string]$ProjectPath = "",
 
+    [string]$AuthoringTool = "",
+
     [string]$WorkspaceRoot = (Resolve-Path (Join-Path $PSScriptRoot "../..")).Path,
 
     [string]$OutputDirectory = ""
@@ -13,6 +15,10 @@ param(
 
 $ErrorActionPreference = "Stop"
 $workspace = (Resolve-Path -LiteralPath $WorkspaceRoot).Path
+
+if ($AuthoringTool -and $Target -eq "launcher") {
+    throw "AuthoringTool requires an Editor capture target."
+}
 
 if (-not $OutputDirectory) {
     $OutputDirectory = Join-Path ([System.IO.Path]::GetTempPath()) "gameengine-editor-visual-validation"
@@ -115,7 +121,8 @@ function Invoke-DesktopScreenshot {
         [Parameter(Mandatory = $true)][string]$Package,
         [Parameter(Mandatory = $true)]
         [AllowEmptyCollection()]
-        [string[]]$ProgramArguments
+        [string[]]$ProgramArguments,
+        [string]$RequestedAuthoringTool = ""
     )
 
     $outputPath = Join-Path $OutputDirectory "$Name.png"
@@ -130,12 +137,23 @@ function Invoke-DesktopScreenshot {
         $captureVariable,
         [EnvironmentVariableTarget]::Process
     )
+    $previousAuthoringTool = [Environment]::GetEnvironmentVariable(
+        "GAMEENGINE_VISUAL_AUTHORING_TOOL",
+        [EnvironmentVariableTarget]::Process
+    )
     try {
         [Environment]::SetEnvironmentVariable(
             $captureVariable,
             $outputPath,
             [EnvironmentVariableTarget]::Process
         )
+        if ($Package -eq "engine-editor" -and $RequestedAuthoringTool) {
+            [Environment]::SetEnvironmentVariable(
+                "GAMEENGINE_VISUAL_AUTHORING_TOOL",
+                $RequestedAuthoringTool,
+                [EnvironmentVariableTarget]::Process
+            )
+        }
         $cargoArguments = @(
             "run",
             "--locked",
@@ -153,6 +171,11 @@ function Invoke-DesktopScreenshot {
         [Environment]::SetEnvironmentVariable(
             $captureVariable,
             $previousValue,
+            [EnvironmentVariableTarget]::Process
+        )
+        [Environment]::SetEnvironmentVariable(
+            "GAMEENGINE_VISUAL_AUTHORING_TOOL",
+            $previousAuthoringTool,
             [EnvironmentVariableTarget]::Process
         )
     }
@@ -191,7 +214,8 @@ try {
         $captures += Invoke-DesktopScreenshot `
             -Name "editor" `
             -Package "engine-editor" `
-            -ProgramArguments @("--project", $projectRoot)
+            -ProgramArguments @("--project", $projectRoot) `
+            -RequestedAuthoringTool $AuthoringTool
     }
 
     if ($Target -eq "launcher" -or $Target -eq "both") {
@@ -202,9 +226,10 @@ try {
     }
 
     $summary = [ordered]@{
-        schema_version = 1
+        schema_version = 2
         target = $Target
         project_source = $projectSource
+        authoring_tool = if ($AuthoringTool) { $AuthoringTool } else { $null }
         generated_utc = [DateTime]::UtcNow.ToString("o")
         screenshots = @($captures)
     }

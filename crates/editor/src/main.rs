@@ -60,11 +60,28 @@ impl EditorShell {
                 mcp_server.authorization_token().to_owned(),
             ),
         )?;
+        #[cfg(feature = "visual-validation")]
+        let mut authoring_windows = AuthoringWindows::default();
+        #[cfg(not(feature = "visual-validation"))]
+        let authoring_windows = AuthoringWindows::default();
+        #[cfg(feature = "visual-validation")]
+        if let Some(requested) = std::env::var_os("GAMEENGINE_VISUAL_AUTHORING_TOOL") {
+            let requested = requested.to_string_lossy();
+            let tool = AuthoringTool::ALL
+                .into_iter()
+                .find(|tool| tool.label() == requested)
+                .ok_or_else(|| {
+                    format!(
+                        "visual-validation authoring tool `{requested}` is not available in this Editor build"
+                    )
+                })?;
+            authoring_windows.open(tool);
+        }
         project_lease.mark_ready().map_err(|error| error.to_string())?;
         Ok(Self {
             app,
             ai_studio,
-            authoring_windows: AuthoringWindows::default(),
+            authoring_windows,
             show_authoring_tools: false,
             authoring_status: None,
             project_lease,
