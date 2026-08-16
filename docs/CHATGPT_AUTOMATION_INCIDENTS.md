@@ -45,6 +45,7 @@ INC-001  Markdown trailing whitespace rejected by patch preflight  Dispatcher  R
 INC-002  Unified-diff old coordinates drifted from target tree     Dispatcher  Resolved
 INC-003  Published patch bytes differed from preflight artifact    Transport   Resolved
 INC-004  Main advanced after task baseline and polluted validation  Validation  Resolved
+INC-005  Patch headers included checkout-directory prefix           Dispatcher  Resolved
 ```
 
 ## INC-001: Markdown trailing whitespace rejected by patch preflight
@@ -194,6 +195,11 @@ preflight.
   matching byte counts and blob SHAs. Dispatcher run `31922738621` then passed,
   produced commit `c689fff815f48ff2f56836fcfb096d443dee67ca` and Draft PR #30, and Windows
   Validation run `31922746993` completed successfully in `docs` mode.
+- The same byte-divergence class recurred before `ready.json` in request
+  `20260816-phase5-stable-csm-e99d227a-r1`: a fixed-byte split ended inside a
+  whitespace-bearing line fragment, and the published part blob SHA differed
+  from the preflight artifact. The request was abandoned; newline-boundary
+  splitting restored exact blob equality before the next ready marker.
 
 ### Root cause
 
@@ -215,7 +221,9 @@ Never retype or manually reconstruct a patch after strict preflight. Publish the
 preflight artifact mechanically, verify the remote part blobs are byte-identical
 before `ready.json`, and only then re-read the target HEAD and release the ready
 marker. If any part hash or byte count differs, abandon that unpublished request
-and create a new request from the verified artifact.
+and create a new request from the verified artifact. When the publication API
+accepts text rather than raw bytes, split parts on newline boundaries so a
+whitespace-bearing mid-line fragment never becomes terminal transport text.
 
 ### References
 
@@ -226,6 +234,7 @@ and create a new request from the verified artifact.
 - Successful Dispatcher run: `31922738621`
 - Validation run: `31922746993`
 - Commit: `c689fff815f48ff2f56836fcfb096d443dee67ca`
+- Repeated unpublished request: `20260816-phase5-stable-csm-e99d227a-r1`
 
 ## INC-004: Main advanced after task baseline and polluted validation scope
 
@@ -293,6 +302,69 @@ machine-readable mode/scope before interpreting gate results.
 - Polluted validation run: `31923487466`
 - Successful validation run: `31923640542`
 - Successful commit: `6f190a90cacb5aee2d48c6a13dbd39ba9e698946`
+
+## INC-005: Patch headers included checkout-directory prefix
+
+Status: Resolved
+Layer: Dispatcher
+First confirmed: 2026-08-16
+Last confirmed: 2026-08-16
+
+### Symptom
+
+Request `20260816-phase5-stable-csm-e99d227a-r2` passed the ready-marker
+signal and request-envelope checks, then failed in `Reconstruct and validate
+patch` before any product commit was created.
+
+### Evidence
+
+- Dispatcher run `31926298039` rejected all four changed files with
+  `No such file or directory`, including
+  `GameEngine/crates/render-runtime/src/shadow.rs`.
+- The target branch remained at
+  `e99d227ab40a7d839afa718e40ab372ec1899f32`, ruling out stale target state.
+- The failed patch headers used paths such as
+  `a/GameEngine/crates/render-runtime/src/shadow.rs`, carrying an old
+  checkout-directory name into the repository-relative Git patch path.
+- Replacement request `20260816-phase5-stable-csm-e99d227a-r3` kept the
+  product edits unchanged but regenerated headers as `a/crates/...` and
+  `a/docs/...`. Dispatcher run `31926476659` then passed reconstruction and
+  application, produced commit `7ce7997042802368886d8fe2db26ce7be98ed1af`
+  and Draft PR #39, and Windows Validation run `31926484133` completed
+  successfully in affected mode for `engine-render-runtime`.
+
+### Root cause
+
+The patch producer treated the local checkout directory name `GameEngine/` as
+part of the repository path. Dispatcher `git apply` runs at the repository
+root, so Git patch headers must be repository-root relative. The otherwise
+current patch therefore referenced paths that do not exist in the target tree.
+
+### Resolution
+
+Regenerate the same immutable product patch from the repository root, removing
+the checkout-directory prefix from every old/new path. Re-verify the published
+part blob hashes, use a new request ID, and release a new ready marker. The r3
+request passed Dispatcher application and Windows Validation without changing
+the Phase 5 product design.
+
+### Prevention / ChatGPT next action
+
+Generate and preflight patches from the repository root. Before `ready.json`,
+inspect every changed path and reject checkout-local prefixes such as
+`GameEngine/`. If `git apply` reports missing files while the target HEAD is
+current, validate patch path roots before editing code or adjusting hunk
+context.
+
+### References
+
+- Failed request: `20260816-phase5-stable-csm-e99d227a-r2`
+- Successful request: `20260816-phase5-stable-csm-e99d227a-r3`
+- PR: `#39`
+- Failed Dispatcher run: `31926298039`
+- Successful Dispatcher run: `31926476659`
+- Validation run: `31926484133`
+- Commit: `7ce7997042802368886d8fe2db26ce7be98ed1af`
 
 ## Entry template
 

@@ -1,7 +1,7 @@
 # ChatGPT GitHub Automation
 
 Status: Accepted
-Version: 1.4.2
+Version: 1.4.3
 Canonical location: `docs/CHATGPT_AUTOMATION.md`
 
 ## Purpose
@@ -98,7 +98,9 @@ informal file upload. For every new implementation or correction request:
    relevant to the requested change before constructing the patch.
 4. Build one complete unified Git patch against the exact target tree. Keep
    product changes inside the public allow-list and never include `.github/**`
-   or `.chatgpt-requests/**` in a normal dispatcher patch.
+   or `.chatgpt-requests/**` in a normal dispatcher patch. Patch paths MUST be
+   repository-root relative (for example, `a/crates/...`, not
+   `a/GameEngine/crates/...` copied from a checkout-directory name).
 5. Preflight the exact reconstructed patch bytes that will be published. Run
    `git apply --check --whitespace=error-all <reconstructed-patch>` against the
    captured target tree, then confirm that the patch contains only intended
@@ -107,7 +109,9 @@ informal file upload. For every new implementation or correction request:
    reject. Do not manually retype, reformat, or otherwise reconstruct a second
    copy of the patch after this preflight.
 6. Split the preflighted patch only for transport size and publish those exact
-   bytes as the declared `part-NNNN.patch` files. Before publishing `ready.json`,
+   bytes as the declared `part-NNNN.patch` files. When a text-valued publication
+   API is used, split only at newline boundaries so transport cannot normalize
+   terminal whitespace from a mid-line fragment. Before publishing `ready.json`,
    verify the published part byte counts and blob hashes, or the reconstructed
    content hash, against the preflight artifact. Never use `ready.json` as a
    partial-progress marker.
@@ -155,6 +159,10 @@ changes:
   mismatch as the primary problem. Reconstruct the patch from the current
   target files instead of editing product code merely to make old patch context
   apply.
+- If `git apply --check` reports `No such file or directory` for otherwise
+  current target files, inspect the patch headers before changing code. Patch
+  paths are relative to the repository root and must not include the checkout
+  directory name or another transport-local prefix.
 - If the dispatcher rejects a path, do not weaken the allow-list from the task
   request. `.github/**` and `.chatgpt-requests/**` are trust-boundary paths and
   require the separately reviewed automation-infrastructure workflow.
