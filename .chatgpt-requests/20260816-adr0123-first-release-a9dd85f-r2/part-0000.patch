@@ -1,0 +1,122 @@
+diff --git a/crates/authoring/src/behavior_tree_stateful.rs b/crates/authoring/src/behavior_tree_stateful.rs
+--- a/crates/authoring/src/behavior_tree_stateful.rs
++++ b/crates/authoring/src/behavior_tree_stateful.rs
+@@ -35,5 +35,6 @@ const INVERTER_BEHAVIOR: &str = "engine.inverter";
+ const WAIT_BEHAVIOR_PREFIX: &str = "engine.wait:";
+ const TIMEOUT_BEHAVIOR_PREFIX: &str = "engine.timeout:";
+ const COOLDOWN_BEHAVIOR_PREFIX: &str = "engine.cooldown:";
++const DEFAULT_STATEFUL_DURATION_SECONDS: f64 = 1.0;
+ 
+ /// Behavior Tree graph domain extended with typed stateful decorators.
+@@ -366,11 +367,19 @@ impl BehaviorTreeAuthoringService {
+             self.domain.timeout_type(),
+             self.domain.cooldown_type(),
+         ];
+         let nodes = node_types
+             .into_iter()
+             .filter_map(|node_type| self.domain.node_schema(node_type).cloned())
++            .map(|mut schema| {
++                if schema.node_type.as_str() == self.domain.condition_type().as_str() {
++                    schema.category = "Behavior Tree/Condition".into();
++                } else if schema.node_type.as_str() == self.domain.action_type().as_str() {
++                    schema.category = "Behavior Tree/Action".into();
++                }
++                schema
++            })
+             .collect();
+         BehaviorTreeSchemaCatalog {
+             graph_kind: self.domain.graph_kind().clone(),
+             layout_policy: self.domain.layout_policy(),
+             nodes,
+@@ -378,6 +379,45 @@ impl BehaviorTreeAuthoringService {
+         }
+     }
+ 
++    /// Creates one schema-backed node with authoring defaults shared by every adapter.
++    ///
++    /// Action, condition, and generic decorator nodes use the caller-supplied stable
++    /// behavior ID. Stateful temporal decorators start at one second, which is valid
++    /// for Wait, Timeout, and Cooldown and remains editable through normal graph
++    /// property commands.
++    #[must_use]
++    pub fn create_node_with_defaults(
++        &self,
++        node_type: &NodeTypeId,
++        id: NodeId,
++        behavior: impl Into<String>,
++    ) -> Node {
++        let behavior = behavior.into();
++        if node_type == self.domain.root_type() {
++            self.domain.root_node(id)
++        } else if node_type == self.domain.sequence_type() {
++            self.domain.sequence_node(id)
++        } else if node_type == self.domain.selector_type() {
++            self.domain.selector_node(id)
++        } else if node_type == self.domain.condition_type() {
++            self.domain.condition_node(id, behavior.as_str())
++        } else if node_type == self.domain.action_type() {
++            self.domain.action_node(id, behavior.as_str())
++        } else if node_type == self.domain.decorator_type() {
++            self.domain.decorator_node(id, behavior.as_str())
++        } else if node_type == self.domain.inverter_type() {
++            self.domain.inverter_node(id)
++        } else if node_type == self.domain.wait_type() {
++            self.domain.wait_node(id, DEFAULT_STATEFUL_DURATION_SECONDS)
++        } else if node_type == self.domain.timeout_type() {
++            self.domain.timeout_node(id, DEFAULT_STATEFUL_DURATION_SECONDS)
++        } else if node_type == self.domain.cooldown_type() {
++            self.domain.cooldown_node(id, DEFAULT_STATEFUL_DURATION_SECONDS)
++        } else {
++            Node::new(id, node_type.clone(), Value::Object(BTreeMap::new()))
++        }
++    }
++
+     /// Builds the existing reference chase-or-patrol scenario.
+     pub fn example(&self) -> Result<BehaviorTreeExample, BehaviorTreeServiceError> {
+         legacy::BehaviorTreeAuthoringService::new().example()
+@@ -609,6 +644,45 @@ mod tests {
+         assert!(node_types.contains(service.domain().cooldown_type()));
++        let schemas = service.schemas().nodes;
++        assert_eq!(
++            schemas
++                .iter()
++                .find(|schema| schema.node_type.as_str() == service.domain().condition_type().as_str())
++                .expect("condition schema")
++                .category,
++            "Behavior Tree/Condition"
++        );
++        assert_eq!(
++            schemas
++                .iter()
++                .find(|schema| schema.node_type.as_str() == service.domain().action_type().as_str())
++                .expect("action schema")
++                .category,
++            "Behavior Tree/Action"
++        );
+     }
+ 
++    #[test]
++    fn shared_service_creates_every_catalog_node_with_valid_stateful_defaults() {
++        let service = BehaviorTreeAuthoringService::new();
++        for schema in service.schemas().nodes {
++            let node = service.create_node_with_defaults(
++                &schema.node_type,
++                NodeId::generate(),
++                "new_behavior",
++            );
++            assert_eq!(node.node_type, schema.node_type);
++            if &node.node_type == service.domain().wait_type()
++                || &node.node_type == service.domain().timeout_type()
++                || &node.node_type == service.domain().cooldown_type()
++            {
++                assert_eq!(
++                    duration_value(&node),
++                    Some(DEFAULT_STATEFUL_DURATION_SECONDS)
++                );
++            }
++        }
++    }
++
+     #[test]
+     fn typed_wait_compiles_to_unchanged_decorator_dto() {
+         let domain = BehaviorTreeDomain::new();

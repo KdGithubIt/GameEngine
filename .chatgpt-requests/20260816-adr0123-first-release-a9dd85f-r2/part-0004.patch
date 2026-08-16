@@ -1,0 +1,46 @@
+diff --git a/crates/editor/src/canvas/mod.rs b/crates/editor/src/canvas/mod.rs
+--- a/crates/editor/src/canvas/mod.rs
++++ b/crates/editor/src/canvas/mod.rs
+@@ -31,4 +31,6 @@ pub struct GraphCanvasState {
+     panning: bool,
+     /// Pending request to pan until every node is visible.
+     frame_all_requested: bool,
++    /// Search text for the schema-driven Add Node palette.
++    node_search: String,
+ }
+@@ -353,15 +355,33 @@ pub fn show_graph_canvas(
+             }
+             return;
+         }
++        ui.add(
++            egui::TextEdit::singleline(&mut state.node_search)
++                .hint_text("Search nodes...")
++                .desired_width(180.0),
++        );
+         ui.menu_button("Add Node", |ui| {
+-            for kind in session.available_graph_node_kinds() {
+-                if ui.button(kind.label()).clicked() {
++            let mut last_category = String::new();
++            for kind in session
++                .available_graph_node_kinds()
++                .into_iter()
++                .filter(|kind| kind.matches_search(&state.node_search))
++            {
++                if kind.category() != last_category.as_str() {
++                    if !last_category.is_empty() {
++                        ui.separator();
++                    }
++                    last_category = kind.category().to_owned();
++                    ui.strong(&last_category);
++                }
++                let label = kind.label().to_owned();
++                if ui.button(label).clicked() {
+                     actions.push(GraphCanvasAction::AddNode {
+                         kind,
+                         position: context_add_position,
+                     });
+                     state.context_add_position = None;
+                     ui.close();
+                 }
+             }
+         });

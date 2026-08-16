@@ -1,0 +1,147 @@
+diff --git a/crates/editor/src/session/graph_edit.rs b/crates/editor/src/session/graph_edit.rs
+--- a/crates/editor/src/session/graph_edit.rs
++++ b/crates/editor/src/session/graph_edit.rs
+@@ -9,22 +9,33 @@ use super::{AnimationNodeInsertKind, BehaviorNodeInsertKind, EditorGraphDomain, EditorSession};
+ use super::errors::EditorSessionError;
+ use crate::geometry::{fallback_position_for_index, fallback_position_for_node};
+ use engine_authoring::{
+-    BehaviorTreeAuthoringService, Diagnostic, EdgeId, Graph, GraphCommand, GraphTransaction,
+-    GraphView, GraphViewCommand, GraphViewTransaction, NodeId, NodeLayout, Selection, Value, Vec2,
++    BehaviorTreeAuthoringService, Diagnostic, EdgeId, Graph, GraphCommand, GraphTransaction, GraphView,
++    GraphViewCommand, GraphViewTransaction, NodeId, NodeLayout, NodeTypeId, Selection, Value, Vec2,
+ };
+ 
+ /// Domain-tagged node kind produced by the shared graph canvas.
+-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++#[derive(Debug, Clone, PartialEq, Eq)]
+ pub enum GraphNodeInsertKind {
+     /// A Behavior Tree node kind.
+     Behavior(BehaviorNodeInsertKind),
++    /// A Behavior Tree node supplied by the shared schema catalog.
++    BehaviorSchema {
++        /// Stable schema node type used for mutation.
++        node_type: NodeTypeId,
++        /// Human-facing label from the schema catalog.
++        display_name: String,
++        /// Semantic palette category from the schema catalog.
++        category: String,
++        /// Search tags from the schema catalog.
++        search_tags: Vec<String>,
++    },
+     /// An Animation Graph node kind.
+     Animation(AnimationNodeInsertKind),
+ }
+ 
+ impl GraphNodeInsertKind {
+     /// Returns the concise human-facing node palette label.
+-    pub fn label(self) -> &'static str {
++    pub fn label(&self) -> &str {
+         match self {
+             Self::Behavior(BehaviorNodeInsertKind::Root) => "Root",
+             Self::Behavior(BehaviorNodeInsertKind::Sequence) => "Sequence",
+@@ -31,7 +43,43 @@ impl GraphNodeInsertKind {
+             Self::Behavior(BehaviorNodeInsertKind::Action) => "Action",
+             Self::Behavior(BehaviorNodeInsertKind::Decorator) => "Decorator",
++            Self::BehaviorSchema { display_name, .. } => display_name,
+             Self::Animation(AnimationNodeInsertKind::Entry) => "Entry",
+             Self::Animation(AnimationNodeInsertKind::State) => "State",
+         }
+     }
++
++    /// Returns the semantic palette group used by the node picker.
++    pub fn category(&self) -> &str {
++        match self {
++            Self::BehaviorSchema { category, .. } => category,
++            Self::Behavior(_) => "Behavior Tree",
++            Self::Animation(_) => "Animation Graph",
++        }
++    }
++
++    /// Returns whether this node kind matches a case-insensitive palette query.
++    pub fn matches_search(&self, query: &str) -> bool {
++        let query = query.trim().to_ascii_lowercase();
++        if query.is_empty() {
++            return true;
++        }
++        if self.label().to_ascii_lowercase().contains(&query)
++            || self.category().to_ascii_lowercase().contains(&query)
++        {
++            return true;
++        }
++        match self {
++            Self::BehaviorSchema {
++                node_type,
++                search_tags,
++                ..
++            } => {
++                node_type.as_str().to_ascii_lowercase().contains(&query)
++                    || search_tags
++                        .iter()
++                        .any(|tag| tag.to_ascii_lowercase().contains(&query))
++            }
++            Self::Behavior(_) | Self::Animation(_) => false,
++        }
++    }
+ }
+@@ -44,12 +93,15 @@ impl EditorSession {
+     /// domain rule that exactly one Entry node owns the initial-state edge.
+     pub fn available_graph_node_kinds(&self) -> Vec<GraphNodeInsertKind> {
+         match &self.domain {
+-            EditorGraphDomain::BehaviorTree(_) => vec![
+-                GraphNodeInsertKind::Behavior(BehaviorNodeInsertKind::Root),
+-                GraphNodeInsertKind::Behavior(BehaviorNodeInsertKind::Sequence),
+-                GraphNodeInsertKind::Behavior(BehaviorNodeInsertKind::Selector),
+-                GraphNodeInsertKind::Behavior(BehaviorNodeInsertKind::Condition),
+-                GraphNodeInsertKind::Behavior(BehaviorNodeInsertKind::Action),
+-                GraphNodeInsertKind::Behavior(BehaviorNodeInsertKind::Decorator),
+-            ],
++            EditorGraphDomain::BehaviorTree(service) => service
++                .schemas()
++                .nodes
++                .into_iter()
++                .map(|schema| GraphNodeInsertKind::BehaviorSchema {
++                    node_type: schema.node_type,
++                    display_name: schema.display_name,
++                    category: schema.category,
++                    search_tags: schema.search_tags,
++                })
++                .collect(),
+             EditorGraphDomain::Animation(domain) => {
+@@ -326,6 +378,9 @@ impl EditorSession {
+     ) -> Result<NodeId, EditorSessionError> {
+         match kind {
+             GraphNodeInsertKind::Behavior(kind) => self.add_behavior_node(kind, behavior, position),
++            GraphNodeInsertKind::BehaviorSchema { node_type, .. } => {
++                self.add_behavior_schema_node(node_type, behavior, position)
++            }
+             GraphNodeInsertKind::Animation(kind) => self.add_animation_node(kind, position),
+         }
+     }
+@@ -451,6 +508,27 @@ mod tests {
+     use super::*;
+     use std::collections::BTreeMap;
+ 
++    #[test]
++    fn behavior_palette_matches_shared_schema_catalog() {
++        let session = EditorSession::empty_behavior_tree();
++        let actual = session
++            .available_graph_node_kinds()
++            .into_iter()
++            .filter_map(|kind| match kind {
++                GraphNodeInsertKind::BehaviorSchema { node_type, .. } => Some(node_type),
++                GraphNodeInsertKind::Behavior(_) | GraphNodeInsertKind::Animation(_) => None,
++            })
++            .collect::<Vec<_>>();
++        let expected = BehaviorTreeAuthoringService::new()
++            .schemas()
++            .nodes
++            .into_iter()
++            .map(|schema| schema.node_type)
++            .collect::<Vec<_>>();
++
++        assert_eq!(actual, expected);
++    }
++
+     #[test]
+     fn deleting_a_selected_state_leaves_the_graph_view_committable() {
+         let mut session = EditorSession::empty_animation_graph();

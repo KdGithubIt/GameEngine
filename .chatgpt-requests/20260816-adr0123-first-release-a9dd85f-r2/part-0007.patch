@@ -1,0 +1,205 @@
+diff --git a/crates/gameplay/src/behavior_tree_stateful.rs b/crates/gameplay/src/behavior_tree_stateful.rs
+--- a/crates/gameplay/src/behavior_tree_stateful.rs
++++ b/crates/gameplay/src/behavior_tree_stateful.rs
+@@ -449,6 +449,17 @@
+         self.recent_transitions.push_back(transition);
+     }
+ 
++    fn record_reset(&mut self, reason: BehaviorResetReason) {
++        self.last_reset_reason = Some(reason);
++        self.push_transition(BehaviorExecutionTransition {
++            generation: self.execution_generation,
++            node: None,
++            behavior_id: None,
++            kind: BehaviorExecutionTransitionKind::Reset,
++            reason: Some(reason),
++        });
++    }
++
+     fn record_node_terminal(
+         &mut self,
+         plan: &PreparedBehaviorTree,
+@@ -597,14 +597,7 @@
+         clear_subtree_state(&self.plan, instance, 0, false);
+         instance.active_path.clear();
+         instance.execution_generation = instance.execution_generation.saturating_add(1);
+-        instance.last_reset_reason = Some(reason);
+-        instance.push_transition(BehaviorExecutionTransition {
+-            generation: instance.execution_generation,
+-            node: None,
+-            behavior_id: None,
+-            kind: BehaviorExecutionTransitionKind::Reset,
+-            reason: Some(reason),
+-        });
++        instance.record_reset(reason);
+         Ok(())
+     }
+ }
+@@ -774,6 +774,7 @@
+         self.executor = BehaviorTreeExecutor::new(tree);
+         self.instance = self.executor.create_instance();
+         self.instance.execution_generation = previous_generation;
++        self.instance.record_reset(BehaviorResetReason::TreeReplaced);
+         self.tree_generation = self.tree_generation.saturating_add(1);
+         self.last_status = None;
+         self.last_error = None;
+@@ -1814,4 +1814,159 @@
+     }
+ 
+     #[test]
++    fn runners_sharing_one_compiled_tree_keep_independent_memory() {
++        let compiled = tree(sequence(vec![condition("ready"), action("work")]));
++        let mut first = BehaviorTreeRunner::new(compiled.clone());
++        let mut second = BehaviorTreeRunner::new(compiled);
++        let mut first_registry = BehaviorTreeBehaviorRegistry::default();
++        first_registry
++            .set_condition("ready", BehaviorStatus::Success)
++            .set_action("work", BehaviorStatus::Running);
++        let mut second_registry = BehaviorTreeBehaviorRegistry::default();
++        second_registry
++            .set_condition("ready", BehaviorStatus::Success)
++            .set_action("work", BehaviorStatus::Running);
++
++        assert_eq!(first.tick(&mut first_registry).unwrap(), BehaviorStatus::Running);
++        first_registry.clear_calls();
++        assert_eq!(first.tick(&mut first_registry).unwrap(), BehaviorStatus::Running);
++        assert_eq!(first_registry.calls().len(), 1);
++
++        assert_eq!(second.tick(&mut second_registry).unwrap(), BehaviorStatus::Running);
++        assert_eq!(second_registry.calls().len(), 2);
++    }
++
++    #[test]
++    fn inverter_flips_failure_to_success() {
++        let mut registry = BehaviorTreeBehaviorRegistry::default();
++        registry.set_condition("ready", BehaviorStatus::Failure);
++        let mut runner = BehaviorTreeRunner::new(tree(decorator(
++            INVERTER_BEHAVIOR,
++            condition("ready"),
++        )));
++
++        assert_eq!(runner.tick(&mut registry).unwrap(), BehaviorStatus::Success);
++    }
++
++    #[test]
++    fn explicit_reset_clears_wait_elapsed_before_reentry() {
++        let mut registry = BehaviorTreeBehaviorRegistry::default();
++        registry
++            .set_delta_seconds(0.25)
++            .set_action("work", BehaviorStatus::Success);
++        let mut runner = BehaviorTreeRunner::new(tree(decorator(
++            "engine.wait:0.5",
++            action("work"),
++        )));
++
++        assert_eq!(runner.tick(&mut registry).unwrap(), BehaviorStatus::Running);
++        runner
++            .reset(&mut registry, BehaviorResetReason::ExplicitReset)
++            .unwrap();
++        assert_eq!(
++            runner.snapshot().last_reset_reason,
++            Some(BehaviorResetReason::ExplicitReset)
++        );
++        registry.clear_calls();
++        assert_eq!(runner.tick(&mut registry).unwrap(), BehaviorStatus::Running);
++        assert!(registry.calls().is_empty());
++        assert_eq!(runner.tick(&mut registry).unwrap(), BehaviorStatus::Success);
++    }
++
++    #[test]
++    fn explicit_reset_clears_cooldown_before_reentry() {
++        let mut registry = BehaviorTreeBehaviorRegistry::default();
++        registry
++            .set_delta_seconds(0.25)
++            .set_action("fire", BehaviorStatus::Success);
++        let mut runner = BehaviorTreeRunner::new(tree(decorator(
++            "engine.cooldown:10",
++            action("fire"),
++        )));
++
++        assert_eq!(runner.tick(&mut registry).unwrap(), BehaviorStatus::Success);
++        assert_eq!(runner.tick(&mut registry).unwrap(), BehaviorStatus::Failure);
++        runner
++            .reset(&mut registry, BehaviorResetReason::ExplicitReset)
++            .unwrap();
++        registry.clear_calls();
++        assert_eq!(runner.tick(&mut registry).unwrap(), BehaviorStatus::Success);
++        assert_eq!(registry.calls().len(), 1);
++    }
++
++    #[test]
++    fn snapshot_transition_history_is_bounded_and_keeps_latest_events() {
++        let mut registry = BehaviorTreeBehaviorRegistry::default();
++        registry.set_action("work", BehaviorStatus::Success);
++        let mut runner = BehaviorTreeRunner::new(tree(action("work")));
++
++        for _ in 0..(MAX_BEHAVIOR_TREE_DEBUG_TRANSITIONS + 8) {
++            runner.tick(&mut registry).unwrap();
++        }
++        let snapshot = runner.snapshot();
++
++        assert_eq!(
++            snapshot.recent_transitions.len(),
++            MAX_BEHAVIOR_TREE_DEBUG_TRANSITIONS
++        );
++        assert_eq!(
++            snapshot
++                .recent_transitions
++                .last()
++                .map(|transition| transition.kind),
++            Some(BehaviorExecutionTransitionKind::Success)
++        );
++    }
++
++    #[test]
++    fn tree_replacement_aborts_old_work_and_reports_new_generation_reset() {
++        let old_running = action("old_work");
++        let old_node = old_running.source.clone();
++        let old_tree = tree(old_running);
++        let old_graph = old_tree.source.clone();
++        let new_tree = tree(action("new_work"));
++        let new_graph = new_tree.source.clone();
++        let mut registry = BehaviorTreeBehaviorRegistry::default();
++        registry.set_action("old_work", BehaviorStatus::Running);
++        let mut runner = BehaviorTreeRunner::new(old_tree);
++
++        assert_eq!(runner.tick(&mut registry).unwrap(), BehaviorStatus::Running);
++        let before = runner.snapshot();
++        registry.clear_calls();
++        runner.replace_tree(new_tree, &mut registry).unwrap();
++        let replaced = runner.snapshot();
++
++        assert_eq!(before.tree_source, old_graph);
++        assert_eq!(replaced.tree_source, new_graph);
++        assert_eq!(replaced.tree_generation, before.tree_generation + 1);
++        assert_eq!(
++            replaced.execution_generation,
++            before.execution_generation + 1
++        );
++        assert_eq!(
++            replaced.last_reset_reason,
++            Some(BehaviorResetReason::TreeReplaced)
++        );
++        assert_eq!(registry.lifecycle_calls().len(), 1);
++        assert!(matches!(
++            registry.lifecycle_calls()[0],
++            BehaviorTreeLifecycleEvent::Abort {
++                reason: BehaviorResetReason::TreeReplaced,
++                ..
++            }
++        ));
++        assert!(replaced.recent_transitions.iter().any(|transition| {
++            transition.kind == BehaviorExecutionTransitionKind::Reset
++                && transition.reason == Some(BehaviorResetReason::TreeReplaced)
++        }));
++        assert!(
++            replaced
++                .recent_transitions
++                .iter()
++                .all(|transition| transition.node.as_ref() != Some(&old_node)),
++            "new generation snapshot must not retain source nodes from the replaced tree"
++        );
++    }
++
++    #[test]
+     fn compiled_authoring_tree_executes_with_persistent_runner() {
