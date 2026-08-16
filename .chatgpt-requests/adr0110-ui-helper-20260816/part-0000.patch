@@ -1,0 +1,52 @@
+diff --git a/crates/editor/src/ui/assets/animation_set_window.rs b/crates/editor/src/ui/assets/animation_set_window.rs
+--- a/crates/editor/src/ui/assets/animation_set_window.rs
++++ b/crates/editor/src/ui/assets/animation_set_window.rs
+@@ -10,3 +10,48 @@
+     slots: Vec<engine_authoring::MotionSlot>,
+     states: std::collections::BTreeMap<engine_authoring::MotionSlotId, Vec<String>>,
+ }
++
++fn motion_source_variant_label(variant: engine_authoring::MotionSourceVariant) -> &'static str {
++    match variant {
++        engine_authoring::MotionSourceVariant::Auto => "Auto",
++        engine_authoring::MotionSourceVariant::Native => "Native",
++        engine_authoring::MotionSourceVariant::Humanoid => "Humanoid",
++    }
++}
++
++fn animation_set_motion_source_choices(
++    manifest: &engine::AssetManifest,
++) -> Vec<(engine_authoring::MotionSourceRef, String)> {
++    let mut choices = Vec::new();
++    for (_, entry) in manifest.iter() {
++        for sub_asset in &entry.import_settings.sub_assets {
++            let Ok(asset) = AssetId::from_stable_id(engine_authoring::StableId::new(&sub_asset.id))
++            else {
++                continue;
++            };
++            match sub_asset.kind {
++                engine::ImportedSubAssetKind::Animation => {
++                    for variant in [
++                        engine_authoring::MotionSourceVariant::Auto,
++                        engine_authoring::MotionSourceVariant::Native,
++                    ] {
++                        choices.push((
++                            engine_authoring::MotionSourceRef {
++                                variant,
++                                asset: asset.clone(),
++                            },
++                            format!("[{}] {}", motion_source_variant_label(variant), sub_asset.name),
++                        ));
++                    }
++                }
++                engine::ImportedSubAssetKind::HumanoidMotion => choices.push((
++                    engine_authoring::MotionSourceRef::humanoid(asset),
++                    format!("[Humanoid] {}", sub_asset.name),
++                )),
++                _ => {}
++            }
++        }
++    }
++    choices.sort_by(|left, right| left.1.cmp(&right.1).then(left.0.cmp(&right.0)));
++    choices
++}
