@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "request_id": "20260816-adr0126-timeline-core-r1",
+  "target_branch": "chatgpt/gameengine-adr0126-timeline-core",
+  "expected_head_sha": "095229624db5f72cbf581896e3fa7ba0c19e7341",
+  "patch_parts": [
+    "part-0000.patch",
+    "part-0001.patch",
+    "part-0002.patch",
+    "part-0003.patch",
+    "part-0004.patch",
+    "part-0005.patch",
+    "part-0006.patch",
+    "part-0007.patch",
+    "part-0008.patch",
+    "part-0009.patch",
+    "part-0010.patch",
+    "part-0011.patch"
+  ],
+  "commit_message": "Implement ADR 0126 Timeline core foundation",
+  "pr_title": "Implement ADR 0126 Timeline core foundation",
+  "pr_body": "## Summary\n\n- add a dependency-neutral `engine-timeline` crate with the canonical 48,000 ticks/sec clock, immutable compiled schedules, per-player playback state, deterministic evaluation, exact Event crossing semantics, and explicit Stateless/Seekable/ReplayRequired/NonSeekable seek contracts\n- add versioned `*.timeline.json` authoring data with stable Timeline/Track/Clip/Marker IDs, deterministic validation/compilation, stable bindings, and typed Animation, Transform/Property, Camera Cut, and Event payloads\n- add a GUI-free transactional Timeline authoring service with preview/apply parity plus stale revision/generation protection\n- expose the Timeline foundation through the top-level engine facade without moving Animation, Transform, or Camera domain ownership into Timeline\n\n## Dependency safety\n\nADR 0122 Spatial Audio and ADR 0125 VFX remain parallel Draft PRs. This change intentionally does not implement Audio Track or VFX Track production integration and does not depend on their branch-local types or internal APIs. The neutral compiled payload/evaluator boundary is typed and generic, with no untyped JSON or generic string payload escape hatch, so those tracks can be integrated after their contracts stabilize.\n\n## Sequencer UI\n\nThe Editor Sequencer UI is intentionally not included in this core-foundation PR. The existing Editor document/undo/persistence/persistent-preview architecture needs a coherent Timeline document integration before the stage-5 UI from ADR 0126 is added; landing UI now would create a partial Editor-only path. This PR therefore changes no visual UI and does not require Visual Validation.\n\n## Validation\n\nRoot workspace manifest/lockfile changes select Windows Validation `full` mode. CI results will be recorded after dispatcher application."
+}
