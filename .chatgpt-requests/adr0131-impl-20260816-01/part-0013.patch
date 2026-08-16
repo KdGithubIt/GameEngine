@@ -1,0 +1,183 @@
++        let complete = CompletionReport::new([
++            CompletionCheck {
++                kind: CompletionCheckKind::AcceptanceCriteria,
++                applicable: true,
++                passed: true,
++                detail: "accepted".into(),
++            },
++            CompletionCheck {
++                kind: CompletionCheckKind::AuthoringValidation,
++                applicable: true,
++                passed: true,
++                detail: "validated".into(),
++            },
++            CompletionCheck {
++                kind: CompletionCheckKind::SourceValidation,
++                applicable: true,
++                passed: true,
++                detail: "tests passed".into(),
++            },
++            CompletionCheck {
++                kind: CompletionCheckKind::PlayLaunch,
++                applicable: true,
++                passed: true,
++                detail: "launched".into(),
++            },
++            CompletionCheck {
++                kind: CompletionCheckKind::FrameCapture,
++                applicable: true,
++                passed: true,
++                detail: "frame.png".into(),
++            },
++            CompletionCheck {
++                kind: CompletionCheckKind::VisualEvaluation,
++                applicable: true,
++                passed: true,
++                detail: "image inspected".into(),
++            },
++            CompletionCheck {
++                kind: CompletionCheckKind::InteractionScenarios,
++                applicable: false,
++                passed: false,
++                detail: "not applicable".into(),
++            },
++        ]);
++        assert!(complete.is_complete());
++
++        let incomplete = CompletionReport::new([
++            CompletionCheck {
++                kind: CompletionCheckKind::AcceptanceCriteria,
++                applicable: true,
++                passed: true,
++                detail: String::new(),
++            },
++            CompletionCheck {
++                kind: CompletionCheckKind::AuthoringValidation,
++                applicable: false,
++                passed: false,
++                detail: "not applicable".into(),
++            },
++            CompletionCheck {
++                kind: CompletionCheckKind::SourceValidation,
++                applicable: false,
++                passed: false,
++                detail: "not applicable".into(),
++            },
++            CompletionCheck {
++                kind: CompletionCheckKind::PlayLaunch,
++                applicable: true,
++                passed: true,
++                detail: String::new(),
++            },
++            CompletionCheck {
++                kind: CompletionCheckKind::FrameCapture,
++                applicable: true,
++                passed: false,
++                detail: "not captured".into(),
++            },
++            CompletionCheck {
++                kind: CompletionCheckKind::VisualEvaluation,
++                applicable: true,
++                passed: false,
++                detail: "not inspected".into(),
++            },
++            CompletionCheck {
++                kind: CompletionCheckKind::InteractionScenarios,
++                applicable: false,
++                passed: false,
++                detail: "not applicable".into(),
++            },
++        ]);
++        assert!(!incomplete.is_complete());
++        assert!(incomplete.unresolved_summary().contains("FrameCapture"));
++    }
++
++    #[test]
++    fn managed_validators_never_require_shell_parsing() {
++        let clippy = ManagedValidationCommand::Clippy.command_spec();
++        assert_eq!(clippy.program, "cargo");
++        assert_eq!(
++            clippy.arguments,
++            vec!["clippy", "--workspace", "--all-targets", "--", "-D", "warnings"]
++        );
++    }
++
++    #[test]
++    fn generated_ids_change_even_within_same_clock_tick() {
++        let first = AgentSessionId::generate();
++        let second = AgentSessionId::generate();
++        assert_ne!(first, second);
++        std::thread::sleep(Duration::from_millis(1));
++        assert_ne!(second, AgentSessionId::generate());
++    }
++}
++diff --git a/crates/editor/src/ai_studio.rs b/crates/editor/src/ai_studio.rs
++new file mode 100644
++index 0000000000000000000000000000000000000000..c648f07cfad317535d81cb289c109df3154e2cfc
++--- /dev/null
+++++ b/crates/editor/src/ai_studio.rs
++@@ -0,0 +1,665 @@
+++//! egui frontend for the project-scoped conversational AI Studio.
+++//!
+++//! Provider/runtime orchestration and persistence live in [`crate::agent`].
+++//! This module only translates user interaction into those GUI-free contracts.
+++
+++use crate::agent::{
+++    AgentCapability, AgentHost, AgentPermission, AgentProposalDraft, AgentRunState,
+++    AgentSessionId, ApprovalScope, AuthenticationClass, ConversationRole,
+++    ProviderConnectionState,
+++    ProviderDescriptor, ProviderRuntimeKind, SessionVisibility,
+++};
+++use eframe::egui;
+++use engine_authoring::AuthoringPermission;
+++use std::path::PathBuf;
+++
+++/// Modeless AI Studio window for one Editor-open project.
+++pub struct AiStudioWindow {
+++    host: AgentHost,
+++    session_id: AgentSessionId,
+++    selected_provider: String,
+++    message_input: String,
+++    proposal_goal: String,
+++    proposal_requirements: String,
+++    proposal_assumptions: String,
+++    proposal_acceptance: String,
+++    proposal_changes: String,
+++    proposal_validation: String,
+++    status: Option<String>,
+++}
+++
+++impl AiStudioWindow {
+++    /// Creates an AI Studio frontend for one project root.
+++    pub fn new(project_root: PathBuf) -> Self {
+++        let local_store_root = dirs::data_local_dir()
+++            .unwrap_or_else(std::env::temp_dir)
+++            .join("GameEngine")
+++            .join("ai");
+++        let mut host = AgentHost::new(project_root, local_store_root);
+++        let policy_status = host.load_project_policy().err().map(|error| {
+++            format!(
+++                "Could not restore AI project permissions ({}): {}",
+++                error.code(),
+++                error.message()
+++            )
+++        });
+++
+++        host.register_provider(ProviderDescriptor {
+++            id: "external-agent".to_owned(),
+++            display_name: "External coding agent".to_owned(),
+++            runtime_kind: ProviderRuntimeKind::ExternalAgentRuntime,
+++            authentication: AuthenticationClass::ProviderManagedSession,
+++            connection_state: ProviderConnectionState::AuthenticationRequired,
+++        });
+++        host.register_provider(ProviderDescriptor {
+++            id: "native-model".to_owned(),
+++            display_name: "Native model runtime".to_owned(),
+++            runtime_kind: ProviderRuntimeKind::NativeAgentRuntime,
+++            authentication: AuthenticationClass::LocalNoAuth,
+++            connection_state: ProviderConnectionState::Disconnected,
+++        });
+++
+++        let (session_id, session_status) = match host.restore_latest_session() {
+++            Ok(Some(session_id)) => (session_id, Some("Restored the latest AI session.".to_owned())),
+++            Ok(None) => {
