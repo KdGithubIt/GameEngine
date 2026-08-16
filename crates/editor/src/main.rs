@@ -11,7 +11,7 @@ use std::sync::mpsc;
 #[cfg(feature = "visual-validation")]
 use std::time::{Duration, Instant};
 
-use engine_editor::{AuthoringTool, AuthoringWindows};
+use engine_editor::{AiStudioConnection, AiStudioPanel, AuthoringTool, AuthoringWindows};
 use engine_project_lifecycle::{acquire_editor_project, EditorLease};
 use mcp_transport::{
     EditorMcpHostResult, EditorMcpRequest, EditorMcpServer, MCP_PROTOCOL_VERSION,
@@ -24,6 +24,7 @@ use mcp_transport::{
 /// backend clear frame from flashing through.
 struct EditorShell {
     app: engine_editor::EditorApp,
+    ai_studio: AiStudioPanel,
     authoring_windows: AuthoringWindows,
     show_authoring_tools: bool,
     authoring_status: Option<String>,
@@ -42,7 +43,7 @@ impl EditorShell {
         context: &eframe::egui::Context,
     ) -> Result<Self, String> {
         let root = project_lease.project_root().clone();
-        let app = engine_editor::EditorApp::from_project(root);
+        let app = engine_editor::EditorApp::from_project(root.clone());
         let (mcp_server, mcp_requests) =
             EditorMcpServer::start(context.clone()).map_err(|error| error.to_string())?;
         project_lease
@@ -52,9 +53,17 @@ impl EditorShell {
                 mcp_server.authorization_token(),
             )
             .map_err(|error| error.to_string())?;
+        let ai_studio = AiStudioPanel::new(
+            &root,
+            AiStudioConnection::new(
+                mcp_server.endpoint().to_string(),
+                mcp_server.authorization_token().to_owned(),
+            ),
+        )?;
         project_lease.mark_ready().map_err(|error| error.to_string())?;
         Ok(Self {
             app,
+            ai_studio,
             authoring_windows: AuthoringWindows::default(),
             show_authoring_tools: false,
             authoring_status: None,
@@ -133,11 +142,18 @@ impl EditorShell {
                 // 40-point toolbar below the 28-point menu bar.
                 eframe::egui::vec2(-12.0, 36.0),
             )
-            .order(eframe::egui::Order::Foreground)
+            // Stay above the docked editor surface while allowing modeless
+            // windows to cover the launcher when their bounds overlap it.
+            .order(eframe::egui::Order::Middle)
             .show(context, |ui| {
-                if ui.button("Authoring Tools").clicked() {
-                    self.show_authoring_tools = true;
-                }
+                ui.horizontal(|ui| {
+                    if ui.button("AI Studio").clicked() {
+                        self.ai_studio.open();
+                    }
+                    if ui.button("Authoring Tools").clicked() {
+                        self.show_authoring_tools = true;
+                    }
+                });
             });
 
         if !self.show_authoring_tools {
@@ -228,6 +244,7 @@ impl eframe::App for EditorShell {
         eframe::App::ui(&mut self.app, ui, frame);
         self.show_authoring_tools_launcher(&context);
         self.authoring_windows.show(&context, frame);
+        self.ai_studio.show(&context);
     }
 
     fn clear_color(&self, _visuals: &eframe::egui::Visuals) -> [f32; 4] {
