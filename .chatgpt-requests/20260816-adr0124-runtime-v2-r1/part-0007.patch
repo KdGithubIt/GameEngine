@@ -1,0 +1,321 @@
++        Vec::new()
++    };
++    let nav_mesh = bake_from_obstacles(&obstacles, settings);
++    save_navmesh(&nav_mesh, output_path)?;
++    Ok(nav_mesh)
++}
++
++/// Reports that filesystem-backed navigation baking is unavailable on wasm32.
++///
++/// # Errors
++///
++/// Always returns [`NavMeshError::Io`] with [`io::ErrorKind::Unsupported`].
++#[cfg(target_arch = "wasm32")]
++pub fn bake_navmesh(
++    _world: &mut engine_ecs::World,
++    _settings: &NavMeshSettings,
++    _output_path: &Path,
++) -> Result<NavMesh, NavMeshError> {
++    Err(unsupported_navmesh_io())
++}
++
++/// Saves a validated production navigation asset as pretty JSON.
++///
++/// # Errors
++///
++/// Returns [`NavMeshError`] when asset validation, serialization, or I/O fails.
++#[cfg(not(target_arch = "wasm32"))]
++pub fn save_navmesh(nav_mesh: &NavMesh, path: &Path) -> Result<(), NavMeshError> {
++    nav_mesh.validate()?;
++    let json = serde_json::to_string_pretty(nav_mesh).map_err(NavMeshError::Json)?;
++    std::fs::write(path, json).map_err(NavMeshError::Io)
++}
++
++/// Reports that filesystem-backed navigation persistence is unavailable on wasm32.
++///
++/// # Errors
++///
++/// Always returns [`NavMeshError::Io`] with [`io::ErrorKind::Unsupported`].
++#[cfg(target_arch = "wasm32")]
++pub fn save_navmesh(_nav_mesh: &NavMesh, _path: &Path) -> Result<(), NavMeshError> {
++    Err(unsupported_navmesh_io())
++}
++
++/// Loads and validates a production navigation asset.
++///
++/// # Errors
++///
++/// Returns [`NavMeshError`] when reading, parsing, or validation fails.
++#[cfg(not(target_arch = "wasm32"))]
++pub fn load_navmesh(path: &Path) -> Result<NavMesh, NavMeshError> {
++    let bytes = std::fs::read(path).map_err(NavMeshError::Io)?;
++    let nav_mesh: NavMesh = serde_json::from_slice(&bytes).map_err(NavMeshError::Json)?;
++    nav_mesh.validate()?;
++    Ok(nav_mesh)
++}
++
++/// Reports that filesystem-backed navigation loading is unavailable on wasm32.
++///
++/// # Errors
++///
++/// Always returns [`NavMeshError::Io`] with [`io::ErrorKind::Unsupported`].
++#[cfg(target_arch = "wasm32")]
++pub fn load_navmesh(_path: &Path) -> Result<NavMesh, NavMeshError> {
++    Err(unsupported_navmesh_io())
++}
++
++#[cfg(target_arch = "wasm32")]
++fn unsupported_navmesh_io() -> NavMeshError {
++    NavMeshError::Io(io::Error::new(
++        io::ErrorKind::Unsupported,
++        "navigation asset file IO is not available on wasm32",
++    ))
++}
++
++/// Error returned by production NavMesh persistence and validation.
++#[derive(Debug)]
++pub enum NavMeshError {
++    /// Filesystem operation failed.
++    Io(io::Error),
++    /// JSON serialization or parsing failed.
++    Json(serde_json::Error),
++    /// Loaded runtime asset violated schema invariants.
++    InvalidAsset(String),
++}
++
++impl fmt::Display for NavMeshError {
++    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
++        match self {
++            Self::Io(error) => write!(formatter, "navigation I/O error: {error}"),
++            Self::Json(error) => write!(formatter, "navigation JSON error: {error}"),
++            Self::InvalidAsset(message) => write!(formatter, "invalid navigation asset: {message}"),
++        }
++    }
++}
++
++impl std::error::Error for NavMeshError {
++    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
++        match self {
++            Self::Io(error) => Some(error),
++            Self::Json(error) => Some(error),
++            Self::InvalidAsset(_) => None,
++        }
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    fn triangle(a: Vec3, b: Vec3, c: Vec3) -> NavigationTriangle {
++        NavigationTriangle {
++            a: a.to_array(),
++            b: b.to_array(),
++            c: c.to_array(),
++            area: 0,
++        }
++    }
++
++    fn input(triangles: Vec<NavigationTriangle>) -> NavigationBuildInput {
++        NavigationBuildInput {
++            source_fingerprint: "fixture".to_owned(),
++            triangles,
++            modifiers: Vec::new(),
++            links: Vec::new(),
++            profiles: vec![NavigationAgentProfile {
++                radius: 0.0,
++                ..NavigationAgentProfile::default()
++            }],
++            tile_size: 4.0,
++        }
++    }
++
++    fn floor_square(origin: Vec3, size: f32) -> Vec<NavigationTriangle> {
++        let a = origin;
++        let b = origin + Vec3::X * size;
++        let c = origin + (Vec3::X + Vec3::Z) * size;
++        let d = origin + Vec3::Z * size;
++        vec![triangle(a, b, c), triangle(a, c, d)]
++    }
++
++    #[test]
++    fn stacked_floors_do_not_cross_link() {
++        let mut triangles = floor_square(Vec3::ZERO, 2.0);
++        triangles.extend(floor_square(Vec3::Y * 3.0, 2.0));
++        let asset = ProductionNavigationBaker
++            .bake(&input(triangles), &|| false)
++            .expect("stacked fixture must bake");
++        let query = NavMeshQuery::new(asset);
++        assert!(matches!(
++            query.query_path(
++                DEFAULT_NAVIGATION_PROFILE,
++                Vec3::new(0.5, 0.0, 0.5),
++                Vec3::new(0.5, 3.0, 0.5)
++            ),
++            NavigationPathResult::Partial(_)
++        ));
++    }
++
++    #[test]
++    fn climb_limit_controls_height_offset_portal() {
++        let triangles = vec![
++            triangle(Vec3::ZERO, Vec3::X * 2.0, Vec3::Z * 2.0),
++            triangle(
++                Vec3::X * 2.0 + Vec3::Y * 0.25,
++                (Vec3::X + Vec3::Z) * 2.0 + Vec3::Y * 0.25,
++                Vec3::Z * 2.0 + Vec3::Y * 0.25,
++            ),
++        ];
++        let mut build = input(triangles.clone());
++        build.profiles[0].max_climb = 0.3;
++        let connected = NavMeshQuery::new(
++            ProductionNavigationBaker
++                .bake(&build, &|| false)
++                .expect("connected step must bake"),
++        );
++        assert!(matches!(
++            connected.query_path(
++                DEFAULT_NAVIGATION_PROFILE,
++                Vec3::new(0.2, 0.0, 0.2),
++                Vec3::new(1.7, 0.25, 1.7)
++            ),
++            NavigationPathResult::Complete(_)
++        ));
++
++        build.profiles[0].max_climb = 0.1;
++        let disconnected = NavMeshQuery::new(
++            ProductionNavigationBaker
++                .bake(&build, &|| false)
++                .expect("disconnected step must still bake"),
++        );
++        assert!(matches!(
++            disconnected.query_path(
++                DEFAULT_NAVIGATION_PROFILE,
++                Vec3::new(0.2, 0.0, 0.2),
++                Vec3::new(1.7, 0.25, 1.7)
++            ),
++            NavigationPathResult::Partial(_)
++        ));
++    }
++
++    #[test]
++    fn profile_radius_rejects_portal_narrower_than_agent_diameter() {
++        let triangles = vec![
++            triangle(Vec3::ZERO, Vec3::X, Vec3::Z),
++            triangle(Vec3::X, Vec3::X + Vec3::Z, Vec3::Z),
++        ];
++        let mut build = input(triangles);
++        build.profiles = vec![
++            NavigationAgentProfile {
++                id: NavigationProfileId::new("small"),
++                name: "Small".to_owned(),
++                radius: 0.2,
++                ..NavigationAgentProfile::default()
++            },
++            NavigationAgentProfile {
++                id: NavigationProfileId::new("large"),
++                name: "Large".to_owned(),
++                radius: 0.8,
++                ..NavigationAgentProfile::default()
++            },
++        ];
++        let query = NavMeshQuery::new(
++            ProductionNavigationBaker
++                .bake(&build, &|| false)
++                .expect("radius fixture must bake"),
++        );
++        assert!(matches!(
++            query.query_path("small", Vec3::new(0.1, 0.0, 0.1), Vec3::new(0.9, 0.0, 0.9)),
++            NavigationPathResult::Complete(_)
++        ));
++        assert!(matches!(
++            query.query_path("large", Vec3::new(0.1, 0.0, 0.1), Vec3::new(0.9, 0.0, 0.9)),
++            NavigationPathResult::Partial(_)
++        ));
++    }
++
++    #[test]
++    fn slope_limit_changes_reachable_geometry_by_profile() {
++        let sloped = vec![triangle(
++            Vec3::new(0.0, 0.0, 0.0),
++            Vec3::new(4.0, 0.0, 0.0),
++            Vec3::new(0.0, 4.0, 2.0),
++        )];
++        let mut build = input(sloped);
++        build.profiles = vec![
++            NavigationAgentProfile {
++                id: NavigationProfileId::new("walker"),
++                name: "Walker".to_owned(),
++                radius: 0.0,
++                max_slope_degrees: 40.0,
++                ..NavigationAgentProfile::default()
++            },
++            NavigationAgentProfile {
++                id: NavigationProfileId::new("climber"),
++                name: "Climber".to_owned(),
++                radius: 0.0,
++                max_slope_degrees: 70.0,
++                ..NavigationAgentProfile::default()
++            },
++        ];
++        let asset = ProductionNavigationBaker
++            .bake(&build, &|| false)
++            .expect("profile fixture must bake");
++        assert_eq!(asset.profile("walker").expect("walker").tiles.len(), 0);
++        assert_eq!(asset.profile("climber").expect("climber").tiles.len(), 1);
++    }
++
++    #[test]
++    fn one_way_and_two_way_links_preserve_directionality() {
++        let mut build = input(vec![
++            triangle(Vec3::ZERO, Vec3::X * 2.0, Vec3::Z * 2.0),
++            triangle(
++                Vec3::Y * 3.0,
++                Vec3::Y * 3.0 + Vec3::X * 2.0,
++                Vec3::Y * 3.0 + Vec3::Z * 2.0,
++            ),
++        ]);
++        build.links.push(NavigationBuildLink {
++            id: "jump_up".to_owned(),
++            start: [0.5, 0.0, 0.5],
++            end: [0.5, 3.0, 0.5],
++            bidirectional: false,
++            profiles: Vec::new(),
++            area: 0,
++            cost: 1.0,
++            traversal_tag: "jump".to_owned(),
++        });
++        let one_way = NavMeshQuery::new(
++            ProductionNavigationBaker
++                .bake(&build, &|| false)
++                .expect("one-way fixture must bake"),
++        );
++        assert!(matches!(
++            one_way.query_path(
++                DEFAULT_NAVIGATION_PROFILE,
++                Vec3::new(0.5, 0.0, 0.5),
++                Vec3::new(0.5, 3.0, 0.5)
++            ),
++            NavigationPathResult::Complete(_)
++        ));
++        assert!(matches!(
++            one_way.query_path(
++                DEFAULT_NAVIGATION_PROFILE,
++                Vec3::new(0.5, 3.0, 0.5),
++                Vec3::new(0.5, 0.0, 0.5)
++            ),
++            NavigationPathResult::Partial(_)
++        ));
++
++        build.links[0].bidirectional = true;
++        let two_way = NavMeshQuery::new(
++            ProductionNavigationBaker
++                .bake(&build, &|| false)
++                .expect("two-way fixture must bake"),
++        );
++        assert!(matches!(
++            two_way.query_path(
++                DEFAULT_NAVIGATION_PROFILE,
++                Vec3::new(0.5, 3.0, 0.5),
++                Vec3::new(0.5, 0.0, 0.5)
++            ),
