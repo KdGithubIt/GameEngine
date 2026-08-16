@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "request_id": "20260816-adr0131-mv-fix-r3",
+  "target_branch": "chatgpt/gameengine-adr0131-managed-validation-v1",
+  "expected_head_sha": "0b2191a06a4ec7311937327c425c76fdea2a4956",
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Fix ADR 0131 managed validation policy matching",
+  "pr_title": "ADR 0131: integrate managed validation with agent runs",
+  "pr_body": "## Summary\n\n- add engine-owned managed validation attempts and fixed Cargo gates derived from the immutable AgentProposal validation plan\n- persist provider-independent validation events/results, interruption recovery, cancellation, and structured process failures\n- keep arbitrary commands outside the managed allow-list unresolved instead of executing them or bypassing ArbitraryCommandExecution permission\n- drive AgentRun Validating/Repairing/Playtesting/Evaluating transitions and CompletionReport source validation from the host\n- make AI Studio display completion state without implementing validation semantics in the UI\n\n## Validation correction\n\n- derive ordering required by the managed gate set after the first affected validation exposed the compile error\n- match only exact managed validation descriptors so arbitrary shell text containing a Cargo keyword cannot be treated as a resolved managed gate\n\n## Validation\n\nExpected Windows validation scope: affected engine-editor. Visual validation is required because Completion contract controls become read-only status presentation."
+}
