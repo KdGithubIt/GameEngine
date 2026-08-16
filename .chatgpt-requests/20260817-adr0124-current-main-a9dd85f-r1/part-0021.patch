@@ -1,0 +1,61 @@
++    pub output_asset: String,
++    /// Normalized navigation-source fingerprint used by the last successful bake.
++    pub source_fingerprint: Option<String>,
++    /// User-editable production bake settings.
++    pub settings: NavMeshBakeSettings,
++}
++
++impl Default for NavMeshBakeDocument {
++    fn default() -> Self {
++        Self {
++            schema_version: NAVMESH_BAKE_SCHEMA_VERSION,
++            output_asset: "navigation/arena.navmesh.json".to_owned(),
++            source_fingerprint: None,
++            settings: NavMeshBakeSettings::default(),
++        }
++    }
++}
++
++impl NavMeshBakeDocument {
++    /// Parses schema v2, migrating the previous planar schema v1 in memory.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`NavigationBakeServiceError`] when JSON or settings are invalid.
++    pub fn from_json(json: &str) -> Result<Self, NavigationBakeServiceError> {
++        let value: serde_json::Value =
++            serde_json::from_str(json).map_err(NavigationBakeServiceError::Json)?;
++        let version = value
++            .get("schema_version")
++            .and_then(serde_json::Value::as_u64)
++            .unwrap_or(1) as u32;
++        let document = match version {
++            1 => migrate_v1_document(
++                serde_json::from_value(value).map_err(NavigationBakeServiceError::Json)?,
++            ),
++            NAVMESH_BAKE_SCHEMA_VERSION => {
++                serde_json::from_value(value).map_err(NavigationBakeServiceError::Json)?
++            }
++            other => return Err(NavigationBakeServiceError::UnsupportedVersion(other)),
++        };
++        document.validate()?;
++        Ok(document)
++    }
++
++    /// Writes deterministic pretty JSON.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`NavigationBakeServiceError`] when settings are invalid or JSON fails.
++    pub fn to_canonical_json(&self) -> Result<String, NavigationBakeServiceError> {
++        self.validate()?;
++        serde_json::to_string_pretty(self).map_err(NavigationBakeServiceError::Json)
++    }
++
++    /// Validates output confinement and production profile settings.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`NavigationBakeServiceError::InvalidSettings`] for invalid values.
++    pub fn validate(&self) -> Result<(), NavigationBakeServiceError> {
++        if self.schema_version != NAVMESH_BAKE_SCHEMA_VERSION

@@ -1,0 +1,53 @@
++        if end.distance(end_point) > DEFAULT_NEAREST_DISTANCE {
++            return NavigationPathResult::Failure(NavigationQueryFailure::EndOutside);
++        }
+         match astar_polygons(profile, start_ref, end_ref) {
+-            Some(search) => {
+-                let path = materialize_path(profile, start_point, end_point, search);
+-                if end_is_near {
+-                    NavigationPathResult::Complete(path)
+-                } else {
+-                    NavigationPathResult::Partial(path)
+-                }
++            Some(SearchOutcome::Complete(search)) => NavigationPathResult::Complete(
++                materialize_path(profile, start_point, end_point, search),
++            ),
++            Some(SearchOutcome::Partial(search)) => {
++                let Some(partial_ref) = search.corridor.last().copied() else {
++                    return NavigationPathResult::Failure(NavigationQueryFailure::NoPath);
++                };
++                let Some(partial_end) = closest_point_on_polygon(profile, partial_ref, end) else {
++                    return NavigationPathResult::Failure(NavigationQueryFailure::NoPath);
++                };
++                NavigationPathResult::Partial(materialize_path(
++                    profile,
++                    start_point,
++                    partial_end,
++                    search,
++                ))
+             }
+             None => NavigationPathResult::Failure(NavigationQueryFailure::NoPath),
+         }
+@@ -1000,6 +1039,22 @@ fn nearest_polygon_in_profile(
+     best.map(|(reference, nearest, _)| (reference, nearest))
+ }
+ 
++fn closest_point_on_polygon(
++    profile: &NavigationProfileMesh,
++    reference: NavigationPolygonRef,
++    point: Vec3,
++) -> Option<Vec3> {
++    let tile = profile.tiles.iter().find(|tile| tile.id == reference.tile)?;
++    let polygon = tile.polygons.get(reference.polygon as usize)?;
++    if polygon.vertices.len() != 3 {
++        return None;
++    }
++    let a = Vec3::from_array(tile.vertices[*polygon.vertices.first()? as usize]);
++    let b = Vec3::from_array(tile.vertices[*polygon.vertices.get(1)? as usize]);
++    let c = Vec3::from_array(tile.vertices[*polygon.vertices.get(2)? as usize]);
++    Some(closest_point_on_triangle(point, a, b, c))
++}
++
+ fn closest_point_on_triangle(point: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Vec3 {
+     let ab = b - a;
+     let ac = c - a;
