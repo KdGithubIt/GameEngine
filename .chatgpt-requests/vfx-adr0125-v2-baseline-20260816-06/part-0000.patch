@@ -1,0 +1,2001 @@
+diff --git a/crates/authoring/src/lib.rs b/crates/authoring/src/lib.rs
+index b936312..16c2d4b 100644
+--- a/crates/authoring/src/lib.rs
++++ b/crates/authoring/src/lib.rs
+@@ -65,6 +65,7 @@ pub mod ui_contract_runtime;
+ pub mod ui_edit;
+ pub mod validation;
+ pub mod value;
++pub mod vfx;
+ 
+ pub use access::{
+     AuthoringPermission, AuthoringPermissionError, AuthoringPermissions,
+@@ -155,3 +156,12 @@ pub use validation::{
+     validate_asset_manifest, validate_scene, validate_scene_asset_refs, validate_start_scene,
+ };
+ pub use value::Value;
++pub use vfx::{
++    CompiledVfxEffect, CompiledVfxEmitter, CompiledVfxOperation, VfxApply, VfxAttributeLayout,
++    VfxAuthoringService, VfxCapabilityRequirements, VfxCommand, VfxCompilation, VfxCurve,
++    VfxCurveInterpolation, VfxCurveKey, VfxCurveKeyId, VfxDiagnostic, VfxDiagnosticSeverity,
++    VfxDocumentError, VfxEffect, VfxEmitter, VfxEmitterId, VfxGradient, VfxGradientKey,
++    VfxGradientKeyId, VfxIdError, VfxModule, VfxModuleId, VfxModuleOperation, VfxModuleSchema,
++    VfxPhase, VfxRandomChannel, VfxScalarValue, VfxSchemaCatalog, VfxShape, VfxTemplate,
++    VfxTextureSheet, VfxValidation, VfxVectorValue, VFX_FILE_SUFFIX, VFX_SCHEMA_VERSION,
++};
+diff --git a/crates/authoring/src/vfx.rs b/crates/authoring/src/vfx.rs
+new file mode 100644
+index 0000000..d34be6f
+--- /dev/null
++++ b/crates/authoring/src/vfx.rs
+@@ -0,0 +1,2349 @@
++//! Versioned VFX authoring documents and backend-neutral compilation (ADR 0125).
++//!
++//! This module owns persisted effect semantics, typed module schemas, deterministic
++//! validation, transactional edits, and the compiled intermediate representation.
++//! It deliberately contains no editor widgets, runtime ECS state, or GPU handles.
++
++use crate::id::AssetId;
++use serde::{Deserialize, Deserializer, Serialize};
++use std::collections::BTreeSet;
++use std::fmt;
++
++/// Current persisted VFX document schema version.
++pub const VFX_SCHEMA_VERSION: u32 = 1;
++/// File-name suffix used by persisted VFX documents.
++pub const VFX_FILE_SUFFIX: &str = ".vfx.json";
++
++fn is_valid_ulid_suffix(value: &str) -> bool {
++    value.len() == 26
++        && value
++            .as_bytes()
++            .first()
++            .is_some_and(|byte| matches!(byte, b'0'..=b'7'))
++        && value.bytes().all(|byte| {
++            matches!(
++                byte,
++                b'0'..=b'9'
++                    | b'A'..=b'H'
++                    | b'J'
++                    | b'K'
++                    | b'M'
++                    | b'N'
++                    | b'P'..=b'T'
++                    | b'V'..=b'Z'
++            )
++        })
++}
++
++fn validate_local_id(value: &str, prefix: &'static str) -> Result<(), VfxIdError> {
++    let required = format!("{prefix}_");
++    let Some(suffix) = value.strip_prefix(&required) else {
++        return Err(VfxIdError::WrongPrefix {
++            expected: prefix,
++            actual: value.to_owned(),
++        });
++    };
++    if !is_valid_ulid_suffix(suffix) {
++        return Err(VfxIdError::InvalidSuffix {
++            actual: value.to_owned(),
++        });
++    }
++    Ok(())
++}
++
++macro_rules! define_vfx_id {
++    ($(#[$attr:meta])* $name:ident, $prefix:literal) => {
++        $(#[$attr])*
++        #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
++        #[serde(transparent)]
++        pub struct $name(String);
++
++        impl $name {
++            /// Generates a new stable document-local identifier.
++            pub fn generate() -> Self {
++                Self(format!(concat!($prefix, "_{}"), ulid::Ulid::new()))
++            }
++
++            /// Parses and validates a stable document-local identifier.
++            ///
++            /// # Errors
++            ///
++            /// Returns [`VfxIdError`] when the prefix or ULID suffix is invalid.
++            pub fn try_new(value: impl Into<String>) -> Result<Self, VfxIdError> {
++                let value = value.into();
++                validate_local_id(&value, $prefix)?;
++                Ok(Self(value))
++            }
++
++            /// Returns the stable string representation.
++            pub fn as_str(&self) -> &str {
++                &self.0
++            }
++        }
++
++        impl fmt::Display for $name {
++            fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
++                self.0.fmt(formatter)
++            }
++        }
++
++        impl<'de> Deserialize<'de> for $name {
++            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
++            where
++                D: Deserializer<'de>,
++            {
++                let value = String::deserialize(deserializer)?;
++                Self::try_new(value).map_err(serde::de::Error::custom)
++            }
++        }
++    };
++}
++
++/// Reports why a VFX document-local stable identifier is invalid.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub enum VfxIdError {
++    /// The identifier does not use the required object-kind prefix.
++    WrongPrefix {
++        /// Required prefix without the underscore separator.
++        expected: &'static str,
++        /// Rejected identifier value.
++        actual: String,
++    },
++    /// The identifier suffix is not a valid 26-character Crockford ULID.
++    InvalidSuffix {
++        /// Rejected identifier value.
++        actual: String,
++    },
++}
++
++impl fmt::Display for VfxIdError {
++    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
++        match self {
++            Self::WrongPrefix { expected, actual } => {
++                write!(formatter, "expected VFX ID prefix `{expected}_`, got `{actual}`")
++            }
++            Self::InvalidSuffix { actual } => write!(
++                formatter,
++                "VFX ID `{actual}` has an invalid 26-character Crockford ULID suffix"
++            ),
++        }
++    }
++}
++
++impl std::error::Error for VfxIdError {}
++
++define_vfx_id!(
++    /// Stable identifier for one emitter inside a VFX document.
++    VfxEmitterId,
++    "vfxemitter"
++);
++define_vfx_id!(
++    /// Stable identifier for one typed module inside a VFX document.
++    VfxModuleId,
++    "vfxmodule"
++);
++define_vfx_id!(
++    /// Stable identifier for one scalar-curve key inside a VFX document.
++    VfxCurveKeyId,
++    "vfxkey"
++);
++define_vfx_id!(
++    /// Stable identifier for one color-gradient key inside a VFX document.
++    VfxGradientKeyId,
++    "vfxgradient"
++);
++
++/// Explicit execution phase for a typed VFX module.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case")]
++pub enum VfxPhase {
++    /// Initializes newly spawned particles.
++    Spawn,
++    /// Mutates live particles during simulation.
++    Update,
++    /// Describes how live particles are presented.
++    Render,
++}
++
++/// Stable deterministic random-stream selector used by authored ranges.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
++#[serde(transparent)]
++pub struct VfxRandomChannel(u32);
++
++impl VfxRandomChannel {
++    /// Creates a deterministic random channel from its stable numeric index.
++    pub const fn new(index: u32) -> Self {
++        Self(index)
++    }
++
++    /// Returns the stable numeric channel index.
++    pub const fn index(self) -> u32 {
++        self.0
++    }
++}
++
++/// A scalar authored either as a constant or deterministic random range.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++#[serde(tag = "mode", rename_all = "snake_case")]
++pub enum VfxScalarValue {
++    /// Uses one constant value for every particle.
++    Constant {
++        /// Authored scalar value.
++        value: f32,
++    },
++    /// Samples uniformly from an inclusive range using a named random channel.
++    Range {
++        /// Inclusive minimum value.
++        min: f32,
++        /// Inclusive maximum value.
++        max: f32,
++        /// Deterministic random channel used for the sample.
++        channel: VfxRandomChannel,
++    },
++}
++
++impl VfxScalarValue {
++    /// Returns the greatest possible authored value.
++    pub fn maximum(&self) -> f32 {
++        match self {
++            Self::Constant { value } => *value,
++            Self::Range { max, .. } => *max,
++        }
++    }
++
++    fn validate(&self) -> bool {
++        match self {
++            Self::Constant { value } => value.is_finite(),
++            Self::Range { min, max, .. } => min.is_finite() && max.is_finite() && min <= max,
++        }
++    }
++}
++
++/// A 3D vector authored either as a constant or per-axis deterministic range.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++#[serde(tag = "mode", rename_all = "snake_case")]
++pub enum VfxVectorValue {
++    /// Uses one constant vector.
++    Constant {
++        /// Authored XYZ vector.
++        value: [f32; 3],
++    },
++    /// Samples each axis between `min` and `max` using one deterministic channel.
++    Range {
++        /// Inclusive per-axis minima.
++        min: [f32; 3],
++        /// Inclusive per-axis maxima.
++        max: [f32; 3],
++        /// Deterministic random channel used for the sample.
++        channel: VfxRandomChannel,
++    },
++}
++
++impl VfxVectorValue {
++    fn validate(&self) -> bool {
++        match self {
++            Self::Constant { value } => finite3(*value),
++            Self::Range { min, max, .. } => {
++                finite3(*min)
++                    && finite3(*max)
++                    && min.iter().zip(max).all(|(min, max)| min <= max)
++            }
++        }
++    }
++}
++
++/// Interpolation mode between two scalar curve keys.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case")]
++pub enum VfxCurveInterpolation {
++    /// Holds the left key value until the next key.
++    Step,
++    /// Linearly interpolates between key values.
++    Linear,
++}
++
++/// One stable scalar-curve key on normalized particle lifetime.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++pub struct VfxCurveKey {
++    /// Stable key identifier preserved when the key is moved.
++    pub id: VfxCurveKeyId,
++    /// Normalized lifetime position in `[0, 1]`.
++    pub time: f32,
++    /// Scalar value at this key.
++    pub value: f32,
++    /// Interpolation leaving this key.
++    pub interpolation: VfxCurveInterpolation,
++}
++
++/// Ordered scalar curve evaluated over normalized particle lifetime.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++pub struct VfxCurve {
++    /// Strictly time-ordered curve keys.
++    pub keys: Vec<VfxCurveKey>,
++}
++
++impl VfxCurve {
++    /// Creates a constant two-key curve spanning normalized lifetime.
++    pub fn constant(value: f32) -> Self {
++        Self {
++            keys: vec![
++                VfxCurveKey {
++                    id: VfxCurveKeyId::generate(),
++                    time: 0.0,
++                    value,
++                    interpolation: VfxCurveInterpolation::Linear,
++                },
++                VfxCurveKey {
++                    id: VfxCurveKeyId::generate(),
++                    time: 1.0,
++                    value,
++                    interpolation: VfxCurveInterpolation::Linear,
++                },
++            ],
++        }
++    }
++
++    /// Evaluates the curve at normalized lifetime `time`.
++    ///
++    /// Values outside `[0, 1]` are clamped to the curve's endpoints. Invalid
++    /// curves return `0.0`; callers should normally validate the document first.
++    pub fn evaluate(&self, time: f32) -> f32 {
++        let Some(first) = self.keys.first() else {
++            return 0.0;
++        };
++        if time <= first.time {
++            return first.value;
++        }
++        let Some(last) = self.keys.last() else {
++            return first.value;
++        };
++        if time >= last.time {
++            return last.value;
++        }
++        for pair in self.keys.windows(2) {
++            let left = &pair[0];
++            let right = &pair[1];
++            if time <= right.time {
++                return match left.interpolation {
++                    VfxCurveInterpolation::Step => left.value,
++                    VfxCurveInterpolation::Linear => {
++                        let span = right.time - left.time;
++                        if span <= f32::EPSILON {
++                            right.value
++                        } else {
++                            let factor = ((time - left.time) / span).clamp(0.0, 1.0);
++                            left.value + (right.value - left.value) * factor
++                        }
++                    }
++                };
++            }
++        }
++        last.value
++    }
++
++    fn is_valid(&self) -> bool {
++        if self.keys.is_empty() {
++            return false;
++        }
++        let mut ids = BTreeSet::new();
++        let mut previous = -1.0_f32;
++        for key in &self.keys {
++            if !ids.insert(key.id.clone())
++                || !key.time.is_finite()
++                || !(0.0..=1.0).contains(&key.time)
++                || key.time <= previous
++                || !key.value.is_finite()
++            {
++                return false;
++            }
++            previous = key.time;
++        }
++        true
++    }
++}
++
++/// One stable color-gradient key on normalized particle lifetime.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++pub struct VfxGradientKey {
++    /// Stable key identifier preserved when the key is moved.
++    pub id: VfxGradientKeyId,
++    /// Normalized lifetime position in `[0, 1]`.
++    pub time: f32,
++    /// Linear RGBA color at this key.
++    pub color: [f32; 4],
++}
++
++/// Ordered color gradient evaluated over normalized particle lifetime.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++pub struct VfxGradient {
++    /// Strictly time-ordered color keys.
++    pub keys: Vec<VfxGradientKey>,
++}
++
++impl VfxGradient {
++    /// Creates a two-key gradient between `start` and `end`.
++    pub fn linear(start: [f32; 4], end: [f32; 4]) -> Self {
++        Self {
++            keys: vec![
++                VfxGradientKey {
++                    id: VfxGradientKeyId::generate(),
++                    time: 0.0,
++                    color: start,
++                },
++                VfxGradientKey {
++                    id: VfxGradientKeyId::generate(),
++                    time: 1.0,
++                    color: end,
++                },
++            ],
++        }
++    }
++
++    /// Evaluates the gradient at normalized lifetime `time`.
++    ///
++    /// Values outside `[0, 1]` are clamped to the gradient's endpoints. Invalid
++    /// gradients return transparent black; callers should validate first.
++    pub fn evaluate(&self, time: f32) -> [f32; 4] {
++        let Some(first) = self.keys.first() else {
++            return [0.0; 4];
++        };
++        if time <= first.time {
++            return first.color;
++        }
++        let Some(last) = self.keys.last() else {
++            return first.color;
++        };
++        if time >= last.time {
++            return last.color;
++        }
++        for pair in self.keys.windows(2) {
++            let left = &pair[0];
++            let right = &pair[1];
++            if time <= right.time {
++                let span = right.time - left.time;
++                let factor = if span <= f32::EPSILON {
++                    1.0
++                } else {
++                    ((time - left.time) / span).clamp(0.0, 1.0)
++                };
++                let mut color = [0.0; 4];
++                for (index, value) in color.iter_mut().enumerate() {
++                    *value = left.color[index] + (right.color[index] - left.color[index]) * factor;
++                }
++                return color;
++            }
++        }
++        last.color
++    }
++
++    fn is_valid(&self) -> bool {
++        if self.keys.is_empty() {
++            return false;
++        }
++        let mut ids = BTreeSet::new();
++        let mut previous = -1.0_f32;
++        for key in &self.keys {
++            if !ids.insert(key.id.clone())
++                || !key.time.is_finite()
++                || !(0.0..=1.0).contains(&key.time)
++                || key.time <= previous
++                || !finite4(key.color)
++            {
++                return false;
++            }
++            previous = key.time;
++        }
++        true
++    }
++}
++
++/// Spawn volume used by the shape module.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++#[serde(tag = "shape", rename_all = "snake_case")]
++pub enum VfxShape {
++    /// Spawns at the emitter origin.
++    Point,
++    /// Spawns inside an axis-aligned box centered on the emitter.
++    Box {
++        /// Positive XYZ half-extents.
++        half_extents: [f32; 3],
++    },
++    /// Spawns inside a sphere centered on the emitter.
++    Sphere {
++        /// Non-negative sphere radius.
++        radius: f32,
++    },
++    /// Spawns inside a cone oriented by a local direction.
++    Cone {
++        /// Local cone axis; zero vectors are invalid.
++        direction: [f32; 3],
++        /// Half-angle in radians in `[0, pi/2)`.
++        angle_radians: f32,
++        /// Non-negative radius at the cone base.
++        radius: f32,
++    },
++}
++
++impl VfxShape {
++    fn validate(&self) -> bool {
++        match self {
++            Self::Point => true,
++            Self::Box { half_extents } => {
++                finite3(*half_extents) && half_extents.iter().all(|value| *value >= 0.0)
++            }
++            Self::Sphere { radius } => radius.is_finite() && *radius >= 0.0,
++            Self::Cone {
++                direction,
++                angle_radians,
++                radius,
++            } => {
++                finite3(*direction)
++                    && direction.iter().any(|value| value.abs() > f32::EPSILON)
++                    && angle_radians.is_finite()
++                    && (0.0..std::f32::consts::FRAC_PI_2).contains(angle_radians)
++                    && radius.is_finite()
++                    && *radius >= 0.0
++            }
++        }
++    }
++}
++
++/// Texture-sheet playback data shared by billboard and mesh render modules.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++pub struct VfxTextureSheet {
++    /// Number of horizontal cells.
++    pub columns: u32,
++    /// Number of vertical cells.
++    pub rows: u32,
++    /// Normalized frame selection over particle lifetime, where `0` is the
++    /// first cell and `1` is the last cell.
++    pub frame_over_life: VfxCurve,
++}
++
++impl VfxTextureSheet {
++    fn is_valid(&self) -> bool {
++        self.columns > 0 && self.rows > 0 && self.frame_over_life.is_valid()
++    }
++}
++
++/// Typed operation carried by one VFX module.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++#[serde(tag = "type", rename_all = "snake_case")]
++pub enum VfxModuleOperation {
++    /// Continuously emits particles at a rate per second.
++    SpawnRate {
++        /// Authored emission rate in particles per second.
++        particles_per_second: f32,
++    },
++    /// Emits one deterministic burst at an emitter-local time.
++    Burst {
++        /// Emitter-local burst time in seconds.
++        time: f32,
++        /// Number of particles requested by the burst.
++        count: u32,
++    },
++    /// Chooses the spawn volume for subsequent particles.
++    Shape {
++        /// Authored spawn shape.
++        shape: VfxShape,
++    },
++    /// Chooses particle lifetime at spawn.
++    Lifetime {
++        /// Lifetime in seconds.
++        value: VfxScalarValue,
++    },
++    /// Chooses initial speed along the direction produced by the active shape.
++    ///
++    /// This keeps the simple-emitter cone contract on the same compiled IR as
++    /// advanced effects without introducing a second runtime simulator.
++    InitialSpeed {
++        /// Initial speed in units per second.
++        value: VfxScalarValue,
++    },
++    /// Chooses initial local velocity at spawn, replacing shape-directed speed.
++    InitialVelocity {
++        /// Initial XYZ velocity in units per second.
++        value: VfxVectorValue,
++    },
++    /// Chooses initial linear RGBA color.
++    InitialColor {
++        /// Linear RGBA spawn color.
++        color: [f32; 4],
++    },
++    /// Chooses initial uniform size.
++    InitialSize {
++        /// Uniform spawn size.
++        value: VfxScalarValue,
++    },
++    /// Chooses initial billboard or mesh rotation in radians.
++    InitialRotation {
++        /// Spawn rotation in radians.
++        value: VfxScalarValue,
++    },
++    /// Applies a constant world-space acceleration every update.
++    Force {
++        /// XYZ acceleration in units per second squared.
++        acceleration: [f32; 3],
++    },
++    /// Applies velocity-proportional drag every update.
++    Drag {
++        /// Non-negative drag coefficient.
++        coefficient: f32,
++    },
++    /// Replaces particle color from a normalized-lifetime gradient.
++    ColorOverLife {
++        /// Linear RGBA gradient.
++        gradient: VfxGradient,
++    },
++    /// Multiplies particle size by a normalized-lifetime curve.
++    SizeOverLife {
++        /// Uniform size multiplier curve.
++        curve: VfxCurve,
++    },
++    /// Adds rotation sampled from a normalized-lifetime curve.
++    RotationOverLife {
++        /// Rotation in radians over normalized lifetime.
++        curve: VfxCurve,
++    },
++    /// Renders particles as camera-facing quads.
++    Billboard {
++        /// Optional material asset used by this output.
++        material: Option<AssetId>,
++        /// Optional texture-sheet animation.
++        texture_sheet: Option<VfxTextureSheet>,
++    },
++    /// Renders particles as instanced meshes.
++    Mesh {
++        /// Mesh asset drawn for each particle.
++        mesh: AssetId,
++        /// Optional material asset used by this output.
++        material: Option<AssetId>,
++        /// Optional texture-sheet animation.
++        texture_sheet: Option<VfxTextureSheet>,
++    },
++}
++
++impl VfxModuleOperation {
++    /// Returns the stable engine-owned module type identifier.
++    pub fn type_id(&self) -> &'static str {
++        match self {
++            Self::SpawnRate { .. } => "engine.vfx.spawn_rate",
++            Self::Burst { .. } => "engine.vfx.burst",
++            Self::Shape { .. } => "engine.vfx.shape",
++            Self::Lifetime { .. } => "engine.vfx.lifetime",
++            Self::InitialSpeed { .. } => "engine.vfx.initial_speed",
++            Self::InitialVelocity { .. } => "engine.vfx.initial_velocity",
++            Self::InitialColor { .. } => "engine.vfx.initial_color",
++            Self::InitialSize { .. } => "engine.vfx.initial_size",
++            Self::InitialRotation { .. } => "engine.vfx.initial_rotation",
++            Self::Force { .. } => "engine.vfx.force",
++            Self::Drag { .. } => "engine.vfx.drag",
++            Self::ColorOverLife { .. } => "engine.vfx.color_over_life",
++            Self::SizeOverLife { .. } => "engine.vfx.size_over_life",
++            Self::RotationOverLife { .. } => "engine.vfx.rotation_over_life",
++            Self::Billboard { .. } => "engine.vfx.billboard",
++            Self::Mesh { .. } => "engine.vfx.mesh",
++        }
++    }
++
++    /// Returns the only valid execution phase for this operation.
++    pub fn required_phase(&self) -> VfxPhase {
++        match self {
++            Self::SpawnRate { .. }
++            | Self::Burst { .. }
++            | Self::Shape { .. }
++            | Self::Lifetime { .. }
++            | Self::InitialSpeed { .. }
++            | Self::InitialVelocity { .. }
++            | Self::InitialColor { .. }
++            | Self::InitialSize { .. }
++            | Self::InitialRotation { .. } => VfxPhase::Spawn,
++            Self::Force { .. }
++            | Self::Drag { .. }
++            | Self::ColorOverLife { .. }
++            | Self::SizeOverLife { .. }
++            | Self::RotationOverLife { .. } => VfxPhase::Update,
++            Self::Billboard { .. } | Self::Mesh { .. } => VfxPhase::Render,
++        }
++    }
++}
++
++/// One ordered typed module in a VFX emitter.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++pub struct VfxModule {
++    /// Stable module identifier used by diagnostics and granular edits.
++    pub id: VfxModuleId,
++    /// Explicit execution phase. Validation rejects phase/type mismatches.
++    pub phase: VfxPhase,
++    /// Whether this module participates in compilation.
++    pub enabled: bool,
++    /// Typed engine-owned operation and properties.
++    pub operation: VfxModuleOperation,
++}
++
++impl VfxModule {
++    /// Creates an enabled module in the operation's required phase.
++    pub fn new(operation: VfxModuleOperation) -> Self {
++        Self {
++            id: VfxModuleId::generate(),
++            phase: operation.required_phase(),
++            enabled: true,
++            operation,
++        }
++    }
++}
++
++/// One authored emitter inside a VFX effect.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++pub struct VfxEmitter {
++    /// Stable document-local emitter identifier.
++    pub id: VfxEmitterId,
++    /// Human-readable emitter label.
++    pub name: String,
++    /// Whether this emitter participates in compilation.
++    pub enabled: bool,
++    /// Hard live-particle cap for this emitter.
++    pub max_particles: u32,
++    /// Deterministically ordered typed modules across all phases.
++    pub modules: Vec<VfxModule>,
++}
++
++impl VfxEmitter {
++    /// Creates an enabled emitter with no modules.
++    pub fn new(name: impl Into<String>, max_particles: u32) -> Self {
++        Self {
++            id: VfxEmitterId::generate(),
++            name: name.into(),
++            enabled: true,
++            max_particles,
++            modules: Vec::new(),
++        }
++    }
++}
++
++/// Versioned persisted `*.vfx.json` authoring document.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++pub struct VfxEffect {
++    /// Persisted schema version. Only [`VFX_SCHEMA_VERSION`] is accepted.
++    pub schema_version: u32,
++    /// Human-readable effect name.
++    pub name: String,
++    /// Base deterministic seed for runtime instances.
++    pub seed: u32,
++    /// Hard live-particle cap across every emitter in this effect.
++    pub max_particles: u32,
++    /// Ordered emitters evaluated deterministically by document order.
++    pub emitters: Vec<VfxEmitter>,
++}
++
++impl VfxEffect {
++    /// Creates an empty current-format effect.
++    pub fn new(name: impl Into<String>, max_particles: u32) -> Self {
++        Self {
++            schema_version: VFX_SCHEMA_VERSION,
++            name: name.into(),
++            seed: 0x51ED_5EED,
++            max_particles,
++            emitters: Vec::new(),
++        }
++    }
++}
++
++/// Severity attached to a structured VFX diagnostic.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case")]
++pub enum VfxDiagnosticSeverity {
++    /// Non-blocking authoring or performance warning.
++    Warning,
++    /// Blocking validation or compilation error.
++    Error,
++}
++
++/// Structured VFX diagnostic retaining stable source identities.
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++pub struct VfxDiagnostic {
++    /// Stable machine-readable diagnostic code.
++    pub code: String,
++    /// Diagnostic severity.
++    pub severity: VfxDiagnosticSeverity,
++    /// Human-readable diagnostic message.
++    pub message: String,
++    /// Emitter associated with the diagnostic, when applicable.
++    pub emitter: Option<VfxEmitterId>,
++    /// Module associated with the diagnostic, when applicable.
++    pub module: Option<VfxModuleId>,
++}
++
++impl VfxDiagnostic {
++    /// Returns `true` when this diagnostic blocks compilation or commit.
++    pub fn is_blocking(&self) -> bool {
++        self.severity == VfxDiagnosticSeverity::Error
++    }
++
++    fn error(
++        code: &'static str,
++        message: impl Into<String>,
++        emitter: Option<&VfxEmitterId>,
++        module: Option<&VfxModuleId>,
++    ) -> Self {
++        Self {
++            code: code.to_owned(),
++            severity: VfxDiagnosticSeverity::Error,
++            message: message.into(),
++            emitter: emitter.cloned(),
++            module: module.cloned(),
++        }
++    }
++
++    fn warning(
++        code: &'static str,
++        message: impl Into<String>,
++        emitter: Option<&VfxEmitterId>,
++        module: Option<&VfxModuleId>,
++    ) -> Self {
++        Self {
++            code: code.to_owned(),
++            severity: VfxDiagnosticSeverity::Warning,
++            message: message.into(),
++            emitter: emitter.cloned(),
++            module: module.cloned(),
++        }
++    }
++}
++
++/// Engine-owned particle attributes required by a compiled emitter.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
++pub struct VfxAttributeLayout {
++    /// Whether velocity storage is required.
++    pub velocity: bool,
++    /// Whether color storage is required.
++    pub color: bool,
++    /// Whether size storage is required.
++    pub size: bool,
++    /// Whether rotation storage is required.
++    pub rotation: bool,
++}
++
++/// Runtime capabilities requested by a compiled effect.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
++pub struct VfxCapabilityRequirements {
++    /// At least one emitter needs billboard rendering.
++    pub billboard_rendering: bool,
++    /// At least one emitter needs mesh rendering.
++    pub mesh_rendering: bool,
++    /// At least one render output needs texture-sheet animation.
++    pub texture_sheet_animation: bool,
++}
++
++/// One source-mapped operation in the backend-neutral compiled IR.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++pub struct CompiledVfxOperation {
++    /// Stable authoring module that produced this operation.
++    pub source_module: VfxModuleId,
++    /// Typed engine-owned operation data.
++    pub operation: VfxModuleOperation,
++}
++
++/// One emitter in the backend-neutral compiled IR.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++pub struct CompiledVfxEmitter {
++    /// Stable authoring emitter that produced this compiled emitter.
++    pub source: VfxEmitterId,
++    /// Human-readable name copied for runtime diagnostics.
++    pub name: String,
++    /// Hard live-particle cap enforced by runtime backends.
++    pub max_particles: u32,
++    /// Particle attribute storage required by compiled operations.
++    pub attribute_layout: VfxAttributeLayout,
++    /// Deterministically ordered spawn operations.
++    pub spawn_operations: Vec<CompiledVfxOperation>,
++    /// Deterministically ordered update operations.
++    pub update_operations: Vec<CompiledVfxOperation>,
++    /// Deterministically ordered render operations.
++    pub render_operations: Vec<CompiledVfxOperation>,
++    /// Capacity implied by authored rate, bursts, and maximum lifetime.
++    pub estimated_capacity: u32,
++}
++
++/// Backend-neutral compiled VFX effect consumed by runtime implementations.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++pub struct CompiledVfxEffect {
++    /// Authoring schema version that produced this IR.
++    pub source_schema_version: u32,
++    /// Base deterministic seed used unless an instance overrides it.
++    pub seed: u32,
++    /// Hard live-particle cap across all emitters.
++    pub max_particles: u32,
++    /// Deterministically ordered enabled emitters.
++    pub emitters: Vec<CompiledVfxEmitter>,
++    /// Aggregate renderer/backend capability requirements.
++    pub capabilities: VfxCapabilityRequirements,
++}
++
++/// Validation result returned by the shared VFX authoring service.
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++pub struct VfxValidation {
++    /// `true` when no blocking diagnostics were produced.
++    pub success: bool,
++    /// Structured diagnostics in deterministic traversal order.
++    pub diagnostics: Vec<VfxDiagnostic>,
++}
++
++/// Compilation result returned by the shared VFX authoring service.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++pub struct VfxCompilation {
++    /// `true` when a compiled effect was produced.
++    pub success: bool,
++    /// Validation and capacity diagnostics.
++    pub diagnostics: Vec<VfxDiagnostic>,
++    /// Backend-neutral compiled effect when compilation succeeds.
++    pub compiled_effect: Option<CompiledVfxEffect>,
++}
++
++/// Discoverable description of one engine-owned VFX module type.
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++pub struct VfxModuleSchema {
++    /// Stable engine-owned module type ID.
++    pub type_id: String,
++    /// Human-readable module name.
++    pub display_name: String,
++    /// Palette category used by authoring clients.
++    pub category: String,
++    /// Required execution phase.
++    pub phase: VfxPhase,
++}
++
++/// Deterministic module catalog returned to Editor, CLI, MCP, and tests.
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++pub struct VfxSchemaCatalog {
++    /// Current VFX document schema version.
++    pub schema_version: u32,
++    /// Supported module types in palette order.
++    pub modules: Vec<VfxModuleSchema>,
++}
++
++/// Granular semantic edit applied transactionally to one VFX document.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++#[serde(tag = "command", rename_all = "snake_case")]
++pub enum VfxCommand {
++    /// Renames the effect.
++    SetEffectName {
++        /// New human-readable name.
++        name: String,
++    },
++    /// Changes the effect's deterministic base seed.
++    SetEffectSeed {
++        /// New deterministic seed.
++        seed: u32,
++    },
++    /// Changes the effect-wide live-particle cap.
++    SetEffectMaxParticles {
++        /// New positive live-particle cap.
++        max_particles: u32,
++    },
++    /// Inserts an emitter at a deterministic document position.
++    AddEmitter {
++        /// Emitter to insert, including its stable ID.
++        emitter: VfxEmitter,
++        /// Zero-based insertion position.
++        index: usize,
++    },
++    /// Removes one emitter by stable ID.
++    RemoveEmitter {
++        /// Emitter to remove.
++        emitter: VfxEmitterId,
++    },
++    /// Moves one emitter to a new zero-based position.
++    MoveEmitter {
++        /// Emitter to move.
++        emitter: VfxEmitterId,
++        /// Destination position after removing the emitter from its old position.
++        index: usize,
++    },
++    /// Renames one emitter.
++    RenameEmitter {
++        /// Target emitter.
++        emitter: VfxEmitterId,
++        /// New human-readable name.
++        name: String,
++    },
++    /// Enables or disables one emitter without changing its stable identity.
++    SetEmitterEnabled {
++        /// Target emitter.
++        emitter: VfxEmitterId,
++        /// New enabled state.
++        enabled: bool,
++    },
++    /// Changes one emitter's hard live-particle cap.
++    SetEmitterMaxParticles {
++        /// Target emitter.
++        emitter: VfxEmitterId,
++        /// New positive live-particle cap.
++        max_particles: u32,
++    },
++    /// Inserts a module at a deterministic position in one emitter's stack.
++    AddModule {
++        /// Target emitter.
++        emitter: VfxEmitterId,
++        /// Module to insert, including its stable ID.
++        module: VfxModule,
++        /// Zero-based insertion position in the complete module stack.
++        index: usize,
++    },
++    /// Removes one module by stable ID.
++    RemoveModule {
++        /// Target emitter.
++        emitter: VfxEmitterId,
++        /// Module to remove.
++        module: VfxModuleId,
++    },
++    /// Moves one module inside its existing execution phase.
++    MoveModule {
++        /// Target emitter.
++        emitter: VfxEmitterId,
++        /// Module to move.
++        module: VfxModuleId,
++        /// Destination position among modules in the same phase.
++        phase_index: usize,
++    },
++    /// Enables or disables one module.
++    SetModuleEnabled {
++        /// Target emitter.
++        emitter: VfxEmitterId,
++        /// Target module.
++        module: VfxModuleId,
++        /// New enabled state.
++        enabled: bool,
++    },
++    /// Replaces one module's properties without changing its stable ID or phase.
++    ReplaceModuleOperation {
++        /// Target emitter.
++        emitter: VfxEmitterId,
++        /// Target module.
++        module: VfxModuleId,
++        /// Replacement typed operation. It must belong to the module's current phase.
++        operation: VfxModuleOperation,
++    },
++}
++
++/// Transactional VFX command application result.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++pub struct VfxApply {
++    /// `true` when all commands applied and the resulting document validated.
++    pub success: bool,
++    /// Structured validation or edit diagnostics.
++    pub diagnostics: Vec<VfxDiagnostic>,
++    /// Resulting document when the transaction commits.
++    pub effect: Option<VfxEffect>,
++    /// Commands that restore the input document when applied in this order.
++    pub undo_commands: Vec<VfxCommand>,
++}
++
++/// Built-in data-generation templates for common starting effects.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case")]
++pub enum VfxTemplate {
++    /// Short bright mesh/billboard particles with downward force.
++    Spark,
++    /// Slow expanding particles suitable for smoke textures.
++    Smoke,
++    /// One-shot radial burst.
++    Burst,
++    /// Continuous short-lived particles that form a motion trail.
++    Trail,
++}
++
++/// Reports why a VFX JSON document could not be parsed or serialized.
++#[derive(Debug)]
++pub enum VfxDocumentError {
++    /// JSON parsing or serialization failed.
++    Json(serde_json::Error),
++    /// The document uses a schema version unsupported by this build.
++    UnsupportedVersion {
++        /// Version found in the input document.
++        found: u32,
++    },
++    /// Semantic validation rejected the document.
++    Invalid {
++        /// Structured blocking diagnostics.
++        diagnostics: Vec<VfxDiagnostic>,
++    },
++}
++
++impl fmt::Display for VfxDocumentError {
++    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
++        match self {
++            Self::Json(error) => write!(formatter, "invalid VFX JSON: {error}"),
++            Self::UnsupportedVersion { found } => write!(
++                formatter,
++                "unsupported VFX schema version {found}; expected {VFX_SCHEMA_VERSION}"
++            ),
++            Self::Invalid { diagnostics } => write!(
++                formatter,
++                "VFX document has {} blocking diagnostic(s)",
++                diagnostics.len()
++            ),
++        }
++    }
++}
++
++impl std::error::Error for VfxDocumentError {
++    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
++        match self {
++            Self::Json(error) => Some(error),
++            Self::UnsupportedVersion { .. } | Self::Invalid { .. } => None,
++        }
++    }
++}
++
++/// GUI-free VFX authoring service shared by human and automation frontends.
++#[derive(Debug, Default, Clone, Copy)]
++pub struct VfxAuthoringService;
++
++impl VfxAuthoringService {
++    /// Creates the shared authoring service.
++    pub fn new() -> Self {
++        Self
++    }
++
++    /// Returns the deterministic VFX module schema catalog.
++    pub fn schemas(&self) -> VfxSchemaCatalog {
++        let modules = [
++            ("engine.vfx.spawn_rate", "Spawn Rate", "Emission", VfxPhase::Spawn),
++            ("engine.vfx.burst", "Burst", "Emission", VfxPhase::Spawn),
++            ("engine.vfx.shape", "Shape", "Spawn", VfxPhase::Spawn),
++            ("engine.vfx.lifetime", "Lifetime", "Spawn", VfxPhase::Spawn),
++            (
++                "engine.vfx.initial_speed",
++                "Initial Speed",
++                "Spawn",
++                VfxPhase::Spawn,
++            ),
++            (
++                "engine.vfx.initial_velocity",
++                "Initial Velocity",
++                "Spawn",
++                VfxPhase::Spawn,
++            ),
++            (
++                "engine.vfx.initial_color",
++                "Initial Color",
++                "Spawn",
++                VfxPhase::Spawn,
++            ),
++            (
++                "engine.vfx.initial_size",
++                "Initial Size",
++                "Spawn",
++                VfxPhase::Spawn,
++            ),
++            (
++                "engine.vfx.initial_rotation",
++                "Initial Rotation",
++                "Spawn",
++                VfxPhase::Spawn,
++            ),
++            ("engine.vfx.force", "Force", "Motion", VfxPhase::Update),
++            ("engine.vfx.drag", "Drag", "Motion", VfxPhase::Update),
++            (
++                "engine.vfx.color_over_life",
++                "Color Over Life",
++                "Over Life",
++                VfxPhase::Update,
++            ),
++            (
++                "engine.vfx.size_over_life",
++                "Size Over Life",
++                "Over Life",
++                VfxPhase::Update,
++            ),
++            (
++                "engine.vfx.rotation_over_life",
++                "Rotation Over Life",
++                "Over Life",
++                VfxPhase::Update,
++            ),
++            (
++                "engine.vfx.billboard",
++                "Billboard Renderer",
++                "Render",
++                VfxPhase::Render,
++            ),
++            (
++                "engine.vfx.mesh",
++                "Mesh Renderer",
++                "Render",
++                VfxPhase::Render,
++            ),
++        ]
++        .into_iter()
++        .map(|(type_id, display_name, category, phase)| VfxModuleSchema {
++            type_id: type_id.to_owned(),
++            display_name: display_name.to_owned(),
++            category: category.to_owned(),
++            phase,
++        })
++        .collect();
++        VfxSchemaCatalog {
++            schema_version: VFX_SCHEMA_VERSION,
++            modules,
++        }
++    }
++
++    /// Parses and validates a current-format VFX JSON document.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`VfxDocumentError`] for malformed JSON, unsupported versions,
++    /// or blocking semantic diagnostics.
++    pub fn effect_from_json(&self, json: &str) -> Result<VfxEffect, VfxDocumentError> {
++        #[derive(Deserialize)]
++        struct VersionProbe {
++            schema_version: u32,
++        }
++
++        let version: VersionProbe = serde_json::from_str(json).map_err(VfxDocumentError::Json)?;
++        if version.schema_version != VFX_SCHEMA_VERSION {
++            return Err(VfxDocumentError::UnsupportedVersion {
++                found: version.schema_version,
++            });
++        }
++        let effect: VfxEffect = serde_json::from_str(json).map_err(VfxDocumentError::Json)?;
++        let validation = self.validate(&effect);
++        if validation.success {
++            Ok(effect)
++        } else {
++            Err(VfxDocumentError::Invalid {
++                diagnostics: validation
++                    .diagnostics
++                    .into_iter()
++                    .filter(VfxDiagnostic::is_blocking)
++                    .collect(),
++            })
++        }
++    }
++
++    /// Serializes a validated VFX document as deterministic pretty JSON.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`VfxDocumentError::Invalid`] when semantic validation fails or
++    /// [`VfxDocumentError::Json`] if serialization unexpectedly fails.
++    pub fn effect_to_canonical_json(&self, effect: &VfxEffect) -> Result<String, VfxDocumentError> {
++        let validation = self.validate(effect);
++        if !validation.success {
++            return Err(VfxDocumentError::Invalid {
++                diagnostics: validation
++                    .diagnostics
++                    .into_iter()
++                    .filter(VfxDiagnostic::is_blocking)
++                    .collect(),
++            });
++        }
++        let mut json = serde_json::to_string_pretty(effect).map_err(VfxDocumentError::Json)?;
++        json.push('\n');
++        Ok(json)
++    }
++
++    /// Validates one VFX document and returns stable-ID-addressable diagnostics.
++    pub fn validate(&self, effect: &VfxEffect) -> VfxValidation {
++        let mut diagnostics = Vec::new();
++        if effect.schema_version != VFX_SCHEMA_VERSION {
++            diagnostics.push(VfxDiagnostic::error(
++                "vfx.unsupported_version",
++                format!(
++                    "schema version {} is unsupported; expected {VFX_SCHEMA_VERSION}",
++                    effect.schema_version
++                ),
++                None,
++                None,
++            ));
++        }
++        if effect.name.trim().is_empty() {
++            diagnostics.push(VfxDiagnostic::error(
++                "vfx.blank_name",
++                "effect name must not be blank",
++                None,
++                None,
++            ));
++        }
++        if effect.max_particles == 0 {
++            diagnostics.push(VfxDiagnostic::error(
++                "vfx.zero_effect_budget",
++                "effect max_particles must be greater than zero",
++                None,
++                None,
++            ));
++        }
++        if effect.emitters.is_empty() {
++            diagnostics.push(VfxDiagnostic::warning(
++                "vfx.no_emitters",
++                "effect contains no emitters",
++                None,
++                None,
++            ));
++        }
++
++        let mut emitter_ids = BTreeSet::new();
++        let mut module_ids = BTreeSet::new();
++        let mut total_budget = 0_u64;
++        for emitter in &effect.emitters {
++            if !emitter_ids.insert(emitter.id.clone()) {
++                diagnostics.push(VfxDiagnostic::error(
++                    "vfx.duplicate_emitter_id",
++                    format!("emitter ID `{}` is duplicated", emitter.id),
++                    Some(&emitter.id),
++                    None,
++                ));
++            }
++            if emitter.name.trim().is_empty() {
++                diagnostics.push(VfxDiagnostic::error(
++                    "vfx.blank_emitter_name",
++                    "emitter name must not be blank",
++                    Some(&emitter.id),
++                    None,
++                ));
++            }
++            if emitter.max_particles == 0 {
++                diagnostics.push(VfxDiagnostic::error(
++                    "vfx.zero_emitter_budget",
++                    "emitter max_particles must be greater than zero",
++                    Some(&emitter.id),
++                    None,
++                ));
++            }
++            total_budget = total_budget.saturating_add(u64::from(emitter.max_particles));
++
++            let mut render_count = 0_u32;
++            for module in &emitter.modules {
++                if !module_ids.insert(module.id.clone()) {
++                    diagnostics.push(VfxDiagnostic::error(
++                        "vfx.duplicate_module_id",
++                        format!("module ID `{}` is duplicated", module.id),
++                        Some(&emitter.id),
++                        Some(&module.id),
++                    ));
++                }
++                if module.phase != module.operation.required_phase() {
++                    diagnostics.push(VfxDiagnostic::error(
++                        "vfx.phase_mismatch",
++                        format!(
++                            "module `{}` is in {:?} but `{}` requires {:?}",
++                            module.id,
++                            module.phase,
++                            module.operation.type_id(),
++                            module.operation.required_phase()
++                        ),
++                        Some(&emitter.id),
++                        Some(&module.id),
++                    ));
++                }
++                validate_operation(emitter, module, &mut diagnostics);
++                if module.enabled && module.phase == VfxPhase::Render {
++                    render_count = render_count.saturating_add(1);
++                }
++            }
++            if emitter.enabled && render_count == 0 {
++                diagnostics.push(VfxDiagnostic::warning(
++                    "vfx.no_renderer",
++                    "enabled emitter has no enabled render module",
++                    Some(&emitter.id),
++                    None,
++                ));
++            }
++
++            let estimated = estimate_capacity(emitter);
++            if estimated > emitter.max_particles {
++                diagnostics.push(VfxDiagnostic::warning(
++                    "vfx.emitter_budget_exceeded",
++                    format!(
++                        "authored rate, bursts, and lifetime imply about {estimated} particles, capped to {}",
++                        emitter.max_particles
++                    ),
++                    Some(&emitter.id),
++                    None,
++                ));
++            }
++        }
++        if total_budget > u64::from(effect.max_particles) {
++            diagnostics.push(VfxDiagnostic::warning(
++                "vfx.effect_budget_exceeded",
++                format!(
++                    "emitter budgets total {total_budget}, exceeding effect cap {}",
++                    effect.max_particles
++                ),
++                None,
++                None,
++            ));
++        }
++
++        VfxValidation {
++            success: !diagnostics.iter().any(VfxDiagnostic::is_blocking),
++            diagnostics,
++        }
++    }
++
++    /// Validates and compiles a VFX document to backend-neutral runtime IR.
++    pub fn compile(&self, effect: &VfxEffect) -> VfxCompilation {
++        let validation = self.validate(effect);
++        if !validation.success {
++            return VfxCompilation {
++                success: false,
++                diagnostics: validation.diagnostics,
++                compiled_effect: None,
++            };
++        }
++
++        let mut capabilities = VfxCapabilityRequirements::default();
++        let mut emitters = Vec::new();
++        for emitter in effect.emitters.iter().filter(|emitter| emitter.enabled) {
++            let mut attribute_layout = VfxAttributeLayout::default();
++            let mut spawn_operations = Vec::new();
++            let mut update_operations = Vec::new();
++            let mut render_operations = Vec::new();
++            for module in emitter.modules.iter().filter(|module| module.enabled) {
++                update_attribute_layout(&mut attribute_layout, &module.operation);
++                update_capabilities(&mut capabilities, &module.operation);
++                let operation = CompiledVfxOperation {
++                    source_module: module.id.clone(),
++                    operation: module.operation.clone(),
++                };
++                match module.phase {
++                    VfxPhase::Spawn => spawn_operations.push(operation),
++                    VfxPhase::Update => update_operations.push(operation),
++                    VfxPhase::Render => render_operations.push(operation),
++                }
++            }
++            emitters.push(CompiledVfxEmitter {
++                source: emitter.id.clone(),
++                name: emitter.name.clone(),
++                max_particles: emitter.max_particles,
++                attribute_layout,
++                spawn_operations,
++                update_operations,
++                render_operations,
++                estimated_capacity: estimate_capacity(emitter),
++            });
++        }
++
++        VfxCompilation {
++            success: true,
++            diagnostics: validation.diagnostics,
++            compiled_effect: Some(CompiledVfxEffect {
++                source_schema_version: effect.schema_version,
++                seed: effect.seed,
++                max_particles: effect.max_particles,
++                emitters,
++                capabilities,
++            }),
++        }
++    }
++
++    /// Applies commands to a clone, validates once, and commits atomically on success.
++    ///
++    /// The input document is never mutated. Successful results also contain an
++    /// ordered inverse command list that restores the input document.
++    pub fn apply(&self, effect: &VfxEffect, commands: &[VfxCommand]) -> VfxApply {
++        let mut draft = effect.clone();
++        let mut undo_commands = Vec::new();
++        for command in commands {
++            match apply_command(&mut draft, command) {
++                Ok(inverse) => undo_commands.push(inverse),
++                Err(diagnostic) => {
++                    return VfxApply {
++                        success: false,
++                        diagnostics: vec![diagnostic],
++                        effect: None,
++                        undo_commands: Vec::new(),
++                    };
++                }
++            }
++        }
++        undo_commands.reverse();
++        let validation = self.validate(&draft);
++        if !validation.success {
++            return VfxApply {
++                success: false,
++                diagnostics: validation.diagnostics,
++                effect: None,
++                undo_commands: Vec::new(),
++            };
++        }
++        VfxApply {
++            success: true,
++            diagnostics: validation.diagnostics,
++            effect: Some(draft),
++            undo_commands,
++        }
++    }
++
++    /// Creates one ordinary VFX document from a built-in starting template.
++    pub fn template(&self, template: VfxTemplate) -> VfxEffect {
++        match template {
++            VfxTemplate::Spark => spark_template(),
++            VfxTemplate::Smoke => smoke_template(),
++            VfxTemplate::Burst => burst_template(),
++            VfxTemplate::Trail => trail_template(),
++        }
++    }
++}
++
++fn finite3(value: [f32; 3]) -> bool {
++    value.into_iter().all(f32::is_finite)
++}
++
++fn finite4(value: [f32; 4]) -> bool {
++    value.into_iter().all(f32::is_finite)
++}
++
++fn validate_operation(
++    emitter: &VfxEmitter,
++    module: &VfxModule,
++    diagnostics: &mut Vec<VfxDiagnostic>,
++) {
++    let valid = match &module.operation {
++        VfxModuleOperation::SpawnRate {
++            particles_per_second,
++        } => particles_per_second.is_finite() && *particles_per_second >= 0.0,
++        VfxModuleOperation::Burst { time, .. } => time.is_finite() && *time >= 0.0,
++        VfxModuleOperation::Shape { shape } => shape.validate(),
++        VfxModuleOperation::Lifetime { value } => value.validate() && value.maximum() > 0.0,
++        VfxModuleOperation::InitialSpeed { value } => value.validate(),
++        VfxModuleOperation::InitialVelocity { value } => value.validate(),
++        VfxModuleOperation::InitialColor { color } => finite4(*color),
++        VfxModuleOperation::InitialSize { value } => value.validate() && value.maximum() >= 0.0,
++        VfxModuleOperation::InitialRotation { value } => value.validate(),
++        VfxModuleOperation::Force { acceleration } => finite3(*acceleration),
++        VfxModuleOperation::Drag { coefficient } => coefficient.is_finite() && *coefficient >= 0.0,
++        VfxModuleOperation::ColorOverLife { gradient } => gradient.is_valid(),
++        VfxModuleOperation::SizeOverLife { curve }
++        | VfxModuleOperation::RotationOverLife { curve } => curve.is_valid(),
++        VfxModuleOperation::Billboard { texture_sheet, .. }
++        | VfxModuleOperation::Mesh { texture_sheet, .. } => texture_sheet
++            .as_ref()
++            .is_none_or(VfxTextureSheet::is_valid),
++    };
++    if !valid {
++        diagnostics.push(VfxDiagnostic::error(
++            "vfx.invalid_module_properties",
++            format!(
++                "module `{}` (`{}`) contains non-finite, out-of-range, or invalid ordered data",
++                module.id,
++                module.operation.type_id()
++            ),
++            Some(&emitter.id),
++            Some(&module.id),
++        ));
++    }
++}
++
++fn estimate_capacity(emitter: &VfxEmitter) -> u32 {
++    let mut rate = 0.0_f32;
++    let mut burst = 0_u64;
++    let mut lifetime = 1.0_f32;
++    for module in emitter.modules.iter().filter(|module| module.enabled) {
++        match &module.operation {
++            VfxModuleOperation::SpawnRate {
++                particles_per_second,
++            } if particles_per_second.is_finite() => rate += particles_per_second.max(0.0),
++            VfxModuleOperation::Burst { count, .. } => burst = burst.saturating_add(u64::from(*count)),
++            VfxModuleOperation::Lifetime { value } if value.validate() => {
++                lifetime = lifetime.max(value.maximum().max(0.0));
++            }
++            _ => {}
++        }
++    }
++    let continuous = (rate * lifetime).ceil().max(0.0) as u64;
++    continuous
++        .saturating_add(burst)
++        .min(u64::from(u32::MAX)) as u32
++}
++
++fn update_attribute_layout(layout: &mut VfxAttributeLayout, operation: &VfxModuleOperation) {
++    match operation {
++        VfxModuleOperation::InitialSpeed { .. }
++        | VfxModuleOperation::InitialVelocity { .. }
++        | VfxModuleOperation::Force { .. }
++        | VfxModuleOperation::Drag { .. } => layout.velocity = true,
++        VfxModuleOperation::InitialColor { .. } | VfxModuleOperation::ColorOverLife { .. } => {
++            layout.color = true;
++        }
++        VfxModuleOperation::InitialSize { .. } | VfxModuleOperation::SizeOverLife { .. } => {
++            layout.size = true;
++        }
++        VfxModuleOperation::InitialRotation { .. } | VfxModuleOperation::RotationOverLife { .. } => {
++            layout.rotation = true;
++        }
++        _ => {}
++    }
++}
++
++fn update_capabilities(
++    capabilities: &mut VfxCapabilityRequirements,
++    operation: &VfxModuleOperation,
++) {
++    match operation {
++        VfxModuleOperation::Billboard { texture_sheet, .. } => {
++            capabilities.billboard_rendering = true;
++            capabilities.texture_sheet_animation |= texture_sheet.is_some();
++        }
++        VfxModuleOperation::Mesh { texture_sheet, .. } => {
++            capabilities.mesh_rendering = true;
++            capabilities.texture_sheet_animation |= texture_sheet.is_some();
++        }
++        _ => {}
++    }
++}
++
++fn emitter_index(effect: &VfxEffect, id: &VfxEmitterId) -> Option<usize> {
++    effect.emitters.iter().position(|emitter| &emitter.id == id)
++}
++
++fn emitter_mut<'a>(effect: &'a mut VfxEffect, id: &VfxEmitterId) -> Option<&'a mut VfxEmitter> {
++    effect.emitters.iter_mut().find(|emitter| &emitter.id == id)
++}
++
++fn module_index(emitter: &VfxEmitter, id: &VfxModuleId) -> Option<usize> {
++    emitter.modules.iter().position(|module| &module.id == id)
++}
++
++fn edit_error(
++    code: &'static str,
++    message: impl Into<String>,
++    emitter: Option<&VfxEmitterId>,
++    module: Option<&VfxModuleId>,
++) -> VfxDiagnostic {
++    VfxDiagnostic::error(code, message, emitter, module)
++}
++
++fn apply_command(effect: &mut VfxEffect, command: &VfxCommand) -> Result<VfxCommand, VfxDiagnostic> {
++    match command {
++        VfxCommand::SetEffectName { name } => {
++            let previous = std::mem::replace(&mut effect.name, name.clone());
++            Ok(VfxCommand::SetEffectName { name: previous })
++        }
++        VfxCommand::SetEffectSeed { seed } => {
++            let previous = std::mem::replace(&mut effect.seed, *seed);
++            Ok(VfxCommand::SetEffectSeed { seed: previous })
++        }
++        VfxCommand::SetEffectMaxParticles { max_particles } => {
++            let previous = std::mem::replace(&mut effect.max_particles, *max_particles);
++            Ok(VfxCommand::SetEffectMaxParticles {
++                max_particles: previous,
++            })
++        }
++        VfxCommand::AddEmitter { emitter, index } => {
++            if *index > effect.emitters.len() {
++                return Err(edit_error(
++                    "vfx.edit.index_out_of_range",
++                    format!("emitter insertion index {index} is out of range"),
++                    Some(&emitter.id),
++                    None,
++                ));
++            }
++            if effect.emitters.iter().any(|entry| entry.id == emitter.id) {
++                return Err(edit_error(
++                    "vfx.edit.duplicate_emitter_id",
++                    format!("emitter `{}` already exists", emitter.id),
++                    Some(&emitter.id),
++                    None,
++                ));
++            }
++            effect.emitters.insert(*index, emitter.clone());
++            Ok(VfxCommand::RemoveEmitter {
++                emitter: emitter.id.clone(),
++            })
++        }
++        VfxCommand::RemoveEmitter { emitter } => {
++            let index = emitter_index(effect, emitter).ok_or_else(|| {
++                edit_error(
++                    "vfx.edit.emitter_not_found",
++                    format!("emitter `{emitter}` was not found"),
++                    Some(emitter),
++                    None,
++                )
++            })?;
++            let removed = effect.emitters.remove(index);
++            Ok(VfxCommand::AddEmitter {
++                emitter: removed,
++                index,
++            })
++        }
++        VfxCommand::MoveEmitter { emitter, index } => {
++            let previous = emitter_index(effect, emitter).ok_or_else(|| {
++                edit_error(
++                    "vfx.edit.emitter_not_found",
++                    format!("emitter `{emitter}` was not found"),
++                    Some(emitter),
++                    None,
++                )
++            })?;
++            if *index >= effect.emitters.len() {
++                return Err(edit_error(
++                    "vfx.edit.index_out_of_range",
++                    format!("emitter destination index {index} is out of range"),
++                    Some(emitter),
++                    None,
++                ));
++            }
++            let moved = effect.emitters.remove(previous);
++            effect.emitters.insert(*index, moved);
++            Ok(VfxCommand::MoveEmitter {
++                emitter: emitter.clone(),
++                index: previous,
++            })
++        }
++        VfxCommand::RenameEmitter { emitter, name } => {
++            let target = emitter_mut(effect, emitter).ok_or_else(|| {
++                edit_error(
++                    "vfx.edit.emitter_not_found",
++                    format!("emitter `{emitter}` was not found"),
++                    Some(emitter),
++                    None,
++                )
++            })?;
++            let previous = std::mem::replace(&mut target.name, name.clone());
++            Ok(VfxCommand::RenameEmitter {
++                emitter: emitter.clone(),
++                name: previous,
++            })
++        }
++        VfxCommand::SetEmitterEnabled { emitter, enabled } => {
++            let target = emitter_mut(effect, emitter).ok_or_else(|| {
++                edit_error(
++                    "vfx.edit.emitter_not_found",
++                    format!("emitter `{emitter}` was not found"),
++                    Some(emitter),
++                    None,
++                )
++            })?;
++            let previous = std::mem::replace(&mut target.enabled, *enabled);
++            Ok(VfxCommand::SetEmitterEnabled {
++                emitter: emitter.clone(),
++                enabled: previous,
++            })
++        }
++        VfxCommand::SetEmitterMaxParticles {
++            emitter,
++            max_particles,
++        } => {
++            let target = emitter_mut(effect, emitter).ok_or_else(|| {
++                edit_error(
++                    "vfx.edit.emitter_not_found",
++                    format!("emitter `{emitter}` was not found"),
++                    Some(emitter),
++                    None,
++                )
++            })?;
++            let previous = std::mem::replace(&mut target.max_particles, *max_particles);
++            Ok(VfxCommand::SetEmitterMaxParticles {
++                emitter: emitter.clone(),
++                max_particles: previous,
++            })
++        }
++        VfxCommand::AddModule {
++            emitter,
++            module,
++            index,
++        } => {
++            let target = emitter_mut(effect, emitter).ok_or_else(|| {
++                edit_error(
++                    "vfx.edit.emitter_not_found",
++                    format!("emitter `{emitter}` was not found"),
++                    Some(emitter),
++                    Some(&module.id),
++                )
++            })?;
++            if *index > target.modules.len() {
++                return Err(edit_error(
++                    "vfx.edit.index_out_of_range",
++                    format!("module insertion index {index} is out of range"),
++                    Some(emitter),
++                    Some(&module.id),
++                ));
++            }
++            if target.modules.iter().any(|entry| entry.id == module.id) {
++                return Err(edit_error(
++                    "vfx.edit.duplicate_module_id",
++                    format!("module `{}` already exists in emitter", module.id),
++                    Some(emitter),
++                    Some(&module.id),
++                ));
++            }
++            target.modules.insert(*index, module.clone());
++            Ok(VfxCommand::RemoveModule {
++                emitter: emitter.clone(),
++                module: module.id.clone(),
++            })
++        }
++        VfxCommand::RemoveModule { emitter, module } => {
++            let target = emitter_mut(effect, emitter).ok_or_else(|| {
++                edit_error(
++                    "vfx.edit.emitter_not_found",
++                    format!("emitter `{emitter}` was not found"),
++                    Some(emitter),
++                    Some(module),
++                )
++            })?;
++            let index = module_index(target, module).ok_or_else(|| {
++                edit_error(
++                    "vfx.edit.module_not_found",
++                    format!("module `{module}` was not found"),
++                    Some(emitter),
++                    Some(module),
++                )
++            })?;
++            let removed = target.modules.remove(index);
++            Ok(VfxCommand::AddModule {
++                emitter: emitter.clone(),
++                module: removed,
++                index,
++            })
++        }
++        VfxCommand::MoveModule {
++            emitter,
++            module,
++            phase_index,
++        } => {
++            let target = emitter_mut(effect, emitter).ok_or_else(|| {
++                edit_error(
++                    "vfx.edit.emitter_not_found",
++                    format!("emitter `{emitter}` was not found"),
++                    Some(emitter),
++                    Some(module),
++                )
++            })?;
++            let current = module_index(target, module).ok_or_else(|| {
++                edit_error(
++                    "vfx.edit.module_not_found",
++                    format!("module `{module}` was not found"),
++                    Some(emitter),
++                    Some(module),
++                )
++            })?;
++            let phase = target.modules[current].phase;
++            let phase_positions: Vec<usize> = target
++                .modules
++                .iter()
++                .enumerate()
++                .filter_map(|(index, entry)| (entry.phase == phase).then_some(index))
++                .collect();
++            let previous_phase_index = phase_positions
++                .iter()
++                .position(|position| *position == current)
++                .expect("current module must be present in its own phase positions");
++            if *phase_index >= phase_positions.len() {
++                return Err(edit_error(
++                    "vfx.edit.index_out_of_range",
++                    format!("module phase destination index {phase_index} is out of range"),
++                    Some(emitter),
++                    Some(module),
++                ));
++            }
++            let moved = target.modules.remove(current);
++            let remaining_phase_positions: Vec<usize> = target
++                .modules
++                .iter()
++                .enumerate()
++                .filter_map(|(index, entry)| (entry.phase == phase).then_some(index))
++                .collect();
++            let insert_at = if *phase_index >= remaining_phase_positions.len() {
++                remaining_phase_positions
++                    .last()
++                    .map_or(target.modules.len(), |index| index + 1)
++            } else {
++                remaining_phase_positions[*phase_index]
++            };
++            target.modules.insert(insert_at, moved);
++            Ok(VfxCommand::MoveModule {
++                emitter: emitter.clone(),
++                module: module.clone(),
++                phase_index: previous_phase_index,
++            })
++        }
++        VfxCommand::SetModuleEnabled {
++            emitter,
++            module,
++            enabled,
++        } => {
++            let target = emitter_mut(effect, emitter).ok_or_else(|| {
++                edit_error(
++                    "vfx.edit.emitter_not_found",
++                    format!("emitter `{emitter}` was not found"),
++                    Some(emitter),
++                    Some(module),
++                )
++            })?;
++            let index = module_index(target, module).ok_or_else(|| {
++                edit_error(
++                    "vfx.edit.module_not_found",
++                    format!("module `{module}` was not found"),
++                    Some(emitter),
++                    Some(module),
++                )
++            })?;
++            let previous = std::mem::replace(&mut target.modules[index].enabled, *enabled);
++            Ok(VfxCommand::SetModuleEnabled {
++                emitter: emitter.clone(),
++                module: module.clone(),
++                enabled: previous,
++            })
++        }
++        VfxCommand::ReplaceModuleOperation {
++            emitter,
++            module,
++            operation,
++        } => {
++            let target = emitter_mut(effect, emitter).ok_or_else(|| {
++                edit_error(
++                    "vfx.edit.emitter_not_found",
++                    format!("emitter `{emitter}` was not found"),
++                    Some(emitter),
++                    Some(module),
++                )
++            })?;
++            let index = module_index(target, module).ok_or_else(|| {
++                edit_error(
++                    "vfx.edit.module_not_found",
++                    format!("module `{module}` was not found"),
++                    Some(emitter),
++                    Some(module),
++                )
++            })?;
++            if operation.required_phase() != target.modules[index].phase {
++                return Err(edit_error(
++                    "vfx.edit.phase_change_forbidden",
++                    "replace operation cannot move a module to another execution phase",
++                    Some(emitter),
++                    Some(module),
++                ));
++            }
++            let previous = std::mem::replace(&mut target.modules[index].operation, operation.clone());
++            Ok(VfxCommand::ReplaceModuleOperation {
++                emitter: emitter.clone(),
++                module: module.clone(),
++                operation: previous,
++            })
++        }
++    }
++}
++
++fn module(operation: VfxModuleOperation) -> VfxModule {
++    VfxModule::new(operation)
++}
++
++fn base_emitter(name: &str, max_particles: u32) -> VfxEmitter {
++    VfxEmitter::new(name, max_particles)
++}
++
++fn spark_template() -> VfxEffect {
++    let mut effect = VfxEffect::new("spark", 1024);
++    let mut emitter = base_emitter("sparks", 512);
++    emitter.modules = vec![
++        module(VfxModuleOperation::Burst { time: 0.0, count: 48 }),
++        module(VfxModuleOperation::Shape {
++            shape: VfxShape::Cone {
++                direction: [0.0, 1.0, 0.0],
++                angle_radians: 0.8,
++                radius: 0.05,
++            },
++        }),
++        module(VfxModuleOperation::Lifetime {
++            value: VfxScalarValue::Range {
++                min: 0.25,
++                max: 0.8,
++                channel: VfxRandomChannel::new(0),
++            },
++        }),
++        module(VfxModuleOperation::InitialVelocity {
++            value: VfxVectorValue::Range {
++                min: [-2.0, 2.0, -2.0],
++                max: [2.0, 7.0, 2.0],
++                channel: VfxRandomChannel::new(1),
++            },
++        }),
++        module(VfxModuleOperation::InitialColor {
++            color: [1.0, 0.8, 0.25, 1.0],
++        }),
++        module(VfxModuleOperation::InitialSize {
++            value: VfxScalarValue::Range {
++                min: 0.02,
