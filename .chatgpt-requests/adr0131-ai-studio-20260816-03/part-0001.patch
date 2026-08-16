@@ -1,0 +1,68 @@
++include provider-managed session/login, API credential, local/no-auth, and
++enterprise-managed authentication. GameEngine MUST NOT require an API key when
++an external provider legitimately manages its own authenticated session.
++
++Provider-managed credentials remain owned by that provider. API credentials
++owned by GameEngine MUST be stored in an OS credential facility or equivalent
++secure user secret store. Credentials, tokens, and provider login material MUST
++NOT be written to canonical project data or shared AI session records.
++
++### 6. Structured project authoring continues to use the Editor MCP endpoint
++
++ADR 0121 remains authoritative for project authoring. Both external and native
++agent runtimes use the project-scoped Editor MCP interface for semantic
++inspection and authoring mutation. They MUST NOT introduce a second authoring
++writer or bypass the live Editor session by replacing Scene, Graph, Prefab, UI,
++Material, settings, animation, or other authoring files directly.
++
++The AI Agent Bridge from ADR 0035 remains the runtime input, frame observation,
++and visual interaction path. It is used for playtest interaction and visual
++evaluation, not as a substitute for typed authoring operations.
++
++Source-code changes and asset acquisition are separate domains from authoring
++transactions and use the governed services described below.
++
++### 7. GameEngine owns a layered agent permission broker
++
++The existing authoring permission vocabulary remains the shared authorization
++boundary for authoring operations. Agent orchestration adds application-level
++capabilities for concerns that do not belong in `engine-authoring`, including:
++
++- network access;
++- external asset acquisition;
++- runtime launch;
++- runtime input/control;
++- frame capture;
++- raw workspace filesystem access; and
++- arbitrary command execution when it is broader than an engine-managed tool.
++
++AI Studio exposes these capabilities as understandable controls, such as
++checkboxes or equivalent policy toggles. Safe project authoring writes approved
++by pressing Go do not require a confirmation dialog for every transaction.
++
++Permission escalation supports at least the following approval scopes when the
++operation permits them:
++
++```text
++Allow once
++Allow for this run
++Allow for this project
++Deny
++```
++
++Persistent project policy stores capability decisions, not brittle literal
++command strings. Credentials are never part of the policy record.
++
++### 8. Managed services are the default; low-level access is an explicit escape hatch
++
++The default agent path is **Managed**:
++
++```text
++project authoring -> MCP
++source code       -> agent code workspace / patch service
++assets            -> asset acquisition + import pipeline
++validation        -> engine-managed validation commands
++runtime           -> normal Play / AI Agent Bridge
++```
++
++Raw filesystem writes and arbitrary shell execution are disabled by default.
