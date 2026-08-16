@@ -1,7 +1,7 @@
 # ChatGPT GitHub Automation
 
 Status: Accepted
-Version: 1.5.0
+Version: 2.0.0
 Canonical location: `docs/CHATGPT_AUTOMATION.md`
 
 ## Purpose
@@ -12,10 +12,12 @@ validate GameEngine changes without Codex and without the OpenAI API.
 The normal path is:
 
 ```text
-ChatGPT
+ChatGPT / GameEngine GitHub Worker
+  -> exact target checkout with intended product changes staged
+  -> trusted request builder generates and preflights the Git patch
   -> chatgpt-dispatch-stage-<request-id> staging branch
   -> read-only GitHub Actions stage signal
-  -> trusted default-branch transport publisher
+  -> trusted default-branch transport publisher + pre-publish preflight
   -> chatgpt-dispatch transport branch
   -> trusted default-branch dispatcher
   -> chatgpt/gameengine-* task branch
@@ -44,13 +46,21 @@ publisher through `workflow_run`. GitHub loads the `workflow_run` workflow from
 the default branch, so the write-capable publisher is not supplied by the
 producer-controlled staging branch.
 
-The trusted transport publisher validates the complete staged commit range,
-then globally serializes publication. It cherry-picks the staged request commits
-onto the latest `chatgpt-dispatch` head and pushes with an exact lease. This
-makes the publisher the normal single writer for the shared transport ref. A
-human, fallback tool, or old producer that writes `chatgpt-dispatch` directly is
-an external writer; the publisher must reject the stale lease instead of
-force-updating over that change.
+The trusted transport publisher validates the complete staged commit range and,
+before any transport write, loads the request protocol implementation from
+current `main` and preflights the staged request against the exact declared
+target branch. The pre-publish preflight reconstructs the published patch bytes,
+validates the request schema, checks schema-v2 hashes and the current-main
+baseline, and runs the same strict Git applicability/path/mode checks used by the
+dispatcher. Only a request that passes that trusted preflight may be serialized
+onto `chatgpt-dispatch`.
+
+After preflight, the publisher globally serializes publication. It cherry-picks
+the staged request commits onto the latest `chatgpt-dispatch` head and pushes
+with an exact lease. This makes the publisher the normal single writer for the
+shared transport ref. A human, fallback tool, or old producer that writes
+`chatgpt-dispatch` directly is an external writer; the publisher must reject the
+stale lease instead of force-updating over that change.
 
 Both the transport publisher and dispatcher opt into the GitHub Actions
 `concurrency` queue with `queue: max`. This preserves up to 100 pending runs in
@@ -118,33 +128,74 @@ any other branch is rejected.
 ChatGPT creates or reads the target branch before constructing the request and
 records its exact 40-character HEAD SHA in `expected_head_sha`.
 
+## Mechanical request builder
+
+New normal product requests MUST be produced with
+`.github/chatgpt/request_protocol.py build` from an exact checkout of the target
+HEAD. Hand-authored unified diffs and manually maintained hunk headers are not a
+normal producer path.
+
+The producer prepares the intended product state in a disposable checkout and
+stages exactly the intended files in Git. The builder then:
+
+1. requires checkout `HEAD` to equal the supplied full `expected_head_sha`;
+2. requires the supplied `baseline_main_sha` to be an ancestor of that target;
+3. rejects unstaged tracked changes and untracked files so the staged index is
+   the complete change source;
+4. obtains the patch mechanically with Git from the staged index and exact
+   target tree, including additions and deletions;
+5. preflights that exact patch in a detached worktree with
+   `git apply --check --whitespace=error-all`;
+6. applies it only to the temporary index, runs `git diff --cached --check`, and
+   enforces the public path allow-list plus symlink/submodule restrictions;
+7. re-reads the remote target branch and remote `main` before emitting
+   `ready.json` unless running the explicit regression-test-only bypass;
+8. splits the immutable preflight artifact only at newline boundaries and only
+   for transport size;
+9. computes `patch_sha256` and `patch_bytes` from the complete artifact; and
+10. emits schema-v2 `ready.json` plus contiguous `part-NNNN.patch` files.
+
+The producer MUST publish those emitted patch part bytes without retyping,
+reformatting, line-ending conversion, or synthetic reconstruction. If the
+producer cannot run the builder against a real exact target checkout, it MUST
+obtain an execution environment such as the GameEngine GitHub Worker rather
+than falling back to hand-authored unified diff text.
+
 ## Request lifecycle
 
-A request is published in this order:
+A new request is published in this order:
 
-1. Read the current target branch and capture its exact HEAD SHA.
-2. Create a unique request ID and a fresh
+1. Read the current target branch and current `main`; capture both exact full
+   SHAs.
+2. Prepare the intended product change in a disposable checkout whose `HEAD` is
+   exactly the captured target SHA, and stage exactly the intended files.
+3. Run the mechanical request builder. It generates the unified Git patch,
+   strict-preflights the exact artifact, rechecks remote target/main state,
+   splits the artifact, and emits schema-v2 request files.
+4. Create a unique request ID and a fresh
    `chatgpt-dispatch-stage-<request-id>` branch from current `main`.
-3. Split the complete unified Git patch into one or more transport parts.
-4. Add the exact preflighted `part-NNNN.patch` blobs under
+5. Add the exact builder-emitted `part-NNNN.patch` blobs under
    `.chatgpt-requests/<request-id>/` on the staging branch. The producer may use
    one or more commits, but those commits may only add patch-part files for this
    request.
-5. Re-read the target branch. If its HEAD changed, abandon this unpublished
-   request and build a new request from the new HEAD.
-6. Create `ready.json` in a separate final staging commit. That commit MUST add
-   exactly one file: the request's `ready.json`.
-7. The read-only stage signal completes. The trusted default-branch publisher
-   validates the immutable stage history, waits in the global publisher
-   concurrency queue, and cherry-picks the staged request commits onto the
-   latest `chatgpt-dispatch` head.
-8. Immediately before updating `chatgpt-dispatch`, the publisher re-reads its
-   remote head and pushes with an exact lease. An unexpected external writer
-   makes the publication fail rather than overwrite the new transport history.
-9. After a successful or idempotently detected publication, the publisher starts
-   `gameengine-chatgpt-dispatcher.yml` from `main` with the exact published ready
-   commit SHA.
-10. The dispatcher revalidates that commit and continues to the target task
+6. Re-read the target branch and `main`. If either differs from the builder's
+   `expected_head_sha` / `baseline_main_sha`, abandon this unpublished request,
+   rebuild from current state, and use a new request ID.
+7. Add the exact builder-emitted `ready.json` in a separate final staging commit.
+   That commit MUST add exactly one file: the request's `ready.json`.
+8. The read-only stage signal completes. The trusted default-branch publisher
+   validates immutable stage history and executes the trusted pre-publish
+   preflight against the exact target before any transport mutation.
+9. Only after successful preflight, the publisher waits in the global publisher
+   concurrency queue and cherry-picks the staged request commits onto the latest
+   `chatgpt-dispatch` head.
+10. Immediately before updating `chatgpt-dispatch`, the publisher re-reads its
+    remote head and pushes with an exact lease. An unexpected external writer
+    makes the publication fail rather than overwrite the new transport history.
+11. After a successful or idempotently detected publication, the publisher
+    starts `gameengine-chatgpt-dispatcher.yml` from `main` with the exact
+    published ready commit SHA.
+12. The dispatcher revalidates that commit and continues to the target task
     branch, Draft PR, and Windows validation.
 
 A `ready.json` modification, deletion, staging-branch rewrite after ready, or a
@@ -158,65 +209,64 @@ informal file upload. For every new implementation or correction request:
 
 1. Start from the latest intended baseline and create or select one dedicated
    `chatgpt/gameengine-*` target branch.
-2. Read the target branch itself, not a remembered or previously cached copy.
-   Capture its current 40-character HEAD SHA and use that exact tree when
-   generating the patch.
+2. Read the target branch itself and current `main`, not remembered or cached
+   values. Capture both full 40-character SHAs.
 3. Read `AGENTS.md` and every specification, ADR, or workflow document it makes
-   relevant to the requested change before constructing the patch.
-4. Build one complete unified Git patch against the exact target tree. Keep
-   product changes inside the public allow-list and never include `.github/**`
-   or `.chatgpt-requests/**` in a normal dispatcher patch. Patch paths MUST be
-   repository-root relative (for example, `a/crates/...`, not
-   `a/GameEngine/crates/...` copied from a checkout-directory name).
-5. Preflight the exact reconstructed patch bytes that will be published. Run
-   `git apply --check --whitespace=error-all <reconstructed-patch>` against the
-   captured target tree, then confirm that the patch contains only intended
-   paths and no symlink or submodule changes. Using plain `git apply --check`
-   is not equivalent because it can miss whitespace errors the dispatcher will
-   reject. Do not manually retype, reformat, or otherwise reconstruct a second
-   copy of the patch after this preflight.
-6. Split the preflighted patch only for transport size. Create a fresh staging
-   branch named `chatgpt-dispatch-stage-<request-id>` from current `main` and
-   publish those exact bytes as contiguous `part-NNNN.patch` additions for this
-   request. When a text-valued publication API is used, split only at newline
-   boundaries so transport cannot normalize terminal whitespace from a mid-line
-   fragment. Verify the staged part byte counts and blob hashes, or the
-   reconstructed content hash, against the preflight artifact. Never use
-   `ready.json` as a partial-progress marker.
-7. Immediately before creating `ready.json`, re-read the remote target branch
-   HEAD. If it differs from `expected_head_sha`, abandon the unpublished
-   request, regenerate the patch from the new target tree, and use a new request
-   ID. Do not update `expected_head_sha` without regenerating the patch.
-   For a normal task branch whose intended baseline is `main`, also re-read
-   `main`. If `main` advanced after that task branch's baseline and the branch
-   does not already contain the new baseline, create a new task branch and
-   regenerate the request from current `main` before publishing `ready.json`,
-   unless the task intentionally targets the older baseline. A stable target
-   HEAD alone does not guarantee clean PR validation scope.
-8. Add `ready.json` in its own final staging commit and change no other file in
-   that commit. After this point the staging branch and request are immutable.
-   Do not advance `chatgpt-dispatch` yourself.
-9. Follow the stage signal, transport publisher, dispatcher, Draft PR, and
-   Windows validation through to a terminal result. Read the validation mode
-   and scope before interpreting the individual gate results.
-10. On failure, identify the failing layer before changing code: staging signal,
-    transport publisher, request envelope, dispatcher/preflight, target-branch
-    concurrency, Rust/docs validation, visual validation, or external
-    runner/service failure.
-11. After a confirmed recovery, apply the incident-learning rules below so the
+   relevant to the requested change before preparing the product change.
+4. Modify a real checkout of the exact target HEAD and stage exactly the intended
+   product files. Do not manually write unified-diff hunk headers or calculate
+   hunk coordinates. Do not construct a synthetic or stitched partial source
+   fixture as the diff source.
+5. Run `.github/chatgpt/request_protocol.py build` to mechanically generate the
+   complete Git patch, strict-preflight it against the exact target tree, verify
+   allowed paths/modes, re-read remote target/main, split on newline boundaries,
+   and create schema-v2 metadata. The builder's output is the authoritative
+   preflight artifact.
+6. Keep product changes inside the public allow-list and never include
+   `.github/**` or `.chatgpt-requests/**` in a normal dispatcher patch. Because
+   Git generates the diff from the repository root, patch paths MUST remain
+   repository-root relative and MUST NOT acquire checkout-directory prefixes
+   such as `GameEngine/`.
+7. Create a fresh staging branch named
+   `chatgpt-dispatch-stage-<request-id>` from current `main` and publish the
+   exact builder output as contiguous `part-NNNN.patch` additions. Verify the
+   staged part byte counts/blob hashes or reconstructed hash against the builder
+   artifact. Never use `ready.json` as a partial-progress marker.
+8. Immediately before adding `ready.json`, re-read remote target and `main`.
+   Schema v2 declares both `expected_head_sha` and `baseline_main_sha`; any
+   difference requires abandoning the unpublished request and rebuilding from
+   current state with a new request ID. Do not update either SHA without
+   regenerating the patch.
+9. Add the exact builder-emitted `ready.json` in its own final staging commit and
+   change no other file in that commit. After this point the staging branch and
+   request are immutable. Do not advance `chatgpt-dispatch` yourself.
+10. Follow the stage signal, trusted pre-publish publisher, dispatcher, Draft PR,
+    and Windows validation through to a terminal result. Read validation mode
+    and scope before interpreting individual gate results.
+11. On failure, identify the failing layer before changing code: request builder,
+    staging signal, trusted pre-publish preflight, transport publication, request
+    envelope, dispatcher/apply, target-branch concurrency, Rust/docs validation,
+    visual validation, or external runner/service failure.
+12. After a confirmed recovery, apply the incident-learning rules below so the
     same root cause does not need to be rediscovered on a later request.
 
-The producer MUST NOT work around a staging, publisher, or dispatcher failure by
-pushing the intended product patch directly to the task branch or by directly
-advancing `chatgpt-dispatch`. Fix the request or, when trusted automation itself
-is defective, use the separately reviewed automation-infrastructure path
-described by the repository policy.
+The producer MUST NOT work around a builder, staging, publisher, or dispatcher
+failure by pushing the intended product patch directly to the task branch or by
+directly advancing `chatgpt-dispatch`. Fix the request or, when trusted
+automation itself is defective, use the separately reviewed
+automation-infrastructure path described by the repository policy.
 
 ## Failure diagnosis before retry
 
 Use the failing layer to choose the recovery instead of making speculative code
 changes:
 
+- If the request builder rejects the staged change, correct the exact staged
+  product state or target/baseline mismatch. Do not hand-edit the generated
+  unified diff to bypass the builder.
+- If a generated patch is reported as corrupt or has hunk-count/coordinate
+  problems, discard that unpublished artifact, return to the exact target
+  checkout, and regenerate mechanically. Never repair hunk headers by hand.
 - If the staging signal does not accept the ready commit, verify that the push
   was to `chatgpt-dispatch-stage-<request-id>` and that the final commit newly
   added exactly one matching `.chatgpt-requests/<request-id>/ready.json` file.
@@ -224,6 +274,12 @@ changes:
   still points at the signaled ready commit, that it was based on `main`, that
   all staged commits are linear, and that every pre-ready change only adds patch
   parts for the same request ID.
+- If trusted pre-publish preflight rejects `patch_sha256` or `patch_bytes`, the
+  published bytes differ from the builder artifact. Do not repair the staged
+  request; abandon it and create a new request from byte-identical builder output.
+- If trusted pre-publish preflight reports that `main` advanced, rebuild the
+  target branch/request from current `main`; do not merely change
+  `baseline_main_sha`.
 - If the publisher reports an existing request ID with different content, do
   not overwrite or reuse that ID. Create a new request ID and staging branch.
 - If the publisher reports that `chatgpt-dispatch` moved outside the serialized
@@ -245,13 +301,12 @@ changes:
   Re-read the target branch, regenerate the patch from that exact tree, and use
   a new request ID. Never force-apply or reuse the stale request.
 - If `git apply --check` rejects the reconstructed patch, treat the patch/tree
-  mismatch as the primary problem. Reconstruct the patch from the current
-  target files instead of editing product code merely to make old patch context
-  apply.
+  mismatch as the primary problem. Return to the exact target files and run the
+  mechanical builder instead of editing patch text or product code merely to
+  make old patch context apply.
 - If `git apply --check` reports `No such file or directory` for otherwise
-  current target files, inspect the patch headers before changing code. Patch
-  paths are relative to the repository root and must not include the checkout
-  directory name or another transport-local prefix.
+  current target files, treat checkout-path contamination as a producer defect.
+  Regenerate from repository root with the builder rather than editing headers.
 - If the dispatcher rejects a path, do not weaken the allow-list from the task
   request. `.github/**` and `.chatgpt-requests/**` are trust-boundary paths and
   require the separately reviewed automation-infrastructure workflow.
@@ -275,6 +330,10 @@ published blobs MUST reconstruct byte-for-byte to the artifact that passed
 producer preflight; a patch that was retyped or transformed after preflight has
 not been preflighted.
 
+The mechanical builder splits only on newline boundaries. A text-valued
+publication API therefore never turns a whitespace-bearing mid-line fragment
+into terminal transport text.
+
 Constraints:
 
 - names are contiguous `part-0000.patch`, `part-0001.patch`, ...;
@@ -286,14 +345,17 @@ Constraints:
 
 ## `ready.json` format
 
-Schema version 1 uses this shape:
+Schema version 2 is required for new normal requests:
 
 ```json
 {
-  "schema_version": 1,
-  "request_id": "renderer-aa-20260814-01",
+  "schema_version": 2,
+  "request_id": "renderer-aa-20260817-01",
   "target_branch": "chatgpt/gameengine-renderer-aa",
   "expected_head_sha": "0123456789abcdef0123456789abcdef01234567",
+  "baseline_main_sha": "89abcdef0123456789abcdef0123456789abcdef",
+  "patch_sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "patch_bytes": 12345,
   "patch_parts": [
     "part-0000.patch",
     "part-0001.patch"
@@ -304,7 +366,10 @@ Schema version 1 uses this shape:
 }
 ```
 
-Required validation:
+Schema version 1 remains accepted only for already-staged or legacy-compatible
+requests during migration. New producer work MUST use the builder and schema 2.
+
+Required validation for all schemas:
 
 - `request_id` matches the request directory;
 - `target_branch` is a safe `chatgpt/gameengine-*` ref;
@@ -315,6 +380,16 @@ Required validation:
 - `patch_parts` exactly matches the files in the request directory;
 - the legacy `<!-- gameengine-chatgpt-automation -->` auto-merge marker is
   forbidden in dispatcher PR bodies.
+
+Schema version 2 additionally requires:
+
+- `baseline_main_sha` is the full current `main` SHA captured for the request;
+- the target HEAD contains that baseline;
+- current remote `main` still equals `baseline_main_sha` at builder release and
+  trusted pre-publish preflight;
+- `patch_sha256` is SHA-256 of the complete concatenated patch bytes;
+- `patch_bytes` is the exact byte length of that complete patch;
+- both values match the bytes reconstructed by the publisher and dispatcher.
 
 ## Transport publisher safety checks
 
@@ -333,14 +408,25 @@ of the following:
    files and the final commit to add only `ready.json`.
 5. Verifies contiguous part naming, normal file modes, per-part size limits,
    total patch size, and matching `request_id`.
-6. Rejects request ID reuse when the existing transport request tree differs.
-   An identical existing tree is treated idempotently.
-7. Reads the latest `chatgpt-dispatch` head only after entering the global
-   publisher concurrency group.
-8. Cherry-picks the validated staging commits onto that exact head.
-9. Re-reads the remote transport head immediately before push and uses an exact
-   `--force-with-lease` for the captured head.
-10. Starts the trusted dispatcher from `main` with the exact published ready
+6. Loads the request protocol implementation from current `main` and reconstructs
+   the staged patch before any transport write.
+7. Re-reads the exact target branch and, for schema 2, current `main`; requires
+   target HEAD to equal `expected_head_sha`, current `main` to equal
+   `baseline_main_sha`, and the target to contain that baseline.
+8. For schema 2, requires reconstructed `patch_sha256` and `patch_bytes` to match
+   the manifest.
+9. Runs `git apply --check --whitespace=error-all` against a detached worktree of
+   the exact target, then applies to that temporary index only, runs
+   `git diff --cached --check`, validates the public path allow-list, and rejects
+   symlink/submodule modes.
+10. Rejects request ID reuse when the existing transport request tree differs.
+    An identical existing tree is treated idempotently.
+11. Reads the latest `chatgpt-dispatch` head only after entering the global
+    publisher concurrency group.
+12. Cherry-picks the validated staging commits onto that exact head.
+13. Re-reads the remote transport head immediately before push and uses an exact
+    `--force-with-lease` for the captured head.
+14. Starts the trusted dispatcher from `main` with the exact published ready
     commit SHA instead of relying on a push event generated by `GITHUB_TOKEN`.
 
 The transport publisher is globally serialized with `cancel-in-progress: false`
@@ -361,17 +447,22 @@ following:
    commit SHA to be reachable from `chatgpt-dispatch`.
 2. Verifies the final commit newly added only the declared `ready.json`.
 3. Verifies request schema, part names, file modes, counts, and size limits.
-4. Checks out the declared target branch.
-5. Requires its current HEAD to equal `expected_head_sha`.
-6. Reconstructs the patch and runs `git apply --check --whitespace=error-all`.
-7. Applies the patch to the local index only.
-8. Rejects `.github/**` and `.chatgpt-requests/**`, and rejects every other
+4. Accepts schema 1 for migration compatibility and schema 2 for normal current
+   requests.
+5. Checks out the declared target branch and requires its current HEAD to equal
+   `expected_head_sha`.
+6. Reconstructs the complete patch and, for schema 2, revalidates
+   `patch_sha256`, `patch_bytes`, `baseline_main_sha`, current `main`, and target
+   ancestry.
+7. Runs `git apply --check --whitespace=error-all`.
+8. Applies the patch to the local index only.
+9. Rejects `.github/**` and `.chatgpt-requests/**`, and rejects every other
    changed path outside the explicit public GameEngine allow-list, including old
    paths of renames by inspecting the diff with rename detection disabled.
-9. Rejects old or new Git modes `120000` (symlink) and `160000` (submodule).
-10. Runs `git diff --cached --check`.
-11. Re-reads the remote target HEAD immediately before commit/push.
-12. Pushes with an exact `--force-with-lease` for `expected_head_sha`.
+10. Rejects old or new Git modes `120000` (symlink) and `160000` (submodule).
+11. Runs `git diff --cached --check`.
+12. Re-reads the remote target HEAD immediately before commit/push.
+13. Pushes with an exact `--force-with-lease` for `expected_head_sha`.
 
 The dispatcher itself remains globally serialized with `cancel-in-progress:
 false` and `queue: max`, retaining up to 100 pending dispatcher runs instead of
@@ -380,6 +471,31 @@ changes made by humans, fallback automation, or other external writers.
 
 No stale request is force-applied. A stale request fails and must be rebuilt
 from the latest branch state.
+
+## Automation regression suite
+
+`.github/workflows/gameengine-chatgpt-automation-regression.yml` runs the
+repository-owned regression suite whenever ChatGPT automation, its protocol
+documentation, or the Editor visual-capture harness changes. The suite uses
+`.github/chatgpt/test_request_protocol.py` to preserve confirmed incident
+lessons as executable checks.
+
+The suite currently covers at least:
+
+- INC-001: strict rejection of added trailing whitespace;
+- INC-002: rejection of corrupt or target-misaligned unified-diff hunks;
+- INC-003: schema-v2 patch hash mismatch rejection;
+- INC-004: stale/current-main baseline mismatch rejection;
+- INC-005: checkout-directory-prefixed patch rejection;
+- INC-006: Editor capture remains on the application-owned screenshot path, not
+  the unsupported eframe helper; and
+- INC-007: the transport publisher retains verifying `git rev-parse --verify`
+  semantics for optional request-tree existence probes.
+
+When a transport/apply/validation incident produces a durable automation fix,
+add a regression when the failure can be reproduced deterministically. The
+incident log remains the explanation of the root cause; the regression suite is
+the executable prevention layer.
 
 ## Pull request rules
 
@@ -524,9 +640,10 @@ machine-readable aggregate result.
    the executor log and the failure-only diagnostics artifact when present.
 4. Separate code failures from runner, GitHub, network, or dependency-service
    failures before editing code.
-5. Re-read the current target branch HEAD and affected files.
-6. Create a new request ID with a patch against that exact HEAD.
-7. Repeat dispatch and validation.
+5. Re-read the current target branch HEAD, current `main`, and affected files.
+6. Prepare the correction in an exact checkout, stage the intended files, and
+   create a new schema-v2 request with the mechanical builder.
+7. Repeat staging, trusted pre-publish preflight, dispatch, and validation.
 
 Normal automated repair is limited to five correction rounds. Stop earlier if
 the same essential failure repeats twice or if the failure is external to the
@@ -558,6 +675,9 @@ After a failure is understood and a recovery has been validated, ChatGPT MUST:
 6. Keep secrets, credentials, private machine paths, and large raw logs out of
    the document. Link to a durable PR, workflow run, commit, or request ID when
    useful instead of copying entire logs.
+7. When the durable resolution can be reproduced deterministically in automation,
+   add or update a regression so the same defect is rejected before another
+   production request depends on memory alone.
 
 The incident log is organized by root cause rather than chronology. Repeated
 occurrences of the same problem belong in the same entry so that the repository

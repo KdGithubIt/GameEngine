@@ -1,0 +1,37 @@
+name: GameEngine ChatGPT Automation Regression
+
+on:
+  pull_request:
+    paths:
+      - ".github/**"
+      - "docs/CHATGPT_AUTOMATION.md"
+      - "docs/CHATGPT_AUTOMATION_INCIDENTS.md"
+      - "scripts/ci/Invoke-EditorVisualValidation.ps1"
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/**"
+      - "docs/CHATGPT_AUTOMATION.md"
+      - "docs/CHATGPT_AUTOMATION_INCIDENTS.md"
+      - "scripts/ci/Invoke-EditorVisualValidation.ps1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  request-protocol:
+    name: Request protocol regressions
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out exact revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Run incident regression suite
+        run: python3 .github/chatgpt/test_request_protocol.py
