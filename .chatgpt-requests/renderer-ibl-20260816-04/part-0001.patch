@@ -1,0 +1,403 @@
+diff --git a/crates/render-runtime/src/ibl.rs b/crates/render-runtime/src/ibl.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/render-runtime/src/ibl.rs
+@@ -0,0 +1,398 @@
++//! CPU preprocessing for split-sum image-based lighting.
++
++use std::f32::consts::{PI, TAU};
++
++use glam::{Vec2, Vec3};
++
++use crate::shadow::EnvironmentMap;
++
++pub(crate) const DIFFUSE_WIDTH: u32 = 32;
++pub(crate) const DIFFUSE_HEIGHT: u32 = 16;
++pub(crate) const SPECULAR_WIDTH: u32 = 128;
++pub(crate) const SPECULAR_HEIGHT: u32 = 64;
++pub(crate) const SPECULAR_MIP_COUNT: u32 = 8;
++pub(crate) const BRDF_LUT_SIZE: u32 = 64;
++const ENVIRONMENT_SAMPLE_COUNT: u32 = 64;
++const BRDF_SAMPLE_COUNT: u32 = 64;
++
++#[derive(Debug)]
++pub(crate) struct RgbaMipChain {
++    pub width: u32,
++    pub height: u32,
++    pub mips: Vec<Vec<[f32; 4]>>,
++}
++
++#[derive(Debug)]
++pub(crate) struct RgImage {
++    pub width: u32,
++    pub height: u32,
++    pub pixels: Vec<[f32; 2]>,
++}
++
++#[derive(Debug)]
++pub(crate) struct PrecomputedEnvironment {
++    pub diffuse_irradiance: RgbaMipChain,
++    pub specular_prefiltered: RgbaMipChain,
++}
++
++pub(crate) fn precompute_environment(source: &EnvironmentMap) -> PrecomputedEnvironment {
++    PrecomputedEnvironment {
++        diffuse_irradiance: build_diffuse_irradiance(
++            source,
++            DIFFUSE_WIDTH,
++            DIFFUSE_HEIGHT,
++            ENVIRONMENT_SAMPLE_COUNT,
++        ),
++        specular_prefiltered: build_specular_prefilter(
++            source,
++            SPECULAR_WIDTH,
++            SPECULAR_HEIGHT,
++            SPECULAR_MIP_COUNT,
++            ENVIRONMENT_SAMPLE_COUNT,
++        ),
++    }
++}
++
++pub(crate) fn brdf_lut() -> RgImage {
++    build_brdf_lut(BRDF_LUT_SIZE, BRDF_SAMPLE_COUNT)
++}
++
++fn build_diffuse_irradiance(
++    source: &EnvironmentMap,
++    width: u32,
++    height: u32,
++    sample_count: u32,
++) -> RgbaMipChain {
++    let mut pixels = Vec::with_capacity((width * height) as usize);
++    for y in 0..height {
++        for x in 0..width {
++            let normal = texel_direction(x, y, width, height);
++            let (tangent, bitangent) = tangent_basis(normal);
++            let mut irradiance = Vec3::ZERO;
++            for sample_index in 0..sample_count {
++                let xi = hammersley(sample_index, sample_count);
++                let radius = xi.x.sqrt();
++                let phi = TAU * xi.y;
++                let local = Vec3::new(
++                    radius * phi.cos(),
++                    radius * phi.sin(),
++                    (1.0 - xi.x).sqrt(),
++                );
++                let direction = (tangent * local.x + bitangent * local.y + normal * local.z)
++                    .normalize_or_zero();
++                irradiance += sample_environment(source, direction);
++            }
++            irradiance *= PI / sample_count.max(1) as f32;
++            pixels.push([irradiance.x, irradiance.y, irradiance.z, 1.0]);
++        }
++    }
++    RgbaMipChain {
++        width,
++        height,
++        mips: vec![pixels],
++    }
++}
++
++fn build_specular_prefilter(
++    source: &EnvironmentMap,
++    width: u32,
++    height: u32,
++    mip_count: u32,
++    sample_count: u32,
++) -> RgbaMipChain {
++    let mip_count = mip_count.max(1);
++    let mut mips = Vec::with_capacity(mip_count as usize);
++    for mip in 0..mip_count {
++        let mip_width = (width >> mip).max(1);
++        let mip_height = (height >> mip).max(1);
++        let roughness = if mip_count == 1 {
++            0.0
++        } else {
++            mip as f32 / (mip_count - 1) as f32
++        };
++        let mut pixels = Vec::with_capacity((mip_width * mip_height) as usize);
++        for y in 0..mip_height {
++            for x in 0..mip_width {
++                let normal = texel_direction(x, y, mip_width, mip_height);
++                let color = if roughness <= f32::EPSILON {
++                    sample_environment(source, normal)
++                } else {
++                    prefilter_specular_direction(source, normal, roughness, sample_count)
++                };
++                pixels.push([color.x, color.y, color.z, 1.0]);
++            }
++        }
++        mips.push(pixels);
++    }
++    RgbaMipChain {
++        width,
++        height,
++        mips,
++    }
++}
++
++fn prefilter_specular_direction(
++    source: &EnvironmentMap,
++    normal: Vec3,
++    roughness: f32,
++    sample_count: u32,
++) -> Vec3 {
++    let view = normal;
++    let (tangent, bitangent) = tangent_basis(normal);
++    let mut color = Vec3::ZERO;
++    let mut weight = 0.0;
++    for sample_index in 0..sample_count {
++        let xi = hammersley(sample_index, sample_count);
++        let half_local = importance_sample_ggx(xi, roughness);
++        let half_vector = (tangent * half_local.x
++            + bitangent * half_local.y
++            + normal * half_local.z)
++            .normalize_or_zero();
++        let light = (2.0 * view.dot(half_vector) * half_vector - view).normalize_or_zero();
++        let ndl = normal.dot(light).max(0.0);
++        if ndl > 0.0 {
++            color += sample_environment(source, light) * ndl;
++            weight += ndl;
++        }
++    }
++    if weight > 0.0 {
++        color / weight
++    } else {
++        sample_environment(source, normal)
++    }
++}
++
++fn build_brdf_lut(size: u32, sample_count: u32) -> RgImage {
++    let size = size.max(1);
++    let mut pixels = Vec::with_capacity((size * size) as usize);
++    for y in 0..size {
++        let roughness = (y as f32 + 0.5) / size as f32;
++        for x in 0..size {
++            let ndv = ((x as f32 + 0.5) / size as f32).clamp(0.0001, 0.9999);
++            pixels.push(integrate_brdf(ndv, roughness, sample_count));
++        }
++    }
++    RgImage {
++        width: size,
++        height: size,
++        pixels,
++    }
++}
++
++fn integrate_brdf(ndv: f32, roughness: f32, sample_count: u32) -> [f32; 2] {
++    let view = Vec3::new((1.0 - ndv * ndv).sqrt(), 0.0, ndv);
++    let mut scale = 0.0;
++    let mut bias = 0.0;
++    for sample_index in 0..sample_count {
++        let xi = hammersley(sample_index, sample_count);
++        let half_vector = importance_sample_ggx(xi, roughness);
++        let light = (2.0 * view.dot(half_vector) * half_vector - view).normalize_or_zero();
++        let ndl = light.z.max(0.0);
++        let ndh = half_vector.z.max(0.0);
++        let vdh = view.dot(half_vector).max(0.0);
++        if ndl <= 0.0 || ndh <= 0.0 || vdh <= 0.0 {
++            continue;
++        }
++        let geometry = geometry_smith_ibl(ndv, ndl, roughness);
++        let visibility = geometry * vdh / (ndh * ndv).max(0.0001);
++        let fresnel = (1.0 - vdh).powi(5);
++        scale += (1.0 - fresnel) * visibility;
++        bias += fresnel * visibility;
++    }
++    let denominator = sample_count.max(1) as f32;
++    [scale / denominator, bias / denominator]
++}
++
++fn geometry_smith_ibl(ndv: f32, ndl: f32, roughness: f32) -> f32 {
++    let k = roughness * roughness * 0.5;
++    geometry_schlick(ndv, k) * geometry_schlick(ndl, k)
++}
++
++fn geometry_schlick(ndot: f32, k: f32) -> f32 {
++    ndot / (ndot * (1.0 - k) + k).max(0.0001)
++}
++
++fn importance_sample_ggx(xi: Vec2, roughness: f32) -> Vec3 {
++    let alpha = roughness.max(0.001).powi(2);
++    let alpha2 = alpha * alpha;
++    let phi = TAU * xi.x;
++    let cos_theta = ((1.0 - xi.y) / (1.0 + (alpha2 - 1.0) * xi.y).max(0.0001)).sqrt();
++    let sin_theta = (1.0 - cos_theta * cos_theta).max(0.0).sqrt();
++    Vec3::new(phi.cos() * sin_theta, phi.sin() * sin_theta, cos_theta)
++}
++
++fn tangent_basis(normal: Vec3) -> (Vec3, Vec3) {
++    let helper = if normal.y.abs() < 0.999 { Vec3::Y } else { Vec3::X };
++    let tangent = helper.cross(normal).normalize_or_zero();
++    let bitangent = normal.cross(tangent).normalize_or_zero();
++    (tangent, bitangent)
++}
++
++fn sample_environment(source: &EnvironmentMap, direction: Vec3) -> Vec3 {
++    let direction = direction.normalize_or_zero();
++    if direction == Vec3::ZERO {
++        return Vec3::ZERO;
++    }
++    let u = (direction.z.atan2(direction.x) / TAU + 0.5).rem_euclid(1.0);
++    let v = direction.y.clamp(-1.0, 1.0).acos() / PI;
++    sample_bilinear(source, u, v)
++}
++
++fn sample_bilinear(source: &EnvironmentMap, u: f32, v: f32) -> Vec3 {
++    let width = source.width();
++    let height = source.height();
++    let x = u * width as f32 - 0.5;
++    let y = v.clamp(0.0, 1.0) * height as f32 - 0.5;
++    let x0 = x.floor() as i32;
++    let y0 = y.floor() as i32;
++    let tx = x - x.floor();
++    let ty = y - y.floor();
++    let x1 = x0 + 1;
++    let y1 = y0 + 1;
++    let fetch = |x: i32, y: i32| {
++        let wrapped_x = x.rem_euclid(width as i32) as u32;
++        let clamped_y = y.clamp(0, height as i32 - 1) as u32;
++        source.linear_pixel(wrapped_x, clamped_y)
++    };
++    let top = fetch(x0, y0).lerp(fetch(x1, y0), tx);
++    let bottom = fetch(x0, y1).lerp(fetch(x1, y1), tx);
++    top.lerp(bottom, ty)
++}
++
++fn texel_direction(x: u32, y: u32, width: u32, height: u32) -> Vec3 {
++    let u = (x as f32 + 0.5) / width.max(1) as f32;
++    let v = (y as f32 + 0.5) / height.max(1) as f32;
++    let phi = (u - 0.5) * TAU;
++    let theta = v * PI;
++    Vec3::new(theta.sin() * phi.cos(), theta.cos(), theta.sin() * phi.sin())
++}
++
++fn hammersley(index: u32, count: u32) -> Vec2 {
++    Vec2::new(index as f32 / count.max(1) as f32, radical_inverse_vdc(index))
++}
++
++fn radical_inverse_vdc(mut bits: u32) -> f32 {
++    bits = bits.rotate_right(16);
++    bits = ((bits & 0x5555_5555) << 1) | ((bits & 0xaaaa_aaaa) >> 1);
++    bits = ((bits & 0x3333_3333) << 2) | ((bits & 0xcccc_cccc) >> 2);
++    bits = ((bits & 0x0f0f_0f0f) << 4) | ((bits & 0xf0f0_f0f0) >> 4);
++    bits = ((bits & 0x00ff_00ff) << 8) | ((bits & 0xff00_ff00) >> 8);
++    bits as f32 * 2.328_306_4e-10
++}
++
++pub(crate) fn encode_rgba16f(mips: &[Vec<[f32; 4]>]) -> Vec<u8> {
++    let value_count = mips.iter().map(|mip| mip.len()).sum::<usize>() * 4;
++    let mut bytes = Vec::with_capacity(value_count * 2);
++    for pixel in mips.iter().flatten() {
++        for value in pixel {
++            bytes.extend_from_slice(&f32_to_f16_bits(*value).to_le_bytes());
++        }
++    }
++    bytes
++}
++
++pub(crate) fn encode_rg16f(pixels: &[[f32; 2]]) -> Vec<u8> {
++    let mut bytes = Vec::with_capacity(pixels.len() * 4);
++    for pixel in pixels {
++        for value in pixel {
++            bytes.extend_from_slice(&f32_to_f16_bits(*value).to_le_bytes());
++        }
++    }
++    bytes
++}
++
++fn f32_to_f16_bits(value: f32) -> u16 {
++    let bits = value.to_bits();
++    let sign = ((bits >> 16) & 0x8000) as u16;
++    let exponent = ((bits >> 23) & 0xff) as i32;
++    let mantissa = bits & 0x007f_ffff;
++
++    if exponent == 0xff {
++        return sign | 0x7c00 | if mantissa == 0 { 0 } else { 0x0200 };
++    }
++
++    let half_exponent = exponent - 127 + 15;
++    if half_exponent >= 0x1f {
++        return sign | 0x7c00;
++    }
++    if half_exponent <= 0 {
++        if half_exponent < -10 {
++            return sign;
++        }
++        let mantissa = mantissa | 0x0080_0000;
++        let shift = (14 - half_exponent) as u32;
++        let mut half_mantissa = mantissa >> shift;
++        let round_bit = 1_u32 << (shift - 1);
++        if mantissa & round_bit != 0
++            && (mantissa & (round_bit - 1) != 0 || half_mantissa & 1 != 0)
++        {
++            half_mantissa += 1;
++        }
++        return sign | half_mantissa as u16;
++    }
++
++    let mut half_exponent = half_exponent as u16;
++    let mut half_mantissa = (mantissa >> 13) as u16;
++    let remainder = mantissa & 0x1fff;
++    if remainder > 0x1000 || (remainder == 0x1000 && half_mantissa & 1 != 0) {
++        half_mantissa += 1;
++        if half_mantissa & 0x0400 != 0 {
++            half_mantissa = 0;
++            half_exponent += 1;
++            if half_exponent >= 0x1f {
++                return sign | 0x7c00;
++            }
++        }
++    }
++    sign | (half_exponent << 10) | half_mantissa
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    fn constant_environment(color: [f32; 3]) -> EnvironmentMap {
++        EnvironmentMap::from_linear_rgb(4, 2, vec![color; 8]).expect("valid constant map")
++    }
++
++    #[test]
++    fn constant_environment_stays_constant_through_specular_prefilter() {
++        let source = constant_environment([0.25, 0.5, 2.0]);
++        let prefiltered = build_specular_prefilter(&source, 8, 4, 4, 16);
++        for mip in prefiltered.mips {
++            for pixel in mip {
++                assert!((pixel[0] - 0.25).abs() < 1.0e-4);
++                assert!((pixel[1] - 0.5).abs() < 1.0e-4);
++                assert!((pixel[2] - 2.0).abs() < 1.0e-4);
++            }
++        }
++    }
++
++    #[test]
++    fn constant_environment_diffuse_is_irradiance_integral() {
++        let source = constant_environment([0.5, 1.0, 2.0]);
++        let irradiance = build_diffuse_irradiance(&source, 4, 2, 16);
++        for pixel in &irradiance.mips[0] {
++            assert!((pixel[0] - 0.5 * PI).abs() < 1.0e-4);
++            assert!((pixel[1] - PI).abs() < 1.0e-4);
++            assert!((pixel[2] - 2.0 * PI).abs() < 1.0e-4);
++        }
++    }
++
++    #[test]
++    fn brdf_lut_is_finite_and_non_negative() {
++        let lut = build_brdf_lut(8, 16);
++        for [scale, bias] in lut.pixels {
++            assert!(scale.is_finite() && scale >= 0.0);
++            assert!(bias.is_finite() && bias >= 0.0);
++        }
++    }
++
++    #[test]
++    fn half_encoding_covers_common_hdr_values() {
++        assert_eq!(f32_to_f16_bits(0.0), 0x0000);
++        assert_eq!(f32_to_f16_bits(1.0), 0x3c00);
++        assert_eq!(f32_to_f16_bits(-2.0), 0xc000);
++        assert_eq!(f32_to_f16_bits(f32::INFINITY), 0x7c00);
++    }
++}
