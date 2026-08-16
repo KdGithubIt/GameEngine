@@ -1,4 +1,4 @@
-# ADR 0123: Generic Directional, Point, and Spot Direct Lighting
+# ADR 0129: Generic Directional, Point, and Spot Direct Lighting
 
 Status: Accepted
 
@@ -62,7 +62,7 @@ outer and inner half-angle cosines.
 
 Local lights affect direct lighting only. Ambient, diffuse irradiance, GGX
 environment specular, BRDF LUT evaluation, and material occlusion keep the ADR
-0120/0122 indirect-light contract unchanged.
+0120/0128 indirect-light contract unchanged.
 
 ### Shadows and ToonLit boundary
 
@@ -79,7 +79,7 @@ appearance.
 
 Local lights are fixed-size vec4-packed arrays inside the existing scene-light
 uniform at mesh bind group 2. No new mesh bind group is introduced, so the
-portable four-bind-group floor established by ADR 0122 remains intact.
+portable four-bind-group floor established by ADR 0128 remains intact.
 
 ## Consequences
 
@@ -99,4 +99,4 @@ portable four-bind-group floor established by ADR 0122 remains intact.
 - ADR 0055: render authoring and renderer budgets
 - ADR 0100: generic shading-model boundary
 - ADR 0120: generic PBR material texture contract
-- ADR 0122: renderer-owned full image-based lighting
+- ADR 0128: renderer-owned full image-based lighting
