@@ -1,7 +1,7 @@
 # Editor Visual Validation
 
-Status: Accepted  
-Version: 1.0.0  
+Status: Accepted
+Version: 1.1.0
 Canonical location: `docs/EDITOR_VISUAL_VALIDATION.md`
 
 ## Purpose
@@ -64,8 +64,20 @@ the repository's dedicated infrastructure-branch and Draft-PR rule.
 ## Capture implementation
 
 The Launcher and Editor expose a non-default Cargo feature named
-`visual-validation`. That feature enables eframe's screenshot support only for
-the capture invocation. Normal application builds do not enable the feature.
+`visual-validation`. Normal application builds do not enable the feature.
+
+Editor capture keeps eframe's normal wgpu renderer. The capture script sets
+`GAMEENGINE_SCREENSHOT_TO` only for the validation invocation. The Editor then
+requests the next rendered frame through egui's `ViewportCommand::Screenshot`,
+receives the renderer-independent `Event::Screenshot`, and writes the returned
+image with its existing PNG encoder. The capture path is bounded: if the
+screenshot response is not returned, the validation-only process closes and the
+script reports a missing artifact instead of waiting indefinitely.
+
+Launcher capture currently keeps its existing eframe `__screenshot` /
+`EFRAME_SCREENSHOT_TO` path. Editor and Launcher therefore intentionally use
+separate capture implementations until the Launcher path is migrated and
+validated independently.
 
 `scripts/ci/Invoke-EditorVisualValidation.ps1` builds and launches only the
 requested desktop executable with the feature enabled and stores the resulting
