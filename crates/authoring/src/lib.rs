@@ -75,7 +75,8 @@ pub use animation_graph::{
     MotionSlot, ANIMATION_STATE_PLAYBACK_MODE_PROPERTY, MOTION_SLOTS_ANNOTATION,
 };
 pub use animation_set::{
-    AnimationBinding, AnimationSet, AnimationSetError, AnimationSetEvent,
+    AnimationBinding, AnimationSet, AnimationSetError, AnimationSetEvent, MotionSourceRef,
+    MotionSourceVariant,
     ANIMATION_SET_FILE_SUFFIX, ANIMATION_SET_SCHEMA_VERSION,
 };
 pub use behavior_tree::{

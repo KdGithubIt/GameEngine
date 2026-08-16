@@ -1527,6 +1527,7 @@ fn imported_sub_asset_badge(kind: engine::ImportedSubAssetKind) -> &'static str 
         engine::ImportedSubAssetKind::Skeleton => "[skeleton]",
         engine::ImportedSubAssetKind::Skin => "[skin]",
         engine::ImportedSubAssetKind::Animation => "[clip]",
+        engine::ImportedSubAssetKind::HumanoidMotion => "[humanoid]",
         engine::ImportedSubAssetKind::Morph => "[morph]",
         engine::ImportedSubAssetKind::RigidBodyRig => "[physics]",
     }
@@ -1540,6 +1541,7 @@ fn imported_sub_asset_label(kind: engine::ImportedSubAssetKind) -> &'static str 
         engine::ImportedSubAssetKind::Skeleton => "Skeleton",
         engine::ImportedSubAssetKind::Skin => "Skin",
         engine::ImportedSubAssetKind::Animation => "Animation Clip",
+        engine::ImportedSubAssetKind::HumanoidMotion => "Humanoid Motion",
         engine::ImportedSubAssetKind::Morph => "Morph",
         engine::ImportedSubAssetKind::RigidBodyRig => "Rigid Body Rig",
     }

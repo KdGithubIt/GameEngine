@@ -4,6 +4,10 @@
 //! paired-model picker shown for a `*.vmd` motion source.
 
 use crate::ui::*;
+use super::humanoid_profile_editor::{
+    humanoid_profile_editor_states, persisted_humanoid_profiles, show_humanoid_profiles_editor,
+    HumanoidProfileEditorState,
+};
 use super::manifest::save_asset_manifest;
 use super::motion_pairing::show_motion_pairing_editor;
 use super::retarget_window::{pmx_model_paths, pmx_model_sources, registered_model_retarget_pairs};
@@ -22,6 +26,11 @@ impl EditorApp {
             .asset_manifest
             .get(&source_id)
             .map(|entry| entry.import_settings.contact_bones.clone())
+            .unwrap_or_default();
+        let humanoid_profiles = self
+            .asset_manifest
+            .get(&source_id)
+            .map(|entry| humanoid_profile_editor_states(&entry.import_settings))
             .unwrap_or_default();
         let motion_pairing = engine::asset_path_matches_kind(
             engine::AssetKind::MotionSource,
@@ -81,6 +90,7 @@ impl EditorApp {
         self.import_settings_editor = Some(ImportSettingsEditorState {
             source_id,
             relative_path: entry.relative_path.clone(),
+            humanoid_profiles,
             contact_bones,
             motion_pairing,
         });
@@ -105,12 +115,16 @@ impl EditorApp {
                     show_motion_pairing_editor(ui, pairing);
                     ui.separator();
                 }
+                if !state.humanoid_profiles.is_empty() {
+                    show_humanoid_profiles_editor(ui, &mut state.humanoid_profiles);
+                    ui.separator();
+                }
                 let _ = crate::anim_ux::show_contact_bones_editor(ui, &mut state.contact_bones);
                 save_requested = ui
                     .button("Save and Reimport")
                     .on_hover_text(
-                        "Writes the contact-bones override and re-detects contact intervals \
-                         (ADR 0080 §1) by reimporting this source",
+                        "Writes import settings, preserves authored Humanoid mappings, and \
+                         reimports this source",
                     )
                     .clicked();
                 ui.separator();
@@ -154,6 +168,7 @@ impl EditorApp {
             return;
         };
         let source_id = state.source_id.clone();
+        let humanoid_profiles = persisted_humanoid_profiles(&state.humanoid_profiles);
         let contact_bones = state.contact_bones.clone();
         let relative_path = state.relative_path.clone();
         let motion_model_sources = state.motion_pairing.as_ref().map(|pairing| {
@@ -173,6 +188,7 @@ impl EditorApp {
         let Some(entry) = manifest.get_mut(&source_id) else {
             return;
         };
+        entry.import_settings.humanoid_profiles = humanoid_profiles;
         entry.import_settings.contact_bones = contact_bones;
         // Only a motion source carries a pairing at all; the outer `Option`
         // distinguishes "this source has no pairing field" from "the author
@@ -211,6 +227,9 @@ pub(in crate::ui) struct ImportSettingsEditorState {
     pub(in crate::ui) source_id: AssetId,
     /// Asset-relative path of the source file, kept for the window title.
     pub(in crate::ui) relative_path: PathBuf,
+    /// Editable model-owned Humanoid profiles. Disabled drafts represent skeletons
+    /// that automatic detection could not map and are omitted until explicitly configured.
+    humanoid_profiles: Vec<HumanoidProfileEditorState>,
     /// Editable copy of `ImportSettings::contact_bones`; written back to the
     /// manifest and reimported when the user clicks Save.
     pub(in crate::ui) contact_bones: Vec<String>,

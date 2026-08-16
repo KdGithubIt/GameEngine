@@ -4,7 +4,11 @@
 //! editor appear frozen. This module keeps that work off the UI thread and
 //! sends only owned progress/result records back for main-thread persistence.
 
-use engine::{ImportedSubAsset, SkeletonRecord};
+use engine::{
+    asset::HumanoidProfile,
+    humanoid_import::{build_humanoid_import_catalog, humanoid_imported_sub_assets},
+    ImportedSubAsset, SkeletonRecord,
+};
 use engine_authoring::prefab::PrefabAsset;
 use engine_authoring::{AssetId, Diagnostic};
 use std::fmt;
@@ -72,6 +76,9 @@ pub struct AssetImportResult {
     /// persisted into `ImportSettings::skeleton_records` alongside
     /// [`Self::sub_assets`].
     pub skeleton_records: Vec<SkeletonRecord>,
+    /// Valid model-owned Humanoid profiles detected from this model import (ADR 0110).
+    /// Motion-only sources leave this empty because the target model owns the profile.
+    pub humanoid_profiles: Vec<HumanoidProfile>,
     /// Per-clip detected ground-contact intervals (ADR 0080 §1), reflecting
     /// whatever `contact_bones` override [`AssetImportManager::start_gltf`]
     /// was called with. Used by the Inspector's contact interval display
@@ -210,6 +217,10 @@ impl AssetImportManager {
     /// registered source's `ImportSettings::skeleton_records` — so the
     /// dedupe rule can recognize a rig imported from a different source.
     ///
+    /// `existing_humanoid_profiles` is this model source's persisted Humanoid
+    /// profile state. Valid authored mappings are reused and stale authored
+    /// mappings are preserved instead of being silently replaced (ADR 0110).
+    ///
     /// `contact_bones` (ADR 0080 §1, AP-5) is normally this source's own
     /// `ImportSettings::contact_bones`; an empty list keeps the default
     /// foot/ankle/toe name heuristic.
@@ -224,6 +235,7 @@ impl AssetImportManager {
         source_id: AssetId,
         source_path: PathBuf,
         existing_skeletons: Vec<SkeletonRecord>,
+        existing_humanoid_profiles: Vec<HumanoidProfile>,
         contact_bones: Vec<String>,
     ) -> Result<(), AssetImportStartError> {
         if self.is_running() {
@@ -333,7 +345,10 @@ impl AssetImportManager {
                 .to_owned();
             let prefab = engine::build_gltf_prefab(&source_id, &imported, &prefab_name);
             progress(0.95, "Publishing import result");
-            let sub_assets = imported.imported_sub_assets();
+            let mut humanoid_catalog =
+                build_humanoid_import_catalog(&imported, &existing_humanoid_profiles);
+            let mut sub_assets = imported.imported_sub_assets();
+            sub_assets.extend(humanoid_imported_sub_assets(&humanoid_catalog));
             let skeleton_records = imported.skeleton_records.clone();
             let animation_contacts = resolve_animation_contacts(&imported);
             let _ = sender.send(WorkerMessage::Complete(Box::new(AssetImportResult {
@@ -345,9 +360,14 @@ impl AssetImportManager {
                 source_dependencies: dependencies,
                 sub_assets,
                 skeleton_records,
+                humanoid_profiles: humanoid_catalog.profiles,
                 animation_contacts,
                 prefab,
-                diagnostics: imported.diagnostics,
+                diagnostics: {
+                    let mut diagnostics = imported.diagnostics;
+                    diagnostics.append(&mut humanoid_catalog.diagnostics);
+                    diagnostics
+                },
                 error: None,
                 cancelled: false,
             })));
@@ -676,6 +696,7 @@ impl AssetImportManager {
                 source_dependencies,
                 sub_assets,
                 skeleton_records,
+                humanoid_profiles: Vec::new(),
                 animation_contacts,
                 // A motion draws nothing, so there is no placement prefab.
                 prefab: None,
@@ -710,6 +731,7 @@ impl AssetImportManager {
                             source_dependencies: Vec::new(),
                             sub_assets: Vec::new(),
                             skeleton_records: Vec::new(),
+                            humanoid_profiles: Vec::new(),
                             animation_contacts: Vec::new(),
                             prefab: None,
                             diagnostics: Vec::new(),
@@ -864,6 +886,7 @@ fn send_cancelled(
         source_dependencies: Vec::new(),
         sub_assets: Vec::new(),
         skeleton_records: Vec::new(),
+        humanoid_profiles: Vec::new(),
         animation_contacts: Vec::new(),
         prefab: None,
         diagnostics: Vec::new(),
@@ -888,6 +911,7 @@ fn send_failed(
         source_dependencies: Vec::new(),
         sub_assets: Vec::new(),
         skeleton_records: Vec::new(),
+        humanoid_profiles: Vec::new(),
         animation_contacts: Vec::new(),
         prefab: None,
         diagnostics: Vec::new(),
@@ -981,6 +1005,7 @@ mod tests {
                 source_path.clone(),
                 Vec::new(),
                 Vec::new(),
+                Vec::new(),
             )
             .expect("import without override starts");
         let without_override = wait_for_result(&mut manager);
@@ -997,6 +1022,7 @@ mod tests {
                 source_id,
                 source_path,
                 without_override.skeleton_records.clone(),
+                without_override.humanoid_profiles.clone(),
                 vec!["tip_joint".to_owned()],
             )
             .expect("import with override starts");
@@ -1068,6 +1094,7 @@ mod tests {
             PathBuf::from("asset.glb"),
             Vec::new(),
             Vec::new(),
+            Vec::new(),
         );
         assert_eq!(result, Err(AssetImportStartError::AlreadyRunning));
     }
@@ -1113,6 +1140,7 @@ mod tests {
                 source_path.clone(),
                 Vec::new(),
                 Vec::new(),
+                Vec::new(),
             )
             .expect("first import starts");
         let first = wait_for_result(&mut manager);
@@ -1123,6 +1151,7 @@ mod tests {
                 source_id,
                 source_path,
                 first.skeleton_records.clone(),
+                first.humanoid_profiles.clone(),
                 Vec::new(),
             )
             .expect("reimport starts");

@@ -100,6 +100,15 @@ pub enum BuildDiagnosticKind {
         /// Registered map path.
         path: String,
     },
+    /// Pre-baking or staging a skeleton-independent Humanoid motion failed.
+    HumanoidBakeFailed {
+        /// Stable HumanoidMotion sub-asset ID.
+        motion: String,
+        /// Target skeleton ID when the failure happened during target bake.
+        target_skeleton: Option<String>,
+        /// Import, validation, cache, or bake failure detail.
+        reason: String,
+    },
 }
 
 /// A single diagnostic produced during build analysis.
@@ -186,18 +195,14 @@ pub fn analyze_build(config: &BuildConfig, manifest: &AssetManifest) -> BuildRep
             ));
         }
         for sub_asset in &entry.import_settings.sub_assets {
-            match AssetId::from_stable_id(StableId::new(&sub_asset.id)) {
-                Ok(id)
-                    if id
-                        == engine::imported_sub_asset_id(
-                            source_id,
-                            sub_asset.kind,
-                            sub_asset.index as usize,
-                        ) =>
-                {
+            match (
+                AssetId::from_stable_id(StableId::new(&sub_asset.id)),
+                engine::asset::expected_imported_sub_asset_id(source_id, sub_asset),
+            ) {
+                (Ok(id), Ok(expected)) if id == expected => {
                     reachable_assets.insert(id);
                 }
-                Ok(_) | Err(_) => diagnostics.push(BuildDiagnostic::blocking(
+                _ => diagnostics.push(BuildDiagnostic::blocking(
                     BuildDiagnosticKind::InvalidImportedAssetId {
                         id: sub_asset.id.clone(),
                     },
@@ -465,10 +470,14 @@ pub fn plan_package(config: &BuildConfig, manifest: &AssetManifest) -> PackagePl
         let (retarget_copies, retarget_diagnostics) =
             bake_registered_retarget_clips(config, manifest);
         diagnostics.extend(retarget_diagnostics);
+        let (humanoid_copies, humanoid_diagnostics) =
+            bake_registered_humanoid_clips(config, manifest);
+        diagnostics.extend(humanoid_diagnostics);
         if diagnostics.iter().any(|diagnostic| diagnostic.blocking) {
             copies.clear();
         } else {
             copies.extend(retarget_copies);
+            copies.extend(humanoid_copies);
         }
     }
 
@@ -684,6 +693,406 @@ fn bake_registered_retarget_clips(
     (copies, diagnostics)
 }
 
+/// Pre-bakes every registered HumanoidMotion against every usable persisted
+/// HumanoidProfile and stages the resulting target-bound clips for packaged
+/// playback (ADR 0110).
+///
+/// This intentionally follows the packager's conservative v1 reachability
+/// policy instead of trying to infer every possible runtime `Auto`/`Humanoid`
+/// choice. The shipped player never imports a model or solves a Humanoid bake:
+/// it resolves the deterministic `(motion stable ID, target skeleton stable ID)`
+/// package path written here.
+fn bake_registered_humanoid_clips(
+    config: &BuildConfig,
+    manifest: &AssetManifest,
+) -> (Vec<PackageCopy>, Vec<BuildDiagnostic>) {
+    let assets_root = config.project_root.join("assets");
+    let cache = engine::DerivedCache::new(&config.project_root);
+    let mut imports: BTreeMap<AssetId, engine::GltfImportResult> = BTreeMap::new();
+    let mut diagnostics = Vec::new();
+    let required_bakes = collect_needed_humanoid_bakes(manifest, &assets_root, &mut imports);
+
+    let mut first_profiles = BTreeMap::<AssetId, engine::asset::HumanoidProfile>::new();
+    let mut motion_sources = Vec::<(AssetId, Vec<AssetId>)>::new();
+    for (source_id, entry) in manifest.iter() {
+        for profile in &entry.import_settings.humanoid_profiles {
+            let Ok(skeleton_id) =
+                AssetId::from_stable_id(StableId::new(&profile.skeleton))
+            else {
+                continue;
+            };
+            first_profiles
+                .entry(skeleton_id)
+                .or_insert_with(|| profile.clone());
+        }
+
+        let motion_ids = entry
+            .import_settings
+            .sub_assets
+            .iter()
+            .filter(|sub_asset| {
+                sub_asset.kind == engine::ImportedSubAssetKind::HumanoidMotion
+            })
+            .filter_map(|sub_asset| {
+                AssetId::from_stable_id(StableId::new(&sub_asset.id)).ok()
+            })
+            .collect::<Vec<_>>();
+        if !motion_ids.is_empty() {
+            motion_sources.push((source_id.clone(), motion_ids));
+        }
+    }
+
+    let mut targets = BTreeMap::<
+        AssetId,
+        (
+            engine::skeleton_asset::SkeletonAsset,
+            engine::asset::HumanoidProfile,
+        ),
+    >::new();
+    for (target_id, profile) in first_profiles {
+        let Some(target_source_id) =
+            locate_skeleton_source_id(&target_id, manifest, &assets_root, &mut imports)
+        else {
+            continue;
+        };
+        let Some(target) = imports
+            .get(&target_source_id)
+            .and_then(|imported| {
+                imported
+                    .skins
+                    .iter()
+                    .find(|skin| skin.skeleton.id == target_id)
+            })
+            .map(|skin| skin.skeleton.clone())
+        else {
+            continue;
+        };
+        if engine::humanoid::validate_humanoid_profile(&profile, &target).is_ok() {
+            targets.insert(target_id, (target, profile));
+        }
+    }
+
+    let mut motions = BTreeMap::<AssetId, engine::humanoid_motion::HumanoidMotion>::new();
+    for (source_id, registered_motion_ids) in motion_sources {
+        let Some(entry) = manifest.get(&source_id) else {
+            continue;
+        };
+        let existing_profiles = entry.import_settings.humanoid_profiles.clone();
+        let source_path = entry.path.clone();
+        let Some(imported) =
+            import_source_for_reachability(&source_id, manifest, &assets_root, &mut imports)
+        else {
+            for motion_id in registered_motion_ids {
+                diagnostics.push(BuildDiagnostic::blocking(
+                    BuildDiagnosticKind::HumanoidBakeFailed {
+                        motion: motion_id.as_str().to_owned(),
+                        target_skeleton: None,
+                        reason: "owning model source could not be imported".to_owned(),
+                    },
+                    format!(
+                        "Humanoid motion '{}' is registered by source '{}' but that model could not be imported during packaging",
+                        motion_id.as_str(),
+                        source_path
+                    ),
+                ));
+            }
+            continue;
+        };
+
+        let catalog =
+            engine::humanoid_import::build_humanoid_import_catalog(imported, &existing_profiles);
+        for motion_id in registered_motion_ids {
+            let Some(portable) = catalog
+                .motions
+                .iter()
+                .find(|motion| motion.id == motion_id)
+            else {
+                diagnostics.push(BuildDiagnostic::blocking(
+                    BuildDiagnosticKind::HumanoidBakeFailed {
+                        motion: motion_id.as_str().to_owned(),
+                        target_skeleton: None,
+                        reason: "registered HumanoidMotion is no longer produced by import".to_owned(),
+                    },
+                    format!(
+                        "Humanoid motion '{}' is registered by source '{}' but reimport no longer produces it; reimport the source before packaging",
+                        motion_id.as_str(),
+                        source_path
+                    ),
+                ));
+                continue;
+            };
+            motions.insert(motion_id, portable.motion.clone());
+        }
+    }
+
+    for (motion_id, target_id) in &required_bakes {
+        if !motions.contains_key(motion_id) {
+            diagnostics.push(BuildDiagnostic::blocking(
+                BuildDiagnosticKind::HumanoidBakeFailed {
+                    motion: motion_id.as_str().to_owned(),
+                    target_skeleton: Some(target_id.as_str().to_owned()),
+                    reason: "required HumanoidMotion is unavailable".to_owned(),
+                },
+                format!(
+                    "Animation Set requires Humanoid motion '{}' for target skeleton '{}', but the owning source does not expose a usable HumanoidMotion; configure the source Humanoid profile and reimport before packaging",
+                    motion_id.as_str(),
+                    target_id.as_str()
+                ),
+            ));
+        }
+        if !targets.contains_key(target_id) {
+            diagnostics.push(BuildDiagnostic::blocking(
+                BuildDiagnosticKind::HumanoidBakeFailed {
+                    motion: motion_id.as_str().to_owned(),
+                    target_skeleton: Some(target_id.as_str().to_owned()),
+                    reason: "target skeleton has no usable persisted HumanoidProfile".to_owned(),
+                },
+                format!(
+                    "Animation Set requires Humanoid motion '{}' for target skeleton '{}', but that target has no usable persisted HumanoidProfile; repair Configure Humanoid mappings and reimport before packaging",
+                    motion_id.as_str(),
+                    target_id.as_str()
+                ),
+            ));
+        }
+    }
+
+    let mut copies = Vec::new();
+    for (motion_id, motion) in &motions {
+        for (target_id, (target, profile)) in &targets {
+            let key = match engine::humanoid_motion::humanoid_bake_cache_key(
+                motion, target, profile,
+            ) {
+                Ok(key) => key,
+                Err(error) => {
+                    diagnostics.push(BuildDiagnostic::blocking(
+                        BuildDiagnosticKind::HumanoidBakeFailed {
+                            motion: motion_id.as_str().to_owned(),
+                            target_skeleton: Some(target_id.as_str().to_owned()),
+                            reason: error.to_string(),
+                        },
+                        format!(
+                            "failed to compute Humanoid bake key for motion '{}' and target skeleton '{}': {error}",
+                            motion_id.as_str(),
+                            target_id.as_str()
+                        ),
+                    ));
+                    continue;
+                }
+            };
+            if let Err(error) = engine::humanoid_motion::resolve_or_bake_humanoid_motion(
+                &cache, motion, target, profile,
+            ) {
+                diagnostics.push(BuildDiagnostic::blocking(
+                    BuildDiagnosticKind::HumanoidBakeFailed {
+                        motion: motion_id.as_str().to_owned(),
+                        target_skeleton: Some(target_id.as_str().to_owned()),
+                        reason: error.to_string(),
+                    },
+                    format!(
+                        "failed to bake Humanoid motion '{}' for target skeleton '{}': {error}",
+                        motion_id.as_str(),
+                        target_id.as_str()
+                    ),
+                ));
+                continue;
+            }
+
+            let cache_file_name = format!(
+                "{}.{}",
+                key.file_stem(),
+                engine::humanoid_motion::HUMANOID_BAKED_CLIP_FILE_EXTENSION
+            );
+            let package_file_name =
+                engine::humanoid_motion::humanoid_packaged_bake_file_name(
+                    motion_id, target_id,
+                );
+            copies.push(PackageCopy {
+                source: PathBuf::from(".engine/cache")
+                    .join(engine::humanoid_motion::HUMANOID_CACHE_DOMAIN)
+                    .join(cache_file_name),
+                destination: PathBuf::from("baked_anim")
+                    .join("humanoid")
+                    .join(package_file_name),
+            });
+        }
+    }
+
+    (copies, diagnostics)
+}
+
+/// Returns the HumanoidMotion asset that must exist for one persisted motion-source
+/// selection after applying ADR 0110's explicit source priority.
+fn required_humanoid_motion_asset(
+    source: &engine_authoring::MotionSourceRef,
+    same_skeleton_native: bool,
+    explicit_retarget_map: bool,
+) -> Option<AssetId> {
+    match source.variant {
+        engine_authoring::MotionSourceVariant::Native => None,
+        engine_authoring::MotionSourceVariant::Humanoid => Some(source.asset.clone()),
+        engine_authoring::MotionSourceVariant::Auto
+            if !same_skeleton_native && !explicit_retarget_map =>
+        {
+            Some(engine::asset::imported_humanoid_motion_sub_asset_id(
+                &source.asset,
+            ))
+        }
+        engine_authoring::MotionSourceVariant::Auto => None,
+    }
+}
+
+/// Finds Humanoid target bakes that statically reachable scene/prefab controllers
+/// require in a packaged player.
+///
+/// The packager still stages every valid registered HumanoidMotion/profile
+/// combination for conservative dynamic reachability. This trace only adds a
+/// stronger guarantee: a persisted explicit Humanoid source, or an Auto source
+/// that reaches the Humanoid fallback after same-skeleton Native and explicit
+/// RetargetMap priority, must not ship without its required target bake.
+fn collect_needed_humanoid_bakes(
+    manifest: &AssetManifest,
+    assets_root: &Path,
+    imports: &mut BTreeMap<AssetId, engine::GltfImportResult>,
+) -> BTreeSet<(AssetId, AssetId)> {
+    let retarget_maps = engine::load_registered_retarget_maps(assets_root, manifest);
+    let mut needed = BTreeSet::new();
+
+    for path in animation_controller_document_paths(manifest, assets_root) {
+        let Some(entities) = load_animation_document_entities(&path) else {
+            continue;
+        };
+        for entity in &entities {
+            let Some(controller) = entity.components.get(
+                &engine_authoring::id::ComponentTypeId::new(
+                    engine::scene_bridge::ANIMATION_CONTROLLER_COMPONENT,
+                ),
+            ) else {
+                continue;
+            };
+            let Some(model) = entity.components.get(
+                &engine_authoring::id::ComponentTypeId::new(
+                    engine::scene_bridge::SKINNED_MODEL_COMPONENT,
+                ),
+            ) else {
+                continue;
+            };
+            if matches!(
+                controller,
+                engine_authoring::Value::Object(fields)
+                    if fields.get("enabled") == Some(&engine_authoring::Value::Bool(false))
+            ) {
+                continue;
+            }
+
+            let Some(target_skeleton) =
+                resolve_target_skeleton_id(model, manifest, assets_root, imports)
+            else {
+                continue;
+            };
+            let engine_authoring::Value::Object(fields) = controller else {
+                continue;
+            };
+            let Some(engine_authoring::Value::AssetRef(animation_set_id)) =
+                fields.get("animation_set")
+            else {
+                continue;
+            };
+            let Some(entry) = manifest.get(animation_set_id) else {
+                continue;
+            };
+            let Ok(json) = std::fs::read_to_string(assets_root.join(&entry.path)) else {
+                continue;
+            };
+            let Ok(animation_set) = engine_authoring::AnimationSet::from_json(&json) else {
+                continue;
+            };
+
+            for binding in animation_set.bindings.values() {
+                for source in std::iter::once(&binding.clip).chain(&binding.overlays) {
+                    let (same_skeleton_native, explicit_retarget_map) =
+                        if source.variant == engine_authoring::MotionSourceVariant::Auto {
+                            let source_skeletons = resolve_clip_source_skeleton_ids(
+                                &source.asset,
+                                manifest,
+                                assets_root,
+                                imports,
+                            );
+                            let same_skeleton_native = source_skeletons
+                                .iter()
+                                .any(|source_skeleton| source_skeleton == &target_skeleton);
+                            let explicit_retarget_map =
+                                !same_skeleton_native
+                                    && source_skeletons.iter().any(|source_skeleton| {
+                                        engine::find_retarget_map_for_pair(
+                                            &retarget_maps,
+                                            source_skeleton,
+                                            &target_skeleton,
+                                        )
+                                        .is_some()
+                                    });
+                            (same_skeleton_native, explicit_retarget_map)
+                        } else {
+                            (false, false)
+                        };
+
+                    if let Some(motion) = required_humanoid_motion_asset(
+                        source,
+                        same_skeleton_native,
+                        explicit_retarget_map,
+                    ) {
+                        needed.insert((motion, target_skeleton.clone()));
+                    }
+                }
+            }
+        }
+    }
+
+    needed
+}
+
+fn animation_controller_document_paths(
+    manifest: &AssetManifest,
+    assets_root: &Path,
+) -> BTreeSet<PathBuf> {
+    let mut document_paths = BTreeSet::new();
+    for (_, entry) in manifest.iter() {
+        let lower = entry.path.to_ascii_lowercase();
+        if lower.ends_with(".scene.json") || lower.ends_with(".prefab.json") {
+            document_paths.insert(assets_root.join(&entry.path));
+        }
+    }
+    let scenes_root = assets_root.join("scenes");
+    if scenes_root.is_dir() {
+        for path in collect_regular_files(&scenes_root) {
+            if path
+                .to_string_lossy()
+                .to_ascii_lowercase()
+                .ends_with(".scene.json")
+            {
+                document_paths.insert(path);
+            }
+        }
+    }
+    document_paths
+}
+
+fn load_animation_document_entities(
+    path: &Path,
+) -> Option<Vec<engine_authoring::AuthoringEntity>> {
+    let json = std::fs::read_to_string(path).ok()?;
+    let lower = path.to_string_lossy().to_ascii_lowercase();
+    if lower.ends_with(".scene.json") {
+        engine_authoring::load_scene_from_json(&json)
+            .ok()
+            .map(|scene| scene.entities().map(|(_, entity)| entity.clone()).collect())
+    } else if lower.ends_with(".prefab.json") {
+        engine_authoring::PrefabAsset::from_json(&json)
+            .ok()
+            .map(|prefab| prefab.entities.into_values().collect())
+    } else {
+        None
+    }
+}
 // ---------------------------------------------------------------------------
 // AP-7 reachability trace
 // ---------------------------------------------------------------------------
@@ -708,43 +1117,9 @@ fn collect_needed_retarget_pairs(
     assets_root: &Path,
     imports: &mut BTreeMap<AssetId, engine::GltfImportResult>,
 ) -> BTreeSet<(AssetId, AssetId)> {
-    let mut document_paths: BTreeSet<PathBuf> = BTreeSet::new();
-    for (_, entry) in manifest.iter() {
-        let lower = entry.path.to_ascii_lowercase();
-        if lower.ends_with(".scene.json") || lower.ends_with(".prefab.json") {
-            document_paths.insert(assets_root.join(&entry.path));
-        }
-    }
-    let scenes_root = assets_root.join("scenes");
-    if scenes_root.is_dir() {
-        for path in collect_regular_files(&scenes_root) {
-            if path
-                .to_string_lossy()
-                .to_ascii_lowercase()
-                .ends_with(".scene.json")
-            {
-                document_paths.insert(path);
-            }
-        }
-    }
-
     let mut needed = BTreeSet::new();
-    for path in document_paths {
-        let Ok(json) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        let lower = path.to_string_lossy().to_ascii_lowercase();
-        let entities: Vec<engine_authoring::AuthoringEntity> = if lower.ends_with(".scene.json") {
-            match engine_authoring::load_scene_from_json(&json) {
-                Ok(scene) => scene.entities().map(|(_, entity)| entity.clone()).collect(),
-                Err(_) => continue,
-            }
-        } else if lower.ends_with(".prefab.json") {
-            match engine_authoring::PrefabAsset::from_json(&json) {
-                Ok(prefab) => prefab.entities.into_values().collect(),
-                Err(_) => continue,
-            }
-        } else {
+    for path in animation_controller_document_paths(manifest, assets_root) {
+        let Some(entities) = load_animation_document_entities(&path) else {
             continue;
         };
         for entity in &entities {
@@ -1363,6 +1738,89 @@ mod tests {
     }
 
     #[test]
+    fn humanoid_motion_sub_assets_use_the_manifest_stable_id_contract() {
+        let source = AssetId::generate();
+        let native =
+            engine::imported_sub_asset_id(&source, ImportedSubAssetKind::Animation, 0);
+        let humanoid = engine::asset::imported_humanoid_motion_sub_asset_id(&native);
+        let mut manifest = AssetManifest::default();
+        manifest.insert(
+            source,
+            ManifestEntry {
+                path: "characters/hero.glb".into(),
+                name: None,
+                import_settings: ImportSettings {
+                    sub_assets: vec![ImportedSubAsset {
+                        id: humanoid.as_str().to_owned(),
+                        kind: ImportedSubAssetKind::HumanoidMotion,
+                        name: "Walk (Humanoid)".into(),
+                        index: 0,
+                        target_model_source: None,
+                    }],
+                    ..ImportSettings::default()
+                },
+            },
+        );
+
+        let report = analyze_build(&config_with_scene(), &manifest);
+
+        assert!(report.reachable_assets.contains(&humanoid));
+        assert!(!report.diagnostics.iter().any(|diagnostic| matches!(
+            diagnostic.kind,
+            BuildDiagnosticKind::InvalidImportedAssetId { .. }
+        )));
+    }
+
+    #[test]
+    fn humanoid_package_requirement_respects_motion_source_priority() {
+        let native = AssetId::generate();
+        let explicit_humanoid = AssetId::generate();
+
+        assert_eq!(
+            required_humanoid_motion_asset(
+                &engine_authoring::MotionSourceRef::native(native.clone()),
+                false,
+                false,
+            ),
+            None
+        );
+        assert_eq!(
+            required_humanoid_motion_asset(
+                &engine_authoring::MotionSourceRef::auto(native.clone()),
+                true,
+                false,
+            ),
+            None
+        );
+        assert_eq!(
+            required_humanoid_motion_asset(
+                &engine_authoring::MotionSourceRef::auto(native.clone()),
+                false,
+                true,
+            ),
+            None
+        );
+        assert_eq!(
+            required_humanoid_motion_asset(
+                &engine_authoring::MotionSourceRef::auto(native.clone()),
+                false,
+                false,
+            ),
+            Some(engine::asset::imported_humanoid_motion_sub_asset_id(
+                &native,
+            ))
+        );
+        assert_eq!(
+            required_humanoid_motion_asset(
+                &engine_authoring::MotionSourceRef::humanoid(explicit_humanoid.clone()),
+                false,
+                false,
+            ),
+            Some(explicit_humanoid)
+        );
+    }
+
+    #[test]
     fn package_plan_includes_external_gltf_sidecars_once() {
         let directory = tempfile::tempdir().expect("temp dir");
         let project_root = directory.path().join("project");
@@ -1706,7 +2164,7 @@ mod tests {
             motion_slot,
             engine_authoring::AnimationBinding {
                 name: "retarget_motion".to_owned(),
-                clip: clip.clone(),
+                clip: engine_authoring::MotionSourceRef::native(clip.clone()),
                 overlays: Vec::new(),
                 events: Vec::new(),
             },

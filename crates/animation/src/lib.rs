@@ -17,6 +17,10 @@ pub mod contact_detect;
 /// may disable default features to avoid compiling the physics backend.
 #[cfg(feature = "physics")]
 pub mod foot_ik;
+/// Humanoid profile validation, portable motion, and target-specific baking (ADR 0110).
+pub mod humanoid;
+/// Skeleton-independent humanoid motion conversion and target-specific bake/cache (ADR 0110).
+pub mod humanoid_motion;
 /// Animation-side morph assets, bindings, and weights.
 pub mod morph;
 /// Pure pose sampling and blending.

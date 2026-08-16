@@ -855,6 +855,13 @@ fn show_asset_browser(
                                                     )
                                             });
                                         let registered = registered_asset.is_some();
+                                        let humanoid_configurable =
+                                            registered_asset.is_some_and(|(_, manifest_entry)| {
+                                                !manifest_entry
+                                                    .import_settings
+                                                    .skeleton_records
+                                                    .is_empty()
+                                            });
                                         let gltf_source = engine::asset_path_matches_kind(
                                             engine::AssetKind::GltfSource,
                                             &entry.relative_path,
@@ -1022,9 +1029,14 @@ fn show_asset_browser(
                                                 action = Some(AssetBrowserAction::Reimport(*index));
                                                 ui.close();
                                             }
+                                            let import_settings_label = if humanoid_configurable {
+                                                "Configure Humanoid / Import Settings..."
+                                            } else {
+                                                "Edit Import Settings..."
+                                            };
                                             if registered
                                                 && import_source
-                                                && ui.button("Edit Import Settings...").clicked()
+                                                && ui.button(import_settings_label).clicked()
                                             {
                                                 action = Some(
                                                     AssetBrowserAction::EditImportSettings(*index),

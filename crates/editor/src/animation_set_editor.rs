@@ -2,7 +2,7 @@
 
 use engine_authoring::{
     replace_file_contents, AnimationBinding, AnimationSet, AnimationSetEvent, AssetId, MotionSlot,
-    MotionSlotId,
+    MotionSlotId, MotionSourceRef,
 };
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -113,14 +113,18 @@ impl AnimationSetEditorState {
         }
     }
 
-    /// Assigns or clears the imported clip for one graph-owned slot.
-    pub fn set_binding(&mut self, slot: &MotionSlot, clip: Option<AssetId>) -> Result<(), String> {
+    /// Assigns or clears one explicitly tagged motion source for a graph-owned slot.
+    pub fn set_binding_source(
+        &mut self,
+        slot: &MotionSlot,
+        motion: Option<MotionSourceRef>,
+    ) -> Result<(), String> {
         if self.document.graph.is_none() {
             return Err("assign an Animation Graph before editing bindings".to_owned());
         }
         self.push_undo();
-        match clip {
-            Some(clip) => {
+        match motion {
+            Some(motion) => {
                 let events = self
                     .document
                     .bindings
@@ -137,7 +141,7 @@ impl AnimationSetEditorState {
                     slot.id.clone(),
                     AnimationBinding {
                         name: slot.display_name.clone(),
-                        clip,
+                        clip: motion,
                         overlays,
                         events,
                     },
@@ -150,12 +154,16 @@ impl AnimationSetEditorState {
         Ok(())
     }
 
-    /// Appends one supplemental clip to a slot's ordered composition.
-    pub fn add_overlay(&mut self, slot: &MotionSlotId, clip: AssetId) -> Result<(), String> {
+    /// Appends one explicitly tagged supplemental motion source.
+    pub fn add_overlay_source(
+        &mut self,
+        slot: &MotionSlotId,
+        motion: MotionSourceRef,
+    ) -> Result<(), String> {
         let Some(binding) = self.document.bindings.get(slot) else {
             return Err("assign a primary clip before adding overlays".to_owned());
         };
-        if binding.clip == clip || binding.overlays.contains(&clip) {
+        if binding.clip == motion || binding.overlays.contains(&motion) {
             return Err("the selected clip is already present in this binding".to_owned());
         }
         self.push_undo();
@@ -164,7 +172,7 @@ impl AnimationSetEditorState {
             .get_mut(slot)
             .expect("binding validated before recording undo")
             .overlays
-            .push(clip);
+            .push(motion);
         Ok(())
     }
 
@@ -390,7 +398,7 @@ mod tests {
                 motion.id.clone(),
                 AnimationBinding {
                     name: motion.display_name.clone(),
-                    clip: AssetId::generate(),
+                    clip: MotionSourceRef::native(AssetId::generate()),
                     overlays: Vec::new(),
                     events: Vec::new(),
                 },
@@ -417,7 +425,7 @@ mod tests {
             motion.id,
             AnimationBinding {
                 name: motion.display_name,
-                clip: AssetId::generate(),
+                clip: MotionSourceRef::native(AssetId::generate()),
                 overlays: Vec::new(),
                 events: Vec::new(),
             },
@@ -440,22 +448,28 @@ mod tests {
         let motion = slot("Dance");
         let mut state = editor(AnimationSet::new(AssetId::generate()));
         state
-            .set_binding(&motion, Some(AssetId::generate()))
+            .set_binding_source(
+                &motion,
+                Some(MotionSourceRef::native(AssetId::generate())),
+            )
             .expect("primary clip must bind");
         let first = AssetId::generate();
         let second = AssetId::generate();
         state
-            .add_overlay(&motion.id, first.clone())
+            .add_overlay_source(&motion.id, MotionSourceRef::native(first.clone()))
             .expect("first overlay must be added");
         state
-            .add_overlay(&motion.id, second.clone())
+            .add_overlay_source(&motion.id, MotionSourceRef::native(second.clone()))
             .expect("second overlay must be added");
         state
             .move_overlay(&motion.id, 1, 0)
             .expect("overlay must move");
         assert_eq!(
             state.document.bindings[&motion.id].overlays,
-            vec![second, first]
+            vec![
+                MotionSourceRef::native(second),
+                MotionSourceRef::native(first)
+            ]
         );
         assert!(state.undo());
         assert_eq!(state.document.bindings[&motion.id].overlays.len(), 2);
@@ -470,7 +484,10 @@ mod tests {
         let motion = slot("Attack");
         let mut state = editor(AnimationSet::new(AssetId::generate()));
         state
-            .set_binding(&motion, Some(AssetId::generate()))
+            .set_binding_source(
+                &motion,
+                Some(MotionSourceRef::native(AssetId::generate())),
+            )
             .expect("primary clip must bind");
         for _ in 0..2 {
             state.add_event(&motion.id).expect("event must be added");
@@ -499,7 +516,10 @@ mod tests {
         let motion = slot("Attack");
         let mut state = editor(AnimationSet::new(AssetId::generate()));
         state
-            .set_binding(&motion, Some(AssetId::generate()))
+            .set_binding_source(
+                &motion,
+                Some(MotionSourceRef::native(AssetId::generate())),
+            )
             .expect("primary clip must bind");
         state.add_event(&motion.id).expect("event must be added");
         let before = state.document.clone();
@@ -521,12 +541,18 @@ mod tests {
         let motion = slot("Attack");
         let mut state = editor(AnimationSet::new(AssetId::generate()));
         state
-            .set_binding(&motion, Some(AssetId::generate()))
+            .set_binding_source(
+                &motion,
+                Some(MotionSourceRef::native(AssetId::generate())),
+            )
             .expect("primary clip must bind");
         state.add_event(&motion.id).expect("event must be added");
 
         state
-            .set_binding(&motion, Some(AssetId::generate()))
+            .set_binding_source(
+                &motion,
+                Some(MotionSourceRef::native(AssetId::generate())),
+            )
             .expect("clip must be reassigned");
         assert_eq!(state.document.bindings[&motion.id].events.len(), 1);
 

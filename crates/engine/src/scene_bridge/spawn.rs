@@ -920,15 +920,26 @@ pub(crate) fn spawn_animation_controller_component(
                 message: source.to_string(),
             },
         })?;
-    let resolved_set = resolve_animation_set(&animation_set_asset, &graph_asset, context)?;
-    let resolved_clips = resolved_set.clips;
-    let animation_set_events = resolved_set.events;
-    if compiled_graph
+    let resolved_set = resolve_animation_set(
+        &animation_set_asset,
+        &graph_asset,
+        entity,
+        context,
+    )?;
+    let ResolvedAnimationSet {
+        clips: resolved_clips,
+        events: animation_set_events,
+        unresolved_motion_slots,
+    } = resolved_set;
+    if let Some(motion_key) = compiled_graph
         .states
         .iter()
         .filter_map(|state| state.motion_key())
-        .any(|motion_key| !resolved_clips.contains_key(motion_key))
+        .find(|motion_key| !resolved_clips.contains_key(*motion_key))
     {
+        if unresolved_motion_slots.contains(motion_key) {
+            return Ok(());
+        }
         return Err(fields
             .invalid("an Animation Set binding for every graph motion slot")
             .into());
@@ -1244,14 +1255,54 @@ struct ResolvedAnimationClipSource {
 struct ResolvedAnimationSet {
     clips: BTreeMap<String, Handle<AnimationClip>>,
     events: Vec<(Handle<AnimationClip>, Vec<AnimEvent>)>,
+    unresolved_motion_slots: HashSet<String>,
 }
 
 fn resolve_animation_set(
     animation_set_asset: &AssetId,
     graph_asset: &AssetId,
+    entity: Entity,
     context: &mut SpawnContext<'_>,
 ) -> Result<ResolvedAnimationSet, SceneBridgeError> {
     let path = manifest_asset_path(animation_set_asset, context)?;
+    let target_skeleton_id = context
+        .world
+        .get_component::<Skeleton>(entity)
+        .and_then(|skeleton| skeleton.asset.clone());
+    let Some(target_skeleton_id) = target_skeleton_id else {
+        return Err(SceneBridgeError::AssetLoad {
+            asset: animation_set_asset.clone(),
+            source: AssetLoadError::InvalidAsset {
+                path: path.clone(),
+                message: "Animation Controller rig has no target SkeletonAsset ID".to_owned(),
+            },
+        });
+    };
+    let target_skeleton = context
+        .world
+        .get_resource::<SkeletonAssetRegistry>()
+        .and_then(|registry| registry.get(&target_skeleton_id))
+        .cloned();
+    let target_skeleton = if let Some(target_skeleton) = target_skeleton {
+        target_skeleton
+    } else {
+        resolve_retarget_skeleton_asset(
+            &target_skeleton_id,
+            context.asset_root,
+            context.manifest,
+            context.asset_state,
+        )
+        .ok_or_else(|| SceneBridgeError::AssetLoad {
+            asset: animation_set_asset.clone(),
+            source: AssetLoadError::InvalidAsset {
+                path: path.clone(),
+                message: format!(
+                    "Animation Controller target skeleton `{}` could not be loaded",
+                    target_skeleton_id.as_str()
+                ),
+            },
+        })?
+    };
     let json = std::fs::read_to_string(&path).map_err(|source| SceneBridgeError::AssetLoad {
         asset: animation_set_asset.clone(),
         source: AssetLoadError::Io {
@@ -1288,17 +1339,29 @@ fn resolve_animation_set(
 
     let mut clips = BTreeMap::new();
     let mut events = Vec::<(Handle<AnimationClip>, Vec<AnimEvent>)>::new();
+    let mut unresolved_motion_slots = HashSet::new();
     for (motion_slot, binding) in animation_set.bindings {
-        let primary_handle =
-            resolve_animation_binding_clip(animation_set_asset, &binding.clip, context)?;
+        let Some(primary_handle) = resolve_animation_binding_clip(
+            animation_set_asset,
+            &binding.clip,
+            &target_skeleton,
+            context,
+        )?
+        else {
+            unresolved_motion_slots.insert(motion_slot.as_str().to_owned());
+            continue;
+        };
         let mut layer_handles = Vec::with_capacity(binding.overlays.len() + 1);
         layer_handles.push(primary_handle);
         for overlay in &binding.overlays {
-            layer_handles.push(resolve_animation_binding_clip(
+            if let Some(overlay_handle) = resolve_animation_binding_clip(
                 animation_set_asset,
                 overlay,
+                &target_skeleton,
                 context,
-            )?);
+            )? {
+                layer_handles.push(overlay_handle);
+            }
         }
 
         let handle = if layer_handles.len() == 1 {
@@ -1316,7 +1379,7 @@ fn resolve_animation_set(
                             .get(handle)
                             .cloned()
                             .ok_or_else(|| SceneBridgeError::UnknownAsset {
-                                asset: binding.clip.clone(),
+                                asset: binding.clip.asset.clone(),
                             })
                     })
                     .collect::<Result<Vec<_>, _>>()?
@@ -1340,7 +1403,7 @@ fn resolve_animation_set(
                     .animation_clip_sources
                     .get(&layer_handle.id())
                     .ok_or_else(|| SceneBridgeError::UnknownAsset {
-                        asset: binding.clip.clone(),
+                        asset: binding.clip.asset.clone(),
                     })?;
                 let source_fingerprint = context
                     .manifest
@@ -1402,30 +1465,333 @@ fn resolve_animation_set(
             }
         }
     }
-    Ok(ResolvedAnimationSet { clips, events })
+    Ok(ResolvedAnimationSet {
+        clips,
+        events,
+        unresolved_motion_slots,
+    })
 }
 
 fn resolve_animation_binding_clip(
     animation_set_asset: &AssetId,
-    clip_asset: &AssetId,
+    source: &engine_authoring::MotionSourceRef,
+    target_skeleton: &SkeletonAsset,
     context: &mut SpawnContext<'_>,
-) -> Result<Handle<AnimationClip>, SceneBridgeError> {
-    let resolved = resolve_animation_clip_source(clip_asset, context)?;
-    let selected_name = resolved.selected_clip.ok_or_else(|| SceneBridgeError::AssetLoad {
-        asset: clip_asset.clone(),
-        source: AssetLoadError::InvalidAsset {
-            path: manifest_asset_path(animation_set_asset, context)
-                .unwrap_or_else(|_| std::path::PathBuf::from("<animation-set>")),
-            message: "animation-set layers must reference imported Animation Clip sub-assets, not entire model sources".to_owned(),
-        },
+) -> Result<Option<Handle<AnimationClip>>, SceneBridgeError> {
+    if source.variant == engine_authoring::MotionSourceVariant::Humanoid {
+        return resolve_humanoid_animation_binding_clip(
+            animation_set_asset,
+            &source.asset,
+            target_skeleton,
+            context,
+        )
+        .map(Some);
+    }
+
+    let resolved = resolve_animation_clip_source(&source.asset, context)?;
+    let selected_name = resolved.selected_clip.ok_or_else(|| {
+        animation_binding_error(
+            animation_set_asset,
+            &source.asset,
+            context,
+            "Animation Set Native and Auto sources must reference imported Animation sub-assets",
+        )
     })?;
-    resolved
+    let native_handle = resolved
         .clips
         .get(&selected_name)
         .copied()
         .ok_or_else(|| SceneBridgeError::UnknownAsset {
-            asset: clip_asset.clone(),
-        })
+            asset: source.asset.clone(),
+        })?;
+    let native_clip = context
+        .world
+        .get_resource::<Assets<AnimationClip>>()
+        .and_then(|assets| assets.get(&native_handle))
+        .cloned()
+        .ok_or_else(|| SceneBridgeError::UnknownAsset {
+            asset: source.asset.clone(),
+        })?;
+    let source_skeleton_id = native_clip.skeleton.clone().ok_or_else(|| {
+        animation_binding_error(
+            animation_set_asset,
+            &source.asset,
+            context,
+            "Animation Set Native and Auto sources must be bound to an imported skeleton",
+        )
+    })?;
+
+    if source_skeleton_id == target_skeleton.id {
+        return Ok(Some(native_handle));
+    }
+
+    if source.variant == engine_authoring::MotionSourceVariant::Auto {
+        let assets_root = context.asset_root.unwrap_or_else(|| Path::new("."));
+        let maps = crate::retarget::load_registered_retarget_maps(assets_root, context.manifest);
+        if crate::retarget::find_retarget_map_for_pair(
+            &maps,
+            &source_skeleton_id,
+            &target_skeleton.id,
+        )
+        .is_none()
+        {
+            let humanoid_asset =
+                crate::asset::imported_humanoid_motion_sub_asset_id(&source.asset);
+            return resolve_humanoid_animation_binding_clip(
+                animation_set_asset,
+                &humanoid_asset,
+                target_skeleton,
+                context,
+            )
+            .map(Some);
+        }
+    }
+
+    resolve_retargeted_animation_binding_clip(
+        animation_set_asset,
+        &source.asset,
+        native_handle,
+        &native_clip,
+        &source_skeleton_id,
+        target_skeleton,
+        context,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn resolve_retargeted_animation_binding_clip(
+    _animation_set_asset: &AssetId,
+    source_asset: &AssetId,
+    native_handle: Handle<AnimationClip>,
+    native_clip: &AnimationClip,
+    source_skeleton_id: &AssetId,
+    target_skeleton: &SkeletonAsset,
+    context: &mut SpawnContext<'_>,
+) -> Result<Option<Handle<AnimationClip>>, SceneBridgeError> {
+    let provenance = context
+        .asset_state
+        .animation_clip_sources
+        .get(&native_handle.id())
+        .cloned()
+        .ok_or_else(|| SceneBridgeError::UnknownAsset {
+            asset: source_asset.clone(),
+        })?;
+    let packaged = context
+        .world
+        .get_resource::<crate::retarget::PackagedBakedClips>()
+        .cloned();
+    let adapted = match resolve_cross_skeleton_clip(
+        native_clip,
+        &native_handle,
+        source_skeleton_id,
+        &target_skeleton.id,
+        context.asset_root,
+        context.manifest,
+        context.asset_state,
+        packaged.as_ref(),
+    ) {
+        Ok(adapted) => adapted,
+        Err(diagnostic) => {
+            context.asset_diagnostics.push(*diagnostic);
+            return Ok(None);
+        }
+    };
+    Ok(Some(store_animation_binding_clip(
+        adapted, provenance, context,
+    )))
+}
+
+fn resolve_humanoid_animation_binding_clip(
+    animation_set_asset: &AssetId,
+    motion_asset: &AssetId,
+    target_skeleton: &SkeletonAsset,
+    context: &mut SpawnContext<'_>,
+) -> Result<Handle<AnimationClip>, SceneBridgeError> {
+    let (source_id, existing_profiles) = {
+        let Some((source_id, entry, sub_asset)) = context.manifest.imported_sub_asset(motion_asset)
+        else {
+            return Err(animation_binding_error(
+                animation_set_asset,
+                motion_asset,
+                context,
+                "Humanoid source is not a registered imported sub-asset",
+            ));
+        };
+        if sub_asset.kind != ImportedSubAssetKind::HumanoidMotion {
+            return Err(animation_binding_error(
+                animation_set_asset,
+                motion_asset,
+                context,
+                "Humanoid source must reference an imported HumanoidMotion sub-asset",
+            ));
+        }
+        (
+            source_id.clone(),
+            entry.import_settings.humanoid_profiles.clone(),
+        )
+    };
+
+    if let Some(packaged_root) = context
+        .world
+        .get_resource::<crate::retarget::PackagedBakedClips>()
+        .map(|packaged| packaged.root.clone())
+    {
+        let file_name = crate::humanoid_motion::humanoid_packaged_bake_file_name(
+            motion_asset,
+            &target_skeleton.id,
+        );
+        let path = packaged_root.join("humanoid").join(&file_name);
+        let clip = std::fs::read(&path)
+            .ok()
+            .and_then(|bytes| crate::humanoid_motion::deserialize_humanoid_baked_clip(&bytes).ok())
+            .filter(|clip| {
+                clip.skeleton.as_ref() == Some(&target_skeleton.id)
+                    && clip.skeleton_identity == Some(target_skeleton.identity)
+            })
+            .ok_or_else(|| {
+                let diagnostic = Diagnostic::error(
+                    crate::humanoid_motion::HUMANOID_BAKE_MISSING_FROM_PACKAGE_DIAGNOSTIC,
+                    format!(
+                        "packaged Humanoid bake `{file_name}` for motion `{}` and target skeleton `{}` was not found or did not match the target; re-package the project",
+                        motion_asset.as_str(),
+                        target_skeleton.id.as_str()
+                    ),
+                )
+                .with_target(DiagnosticTarget::Asset {
+                    id: motion_asset.clone(),
+                });
+                let message = diagnostic.message.clone();
+                context.asset_diagnostics.push(diagnostic);
+                animation_binding_error(animation_set_asset, motion_asset, context, message)
+            })?;
+        return Ok(store_animation_binding_clip(
+            clip,
+            (source_id, motion_asset.clone()),
+            context,
+        ));
+    }
+
+    let imported = import_source_cached(&source_id, context).map_err(|error| {
+        animation_binding_error(
+            animation_set_asset,
+            motion_asset,
+            context,
+            format!(
+                "could not import the model source owning Humanoid motion `{}`: {error}",
+                motion_asset.as_str()
+            ),
+        )
+    })?;
+    let catalog =
+        crate::humanoid_import::build_humanoid_import_catalog(&imported, &existing_profiles);
+    context.asset_diagnostics.extend(
+        catalog
+            .diagnostics
+            .iter()
+            .cloned()
+            .map(|diagnostic| diagnostic.with_target(DiagnosticTarget::Asset {
+                id: source_id.clone(),
+            })),
+    );
+    let portable = catalog
+        .motions
+        .iter()
+        .find(|motion| &motion.id == motion_asset)
+        .ok_or_else(|| {
+            animation_binding_error(
+                animation_set_asset,
+                motion_asset,
+                context,
+                "the source no longer exposes this Humanoid motion; reimport it",
+            )
+        })?;
+    let target_profile = context
+        .manifest
+        .iter()
+        .flat_map(|(_, entry)| entry.import_settings.humanoid_profiles.iter())
+        .find(|profile| profile.skeleton == target_skeleton.id.as_str())
+        .cloned()
+        .ok_or_else(|| {
+            animation_binding_error(
+                animation_set_asset,
+                motion_asset,
+                context,
+                format!(
+                    "target skeleton `{}` has no persisted HumanoidProfile",
+                    target_skeleton.id.as_str()
+                ),
+            )
+        })?;
+
+    let mut baked = if let Some(cache) = context.asset_state.derived_cache.as_ref() {
+        crate::humanoid_motion::resolve_or_bake_humanoid_motion(
+            cache,
+            &portable.motion,
+            target_skeleton,
+            &target_profile,
+        )
+    } else {
+        crate::humanoid_motion::bake_humanoid_motion(
+            &portable.motion,
+            target_skeleton,
+            &target_profile,
+        )
+    }
+    .map_err(|error| {
+        animation_binding_error(
+            animation_set_asset,
+            motion_asset,
+            context,
+            format!(
+                "Humanoid motion `{}` could not be baked for target skeleton `{}`: {error}",
+                motion_asset.as_str(),
+                target_skeleton.id.as_str()
+            ),
+        )
+    })?;
+    context.asset_diagnostics.append(&mut baked.diagnostics);
+    Ok(store_animation_binding_clip(
+        baked.clip,
+        (source_id, motion_asset.clone()),
+        context,
+    ))
+}
+
+fn store_animation_binding_clip(
+    clip: AnimationClip,
+    provenance: (AssetId, AssetId),
+    context: &mut SpawnContext<'_>,
+) -> Handle<AnimationClip> {
+    let handle = context
+        .world
+        .get_resource_mut::<Assets<AnimationClip>>()
+        .expect("animation asset store must exist before Animation Set resolution")
+        .add(clip);
+    context
+        .asset_state
+        .added_animation_clip_handles
+        .push(handle);
+    context
+        .asset_state
+        .animation_clip_sources
+        .insert(handle.id(), provenance);
+    handle
+}
+
+fn animation_binding_error(
+    animation_set_asset: &AssetId,
+    source_asset: &AssetId,
+    context: &SpawnContext<'_>,
+    message: impl Into<String>,
+) -> SceneBridgeError {
+    SceneBridgeError::AssetLoad {
+        asset: source_asset.clone(),
+        source: AssetLoadError::InvalidAsset {
+            path: manifest_asset_path(animation_set_asset, context)
+                .unwrap_or_else(|_| std::path::PathBuf::from("<animation-set>")),
+            message: message.into(),
+        },
+    }
 }
 
 struct SourceAnimation {

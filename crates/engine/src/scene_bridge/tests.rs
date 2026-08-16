@@ -956,7 +956,7 @@ fn unified_animation_controller_expands_to_runtime_rig_animator_and_graph() {
         motion_slot,
         engine_authoring::AnimationBinding {
             name: "spin".to_owned(),
-            clip: imported.animations[0].id.clone(),
+            clip: engine_authoring::MotionSourceRef::native(imported.animations[0].id.clone()),
             overlays: Vec::new(),
             events: vec![engine_authoring::AnimationSetEvent {
                 time: 0.1,
@@ -1175,7 +1175,7 @@ fn cross_skeleton_scene_json(
         motion_slot,
         engine_authoring::AnimationBinding {
             name: "hero_attack".to_owned(),
-            clip: hero_imported.animations[1].id.clone(),
+            clip: engine_authoring::MotionSourceRef::native(hero_imported.animations[1].id.clone()),
             overlays: Vec::new(),
             events: Vec::new(),
         },
@@ -1464,7 +1464,7 @@ fn animation_set_resolves_and_retargets_clips_from_multiple_model_sources() {
         idle_slot,
         engine_authoring::AnimationBinding {
             name: "villain_idle".to_owned(),
-            clip: villain_imported.animations[0].id.clone(),
+            clip: engine_authoring::MotionSourceRef::native(villain_imported.animations[0].id.clone()),
             overlays: Vec::new(),
             events: Vec::new(),
         },
@@ -1473,7 +1473,7 @@ fn animation_set_resolves_and_retargets_clips_from_multiple_model_sources() {
         attack_slot,
         engine_authoring::AnimationBinding {
             name: "hero_attack".to_owned(),
-            clip: hero_imported.animations[1].id.clone(),
+            clip: engine_authoring::MotionSourceRef::native(hero_imported.animations[1].id.clone()),
             overlays: Vec::new(),
             events: Vec::new(),
         },

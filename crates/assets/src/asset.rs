@@ -234,6 +234,9 @@ pub struct ImportSettings {
     /// Bone-catalog ledger for skeletons bound to this source.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skeleton_records: Vec<SkeletonRecord>,
+    /// Model-owned humanoid semantic mappings keyed by stable skeleton/bone IDs (ADR 0110).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub humanoid_profiles: Vec<HumanoidProfile>,
     /// Bone names that replace the default contact-detection heuristic.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub contact_bones: Vec<String>,
@@ -285,6 +288,178 @@ pub struct SkeletonBoneRecord {
     pub name: String,
 }
 
+/// Stable humanoid body semantics shared by model profiles and portable motion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HumanoidBone {
+    /// Pelvis / body root semantic.
+    Hips,
+    /// Lower torso semantic.
+    Spine,
+    /// Upper torso semantic.
+    Chest,
+    /// Uppermost torso semantic.
+    UpperChest,
+    /// Neck semantic.
+    Neck,
+    /// Head semantic.
+    Head,
+    /// Left shoulder semantic.
+    LeftShoulder,
+    /// Left upper arm semantic.
+    LeftUpperArm,
+    /// Left lower arm semantic.
+    LeftLowerArm,
+    /// Left hand semantic.
+    LeftHand,
+    /// Right shoulder semantic.
+    RightShoulder,
+    /// Right upper arm semantic.
+    RightUpperArm,
+    /// Right lower arm semantic.
+    RightLowerArm,
+    /// Right hand semantic.
+    RightHand,
+    /// Left upper leg semantic.
+    LeftUpperLeg,
+    /// Left lower leg semantic.
+    LeftLowerLeg,
+    /// Left foot semantic.
+    LeftFoot,
+    /// Left toe semantic.
+    LeftToes,
+    /// Right upper leg semantic.
+    RightUpperLeg,
+    /// Right lower leg semantic.
+    RightLowerLeg,
+    /// Right foot semantic.
+    RightFoot,
+    /// Right toe semantic.
+    RightToes,
+    /// Left thumb proximal semantic.
+    LeftThumbProximal,
+    /// Left index proximal semantic.
+    LeftIndexProximal,
+    /// Left middle proximal semantic.
+    LeftMiddleProximal,
+    /// Left ring proximal semantic.
+    LeftRingProximal,
+    /// Left little-finger proximal semantic.
+    LeftLittleProximal,
+    /// Right thumb proximal semantic.
+    RightThumbProximal,
+    /// Right index proximal semantic.
+    RightIndexProximal,
+    /// Right middle proximal semantic.
+    RightMiddleProximal,
+    /// Right ring proximal semantic.
+    RightRingProximal,
+    /// Right little-finger proximal semantic.
+    RightLittleProximal,
+    /// Left eye semantic.
+    LeftEye,
+    /// Right eye semantic.
+    RightEye,
+    /// Jaw semantic.
+    Jaw,
+}
+
+impl HumanoidBone {
+    /// Complete stable semantic vocabulary exposed by the Humanoid authoring UI.
+    pub const ALL: [Self; 35] = [
+        Self::Hips,
+        Self::Spine,
+        Self::Chest,
+        Self::UpperChest,
+        Self::Neck,
+        Self::Head,
+        Self::LeftShoulder,
+        Self::LeftUpperArm,
+        Self::LeftLowerArm,
+        Self::LeftHand,
+        Self::RightShoulder,
+        Self::RightUpperArm,
+        Self::RightLowerArm,
+        Self::RightHand,
+        Self::LeftUpperLeg,
+        Self::LeftLowerLeg,
+        Self::LeftFoot,
+        Self::LeftToes,
+        Self::RightUpperLeg,
+        Self::RightLowerLeg,
+        Self::RightFoot,
+        Self::RightToes,
+        Self::LeftThumbProximal,
+        Self::LeftIndexProximal,
+        Self::LeftMiddleProximal,
+        Self::LeftRingProximal,
+        Self::LeftLittleProximal,
+        Self::RightThumbProximal,
+        Self::RightIndexProximal,
+        Self::RightMiddleProximal,
+        Self::RightRingProximal,
+        Self::RightLittleProximal,
+        Self::LeftEye,
+        Self::RightEye,
+        Self::Jaw,
+    ];
+
+    /// Semantics required for a profile to be structurally usable for humanoid conversion.
+    pub const REQUIRED: [Self; 15] = [
+        Self::Hips,
+        Self::Spine,
+        Self::Head,
+        Self::LeftUpperArm,
+        Self::LeftLowerArm,
+        Self::LeftHand,
+        Self::RightUpperArm,
+        Self::RightLowerArm,
+        Self::RightHand,
+        Self::LeftUpperLeg,
+        Self::LeftLowerLeg,
+        Self::LeftFoot,
+        Self::RightUpperLeg,
+        Self::RightLowerLeg,
+        Self::RightFoot,
+    ];
+}
+
+/// Whether a humanoid mapping was inferred by import or explicitly authored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HumanoidProfileOrigin {
+    /// Import-time convention/name/hierarchy detection produced the mapping.
+    Automatic,
+    /// An author explicitly confirmed or edited the mapping.
+    Authored,
+}
+
+/// Model-owned mapping from portable humanoid semantics to one skeleton's stable bone IDs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HumanoidProfile {
+    /// Stable `SkeletonAsset` sub-asset ID this profile belongs to.
+    pub skeleton: String,
+    /// Canonical skeleton identity the mapping was validated against.
+    pub skeleton_identity: u64,
+    /// Semantic-to-`BoneId` mapping. Values are stable numeric BoneId payloads.
+    pub bones: BTreeMap<HumanoidBone, u32>,
+    /// Optional bone whose translation carries locomotion; deliberately distinct from Hips.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub motion_root: Option<u32>,
+    /// Semantics resolved with lower-confidence import heuristics.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub uncertain_bones: Vec<HumanoidBone>,
+    /// Whether this mapping is import-generated or explicitly authored.
+    pub origin: HumanoidProfileOrigin,
+}
+
+impl HumanoidProfile {
+    /// Returns the persisted BoneId payload for `semantic`, when mapped.
+    pub fn bone_id(&self, semantic: HumanoidBone) -> Option<u32> {
+        self.bones.get(&semantic).copied()
+    }
+}
+
 /// Persisted type of a deterministic imported sub-asset.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -301,6 +476,8 @@ pub enum ImportedSubAssetKind {
     Skin,
     /// Skeletal animation clip.
     Animation,
+    /// Skeleton-independent humanoid motion derived from a Native animation (ADR 0110).
+    HumanoidMotion,
     /// Named vertex or material deformation.
     Morph,
     /// Secondary-motion rigid-body rig.
@@ -316,6 +493,7 @@ impl ImportedSubAssetKind {
             Self::Skeleton => "skeleton",
             Self::Skin => "skin",
             Self::Animation => "animation",
+            Self::HumanoidMotion => "humanoid_motion",
             Self::Morph => "morph",
             Self::RigidBodyRig => "rigidbodyrig",
         }
@@ -343,6 +521,13 @@ pub fn imported_motion_sub_asset_id(
     )
 }
 
+/// Derives the stable skeleton-independent Humanoid variant nested under a Native clip.
+///
+/// Basing the ID on the Native clip keeps a logical animation's variants grouped by identity.
+pub fn imported_humanoid_motion_sub_asset_id(native_clip: &AssetId) -> AssetId {
+    AssetId::derive(native_clip, "humanoid")
+}
+
 /// Stable metadata exposed to asset pickers after import or reimport.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ImportedSubAsset {
@@ -357,6 +542,44 @@ pub struct ImportedSubAsset {
     /// Model source whose rig a model-specific motion clip was baked against.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_model_source: Option<String>,
+}
+
+/// Derives the stable ID required for persisted imported sub-asset metadata.
+///
+/// # Errors
+///
+/// Returns [`AssetManifestError::InvalidAssetId`] when a targeted motion refers
+/// to an invalid persisted target model source ID.
+pub fn expected_imported_sub_asset_id(
+    source_id: &AssetId,
+    sub_asset: &ImportedSubAsset,
+) -> Result<AssetId, AssetManifestError> {
+    let native = if let Some(target) = &sub_asset.target_model_source {
+        let target_id = AssetId::from_stable_id(engine_authoring::StableId::new(target))
+            .map_err(|source| AssetManifestError::InvalidAssetId {
+                id: target.clone(),
+                source,
+            })?;
+        imported_motion_sub_asset_id(source_id, &target_id, sub_asset.index as usize)
+    } else {
+        imported_sub_asset_id(
+            source_id,
+            ImportedSubAssetKind::Animation,
+            sub_asset.index as usize,
+        )
+    };
+
+    if sub_asset.kind == ImportedSubAssetKind::HumanoidMotion {
+        Ok(imported_humanoid_motion_sub_asset_id(&native))
+    } else if sub_asset.target_model_source.is_some() {
+        Ok(native)
+    } else {
+        Ok(imported_sub_asset_id(
+            source_id,
+            sub_asset.kind,
+            sub_asset.index as usize,
+        ))
+    }
 }
 
 fn is_default<T: Default + PartialEq>(value: &T) -> bool {
@@ -496,16 +719,7 @@ impl AssetManifest {
             let asset_id = AssetId::from_stable_id(stable)
                 .map_err(|source| AssetManifestError::InvalidAssetId { id: id_str, source })?;
             for sub_asset in &raw_entry.import_settings.sub_assets {
-                let expected = if let Some(target) = &sub_asset.target_model_source {
-                    let target_id = AssetId::from_stable_id(engine_authoring::StableId::new(target))
-                        .map_err(|source| AssetManifestError::InvalidAssetId {
-                            id: target.clone(),
-                            source,
-                        })?;
-                    imported_motion_sub_asset_id(&asset_id, &target_id, sub_asset.index as usize)
-                } else {
-                    imported_sub_asset_id(&asset_id, sub_asset.kind, sub_asset.index as usize)
-                };
+                let expected = expected_imported_sub_asset_id(&asset_id, sub_asset)?;
                 if sub_asset.id != expected.as_str() {
                     return Err(AssetManifestError::ImportedSubAssetIdMismatch {
                         source_id: asset_id,

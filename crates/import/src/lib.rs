@@ -11,6 +11,8 @@
 pub mod model_ir;
 /// Format-independent runtime-asset builder.
 pub mod model_import;
+/// Humanoid profiles and portable motion variants derived from canonical Native model data.
+pub mod humanoid_import;
 /// glTF / GLB parser and importer.
 pub mod gltf_import;
 /// Imported-model prefab generation.
