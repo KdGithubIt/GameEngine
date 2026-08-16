@@ -1,0 +1,37 @@
+diff --git a/crates/import/src/pmx_import.rs b/crates/import/src/pmx_import.rs
+--- a/crates/import/src/pmx_import.rs
++++ b/crates/import/src/pmx_import.rs
+@@ -476,11 +476,10 @@ pub(crate) fn convert_rotation(rotation: [f32; 4]) -> Quat {
+ /// Builds a rotation from PMX's per-axis Euler angles, then converts it to
+ /// engine space.
+ ///
+-/// PMX hands these XYZ component angles to Bullet as
+-/// `btQuaternion::setEulerZYX(z, y, x)`. `mmd-anim-physics-bullet`, which
+-/// consumes the same parser output as this importer, uses the equivalent
+-/// glam [`EulerRot::ZYX`] construction. Keeping the order conversion here
+-/// makes rigid-body and joint frames share one handedness/order path.
++/// PMX stores XYZ component angles for rigid-body and joint frames. The source
++/// convention composes them in ZYX order (`z`, `y`, then `x`). Keeping that
++/// source-order normalization here makes rigid-body and joint frames share one
++/// handedness/order path without exposing a solver-specific convention.
+ fn convert_euler_rotation(euler: [f32; 3]) -> Quat {
+     let mmd = glam::Quat::from_euler(glam::EulerRot::ZYX, euler[2], euler[1], euler[0]);
+     convert_rotation(mmd.to_array())
+@@ -1956,7 +1955,7 @@ pub(crate) fn convert_position(position: [f32; 3]) -> Vec3 {
+     }
+ 
+     #[test]
+-    fn pmx_physics_euler_rotation_matches_bullet_zyx_order() {
++    fn pmx_physics_euler_rotation_uses_source_zyx_order() {
+         let euler = [0.37, -0.29, 0.61];
+         let expected = convert_rotation(
+             Quat::from_euler(glam::EulerRot::ZYX, euler[2], euler[1], euler[0]).to_array(),
+@@ -1965,7 +1964,7 @@ pub(crate) fn convert_position(position: [f32; 3]) -> Vec3 {
+ 
+         assert!(
+             actual.dot(expected).abs() > 1.0 - 1.0e-6,
+-            "PMX physics Euler angles must use Bullet's ZYX composition: got {actual:?}, expected {expected:?}"
++            "PMX physics Euler angles must use the source ZYX composition: got {actual:?}, expected {expected:?}"
+         );
+     }
+ 
