@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "request_id": "20260816-adr0123-live-debug-lint-60aa5d2-r7",
+  "target_branch": "chatgpt/gameengine-adr0123-live-debug-v2",
+  "expected_head_sha": "60aa5d258ed834ab8cba785fe71aefa6dce4b1bb",
+  "patch_parts": ["part-0000.patch"],
+  "commit_message": "Fix ADR 0123 Editor live debug lint issues",
+  "pr_title": "ADR 0123: add Play-mode Behavior Tree live debugging",
+  "pr_body": "## Summary\n\n- add a transient Play-mode Behavior Tree graph debugger sourced only from the runtime bounded execution snapshot\n- map runtime source GraphId/NodeId state to read-only graph presentation for Running, Success/Failure, lifecycle/abort/reset and elapsed time\n- discard stale presentation when Play stops, runners disappear, entity/tree generations change, or the source graph changes\n- keep Graph/GraphView documents and serialized formats unchanged\n- fix the Editor lint failures found by affected Windows Validation without changing runtime semantics\n\n#84 remains separate; this PR does not duplicate the CLI schema-count change. Audio, Navigation, and VFX implementation files are not changed.\n\n<!-- gameengine-visual-validation: editor -->"
+}
