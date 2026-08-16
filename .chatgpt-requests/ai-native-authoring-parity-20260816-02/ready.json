@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "request_id": "ai-native-authoring-parity-20260816-02",
+  "target_branch": "chatgpt/gameengine-ai-native-authoring-parity",
+  "expected_head_sha": "b20f7cce47f6030b2a0bf56f87c1fdc26535db84",
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Document AI-native authoring parity and MCP lifecycle",
+  "pr_title": "GameEngine: define AI-native authoring parity and MCP lifecycle",
+  "pr_body": "## Summary\n\n- add ADR 0121 defining MCP as the standard structured AI authoring interface for an active Editor project\n- resolve the MCP transport/process lifecycle with an Editor-owned project-scoped loopback endpoint and single-call transaction boundary\n- define the staged parity plan for Scene/schema, assets/prefabs, graph/UI, typed documents, and CI parity guardrails\n- update the canonical authoring specification and ADR index\n\n## Validation\n\nDocumentation-only change; expect GameEngine Windows Validation `docs` mode.\n\n## Notes\n\nNo persisted project schema, Stable ID, existing CLI output, or existing MCP tool name is changed by this ADR."
+}
