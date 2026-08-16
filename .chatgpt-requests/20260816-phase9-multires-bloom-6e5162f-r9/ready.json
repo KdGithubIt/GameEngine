@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "request_id": "20260816-phase9-multires-bloom-6e5162f-r9",
+  "target_branch": "chatgpt/gameengine-render-multires-bloom-v6",
+  "expected_head_sha": "6e5162f70b2c7f15666f8659ebd3978eaf3f00ef",
+  "patch_parts": [
+    "part-0000.patch",
+    "part-0001.patch",
+    "part-0002.patch",
+    "part-0003.patch",
+    "part-0004.patch",
+    "part-0005.patch"
+  ],
+  "commit_message": "Renderer: add multi-resolution bloom",
+  "pr_title": "Renderer: add multi-resolution bloom",
+  "pr_body": "## Summary\n\nReplaces the Phase 45 inline 9-tap bloom approximation with renderer-owned multi-resolution HDR bloom behind the existing ToneMapPass facade. Bright-pass extraction runs once at half resolution, a bounded five-level pyramid downsamples and reconstructs bloom, and intensity is applied once during the full-resolution HDR composite before existing tone mapping and color grading.\n\nThe existing PostProcessSettings and BloomSettings public contracts are unchanged; this implements the dedicated multi-pass bloom path deferred by ADR 0040 without new persisted data or crate-boundary changes.\n\n## Validation\n\nRebased onto current main after the trusted publisher fix landed. Uses the wgpu 29 ErrorScopeGuard API for the GPU validation test. Run affected Windows Validation and Editor Visual Validation against the exact PR head.\n\n<!-- gameengine-visual-validation: editor -->"
+}
