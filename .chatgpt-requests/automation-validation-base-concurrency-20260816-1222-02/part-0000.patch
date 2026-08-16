@@ -1,0 +1,113 @@
+diff --git a/docs/CHATGPT_AUTOMATION.md b/docs/CHATGPT_AUTOMATION.md
+--- a/docs/CHATGPT_AUTOMATION.md
++++ b/docs/CHATGPT_AUTOMATION.md
+@@ -1,7 +1,7 @@
+ # ChatGPT GitHub Automation
+ 
+ Status: Accepted
+-Version: 1.4.1
++Version: 1.4.2
+ Canonical location: `docs/CHATGPT_AUTOMATION.md`
+ 
+ ## Purpose
+@@ -112,9 +112,15 @@
+    content hash, against the preflight artifact. Never use `ready.json` as a
+    partial-progress marker.
+ 7. Immediately before creating `ready.json`, re-read the remote target branch
+    HEAD. If it differs from `expected_head_sha`, abandon the unpublished
+    request, regenerate the patch from the new target tree, and use a new request
+    ID. Do not update `expected_head_sha` without regenerating the patch.
++   For a normal task branch whose intended baseline is `main`, also re-read
++   `main`. If `main` advanced after that task branch's baseline and the branch
++   does not already contain the new baseline, create a new task branch and
++   regenerate the request from current `main` before publishing `ready.json`,
++   unless the task intentionally targets the older baseline. A stable target
++   HEAD alone does not guarantee clean PR validation scope.
+ 8. Add `ready.json` in its own final transport commit and change no other file in
+    that commit. After this point the request is immutable.
+ 9. Follow the signal, dispatcher, Draft PR, and Windows validation through to a
+diff --git a/docs/CHATGPT_AUTOMATION_INCIDENTS.md b/docs/CHATGPT_AUTOMATION_INCIDENTS.md
+--- a/docs/CHATGPT_AUTOMATION_INCIDENTS.md
++++ b/docs/CHATGPT_AUTOMATION_INCIDENTS.md
+@@ -39,6 +39,7 @@
+ INC-001  Markdown trailing whitespace rejected by patch preflight  Dispatcher  Resolved
+ INC-002  Unified-diff old coordinates drifted from target tree     Dispatcher  Resolved
+ INC-003  Published patch bytes differed from preflight artifact    Transport   Resolved
++INC-004  Main advanced after task baseline and polluted validation  Validation  Resolved
+ ```
+ 
+ ## INC-001: Markdown trailing whitespace rejected by patch preflight
+@@ -225,6 +226,73 @@
+ - Validation run: `31922746993`
+ - Commit: `c689fff815f48ff2f56836fcfb096d443dee67ca`
+ 
++## INC-004: Main advanced after task baseline and polluted validation scope
++
++Status: Resolved
++Layer: Validation
++First confirmed: 2026-08-16
++Last confirmed: 2026-08-16
++
++### Symptom
++
++Request `adr0127-native-2d-20260816-1156-01` applied successfully and created
++Draft PR #33, but Windows Validation run `31923487466` planned validation for
++unrelated renderer and automation files even though the request itself added
++only ADR 0127.
++
++### Evidence
++
++- The original task branch was created from main commit
++  `295b86e41cf7db2dc673739de348783358a6a7ee`, and the Dispatcher produced task
++  commit `52214ccf845650da4d4f4adfdc28636e142a4955`.
++- Before validation planning, `main` advanced to
++  `e9c1a060b63b8b2ff93e1f45115047f69d0a1a15` through unrelated renderer work.
++- Validation run `31923487466` checked out the exact requested head, then used
++  the newer main commit as `BASE_SHA`. Its changed-path step listed the unrelated
++  renderer/automation changes between those divergent commits as well as ADR
++  0127, so the task no longer received documentation-only scope.
++- Recovery request `adr0127-native-2d-20260816-1208-02` started a fresh task
++  branch from the then-current main commit, regenerated the request, and produced
++  commit `6f190a90cacb5aee2d48c6a13dbd39ba9e698946` in Draft PR #34.
++- Validation run `31923640542` then reported `docs` mode, base
++  `e9c1a060b63b8b2ff93e1f45115047f69d0a1a15`, exact head
++  `6f190a90cacb5aee2d48c6a13dbd39ba9e698946`, and overall `success`. The
++  superseded PR #33 was closed without merge.
++
++### Root cause
++
++The Dispatcher correctly protects the target branch with `expected_head_sha`,
++but that guard only detects movement of the target branch. PR validation plans
++changed paths against the PR's current main baseline. When main advances after a
++task branch was created, the old task head and current main are divergent. A
++direct base-to-head changed-path comparison therefore includes intervening main
++changes that are absent from the old task branch, polluting validation scope.
++
++### Resolution
++
++Create a new task branch from current `main`, regenerate the patch/request from
++that exact baseline, and validate the new Draft PR. The replacement request and
++PR #34 completed documentation-only validation successfully. Do not treat the
++old broader validation as evidence for the task's intended scope.
++
++### Prevention / ChatGPT next action
++
++For normal main-based work, immediately before publishing `ready.json`, re-read
++both the target branch and `main`. If main advanced beyond the baseline the task
++branch contains, create a new task branch and regenerate the request from current
++main unless the older baseline is intentional. After validation, always read the
++machine-readable mode/scope before interpreting gate results.
++
++### References
++
++- Failed-scope request: `adr0127-native-2d-20260816-1156-01`
++- Successful request: `adr0127-native-2d-20260816-1208-02`
++- Superseded PR: `#33`
++- Successful PR: `#34`
++- Polluted validation run: `31923487466`
++- Successful validation run: `31923640542`
++- Successful commit: `6f190a90cacb5aee2d48c6a13dbd39ba9e698946`
++
+ ## Entry template
+ 
+ Copy this section for a materially new root cause. Incident IDs are monotonic
