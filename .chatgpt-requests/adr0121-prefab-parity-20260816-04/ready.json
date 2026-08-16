@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0121-prefab-parity-20260816-04",
+  "target_branch": "chatgpt/gameengine-adr-0121-prefab-parity-v3",
+  "expected_head_sha": "dbeca1a994a854c828da1b9e85f5be274436fb2c",
+  "patch_parts": [
+    "part-0000.patch",
+    "part-0001.patch",
+    "part-0002.patch",
+    "part-0003.patch",
+    "part-0004.patch",
+    "part-0005.patch",
+    "part-0006.patch",
+    "part-0007.patch",
+    "part-0008.patch",
+    "part-0009.patch"
+  ],
+  "commit_message": "Implement ADR 0121 prefab authoring parity",
+  "pr_title": "GameEngine: add prefab authoring parity",
+  "pr_body": "## Summary\n\nContinues ADR 0121 Asset/Prefab parity with shared prefab creation and instantiation semantics.\n\n- adds a GUI-free PrefabAuthoringService over SceneAuthoringService for preview/apply, stale revision/generation protection, one transaction, and one undo entry\n- moves prefab instance marker semantics into the shared authoring layer and routes Editor instantiate through it\n- fixes nested-root prefab capture so external Scene parents cannot leak into standalone prefab documents\n- adds PrefabAssetService for safe root+descendant capture, .prefab.json persistence, fresh AssetId registration, manifest persistence, and rollback of newly-created files on manifest failure\n- routes Editor Save as Prefab through the shared asset service\n- exposes prefab.create, prefab.preview, and prefab.instantiate through MCP and equivalent headless CLI commands\n- enforces shared Read / Preview / ProjectDataWrite / AssetWrite permissions and ProjectRoot path confinement\n- adds shared service tests for descendants, root detachment, manifest registration, path/permission safety, non-destructive preview, one-undo apply, and stale-base rejection\n\nCargo.lock changes because the Editor now directly depends on engine-assets, so Windows Validation must run in full mode."
+}
