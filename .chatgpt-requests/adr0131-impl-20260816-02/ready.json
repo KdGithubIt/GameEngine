@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0131-impl-20260816-02",
+  "target_branch": "chatgpt/gameengine-adr0131-ai-studio-impl-v4",
+  "expected_head_sha": "b8bad6cb6043025d53e83aca8ccc81fc580264b8",
+  "patch_parts": [
+    "part-0000.patch",
+    "part-0001.patch",
+    "part-0002.patch",
+    "part-0003.patch",
+    "part-0004.patch",
+    "part-0005.patch",
+    "part-0006.patch",
+    "part-0007.patch",
+    "part-0008.patch",
+    "part-0009.patch",
+    "part-0010.patch",
+    "part-0011.patch",
+    "part-0012.patch",
+    "part-0013.patch",
+    "part-0014.patch",
+    "part-0015.patch",
+    "part-0016.patch",
+    "part-0017.patch",
+    "part-0018.patch",
+    "part-0019.patch",
+    "part-0020.patch"
+  ],
+  "commit_message": "Implement ADR 0131 AI Studio agent host",
+  "pr_title": "GameEngine: implement conversational AI Studio agent host",
+  "pr_body": "## Summary\n\n- implements the first architecture-preserving ADR 0131 capability slice with GUI-free AI session, proposal, run, event, permission, persistence, code-workspace, provider, asset, and completion contracts\n- adds the modeless AI Studio Editor frontend for conversation, proposals, Go, permissions, audit, cancellation, and local/shared persistence\n- updates the canonical authoring specification sections 16-18 for the new agent-runtime, permission, and collaboration boundaries\n\nConcrete external/native runtime adapters and autonomous playtest execution remain follow-up capabilities behind these contracts.\n\n## Validation\n\nRun Windows Validation through the repository dispatcher. Editor UI changes require Visual Validation.\n\n<!-- gameengine-chatgpt-dispatcher -->"
+}
