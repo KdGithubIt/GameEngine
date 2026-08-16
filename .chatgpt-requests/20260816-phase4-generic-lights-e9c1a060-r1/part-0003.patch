@@ -1,0 +1,105 @@
++    default_spot_color_b => Value::F64(SpotLight::default().color.z as f64);
++    default_spot_intensity => Value::F64(SpotLight::default().intensity as f64);
++    default_spot_range => Value::F64(SpotLight::default().range as f64);
++    default_spot_inner_angle => Value::F64(SpotLight::default().inner_angle_radians.to_degrees() as f64);
++    default_spot_outer_angle => Value::F64(SpotLight::default().outer_angle_radians.to_degrees() as f64);
++
+     default_ambient_color_r => Value::F64(AmbientLight::default().color.x as f64);
+@@ -1734,5 +1818,23 @@
+             RIGID_BODY_PHYSICS_FIELDS,
+             spawn_rigid_body_physics_component,
+         ),
++        BuiltinComponent::new(
++            POINT_LIGHT_COMPONENT,
++            "Point Light",
++            "Finite-range omnidirectional light positioned by this entity's Transform.",
++            "Rendering",
++            1,
++            POINT_LIGHT_FIELDS,
++            spawn_point_light_component,
++        ),
++        BuiltinComponent::new(
++            SPOT_LIGHT_COMPONENT,
++            "Spot Light",
++            "Finite-range cone light positioned by this entity's Transform and aimed along local -Z.",
++            "Rendering",
++            1,
++            SPOT_LIGHT_FIELDS,
++            spawn_spot_light_component,
++        ),
+     ]
+ }
+diff --git a/crates/engine/src/lib.rs b/crates/engine/src/lib.rs
+--- a/crates/engine/src/lib.rs
++++ b/crates/engine/src/lib.rs
+@@ -95,2 +95,2 @@
+-/// Ambient and directional light resources.
++/// Ambient, directional, point, and spot light resources.
+ pub mod light;
+@@ -299,3 +299,5 @@
+ pub use inventory;
+-pub use light::{light_resource_mirror_system, AmbientLight, DirectionalLight, SkySettings};
++pub use light::{
++    light_resource_mirror_system, AmbientLight, DirectionalLight, PointLight, SkySettings, SpotLight,
++};
+ pub use lock_on::{lock_on_system, LockOnTarget, TargetLock};
+@@ -350,4 +352,5 @@
+ pub use render_limits::{
+     validate_scene_render_limits, MATERIAL_TEXTURE_SLOTS, MAX_AMBIENT_LIGHTS,
+-    MAX_DIRECTIONAL_LIGHTS, MAX_PARTICLES_PER_EMITTER, MAX_RENDER_INSTANCES, MAX_TEXTURE_DIMENSION,
++    MAX_DIRECTIONAL_LIGHTS, MAX_PARTICLES_PER_EMITTER, MAX_POINT_LIGHTS, MAX_RENDER_INSTANCES,
++    MAX_SPOT_LIGHTS, MAX_TEXTURE_DIMENSION,
+ };
+diff --git a/crates/render-runtime/src/shaders/mesh.wgsl b/crates/render-runtime/src/shaders/mesh.wgsl
+--- a/crates/render-runtime/src/shaders/mesh.wgsl
++++ b/crates/render-runtime/src/shaders/mesh.wgsl
+@@ -7,6 +7,19 @@
++struct PointLightData {
++    position_range: vec4<f32>,
++    color_intensity: vec4<f32>,
++}
++struct SpotLightData {
++    position_range: vec4<f32>,
++    direction_outer: vec4<f32>,
++    color_intensity: vec4<f32>,
++    params: vec4<f32>, // x=cos(inner angle)
++}
+ struct LightUniform {
+     ambient_color: vec3<f32>, ambient_intensity: f32,
+     dir_direction: vec3<f32>, dir_intensity: f32,
+     dir_color: vec3<f32>, _pad: f32,
++    counts: vec4<u32>, // x=point count, y=spot count
++    point_lights: array<PointLightData, 16>,
++    spot_lights: array<SpotLightData, 8>,
+ }
+ struct ShadowUniform {
+@@ -155,6 +168,16 @@
+-fn standard_lit(base: vec3<f32>, n: vec3<f32>, l: vec3<f32>, v: vec3<f32>, surface: vec4<f32>, visibility: f32, occlusion: f32) -> vec3<f32> {
++fn standard_direct(
++    base: vec3<f32>,
++    n: vec3<f32>,
++    l: vec3<f32>,
++    v: vec3<f32>,
++    surface: vec4<f32>,
++    radiance: vec3<f32>,
++    visibility: f32,
++) -> vec3<f32> {
++    let ndl = max(dot(n, l), 0.0);
++    if (ndl <= 0.0) { return vec3<f32>(0.0); }
+     let h = normalize(l + v);
+-    let ndl = max(dot(n, l), 0.0); let ndv = max(dot(n, v), 0.0001);
++    let ndv = max(dot(n, v), 0.0001);
+     let ndh = max(dot(n, h), 0.0); let vdh = max(dot(v, h), 0.0);
+     let roughness = clamp(surface.x, 0.04, 1.0); let metallic = clamp(surface.y, 0.0, 1.0);
+     let alpha = roughness * roughness; let alpha2 = alpha * alpha;
+@@ -166,7 +189,57 @@
+     let fresnel = f0 + (vec3<f32>(1.0) - f0) * pow(1.0 - vdh, 5.0);
+     let specular = distribution * geometry * fresnel / max(4.0 * ndv * ndl, 0.0001);
+     let diffuse_weight = (vec3<f32>(1.0) - fresnel) * (1.0 - metallic);
+-    let direct = (diffuse_weight * base / 3.14159265 + specular)
+-        * light.dir_color * light.dir_intensity * visibility * ndl;
++    return (diffuse_weight * base / 3.14159265 + specular) * radiance * visibility * ndl;
++}
++
++fn local_light_attenuation(distance: f32, range: f32) -> f32 {
++    if (distance >= range || range <= 0.0) { return 0.0; }
