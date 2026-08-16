@@ -1,7 +1,7 @@
 # Editor Visual Validation
 
 Status: Accepted
-Version: 1.2.0
+Version: 1.3.0
 Canonical location: `docs/EDITOR_VISUAL_VALIDATION.md`
 
 ## Purpose
@@ -70,8 +70,35 @@ sleep-based automation is used.
 
 This scenario validates the authoring window's deterministic startup state. A
 state that additionally requires a specific asset or document to be loaded
-still requires a separate explicit document scenario; opening an authoring tool
-alone is not evidence for document-dependent controls that are not visible yet.
+uses an explicit Editor scenario rather than relying on a diff-derived fixture.
+
+### Explicit Editor scenario
+
+A PR that needs a deterministic populated Editor state MAY add one explicit
+Editor scenario marker alongside an explicit `editor` or `both` target:
+
+```text
+<!-- gameengine-visual-validation: editor -->
+<!-- gameengine-visual-editor-scenario: behavior-tree -->
+```
+
+The trusted workflow accepts only named scenarios that it knows how to validate.
+Unknown values fail the context job. An Editor scenario cannot be combined with
+an authoring-tool scenario in one capture, because each scenario owns the
+window/document state that must be visible in the screenshot.
+
+The initial `behavior-tree` scenario installs the validation-only Behavior Tree
+live-debug fixture and renders the schema-driven Add Node catalog in the same
+frame. Its search is preset to `behavior`, so the screenshot exercises the
+normal case-insensitive schema search while retaining the semantic Behavior Tree
+category groups. The frame is intended to show the selected runner identity,
+active/running path, status/lifecycle presentation, search field, category
+headers, and node entries together.
+
+The capture script passes the resolved scenario only to the Editor child process
+through `GAMEENGINE_VISUAL_EDITOR_SCENARIO`. Normal Editor launches do not set or
+depend on this variable. The scenario is deterministic and does not use pointer
+coordinates, synthetic input, sleeps, or persisted validation-only project data.
 
 ## Trusted workflow boundary
 
@@ -85,8 +112,9 @@ trusted default branch. Before a Windows job is selected, the workflow requires:
 - one valid visual-validation marker; and
 - exact 40-character base and head commit SHAs from the pull request event.
 
-The optional authoring-tool scenario is also parsed inside this trusted context
-job before its value can reach the checked-out Editor process.
+Optional authoring-tool and Editor scenario markers are parsed inside this
+trusted context job before their bounded values can reach the checked-out Editor
+process.
 
 The Windows job checks out that exact head SHA with persisted Git credentials
 disabled. It may use the same trusted self-hosted Windows runner configuration
@@ -110,9 +138,11 @@ screenshot response is not returned, the validation-only process closes and the
 script reports a missing artifact instead of waiting indefinitely.
 
 When an authoring-tool scenario is requested, the same script additionally sets
-`GAMEENGINE_VISUAL_AUTHORING_TOOL` for the Editor child process only. The Editor
-resolves the label from its own catalog and marks the corresponding modeless
-window open before the screenshot frame is rendered.
+`GAMEENGINE_VISUAL_AUTHORING_TOOL` for the Editor child process only. When an
+explicit Editor scenario is requested, it instead sets
+`GAMEENGINE_VISUAL_EDITOR_SCENARIO`. The Editor resolves only the selected
+scenario before the screenshot frame is rendered, and the script restores both
+environment variables after the child exits.
 
 Launcher capture also keeps eframe's normal wgpu renderer. The capture script
 sets `GAMEENGINE_LAUNCHER_SCREENSHOT_TO` only for the validation invocation.
@@ -151,9 +181,9 @@ summary.json
 ```
 
 `summary.json` records the resolved target, project source, optional authoring
-tool scenario, screenshot byte size, SHA-256 digest, and generation timestamp.
-The PNG files are the visual evidence that ChatGPT or a human reviewer should
-inspect.
+tool or Editor scenario, screenshot byte size, SHA-256 digest, and generation
+timestamp. The PNG files are the visual evidence that ChatGPT or a human
+reviewer should inspect.
 
 A screenshot being generated successfully proves that the requested desktop
 application built, started, rendered a frame, and exported that frame. It does
@@ -162,16 +192,18 @@ only after the PNG is actually reviewed.
 
 ## Current scope and extensions
 
-Version 1.2 captures the deterministic initial Launcher or Editor window and can
-open one modeless authoring-tool window before an Editor screenshot. It is
-intended for shell layout, toolbar, startup-visible panels, authoring-window
-startup layout, typography, colors, clipping, spacing, and similar regressions.
+Version 1.3 captures the deterministic initial Launcher or Editor window, can
+open one modeless authoring-tool window, and supports the explicit
+`behavior-tree` populated Editor scenario. It is intended for shell layout,
+toolbar, startup-visible panels, authoring-window startup layout, deterministic
+scenario state, typography, colors, clipping, spacing, and similar regressions.
 
-UI states that require a specific document, populated tool state, or a sequence
-of inputs still need an explicit future visual scenario rather than hidden
-sleeps or coordinate-based automation. Such scenarios should keep the same
-principles: deterministic setup, an explicit opt-in request, exact-head
-execution, and screenshot artifacts that can be reviewed independently of the
-normal Rust validation result.
+Additional UI states that require a specific document, populated tool state, or
+a sequence of inputs must be added as explicit trusted scenarios rather than
+hidden sleeps, coordinate-based automation, or inference from whether a source
+file happens to differ from `main`. Such scenarios keep the same principles:
+deterministic setup, an explicit opt-in request, exact-head execution, and
+screenshot artifacts that can be reviewed independently of the normal Rust
+validation result.
 
 [`AuthoringTool`]: ../crates/editor/src/authoring_tools.rs
