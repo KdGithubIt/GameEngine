@@ -1,0 +1,118 @@
+diff --git a/docs/CHATGPT_AUTOMATION.md b/docs/CHATGPT_AUTOMATION.md
+--- a/docs/CHATGPT_AUTOMATION.md
++++ b/docs/CHATGPT_AUTOMATION.md
+@@ -1,7 +1,7 @@
+ # ChatGPT GitHub Automation
+ 
+ Status: Accepted
+-Version: 1.4.0
++Version: 1.4.1
+ Canonical location: `docs/CHATGPT_AUTOMATION.md`
+ 
+ ## Purpose
+@@ -105,7 +105,11 @@
+    captured target tree, then confirm that the patch contains only intended
+    paths and no symlink or submodule changes. Using plain `git apply --check`
+    is not equivalent because it can miss whitespace errors the dispatcher will
+-   reject.
++   reject. Applicability preflight MUST use an exact snapshot of the captured
++   target tree, or exact contiguous target-file ranges for every hunk when a
++   complete worktree is unavailable. Do not build a synthetic preflight tree by
++   joining unrelated source fragments with blank, placeholder, or filler lines;
++   that can validate patch context that does not exist on the remote target.
+ 6. Split the patch only for transport size. Publish every declared
+    `part-NNNN.patch` before publishing `ready.json`; never use `ready.json` as a
+    partial-progress marker.
+@@ -144,9 +144,11 @@
+   Re-read the target branch, regenerate the patch from that exact tree, and use
+   a new request ID. Never force-apply or reuse the stale request.
+ - If `git apply --check` rejects the reconstructed patch, treat the patch/tree
+-  mismatch as the primary problem. Reconstruct the patch from the current
+-  target files instead of editing product code merely to make old patch context
+-  apply.
++  mismatch as the primary problem. Verify that every hunk came from exact
++  contiguous content in the captured target tree; separated fragments joined
++  with synthetic filler are not a valid applicability preflight. Reconstruct
++  the patch from the current target files instead of editing product code merely
++  to make old patch context apply.
+ - If the dispatcher rejects a path, do not weaken the allow-list from the task
+   request. `.github/**` and `.chatgpt-requests/**` are trust-boundary paths and
+   require the separately reviewed automation-infrastructure workflow.
+diff --git a/docs/CHATGPT_AUTOMATION_INCIDENTS.md b/docs/CHATGPT_AUTOMATION_INCIDENTS.md
+--- a/docs/CHATGPT_AUTOMATION_INCIDENTS.md
++++ b/docs/CHATGPT_AUTOMATION_INCIDENTS.md
+@@ -42,6 +42,7 @@
+ 
+ ```text
+ INC-001  Markdown trailing whitespace rejected by patch preflight  Dispatcher  Resolved
++INC-002  Synthetic fragment preflight validated nonexistent context  Dispatcher  Resolved
+ ```
+ 
+ ## INC-001: Markdown trailing whitespace rejected by patch preflight
+@@ -94,6 +95,66 @@
+ - Workflow run: `31920548068`
+ - Commit: N/A; target branch was not changed
+ 
++## INC-002: Synthetic fragment preflight validated nonexistent patch context
++
++Status: Resolved
++Layer: Dispatcher / patch applicability
++First confirmed: 2026-08-16
++Last confirmed: 2026-08-16
++
++### Symptom
++
++Request `adr0112-pmx-joint-diagnostics-20260816-22` passed ready-marker signal,
++request-envelope validation, and target checkout, then failed in
++`Reconstruct and validate patch` because `git apply --check` could not apply the
++patch to the declared target HEAD.
++
++### Evidence
++
++- Dispatcher run `31928677650`, job `95120141349`, reported
++  `patch failed: crates/import/src/pmx_import.rs` and
++  `git apply --check rejected the patch.`
++- The producer's earlier whitespace-strict preflight had passed, but it ran
++  against a synthetic file assembled from separately fetched source fragments
++  with blank filler between them rather than the exact target file.
++- The failing hunk therefore contained context adjacency created by that
++  synthetic layout and absent from the target branch.
++- Corrected request `adr0112-pmx-joint-diagnostics-20260816-23` regenerated the
++  patch from exact contiguous target context. Dispatcher run `31928914736`
++  passed `Reconstruct and validate patch`, applied the patch, and created commit
++  `0b966e71ac64e6f64b6cd2be73bff3cca219649b` on Draft PR #28.
++
++### Root cause
++
++The producer validated applicability against a fabricated preflight tree instead
++of the captured target tree. Although the fragments came from the target branch,
++joining non-contiguous fragments with filler changed their adjacency. Git
++therefore validated a different file layout from the trusted dispatcher.
++
++### Resolution
++
++Abandon the failed request, re-read the current target HEAD, and regenerate a
++new immutable request whose hunk context comes from exact contiguous target
++content. The corrected request passed the dispatcher's reconstruction and
++applicability checks before commit and push.
++
++### Prevention / ChatGPT next action
++
++Never treat a fragment-and-filler synthetic file as proof that a dispatcher
++patch applies. Preflight against a complete exact target snapshot when
++available; otherwise ensure every hunk's context comes from one contiguous
++range of the captured target file and verify the transported patch blob before
++publishing `ready.json`.
++
++### References
++
++- Request: `adr0112-pmx-joint-diagnostics-20260816-22`
++- PR: #28
++- Workflow run: `31928677650`
++- Corrected request: `adr0112-pmx-joint-diagnostics-20260816-23`
++- Corrected dispatcher run: `31928914736`
++- Commit: `0b966e71ac64e6f64b6cd2be73bff3cca219649b`
++
+ ## Entry template
+ 
+ Copy this section for a materially new root cause. Incident IDs are monotonic
