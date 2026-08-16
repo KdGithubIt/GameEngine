@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0131-clippy-74332f0-r9",
+  "target_branch": "chatgpt/gameengine-adr0131-ai-studio-impl-v11",
+  "expected_head_sha": "74332f0d57a03e45cca6d882c40b6c9e8029f0e3",
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Fix ADR 0131 Editor Clippy warnings",
+  "pr_title": "GameEngine: implement ADR 0131 conversational AI Studio foundation",
+  "pr_body": "## Summary\n\n- implement the ADR 0131 conversational AI Studio foundation on the current main baseline\n- preserve the established foundation behavior while fixing the Editor Clippy findings from affected Windows Validation\n- remove two unused imports and collapse four nested conditional forms without changing runtime behavior\n\n## Validation\n\n- Windows affected validation for engine-editor\n- Editor visual validation\n\n<!-- gameengine-visual-validation: editor -->"
+}
