@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0110-ui-helper-20260816",
+  "target_branch": "chatgpt/gameengine-adr-0110-humanoid-motion",
+  "expected_head_sha": "74e2df906d27c11612c3b735dd3cfee7490b5393",
+  "patch_parts": ["part-0000.patch"],
+  "commit_message": "Add typed Animation Set source choices",
+  "pr_title": "ADR 0110: implement humanoid animation sources",
+  "pr_body": "Implements ADR 0110. Adds modular Animation Set UI helpers for explicit Auto, Native, and Humanoid stable motion source choices. PR remains Draft; merge to main is manual."
+}
