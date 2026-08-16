@@ -41,11 +41,12 @@ required by `docs/CHATGPT_AUTOMATION.md`.
 ## Incident index
 
 ```text
-INC-001  Markdown trailing whitespace rejected by patch preflight  Dispatcher  Resolved
-INC-002  Unified-diff old coordinates drifted from target tree     Dispatcher  Resolved
-INC-003  Published patch bytes differed from preflight artifact    Transport   Resolved
-INC-004  Main advanced after task baseline and polluted validation  Validation  Resolved
-INC-005  Patch headers included checkout-directory prefix           Dispatcher  Resolved
+INC-001  Markdown trailing whitespace rejected by patch preflight  Dispatcher         Resolved
+INC-002  Unified-diff old coordinates drifted from target tree     Dispatcher         Resolved
+INC-003  Published patch bytes differed from preflight artifact    Transport          Resolved
+INC-004  Main advanced after task baseline and polluted validation  Validation         Resolved
+INC-005  Patch headers included checkout-directory prefix           Dispatcher         Resolved
+INC-006  eframe screenshot helper incompatible with default wgpu    Visual validation  Resolved
 ```
 
 ## INC-001: Markdown trailing whitespace rejected by patch preflight
@@ -365,6 +366,83 @@ context.
 - Successful Dispatcher run: `31926476659`
 - Validation run: `31926484133`
 - Commit: `7ce7997042802368886d8fe2db26ce7be98ed1af`
+
+## INC-006: eframe screenshot helper incompatible with default wgpu
+
+Status: Resolved
+Layer: Visual validation
+First confirmed: 2026-08-16
+Last confirmed: 2026-08-16
+
+### Symptom
+
+ADR 0112 Draft PR #28 requested Editor visual validation, but the capture job
+built the Editor and then panicked before any screenshot was produced.
+
+### Evidence
+
+- Visual Validation run `31930038159` reached the Editor capture invocation and
+  panicked in eframe 0.34.3's native wgpu integration with
+  `EFRAME_SCREENSHOT_TO not yet implemented for wgpu backend`.
+- No PNG was generated, so the failing workflow could not establish visual
+  correctness for PR #28.
+- A first infrastructure-only Glow attempt in Draft PR #45 was not a valid
+  resolution: Visual Validation run `31930753037` was rejected by Cargo because
+  enabling Glow changed dependency resolution while the capture command uses
+  `--locked`.
+- Commit `ac8e755e1031b180f924d8a61a0e054f38350972` kept the default wgpu
+  renderer and moved Editor capture to egui's normal screenshot command/event
+  path. Visual Validation run `31930981030` then completed successfully and
+  uploaded artifact `9259315213` containing a non-empty `editor.png`.
+- Final commit `ff2254a12648db7d91d0a27526d529f5fe94fcd7` also bounded a missing
+  screenshot response so the validation-only process cannot wait indefinitely.
+  Visual Validation run `31931147173` completed successfully and artifact
+  `9259358605` contained `editor.png` with SHA-256
+  `574200f7ef80e07331f454b38a6f032d4668790001533b7dd06ca56950e5b030`.
+- ChatGPT retrieved and visually inspected the successful screenshots. The
+  Editor startup layout showed no clipping, overlap, broken spacing, missing
+  panels, or obvious color/background regression.
+
+### Root cause
+
+The visual harness treated eframe's `__screenshot` /
+`EFRAME_SCREENSHOT_TO` helper as renderer-independent. eframe 0.34 uses wgpu as
+the default native renderer, while the helper path used by the harness is not
+implemented by eframe 0.34.3's native wgpu integration. The validation contract
+therefore depended on an example/helper capture mechanism that did not support
+the renderer used by the actual Editor.
+
+### Resolution
+
+Keep the normal Editor renderer and Cargo dependency graph unchanged. The
+Editor `visual-validation` feature is now application-owned: the script passes
+`GAMEENGINE_SCREENSHOT_TO`, the Editor requests a frame with egui
+`ViewportCommand::Screenshot`, receives `Event::Screenshot`, writes the image
+with its existing PNG encoder, and closes. A bounded capture timeout turns a
+missing response into an explicit failed artifact instead of a hanging job.
+
+This resolution was validated by successful Visual Validation runs
+`31930981030` and `31931147173` and by direct review of their PNG artifacts.
+
+### Prevention / ChatGPT next action
+
+Do not use `EFRAME_SCREENSHOT_TO` for Editor capture while the native Editor uses
+wgpu. Prefer egui's renderer-independent screenshot command/event path and keep
+capture-only behavior dependency-neutral so `cargo --locked` remains valid.
+Always inspect the produced PNG before reporting Visual Validation PASS. The
+Launcher still uses a separate capture path and must not be reported fixed or
+visually validated by this Editor-only incident.
+
+### References
+
+- Request: N/A; trusted visual-validation infrastructure change
+- Blocked product PR: `#28`
+- Infrastructure PR: `#45`
+- Failed Visual Validation run: `31930038159`
+- Unsuccessful Glow-attempt run: `31930753037`
+- Successful Visual Validation runs: `31930981030`, `31931147173`
+- Successful artifacts: `9259315213`, `9259358605`
+- Commit: `ff2254a12648db7d91d0a27526d529f5fe94fcd7`
 
 ## Entry template
 
