@@ -2015,7 +2015,7 @@ impl WorldRenderer {
         world: &mut engine_ecs::World,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        _camera_position: glam::Vec3,
+        camera_position: glam::Vec3,
     ) -> Vec<StaticBatch> {
         use crate::asset::Handle;
         use engine_ecs::{Query, Without};

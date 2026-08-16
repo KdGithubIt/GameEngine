@@ -480,8 +480,8 @@ impl VfxPlayer {
         let mut output = Vec::new();
         for emitter in self.instance.emitters() {
             for operation in emitter.render_operations() {
-                let VfxModuleOperation::Billboard { texture_sheet, .. }
-                | VfxModuleOperation::Mesh { texture_sheet, .. } = &operation.operation
+                let (VfxModuleOperation::Billboard { texture_sheet, .. }
+                | VfxModuleOperation::Mesh { texture_sheet, .. }) = &operation.operation
                 else {
                     continue;
                 };
