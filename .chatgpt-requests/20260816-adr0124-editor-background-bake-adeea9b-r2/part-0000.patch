@@ -1,0 +1,453 @@
+diff --git a/crates/editor/src/ui/navigation_workspace.rs b/crates/editor/src/ui/navigation_workspace.rs
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/crates/editor/src/ui/navigation_workspace.rs
+@@ -0,0 +1,160 @@
++//! Non-blocking Editor workflow for the shared production navigation bake service.
++
++use crate::navmesh_bake::{
++    bake_scene_navmesh, NavMeshBakeDocument, NavMeshBakeError, NavMeshBakeResult,
++    NavigationBakeServiceError,
++};
++use crate::workspace::WorkspaceTabId;
++use engine::AssetManifest;
++use engine_authoring::{replace_file_contents, AuthoringScene, ProjectRoot};
++use std::path::PathBuf;
++use std::sync::atomic::{AtomicBool, Ordering};
++use std::sync::mpsc::{self, Receiver};
++use std::sync::Arc;
++use std::thread;
++
++pub(super) enum NavigationBakeCompletion {
++    Succeeded {
++        tab_id: WorkspaceTabId,
++        project: ProjectRoot,
++        manifest: AssetManifest,
++        result: NavMeshBakeResult,
++    },
++    Cancelled {
++        tab_id: WorkspaceTabId,
++    },
++    Failed {
++        tab_id: WorkspaceTabId,
++        error: String,
++    },
++}
++
++pub(super) struct NavigationBakeManager {
++    receiver: Option<Receiver<NavigationBakeCompletion>>,
++    cancelled: Option<Arc<AtomicBool>>,
++    cancel_requested: bool,
++}
++
++impl Default for NavigationBakeManager {
++    fn default() -> Self {
++        Self {
++            receiver: None,
++            cancelled: None,
++            cancel_requested: false,
++        }
++    }
++}
++
++impl NavigationBakeManager {
++    pub(super) fn is_running(&self) -> bool {
++        self.receiver.is_some()
++    }
++
++    pub(super) fn is_cancelling(&self) -> bool {
++        self.is_running() && self.cancel_requested
++    }
++
++    pub(super) fn start(
++        &mut self,
++        tab_id: WorkspaceTabId,
++        scene: AuthoringScene,
++        project: ProjectRoot,
++        manifest: AssetManifest,
++        document: NavMeshBakeDocument,
++        document_path: PathBuf,
++    ) -> Result<(), &'static str> {
++        if self.is_running() {
++            return Err("a navigation bake is already running");
++        }
++        let cancelled = Arc::new(AtomicBool::new(false));
++        let worker_cancelled = Arc::clone(&cancelled);
++        let (sender, receiver) = mpsc::channel();
++        self.receiver = Some(receiver);
++        self.cancelled = Some(cancelled);
++        self.cancel_requested = false;
++        thread::spawn(move || {
++            let completion = run_navigation_bake(
++                tab_id,
++                scene,
++                project,
++                manifest,
++                document,
++                document_path,
++                &worker_cancelled,
++            );
++            let _ = sender.send(completion);
++        });
++        Ok(())
++    }
++
++    pub(super) fn poll(&mut self) -> Option<NavigationBakeCompletion> {
++        let completion = self.receiver.as_ref()?.try_recv().ok()?;
++        self.receiver = None;
++        self.cancelled = None;
++        self.cancel_requested = false;
++        Some(completion)
++    }
++
++    pub(super) fn cancel(&mut self) -> bool {
++        let Some(cancelled) = &self.cancelled else {
++            return false;
++        };
++        cancelled.store(true, Ordering::Relaxed);
++        self.cancel_requested = true;
++        true
++    }
++
++    pub(super) fn clear(&mut self) {
++        let _ = self.cancel();
++        self.receiver = None;
++        self.cancelled = None;
++        self.cancel_requested = false;
++    }
++}
++
++fn run_navigation_bake(
++    tab_id: WorkspaceTabId,
++    scene: AuthoringScene,
++    project: ProjectRoot,
++    mut manifest: AssetManifest,
++    mut document: NavMeshBakeDocument,
++    document_path: PathBuf,
++    cancelled: &AtomicBool,
++) -> NavigationBakeCompletion {
++    let result = match bake_scene_navmesh(
++        &scene,
++        &project,
++        &mut manifest,
++        &mut document,
++        cancelled,
++    ) {
++        Ok(result) => result,
++        Err(NavMeshBakeError::Shared(NavigationBakeServiceError::Cancelled)) => {
++            return NavigationBakeCompletion::Cancelled { tab_id };
++        }
++        Err(error) => {
++            return NavigationBakeCompletion::Failed {
++                tab_id,
++                error: error.to_string(),
++            };
++        }
++    };
++    let persist_result = document
++        .to_canonical_json()
++        .map_err(|error| error.to_string())
++        .and_then(|json| {
++            if let Some(parent) = document_path.parent() {
++                std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
++            }
++            replace_file_contents(&document_path, &json).map_err(|error| error.to_string())
++        });
++    if let Err(error) = persist_result {
++        return NavigationBakeCompletion::Failed { tab_id, error };
++    }
++    NavigationBakeCompletion::Succeeded {
++        tab_id,
++        project,
++        manifest,
++        result,
++    }
++}
+diff --git a/crates/editor/src/workspace.rs b/crates/editor/src/workspace.rs
+--- a/crates/editor/src/workspace.rs
++++ b/crates/editor/src/workspace.rs
+@@ -78,6 +78,10 @@ impl DocumentWorkspace {
+         self.tabs.iter().any(|tab| tab.id == id)
+     }
+ 
++    pub(crate) fn tab_session_mut(&mut self, id: WorkspaceTabId) -> Option<&mut EditorSession> {
++        self.tabs.iter_mut().find(|tab| tab.id == id).map(|tab| &mut tab.session)
++    }
++
+     pub(crate) fn summaries(&self) -> Vec<WorkspaceTabSummary> {
+         self.tabs
+             .iter()
+diff --git a/crates/editor/src/ui/mod.rs b/crates/editor/src/ui/mod.rs
+--- a/crates/editor/src/ui/mod.rs
++++ b/crates/editor/src/ui/mod.rs
+@@ -56,6 +56,7 @@ mod game_tools;
+ mod hierarchy;
+ mod inspector;
+ mod mcp;
++mod navigation_workspace;
+ mod play;
+ mod presentation;
+ mod viewport;
+@@ -89,5 +90,6 @@ use game_tools::*;
+ use hierarchy::*;
+ use inspector::*;
++use navigation_workspace::*;
+ use play::*;
+ use presentation::*;
+ 
+@@ -272,5 +274,7 @@ pub struct EditorApp {
+     game_build_problems: Vec<engine_authoring::Diagnostic>,
+     /// Background Cargo process and completion channel for project Rust code.
+     game_build: GameBuildManager,
++    /// Background production navigation bake and cancellation channel.
++    navigation_bake: NavigationBakeManager,
+     /// Latest successfully loaded project game-module generation.
+     game_module: Option<Arc<engine::game_module::GameModule>>,
+@@ -455,5 +459,6 @@ impl EditorApp {
+             asset_import_problems: Vec::new(),
+             game_build_problems: Vec::new(),
+             game_build: GameBuildManager::default(),
++            navigation_bake: NavigationBakeManager::default(),
+             game_module: None,
+             play_after_game_build: false,
+@@ -510,5 +515,6 @@ impl EditorApp {
+         self.pending_material_saves.clear();
+         self.material_texture_choices_cache = None;
+         let _ = self.asset_import.cancel();
++        self.navigation_bake.clear();
+         self.asset_import_problems.clear();
+         self.game_build_problems.clear();
+@@ -668,6 +674,12 @@ impl eframe::App for EditorApp {
+         if let Some(result) = self.game_build.poll() {
+             self.handle_game_build_result(result);
+         }
++        if self.navigation_bake.is_running() {
++            ctx.request_repaint_after(std::time::Duration::from_millis(50));
++        }
++        if let Some(completion) = self.navigation_bake.poll() {
++            self.handle_navigation_bake_completion(completion);
++        }
+         self.poll_coalesced_game_build(ctx);
+         self.poll_project_filesystem(ctx);
+         self.poll_scene_filesystem_validation(ctx);
+diff --git a/crates/editor/src/ui/game_tools.rs b/crates/editor/src/ui/game_tools.rs
+--- a/crates/editor/src/ui/game_tools.rs
++++ b/crates/editor/src/ui/game_tools.rs
+@@ -478,9 +478,13 @@ impl EditorApp {
+     pub(super) fn bake_current_navmesh(&mut self) {
++        if self.navigation_bake.is_running() {
++            return;
++        }
+         let (Some(project), Some(scene)) =
+             (self.project_root.clone(), self.session.scene().cloned())
+         else {
+             return;
+         };
++        let tab_id = self.session.active_tab_id();
+         let scene_stem = self
+             .session
+             .current_document_path()
+@@ -496,55 +510,79 @@ impl EditorApp {
+             .assets_root()
+             .join("navigation")
+             .join(format!("{scene_stem}.navmesh.bake.json"));
+-        let mut document = std::fs::read_to_string(&document_path)
++        let document = std::fs::read_to_string(&document_path)
+             .ok()
+             .and_then(|json| crate::navmesh_bake::NavMeshBakeDocument::from_json(&json).ok())
+             .unwrap_or_else(|| crate::navmesh_bake::NavMeshBakeDocument {
+                 output_asset: format!("navigation/{scene_stem}.navmesh.json"),
+                 ..crate::navmesh_bake::NavMeshBakeDocument::default()
+             });
+-        let cancelled = std::sync::atomic::AtomicBool::new(false);
+-        match crate::navmesh_bake::bake_scene_navmesh(
+-            &scene,
+-            &project,
+-            &mut self.asset_manifest,
+-            &mut document,
+-            &cancelled,
+-        ) {
+-            Ok(result) => {
+-                if let Some(parent) = document_path.parent() {
+-                    let _ = std::fs::create_dir_all(parent);
+-                }
+-                match document.to_canonical_json().and_then(|json| {
+-                    std::fs::write(&document_path, json).map_err(|error| {
+-                        crate::navmesh_bake::NavMeshBakeError::Persist(error.to_string())
+-                    })
+-                }) {
+-                    Ok(()) => {}
+-                    Err(error) => {
+-                        self.session
+-                            .push_diagnostic(engine_authoring::Diagnostic::warning(
+-                                "editor.navmesh_bake_document_failed",
+-                                error.to_string(),
+-                            ))
+-                    }
+-                }
+-
++        match self.navigation_bake.start(
++            tab_id,
++            scene,
++            project,
++            self.asset_manifest.clone(),
++            document,
++            document_path,
++        ) {
++            Ok(()) => self
++                .session
++                .push_diagnostic(engine_authoring::Diagnostic::info(
++                    "editor.navmesh_bake_started",
++                    "navigation bake started in the background",
++                )),
++            Err(error) => self
++                .session
++                .push_diagnostic(engine_authoring::Diagnostic::error(
++                    "editor.navmesh_bake_start_failed",
++                    error,
++                )),
++        }
++    }
++
++    pub(super) fn cancel_current_navmesh_bake(&mut self) {
++        if self.navigation_bake.cancel() {
++            self.session
++                .push_diagnostic(engine_authoring::Diagnostic::info(
++                    "editor.navmesh_bake_cancelling",
++                    "navigation bake cancellation requested",
++                ));
++        }
++    }
++
++    pub(super) fn handle_navigation_bake_completion(
++        &mut self,
++        completion: NavigationBakeCompletion,
++    ) {
++        match completion {
++            NavigationBakeCompletion::Succeeded {
++                tab_id,
++                project,
++                manifest,
++                result,
++            } => {
++                self.asset_manifest = manifest;
+                 let component_type = engine_authoring::ComponentTypeId::new(
+                     engine::scene_bridge::NAV_MESH_SURFACE_COMPONENT,
+                 );
+-                let existing_surface = self.session.scene().and_then(|scene| {
++                let Some(session) = self.session.tab_session_mut(tab_id) else {
++                    self.session.push_diagnostic(engine_authoring::Diagnostic::warning(
++                        "editor.navmesh_bake_tab_closed",
++                        "navigation bake completed after its source scene tab was closed",
++                    ));
++                    return;
++                };
++                let existing_surface = session.scene().and_then(|scene| {
+                     scene
+                         .entities()
+                         .find(|(_, entity)| entity.components.contains_key(&component_type))
+                         .map(|(id, _)| id.clone())
+                 });
+                 if existing_surface.is_none() {
+-                    let added = self
+-                        .session
++                    let added = session
+                         .create_scene_entity("navmesh_surface")
+                         .and_then(|entity| {
+-                            self.session.add_scene_component(
++                            session.add_scene_component(
+                                 entity,
+                                 component_type,
+                                 engine_authoring::Value::Object(std::collections::BTreeMap::from(
+@@ -576,26 +590,44 @@ impl EditorApp {
+                             )
+                         });
+                     if let Err(error) = added {
+-                        self.session
+-                            .push_diagnostic(engine_authoring::Diagnostic::warning(
+-                                "editor.navmesh_surface_add_failed",
+-                                error.to_string(),
+-                            ));
++                        session.push_diagnostic(engine_authoring::Diagnostic::warning(
++                            "editor.navmesh_surface_add_failed",
++                            error.to_string(),
++                        ));
+                     }
+                 }
+                 self.asset_browser.refresh(&project.assets_root());
+-                self.session
+-                    .push_diagnostic(engine_authoring::Diagnostic::info(
+-                        "editor.navmesh_bake_succeeded",
+-                        format!("baked NavMesh to {}", result.output_path.display()),
+-                    ));
++                session.push_diagnostic(engine_authoring::Diagnostic::info(
++                    "editor.navmesh_bake_succeeded",
++                    format!(
++                        "baked NavMesh to {} ({} profiles, {} tiles, {} polygons, {} links)",
++                        result.output_path.display(),
++                        result.stats.profile_count,
++                        result.stats.tile_count,
++                        result.stats.polygon_count,
++                        result.stats.link_count
++                    ),
++                ));
+             }
+-            Err(error) => self
+-                .session
+-                .push_diagnostic(engine_authoring::Diagnostic::error(
++            NavigationBakeCompletion::Cancelled { tab_id } => {
++                if let Some(session) = self.session.tab_session_mut(tab_id) {
++                    session.push_diagnostic(engine_authoring::Diagnostic::info(
++                        "editor.navmesh_bake_cancelled",
++                        "navigation bake cancelled; the previous valid artifact was preserved",
++                    ));
++                }
++            }
++            NavigationBakeCompletion::Failed { tab_id, error } => {
++                let diagnostic = engine_authoring::Diagnostic::error(
+                     "editor.navmesh_bake_failed",
+-                    error.to_string(),
+-                )),
++                    error,
++                );
++                if let Some(session) = self.session.tab_session_mut(tab_id) {
++                    session.push_diagnostic(diagnostic);
++                } else {
++                    self.session.push_diagnostic(diagnostic);
++                }
++            }
+         }
+     }
+ 
+ diff --git a/crates/editor/src/ui/chrome.rs b/crates/editor/src/ui/chrome.rs
+--- a/crates/editor/src/ui/chrome.rs
++++ b/crates/editor/src/ui/chrome.rs
+@@ -430,13 +430,26 @@ impl EditorApp {
+                 }
+                 if ui
+                     .add_enabled(
+-                        self.session.scene().is_some() && !self.is_playing(),
++                        self.session.scene().is_some()
++                            && !self.is_playing()
++                            && !self.navigation_bake.is_running(),
+                         egui::Button::new("Bake NavMesh"),
+                     )
+                     .clicked()
+                 {
+                     self.bake_current_navmesh();
+                     ui.close();
+                 }
++                if self.navigation_bake.is_running()
++                    && ui
++                        .add_enabled(
++                            !self.navigation_bake.is_cancelling(),
++                            egui::Button::new("Cancel NavMesh Bake"),
++                        )
++                        .clicked()
++                {
++                    self.cancel_current_navmesh_bake();
++                    ui.close();
++                }
+             });
+             ui.menu_button("Build", |ui| {
