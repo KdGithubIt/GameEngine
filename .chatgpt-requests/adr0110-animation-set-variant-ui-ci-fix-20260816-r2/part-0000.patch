@@ -1,0 +1,34 @@
+diff --git a/crates/editor/src/session/undo.rs b/crates/editor/src/session/undo.rs
+--- a/crates/editor/src/session/undo.rs
++++ b/crates/editor/src/session/undo.rs
+@@ -9,6 +9,5 @@
+ use engine_authoring::{AuthoringSession, Graph, GraphView, UiDocument};
+ 
+ /// Maximum number of retained undo snapshots (ADR 0018).
+-
+ const UNDO_LIMIT: usize = 100;
+ 
+ /// One snapshot entry in the session undo/redo history.
+diff --git a/crates/editor/src/session/scene_entities.rs b/crates/editor/src/session/scene_entities.rs
+--- a/crates/editor/src/session/scene_entities.rs
++++ b/crates/editor/src/session/scene_entities.rs
+@@ -278,6 +278,5 @@
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+-    use std::collections::BTreeMap;
+ 
+     #[test]
+     fn scene_entity_create_delete_and_undo_redo_use_authoring_session() {
+diff --git a/crates/editor/src/ui/tests.rs b/crates/editor/src/ui/tests.rs
+--- a/crates/editor/src/ui/tests.rs
++++ b/crates/editor/src/ui/tests.rs
+@@ -1705,7 +1705,7 @@
+     let motion_source = AssetId::generate();
+     let primary_clip = AssetId::derive(&motion_source, "animation:0");
+     let overlay_clip = AssetId::derive(&motion_source, "animation:1");
+-    let humanoid_motion = engine::imported_humanoid_motion_sub_asset_id(&primary_clip);
++    let humanoid_motion = engine::asset::imported_humanoid_motion_sub_asset_id(&primary_clip);
+ 
+     let mut manifest = engine::AssetManifest::default();
+     manifest.insert(
