@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "request_id": "20260816-inc002-adr0131-r1",
+  "target_branch": "chatgpt/gameengine-inc002-adr0131-recurrence",
+  "expected_head_sha": "095229624db5f72cbf581896e3fa7ba0c19e7341",
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Record ADR 0131 INC-002 recurrence",
+  "pr_title": "Automation: record ADR 0131 INC-002 recurrence",
+  "pr_body": "## Summary\n\n- record the ADR 0131 managed-validation r2 dispatcher failure as another confirmed INC-002 recurrence\n- record the exact-target r3 request, successful dispatcher recovery, PR #88, and recovery commit\n- keep the incident root cause and prevention guidance unchanged because this is the existing synthetic/stitched preflight class\n\n## Validation\n\nDocumentation-only operational record update; expected Windows Validation mode: docs."
+}
