@@ -7,7 +7,8 @@ use engine_authoring::{
 use engine_mcp::{
     AssetInspectInput, AssetMcpTools, AssetSearchInput, BehaviorTreeApplyInput,
     BehaviorTreeGraphInput, BehaviorTreeMcpTools, EntityFindInput, EntityInspectInput,
-    McpToolError, SceneMcpTools, SceneMutationInput,
+    McpToolError, PrefabCreateInput, PrefabInstantiateInput, PrefabMcpTools, SceneMcpTools,
+    SceneMutationInput,
 };
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -84,6 +85,7 @@ impl EditorApp {
         let permissions = mcp_authoring_permissions();
         let scene_tools = SceneMcpTools::new();
         let asset_tools = AssetMcpTools::new();
+        let prefab_tools = PrefabMcpTools::new();
         let behavior_tools = BehaviorTreeMcpTools::new();
 
         match name {
@@ -151,6 +153,50 @@ impl EditorApp {
                     &permissions,
                     input,
                 )?)
+            }
+            "prefab.create" => {
+                let input: PrefabCreateInput = decode(arguments)?;
+                let project = self.project_root().clone();
+                let scene = self.scene_authoring_session()?.scene().clone();
+                let creation = prefab_tools.prefab_create(
+                    &project,
+                    &mut self.asset_manifest,
+                    &permissions,
+                    &scene,
+                    input,
+                )?;
+                self.asset_browser.refresh(&project.assets_root());
+                to_value(creation)
+            }
+            "prefab.preview" => {
+                let input: PrefabInstantiateInput = decode(arguments)?;
+                let project = self.project_root().clone();
+                let session = self.scene_authoring_session()?;
+                to_value(prefab_tools.prefab_preview(
+                    &project,
+                    session,
+                    &permissions,
+                    input,
+                )?)
+            }
+            "prefab.instantiate" => {
+                let input: PrefabInstantiateInput = decode(arguments)?;
+                let project = self.project_root().clone();
+                let mutation = {
+                    let session = self.scene_authoring_session_mut()?;
+                    prefab_tools.prefab_instantiate(
+                        &project,
+                        session,
+                        &permissions,
+                        input,
+                    )?
+                };
+                self.session
+                    .extend_diagnostics(mutation.mutation.diagnostics.iter().cloned());
+                if mutation.mutation.success {
+                    self.session.finish_external_scene_mutation();
+                }
+                to_value(mutation)
             }
             "behavior_tree.schemas" => {
                 require_empty_arguments(arguments)?;
@@ -220,6 +266,7 @@ fn mcp_authoring_permissions() -> AuthoringPermissions {
     AuthoringPermissions::read_only()
         .with(AuthoringPermission::Preview)
         .with(AuthoringPermission::ProjectDataWrite)
+        .with(AuthoringPermission::AssetWrite)
 }
 
 fn require_empty_arguments(arguments: Value) -> Result<(), EditorMcpCallFailure> {

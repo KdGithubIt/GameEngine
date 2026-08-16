@@ -8,14 +8,15 @@
 use crate::session::{EditorSession, EditorSessionError};
 use engine_authoring::{
     replace_file_contents, AuthoringCommand, AuthoringEntity, AuthoringScene, ComponentTypeId,
-    EntityId, PersistError, PrefabAsset, PrefabError, Value,
+    AuthoringPermission, AuthoringPermissions, EntityId, PersistError, PrefabAsset,
+    PrefabAuthoringError, PrefabAuthoringService, PrefabError, SceneAuthoringService, Value,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
 
 /// Editor-only component that records the source asset of a prefab instance.
-pub const EDITOR_PREFAB_INSTANCE_COMPONENT: &str = "editor.prefab_instance";
+pub const EDITOR_PREFAB_INSTANCE_COMPONENT: &str = engine_authoring::PREFAB_INSTANCE_COMPONENT;
 
 /// Read-only information shown for a selected prefab instance root.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,6 +34,8 @@ pub struct PrefabInstanceInfo {
 pub enum PrefabWorkflowError {
     /// No scene is open or an authoring transaction failed.
     Session(EditorSessionError),
+    /// Shared prefab authoring semantics rejected an instantiation.
+    Authoring(PrefabAuthoringError),
     /// Prefab structure or JSON was invalid.
     Prefab(PrefabError),
     /// Source or destination IO failed.
@@ -53,6 +56,7 @@ impl fmt::Display for PrefabWorkflowError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Session(error) => write!(formatter, "prefab scene transaction failed: {error}"),
+            Self::Authoring(error) => write!(formatter, "prefab authoring failed: {error}"),
             Self::Prefab(error) => write!(formatter, "prefab asset is invalid: {error}"),
             Self::Io(error) => write!(formatter, "prefab IO failed: {error}"),
             Self::Persist(error) => write!(formatter, "prefab persistence failed: {error}"),
@@ -77,6 +81,11 @@ impl std::error::Error for PrefabWorkflowError {}
 impl From<EditorSessionError> for PrefabWorkflowError {
     fn from(value: EditorSessionError) -> Self {
         Self::Session(value)
+    }
+}
+impl From<PrefabAuthoringError> for PrefabWorkflowError {
+    fn from(value: PrefabAuthoringError) -> Self {
+        Self::Authoring(value)
     }
 }
 impl From<PrefabError> for PrefabWorkflowError {
@@ -111,14 +120,36 @@ pub fn instantiate_prefab(
     parent: Option<EntityId>,
 ) -> Result<EntityId, PrefabWorkflowError> {
     let prefab = load_prefab(source)?;
-    let mut instance = prefab.instantiate_with_root(parent)?;
-    instance.commands.push(AuthoringCommand::AddComponent {
-        entity: instance.root.clone(),
-        component_type: ComponentTypeId::new(EDITOR_PREFAB_INSTANCE_COMPONENT),
-        value: marker_value(source),
-    });
-    session.apply_scene_commands(instance.commands)?;
-    Ok(instance.root)
+    let permissions =
+        AuthoringPermissions::read_only().with(AuthoringPermission::ProjectDataWrite);
+    let base = {
+        let authoring = session
+            .scene_authoring_session()
+            .ok_or(EditorSessionError::NoSceneDocument)?;
+        SceneAuthoringService::new()
+            .inspect(authoring, &permissions)
+            .map_err(PrefabAuthoringError::from)?
+    };
+    let result = {
+        let authoring = session
+            .scene_authoring_session_mut()
+            .ok_or(EditorSessionError::NoSceneDocument)?;
+        PrefabAuthoringService::new().apply_instantiation(
+            authoring,
+            &permissions,
+            &prefab,
+            source,
+            parent,
+            base.revision,
+            base.generation,
+        )?
+    };
+    session.extend_diagnostics(result.mutation.diagnostics.iter().cloned());
+    if !result.mutation.success {
+        return Err(EditorSessionError::Diagnostics.into());
+    }
+    session.finish_external_scene_mutation();
+    Ok(result.proposed_root)
 }
 
 /// Returns source validity and a recovery diagnostic for an instance root.
