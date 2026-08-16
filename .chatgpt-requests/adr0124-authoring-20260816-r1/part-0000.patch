@@ -1,0 +1,208 @@
+diff --git a/crates/engine/src/components/builtins.rs b/crates/engine/src/components/builtins.rs
+--- a/crates/engine/src/components/builtins.rs
++++ b/crates/engine/src/components/builtins.rs
+@@ -1057,6 +1057,13 @@ const HAS_NAV_TARGET: InspectorFieldCondition = InspectorFieldCondition::Bool {
+ };
+
+ const NAV_MESH_AGENT_FIELDS: &[FieldDef] = &[
++    FieldDef::new(
++        "profile_id",
++        "Agent Profile",
++        "Stable navigation profile ID baked into the selected NavMesh.",
++        FieldKind::Str,
++        FieldDefaultSpec::Computed(default_agent_profile_id),
++    ),
+     FieldDef::new(
+         "speed",
+         "Speed",
+@@ -1093,6 +1100,101 @@ const NAV_MESH_SURFACE_FIELDS: &[FieldDef] = &[asset_ref(
+     FieldDefaultSpec::Unassigned,
+ )];
+
++const NAVIGATION_LINK_FIELDS: &[FieldDef] = &[
++    float("start_x", "Start X", "World-space link start X.", 0.0),
++    float("start_y", "Start Y", "World-space link start Y.", 0.0),
++    float("start_z", "Start Z", "World-space link start Z.", 0.0),
++    float("end_x", "End X", "World-space link end X.", 0.0),
++    float("end_y", "End Y", "World-space link end Y.", 0.0),
++    float("end_z", "End Z", "World-space link end Z.", 0.0),
++    boolean(
++        "bidirectional",
++        "Bidirectional",
++        "Allow traversal in both directions.",
++        true,
++    ),
++    list(
++        "profiles",
++        "Profiles",
++        "Stable profile IDs allowed to use this link; empty means every profile.",
++        &STRING_KIND,
++    ),
++    integer(
++        "area",
++        "Area",
++        "Navigation area ID assigned to this traversal.",
++        0,
++        NumericRange::inclusive(0.0, u16::MAX as f64),
++    ),
++    number(
++        "cost",
++        "Additional Cost",
++        "Additional deterministic traversal cost.",
++        0.0,
++        NON_NEGATIVE,
++    ),
++    text(
++        "traversal_tag",
++        "Traversal Tag",
++        "Stable gameplay-facing traversal tag such as jump or door.",
++        "link",
++    ),
++];
++
++const NAVIGATION_MODIFIER_FIELDS: &[FieldDef] = &[
++    float("center_x", "Center X", "World-space modifier center X.", 0.0),
++    float("center_y", "Center Y", "World-space modifier center Y.", 0.0),
++    float("center_z", "Center Z", "World-space modifier center Z.", 0.0),
++    number(
++        "half_extents_x",
++        "Half Extent X",
++        "Non-negative modifier half extent along X.",
++        0.5,
++        NON_NEGATIVE,
++    ),
++    number(
++        "half_extents_y",
++        "Half Extent Y",
++        "Non-negative modifier half extent along Y.",
++        0.5,
++        NON_NEGATIVE,
++    ),
++    number(
++        "half_extents_z",
++        "Half Extent Z",
++        "Non-negative modifier half extent along Z.",
++        0.5,
++        NON_NEGATIVE,
++    ),
++    list(
++        "profiles",
++        "Profiles",
++        "Stable profile IDs affected by this modifier; empty means every profile.",
++        &STRING_KIND,
++    ),
++    enumeration(
++        "mode",
++        "Mode",
++        "Exclude geometry or reclassify it to an area.",
++        "exclude",
++        &["exclude", "area"],
++    ),
++    integer(
++        "area",
++        "Area",
++        "Replacement navigation area used by area mode.",
++        0,
++        NumericRange::inclusive(0.0, u16::MAX as f64),
++    ),
++    number(
++        "cost_multiplier",
++        "Cost Multiplier",
++        "Positive traversal-cost multiplier used by area mode.",
++        1.0,
++        POSITIVE,
++    ),
++];
++
+ const RUNTIME_METADATA_FIELDS: &[FieldDef] = &[
+     text(
+         "name",
+@@ -1471,6 +1562,7 @@ defaults! {
+
+     default_lock_on_team => Value::I64(i64::from(LockOnTarget::default().team));
+
++    default_agent_profile_id => Value::String(NavMeshAgent::default().profile_id.as_str().to_owned());
+     default_agent_speed => Value::F64(NavMeshAgent::default().speed as f64);
+     default_stopping_distance => Value::F64(NavMeshAgent::default().stopping_distance as f64);
+     default_repath_interval => Value::F64(NavMeshAgent::default().repath_interval as f64);
+@@ -1834,5 +1926,23 @@ pub(super) fn builtin_components() -> Vec<BuiltinComponent> {
+             SPOT_LIGHT_FIELDS,
+             spawn_spot_light_component,
+         ),
++        BuiltinComponent::new(
++            crate::navigation_bake::NAVIGATION_LINK_COMPONENT,
++            "Navigation Link",
++            "Adds an explicit off-mesh traversal to the production navigation bake.",
++            "Navigation",
++            1,
++            NAVIGATION_LINK_FIELDS,
++            spawn_navigation_link_component,
++        ),
++        BuiltinComponent::new(
++            crate::navigation_bake::NAVIGATION_MODIFIER_COMPONENT,
++            "Navigation Modifier",
++            "Excludes or reclassifies bounded geometry in the production navigation bake.",
++            "Navigation",
++            1,
++            NAVIGATION_MODIFIER_FIELDS,
++            spawn_navigation_modifier_component,
++        ),
+     ]
+ }
+diff --git a/crates/engine/src/scene_bridge/spawn.rs b/crates/engine/src/scene_bridge/spawn.rs
+--- a/crates/engine/src/scene_bridge/spawn.rs
++++ b/crates/engine/src/scene_bridge/spawn.rs
+@@ -2619,6 +2619,14 @@ pub(crate) fn spawn_nav_mesh_agent_component(
+     }
+     let has_target = fields.bool("has_target")?;
+     let mut agent = NavMeshAgent::new(speed);
++    let profile_id = match fields.get("profile_id") {
++        None => agent.profile_id.clone(),
++        Some(Value::String(profile_id)) if !profile_id.trim().is_empty() => {
++            crate::navmesh::NavigationProfileId::new(profile_id)
++        }
++        _ => return Err(fields.invalid("a non-empty stable profile_id string").into()),
++    };
++    agent.profile_id = profile_id;
+     agent.stopping_distance = stopping_distance;
+     agent.repath_interval = repath_interval;
+     agent.avoidance_radius = avoidance_radius;
+@@ -2669,6 +2676,38 @@ pub(crate) fn spawn_nav_mesh_surface_component(
+     Ok(())
+ }
+
++pub(crate) fn spawn_navigation_link_component(
++    _entity: Entity,
++    value: &Value,
++    context: &mut SpawnContext<'_>,
++) -> Result<(), ComponentSpawnError> {
++    let component_type =
++        ComponentTypeId::new(crate::navigation_bake::NAVIGATION_LINK_COMPONENT);
++    ComponentFields::new(
++        context.authoring_entity,
++        &component_type,
++        value,
++        "a schema-valid navigation link object",
++    )?;
++    Ok(())
++}
++
++pub(crate) fn spawn_navigation_modifier_component(
++    _entity: Entity,
++    value: &Value,
++    context: &mut SpawnContext<'_>,
++) -> Result<(), ComponentSpawnError> {
++    let component_type =
++        ComponentTypeId::new(crate::navigation_bake::NAVIGATION_MODIFIER_COMPONENT);
++    ComponentFields::new(
++        context.authoring_entity,
++        &component_type,
++        value,
++        "a schema-valid navigation modifier object",
++    )?;
++    Ok(())
++}
++
+ pub(crate) fn spawn_runtime_metadata_component(
+     entity: Entity,
+     value: &Value,
