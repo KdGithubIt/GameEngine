@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0121-prefab-parity-20260816-v4-02",
+  "target_branch": "chatgpt/gameengine-adr-0121-prefab-parity-v4",
+  "expected_head_sha": "a0930e105e9461b9f11c4f6d52ceb8fbe5aac56b",
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Refine prefab instantiation request API",
+  "pr_title": "GameEngine: add prefab authoring parity",
+  "pr_body": "Refines the ADR 0121 prefab parity implementation after Windows Clippy identified an over-wide shared service signature. Prefab instantiation metadata is now grouped in a shared PrefabInstantiationRequest consumed consistently by Editor, CLI, and MCP, rather than suppressing the lint. The existing prefab creation/loading, fresh AssetId manifest registration, preview/apply stale guards, and one-transaction undo semantics remain unchanged."
+}
