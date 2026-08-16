@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "request_id": "20260816-phase3-full-ibl-bindgroups-r6",
+  "target_branch": "chatgpt/gameengine-render-full-ibl",
+  "expected_head_sha": "acc2b01b0157c9b381c8b89a8f5e28d7c7f42df1",
+  "patch_parts": [
+    "part-0000.patch",
+    "part-0001.patch",
+    "part-0002.patch",
+    "part-0003.patch",
+    "part-0004.patch"
+  ],
+  "commit_message": "Renderer: keep IBL within portable bind-group limits",
+  "pr_title": "Renderer: add full image-based lighting",
+  "pr_body": "## Summary\n- add renderer-owned diffuse irradiance, GGX specular prefilter, and split-sum BRDF LUT generation\n- feed generic StandardLit indirect lighting from existing EnvironmentLighting runtime texture IDs without changing material/scene/Stable ID contracts\n- render a resolved equirectangular skybox as the scene background and preserve procedural-sky fallback\n- keep AO scoped to StandardLit indirect light and add a fixed-camera GPU regression for skybox specular IBL\n- keep mesh pipelines within the portable four-bind-group floor by integrating IBL into the existing scene-lighting group\n- record the renderer-owned IBL contract in ADR 0122\n\n## Validation\nWindows Validation should use affected scope for engine-render-runtime unless the CI planner escalates it.\n\n<!-- gameengine-chatgpt-dispatcher -->"
+}
