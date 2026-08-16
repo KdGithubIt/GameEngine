@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "request_id": "20260816-adr0125-vfx-4296059-r1",
+  "target_branch": "chatgpt/gameengine-adr0125-vfx-authoring-completion-v2",
+  "expected_head_sha": "42960593d342dc077a72f1cae731088b6768ae6a",
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Fix VFX preview validation errors",
+  "pr_title": "GameEngine: complete ADR 0125 VFX authoring workflow",
+  "pr_body": "## Summary\n\n- fixes Rust 1.97.1 float-fallback warnings in the VFX preview painter\n- adds the explicit effect-bounds accumulator type required by the compiler\n- preserves the ADR 0125 VFX Builder/runtime implementation from the existing Draft PR\n\n## Validation\n\nRe-run affected Windows Validation and Editor visual validation.\n\n<!-- gameengine-visual-validation: editor -->\n<!-- gameengine-visual-authoring-tool: VFX Builder -->"
+}
