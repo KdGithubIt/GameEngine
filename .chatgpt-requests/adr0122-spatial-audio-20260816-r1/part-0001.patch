@@ -1,0 +1,334 @@
++    #[allow(clippy::too_many_arguments)]
+     pub fn new(
+         clip: Handle<AudioAsset>,
+         volume: f32,
+         spatial_blend: f32,
+         min_distance: f32,
+         max_distance: f32,
++        rolloff: AudioRolloff,
+         autoplay: bool,
++        looping: bool,
+     ) -> Self {
+         Self {
+             clip,
+@@ -143,7 +152,9 @@
+             spatial_blend,
+             min_distance,
+             max_distance,
++            rolloff,
+             autoplay,
++            looping,
+             state: AuthoredAudioState::Pending,
+         }
+     }
+@@ -152,6 +163,22 @@
+     pub fn state(&self) -> &AuthoredAudioState {
+         &self.state
+     }
++
++    /// Updates the runtime-only autoplay lifecycle state.
++    pub fn set_state(&mut self, state: AuthoredAudioState) {
++        self.state = state;
++    }
++
++    /// Returns the backend-neutral parameters used by the spatial mixer.
++    pub fn spatial_params(&self) -> AudioSpatialParams {
++        AudioSpatialParams {
++            volume: self.volume,
++            spatial_blend: self.spatial_blend,
++            min_distance: self.min_distance,
++            max_distance: self.max_distance,
++            rolloff: self.rolloff,
++        }
++    }
+ }
+ 
+ /// Marks the transform used as the positional-audio listener.
+@@ -159,4 +186,6 @@
+ pub struct AudioListener {
+     /// Disabled listeners remain authored but do not participate in selection.
+     pub enabled: bool,
++    /// Selection priority; larger values win.
++    pub priority: i32,
+ }
+@@ -190,24 +190,11 @@
+-/// Applies author-authored emitter and music autoplay requests once.
++/// Applies author-authored music autoplay requests once.
++///
++/// Spatial emitters are handled by the engine composition layer after world
++/// transform propagation so the platform crate never depends on scene/rig data.
+ pub fn authored_audio_system(
+-    mut emitters: Query<&mut AudioEmitter>,
++    _emitters: Query<&mut AudioEmitter>,
+     mut music: Query<&mut MusicController>,
+     assets: Res<Assets<AudioAsset>>,
+     mut audio: Option<ResMut<AudioSystem>>,
+ ) {
+-    for (_, emitter) in &mut emitters {
+-        if !emitter.autoplay || emitter.state != AuthoredAudioState::Pending {
+-            continue;
+-        }
+-        let Some(asset) = assets.get(&emitter.clip) else {
+-            emitter.state = AuthoredAudioState::Failed("decoded clip handle is missing".into());
+-            continue;
+-        };
+-        emitter.state = match audio.as_deref_mut() {
+-            Some(audio) => audio
+-                .play_se(asset)
+-                .map(|()| AuthoredAudioState::Playing)
+-                .unwrap_or_else(|error| AuthoredAudioState::Failed(error.to_string())),
+-            None => AuthoredAudioState::Unavailable,
+-        };
+-    }
+     for (_, controller) in &mut music {
+@@ -360,14 +360,17 @@
+-/// Sends playback commands to the audio worker thread.
++/// Sends playback commands to the bounded audio worker thread.
+ #[cfg(not(target_arch = "wasm32"))]
+ pub struct AudioSystem {
+-    command_sender: mpsc::Sender<AudioCommand>,
++    command_sender: mpsc::SyncSender<AudioCommand>,
++    completed_receiver: Mutex<mpsc::Receiver<AudioVoiceId>>,
+     worker: Mutex<Option<thread::JoinHandle<()>>>,
++    next_voice_id: u64,
+     volumes: AudioBusVolumes,
+ }
+ 
+ /// Target stub for builds where desktop audio playback is unavailable.
+ #[cfg(target_arch = "wasm32")]
+ pub struct AudioSystem {
++    next_voice_id: u64,
+     volumes: AudioBusVolumes,
+ }
+ 
+@@ -375,11 +378,12 @@
+ impl AudioSystem {
+     /// Opens the platform default audio output stream.
+     pub fn new() -> Result<Self, AudioError> {
+-        let (command_sender, command_receiver) = mpsc::channel();
++        let (command_sender, command_receiver) = mpsc::sync_channel(AUDIO_COMMAND_CAPACITY);
++        let (completed_sender, completed_receiver) = mpsc::channel();
+         let (init_sender, init_receiver) = mpsc::channel();
+         let worker = thread::Builder::new()
+             .name("engine-audio".into())
+-            .spawn(move || run_audio_thread(command_receiver, init_sender))
++            .spawn(move || run_audio_thread(command_receiver, completed_sender, init_sender))
+             .map_err(|source| AudioError::AudioThread {
+                 message: source.to_string(),
+             })?;
+@@ -400,6 +400,8 @@
+         Ok(Self {
+             command_sender,
++            completed_receiver: Mutex::new(completed_receiver),
+             worker: Mutex::new(Some(worker)),
++            next_voice_id: 1,
+             volumes: AudioBusVolumes::default(),
+         })
+     }
+@@ -411,3 +413,58 @@
+             respond_to,
+         })
+     }
++
++    /// Starts a tracked spatial voice without exposing backend sink types.
++    pub fn start_voice(
++        &mut self,
++        asset: &AudioAsset,
++        mix: AudioSpatialMix,
++        looping: bool,
++    ) -> Result<AudioVoiceId, AudioError> {
++        let voice_id = AudioVoiceId(self.next_voice_id);
++        self.next_voice_id = self.next_voice_id.wrapping_add(1).max(1);
++        self.send_command(|respond_to| AudioCommand::StartVoice {
++            voice_id,
++            encoded: asset.encoded(),
++            mix: mix.sanitized(),
++            looping,
++            respond_to,
++        })?;
++        Ok(voice_id)
++    }
++
++    /// Updates a tracked voice's stereo gains without decoding or restarting it.
++    ///
++    /// A saturated command queue may drop an intermediate frame update; later
++    /// frames continue publishing the latest transform-derived mix.
++    pub fn update_voice(
++        &self,
++        voice_id: AudioVoiceId,
++        mix: AudioSpatialMix,
++    ) -> Result<(), AudioError> {
++        match self.command_sender.try_send(AudioCommand::UpdateVoice {
++            voice_id,
++            mix: mix.sanitized(),
++        }) {
++            Ok(()) | Err(mpsc::TrySendError::Full(_)) => Ok(()),
++            Err(mpsc::TrySendError::Disconnected(_)) => Err(AudioError::AudioThread {
++                message: "audio worker disconnected while updating a voice".to_owned(),
++            }),
++        }
++    }
++
++    /// Stops and retires a tracked voice.
++    pub fn stop_voice(&self, voice_id: AudioVoiceId) -> Result<(), AudioError> {
++        self.send_command(|respond_to| AudioCommand::StopVoice {
++            voice_id,
++            respond_to,
++        })
++    }
++
++    /// Drains naturally completed non-looping voice IDs.
++    pub fn drain_completed_voices(&self) -> Vec<AudioVoiceId> {
++        let Ok(receiver) = self.completed_receiver.lock() else {
++            return Vec::new();
++        };
++        receiver.try_iter().collect()
++    }
+@@ -522,3 +522,29 @@
+     pub fn play_se(&self, _asset: &AudioAsset) -> Result<(), AudioError> {
+         Err(AudioError::UnsupportedTarget)
+     }
++    /// Returns an error because this phase does not support WASM audio.
++    pub fn start_voice(
++        &mut self,
++        _asset: &AudioAsset,
++        _mix: AudioSpatialMix,
++        _looping: bool,
++    ) -> Result<AudioVoiceId, AudioError> {
++        self.next_voice_id = self.next_voice_id.wrapping_add(1).max(1);
++        Err(AudioError::UnsupportedTarget)
++    }
++    /// Returns an error because this phase does not support WASM audio.
++    pub fn update_voice(
++        &self,
++        _voice_id: AudioVoiceId,
++        _mix: AudioSpatialMix,
++    ) -> Result<(), AudioError> {
++        Err(AudioError::UnsupportedTarget)
++    }
++    /// Returns an error because this phase does not support WASM audio.
++    pub fn stop_voice(&self, _voice_id: AudioVoiceId) -> Result<(), AudioError> {
++        Err(AudioError::UnsupportedTarget)
++    }
++    /// The WASM stub never owns playback voices.
++    pub fn drain_completed_voices(&self) -> Vec<AudioVoiceId> {
++        Vec::new()
++    }
+@@ -603,4 +603,19 @@
+         encoded: Arc<[u8]>,
+         respond_to: mpsc::Sender<Result<(), AudioError>>,
+     },
++    StartVoice {
++        voice_id: AudioVoiceId,
++        encoded: Arc<[u8]>,
++        mix: AudioSpatialMix,
++        looping: bool,
++        respond_to: mpsc::Sender<Result<(), AudioError>>,
++    },
++    UpdateVoice {
++        voice_id: AudioVoiceId,
++        mix: AudioSpatialMix,
++    },
++    StopVoice {
++        voice_id: AudioVoiceId,
++        respond_to: mpsc::Sender<Result<(), AudioError>>,
++    },
+     PlayBgm {
+@@ -625,5 +625,6 @@
+ #[cfg(not(target_arch = "wasm32"))]
+ fn run_audio_thread(
+     command_receiver: mpsc::Receiver<AudioCommand>,
++    completed_sender: mpsc::Sender<AudioVoiceId>,
+     init_sender: mpsc::Sender<Result<(), AudioError>>,
+ ) {
+@@ -646,5 +646,6 @@
+     let mut bgm = BgmPlayback::Silent;
+     let mut se_sinks = Vec::new();
++    let mut voices = BTreeMap::new();
+     let mut volumes = AudioBusVolumes::default();
+ 
+     loop {
+@@ -665,4 +665,45 @@
+                     .map(|sink| se_sinks.push(sink));
+                 let _ = respond_to.send(result);
+             }
++            Some(AudioCommand::StartVoice {
++                voice_id,
++                encoded,
++                mix,
++                looping,
++                respond_to,
++            }) => {
++                let result = if voices.len() >= MAX_ACTIVE_VOICES {
++                    Err(AudioError::Playback {
++                        message: format!("spatial voice capacity {MAX_ACTIVE_VOICES} is full"),
++                    })
++                } else {
++                    play_voice_on_thread(
++                        &stream_handle,
++                        encoded,
++                        mix,
++                        looping,
++                        volumes.sound_effects(),
++                    )
++                    .map(|voice| {
++                        voices.insert(voice_id, voice);
++                    })
++                };
++                let _ = respond_to.send(result);
++            }
++            Some(AudioCommand::UpdateVoice { voice_id, mix }) => {
++                if let Some(voice) = voices.get(&voice_id)
++                    && let Ok(mut gains) = voice.gains.lock()
++                {
++                    *gains = [mix.left_gain, mix.right_gain];
++                }
++            }
++            Some(AudioCommand::StopVoice {
++                voice_id,
++                respond_to,
++            }) => {
++                if let Some(voice) = voices.remove(&voice_id) {
++                    voice.sink.stop();
++                }
++                let _ = respond_to.send(Ok(()));
++            }
+             Some(AudioCommand::PlayBgm {
+@@ -700,6 +700,6 @@
+             Some(AudioCommand::SetMasterVolume { volume, respond_to }) => {
+                 volumes.master = sanitize_volume(volume);
+-                apply_bus_volumes(&mut bgm, &se_sinks, volumes);
++                apply_bus_volumes(&mut bgm, &se_sinks, &voices, volumes);
+                 let _ = respond_to.send(Ok(()));
+             }
+             Some(AudioCommand::SetBusVolume {
+@@ -708,7 +708,7 @@
+                 respond_to,
+             }) => {
+                 volumes.set(bus, volume);
+-                apply_bus_volumes(&mut bgm, &se_sinks, volumes);
++                apply_bus_volumes(&mut bgm, &se_sinks, &voices, volumes);
+                 let _ = respond_to.send(Ok(()));
+             }
+             Some(AudioCommand::Shutdown) => break,
+@@ -717,13 +717,35 @@
+ 
+         bgm.tick(volumes.background_music());
+         se_sinks.retain(|sink| !sink.empty());
++        let completed: Vec<_> = voices
++            .iter()
++            .filter_map(|(voice_id, voice)| voice.sink.empty().then_some(*voice_id))
++            .collect();
++        for voice_id in completed {
++            voices.remove(&voice_id);
++            let _ = completed_sender.send(voice_id);
++        }
+     }
+ }
+ 
+ #[cfg(not(target_arch = "wasm32"))]
+-fn apply_bus_volumes(bgm: &mut BgmPlayback, se_sinks: &[rodio::Sink], volumes: AudioBusVolumes) {
++fn apply_bus_volumes(
++    bgm: &mut BgmPlayback,
++    se_sinks: &[rodio::Sink],
++    voices: &BTreeMap<AudioVoiceId, ActiveVoice>,
