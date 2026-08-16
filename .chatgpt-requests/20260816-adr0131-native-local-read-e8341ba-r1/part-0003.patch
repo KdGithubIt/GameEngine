@@ -1,0 +1,268 @@
++    let mut stream = endpoint.connect()?;
++    write!(
++        stream,
++        "POST /api/generate HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\nAccept: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
++        endpoint.host_header(),
++        body.len()
++    )?;
++    stream.write_all(&body)?;
++    stream.flush()?;
++
++    let mut response = Vec::new();
++    stream
++        .take(MAX_HTTP_RESPONSE_BYTES + 1)
++        .read_to_end(&mut response)?;
++    if response.len() as u64 > MAX_HTTP_RESPONSE_BYTES {
++        return Err(NativeAgentError::ResponseTooLarge);
++    }
++    let parsed = parse_http_response(&response)?;
++    if parsed.status != 200 {
++        let message = String::from_utf8_lossy(&parsed.body);
++        return Err(NativeAgentError::HttpStatus(
++            parsed.status,
++            truncate_text(message.trim(), 500),
++        ));
++    }
++    serde_json::from_slice(&parsed.body).map_err(Into::into)
++}
++
++struct ParsedHttpResponse {
++    status: u16,
++    body: Vec<u8>,
++}
++
++fn parse_http_response(bytes: &[u8]) -> Result<ParsedHttpResponse, NativeAgentError> {
++    let header_end = find_bytes(bytes, b"\r\n\r\n").ok_or_else(|| {
++        NativeAgentError::InvalidHttpResponse("header terminator is missing".to_owned())
++    })?;
++    let headers = std::str::from_utf8(&bytes[..header_end]).map_err(|_| {
++        NativeAgentError::InvalidHttpResponse("headers are not valid UTF-8".to_owned())
++    })?;
++    let mut lines = headers.split("\r\n");
++    let status_line = lines.next().ok_or_else(|| {
++        NativeAgentError::InvalidHttpResponse("status line is missing".to_owned())
++    })?;
++    let status = status_line
++        .split_whitespace()
++        .nth(1)
++        .ok_or_else(|| {
++            NativeAgentError::InvalidHttpResponse("status code is missing".to_owned())
++        })?
++        .parse::<u16>()
++        .map_err(|_| {
++            NativeAgentError::InvalidHttpResponse("status code is invalid".to_owned())
++        })?;
++    let mut content_length = None;
++    let mut chunked = false;
++    for line in lines {
++        let Some((name, value)) = line.split_once(':') else {
++            continue;
++        };
++        if name.eq_ignore_ascii_case("content-length") {
++            content_length = Some(value.trim().parse::<usize>().map_err(|_| {
++                NativeAgentError::InvalidHttpResponse("Content-Length is invalid".to_owned())
++            })?);
++        }
++        if name.eq_ignore_ascii_case("transfer-encoding")
++            && value
++                .split(',')
++                .any(|encoding| encoding.trim().eq_ignore_ascii_case("chunked"))
++        {
++            chunked = true;
++        }
++    }
++    let raw_body = &bytes[header_end + 4..];
++    let body = if chunked {
++        decode_chunked(raw_body)?
++    } else if let Some(length) = content_length {
++        if raw_body.len() < length {
++            return Err(NativeAgentError::InvalidHttpResponse(
++                "response body is shorter than Content-Length".to_owned(),
++            ));
++        }
++        raw_body[..length].to_vec()
++    } else {
++        raw_body.to_vec()
++    };
++    Ok(ParsedHttpResponse { status, body })
++}
++
++fn decode_chunked(mut bytes: &[u8]) -> Result<Vec<u8>, NativeAgentError> {
++    let mut output = Vec::new();
++    loop {
++        let line_end = find_bytes(bytes, b"\r\n").ok_or_else(|| {
++            NativeAgentError::InvalidHttpResponse("chunk size terminator is missing".to_owned())
++        })?;
++        let size_text = std::str::from_utf8(&bytes[..line_end]).map_err(|_| {
++            NativeAgentError::InvalidHttpResponse("chunk size is not UTF-8".to_owned())
++        })?;
++        let size = usize::from_str_radix(
++            size_text.split(';').next().unwrap_or_default().trim(),
++            16,
++        )
++        .map_err(|_| {
++            NativeAgentError::InvalidHttpResponse("chunk size is invalid".to_owned())
++        })?;
++        bytes = &bytes[line_end + 2..];
++        if size == 0 {
++            return Ok(output);
++        }
++        if bytes.len() < size + 2 || &bytes[size..size + 2] != b"\r\n" {
++            return Err(NativeAgentError::InvalidHttpResponse(
++                "chunk payload is truncated".to_owned(),
++            ));
++        }
++        output.extend_from_slice(&bytes[..size]);
++        if output.len() as u64 > MAX_HTTP_RESPONSE_BYTES {
++            return Err(NativeAgentError::ResponseTooLarge);
++        }
++        bytes = &bytes[size + 2..];
++    }
++}
++
++fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
++    haystack.windows(needle.len()).position(|window| window == needle)
++}
++
++#[derive(Debug, Clone)]
++struct EvidenceChunk {
++    source: RetrievedSource,
++    text: String,
++    score: usize,
++}
++
++fn retrieve_evidence(
++    query: &str,
++    engine_root: Option<&Path>,
++    project_root: &Path,
++) -> Result<Vec<EvidenceChunk>, NativeAgentError> {
++    let query_terms = query_terms(query);
++    let mut candidates = Vec::new();
++    let mut engine_scanned = 0;
++    if let Some(root) = engine_root {
++        scan_path(
++            root,
++            root,
++            Path::new("AGENTS.md"),
++            SourceKind::EngineRepository,
++            &query_terms,
++            &mut candidates,
++            &mut engine_scanned,
++        )?;
++        scan_path(
++            root,
++            root,
++            Path::new("docs"),
++            SourceKind::EngineRepository,
++            &query_terms,
++            &mut candidates,
++            &mut engine_scanned,
++        )?;
++        scan_path(
++            root,
++            root,
++            Path::new("crates"),
++            SourceKind::EngineRepository,
++            &query_terms,
++            &mut candidates,
++            &mut engine_scanned,
++        )?;
++    }
++    let mut project_scanned = 0;
++    for relative in ["project.json", "game", "assets"] {
++        scan_path(
++            project_root,
++            project_root,
++            Path::new(relative),
++            SourceKind::ProjectFile,
++            &query_terms,
++            &mut candidates,
++            &mut project_scanned,
++        )?;
++    }
++    candidates.sort_by_key(|chunk| Reverse((chunk.score, chunk.source.path.clone())));
++    candidates.truncate(MAX_RETRIEVED_CHUNKS);
++    Ok(candidates)
++}
++
++fn scan_path(
++    root: &Path,
++    base: &Path,
++    relative: &Path,
++    kind: SourceKind,
++    query_terms: &BTreeSet<String>,
++    output: &mut Vec<EvidenceChunk>,
++    scanned: &mut usize,
++) -> Result<(), NativeAgentError> {
++    if *scanned >= MAX_SCANNED_FILES {
++        return Ok(());
++    }
++    let path = root.join(relative);
++    let metadata = match fs::symlink_metadata(&path) {
++        Ok(metadata) => metadata,
++        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
++        Err(error) => return Err(error.into()),
++    };
++    if metadata.file_type().is_symlink() {
++        return Ok(());
++    }
++    if metadata.is_dir() {
++        let mut entries = fs::read_dir(&path)?.collect::<Result<Vec<_>, _>>()?;
++        entries.sort_by_key(|entry| entry.file_name());
++        for entry in entries {
++            if *scanned >= MAX_SCANNED_FILES {
++                break;
++            }
++            let name = entry.file_name();
++            if matches!(name.to_str(), Some(".git" | "target" | "node_modules" | ".gameengine")) {
++                continue;
++            }
++            let child = relative.join(name);
++            scan_path(root, base, &child, kind, query_terms, output, scanned)?;
++        }
++        return Ok(());
++    }
++    if !metadata.is_file()
++        || metadata.len() > MAX_SOURCE_FILE_BYTES
++        || !is_retrieval_text_file(&path)
++    {
++        return Ok(());
++    }
++    *scanned += 1;
++    let bytes = fs::read(&path)?;
++    let Ok(text) = String::from_utf8(bytes) else {
++        return Ok(());
++    };
++    let relative_path = path
++        .strip_prefix(base)
++        .unwrap_or(path.as_path())
++        .to_string_lossy()
++        .replace('\\', "/");
++    for chunk in chunk_text(&text) {
++        let score = score_chunk(query_terms, &relative_path, &chunk);
++        if score == 0 && !query_terms.is_empty() {
++            continue;
++        }
++        output.push(EvidenceChunk {
++            source: RetrievedSource {
++                kind,
++                path: relative_path.clone(),
++            },
++            text: chunk,
++            score,
++        });
++    }
++    Ok(())
++}
++
++fn is_retrieval_text_file(path: &Path) -> bool {
++    let file_name = path.file_name().and_then(|name| name.to_str()).unwrap_or_default();
++    if matches!(file_name, "Cargo.toml" | "Cargo.lock" | "project.json" | "AGENTS.md") {
++        return true;
++    }
++    matches!(
++        path.extension().and_then(|extension| extension.to_str()),
++        Some("md" | "rs" | "toml" | "json" | "ron" | "rhai" | "txt" | "yaml" | "yml")
++    )
++}
++
