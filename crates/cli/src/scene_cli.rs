@@ -1,6 +1,7 @@
 use super::{input_error_json, to_json, CliError, CliRunResult};
 use engine_authoring::{
-    load_scene_from_json, replace_file_contents, AuthoringCommand, AuthoringEntity,
+    load_scene_from_json, replace_file_contents, AuthoringCapabilityId,
+    AuthoringCapabilityRegistry, AuthoringCommand, AuthoringDomain, AuthoringEntity,
     AuthoringPermission, AuthoringPermissions, AuthoringSession, ComponentSchema,
     ComponentSchemaRegistry, EntityId, ProjectId, ProjectRoot, SceneAuthoringError,
     SceneAuthoringService, SceneLoadError, SceneSaveError, StableId,
@@ -9,23 +10,13 @@ use serde::Serialize;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const SCENE_CAPABILITIES: [&str; 8] = [
-    "project.describe",
-    "scene.inspect",
-    "scene.validate",
-    "scene.preview",
-    "scene.apply",
-    "entity.find",
-    "entity.inspect",
-    "component.schemas",
-];
-
 #[derive(Debug, Serialize)]
 struct ProjectDescribeOutput {
     project_id: ProjectId,
     name: String,
     engine_version: String,
-    capabilities: Vec<&'static str>,
+    capabilities: Vec<String>,
+    authoring_capabilities: Vec<AuthoringCapabilityId>,
 }
 
 #[derive(Debug, Serialize)]
@@ -119,11 +110,30 @@ fn project_describe(project_path: &Path) -> Result<CliRunResult, CliError> {
         }
     };
 
+    // Both capability lists are read from the canonical authoring registry so
+    // the CLI cannot report a structured surface that disagrees with the Editor
+    // or MCP (ADR 0132).
+    let registry = AuthoringCapabilityRegistry::builtin();
     let output = ProjectDescribeOutput {
         project_id: project.project_id().clone(),
         name: project.config().name.clone(),
         engine_version: project.engine_version().to_owned(),
-        capabilities: SCENE_CAPABILITIES.to_vec(),
+        capabilities: registry
+            .capabilities()
+            .filter(|capability| {
+                matches!(
+                    capability.domain,
+                    AuthoringDomain::Project
+                        | AuthoringDomain::Scene
+                        | AuthoringDomain::ComponentSchema
+                )
+            })
+            .map(|capability| capability.id.as_str().to_owned())
+            .collect(),
+        authoring_capabilities: registry
+            .capabilities()
+            .map(|capability| capability.id.clone())
+            .collect(),
     };
     Ok(CliRunResult::success(to_json(&output)?))
 }
