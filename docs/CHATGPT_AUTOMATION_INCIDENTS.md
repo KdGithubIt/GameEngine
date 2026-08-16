@@ -47,6 +47,7 @@ INC-003  Published patch bytes differed from preflight artifact    Transport    
 INC-004  Main advanced after task baseline and polluted validation  Validation         Resolved
 INC-005  Patch headers included checkout-directory prefix           Dispatcher         Resolved
 INC-006  eframe screenshot helper incompatible with default wgpu    Visual validation  Resolved
+INC-007  Missing transport tree misclassified as duplicate request  Transport          Resolved
 ```
 
 ## INC-001: Markdown trailing whitespace rejected by patch preflight
@@ -463,6 +464,78 @@ visually validated by this Editor-only incident.
 - Successful Visual Validation runs: `31930981030`, `31931147173`
 - Successful artifacts: `9259315213`, `9259358605`
 - Commit: `ff2254a12648db7d91d0a27526d529f5fe94fcd7`
+
+## INC-007: Missing transport tree misclassified as duplicate request
+
+Status: Resolved
+Layer: Transport
+First confirmed: 2026-08-16
+Last confirmed: 2026-08-16
+
+### Symptom
+
+Fresh immutable staging requests passed the read-only stage signal but the
+trusted transport publisher rejected them with `The request ID already exists
+on chatgpt-dispatch with different content.` even though the corresponding
+request directory did not exist on the transport branch.
+
+### Evidence
+
+- Request `20260816-phase9-multires-bloom-d5e2bd4-r8` had no request directory
+  on `chatgpt-dispatch` before publication, but publisher run `31937633592`
+  rejected it as an existing request with different content.
+- The publisher used `git rev-parse "$transport_head:$request_dir"` with stderr
+  discarded and `|| true` to probe the optional request tree.
+- A minimal Git reproduction confirmed that a missing `<commit>:<path>` can be
+  echoed to stdout by `git rev-parse` even when the command exits non-zero, while
+  `git rev-parse --verify` leaves the failed lookup without a resolved object ID.
+- Infrastructure PR #76 changed that optional lookup to
+  `git rev-parse --verify` and was merged as
+  `6e5162f70b2c7f15666f8659ebd3978eaf3f00ef`.
+- After the fix reached `main`, the unchanged immutable r8 stage was replayed.
+  Publisher run `31938218225` succeeded, published ready commit
+  `7b9f3b79fdbcc980c5d79b96a4100ae7e97d271c`, and Dispatcher run `31938224725`
+  then applied the request successfully.
+- Fresh request `20260816-phase9-multires-bloom-6e5162f-r9` also published
+  successfully in publisher run `31938516583`, confirming that new request IDs
+  no longer take the false duplicate branch.
+
+### Root cause
+
+The publisher treated non-empty stdout from an optional `git rev-parse` lookup
+as proof that the request directory already existed. Without `--verify`, a
+missing revision/path expression could remain on stdout even though no tree
+object resolved. The publisher therefore compared an unresolved expression
+against the staged tree SHA and falsely classified a genuinely new request as a
+conflicting reused request ID.
+
+### Resolution
+
+Use `git rev-parse --verify` for the optional transport request-tree lookup so a
+missing path yields no resolved tree ID. Keep the existing content comparison
+for request directories that actually resolve. After PR #76 reached `main`,
+replay the unchanged immutable stage instead of rewriting it or publishing the
+product patch directly. Production publisher and Dispatcher runs then passed.
+
+### Prevention / ChatGPT next action
+
+When the publisher reports a request-ID conflict, first confirm that the request
+directory exists at the exact transport head observed by that run. A real
+different tree requires a new request ID. If multiple fresh IDs are absent yet
+receive the same conflict, stop generating IDs and diagnose the trusted
+publisher's existence check. Repair trusted automation separately and replay the
+immutable staged request after the fix is on `main`.
+
+### References
+
+- Failed request: `20260816-phase9-multires-bloom-d5e2bd4-r8`
+- Recovery request: same immutable r8 stage replay
+- Infrastructure PR: `#76`
+- Failed publisher run: `31937633592`
+- Successful publisher run: `31938218225`
+- Successful Dispatcher run: `31938224725`
+- Fresh-request publisher confirmation: `31938516583`
+- Infrastructure merge commit: `6e5162f70b2c7f15666f8659ebd3978eaf3f00ef`
 
 ## Entry template
 

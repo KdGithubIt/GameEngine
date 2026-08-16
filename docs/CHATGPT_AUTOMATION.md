@@ -1,7 +1,7 @@
 # ChatGPT GitHub Automation
 
 Status: Accepted
-Version: 1.5.0
+Version: 1.5.1
 Canonical location: `docs/CHATGPT_AUTOMATION.md`
 
 ## Purpose
@@ -224,8 +224,15 @@ changes:
   still points at the signaled ready commit, that it was based on `main`, that
   all staged commits are linear, and that every pre-ready change only adds patch
   parts for the same request ID.
-- If the publisher reports an existing request ID with different content, do
-  not overwrite or reuse that ID. Create a new request ID and staging branch.
+- If the publisher reports an existing request ID with different content, first
+  verify that `.chatgpt-requests/<request-id>` actually exists at the transport
+  head observed by that publisher run. If it exists with different content, do
+  not overwrite or reuse that ID; create a new request ID and staging branch.
+- If the same conflict is reported for multiple fresh request IDs whose request
+  paths are absent from the observed transport heads, stop creating replacement
+  IDs and classify the failure as a transport-publisher existence-check defect.
+  Repair the trusted publisher through its separate infrastructure path, then
+  replay the unchanged immutable stage after the fix is on `main`.
 - If the publisher reports that `chatgpt-dispatch` moved outside the serialized
   publisher, classify the other writer before retrying. Do not force-update the
   transport ref. Old producer logic that writes the shared ref directly must be
