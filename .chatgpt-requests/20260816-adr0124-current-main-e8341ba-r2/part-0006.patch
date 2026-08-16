@@ -1,0 +1,547 @@
+diff --git a/crates/physics/src/lib.rs b/crates/physics/src/lib.rs
+--- a/crates/physics/src/lib.rs
++++ b/crates/physics/src/lib.rs
+@@ -22,7 +22,11 @@ pub mod collision;
+ #[cfg(not(feature = "solver"))]
+ #[path = "collision_contract.rs"]
+ pub mod collision;
+-/// Grid navigation baking, persistence, queries, and agents.
++/// Production tiled polygon navigation assets, baking, queries, and agents.
++pub mod navigation;
++/// Shared GUI-free navigation bake document and service contracts.
++pub mod navigation_bake;
++/// Legacy grid navigation retained for focused compatibility tests and layered utilities.
+ pub mod navmesh;
+ /// Rapier-backed gameplay rigid-body integration.
+ #[cfg(feature = "solver")]
+diff --git a/crates/physics/src/navigation_bake.rs b/crates/physics/src/navigation_bake.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/physics/src/navigation_bake.rs
+@@ -0,0 +1,527 @@
++//! GUI-free production navigation bake service shared by Editor, CLI, and validation.
++//!
++//! This module owns the persisted bake-document schema, deterministic build-input
++//! normalization/fingerprinting, cancellation, bake statistics, and safe output
++//! replacement. Host layers only collect engine-neutral source geometry and manage
++//! project-specific asset registration.
++
++use std::collections::BTreeSet;
++use std::fmt;
++use std::fs;
++use std::io::Write;
++use std::path::{Path, PathBuf};
++use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
++use std::time::{Duration, Instant};
++
++use serde::{Deserialize, Serialize};
++
++use crate::navigation::{
++    NavMesh, NavigationAgentProfile, NavigationBakeError as RuntimeNavigationBakeError,
++    NavigationBaker, NavigationBuildInput, NavigationBuildLink, NavigationModifier,
++    NavigationTriangle, ProductionNavigationBaker,
++};
++
++/// Current serialized `.navmesh.bake.json` schema.
++pub const NAVMESH_BAKE_SCHEMA_VERSION: u32 = 2;
++
++/// Persisted production navigation bake settings.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++pub struct NavMeshBakeSettings {
++    /// Edge length of one independently rebuildable tile in world units.
++    pub tile_size: f32,
++    /// Stable agent profiles baked into independent tile sets.
++    pub profiles: Vec<NavigationAgentProfile>,
++}
++
++impl Default for NavMeshBakeSettings {
++    fn default() -> Self {
++        Self {
++            tile_size: 16.0,
++            profiles: vec![NavigationAgentProfile::default()],
++        }
++    }
++}
++
++/// Scene-owned source document for one production navigation artifact.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++pub struct NavMeshBakeDocument {
++    /// Document schema version.
++    pub schema_version: u32,
++    /// Adapter-owned project-relative output path.
++    pub output_asset: String,
++    /// Normalized navigation-source fingerprint used by the last successful bake.
++    pub source_fingerprint: Option<String>,
++    /// User-editable production bake settings.
++    pub settings: NavMeshBakeSettings,
++}
++
++impl Default for NavMeshBakeDocument {
++    fn default() -> Self {
++        Self {
++            schema_version: NAVMESH_BAKE_SCHEMA_VERSION,
++            output_asset: "navigation/arena.navmesh.json".to_owned(),
++            source_fingerprint: None,
++            settings: NavMeshBakeSettings::default(),
++        }
++    }
++}
++
++impl NavMeshBakeDocument {
++    /// Parses exactly the current production bake-document schema.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`NavigationBakeServiceError`] when JSON, version, or settings are invalid.
++    pub fn from_json(json: &str) -> Result<Self, NavigationBakeServiceError> {
++        let document: Self =
++            serde_json::from_str(json).map_err(NavigationBakeServiceError::Json)?;
++        if document.schema_version != NAVMESH_BAKE_SCHEMA_VERSION {
++            return Err(NavigationBakeServiceError::UnsupportedVersion(
++                document.schema_version,
++            ));
++        }
++        document.validate()?;
++        Ok(document)
++    }
++
++    /// Writes deterministic pretty JSON.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`NavigationBakeServiceError`] when settings are invalid or JSON fails.
++    pub fn to_canonical_json(&self) -> Result<String, NavigationBakeServiceError> {
++        self.validate()?;
++        serde_json::to_string_pretty(self).map_err(NavigationBakeServiceError::Json)
++    }
++
++    /// Validates output confinement and production profile settings.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`NavigationBakeServiceError::InvalidSettings`] for invalid values.
++    pub fn validate(&self) -> Result<(), NavigationBakeServiceError> {
++        if self.schema_version != NAVMESH_BAKE_SCHEMA_VERSION
++            || !self.settings.tile_size.is_finite()
++            || self.settings.tile_size <= 0.0
++            || self.settings.profiles.is_empty()
++            || !self.output_asset.ends_with(".navmesh.json")
++            || Path::new(&self.output_asset).is_absolute()
++            || Path::new(&self.output_asset)
++                .components()
++                .any(|part| matches!(part, std::path::Component::ParentDir))
++        {
++            return Err(NavigationBakeServiceError::InvalidSettings);
++        }
++        let mut ids = BTreeSet::new();
++        for profile in &self.settings.profiles {
++            if profile.id.as_str().is_empty()
++                || profile.name.trim().is_empty()
++                || !ids.insert(profile.id.as_str())
++                || !profile.radius.is_finite()
++                || profile.radius < 0.0
++                || !profile.height.is_finite()
++                || profile.height <= 0.0
++                || !profile.max_slope_degrees.is_finite()
++                || !(0.0..90.0).contains(&profile.max_slope_degrees)
++                || !profile.max_climb.is_finite()
++                || profile.max_climb < 0.0
++                || profile
++                    .area_costs
++                    .values()
++                    .any(|cost| !cost.is_finite() || *cost <= 0.0)
++            {
++                return Err(NavigationBakeServiceError::InvalidSettings);
++            }
++        }
++        Ok(())
++    }
++}
++
++/// Engine-neutral scene source collected by a host adapter.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
++pub struct NavigationSource {
++    /// World-space triangles considered for walkability.
++    pub triangles: Vec<NavigationTriangle>,
++    /// Area and exclusion modifiers.
++    pub modifiers: Vec<NavigationModifier>,
++    /// Explicit off-mesh traversals.
++    pub links: Vec<NavigationBuildLink>,
++}
++
++/// Summary produced by one successful production bake.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct NavigationBakeStats {
++    /// Number of agent profiles baked.
++    pub profile_count: usize,
++    /// Total number of generated tiles across profiles.
++    pub tile_count: usize,
++    /// Total number of generated polygons across profiles.
++    pub polygon_count: usize,
++    /// Total number of resolved explicit links across profiles.
++    pub link_count: usize,
++    /// Worker-side bake duration.
++    pub elapsed: Duration,
++}
++
++/// Successful shared bake output before adapter-specific asset registration.
++#[derive(Debug, Clone, PartialEq)]
++pub struct NavigationBakeOutput {
++    /// Newly baked production runtime asset.
++    pub nav_mesh: NavMesh,
++    /// Fingerprint of the normalized source/settings that produced the asset.
++    pub source_fingerprint: String,
++    /// Production bake statistics.
++    pub stats: NavigationBakeStats,
++}
++
++/// GUI-free production navigation bake service.
++#[derive(Debug, Default, Clone, Copy)]
++pub struct NavigationBakeService;
++
++impl NavigationBakeService {
++    /// Normalizes and fingerprints one engine-neutral navigation source.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`NavigationBakeServiceError`] for invalid settings or build input.
++    pub fn prepare(
++        &self,
++        source: &NavigationSource,
++        document: &NavMeshBakeDocument,
++    ) -> Result<NavigationBuildInput, NavigationBakeServiceError> {
++        document.validate()?;
++        let mut triangles = source.triangles.clone();
++        triangles.sort_by_key(triangle_sort_key);
++        let mut modifiers = source.modifiers.clone();
++        modifiers.sort_by(|left, right| left.id.cmp(&right.id));
++        let mut links = source.links.clone();
++        links.sort_by(|left, right| left.id.cmp(&right.id));
++        let mut input = NavigationBuildInput {
++            source_fingerprint: "pending".to_owned(),
++            triangles,
++            modifiers,
++            links,
++            profiles: document.settings.profiles.clone(),
++            tile_size: document.settings.tile_size,
++        };
++        input.source_fingerprint = build_input_fingerprint(&input)?;
++        input
++            .validate()
++            .map_err(|error| NavigationBakeServiceError::Bake(error.to_string()))?;
++        Ok(input)
++    }
++
++    /// Returns whether normalized source/settings differ from the last successful bake.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`NavigationBakeServiceError`] when source preparation fails.
++    pub fn is_stale(
++        &self,
++        source: &NavigationSource,
++        document: &NavMeshBakeDocument,
++    ) -> Result<bool, NavigationBakeServiceError> {
++        let input = self.prepare(source, document)?;
++        Ok(document.source_fingerprint.as_deref() != Some(input.source_fingerprint.as_str()))
++    }
++
++    /// Bakes one source without mutating files.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`NavigationBakeServiceError`] for invalid input or cancellation.
++    pub fn bake(
++        &self,
++        source: &NavigationSource,
++        document: &NavMeshBakeDocument,
++        cancelled: &AtomicBool,
++    ) -> Result<NavigationBakeOutput, NavigationBakeServiceError> {
++        let input = self.prepare(source, document)?;
++        if cancelled.load(Ordering::Relaxed) {
++            return Err(NavigationBakeServiceError::Cancelled);
++        }
++        let started = Instant::now();
++        let nav_mesh = ProductionNavigationBaker
++            .bake(&input, &|| cancelled.load(Ordering::Relaxed))
++            .map_err(|error| match error {
++                RuntimeNavigationBakeError::Cancelled => NavigationBakeServiceError::Cancelled,
++                other => NavigationBakeServiceError::Bake(other.to_string()),
++            })?;
++        if cancelled.load(Ordering::Relaxed) {
++            return Err(NavigationBakeServiceError::Cancelled);
++        }
++        let stats = NavigationBakeStats {
++            profile_count: nav_mesh.profiles.len(),
++            tile_count: nav_mesh.profiles.iter().map(|profile| profile.tiles.len()).sum(),
++            polygon_count: nav_mesh
++                .profiles
++                .iter()
++                .flat_map(|profile| &profile.tiles)
++                .map(|tile| tile.polygons.len())
++                .sum(),
++            link_count: nav_mesh.profiles.iter().map(|profile| profile.links.len()).sum(),
++            elapsed: started.elapsed(),
++        };
++        Ok(NavigationBakeOutput {
++            nav_mesh,
++            source_fingerprint: input.source_fingerprint,
++            stats,
++        })
++    }
++
++    /// Bakes and safely replaces one derived navigation file only after success.
++    ///
++    /// The previous valid file is restored when replacement fails. Cancellation
++    /// before replacement never touches the destination.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`NavigationBakeServiceError`] for bake, serialization, or I/O failure.
++    pub fn bake_to_path(
++        &self,
++        source: &NavigationSource,
++        document: &NavMeshBakeDocument,
++        output_path: &Path,
++        cancelled: &AtomicBool,
++    ) -> Result<NavigationBakeOutput, NavigationBakeServiceError> {
++        let output = self.bake(source, document, cancelled)?;
++        if cancelled.load(Ordering::Relaxed) {
++            return Err(NavigationBakeServiceError::Cancelled);
++        }
++        let bytes = serde_json::to_vec_pretty(&output.nav_mesh)
++            .map_err(NavigationBakeServiceError::Json)?;
++        replace_preserving_previous(output_path, &bytes)?;
++        Ok(output)
++    }
++}
++
++fn triangle_sort_key(triangle: &NavigationTriangle) -> [u32; 10] {
++    [
++        triangle.a[0].to_bits(),
++        triangle.a[1].to_bits(),
++        triangle.a[2].to_bits(),
++        triangle.b[0].to_bits(),
++        triangle.b[1].to_bits(),
++        triangle.b[2].to_bits(),
++        triangle.c[0].to_bits(),
++        triangle.c[1].to_bits(),
++        triangle.c[2].to_bits(),
++        u32::from(triangle.area),
++    ]
++}
++
++fn build_input_fingerprint(
++    input: &NavigationBuildInput,
++) -> Result<String, NavigationBakeServiceError> {
++    let mut normalized = input.clone();
++    normalized.source_fingerprint.clear();
++    let bytes = serde_json::to_vec(&normalized).map_err(NavigationBakeServiceError::Json)?;
++    let mut hash = 0xcbf29ce484222325_u64;
++    for byte in bytes {
++        hash ^= u64::from(byte);
++        hash = hash.wrapping_mul(0x100000001b3);
++    }
++    Ok(format!("nav-v2-fnv1a64:{hash:016x}"))
++}
++
++static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(1);
++
++fn sidecar_path(path: &Path, suffix: &str) -> PathBuf {
++    let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
++    let file_name = path
++        .file_name()
++        .and_then(|name| name.to_str())
++        .unwrap_or("navmesh");
++    path.with_file_name(format!(".{file_name}.{suffix}.{}-{sequence}", std::process::id()))
++}
++
++fn replace_preserving_previous(
++    path: &Path,
++    bytes: &[u8],
++) -> Result<(), NavigationBakeServiceError> {
++    if let Some(parent) = path.parent() {
++        fs::create_dir_all(parent).map_err(NavigationBakeServiceError::Io)?;
++    }
++    let temporary = sidecar_path(path, "tmp");
++    let backup = sidecar_path(path, "bak");
++    let write_result = (|| -> Result<(), std::io::Error> {
++        let mut file = fs::OpenOptions::new()
++            .write(true)
++            .create_new(true)
++            .open(&temporary)?;
++        file.write_all(bytes)?;
++        file.sync_all()?;
++        Ok(())
++    })();
++    if let Err(error) = write_result {
++        let _ = fs::remove_file(&temporary);
++        return Err(NavigationBakeServiceError::Io(error));
++    }
++
++    let had_previous = move_previous_to_backup(path, &backup, &temporary)?;
++    match fs::rename(&temporary, path) {
++        Ok(()) => {
++            if had_previous {
++                let _ = fs::remove_file(&backup);
++            }
++            Ok(())
++        }
++        Err(error) => {
++            let _ = fs::remove_file(&temporary);
++            if had_previous {
++                let _ = fs::rename(&backup, path);
++            }
++            Err(NavigationBakeServiceError::Io(error))
++        }
++    }
++}
++
++fn move_previous_to_backup(
++    path: &Path,
++    backup: &Path,
++    temporary: &Path,
++) -> Result<bool, NavigationBakeServiceError> {
++    if !path.exists() {
++        return Ok(false);
++    }
++    if let Err(error) = fs::rename(path, backup) {
++        let _ = fs::remove_file(temporary);
++        return Err(NavigationBakeServiceError::Io(error));
++    }
++    Ok(true)
++}
++
++/// Error from shared bake-document validation, normalization, execution, or persistence.
++#[derive(Debug)]
++pub enum NavigationBakeServiceError {
++    /// JSON parse or serialization failure.
++    Json(serde_json::Error),
++    /// Document schema is newer than this engine.
++    UnsupportedVersion(u32),
++    /// Output path or profile settings are invalid.
++    InvalidSettings,
++    /// Production baker rejected input.
++    Bake(String),
++    /// Derived output replacement failed.
++    Io(std::io::Error),
++    /// Cancellation was observed before output replacement.
++    Cancelled,
++}
++
++impl fmt::Display for NavigationBakeServiceError {
++    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
++        match self {
++            Self::Json(error) => write!(formatter, "navigation bake JSON error: {error}"),
++            Self::UnsupportedVersion(version) => {
++                write!(formatter, "unsupported navigation bake schema version {version}")
++            }
++            Self::InvalidSettings => formatter.write_str("invalid navigation bake settings"),
++            Self::Bake(error) => write!(formatter, "navigation production bake failed: {error}"),
++            Self::Io(error) => write!(formatter, "navigation persistence failed: {error}"),
++            Self::Cancelled => formatter.write_str("navigation bake cancelled"),
++        }
++    }
++}
++
++impl std::error::Error for NavigationBakeServiceError {
++    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
++        match self {
++            Self::Json(error) => Some(error),
++            Self::Io(error) => Some(error),
++            Self::UnsupportedVersion(_)
++            | Self::InvalidSettings
++            | Self::Bake(_)
++            | Self::Cancelled => None,
++        }
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use crate::navigation::NavigationProfileId;
++    use glam::Vec3;
++
++    fn source() -> NavigationSource {
++        NavigationSource {
++            triangles: vec![NavigationTriangle {
++                a: Vec3::ZERO.to_array(),
++                b: Vec3::X.to_array(),
++                c: Vec3::Z.to_array(),
++                area: 0,
++            }],
++            ..NavigationSource::default()
++        }
++    }
++
++    #[test]
++    fn schema_v1_is_rejected_by_current_format_only_reader() {
++        let json = r#"{
++            "schema_version": 1,
++            "output_asset": "navigation/arena.navmesh.json",
++            "source_fingerprint": "old",
++            "settings": {
++                "tile_size": 16.0,
++                "profiles": []
++            }
++        }"#;
++        assert!(matches!(
++            NavMeshBakeDocument::from_json(json),
++            Err(NavigationBakeServiceError::UnsupportedVersion(1))
++        ));
++    }
++
++    #[test]
++    fn equivalent_sources_have_the_same_fingerprint() {
++        let service = NavigationBakeService;
++        let document = NavMeshBakeDocument::default();
++        let mut first = source();
++        first.links = vec![NavigationBuildLink {
++            id: "b".to_owned(),
++            start: [0.0, 0.0, 0.0],
++            end: [1.0, 0.0, 0.0],
++            bidirectional: true,
++            profiles: Vec::new(),
++            area: 0,
++            cost: 0.0,
++            traversal_tag: "door".to_owned(),
++        }];
++        let mut second = first.clone();
++        second.links.reverse();
++        assert_eq!(
++            service.prepare(&first, &document).unwrap().source_fingerprint,
++            service.prepare(&second, &document).unwrap().source_fingerprint
++        );
++    }
++
++    #[test]
++    fn profile_change_marks_source_stale() {
++        let service = NavigationBakeService;
++        let mut document = NavMeshBakeDocument::default();
++        let prepared = service.prepare(&source(), &document).unwrap();
++        document.source_fingerprint = Some(prepared.source_fingerprint);
++        assert!(!service.is_stale(&source(), &document).unwrap());
++        document.settings.profiles[0].id = NavigationProfileId::new("large");
++        assert!(service.is_stale(&source(), &document).unwrap());
++    }
++
++    #[test]
++    fn cancellation_preserves_existing_artifact() {
++        let path = std::env::temp_dir().join(format!(
++            "engine_navigation_cancel_preserves_{}.json",
++            std::process::id()
++        ));
++        fs::write(&path, b"previous").unwrap();
++        let cancelled = AtomicBool::new(true);
++        let result = NavigationBakeService.bake_to_path(
++            &source(),
++            &NavMeshBakeDocument::default(),
++            &path,
++            &cancelled,
++        );
++        assert!(matches!(result, Err(NavigationBakeServiceError::Cancelled)));
++        assert_eq!(fs::read(&path).unwrap(), b"previous");
++        let _ = fs::remove_file(path);
++    }
++}
