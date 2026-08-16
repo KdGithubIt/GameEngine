@@ -1,0 +1,294 @@
++                "response body is shorter than Content-Length".to_owned(),
++            ));
++        }
++        raw_body[..length].to_vec()
++    } else {
++        raw_body.to_vec()
++    };
++    Ok(ParsedHttpResponse { status, body })
++}
++
++fn decode_chunked(mut bytes: &[u8]) -> Result<Vec<u8>, NativeAgentError> {
++    let mut output = Vec::new();
++    loop {
++        let line_end = find_bytes(bytes, b"\r\n").ok_or_else(|| {
++            NativeAgentError::InvalidHttpResponse("chunk size terminator is missing".to_owned())
++        })?;
++        let size_text = std::str::from_utf8(&bytes[..line_end]).map_err(|_| {
++            NativeAgentError::InvalidHttpResponse("chunk size is not UTF-8".to_owned())
++        })?;
++        let size = usize::from_str_radix(
++            size_text.split(';').next().unwrap_or_default().trim(),
++            16,
++        )
++        .map_err(|_| {
++            NativeAgentError::InvalidHttpResponse("chunk size is invalid".to_owned())
++        })?;
++        bytes = &bytes[line_end + 2..];
++        if size == 0 {
++            return Ok(output);
++        }
++        if bytes.len() < size + 2 || &bytes[size..size + 2] != b"\r\n" {
++            return Err(NativeAgentError::InvalidHttpResponse(
++                "chunk payload is truncated".to_owned(),
++            ));
++        }
++        output.extend_from_slice(&bytes[..size]);
++        if output.len() as u64 > MAX_HTTP_RESPONSE_BYTES {
++            return Err(NativeAgentError::ResponseTooLarge);
++        }
++        bytes = &bytes[size + 2..];
++    }
++}
++
++fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
++    haystack.windows(needle.len()).position(|window| window == needle)
++}
++
++#[derive(Debug, Clone)]
++struct EvidenceChunk {
++    source: RetrievedSource,
++    text: String,
++    score: usize,
++}
++
++fn retrieve_evidence(
++    query: &str,
++    engine_root: Option<&Path>,
++    project_root: &Path,
++) -> Result<Vec<EvidenceChunk>, NativeAgentError> {
++    let query_terms = query_terms(query);
++    let mut candidates = Vec::new();
++    let mut engine_scanned = 0;
++    if let Some(root) = engine_root {
++        scan_path(
++            root,
++            root,
++            Path::new("AGENTS.md"),
++            SourceKind::EngineRepository,
++            &query_terms,
++            &mut candidates,
++            &mut engine_scanned,
++        )?;
++        scan_path(
++            root,
++            root,
++            Path::new("docs"),
++            SourceKind::EngineRepository,
++            &query_terms,
++            &mut candidates,
++            &mut engine_scanned,
++        )?;
++        scan_path(
++            root,
++            root,
++            Path::new("crates"),
++            SourceKind::EngineRepository,
++            &query_terms,
++            &mut candidates,
++            &mut engine_scanned,
++        )?;
++    }
++    let mut project_scanned = 0;
++    for relative in ["project.json", "game", "assets"] {
++        scan_path(
++            project_root,
++            project_root,
++            Path::new(relative),
++            SourceKind::ProjectFile,
++            &query_terms,
++            &mut candidates,
++            &mut project_scanned,
++        )?;
++    }
++    candidates.sort_by_key(|chunk| Reverse((chunk.score, chunk.source.path.clone())));
++    candidates.truncate(MAX_RETRIEVED_CHUNKS);
++    Ok(candidates)
++}
++
++fn scan_path(
++    root: &Path,
++    base: &Path,
++    relative: &Path,
++    kind: SourceKind,
++    query_terms: &BTreeSet<String>,
++    output: &mut Vec<EvidenceChunk>,
++    scanned: &mut usize,
++) -> Result<(), NativeAgentError> {
++    if *scanned >= MAX_SCANNED_FILES {
++        return Ok(());
++    }
++    let path = root.join(relative);
++    let metadata = match fs::symlink_metadata(&path) {
++        Ok(metadata) => metadata,
++        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
++        Err(error) => return Err(error.into()),
++    };
++    if metadata.file_type().is_symlink() {
++        return Ok(());
++    }
++    if metadata.is_dir() {
++        let mut entries = fs::read_dir(&path)?.collect::<Result<Vec<_>, _>>()?;
++        entries.sort_by_key(|entry| entry.file_name());
++        for entry in entries {
++            if *scanned >= MAX_SCANNED_FILES {
++                break;
++            }
++            let name = entry.file_name();
++            if matches!(name.to_str(), Some(".git" | "target" | "node_modules" | ".gameengine")) {
++                continue;
++            }
++            let child = relative.join(name);
++            scan_path(root, base, &child, kind, query_terms, output, scanned)?;
++        }
++        return Ok(());
++    }
++    if !metadata.is_file()
++        || metadata.len() > MAX_SOURCE_FILE_BYTES
++        || !is_retrieval_text_file(&path)
++    {
++        return Ok(());
++    }
++    *scanned += 1;
++    let bytes = fs::read(&path)?;
++    let Ok(text) = String::from_utf8(bytes) else {
++        return Ok(());
++    };
++    let relative_path = path
++        .strip_prefix(base)
++        .unwrap_or(path.as_path())
++        .to_string_lossy()
++        .replace('\\', "/");
++    for chunk in chunk_text(&text) {
++        let score = score_chunk(query_terms, &relative_path, &chunk);
++        if score == 0 && !query_terms.is_empty() {
++            continue;
++        }
++        output.push(EvidenceChunk {
++            source: RetrievedSource {
++                kind,
++                path: relative_path.clone(),
++            },
++            text: chunk,
++            score,
++        });
++    }
++    Ok(())
++}
++
++fn is_retrieval_text_file(path: &Path) -> bool {
++    let file_name = path.file_name().and_then(|name| name.to_str()).unwrap_or_default();
++    if matches!(file_name, "Cargo.toml" | "Cargo.lock" | "project.json" | "AGENTS.md") {
++        return true;
++    }
++    matches!(
++        path.extension().and_then(|extension| extension.to_str()),
++        Some("md" | "rs" | "toml" | "json" | "ron" | "rhai" | "txt" | "yaml" | "yml")
++    )
++}
++
++fn query_terms(query: &str) -> BTreeSet<String> {
++    let mut terms = BTreeSet::new();
++    let mut current = String::new();
++    let mut current_ascii = None;
++    let flush = |current: &mut String, terms: &mut BTreeSet<String>| {
++        if current.chars().count() >= 2 {
++            terms.insert(current.to_lowercase());
++        }
++        current.clear();
++    };
++    for character in query.chars() {
++        let is_word = character.is_alphanumeric() || character == '_';
++        if !is_word {
++            flush(&mut current, &mut terms);
++            current_ascii = None;
++            continue;
++        }
++        let is_ascii = character.is_ascii_alphanumeric() || character == '_';
++        if current_ascii.is_some_and(|previous| previous != is_ascii) {
++            flush(&mut current, &mut terms);
++        }
++        current.push(character);
++        current_ascii = Some(is_ascii);
++    }
++    flush(&mut current, &mut terms);
++    terms
++}
++
++fn score_chunk(query_terms: &BTreeSet<String>, path: &str, text: &str) -> usize {
++    if query_terms.is_empty() {
++        return usize::from(path.ends_with("AGENTS.md"));
++    }
++    let path = path.to_lowercase();
++    let text = text.to_lowercase();
++    query_terms
++        .iter()
++        .map(|term| {
++            let path_hits = path.matches(term.as_str()).count();
++            let text_hits = text.matches(term.as_str()).count().min(8);
++            path_hits.saturating_mul(6).saturating_add(text_hits)
++        })
++        .sum()
++}
++
++fn chunk_text(text: &str) -> Vec<String> {
++    if text.chars().count() <= SOURCE_CHUNK_CHARS {
++        return vec![text.to_owned()];
++    }
++    let mut chunks = Vec::new();
++    let mut current = String::new();
++    for line in text.lines() {
++        if current.chars().count() + line.chars().count() + 1 > SOURCE_CHUNK_CHARS
++            && !current.is_empty()
++        {
++            chunks.push(std::mem::take(&mut current));
++        }
++        current.push_str(line);
++        current.push('\n');
++    }
++    if !current.is_empty() {
++        chunks.push(current);
++    }
++    chunks
++}
++
++fn distinct_sources(evidence: &[EvidenceChunk]) -> Vec<RetrievedSource> {
++    let mut seen = BTreeSet::new();
++    let mut sources = Vec::new();
++    for chunk in evidence {
++        let key = (chunk.source.kind.label(), chunk.source.path.clone());
++        if seen.insert(key) {
++            sources.push(chunk.source.clone());
++        }
++    }
++    sources
++}
++
++fn build_prompt(conversation: &[QuestionMessage], evidence: &[EvidenceChunk]) -> String {
++    let mut prompt = String::from(concat!(
++        "You are the native read-oriented GameEngine AI Studio assistant.\n",
++        "This request is a question/learning turn, not a write-capable AgentRun.\n",
++        "Do not claim to edit files, run mutation tools, or acquire write permissions.\n",
++        "For GameEngine-specific facts, retrieved repository/project evidence is authoritative ",
++        "over model memory.\n",
++        "Cite GameEngine evidence inline as [engine:path] or [project:path].\n",
++        "If the evidence does not support a GameEngine-specific claim, say that it is not ",
++        "established by the current sources.\n",
++        "General game-development knowledge may be used, but distinguish it from ",
++        "repository/project facts.\n",
++        "Answer the user's latest question directly and keep useful conversation context.\n\n",
++    ));
++    prompt.push_str("Retrieved evidence:\n");
++    if evidence.is_empty() {
++        prompt.push_str("(No matching repository/project evidence was found.)\n");
++    } else {
++        for chunk in evidence {
++            prompt.push_str(&format!(
++                "\n--- [{}:{}] ---\n{}\n",
++                chunk.source.kind.label(),
++                chunk.source.path,
++                chunk.text
++            ));
++        }
++    }
++    prompt.push_str("\nConversation:\n");
