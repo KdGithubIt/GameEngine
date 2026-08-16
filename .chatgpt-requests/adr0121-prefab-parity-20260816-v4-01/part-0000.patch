@@ -1,0 +1,1192 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index 1a6c119..201aacc 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -1397,6 +1397,7 @@ dependencies = [
+  "dirs",
+  "eframe",
+  "engine",
++ "engine-assets",
+  "engine-authoring",
+  "engine-mcp",
+  "engine-project-lifecycle",
+diff --git a/crates/assets/src/lib.rs b/crates/assets/src/lib.rs
+index 415dd8c..38f69b2 100644
+--- a/crates/assets/src/lib.rs
++++ b/crates/assets/src/lib.rs
+@@ -13,3 +13,5 @@ pub mod data_asset;
+ pub mod derived_cache;
+ /// Format-independent model intermediate representation.
+ pub mod model_ir;
++/// Shared prefab creation and loading within a project asset boundary.
++pub mod prefab;
+diff --git a/crates/assets/src/prefab.rs b/crates/assets/src/prefab.rs
+new file mode 100644
+index 0000000..2f6ad5c
+--- /dev/null
++++ b/crates/assets/src/prefab.rs
+@@ -0,0 +1,528 @@
++//! Shared prefab asset creation and loading inside a [`ProjectRoot`].
++//!
++//! This service owns the asset-side half of prefab authoring: safe project path
++//! resolution, subtree capture, deterministic serialization, fresh manifest
++//! identity, and manifest persistence. Scene mutation remains in
++//! `engine-authoring::PrefabAuthoringService`.
++
++use crate::asset::{AssetManifest, ImportSettings, ManifestEntry};
++use engine_authoring::{
++    replace_file_contents, AssetId, AuthoringPermission, AuthoringPermissionError,
++    AuthoringPermissions, AuthoringScene, EntityId, PersistError, PrefabAsset, PrefabError,
++    ProjectError, ProjectRoot,
++};
++use serde::Serialize;
++use std::fmt;
++use std::fs;
++use std::io;
++use std::path::{Component, Path, PathBuf};
++
++const ASSET_MANIFEST_FILE: &str = "asset_manifest.json";
++
++/// Successful prefab asset creation result shared by Editor, CLI, and MCP.
++#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
++pub struct PrefabCreation {
++    /// Fresh stable identity registered in `asset_manifest.json`.
++    pub asset_id: AssetId,
++    /// Asset-root-relative path written to the manifest.
++    pub path: String,
++    /// Unique searchable manifest name chosen for the prefab.
++    pub name: String,
++    /// Prefab-local root ID stored in the new prefab document.
++    pub root: EntityId,
++    /// Number of entities captured from the selected root subtree.
++    pub entity_count: usize,
++}
++
++/// Prefab loaded from an asset-root-relative project path.
++#[derive(Debug, Clone, PartialEq)]
++pub struct LoadedPrefab {
++    /// Parsed prefab document.
++    pub prefab: PrefabAsset,
++    /// Canonical resolved file path used for the persisted instance marker.
++    pub source: PathBuf,
++}
++
++/// Failure from shared prefab asset operations.
++#[derive(Debug)]
++pub enum PrefabAssetError {
++    /// The caller lacks the required shared authoring permission.
++    Permission(AuthoringPermissionError),
++    /// A source or destination path violates the project boundary.
++    Project(ProjectError),
++    /// The selected root is absent from the source Scene.
++    MissingEntity(EntityId),
++    /// The requested destination already exists.
++    DestinationExists(String),
++    /// Prefab assets cannot be created below the user script tree.
++    ScriptFolder(String),
++    /// Authored prefab assets must use the `.prefab.json` suffix.
++    InvalidSuffix(String),
++    /// Captured prefab structure is invalid.
++    Prefab(PrefabError),
++    /// Prefab JSON serialization failed.
++    PrefabJson(serde_json::Error),
++    /// Asset manifest JSON serialization failed.
++    ManifestJson(serde_json::Error),
++    /// Reading an existing prefab source failed.
++    Io {
++        /// Source path that failed.
++        path: PathBuf,
++        /// Underlying IO error.
++        source: io::Error,
++    },
++    /// Atomic prefab persistence failed.
++    PrefabPersist(PersistError),
++    /// Atomic asset-manifest persistence failed.
++    ManifestPersist(PersistError),
++}
++
++impl PrefabAssetError {
++    /// Returns the stable diagnostic-style code for this failure.
++    pub fn code(&self) -> &'static str {
++        match self {
++            Self::Permission(source) => source.code(),
++            Self::Project(_) => "asset.invalid_path",
++            Self::MissingEntity(_) => "prefab.entity_not_found",
++            Self::DestinationExists(_) => "prefab.destination_exists",
++            Self::ScriptFolder(_) => "prefab.script_folder",
++            Self::InvalidSuffix(_) => "prefab.invalid_path",
++            Self::Prefab(_) => "prefab.invalid_selection",
++            Self::PrefabJson(_) => "prefab.serialization_failed",
++            Self::ManifestJson(_) => "asset.manifest_serialization_failed",
++            Self::Io { .. } => "prefab.read_failed",
++            Self::PrefabPersist(_) => "prefab.write_failed",
++            Self::ManifestPersist(_) => "asset.manifest_write_failed",
++        }
++    }
++}
++
++impl fmt::Display for PrefabAssetError {
++    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
++        match self {
++            Self::Permission(source) => source.fmt(formatter),
++            Self::Project(source) => write!(formatter, "prefab path is invalid: {source}"),
++            Self::MissingEntity(entity) => {
++                write!(formatter, "entity `{entity}` is absent from the source Scene")
++            }
++            Self::DestinationExists(path) => {
++                write!(formatter, "prefab destination already exists: `{path}`")
++            }
++            Self::ScriptFolder(path) => {
++                write!(formatter, "prefab destination `{path}` is inside the script tree")
++            }
++            Self::InvalidSuffix(path) => {
++                write!(formatter, "prefab path `{path}` must end with .prefab.json")
++            }
++            Self::Prefab(source) => write!(formatter, "prefab selection is invalid: {source}"),
++            Self::PrefabJson(source) => write!(formatter, "failed to serialize prefab: {source}"),
++            Self::ManifestJson(source) => {
++                write!(formatter, "failed to serialize asset manifest: {source}")
++            }
++            Self::Io { path, source } => {
++                write!(formatter, "failed to read prefab `{}`: {source}", path.display())
++            }
++            Self::PrefabPersist(source) => write!(formatter, "failed to save prefab: {source}"),
++            Self::ManifestPersist(source) => {
++                write!(formatter, "failed to save asset manifest: {source}")
++            }
++        }
++    }
++}
++
++impl std::error::Error for PrefabAssetError {
++    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
++        match self {
++            Self::Permission(source) => Some(source),
++            Self::Project(source) => Some(source),
++            Self::Prefab(source) => Some(source),
++            Self::PrefabJson(source) | Self::ManifestJson(source) => Some(source),
++            Self::Io { source, .. } => Some(source),
++            Self::PrefabPersist(source) | Self::ManifestPersist(source) => Some(source),
++            Self::MissingEntity(_)
++            | Self::DestinationExists(_)
++            | Self::ScriptFolder(_)
++            | Self::InvalidSuffix(_) => None,
++        }
++    }
++}
++
++impl From<AuthoringPermissionError> for PrefabAssetError {
++    fn from(source: AuthoringPermissionError) -> Self {
++        Self::Permission(source)
++    }
++}
++
++impl From<ProjectError> for PrefabAssetError {
++    fn from(source: ProjectError) -> Self {
++        Self::Project(source)
++    }
++}
++
++impl From<PrefabError> for PrefabAssetError {
++    fn from(source: PrefabError) -> Self {
++        Self::Prefab(source)
++    }
++}
++
++/// GUI-free project prefab asset service.
++#[derive(Debug, Default, Clone, Copy)]
++pub struct PrefabAssetService;
++
++impl PrefabAssetService {
++    /// Creates the stateless prefab asset service.
++    pub fn new() -> Self {
++        Self
++    }
++
++    /// Creates one prefab from `root` and all descendants, then registers it
++    /// with a fresh [`AssetId`] in the project manifest.
++    ///
++    /// The destination is asset-root-relative. Existing files are rejected. If
++    /// manifest persistence fails after the new prefab file is written, the new
++    /// file is removed and the caller's in-memory manifest remains unchanged.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`PrefabAssetError`] for permission denial, unsafe paths,
++    /// missing Scene entities, invalid prefab structure, or persistence errors.
++    pub fn create_from_root(
++        &self,
++        project: &ProjectRoot,
++        manifest: &mut AssetManifest,
++        permissions: &AuthoringPermissions,
++        scene: &AuthoringScene,
++        root: &EntityId,
++        destination_relative: &str,
++    ) -> Result<PrefabCreation, PrefabAssetError> {
++        permissions.require(AuthoringPermission::Read)?;
++        permissions.require(AuthoringPermission::AssetWrite)?;
++
++        let normalized = normalize_relative_path(destination_relative)?;
++        require_prefab_suffix(&normalized)?;
++        let destination = project.resolve_asset_for_write(&normalized)?;
++        if Path::new(&normalized).starts_with("scripts") {
++            return Err(PrefabAssetError::ScriptFolder(normalized));
++        }
++        if destination.exists() {
++            return Err(PrefabAssetError::DestinationExists(normalized));
++        }
++
++        let ids = subtree_ids(scene, root)?;
++        let prefab = PrefabAsset::from_selection(ids.iter().map(|id| {
++            let entity = scene
++                .entity(id)
++                .expect("subtree IDs are collected from the same Scene");
++            (id, entity)
++        }))?;
++        let prefab_json = prefab.to_json().map_err(PrefabAssetError::PrefabJson)?;
++
++        let asset_id = AssetId::generate();
++        let name = unique_asset_name(&normalized, manifest);
++        let mut next_manifest = manifest.clone();
++        next_manifest.insert(
++            asset_id.clone(),
++            ManifestEntry {
++                path: normalized.clone(),
++                name: Some(name.clone()),
++                import_settings: ImportSettings::default(),
++            },
++        );
++        let manifest_json = next_manifest
++            .to_canonical_json()
++            .map_err(PrefabAssetError::ManifestJson)?;
++
++        replace_file_contents(&destination, &prefab_json)
++            .map_err(PrefabAssetError::PrefabPersist)?;
++        let manifest_path = project.path().join(ASSET_MANIFEST_FILE);
++        if let Err(source) = replace_file_contents(&manifest_path, &manifest_json) {
++            let _ = fs::remove_file(&destination);
++            return Err(PrefabAssetError::ManifestPersist(source));
++        }
++
++        *manifest = next_manifest;
++        Ok(PrefabCreation {
++            asset_id,
++            path: normalized,
++            name,
++            root: prefab.root,
++            entity_count: prefab.entities.len(),
++        })
++    }
++
++    /// Loads one author-owned prefab through the project asset boundary.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`PrefabAssetError`] for read permission denial, an unsafe or
++    /// missing source path, IO failure, or invalid prefab JSON/structure.
++    pub fn load(
++        &self,
++        project: &ProjectRoot,
++        permissions: &AuthoringPermissions,
++        source_relative: &str,
++    ) -> Result<LoadedPrefab, PrefabAssetError> {
++        permissions.require(AuthoringPermission::Read)?;
++        let normalized = normalize_relative_path(source_relative)?;
++        require_prefab_suffix(&normalized)?;
++        let source = project.resolve_asset(&normalized)?;
++        let json = fs::read_to_string(&source).map_err(|error| PrefabAssetError::Io {
++            path: source.clone(),
++            source: error,
++        })?;
++        let prefab = PrefabAsset::from_json(&json)?;
++        Ok(LoadedPrefab { prefab, source })
++    }
++}
++
++fn normalize_relative_path(relative: &str) -> Result<String, PrefabAssetError> {
++    let portable = relative.replace('\\', "/");
++    let mut parts = Vec::new();
++    for component in Path::new(&portable).components() {
++        match component {
++            Component::Normal(part) => {
++                let Some(part) = part.to_str() else {
++                    return Err(PrefabAssetError::Project(ProjectError::PathTraversal {
++                        requested: relative.to_owned(),
++                    }));
++                };
++                parts.push(part);
++            }
++            Component::CurDir => {}
++            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
++                return Err(PrefabAssetError::Project(ProjectError::PathTraversal {
++                    requested: relative.to_owned(),
++                }));
++            }
++        }
++    }
++    if parts.is_empty() {
++        return Err(PrefabAssetError::Project(ProjectError::PathTraversal {
++            requested: relative.to_owned(),
++        }));
++    }
++    Ok(parts.join("/"))
++}
++
++fn require_prefab_suffix(relative: &str) -> Result<(), PrefabAssetError> {
++    if relative.ends_with(".prefab.json") {
++        Ok(())
++    } else {
++        Err(PrefabAssetError::InvalidSuffix(relative.to_owned()))
++    }
++}
++
++fn subtree_ids(scene: &AuthoringScene, root: &EntityId) -> Result<Vec<EntityId>, PrefabAssetError> {
++    if scene.entity(root).is_none() {
++        return Err(PrefabAssetError::MissingEntity(root.clone()));
++    }
++    let mut result = Vec::new();
++    let mut frontier = vec![root.clone()];
++    while let Some(parent) = frontier.pop() {
++        result.push(parent.clone());
++        let mut children = scene
++            .entities()
++            .filter(|(_, entity)| entity.parent.as_ref() == Some(&parent))
++            .map(|(id, _)| id.clone())
++            .collect::<Vec<_>>();
++        children.reverse();
++        frontier.extend(children);
++    }
++    Ok(result)
++}
++
++fn unique_asset_name(relative: &str, manifest: &AssetManifest) -> String {
++    let display = Path::new(relative)
++        .file_stem()
++        .and_then(|stem| stem.to_str())
++        .unwrap_or("prefab");
++    let base = asset_name_slug(display);
++    if !manifest
++        .iter()
++        .any(|(_, entry)| entry.name.as_deref() == Some(base.as_str()))
++    {
++        return base;
++    }
++    for suffix in 2.. {
++        let candidate = format!("{base}_{suffix}");
++        if !manifest
++            .iter()
++            .any(|(_, entry)| entry.name.as_deref() == Some(candidate.as_str()))
++        {
++            return candidate;
++        }
++    }
++    unreachable!("usize suffix space must not be exhausted")
++}
++
++fn asset_name_slug(display_name: &str) -> String {
++    let mut slug = String::new();
++    let mut previous_was_separator = false;
++    for character in display_name.chars() {
++        if character.is_ascii_alphanumeric() {
++            slug.push(character.to_ascii_lowercase());
++            previous_was_separator = false;
++        } else if !previous_was_separator && !slug.is_empty() {
++            slug.push('_');
++            previous_was_separator = true;
++        }
++    }
++    while slug.ends_with('_') {
++        slug.pop();
++    }
++    if slug.is_empty() {
++        "asset".into()
++    } else {
++        slug
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use engine_authoring::{
++        AuthoringCommand, AuthoringPermission, ProjectConfig, Transaction, PROJECT_SCHEMA_VERSION,
++    };
++
++    fn project() -> (tempfile::TempDir, ProjectRoot) {
++        let directory = tempfile::tempdir().expect("temporary project directory");
++        let root = ProjectRoot::create(
++            directory.path(),
++            ProjectConfig {
++                name: "PrefabAssetTest".into(),
++                schema_version: PROJECT_SCHEMA_VERSION,
++            },
++        )
++        .expect("project fixture");
++        fs::create_dir_all(root.assets_root().join("prefabs")).expect("prefab directory");
++        (directory, root)
++    }
++
++    fn scene_with_nested_selection() -> (AuthoringScene, EntityId, EntityId) {
++        let mut scene = AuthoringScene::new();
++        let outer = EntityId::generate();
++        let root = EntityId::generate();
++        let child = EntityId::generate();
++        let mut transaction = Transaction::begin(&scene);
++        transaction.apply(AuthoringCommand::CreateEntity {
++            id: outer.clone(),
++            name: "outer".into(),
++            parent: None,
++        });
++        transaction.apply(AuthoringCommand::CreateEntity {
++            id: root.clone(),
++            name: "enemy".into(),
++            parent: Some(outer),
++        });
++        transaction.apply(AuthoringCommand::CreateEntity {
++            id: child.clone(),
++            name: "weapon".into(),
++            parent: Some(root.clone()),
++        });
++        transaction.commit(&mut scene).expect("scene fixture");
++        (scene, root, child)
++    }
++
++    fn write_permissions() -> AuthoringPermissions {
++        AuthoringPermissions::read_only().with(AuthoringPermission::AssetWrite)
++    }
++
++    #[test]
++    fn creation_captures_descendants_detaches_root_and_registers_manifest() {
++        let (_directory, project) = project();
++        let (scene, root, child) = scene_with_nested_selection();
++        let mut manifest = AssetManifest::default();
++
++        let result = PrefabAssetService::new()
++            .create_from_root(
++                &project,
++                &mut manifest,
++                &write_permissions(),
++                &scene,
++                &root,
++                "prefabs/enemy.prefab.json",
++            )
++            .expect("prefab creation");
++
++        assert_eq!(result.entity_count, 2);
++        let entry = manifest.get(&result.asset_id).expect("manifest entry");
++        assert_eq!(entry.path, "prefabs/enemy.prefab.json");
++        let saved = fs::read_to_string(project.assets_root().join(&entry.path))
++            .expect("prefab file");
++        let prefab = PrefabAsset::from_json(&saved).expect("saved prefab must be reloadable");
++        assert_eq!(prefab.entities.len(), 2);
++        assert_eq!(prefab.entities[&prefab.root].parent, None);
++        assert!(prefab.entities.contains_key(&child));
++
++        let persisted_manifest = fs::read_to_string(project.path().join(ASSET_MANIFEST_FILE))
++            .expect("manifest file");
++        let persisted = AssetManifest::from_json(&persisted_manifest).expect("manifest parse");
++        assert!(persisted.get(&result.asset_id).is_some());
++    }
++
++    #[test]
++    fn creation_requires_asset_write_and_rejects_path_escape() {
++        let (_directory, project) = project();
++        let (scene, root, _) = scene_with_nested_selection();
++        let mut manifest = AssetManifest::default();
++
++        let denied = PrefabAssetService::new()
++            .create_from_root(
++                &project,
++                &mut manifest,
++                &AuthoringPermissions::read_only(),
++                &scene,
++                &root,
++                "prefabs/enemy.prefab.json",
++            )
++            .expect_err("asset-write permission must be required");
++        assert_eq!(denied.code(), "authoring.permission_denied");
++
++        let escaped = PrefabAssetService::new()
++            .create_from_root(
++                &project,
++                &mut manifest,
++                &write_permissions(),
++                &scene,
++                &root,
++                "../enemy.prefab.json",
++            )
++            .expect_err("path traversal must be rejected");
++        assert_eq!(escaped.code(), "asset.invalid_path");
++    }
++
++    #[test]
++    fn load_uses_project_boundary_and_shared_read_permission() {
++        let (_directory, project) = project();
++        let (scene, root, _) = scene_with_nested_selection();
++        let mut manifest = AssetManifest::default();
++        PrefabAssetService::new()
++            .create_from_root(
++                &project,
++                &mut manifest,
++                &write_permissions(),
++                &scene,
++                &root,
++                "prefabs/enemy.prefab.json",
++            )
++            .expect("prefab creation");
++
++        let loaded = PrefabAssetService::new()
++            .load(
++                &project,
++                &AuthoringPermissions::read_only(),
++                "prefabs/enemy.prefab.json",
++            )
++            .expect("prefab load");
++        assert_eq!(loaded.prefab.entities.len(), 2);
++
++        let denied = PrefabAssetService::new()
++            .load(
++                &project,
++                &AuthoringPermissions::none(),
++                "prefabs/enemy.prefab.json",
++            )
++            .expect_err("read permission must be required");
++        assert_eq!(denied.code(), "authoring.permission_denied");
++    }
++}
+diff --git a/crates/authoring/src/lib.rs b/crates/authoring/src/lib.rs
+index b936312..7488ef1 100644
+--- a/crates/authoring/src/lib.rs
++++ b/crates/authoring/src/lib.rs
+@@ -52,6 +52,7 @@ pub mod load;
+ pub mod material_asset;
+ pub mod persist;
+ pub mod prefab;
++pub mod prefab_authoring;
+ pub mod project;
+ pub mod project_settings;
+ pub mod scene;
+@@ -126,6 +127,10 @@ pub use material_asset::{
+ };
+ pub use persist::{replace_file_contents, PersistError, PersistOperation};
+ pub use prefab::{PrefabAsset, PrefabError, PrefabInstantiation, PREFAB_SCHEMA_VERSION};
++pub use prefab_authoring::{
++    PrefabAuthoringError, PrefabAuthoringService, PrefabInstantiationMutation,
++    PREFAB_INSTANCE_COMPONENT,
++};
+ pub use project::{ProjectConfig, ProjectError, ProjectRoot, PROJECT_SCHEMA_VERSION};
+ pub use project_settings::{
+     AxisBinding, InputAction, KeyAxisBinding, Layer, ProjectSettings, ProjectSettingsError,
+diff --git a/crates/authoring/src/prefab.rs b/crates/authoring/src/prefab.rs
+index c88a896..eb46ab2 100644
+--- a/crates/authoring/src/prefab.rs
++++ b/crates/authoring/src/prefab.rs
+@@ -138,7 +138,7 @@ impl PrefabAsset {
+     pub fn from_selection<'a>(
+         selection: impl IntoIterator<Item = (&'a EntityId, &'a AuthoringEntity)>,
+     ) -> Result<Self, PrefabError> {
+-        let entities: BTreeMap<EntityId, AuthoringEntity> = selection
++        let mut entities: BTreeMap<EntityId, AuthoringEntity> = selection
+             .into_iter()
+             .map(|(id, e)| (id.clone(), e.clone()))
+             .collect();
+@@ -161,6 +161,13 @@ impl PrefabAsset {
+             _ => return Err(PrefabError::MultipleRoots),
+         };
+ 
++        // A prefab is a standalone subtree. If the selected root was nested in
++        // the source Scene, its external parent must not leak into the prefab.
++        entities
++            .get_mut(&root)
++            .expect("the selected root is present in the cloned selection")
++            .parent = None;
++
+         Ok(Self {
+             schema_version: PREFAB_SCHEMA_VERSION,
+             root,
+diff --git a/crates/authoring/src/prefab_authoring.rs b/crates/authoring/src/prefab_authoring.rs
+new file mode 100644
+index 0000000..418014b
+--- /dev/null
++++ b/crates/authoring/src/prefab_authoring.rs
+@@ -0,0 +1,275 @@
++//! Shared prefab instantiation semantics over the Scene authoring transaction API.
++//!
++//! The prefab schema owns reusable entity templates, while this service owns the
++//! authoring command batch used to preview or apply one instance. Editor, CLI,
++//! and MCP adapters must not add their own ID-remap or instance-marker rules.
++
++use crate::{
++    AuthoringCommand, AuthoringPermissions, AuthoringSession, ComponentTypeId, EntityId,
++    PrefabAsset, PrefabError, SceneAuthoringError, SceneAuthoringMutation,
++    SceneAuthoringService, Value,
++};
++use serde::Serialize;
++use std::collections::BTreeMap;
++use std::fmt;
++use std::path::Path;
++
++/// Persisted editor-only component that records the source of a prefab instance.
++pub const PREFAB_INSTANCE_COMPONENT: &str = "editor.prefab_instance";
++
++/// Result of previewing or applying one prefab instantiation.
++#[derive(Debug, Clone, PartialEq, Serialize)]
++pub struct PrefabInstantiationMutation {
++    /// Fresh root ID proposed for this independent instantiation call.
++    pub proposed_root: EntityId,
++    /// Shared Scene mutation result, including diagnostics and semantic diff.
++    pub mutation: SceneAuthoringMutation,
++}
++
++/// Failure from shared prefab instantiation semantics.
++#[derive(Debug)]
++pub enum PrefabAuthoringError {
++    /// The prefab definition cannot produce a valid command batch.
++    Prefab(PrefabError),
++    /// The shared Scene authoring service rejected the operation.
++    Scene(SceneAuthoringError),
++}
++
++impl PrefabAuthoringError {
++    /// Returns the stable diagnostic-style code for this failure.
++    pub fn code(&self) -> &'static str {
++        match self {
++            Self::Prefab(_) => "prefab.invalid_definition",
++            Self::Scene(source) => source.code(),
++        }
++    }
++}
++
++impl fmt::Display for PrefabAuthoringError {
++    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
++        match self {
++            Self::Prefab(source) => write!(formatter, "prefab definition is invalid: {source}"),
++            Self::Scene(source) => source.fmt(formatter),
++        }
++    }
++}
++
++impl std::error::Error for PrefabAuthoringError {
++    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
++        match self {
++            Self::Prefab(source) => Some(source),
++            Self::Scene(source) => Some(source),
++        }
++    }
++}
++
++impl From<PrefabError> for PrefabAuthoringError {
++    fn from(source: PrefabError) -> Self {
++        Self::Prefab(source)
++    }
++}
++
++impl From<SceneAuthoringError> for PrefabAuthoringError {
++    fn from(source: SceneAuthoringError) -> Self {
++        Self::Scene(source)
++    }
++}
++
++/// GUI-free prefab instantiation behavior shared by structured authoring clients.
++#[derive(Debug, Default, Clone, Copy)]
++pub struct PrefabAuthoringService;
++
++impl PrefabAuthoringService {
++    /// Creates the stateless prefab authoring service.
++    pub fn new() -> Self {
++        Self
++    }
++
++    /// Previews one prefab instantiation without changing the Scene or undo history.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`PrefabAuthoringError`] when the prefab is structurally invalid,
++    /// preview permission is absent, or the supplied revision/generation is stale.
++    pub fn preview_instantiation(
++        &self,
++        session: &AuthoringSession,
++        permissions: &AuthoringPermissions,
++        prefab: &PrefabAsset,
++        source: &Path,
++        parent: Option<EntityId>,
++        expected_revision: u64,
++        expected_generation: u64,
++    ) -> Result<PrefabInstantiationMutation, PrefabAuthoringError> {
++        let (proposed_root, commands) = instantiation_commands(prefab, source, parent)?;
++        let mutation = SceneAuthoringService::new().preview(
++            session,
++            permissions,
++            expected_revision,
++            expected_generation,
++            commands,
++        )?;
++        Ok(PrefabInstantiationMutation {
++            proposed_root,
++            mutation,
++        })
++    }
++
++    /// Applies one prefab instantiation as one Scene transaction and undo entry.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`PrefabAuthoringError`] when the prefab is structurally invalid,
++    /// project-data-write permission is absent, the supplied revision/generation
++    /// is stale, or the Scene transaction cannot be committed.
++    pub fn apply_instantiation(
++        &self,
++        session: &mut AuthoringSession,
++        permissions: &AuthoringPermissions,
++        prefab: &PrefabAsset,
++        source: &Path,
++        parent: Option<EntityId>,
++        expected_revision: u64,
++        expected_generation: u64,
++    ) -> Result<PrefabInstantiationMutation, PrefabAuthoringError> {
++        let (proposed_root, commands) = instantiation_commands(prefab, source, parent)?;
++        let mutation = SceneAuthoringService::new().apply(
++            session,
++            permissions,
++            expected_revision,
++            expected_generation,
++            commands,
++        )?;
++        Ok(PrefabInstantiationMutation {
++            proposed_root,
++            mutation,
++        })
++    }
++}
++
++fn instantiation_commands(
++    prefab: &PrefabAsset,
++    source: &Path,
++    parent: Option<EntityId>,
++) -> Result<(EntityId, Vec<AuthoringCommand>), PrefabAuthoringError> {
++    let mut instance = prefab.instantiate_with_root(parent)?;
++    instance.commands.push(AuthoringCommand::AddComponent {
++        entity: instance.root.clone(),
++        component_type: ComponentTypeId::new(PREFAB_INSTANCE_COMPONENT),
++        value: Value::Object(BTreeMap::from([(
++            "source".to_owned(),
++            Value::String(source.to_string_lossy().into_owned()),
++        )])),
++    });
++    Ok((instance.root, instance.commands))
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use crate::{AuthoringEntity, AuthoringPermission, AuthoringScene};
++
++    fn permissions() -> AuthoringPermissions {
++        AuthoringPermissions::read_only()
++            .with(AuthoringPermission::Preview)
++            .with(AuthoringPermission::ProjectDataWrite)
++    }
++
++    fn prefab() -> PrefabAsset {
++        let id = EntityId::generate();
++        let entity = AuthoringEntity::new(id.clone(), "enemy");
++        PrefabAsset::from_selection([(&id, &entity)]).expect("prefab fixture")
++    }
++
++    #[test]
++    fn preview_is_non_destructive_and_reports_proposed_root() {
++        let session = AuthoringSession::new(AuthoringScene::new());
++        let base = SceneAuthoringService::new()
++            .inspect(&session, &permissions())
++            .expect("base snapshot");
++
++        let result = PrefabAuthoringService::new()
++            .preview_instantiation(
++                &session,
++                &permissions(),
++                &prefab(),
++                Path::new("/project/assets/prefabs/enemy.prefab.json"),
++                None,
++                base.revision,
++                base.generation,
++            )
++            .expect("preview");
++
++        assert!(result.mutation.success);
++        assert!(session.scene().entity(&result.proposed_root).is_none());
++        assert!(!session.can_undo());
++    }
++
++    #[test]
++    fn apply_is_one_undoable_scene_transaction_with_source_marker() {
++        let mut session = AuthoringSession::new(AuthoringScene::new());
++        let permissions = permissions();
++        let base = SceneAuthoringService::new()
++            .inspect(&session, &permissions)
++            .expect("base snapshot");
++        let source = Path::new("/project/assets/prefabs/enemy.prefab.json");
++
++        let result = PrefabAuthoringService::new()
++            .apply_instantiation(
++                &mut session,
++                &permissions,
++                &prefab(),
++                source,
++                None,
++                base.revision,
++                base.generation,
++            )
++            .expect("apply");
++
++        assert!(result.mutation.success);
++        let root = session
++            .scene()
++            .entity(&result.proposed_root)
++            .expect("instantiated root");
++        assert!(root
++            .components
++            .contains_key(&ComponentTypeId::new(PREFAB_INSTANCE_COMPONENT)));
++        assert!(session.can_undo());
++        assert!(session.undo());
++        assert!(session.scene().entity(&result.proposed_root).is_none());
++    }
++
++    #[test]
++    fn stale_base_is_forwarded_from_scene_service() {
++        let mut session = AuthoringSession::new(AuthoringScene::new());
++        let permissions = permissions();
++        let base = SceneAuthoringService::new()
++            .inspect(&session, &permissions)
++            .expect("base snapshot");
++        let first = PrefabAuthoringService::new()
++            .apply_instantiation(
++                &mut session,
++                &permissions,
++                &prefab(),
++                Path::new("enemy.prefab.json"),
++                None,
++                base.revision,
++                base.generation,
++            )
++            .expect("first apply");
++        assert!(first.mutation.success);
++
++        let error = PrefabAuthoringService::new()
++            .apply_instantiation(
++                &mut session,
++                &permissions,
++                &prefab(),
++                Path::new("enemy.prefab.json"),
++                None,
++                base.revision,
++                base.generation,
++            )
++            .expect_err("stale apply must fail");
++        assert_eq!(error.code(), "authoring.stale_revision");
++    }
++}
+diff --git a/crates/cli/src/asset_cli.rs b/crates/cli/src/asset_cli.rs
+index f914021..c0c4aa1 100644
+--- a/crates/cli/src/asset_cli.rs
++++ b/crates/cli/src/asset_cli.rs
+@@ -64,7 +64,9 @@ fn asset_inspect(project_path: &Path, asset_id: &str) -> Result<CliRunResult, Cl
+     }
+ }
+ 
+-fn load_catalog(project_path: &Path) -> Result<(ProjectRoot, AssetManifest), CliRunResult> {
++pub(super) fn load_catalog(
++    project_path: &Path,
++) -> Result<(ProjectRoot, AssetManifest), CliRunResult> {
+     let project = ProjectRoot::open(project_path).map_err(|error| {
+         input_error("project_error", project_path, &error.to_string())
+     })?;
+diff --git a/crates/cli/src/lib.rs b/crates/cli/src/lib.rs
+index ee5ef96..16f4e68 100644
+--- a/crates/cli/src/lib.rs
++++ b/crates/cli/src/lib.rs
+@@ -4,6 +4,7 @@
+ //! only. Domain behavior is delegated to shared authoring and asset services.
+ 
+ mod asset_cli;
++mod prefab_cli;
+ mod scene_cli;
+ 
+ use engine_authoring::{
+@@ -56,6 +57,9 @@ where
+     if let Some(result) = asset_cli::dispatch(&args) {
+         return result;
+     }
++    if let Some(result) = prefab_cli::dispatch(&args) {
++        return result;
++    }
+     if let Some(result) = scene_cli::dispatch(&args) {
+         return result;
+     }
+@@ -602,7 +606,7 @@ fn ai_agent_capture_frame(inbox_path: &str) -> Result<CliRunResult, CliError> {
+ }
+ 
+ fn help_text() -> &'static str {
+-    "Usage:\n  engine-cli project describe <project-root>\n  engine-cli asset search <project-root> [query]\n  engine-cli asset inspect <project-root> <asset-id>\n  engine-cli scene inspect <project-root> <scene-relative-path>\n  engine-cli scene validate <project-root> <scene-relative-path>\n  engine-cli scene preview <project-root> <scene-relative-path> <commands.json>\n  engine-cli scene apply <project-root> <scene-relative-path> <commands.json>\n  engine-cli entity find <project-root> <scene-relative-path> [query]\n  engine-cli entity inspect <project-root> <scene-relative-path> <entity-id>\n  engine-cli component schemas\n  engine-cli behavior-tree schemas\n  engine-cli behavior-tree example\n  engine-cli behavior-tree validate <graph.json>\n  engine-cli behavior-tree compile <graph.json>\n  engine-cli behavior-tree layout <graph.json>\n  engine-cli behavior-tree nodes <graph.json>\n  engine-cli behavior-tree edges <graph.json>\n  engine-cli behavior-tree preview <graph.json> <commands.json>\n  engine-cli behavior-tree apply <graph.json> <commands.json>\n  engine-cli ai-agent describe-tools\n  engine-cli ai-agent validate-input <json>\n  engine-cli ai-agent inject-input <inbox_path> <json>\n  engine-cli ai-agent capture-frame <inbox_path>"
++    "Usage:\n  engine-cli project describe <project-root>\n  engine-cli asset search <project-root> [query]\n  engine-cli asset inspect <project-root> <asset-id>\n  engine-cli prefab create <project-root> <scene-relative-path> <root-entity-id> <destination-relative-path>\n  engine-cli prefab preview <project-root> <scene-relative-path> <source-relative-path> [parent-entity-id]\n  engine-cli prefab instantiate <project-root> <scene-relative-path> <source-relative-path> [parent-entity-id]\n  engine-cli scene inspect <project-root> <scene-relative-path>\n  engine-cli scene validate <project-root> <scene-relative-path>\n  engine-cli scene preview <project-root> <scene-relative-path> <commands.json>\n  engine-cli scene apply <project-root> <scene-relative-path> <commands.json>\n  engine-cli entity find <project-root> <scene-relative-path> [query]\n  engine-cli entity inspect <project-root> <scene-relative-path> <entity-id>\n  engine-cli component schemas\n  engine-cli behavior-tree schemas\n  engine-cli behavior-tree example\n  engine-cli behavior-tree validate <graph.json>\n  engine-cli behavior-tree compile <graph.json>\n  engine-cli behavior-tree layout <graph.json>\n  engine-cli behavior-tree nodes <graph.json>\n  engine-cli behavior-tree edges <graph.json>\n  engine-cli behavior-tree preview <graph.json> <commands.json>\n  engine-cli behavior-tree apply <graph.json> <commands.json>\n  engine-cli ai-agent describe-tools\n  engine-cli ai-agent validate-input <json>\n  engine-cli ai-agent inject-input <inbox_path> <json>\n  engine-cli ai-agent capture-frame <inbox_path>"
+ }
+ 
+ #[cfg(test)]
+diff --git a/crates/cli/src/prefab_cli.rs b/crates/cli/src/prefab_cli.rs
+new file mode 100644
+index 0000000..7dd62b1
+--- /dev/null
++++ b/crates/cli/src/prefab_cli.rs
+@@ -0,0 +1,227 @@
++use super::{asset_cli, scene_cli, to_json, CliError, CliRunResult};
++use engine_assets::prefab::{PrefabAssetError, PrefabAssetService};
++use engine_authoring::{
++    replace_file_contents, AuthoringPermission, AuthoringPermissions, EntityId,
++    PrefabAuthoringError, PrefabAuthoringService, SceneAuthoringService, SceneSaveError, StableId,
++};
++use serde::Serialize;
++use std::path::Path;
++
++#[derive(Debug, Serialize)]
++struct ServiceErrorOutput {
++    success: bool,
++    error: ServiceErrorBody,
++}
++
++#[derive(Debug, Serialize)]
++struct ServiceErrorBody {
++    code: &'static str,
++    message: String,
++}
++
++pub(super) fn dispatch(args: &[String]) -> Option<Result<CliRunResult, CliError>> {
++    match args {
++        [domain, command, project, scene, root, destination]
++            if domain == "prefab" && command == "create" =>
++        {
++            Some(prefab_create(
++                Path::new(project),
++                scene,
++                root,
++                destination,
++            ))
++        }
++        [domain, command, project, scene, source]
++            if domain == "prefab" && command == "preview" =>
++        {
++            Some(prefab_mutate(
++                Path::new(project),
++                scene,
++                source,
++                None,
++                false,
++            ))
++        }
++        [domain, command, project, scene, source, parent]
++            if domain == "prefab" && command == "preview" =>
++        {
++            Some(prefab_mutate(
++                Path::new(project),
++                scene,
++                source,
++                Some(parent.as_str()),
++                false,
++            ))
++        }
++        [domain, command, project, scene, source]
++            if domain == "prefab" && command == "instantiate" =>
++        {
++            Some(prefab_mutate(
++                Path::new(project),
++                scene,
++                source,
++                None,
++                true,
++            ))
++        }
++        [domain, command, project, scene, source, parent]
++            if domain == "prefab" && command == "instantiate" =>
++        {
++            Some(prefab_mutate(
++                Path::new(project),
++                scene,
++                source,
++                Some(parent.as_str()),
++                true,
++            ))
++        }
++        _ => None,
++    }
++}
++
++fn prefab_create(
++    project_path: &Path,
++    scene_relative: &str,
++    root_text: &str,
++    destination: &str,
++) -> Result<CliRunResult, CliError> {
++    let root = match parse_entity_id(root_text) {
++        Ok(root) => root,
++        Err(result) => return Ok(result),
++    };
++    let context = match scene_cli::load_scene_context(project_path, scene_relative) {
++        Ok(context) => context,
++        Err(result) => return Ok(result),
++    };
++    let (project, mut manifest) = match asset_cli::load_catalog(project_path) {
++        Ok(catalog) => catalog,
++        Err(result) => return Ok(result),
++    };
++    let result = PrefabAssetService::new().create_from_root(
++        &project,
++        &mut manifest,
++        &prefab_permissions(),
++        context.session.scene(),
++        &root,
++        destination,
++    );
++    match result {
++        Ok(output) => Ok(CliRunResult::success(to_json(&output)?)),
++        Err(error) => prefab_asset_error(error),
++    }
++}
++
++fn prefab_mutate(
++    project_path: &Path,
++    scene_relative: &str,
++    source: &str,
++    parent_text: Option<&str>,
++    persist: bool,
++) -> Result<CliRunResult, CliError> {
++    let parent = match parent_text.map(|parent| parse_entity_id(parent)).transpose() {
++        Ok(parent) => parent,
++        Err(result) => return Ok(result),
++    };
++    let mut context = match scene_cli::load_scene_context(project_path, scene_relative) {
++        Ok(context) => context,
++        Err(result) => return Ok(result),
++    };
++    let (project, _manifest) = match asset_cli::load_catalog(project_path) {
++        Ok(catalog) => catalog,
++        Err(result) => return Ok(result),
++    };
++    let permissions = prefab_permissions();
++    let loaded = match PrefabAssetService::new().load(&project, &permissions, source) {
++        Ok(loaded) => loaded,
++        Err(error) => return prefab_asset_error(error),
++    };
++    let snapshot = match SceneAuthoringService::new().inspect(&context.session, &permissions) {
++        Ok(snapshot) => snapshot,
++        Err(error) => return Ok(service_error(error.code(), error.to_string())),
++    };
++    let revision = snapshot.revision;
++    let generation = snapshot.generation;
++    let service = PrefabAuthoringService::new();
++    let result = if persist {
++        service.apply_instantiation(
++            &mut context.session,
++            &permissions,
++            &loaded.prefab,
++            &loaded.source,
++            parent,
++            revision,
++            generation,
++        )
++    } else {
++        service.preview_instantiation(
++            &context.session,
++            &permissions,
++            &loaded.prefab,
++            &loaded.source,
++            parent,
++            revision,
++            generation,
++        )
++    };
++    let output = match result {
++        Ok(output) => output,
++        Err(error) => return prefab_authoring_error(error),
++    };
++
++    if persist && output.mutation.success {
++        let json = context
++            .session
++            .scene()
++            .to_canonical_json()
++            .map_err(scene_save_error_to_cli)?;
++        replace_file_contents(&context.path, &json)
++            .map_err(|source| CliError::Persist { source })?;
++    }
++
++    Ok(CliRunResult::diagnostics(
++        to_json(&output)?,
++        !output.mutation.success,
++    ))
++}
++
++fn parse_entity_id(text: &str) -> Result<EntityId, CliRunResult> {
++    EntityId::from_stable_id(StableId::new(text)).map_err(|error| {
++        service_error(
++            "invalid_entity_id",
++            format!("entity ID `{text}` is invalid: {error}"),
++        )
++    })
++}
++
++fn prefab_permissions() -> AuthoringPermissions {
++    AuthoringPermissions::read_only()
++        .with(AuthoringPermission::Preview)
++        .with(AuthoringPermission::ProjectDataWrite)
++        .with(AuthoringPermission::AssetWrite)
++}
++
++fn prefab_asset_error(error: PrefabAssetError) -> Result<CliRunResult, CliError> {
++    Ok(service_error(error.code(), error.to_string()))
++}
++
++fn prefab_authoring_error(error: PrefabAuthoringError) -> Result<CliRunResult, CliError> {
++    Ok(service_error(error.code(), error.to_string()))
++}
++
++fn service_error(code: &'static str, message: String) -> CliRunResult {
++    let output = ServiceErrorOutput {
++        success: false,
++        error: ServiceErrorBody { code, message },
++    };
++    let json = serde_json::to_string_pretty(&output).unwrap_or_else(|_| {
++        "{\"success\":false,\"error\":{\"code\":\"internal_error\"}}".into()
++    });
++    CliRunResult::diagnostics(json, true)
++}
++
++fn scene_save_error_to_cli(error: SceneSaveError) -> CliError {
++    match error {
++        SceneSaveError::ValidationFailed { diagnostics } => CliError::Authoring { diagnostics },
++        SceneSaveError::Json(error) => CliError::Json(error),
++    }
++}
+diff --git a/crates/cli/src/scene_cli.rs b/crates/cli/src/scene_cli.rs
+index 3ddf1b8..cb6d586 100644
+--- a/crates/cli/src/scene_cli.rs
++++ b/crates/cli/src/scene_cli.rs
+@@ -55,9 +55,9 @@ struct AuthoringErrorBody {
+     message: String,
+ }
+ 
+-struct SceneContext {
+-    path: PathBuf,
+-    session: AuthoringSession,
++pub(super) struct SceneContext {
++    pub(super) path: PathBuf,
++    pub(super) session: AuthoringSession,
+ }
+ 
+ pub(super) fn dispatch(args: &[String]) -> Option<Result<CliRunResult, CliError>> {
+@@ -273,7 +273,7 @@ fn component_schemas() -> Result<CliRunResult, CliError> {
+     Ok(CliRunResult::success(to_json(&output)?))
+ }
+ 
+-fn load_scene_context(
++pub(super) fn load_scene_context(
+     project_path: &Path,
+     scene_relative: &str,
+ ) -> Result<SceneContext, CliRunResult> {
