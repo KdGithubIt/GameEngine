@@ -7,13 +7,14 @@
 //! Timeline scheduler.
 
 pub use engine_authoring::timeline::{
-    compile_timeline, CompiledAnimationPayload, CompiledCameraCutPayload, CompiledEventPayload,
-    CompiledTimelinePayload, CompiledTransformPayload, TimelineAnimationClip,
+    compile_timeline, CompiledAnimationPayload, CompiledAudioPayload, CompiledCameraCutPayload,
+    CompiledEventPayload, CompiledTimelinePayload, CompiledTransformPayload, CompiledVfxPayload,
+    TimelineAnimationClip, TimelineAudioClip,
     TimelineBindingResolver, TimelineBlend, TimelineCameraCutClip, TimelineClipRef,
     TimelineClipTiming, TimelineCompileError, TimelineDisplayRate, TimelineDocument,
     TimelineDocumentError, TimelineEventMarker, TimelineQuatKey, TimelineTrack, TimelineTrackKind,
     TimelineTrackType, TimelineTransformClip, TimelineTransformCurve, TimelineTransformSample,
-    TimelineVec3Key, TIMELINE_FILE_SUFFIX, TIMELINE_SCHEMA_VERSION,
+    TimelineVec3Key, TimelineVfxClip, TIMELINE_FILE_SUFFIX, TIMELINE_SCHEMA_VERSION,
 };
 pub use engine_authoring::timeline_authoring::{
     TimelineAuthoringError, TimelineAuthoringMutation, TimelineAuthoringService,
