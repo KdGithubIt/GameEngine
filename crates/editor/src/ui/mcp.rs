@@ -6,11 +6,14 @@ use engine_authoring::{
     AuthoringPermission, AuthoringPermissions, AuthoringSession, ComponentSchemaRegistry,
 };
 use engine_mcp::{
-    AssetInspectInput, AssetMcpTools, AssetSearchInput, BehaviorTreeApplyInput,
-    BehaviorTreeGraphInput, BehaviorTreeMcpTools, EntityFindInput, EntityInspectInput,
-    GraphMutationInput, GraphViewMutationInput, McpToolError, PrefabCreateInput,
-    PrefabInstantiateInput, PrefabMcpTools, SceneMcpTools, SceneMutationInput, UiMutationInput,
-    VfxEffectInput, VfxMcpTools, VfxMutationInput, VfxTemplateInput,
+    AssetInspectInput, AssetMcpTools, AssetSearchInput, AuthoringCapabilityMcpTools, AuthoringVerb,
+    BehaviorTreeApplyInput, BehaviorTreeGraphInput, BehaviorTreeMcpTools, CapabilityDescribeInput,
+    CapabilityInvokeInput, EntityFindInput, EntityInspectInput, GraphMutationInput,
+    GraphViewMutationInput, McpToolError, PrefabCreateInput, PrefabInstantiateInput, PrefabMcpTools,
+    SceneMcpTools, SceneMutationInput, UiMutationInput, VfxEffectInput, VfxMcpTools,
+    VfxMutationInput, VfxTemplateInput, AUTHORING_APPLY_TOOL, AUTHORING_CAPABILITIES_TOOL,
+    AUTHORING_DESCRIBE_TOOL, AUTHORING_INSPECT_TOOL, AUTHORING_PREVIEW_TOOL,
+    AUTHORING_VALIDATE_TOOL,
 };
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -95,8 +98,44 @@ impl EditorApp {
         let prefab_tools = PrefabMcpTools::new();
         let behavior_tools = BehaviorTreeMcpTools::new();
         let vfx_tools = VfxMcpTools::new();
+        let capability_tools = AuthoringCapabilityMcpTools::new();
 
         match name {
+            AUTHORING_CAPABILITIES_TOOL => {
+                require_empty_arguments(arguments)?;
+                to_value(
+                    capability_tools
+                        .capabilities(&permissions)
+                        .map_err(McpToolError::from)?,
+                )
+            }
+            AUTHORING_DESCRIBE_TOOL => {
+                let input: CapabilityDescribeInput = decode(arguments)?;
+                to_value(
+                    capability_tools
+                        .describe(&permissions, input)
+                        .map_err(McpToolError::from)?,
+                )
+            }
+            AUTHORING_INSPECT_TOOL
+            | AUTHORING_VALIDATE_TOOL
+            | AUTHORING_PREVIEW_TOOL
+            | AUTHORING_APPLY_TOOL => {
+                let verb = match name {
+                    AUTHORING_VALIDATE_TOOL => AuthoringVerb::Validate,
+                    AUTHORING_PREVIEW_TOOL => AuthoringVerb::Preview,
+                    AUTHORING_APPLY_TOOL => AuthoringVerb::Apply,
+                    _ => AuthoringVerb::Inspect,
+                };
+                let input: CapabilityInvokeInput = decode(arguments)?;
+                let plan = capability_tools
+                    .plan(verb, &permissions, input)
+                    .map_err(McpToolError::from)?;
+                // The registry reserves the `authoring` namespace, so the
+                // resolved tool is always a domain tool and this dispatch
+                // cannot re-enter the generic surface.
+                self.handle_mcp_tool_call(&plan.tool, plan.arguments)
+            }
             "project.describe" => {
                 require_empty_arguments(arguments)?;
                 to_value(scene_tools.project_describe(self.project_root(), &permissions)?)
@@ -507,6 +546,106 @@ mod tests {
         assert!(schemas.iter().any(|schema| {
             schema["type_id"] == Value::String("engine.camera".into())
         }));
+    }
+
+    #[test]
+    fn generic_apply_routes_through_the_same_live_scene_transaction() {
+        let (_directory, mut app) = editor_app();
+        let snapshot = app
+            .handle_mcp_tool_call(
+                "authoring.inspect",
+                json!({"capability": "scene.inspect"}),
+            )
+            .expect("generic scene inspection");
+        let revision = snapshot["revision"].as_u64().expect("revision");
+        let generation = snapshot["generation"].as_u64().expect("generation");
+        let entity = EntityId::generate();
+
+        let result = app
+            .handle_mcp_tool_call(
+                "authoring.apply",
+                json!({
+                    "capability": "scene.apply",
+                    "arguments": {
+                        "expected_revision": revision,
+                        "expected_generation": generation,
+                        "commands": [AuthoringCommand::CreateEntity {
+                            id: entity.clone(),
+                            name: "created_generically".into(),
+                            parent: None,
+                        }]
+                    }
+                }),
+            )
+            .expect("generic scene apply");
+
+        assert_eq!(result["success"], Value::Bool(true));
+        assert!(app.session.scene_entity(&entity).is_some());
+        assert!(app.session.is_dirty());
+        assert!(app.session.can_undo());
+        assert!(app.session.undo());
+        assert!(app.session.scene_entity(&entity).is_none());
+    }
+
+    #[test]
+    fn capability_discovery_reports_the_registry_and_its_bound_tools() {
+        let (_directory, mut app) = editor_app();
+
+        let listed = app
+            .handle_mcp_tool_call("authoring.capabilities", json!({}))
+            .expect("capability discovery");
+        let described = app
+            .handle_mcp_tool_call("authoring.describe", json!({"capability": "scene.apply"}))
+            .expect("capability description");
+
+        let ids = listed["capabilities"]
+            .as_array()
+            .expect("capability array")
+            .iter()
+            .map(|capability| capability["id"].as_str().unwrap_or_default().to_owned())
+            .collect::<Vec<_>>();
+        assert!(ids.contains(&"scene.apply".to_owned()));
+        assert!(ids.contains(&"behavior_tree.compile".to_owned()));
+        assert_eq!(described["tool"], Value::String("scene.apply".into()));
+        assert_eq!(
+            described["capability"]["exposure"],
+            Value::String("generic".into())
+        );
+    }
+
+    #[test]
+    fn specialized_capabilities_are_rejected_by_the_generic_surface() {
+        let (_directory, mut app) = editor_app();
+
+        let error = app
+            .handle_mcp_tool_call(
+                "authoring.apply",
+                json!({"capability": "behavior_tree.apply", "arguments": {}}),
+            )
+            .expect_err("specialized capabilities keep their declared tool");
+
+        assert_eq!(error.code(), "mcp.capability_not_generic");
+    }
+
+    #[test]
+    fn project_describe_reports_the_canonical_capability_registry() {
+        let (_directory, mut app) = editor_app();
+
+        let output = app
+            .handle_mcp_tool_call("project.describe", json!({}))
+            .expect("project description");
+        let reported = output["authoring_capabilities"]
+            .as_array()
+            .expect("authoring capability array")
+            .iter()
+            .map(|value| value.as_str().unwrap_or_default().to_owned())
+            .collect::<Vec<_>>();
+        let expected = engine_authoring::AuthoringCapabilityRegistry::builtin()
+            .capabilities()
+            .map(|capability| capability.id.as_str().to_owned())
+            .collect::<Vec<_>>();
+
+        assert_eq!(reported, expected);
     }
 
     #[test]

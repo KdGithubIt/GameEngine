@@ -2065,11 +2065,13 @@ mod tests {
 
     #[test]
     fn managed_validation_plan_never_turns_unknown_text_into_a_command() {
-        let mut proposal = AgentProposal::default();
-        proposal.validation_plan = vec![
-            "echo should-not-run".to_owned(),
-            "powershell cargo check; Write-Host should-not-run".to_owned(),
-        ];
+        let proposal = AgentProposal {
+            validation_plan: vec![
+                "echo should-not-run".to_owned(),
+                "powershell cargo check; Write-Host should-not-run".to_owned(),
+            ],
+            ..AgentProposal::default()
+        };
         let (gates, unmanaged) = managed_validation_plan(&proposal, false);
         assert!(gates.is_empty());
         assert_eq!(unmanaged, 2);

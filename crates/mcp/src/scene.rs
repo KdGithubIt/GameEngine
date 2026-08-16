@@ -5,15 +5,15 @@
 //! Editor-specific mutation rules while still exercising the same shared Scene
 //! authoring service as human and CLI clients.
 
+use crate::capability::domain_tool_descriptors;
 use crate::{McpToolDescriptor, McpToolError};
 use engine_authoring::{
-    AuthoringCommand, AuthoringEntity, AuthoringPermission, AuthoringPermissions,
-    AuthoringSession, ComponentSchema, ComponentSchemaRegistry, EntityId, ProjectId, ProjectRoot,
-    SceneAuthoringMutation, SceneAuthoringService, SceneAuthoringSnapshot,
-    SceneAuthoringValidation,
+    AuthoringCapabilityId, AuthoringCapabilityRegistry, AuthoringCommand, AuthoringDomain,
+    AuthoringEntity, AuthoringPermission, AuthoringPermissions, AuthoringSession, ComponentSchema,
+    ComponentSchemaRegistry, EntityId, ProjectId, ProjectRoot, SceneAuthoringMutation,
+    SceneAuthoringService, SceneAuthoringSnapshot, SceneAuthoringValidation,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 
 /// Project metadata and structured authoring capability coverage.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -26,6 +26,12 @@ pub struct ProjectDescribeOutput {
     pub engine_version: String,
     /// MCP capabilities currently backed by shared authoring services.
     pub capabilities: Vec<String>,
+    /// Semantic capability inventory reported from the canonical authoring
+    /// capability registry (ADR 0132).
+    ///
+    /// Runtime discovery and parity coverage validation therefore read the same
+    /// source of truth.
+    pub authoring_capabilities: Vec<AuthoringCapabilityId>,
 }
 
 /// Input for `scene.preview` and `scene.apply`.
@@ -91,58 +97,18 @@ impl SceneMcpTools {
     }
 
     /// Returns tool descriptors for registration by an MCP transport layer.
+    ///
+    /// Names, descriptions, and argument schemas are derived from the canonical
+    /// authoring capability registry (ADR 0132) rather than maintained here.
     pub fn tool_descriptors(&self) -> Vec<McpToolDescriptor> {
-        vec![
-            descriptor(
-                "project.describe",
-                "Describe the active GameEngine project and structured authoring capabilities.",
-                json!({"type":"object","properties":{},"additionalProperties":false}),
-            ),
-            descriptor(
-                "scene.inspect",
-                "Inspect the live committed Scene with revision and generation tokens.",
-                json!({"type":"object","properties":{},"additionalProperties":false}),
-            ),
-            descriptor(
-                "scene.validate",
-                "Validate the live committed Scene without mutation.",
-                json!({"type":"object","properties":{},"additionalProperties":false}),
-            ),
-            descriptor(
-                "scene.preview",
-                "Preview one atomic Scene command batch against an exact revision/generation base.",
-                mutation_input_schema(),
-            ),
-            descriptor(
-                "scene.apply",
-                "Apply one atomic Scene command batch through the shared authoring transaction boundary.",
-                mutation_input_schema(),
-            ),
-            descriptor(
-                "entity.find",
-                "Find live Scene entities by stable ID, slug, display name, or description.",
-                json!({
-                    "type":"object",
-                    "properties":{"query":{"type":"string"}},
-                    "additionalProperties":false
-                }),
-            ),
-            descriptor(
-                "entity.inspect",
-                "Inspect one live Scene entity by stable ID.",
-                json!({
-                    "type":"object",
-                    "required":["entity"],
-                    "properties":{"entity":{"type":"string"}},
-                    "additionalProperties":false
-                }),
-            ),
-            descriptor(
-                "component.schemas",
-                "Discover component schemas supplied by the live authoring host.",
-                json!({"type":"object","properties":{},"additionalProperties":false}),
-            ),
-        ]
+        domain_tool_descriptors(
+            &AuthoringCapabilityRegistry::builtin(),
+            &[
+                AuthoringDomain::Project,
+                AuthoringDomain::Scene,
+                AuthoringDomain::ComponentSchema,
+            ],
+        )
     }
 
     /// Describes the active project and implemented parity capabilities.
@@ -166,6 +132,10 @@ impl SceneMcpTools {
                 .tool_descriptors()
                 .into_iter()
                 .map(|descriptor| descriptor.name)
+                .collect(),
+            authoring_capabilities: AuthoringCapabilityRegistry::builtin()
+                .capabilities()
+                .map(|capability| capability.id.clone())
                 .collect(),
         })
     }
@@ -292,31 +262,6 @@ impl SceneMcpTools {
     }
 }
 
-fn descriptor(
-    name: &'static str,
-    description: &'static str,
-    input_schema: serde_json::Value,
-) -> McpToolDescriptor {
-    McpToolDescriptor {
-        name: name.into(),
-        description: description.into(),
-        input_schema,
-    }
-}
-
-fn mutation_input_schema() -> serde_json::Value {
-    json!({
-        "type":"object",
-        "required":["expected_revision","expected_generation","commands"],
-        "properties":{
-            "expected_revision":{"type":"integer","minimum":0},
-            "expected_generation":{"type":"integer","minimum":0},
-            "commands":{"type":"array","items":{"type":"object"}}
-        },
-        "additionalProperties":false
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -340,15 +285,29 @@ mod tests {
             names,
             vec![
                 "project.describe",
-                "scene.inspect",
-                "scene.validate",
-                "scene.preview",
-                "scene.apply",
                 "entity.find",
                 "entity.inspect",
+                "scene.apply",
+                "scene.inspect",
+                "scene.preview",
+                "scene.validate",
                 "component.schemas",
             ]
         );
+    }
+
+    #[test]
+    fn descriptors_reuse_registry_descriptions_and_schemas() {
+        let registry = AuthoringCapabilityRegistry::builtin();
+        let descriptors = SceneMcpTools::new().tool_descriptors();
+
+        for descriptor in descriptors {
+            let capability = registry
+                .require(&AuthoringCapabilityId::new(descriptor.name.clone()))
+                .expect("every advertised Scene tool must be a registered capability");
+            assert_eq!(descriptor.description, capability.description);
+            assert_eq!(descriptor.input_schema, capability.input.json_schema);
+        }
     }
 
     #[test]

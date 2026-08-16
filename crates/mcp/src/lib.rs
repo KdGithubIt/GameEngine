@@ -11,6 +11,8 @@
 pub mod ai_agent;
 /// Asset discovery and inspection tool handlers backed by the shared asset catalog.
 pub mod asset;
+/// Registry-driven generic authoring capability surface (ADR 0132).
+pub mod capability;
 /// Generic Graph, GraphView, and declarative UI authoring tool handlers.
 pub mod generic_authoring;
 /// Prefab creation and instantiation tool handlers backed by shared services.
@@ -25,6 +27,13 @@ pub use ai_agent::{
     validate_ai_agent_input, AiAgentInput, AiAgentOutput,
 };
 pub use asset::{AssetInspectInput, AssetMcpTools, AssetSearchInput};
+pub use capability::{
+    capability_coverage, uncovered_capabilities, AuthoringCapabilityMcpTools,
+    AuthoringInvocationPlan, AuthoringVerb, CapabilityCoverage, CapabilityDescribeInput,
+    CapabilityDescribeOutput, CapabilityInvokeInput, CapabilityListOutput, CapabilityMcpError,
+    AUTHORING_APPLY_TOOL, AUTHORING_CAPABILITIES_TOOL, AUTHORING_DESCRIBE_TOOL,
+    AUTHORING_INSPECT_TOOL, AUTHORING_PREVIEW_TOOL, AUTHORING_VALIDATE_TOOL,
+};
 pub use generic_authoring::{
     GenericAuthoringMcpError, GenericAuthoringMcpTools, GraphMutationInput,
     GraphViewMutationInput, UiMutationInput,
@@ -49,6 +58,22 @@ use engine_assets::prefab::PrefabAssetError;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::fmt;
+
+/// Returns every structured authoring tool this crate advertises.
+///
+/// The transport layer and ADR 0132 parity coverage both read this inventory,
+/// so a registered capability cannot lose its adapter binding without failing
+/// the coverage guardrail.
+pub fn authoring_tool_descriptors() -> Vec<McpToolDescriptor> {
+    let mut descriptors = AuthoringCapabilityMcpTools::new().tool_descriptors();
+    descriptors.extend(SceneMcpTools::new().tool_descriptors());
+    descriptors.extend(GenericAuthoringMcpTools::new().tool_descriptors());
+    descriptors.extend(AssetMcpTools::new().tool_descriptors());
+    descriptors.extend(PrefabMcpTools::new().tool_descriptors());
+    descriptors.extend(VfxMcpTools::new().tool_descriptors());
+    descriptors.extend(BehaviorTreeMcpTools::new().tool_descriptors());
+    descriptors
+}
 
 /// Describes one available MCP tool.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -123,6 +148,11 @@ pub enum McpToolError {
         /// Source prefab authoring error.
         source: PrefabAuthoringError,
     },
+    /// The registry-driven generic authoring surface rejected the request.
+    Capability {
+        /// Source capability error.
+        source: CapabilityMcpError,
+    },
 }
 
 impl fmt::Display for McpToolError {
@@ -133,6 +163,7 @@ impl fmt::Display for McpToolError {
             Self::AssetCatalog { source } => source.fmt(formatter),
             Self::PrefabAsset { source } => source.fmt(formatter),
             Self::PrefabAuthoring { source } => source.fmt(formatter),
+            Self::Capability { source } => source.fmt(formatter),
         }
     }
 }
@@ -145,6 +176,7 @@ impl std::error::Error for McpToolError {
             Self::AssetCatalog { source } => Some(source),
             Self::PrefabAsset { source } => Some(source),
             Self::PrefabAuthoring { source } => Some(source),
+            Self::Capability { source } => Some(source),
         }
     }
 }
@@ -179,6 +211,12 @@ impl From<PrefabAuthoringError> for McpToolError {
     }
 }
 
+impl From<CapabilityMcpError> for McpToolError {
+    fn from(source: CapabilityMcpError) -> Self {
+        Self::Capability { source }
+    }
+}
+
 impl McpToolError {
     /// Returns a stable diagnostic-style code when the source exposes one.
     pub fn code(&self) -> &'static str {
@@ -188,6 +226,7 @@ impl McpToolError {
             Self::AssetCatalog { source } => source.code(),
             Self::PrefabAsset { source } => source.code(),
             Self::PrefabAuthoring { source } => source.code(),
+            Self::Capability { source } => source.code(),
         }
     }
 }

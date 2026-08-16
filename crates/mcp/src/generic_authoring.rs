@@ -3,8 +3,10 @@
 //! These handlers own only tool-shaped DTOs and delegate all authoring meaning
 //! to `engine-authoring` shared services.
 
+use crate::capability::domain_tool_descriptors;
 use crate::McpToolDescriptor;
 use engine_authoring::{
+    AuthoringCapabilityRegistry, AuthoringDomain,
     AuthoringGraphDomain, AuthoringPermissions, Graph, GraphAuthoringError,
     GraphAuthoringMutation, GraphAuthoringService, GraphAuthoringSnapshot,
     GraphAuthoringValidation, GraphCommand, GraphView, GraphViewAuthoringError,
@@ -14,7 +16,6 @@ use engine_authoring::{
     UiDocumentCommand, UnsupportedGraphKind,
 };
 use serde::Deserialize;
-use serde_json::json;
 use std::fmt;
 
 /// Mutation request shared by generic Graph preview and apply tools.
@@ -132,21 +133,18 @@ impl GenericAuthoringMcpTools {
     }
 
     /// Returns descriptors for generic structured authoring tools.
+    ///
+    /// Names, descriptions, and argument schemas are derived from the canonical
+    /// authoring capability registry (ADR 0132) rather than maintained here.
     pub fn tool_descriptors(&self) -> Vec<McpToolDescriptor> {
-        vec![
-            descriptor("graph.inspect", "Inspect the active semantic Graph.", empty_schema()),
-            descriptor("graph.validate", "Validate the active semantic Graph with its built-in domain.", empty_schema()),
-            descriptor("graph.preview", "Preview one atomic semantic Graph command batch.", graph_mutation_schema()),
-            descriptor("graph.apply", "Apply one atomic semantic Graph command batch.", graph_mutation_schema()),
-            descriptor("graph.layout.inspect", "Inspect the active GraphView presentation document.", empty_schema()),
-            descriptor("graph.layout.validate", "Validate the active GraphView against its semantic Graph.", empty_schema()),
-            descriptor("graph.layout.preview", "Preview one atomic GraphView presentation command batch.", graph_view_mutation_schema()),
-            descriptor("graph.layout.apply", "Apply one atomic GraphView presentation command batch.", graph_view_mutation_schema()),
-            descriptor("ui.inspect", "Inspect the active declarative UI document.", empty_schema()),
-            descriptor("ui.validate", "Validate the active declarative UI document.", empty_schema()),
-            descriptor("ui.preview", "Preview one atomic declarative UI command batch.", ui_mutation_schema()),
-            descriptor("ui.apply", "Apply one atomic declarative UI command batch.", ui_mutation_schema()),
-        ]
+        domain_tool_descriptors(
+            &AuthoringCapabilityRegistry::builtin(),
+            &[
+                AuthoringDomain::Graph,
+                AuthoringDomain::GraphView,
+                AuthoringDomain::Ui,
+            ],
+        )
     }
 
     /// Inspects a semantic Graph through the shared service.
@@ -310,49 +308,11 @@ impl GenericAuthoringMcpTools {
     }
 }
 
-fn descriptor(name: &'static str, description: &'static str, input_schema: serde_json::Value) -> McpToolDescriptor {
-    McpToolDescriptor {
-        name: name.into(),
-        description: description.into(),
-        input_schema,
-    }
-}
-
-fn empty_schema() -> serde_json::Value {
-    json!({"type":"object","properties":{},"additionalProperties":false})
-}
-
-fn graph_mutation_schema() -> serde_json::Value {
-    mutation_schema("GraphCommand")
-}
-
-fn graph_view_mutation_schema() -> serde_json::Value {
-    mutation_schema("GraphViewCommand")
-}
-
-fn ui_mutation_schema() -> serde_json::Value {
-    mutation_schema("UiDocumentCommand")
-}
-
-fn mutation_schema(command_title: &'static str) -> serde_json::Value {
-    json!({
-        "type": "object",
-        "required": ["expected_revision", "expected_generation", "commands"],
-        "properties": {
-            "expected_revision": {"type": "integer", "minimum": 0},
-            "expected_generation": {"type": "integer", "minimum": 0},
-            "commands": {
-                "type": "array",
-                "items": {"type": "object", "title": command_title}
-            }
-        },
-        "additionalProperties": false
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use engine_authoring::AuthoringCapabilityId;
+    use serde_json::json;
 
     #[test]
     fn descriptors_cover_generic_graph_layout_and_ui_surfaces() {
@@ -366,5 +326,24 @@ mod tests {
         assert!(names.contains(&"graph.layout.apply".to_owned()));
         assert!(names.contains(&"ui.apply".to_owned()));
         assert_eq!(names.len(), 12);
+    }
+
+    #[test]
+    fn command_batch_schemas_name_their_shared_command_type() {
+        let registry = AuthoringCapabilityRegistry::builtin();
+        let descriptors = GenericAuthoringMcpTools::new().tool_descriptors();
+        let apply = descriptors
+            .iter()
+            .find(|descriptor| descriptor.name == "ui.apply")
+            .expect("ui.apply must be advertised");
+        let capability = registry
+            .require(&AuthoringCapabilityId::new("ui.apply"))
+            .expect("ui.apply must be registered");
+
+        assert_eq!(apply.input_schema, capability.input.json_schema);
+        assert_eq!(
+            apply.input_schema["properties"]["commands"]["items"]["title"],
+            json!("UiDocumentCommand")
+        );
     }
 }

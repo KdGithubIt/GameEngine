@@ -43,6 +43,7 @@ pub mod animation_set;
 mod behavior_tree_legacy;
 #[path = "behavior_tree_stateful.rs"]
 pub mod behavior_tree;
+pub mod capability;
 pub mod command;
 pub mod component_metadata;
 pub mod diagnostic;
@@ -92,6 +93,12 @@ pub use behavior_tree::{
     BehaviorTreeEdgeSummary, BehaviorTreeExample, BehaviorTreeLayout, BehaviorTreeNodeKind,
     BehaviorTreeNodeSummary, BehaviorTreeSchemaCatalog, BehaviorTreeServiceError,
     BehaviorTreeValidation, CompiledBehaviorNode, CompiledBehaviorTree,
+};
+pub use capability::{
+    AuthoringCapability, AuthoringCapabilityError, AuthoringCapabilityExposure,
+    AuthoringCapabilityId, AuthoringCapabilityIdError, AuthoringCapabilityKind,
+    AuthoringCapabilityRegistry, AuthoringDocumentKind, AuthoringDomain, AuthoringSchemaRef,
+    AuthoringTransactionRequirement, RESERVED_CAPABILITY_NAMESPACE,
 };
 pub use command::{AuthoringCommand, Change, CommandResult, PropertyPath, PropertyPathSegment};
 pub use component_metadata::{
