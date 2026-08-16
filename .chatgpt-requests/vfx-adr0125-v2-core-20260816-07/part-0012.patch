@@ -1,0 +1,128 @@
++                                        time: 1.0,
++                                        value: 0.0,
++                                        interpolation: VfxCurveInterpolation::Linear,
++                                    },
++                                ],
++                            },
++                        },
++                    ),
++                ],
++                render_operations: Vec::new(),
++                estimated_capacity: max_particles,
++            }],
++            capabilities: VfxCapabilityRequirements::default(),
++        }
++    }
++
++    #[test]
++    fn equal_seeds_produce_identical_reference_simulation() {
++        let definition = effect(128);
++        let mut first = VfxInstance::new(definition.clone(), None);
++        let mut second = VfxInstance::new(definition, None);
++        for _ in 0..60 {
++            first.step(1.0 / 60.0, Vec3::new(1.0, 2.0, 3.0));
++            second.step(1.0 / 60.0, Vec3::new(1.0, 2.0, 3.0));
++        }
++        assert_eq!(first.stats(), second.stats());
++        assert_eq!(first.emitters()[0].particles(), second.emitters()[0].particles());
++    }
++
++    #[test]
++    fn effect_and_emitter_caps_report_dropped_particles() {
++        let mut definition = effect(3);
++        definition.emitters[0].max_particles = 2;
++        let mut instance = VfxInstance::new(definition, None);
++        instance.step(1.0, Vec3::ZERO);
++        assert_eq!(instance.stats().live_particles, 2);
++        assert!(instance.stats().dropped_particles >= 18);
++    }
++
++    #[test]
++    fn runtime_stats_report_spawn_count_and_backend() {
++        let mut instance = VfxInstance::new(effect(128), None);
++        instance.step(0.5, Vec3::ZERO);
++        let stats = instance.stats();
++        assert_eq!(stats.live_particles, 10);
++        assert_eq!(stats.spawned_particles, 10);
++        assert_eq!(stats.dropped_particles, 0);
++        assert_eq!(stats.backend, VfxRuntimeBackend::CpuReference);
++    }
++
++    #[test]
++    fn backward_preview_seek_restarts_and_replays_deterministically() {
++        let mut instance = VfxInstance::new(effect(128), Some(7));
++        instance.seek_preview(1.0, Vec3::ZERO);
++        let first = instance.emitters()[0].particles().to_vec();
++        instance.seek_preview(2.0, Vec3::ZERO);
++        instance.seek_preview(1.0, Vec3::ZERO);
++        assert_eq!(instance.emitters()[0].particles(), first.as_slice());
++    }
++
++    #[test]
++    fn reconfigure_preserves_pool_for_same_stable_emitter() {
++        let mut definition = effect(128);
++        let mut instance = VfxInstance::new(definition.clone(), None);
++        instance.step(0.5, Vec3::ZERO);
++        let live_before = instance.stats().live_particles;
++        definition.emitters[0].spawn_operations[0].operation = VfxModuleOperation::SpawnRate {
++            particles_per_second: 0.0,
++        };
++        instance.reconfigure(definition);
++        assert_eq!(instance.stats().live_particles, live_before);
++        instance.step(0.1, Vec3::ZERO);
++        assert!(instance.stats().live_particles <= live_before);
++    }
++
++    #[test]
++    fn burst_at_zero_fires_once() {
++        let mut definition = effect(128);
++        definition.emitters[0].spawn_operations = vec![operation(
++            1,
++            VfxModuleOperation::Burst { time: 0.0, count: 4 },
++        )];
++        let mut instance = VfxInstance::new(definition, None);
++        instance.step(0.1, Vec3::ZERO);
++        assert_eq!(instance.stats().live_particles, 4);
++        instance.step(0.1, Vec3::ZERO);
++        assert_eq!(instance.stats().live_particles, 4);
++    }
++
++    #[test]
++    fn player_pause_restart_and_loop_use_reference_instance() {
++        let mut definition = effect(32);
++        definition.emitters[0].spawn_operations = vec![operation(
++            1,
++            VfxModuleOperation::Burst { time: 0.0, count: 1 },
++        )];
++        definition.emitters[0].update_operations.clear();
++        definition.emitters[0].spawn_operations.push(operation(
++            2,
++            VfxModuleOperation::Lifetime {
++                value: VfxScalarValue::Constant { value: 0.1 },
++            },
++        ));
++        let mut player = VfxPlayer::new(
++            definition,
++            false,
++            true,
++            VfxRestartPolicy::Manual,
++            1.0,
++            Some(9),
++            BTreeMap::new(),
++        );
++        assert!(!player.is_playing());
++        player.play();
++        player.step(0.01, Vec3::ZERO);
++        assert_eq!(player.instance().stats().live_particles, 1);
++        player.pause();
++        let elapsed = player.instance().elapsed_seconds();
++        player.step(1.0, Vec3::ZERO);
++        assert_eq!(player.instance().elapsed_seconds(), elapsed);
++        player.play();
++        player.step(0.2, Vec3::ZERO);
++        assert_eq!(player.instance().elapsed_seconds(), 0.0);
++        player.restart();
++        assert!(player.is_playing());
++        assert_eq!(player.instance().stats().spawned_particles, 0);
++    }
++}
