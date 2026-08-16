@@ -1,0 +1,200 @@
++    source_path: Option<PathBuf>,
++    source_fingerprint: Option<GraphFileFingerprint>,
++    graph_session: Option<EditorSession>,
++    invalidated: bool,
++    message: Option<String>,
++    canvas: GraphCanvasState,
++    #[cfg(feature = "visual-validation")]
++    fixture_snapshot: Option<BehaviorExecutionSnapshot>,
++}
++
++impl Default for BehaviorTreeDebugState {
++    fn default() -> Self {
++        Self {
++            visible: false,
++            source_key: None,
++            source_path: None,
++            source_fingerprint: None,
++            graph_session: None,
++            invalidated: false,
++            message: None,
++            canvas: GraphCanvasState::default(),
++            #[cfg(feature = "visual-validation")]
++            fixture_snapshot: None,
++        }
++    }
++}
++
++impl BehaviorTreeDebugState {
++    /// Clears all Play-mode Behavior Tree debug presentation.
++    pub(super) fn clear(&mut self) {
++        *self = Self::default();
++    }
++
++    /// Drops the observed runner and graph while preserving view visibility.
++    pub(super) fn clear_observation(&mut self) {
++        let visible = self.visible;
++        *self = Self::default();
++        self.visible = visible;
++    }
++
++    fn sync(
++        &mut self,
++        runtime_entity: (u32, u32),
++        project: Option<&ProjectRoot>,
++        snapshot: &BehaviorExecutionSnapshot,
++    ) {
++        let next_key = BehaviorDebugSourceKey {
++            runtime_entity,
++            graph: snapshot.tree_source.clone(),
++            tree_generation: snapshot.tree_generation,
++        };
++        if self.source_key.as_ref() != Some(&next_key) {
++            self.clear_observation();
++            self.source_key = Some(next_key);
++            self.canvas.request_frame_all();
++        }
++
++        if self.invalidated {
++            return;
++        }
++        if let (Some(path), Some(expected)) = (&self.source_path, &self.source_fingerprint)
++            && GraphFileFingerprint::read(path).as_ref() != Some(expected)
++        {
++            self.graph_session = None;
++            self.invalidated = true;
++            self.message = Some(
++                "The source graph changed after this runner generation was loaded. Replace/restart the runner before continuing live graph debugging."
++                    .to_owned(),
++            );
++            return;
++        }
++        if self.graph_session.is_some() {
++            return;
++        }
++
++        let Some(project) = project else {
++            self.message = Some("The Play session has no project root for source graph lookup.".into());
++            return;
++        };
++        let Some(path) = find_graph_source(&project.assets_root(), &snapshot.tree_source) else {
++            self.message = Some(format!(
++                "Could not locate source Behavior Tree graph {} under the project assets.",
++                snapshot.tree_source.as_str()
++            ));
++            return;
++        };
++        let mut session = EditorSession::empty_behavior_tree();
++        match session.open_graph_discarding_changes(path.clone()) {
++            Ok(()) if session.graph().id == snapshot.tree_source && !session.is_animation_graph() => {
++                self.source_fingerprint = GraphFileFingerprint::read(&path);
++                self.source_path = Some(path);
++                self.graph_session = Some(session);
++                self.message = None;
++            }
++            Ok(()) => {
++                self.invalidated = true;
++                self.message = Some(
++                    "The resolved graph no longer matches the runtime Behavior Tree source identity."
++                        .into(),
++                );
++            }
++            Err(error) => {
++                self.message = Some(format!("Could not load the source Behavior Tree graph: {error}"));
++            }
++        }
++    }
++
++    fn show_graph(&mut self, ui: &mut egui::Ui, presentation: &BehaviorTreeDebugPresentation) {
++        if let Some(session) = self.graph_session.as_ref() {
++            show_graph_debug_canvas(ui, session, &mut self.canvas, &presentation.overlay);
++        } else {
++            ui.vertical_centered(|ui| {
++                ui.add_space(48.0);
++                ui.heading("Behavior Tree source unavailable");
++                if let Some(message) = &self.message {
++                    ui.label(message);
++                }
++            });
++        }
++    }
++
++    #[cfg(feature = "visual-validation")]
++    fn install_visual_fixture(&mut self) -> bool {
++        let Ok(session) = EditorSession::behavior_tree_example() else {
++            return false;
++        };
++        let nodes = session.graph().nodes.keys().cloned().collect::<Vec<_>>();
++        if nodes.len() < 3 {
++            return false;
++        }
++        let active_path = nodes
++            .iter()
++            .take(3)
++            .enumerate()
++            .map(|(index, node)| engine::behavior_tree::BehaviorActiveNodeSnapshot {
++                node: node.clone(),
++                elapsed_seconds: 0.35 + index as f64 * 0.42,
++            })
++            .collect();
++        let mut recent_transitions = Vec::new();
++        recent_transitions.push(engine::behavior_tree::BehaviorExecutionTransition {
++            generation: 4,
++            node: nodes.get(1).cloned(),
++            behavior_id: Some("enemy.has_target".into()),
++            kind: BehaviorExecutionTransitionKind::Success,
++            reason: None,
++        });
++        recent_transitions.push(engine::behavior_tree::BehaviorExecutionTransition {
++            generation: 4,
++            node: nodes.get(2).cloned(),
++            behavior_id: Some("enemy.chase_target".into()),
++            kind: BehaviorExecutionTransitionKind::Enter,
++            reason: None,
++        });
++        if let Some(node) = nodes.get(3) {
++            recent_transitions.push(engine::behavior_tree::BehaviorExecutionTransition {
++                generation: 4,
++                node: Some(node.clone()),
++                behavior_id: Some("enemy.previous_action".into()),
++                kind: BehaviorExecutionTransitionKind::Abort,
++                reason: Some(BehaviorResetReason::Interrupted),
++            });
++        }
++        let snapshot = BehaviorExecutionSnapshot {
++            tree_source: session.graph().id.clone(),
++            tree_generation: 2,
++            execution_generation: 4,
++            status: Some(BehaviorStatus::Running),
++            active_path,
++            running_node: nodes.get(2).cloned(),
++            last_terminal_node: nodes.get(1).cloned(),
++            last_terminal_status: Some(BehaviorStatus::Success),
++            last_reset_reason: Some(BehaviorResetReason::Interrupted),
++            recent_transitions,
++            blackboard: BTreeMap::new(),
++            error: None,
++        };
++        self.clear();
++        self.visible = true;
++        self.graph_session = Some(session);
++        self.fixture_snapshot = Some(snapshot);
++        self.canvas.request_frame_all();
++        true
++    }
++}
++
++#[derive(Debug)]
++struct BehaviorTreeDebugPresentation {
++    graph: GraphId,
++    tree_generation: u64,
++    execution_generation: u64,
++    status: Option<BehaviorStatus>,
++    last_reset_reason: Option<BehaviorResetReason>,
++    recent_transitions: Vec<String>,
++    blackboard: Vec<(String, String)>,
++    error: Option<String>,
++    overlay: GraphDebugOverlay,
++}
++
++impl BehaviorTreeDebugPresentation {
