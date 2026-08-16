@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "request_id": "20260816-adr0126-timeline-av-complete-fe584ef-r7",
+  "target_branch": "chatgpt/gameengine-adr0126-timeline-sequencer-v2",
+  "expected_head_sha": "fe584efd29803b3ce897309ed637cb5caa97b117",
+  "patch_parts": ["part-0000.patch"],
+  "commit_message": "Complete Timeline Audio and VFX compilation",
+  "pr_title": "Implement ADR 0126 Timeline and Sequencer runtime",
+  "pr_body": "Completes the typed Timeline Audio/VFX compiled payloads and validation, uses ADR 0122 NonSeekable Audio and ADR 0125 ReplayRequired VFX semantics, and carries stable source Timeline identity on Event payloads. The PR remains Draft until ADR 0126 Definition of Done and required Windows/Visual validation complete."
+}
