@@ -1,0 +1,45 @@
+diff --git a/crates/engine/src/navigation_bake.rs b/crates/engine/src/navigation_bake.rs
+index 060b61d..0897c89 100644
+--- a/crates/engine/src/navigation_bake.rs
++++ b/crates/engine/src/navigation_bake.rs
+@@ -365,12 +365,10 @@
+     let removals = normalized
+         .entities()
+         .flat_map(|(id, entity)| {
+-            ignored.iter().filter_map(move |component| {
+-                entity
+-                    .components
+-                    .contains_key(component)
+-                    .then(|| (id.clone(), component.clone()))
+-            })
++            ignored
++                .iter()
++                .filter(move |component| entity.components.contains_key(*component))
++                .map(move |component| (id.clone(), component.clone()))
+         })
+         .collect::<Vec<_>>();
+     if removals.is_empty() {
+diff --git a/crates/engine/src/scene_bridge/spawn.rs b/crates/engine/src/scene_bridge/spawn.rs
+index 31cc0c0..426f756 100644
+--- a/crates/engine/src/scene_bridge/spawn.rs
++++ b/crates/engine/src/scene_bridge/spawn.rs
+@@ -2610,10 +2610,15 @@
+     let component_type = ComponentTypeId::new(NAV_MESH_AGENT_COMPONENT);
+     let expected = "an object with finite non-negative navigation agent fields";
+     let fields = ComponentFields::new(context.authoring_entity, &component_type, value, expected)?;
+-    let profile_id = fields.string("profile_id")?;
+-    if profile_id.trim().is_empty() {
+-        return Err(fields.invalid("a non-empty stable navigation profile ID").into());
+-    }
++    let profile_id = match fields.get("profile_id") {
++        None => "default",
++        Some(Value::String(profile_id)) if !profile_id.trim().is_empty() => profile_id.as_str(),
++        Some(_) => {
++            return Err(fields
++                .invalid("a non-empty stable navigation profile ID")
++                .into())
++        }
++    };
+     let speed = fields.f32("speed")?;
+     let stopping_distance = fields.f32("stopping_distance")?;
+     let defaults = NavMeshAgent::default();
