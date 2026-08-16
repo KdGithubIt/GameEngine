@@ -34,6 +34,7 @@ mod scene_components;
 mod scene_entities;
 mod scene_models;
 mod scene_transform;
+mod structured_authoring;
 mod undo;
 
 #[cfg(test)]
@@ -44,6 +45,7 @@ pub use behavior_edit::BehaviorNodeInsertKind;
 pub use errors::{EditorLoadError, EditorPersistError, EditorSessionError};
 pub use graph_edit::GraphNodeInsertKind;
 pub use scene_transform::{SceneAlignment, SceneAxis};
+pub use structured_authoring::StructuredAuthoringError;
 
 use self::undo::{CleanSnapshot, UndoStack};
 use crate::document::CurrentDocument;
@@ -51,7 +53,7 @@ use engine_authoring::{
     AnimationGraphDomain, AuthoringCommand, AuthoringEntity, AuthoringScene, AuthoringSession,
     BehaviorTreeAuthoringService, BehaviorTreeDomain, BehaviorTreeServiceError, Diagnostic, EdgeId,
     EntityId, Graph, GraphDomain, GraphId, GraphSchemaRegistry, GraphView, NodeId,
-    TransactionError, UiDocument, Vec2,
+    TransactionError, UiAuthoringSession, UiDocument, Vec2,
 };
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -130,6 +132,8 @@ pub struct EditorSession {
     current_document: CurrentDocument,
     /// Scene edit history for the open scene document.
     scene_session: Option<AuthoringSession>,
+    /// Shared structured authoring state for the open UI document.
+    ui_authoring_session: Option<UiAuthoringSession>,
     /// Dirty state for a graph session that has not been saved to a document.
     untitled_dirty: bool,
     /// Baseline used to make undoing back to the saved state clean again.
@@ -156,6 +160,7 @@ impl EditorSession {
             undo_stack: UndoStack::new(),
             current_document: CurrentDocument::None,
             scene_session: None,
+            ui_authoring_session: None,
             untitled_dirty: false,
             clean_snapshot: None,
             document_revision: next_document_revision(),

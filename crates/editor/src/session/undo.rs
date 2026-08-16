@@ -6,7 +6,7 @@
 
 use super::{EditorGraphDomain, EditorSession};
 use crate::document::CurrentDocument;
-use engine_authoring::{AuthoringSession, Graph, GraphView, UiDocument};
+use engine_authoring::{AuthoringSession, Graph, GraphView, UiAuthoringSession, UiDocument};
 
 /// Maximum number of retained undo snapshots (ADR 0018).
 const UNDO_LIMIT: usize = 100;
@@ -246,6 +246,7 @@ impl EditorSession {
                     .as_deref()
                     .and_then(|json| serde_json::from_str::<GraphView>(json).ok());
                 self.diagnostics = self.domain.validate_domain(&self.graph);
+                self.ui_authoring_session = None;
             }
             UndoEntry::Ui(json) => {
                 if let Ok(document) = serde_json::from_str::<UiDocument>(&json) {
@@ -254,8 +255,9 @@ impl EditorSession {
                         document: current, ..
                     } = &mut self.current_document
                     {
-                        *current = document;
+                        *current = document.clone();
                     }
+                    self.ui_authoring_session = Some(UiAuthoringSession::new(document));
                 }
             }
         }

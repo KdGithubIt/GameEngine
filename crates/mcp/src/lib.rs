@@ -11,6 +11,8 @@
 pub mod ai_agent;
 /// Asset discovery and inspection tool handlers backed by the shared asset catalog.
 pub mod asset;
+/// Generic Graph, GraphView, and declarative UI authoring tool handlers.
+pub mod generic_authoring;
 /// Prefab creation and instantiation tool handlers backed by shared services.
 pub mod prefab;
 /// Scene/project tool handlers backed by the shared authoring services.
@@ -21,6 +23,10 @@ pub use ai_agent::{
     validate_ai_agent_input, AiAgentInput, AiAgentOutput,
 };
 pub use asset::{AssetInspectInput, AssetMcpTools, AssetSearchInput};
+pub use generic_authoring::{
+    GenericAuthoringMcpError, GenericAuthoringMcpTools, GraphMutationInput,
+    GraphViewMutationInput, UiMutationInput,
+};
 pub use prefab::{PrefabCreateInput, PrefabInstantiateInput, PrefabMcpTools};
 pub use scene::{
     ComponentSchemasOutput, EntityFindInput, EntityFindOutput, EntityInspectInput,

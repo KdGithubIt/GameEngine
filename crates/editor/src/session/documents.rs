@@ -11,7 +11,9 @@ use crate::document::{
     open_graph_from_path, open_scene_from_path, open_ui_from_path, CurrentDocument,
     OpenDocumentError,
 };
-use engine_authoring::{AuthoringSession, UiDocument, UiDocumentCommand, UiDocumentTransaction};
+use engine_authoring::{
+    AuthoringSession, UiAuthoringSession, UiDocument, UiDocumentCommand, UiDocumentTransaction,
+};
 use std::path::{Path, PathBuf};
 
 impl EditorSession {
@@ -25,6 +27,7 @@ impl EditorSession {
         }
         self.current_document = CurrentDocument::None;
         self.scene_session = None;
+        self.ui_authoring_session = None;
         self.undo_stack.clear();
         self.untitled_dirty = false;
         self.clean_snapshot = None;
@@ -66,6 +69,7 @@ impl EditorSession {
             self.scene_session = Some(AuthoringSession::new(scene.clone()));
         }
         self.current_document = doc;
+        self.ui_authoring_session = None;
         self.undo_stack.clear();
         self.untitled_dirty = false;
         self.record_clean_snapshot();
@@ -117,6 +121,7 @@ impl EditorSession {
         self.diagnostics = self.domain.validate_domain(&self.graph);
         self.undo_stack.clear();
         self.scene_session = None;
+        self.ui_authoring_session = None;
         self.current_document = doc;
         self.untitled_dirty = false;
         self.record_clean_snapshot();
@@ -150,6 +155,10 @@ impl EditorSession {
             .unwrap_or_default();
         self.record_clean_snapshot();
         self.restore_newer_recovery();
+        self.ui_authoring_session = self
+            .ui_document()
+            .cloned()
+            .map(UiAuthoringSession::new);
         self.bump_document_revision();
         Ok(())
     }
@@ -191,8 +200,9 @@ impl EditorSession {
             document: current, ..
         } = &mut self.current_document
         {
-            *current = document;
+            *current = document.clone();
         }
+        self.ui_authoring_session = Some(UiAuthoringSession::new(document));
         self.diagnostics = diagnostics;
         self.mark_dirty();
         Ok(())

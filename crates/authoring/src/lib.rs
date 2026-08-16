@@ -51,6 +51,7 @@ mod explicit_game_fields;
 pub mod game_project;
 pub mod graph;
 pub mod graph_domain;
+pub mod graph_routing;
 pub mod graph_view;
 pub mod id;
 pub mod load;
@@ -119,6 +120,11 @@ pub use graph::{
 pub use graph_domain::{
     apply_graph_commands_with_domain, validate_graph_with_domain, GraphCommandApplication,
     GraphDomain, TestGraphDomain,
+};
+pub use graph_routing::{AuthoringGraphDomain, UnsupportedGraphKind};
+pub use graph_view::authoring_service::{
+    GraphViewAuthoringError, GraphViewAuthoringMutation, GraphViewAuthoringService,
+    GraphViewAuthoringSnapshot, GraphViewAuthoringValidation,
 };
 pub use graph_view::{
     GraphView, GraphViewChange, GraphViewCommand, GraphViewCommandResult, GraphViewSaveError,
