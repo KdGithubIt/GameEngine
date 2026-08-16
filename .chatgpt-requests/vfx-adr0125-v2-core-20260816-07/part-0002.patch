@@ -1,0 +1,341 @@
++/// One ordered typed module in a VFX emitter.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++pub struct VfxModule {
++    /// Stable module identifier used by diagnostics and granular edits.
++    pub id: VfxModuleId,
++    /// Explicit execution phase. Validation rejects phase/type mismatches.
++    pub phase: VfxPhase,
++    /// Whether this module participates in compilation.
++    pub enabled: bool,
++    /// Typed engine-owned operation and properties.
++    pub operation: VfxModuleOperation,
++}
++
++impl VfxModule {
++    /// Creates an enabled module in the operation's required phase.
++    pub fn new(operation: VfxModuleOperation) -> Self {
++        Self {
++            id: VfxModuleId::generate(),
++            phase: operation.required_phase(),
++            enabled: true,
++            operation,
++        }
++    }
++}
++
++/// One authored emitter inside a VFX effect.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++pub struct VfxEmitter {
++    /// Stable document-local emitter identifier.
++    pub id: VfxEmitterId,
++    /// Human-readable emitter label.
++    pub name: String,
++    /// Whether this emitter participates in compilation.
++    pub enabled: bool,
++    /// Hard live-particle cap for this emitter.
++    pub max_particles: u32,
++    /// Deterministically ordered typed modules across all phases.
++    pub modules: Vec<VfxModule>,
++}
++
++impl VfxEmitter {
++    /// Creates an enabled emitter with no modules.
++    pub fn new(name: impl Into<String>, max_particles: u32) -> Self {
++        Self {
++            id: VfxEmitterId::generate(),
++            name: name.into(),
++            enabled: true,
++            max_particles,
++            modules: Vec::new(),
++        }
++    }
++}
++
++/// Versioned persisted `*.vfx.json` authoring document.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++pub struct VfxEffect {
++    /// Persisted schema version. Only [`VFX_SCHEMA_VERSION`] is accepted.
++    pub schema_version: u32,
++    /// Human-readable effect name.
++    pub name: String,
++    /// Base deterministic seed for runtime instances.
++    pub seed: u32,
++    /// Hard live-particle cap across every emitter in this effect.
++    pub max_particles: u32,
++    /// Ordered emitters evaluated deterministically by document order.
++    pub emitters: Vec<VfxEmitter>,
++}
++
++impl VfxEffect {
++    /// Creates an empty current-format effect.
++    pub fn new(name: impl Into<String>, max_particles: u32) -> Self {
++        Self {
++            schema_version: VFX_SCHEMA_VERSION,
++            name: name.into(),
++            seed: 0x51ED_5EED,
++            max_particles,
++            emitters: Vec::new(),
++        }
++    }
++}
++
++/// Severity attached to a structured VFX diagnostic.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case")]
++pub enum VfxDiagnosticSeverity {
++    /// Non-blocking authoring or performance warning.
++    Warning,
++    /// Blocking validation or compilation error.
++    Error,
++}
++
++/// Structured VFX diagnostic retaining stable source identities.
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++pub struct VfxDiagnostic {
++    /// Stable machine-readable diagnostic code.
++    pub code: String,
++    /// Diagnostic severity.
++    pub severity: VfxDiagnosticSeverity,
++    /// Human-readable diagnostic message.
++    pub message: String,
++    /// Emitter associated with the diagnostic, when applicable.
++    pub emitter: Option<VfxEmitterId>,
++    /// Module associated with the diagnostic, when applicable.
++    pub module: Option<VfxModuleId>,
++}
++
++impl VfxDiagnostic {
++    /// Returns `true` when this diagnostic blocks compilation or commit.
++    pub fn is_blocking(&self) -> bool {
++        self.severity == VfxDiagnosticSeverity::Error
++    }
++
++    fn error(
++        code: &'static str,
++        message: impl Into<String>,
++        emitter: Option<&VfxEmitterId>,
++        module: Option<&VfxModuleId>,
++    ) -> Self {
++        Self {
++            code: code.to_owned(),
++            severity: VfxDiagnosticSeverity::Error,
++            message: message.into(),
++            emitter: emitter.cloned(),
++            module: module.cloned(),
++        }
++    }
++
++    fn warning(
++        code: &'static str,
++        message: impl Into<String>,
++        emitter: Option<&VfxEmitterId>,
++        module: Option<&VfxModuleId>,
++    ) -> Self {
++        Self {
++            code: code.to_owned(),
++            severity: VfxDiagnosticSeverity::Warning,
++            message: message.into(),
++            emitter: emitter.cloned(),
++            module: module.cloned(),
++        }
++    }
++}
++
++/// Engine-owned particle attributes required by a compiled emitter.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
++pub struct VfxAttributeLayout {
++    /// Whether velocity storage is required.
++    pub velocity: bool,
++    /// Whether color storage is required.
++    pub color: bool,
++    /// Whether size storage is required.
++    pub size: bool,
++    /// Whether rotation storage is required.
++    pub rotation: bool,
++}
++
++/// Runtime capabilities requested by a compiled effect.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
++pub struct VfxCapabilityRequirements {
++    /// At least one emitter needs billboard rendering.
++    pub billboard_rendering: bool,
++    /// At least one emitter needs mesh rendering.
++    pub mesh_rendering: bool,
++    /// At least one render output needs texture-sheet animation.
++    pub texture_sheet_animation: bool,
++}
++
++/// One source-mapped operation in the backend-neutral compiled IR.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++pub struct CompiledVfxOperation {
++    /// Stable authoring module that produced this operation.
++    pub source_module: VfxModuleId,
++    /// Typed engine-owned operation data.
++    pub operation: VfxModuleOperation,
++}
++
++/// One emitter in the backend-neutral compiled IR.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++pub struct CompiledVfxEmitter {
++    /// Stable authoring emitter that produced this compiled emitter.
++    pub source: VfxEmitterId,
++    /// Human-readable name copied for runtime diagnostics.
++    pub name: String,
++    /// Hard live-particle cap enforced by runtime backends.
++    pub max_particles: u32,
++    /// Particle attribute storage required by compiled operations.
++    pub attribute_layout: VfxAttributeLayout,
++    /// Deterministically ordered spawn operations.
++    pub spawn_operations: Vec<CompiledVfxOperation>,
++    /// Deterministically ordered update operations.
++    pub update_operations: Vec<CompiledVfxOperation>,
++    /// Deterministically ordered render operations.
++    pub render_operations: Vec<CompiledVfxOperation>,
++    /// Capacity implied by authored rate, bursts, and maximum lifetime.
++    pub estimated_capacity: u32,
++}
++
++/// Backend-neutral compiled VFX effect consumed by runtime implementations.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++pub struct CompiledVfxEffect {
++    /// Authoring schema version that produced this IR.
++    pub source_schema_version: u32,
++    /// Base deterministic seed used unless an instance overrides it.
++    pub seed: u32,
++    /// Hard live-particle cap across all emitters.
++    pub max_particles: u32,
++    /// Deterministically ordered enabled emitters.
++    pub emitters: Vec<CompiledVfxEmitter>,
++    /// Aggregate renderer/backend capability requirements.
++    pub capabilities: VfxCapabilityRequirements,
++}
++
++/// Validation result returned by the shared VFX authoring service.
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++pub struct VfxValidation {
++    /// `true` when no blocking diagnostics were produced.
++    pub success: bool,
++    /// Structured diagnostics in deterministic traversal order.
++    pub diagnostics: Vec<VfxDiagnostic>,
++}
++
++/// Compilation result returned by the shared VFX authoring service.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++pub struct VfxCompilation {
++    /// `true` when a compiled effect was produced.
++    pub success: bool,
++    /// Validation and capacity diagnostics.
++    pub diagnostics: Vec<VfxDiagnostic>,
++    /// Backend-neutral compiled effect when compilation succeeds.
++    pub compiled_effect: Option<CompiledVfxEffect>,
++}
++
++/// Discoverable description of one engine-owned VFX module type.
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++pub struct VfxModuleSchema {
++    /// Stable engine-owned module type ID.
++    pub type_id: String,
++    /// Human-readable module name.
++    pub display_name: String,
++    /// Palette category used by authoring clients.
++    pub category: String,
++    /// Required execution phase.
++    pub phase: VfxPhase,
++}
++
++/// Deterministic module catalog returned to Editor, CLI, MCP, and tests.
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++pub struct VfxSchemaCatalog {
++    /// Current VFX document schema version.
++    pub schema_version: u32,
++    /// Supported module types in palette order.
++    pub modules: Vec<VfxModuleSchema>,
++}
++
++/// Granular semantic edit applied transactionally to one VFX document.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++#[serde(tag = "command", rename_all = "snake_case")]
++pub enum VfxCommand {
++    /// Renames the effect.
++    SetEffectName {
++        /// New human-readable name.
++        name: String,
++    },
++    /// Changes the effect's deterministic base seed.
++    SetEffectSeed {
++        /// New deterministic seed.
++        seed: u32,
++    },
++    /// Changes the effect-wide live-particle cap.
++    SetEffectMaxParticles {
++        /// New positive live-particle cap.
++        max_particles: u32,
++    },
++    /// Inserts an emitter at a deterministic document position.
++    AddEmitter {
++        /// Emitter to insert, including its stable ID.
++        emitter: VfxEmitter,
++        /// Zero-based insertion position.
++        index: usize,
++    },
++    /// Removes one emitter by stable ID.
++    RemoveEmitter {
++        /// Emitter to remove.
++        emitter: VfxEmitterId,
++    },
++    /// Moves one emitter to a new zero-based position.
++    MoveEmitter {
++        /// Emitter to move.
++        emitter: VfxEmitterId,
++        /// Destination position after removing the emitter from its old position.
++        index: usize,
++    },
++    /// Renames one emitter.
++    RenameEmitter {
++        /// Target emitter.
++        emitter: VfxEmitterId,
++        /// New human-readable name.
++        name: String,
++    },
++    /// Enables or disables one emitter without changing its stable identity.
++    SetEmitterEnabled {
++        /// Target emitter.
++        emitter: VfxEmitterId,
++        /// New enabled state.
++        enabled: bool,
++    },
++    /// Changes one emitter's hard live-particle cap.
++    SetEmitterMaxParticles {
++        /// Target emitter.
++        emitter: VfxEmitterId,
++        /// New positive live-particle cap.
++        max_particles: u32,
++    },
++    /// Inserts a module at a deterministic position in one emitter's stack.
++    AddModule {
++        /// Target emitter.
++        emitter: VfxEmitterId,
++        /// Module to insert, including its stable ID.
++        module: VfxModule,
++        /// Zero-based insertion position in the complete module stack.
++        index: usize,
++    },
++    /// Removes one module by stable ID.
++    RemoveModule {
++        /// Target emitter.
++        emitter: VfxEmitterId,
++        /// Module to remove.
++        module: VfxModuleId,
++    },
++    /// Moves one module inside its existing execution phase.
++    MoveModule {
++        /// Target emitter.
++        emitter: VfxEmitterId,
++        /// Module to move.
++        module: VfxModuleId,
++        /// Destination position among modules in the same phase.
++        phase_index: usize,
++    },
++    /// Enables or disables one module.
++    SetModuleEnabled {
++        /// Target emitter.
