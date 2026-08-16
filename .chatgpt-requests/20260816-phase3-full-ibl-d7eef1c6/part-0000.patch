@@ -1,0 +1,206 @@
+diff --git a/crates/render-runtime/src/environment.rs b/crates/render-runtime/src/environment.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/render-runtime/src/environment.rs
+@@ -0,0 +1,611 @@
++use std::sync::{Arc, Weak};
++
++use bytemuck::{Pod, Zeroable};
++
++use crate::material::Texture;
++use crate::shadow::EnvironmentLighting;
++
++const DIFFUSE_WIDTH: u32 = 32;
++const DIFFUSE_HEIGHT: u32 = 16;
++const SPECULAR_WIDTH: u32 = 128;
++const SPECULAR_HEIGHT: u32 = 64;
++const SPECULAR_MIP_LEVELS: u32 = 8;
++const BRDF_LUT_SIZE: u32 = 128;
++const ENVIRONMENT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
++
++#[repr(C)]
++#[derive(Clone, Copy, Pod, Zeroable)]
++struct EnvironmentUniform {
++    diffuse_color: [f32; 3],
++    intensity: f32,
++    /// x=diffuse enabled, y=has diffuse texture, z=specular enabled, w=has skybox.
++    params: [f32; 4],
++}
++
++impl EnvironmentUniform {
++    fn from_settings(
++        settings: &EnvironmentLighting,
++        has_diffuse_texture: bool,
++        has_skybox: bool,
++    ) -> Self {
++        let finite = |value: f32, fallback: f32| {
++            if value.is_finite() {
++                value
++            } else {
++                fallback
++            }
++        };
++        Self {
++            diffuse_color: [
++                finite(settings.diffuse_color.x, 1.0).max(0.0),
++                finite(settings.diffuse_color.y, 1.0).max(0.0),
++                finite(settings.diffuse_color.z, 1.0).max(0.0),
++            ],
++            intensity: finite(settings.intensity, 0.0).max(0.0),
++            params: [
++                flag(settings.diffuse_ibl_enabled),
++                flag(has_diffuse_texture),
++                flag(has_skybox),
++                flag(has_skybox),
++            ],
++        }
++    }
++}
++
++fn flag(enabled: bool) -> f32 {
++    f32::from(u8::from(enabled))
++}
++
++#[repr(C)]
++#[derive(Clone, Copy, Pod, Zeroable)]
++struct BakeUniform {
++    roughness: f32,
++    _padding: [f32; 3],
++}
++
++impl BakeUniform {
++    const fn new(roughness: f32) -> Self {
++        Self {
++            roughness,
++            _padding: [0.0; 3],
++        }
++    }
++}
++
++/// Renderer-owned environment resources derived from runtime texture assets.
++pub(crate) struct EnvironmentGpuState {
++    bind_group_layout: wgpu::BindGroupLayout,
++    bind_group: wgpu::BindGroup,
++    uniform_buffer: wgpu::Buffer,
++    sampler: wgpu::Sampler,
++    fallback: Texture,
++    _brdf_texture: wgpu::Texture,
++    brdf_view: wgpu::TextureView,
++    _diffuse_texture: Option<wgpu::Texture>,
++    diffuse_view: Option<wgpu::TextureView>,
++    _specular_texture: Option<wgpu::Texture>,
++    specular_view: Option<wgpu::TextureView>,
++    source_bgl: wgpu::BindGroupLayout,
++    diffuse_pipeline: wgpu::RenderPipeline,
++    specular_pipeline: wgpu::RenderPipeline,
++    skybox_source: Option<Weak<Texture>>,
++    diffuse_override_source: Option<Weak<Texture>>,
++    has_skybox: bool,
++}
++
++impl EnvironmentGpuState {
++    pub(crate) fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Self {
++        use wgpu::util::DeviceExt;
++
++        let fallback = Texture::solid_rgba(
++            device,
++            queue,
++            [0, 0, 0, 255],
++            "environment_black_fallback",
++            false,
++        )
++        .expect("one-pixel environment fallback must fit every valid GPU device");
++        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
++            label: Some("Environment sampler"),
++            address_mode_u: wgpu::AddressMode::Repeat,
++            address_mode_v: wgpu::AddressMode::ClampToEdge,
++            address_mode_w: wgpu::AddressMode::ClampToEdge,
++            mag_filter: wgpu::FilterMode::Linear,
++            min_filter: wgpu::FilterMode::Linear,
++            mipmap_filter: wgpu::MipmapFilterMode::Linear,
++            ..Default::default()
++        });
++
++        let bind_group_layout =
++            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
++                label: Some("Environment IBL BGL"),
++                entries: &[
++                    texture_layout_entry(0),
++                    texture_layout_entry(1),
++                    texture_layout_entry(2),
++                    texture_layout_entry(3),
++                    wgpu::BindGroupLayoutEntry {
++                        binding: 4,
++                        visibility: wgpu::ShaderStages::FRAGMENT,
++                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
++                        count: None,
++                    },
++                    wgpu::BindGroupLayoutEntry {
++                        binding: 5,
++                        visibility: wgpu::ShaderStages::FRAGMENT,
++                        ty: wgpu::BindingType::Buffer {
++                            ty: wgpu::BufferBindingType::Uniform,
++                            has_dynamic_offset: false,
++                            min_binding_size: None,
++                        },
++                        count: None,
++                    },
++                ],
++            });
++        let source_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
++            label: Some("Environment precompute source BGL"),
++            entries: &[
++                texture_layout_entry(0),
++                wgpu::BindGroupLayoutEntry {
++                    binding: 1,
++                    visibility: wgpu::ShaderStages::FRAGMENT,
++                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
++                    count: None,
++                },
++                wgpu::BindGroupLayoutEntry {
++                    binding: 2,
++                    visibility: wgpu::ShaderStages::FRAGMENT,
++                    ty: wgpu::BindingType::Buffer {
++                        ty: wgpu::BufferBindingType::Uniform,
++                        has_dynamic_offset: false,
++                        min_binding_size: None,
++                    },
++                    count: None,
++                },
++            ],
++        });
++
++        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
++            label: Some("Environment precompute shader"),
++            source: wgpu::ShaderSource::Wgsl(
++                include_str!("shaders/environment_precompute.wgsl").into(),
++            ),
++        });
++        let source_pipeline_layout =
++            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
++                label: Some("Environment precompute pipeline layout"),
++                bind_group_layouts: &[Some(&source_bgl)],
++                immediate_size: 0,
++            });
++        let diffuse_pipeline = make_precompute_pipeline(
++            device,
++            "Environment diffuse irradiance pipeline",
++            &source_pipeline_layout,
++            &shader,
++            "fs_diffuse",
++        );
++        let specular_pipeline = make_precompute_pipeline(
++            device,
++            "Environment GGX prefilter pipeline",
++            &source_pipeline_layout,
++            &shader,
++            "fs_specular",
++        );
++        let brdf_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
++            label: Some("Environment BRDF integration pipeline layout"),
++            bind_group_layouts: &[],
++            immediate_size: 0,
++        });
++        let brdf_pipeline = make_precompute_pipeline(
++            device,
++            "Environment BRDF integration pipeline",
