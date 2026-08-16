@@ -1,0 +1,130 @@
++        let payloads: Vec<_> = timeline.entries().iter().map(CompiledEntry::payload).collect();
++        assert_eq!(
++            payloads,
++            vec![
++                &TestPayload::State(3),
++                &TestPayload::State(2),
++                &TestPayload::State(1)
++            ]
++        );
++    }
++
++    #[test]
++    fn forward_event_crossing_fires_once_and_scrub_suppresses_by_default() {
++        let timeline = CompiledTimeline::new(
++            TimelineTick::new(100),
++            vec![CompiledEntry::point(
++                0,
++                0,
++                TimelineTick::new(50),
++                SeekCapability::Stateless,
++                true,
++                TestPayload::Event(7),
++            )],
++        )
++        .expect("valid timeline");
++
++        let playback = EvaluationRequest {
++            previous_tick: TimelineTick::new(40),
++            current_tick: TimelineTick::new(60),
++            mode: EvaluationMode::Playback,
++            generation: 1,
++        };
++        assert_eq!(timeline.evaluate(&playback).len(), 1);
++
++        let after = EvaluationRequest {
++            previous_tick: TimelineTick::new(60),
++            current_tick: TimelineTick::new(70),
++            mode: EvaluationMode::Playback,
++            generation: 2,
++        };
++        assert!(timeline.evaluate(&after).is_empty());
++
++        let scrub = EvaluationRequest {
++            previous_tick: TimelineTick::new(0),
++            current_tick: TimelineTick::new(50),
++            mode: EvaluationMode::Seek {
++                preview_events: false,
++            },
++            generation: 3,
++        };
++        assert!(timeline.evaluate(&scrub).is_empty());
++
++        let preview = EvaluationRequest {
++            mode: EvaluationMode::Seek {
++                preview_events: true,
++            },
++            ..scrub
++        };
++        assert_eq!(timeline.evaluate(&preview).len(), 1);
++    }
++
++    #[test]
++    fn seek_capabilities_are_explicit() {
++        let timeline = CompiledTimeline::new(
++            TimelineTick::new(100),
++            vec![
++                CompiledEntry::interval(
++                    0,
++                    0,
++                    TimelineTick::ZERO,
++                    TimelineTick::new(100),
++                    SeekCapability::ReplayRequired,
++                    TestPayload::State(1),
++                ),
++                CompiledEntry::interval(
++                    1,
++                    0,
++                    TimelineTick::ZERO,
++                    TimelineTick::new(100),
++                    SeekCapability::NonSeekable,
++                    TestPayload::State(2),
++                ),
++            ],
++        )
++        .expect("valid timeline");
++        let request = EvaluationRequest {
++            previous_tick: TimelineTick::ZERO,
++            current_tick: TimelineTick::new(10),
++            mode: EvaluationMode::Seek {
++                preview_events: false,
++            },
++            generation: 1,
++        };
++        let items = timeline.evaluate(&request);
++        assert_eq!(
++            items[0].decision(),
++            EvaluationDecision::ReplayRequired {
++                from_tick: TimelineTick::ZERO
++            }
++        );
++        assert_eq!(items[1].decision(), EvaluationDecision::NonSeekable);
++    }
++
++    #[test]
++    fn players_sharing_one_compiled_timeline_do_not_share_state() {
++        let compiled = CompiledTimeline::<TestPayload>::new(TimelineTick::new(100), Vec::new())
++            .expect("valid timeline");
++        let mut first = TimelinePlayer::new();
++        let second = TimelinePlayer::new();
++        first.play();
++        first.advance_ticks(10, compiled.duration());
++
++        assert_eq!(first.current_tick(), TimelineTick::new(10));
++        assert_eq!(second.current_tick(), TimelineTick::ZERO);
++        assert_eq!(second.state(), TimelinePlaybackState::Stopped);
++    }
++
++    #[test]
++    fn stop_and_seek_advance_generation_and_clamp() {
++        let mut player = TimelinePlayer::new();
++        player.play();
++        player.advance_ticks(20, TimelineTick::new(100));
++        let seek = player.seek(TimelineTick::new(500), TimelineTick::new(100), false);
++        assert_eq!(seek.current_tick, TimelineTick::new(100));
++        let generation = seek.generation;
++        let stop = player.stop();
++        assert_eq!(stop.current_tick, TimelineTick::ZERO);
++        assert!(stop.generation > generation);
++    }
++}
