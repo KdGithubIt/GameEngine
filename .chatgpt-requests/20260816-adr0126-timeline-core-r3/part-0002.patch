@@ -1,0 +1,302 @@
++                                "timeline.missing_asset_binding",
++                                format!(
++                                    "Timeline track `{}` clip `{}` references missing Animation Set asset `{}`",
++                                    track.id, clip.timing.id, clip.animation_set
++                                ),
++                            ));
++                        }
++                    }
++                }
++                TimelineTrackKind::TransformProperty { clips } => {
++                    let mut clips = clips.iter().collect::<Vec<_>>();
++                    clips.sort_by_key(|clip| (clip.timing.start_tick, clip.timing.id.clone()));
++                    for clip in clips {
++                        if !resolver.entity_exists(&clip.target) {
++                            diagnostics.push(missing_entity_binding(
++                                &track.id,
++                                &clip.timing.id,
++                                &clip.target,
++                            ));
++                        }
++                    }
++                }
++                TimelineTrackKind::CameraCut { clips } => {
++                    let mut clips = clips.iter().collect::<Vec<_>>();
++                    clips.sort_by_key(|clip| (clip.timing.start_tick, clip.timing.id.clone()));
++                    for clip in clips {
++                        if !resolver.entity_exists(&clip.camera) {
++                            diagnostics.push(missing_entity_binding(
++                                &track.id,
++                                &clip.timing.id,
++                                &clip.camera,
++                            ));
++                        }
++                    }
++                }
++                TimelineTrackKind::Event { .. } => {}
++            }
++        }
++        diagnostics
++    }
++
++    /// Returns one track by stable ID.
++    pub fn track(&self, id: &TimelineTrackId) -> Option<&TimelineTrack> {
++        self.tracks.iter().find(|track| &track.id == id)
++    }
++
++    /// Returns tracks in canonical deterministic evaluation order.
++    pub fn tracks_in_evaluation_order(&self) -> Vec<&TimelineTrack> {
++        let mut tracks = self.tracks.iter().collect::<Vec<_>>();
++        tracks.sort_by_key(|track| (track.order, track.id.clone()));
++        tracks
++    }
++}
++
++fn missing_entity_binding(
++    track: &TimelineTrackId,
++    clip: &TimelineClipId,
++    entity: &EntityId,
++) -> Diagnostic {
++    Diagnostic::error(
++        "timeline.missing_entity_binding",
++        format!(
++            "Timeline track `{track}` clip `{clip}` references missing entity `{entity}`"
++        ),
++    )
++}
++
++/// Project/scene-owned existence query used for stable Timeline bindings.
++///
++/// Implementations inspect stable authoring identity only. A resolver must not
++/// search for same-name replacements when an ID is missing.
++pub trait TimelineBindingResolver {
++    /// Returns whether the stable authored entity currently exists.
++    fn entity_exists(&self, entity: &EntityId) -> bool;
++    /// Returns whether the stable authored asset currently exists.
++    fn asset_exists(&self, asset: &AssetId) -> bool;
++}
++
++/// Error loading/saving a versioned Timeline document.
++#[derive(Debug)]
++pub enum TimelineDocumentError {
++    /// Malformed JSON or an invalid typed stable ID.
++    Json(serde_json::Error),
++    /// Persisted schema version is unsupported.
++    UnsupportedVersion {
++        /// Version found in the document.
++        found: u32,
++    },
++    /// Current-format structural validation failed.
++    Validation {
++        /// Deterministic diagnostics.
++        diagnostics: Vec<Diagnostic>,
++    },
++}
++
++impl fmt::Display for TimelineDocumentError {
++    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
++        match self {
++            Self::Json(error) => write!(formatter, "invalid Timeline JSON: {error}"),
++            Self::UnsupportedVersion { found } => write!(
++                formatter,
++                "unsupported Timeline schema version {found}; expected {TIMELINE_SCHEMA_VERSION}"
++            ),
++            Self::Validation { diagnostics } => {
++                let count = diagnostics.iter().filter(|item| item.is_blocking()).count();
++                write!(formatter, "Timeline validation failed with {count} error(s)")
++            }
++        }
++    }
++}
++
++impl std::error::Error for TimelineDocumentError {
++    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
++        match self {
++            Self::Json(error) => Some(error),
++            Self::UnsupportedVersion { .. } | Self::Validation { .. } => None,
++        }
++    }
++}
++
++/// Immutable payload compiled from the currently supported typed track set.
++///
++/// The neutral scheduler is generic over this type. Audio/VFX are not hidden
++/// behind an `Other(String)`/JSON branch; they can be introduced later as
++/// explicit typed payloads once their runtime contracts are stable.
++#[derive(Debug, Clone, PartialEq)]
++pub enum CompiledTimelinePayload {
++    /// Animation Set motion-slot evaluation request.
++    Animation(CompiledAnimationPayload),
++    /// Typed Transform property curve evaluation request.
++    TransformProperty(CompiledTransformPayload),
++    /// Runtime-only game-camera override request.
++    CameraCut(CompiledCameraCutPayload),
++    /// Sequence-level Event marker request.
++    Event(CompiledEventPayload),
++}
++
++/// Pre-resolved stable Animation Track payload.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct CompiledAnimationPayload {
++    /// Stable source track.
++    pub track: TimelineTrackId,
++    /// Stable source clip.
++    pub clip: TimelineClipId,
++    /// Stable target entity.
++    pub target: EntityId,
++    /// Stable Animation Set asset.
++    pub animation_set: AssetId,
++    /// Stable Animation Set motion slot.
++    pub motion_slot: MotionSlotId,
++    /// Clip-local source start in canonical ticks.
++    pub source_start_tick: TimelineTick,
++}
++
++impl CompiledAnimationPayload {
++    /// Returns the source-domain sample position for a Timeline local tick.
++    pub fn source_tick(&self, local_tick: TimelineTick) -> TimelineTick {
++        self.source_start_tick.saturating_add(local_tick.get())
++    }
++}
++
++/// Pre-resolved stable Transform/Property Track payload.
++#[derive(Debug, Clone, PartialEq)]
++pub struct CompiledTransformPayload {
++    /// Stable source track.
++    pub track: TimelineTrackId,
++    /// Stable source clip.
++    pub clip: TimelineClipId,
++    /// Stable target entity.
++    pub target: EntityId,
++    /// Immutable typed property curve.
++    pub curve: TimelineTransformCurve,
++}
++
++impl CompiledTransformPayload {
++    /// Samples the immutable typed curve at a clip-local tick.
++    pub fn sample(&self, local_tick: TimelineTick) -> Option<TimelineTransformSample> {
++        self.curve.sample(local_tick)
++    }
++}
++
++/// Pre-resolved stable Camera Cut payload.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct CompiledCameraCutPayload {
++    /// Stable source track.
++    pub track: TimelineTrackId,
++    /// Stable source clip.
++    pub clip: TimelineClipId,
++    /// Stable authored camera entity.
++    pub camera: EntityId,
++    /// Explicit priority for transient Timeline camera arbitration.
++    pub override_priority: i32,
++}
++
++/// Pre-resolved stable Event Track marker payload.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct CompiledEventPayload {
++    /// Stable source track.
++    pub track: TimelineTrackId,
++    /// Stable marker/event identity.
++    pub marker: TimelineMarkerId,
++    /// Authored sequence-level event name.
++    pub name: String,
++}
++
++/// Error compiling a validated authoring Timeline to the immutable schedule.
++#[derive(Debug)]
++pub enum TimelineCompileError {
++    /// Authoring validation produced blocking diagnostics.
++    Validation {
++        /// Deterministic diagnostics.
++        diagnostics: Vec<Diagnostic>,
++    },
++    /// The neutral schedule rejected a span after authoring validation.
++    Schedule(CompiledTimelineError),
++}
++
++impl TimelineCompileError {
++    /// Returns structural diagnostics when compilation was blocked by authoring.
++    pub fn diagnostics(&self) -> Option<&[Diagnostic]> {
++        match self {
++            Self::Validation { diagnostics } => Some(diagnostics),
++            Self::Schedule(_) => None,
++        }
++    }
++}
++
++impl fmt::Display for TimelineCompileError {
++    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
++        match self {
++            Self::Validation { diagnostics } => write!(
++                formatter,
++                "Timeline compilation blocked by {} validation diagnostic(s)",
++                diagnostics.len()
++            ),
++            Self::Schedule(error) => error.fmt(formatter),
++        }
++    }
++}
++
++impl std::error::Error for TimelineCompileError {
++    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
++        match self {
++            Self::Schedule(error) => Some(error),
++            Self::Validation { .. } => None,
++        }
++    }
++}
++
++/// Compiles structural authoring data into a deterministic immutable schedule.
++///
++/// Stable entity/asset references are retained as typed IDs. A composition
++/// layer resolves them to runtime entities/handles and delegates actual motion,
++/// Transform, camera, and event application to the owning domains.
++pub fn compile_timeline(
++    document: &TimelineDocument,
++) -> Result<CompiledTimeline<CompiledTimelinePayload>, TimelineCompileError> {
++    let diagnostics = document.validate();
++    if diagnostics.iter().any(Diagnostic::is_blocking) {
++        return Err(TimelineCompileError::Validation { diagnostics });
++    }
++
++    let mut entries = Vec::new();
++    for (track_order, track) in document.tracks_in_evaluation_order().into_iter().enumerate() {
++        if !track.enabled {
++            continue;
++        }
++        let track_order = u32::try_from(track_order).unwrap_or(u32::MAX);
++        match &track.kind {
++            TimelineTrackKind::Animation { clips } => {
++                let mut clips = clips.iter().collect::<Vec<_>>();
++                clips.sort_by_key(|clip| (clip.timing.start_tick, clip.timing.id.clone()));
++                for (item_order, clip) in clips.into_iter().enumerate() {
++                    entries.push(CompiledEntry::interval(
++                        track_order,
++                        u32::try_from(item_order).unwrap_or(u32::MAX),
++                        clip.timing.start_tick,
++                        clip.timing.end_tick,
++                        SeekCapability::Seekable,
++                        CompiledTimelinePayload::Animation(CompiledAnimationPayload {
++                            track: track.id.clone(),
++                            clip: clip.timing.id.clone(),
++                            target: clip.target.clone(),
++                            animation_set: clip.animation_set.clone(),
++                            motion_slot: clip.motion_slot.clone(),
++                            source_start_tick: clip.source_start_tick,
++                        }),
++                    ));
++                }
++            }
++            TimelineTrackKind::TransformProperty { clips } => {
++                let mut clips = clips.iter().collect::<Vec<_>>();
++                clips.sort_by_key(|clip| (clip.timing.start_tick, clip.timing.id.clone()));
++                for (item_order, clip) in clips.into_iter().enumerate() {
++                    entries.push(CompiledEntry::interval(
++                        track_order,
++                        u32::try_from(item_order).unwrap_or(u32::MAX),
++                        clip.timing.start_tick,
++                        clip.timing.end_tick,
++                        SeekCapability::Stateless,
++                        CompiledTimelinePayload::TransformProperty(CompiledTransformPayload {
++                            track: track.id.clone(),

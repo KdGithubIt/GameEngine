@@ -1,0 +1,323 @@
++    let factor = interpolation_factor(left_key.tick, right_key.tick, tick);
++    Some([
++        lerp(left_key.value[0], right_key.value[0], factor),
++        lerp(left_key.value[1], right_key.value[1], factor),
++        lerp(left_key.value[2], right_key.value[2], factor),
++    ])
++}
++
++fn sample_quat(keys: &[TimelineQuatKey], tick: TimelineTick) -> Option<[f32; 4]> {
++    let first = keys.first()?;
++    if tick <= first.tick || keys.len() == 1 {
++        return normalize_quat(first.value);
++    }
++    let last = keys.last()?;
++    if tick >= last.tick {
++        return normalize_quat(last.value);
++    }
++    let right = keys.partition_point(|key| key.tick <= tick);
++    let left_key = &keys[right - 1];
++    let right_key = &keys[right];
++    let factor = interpolation_factor(left_key.tick, right_key.tick, tick);
++    let mut right_value = right_key.value;
++    let dot = left_key
++        .value
++        .iter()
++        .zip(right_value.iter())
++        .map(|(left, right)| left * right)
++        .sum::<f32>();
++    if dot < 0.0 {
++        for value in &mut right_value {
++            *value = -*value;
++        }
++    }
++    normalize_quat([
++        lerp(left_key.value[0], right_value[0], factor),
++        lerp(left_key.value[1], right_value[1], factor),
++        lerp(left_key.value[2], right_value[2], factor),
++        lerp(left_key.value[3], right_value[3], factor),
++    ])
++}
++
++fn interpolation_factor(left: TimelineTick, right: TimelineTick, tick: TimelineTick) -> f32 {
++    let span = right.get().saturating_sub(left.get());
++    if span <= 0 {
++        return 0.0;
++    }
++    let offset = tick.get().saturating_sub(left.get());
++    (offset as f64 / span as f64).clamp(0.0, 1.0) as f32
++}
++
++fn lerp(left: f32, right: f32, factor: f32) -> f32 {
++    left + (right - left) * factor
++}
++
++fn normalize_quat(value: [f32; 4]) -> Option<[f32; 4]> {
++    let length_squared = value.iter().map(|component| component * component).sum::<f32>();
++    if !length_squared.is_finite() || length_squared <= f32::EPSILON {
++        return None;
++    }
++    let inverse = length_squared.sqrt().recip();
++    Some([
++        value[0] * inverse,
++        value[1] * inverse,
++        value[2] * inverse,
++        value[3] * inverse,
++    ])
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    fn timing(start: i64, end: i64) -> TimelineClipTiming {
++        TimelineClipTiming {
++            id: TimelineClipId::generate(),
++            start_tick: TimelineTick::new(start),
++            end_tick: TimelineTick::new(end),
++            blend: TimelineBlend::default(),
++        }
++    }
++
++    fn base_document() -> TimelineDocument {
++        TimelineDocument::new(
++            TimelineId::generate(),
++            "intro",
++            TimelineTick::new(48_000 * 10),
++        )
++    }
++
++    #[test]
++    fn json_roundtrip_preserves_exact_ticks_and_stable_ids() {
++        let mut document = base_document();
++        let track = TimelineTrack {
++            id: TimelineTrackId::generate(),
++            name: "events".into(),
++            enabled: true,
++            order: 0,
++            kind: TimelineTrackKind::Event {
++                markers: vec![TimelineEventMarker {
++                    id: TimelineMarkerId::generate(),
++                    tick: TimelineTick::new(144_001),
++                    name: "cutscene.open_door".into(),
++                }],
++            },
++        };
++        let marker_id = match &track.kind {
++            TimelineTrackKind::Event { markers } => markers[0].id.clone(),
++            _ => unreachable!(),
++        };
++        let track_id = track.id.clone();
++        let document_id = document.id.clone();
++        document.tracks.push(track);
++
++        let json = document.to_canonical_json().expect("serialize");
++        let loaded = TimelineDocument::from_json(&json).expect("load");
++        assert_eq!(loaded.id, document_id);
++        assert_eq!(loaded.tracks[0].id, track_id);
++        match &loaded.tracks[0].kind {
++            TimelineTrackKind::Event { markers } => {
++                assert_eq!(markers[0].id, marker_id);
++                assert_eq!(markers[0].tick, TimelineTick::new(144_001));
++            }
++            _ => panic!("expected event track"),
++        }
++    }
++
++    #[test]
++    fn compile_order_uses_track_order_then_stable_ties() {
++        let mut document = base_document();
++        let later_id = TimelineTrackId::generate();
++        let earlier_id = TimelineTrackId::generate();
++        let (first_id, second_id) = if earlier_id < later_id {
++            (earlier_id, later_id)
++        } else {
++            (later_id, earlier_id)
++        };
++        document.tracks.push(TimelineTrack {
++            id: second_id.clone(),
++            name: "second".into(),
++            enabled: true,
++            order: 0,
++            kind: TimelineTrackKind::Event {
++                markers: vec![TimelineEventMarker {
++                    id: TimelineMarkerId::generate(),
++                    tick: TimelineTick::new(100),
++                    name: "second".into(),
++                }],
++            },
++        });
++        document.tracks.push(TimelineTrack {
++            id: first_id.clone(),
++            name: "first".into(),
++            enabled: true,
++            order: 0,
++            kind: TimelineTrackKind::Event {
++                markers: vec![TimelineEventMarker {
++                    id: TimelineMarkerId::generate(),
++                    tick: TimelineTick::new(100),
++                    name: "first".into(),
++                }],
++            },
++        });
++
++        let compiled = compile_timeline(&document).expect("warning-only order tie compiles");
++        match compiled.entries()[0].payload() {
++            CompiledTimelinePayload::Event(payload) => assert_eq!(payload.track, first_id),
++            _ => panic!("expected event payload"),
++        }
++    }
++
++    #[test]
++    fn animation_track_compiles_stable_set_and_motion_slot_without_runtime_handle() {
++        let mut document = base_document();
++        let animation_set = AssetId::generate();
++        let motion_slot = MotionSlotId::generate();
++        document.tracks.push(TimelineTrack {
++            id: TimelineTrackId::generate(),
++            name: "animation".into(),
++            enabled: true,
++            order: 0,
++            kind: TimelineTrackKind::Animation {
++                clips: vec![TimelineAnimationClip {
++                    timing: timing(0, 48_000),
++                    target: EntityId::generate(),
++                    animation_set: animation_set.clone(),
++                    motion_slot: motion_slot.clone(),
++                    source_start_tick: TimelineTick::new(12_000),
++                }],
++            },
++        });
++
++        let compiled = compile_timeline(&document).expect("compile");
++        match compiled.entries()[0].payload() {
++            CompiledTimelinePayload::Animation(payload) => {
++                assert_eq!(payload.animation_set, animation_set);
++                assert_eq!(payload.motion_slot, motion_slot);
++                assert_eq!(payload.source_tick(TimelineTick::new(24_000)), TimelineTick::new(36_000));
++            }
++            _ => panic!("expected animation payload"),
++        }
++    }
++
++    #[test]
++    fn transform_curve_sampling_is_stateless_and_typed() {
++        let curve = TimelineTransformCurve::Translation(vec![
++            TimelineVec3Key {
++                tick: TimelineTick::ZERO,
++                value: [0.0, 0.0, 0.0],
++            },
++            TimelineVec3Key {
++                tick: TimelineTick::new(48_000),
++                value: [10.0, 20.0, 30.0],
++            },
++        ]);
++        assert_eq!(
++            curve.sample(TimelineTick::new(24_000)),
++            Some(TimelineTransformSample::Translation([5.0, 10.0, 15.0]))
++        );
++    }
++
++    #[test]
++    fn missing_binding_is_reported_by_stable_id_without_name_retarget() {
++        struct Missing;
++        impl TimelineBindingResolver for Missing {
++            fn entity_exists(&self, _entity: &EntityId) -> bool {
++                false
++            }
++            fn asset_exists(&self, _asset: &AssetId) -> bool {
++                false
++            }
++        }
++
++        let mut document = base_document();
++        document.tracks.push(TimelineTrack {
++            id: TimelineTrackId::generate(),
++            name: "camera".into(),
++            enabled: true,
++            order: 0,
++            kind: TimelineTrackKind::CameraCut {
++                clips: vec![TimelineCameraCutClip {
++                    timing: timing(0, 10),
++                    camera: EntityId::generate(),
++                    override_priority: 10,
++                }],
++            },
++        });
++        let diagnostics = document.validate_bindings(&Missing);
++        assert_eq!(diagnostics.len(), 1);
++        assert_eq!(diagnostics[0].code, "timeline.missing_entity_binding");
++    }
++
++    #[test]
++    fn invalid_transform_key_order_blocks_compile() {
++        let mut document = base_document();
++        document.tracks.push(TimelineTrack {
++            id: TimelineTrackId::generate(),
++            name: "transform".into(),
++            enabled: true,
++            order: 0,
++            kind: TimelineTrackKind::TransformProperty {
++                clips: vec![TimelineTransformClip {
++                    timing: timing(0, 100),
++                    target: EntityId::generate(),
++                    curve: TimelineTransformCurve::Scale(vec![
++                        TimelineVec3Key {
++                            tick: TimelineTick::new(10),
++                            value: [1.0; 3],
++                        },
++                        TimelineVec3Key {
++                            tick: TimelineTick::new(10),
++                            value: [2.0; 3],
++                        },
++                    ]),
++                }],
++            },
++        });
++        let error = compile_timeline(&document).expect_err("duplicate key tick must fail");
++        let diagnostics = error.diagnostics().expect("validation diagnostics");
++        assert!(diagnostics.iter().any(|diagnostic| {
++            diagnostic.code == "timeline.transform_keys_not_strictly_ordered"
++        }));
++    }
++}
+diff --git a/crates/authoring/src/timeline_authoring.rs b/crates/authoring/src/timeline_authoring.rs
+new file mode 100644
+index 0000000..2731e69
+--- /dev/null
++++ b/crates/authoring/src/timeline_authoring.rs
+@@ -0,0 +1,1200 @@
++//! GUI-free transactional Timeline authoring service (ADR 0121, ADR 0126).
++//!
++//! Editor, CLI, MCP, tests, and future adapters can share this service without
++//! importing any GUI toolkit. Preview is non-destructive, apply is atomic, and
++//! the caller must present both revision and in-memory generation to prevent
++//! stale/ABA writes across reloads.
++
++use crate::access::{AuthoringPermission, AuthoringPermissionError, AuthoringPermissions};
++use crate::diagnostic::Diagnostic;
++use crate::id::{TimelineClipId, TimelineMarkerId, TimelineTrackId};
++use crate::timeline::{
++    TimelineAnimationClip, TimelineCameraCutClip, TimelineDisplayRate, TimelineDocument,
++    TimelineEventMarker, TimelineTrack, TimelineTrackKind, TimelineTrackType,
++    TimelineTransformClip,
++};
++use engine_timeline::TimelineTick;
++use serde::{Deserialize, Serialize};
++use std::fmt;
++use std::sync::atomic::{AtomicU64, Ordering};
++
++/// Strongly typed interval clip accepted by [`TimelineCommand`].
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++#[serde(tag = "type", content = "data", rename_all = "snake_case")]
++pub enum TimelineEditableClip {
++    /// Animation Track clip.
++    Animation(TimelineAnimationClip),
++    /// Transform/Property Track clip.
++    TransformProperty(TimelineTransformClip),
++    /// Camera Cut Track clip.
++    CameraCut(TimelineCameraCutClip),
++}
++
++impl TimelineEditableClip {
++    /// Returns this clip's stable identity.
