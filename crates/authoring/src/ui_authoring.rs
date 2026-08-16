@@ -2,7 +2,7 @@
 //!
 //! The service owns adapter-neutral permissions, stale-base protection,
 //! non-destructive preview, validation, and one-batch commit semantics over
-//! [`UiDocumentCommand`]. Applications remain responsible for selecting and
+//! `UiDocumentCommand`. Applications remain responsible for selecting and
 //! persisting the live UI document and for their own undo presentation.
 
 use super::UiDocument;
