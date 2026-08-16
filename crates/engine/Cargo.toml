@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 engine-animation = { path = "../animation" }
+engine-timeline = { path = "../timeline" }
 engine-authoring = { path = "../authoring" }
 engine-assets = { path = "../assets" }
 engine-core = { path = "../core" }

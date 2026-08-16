@@ -65,6 +65,8 @@ pub mod scene;
 pub mod scene_authoring;
 pub mod schema;
 pub mod test_fixtures;
+pub mod timeline;
+pub mod timeline_authoring;
 pub mod transaction;
 pub mod ui;
 pub mod ui_contract;
@@ -133,7 +135,8 @@ pub use graph_view::{
 };
 pub use id::{
     AssetId, ComponentTypeId, ComponentTypeIdError, EdgeId, EntityId, GraphId, GroupId, IdError,
-    MotionSlotId, NodeId, PortId, ProjectId, StableId,
+    MotionSlotId, NodeId, PortId, ProjectId, StableId, TimelineClipId, TimelineId,
+    TimelineMarkerId, TimelineTrackId,
 };
 pub use load::{load_scene_from_json, SceneLoadError};
 pub use material_asset::{
@@ -158,6 +161,21 @@ pub use scene_authoring::{
     SceneAuthoringValidation,
 };
 pub use schema::{ComponentSchema, ComponentSchemaRegistry, FieldSchema, FieldType};
+pub use timeline::{
+    compile_timeline, CompiledAnimationPayload, CompiledCameraCutPayload, CompiledEventPayload,
+    CompiledTimelinePayload, CompiledTransformPayload, TimelineAnimationClip,
+    TimelineBindingResolver, TimelineBlend, TimelineCameraCutClip, TimelineClipRef,
+    TimelineClipTiming, TimelineCompileError, TimelineDisplayRate, TimelineDocument,
+    TimelineDocumentError, TimelineEventMarker, TimelineQuatKey, TimelineTrack, TimelineTrackKind,
+    TimelineTrackType, TimelineTransformClip, TimelineTransformCurve, TimelineTransformSample,
+    TimelineVec3Key, TIMELINE_FILE_SUFFIX, TIMELINE_SCHEMA_VERSION,
+};
+pub use timeline_authoring::{
+    TimelineAuthoringError, TimelineAuthoringMutation, TimelineAuthoringService,
+    TimelineAuthoringSession, TimelineAuthoringSnapshot, TimelineAuthoringValidation,
+    TimelineChange, TimelineCommand, TimelineCommitError, TimelineEditError, TimelineEditableClip,
+    TimelineTransaction, TimelineTransactionCommit,
+};
 pub use transaction::{AuthoringSession, Transaction, TransactionError};
 pub use ui::authoring_service::{
     UiAuthoringError, UiAuthoringMutation, UiAuthoringService, UiAuthoringSession,

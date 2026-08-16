@@ -6,6 +6,7 @@ members = [
     "crates/rig",
     "crates/physics",
     "crates/animation",
+    "crates/timeline",
     "crates/gameplay",
     "crates/render-runtime",
     "crates/platform",
