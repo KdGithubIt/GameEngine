@@ -109,7 +109,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     return $projectRoot
 }
 
-function Invoke-EframeScreenshot {
+function Invoke-DesktopScreenshot {
     param(
         [Parameter(Mandatory = $true)][string]$Name,
         [Parameter(Mandatory = $true)][string]$Package,
@@ -119,10 +119,21 @@ function Invoke-EframeScreenshot {
     $outputPath = Join-Path $OutputDirectory "$Name.png"
     Remove-Item -LiteralPath $outputPath -Force -ErrorAction SilentlyContinue
 
-    $hadPreviousValue = Test-Path Env:EFRAME_SCREENSHOT_TO
-    $previousValue = $env:EFRAME_SCREENSHOT_TO
+    $captureVariable = if ($Package -eq "engine-editor") {
+        "GAMEENGINE_SCREENSHOT_TO"
+    } else {
+        "EFRAME_SCREENSHOT_TO"
+    }
+    $previousValue = [Environment]::GetEnvironmentVariable(
+        $captureVariable,
+        [EnvironmentVariableTarget]::Process
+    )
     try {
-        $env:EFRAME_SCREENSHOT_TO = $outputPath
+        [Environment]::SetEnvironmentVariable(
+            $captureVariable,
+            $outputPath,
+            [EnvironmentVariableTarget]::Process
+        )
         $cargoArguments = @(
             "run",
             "--locked",
@@ -137,11 +148,11 @@ function Invoke-EframeScreenshot {
         }
         Invoke-CargoChecked -Arguments $cargoArguments
     } finally {
-        if ($hadPreviousValue) {
-            $env:EFRAME_SCREENSHOT_TO = $previousValue
-        } else {
-            Remove-Item Env:EFRAME_SCREENSHOT_TO -ErrorAction SilentlyContinue
-        }
+        [Environment]::SetEnvironmentVariable(
+            $captureVariable,
+            $previousValue,
+            [EnvironmentVariableTarget]::Process
+        )
     }
 
     if (-not (Test-Path -LiteralPath $outputPath -PathType Leaf)) {
@@ -175,14 +186,14 @@ try {
             $projectRoot = New-StandardVisualValidationProject
             $projectSource = "generated-standard-project"
         }
-        $captures += Invoke-EframeScreenshot `
+        $captures += Invoke-DesktopScreenshot `
             -Name "editor" `
             -Package "engine-editor" `
             -ProgramArguments @("--project", $projectRoot)
     }
 
     if ($Target -eq "launcher" -or $Target -eq "both") {
-        $captures += Invoke-EframeScreenshot `
+        $captures += Invoke-DesktopScreenshot `
             -Name "launcher" `
             -Package "engine-launcher" `
             -ProgramArguments @()
