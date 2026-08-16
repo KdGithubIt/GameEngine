@@ -1,0 +1,172 @@
+diff --git a/crates/editor/src/ui/assets/animation_set_window.rs b/crates/editor/src/ui/assets/animation_set_window.rs
+--- a/crates/editor/src/ui/assets/animation_set_window.rs
++++ b/crates/editor/src/ui/assets/animation_set_window.rs
+@@ -8,3 +8,45 @@ struct AnimationSetGraphModel {
+     slots: Vec<engine_authoring::MotionSlot>,
+     states: std::collections::BTreeMap<engine_authoring::MotionSlotId, Vec<String>>,
+ }
++
++fn motion_source_variant_label(variant: engine_authoring::MotionSourceVariant) -> &'static str {
++    match variant {
++        engine_authoring::MotionSourceVariant::Auto => "Auto",
++        engine_authoring::MotionSourceVariant::Native => "Native",
++        engine_authoring::MotionSourceVariant::Humanoid => "Humanoid",
++    }
++}
++
++fn animation_set_motion_source_choices(
++    manifest: &engine::AssetManifest,
++) -> Vec<(engine_authoring::MotionSourceRef, String)> {
++    let mut choices = Vec::new();
++    for (_, entry) in manifest.iter() {
++        for sub_asset in &entry.import_settings.sub_assets {
++            let Ok(asset) = AssetId::from_stable_id(engine_authoring::StableId::new(&sub_asset.id))
++            else {
++                continue;
++            };
++            match sub_asset.kind {
++                engine::ImportedSubAssetKind::Animation => {
++                    for variant in [
++                        engine_authoring::MotionSourceVariant::Auto,
++                        engine_authoring::MotionSourceVariant::Native,
++                    ] {
++                        choices.push((
++                            engine_authoring::MotionSourceRef { variant, asset: asset.clone() },
++                            format!("[{}] {}", motion_source_variant_label(variant), sub_asset.name),
++                        ));
++                    }
++                }
++                engine::ImportedSubAssetKind::HumanoidMotion => choices.push((
++                    engine_authoring::MotionSourceRef::humanoid(asset),
++                    format!("[Humanoid] {}", sub_asset.name),
++                )),
++                _ => {}
++            }
++        }
++    }
++    choices.sort_by(|left, right| left.1.cmp(&right.1).then(left.0.cmp(&right.0)));
++    choices
++}
+@@ -111,9 +151,9 @@ enum AnimationSetUiAction {
+     CancelClear,
+     SetBinding {
+         slot: engine_authoring::MotionSlot,
+-        clip: Option<AssetId>,
++        motion: Option<engine_authoring::MotionSourceRef>,
+     },
+     AddOverlay {
+         slot: engine_authoring::MotionSlotId,
+-        clip: AssetId,
++        motion: engine_authoring::MotionSourceRef,
+     },
+@@ -149,46 +189,38 @@ enum AnimationSetUiAction {
+-/// Checks that a reference about to be stored in an Animation Set points at an
+-/// Animation Clip sub-asset produced by the import pipeline.
++/// Checks that a typed motion source about to be stored in an Animation Set
++/// points at the imported sub-asset kind required by its explicit variant.
+ ///
+-/// A parent source such as a VMD or PMX file can produce animation as well, but
+-/// what an Animation Set must hold is not the parent source: it is the stable
+-/// [`engine::ImportedSubAssetKind::Animation`] ID derived from it.
+-///
+-/// Restricting the combo box candidates is not enough on its own, because an
+-/// invalid ID can still arrive through drag and drop, an older document, or an
+-/// input path added later. This is therefore the shared guard applied both
+-/// immediately before the document changes and immediately before it is saved.
+-pub(in crate::ui) fn validate_imported_animation_clip_reference(
++/// Auto and Native select the stable Native Animation sub-asset. Humanoid
++/// selects the stable HumanoidMotion sibling. The variant is persisted and is
++/// never inferred from a display name (ADR 0110).
++pub(in crate::ui) fn validate_animation_set_motion_source_reference(
+     manifest: &engine::AssetManifest,
+-    clip: &AssetId,
++    motion: &engine_authoring::MotionSourceRef,
+ ) -> Result<(), String> {
+-    match manifest.imported_sub_asset(clip) {
+-        // An imported sub-asset of kind Animation already satisfies the
+-        // reference contract, so allow the assignment or the save as-is.
+-        Some((_, _, sub_asset))
+-            if sub_asset.kind == engine::ImportedSubAssetKind::Animation =>
+-        {
+-            Ok(())
+-        }
+-
+-        // The sub-asset exists but a Mesh or Material cannot be stored as an
+-        // Animation Clip, so reject it as a kind mismatch.
+-        Some((_, _, _)) => Err(format!(
+-            "asset `{}` is an imported sub-asset, but it is not an Animation Clip",
+-            clip.as_str()
+-        )),
+-
+-        // A top-level registered asset is the parent source, such as the VMD
+-        // itself; the clip derived from it has to be selected instead.
+-        None if manifest.get(clip).is_some() => Err(format!(
+-            "asset `{}` is a source asset; select its imported Animation Clip sub-asset instead",
+-            clip.as_str()
+-        )),
+-
+-        // An ID that is nowhere in the manifest is a deleted or broken
+-        // reference, which must never be written back out as canonical data.
+-        None => Err(format!(
+-            "asset `{}` is not a registered imported Animation Clip sub-asset",
+-            clip.as_str()
+-        )),
++    let expected = match motion.variant {
++        engine_authoring::MotionSourceVariant::Auto
++        | engine_authoring::MotionSourceVariant::Native => engine::ImportedSubAssetKind::Animation,
++        engine_authoring::MotionSourceVariant::Humanoid => {
++            engine::ImportedSubAssetKind::HumanoidMotion
++        }
++    };
++    match manifest.imported_sub_asset(&motion.asset) {
++        Some((_, _, sub_asset)) if sub_asset.kind == expected => Ok(()),
++        Some((_, _, sub_asset)) => Err(format!(
++            "{} source `{}` requires an imported {:?} sub-asset, but the asset is {:?}",
++            motion_source_variant_label(motion.variant),
++            motion.asset.as_str(),
++            expected,
++            sub_asset.kind
++        )),
++        None if manifest.get(&motion.asset).is_some() => Err(format!(
++            "asset `{}` is a source asset; select its imported {} variant instead",
++            motion.asset.as_str(),
++            motion_source_variant_label(motion.variant)
++        )),
++        None => Err(format!(
++            "asset `{}` is not a registered imported {} motion sub-asset",
++            motion.asset.as_str(),
++            motion_source_variant_label(motion.variant)
++        )),
+     }
+ }
+@@ -205,13 +247,10 @@ pub(in crate::ui) fn validate_animation_set_clip_references(
+     manifest: &engine::AssetManifest,
+ ) -> Result<(), String> {
+     for binding in document.bindings.values() {
+-        // The primary clip is mandatory for every binding, so validate it first.
+-        validate_imported_animation_clip_reference(manifest, &binding.clip)
++        validate_animation_set_motion_source_reference(manifest, &binding.clip)
+             .map_err(|error| format!("binding `{}` primary clip: {error}", binding.name))?;
+ 
+-        // Overlays carry the same Animation Clip reference contract. Report a
+-        // one-based index to match the numbering shown in the UI.
+         for (index, overlay) in binding.overlays.iter().enumerate() {
+-            validate_imported_animation_clip_reference(manifest, overlay).map_err(|error| {
++            validate_animation_set_motion_source_reference(manifest, overlay).map_err(|error| {
+                 format!(
+                     "binding `{}` overlay {}: {error}",
+@@ -278,13 +320,6 @@ impl EditorApp {
+             self.project_root
+                 .as_ref()
+                 .map(ProjectRoot::assets_root)
+                 .as_deref(),
+         );
+-        let clip_choices = asset_choices_for_kind(
+-            engine::AssetKind::AnimationClip,
+-            &self.asset_manifest,
+-            self.project_root
+-                .as_ref()
+-                .map(ProjectRoot::assets_root)
+-                .as_deref(),
+-        );
++        let motion_choices = animation_set_motion_source_choices(&self.asset_manifest);
