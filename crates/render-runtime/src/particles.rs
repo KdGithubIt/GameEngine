@@ -1,11 +1,18 @@
 //! CPU particle simulation rendered through GPU instancing (Phase 49,
 //! ADR 0044).
 //!
-//! A [`ParticleEmitter`] owns its particle pool; particles are never ECS
-//! entities. [`particle_update_system`] runs on the frame schedule and the
-//! render batch pass turns live particles into instanced draws of the
-//! emitter's mesh.
+//! [`ParticleEmitter`] is the legacy convenience API. ADR 0125 compiles its
+//! public fields into the same backend-neutral VFX IR and [`VfxInstance`] used
+//! by authored effects; particles remain transient runtime state rather than
+//! ECS entities. [`particle_update_system`] runs on the frame schedule and the
+//! render batch pass turns the compatibility particle view into instanced draws.
 
+use engine_authoring::{
+    CompiledVfxEffect, CompiledVfxEmitter, CompiledVfxOperation, VfxAttributeLayout,
+    VfxCapabilityRequirements, VfxCurve, VfxCurveInterpolation, VfxCurveKey, VfxCurveKeyId,
+    VfxEmitterId, VfxGradient, VfxGradientKey, VfxGradientKeyId, VfxModuleId,
+    VfxModuleOperation, VfxRandomChannel, VfxScalarValue, VfxShape, VFX_SCHEMA_VERSION,
+};
 use engine_ecs::{Query, Res};
 use glam::Vec3;
 
@@ -13,12 +20,7 @@ use crate::asset::Handle;
 use crate::mesh::Mesh;
 use crate::time::Time;
 use crate::transform::GlobalTransform;
-
-/// Upper bound on particles spawned in a single frame per emitter.
-///
-/// Protects against a burst after a long frame (breakpoints, window drags)
-/// turning the accumulated spawn debt into one giant emission.
-const MAX_SPAWNS_PER_FRAME: u32 = 256;
+use crate::vfx::VfxInstance;
 
 /// One live particle inside an emitter pool.
 #[derive(Debug, Clone)]
@@ -40,36 +42,6 @@ impl Particle {
         } else {
             (self.age / self.lifetime).clamp(0.0, 1.0)
         }
-    }
-}
-
-/// A deterministic xorshift32 generator (ADR 0044: no `rand` dependency).
-#[derive(Debug, Clone)]
-struct XorShift32(u32);
-
-impl XorShift32 {
-    fn new(seed: u32) -> Self {
-        // Zero is a fixed point of xorshift; nudge it to a valid state.
-        Self(if seed == 0 { 0x9E37_79B9 } else { seed })
-    }
-
-    fn next_u32(&mut self) -> u32 {
-        let mut x = self.0;
-        x ^= x << 13;
-        x ^= x >> 17;
-        x ^= x << 5;
-        self.0 = x;
-        x
-    }
-
-    /// Returns a uniform value in `[0, 1)`.
-    fn next_f32(&mut self) -> f32 {
-        (self.next_u32() >> 8) as f32 / (1u32 << 24) as f32
-    }
-
-    /// Returns a uniform value in `[low, high]`.
-    fn range(&mut self, low: f32, high: f32) -> f32 {
-        low + (high - low) * self.next_f32()
     }
 }
 
@@ -110,9 +82,11 @@ pub struct ParticleEmitter {
     pub max_particles: usize,
     /// Seed for the emitter's deterministic random stream.
     pub seed: u32,
-    rng: XorShift32,
-    spawn_accumulator: f32,
-    /// Live particle storage consumed by the high-level render adapter.
+    /// Shared ADR 0125 runtime instance. The public simple-emitter fields are
+    /// compiled into this instance before every simulation step.
+    runtime: Option<VfxInstance>,
+    /// Compatibility particle view consumed by the existing high-level render
+    /// adapter. Simulation ownership remains in [`VfxInstance`].
     #[doc(hidden)]
     pub particles: Vec<Particle>,
 }
@@ -136,8 +110,7 @@ impl ParticleEmitter {
             end_size: 0.02,
             max_particles: 1024,
             seed,
-            rng: XorShift32::new(seed),
-            spawn_accumulator: 0.0,
+            runtime: None,
             particles: Vec::new(),
         }
     }
@@ -147,8 +120,7 @@ impl ParticleEmitter {
     /// Two emitters with equal configuration and seed produce identical
     /// particle streams after a reset.
     pub fn reset(&mut self) {
-        self.rng = XorShift32::new(self.seed);
-        self.spawn_accumulator = 0.0;
+        self.runtime = None;
         self.particles.clear();
     }
 
@@ -205,61 +177,193 @@ impl ParticleEmitter {
         self.start_size + (self.end_size - self.start_size) * factor
     }
 
-    /// Advances the pool by `dt` seconds, spawning from `origin`.
-    fn step(&mut self, dt: f32, origin: Vec3) {
-        // Age and integrate existing particles, dropping expired ones.
-        let gravity = self.gravity;
-        for particle in &mut self.particles {
-            particle.age += dt;
-            particle.velocity += gravity * dt;
-            let velocity = particle.velocity;
-            particle.position += velocity * dt;
-        }
-        self.particles
-            .retain(|particle| particle.age < particle.lifetime);
+    /// Compiles the convenience API into the backend-neutral ADR 0125 IR.
+    ///
+    /// Stable source/module IDs intentionally do not change as public fields
+    /// are edited. This lets [`VfxInstance::reconfigure`] preserve the live pool
+    /// and keeps shape random channels deterministic across property updates.
+    fn compiled_effect(&self) -> CompiledVfxEffect {
+        let max_particles = u32::try_from(self.max_particles).unwrap_or(u32::MAX);
+        let spawn_operations = vec![
+            compiled_operation(
+                1,
+                VfxModuleOperation::SpawnRate {
+                    particles_per_second: self.spawn_rate,
+                },
+            ),
+            compiled_operation(
+                2,
+                VfxModuleOperation::Shape {
+                    shape: VfxShape::Cone {
+                        direction: self.direction.to_array(),
+                        angle_radians: self.spread,
+                        radius: 0.0,
+                    },
+                },
+            ),
+            compiled_operation(
+                3,
+                VfxModuleOperation::Lifetime {
+                    value: VfxScalarValue::Range {
+                        min: self.lifetime.0,
+                        max: self.lifetime.1,
+                        channel: VfxRandomChannel::new(0),
+                    },
+                },
+            ),
+            compiled_operation(
+                4,
+                VfxModuleOperation::InitialSpeed {
+                    value: VfxScalarValue::Range {
+                        min: self.initial_speed.0,
+                        max: self.initial_speed.1,
+                        channel: VfxRandomChannel::new(1),
+                    },
+                },
+            ),
+            compiled_operation(
+                5,
+                VfxModuleOperation::InitialColor {
+                    color: self.start_color,
+                },
+            ),
+            compiled_operation(
+                6,
+                VfxModuleOperation::InitialSize {
+                    value: VfxScalarValue::Constant { value: 1.0 },
+                },
+            ),
+        ];
+        let update_operations = vec![
+            compiled_operation(
+                7,
+                VfxModuleOperation::Force {
+                    acceleration: self.gravity.to_array(),
+                },
+            ),
+            compiled_operation(
+                8,
+                VfxModuleOperation::ColorOverLife {
+                    gradient: simple_color_gradient(self.start_color, self.end_color),
+                },
+            ),
+            compiled_operation(
+                9,
+                VfxModuleOperation::SizeOverLife {
+                    curve: simple_size_curve(self.start_size, self.end_size),
+                },
+            ),
+        ];
 
-        if self.spawn_rate <= 0.0 {
-            self.spawn_accumulator = 0.0;
-            return;
-        }
-        self.spawn_accumulator += self.spawn_rate * dt;
-        let mut to_spawn = self.spawn_accumulator.floor() as u32;
-        self.spawn_accumulator -= to_spawn as f32;
-        to_spawn = to_spawn.min(MAX_SPAWNS_PER_FRAME);
-
-        for _ in 0..to_spawn {
-            if self.particles.len() >= self.max_particles {
-                break;
-            }
-            let particle = self.spawn_one(origin);
-            self.particles.push(particle);
+        CompiledVfxEffect {
+            source_schema_version: VFX_SCHEMA_VERSION,
+            seed: self.seed,
+            max_particles,
+            emitters: vec![CompiledVfxEmitter {
+                source: simple_emitter_id(),
+                name: "ParticleEmitter".to_owned(),
+                max_particles,
+                attribute_layout: VfxAttributeLayout {
+                    velocity: true,
+                    color: true,
+                    size: true,
+                    rotation: false,
+                },
+                spawn_operations,
+                update_operations,
+                // The legacy convenience API keeps its mesh Handle in the
+                // render adapter; only simulation semantics are compiled here.
+                render_operations: Vec::new(),
+                estimated_capacity: max_particles,
+            }],
+            capabilities: VfxCapabilityRequirements::default(),
         }
     }
 
-    /// Creates one particle at `origin` using the emitter's random stream.
-    fn spawn_one(&mut self, origin: Vec3) -> Particle {
-        let lifetime = self.rng.range(self.lifetime.0, self.lifetime.1).max(0.01);
-        let speed = self.rng.range(self.initial_speed.0, self.initial_speed.1);
-
-        // Build an orthonormal basis around the emission direction and tilt
-        // by a random angle within the cone.
-        let axis = self.direction.normalize_or_zero();
-        let axis = if axis == Vec3::ZERO { Vec3::Y } else { axis };
-        let ortho = if axis.x.abs() < 0.9 { Vec3::X } else { Vec3::Z };
-        let tangent = axis.cross(ortho).normalize();
-        let bitangent = axis.cross(tangent);
-        let tilt = self.rng.range(0.0, self.spread);
-        let around = self.rng.range(0.0, std::f32::consts::TAU);
-        let direction = (axis * tilt.cos()
-            + (tangent * around.cos() + bitangent * around.sin()) * tilt.sin())
-        .normalize_or_zero();
-
-        Particle {
-            position: origin,
-            velocity: direction * speed,
-            age: 0.0,
-            lifetime,
+    /// Advances the pool by `dt` seconds, spawning from `origin`.
+    fn step(&mut self, dt: f32, origin: Vec3) {
+        let definition = self.compiled_effect();
+        match &mut self.runtime {
+            Some(runtime) => runtime.reconfigure(definition),
+            None => self.runtime = Some(VfxInstance::new(definition, None)),
         }
+        let runtime = self
+            .runtime
+            .as_mut()
+            .expect("ParticleEmitter runtime is initialized above");
+        runtime.step(dt, origin);
+        self.particles.clear();
+        if let Some(emitter) = runtime.emitters().first() {
+            self.particles.extend(emitter.particles().iter().map(|particle| Particle {
+                position: particle.position,
+                velocity: particle.velocity,
+                age: particle.age,
+                lifetime: particle.lifetime,
+            }));
+        }
+    }
+}
+
+fn simple_emitter_id() -> VfxEmitterId {
+    VfxEmitterId::try_new("vfxemitter_00000000000000000000000000")
+        .expect("hard-coded simple VFX emitter ID must be valid")
+}
+
+fn simple_module_id(index: u8) -> VfxModuleId {
+    VfxModuleId::try_new(format!("vfxmodule_0000000000000000000000000{index:X}"))
+        .expect("hard-coded simple VFX module ID must be valid")
+}
+
+fn compiled_operation(index: u8, operation: VfxModuleOperation) -> CompiledVfxOperation {
+    CompiledVfxOperation {
+        source_module: simple_module_id(index),
+        operation,
+    }
+}
+
+fn simple_curve_key_id(index: u8) -> VfxCurveKeyId {
+    VfxCurveKeyId::try_new(format!("vfxkey_0000000000000000000000000{index:X}"))
+        .expect("hard-coded simple VFX curve key ID must be valid")
+}
+
+fn simple_gradient_key_id(index: u8) -> VfxGradientKeyId {
+    VfxGradientKeyId::try_new(format!("vfxgradient_0000000000000000000000000{index:X}"))
+        .expect("hard-coded simple VFX gradient key ID must be valid")
+}
+
+fn simple_size_curve(start: f32, end: f32) -> VfxCurve {
+    VfxCurve {
+        keys: vec![
+            VfxCurveKey {
+                id: simple_curve_key_id(0),
+                time: 0.0,
+                value: start,
+                interpolation: VfxCurveInterpolation::Linear,
+            },
+            VfxCurveKey {
+                id: simple_curve_key_id(1),
+                time: 1.0,
+                value: end,
+                interpolation: VfxCurveInterpolation::Linear,
+            },
+        ],
+    }
+}
+
+fn simple_color_gradient(start: [f32; 4], end: [f32; 4]) -> VfxGradient {
+    VfxGradient {
+        keys: vec![
+            VfxGradientKey {
+                id: simple_gradient_key_id(0),
+                time: 0.0,
+                color: start,
+            },
+            VfxGradientKey {
+                id: simple_gradient_key_id(1),
+                time: 1.0,
+                color: end,
+            },
+        ],
     }
 }
 
@@ -369,7 +473,7 @@ mod tests {
 
         emitter.step(1.0, Vec3::ZERO);
 
-        assert_eq!(emitter.live_count(), MAX_SPAWNS_PER_FRAME as usize);
+        assert_eq!(emitter.live_count(), 256);
     }
 
     #[test]
@@ -411,5 +515,42 @@ mod tests {
         emitter.simulate_preview(0.5, Vec3::new(3.0, 4.0, 5.0));
         assert_eq!(emitter.live_count(), first_count);
         assert_eq!(emitter.live_bounds(), Some(first_bounds));
+    }
+
+    #[test]
+    fn simple_emitter_uses_shared_vfx_reference_runtime() {
+        let mut emitter = test_emitter();
+        emitter.seed = 77;
+        emitter.spawn_rate = 16.0;
+        emitter.lifetime = (1.5, 2.0);
+        emitter.initial_speed = (3.0, 5.0);
+        emitter.direction = Vec3::new(1.0, 2.0, 3.0);
+        emitter.spread = 0.35;
+        emitter.gravity = Vec3::new(0.0, -4.0, 0.0);
+        emitter.max_particles = 128;
+        emitter.reset();
+
+        let definition = emitter.compiled_effect();
+        let mut direct = VfxInstance::new(definition, None);
+        let origin = Vec3::new(4.0, 5.0, 6.0);
+        for _ in 0..30 {
+            emitter.step(1.0 / 60.0, origin);
+            direct.step(1.0 / 60.0, origin);
+        }
+
+        let direct_particles = direct.emitters()[0].particles();
+        assert_eq!(emitter.particles.len(), direct_particles.len());
+        for (simple, shared) in emitter.particles.iter().zip(direct_particles) {
+            assert_eq!(simple.position, shared.position);
+            assert_eq!(simple.velocity, shared.velocity);
+            assert_eq!(simple.age, shared.age);
+            assert_eq!(simple.lifetime, shared.lifetime);
+        }
+    }
+
+    #[test]
+    fn simple_emitter_compilation_is_deterministic() {
+        let emitter = test_emitter();
+        assert_eq!(emitter.compiled_effect(), emitter.compiled_effect());
     }
 }

@@ -332,9 +332,15 @@ fn requested_spawns(runtime: &mut VfxEmitterRuntime, dt: f32, end_time: f32) -> 
         }
     }
 
-    runtime.spawn_accumulator += rate * dt;
-    let continuous = runtime.spawn_accumulator.floor().max(0.0) as u64;
-    runtime.spawn_accumulator -= continuous as f32;
+    let continuous = if rate > 0.0 {
+        runtime.spawn_accumulator += rate * dt;
+        let continuous = runtime.spawn_accumulator.floor().max(0.0) as u64;
+        runtime.spawn_accumulator -= continuous as f32;
+        continuous
+    } else {
+        runtime.spawn_accumulator = 0.0;
+        0
+    };
     continuous
         .saturating_add(bursts)
         .min(u64::from(u32::MAX)) as u32
