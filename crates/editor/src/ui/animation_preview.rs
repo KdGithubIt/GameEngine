@@ -900,7 +900,7 @@ mod isolation_tests {
                                 "skeleton": {"$type": "asset_ref", "id": "asset_01JP0000000000000000000001"}
                             },
                             "engine.animation_controller": {},
-                            "engine.rigid_body_physics": {
+                            "engine.secondary_motion": {
                                 "rig": {"$type": "asset_ref", "id": "asset_01JP0000000000000000000004"}
                             },
                             "engine.physics_body": {"kind": "dynamic"},
