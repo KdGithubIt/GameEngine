@@ -113,8 +113,9 @@ the beginning:
 - **AI, CLI, and MCP:** [0015](0015-mcp-behavior-tree-tool-adapter.md),
   [0035](0035-ai-agent-bridge-ipc.md),
   [0121](0121-ai-native-authoring-parity-and-project-scoped-mcp-lifecycle.md),
-  [0131](0131-conversational-ai-studio-agent-runtime-and-governed-workspace.md), and
-  [0132](0132-declarative-authoring-capability-registry-and-automatic-adapter-exposure.md).
+  [0131](0131-conversational-ai-studio-agent-runtime-and-governed-workspace.md),
+  [0132](0132-declarative-authoring-capability-registry-and-automatic-adapter-exposure.md), and
+  [0133](0133-remote-ai-studio-companion-access-and-private-network-boundary.md).
 
 ## Proposed Decisions
 
@@ -272,3 +273,4 @@ implementation contract.
 | [0130](0130-renderer-temporal-history-infrastructure.md) | Renderer Temporal History Infrastructure |
 | [0131](0131-conversational-ai-studio-agent-runtime-and-governed-workspace.md) | Conversational AI Studio Agent Runtime and Governed Workspace |
 | [0132](0132-declarative-authoring-capability-registry-and-automatic-adapter-exposure.md) | Declarative Authoring Capability Registry and Automatic Adapter Exposure |
+| [0133](0133-remote-ai-studio-companion-access-and-private-network-boundary.md) | Remote AI Studio Companion Access and Private Network Boundary |
