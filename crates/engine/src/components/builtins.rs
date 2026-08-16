@@ -843,11 +843,14 @@ const VFX_PLAYER_FIELDS: &[FieldDef] = &[
         -1,
         NumericRange::inclusive(-1.0, u32::MAX as f64),
     ),
-    map(
+    FieldDef::new(
         "parameter_overrides",
         "Parameter Overrides",
         "Named finite scalar overrides reserved by the VFX instance contract.",
-    ),
+        FieldKind::Object,
+        FieldDefaultSpec::Unassigned,
+    )
+    .optional(),
 ];
 
 const UI_DOCUMENT_FIELDS: &[FieldDef] = &[];
