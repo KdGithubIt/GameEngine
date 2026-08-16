@@ -1,0 +1,32 @@
++                "Provider execution finished with {exit_code:?}; engine-managed validation is active or has recorded its result."
++            ));
+         }
+     }
+ 
+@@ -788,24 +791,11 @@ fn change_summary(change: &CodeChange) -> &'static str {
+     }
+ }
+ 
+-fn completion_row(ui: &mut egui::Ui, label: &str, status: &mut CompletionStatus) -> bool {
+-    let before = *status;
++fn completion_row(ui: &mut egui::Ui, label: &str, status: CompletionStatus) {
+     ui.horizontal(|ui| {
+         ui.label(label);
+-        egui::ComboBox::from_id_salt(("ai_completion", label))
+-            .selected_text(completion_label(*status))
+-            .show_ui(ui, |ui| {
+-                for candidate in [
+-                    CompletionStatus::Pending,
+-                    CompletionStatus::Passed,
+-                    CompletionStatus::Failed,
+-                    CompletionStatus::NotApplicable,
+-                ] {
+-                    ui.selectable_value(status, candidate, completion_label(candidate));
+-                }
+-            });
++        ui.strong(completion_label(status));
+     });
+-    *status != before
+ }
+ 
+ fn completion_label(status: CompletionStatus) -> &'static str {
