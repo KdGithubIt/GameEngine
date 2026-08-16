@@ -1,0 +1,46 @@
++                value: VfxScalarValue::Constant { value: 2.0 },
++            }),
++            module(VfxModuleOperation::Billboard {
++                material: None,
++                texture_sheet: None,
++            }),
++        ];
++        effect.emitters.push(emitter);
++
++        let compilation = service.compile(&effect);
++        assert!(compilation.success);
++        assert_eq!(
++            compilation.compiled_effect.as_ref().unwrap().emitters[0].estimated_capacity,
++            24
++        );
++        assert!(compilation
++            .diagnostics
++            .iter()
++            .any(|diagnostic| diagnostic.code == "vfx.emitter_budget_exceeded"));
++    }
++
++    #[test]
++    fn every_template_is_an_ordinary_compilable_document() {
++        let service = VfxAuthoringService::new();
++        for template in [
++            VfxTemplate::Spark,
++            VfxTemplate::Smoke,
++            VfxTemplate::Burst,
++            VfxTemplate::Trail,
++        ] {
++            let effect = service.template(template);
++            assert_eq!(effect.schema_version, VFX_SCHEMA_VERSION);
++            assert!(service.compile(&effect).success);
++        }
++    }
++
++    #[test]
++    fn module_catalog_is_stable_and_phase_typed() {
++        let catalog = VfxAuthoringService::new().schemas();
++        assert_eq!(catalog.schema_version, VFX_SCHEMA_VERSION);
++        assert_eq!(catalog.modules[0].type_id, "engine.vfx.spawn_rate");
++        assert_eq!(catalog.modules[0].phase, VfxPhase::Spawn);
++        assert_eq!(catalog.modules.last().unwrap().type_id, "engine.vfx.mesh");
++        assert_eq!(catalog.modules.last().unwrap().phase, VfxPhase::Render);
++    }
++}
