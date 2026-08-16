@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0122-authoring-api-20260816-r4",
+  "target_branch": "chatgpt/gameengine-adr-0122-spatial-audio-v2",
+  "expected_head_sha": "8fe245d5731ce63d7ebc75dfa13131c0385a1898",
+  "patch_parts": [
+    "part-0000.patch",
+    "part-0001.patch"
+  ],
+  "commit_message": "Complete ADR 0122 authoring and project API",
+  "pr_title": "Implement ADR 0122 spatial audio",
+  "pr_body": "Completes the ADR 0122 authoring and Project Rust contract on top of the validated spatial runtime foundation: rolloff/loop/listener-priority schema fields, scene diagnostics, bridge conversion, and additive generation-checked spatial playback while preserving existing 2D PlaySoundEffect semantics."
+}
