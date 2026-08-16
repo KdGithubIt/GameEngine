@@ -1,0 +1,79 @@
++            NavigationPathResult::Complete(_)
++        ));
++    }
++
++    #[test]
++    fn area_modifier_is_baked_into_deterministic_cost_policy() {
++        let mut build = input(floor_square(Vec3::ZERO, 2.0));
++        build.modifiers.push(NavigationModifier {
++            id: "mud".to_owned(),
++            minimum: [-0.1, -0.1, -0.1],
++            maximum: [2.1, 0.1, 2.1],
++            profiles: Vec::new(),
++            mode: NavigationModifierMode::Area {
++                area: 7,
++                cost_multiplier: 3.0,
++            },
++        });
++        let asset = ProductionNavigationBaker
++            .bake(&build, &|| false)
++            .expect("area-cost fixture must bake");
++        assert!(asset
++            .profile(DEFAULT_NAVIGATION_PROFILE)
++            .expect("default profile")
++            .tiles
++            .iter()
++            .flat_map(|tile| &tile.polygons)
++            .all(|polygon| polygon.area == 7 && polygon.cost_multiplier == 3.0));
++    }
++
++    #[test]
++    fn nearest_point_and_disconnected_destination_return_typed_results() {
++        let mut triangles = floor_square(Vec3::ZERO, 2.0);
++        triangles.extend(floor_square(Vec3::X * 10.0, 2.0));
++        let query = NavMeshQuery::new(
++            ProductionNavigationBaker
++                .bake(&input(triangles), &|| false)
++                .expect("partial fixture must bake"),
++        );
++        assert_eq!(
++            query.nearest_point(
++                DEFAULT_NAVIGATION_PROFILE,
++                Vec3::new(100.0, 0.0, 100.0),
++                1.0
++            ),
++            Err(NavigationQueryFailure::StartOutside)
++        );
++        assert!(matches!(
++            query.query_path(
++                DEFAULT_NAVIGATION_PROFILE,
++                Vec3::new(0.5, 0.0, 0.5),
++                Vec3::new(10.5, 0.0, 0.5)
++            ),
++            NavigationPathResult::Partial(_)
++        ));
++    }
++
++    #[test]
++    fn cancelled_bake_produces_no_asset() {
++        let build = input(floor_square(Vec3::ZERO, 2.0));
++        assert_eq!(
++            ProductionNavigationBaker.bake(&build, &|| true),
++            Err(NavigationBakeError::Cancelled)
++        );
++    }
++
++    #[test]
++    fn compatibility_bake_writes_production_schema() {
++        let settings = NavMeshSettings {
++            cell_size: 1.0,
++            agent_radius: 0.0,
++            world_min: Vec3::ZERO,
++            world_max: Vec3::new(2.0, 0.0, 2.0),
++            ..NavMeshSettings::default()
++        };
++        let asset = bake_from_obstacles(&[], &settings);
++        assert_eq!(asset.schema_version, NAV_MESH_SCHEMA_VERSION);
++        assert!(asset.profile(DEFAULT_NAVIGATION_PROFILE).is_some());
++    }
++}
