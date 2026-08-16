@@ -14,6 +14,8 @@ pub mod camera;
 #[cfg(feature = "gpu")]
 pub mod debug_draw;
 #[cfg(feature = "gpu")]
+mod bloom;
+#[cfg(feature = "gpu")]
 mod environment;
 /// Runtime light resources and authored light mirroring.
 #[cfg(feature = "gpu")]
