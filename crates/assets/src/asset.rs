@@ -365,6 +365,45 @@ pub enum HumanoidBone {
 }
 
 impl HumanoidBone {
+    /// Complete stable semantic vocabulary exposed by the Humanoid authoring UI.
+    pub const ALL: [Self; 35] = [
+        Self::Hips,
+        Self::Spine,
+        Self::Chest,
+        Self::UpperChest,
+        Self::Neck,
+        Self::Head,
+        Self::LeftShoulder,
+        Self::LeftUpperArm,
+        Self::LeftLowerArm,
+        Self::LeftHand,
+        Self::RightShoulder,
+        Self::RightUpperArm,
+        Self::RightLowerArm,
+        Self::RightHand,
+        Self::LeftUpperLeg,
+        Self::LeftLowerLeg,
+        Self::LeftFoot,
+        Self::LeftToes,
+        Self::RightUpperLeg,
+        Self::RightLowerLeg,
+        Self::RightFoot,
+        Self::RightToes,
+        Self::LeftThumbProximal,
+        Self::LeftIndexProximal,
+        Self::LeftMiddleProximal,
+        Self::LeftRingProximal,
+        Self::LeftLittleProximal,
+        Self::RightThumbProximal,
+        Self::RightIndexProximal,
+        Self::RightMiddleProximal,
+        Self::RightRingProximal,
+        Self::RightLittleProximal,
+        Self::LeftEye,
+        Self::RightEye,
+        Self::Jaw,
+    ];
+
     /// Semantics required for a profile to be structurally usable for humanoid conversion.
     pub const REQUIRED: [Self; 15] = [
         Self::Hips,

@@ -9,6 +9,7 @@
 mod animation_set_window;
 mod browser;
 mod document_creation;
+mod humanoid_profile_editor;
 mod import_settings_window;
 mod instantiate;
 mod manifest;
