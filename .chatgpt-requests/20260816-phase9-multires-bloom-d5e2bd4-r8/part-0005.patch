@@ -1,0 +1,22 @@
+diff --git a/crates/render-runtime/src/bloom.rs b/crates/render-runtime/src/bloom.rs
+index 670e916..120b064 100644
+--- a/crates/render-runtime/src/bloom.rs
++++ b/crates/render-runtime/src/bloom.rs
+@@ -2,7 +2,7 @@
+         let mut bloom = pollster::block_on(BloomPass::new(device, &source_view))
+             .expect("multi-resolution bloom pipelines must validate");
+ 
+-        device.push_error_scope(wgpu::ErrorFilter::Validation);
++        let validation_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+         bloom.execute(
+             device,
+             queue,
+@@ -11,7 +11,7 @@
+                 ..BloomSettings::default()
+             },
+         );
+-        let validation_error = pollster::block_on(device.pop_error_scope());
++        let validation_error = pollster::block_on(validation_scope.pop());
+         assert!(
+             validation_error.is_none(),
+             "bloom execution must not report validation errors: {validation_error:?}"
