@@ -39,6 +39,7 @@ jobs:
     outputs:
       target: ${{ steps.resolve.outputs.target }}
       authoring_tool: ${{ steps.resolve.outputs.authoring_tool }}
+      editor_scenario: ${{ steps.resolve.outputs.editor_scenario }}
       branch: ${{ steps.resolve.outputs.branch }}
       head_sha: ${{ steps.resolve.outputs.head_sha }}
       base_sha: ${{ steps.resolve.outputs.base_sha }}
@@ -67,9 +68,19 @@ jobs:
               core.setFailed("PR body may contain at most one GameEngine authoring-tool visual scenario marker.");
               return;
             }
+            const editorScenarioMarker = /<!--\s*gameengine-visual-editor-scenario:\s*([^<>\r\n]{1,40})\s*-->/gi;
+            const editorScenarioMatches = [...body.matchAll(editorScenarioMarker)];
+            if (editorScenarioMatches.length > 1) {
+              core.setFailed("PR body may contain at most one GameEngine Editor visual scenario marker.");
+              return;
+            }
+
             const requestedTarget = matches[0][1].toLowerCase();
             const authoringTool = authoringToolMatches.length === 1
               ? authoringToolMatches[0][1].trim()
+              : "";
+            const editorScenario = editorScenarioMatches.length === 1
+              ? editorScenarioMatches[0][1].trim().toLowerCase()
               : "";
             if (authoringTool && !/^[A-Za-z0-9][A-Za-z0-9 ._()\/-]{0,79}$/.test(authoringTool)) {
               core.setFailed("Authoring-tool visual scenario contains unsupported characters.");
@@ -77,6 +88,18 @@ jobs:
             }
             if (authoringTool && requestedTarget !== "editor" && requestedTarget !== "both") {
               core.setFailed("Authoring-tool visual scenarios require an explicit editor or both capture target.");
+              return;
+            }
+            if (editorScenario && editorScenario !== "behavior-tree") {
+              core.setFailed(`Unsupported GameEngine Editor visual scenario: ${editorScenario}`);
+              return;
+            }
+            if (editorScenario && requestedTarget !== "editor" && requestedTarget !== "both") {
+              core.setFailed("Editor visual scenarios require an explicit editor or both capture target.");
+              return;
+            }
+            if (editorScenario && authoringTool) {
+              core.setFailed("Editor visual scenarios and authoring-tool scenarios cannot be combined in one capture.");
               return;
             }
 
@@ -114,6 +137,7 @@ jobs:
 
             core.setOutput("target", requestedTarget);
             core.setOutput("authoring_tool", authoringTool);
+            core.setOutput("editor_scenario", editorScenario);
             core.setOutput("branch", branch);
             core.setOutput("head_sha", headSha);
             core.setOutput("base_sha", baseSha);
@@ -197,11 +221,13 @@ jobs:
         env:
           CAPTURE_TARGET: ${{ steps.target.outputs.target }}
           AUTHORING_TOOL: ${{ needs.context.outputs.authoring_tool }}
+          EDITOR_SCENARIO: ${{ needs.context.outputs.editor_scenario }}
         run: |
           $output = Join-Path $env:RUNNER_TEMP "gameengine-editor-visual-validation"
           ./scripts/ci/Invoke-EditorVisualValidation.ps1 `
               -Target $env:CAPTURE_TARGET `
               -AuthoringTool $env:AUTHORING_TOOL `
+              -EditorScenario $env:EDITOR_SCENARIO `
               -WorkspaceRoot (Get-Location).Path `
               -OutputDirectory $output
 
@@ -211,6 +237,7 @@ jobs:
         env:
           CAPTURE_TARGET: ${{ steps.target.outputs.target }}
           AUTHORING_TOOL: ${{ needs.context.outputs.authoring_tool }}
+          EDITOR_SCENARIO: ${{ needs.context.outputs.editor_scenario }}
         run: |
           $summaryPath = Join-Path $env:RUNNER_TEMP "gameengine-editor-visual-validation\summary.json"
           Add-Content $env:GITHUB_STEP_SUMMARY "### GameEngine desktop visual validation"
@@ -221,6 +248,9 @@ jobs:
           Add-Content $env:GITHUB_STEP_SUMMARY "- Resolved target: ``$env:CAPTURE_TARGET``"
           if ($env:AUTHORING_TOOL) {
               Add-Content $env:GITHUB_STEP_SUMMARY "- Authoring tool scenario: ``$env:AUTHORING_TOOL``"
+          }
+          if ($env:EDITOR_SCENARIO) {
+              Add-Content $env:GITHUB_STEP_SUMMARY "- Editor scenario: ``$env:EDITOR_SCENARIO``"
           }
           if (Test-Path -LiteralPath $summaryPath -PathType Leaf) {
               $summary = Get-Content -Raw -LiteralPath $summaryPath -Encoding utf8 | ConvertFrom-Json

@@ -516,6 +516,12 @@ fn collect_graph_files(directory: &Path, output: &mut Vec<PathBuf>) {
 
 #[cfg(feature = "visual-validation")]
 fn visual_validation_touches_behavior_debug() -> bool {
+    if matches!(
+        std::env::var("GAMEENGINE_VISUAL_EDITOR_SCENARIO").as_deref(),
+        Ok("behavior-tree")
+    ) {
+        return true;
+    }
     let base_ref = std::env::var("GITHUB_BASE_REF").unwrap_or_else(|_| "main".into());
     let base = format!("origin/{base_ref}...HEAD");
     std::process::Command::new("git")
