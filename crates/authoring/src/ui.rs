@@ -12,6 +12,10 @@
 //! resolved at draw time from a `UiBindings` table; this module owns their
 //! persisted representation, not runtime binding resolution.
 
+/// Shared structured authoring service for declarative UI documents.
+#[path = "ui_authoring.rs"]
+pub mod authoring_service;
+
 use crate::diagnostic::Diagnostic;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::{BTreeMap, BTreeSet};
