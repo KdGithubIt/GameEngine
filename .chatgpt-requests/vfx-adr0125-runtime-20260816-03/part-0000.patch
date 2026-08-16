@@ -1,0 +1,298 @@
+diff --git a/crates/authoring/src/vfx.rs b/crates/authoring/src/vfx.rs
+index f1c2747..d34be6f 100644
+--- a/crates/authoring/src/vfx.rs
++++ b/crates/authoring/src/vfx.rs
+@@ -552,7 +552,15 @@ pub enum VfxModuleOperation {
+         /// Lifetime in seconds.
+         value: VfxScalarValue,
+     },
+-    /// Chooses initial local velocity at spawn.
++    /// Chooses initial speed along the direction produced by the active shape.
++    ///
++    /// This keeps the simple-emitter cone contract on the same compiled IR as
++    /// advanced effects without introducing a second runtime simulator.
++    InitialSpeed {
++        /// Initial speed in units per second.
++        value: VfxScalarValue,
++    },
++    /// Chooses initial local velocity at spawn, replacing shape-directed speed.
+     InitialVelocity {
+         /// Initial XYZ velocity in units per second.
+         value: VfxVectorValue,
+@@ -623,6 +631,7 @@ impl VfxModuleOperation {
+             Self::Burst { .. } => "engine.vfx.burst",
+             Self::Shape { .. } => "engine.vfx.shape",
+             Self::Lifetime { .. } => "engine.vfx.lifetime",
++            Self::InitialSpeed { .. } => "engine.vfx.initial_speed",
+             Self::InitialVelocity { .. } => "engine.vfx.initial_velocity",
+             Self::InitialColor { .. } => "engine.vfx.initial_color",
+             Self::InitialSize { .. } => "engine.vfx.initial_size",
+@@ -644,6 +653,7 @@ impl VfxModuleOperation {
+             | Self::Burst { .. }
+             | Self::Shape { .. }
+             | Self::Lifetime { .. }
++            | Self::InitialSpeed { .. }
+             | Self::InitialVelocity { .. }
+             | Self::InitialColor { .. }
+             | Self::InitialSize { .. }
+@@ -1103,6 +1113,12 @@ impl VfxAuthoringService {
+             ("engine.vfx.burst", "Burst", "Emission", VfxPhase::Spawn),
+             ("engine.vfx.shape", "Shape", "Spawn", VfxPhase::Spawn),
+             ("engine.vfx.lifetime", "Lifetime", "Spawn", VfxPhase::Spawn),
++            (
++                "engine.vfx.initial_speed",
++                "Initial Speed",
++                "Spawn",
++                VfxPhase::Spawn,
++            ),
+             (
+                 "engine.vfx.initial_velocity",
+                 "Initial Velocity",
+@@ -1492,6 +1508,7 @@ fn validate_operation(
+         VfxModuleOperation::Burst { time, .. } => time.is_finite() && *time >= 0.0,
+         VfxModuleOperation::Shape { shape } => shape.validate(),
+         VfxModuleOperation::Lifetime { value } => value.validate() && value.maximum() > 0.0,
++        VfxModuleOperation::InitialSpeed { value } => value.validate(),
+         VfxModuleOperation::InitialVelocity { value } => value.validate(),
+         VfxModuleOperation::InitialColor { color } => finite4(*color),
+         VfxModuleOperation::InitialSize { value } => value.validate() && value.maximum() >= 0.0,
+@@ -1544,7 +1561,8 @@ fn estimate_capacity(emitter: &VfxEmitter) -> u32 {
+ 
+ fn update_attribute_layout(layout: &mut VfxAttributeLayout, operation: &VfxModuleOperation) {
+     match operation {
+-        VfxModuleOperation::InitialVelocity { .. }
++        VfxModuleOperation::InitialSpeed { .. }
++        | VfxModuleOperation::InitialVelocity { .. }
+         | VfxModuleOperation::Force { .. }
+         | VfxModuleOperation::Drag { .. } => layout.velocity = true,
+         VfxModuleOperation::InitialColor { .. } | VfxModuleOperation::ColorOverLife { .. } => {
+diff --git a/crates/render-runtime/src/lib.rs b/crates/render-runtime/src/lib.rs
+index e1a654f..c563566 100644
+--- a/crates/render-runtime/src/lib.rs
++++ b/crates/render-runtime/src/lib.rs
+@@ -43,6 +43,9 @@ pub mod morph;
+ /// CPU particle simulation rendered through runtime mesh instancing.
+ #[cfg(feature = "gpu")]
+ pub mod particles;
++/// Backend-neutral compiled VFX CPU reference runtime (ADR 0125).
++#[cfg(feature = "gpu")]
++pub mod vfx;
+ /// HDR, bloom, tone-mapping, and color-grading settings.
+ #[cfg(feature = "gpu")]
+ pub mod postprocess;
+diff --git a/crates/render-runtime/src/vfx.rs b/crates/render-runtime/src/vfx.rs
+new file mode 100644
+index 0000000..700e9ae
+--- /dev/null
++++ b/crates/render-runtime/src/vfx.rs
+@@ -0,0 +1,777 @@
++//! CPU reference runtime for compiled VFX effects (ADR 0125).
++//!
++//! The authoring crate owns persisted semantics and compilation. This module
++//! owns only transient runtime state: particle pools, deterministic spawn
++//! streams, preview replay, and budget counters. It consumes
++//! [`engine_authoring::CompiledVfxEffect`] directly so CPU and future GPU
++//! backends share one backend-neutral contract.
++
++use std::collections::BTreeSet;
++
++use engine_authoring::{
++    CompiledVfxEffect, CompiledVfxEmitter, CompiledVfxOperation, VfxEmitterId, VfxModuleId,
++    VfxModuleOperation, VfxScalarValue, VfxShape, VfxVectorValue,
++};
++use glam::Vec3;
++
++/// Maximum number of particles one emitter may request in one runtime step.
++///
++/// This preserves the long-frame safety property of ADR 0044 while the
++/// authored emitter/effect budgets remain the primary live-particle limits.
++const MAX_SPAWNS_PER_STEP: u32 = 256;
++/// Fixed replay step used by deterministic preview seeking.
++pub const VFX_PREVIEW_STEP_SECONDS: f32 = 1.0 / 60.0;
++
++/// One transient live particle produced by a compiled VFX emitter.
++#[derive(Debug, Clone, PartialEq)]
++pub struct VfxParticle {
++    /// Current world-space position.
++    pub position: Vec3,
++    /// Current world-space velocity.
++    pub velocity: Vec3,
++    /// Current linear RGBA color after update modules.
++    pub color: [f32; 4],
++    /// Current uniform size after update modules.
++    pub size: f32,
++    /// Current rotation in radians after update modules.
++    pub rotation: f32,
++    /// Age in seconds.
++    pub age: f32,
++    /// Lifetime in seconds.
++    pub lifetime: f32,
++    base_size: f32,
++    base_rotation: f32,
++}
++
++impl VfxParticle {
++    /// Returns normalized age in `[0, 1]`.
++    pub fn life_factor(&self) -> f32 {
++        if self.lifetime <= f32::EPSILON {
++            1.0
++        } else {
++            (self.age / self.lifetime).clamp(0.0, 1.0)
++        }
++    }
++}
++
++/// Runtime state and live pool for one compiled emitter.
++#[derive(Debug, Clone)]
++pub struct VfxEmitterRuntime {
++    definition: CompiledVfxEmitter,
++    particles: Vec<VfxParticle>,
++    spawn_accumulator: f32,
++    spawn_serial: u64,
++    fired_bursts: BTreeSet<VfxModuleId>,
++    dropped_particles: u64,
++}
++
++impl VfxEmitterRuntime {
++    fn new(definition: CompiledVfxEmitter) -> Self {
++        Self {
++            definition,
++            particles: Vec::new(),
++            spawn_accumulator: 0.0,
++            spawn_serial: 0,
++            fired_bursts: BTreeSet::new(),
++            dropped_particles: 0,
++        }
++    }
++
++    /// Stable source emitter ID retained from the authoring document.
++    pub fn source(&self) -> &VfxEmitterId {
++        &self.definition.source
++    }
++
++    /// Human-readable source emitter name retained for diagnostics.
++    pub fn name(&self) -> &str {
++        &self.definition.name
++    }
++
++    /// Live particles in deterministic pool order.
++    pub fn particles(&self) -> &[VfxParticle] {
++        &self.particles
++    }
++
++    /// Number of currently live particles.
++    pub fn live_count(&self) -> usize {
++        self.particles.len()
++    }
++
++    /// Particles refused by frame or authored budgets since the last restart.
++    pub fn dropped_particles(&self) -> u64 {
++        self.dropped_particles
++    }
++
++    /// Backend-neutral render operations associated with this emitter.
++    pub fn render_operations(&self) -> &[CompiledVfxOperation] {
++        &self.definition.render_operations
++    }
++
++    /// Axis-aligned world-space bounds of the current live pool.
++    pub fn live_bounds(&self) -> Option<(Vec3, Vec3)> {
++        let first = self.particles.first()?.position;
++        let mut min = first;
++        let mut max = first;
++        for particle in &self.particles[1..] {
++            min = min.min(particle.position);
++            max = max.max(particle.position);
++        }
++        Some((min, max))
++    }
++}
++
++/// Aggregate counters exposed to Editor preview and diagnostics.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
++pub struct VfxRuntimeStats {
++    /// Current live particles across all emitters.
++    pub live_particles: usize,
++    /// Particles refused by budgets or the per-step safety cap.
++    pub dropped_particles: u64,
++}
++
++/// Deterministic CPU reference instance for one compiled VFX effect.
++#[derive(Debug, Clone)]
++pub struct VfxInstance {
++    effect: CompiledVfxEffect,
++    emitters: Vec<VfxEmitterRuntime>,
++    seed_override: Option<u32>,
++    active_seed: u32,
++    elapsed_seconds: f32,
++}
++
++impl VfxInstance {
++    /// Creates a stopped-at-zero runtime instance from backend-neutral IR.
++    ///
++    /// `seed_override` implements the instance-level deterministic preview and
++    /// `engine.vfx_player` override contract without mutating the asset.
++    pub fn new(effect: CompiledVfxEffect, seed_override: Option<u32>) -> Self {
++        let active_seed = seed_override.unwrap_or(effect.seed);
++        let emitters = effect
++            .emitters
++            .iter()
++            .cloned()
++            .map(VfxEmitterRuntime::new)
++            .collect();
++        Self {
++            effect,
++            emitters,
++            seed_override,
++            active_seed,
++            elapsed_seconds: 0.0,
++        }
++    }
++
++    /// Current backend-neutral effect definition.
++    pub fn effect(&self) -> &CompiledVfxEffect {
++        &self.effect
++    }
++
++    /// Current runtime emitter pools in compiled document order.
++    pub fn emitters(&self) -> &[VfxEmitterRuntime] {
++        &self.emitters
++    }
++
++    /// Current simulated time in seconds.
++    pub fn elapsed_seconds(&self) -> f32 {
++        self.elapsed_seconds
++    }
++
++    /// Current seed override, if one was supplied for this instance.
++    pub fn seed_override(&self) -> Option<u32> {
++        self.seed_override
++    }
++
++    /// Aggregate live/dropped counters.
++    pub fn stats(&self) -> VfxRuntimeStats {
++        VfxRuntimeStats {
++            live_particles: self.emitters.iter().map(VfxEmitterRuntime::live_count).sum(),
++            dropped_particles: self
++                .emitters
++                .iter()
++                .map(VfxEmitterRuntime::dropped_particles)
++                .sum(),
++        }
++    }
++
++    /// Restarts the effect from time zero and resets deterministic streams.
++    pub fn restart(&mut self) {
++        self.active_seed = self.seed_override.unwrap_or(self.effect.seed);
++        self.elapsed_seconds = 0.0;
++        self.emitters = self
++            .effect
++            .emitters
++            .iter()
++            .cloned()
++            .map(VfxEmitterRuntime::new)
++            .collect();
++    }
++
++    /// Replaces compiled definitions while preserving compatible transient pools.
++    ///
