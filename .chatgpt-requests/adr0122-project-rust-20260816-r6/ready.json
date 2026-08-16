@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0122-project-rust-20260816-r6",
+  "target_branch": "chatgpt/gameengine-adr-0122-spatial-audio-v2",
+  "expected_head_sha": "8fe245d5731ce63d7ebc75dfa13131c0385a1898",
+  "patch_parts": [
+    "part-0000.patch",
+    "part-0001.patch",
+    "part-0002.patch"
+  ],
+  "commit_message": "Expose ADR 0122 spatial audio to Project Rust",
+  "pr_title": "Implement ADR 0122 spatial audio",
+  "pr_body": "Adds the ADR 0122 generation-checked spatial sound command to Project Rust while preserving the existing two-dimensional PlaySoundEffect contract."
+}
