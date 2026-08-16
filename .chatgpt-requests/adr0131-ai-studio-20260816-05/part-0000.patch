@@ -1,0 +1,206 @@
+diff --git a/docs/adr/0131-conversational-ai-studio-agent-runtime-and-governed-workspace.md b/docs/adr/0131-conversational-ai-studio-agent-runtime-and-governed-workspace.md
+new file mode 100644
+index 0000000..7fe5de1
+--- /dev/null
++++ b/docs/adr/0131-conversational-ai-studio-agent-runtime-and-governed-workspace.md
+@@ -0,0 +1,555 @@
++# ADR 0131: Conversational AI Studio Agent Runtime and Governed Workspace
++
++Status: Proposed
++Date: 2026-08-16
++Relates to: ADR 0035, ADR 0117, ADR 0121
++
++## Context
++
++ADR 0121 establishes MCP as the standard structured AI authoring interface for
++an Editor-open project and keeps the live Editor authoring session authoritative.
++ADR 0035 separately defines runtime input and frame observation. Those decisions
++make external AI authoring possible, but they do not define a first-class
++product experience for asking an AI to design, build, test, and iteratively
++refine a game from inside GameEngine.
++
++A production-quality AI creation workflow needs more than a prompt box or a
++single model API integration. Different users may have access to external agent
++runtimes such as Claude Code or Codex through provider-managed accounts, direct
++model APIs through separate credentials, or local models through runtimes such
++as Ollama. External coding agents already own tool loops, context management,
++process execution, and provider authentication, while a native in-engine agent
++must own those concerns itself. Treating both shapes as one undifferentiated
++"LLM provider" would produce a weak abstraction and tie the Editor to one
++vendor's authentication and process model.
++
++The interaction model also needs to remain collaborative. A user may begin with
++an incomplete idea, expect the AI to ask design questions, refine the proposal
++through conversation, and only then authorize implementation. During execution,
++new design choices may appear that require another human decision. A one-way
++Plan -> Build pipeline would make this workflow unnecessarily rigid.
++
++Game creation may require authoring mutations, project Rust source changes,
++asset acquisition, validation commands, runtime control, frame capture, and in
++some cases lower-level filesystem or shell access. GameEngine should keep normal
++operations inside typed and reviewable services, while retaining a controlled
++escape hatch for workflows that cannot be expressed through those services.
++Application-level permission policy must not be misrepresented as an OS-level
++sandbox guarantee.
++
++Finally, AI conversation and run history is useful across Editor restarts and
++machines. Keeping all history only in local user state prevents deliberate team
++or multi-PC sharing, while writing credentials, temporary workspaces, or all
++private conversation into canonical project data would be unsafe and noisy.
++
++A project-wide decision is therefore required for the AI Studio product model,
++agent runtime and model-backend boundaries, execution state machine, permission
++broker, code and asset side effects, session persistence, human/agent
++concurrency, and completion criteria.
++
++## Decision
++
++### 1. AI Studio is the project-scoped conversational creation surface
++
++The Editor owns a project-scoped **AI Studio** surface above the MCP authoring
++interface. AI Studio is conversation-first rather than mode-first. The normal
++workflow is:
++
++```text
++User intent
++  -> conversation and design questions
++  -> structured proposal revisions
++  -> explicit Go
++  -> autonomous or interactive run
++  -> validation and playtest
++  -> completion or further conversation
++```
++
++The user and agent MAY continue the same conversation before, during, and after
++a run. AI Studio MUST NOT require the user to choose a one-way Ask, Plan, Build,
++or Autopilot pipeline before discussing the desired result.
++
++The UI SHOULD make the current provider, connection/authentication state,
++proposal, active run, permissions, changes, validation state, and stop action
++visible without requiring raw terminal inspection.
++
++### 2. Conversation produces a versioned proposal; Go snapshots it into a run
++
++Each AI session maintains a versioned structured proposal in addition to the
++human-readable conversation. A proposal contains at least:
++
++- goal;
++- agreed requirements;
++- assumptions;
++- acceptance criteria;
++- planned project, code, and asset changes at an appropriate level;
++- validation and playtest plan; and
++- capabilities expected to be required.
++
++Proposal revisions are mutable while the user and agent are discussing the
++work. Pressing or invoking **Go** snapshots one exact proposal version into a
++new immutable `AgentRun` input. Later conversation may create a new proposal
++version, but it MUST NOT silently change the objective or acceptance criteria of
++an already-running run.
++
++A session therefore has the conceptual structure:
++
++```text
++AgentSession
++  conversation
++  proposal v1
++  proposal v2
++  ...
++  run 1 -> proposal snapshot v2
++  run 2 -> proposal snapshot v5
++```
++
++A run may request clarification, but a material change to the agreed goal or
++acceptance criteria requires an explicit proposal revision and a new or resumed
++run decision rather than silent scope expansion.
++
++### 3. Runs are resumable state machines with structured events
++
++An `AgentRun` is not represented as an opaque child process. The host tracks a
++state machine whose implementation may refine the following conceptual phases:
++
++```text
++Inspecting
++Planning
++Executing
++AwaitingUser
++Validating
++Playtesting
++Evaluating
++Repairing
++Completed
++Failed
++Cancelled
++```
++
++Transitions are not one-way. Validation or playtest failure may return to
++`Repairing` and then to execution or validation. A design ambiguity, permission
++escalation, or user-dependent choice may transition to `AwaitingUser` and resume
++when the user responds.
++
++Ordinary recoverable implementation problems such as compiler errors,
++authoring validation failures, import failures, or minor layout adjustments
++SHOULD be repaired autonomously within the active proposal and permission
++budget. The agent SHOULD ask the user when a meaningful product decision,
++permission escalation, destructive operation, or material scope deviation is
++required.
++
++The host emits provider-independent structured `AgentEvent` values for lifecycle
++and UX. Events SHOULD cover at least plan/proposal updates, step start and
++completion, tool calls, change previews and commits, permission requests,
++validation, playtest, repair, cancellation, failure, and completion. Provider
++stdout/stderr MAY be retained for diagnostics, but raw terminal text MUST NOT be
++the only source of truth for the AI Studio UI.
++
++### 4. Agent orchestration is an application layer above authoring semantics
++
++GameEngine introduces a GUI-free agent orchestration boundary conceptually split
++into these responsibilities:
++
++- **agent core contracts**: session/run identifiers, proposals, events,
++  capabilities, permissions, provider descriptors, and run state;
++- **agent host**: project-scoped session/run lifecycle, provider registry,
++  permission broker, approvals, cancellation, persistence, and orchestration;
++- **external agent runtime adapters**: launching and communicating with coding
++  agents that already own their own agent loop;
++- **native agent runtime**: an engine-owned model/tool loop for direct model
++  backends;
++- **agent code workspace**: source snapshot/checkpoint, diff, patch application,
++  and engine-managed validation; and
++- **asset acquisition service**: search/acquire providers above the normal asset
++  import and manifest pipeline.
++
++The implementation MAY place these responsibilities in separate workspace
++crates as they become substantial. Regardless of package count, they MUST NOT
++move agent lifecycle, provider authentication, network access, or shell policy
++into `engine-authoring`, runtime ECS crates, or `engine-mcp`.
++
++The Editor AI Studio is a frontend over the agent host. It MUST NOT duplicate
++provider-specific orchestration or authoring business rules in GUI code.
++
++### 5. External agent runtimes and model backends are distinct abstractions
++
++GameEngine distinguishes an **agent runtime** from a **model backend**.
++
++An external agent runtime already owns its own model interaction and agent loop.
++Examples include coding-agent CLIs. A native agent runtime is owned by
++GameEngine and delegates model inference to a `ModelBackend` abstraction.
++Conceptually:
++
++```text
++AgentRuntime
++  ExternalAgentRuntime
++    provider-managed coding agent
++    custom compatible agent process
++
++  NativeAgentRuntime
++    ModelBackend
++      local model runtime
++      hosted model API
++      future enterprise backend
++```
++
++Claude Code, Codex, local model runtimes, hosted APIs, and future providers MUST
++NOT be forced into one API-key-shaped provider interface.
++
++Authentication is a provider capability. Supported authentication classes MAY
