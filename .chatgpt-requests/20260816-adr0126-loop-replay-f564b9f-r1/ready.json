@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "request_id": "20260816-adr0126-loop-replay-f564b9f-r1",
+  "target_branch": "chatgpt/gameengine-adr0126-timeline-sequencer",
+  "expected_head_sha": "f564b9fb228d3471bb96401967f057bf93f9501a",
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Implement Timeline loop boundaries and replay reconstruction",
+  "pr_title": "Implement ADR 0126 Timeline and Sequencer runtime",
+  "pr_body": "## ADR 0126 implementation\n\nContinue ADR 0126 on current `main`: exact loop-boundary playback segments and bounded, forward-only ReplayRequired reconstruction with cancellation are added on top of the integrated Timeline foundation. Additional runtime composition, Timeline Player / Project Rust, shared authoring parity, Sequencer, persistent Scene View preview, tests, Windows Validation, and Visual Validation remain in this Draft PR series.\n\nThe PR remains Draft and must not be merged until the Definition of Done and required validation are satisfied."
+}
