@@ -1,0 +1,182 @@
++                &self.downsample_pipeline,
++                &self.resources.downsample_bind_groups[index],
++                "Bloom downsample pass",
++            );
++        }
++
++        for index in (0..self.resources.upsample_targets.len()).rev() {
++            run_fullscreen_pass(
++                &mut encoder,
++                &self.resources.upsample_targets[index].view,
++                &self.upsample_pipeline,
++                &self.resources.upsample_bind_groups[index],
++                "Bloom upsample pass",
++            );
++        }
++
++        run_fullscreen_pass(
++            &mut encoder,
++            &self.resources.composite_target.view,
++            &self.composite_pipeline,
++            &self.resources.composite_bind_group,
++            "Bloom HDR composite pass",
++        );
++
++        queue.submit(std::iter::once(encoder.finish()));
++    }
++}
++
++fn make_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
++    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
++        label: Some("Bloom BGL"),
++        entries: &[
++            texture_layout_entry(0),
++            texture_layout_entry(1),
++            wgpu::BindGroupLayoutEntry {
++                binding: 2,
++                visibility: wgpu::ShaderStages::FRAGMENT,
++                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
++                count: None,
++            },
++            wgpu::BindGroupLayoutEntry {
++                binding: 3,
++                visibility: wgpu::ShaderStages::FRAGMENT,
++                ty: wgpu::BindingType::Buffer {
++                    ty: wgpu::BufferBindingType::Uniform,
++                    has_dynamic_offset: false,
++                    min_binding_size: None,
++                },
++                count: None,
++            },
++        ],
++    })
++}
++
++fn texture_layout_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
++    wgpu::BindGroupLayoutEntry {
++        binding,
++        visibility: wgpu::ShaderStages::FRAGMENT,
++        ty: wgpu::BindingType::Texture {
++            sample_type: wgpu::TextureSampleType::Float { filterable: true },
++            view_dimension: wgpu::TextureViewDimension::D2,
++            multisampled: false,
++        },
++        count: None,
++    }
++}
++
++fn make_uniform_buffer(device: &wgpu::Device, label: &str) -> wgpu::Buffer {
++    device.create_buffer(&wgpu::BufferDescriptor {
++        label: Some(label),
++        size: std::mem::size_of::<BloomUniformData>() as u64,
++        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
++        mapped_at_creation: false,
++    })
++}
++
++fn make_bind_group(
++    device: &wgpu::Device,
++    bgl: &wgpu::BindGroupLayout,
++    primary: &wgpu::TextureView,
++    secondary: &wgpu::TextureView,
++    sampler: &wgpu::Sampler,
++    uniform: &wgpu::Buffer,
++    label: &str,
++) -> wgpu::BindGroup {
++    device.create_bind_group(&wgpu::BindGroupDescriptor {
++        label: Some(label),
++        layout: bgl,
++        entries: &[
++            wgpu::BindGroupEntry {
++                binding: 0,
++                resource: wgpu::BindingResource::TextureView(primary),
++            },
++            wgpu::BindGroupEntry {
++                binding: 1,
++                resource: wgpu::BindingResource::TextureView(secondary),
++            },
++            wgpu::BindGroupEntry {
++                binding: 2,
++                resource: wgpu::BindingResource::Sampler(sampler),
++            },
++            wgpu::BindGroupEntry {
++                binding: 3,
++                resource: uniform.as_entire_binding(),
++            },
++        ],
++    })
++}
++
++fn make_pipeline(
++    device: &wgpu::Device,
++    layout: &wgpu::PipelineLayout,
++    shader: &wgpu::ShaderModule,
++    fragment_entry: &str,
++    label: &str,
++) -> wgpu::RenderPipeline {
++    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
++        label: Some(label),
++        layout: Some(layout),
++        vertex: wgpu::VertexState {
++            module: shader,
++            entry_point: Some("vs_main"),
++            buffers: &[],
++            compilation_options: Default::default(),
++        },
++        fragment: Some(wgpu::FragmentState {
++            module: shader,
++            entry_point: Some(fragment_entry),
++            targets: &[Some(wgpu::ColorTargetState {
++                format: BLOOM_FORMAT,
++                blend: None,
++                write_mask: wgpu::ColorWrites::ALL,
++            })],
++            compilation_options: Default::default(),
++        }),
++        primitive: wgpu::PrimitiveState {
++            topology: wgpu::PrimitiveTopology::TriangleList,
++            ..Default::default()
++        },
++        depth_stencil: None,
++        multisample: wgpu::MultisampleState::default(),
++        multiview_mask: None,
++        cache: None,
++    })
++}
++
++fn run_fullscreen_pass(
++    encoder: &mut wgpu::CommandEncoder,
++    target: &wgpu::TextureView,
++    pipeline: &wgpu::RenderPipeline,
++    bind_group: &wgpu::BindGroup,
++    label: &str,
++) {
++    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
++        label: Some(label),
++        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
++            view: target,
++            resolve_target: None,
++            depth_slice: None,
++            ops: wgpu::Operations {
++                load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
++                store: wgpu::StoreOp::Store,
++            },
++        })],
++        depth_stencil_attachment: None,
++        timestamp_writes: None,
++        occlusion_query_set: None,
++        multiview_mask: None,
++    });
++    pass.set_pipeline(pipeline);
++    pass.set_bind_group(0, bind_group, &[]);
++    pass.draw(0..3, 0..1);
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn bloom_pyramid_is_bounded_and_never_zero_sized() {
++        let extents = bloom_pyramid_extents(1920, 1080);
++        assert_eq!(extents[0], [960, 540]);
