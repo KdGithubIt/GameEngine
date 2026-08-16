@@ -1,0 +1,346 @@
++        self.0.fmt(formatter)
++    }
++}
++
++/// How a track payload can reconstruct state after discontinuous time.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
++pub enum SeekCapability {
++    /// Evaluation is a pure function of the requested target tick.
++    Stateless,
++    /// The target domain exposes a deterministic seek or sample operation.
++    Seekable,
++    /// State must be reconstructed by replaying from a known earlier point.
++    ReplayRequired,
++    /// The target domain cannot provide a meaningful discontinuous sample.
++    NonSeekable,
++}
++
++/// The reason a compiled schedule is being evaluated.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum EvaluationMode {
++    /// Normal forward playback from the previous tick to the current tick.
++    Playback,
++    /// A discontinuous seek/scrub to the current tick.
++    Seek {
++        /// Whether point-event side effects may be previewed while seeking.
++        preview_events: bool,
++    },
++}
++
++impl EvaluationMode {
++    /// Returns whether event side effects may be previewed in this evaluation.
++    pub const fn preview_events(self) -> bool {
++        match self {
++            Self::Playback => true,
++            Self::Seek { preview_events } => preview_events,
++        }
++    }
++}
++
++/// One immutable interval or point in a compiled Timeline.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum CompiledSpan {
++    /// An active half-open clip interval `[start, end)`.
++    Interval {
++        /// Inclusive first tick of the clip.
++        start: TimelineTick,
++        /// Exclusive tick at which the clip is no longer active.
++        end: TimelineTick,
++    },
++    /// An exact point marker.
++    Point {
++        /// Exact marker tick.
++        tick: TimelineTick,
++    },
++}
++
++impl CompiledSpan {
++    /// Returns the first tick represented by this span.
++    pub const fn start(self) -> TimelineTick {
++        match self {
++            Self::Interval { start, .. } => start,
++            Self::Point { tick } => tick,
++        }
++    }
++
++    /// Returns whether this span is active at `tick` as sampled state.
++    pub const fn contains_sample(self, tick: TimelineTick) -> bool {
++        match self {
++            Self::Interval { start, end } => tick.0 >= start.0 && tick.0 < end.0,
++            Self::Point { tick: point } => tick.0 == point.0,
++        }
++    }
++}
++
++/// One typed immutable entry in a compiled Timeline schedule.
++///
++/// `P` is intentionally generic. Domain composition layers choose a closed,
++/// typed payload enum or struct; the neutral Timeline crate never interprets
++/// it or converts it through strings/JSON.
++#[derive(Debug, Clone)]
++pub struct CompiledEntry<P> {
++    track_order: u32,
++    item_order: u32,
++    span: CompiledSpan,
++    seek_capability: SeekCapability,
++    point_side_effect: bool,
++    payload: P,
++}
++
++impl<P> CompiledEntry<P> {
++    /// Creates an interval entry.
++    pub fn interval(
++        track_order: u32,
++        item_order: u32,
++        start: TimelineTick,
++        end: TimelineTick,
++        seek_capability: SeekCapability,
++        payload: P,
++    ) -> Self {
++        Self {
++            track_order,
++            item_order,
++            span: CompiledSpan::Interval { start, end },
++            seek_capability,
++            point_side_effect: false,
++            payload,
++        }
++    }
++
++    /// Creates an exact point entry.
++    ///
++    /// `side_effect` identifies point entries such as gameplay Event markers
++    /// that are suppressed by default during manual seek/scrub.
++    pub fn point(
++        track_order: u32,
++        item_order: u32,
++        tick: TimelineTick,
++        seek_capability: SeekCapability,
++        side_effect: bool,
++        payload: P,
++    ) -> Self {
++        Self {
++            track_order,
++            item_order,
++            span: CompiledSpan::Point { tick },
++            seek_capability,
++            point_side_effect: side_effect,
++            payload,
++        }
++    }
++
++    /// Returns the deterministic compiled track order.
++    pub const fn track_order(&self) -> u32 {
++        self.track_order
++    }
++
++    /// Returns the deterministic order within the compiled track.
++    pub const fn item_order(&self) -> u32 {
++        self.item_order
++    }
++
++    /// Returns the clip interval or point marker span.
++    pub const fn span(&self) -> CompiledSpan {
++        self.span
++    }
++
++    /// Returns the payload's discontinuous-time capability.
++    pub const fn seek_capability(&self) -> SeekCapability {
++        self.seek_capability
++    }
++
++    /// Returns the strongly typed payload owned by the composition layer.
++    pub const fn payload(&self) -> &P {
++        &self.payload
++    }
++
++    fn order_key(&self) -> (u32, TimelineTick, u32, u8) {
++        let kind = match self.span {
++            CompiledSpan::Interval { .. } => 0,
++            CompiledSpan::Point { .. } => 1,
++        };
++        (self.track_order, self.span.start(), self.item_order, kind)
++    }
++}
++
++/// Reports invalid input while constructing an immutable compiled Timeline.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub enum CompiledTimelineError {
++    /// The declared Timeline duration was negative.
++    NegativeDuration {
++        /// Invalid duration.
++        duration: TimelineTick,
++    },
++    /// A compiled interval was empty, reversed, negative, or beyond duration.
++    InvalidInterval {
++        /// Invalid interval start.
++        start: TimelineTick,
++        /// Invalid interval end.
++        end: TimelineTick,
++        /// Timeline duration used for validation.
++        duration: TimelineTick,
++    },
++    /// A point marker was negative or beyond the Timeline duration.
++    InvalidPoint {
++        /// Invalid point tick.
++        tick: TimelineTick,
++        /// Timeline duration used for validation.
++        duration: TimelineTick,
++    },
++}
++
++impl fmt::Display for CompiledTimelineError {
++    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
++        match self {
++            Self::NegativeDuration { duration } => {
++                write!(formatter, "timeline duration {duration} is negative")
++            }
++            Self::InvalidInterval {
++                start,
++                end,
++                duration,
++            } => write!(
++                formatter,
++                "compiled interval [{start}, {end}) is outside timeline duration {duration}"
++            ),
++            Self::InvalidPoint { tick, duration } => write!(
++                formatter,
++                "compiled point {tick} is outside timeline duration {duration}"
++            ),
++        }
++    }
++}
++
++impl std::error::Error for CompiledTimelineError {}
++
++/// Immutable, deterministically ordered Timeline evaluation representation.
++///
++/// Construction validates all spans and sorts entries by compiled track order,
++/// span start, item order, and span kind. The resulting `Arc` slice may be
++/// shared by any number of independent [`TimelinePlayer`] instances.
++#[derive(Debug, Clone)]
++pub struct CompiledTimeline<P> {
++    duration: TimelineTick,
++    entries: Arc<[CompiledEntry<P>]>,
++}
++
++impl<P> CompiledTimeline<P> {
++    /// Validates and freezes a compiled schedule.
++    pub fn new(
++        duration: TimelineTick,
++        mut entries: Vec<CompiledEntry<P>>,
++    ) -> Result<Self, CompiledTimelineError> {
++        if duration < TimelineTick::ZERO {
++            return Err(CompiledTimelineError::NegativeDuration { duration });
++        }
++        for entry in &entries {
++            match entry.span {
++                CompiledSpan::Interval { start, end }
++                    if start < TimelineTick::ZERO || start >= end || end > duration =>
++                {
++                    return Err(CompiledTimelineError::InvalidInterval {
++                        start,
++                        end,
++                        duration,
++                    });
++                }
++                CompiledSpan::Point { tick }
++                    if tick < TimelineTick::ZERO || tick > duration =>
++                {
++                    return Err(CompiledTimelineError::InvalidPoint { tick, duration });
++                }
++                _ => {}
++            }
++        }
++        entries.sort_by_key(CompiledEntry::order_key);
++        Ok(Self {
++            duration,
++            entries: entries.into(),
++        })
++    }
++
++    /// Returns the inclusive final Timeline tick.
++    pub const fn duration(&self) -> TimelineTick {
++        self.duration
++    }
++
++    /// Returns the immutable deterministic schedule.
++    pub fn entries(&self) -> &[CompiledEntry<P>] {
++        &self.entries
++    }
++
++    /// Evaluates the schedule for one player transition.
++    ///
++    /// Interval state is sampled only at `request.current_tick`. Point entries
++    /// fire during forward playback when crossed by `(previous, current]`.
++    /// Reverse playback never invents symmetric point-event semantics. During
++    /// seek, point side effects are suppressed unless `preview_events` is
++    /// explicitly enabled.
++    pub fn evaluate(&self, request: &EvaluationRequest) -> Vec<EvaluationItem<'_, P>> {
++        let mut output = Vec::new();
++        for entry in self.entries.iter() {
++            match entry.span {
++                CompiledSpan::Interval { start, end } => {
++                    if request.current_tick < start || request.current_tick >= end {
++                        continue;
++                    }
++                    output.push(EvaluationItem {
++                        entry,
++                        local_tick: TimelineTick::new(request.current_tick.0 - start.0),
++                        decision: decision_for(entry.seek_capability, request.mode, start),
++                    });
++                }
++                CompiledSpan::Point { tick } => {
++                    let selected = match request.mode {
++                        EvaluationMode::Playback => {
++                            request.current_tick >= request.previous_tick
++                                && tick > request.previous_tick
++                                && tick <= request.current_tick
++                        }
++                        EvaluationMode::Seek { preview_events } => {
++                            tick == request.current_tick
++                                && (!entry.point_side_effect || preview_events)
++                        }
++                    };
++                    if selected {
++                        output.push(EvaluationItem {
++                            entry,
++                            local_tick: TimelineTick::ZERO,
++                            decision: decision_for(entry.seek_capability, request.mode, tick),
++                        });
++                    }
++                }
++            }
++        }
++        output
++    }
++}
++
++fn decision_for(
++    capability: SeekCapability,
++    mode: EvaluationMode,
++    replay_origin: TimelineTick,
++) -> EvaluationDecision {
++    if !matches!(mode, EvaluationMode::Seek { .. }) {
++        return EvaluationDecision::Apply;
++    }
++    match capability {
++        SeekCapability::Stateless | SeekCapability::Seekable => EvaluationDecision::Apply,
++        SeekCapability::ReplayRequired => EvaluationDecision::ReplayRequired {
++            from_tick: replay_origin,
++        },
++        SeekCapability::NonSeekable => EvaluationDecision::NonSeekable,
++    }
++}
++
++/// What a domain adapter must do for one selected compiled entry.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum EvaluationDecision {
++    /// Apply/sample the payload at the supplied local tick.
++    Apply,
++    /// Reconstruct state by replaying from an earlier deterministic point.
++    ReplayRequired {
++        /// Earliest point the neutral scheduler can prove for this entry.
++        from_tick: TimelineTick,
++    },
++    /// Do not fabricate a discontinuous result for this payload.
