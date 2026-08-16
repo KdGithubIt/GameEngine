@@ -1,0 +1,168 @@
++        host.revise_proposal(&session, draft("state")).unwrap();
++        let run = host.start_run(&session).unwrap();
++
++        host.transition_run(&session, &run, AgentRunState::Planning)
++            .unwrap();
++        host.transition_run(&session, &run, AgentRunState::Executing)
++            .unwrap();
++        host.transition_run(&session, &run, AgentRunState::Repairing)
++            .unwrap();
++        host.transition_run(&session, &run, AgentRunState::AwaitingUser)
++            .unwrap();
++        host.transition_run(&session, &run, AgentRunState::Executing)
++            .unwrap();
++    }
++
++    #[test]
++    fn permission_scopes_are_distinct() {
++        let run = AgentRunId::generate();
++        let permission = AgentPermission::Agent(AgentCapability::NetworkAccess);
++        let mut broker = AgentPermissionBroker::default();
++        let request = broker
++            .request(run.clone(), permission, "search provider")
++            .unwrap();
++        broker.resolve(&request, ApprovalScope::AllowOnce).unwrap();
++        assert!(broker.authorize(&run, permission));
++        assert!(!broker.authorize(&run, permission));
++
++        let request = broker
++            .request(run.clone(), permission, "search again")
++            .unwrap();
++        broker
++            .resolve(&request, ApprovalScope::AllowForRun)
++            .unwrap();
++        assert!(broker.authorize(&run, permission));
++        broker.finish_run(&run);
++        assert!(!broker.authorize(&run, permission));
++    }
++
++    #[test]
++    fn shared_session_is_written_under_reserved_project_metadata() {
++        let project = temp_root("shared-project");
++        let local = temp_root("shared-local");
++        let mut host = AgentHost::new(project.clone(), local);
++        let session = host.create_session("shared");
++        host.add_message(&session, ConversationRole::User, "build a game")
++            .unwrap();
++        host.set_visibility(&session, SessionVisibility::ProjectShared)
++            .unwrap();
++        let path = host.save_session(&session).unwrap();
++
++        assert!(path.starts_with(project.join(".gameengine/ai/sessions")));
++        let text = fs::read_to_string(path).unwrap();
++        assert!(text.contains("build a game"));
++        assert!(!text.contains("authorization_token"));
++    }
++
++    #[test]
++    fn local_session_path_does_not_enter_project_tree() {
++        let project = temp_root("private-project");
++        let local = temp_root("private-local");
++        let mut host = AgentHost::new(project.clone(), local.clone());
++        let session = host.create_session("private");
++        let path = host.save_session(&session).unwrap();
++
++        assert!(path.starts_with(local));
++        assert!(!path.starts_with(project));
++    }
++
++    #[test]
++    fn latest_local_session_restores_after_restart() {
++        let project = temp_root("restore-project");
++        let local = temp_root("restore-local");
++        let session = {
++            let mut host = AgentHost::new(project.clone(), local.clone());
++            let session = host.create_session("restored");
++            host.add_message(&session, ConversationRole::User, "continue this")
++                .unwrap();
++            host.save_session(&session).unwrap();
++            session
++        };
++
++        let mut restarted = AgentHost::new(project, local);
++        let restored = restarted
++            .restore_latest_session()
++            .unwrap()
++            .expect("saved session must be discovered");
++        assert_eq!(restored, session);
++        assert_eq!(
++            restarted.session(&restored).unwrap().conversation()[0].text(),
++            "continue this"
++        );
++    }
++
++    #[test]
++    fn run_audit_distinguishes_managed_and_escape_hatch_work() {
++        let project = temp_root("audit-project");
++        let local = temp_root("audit-local");
++        let mut host = AgentHost::new(project, local);
++        let session = host.create_session("audit");
++        host.revise_proposal(&session, draft("audit")).unwrap();
++        let run = host.start_run(&session).unwrap();
++        host.record_audit_operation(&session, &run, AgentAuditOperation::AuthoringOperation)
++            .unwrap();
++        host.record_audit_operation(&session, &run, AgentAuditOperation::CustomCommand)
++            .unwrap();
++        host.record_changed_source_file(&session, &run, PathBuf::from("src/lib.rs"))
++            .unwrap();
++        host.record_validation(&session, &run, "clippy", true)
++            .unwrap();
++        host.record_playtest(&session, &run, "launch", true)
++            .unwrap();
++
++        let audit = host.session(&session).unwrap().run(&run).unwrap().audit();
++        assert_eq!(audit.authoring_operations, 1);
++        assert_eq!(audit.code_changes, 1);
++        assert_eq!(audit.custom_commands, 1);
++        assert_eq!(audit.validation_records, 1);
++        assert_eq!(audit.playtest_records, 1);
++    }
++
++    #[test]
++    fn code_workspace_isolated_changes_require_explicit_apply() {
++        let project = temp_root("code-project");
++        let workspace = temp_root("code-workspace");
++        fs::create_dir_all(project.join("src")).unwrap();
++        fs::write(project.join("src/lib.rs"), "pub fn answer() -> u32 { 1 }\n").unwrap();
++        let code = AgentCodeWorkspace::capture(
++            &project,
++            &workspace,
++            [PathBuf::from("src/lib.rs")],
++        )
++        .unwrap();
++        code.write_file("src/lib.rs".as_ref(), "pub fn answer() -> u32 { 2 }\n")
++            .unwrap();
++
++        assert_eq!(
++            fs::read_to_string(project.join("src/lib.rs")).unwrap(),
++            "pub fn answer() -> u32 { 1 }\n"
++        );
++        assert_eq!(code.preview_changes().unwrap().len(), 1);
++        let denied = code
++            .apply_to_project(&AuthoringPermissions::read_only())
++            .expect_err("CodeWrite is mandatory");
++        assert_eq!(denied.code(), "agent.code_write_denied");
++
++        let permissions = AuthoringPermissions::read_only().with(AuthoringPermission::CodeWrite);
++        code.apply_to_project(&permissions).unwrap();
++        assert_eq!(
++            fs::read_to_string(project.join("src/lib.rs")).unwrap(),
++            "pub fn answer() -> u32 { 2 }\n"
++        );
++    }
++
++    #[test]
++    fn code_workspace_rejects_parent_traversal() {
++        let project = temp_root("escape-project");
++        let workspace = temp_root("escape-workspace");
++        fs::write(project.join("safe.rs"), "fn safe() {}\n").unwrap();
++        let code = AgentCodeWorkspace::capture(&project, &workspace, [PathBuf::from("safe.rs")])
++            .unwrap();
++        let error = code
++            .write_file("../escape.rs".as_ref(), "bad")
++            .expect_err("parent traversal must be rejected");
++        assert_eq!(error.code(), "agent.code_path_escape");
++    }
++
++    #[test]
++    fn completion_requires_explicit_visual_and_runtime_evidence() {
