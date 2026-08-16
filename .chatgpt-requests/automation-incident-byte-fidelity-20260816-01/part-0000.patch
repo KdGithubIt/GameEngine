@@ -1,0 +1,141 @@
+diff --git a/docs/CHATGPT_AUTOMATION.md b/docs/CHATGPT_AUTOMATION.md
+index 8fa5686..fbca54c 100644
+--- a/docs/CHATGPT_AUTOMATION.md
++++ b/docs/CHATGPT_AUTOMATION.md
+@@ -1,7 +1,7 @@
+ # ChatGPT GitHub Automation
+ 
+ Status: Accepted
+-Version: 1.4.0
++Version: 1.4.1
+ Canonical location: `docs/CHATGPT_AUTOMATION.md`
+ 
+ ## Purpose
+@@ -99,15 +99,17 @@ informal file upload. For every new implementation or correction request:
+ 4. Build one complete unified Git patch against the exact target tree. Keep
+    product changes inside the public allow-list and never include `.github/**`
+    or `.chatgpt-requests/**` in a normal dispatcher patch.
+-5. Preflight the reconstructed patch before publication whenever the producer
+-   has a local Git worktree available. Run
++5. Preflight the exact reconstructed patch bytes that will be published. Run
+    `git apply --check --whitespace=error-all <reconstructed-patch>` against the
+    captured target tree, then confirm that the patch contains only intended
+    paths and no symlink or submodule changes. Using plain `git apply --check`
+    is not equivalent because it can miss whitespace errors the dispatcher will
+-   reject.
+-6. Split the patch only for transport size. Publish every declared
+-   `part-NNNN.patch` before publishing `ready.json`; never use `ready.json` as a
++   reject. Do not manually retype, reformat, or otherwise reconstruct a second
++   copy of the patch after this preflight.
++6. Split the preflighted patch only for transport size and publish those exact
++   bytes as the declared `part-NNNN.patch` files. Before publishing `ready.json`,
++   verify the published part byte counts and blob hashes, or the reconstructed
++   content hash, against the preflight artifact. Never use `ready.json` as a
+    partial-progress marker.
+ 7. Immediately before creating `ready.json`, re-read the remote target branch
+    HEAD. If it differs from `expected_head_sha`, abandon the unpublished
+@@ -165,7 +167,10 @@ does not override it.
+ 
+ Patch transport is byte-preserving concatenation. The dispatcher concatenates
+ parts in the order declared by `patch_parts`; it does not add separators.
+-Parts therefore do not need to be independently applicable patches.
++Parts therefore do not need to be independently applicable patches. The
++published blobs MUST reconstruct byte-for-byte to the artifact that passed
++producer preflight; a patch that was retyped or transformed after preflight has
++not been preflighted.
+ 
+ Constraints:
+ 
+diff --git a/docs/CHATGPT_AUTOMATION_INCIDENTS.md b/docs/CHATGPT_AUTOMATION_INCIDENTS.md
+index 1a1deeb..5178c10 100644
+--- a/docs/CHATGPT_AUTOMATION_INCIDENTS.md
++++ b/docs/CHATGPT_AUTOMATION_INCIDENTS.md
+@@ -43,6 +43,7 @@ required by `docs/CHATGPT_AUTOMATION.md`.
+ ```text
+ INC-001  Markdown trailing whitespace rejected by patch preflight  Dispatcher  Resolved
+ INC-002  Unified-diff old coordinates drifted from target tree     Dispatcher  Resolved
++INC-003  Published patch bytes differed from preflight artifact    Transport   Resolved
+ ```
+ 
+ ## INC-001: Markdown trailing whitespace rejected by patch preflight
+@@ -123,6 +124,11 @@ between those attempts.
+ - Request `20260816-phase3-full-ibl-bindgroups-r7` combined the dependent edit
+   into target-aligned context and Dispatcher run `31922381541` passed
+   `Reconstruct and validate patch`, committed, and pushed successfully.
++- The same target-alignment class recurred in request
++  `adr-audit-index-20260816-02`: Dispatcher run `31922197791` rejected ADR/doc
++  hunks that had been generated from stitched snippets rather than the exact
++  target files. The final exact-target regeneration was validated by the
++  successful ADR-audit request recorded in INC-003.
+ 
+ ### Root cause
+ 
+@@ -158,6 +164,68 @@ the complete reconstructed request with
+ - Workflow run: `31922381541`
+ - Commit: `1e82c3beb53205404a5110828c5e8943f62d6aa7`
+ 
++## INC-003: Published patch bytes differed from preflight artifact
++
++Status: Resolved
++Layer: Transport
++First confirmed: 2026-08-16
++Last confirmed: 2026-08-16
++
++### Symptom
++
++ADR-audit request `adr-audit-index-20260816-03` passed the request envelope and
++target-HEAD checks but failed `Reconstruct and validate patch` even though the
++corrected local patch had already passed the dispatcher's strict `git apply`
++preflight.
++
++### Evidence
++
++- Dispatcher run `31922629969` failed only the ADR 0113 hunk after the earlier
++  exact-target applicability problems had been corrected.
++- The intended preflighted `part-0001.patch` was 2,445 bytes with Git blob SHA
++  `b2cb31fff1dcec4cbae188f3dd74381aab82ab15`.
++- The published request's `part-0001.patch` was 2,444 bytes with Git blob SHA
++  `a68d723a0d3e51a7de2515966f53a851f9591548`; the other four published part
++  blobs matched their preflight artifacts.
++- Comparing the two artifacts found one missing leading `-` on a deleted
++  Markdown bullet. The target branch itself had not moved.
++- Request `adr-audit-index-20260816-04` published all five preflighted blobs with
++  matching byte counts and blob SHAs. Dispatcher run `31922738621` then passed,
++  produced commit `c689fff815f48ff2f56836fcfb096d443dee67ca` and Draft PR #30, and Windows
++  Validation run `31922746993` completed successfully in `docs` mode.
++
++### Root cause
++
++The producer manually transcribed one patch part after local preflight. That
++transcription changed one byte, so the artifact validated locally was not the
++artifact later reconstructed by the Dispatcher. A correct preflight cannot
++protect a different set of transport bytes.
++
++### Resolution
++
++Treat the preflighted patch as an immutable artifact. Split and publish those
++exact bytes, then verify the published part byte counts and Git blob SHAs before
++creating `ready.json`. The `-04` request used that process and completed patch
++application, Draft PR publication, and docs validation successfully.
++
++### Prevention / ChatGPT next action
++
++Never retype or manually reconstruct a patch after strict preflight. Publish the
++preflight artifact mechanically, verify the remote part blobs are byte-identical
++before `ready.json`, and only then re-read the target HEAD and release the ready
++marker. If any part hash or byte count differs, abandon that unpublished request
++and create a new request from the verified artifact.
++
++### References
++
++- Failed request: `adr-audit-index-20260816-03`
++- Successful request: `adr-audit-index-20260816-04`
++- PR: `#30`
++- Failed Dispatcher run: `31922629969`
++- Successful Dispatcher run: `31922738621`
++- Validation run: `31922746993`
++- Commit: `c689fff815f48ff2f56836fcfb096d443dee67ca`
++
+ ## Entry template
+ 
+ Copy this section for a materially new root cause. Incident IDs are monotonic
