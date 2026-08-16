@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "request_id": "20260816-adr0122-core-ef1e9e6-r3",
+  "target_branch": "chatgpt/gameengine-adr0122-spatial-audio-ecs",
+  "expected_head_sha": "ef1e9e653d88fefd769b50681f797e7dc061317a",
+  "patch_parts": [
+    "part-0000.patch",
+    "part-0001.patch",
+    "part-0002.patch"
+  ],
+  "commit_message": "Complete ADR 0122 spatial audio authoring core",
+  "pr_title": "Continue ADR 0122 spatial audio ECS synchronization",
+  "pr_body": "<!-- gameengine-chatgpt-dispatcher -->\n\nContinues ADR 0122 from the latest-main baseline. Adds current-format spatial authoring fields (rolloff, loop, listener priority), priority-based deterministic listener selection, managed looping/rolloff composition, shared listener diagnostics, Transform dependency validation, and canonical scene fixture coverage.\n\nProject Rust spatial requests and the remaining Editor authoring/preview UX will follow on fresh request IDs before ADR 0122 is marked Accepted."
+}
