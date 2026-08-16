@@ -1,0 +1,160 @@
++    bgl: &wgpu::BindGroupLayout,
++    source_a: &wgpu::TextureView,
++    source_b: &wgpu::TextureView,
++    sampler: &wgpu::Sampler,
++    uniform_buffer: &wgpu::Buffer,
++    label: &str,
++) -> wgpu::BindGroup {
++    device.create_bind_group(&wgpu::BindGroupDescriptor {
++        label: Some(label),
++        layout: bgl,
++        entries: &[
++            wgpu::BindGroupEntry {
++                binding: 0,
++                resource: wgpu::BindingResource::TextureView(source_a),
++            },
++            wgpu::BindGroupEntry {
++                binding: 1,
++                resource: wgpu::BindingResource::TextureView(source_b),
++            },
++            wgpu::BindGroupEntry {
++                binding: 2,
++                resource: wgpu::BindingResource::Sampler(sampler),
++            },
++            wgpu::BindGroupEntry {
++                binding: 3,
++                resource: uniform_buffer.as_entire_binding(),
++            },
++        ],
++    })
++}
++
++fn create_pipeline(
++    device: &wgpu::Device,
++    layout: &wgpu::PipelineLayout,
++    shader: &wgpu::ShaderModule,
++    format: wgpu::TextureFormat,
++    entry_point: &'static str,
++    label: &'static str,
++) -> wgpu::RenderPipeline {
++    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
++        label: Some(label),
++        layout: Some(layout),
++        vertex: wgpu::VertexState {
++            module: shader,
++            entry_point: Some("vs_main"),
++            buffers: &[],
++            compilation_options: Default::default(),
++        },
++        fragment: Some(wgpu::FragmentState {
++            module: shader,
++            entry_point: Some(entry_point),
++            targets: &[Some(wgpu::ColorTargetState {
++                format,
++                blend: None,
++                write_mask: wgpu::ColorWrites::ALL,
++            })],
++            compilation_options: Default::default(),
++        }),
++        primitive: wgpu::PrimitiveState::default(),
++        depth_stencil: None,
++        multisample: wgpu::MultisampleState::default(),
++        multiview_mask: None,
++        cache: None,
++    })
++}
++
++fn encode_fullscreen_pass(
++    encoder: &mut wgpu::CommandEncoder,
++    pipeline: &wgpu::RenderPipeline,
++    bind_group: &wgpu::BindGroup,
++    target: &wgpu::TextureView,
++    label: &'static str,
++) {
++    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
++        label: Some(label),
++        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
++            view: target,
++            resolve_target: None,
++            depth_slice: None,
++            ops: wgpu::Operations {
++                load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
++                store: wgpu::StoreOp::Store,
++            },
++        })],
++        depth_stencil_attachment: None,
++        timestamp_writes: None,
++        occlusion_query_set: None,
++        multiview_mask: None,
++    });
++    pass.set_pipeline(pipeline);
++    pass.set_bind_group(0, bind_group, &[]);
++    pass.draw(0..3, 0..1);
++}
++
++pub(crate) struct BloomPass {
++    format: wgpu::TextureFormat,
++    bgl: wgpu::BindGroupLayout,
++    sampler: wgpu::Sampler,
++    uniform_buffer: wgpu::Buffer,
++    prefilter_pipeline: wgpu::RenderPipeline,
++    downsample_pipeline: wgpu::RenderPipeline,
++    upsample_pipeline: wgpu::RenderPipeline,
++    composite_pipeline: wgpu::RenderPipeline,
++    targets: BloomTargets,
++}
++
++impl BloomPass {
++    pub(crate) async fn new(
++        device: &wgpu::Device,
++        source_view: &wgpu::TextureView,
++    ) -> Result<Self, wgpu::Error> {
++        use wgpu::util::DeviceExt;
++
++        let format = source_view.texture().format();
++        let error_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
++        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
++            label: Some("Bloom sampler"),
++            address_mode_u: wgpu::AddressMode::ClampToEdge,
++            address_mode_v: wgpu::AddressMode::ClampToEdge,
++            address_mode_w: wgpu::AddressMode::ClampToEdge,
++            mag_filter: wgpu::FilterMode::Linear,
++            min_filter: wgpu::FilterMode::Linear,
++            ..Default::default()
++        });
++        let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
++            label: Some("Bloom uniform"),
++            contents: bytemuck::bytes_of(&BloomUniformData::from_settings(
++                &BloomSettings::default(),
++            )),
++            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
++        });
++        let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
++            label: Some("Bloom BGL"),
++            entries: &[
++                wgpu::BindGroupLayoutEntry {
++                    binding: 0,
++                    visibility: wgpu::ShaderStages::FRAGMENT,
++                    ty: wgpu::BindingType::Texture {
++                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
++                        view_dimension: wgpu::TextureViewDimension::D2,
++                        multisampled: false,
++                    },
++                    count: None,
++                },
++                wgpu::BindGroupLayoutEntry {
++                    binding: 1,
++                    visibility: wgpu::ShaderStages::FRAGMENT,
++                    ty: wgpu::BindingType::Texture {
++                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
++                        view_dimension: wgpu::TextureViewDimension::D2,
++                        multisampled: false,
++                    },
++                    count: None,
++                },
++                wgpu::BindGroupLayoutEntry {
++                    binding: 2,
++                    visibility: wgpu::ShaderStages::FRAGMENT,
++                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
++                    count: None,
++                },
