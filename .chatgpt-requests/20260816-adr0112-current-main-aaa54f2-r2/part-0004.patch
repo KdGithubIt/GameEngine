@@ -1,0 +1,12 @@
+diff --git a/crates/editor/src/systems_panel.rs b/crates/editor/src/systems_panel.rs
+--- a/crates/editor/src/systems_panel.rs
++++ b/crates/editor/src/systems_panel.rs
+@@ -479,7 +479,7 @@ mod tests {
+             fixed_ids,
+             [
+                 "engine.fixed_transform_propagation",
+-                "engine.mmd_physics_transform_propagation"
++                "engine.secondary_motion_transform_propagation"
+             ]
+         );
+     }
