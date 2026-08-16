@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0121-scene-authoring-parity-20260816-01",
+  "target_branch": "chatgpt/gameengine-adr-0121-authoring-parity",
+  "expected_head_sha": "79d45ae7859c50be051b17f36e36b6b3a089f42c",
+  "patch_parts": [
+    "part-0000.patch",
+    "part-0001.patch",
+    "part-0002.patch",
+    "part-0003.patch",
+    "part-0004.patch",
+    "part-0005.patch"
+  ],
+  "commit_message": "Implement ADR 0121 Scene authoring parity",
+  "pr_title": "Implement ADR 0121 Scene authoring parity",
+  "pr_body": "Implements the first executable ADR 0121 capability slice without changing persisted project formats or Stable IDs.\n\n- adds the shared authoring permission vocabulary\n- adds a Scene authoring service over the existing AuthoringSession/Transaction boundary\n- enforces exact revision + monotonic generation stale checks\n- makes preview use commit-equivalent validation without mutation\n- keeps one bulk apply call to one existing authoring transaction / undo entry\n- adds transport-agnostic MCP handlers for project.describe, scene inspect/validate/preview/apply, entity find/inspect, and component schemas\n- adds direct-service/MCP equivalence and stale/permission/atomicity tests\n\nThis deliberately keeps MCP transport and Editor process lifecycle out of engine-mcp, consistent with ADR 0015/0035/0121. Follow-up ADR 0121 slices can bind this adapter to the project-scoped live Editor endpoint and extend parity to the remaining authoring domains."
+}
