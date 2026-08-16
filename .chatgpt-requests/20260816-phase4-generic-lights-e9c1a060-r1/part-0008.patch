@@ -1,0 +1,104 @@
++        let point_peak = peak_rgb_sum(&rgba8, WIDTH, HEIGHT, 0, WIDTH / 2);
++        let spot_peak = peak_rgb_sum(&rgba8, WIDTH, HEIGHT, WIDTH / 2, WIDTH);
++        assert!(
++            point_peak > background + 100,
++            "point light must illuminate its local StandardLit surface: background={background}, point={point_peak}"
++        );
++        assert!(
++            spot_peak > background + 100,
++            "spot light must illuminate the surface inside its cone: background={background}, spot={spot_peak}"
++        );
++    }
++
++    #[test]
+     fn fixed_camera_light_reference_scene_preserves_standard_lit_occlusion_contrast() {
+diff --git a/docs/adr/README.md b/docs/adr/README.md
+--- a/docs/adr/README.md
++++ b/docs/adr/README.md
+@@ -170,4 +170,5 @@
+ | [0121](0121-ai-native-authoring-parity-and-project-scoped-mcp-lifecycle.md) | AI-Native Authoring Parity and Project-Scoped MCP Lifecycle |
+ | [0122](0122-renderer-owned-full-image-based-lighting.md) | Renderer-Owned Full Image-Based Lighting |
++| [0123](0123-generic-directional-point-spot-lighting.md) | Generic Directional, Point, and Spot Direct Lighting |
+ 
+ ## Phase 41+ ADR Targets
+diff --git a/docs/AI_FRIENDLY_AUTHORING_SPEC.md b/docs/AI_FRIENDLY_AUTHORING_SPEC.md
+--- a/docs/AI_FRIENDLY_AUTHORING_SPEC.md
++++ b/docs/AI_FRIENDLY_AUTHORING_SPEC.md
+@@ -360,4 +360,11 @@
+ A `ComponentTypeId` identifies the component type. It is not an identifier
+ for a specific component instance on an entity.
+ 
++Engine-owned render-light component IDs are stable authoring contracts.
++`engine.directional_light` and `engine.ambient_light` preserve their existing
++global-light semantics. `engine.point_light` and `engine.spot_light` are
++finite-range local lights whose runtime position comes from the owning entity's
++transform; spot-light orientation is the transformed local `-Z` axis. Their
++renderer budgets and shading semantics are defined by ADR 0123.
++
+ Project Rust component identity is stored in a JSON sidecar beside its source:
+diff --git a/crates/engine/src/components/tests.rs b/crates/engine/src/components/tests.rs
+--- a/crates/engine/src/components/tests.rs
++++ b/crates/engine/src/components/tests.rs
+@@ -39,5 +39,11 @@
+         .get(&ComponentTypeId::new(AMBIENT_LIGHT_COMPONENT))
+         .is_some());
+     assert!(registry
++        .get(&ComponentTypeId::new(POINT_LIGHT_COMPONENT))
++        .is_some());
++    assert!(registry
++        .get(&ComponentTypeId::new(SPOT_LIGHT_COMPONENT))
++        .is_some());
++    assert!(registry
+         .get(&ComponentTypeId::new(SHADOW_SETTINGS_COMPONENT))
+         .is_some());
+@@ -195,4 +201,6 @@
+             MUSIC_CONTROLLER_COMPONENT,
+             FOOT_IK_COMPONENT,
+             RIGID_BODY_PHYSICS_COMPONENT,
++            POINT_LIGHT_COMPONENT,
++            SPOT_LIGHT_COMPONENT,
+         ]
+diff --git a/docs/adr/0123-generic-directional-point-spot-lighting.md b/docs/adr/0123-generic-directional-point-spot-lighting.md
+new file mode 100644
+--- /dev/null
++++ b/docs/adr/0123-generic-directional-point-spot-lighting.md
+@@ -0,0 +1,102 @@
++# ADR 0123: Generic Directional, Point, and Spot Direct Lighting
++
++Status: Accepted
++
++## Context
++
++The renderer already has a generic StandardLit PBR path, one scene directional
++light with cascaded shadows, and renderer-owned image-based lighting. The next
++renderer roadmap step needs finite local lights without creating importer-
++specific render paths or weakening the existing indirect-lighting contract.
++
++Point and spot lights are also authoring data: they need stable component IDs,
++editor-discoverable schemas, deterministic runtime budgets, and a clear transform
++contract. Point/spot shadows remain outside the existing ADR 0036 shadow scope.
++
++## Decision
++
++### Authoring components
++
++Two additive engine-owned component IDs are stable contracts:
++
++- `engine.point_light`
++- `engine.spot_light`
++
++Both use the entity `GlobalTransform` for runtime placement. Point lights use
++translation only. Spot lights use translation plus the transformed local `-Z`
++axis as the light-travel direction.
++
++Point Light fields are `color_r`, `color_g`, `color_b`, `intensity`, and
++`range`. Spot Light adds `inner_angle_degrees` and `outer_angle_degrees`, with
++`0 <= inner < outer < 90`.
++
++Existing `engine.directional_light` remains an explicit direction-valued
++component and is not migrated to transform-derived orientation.
++
++### Stable renderer budgets
++
++Editor Ready v1 evaluates at most:
++
