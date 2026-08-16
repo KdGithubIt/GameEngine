@@ -1,0 +1,268 @@
+         let mut stop_requested = false;
+         ui.horizontal(|ui| {
+@@ -758,6 +887,82 @@ impl AiStudioPanel {
+     }
+ }
+ 
++fn model_capability_summary(profile: &ModelCapabilityProfile) -> String {
++    format!(
++        "Backend: {} · Model: {} · structured: {} · tools: {} · images: {} · reasoning: {} · context: {} · benchmark: {}",
++        profile.backend_id,
++        if profile.model_id.is_empty() {
++            "not selected"
++        } else {
++            profile.model_id.as_str()
++        },
++        capability_flag(profile.structured_output),
++        capability_flag(profile.tool_use),
++        capability_flag(profile.image_input),
++        capability_flag(profile.reasoning),
++        profile
++            .context_limit
++            .map(|limit| limit.to_string())
++            .unwrap_or_else(|| "unknown".to_owned()),
++        if profile.benchmark_verified {
++            "verified"
++        } else {
++            "unverified"
++        }
++    )
++}
++
++fn capability_flag(value: Option<bool>) -> &'static str {
++    match value {
++        Some(true) => "yes",
++        Some(false) => "no",
++        None => "unknown",
++    }
++}
++
++fn format_native_answer(answer: &NativeAnswer) -> String {
++    let mut message = answer.text.trim().to_owned();
++    message.push_str("\n\nSources / provenance:\n");
++    if answer.sources.is_empty() {
++        message.push_str(
++            "- No matching GameEngine repository or project source was retrieved; general model knowledge may have been used.\n",
++        );
++    } else {
++        for source in &answer.sources {
++            message.push_str(&format!(
++                "- {}:{}\n",
++                source.kind.label(),
++                source.path
++            ));
++        }
++        message.push_str(
++            "- General model knowledge may supplement the retrieved evidence where the answer says so.\n",
++        );
++    }
++    message.push_str("Harness evidence:\n");
++    message.push_str(&format!(
++        "- {} · backend={} · model={} · turns={} · retrieved_chunks={} · prompt_chars={} · response_chars={} · elapsed_ms={} · prompt_tokens={} · response_tokens={} · backend_ms={}",
++        answer.metrics.harness_version,
++        answer.metrics.backend_id,
++        answer.metrics.model_id,
++        answer.metrics.model_turns,
++        answer.metrics.retrieval_chunks,
++        answer.metrics.prompt_chars,
++        answer.metrics.response_chars,
++        answer.metrics.elapsed_ms,
++        optional_metric(answer.metrics.prompt_eval_tokens),
++        optional_metric(answer.metrics.response_tokens),
++        optional_metric(answer.metrics.backend_duration_ms),
++    ));
++    message
++}
++
++fn optional_metric(value: Option<u64>) -> String {
++    value
++        .map(|value| value.to_string())
++        .unwrap_or_else(|| "n/a".to_owned())
++}
++
+ fn edit_lines(ui: &mut egui::Ui, label: &str, values: &mut Vec<String>) {
+     let mut text = values.join("\n");
+     ui.label(label);
+diff --git a/crates/editor/src/lib.rs b/crates/editor/src/lib.rs
+index fc7bf18..ac99555 100644
+--- a/crates/editor/src/lib.rs
++++ b/crates/editor/src/lib.rs
+@@ -8,6 +8,7 @@
+ #![warn(rustdoc::broken_intra_doc_links)]
+ 
+ mod agent_host;
++mod native_agent;
+ pub mod ai_studio;
+ pub mod anim_ux;
+ mod animation_set_editor;
+diff --git a/crates/editor/src/native_agent.rs b/crates/editor/src/native_agent.rs
+new file mode 100644
+index 0000000..d77a55c
+--- /dev/null
++++ b/crates/editor/src/native_agent.rs
+@@ -0,0 +1,920 @@
++//! Provider-independent native AI question harness for AI Studio.
++//!
++//! The initial native slice is deliberately read-oriented. It retrieves current
++//! GameEngine/project evidence, sends a bounded prompt to a user-selected local
++//! model backend, and returns provenance plus measurable run metadata. It does
++//! not acquire mutation permissions or participate in the write-capable
++//! [`crate::agent_host::AgentRun`] state machine.
++
++use serde::{Deserialize, Serialize};
++use std::cmp::Reverse;
++use std::collections::BTreeSet;
++use std::fmt;
++use std::fs;
++use std::io::{self, Read, Write};
++use std::net::{IpAddr, TcpStream, ToSocketAddrs};
++use std::path::{Path, PathBuf};
++use std::sync::mpsc::{self, Receiver, TryRecvError};
++use std::time::{Duration, Instant};
++
++pub(crate) const DEFAULT_LOCAL_MODEL_ENDPOINT: &str = "http://127.0.0.1:11434";
++pub(crate) const BASELINE_HARNESS_VERSION: &str = "native-read-v1";
++const BACKEND_ID: &str = "ollama-compatible";
++const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
++const IO_TIMEOUT: Duration = Duration::from_secs(120);
++const MAX_HTTP_RESPONSE_BYTES: u64 = 8 * 1024 * 1024;
++const MAX_SOURCE_FILE_BYTES: u64 = 512 * 1024;
++const MAX_SCANNED_FILES: usize = 1_200;
++const SOURCE_CHUNK_CHARS: usize = 3_200;
++const MAX_RETRIEVED_CHUNKS: usize = 8;
++const MAX_CONVERSATION_MESSAGES: usize = 12;
++const MAX_CONVERSATION_MESSAGE_CHARS: usize = 4_000;
++
++#[derive(Debug)]
++pub(crate) enum NativeAgentError {
++    EmptyModel,
++    InvalidEndpoint(String),
++    BackendUnavailable(String),
++    HttpStatus(u16, String),
++    InvalidHttpResponse(String),
++    ResponseTooLarge,
++    EmptyResponse,
++    WorkerDisconnected,
++    Io(io::Error),
++    Json(serde_json::Error),
++}
++
++impl fmt::Display for NativeAgentError {
++    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
++        match self {
++            Self::EmptyModel => write!(formatter, "a local model name is required"),
++            Self::InvalidEndpoint(message) => {
++                write!(formatter, "invalid local model endpoint: {message}")
++            }
++            Self::BackendUnavailable(message) => {
++                write!(formatter, "local model backend is unavailable: {message}")
++            }
++            Self::HttpStatus(status, message) => {
++                write!(formatter, "local model backend returned HTTP {status}: {message}")
++            }
++            Self::InvalidHttpResponse(message) => write!(
++                formatter,
++                "local model backend returned an invalid HTTP response: {message}"
++            ),
++            Self::ResponseTooLarge => write!(
++                formatter,
++                "local model backend response exceeded the safety limit"
++            ),
++            Self::EmptyResponse => write!(formatter, "local model returned an empty answer"),
++            Self::WorkerDisconnected => {
++                write!(formatter, "native question worker disconnected unexpectedly")
++            }
++            Self::Io(error) => write!(formatter, "native agent I/O error: {error}"),
++            Self::Json(error) => write!(formatter, "native agent JSON error: {error}"),
++        }
++    }
++}
++
++impl std::error::Error for NativeAgentError {
++    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
++        match self {
++            Self::Io(error) => Some(error),
++            Self::Json(error) => Some(error),
++            _ => None,
++        }
++    }
++}
++
++impl From<io::Error> for NativeAgentError {
++    fn from(value: io::Error) -> Self {
++        Self::Io(value)
++    }
++}
++
++impl From<serde_json::Error> for NativeAgentError {
++    fn from(value: serde_json::Error) -> Self {
++        Self::Json(value)
++    }
++}
++
++#[derive(Debug, Clone)]
++pub(crate) struct LocalModelConfig {
++    pub(crate) endpoint: String,
++    pub(crate) model: String,
++}
++
++impl LocalModelConfig {
++    pub(crate) fn capability_profile(&self) -> ModelCapabilityProfile {
++        ModelCapabilityProfile {
++            backend_id: BACKEND_ID,
++            model_id: self.model.trim().to_owned(),
++            structured_output: None,
++            tool_use: None,
++            image_input: None,
++            reasoning: None,
++            context_limit: None,
++            benchmark_verified: false,
++        }
++    }
++}
++
++#[derive(Debug, Clone)]
++pub(crate) struct ModelCapabilityProfile {
++    pub(crate) backend_id: &'static str,
++    pub(crate) model_id: String,
++    pub(crate) structured_output: Option<bool>,
++    pub(crate) tool_use: Option<bool>,
++    pub(crate) image_input: Option<bool>,
++    pub(crate) reasoning: Option<bool>,
++    pub(crate) context_limit: Option<u64>,
++    pub(crate) benchmark_verified: bool,
++}
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub(crate) enum QuestionRole {
++    User,
++    Assistant,
++    System,
++}
++
++impl QuestionRole {
++    fn label(self) -> &'static str {
++        match self {
++            Self::User => "User",
++            Self::Assistant => "Assistant",
++            Self::System => "System",
++        }
++    }
++}
++
++#[derive(Debug, Clone)]
++pub(crate) struct QuestionMessage {
++    pub(crate) role: QuestionRole,
++    pub(crate) text: String,
++}
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub(crate) enum SourceKind {
++    EngineRepository,
++    ProjectFile,
++}
++
++impl SourceKind {
++    pub(crate) fn label(self) -> &'static str {
++        match self {
++            Self::EngineRepository => "engine",
