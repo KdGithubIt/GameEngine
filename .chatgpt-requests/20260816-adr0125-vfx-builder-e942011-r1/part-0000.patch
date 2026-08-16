@@ -1,0 +1,80 @@
+diff --git a/crates/editor/src/lib.rs b/crates/editor/src/lib.rs
+--- a/crates/editor/src/lib.rs
++++ b/crates/editor/src/lib.rs
+@@ -1,5 +1,6 @@
+ pub mod ui;
+ pub mod ui_builder;
++pub mod vfx_builder;
+ pub mod view_aspect;
+ mod view_resolution;
+ mod workspace;
+@@ -11,3 +12,4 @@
+ pub use ui::EditorApp;
+ pub use ui_builder::UiBuilderState;
++pub use vfx_builder::VfxBuilderState;
+ pub use view_aspect::ViewAspect;
+diff --git a/crates/editor/src/document.rs b/crates/editor/src/document.rs
+--- a/crates/editor/src/document.rs
++++ b/crates/editor/src/document.rs
+@@ -1,4 +1,4 @@
+ use engine_authoring::{
+     load_scene_from_json, AuthoringScene, Diagnostic, Graph, GraphView, SceneLoadError, Severity,
+-    UiDocument, UiDocumentError,
++    UiDocument, UiDocumentError, VfxAuthoringService, VfxDocumentError, VfxEffect,
+ };
+@@ -10,4 +10,14 @@
+         /// Whether the in-memory document differs from the file on disk.
+         is_dirty: bool,
+     },
++
++    /// A VFX effect authoring document (`*.vfx.json`) is open.
++    Vfx {
++        /// The parsed effect edited through the shared VFX authoring service.
++        effect: VfxEffect,
++        /// Absolute path to the `*.vfx.json` file.
++        path: PathBuf,
++        /// Whether the in-memory effect differs from the file on disk.
++        is_dirty: bool,
++    },
+ }
+@@ -19,3 +29,4 @@
+             Self::Scene { is_dirty, .. }
+             | Self::Graph { is_dirty, .. }
+-            | Self::Ui { is_dirty, .. } => *is_dirty,
++            | Self::Ui { is_dirty, .. }
++            | Self::Vfx { is_dirty, .. } => *is_dirty,
+@@ -27,3 +38,4 @@
+             Self::Scene { is_dirty, .. }
+             | Self::Graph { is_dirty, .. }
+-            | Self::Ui { is_dirty, .. } => *is_dirty = true,
++            | Self::Ui { is_dirty, .. }
++            | Self::Vfx { is_dirty, .. } => *is_dirty = true,
+@@ -35,3 +47,4 @@
+             Self::Scene { is_dirty, .. }
+             | Self::Graph { is_dirty, .. }
+-            | Self::Ui { is_dirty, .. } => *is_dirty = false,
++            | Self::Ui { is_dirty, .. }
++            | Self::Vfx { is_dirty, .. } => *is_dirty = false,
+@@ -43,3 +56,5 @@
+     /// UI JSON parsed but failed whole-document validation.
+     UiValidation(Vec<Diagnostic>),
++    /// VFX JSON could not be parsed, versioned, or semantically validated.
++    VfxDocument(VfxDocumentError),
+     /// The current document has unsaved changes.  Open was refused to prevent
+@@ -51,2 +66,3 @@
+             Self::UiDocument(e) => write!(f, "UI document load failed: {e}"),
++            Self::VfxDocument(e) => write!(f, "VFX document load failed: {e}"),
+             Self::UiValidation(diagnostics) => write!(
+@@ -58,2 +74,3 @@
+             Self::UiDocument(e) => Some(e),
++            Self::VfxDocument(e) => Some(e),
+             Self::UiValidation(_) | Self::UnsavedChanges => None,
+@@ -65,5 +82,18 @@
+     })
+ }
+ 
++/// Opens and validates a `*.vfx.json` effect through the shared authoring service.
++pub fn open_vfx_from_path(path: &Path) -> Result<CurrentDocument, OpenDocumentError> {
++    let json = fs::read_to_string(path).map_err(OpenDocumentError::Io)?;
++    let effect = VfxAuthoringService::new()
++        .effect_from_json(&json)
