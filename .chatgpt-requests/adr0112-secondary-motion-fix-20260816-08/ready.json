@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0112-secondary-motion-fix-20260816-08",
+  "target_branch": "chatgpt/gameengine-adr-0112-secondary-motion-v2",
+  "expected_head_sha": "037b943c663b7ccdb311164d41c9ddaf6e62c385",
+  "patch_parts": ["part-0000.patch"],
+  "commit_message": "Fix secondary-motion validation tests",
+  "pr_title": "Implement ADR 0112 engine-native secondary motion",
+  "pr_body": "Implements ADR 0112 by migrating MMD-specific cosmetic physics toward engine-native Secondary Motion, including generic reset semantics, isolated fixed-step simulation, PMX conversion, authoring identities, and validation updates. The PR remains Draft for final Windows and visual validation."
+}
