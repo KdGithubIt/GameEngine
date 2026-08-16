@@ -1,0 +1,234 @@
++                let Some(emitter) = poses.get(&source).copied() else {
++                    log::warn!("project Rust spatial audio source {source} has no GlobalTransform");
++                    continue;
++                };
++                let gains = emitter_gains(listener, emitter, options.settings());
++                match resolve_and_start_spatial(
++                    &asset_id,
++                    gains,
++                    options.looping,
++                    audio_system.as_deref_mut(),
++                    asset_server.as_deref_mut(),
++                    manifest.as_deref(),
++                    audio_assets.as_deref_mut(),
++                ) {
++                    Some(Ok(voice_id)) => {
++                        runtime.game_voices.push(GameSpatialVoice {
++                            source,
++                            voice_id,
++                            options,
++                        });
++                        Some(Ok(()))
++                    }
++                    Some(Err(error)) => Some(Err(error)),
++                    None => None,
++                }
++            }
+             GameAudioCommand::PlayBackgroundMusic {
+                 asset_id,
+                 fade_seconds,
+diff --git a/crates/engine/src/audio.rs b/crates/engine/src/audio.rs
+--- a/crates/engine/src/audio.rs
++++ b/crates/engine/src/audio.rs
+@@ -447,3 +447,45 @@
++impl GameSpatialAudioOptions {
++    fn settings(self) -> AudioVoiceSpatialSettings {
++        AudioVoiceSpatialSettings {
++            volume: self.volume,
++            spatial_blend: self.spatial_blend,
++            min_distance: self.min_distance,
++            max_distance: self.max_distance,
++            rolloff: self.rolloff,
++        }
++    }
++}
++
++fn resolve_and_start_spatial(
++    asset_id: &str,
++    gains: StereoGains,
++    looping: bool,
++    audio: Option<&mut AudioSystem>,
++    server: Option<&mut AssetServer>,
++    manifest: Option<&AssetManifest>,
++    assets: Option<&mut Assets<AudioAsset>>,
++) -> Option<Result<AudioVoiceId, AudioError>> {
++    let stable = StableId::new(asset_id);
++    let Ok(asset_id) = AssetId::from_stable_id(stable) else {
++        log::error!("project Rust audio asset ID `{asset_id}` became invalid after preflight");
++        return None;
++    };
++    let entry = manifest?.get(&asset_id)?;
++    let server = server?;
++    let assets = assets?;
++    let audio = audio?;
++    let handle = match server.load_audio(asset_id, &entry.path, assets) {
++        Ok(handle) => handle,
++        Err(error) => {
++            return Some(Err(AudioError::Playback {
++                message: error.to_string(),
++            }));
++        }
++    };
++    let asset = assets.get(&handle)?;
++    Some(audio.start_voice(asset, gains, looping))
++}
++
+ fn resolve_and_play(
+     asset_id: &str,
+     fade_seconds: Option<f32>,
+diff --git a/crates/engine/src/audio.rs b/crates/engine/src/audio.rs
+--- a/crates/engine/src/audio.rs
++++ b/crates/engine/src/audio.rs
+@@ -492,5 +492,8 @@
+         let first = world
+-            .spawn_with(AudioListener { enabled: true })
++            .spawn_with(AudioListener {
++                enabled: true,
++                priority: 0,
++            })
+             .expect("listener entity");
+         world
+             .add_component(
+@@ -499,7 +502,10 @@
+             )
+             .expect("listener transform");
+         let second = world
+-            .spawn_with(AudioListener { enabled: true })
++            .spawn_with(AudioListener {
++                enabled: true,
++                priority: 10,
++            })
+             .expect("listener entity");
+         world
+             .add_component(
+@@ -508,7 +514,10 @@
+             )
+             .expect("listener transform");
+         let disabled = world
+-            .spawn_with(AudioListener { enabled: false })
++            .spawn_with(AudioListener {
++                enabled: false,
++                priority: 100,
++            })
+             .expect("listener entity");
+         world
+             .add_component(
+@@ -519,8 +528,7 @@
+ 
+         let mut query = engine_ecs::Query::new(&mut world);
+         let pose = active_listener_pose(&mut query).expect("enabled listener");
+-        let expected_x = if first < second { 1.0 } else { 2.0 };
+-        assert_eq!(pose.position, [expected_x, 0.0, 0.0]);
++        assert_eq!(pose.position, [2.0, 0.0, 0.0]);
+     }
+ 
+     #[test]
+diff --git a/crates/engine/src/audio.rs b/crates/engine/src/audio.rs
+--- a/crates/engine/src/audio.rs
++++ b/crates/engine/src/audio.rs
+@@ -567,4 +567,5 @@
+         app.insert_resource(queue);
++        app.insert_resource(SpatialAudioRuntime::default());
+         app.add_system(game_audio_effect_system);
+ 
+         app.update().expect("headless audio system must run");
+diff --git a/crates/engine/src/app.rs b/crates/engine/src/app.rs
+--- a/crates/engine/src/app.rs
++++ b/crates/engine/src/app.rs
+@@ -1,4 +1,6 @@
+ .try_after("engine.script_audio_effect")
++            .expect("built-in system IDs are valid")
++            .try_after("engine.transform_propagation")
+             .expect("built-in system IDs are valid"),
+             game_audio_effect_system,
+         );
+diff --git a/crates/engine/src/runtime_systems.rs b/crates/engine/src/runtime_systems.rs
+--- a/crates/engine/src/runtime_systems.rs
++++ b/crates/engine/src/runtime_systems.rs
+@@ -1,4 +1,6 @@
+ .try_after("engine.transform_propagation")
++        .expect("built-in system IDs are valid")
++        .try_before("engine.game_audio_effect")
+         .expect("built-in system IDs are valid")
+         .try_before("engine.authored_audio")
+         .expect("built-in system IDs are valid"),
+diff --git a/crates/engine/src/scene_bridge.rs b/crates/engine/src/scene_bridge.rs
+--- a/crates/engine/src/scene_bridge.rs
++++ b/crates/engine/src/scene_bridge.rs
+@@ -1,4 +1,6 @@
+-use crate::audio::{AudioAsset, AudioEmitter, AudioListener, MusicController};
++use crate::audio::{
++    AudioAsset, AudioEmitter, AudioListener, AudioRolloffMode, MusicController,
++};
+ use crate::behavior_tree::BehaviorTreeRunner;
+ use crate::camera::{Camera3D, FollowCamera, LockOnCamera, OrbitCamera};
+ use crate::character_controller::KinematicCharacterController;
+diff --git a/crates/engine/src/scene_bridge/spawn.rs b/crates/engine/src/scene_bridge/spawn.rs
+--- a/crates/engine/src/scene_bridge/spawn.rs
++++ b/crates/engine/src/scene_bridge/spawn.rs
+@@ -1,13 +1,19 @@
+     let min_distance = fields.f32("min_distance")?;
+     let max_distance = fields.f32("max_distance")?;
+-    let autoplay = fields.bool_or("autoplay", false)?;
++    let rolloff = match fields.string("rolloff")? {
++        "linear" => AudioRolloffMode::Linear,
++        "inverse" => AudioRolloffMode::Inverse,
++        _ => return Err(fields.invalid("rolloff must be linear or inverse").into()),
++    };
++    let looping = fields.bool("looping")?;
++    let autoplay = fields.bool("autoplay")?;
+     if !(0.0..=1.0).contains(&volume)
+         || !(0.0..=1.0).contains(&spatial_blend)
+-        || min_distance <= 0.0
++        || min_distance < 0.0
+         || max_distance < min_distance
+     {
+         return Err(fields
+-            .invalid("volume/spatial_blend in 0..=1 and 0 < min_distance <= max_distance")
++            .invalid("volume/spatial_blend in 0..=1 and 0 <= min_distance <= max_distance")
+             .into());
+     }
+     let handle = resolve_audio_asset(&clip, context)?;
+@@ -20,7 +26,8 @@
+             min_distance,
+             max_distance,
+             autoplay,
+-        ),
++        )
++        .with_spatial_playback(rolloff, looping),
+     )?;
+     Ok(())
+ }
+diff --git a/crates/engine/src/scene_bridge/spawn.rs b/crates/engine/src/scene_bridge/spawn.rs
+--- a/crates/engine/src/scene_bridge/spawn.rs
++++ b/crates/engine/src/scene_bridge/spawn.rs
+@@ -69,10 +69,11 @@
+     let component_type = ComponentTypeId::new(AUDIO_LISTENER_COMPONENT);
+-    let expected = "an object with an enabled boolean field";
++    let expected = "an object with enabled and priority fields";
+     let fields = ComponentFields::new(context.authoring_entity, &component_type, value, expected)?;
+-    let enabled = fields.bool_or("enabled", true)?;
++    let enabled = fields.bool("enabled")?;
++    let priority = fields.i64("priority")?;
+     context
+         .world
+-        .add_component(entity, AudioListener { enabled })?;
++        .add_component(entity, AudioListener { enabled, priority })?;
+     Ok(())
+ }
+ 
+diff --git a/crates/engine/src/components/builtins.rs b/crates/engine/src/components/builtins.rs
+--- a/crates/engine/src/components/builtins.rs
++++ b/crates/engine/src/components/builtins.rs
+@@ -1,7 +1,7 @@
+     number(
+         "spatial_blend",
+-        "Spatial Blend",
+-        "Blend from 2D (0.0) to positional (1.0); applied by the ER-9 mixer.",
++        "Spatial Blend (2D ↔ 3D)",
++        "Blend from centered 2D (0.0) to positional 3D (1.0).",
+         1.0,
+         UNIT_INTERVAL,
+     ),
+@@ -10,14 +10,27 @@
+         "Min Distance",
