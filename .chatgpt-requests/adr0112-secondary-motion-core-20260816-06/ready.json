@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0112-secondary-motion-core-20260816-06",
+  "target_branch": "chatgpt/gameengine-adr-0112-secondary-motion-v2",
+  "expected_head_sha": "bf21b073f0032b637e0663430370609f72d8d62b",
+  "patch_parts": [
+    "part-0000.patch",
+    "part-0001.patch",
+    "part-0002.patch",
+    "part-0003.patch"
+  ],
+  "commit_message": "Implement engine-native secondary-motion core",
+  "pr_title": "Implement ADR 0112 engine-native secondary motion",
+  "pr_body": "Implements the ADR 0112 runtime core first: engine-native secondary-motion data, an engine-physics isolated Rapier solver, generic discontinuity reseat/reset semantics without MMD seek pre-roll, and generalized runtime system IDs. Follow-up patches on this Draft PR complete the authoring/import/editor migration and final test expectations before final validation."
+}
