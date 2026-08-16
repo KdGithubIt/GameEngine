@@ -162,13 +162,14 @@ pub use scene_authoring::{
 };
 pub use schema::{ComponentSchema, ComponentSchemaRegistry, FieldSchema, FieldType};
 pub use timeline::{
-    compile_timeline, CompiledAnimationPayload, CompiledCameraCutPayload, CompiledEventPayload,
-    CompiledTimelinePayload, CompiledTransformPayload, TimelineAnimationClip,
-    TimelineBindingResolver, TimelineBlend, TimelineCameraCutClip, TimelineClipRef,
-    TimelineClipTiming, TimelineCompileError, TimelineDisplayRate, TimelineDocument,
-    TimelineDocumentError, TimelineEventMarker, TimelineQuatKey, TimelineTrack, TimelineTrackKind,
-    TimelineTrackType, TimelineTransformClip, TimelineTransformCurve, TimelineTransformSample,
-    TimelineVec3Key, TIMELINE_FILE_SUFFIX, TIMELINE_SCHEMA_VERSION,
+    compile_timeline, CompiledAnimationPayload, CompiledAudioPayload, CompiledCameraCutPayload,
+    CompiledEventPayload, CompiledTimelinePayload, CompiledTransformPayload, CompiledVfxPayload,
+    TimelineAnimationClip, TimelineAudioClip, TimelineBindingResolver, TimelineBlend,
+    TimelineCameraCutClip, TimelineClipRef, TimelineClipTiming, TimelineCompileError,
+    TimelineDisplayRate, TimelineDocument, TimelineDocumentError, TimelineEventMarker,
+    TimelineQuatKey, TimelineTrack, TimelineTrackKind, TimelineTrackType, TimelineTransformClip,
+    TimelineTransformCurve, TimelineTransformSample, TimelineVec3Key, TimelineVfxClip,
+    TIMELINE_FILE_SUFFIX, TIMELINE_SCHEMA_VERSION,
 };
 pub use timeline_authoring::{
     TimelineAuthoringError, TimelineAuthoringMutation, TimelineAuthoringService,

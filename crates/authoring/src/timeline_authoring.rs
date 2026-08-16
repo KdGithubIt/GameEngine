@@ -9,9 +9,9 @@ use crate::access::{AuthoringPermission, AuthoringPermissionError, AuthoringPerm
 use crate::diagnostic::Diagnostic;
 use crate::id::{TimelineClipId, TimelineMarkerId, TimelineTrackId};
 use crate::timeline::{
-    TimelineAnimationClip, TimelineCameraCutClip, TimelineDisplayRate, TimelineDocument,
-    TimelineEventMarker, TimelineTrack, TimelineTrackKind, TimelineTrackType,
-    TimelineTransformClip,
+    TimelineAnimationClip, TimelineAudioClip, TimelineCameraCutClip, TimelineDisplayRate,
+    TimelineDocument, TimelineEventMarker, TimelineTrack, TimelineTrackKind, TimelineTrackType,
+    TimelineTransformClip, TimelineVfxClip,
 };
 use engine_timeline::TimelineTick;
 use serde::{Deserialize, Serialize};
@@ -28,6 +28,10 @@ pub enum TimelineEditableClip {
     TransformProperty(TimelineTransformClip),
     /// Camera Cut Track clip.
     CameraCut(TimelineCameraCutClip),
+    /// Audio Track clip.
+    Audio(TimelineAudioClip),
+    /// VFX Track clip.
+    Vfx(TimelineVfxClip),
 }
 
 impl TimelineEditableClip {
@@ -37,6 +41,8 @@ impl TimelineEditableClip {
             Self::Animation(clip) => &clip.timing.id,
             Self::TransformProperty(clip) => &clip.timing.id,
             Self::CameraCut(clip) => &clip.timing.id,
+            Self::Audio(clip) => &clip.timing.id,
+            Self::Vfx(clip) => &clip.timing.id,
         }
     }
 
@@ -46,6 +52,8 @@ impl TimelineEditableClip {
             Self::Animation(_) => TimelineTrackType::Animation,
             Self::TransformProperty(_) => TimelineTrackType::TransformProperty,
             Self::CameraCut(_) => TimelineTrackType::CameraCut,
+            Self::Audio(_) => TimelineTrackType::Audio,
+            Self::Vfx(_) => TimelineTrackType::Vfx,
         }
     }
 }
@@ -906,6 +914,12 @@ fn insert_clip(track: &mut TimelineTrack, clip: TimelineEditableClip) -> Result<
         (TimelineTrackKind::CameraCut { clips }, TimelineEditableClip::CameraCut(clip)) => {
             clips.push(clip)
         }
+        (TimelineTrackKind::Audio { clips }, TimelineEditableClip::Audio(clip)) => {
+            clips.push(clip)
+        }
+        (TimelineTrackKind::Vfx { clips }, TimelineEditableClip::Vfx(clip)) => {
+            clips.push(clip)
+        }
         _ => {
             return Err(TimelineEditError::TrackTypeMismatch {
                 track_type,
@@ -932,6 +946,12 @@ fn replace_clip(
             TimelineEditableClip::TransformProperty(replacement),
         ) => replace_by_id(clips, id, replacement, |clip| &clip.timing.id),
         (TimelineTrackKind::CameraCut { clips }, TimelineEditableClip::CameraCut(replacement)) => {
+            replace_by_id(clips, id, replacement, |clip| &clip.timing.id)
+        }
+        (TimelineTrackKind::Audio { clips }, TimelineEditableClip::Audio(replacement)) => {
+            replace_by_id(clips, id, replacement, |clip| &clip.timing.id)
+        }
+        (TimelineTrackKind::Vfx { clips }, TimelineEditableClip::Vfx(replacement)) => {
             replace_by_id(clips, id, replacement, |clip| &clip.timing.id)
         }
         _ => Err(TimelineEditError::TrackTypeMismatch {
@@ -961,6 +981,8 @@ fn remove_clip(track: &mut TimelineTrack, id: &TimelineClipId) -> Result<(), Tim
             remove_by_id(clips, id, |clip| &clip.timing.id)
         }
         TimelineTrackKind::CameraCut { clips } => remove_by_id(clips, id, |clip| &clip.timing.id),
+        TimelineTrackKind::Audio { clips } => remove_by_id(clips, id, |clip| &clip.timing.id),
+        TimelineTrackKind::Vfx { clips } => remove_by_id(clips, id, |clip| &clip.timing.id),
         TimelineTrackKind::Event { .. } => Err(TimelineEditError::ClipNotFound(id.clone())),
     }
 }
