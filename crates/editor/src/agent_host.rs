@@ -205,14 +205,14 @@ impl PermissionBroker {
         if self.run.contains(&key) {
             return PermissionCheck::Granted;
         }
-        if let Some(remaining) = self.once.get_mut(&key) {
-            if *remaining > 0 {
-                *remaining -= 1;
-                if *remaining == 0 {
-                    self.once.remove(&key);
-                }
-                return PermissionCheck::Granted;
+        if let Some(remaining) = self.once.get_mut(&key)
+            && *remaining > 0
+        {
+            *remaining -= 1;
+            if *remaining == 0 {
+                self.once.remove(&key);
             }
+            return PermissionCheck::Granted;
         }
         PermissionCheck::RequiresApproval
     }
