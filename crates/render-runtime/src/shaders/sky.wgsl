@@ -17,8 +17,8 @@ struct EnvironmentUniform {
 
 @group(0) @binding(0) var<uniform> sky: SkyUniform;
 @group(1) @binding(0) var t_environment_source: texture_2d<f32>;
-@group(1) @binding(4) var s_environment: sampler;
-@group(1) @binding(5) var<uniform> environment: EnvironmentUniform;
+@group(1) @binding(1) var s_environment: sampler;
+@group(1) @binding(2) var<uniform> environment: EnvironmentUniform;
 
 struct VsOut {
     @builtin(position) position: vec4<f32>,

@@ -421,7 +421,10 @@ pub(crate) struct RenderState {
     flat_normal_texture: Arc<Texture>,
     environment: EnvironmentGpuState,
     light_buffer: wgpu::Buffer,
+    light_bind_group_layout: wgpu::BindGroupLayout,
     pub(crate) light_bind_group: wgpu::BindGroup,
+    shadow_sample_view: wgpu::TextureView,
+    shadow_sampler: wgpu::Sampler,
     pipelines: [[wgpu::RenderPipeline; 3]; 3],
     skinned_pipelines: [[wgpu::RenderPipeline; 3]; 3],
     outline_mask_pipelines: [wgpu::RenderPipeline; 3],
@@ -1509,11 +1512,10 @@ impl WorldRenderer {
                 // draw before geometry with depth writes disabled.
                 pass.set_pipeline(&self.render.sky_pipeline);
                 pass.set_bind_group(0, &self.render.sky_bind_group, &[]);
-                pass.set_bind_group(1, self.render.environment.bind_group(), &[]);
+                pass.set_bind_group(1, self.render.environment.sky_bind_group(), &[]);
                 pass.draw(0..3, 0..1);
                 pass.set_bind_group(0, &self.render.camera_bind_group, &[]);
             }
-            pass.set_bind_group(4, self.render.environment.bind_group(), &[]);
 
             // Opaque and masked geometry from every mesh path writes depth
             // before any blended draw. Keeping static and skinned paths in
@@ -2660,31 +2662,65 @@ impl RenderState {
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        multisampled: false,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 5,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        multisampled: false,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 6,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        multisampled: false,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 7,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 8,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         });
 
-        let light_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Light BG"),
-            layout: &light_bgl,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: light_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: shadow_uniform_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::TextureView(&shadow_sample_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: wgpu::BindingResource::Sampler(&shadow_sampler),
-                },
-            ],
-        });
+        let light_bind_group = Self::make_light_bind_group(
+            device,
+            &light_bgl,
+            &light_buffer,
+            &shadow_uniform_buffer,
+            &shadow_sample_view,
+            &shadow_sampler,
+            &environment,
+            None,
+        );
 
         // The static module owns the material fragment stage. Skinned material
         // pipelines pair their deformation vertex stage with this same
@@ -2700,8 +2736,6 @@ impl RenderState {
                 Some(&camera_bgl),
                 Some(&texture_bind_group_layout),
                 Some(&light_bgl),
-                None,
-                Some(environment.bind_group_layout()),
             ],
             immediate_size: 0,
         });
@@ -2755,7 +2789,6 @@ impl RenderState {
                     Some(&texture_bind_group_layout),
                     Some(&light_bgl),
                     Some(&joint_palette_bgl),
-                    Some(environment.bind_group_layout()),
                 ],
                 immediate_size: 0,
             });
@@ -3109,7 +3142,10 @@ impl RenderState {
         });
         let sky_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Sky pipeline layout"),
-            bind_group_layouts: &[Some(&sky_bgl), Some(environment.bind_group_layout())],
+            bind_group_layouts: &[
+                Some(&sky_bgl),
+                Some(environment.sky_bind_group_layout()),
+            ],
             immediate_size: 0,
         });
         let sky_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -3159,7 +3195,10 @@ impl RenderState {
             flat_normal_texture: flat_normal_tex,
             environment,
             light_buffer,
+            light_bind_group_layout: light_bgl,
             light_bind_group,
+            shadow_sample_view,
+            shadow_sampler,
             pipelines,
             skinned_pipelines,
             outline_mask_pipelines,
@@ -3181,6 +3220,65 @@ impl RenderState {
             return Err(RenderStateError(error));
         }
         Ok(state)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn make_light_bind_group(
+        device: &wgpu::Device,
+        layout: &wgpu::BindGroupLayout,
+        light_buffer: &wgpu::Buffer,
+        shadow_uniform_buffer: &wgpu::Buffer,
+        shadow_sample_view: &wgpu::TextureView,
+        shadow_sampler: &wgpu::Sampler,
+        environment: &EnvironmentGpuState,
+        diffuse_override: Option<&Texture>,
+    ) -> wgpu::BindGroup {
+        let diffuse_view = match diffuse_override {
+            Some(texture) => &texture.view,
+            None => environment.diffuse_view(),
+        };
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Scene lighting BG"),
+            layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: light_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: shadow_uniform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(shadow_sample_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::Sampler(shadow_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::TextureView(diffuse_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: wgpu::BindingResource::TextureView(environment.specular_view()),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: wgpu::BindingResource::TextureView(environment.brdf_view()),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: wgpu::BindingResource::Sampler(environment.sampler()),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 8,
+                    resource: environment.uniform_buffer().as_entire_binding(),
+                },
+            ],
+        })
     }
 
     fn make_uniform_buffer(device: &wgpu::Device, data: &[u8], label: &str) -> wgpu::Buffer {
@@ -3272,8 +3370,21 @@ impl RenderState {
         skybox: Option<&Arc<Texture>>,
         diffuse_irradiance: Option<&Arc<Texture>>,
     ) {
-        self.environment
-            .update(device, queue, settings, skybox, diffuse_irradiance);
+        let bindings_changed =
+            self.environment
+                .update(device, queue, settings, skybox, diffuse_irradiance);
+        if bindings_changed {
+            self.light_bind_group = Self::make_light_bind_group(
+                device,
+                &self.light_bind_group_layout,
+                &self.light_buffer,
+                &self.shadow_uniform_buffer,
+                &self.shadow_sample_view,
+                &self.shadow_sampler,
+                &self.environment,
+                diffuse_irradiance.map(Arc::as_ref),
+            );
+        }
     }
 
     pub(crate) fn update_sky(&self, queue: &wgpu::Queue, vp: glam::Mat4, sky: &SkySettings) {

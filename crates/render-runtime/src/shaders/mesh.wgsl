@@ -41,11 +41,11 @@ struct MaterialUniform {
 @group(2) @binding(1) var<uniform> shadow: ShadowUniform;
 @group(2) @binding(2) var t_shadow: texture_depth_2d_array;
 @group(2) @binding(3) var s_shadow: sampler_comparison;
-@group(4) @binding(1) var t_environment_diffuse: texture_2d<f32>;
-@group(4) @binding(2) var t_environment_specular: texture_2d<f32>;
-@group(4) @binding(3) var t_environment_brdf: texture_2d<f32>;
-@group(4) @binding(4) var s_environment: sampler;
-@group(4) @binding(5) var<uniform> environment: EnvironmentUniform;
+@group(2) @binding(4) var t_environment_diffuse: texture_2d<f32>;
+@group(2) @binding(5) var t_environment_specular: texture_2d<f32>;
+@group(2) @binding(6) var t_environment_brdf: texture_2d<f32>;
+@group(2) @binding(7) var s_environment: sampler;
+@group(2) @binding(8) var<uniform> environment: EnvironmentUniform;
 
 struct VertexInput {
     @location(0) position: vec3<f32>, @location(1) normal: vec3<f32>,

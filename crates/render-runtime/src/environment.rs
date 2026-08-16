@@ -74,8 +74,8 @@ impl BakeUniform {
 
 /// Renderer-owned environment resources derived from runtime texture assets.
 pub(crate) struct EnvironmentGpuState {
-    bind_group_layout: wgpu::BindGroupLayout,
-    bind_group: wgpu::BindGroup,
+    sky_bind_group_layout: wgpu::BindGroupLayout,
+    sky_bind_group: wgpu::BindGroup,
     uniform_buffer: wgpu::Buffer,
     sampler: wgpu::Sampler,
     fallback: Texture,
@@ -116,22 +116,19 @@ impl EnvironmentGpuState {
             ..Default::default()
         });
 
-        let bind_group_layout =
+        let sky_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("Environment IBL BGL"),
+                label: Some("Environment sky BGL"),
                 entries: &[
                     texture_layout_entry(0),
-                    texture_layout_entry(1),
-                    texture_layout_entry(2),
-                    texture_layout_entry(3),
                     wgpu::BindGroupLayoutEntry {
-                        binding: 4,
+                        binding: 1,
                         visibility: wgpu::ShaderStages::FRAGMENT,
                         ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                         count: None,
                     },
                     wgpu::BindGroupLayoutEntry {
-                        binding: 5,
+                        binding: 2,
                         visibility: wgpu::ShaderStages::FRAGMENT,
                         ty: wgpu::BindingType::Buffer {
                             ty: wgpu::BufferBindingType::Uniform,
@@ -244,20 +241,17 @@ impl EnvironmentGpuState {
             contents: bytemuck::bytes_of(&uniform),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
-        let bind_group = make_environment_bind_group(
+        let sky_bind_group = make_sky_bind_group(
             device,
-            &bind_group_layout,
+            &sky_bind_group_layout,
             &fallback.view,
-            &fallback.view,
-            &fallback.view,
-            &brdf_view,
             &sampler,
             &uniform_buffer,
         );
 
         Self {
-            bind_group_layout,
-            bind_group,
+            sky_bind_group_layout,
+            sky_bind_group,
             uniform_buffer,
             sampler,
             fallback,
@@ -276,12 +270,32 @@ impl EnvironmentGpuState {
         }
     }
 
-    pub(crate) fn bind_group_layout(&self) -> &wgpu::BindGroupLayout {
-        &self.bind_group_layout
+    pub(crate) fn sky_bind_group_layout(&self) -> &wgpu::BindGroupLayout {
+        &self.sky_bind_group_layout
     }
 
-    pub(crate) fn bind_group(&self) -> &wgpu::BindGroup {
-        &self.bind_group
+    pub(crate) fn sky_bind_group(&self) -> &wgpu::BindGroup {
+        &self.sky_bind_group
+    }
+
+    pub(crate) fn diffuse_view(&self) -> &wgpu::TextureView {
+        self.diffuse_view.as_ref().unwrap_or(&self.fallback.view)
+    }
+
+    pub(crate) fn specular_view(&self) -> &wgpu::TextureView {
+        self.specular_view.as_ref().unwrap_or(&self.fallback.view)
+    }
+
+    pub(crate) fn brdf_view(&self) -> &wgpu::TextureView {
+        &self.brdf_view
+    }
+
+    pub(crate) fn sampler(&self) -> &wgpu::Sampler {
+        &self.sampler
+    }
+
+    pub(crate) fn uniform_buffer(&self) -> &wgpu::Buffer {
+        &self.uniform_buffer
     }
 
     pub(crate) fn has_skybox(&self) -> bool {
@@ -295,7 +309,7 @@ impl EnvironmentGpuState {
         settings: &EnvironmentLighting,
         skybox: Option<&Arc<Texture>>,
         diffuse_override: Option<&Arc<Texture>>,
-    ) {
+    ) -> bool {
         let sky_changed = !weak_matches(&self.skybox_source, skybox);
         let diffuse_changed = !weak_matches(&self.diffuse_override_source, diffuse_override);
 
@@ -325,29 +339,20 @@ impl EnvironmentGpuState {
             EnvironmentUniform::from_settings(settings, has_diffuse_texture, self.has_skybox);
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniform));
 
-        if sky_changed || diffuse_changed {
+        if sky_changed {
             let source_view = skybox
                 .map(|texture| &texture.view)
                 .unwrap_or(&self.fallback.view);
-            let diffuse_view = diffuse_override
-                .map(|texture| &texture.view)
-                .or(self.diffuse_view.as_ref())
-                .unwrap_or(&self.fallback.view);
-            let specular_view = self
-                .specular_view
-                .as_ref()
-                .unwrap_or(&self.fallback.view);
-            self.bind_group = make_environment_bind_group(
+            self.sky_bind_group = make_sky_bind_group(
                 device,
-                &self.bind_group_layout,
+                &self.sky_bind_group_layout,
                 source_view,
-                diffuse_view,
-                specular_view,
-                &self.brdf_view,
                 &self.sampler,
                 &self.uniform_buffer,
             );
         }
+
+        sky_changed || diffuse_changed
     }
 
     fn precompute_environment(
@@ -567,19 +572,15 @@ fn make_precompute_bind_group(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
-fn make_environment_bind_group(
+fn make_sky_bind_group(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
     source: &wgpu::TextureView,
-    diffuse: &wgpu::TextureView,
-    specular: &wgpu::TextureView,
-    brdf: &wgpu::TextureView,
     sampler: &wgpu::Sampler,
     uniform_buffer: &wgpu::Buffer,
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("Environment IBL BG"),
+        label: Some("Environment sky BG"),
         layout,
         entries: &[
             wgpu::BindGroupEntry {
@@ -588,22 +589,10 @@ fn make_environment_bind_group(
             },
             wgpu::BindGroupEntry {
                 binding: 1,
-                resource: wgpu::BindingResource::TextureView(diffuse),
-            },
-            wgpu::BindGroupEntry {
-                binding: 2,
-                resource: wgpu::BindingResource::TextureView(specular),
-            },
-            wgpu::BindGroupEntry {
-                binding: 3,
-                resource: wgpu::BindingResource::TextureView(brdf),
-            },
-            wgpu::BindGroupEntry {
-                binding: 4,
                 resource: wgpu::BindingResource::Sampler(sampler),
             },
             wgpu::BindGroupEntry {
-                binding: 5,
+                binding: 2,
                 resource: uniform_buffer.as_entire_binding(),
             },
         ],

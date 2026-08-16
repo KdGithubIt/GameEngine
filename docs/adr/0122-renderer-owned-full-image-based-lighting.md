@@ -78,6 +78,12 @@ sampled through their existing sRGB view, so hardware decoding places source
 radiance in linear space before convolution. Derived textures are never
 serialized, assigned Stable IDs, or exposed as importer output.
 
+StandardLit consumes those resources through the existing scene-lighting bind
+group together with directional light and shadow resources. The renderer does
+not allocate a fifth mesh bind group for IBL: group 3 remains available for the
+skinned joint palette, and static/skinned material pipelines stay within the
+portable four-bind-group floor validated by the runtime GPU limits.
+
 The cache key is runtime texture identity. Replacing the skybox texture rebuilds
 its derived irradiance and prefilter resources; unchanged textures do not pay
 that cost every frame.
