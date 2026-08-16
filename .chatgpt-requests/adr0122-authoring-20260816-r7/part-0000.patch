@@ -1,0 +1,72 @@
+diff --git a/crates/engine/src/components/builtins.rs b/crates/engine/src/components/builtins.rs
+--- a/crates/engine/src/components/builtins.rs
++++ b/crates/engine/src/components/builtins.rs
+@@ -1238,15 +1238,28 @@
+     number(
+         "max_distance",
+         "Max Distance",
+         "Distance where attenuation reaches its floor.",
+         20.0,
+         POSITIVE,
+     ),
++    enumeration(
++        "rolloff",
++        "Rolloff",
++        "Distance attenuation curve used by positional playback.",
++        "linear",
++        &["linear", "inverse"],
++    ),
+     boolean(
+         "autoplay",
+         "Autoplay",
+         "Submit one sound-effect request on the first runtime update.",
+         false,
+     ),
++    boolean(
++        "looping",
++        "Loop",
++        "Repeat the authored autoplay voice until the component is removed.",
++        false,
++    ),
+ ];
+ 
+@@ -1253,8 +1266,17 @@
+-const AUDIO_LISTENER_FIELDS: &[FieldDef] = &[boolean(
+-    "enabled",
+-    "Enabled",
+-    "Whether this listener participates in positional mixing.",
+-    true,
+-)];
++const AUDIO_LISTENER_FIELDS: &[FieldDef] = &[
++    boolean(
++        "enabled",
++        "Enabled",
++        "Whether this listener participates in positional mixing.",
++        true,
++    ),
++    integer(
++        "priority",
++        "Priority",
++        "Selection priority among enabled listeners; higher values win.",
++        0,
++        NumericRange::inclusive(i32::MIN as f64, i32::MAX as f64),
++    ),
++];
+ 
+ const MUSIC_CONTROLLER_FIELDS: &[FieldDef] = &[
+@@ -1780,6 +1802,6 @@
+             "Plays a registered sound from this entity's position.",
+             "Audio",
+-            1,
++            2,
+             AUDIO_EMITTER_FIELDS,
+             spawn_audio_emitter_component,
+         ),
+@@ -1789,6 +1811,6 @@
+             "Marks this entity as a positional-audio listener.",
+             "Audio",
+-            1,
++            2,
+             AUDIO_LISTENER_FIELDS,
+             spawn_audio_listener_component,
+         )
