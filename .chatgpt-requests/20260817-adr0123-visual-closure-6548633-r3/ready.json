@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "request_id": "20260817-adr0123-visual-closure-6548633-r3",
+  "target_branch": "chatgpt/gameengine-adr0123-visual-closure-v2",
+  "expected_head_sha": "65486331049c4ad3da94f8a0930dc93c8275831a",
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Fix ADR 0123 visual validation workspace",
+  "pr_title": "ADR 0123: close Behavior Tree visual validation",
+  "pr_body": "## Summary\n\n- keep the schema-driven palette fixture and Play-mode debugger evidence in one deterministic Windows Editor capture\n- place the validation-only palette, live debug graph, and runtime details side-by-side in a foreground validation workspace so normal Hierarchy/Assets docks cannot clip required evidence\n- leave normal Editor layout, Behavior Tree runtime semantics, persisted documents, stable IDs, and public APIs unchanged\n\n## Validation\n\nRe-run affected Windows Validation and Editor Visual Validation, then review the actual artifact for all ADR 0123 first-release palette/debugger evidence and layout quality.\n\n<!-- gameengine-visual-validation: editor -->\n\n<!-- gameengine-chatgpt-dispatcher -->"
+}
