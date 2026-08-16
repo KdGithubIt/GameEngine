@@ -1,0 +1,180 @@
+use engine_render_runtime::{
+    postprocess::{BloomSettings, PostProcessSettings, ToneMapOperator},
+    renderer::ToneMapPass,
+};
+
+fn clear_hdr_source(device: &wgpu::Device, queue: &wgpu::Queue, view: &wgpu::TextureView) {
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("Bloom functional source clear encoder"),
+    });
+    {
+        let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("Bloom functional source clear pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view,
+                resolve_target: None,
+                depth_slice: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color {
+                        r: 2.0,
+                        g: 2.0,
+                        b: 2.0,
+                        a: 1.0,
+                    }),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+    }
+    queue.submit(Some(encoder.finish()));
+}
+
+fn readback_pixel(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    texture: &wgpu::Texture,
+) -> [u8; 4] {
+    let bytes_per_row = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("Bloom functional readback"),
+        size: u64::from(bytes_per_row),
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("Bloom functional readback encoder"),
+    });
+    encoder.copy_texture_to_buffer(
+        wgpu::TexelCopyTextureInfo {
+            texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        wgpu::TexelCopyBufferInfo {
+            buffer: &buffer,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(bytes_per_row),
+                rows_per_image: None,
+            },
+        },
+        wgpu::Extent3d {
+            width: 1,
+            height: 1,
+            depth_or_array_layers: 1,
+        },
+    );
+    queue.submit(Some(encoder.finish()));
+
+    let slice = buffer.slice(..);
+    let (sender, receiver) = std::sync::mpsc::channel();
+    slice.map_async(wgpu::MapMode::Read, move |result| {
+        let _ = sender.send(result);
+    });
+    device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .expect("bloom functional readback device poll must succeed");
+    receiver
+        .recv()
+        .expect("bloom functional readback callback must run")
+        .expect("bloom functional readback buffer must map");
+
+    let mapped = slice.get_mapped_range();
+    let pixel = [mapped[0], mapped[1], mapped[2], mapped[3]];
+    drop(mapped);
+    buffer.unmap();
+    pixel
+}
+
+#[test]
+fn bloom_changes_final_pixels_when_a_gpu_adapter_is_available() {
+    let instance = wgpu::Instance::default();
+    let context = match pollster::block_on(engine_renderer::GpuContext::new(&instance, None)) {
+        Ok(context) => context,
+        Err(engine_renderer::GpuContextError::AdapterUnavailable) => return,
+        Err(error) => panic!("GPU device creation failed: {error}"),
+    };
+    let device = context.device();
+    let queue = context.queue();
+
+    let source = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("Bloom functional HDR source"),
+        size: wgpu::Extent3d {
+            width: 16,
+            height: 16,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba16Float,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    });
+    let source_view = source.create_view(&wgpu::TextureViewDescriptor::default());
+    clear_hdr_source(device, queue, &source_view);
+
+    let output = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("Bloom functional output"),
+        size: wgpu::Extent3d {
+            width: 1,
+            height: 1,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let output_view = output.create_view(&wgpu::TextureViewDescriptor::default());
+    let mut tone_map = pollster::block_on(ToneMapPass::new(
+        device,
+        wgpu::TextureFormat::Rgba8Unorm,
+        &source_view,
+    ))
+    .expect("tone-map and bloom pipelines must validate");
+
+    let without_bloom = PostProcessSettings {
+        tone_map: ToneMapOperator::Reinhard,
+        bloom: BloomSettings {
+            enabled: false,
+            threshold: 0.5,
+            intensity: 1.0,
+            radius: 4.0,
+        },
+        ..PostProcessSettings::default()
+    };
+    tone_map.execute(device, queue, &output_view, &without_bloom);
+    let baseline = readback_pixel(device, queue, &output);
+
+    let with_bloom = PostProcessSettings {
+        bloom: BloomSettings {
+            enabled: true,
+            ..without_bloom.bloom
+        },
+        ..without_bloom
+    };
+    tone_map.execute(device, queue, &output_view, &with_bloom);
+    let bloomed = readback_pixel(device, queue, &output);
+
+    tone_map.execute(device, queue, &output_view, &without_bloom);
+    let restored = readback_pixel(device, queue, &output);
+
+    assert_eq!(baseline, restored, "disabling bloom must restore the HDR source path");
+    assert_eq!(baseline[3], 255);
+    assert_eq!(bloomed[3], 255);
+    assert!(
+        bloomed[..3]
+            .iter()
+            .zip(&baseline[..3])
+            .all(|(with_bloom, without_bloom)| with_bloom > without_bloom),
+        "enabled bloom must increase the final bright-source pixel: baseline={baseline:?}, bloomed={bloomed:?}"
+    );
+}
