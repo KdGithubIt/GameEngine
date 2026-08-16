@@ -1,0 +1,190 @@
+diff --git a/crates/physics/src/navigation.rs b/crates/physics/src/navigation.rs
+--- a/crates/physics/src/navigation.rs
++++ b/crates/physics/src/navigation.rs
+@@ -1147,6 +1147,54 @@ enum SearchOutcome {
+     Partial(SearchResult),
+ }
+ 
++struct SearchFrontier {
++    open: BinaryHeap<OpenEntry>,
++    costs: HashMap<NavigationPolygonRef, f32>,
++    previous: HashMap<NavigationPolygonRef, (NavigationPolygonRef, SearchEdge)>,
++}
++
++impl SearchFrontier {
++    fn new(start: NavigationPolygonRef, estimated_total: f32) -> Self {
++        let mut costs = HashMap::new();
++        costs.insert(start, 0.0);
++        let mut open = BinaryHeap::new();
++        open.push(OpenEntry {
++            estimated_total,
++            cost: 0.0,
++            node: start,
++        });
++        Self {
++            open,
++            costs,
++            previous: HashMap::new(),
++        }
++    }
++
++    fn relax(
++        &mut self,
++        next: NavigationPolygonRef,
++        current: NavigationPolygonRef,
++        edge: SearchEdge,
++        new_cost: f32,
++        end_center: Vec3,
++        centers: &HashMap<NavigationPolygonRef, Vec3>,
++    ) {
++        if new_cost + 1e-5 >= self.costs.get(&next).copied().unwrap_or(f32::INFINITY) {
++            return;
++        }
++        self.costs.insert(next, new_cost);
++        self.previous.insert(next, (current, edge));
++        let heuristic = centers
++            .get(&next)
++            .map_or(0.0, |center| center.distance(end_center));
++        self.open.push(OpenEntry {
++            estimated_total: new_cost + heuristic,
++            cost: new_cost,
++            node: next,
++        });
++    }
++}
++
+ fn astar_polygons(
+     profile: &NavigationProfileMesh,
+     start: NavigationPolygonRef,
+@@ -1155,21 +1203,13 @@ fn astar_polygons(
+     let index = polygon_index(&profile.tiles);
+     let centers = polygon_centers(profile, &index);
+     let end_center = *centers.get(&end)?;
+-    let mut open = BinaryHeap::new();
+-    let mut costs = HashMap::new();
+-    let mut previous: HashMap<NavigationPolygonRef, (NavigationPolygonRef, SearchEdge)> =
+-        HashMap::new();
+     let mut best_partial = start;
+     let mut best_distance = centers.get(&start)?.distance_squared(end_center);
+-    costs.insert(start, 0.0_f32);
+-    open.push(OpenEntry {
+-        estimated_total: best_distance.sqrt(),
+-        cost: 0.0,
+-        node: start,
+-    });
+-
+-    while let Some(entry) = open.pop() {
+-        if costs
++    let mut frontier = SearchFrontier::new(start, best_distance.sqrt());
++
++    while let Some(entry) = frontier.open.pop() {
++        if frontier
++            .costs
+             .get(&entry.node)
+             .is_some_and(|best| entry.cost > *best + 1e-5)
+         {
+@@ -1186,7 +1226,7 @@ fn astar_polygons(
+             return Some(SearchOutcome::Complete(reconstruct_search(
+                 end,
+                 entry.cost,
+-                &previous,
++                &frontier.previous,
+             )));
+         }
+         let (tile_index, polygon_index) = *index.get(&entry.node)?;
+@@ -1200,21 +1240,18 @@ fn astar_polygons(
+             let step = from_center.distance(to_center)
+                 * profile.profile.area_cost(destination_polygon.area)
+                 * destination_polygon.cost_multiplier;
+-            relax(
++            frontier.relax(
+                 portal.to,
+                 entry.node,
+                 SearchEdge::Portal(portal.clone()),
+                 entry.cost + step,
+                 end_center,
+                 &centers,
+-                &mut costs,
+-                &mut previous,
+-                &mut open,
+             );
+         }
+         for link in &profile.links {
+             if link.from == entry.node {
+-                relax(
++                frontier.relax(
+                     link.to,
+                     entry.node,
+                     SearchEdge::Link(link.clone(), false),
+@@ -1224,13 +1261,10 @@ fn astar_polygons(
+                             * Vec3::from_array(link.start).distance(Vec3::from_array(link.end)),
+                     end_center,
+                     &centers,
+-                    &mut costs,
+-                    &mut previous,
+-                    &mut open,
+                 );
+             }
+             if link.bidirectional && link.to == entry.node {
+-                relax(
++                frontier.relax(
+                     link.from,
+                     entry.node,
+                     SearchEdge::Link(link.clone(), true),
+@@ -1240,21 +1274,18 @@ fn astar_polygons(
+                             * Vec3::from_array(link.start).distance(Vec3::from_array(link.end)),
+                     end_center,
+                     &centers,
+-                    &mut costs,
+-                    &mut previous,
+-                    &mut open,
+                 );
+             }
+         }
+     }
+     if best_partial == start {
+         return None;
+     }
+-    let cost = costs.get(&best_partial).copied()?;
++    let cost = frontier.costs.get(&best_partial).copied()?;
+     Some(SearchOutcome::Partial(reconstruct_search(
+         best_partial,
+         cost,
+-        &previous,
++        &frontier.previous,
+     )))
+ }
+ 
+@@ -1280,32 +1311,6 @@ fn reconstruct_search(
+     }
+ }
+ 
+-fn relax(
+-    next: NavigationPolygonRef,
+-    current: NavigationPolygonRef,
+-    edge: SearchEdge,
+-    new_cost: f32,
+-    end_center: Vec3,
+-    centers: &HashMap<NavigationPolygonRef, Vec3>,
+-    costs: &mut HashMap<NavigationPolygonRef, f32>,
+-    previous: &mut HashMap<NavigationPolygonRef, (NavigationPolygonRef, SearchEdge)>,
+-    open: &mut BinaryHeap<OpenEntry>,
+-) {
+-    if new_cost + 1e-5 >= costs.get(&next).copied().unwrap_or(f32::INFINITY) {
+-        return;
+-    }
+-    costs.insert(next, new_cost);
+-    previous.insert(next, (current, edge));
+-    let heuristic = centers
+-        .get(&next)
+-        .map_or(0.0, |center| center.distance(end_center));
+-    open.push(OpenEntry {
+-        estimated_total: new_cost + heuristic,
+-        cost: new_cost,
+-        node: next,
+-    });
+-}
+-
+ fn polygon_centers(
+     profile: &NavigationProfileMesh,
+     index: &HashMap<NavigationPolygonRef, (usize, usize)>,

@@ -1,0 +1,73 @@
++        triangle.b[0].to_bits(),
++        triangle.b[1].to_bits(),
++        triangle.b[2].to_bits(),
++        triangle.c[0].to_bits(),
++        triangle.c[1].to_bits(),
++        triangle.c[2].to_bits(),
++        u32::from(triangle.area),
++    ]
++}
++
++fn build_input_fingerprint(
++    input: &NavigationBuildInput,
++) -> Result<String, NavigationBakeServiceError> {
++    let mut normalized = input.clone();
++    normalized.source_fingerprint.clear();
++    let bytes = serde_json::to_vec(&normalized).map_err(NavigationBakeServiceError::Json)?;
++    let mut hash = 0xcbf29ce484222325_u64;
++    for byte in bytes {
++        hash ^= u64::from(byte);
++        hash = hash.wrapping_mul(0x100000001b3);
++    }
++    Ok(format!("nav-v2-fnv1a64:{hash:016x}"))
++}
++
++static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(1);
++
++fn sidecar_path(path: &Path, suffix: &str) -> PathBuf {
++    let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
++    let file_name = path
++        .file_name()
++        .and_then(|name| name.to_str())
++        .unwrap_or("navmesh");
++    path.with_file_name(format!(".{file_name}.{suffix}.{}-{sequence}", std::process::id()))
++}
++
++fn replace_preserving_previous(
++    path: &Path,
++    bytes: &[u8],
++) -> Result<(), NavigationBakeServiceError> {
++    if let Some(parent) = path.parent() {
++        fs::create_dir_all(parent).map_err(NavigationBakeServiceError::Io)?;
++    }
++    let temporary = sidecar_path(path, "tmp");
++    let backup = sidecar_path(path, "bak");
++    let write_result = (|| -> Result<(), std::io::Error> {
++        let mut file = fs::OpenOptions::new()
++            .write(true)
++            .create_new(true)
++            .open(&temporary)?;
++        file.write_all(bytes)?;
++        file.sync_all()?;
++        Ok(())
++    })();
++    if let Err(error) = write_result {
++        let _ = fs::remove_file(&temporary);
++        return Err(NavigationBakeServiceError::Io(error));
++    }
++
++    let had_previous = path.exists();
++    if had_previous {
++        if let Err(error) = fs::rename(path, &backup) {
++            let _ = fs::remove_file(&temporary);
++            return Err(NavigationBakeServiceError::Io(error));
++        }
++    }
++    match fs::rename(&temporary, path) {
++        Ok(()) => {
++            if had_previous {
++                let _ = fs::remove_file(&backup);
++            }
++            Ok(())
++        }
++        Err(error) => {

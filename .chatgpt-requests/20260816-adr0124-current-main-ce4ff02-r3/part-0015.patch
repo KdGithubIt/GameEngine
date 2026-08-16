@@ -1,0 +1,61 @@
+         let polygon = &profile.tiles[tile_index].polygons[polygon_index];
+         let from_center = *centers.get(&entry.node)?;
+         for portal in &polygon.portals {
+             let to_center = *centers.get(&portal.to)?;
+-            let (_, destination_polygon_index) = *index.get(&portal.to)?;
+-            let destination_tile_index = index.get(&portal.to)?.0;
++            let (destination_tile_index, destination_polygon_index) = *index.get(&portal.to)?;
+             let destination_polygon =
+                 &profile.tiles[destination_tile_index].polygons[destination_polygon_index];
+             let step = from_center.distance(to_center)
+@@ -1145,6 +1205,8 @@ fn astar_polygons(
+                 entry.node,
+                 SearchEdge::Portal(portal.clone()),
+                 entry.cost + step,
++                end_center,
++                &centers,
+                 &mut costs,
+                 &mut previous,
+                 &mut open,
+@@ -1160,6 +1222,8 @@ fn astar_polygons(
+                         + link.cost
+                         + profile.profile.area_cost(link.area)
+                             * Vec3::from_array(link.start).distance(Vec3::from_array(link.end)),
++                    end_center,
++                    &centers,
+                     &mut costs,
+                     &mut previous,
+                     &mut open,
+@@ -1174,6 +1238,8 @@ fn astar_polygons(
+                         + link.cost
+                         + profile.profile.area_cost(link.area)
+                             * Vec3::from_array(link.start).distance(Vec3::from_array(link.end)),
++                    end_center,
++                    &centers,
+                     &mut costs,
+                     &mut previous,
+                     &mut open,
+@@ -1181,7 +1247,37 @@ fn astar_polygons(
+             }
+         }
+     }
+-    None
++    if best_partial == start {
++        return None;
++    }
++    let cost = costs.get(&best_partial).copied()?;
++    Some(SearchOutcome::Partial(reconstruct_search(
++        best_partial,
++        cost,
++        &previous,
++    )))
++}
++
++fn reconstruct_search(
++    destination: NavigationPolygonRef,
++    total_cost: f32,
++    previous: &HashMap<NavigationPolygonRef, (NavigationPolygonRef, SearchEdge)>,
++) -> SearchResult {
++    let mut corridor = vec![destination];
++    let mut edges = Vec::new();
++    let mut current = destination;
