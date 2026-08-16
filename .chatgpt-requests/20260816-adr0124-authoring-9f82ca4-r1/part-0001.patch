@@ -1,0 +1,12 @@
+diff --git a/crates/engine/src/components/builtins.rs b/crates/engine/src/components/builtins.rs
+--- a/crates/engine/src/components/builtins.rs
++++ b/crates/engine/src/components/builtins.rs
+@@ -3,7 +3,7 @@
+             "NavMesh Agent",
+             "Moves toward an optional world-space target on the runtime NavMesh.",
+             "Navigation",
+-            2,
++            3,
+             NAV_MESH_AGENT_FIELDS,
+             spawn_nav_mesh_agent_component,
+         ),
