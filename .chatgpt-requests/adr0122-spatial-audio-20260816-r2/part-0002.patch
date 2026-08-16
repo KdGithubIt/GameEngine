@@ -1,0 +1,325 @@
++    volumes: AudioBusVolumes,
++) {
+     bgm.apply_volume(volumes.background_music());
+     for sink in se_sinks {
+         sink.set_volume(volumes.sound_effects());
+     }
++    for voice in voices.values() {
++        voice.sink.set_volume(volumes.sound_effects());
++    }
+ }
++
++#[cfg(not(target_arch = "wasm32"))]
++struct ActiveVoice {
++    sink: rodio::Sink,
++    gains: Arc<Mutex<[f32; 2]>>,
++}
+@@ -848,4 +848,47 @@
+ }
+ 
+ #[cfg(not(target_arch = "wasm32"))]
++fn play_voice_on_thread(
++    stream_handle: &rodio::OutputStreamHandle,
++    encoded: Arc<[u8]>,
++    mix: AudioSpatialMix,
++    looping: bool,
++    bus_volume: f32,
++) -> Result<ActiveVoice, AudioError> {
++    let sink = rodio::Sink::try_new(stream_handle).map_err(|source| AudioError::Playback {
++        message: source.to_string(),
++    })?;
++    let gains = Arc::new(Mutex::new([mix.left_gain, mix.right_gain]));
++    let source_gains = Arc::clone(&gains);
++    let decoder = decoder_for_encoded(encoded)?;
++    if looping {
++        let source = rodio::source::ChannelVolume::new(
++            decoder.repeat_infinite(),
++            vec![mix.left_gain, mix.right_gain],
++        )
++        .periodic_access(AUDIO_POLL_INTERVAL, move |source| {
++            if let Ok(gains) = source_gains.lock() {
++                source.set_volume(0, gains[0]);
++                source.set_volume(1, gains[1]);
++            }
++        });
++        sink.append(source);
++    } else {
++        let source = rodio::source::ChannelVolume::new(
++            decoder,
++            vec![mix.left_gain, mix.right_gain],
++        )
++        .periodic_access(AUDIO_POLL_INTERVAL, move |source| {
++            if let Ok(gains) = source_gains.lock() {
++                source.set_volume(0, gains[0]);
++                source.set_volume(1, gains[1]);
++            }
++        });
++        sink.append(source);
++    }
++    sink.set_volume(bus_volume);
++    Ok(ActiveVoice { sink, gains })
++}
++
++#[cfg(not(target_arch = "wasm32"))]
+ fn decoder_for_encoded(
+diff --git a/crates/engine/src/audio.rs b/crates/engine/src/audio.rs
+index 2a13a1a..7f80c0f 100644
+--- a/crates/engine/src/audio.rs
++++ b/crates/engine/src/audio.rs
+@@ -2,11 +2,12 @@
+ 
+ pub use engine_platform::audio::*;
+ 
+-use std::collections::VecDeque;
++use std::collections::{BTreeMap, BTreeSet, VecDeque};
+ 
+ use crate::asset::{AssetManifest, AssetServer, Assets};
++use crate::transform::GlobalTransform;
+ use engine_authoring::{AssetId, StableId};
+-use engine_ecs::{Res, ResMut};
++use engine_ecs::{Entity, Query, Res, ResMut};
+ 
+ /// Maximum pending project-Rust audio requests.
+ pub const MAX_GAME_AUDIO_COMMANDS: usize = 256;
+@@ -15,6 +16,11 @@ pub const MAX_GAME_AUDIO_COMMANDS: usize = 256;
+ #[derive(Debug, Clone, PartialEq)]
+ pub(crate) enum GameAudioCommand {
+     PlaySoundEffect { asset_id: String },
++    PlaySpatialSoundEffect {
++        source: Entity,
++        asset_id: String,
++        params: AudioSpatialParams,
++    },
+     PlayBackgroundMusic { asset_id: String, fade_seconds: f32 },
+     StopBackgroundMusic,
+     SetMasterVolume(f32),
+@@ -22,6 +28,19 @@ pub(crate) enum GameAudioCommand {
+     SetSoundEffectVolume(f32),
+ }
+ 
++#[derive(Debug, Clone, Copy)]
++struct TransientSpatialVoice {
++    source: Entity,
++    params: AudioSpatialParams,
++}
++
++/// Runtime-only voice ownership for authored and Project Rust spatial playback.
++#[derive(Debug, Default)]
++pub(crate) struct SpatialAudioRuntime {
++    authored: BTreeMap<Entity, AudioVoiceId>,
++    transient: BTreeMap<AudioVoiceId, TransientSpatialVoice>,
++}
++
+ /// Bounded bridge between exclusive project callbacks and the audio backend.
+ #[derive(Debug, Default)]
+ pub(crate) struct GameAudioCommandQueue {
+@@ -45,11 +64,19 @@ impl GameAudioCommandQueue {
+ /// Resolves and applies queued project-Rust audio requests.
+ pub(crate) fn game_audio_effect_system(
+     mut queue: ResMut<GameAudioCommandQueue>,
++    mut spatial_runtime: Option<ResMut<SpatialAudioRuntime>>,
++    listeners: Query<(&AudioListener, &GlobalTransform)>,
++    transforms: Query<&GlobalTransform>,
+     mut audio_system: Option<ResMut<AudioSystem>>,
+     mut asset_server: Option<ResMut<AssetServer>>,
+     manifest: Option<Res<AssetManifest>>,
+     mut audio_assets: Option<ResMut<Assets<AudioAsset>>>,
+ ) {
++    let listener = active_listener_pose(&listeners);
++    let source_poses: BTreeMap<_, _> = transforms
++        .iter()
++        .map(|(entity, transform)| (entity, emitter_pose(transform)))
++        .collect();
+     for command in queue.commands.drain(..) {
+         let result = match command {
+             GameAudioCommand::StopBackgroundMusic => {
+@@ -73,6 +100,45 @@ pub(crate) fn game_audio_effect_system(
+                 manifest.as_deref(),
+                 audio_assets.as_deref_mut(),
+             ),
++            GameAudioCommand::PlaySpatialSoundEffect {
++                source,
++                asset_id,
++                params,
++            } => {
++                let Some(source_pose) = source_poses.get(&source).copied() else {
++                    log::warn!(
++                        "project Rust spatial audio source {source:?} has no propagated transform"
++                    );
++                    continue;
++                };
++                let mix = mix_spatial_audio(listener, source_pose, params);
++                match resolve_and_start_voice(
++                    &asset_id,
++                    mix,
++                    false,
++                    audio_system.as_deref_mut(),
++                    asset_server.as_deref_mut(),
++                    manifest.as_deref(),
++                    audio_assets.as_deref_mut(),
++                ) {
++                    Some(Ok(voice_id)) => {
++                        if let Some(runtime) = spatial_runtime.as_deref_mut() {
++                            runtime.transient.insert(
++                                voice_id,
++                                TransientSpatialVoice { source, params },
++                            );
++                            Some(Ok(()))
++                        } else {
++                            let _ = audio_system
++                                .as_deref()
++                                .map(|audio| audio.stop_voice(voice_id));
++                            None
++                        }
++                    }
++                    Some(Err(error)) => Some(Err(error)),
++                    None => None,
++                }
++            }
+             GameAudioCommand::PlayBackgroundMusic {
+                 asset_id,
+                 fade_seconds,
+@@ -96,6 +162,168 @@ pub(crate) fn game_audio_effect_system(
+     }
+ }
+ 
++/// Synchronizes authored and Project Rust spatial voices from propagated transforms.
++pub(crate) fn spatial_audio_system(
++    mut emitters: Query<(&mut AudioEmitter, &GlobalTransform)>,
++    listeners: Query<(&AudioListener, &GlobalTransform)>,
++    transforms: Query<&GlobalTransform>,
++    assets: Res<Assets<AudioAsset>>,
++    mut audio_system: Option<ResMut<AudioSystem>>,
++    mut runtime: ResMut<SpatialAudioRuntime>,
++) {
++    let listener = active_listener_pose(&listeners);
++    let completed: BTreeSet<_> = audio_system
++        .as_deref()
++        .map(AudioSystem::drain_completed_voices)
++        .unwrap_or_default()
++        .into_iter()
++        .collect();
++    runtime.transient.retain(|voice_id, _| !completed.contains(voice_id));
++
++    let mut live_emitters = BTreeSet::new();
++    for (entity, (emitter, transform)) in &mut emitters {
++        live_emitters.insert(entity);
++        if let Some(voice_id) = runtime.authored.get(&entity).copied() {
++            if completed.contains(&voice_id) {
++                runtime.authored.remove(&entity);
++                emitter.set_state(AuthoredAudioState::Completed);
++                continue;
++            }
++            let mix = mix_spatial_audio(listener, emitter_pose(transform), emitter.spatial_params());
++            if let Some(audio) = audio_system.as_deref()
++                && let Err(error) = audio.update_voice(voice_id, mix)
++            {
++                log::error!("failed to update authored spatial voice: {error}");
++            }
++            continue;
++        }
++        if !emitter.autoplay || emitter.state() != &AuthoredAudioState::Pending {
++            continue;
++        }
++        let Some(asset) = assets.get(&emitter.clip) else {
++            emitter.set_state(AuthoredAudioState::Failed(
++                "decoded clip handle is missing".into(),
++            ));
++            continue;
++        };
++        let Some(audio) = audio_system.as_deref_mut() else {
++            emitter.set_state(AuthoredAudioState::Unavailable);
++            continue;
++        };
++        let mix = mix_spatial_audio(listener, emitter_pose(transform), emitter.spatial_params());
++        match audio.start_voice(asset, mix, emitter.looping) {
++            Ok(voice_id) => {
++                runtime.authored.insert(entity, voice_id);
++                emitter.set_state(AuthoredAudioState::Playing);
++            }
++            Err(error) => emitter.set_state(AuthoredAudioState::Failed(error.to_string())),
++        }
++    }
++
++    let stale_authored: Vec<_> = runtime
++        .authored
++        .keys()
++        .copied()
++        .filter(|entity| !live_emitters.contains(entity))
++        .collect();
++    for entity in stale_authored {
++        if let Some(voice_id) = runtime.authored.remove(&entity)
++            && let Some(audio) = audio_system.as_deref()
++        {
++            let _ = audio.stop_voice(voice_id);
++        }
++    }
++
++    let source_poses: BTreeMap<_, _> = transforms
++        .iter()
++        .map(|(entity, transform)| (entity, emitter_pose(transform)))
++        .collect();
++    let mut stale_transient = Vec::new();
++    for (voice_id, voice) in &runtime.transient {
++        let Some(source_pose) = source_poses.get(&voice.source).copied() else {
++            stale_transient.push(*voice_id);
++            continue;
++        };
++        if let Some(audio) = audio_system.as_deref() {
++            let mix = mix_spatial_audio(listener, source_pose, voice.params);
++            if let Err(error) = audio.update_voice(*voice_id, mix) {
++                log::error!("failed to update project Rust spatial voice: {error}");
++            }
++        }
++    }
++    for voice_id in stale_transient {
++        runtime.transient.remove(&voice_id);
++        if let Some(audio) = audio_system.as_deref() {
++            let _ = audio.stop_voice(voice_id);
++        }
++    }
++}
++
++fn active_listener_pose(
++    listeners: &Query<(&AudioListener, &GlobalTransform)>,
++) -> Option<AudioListenerPose> {
++    let mut best: Option<(Entity, i32, AudioListenerPose)> = None;
++    for (entity, (listener, transform)) in listeners {
++        if !listener.enabled {
++            continue;
++        }
++        let replace = best.as_ref().is_none_or(|(best_entity, best_priority, _)| {
++            listener.priority > *best_priority
++                || (listener.priority == *best_priority && entity < *best_entity)
++        });
++        if replace {
++            let matrix = transform.matrix();
++            let position = matrix.w_axis.truncate();
++            let right = matrix.x_axis.truncate();
++            best = Some((
++                entity,
++                listener.priority,
++                AudioListenerPose {
++                    position: position.to_array(),
++                    right: right.to_array(),
++                },
++            ));
++        }
++    }
++    best.map(|(_, _, pose)| pose)
++}
++
++fn emitter_pose(transform: &GlobalTransform) -> AudioEmitterPose {
++    AudioEmitterPose {
++        position: transform.matrix().w_axis.truncate().to_array(),
++    }
++}
++
++fn resolve_and_start_voice(
++    asset_id: &str,
++    mix: AudioSpatialMix,
++    looping: bool,
++    audio: Option<&mut AudioSystem>,
++    server: Option<&mut AssetServer>,
++    manifest: Option<&AssetManifest>,
++    assets: Option<&mut Assets<AudioAsset>>,
