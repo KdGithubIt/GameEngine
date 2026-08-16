@@ -1,0 +1,383 @@
++        &self.definition.render_operations
++    }
++
++    /// Axis-aligned world-space bounds of the current live pool.
++    pub fn live_bounds(&self) -> Option<(Vec3, Vec3)> {
++        let first = self.particles.first()?.position;
++        let mut min = first;
++        let mut max = first;
++        for particle in &self.particles[1..] {
++            min = min.min(particle.position);
++            max = max.max(particle.position);
++        }
++        Some((min, max))
++    }
++}
++
++/// Runtime backend currently executing an effect instance.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
++pub enum VfxRuntimeBackend {
++    /// Deterministic CPU reference backend shared by packaged/editor runtime.
++    #[default]
++    CpuReference,
++}
++
++/// Aggregate counters exposed to Editor preview and diagnostics.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
++pub struct VfxRuntimeStats {
++    /// Current live particles across all emitters.
++    pub live_particles: usize,
++    /// Particles accepted into live pools since the last restart.
++    pub spawned_particles: u64,
++    /// Particles refused by budgets or the per-step safety cap.
++    pub dropped_particles: u64,
++    /// Runtime backend used by this instance.
++    pub backend: VfxRuntimeBackend,
++}
++
++/// Deterministic CPU reference instance for one compiled VFX effect.
++#[derive(Debug, Clone)]
++pub struct VfxInstance {
++    effect: CompiledVfxEffect,
++    emitters: Vec<VfxEmitterRuntime>,
++    seed_override: Option<u32>,
++    active_seed: u32,
++    elapsed_seconds: f32,
++}
++
++impl VfxInstance {
++    /// Creates a stopped-at-zero runtime instance from backend-neutral IR.
++    ///
++    /// `seed_override` implements the instance-level deterministic preview and
++    /// `engine.vfx_player` override contract without mutating the asset.
++    pub fn new(effect: CompiledVfxEffect, seed_override: Option<u32>) -> Self {
++        let active_seed = seed_override.unwrap_or(effect.seed);
++        let emitters = effect
++            .emitters
++            .iter()
++            .cloned()
++            .map(VfxEmitterRuntime::new)
++            .collect();
++        Self {
++            effect,
++            emitters,
++            seed_override,
++            active_seed,
++            elapsed_seconds: 0.0,
++        }
++    }
++
++    /// Current backend-neutral effect definition.
++    pub fn effect(&self) -> &CompiledVfxEffect {
++        &self.effect
++    }
++
++    /// Current runtime emitter pools in compiled document order.
++    pub fn emitters(&self) -> &[VfxEmitterRuntime] {
++        &self.emitters
++    }
++
++    /// Current simulated time in seconds.
++    pub fn elapsed_seconds(&self) -> f32 {
++        self.elapsed_seconds
++    }
++
++    /// Current seed override, if one was supplied for this instance.
++    pub fn seed_override(&self) -> Option<u32> {
++        self.seed_override
++    }
++
++    /// Aggregate live/spawned/dropped counters and backend identity.
++    pub fn stats(&self) -> VfxRuntimeStats {
++        VfxRuntimeStats {
++            live_particles: self.emitters.iter().map(VfxEmitterRuntime::live_count).sum(),
++            spawned_particles: self
++                .emitters
++                .iter()
++                .map(VfxEmitterRuntime::spawned_particles)
++                .sum(),
++            dropped_particles: self
++                .emitters
++                .iter()
++                .map(VfxEmitterRuntime::dropped_particles)
++                .sum(),
++            backend: VfxRuntimeBackend::CpuReference,
++        }
++    }
++
++    /// Returns `true` when no live particles remain and no future emission is pending.
++    pub fn is_complete(&self) -> bool {
++        if self.stats().live_particles != 0 {
++            return false;
++        }
++        self.emitters.iter().all(|runtime| {
++            runtime.definition.spawn_operations.iter().all(|operation| match &operation.operation {
++                VfxModuleOperation::SpawnRate {
++                    particles_per_second,
++                } => *particles_per_second <= 0.0,
++                VfxModuleOperation::Burst { .. } => {
++                    runtime.fired_bursts.contains(&operation.source_module)
++                }
++                _ => true,
++            })
++        })
++    }
++
++    /// Restarts the effect from time zero and resets deterministic streams.
++    pub fn restart(&mut self) {
++        self.active_seed = self.seed_override.unwrap_or(self.effect.seed);
++        self.elapsed_seconds = 0.0;
++        self.emitters = self
++            .effect
++            .emitters
++            .iter()
++            .cloned()
++            .map(VfxEmitterRuntime::new)
++            .collect();
++    }
++
++    /// Replaces compiled definitions while preserving compatible transient pools.
++    ///
++    /// Emitters are matched by stable source ID. This is used by affected VFX
++    /// recompilation and by the simple-emitter adapter when public properties
++    /// change. Removed emitters disappear; newly added emitters start empty.
++    pub fn reconfigure(&mut self, effect: CompiledVfxEffect) {
++        let mut previous = std::mem::take(&mut self.emitters);
++        let mut emitters = Vec::with_capacity(effect.emitters.len());
++        for definition in effect.emitters.iter().cloned() {
++            if let Some(index) = previous
++                .iter()
++                .position(|runtime| runtime.definition.source == definition.source)
++            {
++                let mut runtime = previous.remove(index);
++                runtime.definition = definition;
++                runtime
++                    .particles
++                    .truncate(runtime.definition.max_particles as usize);
++                emitters.push(runtime);
++            } else {
++                emitters.push(VfxEmitterRuntime::new(definition));
++            }
++        }
++        self.effect = effect;
++        self.emitters = emitters;
++        self.enforce_effect_cap();
++    }
++
++    /// Advances the effect by `dt` seconds using `origin` as emitter world origin.
++    ///
++    /// Non-finite or non-positive deltas are ignored. Particle simulation is
++    /// visual/runtime state and intentionally remains outside persisted ECS data.
++    pub fn step(&mut self, dt: f32, origin: Vec3) {
++        if !dt.is_finite() || dt <= 0.0 {
++            return;
++        }
++        let end_time = self.elapsed_seconds + dt;
++
++        for runtime in &mut self.emitters {
++            update_particles(runtime, dt);
++        }
++
++        let mut remaining_effect_capacity = (self.effect.max_particles as usize)
++            .saturating_sub(self.emitters.iter().map(VfxEmitterRuntime::live_count).sum());
++
++        for (emitter_index, runtime) in self.emitters.iter_mut().enumerate() {
++            let requested = requested_spawns(runtime, dt, end_time);
++            let accepted_by_step = requested.min(MAX_SPAWNS_PER_STEP);
++            runtime.dropped_particles = runtime
++                .dropped_particles
++                .saturating_add(u64::from(requested.saturating_sub(accepted_by_step)));
++
++            for _ in 0..accepted_by_step {
++                if runtime.particles.len() >= runtime.definition.max_particles as usize
++                    || remaining_effect_capacity == 0
++                {
++                    runtime.dropped_particles = runtime.dropped_particles.saturating_add(1);
++                    continue;
++                }
++                let particle = spawn_particle(
++                    &runtime.definition,
++                    self.active_seed,
++                    emitter_index as u32,
++                    runtime.spawn_serial,
++                    origin,
++                );
++                runtime.spawn_serial = runtime.spawn_serial.wrapping_add(1);
++                runtime.particles.push(particle);
++                runtime.spawned_particles = runtime.spawned_particles.saturating_add(1);
++                remaining_effect_capacity -= 1;
++            }
++        }
++
++        self.elapsed_seconds = end_time;
++    }
++
++    /// Rebuilds deterministic preview state at an arbitrary non-negative time.
++    ///
++    /// Seeking backwards is implemented as Restart + fixed-step replay. The
++    /// same path is also used for forward seeks so preview results do not
++    /// depend on the Editor frame rate.
++    pub fn seek_preview(&mut self, elapsed_seconds: f32, origin: Vec3) {
++        self.restart();
++        if !elapsed_seconds.is_finite() || elapsed_seconds <= 0.0 {
++            return;
++        }
++        let mut remaining = elapsed_seconds;
++        while remaining > 0.0 {
++            let step = remaining.min(VFX_PREVIEW_STEP_SECONDS);
++            self.step(step, origin);
++            remaining -= step;
++        }
++    }
++
++    fn enforce_effect_cap(&mut self) {
++        let mut remaining = self.effect.max_particles as usize;
++        for runtime in &mut self.emitters {
++            if runtime.particles.len() <= remaining {
++                remaining -= runtime.particles.len();
++                continue;
++            }
++            let removed = runtime.particles.len() - remaining;
++            runtime.particles.truncate(remaining);
++            runtime.dropped_particles = runtime.dropped_particles.saturating_add(removed as u64);
++            remaining = 0;
++        }
++    }
++}
++
++/// Playback completion policy used by scene VFX players.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
++pub enum VfxRestartPolicy {
++    /// Leave the completed effect stopped until explicitly restarted.
++    #[default]
++    Manual,
++    /// Restart automatically when all finite emission and live particles finish.
++    OnComplete,
++}
++
++/// Transient scene runtime component that plays one compiled VFX effect.
++#[derive(Debug, Clone)]
++pub struct VfxPlayer {
++    instance: VfxInstance,
++    playing: bool,
++    /// Starts playback when the runtime component is created.
++    pub autoplay: bool,
++    /// Restarts immediately after a finite effect completes.
++    pub looping: bool,
++    /// Completion policy used when `looping` is disabled.
++    pub restart_policy: VfxRestartPolicy,
++    /// Per-instance playback time multiplier.
++    pub time_scale: f32,
++    /// Named scalar instance overrides reserved by the scene contract.
++    pub parameter_overrides: BTreeMap<String, f32>,
++}
++
++impl VfxPlayer {
++    /// Creates one runtime player from already compiled effect IR.
++    pub fn new(
++        effect: CompiledVfxEffect,
++        autoplay: bool,
++        looping: bool,
++        restart_policy: VfxRestartPolicy,
++        time_scale: f32,
++        seed_override: Option<u32>,
++        parameter_overrides: BTreeMap<String, f32>,
++    ) -> Self {
++        Self {
++            instance: VfxInstance::new(effect, seed_override),
++            playing: autoplay,
++            autoplay,
++            looping,
++            restart_policy,
++            time_scale: if time_scale.is_finite() { time_scale.max(0.0) } else { 1.0 },
++            parameter_overrides,
++        }
++    }
++
++    /// Shared backend-neutral runtime instance.
++    pub fn instance(&self) -> &VfxInstance {
++        &self.instance
++    }
++
++    /// Mutable runtime instance for affected recompilation and preview tools.
++    pub fn instance_mut(&mut self) -> &mut VfxInstance {
++        &mut self.instance
++    }
++
++    /// Whether simulation currently advances.
++    pub fn is_playing(&self) -> bool {
++        self.playing
++    }
++
++    /// Resumes playback without resetting transient state.
++    pub fn play(&mut self) {
++        self.playing = true;
++    }
++
++    /// Pauses playback without discarding transient state.
++    pub fn pause(&mut self) {
++        self.playing = false;
++    }
++
++    /// Restarts deterministic state and resumes playback.
++    pub fn restart(&mut self) {
++        self.instance.restart();
++        self.playing = true;
++    }
++
++    /// Advances playback and applies the configured completion policy.
++    pub fn step(&mut self, dt: f32, origin: Vec3) {
++        if !self.playing {
++            return;
++        }
++        self.instance.step(dt * self.time_scale, origin);
++        if self.instance.is_complete() {
++            if self.looping || self.restart_policy == VfxRestartPolicy::OnComplete {
++                self.instance.restart();
++            } else {
++                self.playing = false;
++            }
++        }
++    }
++}
++
++/// Advances every scene [`VfxPlayer`] from the frame clock.
++pub fn vfx_update_system(time: Res<'_, Time>, mut query: Query<'_, (&mut VfxPlayer, &GlobalTransform)>) {
++    let dt = time.delta_seconds();
++    for (player, transform) in &mut query {
++        player.step(dt, transform.translation());
++    }
++}
++
++fn requested_spawns(runtime: &mut VfxEmitterRuntime, dt: f32, end_time: f32) -> u32 {
++    let mut rate = 0.0_f32;
++    let mut bursts = 0_u64;
++    for operation in &runtime.definition.spawn_operations {
++        match &operation.operation {
++            VfxModuleOperation::SpawnRate {
++                particles_per_second,
++            } => rate += (*particles_per_second).max(0.0),
++            VfxModuleOperation::Burst { time, count }
++                if *time <= end_time && !runtime.fired_bursts.contains(&operation.source_module) =>
++            {
++                runtime.fired_bursts.insert(operation.source_module.clone());
++                bursts = bursts.saturating_add(u64::from(*count));
++            }
++            _ => {}
++        }
++    }
++
++    let continuous = if rate > 0.0 {
++        runtime.spawn_accumulator += rate * dt;
++        let continuous = runtime.spawn_accumulator.floor().max(0.0) as u64;
++        runtime.spawn_accumulator -= continuous as f32;
++        continuous
++    } else {
++        runtime.spawn_accumulator = 0.0;
++        0
++    };
++    continuous
++        .saturating_add(bursts)
++        .min(u64::from(u32::MAX)) as u32
++}
++
