@@ -1,0 +1,195 @@
++impl From<UiAuthoringError> for GenericAuthoringMcpError {
++    fn from(error: UiAuthoringError) -> Self {
++        Self::Ui(error)
++    }
++}
++
++/// Transport-neutral MCP handlers for generic Graph, GraphView, and UI authoring.
++#[derive(Debug, Default, Clone, Copy)]
++pub struct GenericAuthoringMcpTools;
++
++impl GenericAuthoringMcpTools {
++    /// Creates the stateless generic authoring MCP adapter.
++    pub fn new() -> Self {
++        Self
++    }
++
++    /// Returns descriptors for generic structured authoring tools.
++    pub fn tool_descriptors(&self) -> Vec<McpToolDescriptor> {
++        vec![
++            descriptor("graph.inspect", "Inspect the active semantic Graph.", empty_schema()),
++            descriptor("graph.validate", "Validate the active semantic Graph with its built-in domain.", empty_schema()),
++            descriptor("graph.preview", "Preview one atomic semantic Graph command batch.", graph_mutation_schema()),
++            descriptor("graph.apply", "Apply one atomic semantic Graph command batch.", graph_mutation_schema()),
++            descriptor("graph.layout.inspect", "Inspect the active GraphView presentation document.", empty_schema()),
++            descriptor("graph.layout.validate", "Validate the active GraphView against its semantic Graph.", empty_schema()),
++            descriptor("graph.layout.preview", "Preview one atomic GraphView presentation command batch.", graph_view_mutation_schema()),
++            descriptor("graph.layout.apply", "Apply one atomic GraphView presentation command batch.", graph_view_mutation_schema()),
++            descriptor("ui.inspect", "Inspect the active declarative UI document.", empty_schema()),
++            descriptor("ui.validate", "Validate the active declarative UI document.", empty_schema()),
++            descriptor("ui.preview", "Preview one atomic declarative UI command batch.", ui_mutation_schema()),
++            descriptor("ui.apply", "Apply one atomic declarative UI command batch.", ui_mutation_schema()),
++        ]
++    }
++
++    /// Inspects a semantic Graph through the shared service.
++    pub fn graph_inspect(
++        &self,
++        graph: &Graph,
++        permissions: &AuthoringPermissions,
++    ) -> Result<GraphAuthoringSnapshot, GenericAuthoringMcpError> {
++        Ok(GraphAuthoringService::new().inspect(graph, permissions)?)
++    }
++
++    /// Validates a semantic Graph through its shared built-in domain.
++    pub fn graph_validate(
++        &self,
++        graph: &Graph,
++        permissions: &AuthoringPermissions,
++    ) -> Result<GraphAuthoringValidation, GenericAuthoringMcpError> {
++        let domain = AuthoringGraphDomain::for_graph(graph)?;
++        Ok(GraphAuthoringService::new().validate(graph, &domain, permissions)?)
++    }
++
++    /// Previews semantic Graph commands without mutation.
++    pub fn graph_preview(
++        &self,
++        graph: &Graph,
++        permissions: &AuthoringPermissions,
++        input: GraphMutationInput,
++    ) -> Result<GraphAuthoringMutation, GenericAuthoringMcpError> {
++        let domain = AuthoringGraphDomain::for_graph(graph)?;
++        Ok(GraphAuthoringService::new().preview(
++            graph,
++            &domain,
++            permissions,
++            input.expected_revision,
++            input.expected_generation,
++            input.commands,
++        )?)
++    }
++
++    /// Applies semantic Graph commands to the authoritative live Graph.
++    pub fn graph_apply(
++        &self,
++        graph: &mut Graph,
++        permissions: &AuthoringPermissions,
++        input: GraphMutationInput,
++    ) -> Result<GraphAuthoringMutation, GenericAuthoringMcpError> {
++        let domain = AuthoringGraphDomain::for_graph(graph)?;
++        Ok(GraphAuthoringService::new().apply(
++            graph,
++            &domain,
++            permissions,
++            input.expected_revision,
++            input.expected_generation,
++            input.commands,
++        )?)
++    }
++
++    /// Inspects GraphView presentation state through the shared service.
++    pub fn graph_view_inspect(
++        &self,
++        view: &GraphView,
++        permissions: &AuthoringPermissions,
++    ) -> Result<GraphViewAuthoringSnapshot, GenericAuthoringMcpError> {
++        Ok(GraphViewAuthoringService::new().inspect(view, permissions)?)
++    }
++
++    /// Validates GraphView presentation state against its semantic Graph.
++    pub fn graph_view_validate(
++        &self,
++        graph: &Graph,
++        view: &GraphView,
++        permissions: &AuthoringPermissions,
++    ) -> Result<GraphViewAuthoringValidation, GenericAuthoringMcpError> {
++        Ok(GraphViewAuthoringService::new().validate(graph, view, permissions)?)
++    }
++
++    /// Previews GraphView commands without changing presentation state.
++    pub fn graph_view_preview(
++        &self,
++        graph: &Graph,
++        view: &GraphView,
++        permissions: &AuthoringPermissions,
++        input: GraphViewMutationInput,
++    ) -> Result<GraphViewAuthoringMutation, GenericAuthoringMcpError> {
++        Ok(GraphViewAuthoringService::new().preview(
++            graph,
++            view,
++            permissions,
++            input.expected_revision,
++            input.expected_generation,
++            input.commands,
++        )?)
++    }
++
++    /// Applies GraphView commands to the authoritative presentation document.
++    pub fn graph_view_apply(
++        &self,
++        graph: &Graph,
++        view: &mut GraphView,
++        permissions: &AuthoringPermissions,
++        input: GraphViewMutationInput,
++    ) -> Result<GraphViewAuthoringMutation, GenericAuthoringMcpError> {
++        Ok(GraphViewAuthoringService::new().apply(
++            graph,
++            view,
++            permissions,
++            input.expected_revision,
++            input.expected_generation,
++            input.commands,
++        )?)
++    }
++
++    /// Inspects a live declarative UI authoring session.
++    pub fn ui_inspect(
++        &self,
++        session: &UiAuthoringSession,
++        permissions: &AuthoringPermissions,
++    ) -> Result<UiAuthoringSnapshot, GenericAuthoringMcpError> {
++        Ok(UiAuthoringService::new().inspect(session, permissions)?)
++    }
++
++    /// Validates a live declarative UI authoring session.
++    pub fn ui_validate(
++        &self,
++        session: &UiAuthoringSession,
++        permissions: &AuthoringPermissions,
++    ) -> Result<UiAuthoringValidation, GenericAuthoringMcpError> {
++        Ok(UiAuthoringService::new().validate(session, permissions)?)
++    }
++
++    /// Previews declarative UI commands without mutation.
++    pub fn ui_preview(
++        &self,
++        session: &UiAuthoringSession,
++        permissions: &AuthoringPermissions,
++        input: UiMutationInput,
++    ) -> Result<UiAuthoringMutation, GenericAuthoringMcpError> {
++        Ok(UiAuthoringService::new().preview(
++            session,
++            permissions,
++            input.expected_revision,
++            input.expected_generation,
++            input.commands,
++        )?)
++    }
++
++    /// Applies declarative UI commands to the authoritative live UI session.
++    pub fn ui_apply(
++        &self,
++        session: &mut UiAuthoringSession,
++        permissions: &AuthoringPermissions,
++        input: UiMutationInput,
++    ) -> Result<UiAuthoringMutation, GenericAuthoringMcpError> {
++        Ok(UiAuthoringService::new().apply(
++            session,
++            permissions,
++            input.expected_revision,
++            input.expected_generation,
++            input.commands,
++        )?)
++    }
++}
++

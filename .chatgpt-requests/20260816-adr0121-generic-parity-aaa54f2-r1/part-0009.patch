@@ -1,0 +1,177 @@
++        GraphCommand, GraphViewCommand, UiDocumentCommand, Value as AuthoringValue, Vec2, Viewport,
++    };
++    use serde_json::{json, Value};
++
++    fn editor_app() -> (tempfile::TempDir, EditorApp) {
++        let parent = tempfile::tempdir().expect("temporary project parent");
++        let path = parent.path().join("McpParityGame");
++        let root = engine_project_lifecycle::create_standard_project(&path, "McpParityGame")
++            .expect("project scaffold");
++        (parent, EditorApp::from_project(root))
++    }
++
++    #[test]
++    fn generic_graph_and_layout_adapters_produce_equivalent_results() {
++        let seed = EditorSession::behavior_tree_example().expect("behavior tree example");
++        let graph_json = serde_json::to_string_pretty(seed.graph()).expect("graph JSON");
++        let view_json = serde_json::to_string_pretty(
++            seed.graph_view().expect("behavior tree example view"),
++        )
++        .expect("view JSON");
++        let graph_command = GraphCommand::SetGraphAnnotation {
++            key: "parity.marker".into(),
++            value: AuthoringValue::String("same".into()),
++        };
++        let permissions = mcp_authoring_permissions();
++
++        let mut direct = EditorSession::new(
++            serde_json::from_str(&graph_json).expect("direct graph"),
++            Some(serde_json::from_str(&view_json).expect("direct view")),
++        );
++        let direct_base = direct
++            .structured_graph_inspect(&permissions)
++            .expect("direct inspect");
++        let direct_preview = direct
++            .structured_graph_preview(
++                &permissions,
++                direct_base.revision,
++                direct_base.generation,
++                vec![graph_command.clone()],
++            )
++            .expect("direct preview");
++        let direct_apply = direct
++            .structured_graph_apply(
++                &permissions,
++                direct_base.revision,
++                direct_base.generation,
++                vec![graph_command.clone()],
++            )
++            .expect("direct apply");
++        assert!(direct_apply.success);
++        let stale = direct
++            .structured_graph_apply(
++                &permissions,
++                direct_base.revision,
++                direct_base.generation,
++                Vec::new(),
++            )
++            .expect_err("direct stale graph base");
++        assert_eq!(stale.code(), "authoring.stale_revision");
++
++        let (_project, mut app) = editor_app();
++        app.session = EditorSession::new(
++            serde_json::from_str(&graph_json).expect("MCP graph"),
++            Some(serde_json::from_str(&view_json).expect("MCP view")),
++        );
++        let mcp_base = app
++            .handle_mcp_tool_call("graph.inspect", json!({}))
++            .expect("MCP inspect");
++        let mcp_revision = mcp_base["revision"].as_u64().expect("MCP revision");
++        let mcp_generation = mcp_base["generation"].as_u64().expect("MCP generation");
++        let mcp_preview = app
++            .handle_mcp_tool_call(
++                "graph.preview",
++                json!({
++                    "expected_revision": mcp_revision,
++                    "expected_generation": mcp_generation,
++                    "commands": [graph_command.clone()]
++                }),
++            )
++            .expect("MCP preview");
++        assert_eq!(
++            mcp_preview["diff"],
++            serde_json::to_value(&direct_preview.diff).expect("direct preview diff")
++        );
++        assert_eq!(
++            mcp_preview["diagnostics"],
++            serde_json::to_value(&direct_preview.diagnostics).expect("direct diagnostics")
++        );
++        app.handle_mcp_tool_call(
++            "graph.apply",
++            json!({
++                "expected_revision": mcp_revision,
++                "expected_generation": mcp_generation,
++                "commands": [graph_command.clone()]
++            }),
++        )
++        .expect("MCP apply");
++        let mcp_stale = app
++            .handle_mcp_tool_call(
++                "graph.apply",
++                json!({
++                    "expected_revision": mcp_revision,
++                    "expected_generation": mcp_generation,
++                    "commands": []
++                }),
++            )
++            .expect_err("MCP stale graph base");
++        assert_eq!(mcp_stale.code(), "authoring.stale_revision");
++        assert_eq!(
++            serde_json::to_value(app.session.graph()).expect("MCP graph value"),
++            serde_json::to_value(direct.graph()).expect("direct graph value")
++        );
++
++        let cli_dir = tempfile::tempdir().expect("CLI parity directory");
++        let graph_path = cli_dir.path().join("parity.graph.json");
++        let view_path = cli_dir.path().join("parity.graph.view.json");
++        let graph_commands_path = cli_dir.path().join("graph-commands.json");
++        std::fs::write(&graph_path, &graph_json).expect("write CLI graph");
++        std::fs::write(&view_path, &view_json).expect("write CLI view");
++        std::fs::write(
++            &graph_commands_path,
++            serde_json::to_string_pretty(&vec![graph_command]).expect("graph command JSON"),
++        )
++        .expect("write graph commands");
++        let cli_graph = engine_cli::run_cli_with_status([
++            "graph".to_owned(),
++            "apply".to_owned(),
++            graph_path.to_string_lossy().into_owned(),
++            graph_commands_path.to_string_lossy().into_owned(),
++        ])
++        .expect("CLI graph apply");
++        assert_eq!(cli_graph.exit_code, 0, "{}", cli_graph.output);
++        let cli_graph_value: Value = serde_json::from_str(
++            &std::fs::read_to_string(&graph_path).expect("read CLI graph"),
++        )
++        .expect("CLI graph value");
++        assert_eq!(
++            cli_graph_value,
++            serde_json::to_value(direct.graph()).expect("direct graph value")
++        );
++
++        let viewport_command = GraphViewCommand::SetViewport {
++            viewport: Viewport::new(Vec2::new(48.0, -12.0), 1.25),
++        };
++        let direct_layout_base = direct
++            .structured_graph_view_inspect(&permissions)
++            .expect("direct layout inspect");
++        let direct_layout_preview = direct
++            .structured_graph_view_preview(
++                &permissions,
++                direct_layout_base.revision,
++                direct_layout_base.generation,
++                vec![viewport_command.clone()],
++            )
++            .expect("direct layout preview");
++        direct
++            .structured_graph_view_apply(
++                &permissions,
++                direct_layout_base.revision,
++                direct_layout_base.generation,
++                vec![viewport_command.clone()],
++            )
++            .expect("direct layout apply");
++
++        let mcp_layout_base = app
++            .handle_mcp_tool_call("graph.layout.inspect", json!({}))
++            .expect("MCP layout inspect");
++        let layout_revision = mcp_layout_base["revision"].as_u64().expect("layout revision");
++        let layout_generation = mcp_layout_base["generation"].as_u64().expect("layout generation");
++        let mcp_layout_preview = app
++            .handle_mcp_tool_call(
++                "graph.layout.preview",
++                json!({
++                    "expected_revision": layout_revision,
++                    "expected_generation": layout_generation,
++                    "commands": [viewport_command.clone()]
++                }),

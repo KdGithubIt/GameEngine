@@ -1,0 +1,183 @@
++            )
++            .expect("MCP layout preview");
++        assert_eq!(
++            mcp_layout_preview["diff"],
++            serde_json::to_value(&direct_layout_preview.diff).expect("layout preview diff")
++        );
++        app.handle_mcp_tool_call(
++            "graph.layout.apply",
++            json!({
++                "expected_revision": layout_revision,
++                "expected_generation": layout_generation,
++                "commands": [viewport_command.clone()]
++            }),
++        )
++        .expect("MCP layout apply");
++        assert_eq!(
++            serde_json::to_value(app.session.graph_view()).expect("MCP layout value"),
++            serde_json::to_value(direct.graph_view()).expect("direct layout value")
++        );
++
++        let layout_commands_path = cli_dir.path().join("layout-commands.json");
++        std::fs::write(
++            &layout_commands_path,
++            serde_json::to_string_pretty(&vec![viewport_command]).expect("layout command JSON"),
++        )
++        .expect("write layout commands");
++        let cli_layout = engine_cli::run_cli_with_status([
++            "graph".to_owned(),
++            "layout".to_owned(),
++            "apply".to_owned(),
++            graph_path.to_string_lossy().into_owned(),
++            view_path.to_string_lossy().into_owned(),
++            layout_commands_path.to_string_lossy().into_owned(),
++        ])
++        .expect("CLI layout apply");
++        assert_eq!(cli_layout.exit_code, 0, "{}", cli_layout.output);
++        let cli_view_value: Value = serde_json::from_str(
++            &std::fs::read_to_string(&view_path).expect("read CLI view"),
++        )
++        .expect("CLI view value");
++        assert_eq!(
++            cli_view_value,
++            serde_json::to_value(direct.graph_view().expect("direct view")).expect("view value")
++        );
++    }
++
++    #[test]
++    fn generic_ui_adapters_produce_equivalent_results_and_stale_rejection() {
++        let permissions = mcp_authoring_permissions();
++        let cli_dir = tempfile::tempdir().expect("UI parity directory");
++        let ui_path = cli_dir.path().join("parity.ui.json");
++        let commands_path = cli_dir.path().join("ui-commands.json");
++        let baseline = engine_authoring::UiDocument::default();
++        std::fs::write(
++            &ui_path,
++            baseline.to_json_string().expect("baseline UI JSON"),
++        )
++        .expect("write baseline UI");
++        let command = UiDocumentCommand::RenameNode {
++            node: "root".into(),
++            new_id: "root_parity".into(),
++        };
++        std::fs::write(
++            &commands_path,
++            serde_json::to_string_pretty(&vec![command.clone()]).expect("UI command JSON"),
++        )
++        .expect("write UI commands");
++
++        let mut direct = EditorSession::empty_behavior_tree();
++        direct
++            .open_ui_discarding_changes(ui_path.clone())
++            .expect("open direct UI");
++        let direct_base = direct
++            .structured_ui_inspect(&permissions)
++            .expect("direct UI inspect");
++        let direct_preview = direct
++            .structured_ui_preview(
++                &permissions,
++                direct_base.revision,
++                direct_base.generation,
++                vec![command.clone()],
++            )
++            .expect("direct UI preview");
++        direct
++            .structured_ui_apply(
++                &permissions,
++                direct_base.revision,
++                direct_base.generation,
++                vec![command.clone()],
++            )
++            .expect("direct UI apply");
++        let direct_stale = direct
++            .structured_ui_apply(
++                &permissions,
++                direct_base.revision,
++                direct_base.generation,
++                Vec::new(),
++            )
++            .expect_err("direct stale UI base");
++        assert_eq!(direct_stale.code(), "authoring.stale_revision");
++
++        let (_project, mut app) = editor_app();
++        app.session
++            .open_ui_discarding_changes(ui_path.clone())
++            .expect("open MCP UI");
++        let mcp_base = app
++            .handle_mcp_tool_call("ui.inspect", json!({}))
++            .expect("MCP UI inspect");
++        let revision = mcp_base["revision"].as_u64().expect("UI revision");
++        let generation = mcp_base["generation"].as_u64().expect("UI generation");
++        let mcp_preview = app
++            .handle_mcp_tool_call(
++                "ui.preview",
++                json!({
++                    "expected_revision": revision,
++                    "expected_generation": generation,
++                    "commands": [command.clone()]
++                }),
++            )
++            .expect("MCP UI preview");
++        assert_eq!(
++            mcp_preview["diff"],
++            serde_json::to_value(&direct_preview.diff).expect("direct UI diff")
++        );
++        app.handle_mcp_tool_call(
++            "ui.apply",
++            json!({
++                "expected_revision": revision,
++                "expected_generation": generation,
++                "commands": [command]
++            }),
++        )
++        .expect("MCP UI apply");
++        let mcp_stale = app
++            .handle_mcp_tool_call(
++                "ui.apply",
++                json!({
++                    "expected_revision": revision,
++                    "expected_generation": generation,
++                    "commands": []
++                }),
++            )
++            .expect_err("MCP stale UI base");
++        assert_eq!(mcp_stale.code(), "authoring.stale_revision");
++        assert_eq!(
++            serde_json::to_value(app.session.ui_document()).expect("MCP UI value"),
++            serde_json::to_value(direct.ui_document()).expect("direct UI value")
++        );
++
++        let cli_ui = engine_cli::run_cli_with_status([
++            "ui".to_owned(),
++            "apply".to_owned(),
++            ui_path.to_string_lossy().into_owned(),
++            commands_path.to_string_lossy().into_owned(),
++        ])
++        .expect("CLI UI apply");
++        assert_eq!(cli_ui.exit_code, 0, "{}", cli_ui.output);
++        let cli_ui_value: Value = serde_json::from_str(
++            &std::fs::read_to_string(&ui_path).expect("read CLI UI"),
++        )
++        .expect("CLI UI value");
++        assert_eq!(
++            cli_ui_value,
++            serde_json::to_value(direct.ui_document().expect("direct UI")).expect("UI value")
++        );
++    }
++}
+diff --git a/crates/editor/src/mcp_transport.rs b/crates/editor/src/mcp_transport.rs
+--- a/crates/editor/src/mcp_transport.rs
++++ b/crates/editor/src/mcp_transport.rs
+@@ -1,3 +1,4 @@
+ use engine_mcp::{
+-    AssetMcpTools, BehaviorTreeMcpTools, McpToolDescriptor, PrefabMcpTools, SceneMcpTools,
++    AssetMcpTools, BehaviorTreeMcpTools, GenericAuthoringMcpTools, McpToolDescriptor,
++    PrefabMcpTools, SceneMcpTools,
+ };
+diff --git a/crates/editor/src/mcp_transport.rs b/crates/editor/src/mcp_transport.rs
+--- a/crates/editor/src/mcp_transport.rs
++++ b/crates/editor/src/mcp_transport.rs
+@@ -1,2 +1,3 @@
+     let mut descriptors = BehaviorTreeMcpTools::new().tool_descriptors();
++    descriptors.extend(GenericAuthoringMcpTools::new().tool_descriptors());
+     descriptors.extend(SceneMcpTools::new().tool_descriptors());
