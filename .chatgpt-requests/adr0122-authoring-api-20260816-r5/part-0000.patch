@@ -1,0 +1,222 @@
+diff --git a/crates/engine/src/components/builtins.rs b/crates/engine/src/components/builtins.rs
+--- a/crates/engine/src/components/builtins.rs
++++ b/crates/engine/src/components/builtins.rs
+@@ -1242,17 +1242,39 @@ const AUDIO_EMITTER_FIELDS: &[FieldDef] = &[
+         20.0,
+         POSITIVE,
+     ),
++    enumeration(
++        "rolloff",
++        "Rolloff",
++        "Distance attenuation curve used by positional playback.",
++        "linear",
++        &["linear", "inverse"],
++    ),
+     boolean(
+         "autoplay",
+         "Autoplay",
+         "Submit one sound-effect request on the first runtime update.",
+         false,
+     ),
++    boolean(
++        "looping",
++        "Loop",
++        "Repeat the authored autoplay voice until the component is removed.",
++        false,
++    ),
+ ];
+ 
+-const AUDIO_LISTENER_FIELDS: &[FieldDef] = &[boolean(
+-    "enabled",
+-    "Enabled",
+-    "Whether this listener participates in positional mixing.",
+-    true,
+-)];
++const AUDIO_LISTENER_FIELDS: &[FieldDef] = &[
++    boolean(
++        "enabled",
++        "Enabled",
++        "Whether this listener participates in positional mixing.",
++        true,
++    ),
++    integer(
++        "priority",
++        "Priority",
++        "Selection priority among enabled listeners; higher values win.",
++        0,
++        NumericRange::inclusive(i32::MIN as f64, i32::MAX as f64),
++    ),
++];
+@@ -1780,6 +1802,6 @@ pub(crate) const BUILTIN_COMPONENTS: &[BuiltinComponent] = &[
+             "Plays a registered sound from this entity's position.",
+             "Audio",
+-            1,
++            2,
+             AUDIO_EMITTER_FIELDS,
+             spawn_audio_emitter_component,
+         ),
+@@ -1789,6 +1811,6 @@ pub(crate) const BUILTIN_COMPONENTS: &[BuiltinComponent] = &[
+             "Marks this entity as a positional-audio listener.",
+             "Audio",
+-            1,
++            2,
+             AUDIO_LISTENER_FIELDS,
+             spawn_audio_listener_component,
+         )
+diff --git a/crates/engine/src/scene_bridge.rs b/crates/engine/src/scene_bridge.rs
+--- a/crates/engine/src/scene_bridge.rs
++++ b/crates/engine/src/scene_bridge.rs
+@@ -15,6 +15,8 @@ use crate::asset::{
+     AssetLoadError, AssetManifest, Assets, Handle, ImportedSubAssetKind, RuntimeAssetId,
+ };
+-use crate::audio::{AudioAsset, AudioEmitter, AudioListener, MusicController};
++use crate::audio::{
++    AudioAsset, AudioEmitter, AudioListener, MusicController, SpatialRolloff,
++};
+ use crate::behavior_tree::BehaviorTreeRunner;
+ use crate::camera::{Camera3D, FollowCamera, LockOnCamera, OrbitCamera};
+ use crate::character_controller::KinematicCharacterController;
+diff --git a/crates/engine/src/scene_bridge/spawn.rs b/crates/engine/src/scene_bridge/spawn.rs
+--- a/crates/engine/src/scene_bridge/spawn.rs
++++ b/crates/engine/src/scene_bridge/spawn.rs
+@@ -1073,3 +1073,3 @@ pub(crate) fn spawn_audio_emitter_component(
+     let component_type = ComponentTypeId::new(AUDIO_EMITTER_COMPONENT);
+-    let expected = "an object with clip, volume, distance, spatial blend, and autoplay fields";
++    let expected = "an object with clip, volume, distance, spatial blend, rolloff, autoplay, and looping fields";
+     let fields = ComponentFields::new(context.authoring_entity, &component_type, value, expected)?;
+@@ -1098,4 +1098,10 @@ pub(crate) fn spawn_audio_emitter_component(
+     let spatial_blend = fields.f32("spatial_blend")?;
+     let min_distance = fields.f32("min_distance")?;
+     let max_distance = fields.f32("max_distance")?;
++    let rolloff = match fields.string("rolloff")? {
++        "linear" => SpatialRolloff::Linear,
++        "inverse" => SpatialRolloff::Inverse,
++        _ => return Err(fields.invalid("rolloff must be `linear` or `inverse`").into()),
++    };
+     let autoplay = fields.bool_or("autoplay", false)?;
++    let looping = fields.bool("looping")?;
+@@ -1111,16 +1117,16 @@ pub(crate) fn spawn_audio_emitter_component(
+             .into());
+     }
+     let handle = resolve_audio_asset(&clip, context)?;
+-    context.world.add_component(
+-        entity,
+-        AudioEmitter::new(
+-            handle,
+-            volume,
+-            spatial_blend,
+-            min_distance,
+-            max_distance,
+-            autoplay,
+-        ),
+-    )?;
++    let mut emitter = AudioEmitter::new(
++        handle,
++        volume,
++        spatial_blend,
++        min_distance,
++        max_distance,
++        autoplay,
++    );
++    emitter.rolloff = rolloff;
++    emitter.looping = looping;
++    context.world.add_component(entity, emitter)?;
+     Ok(())
+ }
+@@ -1131,12 +1137,14 @@ pub(crate) fn spawn_audio_listener_component(
+     let component_type = ComponentTypeId::new(AUDIO_LISTENER_COMPONENT);
+-    let expected = "an object with an enabled boolean field";
++    let expected = "an object with enabled and priority fields";
+     let fields = ComponentFields::new(context.authoring_entity, &component_type, value, expected)?;
+     let enabled = fields.bool_or("enabled", true)?;
++    let priority = i32::try_from(fields.i64("priority")?)
++        .map_err(|_| fields.invalid("priority in the signed 32-bit integer range"))?;
+     context.world.add_component(
+         entity,
+         AudioListener {
+             enabled,
+-            priority: 0,
++            priority,
+         },
+     )?;
+     Ok(())
+diff --git a/crates/engine/src/components/validation.rs b/crates/engine/src/components/validation.rs
+--- a/crates/engine/src/components/validation.rs
++++ b/crates/engine/src/components/validation.rs
+@@ -285,9 +285,76 @@ pub fn validate_builtin_component_values(scene: &AuthoringScene) -> Vec<Diagnostic> {
+             validate_component_relations(component_type, fields, &target, &mut diagnostics);
+         }
+     }
++    diagnostics.extend(validate_spatial_audio_scene(scene));
+     diagnostics.extend(validate_skinned_models_without_renderers(scene));
+     diagnostics.extend(crate::render_limits::validate_scene_render_limits(scene));
+     diagnostics
+ }
++
++fn validate_spatial_audio_scene(scene: &AuthoringScene) -> Vec<Diagnostic> {
++    let listener_type = ComponentTypeId::new(AUDIO_LISTENER_COMPONENT);
++    let emitter_type = ComponentTypeId::new(AUDIO_EMITTER_COMPONENT);
++    let mut listeners = Vec::new();
++    for (entity_id, entity) in scene.entities() {
++        let Some(Value::Object(fields)) = entity.components.get(&listener_type) else {
++            continue;
++        };
++        if !matches!(fields.get("enabled"), Some(Value::Bool(true))) {
++            continue;
++        }
++        let priority = match fields.get("priority") {
++            Some(Value::I64(value)) => *value,
++            Some(Value::U64(value)) => i64::try_from(*value).unwrap_or(i64::MAX),
++            _ => continue,
++        };
++        listeners.push((entity_id.clone(), priority));
++    }
++
++    let mut diagnostics = Vec::new();
++    if let Some(highest) = listeners.iter().map(|(_, priority)| *priority).max() {
++        let highest_listeners = listeners
++            .iter()
++            .filter(|(_, priority)| *priority == highest)
++            .collect::<Vec<_>>();
++        if highest_listeners.len() > 1 {
++            for (entity, _) in highest_listeners {
++                diagnostics.push(
++                    Diagnostic::warning(
++                        "scene.audio_listener_priority_tie",
++                        format!(
++                            "multiple enabled Audio Listeners share highest priority {highest}; runtime selection falls back to deterministic entity order"
++                        ),
++                    )
++                    .with_target(DiagnosticTarget::Component {
++                        entity: entity.clone(),
++                        component_type: listener_type.clone(),
++                    }),
++                );
++            }
++        }
++    }
++
++    if listeners.is_empty() {
++        for (entity_id, entity) in scene.entities() {
++            let Some(Value::Object(fields)) = entity.components.get(&emitter_type) else {
++                continue;
++            };
++            let spatial_blend = fields.get("spatial_blend").and_then(value_as_f64);
++            if spatial_blend.is_some_and(|blend| blend.is_finite() && blend > 0.0) {
++                diagnostics.push(
++                    Diagnostic::warning(
++                        "scene.audio_spatial_listener_missing",
++                        "positional Audio Emitter has no enabled Audio Listener in the scene",
++                    )
++                    .with_target(DiagnosticTarget::Component {
++                        entity: entity_id.clone(),
++                        component_type: emitter_type.clone(),
++                    }),
++                );
++            }
++        }
++    }
++    diagnostics
++}
+ 
+ /// Reports a reference that points at an entity lacking the components the
