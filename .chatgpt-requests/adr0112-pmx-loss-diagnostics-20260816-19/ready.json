@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0112-pmx-loss-diagnostics-20260816-19",
+  "target_branch": "chatgpt/gameengine-adr-0112-secondary-motion-v2",
+  "expected_head_sha": "26520d3ca6cfe1dc0425708319bc451e5db6638b",
+  "patch_parts": ["part-0000.patch"],
+  "commit_message": "Diagnose lossy PMX Secondary Motion hints",
+  "pr_title": "Implement ADR 0112 engine-native secondary motion",
+  "pr_body": "## Summary\n\nImplements ADR 0112 engine-native Secondary Motion. This follow-up makes lossy PMX physics hint conversion explicit and non-fatal: unsupported soft bodies, invalid rigid-body bone bindings, and unknown rigid-body modes now emit actionable diagnostics while preserving usable model import. It also removes the obsolete PMX/runtime scale-coupling compatibility namespace and regression test.\n\nThe PR remains Draft while stale PMX documentation and remaining MMD-only dead code/compatibility surfaces are audited and cleaned up, followed by final validation."
+}
