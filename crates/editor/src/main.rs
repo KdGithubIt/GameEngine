@@ -152,8 +152,12 @@ impl EditorShell {
         eframe::egui::Area::new(eframe::egui::Id::new("authoring_tools_launcher"))
             .anchor(
                 eframe::egui::Align2::RIGHT_TOP,
+                // Keep the launcher vertically centered in the unified
+                // 40-point toolbar below the 28-point menu bar.
                 eframe::egui::vec2(-12.0, 36.0),
             )
+            // Stay above the docked editor surface while allowing modeless
+            // windows to cover the launcher when their bounds overlap it.
             .order(eframe::egui::Order::Middle)
             .show(context, |ui| {
                 ui.horizontal(|ui| {
