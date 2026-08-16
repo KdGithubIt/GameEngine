@@ -1,0 +1,73 @@
+diff --git a/crates/engine/src/lib.rs b/crates/engine/src/lib.rs
+--- a/crates/engine/src/lib.rs
++++ b/crates/engine/src/lib.rs
+@@ -125,7 +125,7 @@
+ /// Pure skeletal clip sampling and pose blending.
+ pub mod pose_graph;
+-/// PMX (MMD model) static mesh / skin / material import pipeline via
+-/// `mmd-anim-format` (ADR 0097 §1, §2, §4).
++/// PMX model import pipeline for mesh, skin, material, morph, and best-effort
++/// engine-native Secondary Motion hints via `mmd-anim-format` (ADR 0097, ADR 0112).
+ ///
+ /// Desktop-only, same rationale as [`fbx_import`]: PMX import is an
+ /// authoring-time operation, so this module is absent from wasm32 builds
+diff --git a/crates/import/src/pmx_import.rs b/crates/import/src/pmx_import.rs
+--- a/crates/import/src/pmx_import.rs
++++ b/crates/import/src/pmx_import.rs
+@@ -1,25 +1,22 @@
+-//! PMX (MMD model) parser via the `mmd-anim-format` crate (ADR 0097 §1, §2,
+-//! §4).
++//! PMX model parser via `mmd-anim-format` (ADR 0097, ADR 0112).
+ //!
+ //! Parses `.pmx` byte slices and files into a format-independent
+ //! `ModelDocument` (see `crate::model_ir` for the exact normalization
+ //! contract), mirroring `crate::fbx_import`'s structure. This module owns
+-//! every `mmd_anim_format::pmx` symbol — bone/mesh/material/texture
+-//! extraction and the multi-skin split (ADR 0097 §4) — and assigns no
+-//! sub-asset IDs and no skeleton identity; that remains
+-//! `crate::model_import`'s job, unchanged by which parser produced its
+-//! input (ADR 0078).
++//! every `mmd_anim_format::pmx` symbol and normalizes model data before the
++//! format-independent builder assigns sub-asset IDs and skeleton identity;
++//! that remains `crate::model_import`'s job, unchanged by which parser
++//! produced its input (ADR 0078).
+ //!
+ //! # Scope
+ //!
+-//! This module implements ADR 0097 §1, §2, and §4 only: PMX mesh, skeleton,
+-//! material, and multi-skin splitting. VMD motion baking (§3) lives in
+-//! `crate::vmd_import`, which consumes the same `.pmx` bytes to build its
+-//! evaluator rig; morph targets (§5) and rigid-body/physics assets (§6) are
+-//! later work and are not
+-//! represented here at all — PMX morphs, rigid bodies, joints, soft bodies,
+-//! and IK/appended-parent bone constraints are read by
+-//! `mmd_anim_format::pmx::parse_pmx_model` but never touched by this module,
+-//! so `ModelDocument::clips` is always empty for a PMX source.
++//! This module imports PMX mesh, skeleton, material, morph, and rigid-body/joint
++//! data into the format-independent model IR (ADR 0097 §1, §2, §4, §5, §6).
++//! Rigid bodies and joints are best-effort source hints for an engine-native
++//! Secondary Motion rig (ADR 0112): unsupported or lossy constructs emit
++//! actionable diagnostics instead of making otherwise usable model content fail.
++//! VMD motion baking (§3) remains in `crate::vmd_import`, which consumes the
++//! same `.pmx` bytes to build its evaluator rig, so `ModelDocument::clips` is
++//! always empty for a PMX source.
+ //!
+ //! # Normalization contract
+@@ -144,9 +141,15 @@
+ //!   decode is dropped with a warning diagnostic, not a hard error.
+ //!   `pmx_source_dependencies` returns the resolved texture paths.
+ //!   Base, sphere-map, and non-shared toon textures use the same imported
+ //!   texture path.
+-//! - **Morphs, rigid bodies, joints, soft bodies**: never read beyond what
+-//!   `parse_pmx_model` itself returns; nothing about them reaches the IR.
++//! - **Morphs**: PMX vertex, material, and group morphs are normalized into
++//!   format-independent morph targets.
++//! - **Secondary Motion hints**: PMX rigid bodies and joints are converted
++//!   best-effort into generic `IrRigidBodyRig` data. Invalid body bindings,
++//!   unsupported body modes/shapes, and dangling joint endpoints produce
++//!   actionable warnings while preserving the rest of the import.
++//! - **Soft bodies**: PMX soft bodies have no Secondary Motion representation
++//!   and are omitted with `pmx.soft_body_unsupported` diagnostics.
+ //! - **Clips**: `ModelDocument::clips` is always empty; PMX carries no
+ //!   animation on its own — motion is a separate `.vmd` source imported
+ //!   through `crate::vmd_import` (ADR 0097 §3).
