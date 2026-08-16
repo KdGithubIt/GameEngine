@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0112-pmx-rustdoc-sync-20260816-20",
+  "target_branch": "chatgpt/gameengine-adr-0112-secondary-motion-v2",
+  "expected_head_sha": "435badd60560bd173caec6c3efa911ab3571ac90",
+  "patch_parts": ["part-0000.patch"],
+  "commit_message": "Sync PMX import docs with Secondary Motion conversion",
+  "pr_title": "Implement ADR 0112 engine-native secondary motion",
+  "pr_body": "## Summary\n\nImplements ADR 0112 engine-native Secondary Motion. This follow-up updates PMX importer rustdoc to match the implemented model contract: morph data reaches the generic IR, rigid bodies and joints are best-effort Secondary Motion hints with actionable diagnostics, unsupported soft bodies are explicitly diagnosed and omitted, and PMX itself still carries no animation clips.\n\nThe PR remains Draft while the uncompiled legacy MMD runtime implementation is removed and final validation is completed."
+}
