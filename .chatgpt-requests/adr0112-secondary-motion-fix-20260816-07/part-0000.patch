@@ -1,0 +1,47 @@
+diff --git a/crates/physics/src/secondary_motion.rs b/crates/physics/src/secondary_motion.rs
+--- a/crates/physics/src/secondary_motion.rs
++++ b/crates/physics/src/secondary_motion.rs
+@@ -741,11 +741,11 @@ fn discontinuity_reseat_clears_linear_and_angular_velocity() {
+             presentation_previous: Vec::new(),
+             presentation_current: Vec::new(),
+         };
+-        let target = Pose::from_parts(Vector::new(9.0, 8.0, 7.0), Rotation::identity());
++        let target = Pose::from_parts(Vector::new(9.0, 8.0, 7.0), Rotation::IDENTITY);
+ 
+         reseat_bodies(&mut state, &[Some(target)]);
+ 
+         let body = state.world.bodies.get(handle).expect("body must remain alive");
+-        assert_eq!(*body.linvel(), Vector::zeros());
+-        assert_eq!(*body.angvel(), Vector::zeros());
++        assert_eq!(*body.linvel(), Vector::ZERO);
++        assert_eq!(*body.angvel(), Vector::ZERO);
+         assert_eq!(*body.position(), target);
+     }
+diff --git a/crates/engine/src/runtime_systems.rs b/crates/engine/src/runtime_systems.rs
+--- a/crates/engine/src/runtime_systems.rs
++++ b/crates/engine/src/runtime_systems.rs
+@@ -449,20 +449,20 @@ mod tests {
+         assert!(descriptor("engine.collision_detection")
+             .after()
+             .iter()
+-            .any(|id| id.as_str() == "engine.mmd_physics_transform_propagation"));
+-        assert!(descriptor("engine.mmd_rigid_body_physics")
++            .any(|id| id.as_str() == "engine.secondary_motion_transform_propagation"));
++        assert!(descriptor("engine.secondary_motion")
+             .after()
+             .iter()
+             .any(|id| id.as_str() == "engine.fixed_transform_propagation"));
+-        assert!(descriptor("engine.mmd_physics_transform_propagation")
++        assert!(descriptor("engine.secondary_motion_transform_propagation")
+             .after()
+             .iter()
+             .any(|id| id.as_str() == "engine.rig_pose_publish_final"));
+         assert!(descriptor("engine.rig_pose_publish_final")
+             .after()
+             .iter()
+-            .any(|id| id.as_str() == "engine.mmd_rigid_body_physics"));
++            .any(|id| id.as_str() == "engine.secondary_motion"));
+         assert!(descriptor("engine.combat_contacts")
+             .after()
+             .iter()
+             .any(|id| id.as_str() == "engine.collision_detection"));
