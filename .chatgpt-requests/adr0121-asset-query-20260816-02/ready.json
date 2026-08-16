@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0121-asset-query-20260816-02",
+  "target_branch": "chatgpt/gameengine-adr-0121-asset-query",
+  "expected_head_sha": "0df360df8aa18fc44cb5aed06a9b1eea5d9fc59e",
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Fix asset catalog iterator mutation",
+  "pr_title": "GameEngine: add asset discovery parity",
+  "pr_body": "## Summary\n\nContinues ADR 0121 Asset/Prefab parity with the read-only asset discovery slice.\n\n- adds a shared project asset catalog service in engine-assets\n- adds deterministic stable-ID search across manifest assets and imported sub-assets\n- adds asset inspection with ProjectRoot-constrained file checks and import metadata\n- exposes equivalent asset.search / asset.inspect operations through MCP and the headless CLI\n- routes Editor MCP asset tools through the live Editor asset manifest\n- adds shared-service, adapter-equivalence, permission, path-safety, and CLI behavior tests\n- fixes the iterator mutability compile error found by full Windows Validation\n\nPrefab creation/instantiation remains a separate follow-up so this PR keeps the initial asset contract read-only."
+}
