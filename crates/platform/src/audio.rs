@@ -162,6 +162,21 @@ impl AudioEmitter {
     pub fn state(&self) -> &AuthoredAudioState {
         &self.state
     }
+
+    /// Records that the runtime host started this emitter successfully.
+    pub fn mark_playback_started(&mut self) {
+        self.state = AuthoredAudioState::Playing;
+    }
+
+    /// Records that this host cannot provide an audio backend.
+    pub fn mark_playback_unavailable(&mut self) {
+        self.state = AuthoredAudioState::Unavailable;
+    }
+
+    /// Records a runtime playback failure without exposing backend voice identity.
+    pub fn mark_playback_failed(&mut self, message: impl Into<String>) {
+        self.state = AuthoredAudioState::Failed(message.into());
+    }
 }
 
 /// Marks the transform used as the positional-audio listener.
