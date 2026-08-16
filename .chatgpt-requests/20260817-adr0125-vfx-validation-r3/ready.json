@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "request_id": "20260817-adr0125-vfx-validation-r3",
+  "target_branch": "chatgpt/gameengine-adr0125-vfx-authoring-completion-v2",
+  "expected_head_sha": "031de5b357d9bb506098572b0e3fc8d66a1d11a7",
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Fix ADR 0125 VFX validation and visual capture",
+  "pr_title": "GameEngine: complete ADR 0125 VFX authoring workflow",
+  "pr_body": "## Summary\n\n- completes typed VFX module property, curve, gradient, texture-sheet, and template authoring on top of the existing `VfxAuthoringService`\n- adds deterministic VFX Builder preview controls using the production CPU reference runtime, runtime stats, emitter-shape visualization, and live bounds\n- adds shared-service VFX CLI and MCP inspect/validate/preview/apply/template surfaces with parity coverage\n- fixes the affected Clippy findings and keeps the validation-only VFX capture unobstructed by AI Studio\n\n## Validation\n\n- Windows Validation: rerun required on the dispatcher-produced head\n- Editor visual validation requested for the VFX Builder scenario\n\n<!-- gameengine-visual-validation: editor -->\n<!-- gameengine-visual-authoring-tool: VFX Builder -->\n\n<!-- gameengine-chatgpt-dispatcher -->"
+}
