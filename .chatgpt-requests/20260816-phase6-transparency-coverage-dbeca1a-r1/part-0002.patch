@@ -1,0 +1,175 @@
+derPipelineDescriptor {
+-            label: Some("Shadow depth pipeline"),
+-            layout: Some(&shadow_pipeline_layout),
+-            vertex: wgpu::VertexState {
+-                module: &shadow_shader,
+-                entry_point: Some("vs_main"),
+-                buffers: &[Vertex::LAYOUT, InstanceData::LAYOUT],
+-                compilation_options: Default::default(),
+-            },
+-            fragment: None,
+-            primitive: wgpu::PrimitiveState {
+-                topology: wgpu::PrimitiveTopology::TriangleList,
+-                strip_index_format: None,
+-                front_face: wgpu::FrontFace::Ccw,
+-                cull_mode: Some(wgpu::Face::Back),
+-                ..Default::default()
+-            },
+-            depth_stencil: Some(wgpu::DepthStencilState {
+-                format: shadow_descriptor.format.to_wgpu(),
+-                depth_write_enabled: Some(true),
+-                depth_compare: Some(wgpu::CompareFunction::Less),
+-                stencil: wgpu::StencilState::default(),
+-                // Hardware slope-scaled bias combats acne; the shader-side
+-                // depth bias from ShadowSettings stacks on top.
+-                bias: wgpu::DepthBiasState {
+-                    constant: 2,
+-                    slope_scale: 2.0,
+-                    clamp: 0.0,
++        let shadow_pipelines = std::array::from_fn(|cull_index| {
++            let cull_mode = [CullMode::Back, CullMode::Front, CullMode::None][cull_index];
++            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
++                label: Some("Shadow depth pipeline"),
++                layout: Some(&shadow_pipeline_layout),
++                vertex: wgpu::VertexState {
++                    module: &shadow_shader,
++                    entry_point: Some("vs_main"),
++                    buffers: &[Vertex::LAYOUT, InstanceData::LAYOUT],
++                    compilation_options: Default::default(),
+                 },
+-            }),
+-            multisample: wgpu::MultisampleState::default(),
+-            multiview_mask: None,
+-            cache: None,
++                fragment: Some(wgpu::FragmentState {
++                    module: &shadow_shader,
++                    entry_point: Some("fs_main"),
++                    targets: &[],
++                    compilation_options: Default::default(),
++                }),
++                primitive: wgpu::PrimitiveState {
++                    topology: wgpu::PrimitiveTopology::TriangleList,
++                    strip_index_format: None,
++                    front_face: wgpu::FrontFace::Ccw,
++                    cull_mode: match cull_mode {
++                        CullMode::Back => Some(wgpu::Face::Back),
++                        CullMode::Front => Some(wgpu::Face::Front),
++                        CullMode::None => None,
++                    },
++                    ..Default::default()
++                },
++                depth_stencil: Some(wgpu::DepthStencilState {
++                    format: shadow_descriptor.format.to_wgpu(),
++                    depth_write_enabled: Some(true),
++                    depth_compare: Some(wgpu::CompareFunction::Less),
++                    stencil: wgpu::StencilState::default(),
++                    // Hardware slope-scaled bias combats acne; the shader-side
++                    // depth bias from ShadowSettings stacks on top.
++                    bias: wgpu::DepthBiasState {
++                        constant: 2,
++                        slope_scale: 2.0,
++                        clamp: 0.0,
++                    },
++                }),
++                multisample: wgpu::MultisampleState::default(),
++                multiview_mask: None,
++                cache: None,
++            })
+         });
+ 
+         let shadow_skinned_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+@@ -3217,10 +3229,15 @@ impl RenderState {
+         let shadow_skinned_pipeline_layout =
+             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                 label: Some("Shadow skinned pipeline layout"),
+-                bind_group_layouts: &[Some(&shadow_camera_bgl), Some(&joint_palette_bgl)],
++                bind_group_layouts: &[
++                    Some(&shadow_camera_bgl),
++                    Some(&joint_palette_bgl),
++                    Some(&texture_bind_group_layout),
++                ],
+                 immediate_size: 0,
+             });
+-        let shadow_skinned_pipeline =
++        let shadow_skinned_pipelines = std::array::from_fn(|cull_index| {
++            let cull_mode = [CullMode::Back, CullMode::Front, CullMode::None][cull_index];
+             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                 label: Some("Shadow skinned depth pipeline"),
+                 layout: Some(&shadow_skinned_pipeline_layout),
+@@ -3234,12 +3251,21 @@ impl RenderState {
+                     ],
+                     compilation_options: Default::default(),
+                 },
+-                fragment: None,
++                fragment: Some(wgpu::FragmentState {
++                    module: &shadow_skinned_shader,
++                    entry_point: Some("fs_main"),
++                    targets: &[],
++                    compilation_options: Default::default(),
++                }),
+                 primitive: wgpu::PrimitiveState {
+                     topology: wgpu::PrimitiveTopology::TriangleList,
+                     strip_index_format: None,
+                     front_face: wgpu::FrontFace::Ccw,
+-                    cull_mode: Some(wgpu::Face::Back),
++                    cull_mode: match cull_mode {
++                        CullMode::Back => Some(wgpu::Face::Back),
++                        CullMode::Front => Some(wgpu::Face::Front),
++                        CullMode::None => None,
++                    },
+                     ..Default::default()
+                 },
+                 depth_stencil: Some(wgpu::DepthStencilState {
+@@ -3256,7 +3282,8 @@ impl RenderState {
+                 multisample: wgpu::MultisampleState::default(),
+                 multiview_mask: None,
+                 cache: None,
+-            });
++            })
++        });
+ 
+         let sky_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+             label: Some("Sky shader"),
+@@ -3357,8 +3384,8 @@ impl RenderState {
+             outline_composite_bgl,
+             outline_composite_pipeline,
+             joint_palette_bgl,
+-            shadow_pipeline,
+-            shadow_skinned_pipeline,
++            shadow_pipelines,
++            shadow_skinned_pipelines,
+             shadow_uniform_buffer,
+             shadow_cascade_buffers,
+             shadow_cascade_bind_groups,
+@@ -4032,6 +4059,27 @@ impl RenderState {
+ mod tests {
+     use super::*;
+ 
++    #[test]
++    fn blended_draws_sort_globally_by_instance_depth() {
++        let far_static = BlendDraw::StaticInstance { batch: 0, instance: 0 };
++        let near_static = BlendDraw::StaticInstance { batch: 0, instance: 1 };
++        let middle_static = BlendDraw::StaticInstance { batch: 1, instance: 0 };
++        let middle_skinned = BlendDraw::Skinned(0);
++        let mut draws = vec![
++            (near_static, 1.0),
++            (middle_skinned, 64.0),
++            (far_static, 100.0),
++            (middle_static, 81.0),
++        ];
++
++        sort_blend_draws_back_to_front(&mut draws);
++
++        assert_eq!(
++            draws.into_iter().map(|(draw, _)| draw).collect::<Vec<_>>(),
++            vec![far_static, middle_static, middle_skinned, near_static]
++        );
++    }
++
+     #[test]
+     fn material_texture_slots_distinguish_color_from_numeric_data() {
+         assert_ne!(
+diff --git a/crates/render-runtime/src/shaders/shadow_depth.wgsl b/crates/render-runtime/src/shaders/shadow_depth.wgsl
+index 33375c7d81daa4b84d026ab3fea128d02111a182..f0ebf3bb2ae8ff3fadf1b9cf87eb73cb0fbce483 100644
+--- a/crates/render-runtime/src/shaders/shadow_depth.wgsl
++++ b/crates/render-runtime
