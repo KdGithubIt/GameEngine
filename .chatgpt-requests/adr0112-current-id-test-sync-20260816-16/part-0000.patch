@@ -1,0 +1,16 @@
+diff --git a/crates/editor/src/ui/animation_preview.rs b/crates/editor/src/ui/animation_preview.rs
+--- a/crates/editor/src/ui/animation_preview.rs
++++ b/crates/editor/src/ui/animation_preview.rs
+@@ -902,3 +902,3 @@
+                             "engine.animation_controller": {},
+-                            "engine.rigid_body_physics": {
++                            "engine.secondary_motion": {
+                                 "rig": {"$type": "asset_ref", "id": "asset_01JP0000000000000000000004"}
+diff --git a/crates/editor/src/systems_panel.rs b/crates/editor/src/systems_panel.rs
+--- a/crates/editor/src/systems_panel.rs
++++ b/crates/editor/src/systems_panel.rs
+@@ -481,3 +481,3 @@
+                 "engine.fixed_transform_propagation",
+-                "engine.mmd_physics_transform_propagation"
++                "engine.secondary_motion_transform_propagation"
+             ]
