@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "request_id": "automation-validation-base-concurrency-20260816-1216-01",
+  "target_branch": "chatgpt/gameengine-automation-validation-base-concurrency",
+  "expected_head_sha": "e9c1a060b63b8b2ff93e1f45115047f69d0a1a15",
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Document validation baseline concurrency incident",
+  "pr_title": "GameEngine: document validation baseline concurrency recovery",
+  "pr_body": "## Summary\n\nRecords INC-004 for validation scope pollution when main advances after a task-branch baseline, and updates the Dispatcher producer protocol to re-check current main before ready publication for normal main-based work.\n\nThe change documents the recovery proven by ADR 0127 request `adr0127-native-2d-20260816-1208-02` and Windows Validation run `31923640542`."
+}
