@@ -1,0 +1,216 @@
++        });
++    }
++    transaction
++        .commit(&mut normalized)
++        .map_err(|error| NavMeshBakeError::Scene(error.to_string()))?;
++    Ok(normalized)
++}
++
++type ObjectFields<'a> = &'a BTreeMap<String, Value>;
++
++fn object_fields<'a>(
++    value: &'a Value,
++    component: &str,
++) -> Result<ObjectFields<'a>, NavMeshBakeError> {
++    match value {
++        Value::Object(fields) => Ok(fields),
++        _ => Err(NavMeshBakeError::Scene(format!(
++            "`{component}` must be an object"
++        ))),
++    }
++}
++
++fn vector_field(fields: ObjectFields<'_>, prefix: &str) -> Result<Vec3, NavMeshBakeError> {
++    Ok(Vec3::new(
++        f32_field(fields, &format!("{prefix}_x"))?,
++        f32_field(fields, &format!("{prefix}_y"))?,
++        f32_field(fields, &format!("{prefix}_z"))?,
++    ))
++}
++
++fn f32_field(fields: ObjectFields<'_>, key: &str) -> Result<f32, NavMeshBakeError> {
++    let value = match fields.get(key) {
++        Some(Value::F64(value)) => *value as f32,
++        Some(Value::I64(value)) => *value as f32,
++        Some(Value::U64(value)) => *value as f32,
++        _ => {
++            return Err(NavMeshBakeError::Scene(format!(
++                "navigation field `{key}` must be numeric"
++            )))
++        }
++    };
++    if value.is_finite() {
++        Ok(value)
++    } else {
++        Err(NavMeshBakeError::Scene(format!(
++            "navigation field `{key}` must be finite"
++        )))
++    }
++}
++
++fn u16_field(fields: ObjectFields<'_>, key: &str) -> Result<u16, NavMeshBakeError> {
++    match fields.get(key) {
++        Some(Value::I64(value)) => u16::try_from(*value).map_err(|_| {
++            NavMeshBakeError::Scene(format!("navigation field `{key}` must fit u16"))
++        }),
++        Some(Value::U64(value)) => u16::try_from(*value).map_err(|_| {
++            NavMeshBakeError::Scene(format!("navigation field `{key}` must fit u16"))
++        }),
++        _ => Err(NavMeshBakeError::Scene(format!(
++            "navigation field `{key}` must be an integer"
++        ))),
++    }
++}
++
++fn string_field<'a>(
++    fields: ObjectFields<'a>,
++    key: &str,
++) -> Result<&'a str, NavMeshBakeError> {
++    match fields.get(key) {
++        Some(Value::String(value)) if !value.trim().is_empty() => Ok(value),
++        _ => Err(NavMeshBakeError::Scene(format!(
++            "navigation field `{key}` must be a non-empty string"
++        ))),
++    }
++}
++
++fn bool_field(fields: ObjectFields<'_>, key: &str) -> Result<bool, NavMeshBakeError> {
++    match fields.get(key) {
++        Some(Value::Bool(value)) => Ok(*value),
++        _ => Err(NavMeshBakeError::Scene(format!(
++            "navigation field `{key}` must be boolean"
++        ))),
++    }
++}
++
++fn string_array_field(
++    fields: ObjectFields<'_>,
++    key: &str,
++) -> Result<Vec<String>, NavMeshBakeError> {
++    match fields.get(key) {
++        None => Ok(Vec::new()),
++        Some(Value::Array(values)) => values
++            .iter()
++            .map(|value| match value {
++                Value::String(value) if !value.trim().is_empty() => Ok(value.clone()),
++                _ => Err(NavMeshBakeError::Scene(format!(
++                    "navigation field `{key}` must contain only non-empty strings"
++                ))),
++            })
++            .collect(),
++        _ => Err(NavMeshBakeError::Scene(format!(
++            "navigation field `{key}` must be an array"
++        ))),
++    }
++}
++
++/// Error from scene collection, shared baking, project resolution, or registration.
++#[derive(Debug)]
++pub enum NavMeshBakeError {
++    /// JSON serialization failure while persisting the manifest.
++    Json(serde_json::Error),
++    /// Authoring scene conversion or navigation component parsing failed.
++    Scene(String),
++    /// Project path resolution failed.
++    Project(String),
++    /// Shared bake service failed.
++    Shared(NavigationBakeServiceError),
++    /// Project manifest persistence failed after the derived asset was written.
++    Persist(String),
++}
++
++impl fmt::Display for NavMeshBakeError {
++    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
++        match self {
++            Self::Json(error) => write!(formatter, "navigation manifest JSON error: {error}"),
++            Self::Scene(error) => write!(formatter, "navigation scene input failed: {error}"),
++            Self::Project(error) => write!(formatter, "navigation project path failed: {error}"),
++            Self::Shared(error) => write!(formatter, "{error}"),
++            Self::Persist(error) => write!(formatter, "navigation manifest persistence failed: {error}"),
++        }
++    }
++}
++
++impl std::error::Error for NavMeshBakeError {
++    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
++        match self {
++            Self::Json(error) => Some(error),
++            Self::Shared(error) => Some(error),
++            Self::Scene(_) | Self::Project(_) | Self::Persist(_) => None,
++        }
++    }
++}
++diff --git a/crates/physics/src/lib.rs b/crates/physics/src/lib.rs
++index 544d89b..79f0d8b 100644
++--- a/crates/physics/src/lib.rs
+++++ b/crates/physics/src/lib.rs
++@@ -24,6 +24,8 @@ pub mod collision;
++ pub mod collision;
++ /// Production tiled polygon navigation assets, baking, queries, and agents.
++ pub mod navigation;
+++/// Shared GUI-free navigation bake document and service contracts.
+++pub mod navigation_bake;
++ /// Legacy grid navigation retained for focused compatibility tests and layered utilities.
++ pub mod navmesh;
++ /// Rapier-backed gameplay rigid-body integration.
++diff --git a/crates/physics/src/navigation.rs b/crates/physics/src/navigation.rs
++index 806a873..c8a9c29 100644
++--- a/crates/physics/src/navigation.rs
+++++ b/crates/physics/src/navigation.rs
++@@ -654,7 +654,7 @@ fn bake_profile(
++             build_fingerprint: format!("{}:{}:{}", input.source_fingerprint, id.x, id.z),
++         });
++     }
++-    build_adjacency(&mut tiles);
+++    build_adjacency(&mut tiles, profile);
++ 
++     let mut profile_mesh = NavigationProfileMesh {
++         profile: profile.clone(),
++@@ -735,20 +735,27 @@ fn point_in_triangle_xz(point: Vec3, triangle: [Vec3; 3]) -> bool {
++ }
++ 
++ #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
++-struct QuantizedPoint(i32, i32, i32);
+++struct QuantizedPointXZ(i32, i32);
++ 
++ #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
++-struct EdgeKey(QuantizedPoint, QuantizedPoint);
+++struct EdgeKey(QuantizedPointXZ, QuantizedPointXZ);
++ 
++-fn quantize(point: Vec3) -> QuantizedPoint {
++-    QuantizedPoint(
+++fn quantize_xz(point: Vec3) -> QuantizedPointXZ {
+++    QuantizedPointXZ(
++         (point.x * EDGE_QUANTIZATION).round() as i32,
++-        (point.y * EDGE_QUANTIZATION).round() as i32,
++         (point.z * EDGE_QUANTIZATION).round() as i32,
++     )
++ }
++ 
++-fn build_adjacency(tiles: &mut [NavigationTile]) {
+++fn canonical_edge(key: EdgeKey, a: Vec3, b: Vec3) -> (Vec3, Vec3) {
+++    if quantize_xz(a) == key.0 {
+++        (a, b)
+++    } else {
+++        (b, a)
+++    }
+++}
+++
+++fn build_adjacency(tiles: &mut [NavigationTile], profile: &NavigationAgentProfile) {
++     let mut edges: BTreeMap<EdgeKey, Vec<(NavigationPolygonRef, Vec3, Vec3)>> = BTreeMap::new();
++     let mut centers = HashMap::new();
++     for tile in tiles.iter() {
++@@ -767,8 +774,8 @@ fn build_adjacency(tiles: &mut [NavigationTile]) {
++             for edge_index in 0..points.len() {
++                 let a = points[edge_index];
++                 let b = points[(edge_index + 1) % points.len()];
++-                let qa = quantize(a);
++-                let qb = quantize(b);
+++                let qa = quantize_xz(a);
+++                let qb = quantize_xz(b);
++                 let key = if qa <= qb {
++                     EdgeKey(qa, qb)
++                 } else {
++@@ -780,19 +787,39 @@ fn build_adjacency(tiles: &mut [NavigationTile]) {
++     }
++ 
