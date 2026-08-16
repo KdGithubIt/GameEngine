@@ -1,0 +1,64 @@
++repair loop for the later capability slices listed above. The completion model
++already records those gates explicitly, so an unimplemented or unperformed gate
++cannot be presented as a pass. Moving the GUI-free host from the Editor
++application package into a dedicated workspace crate later does not change the
++contract.
++
++## Consequences
++
++- GameEngine gains a first-class conversational AI creation workflow rather
++  than a vendor-specific prompt launcher.
++- Users can use external subscription/account-backed coding agents without
++  requiring GameEngine to possess a model API key, while direct API and local
++  model backends remain possible through the native runtime.
++- The proposal snapshot gives Go a precise meaning and prevents a running agent
++  from silently drifting as the conversation continues.
++- Human editing stays responsive while agent work proceeds; stale authoring
++  mutations fail safely and are re-read instead of force-applied.
++- Managed authoring, code, asset, validation, and runtime services provide a
++  consistent audit and permission surface across providers.
++- The escape hatch preserves practical coding-agent flexibility, but external
++  agents are not falsely described as OS-sandboxed when they are not.
++- Session-scoped code workspaces and run checkpoints add storage, diff, and
++  reconciliation complexity, but make code changes reviewable and reversible
++  without abusing Git commits as internal agent state.
++- Project-shared AI history improves multi-PC and team continuity while keeping
++  credentials, caches, and transient state out of Git and packaged games.
++- Native agent support requires GameEngine to own a real model/tool loop,
++  context management, cancellation, and backend abstraction in addition to the
++  simpler external-agent process adapters.
++- Completion becomes stricter and more meaningful because playable and visual
++  behavior is observed rather than inferred from compilation alone.
++
++## Alternatives Considered
++
++### Make AI Studio a thin terminal wrapper around Claude Code or Codex
++
++Rejected. It would expose provider-specific output and capabilities directly,
++provide no stable proposal/run/audit model, and make future native or local
++agents second-class.
++
++### Treat every integration as an LLM API provider
++
++Rejected. External coding agents and direct model backends own different
++responsibilities and authentication lifecycles. An API-key-shaped abstraction
++would not represent provider-managed subscription/account sessions or local
++models cleanly.
++
++### Use a one-way Ask -> Plan -> Build -> Autopilot mode pipeline
++
++Rejected. The primary workflow is collaborative conversation. The agent must be
++able to ask questions before Go and return to the user during execution when a
++meaningful decision is required.
++
++### Let agents directly edit all project files and run unrestricted shell commands
++
++Rejected as the default. It bypasses the semantic authoring model, weakens
++reviewability, and makes provider behavior inconsistent. Low-level access
++remains an explicit escape hatch for operations that managed services cannot
++express.
++
++### Prohibit all raw filesystem and shell access
++
++Rejected. Coding agents sometimes require build products, generated files,
++custom tools, or diagnostics that are impractical to model immediately through

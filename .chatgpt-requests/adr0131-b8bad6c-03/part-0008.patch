@@ -1,0 +1,77 @@
+ mod view_resolution;
+ mod workspace;
+ 
++pub use ai_studio::{AiStudioConnection, AiStudioPanel};
+ pub use anim_ux::{
+     build_retarget_map_inspector_model, build_skeleton_bind_report, find_skeleton_display_name,
+     find_skeleton_record, merge_bone_pairs, rerun_name_matching, resolve_bone_name,
+diff --git a/crates/editor/src/main.rs b/crates/editor/src/main.rs
+--- a/crates/editor/src/main.rs
++++ b/crates/editor/src/main.rs
+@@ -13,2 +13,2 @@
+-use engine_editor::{AuthoringTool, AuthoringWindows};
++use engine_editor::{AiStudioConnection, AiStudioPanel, AuthoringTool, AuthoringWindows};
+ use engine_project_lifecycle::{acquire_editor_project, EditorLease};
+@@ -25,4 +25,5 @@
+ struct EditorShell {
+     app: engine_editor::EditorApp,
++    ai_studio: AiStudioPanel,
+     authoring_windows: AuthoringWindows,
+     show_authoring_tools: bool,
+@@ -40,5 +41,5 @@
+         let root = project_lease.project_root().clone();
+-        let app = engine_editor::EditorApp::from_project(root);
++        let app = engine_editor::EditorApp::from_project(root.clone());
+         let (mcp_server, mcp_requests) =
+             EditorMcpServer::start(context.clone()).map_err(|error| error.to_string())?;
+         project_lease
+@@ -48,7 +49,15 @@
+                 mcp_server.authorization_token(),
+             )
+             .map_err(|error| error.to_string())?;
++        let ai_studio = AiStudioPanel::new(
++            &root,
++            AiStudioConnection::new(
++                mcp_server.endpoint().to_string(),
++                mcp_server.authorization_token().to_owned(),
++            ),
++        )?;
+         project_lease.mark_ready().map_err(|error| error.to_string())?;
+         Ok(Self {
+             app,
++            ai_studio,
+             authoring_windows: AuthoringWindows::default(),
+@@ -135,6 +144,11 @@
+             .order(eframe::egui::Order::Foreground)
+             .show(context, |ui| {
+-                if ui.button("Authoring Tools").clicked() {
+-                    self.show_authoring_tools = true;
+-                }
++                ui.horizontal(|ui| {
++                    if ui.button("AI Studio").clicked() {
++                        self.ai_studio.open();
++                    }
++                    if ui.button("Authoring Tools").clicked() {
++                        self.show_authoring_tools = true;
++                    }
++                });
+             });
+@@ -228,3 +242,4 @@
+         eframe::App::ui(&mut self.app, ui, frame);
+         self.show_authoring_tools_launcher(&context);
+         self.authoring_windows.show(&context, frame);
++        self.ai_studio.show(&context);
+diff --git a/docs/adr/README.md b/docs/adr/README.md
+--- a/docs/adr/README.md
++++ b/docs/adr/README.md
+@@ -113,5 +113,6 @@
+ - **AI, CLI, and MCP:** [0015](0015-mcp-behavior-tree-tool-adapter.md),
+-  [0035](0035-ai-agent-bridge-ipc.md), and
+-  [0121](0121-ai-native-authoring-parity-and-project-scoped-mcp-lifecycle.md).
++  [0035](0035-ai-agent-bridge-ipc.md),
++  [0121](0121-ai-native-authoring-parity-and-project-scoped-mcp-lifecycle.md), and
++  [0131](0131-conversational-ai-studio-agent-runtime-and-governed-workspace.md).
+ 
+ ## Proposed Decisions
+@@ -269,2 +270,3 @@
+ | [0129](0129-generic-directional-point-spot-lighting.md) | Generic Directional, Point, and Spot Direct Lighting |
