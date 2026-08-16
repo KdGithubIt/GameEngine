@@ -1,0 +1,18 @@
+diff --git a/crates/render-runtime/src/shaders/mesh.wgsl b/crates/render-runtime/src/shaders/mesh.wgsl
+index 92fac64..406d405 100644
+--- a/crates/render-runtime/src/shaders/mesh.wgsl
++++ b/crates/render-runtime/src/shaders/mesh.wgsl
+@@ -321,7 +321,12 @@ fn toon_ramp_factor(ndl: f32, visibility: f32) -> f32 {
+     let generated_ramp = smoothstep(0.45, 0.55, ramp_u);
+     // MMD toon ramps are authored as a vertical gradient (bright at v=0,
+     // dark at v=1); the horizontal axis carries no information.
+-    let sampled_ramp = textureSample(t_toon_ramp, s_material, vec2<f32>(0.5, 1.0 - ramp_u)).r;
++    let sampled_ramp = textureSampleLevel(
++        t_toon_ramp,
++        s_material,
++        vec2<f32>(0.5, 1.0 - ramp_u),
++        0.0,
++    ).r;
+     return select(generated_ramp, sampled_ramp, material.toon_shadow.w > 0.5);
+ }
+ 
