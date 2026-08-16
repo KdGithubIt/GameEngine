@@ -46,6 +46,8 @@ pub mod particles;
 /// HDR, bloom, tone-mapping, and color-grading settings.
 #[cfg(feature = "gpu")]
 pub mod postprocess;
+#[cfg(feature = "gpu")]
+mod postprocess_gpu;
 /// Offscreen rendering helpers for editor integrations.
 #[cfg(feature = "gpu")]
 pub mod preview;

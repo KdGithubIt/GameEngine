@@ -31,12 +31,38 @@ The first implementation may expose CPU-side tone mapping helpers and settings
 resources before the renderer is fully converted to an offscreen target. The
 resource contract is the compatibility boundary for the later GPU pass.
 
+### GPU pass ownership
+
+The runtime GPU implementation keeps post-processing as an explicit renderer-owned
+pass chain rather than embedding screen-space effects in material shaders. Bloom
+runs entirely in linear HDR before exposure and tone mapping:
+
+```text
+scene HDR
+  -> bright extraction / bounded downsample pyramid
+  -> filtered upsample
+  -> HDR bloom composite
+  -> exposure / tone mapping / color grading
+  -> output transfer
+```
+
+The multi-resolution bloom implementation reuses the existing `BloomSettings`
+fields. Resizing the source HDR target recreates renderer-owned bloom targets;
+callers do not provide or persist bloom textures.
+
+White-balance and LUT-based grading, if added later, belong to this same
+post-process stage. This refinement does not add persisted controls, LUT asset
+references, Stable IDs, or a post-process graph; those contracts require a
+separate authoring/asset decision before they are introduced.
+
 ## Consequences
 
 - Gameplay/editor code can configure exposure, tone mapping, and bloom through a
   stable resource.
-- GPU implementation can be incremental: direct swapchain rendering can coexist
-  with the settings resource until the offscreen pass lands.
+- Bloom filtering and composition stay in renderer-owned HDR passes, independent
+  from material shading and the caller-owned swapchain target.
+- The existing settings and scene-authoring contract remain stable while the GPU
+  implementation can improve internally.
 - Any future change to the HDR format or default tone mapper needs an ADR update.
 
 ## Alternatives Considered
