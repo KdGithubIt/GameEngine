@@ -8,6 +8,8 @@ use std::io::BufWriter;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::mpsc;
+#[cfg(feature = "visual-validation")]
+use std::time::{Duration, Instant};
 
 use engine_editor::{AuthoringTool, AuthoringWindows};
 use engine_project_lifecycle::{acquire_editor_project, EditorLease};
@@ -31,7 +33,7 @@ struct EditorShell {
     #[cfg(feature = "visual-validation")]
     visual_capture_path: Option<PathBuf>,
     #[cfg(feature = "visual-validation")]
-    visual_capture_requested: bool,
+    visual_capture_requested_at: Option<Instant>,
 }
 
 impl EditorShell {
@@ -62,7 +64,7 @@ impl EditorShell {
             #[cfg(feature = "visual-validation")]
             visual_capture_path: std::env::var_os("GAMEENGINE_SCREENSHOT_TO").map(PathBuf::from),
             #[cfg(feature = "visual-validation")]
-            visual_capture_requested: false,
+            visual_capture_requested_at: None,
         })
     }
 
@@ -103,12 +105,23 @@ impl EditorShell {
             return;
         }
 
-        if !self.visual_capture_requested {
-            self.visual_capture_requested = true;
-            context.send_viewport_cmd(eframe::egui::ViewportCommand::Screenshot(
-                eframe::egui::UserData::default(),
-            ));
-            context.request_repaint();
+        match self.visual_capture_requested_at {
+            None => {
+                self.visual_capture_requested_at = Some(Instant::now());
+                context.send_viewport_cmd(eframe::egui::ViewportCommand::Screenshot(
+                    eframe::egui::UserData::default(),
+                ));
+                context.request_repaint();
+            }
+            Some(requested_at) if requested_at.elapsed() >= Duration::from_secs(5) => {
+                let _ = std::fs::remove_file(&path);
+                eprintln!(
+                    "[editor.visual_validation_capture_failed] screenshot event was not returned"
+                );
+                self.visual_capture_path = None;
+                context.send_viewport_cmd(eframe::egui::ViewportCommand::Close);
+            }
+            Some(_) => context.request_repaint(),
         }
     }
 
