@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "request_id": "20260816-adr0125-vfx-compile-fix-64c9499-r1",
+  "target_branch": "chatgpt/gameengine-vfx-adr0125-v2",
+  "expected_head_sha": "64c94990d3031a7aaceb55b64df07509278ed65c",
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Fix ADR 0125 VFX compile errors",
+  "pr_title": "GameEngine: implement ADR 0125 VFX architecture",
+  "pr_body": "## Summary\n\nContinues ADR 0125 and fixes the VFX compile errors found by full Windows Validation after scene runtime wiring.\n\nThis remains a Draft PR while Builder authoring and visual validation are completed."
+}
