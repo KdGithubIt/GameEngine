@@ -124,8 +124,8 @@ pub mod physics;
 pub mod player;
 /// Pure skeletal clip sampling and pose blending.
 pub mod pose_graph;
-/// PMX (MMD model) static mesh / skin / material import pipeline via
-/// `mmd-anim-format` (ADR 0097 §1, §2, §4).
+/// PMX model import pipeline for mesh, skin, material, morph, and best-effort
+/// engine-native Secondary Motion hints via `mmd-anim-format` (ADR 0097, ADR 0112).
 ///
 /// Desktop-only, same rationale as [`fbx_import`]: PMX import is an
 /// authoring-time operation, so this module is absent from wasm32 builds
