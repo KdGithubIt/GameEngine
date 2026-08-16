@@ -1,8 +1,8 @@
 //! Stateful runtime execution and observation for compiled Behavior Trees.
 //!
-//! Authoring graphs remain immutable [`CompiledBehaviorTree`] artifacts. A
-//! [`BehaviorTreeExecutor`] prepares that artifact once into compact runtime
-//! indices, while each [`BehaviorTreeInstance`] owns mutable execution state.
+//! Authoring graphs remain immutable [`engine_authoring::CompiledBehaviorTree`] artifacts. A
+//! [`crate::behavior_tree::BehaviorTreeExecutor`] prepares that artifact once into compact runtime
+//! indices, while each [`crate::behavior_tree::BehaviorTreeInstance`] owns mutable execution state.
 
 use engine_authoring::{
     BehaviorTreeNodeKind, CompiledBehaviorNode, CompiledBehaviorTree, GraphId, NodeId, Value,
