@@ -534,8 +534,8 @@ pub(crate) struct RenderState {
     outline_composite_bgl: wgpu::BindGroupLayout,
     outline_composite_pipeline: wgpu::RenderPipeline,
     joint_palette_bgl: wgpu::BindGroupLayout,
-    shadow_pipeline: wgpu::RenderPipeline,
-    shadow_skinned_pipeline: wgpu::RenderPipeline,
+    shadow_pipelines: [wgpu::RenderPipeline; 3],
+    shadow_skinned_pipelines: [wgpu::RenderPipeline; 3],
     shadow_uniform_buffer: wgpu::Buffer,
     shadow_cascade_buffers: Vec<wgpu::Buffer>,
     shadow_cascade_bind_groups: Vec<wgpu::BindGroup>,
@@ -786,10 +786,19 @@ struct StaticBatch {
     outline_instances: Vec<OutlineInstanceData>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BlendDraw {
-    StaticBatch(usize),
+    StaticInstance { batch: usize, instance: u32 },
     Skinned(usize),
+}
+
+fn sort_blend_draws_back_to_front(draws: &mut [(BlendDraw, f32)]) {
+    draws.sort_by(|left, right| {
+        right
+            .1
+            .partial_cmp(&left.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 }
 
 #[derive(Clone, Copy)]
@@ -1397,18 +1406,23 @@ impl WorldRenderer {
             })
             .collect();
 
-        // Blended static batches and skinned draws share one back-to-front
-        // order. Sorting each family independently is insufficient when, for
-        // example, a transparent environment mesh overlaps a character.
+        // Every blended static instance and skinned draw shares one global
+        // back-to-front order. Batch-level ordering is insufficient when the
+        // depth ranges of two transparent materials overlap.
         let mut blend_draws = batches
             .iter()
             .enumerate()
             .filter(|(_, batch)| batch.pipeline_key.alpha_mode == AlphaMode::Blend)
-            .map(|(index, batch)| {
-                (
-                    BlendDraw::StaticBatch(index),
-                    batch_distance_squared(batch, camera_position),
-                )
+            .flat_map(|(batch_index, batch)| {
+                batch.instances.iter().enumerate().map(move |(instance_index, instance)| {
+                    (
+                        BlendDraw::StaticInstance {
+                            batch: batch_index,
+                            instance: instance_index as u32,
+                        },
+                        instance_distance_squared(instance, camera_position),
+                    )
+                })
             })
             .chain(
                 skinned_draws
@@ -1423,12 +1437,7 @@ impl WorldRenderer {
                     }),
             )
             .collect::<Vec<_>>();
-        blend_draws.sort_by(|left, right| {
-            right
-                .1
-                .partial_cmp(&left.1)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+        sort_blend_draws_back_to_front(&mut blend_draws);
 
         self.ensure_main_pass_target(device, color_view, depth_view)
             .map_err(RenderFrameError::Target)?;
@@ -1438,8 +1447,9 @@ impl WorldRenderer {
         });
 
         // Depth-only shadow passes, one per cascade (Phase 50, ADR 0036).
-        // Static, particle, and skinned casters share the same stabilized
-        // cascade matrices.
+        // Directional shadow coverage follows the same material alpha and
+        // culling contract as the visible surface. Mask keeps hard cutouts;
+        // Blend uses deterministic dither coverage in the single-sample map.
         if shadows_enabled {
             for (cascade_index, layer_view) in self.render.shadow_layer_views.iter().enumerate() {
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1457,7 +1467,6 @@ impl WorldRenderer {
                     occlusion_query_set: None,
                     multiview_mask: None,
                 });
-                pass.set_pipeline(&self.render.shadow_pipeline);
                 pass.set_bind_group(
                     0,
                     &self.render.shadow_cascade_bind_groups[cascade_index],
@@ -1467,6 +1476,10 @@ impl WorldRenderer {
                     if batch.instances.is_empty() || !batch.pipeline_key.cast_shadow {
                         continue;
                     }
+                    pass.set_pipeline(
+                        &self.render.shadow_pipelines[batch.pipeline_key.cull_index()],
+                    );
+                    pass.set_bind_group(2, batch.texture_bind_group.as_ref(), &[]);
                     batch.gpu_mesh.draw_instanced_submesh(
                         &mut pass,
                         instance_buf,
@@ -1475,46 +1488,47 @@ impl WorldRenderer {
                     );
                 }
 
-                // Skinned entities whose mesh has no skinning data cast a
-                // static shadow while the static pipeline is still bound.
+                // A selected skinned primitive may have no skin attributes.
+                // It still uses the material-aware static shadow path.
                 for (draw, resources) in
                     skinned_draws.iter().zip(skinned_resources.iter())
                 {
-                    if draw.pipeline_key.cast_shadow && draw.gpu_mesh.skinning_buffer.is_none() {
-                        draw.gpu_mesh.draw_instanced_submesh(
-                            &mut pass,
-                            &resources.instance_buffer,
-                            1,
-                            Some(draw.submesh),
-                        );
+                    if !draw.pipeline_key.cast_shadow || draw.gpu_mesh.skinning_buffer.is_some() {
+                        continue;
                     }
+                    pass.set_pipeline(
+                        &self.render.shadow_pipelines[draw.pipeline_key.cull_index()],
+                    );
+                    pass.set_bind_group(2, draw.texture_bind_group.as_ref(), &[]);
+                    draw.gpu_mesh.draw_instanced_submesh(
+                        &mut pass,
+                        &resources.instance_buffer,
+                        1,
+                        Some(draw.submesh),
+                    );
                 }
 
                 // Skinned casters deform with the same palette as the main
-                // pass so shadows match the rendered pose (Phase 50-D).
-                if skinned_draws
-                    .iter()
-                    .any(|draw| draw.gpu_mesh.skinning_buffer.is_some())
-                {
-                    pass.set_pipeline(&self.render.shadow_skinned_pipeline);
+                // pass so shadows match both pose and material coverage.
+                for (draw, resources) in skinned_draws.iter().zip(skinned_resources.iter()) {
+                    if !draw.pipeline_key.cast_shadow || draw.gpu_mesh.skinning_buffer.is_none() {
+                        continue;
+                    }
+                    pass.set_pipeline(
+                        &self.render.shadow_skinned_pipelines[draw.pipeline_key.cull_index()],
+                    );
                     pass.set_bind_group(
                         0,
                         &self.render.shadow_cascade_bind_groups[cascade_index],
                         &[],
                     );
-                    for (draw, resources) in
-                        skinned_draws.iter().zip(skinned_resources.iter())
-                    {
-                        if !draw.pipeline_key.cast_shadow || draw.gpu_mesh.skinning_buffer.is_none() {
-                            continue;
-                        }
-                        pass.set_bind_group(1, &resources.palette_bind_group, &[]);
-                        draw.gpu_mesh.draw_skinned_submesh(
-                            &mut pass,
-                            &resources.instance_buffer,
-                            Some(draw.submesh),
-                        );
-                    }
+                    pass.set_bind_group(1, &resources.palette_bind_group, &[]);
+                    pass.set_bind_group(2, draw.texture_bind_group.as_ref(), &[]);
+                    draw.gpu_mesh.draw_skinned_submesh(
+                        &mut pass,
+                        &resources.instance_buffer,
+                        Some(draw.submesh),
+                    );
                 }
             }
         }
@@ -1753,18 +1767,21 @@ impl WorldRenderer {
 
             for (draw, _) in &blend_draws {
                 match *draw {
-                    BlendDraw::StaticBatch(index) => {
-                        let batch = &batches[index];
-                        let instance_buffer = &instance_buffers[index];
+                    BlendDraw::StaticInstance {
+                        batch: batch_index,
+                        instance,
+                    } => {
+                        let batch = &batches[batch_index];
+                        let instance_buffer = &instance_buffers[batch_index];
                         pass.set_pipeline(
                             &self.render.pipelines[batch.pipeline_key.alpha_index()]
                                 [batch.pipeline_key.cull_index()],
                         );
                         pass.set_bind_group(1, batch.texture_bind_group.as_ref(), &[]);
-                        batch.gpu_mesh.draw_material_instanced_submesh(
+                        batch.gpu_mesh.draw_material_instanced_submesh_range(
                             &mut pass,
                             instance_buffer,
-                            batch.instances.len() as u32,
+                            instance..instance + 1,
                             Some(batch.submesh),
                         );
                     }
@@ -1998,7 +2015,7 @@ impl WorldRenderer {
         world: &mut engine_ecs::World,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        camera_position: glam::Vec3,
+        _camera_position: glam::Vec3,
     ) -> Vec<StaticBatch> {
         use crate::asset::Handle;
         use engine_ecs::{Query, Without};
@@ -2197,18 +2214,9 @@ impl WorldRenderer {
         }
 
         let mut batches: Vec<_> = batches.into_values().collect();
-        for batch in &mut batches {
-            if batch.pipeline_key.alpha_mode == AlphaMode::Blend {
-                batch.instances.sort_by(|left, right| {
-                    instance_distance_squared(right, camera_position)
-                        .partial_cmp(&instance_distance_squared(left, camera_position))
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                });
-            }
-        }
         // Opaque/masked geometry must populate depth before blended geometry.
-        // Transparent batches are then drawn back-to-front relative to the
-        // active camera; ties retain deterministic material-key ordering.
+        // Blend instances are globally depth-sorted later, so the batch order
+        // only groups fixed pipeline state and must not mutate parallel payloads.
         batches.sort_by(|left, right| {
             match (
                 left.pipeline_key.alpha_mode == AlphaMode::Blend,
@@ -2216,11 +2224,7 @@ impl WorldRenderer {
             ) {
                 (false, true) => std::cmp::Ordering::Less,
                 (true, false) => std::cmp::Ordering::Greater,
-                (false, false) => left.pipeline_key.cmp(&right.pipeline_key),
-                (true, true) => batch_distance_squared(right, camera_position)
-                    .partial_cmp(&batch_distance_squared(left, camera_position))
-                    .unwrap_or(std::cmp::Ordering::Equal)
-                    .then_with(|| left.pipeline_key.cmp(&right.pipeline_key)),
+                (false, false) | (true, true) => left.pipeline_key.cmp(&right.pipeline_key),
             }
         });
         batches
@@ -2560,14 +2564,6 @@ fn instance_distance_squared(instance: &InstanceData, camera_position: glam::Vec
         instance.model[3][2],
     );
     translation.distance_squared(camera_position)
-}
-
-fn batch_distance_squared(batch: &StaticBatch, camera_position: glam::Vec3) -> f32 {
-    batch
-        .instances
-        .first()
-        .map(|instance| instance_distance_squared(instance, camera_position))
-        .unwrap_or(0.0)
 }
 
 /// Pads `palette` with identity matrices to the fixed uniform array size.
@@ -3170,42 +3166,58 @@ impl RenderState {
         let shadow_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Shadow pipeline layout"),
-                bind_group_layouts: &[Some(&shadow_camera_bgl)],
+                bind_group_layouts: &[
+                    Some(&shadow_camera_bgl),
+                    None,
+                    Some(&texture_bind_group_layout),
+                ],
                 immediate_size: 0,
             });
-        let shadow_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Shadow depth pipeline"),
-            layout: Some(&shadow_pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shadow_shader,
-                entry_point: Some("vs_main"),
-                buffers: &[Vertex::LAYOUT, InstanceData::LAYOUT],
-                compilation_options: Default::default(),
-            },
-            fragment: None,
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                strip_index_format: None,
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode: Some(wgpu::Face::Back),
-                ..Default::default()
-            },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: shadow_descriptor.format.to_wgpu(),
-                depth_write_enabled: Some(true),
-                depth_compare: Some(wgpu::CompareFunction::Less),
-                stencil: wgpu::StencilState::default(),
-                // Hardware slope-scaled bias combats acne; the shader-side
-                // depth bias from ShadowSettings stacks on top.
-                bias: wgpu::DepthBiasState {
-                    constant: 2,
-                    slope_scale: 2.0,
-                    clamp: 0.0,
+        let shadow_pipelines = std::array::from_fn(|cull_index| {
+            let cull_mode = [CullMode::Back, CullMode::Front, CullMode::None][cull_index];
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("Shadow depth pipeline"),
+                layout: Some(&shadow_pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &shadow_shader,
+                    entry_point: Some("vs_main"),
+                    buffers: &[Vertex::LAYOUT, InstanceData::LAYOUT],
+                    compilation_options: Default::default(),
                 },
-            }),
-            multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
-            cache: None,
+                fragment: Some(wgpu::FragmentState {
+                    module: &shadow_shader,
+                    entry_point: Some("fs_main"),
+                    targets: &[],
+                    compilation_options: Default::default(),
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    strip_index_format: None,
+                    front_face: wgpu::FrontFace::Ccw,
+                    cull_mode: match cull_mode {
+                        CullMode::Back => Some(wgpu::Face::Back),
+                        CullMode::Front => Some(wgpu::Face::Front),
+                        CullMode::None => None,
+                    },
+                    ..Default::default()
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: shadow_descriptor.format.to_wgpu(),
+                    depth_write_enabled: Some(true),
+                    depth_compare: Some(wgpu::CompareFunction::Less),
+                    stencil: wgpu::StencilState::default(),
+                    // Hardware slope-scaled bias combats acne; the shader-side
+                    // depth bias from ShadowSettings stacks on top.
+                    bias: wgpu::DepthBiasState {
+                        constant: 2,
+                        slope_scale: 2.0,
+                        clamp: 0.0,
+                    },
+                }),
+                multisample: wgpu::MultisampleState::default(),
+                multiview_mask: None,
+                cache: None,
+            })
         });
 
         let shadow_skinned_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -3217,10 +3229,15 @@ impl RenderState {
         let shadow_skinned_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Shadow skinned pipeline layout"),
-                bind_group_layouts: &[Some(&shadow_camera_bgl), Some(&joint_palette_bgl)],
+                bind_group_layouts: &[
+                    Some(&shadow_camera_bgl),
+                    Some(&joint_palette_bgl),
+                    Some(&texture_bind_group_layout),
+                ],
                 immediate_size: 0,
             });
-        let shadow_skinned_pipeline =
+        let shadow_skinned_pipelines = std::array::from_fn(|cull_index| {
+            let cull_mode = [CullMode::Back, CullMode::Front, CullMode::None][cull_index];
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("Shadow skinned depth pipeline"),
                 layout: Some(&shadow_skinned_pipeline_layout),
@@ -3234,12 +3251,21 @@ impl RenderState {
                     ],
                     compilation_options: Default::default(),
                 },
-                fragment: None,
+                fragment: Some(wgpu::FragmentState {
+                    module: &shadow_skinned_shader,
+                    entry_point: Some("fs_main"),
+                    targets: &[],
+                    compilation_options: Default::default(),
+                }),
                 primitive: wgpu::PrimitiveState {
                     topology: wgpu::PrimitiveTopology::TriangleList,
                     strip_index_format: None,
                     front_face: wgpu::FrontFace::Ccw,
-                    cull_mode: Some(wgpu::Face::Back),
+                    cull_mode: match cull_mode {
+                        CullMode::Back => Some(wgpu::Face::Back),
+                        CullMode::Front => Some(wgpu::Face::Front),
+                        CullMode::None => None,
+                    },
                     ..Default::default()
                 },
                 depth_stencil: Some(wgpu::DepthStencilState {
@@ -3256,7 +3282,8 @@ impl RenderState {
                 multisample: wgpu::MultisampleState::default(),
                 multiview_mask: None,
                 cache: None,
-            });
+            })
+        });
 
         let sky_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Sky shader"),
@@ -3357,8 +3384,8 @@ impl RenderState {
             outline_composite_bgl,
             outline_composite_pipeline,
             joint_palette_bgl,
-            shadow_pipeline,
-            shadow_skinned_pipeline,
+            shadow_pipelines,
+            shadow_skinned_pipelines,
             shadow_uniform_buffer,
             shadow_cascade_buffers,
             shadow_cascade_bind_groups,
@@ -4031,6 +4058,27 @@ impl ToneMapPass {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn blended_draws_sort_globally_by_instance_depth() {
+        let far_static = BlendDraw::StaticInstance { batch: 0, instance: 0 };
+        let near_static = BlendDraw::StaticInstance { batch: 0, instance: 1 };
+        let middle_static = BlendDraw::StaticInstance { batch: 1, instance: 0 };
+        let middle_skinned = BlendDraw::Skinned(0);
+        let mut draws = vec![
+            (near_static, 1.0),
+            (middle_skinned, 64.0),
+            (far_static, 100.0),
+            (middle_static, 81.0),
+        ];
+
+        sort_blend_draws_back_to_front(&mut draws);
+
+        assert_eq!(
+            draws.into_iter().map(|(draw, _)| draw).collect::<Vec<_>>(),
+            vec![far_static, middle_static, middle_skinned, near_static]
+        );
+    }
 
     #[test]
     fn material_texture_slots_distinguish_color_from_numeric_data() {
