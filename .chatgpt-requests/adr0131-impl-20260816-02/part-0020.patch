@@ -1,0 +1,34 @@
++and repair or re-plan instead of force-applying stale commands. Multiple
++read-oriented AI sessions MAY coexist, but the initial agent host permits at
++most one AI run per Editor project to hold the agent writer role at a time.
++Human editing is not counted as that AI writer.
++
++Normal AI source mutation MUST occur in a session-scoped isolated code workspace
++or equivalent isolated source state rather than directly in the live working
++tree. Each run records reviewable before/after checkpoints and changed-file
++provenance. Applying changes to the project is an explicit managed service
++operation with project-root confinement and `CodeWrite` authorization. Agent
++checkpoints are not Git commits and MUST NOT silently rewrite Git history.
++
++AI sessions survive Editor restarts. The default is local/private user
++application data outside the project tree. A deliberate project-shared session
++uses the reserved `.gameengine/ai/sessions/<session-id>/` collaboration metadata
++area. Shared history is not canonical authoring data and MUST NOT be packaged.
++It MUST NOT contain credentials, provider login/session material, MCP bearer
++credentials, machine-specific absolute paths when a project-relative identity is
++possible, transient process identifiers/ports, full code workspaces, build
++outputs, or caches. Shared-session schemas MUST be versioned.
++
++### 18.2 Run Completion Contract
++
++An autonomous run MUST NOT report completion solely because source compilation
++or one authoring mutation succeeded. When applicable to the proposal, completion
++requires explicit evidence that acceptance criteria passed, blocking authoring
++validation passed, required source validation passed, Play launched, at least
++one relevant frame was captured, that frame was visually evaluated, and
++required interaction scenarios passed. A criterion marked not applicable MUST
++be reported as such rather than represented as a pass. If required visual
++evidence cannot be captured or inspected, the run is incomplete or partially
++validated.
++
+ ## 19. First Graph Domain

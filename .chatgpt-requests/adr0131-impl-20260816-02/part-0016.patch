@@ -1,0 +1,150 @@
++            {
++                let draft = AgentProposalDraft {
++                    goal: self.proposal_goal.trim().to_owned(),
++                    agreed_requirements: lines(&self.proposal_requirements),
++                    assumptions: lines(&self.proposal_assumptions),
++                    acceptance_criteria: lines(&self.proposal_acceptance),
++                    planned_changes: lines(&self.proposal_changes),
++                    validation_and_playtest_plan: lines(&self.proposal_validation),
++                    expected_capabilities: self
++                        .host
++                        .permissions()
++                        .project_grants()
++                        .iter()
++                        .copied()
++                        .collect(),
++                };
++                match self.host.revise_proposal(&self.session_id, draft) {
++                    Ok(version) => {
++                        self.status = Some(format!("Proposal v{} recorded.", version.get()));
++                        self.autosave_session();
++                    }
++                    Err(error) => self.set_host_error(error),
++                }
++            }
++
++            let go = ui.add_enabled(
++                has_proposal && provider_ready && !writer_active,
++                egui::Button::new("Go"),
++            );
++            if go.clicked() {
++                match self.host.start_run(&self.session_id, &self.selected_provider) {
++                    Ok(run) => {
++                        self.status = Some(format!(
++                            "Run {run} started from the current immutable proposal snapshot."
++                        ));
++                        self.autosave_session();
++                    }
++                    Err(error) => self.set_host_error(error),
++                }
++            }
++            if !provider_ready {
++                ui.small("Go is disabled until the selected runtime adapter reports Ready.");
++            } else if writer_active {
++                ui.small("Another AI run currently owns the project writer role.");
++            }
++        });
++    }
++
++    fn show_permissions(&mut self, ui: &mut egui::Ui) {
++        ui.strong("Project permission policy");
++        ui.small("Managed services are the default. These persistent toggles store capabilities only—never credentials or literal command strings.");
++
++        let mut changed = false;
++        egui::Grid::new("ai_studio_permissions")
++            .num_columns(2)
++            .spacing([16.0, 4.0])
++            .show(ui, |ui| {
++                for (permission, label) in permission_options() {
++                    let mut allowed = self.host.permissions().project_grants().contains(&permission);
++                    if ui.checkbox(&mut allowed, label).changed() {
++                        self.host
++                            .permissions_mut()
++                            .set_project_grant(permission, allowed);
++                        changed = true;
++                    }
++                    ui.small(permission_risk_label(permission));
++                    ui.end_row();
++                }
++            });
++
++        let pending = self
++            .host
++            .permissions()
++            .pending_requests()
++            .cloned()
++            .collect::<Vec<_>>();
++        for request in pending {
++            ui.group(|ui| {
++                ui.strong("Permission escalation");
++                ui.horizontal_wrapped(|ui| {
++                    ui.monospace(request.run_id().as_str());
++                    ui.label(format!("{:?}", request.permission()));
++                });
++                ui.label(request.reason());
++                ui.horizontal(|ui| {
++                    for (scope, label) in [
++                        (ApprovalScope::AllowOnce, "Allow once"),
++                        (ApprovalScope::AllowForRun, "Allow for this run"),
++                        (ApprovalScope::AllowForProject, "Allow for this project"),
++                        (ApprovalScope::Deny, "Deny"),
++                    ] {
++                        if ui.button(label).clicked() {
++                            match self.host.resolve_permission(&self.session_id, request.id(), scope) {
++                                Ok(()) => {
++                                    if scope == ApprovalScope::AllowForProject {
++                                        if let Err(error) = self.host.save_project_policy() {
++                                            self.set_host_error(error);
++                                            return;
++                                        }
++                                    }
++                                    self.status = Some(format!(
++                                        "Permission request {} resolved as {:?}.",
++                                        request.id(),
++                                        scope
++                                    ));
++                                    self.autosave_session();
++                                }
++                                Err(error) => self.set_host_error(error),
++                            }
++                        }
++                    }
++                });
++            });
++        }
++
++        if changed {
++            match self.host.save_project_policy() {
++                Ok(path) => {
++                    self.status = Some(format!("AI permission policy saved to {}", path.display()))
++                }
++                Err(error) => self.set_host_error(error),
++            }
++        }
++        ui.small("GameEngine application policy is not a universal OS sandbox. External processes may still have the user's normal operating-system rights unless their provider or OS supplies stronger isolation.");
++    }
++
++    fn show_runs(&mut self, ui: &mut egui::Ui) {
++        ui.horizontal(|ui| {
++            ui.strong("Run / audit timeline");
++            if let Some((session, run)) = self.host.active_writer() {
++                if session == &self.session_id {
++                    ui.monospace(format!("active: {run}"));
++                }
++            }
++        });
++
++        let active_run = self.host.active_writer().and_then(|(session, run)| {
++            if session == &self.session_id {
++                Some(run.clone())
++            } else {
++                None
++            }
++        });
++        if let Some(run) = active_run {
++            if ui.button("Stop run").clicked() {
++                match self.host.cancel_run(&self.session_id, &run) {
++                    Ok(()) => {
++                        self.status = Some(format!("Run {run} cancelled."));
++                        self.autosave_session();
++                    }

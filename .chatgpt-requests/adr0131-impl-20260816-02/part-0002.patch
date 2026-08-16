@@ -1,0 +1,200 @@
++pub struct AgentProposal {
++    version: ProposalVersion,
++    draft: AgentProposalDraft,
++}
++
++impl AgentProposal {
++    /// Returns the immutable proposal revision.
++    pub const fn version(&self) -> ProposalVersion {
++        self.version
++    }
++
++    /// Returns the proposal body.
++    pub fn draft(&self) -> &AgentProposalDraft {
++        &self.draft
++    }
++}
++
++/// Provider-independent host state for one agent run.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case")]
++pub enum AgentRunState {
++    /// Reading the authoritative project and conversation context.
++    Inspecting,
++    /// Refining an implementation plan inside the approved proposal.
++    Planning,
++    /// Performing managed implementation work.
++    Executing,
++    /// Paused for a human design or permission decision.
++    AwaitingUser,
++    /// Running deterministic validation.
++    Validating,
++    /// Exercising the runtime or required interaction scenario.
++    Playtesting,
++    /// Interpreting deterministic and visual evidence.
++    Evaluating,
++    /// Repairing a recoverable implementation or validation failure.
++    Repairing,
++    /// All applicable completion criteria passed.
++    Completed,
++    /// The run ended because an unrecoverable failure was reported.
++    Failed,
++    /// The user or host cancelled further work.
++    Cancelled,
++}
++
++impl AgentRunState {
++    /// Returns whether no more run work may start from this state.
++    pub const fn is_terminal(self) -> bool {
++        matches!(self, Self::Completed | Self::Failed | Self::Cancelled)
++    }
++
++    fn can_transition_to(self, next: Self) -> bool {
++        if self == next || self.is_terminal() {
++            return false;
++        }
++        match self {
++            Self::Inspecting => matches!(
++                next,
++                Self::Planning | Self::Executing | Self::AwaitingUser | Self::Failed | Self::Cancelled
++            ),
++            Self::Planning => matches!(
++                next,
++                Self::Executing | Self::AwaitingUser | Self::Failed | Self::Cancelled
++            ),
++            Self::Executing => matches!(
++                next,
++                Self::AwaitingUser
++                    | Self::Validating
++                    | Self::Playtesting
++                    | Self::Evaluating
++                    | Self::Repairing
++                    | Self::Failed
++                    | Self::Cancelled
++            ),
++            Self::AwaitingUser => matches!(
++                next,
++                Self::Inspecting
++                    | Self::Planning
++                    | Self::Executing
++                    | Self::Validating
++                    | Self::Playtesting
++                    | Self::Evaluating
++                    | Self::Repairing
++                    | Self::Failed
++                    | Self::Cancelled
++            ),
++            Self::Validating => matches!(
++                next,
++                Self::Playtesting
++                    | Self::Evaluating
++                    | Self::Repairing
++                    | Self::Failed
++                    | Self::Cancelled
++            ),
++            Self::Playtesting => matches!(
++                next,
++                Self::Evaluating | Self::Repairing | Self::Failed | Self::Cancelled
++            ),
++            Self::Evaluating => matches!(
++                next,
++                Self::Repairing | Self::Failed | Self::Cancelled
++            ),
++            Self::Repairing => matches!(
++                next,
++                Self::Inspecting
++                    | Self::Planning
++                    | Self::Executing
++                    | Self::AwaitingUser
++                    | Self::Validating
++                    | Self::Playtesting
++                    | Self::Evaluating
++                    | Self::Failed
++                    | Self::Cancelled
++            ),
++            Self::Completed | Self::Failed | Self::Cancelled => false,
++        }
++    }
++}
++
++/// Immutable input snapshot supplied when Go starts one run.
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++pub struct AgentRunInput {
++    session_id: AgentSessionId,
++    run_id: AgentRunId,
++    provider_id: String,
++    proposal: AgentProposal,
++}
++
++impl AgentRunInput {
++    /// Returns the owning session.
++    pub fn session_id(&self) -> &AgentSessionId {
++        &self.session_id
++    }
++
++    /// Returns the new run identifier.
++    pub fn run_id(&self) -> &AgentRunId {
++        &self.run_id
++    }
++
++    /// Returns the provider selected when Go created this run.
++    pub fn provider_id(&self) -> &str {
++        &self.provider_id
++    }
++
++    /// Returns the exact proposal snapshot used by this run.
++    pub fn proposal(&self) -> &AgentProposal {
++        &self.proposal
++    }
++}
++
++/// Auditable counts that distinguish managed work from elevated escape hatches.
++#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
++pub struct AgentRunAuditSummary {
++    /// Structured authoring mutations committed through MCP/authoring services.
++    pub authoring_operations: u64,
++    /// Source files changed through the managed code workspace.
++    pub code_changes: u64,
++    /// External assets acquired through typed provider services.
++    pub external_acquisitions: u64,
++    /// Raw filesystem operations performed under an elevated capability.
++    pub raw_filesystem_accesses: u64,
++    /// Custom commands executed outside the managed validation allow-list.
++    pub custom_commands: u64,
++    /// Permission escalations requested during the run.
++    pub permission_escalations: u64,
++    /// Deterministic validation results recorded during the run.
++    pub validation_records: u64,
++    /// Runtime playtest observations recorded during the run.
++    pub playtest_records: u64,
++}
++
++/// Operation class used to update one run's audit summary.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum AgentAuditOperation {
++    /// Structured project authoring mutation.
++    AuthoringOperation,
++    /// External asset acquisition.
++    ExternalAcquisition,
++    /// Elevated raw filesystem access.
++    RawFilesystemAccess,
++    /// Elevated custom command execution.
++    CustomCommand,
++}
++
++/// One provider-independent execution record.
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++pub struct AgentRun {
++    input: AgentRunInput,
++    state: AgentRunState,
++    changed_source_files: BTreeSet<PathBuf>,
++    audit: AgentRunAuditSummary,
++}
++
++impl AgentRun {
++    /// Returns the immutable run input.
++    pub fn input(&self) -> &AgentRunInput {
++        &self.input
++    }
++
++    /// Returns the current host lifecycle state.

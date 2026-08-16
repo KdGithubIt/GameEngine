@@ -1,0 +1,170 @@
++                    Err(error) => self.set_host_error(error),
++                }
++            }
++        }
++
++        egui::ScrollArea::vertical()
++            .id_salt("ai_studio_audit")
++            .max_height(170.0)
++            .show(ui, |ui| {
++                if let Some(session) = self.host.session(&self.session_id) {
++                    if session.runs().is_empty() {
++                        ui.weak("No runs yet. Go snapshots the current proposal; provider execution, validation, playtest, repair, and completion all publish structured events here.");
++                    }
++                    for run in session.runs().iter().rev() {
++                        ui.horizontal_wrapped(|ui| {
++                            ui.monospace(run.input().run_id().as_str());
++                            ui.label(run_state_label(run.state()));
++                            ui.small(format!(
++                                "proposal v{}",
++                                run.input().proposal().version().get()
++                            ));
++                        });
++                        let audit = run.audit();
++                        ui.small(format!(
++                            "audit: authoring {} · code {} · assets {} · raw fs {} · custom commands {} · permissions {} · validation {} · playtest {}",
++                            audit.authoring_operations,
++                            audit.code_changes,
++                            audit.external_acquisitions,
++                            audit.raw_filesystem_accesses,
++                            audit.custom_commands,
++                            audit.permission_escalations,
++                            audit.validation_records,
++                            audit.playtest_records
++                        ));
++                    }
++                    for event in session.events().iter().rev().take(12).rev() {
++                        ui.small(format!("#{:04} {:?}", event.sequence(), event.kind()));
++                    }
++                }
++            });
++    }
++
++    fn show_persistence(&mut self, ui: &mut egui::Ui) {
++        ui.strong("Session persistence");
++        let current = self
++            .host
++            .session(&self.session_id)
++            .map_or(SessionVisibility::LocalPrivate, |session| session.visibility());
++        let mut selected = current;
++        ui.horizontal(|ui| {
++            ui.radio_value(
++                &mut selected,
++                SessionVisibility::LocalPrivate,
++                "Local / private",
++            );
++            ui.radio_value(
++                &mut selected,
++                SessionVisibility::ProjectShared,
++                "Project-shared",
++            );
++            if ui.button("Save session").clicked() {
++                match self.host.save_session(&self.session_id) {
++                    Ok(path) => {
++                        self.status = Some(format!("AI session saved to {}", path.display()))
++                    }
++                    Err(error) => self.set_host_error(error),
++                }
++            }
++        });
++        if selected != current {
++            match self.host.set_visibility(&self.session_id, selected) {
++                Ok(()) => match self.host.save_session(&self.session_id) {
++                    Ok(path) => {
++                        self.status = Some(format!(
++                            "Session visibility changed and saved to {}",
++                            path.display()
++                        ))
++                    }
++                    Err(error) => self.set_host_error(error),
++                },
++                Err(error) => self.set_host_error(error),
++            }
++        }
++        ui.small(match selected {
++            SessionVisibility::LocalPrivate => {
++                "Default: conversation/run history stays outside the project working tree."
++            }
++            SessionVisibility::ProjectShared => {
++                "Shared: portable history is written under .gameengine/ai/sessions/<session-id>/; workspaces, credentials, ports, and process state remain local."
++            }
++        });
++    }
++
++    fn autosave_session(&mut self) {
++        if let Err(error) = self.host.save_session(&self.session_id) {
++            self.set_host_error(error);
++        }
++    }
++
++    fn set_host_error(&mut self, error: crate::agent::AgentHostError) {
++        self.status = Some(format!("{}: {}", error.code(), error.message()));
++    }
++}
++
++fn lines(text: &str) -> Vec<String> {
++    text.lines()
++        .map(str::trim)
++        .filter(|line| !line.is_empty())
++        .map(ToOwned::to_owned)
++        .collect()
++}
++
++fn multiline_lines<'a>(text: &'a mut String, rows: usize) -> egui::TextEdit<'a> {
++    egui::TextEdit::multiline(text)
++        .desired_rows(rows)
++        .hint_text("one item per line")
++}
++
++fn provider_state_label(state: &ProviderConnectionState) -> &'static str {
++    match state {
++        ProviderConnectionState::Disconnected => "Disconnected",
++        ProviderConnectionState::AuthenticationRequired => "Authentication required",
++        ProviderConnectionState::Ready => "Ready",
++        ProviderConnectionState::Error(_) => "Error",
++    }
++}
++
++fn run_state_label(state: AgentRunState) -> &'static str {
++    match state {
++        AgentRunState::Inspecting => "Inspecting",
++        AgentRunState::Planning => "Planning",
++        AgentRunState::Executing => "Executing",
++        AgentRunState::AwaitingUser => "Awaiting user",
++        AgentRunState::Validating => "Validating",
++        AgentRunState::Playtesting => "Playtesting",
++        AgentRunState::Evaluating => "Evaluating",
++        AgentRunState::Repairing => "Repairing",
++        AgentRunState::Completed => "Completed",
++        AgentRunState::Failed => "Failed",
++        AgentRunState::Cancelled => "Cancelled",
++    }
++}
++
++fn permission_options() -> [(AgentPermission, &'static str); 10] {
++    [
++        (
++            AgentPermission::Authoring(AuthoringPermission::ProjectDataWrite),
++            "Project authoring writes",
++        ),
++        (
++            AgentPermission::Authoring(AuthoringPermission::AssetWrite),
++            "Asset writes",
++        ),
++        (
++            AgentPermission::Authoring(AuthoringPermission::CodeWrite),
++            "Apply source changes",
++        ),
++        (
++            AgentPermission::Agent(AgentCapability::NetworkAccess),
++            "Network access",
++        ),
++        (
++            AgentPermission::Agent(AgentCapability::ExternalAssetAcquisition),
++            "External asset acquisition",
++        ),
++        (
++            AgentPermission::Agent(AgentCapability::RuntimeLaunch),
++            "Runtime launch",
++        ),
++        (

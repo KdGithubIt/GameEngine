@@ -1,0 +1,132 @@
+diff --git a/crates/editor/src/lib.rs b/crates/editor/src/lib.rs
+index b7daa82..4f1434e 100644
+--- a/crates/editor/src/lib.rs
++++ b/crates/editor/src/lib.rs
+@@ -7,6 +7,8 @@
+ #![warn(missing_docs)]
+ #![warn(rustdoc::broken_intra_doc_links)]
+ 
++pub mod agent;
++pub mod ai_studio;
+ pub mod anim_ux;
+ mod animation_set_editor;
+ pub mod asset_browser;
+@@ -44,6 +46,16 @@ pub mod view_aspect;
+ mod view_resolution;
+ mod workspace;
+ 
++pub use agent::{
++    AgentAuditOperation, AgentCapability, AgentCodeWorkspace, AgentEvent, AgentEventKind, AgentHost,
++    AgentPermission,
++    AgentPermissionBroker, AgentProposal, AgentProposalDraft, AgentRun, AgentRunAuditSummary,
++    AgentRunId, AgentRunState,
++    AgentSession, AgentSessionId, ApprovalScope, AuthenticationClass, CompletionCheck,
++    CompletionCheckKind, CompletionReport, ManagedValidationCommand, ProviderConnectionState,
++    ProviderDescriptor, ProviderRuntimeKind, SessionVisibility,
++};
++pub use ai_studio::AiStudioWindow;
+ pub use anim_ux::{
+     build_retarget_map_inspector_model, build_skeleton_bind_report, find_skeleton_display_name,
+     find_skeleton_record, merge_bone_pairs, rerun_name_matching, resolve_bone_name,
+diff --git a/crates/editor/src/main.rs b/crates/editor/src/main.rs
+index f149b25..1e71e44 100644
+--- a/crates/editor/src/main.rs
++++ b/crates/editor/src/main.rs
+@@ -61,7 +61,7 @@
+ 
+                 ui.separator();
+                 ui.small(
+-                    "All four tools now share this editor process. Runtime Event Timeline keeps its existing live-capture launch flow inside the embedded viewer window.",
++                    "All five tools share this editor process. AI Studio keeps orchestration in GUI-free host contracts while Runtime Event Timeline retains its live-capture flow.",
+                 );
+                 if let Some(status) = &self.authoring_status {
+                     ui.separator();
+@@ -71,7 +71,7 @@
+         self.show_authoring_tools = open;
+ 
+         if let (Some(tool), Some(project)) = (requested_tool, project.as_deref()) {
+-            self.authoring_windows.open(tool);
++            self.authoring_windows.open(tool, project);
+             self.authoring_status = Some(format!(
+                 "Opened {} inside Engine Editor for {}",
+                 tool.label(),
+diff --git a/docs/AI_FRIENDLY_AUTHORING_SPEC.md b/docs/AI_FRIENDLY_AUTHORING_SPEC.md
+index 073da7e..d18bca7 100644
+--- a/docs/AI_FRIENDLY_AUTHORING_SPEC.md
++++ b/docs/AI_FRIENDLY_AUTHORING_SPEC.md
+@@ -68,6 +68,36 @@ project://assets/materials/player
+ project://diagnostics
+ ```
+ 
++### 16.1 AI Studio Agent Orchestration
++
++ADR 0131 defines the Editor's project-scoped AI Studio above the MCP authoring
++interface. AI Studio is conversation-first. Conversation produces versioned
++structured proposals, and **Go** MUST snapshot one exact proposal revision into
++an immutable `AgentRun` input. Continuing conversation MUST NOT silently change
++the goal or acceptance criteria of a running run.
++
++The agent host is an application-layer, GUI-free boundary. It owns session/run
++lifecycle, provider registration, application-level permission policy,
++cancellation, portable event history, managed code workspaces, and completion
++evidence. The AI Studio GUI is a frontend over that host and MUST NOT own
++provider-specific orchestration or unique authoring rules. Agent lifecycle,
++provider authentication, network access, and shell policy MUST NOT be moved into
++`engine-authoring`, runtime ECS crates, or `engine-mcp`.
++
++External agent runtimes and native model backends are distinct abstractions. An
++external coding agent already owns its model/tool loop and MAY own a
++provider-managed authenticated account session. A native GameEngine agent owns
++its tool loop and delegates inference to a `ModelBackend`. Integrations MUST NOT
++force both shapes into one API-key-shaped provider contract. Provider-managed
++credentials remain provider-owned; GameEngine-owned API credentials MUST use a
++secure user secret store and MUST NOT enter project data or portable AI history.
++
++Structured project inspection and authoring mutations from either runtime shape
++continue through the active Editor's project-scoped MCP endpoint. AI Studio MUST
++NOT introduce a second Scene/Graph/Prefab/UI/Material/settings writer or replace
++authoring files directly. Runtime input, frame capture, and visual interaction
++continue through the ADR 0035 AI Agent Bridge.
++
+ ## 17. Permissions and Safety
+ 
+ Authoring clients SHOULD support permission levels equivalent to:
+@@ -98,6 +128,30 @@ Absolute paths, parent traversal, and resolved symlink escapes MUST be rejected
+ unless a separately approved operation explicitly grants broader filesystem
+ access.
+ 
++AI Studio extends this shared authoring vocabulary with application-level agent
++capabilities for network access, external asset acquisition, runtime launch,
++runtime input/control, frame capture, raw workspace filesystem access, and
++arbitrary command execution broader than an engine-managed tool. Permission
++escalation MUST support scopes equivalent to **Allow once**, **Allow for this
++run**, **Allow for this project**, and **Deny** when the operation permits them.
++Persistent project policy stores capability decisions, not credentials or
++brittle literal command strings.
++
++The normal agent path is managed: project authoring uses MCP, source changes use
++a session-scoped code workspace/patch service, external assets use a provider
++service followed by the normal import/manifest pipeline, validation uses an
++engine-managed command allow-list, and runtime observation uses normal Play plus
++the AI Agent Bridge. Raw filesystem writes and arbitrary shell execution are
++escape hatches disabled by default and MUST be separately visible in run audit
++history. Engine-managed formatting, metadata/check, Clippy, tests, and
++documentation MAY execute without granting arbitrary shell access.
++
++GameEngine permission policy is application-level authorization, not a universal
++OS sandbox. If an external process runs with the user's normal OS identity, the
++Editor MUST NOT claim that its toggles prevent every access available to that
++identity. Strong confinement requires a provider or OS sandbox, restricted
++token, container, VM, or equivalent mechanism.
++
+ ## 18. Multi-Agent and Git Collaboration
+ 
+ The project is expected to be edited by multiple humans and AI agents over
+@@ -119,4 +173,41 @@ Contributors SHOULD:
+ - Treat the specification as the shared source of truth rather than relying on
+   chat history.
+ 
++### 18.1 AI Session Concurrency, Code Workspaces, and Persistence
++
++Human Editor work remains available while an AI run executes. Structured
++authoring retains revision/generation stale-apply checks; an agent MUST re-read

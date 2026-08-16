@@ -1,0 +1,185 @@
++    /// Registers or refreshes provider metadata without storing credentials.
++    pub fn register_provider(&mut self, provider: ProviderDescriptor) {
++        self.providers.insert(provider.id.clone(), provider);
++    }
++
++    /// Returns registered provider descriptors in stable identifier order.
++    pub fn providers(&self) -> impl Iterator<Item = &ProviderDescriptor> {
++        self.providers.values()
++    }
++
++    /// Returns one registered provider descriptor.
++    pub fn provider(&self, provider_id: &str) -> Option<&ProviderDescriptor> {
++        self.providers.get(provider_id)
++    }
++
++    /// Returns whether the selected runtime adapter is currently ready for Go.
++    pub fn provider_is_ready(&self, provider_id: &str) -> bool {
++        self.provider(provider_id).is_some_and(|provider| {
++            provider.connection_state == ProviderConnectionState::Ready
++        })
++    }
++
++    /// Creates a local-private conversation for this project.
++    pub fn create_session(&mut self, title: impl Into<String>) -> AgentSessionId {
++        let id = AgentSessionId::generate();
++        self.sessions.insert(
++            id.clone(),
++            AgentSession {
++                id: id.clone(),
++                title: title.into(),
++                visibility: SessionVisibility::LocalPrivate,
++                conversation: Vec::new(),
++                proposals: Vec::new(),
++                runs: Vec::new(),
++                events: Vec::new(),
++            },
++        );
++        id
++    }
++
++    /// Returns one session by identifier.
++    pub fn session(&self, session_id: &AgentSessionId) -> Option<&AgentSession> {
++        self.sessions.get(session_id)
++    }
++
++    /// Returns all sessions currently loaded in the host.
++    pub fn sessions(&self) -> impl Iterator<Item = &AgentSession> {
++        self.sessions.values()
++    }
++
++    fn session_mut(
++        &mut self,
++        session_id: &AgentSessionId,
++    ) -> Result<&mut AgentSession, AgentHostError> {
++        self.sessions.get_mut(session_id).ok_or_else(|| {
++            AgentHostError::new(
++                "agent.session_not_found",
++                format!("AI session `{session_id}` is not loaded"),
++            )
++        })
++    }
++
++    /// Appends a portable conversation message without changing an active run's
++    /// immutable proposal snapshot.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`AgentHostError`] when `session_id` is unknown.
++    pub fn add_message(
++        &mut self,
++        session_id: &AgentSessionId,
++        role: ConversationRole,
++        text: impl Into<String>,
++    ) -> Result<(), AgentHostError> {
++        self.session_mut(session_id)?
++            .conversation
++            .push(ConversationMessage::new(role, text));
++        Ok(())
++    }
++
++    /// Creates the next immutable proposal revision from collaborative conversation.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`AgentHostError`] when `session_id` is unknown.
++    pub fn revise_proposal(
++        &mut self,
++        session_id: &AgentSessionId,
++        draft: AgentProposalDraft,
++    ) -> Result<ProposalVersion, AgentHostError> {
++        let session = self.session_mut(session_id)?;
++        let version = ProposalVersion::new(
++            session
++                .current_proposal()
++                .map_or(1, |proposal| proposal.version().get() + 1),
++        );
++        session.proposals.push(AgentProposal { version, draft });
++        session.emit(AgentEventKind::ProposalUpdated(version));
++        Ok(version)
++    }
++
++    /// Implements Go by snapshotting the current proposal into one immutable run input.
++    ///
++    /// At most one AI writer run may be active for the project. Human Editor
++    /// mutations remain outside this writer role and use their normal revision checks.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`AgentHostError`] when no proposal exists, the selected provider
++    /// is missing or not ready, or another run already owns the project AI writer role.
++    pub fn start_run(
++        &mut self,
++        session_id: &AgentSessionId,
++        provider_id: &str,
++    ) -> Result<AgentRunId, AgentHostError> {
++        if let Some((active_session, active_run)) = &self.active_writer {
++            return Err(AgentHostError::new(
++                "agent.writer_busy",
++                format!(
++                    "AI writer is already held by session `{active_session}` run `{active_run}`"
++                ),
++            ));
++        }
++
++        let provider = self.providers.get(provider_id).ok_or_else(|| {
++            AgentHostError::new(
++                "agent.provider_not_found",
++                format!("agent provider `{provider_id}` is not registered"),
++            )
++        })?;
++        if provider.connection_state != ProviderConnectionState::Ready {
++            return Err(AgentHostError::new(
++                "agent.provider_not_ready",
++                format!(
++                    "agent provider `{provider_id}` is not ready: {:?}",
++                    provider.connection_state
++                ),
++            ));
++        }
++
++        let proposal = self
++            .sessions
++            .get(session_id)
++            .and_then(AgentSession::current_proposal)
++            .cloned()
++            .ok_or_else(|| {
++                AgentHostError::new(
++                    "agent.proposal_required",
++                    "Go requires a current structured proposal",
++                )
++            })?;
++
++        let run_id = AgentRunId::generate();
++        let input = AgentRunInput {
++            session_id: session_id.clone(),
++            run_id: run_id.clone(),
++            provider_id: provider_id.to_owned(),
++            proposal: proposal.clone(),
++        };
++        let session = self.session_mut(session_id)?;
++        session.runs.push(AgentRun {
++            input,
++            state: AgentRunState::Inspecting,
++            changed_source_files: BTreeSet::new(),
++            audit: AgentRunAuditSummary::default(),
++        });
++        session.emit(AgentEventKind::RunStarted {
++            run_id: run_id.clone(),
++            proposal_version: proposal.version(),
++        });
++        self.active_writer = Some((session_id.clone(), run_id.clone()));
++        Ok(run_id)
++    }
++
++    /// Changes one run's resumable host state while preserving legal repair and
++    /// AwaitingUser loops.
++    ///
++    /// Completion is intentionally not available through this method; use
++    /// [`Self::complete_run`] so observed completion evidence is mandatory.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`AgentHostError`] for an unknown run or invalid transition.
++    pub fn transition_run(
++        &mut self,

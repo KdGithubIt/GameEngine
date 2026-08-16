@@ -1,0 +1,174 @@
++    let parent = path.parent().ok_or_else(|| {
++        io::Error::new(io::ErrorKind::InvalidInput, "target path has no parent")
++    })?;
++    fs::create_dir_all(parent)?;
++    let temporary = parent.join(format!(
++        ".{}.tmp-{}",
++        path.file_name()
++            .and_then(|name| name.to_str())
++            .unwrap_or("agent-session"),
++        generated_id("write")
++    ));
++    fs::write(&temporary, bytes)?;
++    match fs::rename(&temporary, path) {
++        Ok(()) => Ok(()),
++        Err(error) if path.exists() => {
++            fs::remove_file(path)?;
++            fs::rename(&temporary, path).map_err(|_| error)
++        }
++        Err(error) => Err(error),
++    }
++}
++
++/// One managed source change prepared in a session-scoped code workspace.
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++pub struct CodeChange {
++    /// Project-relative source path.
++    pub path: PathBuf,
++    /// Baseline contents, or `None` for a newly created file.
++    pub before: Option<String>,
++    /// Workspace contents, or `None` for a deletion.
++    pub after: Option<String>,
++}
++
++/// Run-level source checkpoint stored independently from Git history.
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++pub struct CodeCheckpoint {
++    /// Checkpoint schema version.
++    pub schema_version: u32,
++    /// Run that owns this logical checkpoint.
++    pub run_id: AgentRunId,
++    /// Reviewable changes relative to the session workspace baseline.
++    pub changes: Vec<CodeChange>,
++}
++
++/// Managed, session-scoped isolated source workspace.
++///
++/// The initial implementation snapshots text source paths explicitly selected by
++/// the host. New files may be created inside the workspace, and all live-project
++/// application remains an explicit separate operation.
++#[derive(Debug)]
++pub struct AgentCodeWorkspace {
++    project_root: PathBuf,
++    workspace_root: PathBuf,
++    baseline: BTreeMap<PathBuf, String>,
++}
++
++impl AgentCodeWorkspace {
++    /// Creates an isolated source workspace from project-relative text paths.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`CodeWorkspaceError`] for invalid paths, symlink escapes, I/O,
++    /// or non-UTF-8 source files.
++    pub fn capture(
++        project_root: &Path,
++        workspace_root: &Path,
++        paths: impl IntoIterator<Item = PathBuf>,
++    ) -> Result<Self, CodeWorkspaceError> {
++        fs::create_dir_all(workspace_root).map_err(CodeWorkspaceError::io)?;
++        let project_root = project_root
++            .canonicalize()
++            .map_err(CodeWorkspaceError::io)?;
++        let workspace_root = workspace_root
++            .canonicalize()
++            .map_err(CodeWorkspaceError::io)?;
++        let mut baseline = BTreeMap::new();
++
++        for relative in paths {
++            let relative = validated_relative_path(&relative)?;
++            let source = project_root.join(&relative);
++            let source_canonical = source.canonicalize().map_err(CodeWorkspaceError::io)?;
++            if !source_canonical.starts_with(&project_root) {
++                return Err(CodeWorkspaceError::new(
++                    "agent.code_path_escape",
++                    format!("source path `{}` escapes the project root", relative.display()),
++                ));
++            }
++            let contents = fs::read_to_string(&source_canonical).map_err(CodeWorkspaceError::io)?;
++            let destination = workspace_root.join(&relative);
++            if let Some(parent) = destination.parent() {
++                fs::create_dir_all(parent).map_err(CodeWorkspaceError::io)?;
++            }
++            fs::write(&destination, contents.as_bytes()).map_err(CodeWorkspaceError::io)?;
++            baseline.insert(relative, contents);
++        }
++
++        Ok(Self {
++            project_root,
++            workspace_root,
++            baseline,
++        })
++    }
++
++    /// Returns the local isolated workspace root, never a canonical project path.
++    pub fn workspace_root(&self) -> &Path {
++        &self.workspace_root
++    }
++
++    /// Writes or creates one UTF-8 source file inside the isolated workspace.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`CodeWorkspaceError`] if the path escapes the workspace or I/O fails.
++    pub fn write_file(
++        &self,
++        relative: &Path,
++        contents: &str,
++    ) -> Result<(), CodeWorkspaceError> {
++        let relative = validated_relative_path(relative)?;
++        let target = self.workspace_root.join(&relative);
++        let parent = target.parent().ok_or_else(|| {
++            CodeWorkspaceError::new("agent.code_path_invalid", "source path has no parent")
++        })?;
++        fs::create_dir_all(parent).map_err(CodeWorkspaceError::io)?;
++        ensure_under_root(parent, &self.workspace_root)?;
++        fs::write(target, contents.as_bytes()).map_err(CodeWorkspaceError::io)
++    }
++
++    /// Removes one source file from the isolated workspace without touching the live project.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`CodeWorkspaceError`] when the path is invalid or removal fails.
++    pub fn remove_file(&self, relative: &Path) -> Result<(), CodeWorkspaceError> {
++        let relative = validated_relative_path(relative)?;
++        let target = self.workspace_root.join(relative);
++        if target.exists() {
++            fs::remove_file(target).map_err(CodeWorkspaceError::io)?;
++        }
++        Ok(())
++    }
++
++    /// Returns a reviewable source diff represented as before/after UTF-8 content.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`CodeWorkspaceError`] if the isolated workspace cannot be inspected safely.
++    pub fn preview_changes(&self) -> Result<Vec<CodeChange>, CodeWorkspaceError> {
++        let current = collect_workspace_text(&self.workspace_root)?;
++        let mut paths = self
++            .baseline
++            .keys()
++            .chain(current.keys())
++            .cloned()
++            .collect::<BTreeSet<_>>();
++        let mut changes = Vec::new();
++        for path in std::mem::take(&mut paths) {
++            let before = self.baseline.get(&path).cloned();
++            let after = current.get(&path).cloned();
++            if before != after {
++                changes.push(CodeChange { path, before, after });
++            }
++        }
++        Ok(changes)
++    }
++
++    /// Writes one run checkpoint beneath the local workspace history directory.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`CodeWorkspaceError`] if changes cannot be inspected or persisted.
++    pub fn checkpoint(&self, run_id: &AgentRunId) -> Result<PathBuf, CodeWorkspaceError> {
++        let checkpoint = CodeCheckpoint {
++            schema_version: CODE_CHECKPOINT_SCHEMA_VERSION,

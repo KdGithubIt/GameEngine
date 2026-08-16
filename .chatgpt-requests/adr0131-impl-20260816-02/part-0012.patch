@@ -1,0 +1,170 @@
++                .is_some_and(|check| !check.applicable || check.passed)
++        })
++    }
++
++    /// Returns a compact explanation of missing or failing completion evidence.
++    pub fn unresolved_summary(&self) -> String {
++        let required = [
++            CompletionCheckKind::AcceptanceCriteria,
++            CompletionCheckKind::AuthoringValidation,
++            CompletionCheckKind::SourceValidation,
++            CompletionCheckKind::PlayLaunch,
++            CompletionCheckKind::FrameCapture,
++            CompletionCheckKind::VisualEvaluation,
++            CompletionCheckKind::InteractionScenarios,
++        ];
++        let unresolved = required
++            .into_iter()
++            .filter_map(|kind| match self.check(kind) {
++                None => Some(format!("{kind:?}:missing")),
++                Some(check) if check.applicable && !check.passed => Some(format!("{kind:?}:failed")),
++                Some(_) => None,
++            })
++            .collect::<Vec<_>>();
++        if unresolved.is_empty() {
++            "none".to_owned()
++        } else {
++            unresolved.join(", ")
++        }
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use std::time::Duration;
++
++    fn temp_root(name: &str) -> PathBuf {
++        let root = std::env::temp_dir().join(format!(
++            "gameengine-agent-test-{name}-{}",
++            generated_id("tmp")
++        ));
++        fs::create_dir_all(&root).expect("test root must be creatable");
++        root
++    }
++
++    fn draft(goal: &str) -> AgentProposalDraft {
++        AgentProposalDraft {
++            goal: goal.to_owned(),
++            acceptance_criteria: vec!["it works".to_owned()],
++            ..AgentProposalDraft::default()
++        }
++    }
++
++    fn register_ready_provider(host: &mut AgentHost) {
++        host.register_provider(ProviderDescriptor {
++            id: "test-provider".to_owned(),
++            display_name: "Test Provider".to_owned(),
++            runtime_kind: ProviderRuntimeKind::ExternalAgentRuntime,
++            authentication: AuthenticationClass::LocalNoAuth,
++            connection_state: ProviderConnectionState::Ready,
++        });
++    }
++
++    #[test]
++    fn go_snapshots_exact_proposal_version() {
++        let project = temp_root("proposal-project");
++        let local = temp_root("proposal-local");
++        let mut host = AgentHost::new(project, local);
++        register_ready_provider(&mut host);
++        let session = host.create_session("test");
++        host.revise_proposal(&session, draft("first"))
++            .expect("proposal must revise");
++        let run = host
++            .start_run(&session, "test-provider")
++            .expect("Go must start");
++        host.revise_proposal(&session, draft("second"))
++            .expect("later conversation may revise proposal");
++
++        let session = host.session(&session).expect("session must remain loaded");
++        assert_eq!(session.current_proposal().unwrap().version().get(), 2);
++        assert_eq!(session.run(&run).unwrap().input().provider_id(), "test-provider");
++        assert_eq!(
++            session.run(&run).unwrap().input().proposal().version().get(),
++            1
++        );
++        assert_eq!(
++            session.run(&run).unwrap().input().proposal().draft().goal,
++            "first"
++        );
++    }
++
++    #[test]
++    fn only_one_ai_writer_run_is_active() {
++        let project = temp_root("writer-project");
++        let local = temp_root("writer-local");
++        let mut host = AgentHost::new(project, local);
++        register_ready_provider(&mut host);
++        let first = host.create_session("first");
++        let second = host.create_session("second");
++        host.revise_proposal(&first, draft("one")).unwrap();
++        host.revise_proposal(&second, draft("two")).unwrap();
++        let run = host.start_run(&first, "test-provider").unwrap();
++
++        let error = host
++            .start_run(&second, "test-provider")
++            .expect_err("second writer must wait");
++        assert_eq!(error.code(), "agent.writer_busy");
++        host.cancel_run(&first, &run).unwrap();
++        assert!(host.start_run(&second, "test-provider").is_ok());
++    }
++
++    #[test]
++    fn repair_and_awaiting_user_transitions_are_resumable() {
++        let project = temp_root("state-project");
++        let local = temp_root("state-local");
++        let mut host = AgentHost::new(project, local);
++        register_ready_provider(&mut host);
++        let session = host.create_session("state");
++        host.revise_proposal(&session, draft("state")).unwrap();
++        let run = host.start_run(&session, "test-provider").unwrap();
++
++        host.transition_run(&session, &run, AgentRunState::Planning)
++            .unwrap();
++        host.transition_run(&session, &run, AgentRunState::Executing)
++            .unwrap();
++        host.transition_run(&session, &run, AgentRunState::Repairing)
++            .unwrap();
++        host.transition_run(&session, &run, AgentRunState::AwaitingUser)
++            .unwrap();
++        host.transition_run(&session, &run, AgentRunState::Executing)
++            .unwrap();
++    }
++
++    #[test]
++    fn permission_scopes_are_distinct() {
++        let run = AgentRunId::generate();
++        let permission = AgentPermission::Agent(AgentCapability::NetworkAccess);
++        let mut broker = AgentPermissionBroker::default();
++        let request = broker
++            .request(run.clone(), permission, "search provider")
++            .unwrap();
++        broker.resolve(&request, ApprovalScope::AllowOnce).unwrap();
++        assert!(broker.authorize(&run, permission));
++        assert!(!broker.authorize(&run, permission));
++
++        let request = broker
++            .request(run.clone(), permission, "search again")
++            .unwrap();
++        broker
++            .resolve(&request, ApprovalScope::AllowForRun)
++            .unwrap();
++        assert!(broker.authorize(&run, permission));
++        broker.finish_run(&run);
++        assert!(!broker.authorize(&run, permission));
++    }
++
++    #[test]
++    fn shared_session_is_written_under_reserved_project_metadata() {
++        let project = temp_root("shared-project");
++        let local = temp_root("shared-local");
++        let mut host = AgentHost::new(project.clone(), local);
++        let session = host.create_session("shared");
++        host.add_message(&session, ConversationRole::User, "build a game")
++            .unwrap();
++        host.set_visibility(&session, SessionVisibility::ProjectShared)
++            .unwrap();
++        let path = host.save_session(&session).unwrap();
++
++        assert!(path.starts_with(project.join(".gameengine/ai/sessions")));
++        let text = fs::read_to_string(path).unwrap();

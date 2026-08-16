@@ -1,0 +1,189 @@
++        session_id: &AgentSessionId,
++        run_id: &AgentRunId,
++        next: AgentRunState,
++    ) -> Result<(), AgentHostError> {
++        if next == AgentRunState::Completed {
++            return Err(AgentHostError::new(
++                "agent.completion_evidence_required",
++                "use complete_run so completion evidence is evaluated",
++            ));
++        }
++
++        let session = self.session_mut(session_id)?;
++        let run = session.run_mut(run_id).ok_or_else(|| {
++            AgentHostError::new(
++                "agent.run_not_found",
++                format!("agent run `{run_id}` does not exist"),
++            )
++        })?;
++        let from = run.state;
++        if !from.can_transition_to(next) {
++            return Err(AgentHostError::new(
++                "agent.invalid_run_transition",
++                format!("cannot transition run `{run_id}` from {from:?} to {next:?}"),
++            ));
++        }
++        run.state = next;
++        session.emit(AgentEventKind::StateChanged {
++            run_id: run_id.clone(),
++            from,
++            to: next,
++        });
++        if next.is_terminal() {
++            self.finish_writer(session_id, run_id);
++        }
++        Ok(())
++    }
++
++    /// Records a source path as run provenance after a managed code service applies it.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`AgentHostError`] when the session or run is unknown.
++    pub fn record_changed_source_file(
++        &mut self,
++        session_id: &AgentSessionId,
++        run_id: &AgentRunId,
++        path: PathBuf,
++    ) -> Result<(), AgentHostError> {
++        let path = validated_relative_path(&path).map_err(|error| {
++            AgentHostError::new("agent.code_path_invalid", error.to_string())
++        })?;
++        let session = self.session_mut(session_id)?;
++        let run = session.run_mut(run_id).ok_or_else(|| {
++            AgentHostError::new(
++                "agent.run_not_found",
++                format!("agent run `{run_id}` does not exist"),
++            )
++        })?;
++        if run.changed_source_files.insert(path) {
++            run.audit.code_changes += 1;
++        }
++        Ok(())
++    }
++
++    /// Records one managed or elevated operation in the run audit summary.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`AgentHostError`] when the session or run is unknown.
++    pub fn record_audit_operation(
++        &mut self,
++        session_id: &AgentSessionId,
++        run_id: &AgentRunId,
++        operation: AgentAuditOperation,
++    ) -> Result<(), AgentHostError> {
++        let session = self.session_mut(session_id)?;
++        let run = session.run_mut(run_id).ok_or_else(|| {
++            AgentHostError::new(
++                "agent.run_not_found",
++                format!("agent run `{run_id}` does not exist"),
++            )
++        })?;
++        match operation {
++            AgentAuditOperation::AuthoringOperation => run.audit.authoring_operations += 1,
++            AgentAuditOperation::ExternalAcquisition => run.audit.external_acquisitions += 1,
++            AgentAuditOperation::RawFilesystemAccess => run.audit.raw_filesystem_accesses += 1,
++            AgentAuditOperation::CustomCommand => run.audit.custom_commands += 1,
++        }
++        Ok(())
++    }
++
++    /// Records a deterministic validation result and publishes a structured event.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`AgentHostError`] when the session or run is unknown.
++    pub fn record_validation(
++        &mut self,
++        session_id: &AgentSessionId,
++        run_id: &AgentRunId,
++        name: impl Into<String>,
++        passed: bool,
++    ) -> Result<(), AgentHostError> {
++        let name = name.into();
++        let session = self.session_mut(session_id)?;
++        let run = session.run_mut(run_id).ok_or_else(|| {
++            AgentHostError::new(
++                "agent.run_not_found",
++                format!("agent run `{run_id}` does not exist"),
++            )
++        })?;
++        run.audit.validation_records += 1;
++        session.emit(AgentEventKind::Validation { name, passed });
++        Ok(())
++    }
++
++    /// Records a runtime playtest result and publishes a structured event.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`AgentHostError`] when the session or run is unknown.
++    pub fn record_playtest(
++        &mut self,
++        session_id: &AgentSessionId,
++        run_id: &AgentRunId,
++        scenario: impl Into<String>,
++        passed: bool,
++    ) -> Result<(), AgentHostError> {
++        let scenario = scenario.into();
++        let session = self.session_mut(session_id)?;
++        let run = session.run_mut(run_id).ok_or_else(|| {
++            AgentHostError::new(
++                "agent.run_not_found",
++                format!("agent run `{run_id}` does not exist"),
++            )
++        })?;
++        run.audit.playtest_records += 1;
++        session.emit(AgentEventKind::Playtest { scenario, passed });
++        Ok(())
++    }
++
++    /// Requests an unavailable permission and records it in the semantic audit history.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`AgentHostError`] when the session or run is unknown.
++    pub fn request_permission(
++        &mut self,
++        session_id: &AgentSessionId,
++        run_id: &AgentRunId,
++        permission: AgentPermission,
++        reason: impl Into<String>,
++    ) -> Result<Option<PermissionRequestId>, AgentHostError> {
++        if self
++            .session(session_id)
++            .and_then(|session| session.run(run_id))
++            .is_none()
++        {
++            return Err(AgentHostError::new(
++                "agent.run_not_found",
++                format!("agent run `{run_id}` does not exist"),
++            ));
++        }
++        let request = self
++            .permissions
++            .request(run_id.clone(), permission, reason.into());
++        if let Some(request_id) = &request {
++            let session = self.session_mut(session_id)?;
++            if let Some(run) = session.run_mut(run_id) {
++                run.audit.permission_escalations += 1;
++            }
++            session.emit(AgentEventKind::PermissionRequested(request_id.clone()));
++        }
++        Ok(request)
++    }
++
++    /// Applies a human permission decision and records it in the audit timeline.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`AgentHostError`] when the request or session is unknown.
++    pub fn resolve_permission(
++        &mut self,
++        session_id: &AgentSessionId,
++        request_id: &PermissionRequestId,
++        scope: ApprovalScope,
++    ) -> Result<(), AgentHostError> {
++        self.permissions.resolve(request_id, scope)?;
++        self.session_mut(session_id)?

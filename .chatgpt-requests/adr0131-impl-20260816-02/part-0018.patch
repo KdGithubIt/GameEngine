@@ -1,0 +1,166 @@
++            AgentPermission::Agent(AgentCapability::RuntimeControl),
++            "Runtime input / control",
++        ),
++        (
++            AgentPermission::Agent(AgentCapability::FrameCapture),
++            "Frame capture",
++        ),
++        (
++            AgentPermission::Agent(AgentCapability::WorkspaceFilesystem),
++            "Raw workspace filesystem",
++        ),
++        (
++            AgentPermission::Agent(AgentCapability::ArbitraryCommandExecution),
++            "Arbitrary command execution",
++        ),
++    ]
++}
++
++fn permission_risk_label(permission: AgentPermission) -> &'static str {
++    match permission {
++        AgentPermission::Authoring(AuthoringPermission::ProjectDataWrite) => "Managed via MCP",
++        AgentPermission::Authoring(AuthoringPermission::AssetWrite) => "Managed asset pipeline",
++        AgentPermission::Authoring(AuthoringPermission::CodeWrite) => "Managed code workspace",
++        AgentPermission::Authoring(AuthoringPermission::Read)
++        | AgentPermission::Authoring(AuthoringPermission::Preview) => "Structured authoring",
++        AgentPermission::Authoring(AuthoringPermission::CommandExec) => "Legacy authoring exec",
++        AgentPermission::Agent(AgentCapability::NetworkAccess) => "External side effect",
++        AgentPermission::Agent(AgentCapability::ExternalAssetAcquisition) => {
++            "Provider + import pipeline"
++        }
++        AgentPermission::Agent(AgentCapability::RuntimeLaunch) => "Managed runtime",
++        AgentPermission::Agent(AgentCapability::RuntimeControl) => "AI Agent Bridge",
++        AgentPermission::Agent(AgentCapability::FrameCapture) => "AI Agent Bridge",
++        AgentPermission::Agent(AgentCapability::WorkspaceFilesystem) => "Escape hatch",
++        AgentPermission::Agent(AgentCapability::ArbitraryCommandExecution) => "Escape hatch",
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn proposal_line_parser_discards_empty_lines() {
++        assert_eq!(
++            lines("first\n\n second \n"),
++            vec!["first".to_owned(), "second".to_owned()]
++        );
++    }
++
++    #[test]
++    fn dangerous_permissions_are_labeled_as_escape_hatches() {
++        assert_eq!(
++            permission_risk_label(AgentPermission::Agent(
++                AgentCapability::ArbitraryCommandExecution
++            )),
++            "Escape hatch"
++        );
++    }
++}
+diff --git a/crates/editor/src/authoring_tools.rs b/crates/editor/src/authoring_tools.rs
+index 7f9126b..2fcba50 100644
+--- a/crates/editor/src/authoring_tools.rs
++++ b/crates/editor/src/authoring_tools.rs
+@@ -3,6 +3,8 @@
+ /// Modeless authoring windows available from the main editor shell.
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+ pub enum AuthoringTool {
++    /// Conversational AI creation, proposal, run, permissions, and audit surface.
++    AiStudio,
+     /// Startup, Active, Recovery, and Cooldown timeline authoring.
+     AbilityDesigner,
+     /// Live combat-hit and animation-event inspection.
+@@ -15,7 +17,8 @@ pub enum AuthoringTool {
+ 
+ impl AuthoringTool {
+     /// Stable display order used by editor menus.
+-    pub const ALL: [Self; 4] = [
++    pub const ALL: [Self; 5] = [
++        Self::AiStudio,
+         Self::AbilityDesigner,
+         Self::RuntimeEventTimeline,
+         Self::UiContractDesigner,
+@@ -25,6 +28,7 @@ impl AuthoringTool {
+     /// Human-readable tool name.
+     pub const fn label(self) -> &'static str {
+         match self {
++            Self::AiStudio => "AI Studio",
+             Self::AbilityDesigner => "Ability Designer",
+             Self::RuntimeEventTimeline => "Runtime Event Timeline",
+             Self::UiContractDesigner => "UI Contract Designer",
+@@ -35,6 +39,9 @@ impl AuthoringTool {
+     /// Short description presented in the main editor.
+     pub const fn description(self) -> &'static str {
+         match self {
++            Self::AiStudio => {
++                "Discuss a game, version the proposal, authorize Go, and inspect agent progress."
++            }
+             Self::AbilityDesigner => {
+                 "Author reusable Startup, Active, Recovery, and Cooldown timings."
+             }
+@@ -57,10 +64,11 @@ mod tests {
+ 
+     #[test]
+     fn catalog_order_and_labels_are_stable() {
+-        assert_eq!(AuthoringTool::ALL.len(), 4);
+-        assert_eq!(AuthoringTool::ALL[0].label(), "Ability Designer");
++        assert_eq!(AuthoringTool::ALL.len(), 5);
++        assert_eq!(AuthoringTool::ALL[0].label(), "AI Studio");
++        assert_eq!(AuthoringTool::ALL[1].label(), "Ability Designer");
+         assert_eq!(
+-            AuthoringTool::ALL[3].label(),
++            AuthoringTool::ALL[4].label(),
+             "Advanced Geometry Designer"
+         );
+     }
+diff --git a/crates/editor/src/authoring_windows.rs b/crates/editor/src/authoring_windows.rs
+index 9e81065..b43ab9f 100644
+--- a/crates/editor/src/authoring_windows.rs
++++ b/crates/editor/src/authoring_windows.rs
+@@ -2,6 +2,7 @@
+ 
+ use crate::authoring_tools::AuthoringTool;
+ use eframe::{egui, Frame};
++use std::path::Path;
+ 
+ /// Owns the state and visibility of every project authoring window.
+ ///
+@@ -9,6 +10,8 @@ use eframe::{egui, Frame};
+ /// therefore never starts Cargo or a sibling executable.
+ #[derive(Default)]
+ pub struct AuthoringWindows {
++    ai_studio_open: bool,
++    ai_studio: Option<crate::ai_studio::AiStudioWindow>,
+     ability_open: bool,
+     runtime_event_open: bool,
+     ui_contract_open: bool,
+@@ -19,11 +22,16 @@ pub struct AuthoringWindows {
+     advanced_geometry: advanced_geometry::EmbeddedWindow,
+ }
+ 
+-
+ impl AuthoringWindows {
+     /// Makes the selected authoring window visible.
+-    pub fn open(&mut self, tool: AuthoringTool) {
++    pub fn open(&mut self, tool: AuthoringTool, project_root: &Path) {
+         match tool {
++            AuthoringTool::AiStudio => {
++                self.ai_studio.get_or_insert_with(|| {
++                    crate::ai_studio::AiStudioWindow::new(project_root.to_path_buf())
++                });
++                self.ai_studio_open = true;
++            }
+             AuthoringTool::AbilityDesigner => self.ability_open = true,
+             AuthoringTool::RuntimeEventTimeline => self.runtime_event_open = true,
+             AuthoringTool::UiContractDesigner => self.ui_contract_open = true,
+@@ -33,6 +41,9 @@ impl AuthoringWindows {
+ 
+     /// Draws every visible authoring window into the current editor frame.
+     pub fn show(&mut self, context: &egui::Context, frame: &mut Frame) {
++        if let Some(ai_studio) = self.ai_studio.as_mut() {
++            ai_studio.show(context, &mut self.ai_studio_open);
++        }
+         self.ability
+             .show(context, frame, &mut self.ability_open);
+         self.runtime_event

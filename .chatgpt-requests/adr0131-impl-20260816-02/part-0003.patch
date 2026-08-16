@@ -1,0 +1,210 @@
++    pub const fn state(&self) -> AgentRunState {
++        self.state
++    }
++
++    /// Returns source files attributed to this run.
++    pub fn changed_source_files(&self) -> &BTreeSet<PathBuf> {
++        &self.changed_source_files
++    }
++
++    /// Returns the current audit counters for managed and elevated operations.
++    pub fn audit(&self) -> &AgentRunAuditSummary {
++        &self.audit
++    }
++}
++
++/// Provider-independent structured event shown in the AI Studio audit timeline.
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case", tag = "type", content = "detail")]
++pub enum AgentEventKind {
++    /// A new proposal version became current.
++    ProposalUpdated(ProposalVersion),
++    /// Go created a run from the specified proposal version.
++    RunStarted {
++        /// New run identifier.
++        run_id: AgentRunId,
++        /// Proposal revision frozen into the run input.
++        proposal_version: ProposalVersion,
++    },
++    /// Host lifecycle state changed.
++    StateChanged {
++        /// Affected run.
++        run_id: AgentRunId,
++        /// Previous state.
++        from: AgentRunState,
++        /// New state.
++        to: AgentRunState,
++    },
++    /// One semantic step started.
++    StepStarted(String),
++    /// One semantic step completed.
++    StepCompleted(String),
++    /// A managed or provider tool call was issued.
++    ToolCall(String),
++    /// Reviewable project or source changes were prepared.
++    ChangePreview(String),
++    /// Reviewable changes were applied through their owning service.
++    ChangeCommitted(String),
++    /// A permission escalation requires a human response.
++    PermissionRequested(PermissionRequestId),
++    /// A permission escalation was resolved.
++    PermissionResolved {
++        /// Request identifier.
++        request_id: PermissionRequestId,
++        /// User-selected approval scope.
++        scope: ApprovalScope,
++    },
++    /// Deterministic validation result.
++    Validation {
++        /// Validator or validation group.
++        name: String,
++        /// Whether the validator passed.
++        passed: bool,
++    },
++    /// Runtime playtest observation.
++    Playtest {
++        /// Scenario description.
++        scenario: String,
++        /// Whether the scenario passed.
++        passed: bool,
++    },
++    /// A recoverable problem triggered another repair cycle.
++    Repair(String),
++    /// The run was cancelled and no further work may start.
++    Cancelled(AgentRunId),
++    /// The run failed irrecoverably.
++    Failed {
++        /// Failed run.
++        run_id: AgentRunId,
++        /// Human-readable failure summary.
++        message: String,
++    },
++    /// The run completed after all applicable completion gates passed.
++    Completed(AgentRunId),
++}
++
++/// Sequenced event stored in one session's portable audit history.
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++pub struct AgentEvent {
++    sequence: u64,
++    kind: AgentEventKind,
++}
++
++impl AgentEvent {
++    /// Returns the monotonic session event number.
++    pub const fn sequence(&self) -> u64 {
++        self.sequence
++    }
++
++    /// Returns the structured event payload.
++    pub fn kind(&self) -> &AgentEventKind {
++        &self.kind
++    }
++}
++
++/// Whether one AI session remains user-private or is deliberately shared with
++/// the project.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case")]
++pub enum SessionVisibility {
++    /// Store outside the project working tree in user-local application data.
++    LocalPrivate,
++    /// Store portable history beneath `.gameengine/ai/sessions`.
++    ProjectShared,
++}
++
++impl Default for SessionVisibility {
++    fn default() -> Self {
++        Self::LocalPrivate
++    }
++}
++
++/// Portable project-scoped conversation, proposal, run, and audit history.
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++pub struct AgentSession {
++    id: AgentSessionId,
++    title: String,
++    visibility: SessionVisibility,
++    conversation: Vec<ConversationMessage>,
++    proposals: Vec<AgentProposal>,
++    runs: Vec<AgentRun>,
++    events: Vec<AgentEvent>,
++}
++
++impl AgentSession {
++    /// Returns the session identifier.
++    pub fn id(&self) -> &AgentSessionId {
++        &self.id
++    }
++
++    /// Returns the current display title.
++    pub fn title(&self) -> &str {
++        &self.title
++    }
++
++    /// Returns the persistence visibility.
++    pub const fn visibility(&self) -> SessionVisibility {
++        self.visibility
++    }
++
++    /// Returns the portable conversation history.
++    pub fn conversation(&self) -> &[ConversationMessage] {
++        &self.conversation
++    }
++
++    /// Returns every proposal revision in chronological order.
++    pub fn proposals(&self) -> &[AgentProposal] {
++        &self.proposals
++    }
++
++    /// Returns the current proposal revision, if conversation has produced one.
++    pub fn current_proposal(&self) -> Option<&AgentProposal> {
++        self.proposals.last()
++    }
++
++    /// Returns every run in creation order.
++    pub fn runs(&self) -> &[AgentRun] {
++        &self.runs
++    }
++
++    /// Returns the provider-independent event timeline.
++    pub fn events(&self) -> &[AgentEvent] {
++        &self.events
++    }
++
++    /// Finds one run by stable identifier.
++    pub fn run(&self, run_id: &AgentRunId) -> Option<&AgentRun> {
++        self.runs.iter().find(|run| run.input.run_id() == run_id)
++    }
++
++    fn run_mut(&mut self, run_id: &AgentRunId) -> Option<&mut AgentRun> {
++        self.runs
++            .iter_mut()
++            .find(|run| run.input.run_id() == run_id)
++    }
++
++    fn emit(&mut self, kind: AgentEventKind) {
++        let sequence = self.events.last().map_or(1, |event| event.sequence + 1);
++        self.events.push(AgentEvent { sequence, kind });
++    }
++}
++
++/// Distinguishes an external agent process from a GameEngine-owned model loop.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case")]
++pub enum ProviderRuntimeKind {
++    /// Provider-managed process already owns its agent loop.
++    ExternalAgentRuntime,
++    /// GameEngine owns the agent loop and delegates inference to a model backend.
++    NativeAgentRuntime,
++}
++
++/// Authentication lifecycle owned by one provider.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case")]
++pub enum AuthenticationClass {
++    /// Provider CLI or application owns its authenticated account session.
++    ProviderManagedSession,
++    /// GameEngine must obtain an API credential from a secure user secret store.
++    ApiCredential,
++    /// Local backend requires no remote authentication.

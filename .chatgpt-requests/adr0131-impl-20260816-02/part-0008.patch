@@ -1,0 +1,172 @@
++        let bytes = serde_json::to_vec_pretty(&PersistedProjectPolicy {
++            schema_version: AGENT_POLICY_SCHEMA_VERSION,
++            project_grants: self.permissions.project_grants().clone(),
++        })
++        .map_err(|error| AgentHostError::new("agent.policy_serialize_failed", error.to_string()))?;
++        atomic_write(&path, &bytes)
++            .map_err(|error| AgentHostError::new("agent.policy_save_failed", error.to_string()))?;
++        Ok(path)
++    }
++
++    fn project_policy_path(&self) -> PathBuf {
++        self.local_store_root
++            .join(project_storage_key(&self.project_root))
++            .join("policy.json")
++    }
++
++    /// Changes whether one session is local-private or project-shared.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`AgentHostError`] when the session is unknown.
++    pub fn set_visibility(
++        &mut self,
++        session_id: &AgentSessionId,
++        visibility: SessionVisibility,
++    ) -> Result<(), AgentHostError> {
++        self.session_mut(session_id)?.visibility = visibility;
++        Ok(())
++    }
++
++    /// Persists a loaded session atomically to its configured local/private or
++    /// project-shared location.
++    ///
++    /// Credentials are not represented by any persisted AI session type. The
++    /// caller remains responsible for not inserting secret material into free-form
++    /// user conversation text before deliberately sharing a session.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`AgentHostError`] for an unknown session or persistence failure.
++    pub fn save_session(&self, session_id: &AgentSessionId) -> Result<PathBuf, AgentHostError> {
++        let session = self.session(session_id).ok_or_else(|| {
++            AgentHostError::new(
++                "agent.session_not_found",
++                format!("AI session `{session_id}` is not loaded"),
++            )
++        })?;
++        let path = self.session_path(session);
++        let contents = serde_json::to_string_pretty(&PersistedAgentSession {
++            schema_version: AI_SESSION_SCHEMA_VERSION,
++            session: session.clone(),
++        })
++        .map_err(|error| AgentHostError::new("agent.session_serialize_failed", error.to_string()))?;
++        atomic_write(&path, contents.as_bytes())
++            .map_err(|error| AgentHostError::new("agent.session_save_failed", error.to_string()))?;
++        Ok(path)
++    }
++
++    /// Restores the most recently modified local-private or project-shared session.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`AgentHostError`] when session discovery or loading fails.
++    pub fn restore_latest_session(&mut self) -> Result<Option<AgentSessionId>, AgentHostError> {
++        let mut candidates = Vec::new();
++        let local_sessions = self
++            .local_store_root
++            .join(project_storage_key(&self.project_root))
++            .join("sessions");
++        collect_session_candidates(&local_sessions, false, &mut candidates)?;
++        let shared_sessions = self
++            .project_root
++            .join(".gameengine")
++            .join("ai")
++            .join("sessions");
++        collect_session_candidates(&shared_sessions, true, &mut candidates)?;
++
++        let Some((_, path)) = candidates.into_iter().max_by_key(|candidate| candidate.0) else {
++            return Ok(None);
++        };
++        self.load_session(&path).map(Some)
++    }
++
++    /// Loads one persisted portable session and inserts it into this project host.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`AgentHostError`] when the file cannot be read or uses a different schema.
++    pub fn load_session(&mut self, path: &Path) -> Result<AgentSessionId, AgentHostError> {
++        let bytes = fs::read(path)
++            .map_err(|error| AgentHostError::new("agent.session_load_failed", error.to_string()))?;
++        let record: PersistedAgentSession = serde_json::from_slice(&bytes).map_err(|error| {
++            AgentHostError::new("agent.session_parse_failed", error.to_string())
++        })?;
++        if record.schema_version != AI_SESSION_SCHEMA_VERSION {
++            return Err(AgentHostError::new(
++                "agent.session_schema_unsupported",
++                format!(
++                    "AI session schema {} is unsupported; expected {}",
++                    record.schema_version, AI_SESSION_SCHEMA_VERSION
++                ),
++            ));
++        }
++        let id = record.session.id.clone();
++        self.sessions.insert(id.clone(), record.session);
++        Ok(id)
++    }
++
++    fn session_path(&self, session: &AgentSession) -> PathBuf {
++        match session.visibility {
++            SessionVisibility::LocalPrivate => self
++                .local_store_root
++                .join(project_storage_key(&self.project_root))
++                .join("sessions")
++                .join(format!("{}.json", session.id)),
++            SessionVisibility::ProjectShared => self
++                .project_root
++                .join(".gameengine")
++                .join("ai")
++                .join("sessions")
++                .join(session.id.as_str())
++                .join("session.json"),
++        }
++    }
++}
++
++fn collect_session_candidates(
++    root: &Path,
++    nested: bool,
++    output: &mut Vec<(std::time::SystemTime, PathBuf)>,
++) -> Result<(), AgentHostError> {
++    if !root.exists() {
++        return Ok(());
++    }
++    let entries = fs::read_dir(root)
++        .map_err(|error| AgentHostError::new("agent.session_discovery_failed", error.to_string()))?;
++    for entry in entries {
++        let entry = entry
++            .map_err(|error| AgentHostError::new("agent.session_discovery_failed", error.to_string()))?;
++        let path = if nested {
++            entry.path().join("session.json")
++        } else {
++            entry.path()
++        };
++        if !path.is_file()
++            || path
++                .file_name()
++                .and_then(|name| name.to_str())
++                .is_some_and(|name| name.starts_with('.'))
++            || path.extension().and_then(|extension| extension.to_str()) != Some("json")
++        {
++            continue;
++        }
++        let modified = path
++            .metadata()
++            .and_then(|metadata| metadata.modified())
++            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
++        output.push((modified, path));
++    }
++    Ok(())
++}
++
++fn project_storage_key(path: &Path) -> String {
++    let mut hash = 0xcbf29ce484222325u64;
++    for byte in path.to_string_lossy().as_bytes() {
++        hash ^= u64::from(*byte);
++        hash = hash.wrapping_mul(0x100000001b3);
++    }
++    format!("project-{hash:016x}")
++}
++
++fn atomic_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
