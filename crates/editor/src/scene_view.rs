@@ -2173,7 +2173,7 @@ const ANIMATION_PREVIEW_FIXED_STEP_SECONDS: f32 = 1.0 / 60.0;
 ///
 /// Gameplay gravity, velocity integration, collision, scripts, and character
 /// motors are deliberately absent. The optional physics stage is exclusively
-/// the isolated MMD rigid-body system defined by ADR 0096.
+/// the isolated engine-native Secondary Motion system defined by ADR 0112.
 fn install_animation_preview_systems(
     app: &mut engine::App,
     graph_enabled: bool,
@@ -2183,10 +2183,10 @@ fn install_animation_preview_systems(
     if secondary_physics_enabled
         && app
             .world()
-            .get_resource::<engine::MmdPhysicsWorlds>()
+            .get_resource::<engine::SecondaryMotionWorlds>()
             .is_none()
     {
-        app.insert_resource(engine::MmdPhysicsWorlds::default());
+        app.insert_resource(engine::SecondaryMotionWorlds::default());
     }
 
     app.add_fixed_system(engine::rig_pose_clear_transient_system);
@@ -2197,7 +2197,7 @@ fn install_animation_preview_systems(
     app.add_fixed_system(engine::transform_propagation_system);
     app.add_fixed_system(engine::foot_ik_system);
     if secondary_physics_enabled {
-        app.add_fixed_system(engine::mmd_rigid_body_physics_system);
+        app.add_fixed_system(engine::secondary_motion_system);
     }
     app.add_fixed_system(engine::publish_final_rig_pose_system);
     app.add_fixed_system(engine::transform_propagation_system);

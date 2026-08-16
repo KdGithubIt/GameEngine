@@ -745,8 +745,8 @@ mod tests {
         reseat_bodies(&mut state, &[Some(target)]);
 
         let body = state.world.bodies.get(handle).expect("body must remain alive");
-        assert_eq!(*body.linvel(), Vector::ZERO);
-        assert_eq!(*body.angvel(), Vector::ZERO);
+        assert_eq!(body.linvel(), Vector::ZERO);
+        assert_eq!(body.angvel(), Vector::ZERO);
         assert_eq!(*body.position(), target);
     }
 
