@@ -1,0 +1,317 @@
+diff --git a/crates/mcp/src/lib.rs b/crates/mcp/src/lib.rs
+--- a/crates/mcp/src/lib.rs
++++ b/crates/mcp/src/lib.rs
+@@ -11,9 +11,13 @@
+ pub mod ai_agent;
+ /// Asset discovery and inspection tool handlers backed by the shared asset catalog.
+ pub mod asset;
++/// Domain-neutral semantic Graph tool handlers backed by shared authoring services.
++pub mod graph;
+ /// Prefab creation and instantiation tool handlers backed by shared services.
+ pub mod prefab;
+ /// Scene/project tool handlers backed by the shared authoring services.
+ pub mod scene;
++/// Declarative UI tool handlers backed by shared authoring services.
++pub mod ui;
+ 
+ pub use ai_agent::{
+@@ -24,10 +30,12 @@
+ };
+ pub use asset::{AssetInspectInput, AssetMcpTools, AssetSearchInput};
++pub use graph::{GraphMcpTools, GraphMutationInput};
+ pub use prefab::{PrefabCreateInput, PrefabInstantiateInput, PrefabMcpTools};
+ pub use scene::{
+     ComponentSchemasOutput, EntityFindInput, EntityFindOutput, EntityInspectInput,
+     EntityInspectOutput, ProjectDescribeOutput, SceneMcpTools, SceneMutationInput,
+ };
++pub use ui::{UiMcpTools, UiMutationInput};
+ 
+ use engine_authoring::{
+     BehaviorTreeApply, BehaviorTreeAuthoringService, BehaviorTreeCompilation,
+@@ -35,4 +43,5 @@
+     BehaviorTreeEdgeSummary, BehaviorTreeLayout, BehaviorTreeNodeSummary,
+     BehaviorTreeSchemaCatalog, BehaviorTreeServiceError, BehaviorTreeValidation, Graph,
+-    GraphCommand, PrefabAuthoringError, SceneAuthoringError,
++    GraphAuthoringError, GraphCommand, PrefabAuthoringError, SceneAuthoringError,
++    UiAuthoringError,
+ };
+@@ -81,3 +90,8 @@ pub enum McpToolError {
+         /// Source Scene authoring error.
+         source: SceneAuthoringError,
+     },
++    /// The shared Graph authoring service rejected the request.
++    GraphAuthoring {
++        /// Source Graph authoring error.
++        source: GraphAuthoringError,
++    },
+@@ -101,4 +115,9 @@ pub enum McpToolError {
+         /// Source prefab authoring error.
+         source: PrefabAuthoringError,
+     },
++    /// The shared UI authoring service rejected the request.
++    UiAuthoring {
++        /// Source UI authoring error.
++        source: UiAuthoringError,
++    },
+ }
+@@ -110,9 +129,11 @@ impl fmt::Display for McpToolError {
+         match self {
+             Self::Authoring { source } => source.fmt(formatter),
+             Self::SceneAuthoring { source } => source.fmt(formatter),
++            Self::GraphAuthoring { source } => source.fmt(formatter),
+             Self::AssetCatalog { source } => source.fmt(formatter),
+             Self::PrefabAsset { source } => source.fmt(formatter),
+             Self::PrefabAuthoring { source } => source.fmt(formatter),
++            Self::UiAuthoring { source } => source.fmt(formatter),
+         }
+     }
+ }
+@@ -123,9 +144,11 @@ impl std::error::Error for McpToolError {
+         match self {
+             Self::Authoring { source } => Some(source),
+             Self::SceneAuthoring { source } => Some(source),
++            Self::GraphAuthoring { source } => Some(source),
+             Self::AssetCatalog { source } => Some(source),
+             Self::PrefabAsset { source } => Some(source),
+             Self::PrefabAuthoring { source } => Some(source),
++            Self::UiAuthoring { source } => Some(source),
+         }
+     }
+ }
+@@ -141,4 +164,10 @@ impl From<SceneAuthoringError> for McpToolError {
+     }
+ }
+ 
++impl From<GraphAuthoringError> for McpToolError {
++    fn from(source: GraphAuthoringError) -> Self {
++        Self::GraphAuthoring { source }
++    }
++}
++
+ impl From<AssetCatalogError> for McpToolError {
+@@ -159,4 +188,10 @@ impl From<PrefabAuthoringError> for McpToolError {
+     }
+ }
+ 
++impl From<UiAuthoringError> for McpToolError {
++    fn from(source: UiAuthoringError) -> Self {
++        Self::UiAuthoring { source }
++    }
++}
++
+ impl McpToolError {
+@@ -168,9 +203,11 @@ impl McpToolError {
+         match self {
+             Self::Authoring { .. } => "mcp.authoring_error",
+             Self::SceneAuthoring { source } => source.code(),
++            Self::GraphAuthoring { source } => source.code(),
+             Self::AssetCatalog { source } => source.code(),
+             Self::PrefabAsset { source } => source.code(),
+             Self::PrefabAuthoring { source } => source.code(),
++            Self::UiAuthoring { source } => source.code(),
+         }
+     }
+ }
+diff --git a/crates/cli/src/lib.rs b/crates/cli/src/lib.rs
+--- a/crates/cli/src/lib.rs
++++ b/crates/cli/src/lib.rs
+@@ -4,5 +4,7 @@
+ //! only. Domain behavior is delegated to shared authoring and asset services.
+ 
+ mod asset_cli;
++mod graph_cli;
+ mod prefab_cli;
+ mod scene_cli;
++mod ui_cli;
+@@ -45,6 +47,9 @@ where
+     if let Some(result) = asset_cli::dispatch(&args) {
+         return result;
+     }
++    if let Some(result) = graph_cli::dispatch(&args) {
++        return result;
++    }
+     if let Some(result) = prefab_cli::dispatch(&args) {
+         return result;
+     }
+@@ -54,4 +59,7 @@ where
+     if let Some(result) = scene_cli::dispatch(&args) {
+         return result;
+     }
++    if let Some(result) = ui_cli::dispatch(&args) {
++        return result;
++    }
+     match args.as_slice() {
+diff --git a/crates/editor/src/mcp_transport.rs b/crates/editor/src/mcp_transport.rs
+--- a/crates/editor/src/mcp_transport.rs
++++ b/crates/editor/src/mcp_transport.rs
+@@ -6,5 +6,6 @@
+ 
+ use eframe::egui;
+ use engine_mcp::{
+-    AssetMcpTools, BehaviorTreeMcpTools, McpToolDescriptor, PrefabMcpTools, SceneMcpTools,
++    AssetMcpTools, BehaviorTreeMcpTools, GraphMcpTools, McpToolDescriptor, PrefabMcpTools,
++    SceneMcpTools, UiMcpTools,
+ };
+@@ -378,4 +378,6 @@ fn tools_list_result() -> Value {
+     descriptors.extend(SceneMcpTools::new().tool_descriptors());
+     descriptors.extend(AssetMcpTools::new().tool_descriptors());
+     descriptors.extend(PrefabMcpTools::new().tool_descriptors());
++    descriptors.extend(GraphMcpTools::new().tool_descriptors());
++    descriptors.extend(UiMcpTools::new().tool_descriptors());
+     json!({
+diff --git a/crates/editor/src/session/mod.rs b/crates/editor/src/session/mod.rs
+--- a/crates/editor/src/session/mod.rs
++++ b/crates/editor/src/session/mod.rs
+@@ -50,4 +50,4 @@ use engine_authoring::{
+     BehaviorTreeAuthoringService, BehaviorTreeDomain, BehaviorTreeServiceError, Diagnostic, EdgeId,
+     EntityId, Graph, GraphDomain, GraphId, GraphSchemaRegistry, GraphView, NodeId,
+-    TransactionError, UiDocument, Vec2,
++    TransactionError, UiAuthoringSession, UiDocument, Vec2,
+ };
+@@ -91,4 +91,11 @@ impl EditorGraphDomain {
+             Self::Animation(domain) => domain.validate_domain(graph),
+         }
+     }
++
++    fn as_domain(&self) -> &dyn GraphDomain {
++        match self {
++            Self::BehaviorTree(domain) => domain,
++            Self::Animation(domain) => domain,
++        }
++    }
+ }
+@@ -116,3 +123,5 @@ pub struct EditorSession {
+     current_document: CurrentDocument,
+     /// Scene edit history for the open scene document.
+     scene_session: Option<AuthoringSession>,
++    /// Structured UI authoring state for the open UI document.
++    ui_authoring_session: Option<UiAuthoringSession>,
+@@ -142,4 +151,5 @@ impl EditorSession {
+             undo_stack: UndoStack::new(),
+             current_document: CurrentDocument::None,
+             scene_session: None,
++            ui_authoring_session: None,
+             untitled_dirty: false,
+@@ -235,2 +245,26 @@ impl EditorSession {
+         self.graph_view.as_ref()
+     }
++
++    pub(crate) fn graph_authoring_parts(&self) -> Option<(&Graph, &dyn GraphDomain)> {
++        if !matches!(self.current_document, CurrentDocument::Graph { .. }) {
++            return None;
++        }
++        let domain = self.domain.as_domain();
++        (self.graph.kind == *domain.graph_kind()).then_some((&self.graph, domain))
++    }
++
++    pub(crate) fn graph_authoring_parts_mut(
++        &mut self,
++    ) -> Option<(&mut Graph, &dyn GraphDomain)> {
++        if !matches!(self.current_document, CurrentDocument::Graph { .. }) {
++            return None;
++        }
++        let supported = self.graph.kind == *self.domain.as_domain().graph_kind();
++        if !supported {
++            return None;
++        }
++        match &self.domain {
++            EditorGraphDomain::BehaviorTree(domain) => Some((&mut self.graph, domain)),
++            EditorGraphDomain::Animation(domain) => Some((&mut self.graph, domain)),
++        }
++    }
+@@ -277,6 +311,48 @@ impl EditorSession {
+     pub(crate) fn finish_external_scene_mutation(&mut self) {
+         self.sync_scene_document_from_session();
+         self.mark_dirty();
+     }
++
++    pub(crate) fn ui_authoring_session(&self) -> Option<&UiAuthoringSession> {
++        self.ui_authoring_session.as_ref()
++    }
++
++    pub(crate) fn ui_authoring_session_mut(&mut self) -> Option<&mut UiAuthoringSession> {
++        self.ui_authoring_session.as_mut()
++    }
++
++    pub(super) fn sync_ui_authoring_session_from_document(&mut self) {
++        self.ui_authoring_session = self
++            .ui_document()
++            .cloned()
++            .map(UiAuthoringSession::new);
++    }
++
++    pub(crate) fn finish_external_ui_mutation(&mut self) {
++        let Some(document) = self
++            .ui_authoring_session
++            .as_ref()
++            .map(|session| session.document().clone())
++        else {
++            return;
++        };
++        if let CurrentDocument::Ui {
++            document: current, ..
++        } = &mut self.current_document
++        {
++            *current = document;
++            self.mark_dirty();
++        }
++    }
++
++    pub(crate) fn push_external_undo_checkpoint(&mut self) {
++        self.push_undo_checkpoint();
++    }
++
++    pub(crate) fn finish_external_graph_mutation(&mut self, diagnostics: Vec<Diagnostic>) {
++        self.diagnostics = diagnostics;
++        self.prune_graph_view();
++        self.mark_dirty();
++    }
+ 
+     /// Returns the open declarative UI document.
+diff --git a/crates/editor/src/session/documents.rs b/crates/editor/src/session/documents.rs
+--- a/crates/editor/src/session/documents.rs
++++ b/crates/editor/src/session/documents.rs
+@@ -28,4 +28,5 @@ impl EditorSession {
+         }
+         self.current_document = CurrentDocument::None;
+         self.scene_session = None;
++        self.ui_authoring_session = None;
+         self.undo_stack.clear();
+@@ -68,3 +69,4 @@ impl EditorSession {
+             self.scene_session = Some(AuthoringSession::new(scene.clone()));
+         }
++        self.ui_authoring_session = None;
+         self.current_document = doc;
+@@ -116,3 +118,4 @@ impl EditorSession {
+         self.undo_stack.clear();
+         self.scene_session = None;
++        self.ui_authoring_session = None;
+         self.current_document = doc;
+@@ -145,4 +148,5 @@ impl EditorSession {
+     pub fn open_ui_discarding_changes(&mut self, path: PathBuf) -> Result<(), OpenDocumentError> {
+         self.current_document = open_ui_from_path(&path)?;
+         self.scene_session = None;
++        self.sync_ui_authoring_session_from_document();
+         self.undo_stack.clear();
+@@ -198,4 +202,5 @@ impl EditorSession {
+         {
+             *current = document;
+         }
++        self.sync_ui_authoring_session_from_document();
+         self.diagnostics = diagnostics;
+diff --git a/crates/editor/src/session/undo.rs b/crates/editor/src/session/undo.rs
+--- a/crates/editor/src/session/undo.rs
++++ b/crates/editor/src/session/undo.rs
+@@ -206,5 +206,6 @@ impl EditorSession {
+                 self.graph_view = graph_view_json
+                     .as_deref()
+                     .and_then(|json| serde_json::from_str::<GraphView>(json).ok());
++                self.ui_authoring_session = None;
+                 self.diagnostics = self.domain.validate_domain(&self.graph);
+             }
+@@ -219,4 +220,5 @@ impl EditorSession {
+                         *current = document;
+                     }
++                    self.sync_ui_authoring_session_from_document();
+                 }
+             }
