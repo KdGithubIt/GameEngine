@@ -1,0 +1,11 @@
+diff --git a/crates/import/src/pmx_import.rs b/crates/import/src/pmx_import.rs
+--- a/crates/import/src/pmx_import.rs
++++ b/crates/import/src/pmx_import.rs
+@@ -1555,6 +1555,6 @@ mod tests {
+             imported
+                 .imported_sub_assets()
+                 .iter()
+-                .filter(|asset| asset.kind == ImportedSubAssetKind::RigidBodyRig)
++                .filter(|asset| asset.kind == ImportedSubAssetKind::SecondaryMotionRig)
+                 .count(),
+             1
