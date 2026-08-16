@@ -1,0 +1,208 @@
++                &process.attempt_id,
++                ManagedValidationAttemptStatus::Cancelled,
++                CompletionStatus::Pending,
++            )?;
++        }
++        self.record_event(
++            run_id,
++            AgentEventKind::Cancellation,
++            "Run cancellation requested.",
++        )?;
+         self.transition_run(
+             run_id,
+             AgentRunState::Cancelled,
+@@ -625,20 +801,154 @@ impl AgentHost {
+         )
+     }
+ 
+-    pub(crate) fn set_completion_status(
++    pub(crate) fn begin_managed_validation(
+         &mut self,
+         run_id: &str,
+-        update: impl FnOnce(&mut CompletionReport),
++        code_changes_present: bool,
+     ) -> Result<(), AgentHostError> {
++        let (_, state) = self.run_location(run_id)?;
++        if !matches!(
++            state,
++            AgentRunState::Executing | AgentRunState::AwaitingUser | AgentRunState::Repairing
++        ) {
++            return Err(AgentHostError::InvalidTransition {
++                from: state,
++                to: AgentRunState::Validating,
++            });
++        }
++        let proposal = self.run(run_id)?.proposal_snapshot.clone();
++        let (gates, unmanaged_plan_items) =
++            managed_validation_plan(&proposal, code_changes_present);
++        self.transition_run(
++            run_id,
++            AgentRunState::Validating,
++            "Engine-managed source validation started.",
++        )?;
++
++        let attempt_id = next_id("validation");
++        let started_unix_ms = unix_ms();
++        let gate_results = gates
++            .iter()
++            .copied()
++            .map(|gate| ManagedValidationGateResult {
++                gate,
++                status: ManagedValidationGateStatus::Pending,
++                exit_code: None,
++                failure: None,
++            })
++            .collect();
++        let attempt_status = if gates.is_empty() {
++            ManagedValidationAttemptStatus::NotApplicable
++        } else {
++            ManagedValidationAttemptStatus::Running
++        };
+         let (session_id, _) = self.run_location(run_id)?;
+-        let session = self.session_mut(&session_id)?;
+-        let run = session
+-            .runs
+-            .iter_mut()
+-            .find(|run| run.id == run_id)
+-            .ok_or_else(|| AgentHostError::RunNotFound(run_id.to_owned()))?;
+-        update(&mut run.completion);
+-        self.persist_session(&session_id)
++        {
++            let run = self.run_mut_in_session(&session_id, run_id)?;
++            run.completion.source_validation = CompletionStatus::Pending;
++            run.validation_attempts.push(ManagedValidationAttempt {
++                id: attempt_id.clone(),
++                gate_results,
++                unmanaged_plan_items,
++                status: attempt_status,
++                started_unix_ms,
++                finished_unix_ms: gates.is_empty().then_some(started_unix_ms),
++            });
++            push_validation_event(
++                run,
++                format!(
++                    "Managed validation attempt started with {} allow-listed gate(s); {} plan item(s) require another capability.",
++                    gates.len(), unmanaged_plan_items
++                ),
++                ManagedValidationEvent::Started {
++                    attempt_id: attempt_id.clone(),
++                    gates: gates.clone(),
++                    unmanaged_plan_items,
++                },
++            );
++        }
++        self.persist_session(&session_id)?;
++
++        if gates.is_empty() {
++            self.finish_validation_without_process(run_id, &attempt_id, unmanaged_plan_items)?;
++            return Ok(());
++        }
++        self.spawn_validation_gate(run_id, &attempt_id, 0)
++    }
++
++    pub(crate) fn poll_managed_validation(
++        &mut self,
++        run_id: &str,
++    ) -> Result<bool, AgentHostError> {
++        let Some(process) = self.active_validation.as_mut() else {
++            return Ok(false);
++        };
++        if process.run_id != run_id {
++            return Ok(false);
++        }
++        let poll = process.poll_exit();
++        match poll {
++            Ok(None) => Ok(true),
++            Ok(Some(status)) => {
++                let process = self
++                    .active_validation
++                    .take()
++                    .ok_or_else(|| AgentHostError::RunNotFound(run_id.to_owned()))?;
++                let exit_code = status.code();
++                if !status.success() {
++                    self.fail_managed_validation(
++                        run_id,
++                        &process.attempt_id,
++                        process.gate_index,
++                        ManagedValidationFailure {
++                            kind: ManagedValidationFailureKind::ProcessExit,
++                            exit_code,
++                            message: format!(
++                                "Managed validation gate exited unsuccessfully with {exit_code:?}."
++                            ),
++                        },
++                    )?;
++                    return Ok(false);
++                }
++                self.finish_validation_gate(
++                    run_id,
++                    &process.attempt_id,
++                    process.gate_index,
++                    ManagedValidationGateStatus::Passed,
++                    exit_code,
++                    None,
++                )?;
++                let next_index = process.gate_index + 1;
++                let gate_count = self
++                    .validation_attempt(run_id, &process.attempt_id)?
++                    .gate_results
++                    .len();
++                if next_index < gate_count {
++                    self.spawn_validation_gate(run_id, &process.attempt_id, next_index)?;
++                    Ok(self.active_validation.is_some())
++                } else {
++                    self.complete_managed_validation(run_id, &process.attempt_id)?;
++                    Ok(false)
++                }
++            }
++            Err(error) => {
++                let process = self
++                    .active_validation
++                    .take()
++                    .ok_or_else(|| AgentHostError::RunNotFound(run_id.to_owned()))?;
++                self.fail_managed_validation(
++                    run_id,
++                    &process.attempt_id,
++                    process.gate_index,
++                    ManagedValidationFailure {
++                        kind: ManagedValidationFailureKind::Poll,
++                        exit_code: None,
++                        message: format!("Managed validation process status could not be read: {error}"),
++                    },
++                )?;
++                Ok(false)
++            }
++        }
+     }
+ 
+     pub(crate) fn complete_run(&mut self, run_id: &str) -> Result<(), AgentHostError> {
+@@ -649,6 +959,269 @@ impl AgentHost {
+         self.record_event(run_id, AgentEventKind::Completion, "Run completed.")
+     }
+ 
++    fn spawn_validation_gate(
++        &mut self,
++        run_id: &str,
++        attempt_id: &str,
++        gate_index: usize,
++    ) -> Result<(), AgentHostError> {
++        let gate = self
++            .validation_attempt(run_id, attempt_id)?
++            .gate_results
++            .get(gate_index)
++            .ok_or_else(|| AgentHostError::RunNotFound(run_id.to_owned()))?
++            .gate;
++        let game_dir = self.workspace_root(run_id).join("game");
++        if !game_dir.join("Cargo.toml").is_file() {
++            self.fail_managed_validation(
++                run_id,
++                attempt_id,
++                gate_index,
++                ManagedValidationFailure {
++                    kind: ManagedValidationFailureKind::Preparation,
++                    exit_code: None,
++                    message: "Managed validation workspace is missing game/Cargo.toml.".to_owned(),
++                },
++            )?;
++            return Ok(());
++        }
