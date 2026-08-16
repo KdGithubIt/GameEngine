@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0112-merge-main-code-20260816-02",
+  "target_branch": "chatgpt/gameengine-adr-0112-secondary-motion-v2",
+  "expected_head_sha": "87b7dceb06988667b1ba9ba563daec3a8ce066d7",
+  "patch_parts": ["part-0000.patch"],
+  "commit_message": "Reapply ADR 0112 across current main",
+  "pr_title": "Implement ADR 0112 engine-native secondary motion",
+  "pr_body": "## Summary\n\nImplements ADR 0112 engine-native Secondary Motion and reconciles the long-lived branch with current main without dropping the generic light or visual-validation changes already merged there. The PR remains Draft.\n\n<!-- gameengine-visual-validation: editor -->\n\n<!-- gameengine-chatgpt-dispatcher -->\n"
+}
