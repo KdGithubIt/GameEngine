@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0110-animation-set-variant-ui-ci-fix-20260816-r2",
+  "target_branch": "chatgpt/gameengine-adr-0110-humanoid-motion",
+  "expected_head_sha": "bbeddb1cc3af0225b56ab8d89ab54ce4ab01a621",
+  "patch_parts": ["part-0000.patch", "part-0001.patch"],
+  "commit_message": "Fix ADR 0110 Animation Set validation failures",
+  "pr_title": "ADR 0110: implement humanoid animation sources",
+  "pr_body": "Implements ADR 0110 Humanoid profiles and skeleton-independent motion. This CI repair removes stale Native-only editor wrappers, makes tests use explicit MotionSourceRef variants, fixes the Humanoid derived-ID facade reference, and clears two modular-editor lint regressions surfaced by affected Windows Validation. PR remains Draft; merge is manual."
+}
