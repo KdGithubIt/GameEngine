@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0122-backend-voice-a2a1fafd-01",
+  "target_branch": "chatgpt/gameengine-adr0122-spatial-audio-v2",
+  "expected_head_sha": "a2a1fafd181b8c720e360ab8dd2ddec975e6c962",
+  "patch_parts": ["part-0000.patch"],
+  "commit_message": "Add ADR 0122 managed audio voice backend",
+  "pr_title": "Implement ADR 0122 spatial audio mixer and authoring UX",
+  "pr_body": "Continues ADR 0122 on the existing Draft PR. This slice adds platform-owned managed sound-effect voices with runtime-only identity, start/stop/completion lifecycle, looping playback, dynamic stereo-gain updates without decode or restart, active-voice bounds, and existing master/SE bus integration."
+}
