@@ -47,16 +47,17 @@ pub use vfx::{
     VfxEffectInput, VfxInspectOutput, VfxMcpTools, VfxMutationInput, VfxTemplateInput,
 };
 
+use capability::{authorize_capability, domain_tool_descriptors};
 use engine_authoring::{
-    BehaviorTreeApply, BehaviorTreeAuthoringService, BehaviorTreeCompilation,
-    BehaviorTreeEdgeSummary, BehaviorTreeLayout, BehaviorTreeNodeSummary,
-    BehaviorTreeSchemaCatalog, BehaviorTreeServiceError, BehaviorTreeValidation, Graph,
-    GraphCommand, PrefabAuthoringError, SceneAuthoringError,
+    AuthoringCapabilityRegistry, AuthoringDomain, AuthoringPermissions, BehaviorTreeApply,
+    BehaviorTreeAuthoringService, BehaviorTreeCompilation, BehaviorTreeEdgeSummary,
+    BehaviorTreeLayout, BehaviorTreeNodeSummary, BehaviorTreeSchemaCatalog,
+    BehaviorTreeServiceError, BehaviorTreeValidation, Graph, GraphCommand, PrefabAuthoringError,
+    SceneAuthoringError,
 };
 use engine_assets::catalog::AssetCatalogError;
 use engine_assets::prefab::PrefabAssetError;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 use std::fmt;
 
 /// Returns every structured authoring tool this crate advertises.
@@ -232,8 +233,14 @@ impl McpToolError {
 }
 
 /// Behavior Tree MCP tool handler collection.
+///
+/// The shared Behavior Tree service operates on a graph supplied in the request
+/// rather than on a permissioned session, so this adapter authorizes each call
+/// against the permission its capability declares in the canonical registry
+/// (ADR 0132 sections 5 and 6).
 pub struct BehaviorTreeMcpTools {
     service: BehaviorTreeAuthoringService,
+    registry: AuthoringCapabilityRegistry,
 }
 
 impl BehaviorTreeMcpTools {
@@ -241,73 +248,44 @@ impl BehaviorTreeMcpTools {
     pub fn new() -> Self {
         Self {
             service: BehaviorTreeAuthoringService::new(),
+            registry: AuthoringCapabilityRegistry::builtin(),
         }
     }
 
     /// Returns tool descriptors for registration by an MCP transport layer.
+    ///
+    /// Names, descriptions, and argument schemas come from the canonical
+    /// authoring capability registry (ADR 0132).
     pub fn tool_descriptors(&self) -> Vec<McpToolDescriptor> {
-        vec![
-            descriptor(
-                "behavior_tree.schemas",
-                "Discover Behavior Tree graph kind, layout policy, node schemas, ports, and properties.",
-                json!({"type":"object","properties":{},"additionalProperties":false}),
-            ),
-            descriptor(
-                "behavior_tree.validate",
-                "Validate a Behavior Tree semantic graph.",
-                graph_input_schema(),
-            ),
-            descriptor(
-                "behavior_tree.compile",
-                "Compile a Behavior Tree semantic graph into a runtime tree artifact.",
-                graph_input_schema(),
-            ),
-            descriptor(
-                "behavior_tree.layout",
-                "Generate a deterministic top-down graph view for a Behavior Tree graph.",
-                graph_input_schema(),
-            ),
-            descriptor(
-                "behavior_tree.nodes",
-                "List Behavior Tree nodes with stable IDs, node types, names, and properties.",
-                graph_input_schema(),
-            ),
-            descriptor(
-                "behavior_tree.edges",
-                "List Behavior Tree edges with stable IDs and port endpoints.",
-                graph_input_schema(),
-            ),
-            descriptor(
-                "behavior_tree.apply",
-                "Apply a bulk Behavior Tree graph command transaction and return diff, diagnostics, and the updated graph.",
-                json!({
-                    "type": "object",
-                    "required": ["graph", "commands"],
-                    "properties": {
-                        "graph": {"type": "object"},
-                        "commands": {"type": "array", "items": {"type": "object"}}
-                    },
-                    "additionalProperties": false
-                }),
-            ),
-        ]
+        domain_tool_descriptors(&self.registry, &[AuthoringDomain::BehaviorTree])
     }
 
     /// Returns Behavior Tree schema discovery data.
-    pub fn behavior_tree_schemas(&self) -> BehaviorTreeSchemaCatalog {
-        self.service.schemas()
+    ///
+    /// # Errors
+    ///
+    /// Returns [`McpToolError`] when the session lacks the permission declared
+    /// for `behavior_tree.schemas`.
+    pub fn behavior_tree_schemas(
+        &self,
+        permissions: &AuthoringPermissions,
+    ) -> Result<BehaviorTreeSchemaCatalog, McpToolError> {
+        authorize_capability(&self.registry, "behavior_tree.schemas", permissions)?;
+        Ok(self.service.schemas())
     }
 
     /// Validates a Behavior Tree graph.
     ///
     /// # Errors
     ///
-    /// Returns [`McpToolError`] when the input graph belongs to another graph
-    /// domain.
+    /// Returns [`McpToolError`] when the session lacks the declared permission
+    /// or the input graph belongs to another graph domain.
     pub fn behavior_tree_validate(
         &self,
+        permissions: &AuthoringPermissions,
         input: BehaviorTreeGraphInput,
     ) -> Result<BehaviorTreeValidation, McpToolError> {
+        authorize_capability(&self.registry, "behavior_tree.validate", permissions)?;
         self.service.ensure_behavior_tree_graph(&input.graph)?;
         Ok(self.service.validate(&input.graph))
     }
@@ -316,12 +294,14 @@ impl BehaviorTreeMcpTools {
     ///
     /// # Errors
     ///
-    /// Returns [`McpToolError`] when the input graph belongs to another graph
-    /// domain.
+    /// Returns [`McpToolError`] when the session lacks the declared permission
+    /// or the input graph belongs to another graph domain.
     pub fn behavior_tree_compile(
         &self,
+        permissions: &AuthoringPermissions,
         input: BehaviorTreeGraphInput,
     ) -> Result<BehaviorTreeCompilation, McpToolError> {
+        authorize_capability(&self.registry, "behavior_tree.compile", permissions)?;
         self.service.ensure_behavior_tree_graph(&input.graph)?;
         Ok(self.service.compile(&input.graph))
     }
@@ -330,12 +310,14 @@ impl BehaviorTreeMcpTools {
     ///
     /// # Errors
     ///
-    /// Returns [`McpToolError`] when the input graph belongs to another graph
-    /// domain.
+    /// Returns [`McpToolError`] when the session lacks the declared permission
+    /// or the input graph belongs to another graph domain.
     pub fn behavior_tree_layout(
         &self,
+        permissions: &AuthoringPermissions,
         input: BehaviorTreeGraphInput,
     ) -> Result<BehaviorTreeLayout, McpToolError> {
+        authorize_capability(&self.registry, "behavior_tree.layout", permissions)?;
         self.service.ensure_behavior_tree_graph(&input.graph)?;
         Ok(self.service.layout(&input.graph))
     }
@@ -344,12 +326,14 @@ impl BehaviorTreeMcpTools {
     ///
     /// # Errors
     ///
-    /// Returns [`McpToolError`] when the input graph belongs to another graph
-    /// domain.
+    /// Returns [`McpToolError`] when the session lacks the declared permission
+    /// or the input graph belongs to another graph domain.
     pub fn behavior_tree_nodes(
         &self,
+        permissions: &AuthoringPermissions,
         input: BehaviorTreeGraphInput,
     ) -> Result<BehaviorTreeNodesOutput, McpToolError> {
+        authorize_capability(&self.registry, "behavior_tree.nodes", permissions)?;
         self.service.ensure_behavior_tree_graph(&input.graph)?;
         Ok(BehaviorTreeNodesOutput {
             success: true,
@@ -361,12 +345,14 @@ impl BehaviorTreeMcpTools {
     ///
     /// # Errors
     ///
-    /// Returns [`McpToolError`] when the input graph belongs to another graph
-    /// domain.
+    /// Returns [`McpToolError`] when the session lacks the declared permission
+    /// or the input graph belongs to another graph domain.
     pub fn behavior_tree_edges(
         &self,
+        permissions: &AuthoringPermissions,
         input: BehaviorTreeGraphInput,
     ) -> Result<BehaviorTreeEdgesOutput, McpToolError> {
+        authorize_capability(&self.registry, "behavior_tree.edges", permissions)?;
         self.service.ensure_behavior_tree_graph(&input.graph)?;
         Ok(BehaviorTreeEdgesOutput {
             success: true,
@@ -382,12 +368,14 @@ impl BehaviorTreeMcpTools {
     ///
     /// # Errors
     ///
-    /// Returns [`McpToolError`] when the input graph belongs to another graph
-    /// domain.
+    /// Returns [`McpToolError`] when the session lacks the declared permission
+    /// or the input graph belongs to another graph domain.
     pub fn behavior_tree_apply(
         &self,
+        permissions: &AuthoringPermissions,
         input: BehaviorTreeApplyInput,
     ) -> Result<BehaviorTreeApply, McpToolError> {
+        authorize_capability(&self.registry, "behavior_tree.apply", permissions)?;
         self.service.ensure_behavior_tree_graph(&input.graph)?;
         Ok(self.service.apply(&input.graph, input.commands))
     }
@@ -399,33 +387,18 @@ impl Default for BehaviorTreeMcpTools {
     }
 }
 
-fn descriptor(
-    name: &'static str,
-    description: &'static str,
-    input_schema: serde_json::Value,
-) -> McpToolDescriptor {
-    McpToolDescriptor {
-        name: name.into(),
-        description: description.into(),
-        input_schema,
-    }
-}
-
-fn graph_input_schema() -> serde_json::Value {
-    json!({
-        "type": "object",
-        "required": ["graph"],
-        "properties": {
-            "graph": {"type": "object"}
-        },
-        "additionalProperties": false
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine_authoring::{BehaviorTreeDomain, EdgeId, GraphId, NodeId};
+    use engine_authoring::{
+        AuthoringPermission, BehaviorTreeDomain, EdgeId, GraphId, NodeId,
+    };
+
+    fn writable() -> AuthoringPermissions {
+        AuthoringPermissions::read_only()
+            .with(AuthoringPermission::Preview)
+            .with(AuthoringPermission::ProjectDataWrite)
+    }
 
     #[test]
     fn descriptors_include_bulk_apply_tool() {
@@ -444,7 +417,9 @@ mod tests {
     #[test]
     fn schema_tool_delegates_behavior_tree_schemas() {
         let tools = BehaviorTreeMcpTools::new();
-        let schemas = tools.behavior_tree_schemas();
+        let schemas = tools
+            .behavior_tree_schemas(&AuthoringPermissions::read_only())
+            .expect("schema discovery is a read operation");
 
         let expected = BehaviorTreeAuthoringService::new().schemas();
 
@@ -473,7 +448,7 @@ mod tests {
         ];
 
         let result = BehaviorTreeMcpTools::new()
-            .behavior_tree_apply(BehaviorTreeApplyInput { graph, commands })
+            .behavior_tree_apply(&writable(), BehaviorTreeApplyInput { graph, commands })
             .expect("apply tool must run");
 
         assert!(result.success);
@@ -489,6 +464,24 @@ mod tests {
     }
 
     #[test]
+    fn read_only_sessions_cannot_commit_behavior_tree_mutations() {
+        let domain = BehaviorTreeDomain::new();
+        let graph = valid_graph(&domain);
+
+        let error = BehaviorTreeMcpTools::new()
+            .behavior_tree_apply(
+                &AuthoringPermissions::read_only(),
+                BehaviorTreeApplyInput {
+                    graph,
+                    commands: Vec::new(),
+                },
+            )
+            .expect_err("read-only sessions must not commit");
+
+        assert_eq!(error.code(), "authoring.permission_denied");
+    }
+
+    #[test]
     fn wrong_domain_is_tool_error_not_successful_validation() {
         let graph = Graph::new(
             GraphId::generate(),
@@ -496,8 +489,8 @@ mod tests {
             "wrong",
         );
 
-        let result =
-            BehaviorTreeMcpTools::new().behavior_tree_validate(BehaviorTreeGraphInput { graph });
+        let result = BehaviorTreeMcpTools::new()
+            .behavior_tree_validate(&writable(), BehaviorTreeGraphInput { graph });
 
         assert!(matches!(result, Err(McpToolError::Authoring { .. })));
     }

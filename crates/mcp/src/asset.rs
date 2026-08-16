@@ -1,11 +1,13 @@
 //! MCP adapters for shared project asset discovery and inspection.
 
+use crate::capability::domain_tool_descriptors;
 use crate::{McpToolDescriptor, McpToolError};
 use engine_assets::asset::AssetManifest;
 use engine_assets::catalog::{AssetCatalogSearch, AssetCatalogService, AssetInspection};
-use engine_authoring::{AssetId, AuthoringPermissions, ProjectRoot};
+use engine_authoring::{
+    AssetId, AuthoringCapabilityRegistry, AuthoringDomain, AuthoringPermissions, ProjectRoot,
+};
 use serde::Deserialize;
-use serde_json::json;
 
 /// Input for `asset.search`.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -36,34 +38,14 @@ impl AssetMcpTools {
     }
 
     /// Returns tool descriptors for registration by the MCP transport layer.
+    ///
+    /// Names, descriptions, and argument schemas come from the canonical
+    /// authoring capability registry (ADR 0132).
     pub fn tool_descriptors(&self) -> Vec<McpToolDescriptor> {
-        vec![
-            McpToolDescriptor {
-                name: "asset.search".into(),
-                description: "Search project assets and imported sub-assets by stable ID, name, path, or imported kind."
-                    .into(),
-                input_schema: json!({
-                    "type": "object",
-                    "properties": {
-                        "query": {"type": "string"}
-                    },
-                    "additionalProperties": false
-                }),
-            },
-            McpToolDescriptor {
-                name: "asset.inspect".into(),
-                description: "Inspect one project asset by stable AssetId, including source import metadata and file state."
-                    .into(),
-                input_schema: json!({
-                    "type": "object",
-                    "required": ["asset_id"],
-                    "properties": {
-                        "asset_id": {"type": "string"}
-                    },
-                    "additionalProperties": false
-                }),
-            },
-        ]
+        domain_tool_descriptors(
+            &AuthoringCapabilityRegistry::builtin(),
+            &[AuthoringDomain::Asset],
+        )
     }
 
     /// Searches project assets through the shared asset catalog service.
@@ -141,7 +123,7 @@ mod tests {
             .into_iter()
             .map(|descriptor| descriptor.name)
             .collect::<Vec<_>>();
-        assert_eq!(names, vec!["asset.search", "asset.inspect"]);
+        assert_eq!(names, vec!["asset.inspect", "asset.search"]);
     }
 
     #[test]

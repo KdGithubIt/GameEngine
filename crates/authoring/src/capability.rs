@@ -255,10 +255,9 @@ pub struct AuthoringSchemaRef {
     pub type_name: Option<String>,
     /// JSON schema for structured clients.
     ///
-    /// Generic capabilities carry the exact argument schema so adapters do not
-    /// hand-write a second one. Specialized capabilities reference their shared
-    /// type and leave the precise transport shape to the specialized adapter
-    /// operation that owns it.
+    /// Input schemas are exact for every registered capability, generic and
+    /// specialized alike, so an adapter never hand-writes a second argument
+    /// contract that can disagree with this one.
     pub json_schema: Value,
 }
 
@@ -384,6 +383,8 @@ pub enum AuthoringCapabilityError {
         /// The rejected capability ID.
         id: AuthoringCapabilityId,
     },
+    /// The session does not hold the permission the capability requires.
+    Permission(AuthoringPermissionError),
 }
 
 impl AuthoringCapabilityError {
@@ -393,7 +394,14 @@ impl AuthoringCapabilityError {
             Self::Duplicate { .. } => "authoring.capability_duplicate",
             Self::Unknown { .. } => "authoring.capability_unknown",
             Self::ReservedNamespace { .. } => "authoring.capability_reserved_namespace",
+            Self::Permission(error) => error.code(),
         }
+    }
+}
+
+impl From<AuthoringPermissionError> for AuthoringCapabilityError {
+    fn from(error: AuthoringPermissionError) -> Self {
+        Self::Permission(error)
     }
 }
 
@@ -406,11 +414,19 @@ impl fmt::Display for AuthoringCapabilityError {
                 formatter,
                 "capability `{id}` may not use the reserved `{RESERVED_CAPABILITY_NAMESPACE}` namespace"
             ),
+            Self::Permission(error) => error.fmt(formatter),
         }
     }
 }
 
-impl std::error::Error for AuthoringCapabilityError {}
+impl std::error::Error for AuthoringCapabilityError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Permission(error) => Some(error),
+            Self::Duplicate { .. } | Self::Unknown { .. } | Self::ReservedNamespace { .. } => None,
+        }
+    }
+}
 
 /// Deterministic catalog of semantic authoring capabilities.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -479,6 +495,26 @@ impl AuthoringCapabilityRegistry {
     ) -> Result<&AuthoringCapability, AuthoringCapabilityError> {
         self.get(id)
             .ok_or_else(|| AuthoringCapabilityError::Unknown { id: id.clone() })
+    }
+
+    /// Requires the permission declared for `id` before an adapter executes it.
+    ///
+    /// Adapters whose shared service does not itself receive the session
+    /// permission set use this so their check is the registry contract rather
+    /// than a permission constant retyped in adapter code.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AuthoringCapabilityError`] when the capability is unknown or
+    /// the session lacks the declared permission.
+    pub fn authorize(
+        &self,
+        id: &AuthoringCapabilityId,
+        permissions: &AuthoringPermissions,
+    ) -> Result<&AuthoringCapability, AuthoringCapabilityError> {
+        let capability = self.require(id)?;
+        capability.require_permission(permissions)?;
+        Ok(capability)
     }
 
     /// Returns every capability in deterministic capability-ID order.
@@ -632,6 +668,42 @@ fn document_schema(field: &str) -> AuthoringSchemaRef {
         "properties": {field: {"type": "object"}},
         "additionalProperties": false
     }))
+}
+
+/// Describes a caller-supplied document plus the command batch applied to it.
+fn document_command_schema(field: &str, command_type: &str) -> AuthoringSchemaRef {
+    AuthoringSchemaRef::typed_json(
+        command_type,
+        json!({
+            "type": "object",
+            "required": [field, "commands"],
+            "properties": {
+                field: {"type": "object"},
+                "commands": {
+                    "type": "array",
+                    "items": {"type": "object", "title": command_type}
+                }
+            },
+            "additionalProperties": false
+        }),
+    )
+}
+
+fn prefab_instantiation_schema() -> AuthoringSchemaRef {
+    AuthoringSchemaRef::typed_json(
+        "PrefabInstantiationRequest",
+        json!({
+            "type": "object",
+            "required": ["source", "expected_revision", "expected_generation"],
+            "properties": {
+                "source": {"type": "string"},
+                "parent": {"type": ["string", "null"]},
+                "expected_revision": {"type": "integer", "minimum": 0},
+                "expected_generation": {"type": "integer", "minimum": 0}
+            },
+            "additionalProperties": false
+        }),
+    )
 }
 
 fn scene_documents() -> Vec<AuthoringDocumentKind> {
@@ -823,9 +895,10 @@ fn builtin_capabilities() -> Vec<AuthoringCapability> {
 /// Capabilities whose meaning is not usefully represented by the generic
 /// inspect/validate/preview/apply cycle.
 ///
-/// They are registered so discovery and parity coverage still iterate one
-/// canonical list, while their transport-shaped arguments stay owned by the
-/// specialized adapter operation that exposes them.
+/// They keep an explicitly declared specialized adapter operation, but their
+/// identity, description, argument schema, permission, and transaction contract
+/// are declared here so discovery, adapter descriptors, and parity coverage all
+/// read one canonical list.
 fn specialized_capabilities() -> Vec<AuthoringCapability> {
     let prefab_documents = vec![
         AuthoringDocumentKind::Scene,
@@ -887,7 +960,7 @@ fn specialized_capabilities() -> Vec<AuthoringCapability> {
                 AuthoringDomain::Prefab,
                 AuthoringCapabilityKind::PreviewMutation,
                 prefab_documents.clone(),
-                AuthoringSchemaRef::of_type("PrefabInstantiationRequest"),
+                prefab_instantiation_schema(),
                 AuthoringSchemaRef::of_type("PrefabInstantiationMutation"),
                 "Preview one prefab instantiation against an exact Scene revision/generation without mutating it.",
             )
@@ -899,7 +972,7 @@ fn specialized_capabilities() -> Vec<AuthoringCapability> {
                 AuthoringDomain::Prefab,
                 AuthoringCapabilityKind::CommittedMutation,
                 prefab_documents,
-                AuthoringSchemaRef::of_type("PrefabInstantiationRequest"),
+                prefab_instantiation_schema(),
                 AuthoringSchemaRef::of_type("PrefabInstantiationMutation"),
                 "Instantiate a prefab into the live Scene as one validated transaction and one undo entry.",
             )
@@ -936,7 +1009,7 @@ fn specialized_capabilities() -> Vec<AuthoringCapability> {
             AuthoringDomain::Vfx,
             AuthoringCapabilityKind::PreviewMutation,
             vfx_documents.clone(),
-            AuthoringSchemaRef::of_type("VfxCommand"),
+            document_command_schema("effect", "VfxCommand"),
             AuthoringSchemaRef::of_type("VfxApply"),
             "Preview a VFX command transaction without committing the source document.",
         ),
@@ -945,7 +1018,7 @@ fn specialized_capabilities() -> Vec<AuthoringCapability> {
             AuthoringDomain::Vfx,
             AuthoringCapabilityKind::CommittedMutation,
             vfx_documents.clone(),
-            AuthoringSchemaRef::of_type("VfxCommand"),
+            document_command_schema("effect", "VfxCommand"),
             AuthoringSchemaRef::of_type("VfxApply"),
             "Apply one atomic VFX command transaction and return the committed document plus undo commands.",
         ),
@@ -954,7 +1027,20 @@ fn specialized_capabilities() -> Vec<AuthoringCapability> {
             AuthoringDomain::Vfx,
             AuthoringCapabilityKind::Operation,
             vfx_documents,
-            AuthoringSchemaRef::of_type("VfxTemplate"),
+            AuthoringSchemaRef::typed_json(
+                "VfxTemplate",
+                json!({
+                    "type": "object",
+                    "required": ["template"],
+                    "properties": {
+                        "template": {
+                            "type": "string",
+                            "enum": ["spark", "smoke", "burst", "trail"]
+                        }
+                    },
+                    "additionalProperties": false
+                }),
+            ),
             AuthoringSchemaRef::of_type("VfxEffect"),
             "Create ordinary VFX document data from a built-in starting template.",
         ),
@@ -1017,7 +1103,7 @@ fn specialized_capabilities() -> Vec<AuthoringCapability> {
             AuthoringDomain::BehaviorTree,
             AuthoringCapabilityKind::CommittedMutation,
             graph_documents(),
-            AuthoringSchemaRef::of_type("GraphCommand"),
+            document_command_schema("graph", "GraphCommand"),
             AuthoringSchemaRef::of_type("BehaviorTreeApply"),
             "Apply a bulk Behavior Tree graph command transaction and return diff, diagnostics, and the updated graph.",
         ),
