@@ -1,0 +1,176 @@
+diff --git a/crates/scripting/src/game_io.rs b/crates/scripting/src/game_io.rs
+--- a/crates/scripting/src/game_io.rs
++++ b/crates/scripting/src/game_io.rs
+@@ -149,6 +149,46 @@ pub enum GameHitboxShape {
+     },
+ }
+ 
++/// Distance attenuation curve exposed to project Rust spatial-audio requests.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case")]
++pub enum GameAudioRolloffMode {
++    /// Linear attenuation from minimum to maximum distance.
++    Linear,
++    /// Inverse-distance attenuation normalized to the authored distance range.
++    Inverse,
++}
++
++/// Typed spatial-audio policy copied into a deferred project Rust command.
++#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
++pub struct GameSpatialAudioOptions {
++    /// Per-voice gain from 0.0 to 1.0.
++    pub volume: f32,
++    /// Blend from centered 2D (0.0) to positional 3D (1.0).
++    pub spatial_blend: f32,
++    /// Distance where positional attenuation begins.
++    pub min_distance: f32,
++    /// Distance where positional attenuation reaches silence.
++    pub max_distance: f32,
++    /// Distance attenuation curve.
++    pub rolloff: GameAudioRolloffMode,
++    /// Whether the managed voice repeats until its source disappears.
++    pub looping: bool,
++}
++
++impl Default for GameSpatialAudioOptions {
++    fn default() -> Self {
++        Self {
++            volume: 1.0,
++            spatial_blend: 1.0,
++            min_distance: 1.0,
++            max_distance: 20.0,
++            rolloff: GameAudioRolloffMode::Linear,
++            looping: false,
++        }
++    }
++}
++
+ /// Behavior Tree leaf result supplied by project Rust gameplay.
+ #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+ #[serde(rename_all = "snake_case")]
+@@ -945,7 +985,42 @@ impl GameCommand {
+     pub fn play_sound_effect(asset_id: impl Into<String>) -> Self {
+         audio_asset_command("play_se", asset_id.into(), None)
+     }
++
++    /// Queues a spatial sound effect attached to a generation-checked runtime entity.
++    pub fn play_spatial_sound_effect(
++        target: GameEntityHandle,
++        asset_id: impl Into<String>,
++        options: GameSpatialAudioOptions,
++    ) -> Self {
++        let mut command = audio_asset_command("play_spatial_se", asset_id.into(), None);
++        command.target = Some(target);
++        let Value::Object(payload) = &mut command.payload else {
++            unreachable!("audio asset command always has an object payload");
++        };
++        payload.insert("volume".to_owned(), Value::F64(f64::from(options.volume)));
++        payload.insert(
++            "spatial_blend".to_owned(),
++            Value::F64(f64::from(options.spatial_blend)),
++        );
++        payload.insert(
++            "min_distance".to_owned(),
++            Value::F64(f64::from(options.min_distance)),
++        );
++        payload.insert(
++            "max_distance".to_owned(),
++            Value::F64(f64::from(options.max_distance)),
++        );
++        payload.insert(
++            "rolloff".to_owned(),
++            Value::String(match options.rolloff {
++                GameAudioRolloffMode::Linear => "linear",
++                GameAudioRolloffMode::Inverse => "inverse",
++            }.to_owned()),
++        );
++        payload.insert("looping".to_owned(), Value::Bool(options.looping));
++        command
++    }
+ 
+     /// Replaces the active background music by stable authoring asset ID.
+     pub fn play_background_music(asset_id: impl Into<String>) -> Self {
+         audio_asset_command("play_bgm", asset_id.into(), None)
+diff --git a/crates/scripting/src/game_api.rs b/crates/scripting/src/game_api.rs
+--- a/crates/scripting/src/game_api.rs
++++ b/crates/scripting/src/game_api.rs
+@@ -8,7 +8,7 @@
+ use crate::game_io::{
+     EngineViewKind, GameAccessMode, GameBehaviorStatus, GameClock, GameCommand, GameCommandFamily,
+-    GameComponentAccess, GameEngineViewAccess, GameEntityHandle, GameEventEmission,
+-    GameEventStream, GameHitboxShape, GameHostViewKind, GameInvocation, GameInvocationOutput,
+-    GameQueryAccess, GameQueryRow, GameResourceAccess, GameResourcePatch, GameSystemAccess,
++    GameComponentAccess, GameEngineViewAccess, GameEntityHandle, GameEventEmission, GameEventStream,
++    GameHitboxShape, GameHostViewKind, GameInvocation, GameInvocationOutput, GameQueryAccess,
++    GameQueryRow, GameResourceAccess, GameResourcePatch, GameSpatialAudioOptions, GameSystemAccess,
+ };
+ use crate::game_contracts::{GameComponent, GameField, GameResource};
+@@ -1884,6 +1884,15 @@ impl Commands {
+     pub fn play_sound_effect(&mut self, asset_id: impl Into<String>) {
+         self.push(GameCommand::play_sound_effect(asset_id));
+     }
++    /// Queues a sound effect whose position follows a generation-checked entity.
++    pub fn play_spatial_sound_effect(
++        &mut self,
++        target: GameEntityHandle,
++        asset_id: impl Into<String>,
++        options: GameSpatialAudioOptions,
++    ) {
++        self.push(GameCommand::play_spatial_sound_effect(target, asset_id, options));
++    }
+     /// Replaces background music.
+     pub fn play_background_music(&mut self, asset_id: impl Into<String>) {
+         self.push(GameCommand::play_background_music(asset_id));
+diff --git a/crates/engine/src/audio.rs b/crates/engine/src/audio.rs
+--- a/crates/engine/src/audio.rs
++++ b/crates/engine/src/audio.rs
+@@ -13,11 +13,42 @@ use engine_platform::spatial_audio::{
+     spatial_stereo_gains, AudioEmitterPose, AudioListenerPose, AudioVoiceSpatialSettings,
+ };
+ 
++/// Validated spatial policy for one project Rust sound request.
++#[derive(Debug, Clone, Copy, PartialEq)]
++pub(crate) struct GameSpatialAudioOptions {
++    pub(crate) volume: f32,
++    pub(crate) spatial_blend: f32,
++    pub(crate) min_distance: f32,
++    pub(crate) max_distance: f32,
++    pub(crate) rolloff: AudioRolloffMode,
++    pub(crate) looping: bool,
++}
++
++impl GameSpatialAudioOptions {
++    fn settings(self) -> AudioVoiceSpatialSettings {
++        AudioVoiceSpatialSettings {
++            volume: self.volume,
++            spatial_blend: self.spatial_blend,
++            min_distance: self.min_distance,
++            max_distance: self.max_distance,
++            rolloff: self.rolloff,
++        }
++    }
++}
++
++#[derive(Debug, Clone, Copy)]
++struct GameSpatialVoice {
++    source: Entity,
++    voice_id: AudioVoiceId,
++    options: GameSpatialAudioOptions,
++}
++
+ /// Process-local ownership of active authored spatial-audio voices.
+ ///
+ /// Runtime entity and backend voice identities never cross the authoring or
+ /// project-Rust boundaries.
+ #[derive(Debug, Default)]
+ pub(crate) struct SpatialAudioRuntime {
+     voices: HashMap<Entity, AudioVoiceId>,
++    game_voices: Vec<GameSpatialVoice>,
+ }
+@@ -33,6 +64,7 @@ pub(crate) fn spatial_audio_system(
+ ) {
+     let Some(audio) = audio.as_deref_mut() else {
+         runtime.voices.clear();
++        runtime.game_voices.clear();
+         for (_, (emitter, _)) in &mut emitters {
+             if emitter.autoplay && emitter.state() == &AuthoredAudioState::Pending {
