@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "request_id": "renderer-full-ibl-20260816-03",
+  "target_branch": "chatgpt/gameengine-render-full-ibl",
+  "expected_head_sha": "b20f7cce47f6030b2a0bf56f87c1fdc26535db84",
+  "patch_parts": [
+    "part-0000.patch",
+    "part-0001.patch",
+    "part-0002.patch",
+    "part-0003.patch",
+    "part-0004.patch",
+    "part-0005.patch",
+    "part-0006.patch",
+    "part-0007.patch",
+    "part-0008.patch"
+  ],
+  "commit_message": "Renderer: add full image-based lighting",
+  "pr_title": "Renderer: add full image-based lighting",
+  "pr_body": "## Summary\n\n- add generic StandardLit image-based lighting with diffuse irradiance, GGX prefiltered specular mip chains, and a split-sum BRDF LUT\n- keep visible sky rendering separate and preserve existing ToonLit ambient behavior\n- add content-keyed runtime environment-map preparation and fixed-camera GPU regression coverage\n- document the renderer contract in ADR 0121\n\n## Compatibility\n\nNo serialized scene/material schema, Stable ID, importer-specific render path, or public shading-model contract is changed. Existing non-IBL scenes retain the historical ambient path.\n\n## Validation\n\nWindows Validation is started by the trusted dispatcher. Cargo.lock changes require full workspace validation."
+}
