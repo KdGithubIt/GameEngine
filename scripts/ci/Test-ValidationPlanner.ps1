@@ -109,6 +109,40 @@ function Invoke-LayoutTests {
     Assert-Plan "pull-request" "pull_request" @((Path-InWorkspace "crates/leaf/src/lib.rs")) "affected" @("leaf")
     Assert-Plan "merge-group" "merge_group" @((Path-InWorkspace "crates/leaf/src/lib.rs")) "affected" @("leaf")
     Assert-Plan "dispatcher" "workflow_dispatch" @((Path-InWorkspace "crates/leaf/src/lib.rs")) "affected" @("leaf")
+
+    $forcedChanged = Join-Path $temp "$LayoutName-ci-script-short-circuit.changed.txt"
+    (Path-InWorkspace "scripts/ci/example.ps1") | Set-Content -LiteralPath $forcedChanged -Encoding utf8
+    $missingMetadata = Join-Path $temp "$LayoutName-missing.metadata.json"
+    $forcedJson = & $Planner `
+        -EventName "pull_request" `
+        -ChangedFilesPath $forcedChanged `
+        -WorkspaceRoot $Workspace `
+        -RepositoryRoot $Repository `
+        -MetadataFile $missingMetadata
+    $forcedPlan = $forcedJson | ConvertFrom-Json
+    if ($forcedPlan.validation_mode -ne "full") {
+        throw "$LayoutName/ci-script-short-circuit expected mode full, got $($forcedPlan.validation_mode)."
+    }
+    Write-Host "[PASS] $LayoutName/ci-script-short-circuit -> full without metadata"
+
+    $malformedMetadata = Join-Path $temp "$LayoutName-malformed.metadata.json"
+    "{" | Set-Content -LiteralPath $malformedMetadata -Encoding utf8
+    $metadataFailureChanged = Join-Path $temp "$LayoutName-metadata-failure.changed.txt"
+    (Path-InWorkspace "crates/leaf/src/lib.rs") | Set-Content -LiteralPath $metadataFailureChanged -Encoding utf8
+    $failureJson = & $Planner `
+        -EventName "pull_request" `
+        -ChangedFilesPath $metadataFailureChanged `
+        -WorkspaceRoot $Workspace `
+        -RepositoryRoot $Repository `
+        -MetadataFile $malformedMetadata
+    $failurePlan = $failureJson | ConvertFrom-Json
+    if ($failurePlan.validation_mode -ne "full") {
+        throw "$LayoutName/metadata-failure expected mode full, got $($failurePlan.validation_mode)."
+    }
+    if ($failurePlan.reason -match "[`r`n]") {
+        throw "$LayoutName/metadata-failure returned a multiline scope reason."
+    }
+    Write-Host "[PASS] $LayoutName/metadata-failure -> single-line full fallback"
 }
 
 try {
