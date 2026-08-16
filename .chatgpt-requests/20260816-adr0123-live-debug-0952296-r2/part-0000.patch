@@ -1,0 +1,192 @@
+--- a/crates/editor/src/ui/mod.rs
++++ b/crates/editor/src/ui/mod.rs
+@@ -1,3 +1,4 @@
+ mod animation_graph_parameters;
++mod behavior_debug;
+ mod animation_preview;
+ mod asset_inspector;
+@@ -22,4 +23,5 @@
+ 
+ use animation_preview::*;
++use behavior_debug::*;
+ use asset_inspector::*;
+ use assets::*;
+@@ -42,4 +44,6 @@
+     /// Runtime world owned while Play is active.
+     runtime_state: Option<RuntimePlayState>,
++    /// Transient read-only Behavior Tree live-debug presentation.
++    behavior_debug: BehaviorTreeDebugState,
+     /// Most recently recorded or loaded deterministic input artifact.
+     last_replay: Option<engine::InputReplay>,
+@@ -59,4 +63,5 @@
+             editor_mode: EditorMode::Edit,
+             runtime_state: None,
++            behavior_debug: BehaviorTreeDebugState::default(),
+             last_replay: None,
+             #[cfg(not(target_arch = "wasm32"))]
+--- a/crates/editor/src/ui/documents.rs
++++ b/crates/editor/src/ui/documents.rs
+@@ -11,4 +11,6 @@
+         }
+         app.sync_workspace_preferences();
++        #[cfg(feature = "visual-validation")]
++        app.prepare_behavior_tree_visual_validation();
+         app
+     }
+--- a/crates/editor/src/ui/play.rs
++++ b/crates/editor/src/ui/play.rs
+@@ -7,16 +7,37 @@
+         control_row(ui, |ui| {
+             ui.strong("View");
+-            let mut selected = self.preferences.play_mode_view;
+-            ui.selectable_value(&mut selected, PlayModeView::Game, "Game View");
+-            ui.selectable_value(&mut selected, PlayModeView::Scene, "Scene View");
+-            if selected != self.preferences.play_mode_view {
+-                self.preferences.play_mode_view = selected;
++            let previous = self.preferences.play_mode_view;
++            if ui
++                .selectable_label(
++                    !self.behavior_debug.visible && previous == PlayModeView::Game,
++                    "Game View",
++                )
++                .clicked()
++            {
++                self.behavior_debug.visible = false;
++                self.preferences.play_mode_view = PlayModeView::Game;
++            }
++            if ui
++                .selectable_label(
++                    !self.behavior_debug.visible && previous == PlayModeView::Scene,
++                    "Scene View",
++                )
++                .clicked()
++            {
++                self.behavior_debug.visible = false;
++                self.preferences.play_mode_view = PlayModeView::Scene;
++            }
++            if ui
++                .selectable_label(self.behavior_debug.visible, "Behavior Tree")
++                .clicked()
++            {
++                self.behavior_debug.visible = true;
++            }
++            if self.preferences.play_mode_view != previous {
+                 self.preferences.save();
+-                if selected == PlayModeView::Scene && self.game_view_focused {
+-                    self.release_all_forwarded_input();
+-                    self.game_view_focused = false;
+-                }
+             }
+-            if selected == PlayModeView::Scene {
++            if !self.behavior_debug.visible
++                && self.preferences.play_mode_view == PlayModeView::Scene
++            {
+                 ui.separator();
+                 if ui.button("Reset Camera").clicked() {
+@@ -27,4 +48,12 @@
+         });
+         ui.separator();
++        if self.behavior_debug.visible {
++            if self.game_view_focused {
++                self.release_all_forwarded_input();
++                self.game_view_focused = false;
++            }
++            self.show_behavior_tree_debug_workspace(ui);
++            return;
++        }
+ 
+         // The image below fills all remaining panel space, so any widget
+@@ -47,4 +76,6 @@
+                 self.session.extend_diagnostics(start.diagnostics);
+                 self.runtime_state = Some(start.state);
++                self.behavior_debug.clear();
++                self.selected_runtime_entity = None;
+                 self.editor_mode = EditorMode::Playing;
+                 self.game_view_focused = true;
+@@ -69,4 +100,6 @@
+                 self.session.extend_diagnostics(start.diagnostics);
+                 self.runtime_state = Some(start.state);
++                self.behavior_debug.clear_observation();
++                self.selected_runtime_entity = None;
+             }
+             Err(error) => {
+@@ -84,4 +117,6 @@
+         }
+         self.runtime_state = None;
++        self.behavior_debug.clear();
++        self.selected_runtime_entity = None;
+         self.editor_mode = EditorMode::Edit;
+         self.game_view_focused = false;
+--- a/crates/editor/src/runtime.rs
++++ b/crates/editor/src/runtime.rs
+@@ -1,4 +1,5 @@
+                 component!(engine::ParticleEmitter, "ParticleEmitter");
+                 component!(engine::Animator, "Animator");
++                component!(engine::behavior_tree::BehaviorTreeRunner, "BehaviorTreeRunner");
+                 component!(engine::NavMeshAgent, "NavMeshAgent");
+                 component!(engine::DamageReceiver, "DamageReceiver");
+@@ -24,4 +25,29 @@
+     }
+ 
++    /// Captures one runtime Behavior Tree runner without mutating its execution state.
++    pub(crate) fn behavior_tree_debug_snapshot(
++        &self,
++        key: (u32, u32),
++    ) -> Option<engine::behavior_tree::BehaviorExecutionSnapshot> {
++        let world = self.app.world();
++        let entity = world
++            .entities()
++            .find(|entity| (entity.id(), entity.generation()) == key)?;
++        world
++            .get_component::<engine::behavior_tree::BehaviorTreeRunner>(entity)
++            .map(engine::behavior_tree::BehaviorTreeRunner::snapshot)
++    }
++
++    /// Returns the first runtime entity that currently owns a Behavior Tree runner.
++    pub(crate) fn first_behavior_tree_entity_key(&self) -> Option<(u32, u32)> {
++        let world = self.app.world();
++        world
++            .entities()
++            .find(|entity| {
++                world.has_component::<engine::behavior_tree::BehaviorTreeRunner>(*entity)
++            })
++            .map(|entity| (entity.id(), entity.generation()))
++    }
++
+     /// Returns the number of authoring entities mapped into runtime entities.
+     pub fn mapped_entity_count(&self) -> usize {
+--- a/crates/editor/src/canvas/mod.rs
++++ b/crates/editor/src/canvas/mod.rs
+@@ -14,4 +14,41 @@
+ }
+ 
++/// Runtime-only status shown over one Behavior Tree source node.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub(crate) enum GraphDebugBadge {
++    /// The node is the deepest currently running node.
++    Running,
++    /// The node most recently completed successfully.
++    Success,
++    /// The node most recently completed with failure.
++    Failure,
++    /// A long-running action was recently entered.
++    Entered,
++    /// Active work was recently aborted.
++    Aborted,
++    /// Runtime state was recently reset.
++    Reset,
++}
++
++/// Transient runtime presentation for one graph node.
++#[derive(Debug, Clone, PartialEq, Default)]
++pub(crate) struct GraphDebugNodePresentation {
++    /// Whether this node belongs to the runtime active path.
++    pub(crate) active: bool,
++    /// Most relevant current or recent runtime status.
++    pub(crate) badge: Option<GraphDebugBadge>,
++    /// Runtime-reported active duration for this node.
++    pub(crate) elapsed_seconds: Option<f64>,
++    /// Optional lifecycle detail shown on hover.
++    pub(crate) detail: Option<String>,
++}
++
