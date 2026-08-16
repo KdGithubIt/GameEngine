@@ -1,0 +1,72 @@
++The multi-resolution bloom implementation reuses the existing `BloomSettings`
++fields. Resizing the source HDR target recreates renderer-owned bloom targets;
++callers do not provide or persist bloom textures.
++
++White-balance and LUT-based grading, if added later, belong to this same
++post-process stage. This refinement does not add persisted controls, LUT asset
++references, Stable IDs, or a post-process graph; those contracts require a
++separate authoring/asset decision before they are introduced.
++
+ ## Consequences
+ 
+ - Gameplay/editor code can configure exposure, tone mapping, and bloom through a
+   stable resource.
+-- GPU implementation can be incremental: direct swapchain rendering can coexist
+-  with the settings resource until the offscreen pass lands.
++- Bloom filtering and composition stay in renderer-owned HDR passes, independent
++  from material shading and the caller-owned swapchain target.
++- The existing settings and scene-authoring contract remain stable while the GPU
++  implementation can improve internally.
+ - Any future change to the HDR format or default tone mapper needs an ADR update.
+ 
+ ## Alternatives Considered
+diff --git a/docs/phases/phase-45-postprocess.md b/docs/phases/phase-45-postprocess.md
+index 4b153101935e095a0e6998e340a62970d297f6a7..b594e7962ce35d07f3698ad8724a475b7ed50d5f 100644
+--- a/docs/phases/phase-45-postprocess.md
++++ b/docs/phases/phase-45-postprocess.md
+@@ -24,7 +24,7 @@ render target contract が崩れるため、ADR 0040 で pass 構成を固定し
+ 
+ - HDR offscreen render target（45-A、ADR 0040 ゲート）
+ - Tonemapping pass（Reinhard または ACES、ADR 0040 で決定）（45-B）
+-- Bloom 最小実装（threshold + blur + composite）（45-C）
++- Multi-resolution Bloom（threshold + downsample + filtered upsample + composite）（45-C）
+ - Editor: exposure / bloom toggle / intensity の設定 UI（45-D）
+ 
+ ### 作らないもの
+@@ -46,7 +46,9 @@ ADR 0040 で比較して Accept する。
+ ### Post-process は explicit pass chain
+ 
+ MVP では graph 化せず、`scene_hdr -> tonemap -> backbuffer` の固定 chain から始める。
+-Bloom を有効にした場合だけ downsample / blur / composite pass を挿入する。
++Bloom を有効にした場合は renderer-owned の
++`bright extraction -> downsample pyramid -> filtered upsample -> HDR composite`
++を tonemap 前に挿入する。Bloom target は HDR target の resize に追従して再作成する。
+ 
+ ### Editor 設定は Project Settings に保存
+ 
+@@ -71,9 +73,13 @@ runtime component にはしない。per-scene / per-camera override は後送り
+ 
+ ### 45-C: Bloom
+ 
+-- Bright-pass extraction
+-- 低解像度 blur
+-- Tonemap 前または tonemap pass 内で composite
++- Bright-pass extraction を最初の低解像度 level で行う
++- bounded multi-resolution downsample pyramid を生成する
++- 小さい level から filtered upsample して広い bloom footprint を合成する
++- scene HDR と bloom を HDR のまま composite し、その後で exposure / tonemap /
++  color grading を適用する
++- 既存 `BloomSettings`（enabled / threshold / intensity / radius）を維持し、
++  新しい serialized field や per-camera volume は追加しない
+ 
+ ### 45-D: Editor Integration
+ 
+@@ -94,7 +100,7 @@ runtime component にはしない。per-scene / per-camera override は後送り
+ 
+ - HDR target 経由で scene が描画され、tonemapping 後に Game View に表示される
+ - exposure を変更すると表示が変わる
+-- bloom toggle が動作する
++- bloom toggle が multi-resolution pass chain の有効 / 無効を切り替える
+ - `cargo fmt --all --check` / `cargo clippy --workspace --all-targets -- -D warnings` /
+   `cargo test --workspace` / `cargo doc --workspace --no-deps` が通る
+ 
