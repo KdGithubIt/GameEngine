@@ -6,7 +6,9 @@
 
 use super::errors::EditorSessionError;
 use super::{EditorGraphDomain, EditorSession};
-use engine_authoring::{Diagnostic, EdgeId, GraphCommand, Node, NodeId, NodeLayout, Vec2};
+use engine_authoring::{
+    Diagnostic, EdgeId, GraphCommand, Node, NodeId, NodeLayout, NodeTypeId, Vec2,
+};
 
 /// Behavior Tree node variants available in the Phase 8-A prototype.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,6 +67,44 @@ impl EditorSession {
         Ok(node_id)
     }
 
+    /// Adds a Behavior Tree node selected from the shared schema catalog.
+    ///
+    /// Node construction and defaults stay in [`engine_authoring::BehaviorTreeAuthoringService`];
+    /// the Editor only commits the resulting shared graph command and presentation state.
+    pub fn add_behavior_schema_node(
+        &mut self,
+        node_type: NodeTypeId,
+        behavior: impl Into<String>,
+        position: Option<Vec2>,
+    ) -> Result<NodeId, EditorSessionError> {
+        let node_id = NodeId::generate();
+        let EditorGraphDomain::BehaviorTree(service) = &self.domain else {
+            return Err(EditorSessionError::WrongGraphDomain {
+                operation: "add Behavior Tree schema node",
+            });
+        };
+        let node = service.create_node_with_defaults(&node_type, node_id.clone(), behavior);
+        self.push_undo_checkpoint();
+        self.apply_graph_command(GraphCommand::AddNode { node })?;
+
+        if let Some(position) = position {
+            let layout = NodeLayout::new(position);
+            if let Err(error) = self.set_node_layout(node_id.clone(), layout) {
+                self.diagnostics.push(Diagnostic::warning(
+                    "editor.presentation_after_semantic_failed",
+                    format!("semantic node was added but presentation placement failed: {error}"),
+                ));
+            }
+        }
+        if let Err(error) = self.select_node(Some(node_id.clone())) {
+            self.diagnostics.push(Diagnostic::warning(
+                "editor.presentation_after_semantic_failed",
+                format!("semantic node was added but selection failed: {error}"),
+            ));
+        }
+        Ok(node_id)
+    }
+
     /// Connects two Behavior Tree nodes through `GraphCommand`.
     ///
     /// Pushes one undo checkpoint before mutating state.
@@ -73,14 +113,14 @@ impl EditorSession {
         parent: NodeId,
         child: NodeId,
     ) -> Result<EdgeId, EditorSessionError> {
-        let EditorGraphDomain::BehaviorTree(domain) = &self.domain else {
+        let EditorGraphDomain::BehaviorTree(service) = &self.domain else {
             return Err(EditorSessionError::WrongGraphDomain {
                 operation: "connect Behavior Tree child",
             });
         };
         let order = self.next_child_order(&parent);
         let edge_id = EdgeId::generate();
-        let edge = domain.child_edge(edge_id.clone(), parent, child, order);
+        let edge = service.domain().child_edge(edge_id.clone(), parent, child, order);
         self.push_undo_checkpoint();
         self.apply_graph_command(GraphCommand::AddEdge { edge })?;
         Ok(edge_id)
@@ -92,11 +132,12 @@ impl EditorSession {
         kind: BehaviorNodeInsertKind,
         behavior: String,
     ) -> Result<Node, EditorSessionError> {
-        let EditorGraphDomain::BehaviorTree(domain) = &self.domain else {
+        let EditorGraphDomain::BehaviorTree(service) = &self.domain else {
             return Err(EditorSessionError::WrongGraphDomain {
                 operation: "add Behavior Tree node",
             });
         };
+        let domain = service.domain();
         Ok(match kind {
             BehaviorNodeInsertKind::Root => domain.root_node(id),
             BehaviorNodeInsertKind::Sequence => domain.sequence_node(id),
@@ -183,6 +224,27 @@ mod tests {
         assert!(
             !session.can_undo(),
             "undo stack must be empty after reverting the only operation"
+        );
+    }
+
+    #[test]
+    fn schema_node_uses_shared_stateful_defaults() {
+        let service = engine_authoring::BehaviorTreeAuthoringService::new();
+        let wait_type = service.domain().wait_type().clone();
+        let mut session = EditorSession::empty_behavior_tree();
+
+        let node = session
+            .add_behavior_schema_node(wait_type.clone(), "ignored", Some(Vec2::new(10.0, 20.0)))
+            .expect("shared Wait schema should be insertable");
+
+        let inserted = &session.graph().nodes[&node];
+        assert_eq!(inserted.node_type, wait_type);
+        assert_eq!(
+            inserted.properties,
+            engine_authoring::Value::Object(std::collections::BTreeMap::from([(
+                "duration_seconds".into(),
+                engine_authoring::Value::F64(1.0),
+            )]))
         );
     }
 }
