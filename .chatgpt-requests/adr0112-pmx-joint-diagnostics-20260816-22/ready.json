@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0112-pmx-joint-diagnostics-20260816-22",
+  "target_branch": "chatgpt/gameengine-adr-0112-secondary-motion-v2",
+  "expected_head_sha": "8444366ad3ed30563868e87fa6109973689eb1c3",
+  "patch_parts": ["part-0000.patch"],
+  "commit_message": "Diagnose unsupported PMX Secondary Motion joints",
+  "pr_title": "Implement ADR 0112 engine-native secondary motion",
+  "pr_body": "## Summary\n\nImplements ADR 0112 engine-native Secondary Motion. This follow-up makes PMX joint conversion explicitly best effort by diagnosing unsupported joint kinds and orphaned joints while preserving usable imported model data. The PR remains Draft while remaining ADR 0112 cleanup and final validation are completed."
+}
