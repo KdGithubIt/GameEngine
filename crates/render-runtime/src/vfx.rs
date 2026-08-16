@@ -15,8 +15,57 @@ use engine_authoring::{
 use engine_ecs::{Query, Res};
 use glam::Vec3;
 
+use crate::asset::Handle;
+use crate::material::Material;
+use crate::mesh::Mesh;
 use crate::time::Time;
 use crate::transform::GlobalTransform;
+
+/// Runtime render binding resolved from one authored Render module.
+#[derive(Clone)]
+pub struct VfxRenderBinding {
+    /// Mesh used by this output. Billboard outputs resolve to the built-in quad.
+    pub mesh: Handle<Mesh>,
+    /// Runtime material used by this output.
+    pub material: Material,
+    /// Whether the mesh must face the active camera.
+    pub billboard: bool,
+}
+
+/// Runtime-only bindings from stable Render module IDs to resolved render assets.
+#[derive(Clone, Default)]
+pub struct VfxRenderBindings {
+    bindings: BTreeMap<VfxModuleId, VfxRenderBinding>,
+}
+
+impl VfxRenderBindings {
+    /// Inserts or replaces one render-module binding.
+    pub fn insert(&mut self, module: VfxModuleId, binding: VfxRenderBinding) {
+        self.bindings.insert(module, binding);
+    }
+
+    /// Resolves the runtime binding for a compiled Render operation.
+    pub fn get(&self, module: &VfxModuleId) -> Option<&VfxRenderBinding> {
+        self.bindings.get(module)
+    }
+}
+
+/// One presentation record derived from live simulation without GPU handles.
+#[derive(Debug, Clone)]
+pub struct VfxRenderParticle {
+    /// Stable Render module that produces this presentation record.
+    pub module: VfxModuleId,
+    /// World-space particle position.
+    pub position: Vec3,
+    /// Linear RGBA particle color.
+    pub color: [f32; 4],
+    /// Uniform particle scale.
+    pub size: f32,
+    /// Authored particle rotation in radians.
+    pub rotation: f32,
+    /// UV scale XY and offset ZW for texture-sheet animation.
+    pub uv_transform: [f32; 4],
+}
 
 /// Maximum number of particles one emitter may request in one runtime step.
 ///
@@ -426,6 +475,35 @@ impl VfxPlayer {
         self.playing
     }
 
+    /// Extracts backend-neutral presentation records for every live Render output.
+    pub fn render_particles(&self) -> Vec<VfxRenderParticle> {
+        let mut output = Vec::new();
+        for emitter in self.instance.emitters() {
+            for operation in emitter.render_operations() {
+                let VfxModuleOperation::Billboard { texture_sheet, .. }
+                | VfxModuleOperation::Mesh { texture_sheet, .. } = &operation.operation
+                else {
+                    continue;
+                };
+                for particle in emitter.particles() {
+                    output.push(VfxRenderParticle {
+                        module: operation.source_module.clone(),
+                        position: particle.position,
+                        color: particle.color,
+                        size: particle.size,
+                        rotation: particle.rotation,
+                        uv_transform: texture_sheet
+                            .as_ref()
+                            .map_or([1.0, 1.0, 0.0, 0.0], |sheet| {
+                                texture_sheet_uv(sheet, particle.life_factor())
+                            }),
+                    });
+                }
+            }
+        }
+        output
+    }
+
     /// Resumes playback without resetting transient state.
     pub fn play(&mut self) {
         self.playing = true;
@@ -464,6 +542,24 @@ pub fn vfx_update_system(time: Res<'_, Time>, mut query: Query<'_, (&mut VfxPlay
     for (player, transform) in &mut query {
         player.step(dt, transform.translation());
     }
+}
+
+fn texture_sheet_uv(sheet: &engine_authoring::VfxTextureSheet, life: f32) -> [f32; 4] {
+    let columns = sheet.columns.max(1);
+    let rows = sheet.rows.max(1);
+    let frame_count = columns.saturating_mul(rows).max(1);
+    let normalized = sheet.frame_over_life.evaluate(life).clamp(0.0, 1.0);
+    let frame = ((normalized * frame_count as f32).floor() as u32).min(frame_count - 1);
+    let column = frame % columns;
+    let row = frame / columns;
+    let scale_x = 1.0 / columns as f32;
+    let scale_y = 1.0 / rows as f32;
+    [
+        scale_x,
+        scale_y,
+        column as f32 * scale_x,
+        row as f32 * scale_y,
+    ]
 }
 
 fn requested_spawns(runtime: &mut VfxEmitterRuntime, dt: f32, end_time: f32) -> u32 {
