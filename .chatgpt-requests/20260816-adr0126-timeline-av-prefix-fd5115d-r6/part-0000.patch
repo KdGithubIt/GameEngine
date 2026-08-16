@@ -1,0 +1,197 @@
+diff --git a/crates/authoring/src/timeline.rs b/crates/authoring/src/timeline.rs
+--- a/crates/authoring/src/timeline.rs
++++ b/crates/authoring/src/timeline.rs
+@@ -187,6 +187,38 @@ pub struct TimelineCameraCutClip {
+     pub override_priority: i32,
+ }
+ 
++/// One Audio Track interval evaluated through the ADR 0122 tracked-voice path.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++pub struct TimelineAudioClip {
++    /// Stable Timeline interval.
++    pub timing: TimelineClipTiming,
++    /// Stable authored audio asset.
++    pub audio_asset: AssetId,
++    /// Optional stable scene entity supplying spatial position.
++    pub emitter: Option<EntityId>,
++    /// Linear clip gain. Must be finite and non-negative.
++    pub volume: f32,
++    /// ADR 0122 spatial blend in the inclusive range `[0, 1]`.
++    pub spatial_blend: f32,
++    /// Whether the tracked voice loops while the Timeline clip remains active.
++    pub looping: bool,
++}
++
++/// One VFX Track interval evaluated through the ADR 0125 runtime.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++pub struct TimelineVfxClip {
++    /// Stable Timeline interval.
++    pub timing: TimelineClipTiming,
++    /// Stable authored VFX effect asset.
++    pub effect_asset: AssetId,
++    /// Stable scene entity receiving the effect instance.
++    pub target: EntityId,
++    /// Non-negative VFX simulation multiplier.
++    pub time_scale: f32,
++    /// Optional deterministic seed override.
++    pub seed_override: Option<u32>,
++}
++
+ /// One stable sequence-level Event marker.
+ ///
+ /// `id` is the stable event identity used for ordering and source attribution.
+@@ -208,10 +240,9 @@ pub struct TimelineEventMarker {
+ }
+ 
+ /// Persisted, typed track family.
+ ///
+-/// Audio and VFX are intentionally absent from the current-format enum until
+-/// ADR 0122 / ADR 0125 runtime contracts are stable. Future support must add a
+-/// concrete typed variant rather than serializing an opaque JSON payload.
++/// Every built-in family is explicit; no opaque JSON/reflection escape hatch is
++/// accepted by Timeline authoring.
+ #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+ #[serde(tag = "type", content = "data", rename_all = "snake_case")]
+ pub enum TimelineTrackKind {
+@@ -231,6 +262,16 @@ pub enum TimelineTrackKind {
+         /// Camera cut intervals.
+         clips: Vec<TimelineCameraCutClip>,
+     },
++    /// ADR 0122 tracked audio voices.
++    Audio {
++        /// Ordered typed audio clips.
++        clips: Vec<TimelineAudioClip>,
++    },
++    /// ADR 0125 deterministic VFX playback.
++    Vfx {
++        /// Ordered typed VFX clips.
++        clips: Vec<TimelineVfxClip>,
++    },
+     /// Sequence-level event marker lane.
+     Event {
+         /// Stable sequence Event markers.
+@@ -250,6 +291,10 @@ pub enum TimelineTrackType {
+     TransformProperty,
+     /// Camera Cut track.
+     CameraCut,
++    /// Audio track.
++    Audio,
++    /// VFX track.
++    Vfx,
+     /// Sequence Event track.
+     Event,
+ }
+@@ -262,6 +307,8 @@ impl TimelineTrackKind {
+             Self::Animation { .. } => TimelineTrackType::Animation,
+             Self::TransformProperty { .. } => TimelineTrackType::TransformProperty,
+             Self::CameraCut { .. } => TimelineTrackType::CameraCut,
++            Self::Audio { .. } => TimelineTrackType::Audio,
++            Self::Vfx { .. } => TimelineTrackType::Vfx,
+             Self::Event { .. } => TimelineTrackType::Event,
+         }
+     }
+@@ -280,6 +327,14 @@ impl TimelineTrackKind {
+                 .iter()
+                 .find(|clip| &clip.timing.id == id)
+                 .map(TimelineClipRef::CameraCut),
++            Self::Audio { clips } => clips
++                .iter()
++                .find(|clip| &clip.timing.id == id)
++                .map(TimelineClipRef::Audio),
++            Self::Vfx { clips } => clips
++                .iter()
++                .find(|clip| &clip.timing.id == id)
++                .map(TimelineClipRef::Vfx),
+             Self::Event { .. } => None,
+         }
+     }
+@@ -293,6 +348,10 @@ pub enum TimelineClipRef<'a> {
+     TransformProperty(&'a TimelineTransformClip),
+     /// Camera Cut clip.
+     CameraCut(&'a TimelineCameraCutClip),
++    /// Audio clip.
++    Audio(&'a TimelineAudioClip),
++    /// VFX clip.
++    Vfx(&'a TimelineVfxClip),
+ }
+ 
+ impl TimelineClipRef<'_> {
+@@ -303,6 +362,8 @@ impl TimelineClipRef<'_> {
+             Self::Animation(clip) => &clip.timing,
+             Self::TransformProperty(clip) => &clip.timing,
+             Self::CameraCut(clip) => &clip.timing,
++            Self::Audio(clip) => &clip.timing,
++            Self::Vfx(clip) => &clip.timing,
+         }
+     }
+ }
+@@ -509,6 +570,48 @@ impl TimelineDocument {
+                         }
+                     }
+                 }
++                TimelineTrackKind::Audio { clips } => {
++                    for clip in clips {
++                        if !resolver.asset_exists(&clip.audio_asset) {
++                            diagnostics.push(Diagnostic::error(
++                                "timeline.missing_asset_binding",
++                                format!(
++                                    "Timeline track `{}` clip `{}` references missing audio asset `{}`",
++                                    track.id, clip.timing.id, clip.audio_asset
++                                ),
++                            ));
++                        }
++                        if let Some(emitter) = &clip.emitter {
++                            if !resolver.entity_exists(emitter) {
++                                diagnostics.push(missing_entity_binding(
++                                    &track.id,
++                                    &clip.timing.id,
++                                    emitter,
++                                ));
++                            }
++                        }
++                    }
++                }
++                TimelineTrackKind::Vfx { clips } => {
++                    for clip in clips {
++                        if !resolver.asset_exists(&clip.effect_asset) {
++                            diagnostics.push(Diagnostic::error(
++                                "timeline.missing_asset_binding",
++                                format!(
++                                    "Timeline track `{}` clip `{}` references missing VFX asset `{}`",
++                                    track.id, clip.timing.id, clip.effect_asset
++                                ),
++                            ));
++                        }
++                        if !resolver.entity_exists(&clip.target) {
++                            diagnostics.push(missing_entity_binding(
++                                &track.id,
++                                &clip.timing.id,
++                                &clip.target,
++                            ));
++                        }
++                    }
++                }
+                 TimelineTrackKind::Event { .. } => {}
+             }
+         }
+@@ -582,8 +685,6 @@ impl std::error::Error for TimelineDocumentError {
+ 
+ /// Immutable payload compiled from the currently supported typed track set.
+ ///
+-/// The neutral scheduler is generic over this type. Audio/VFX are not hidden
+-/// behind an `Other(String)`/JSON branch; they can be introduced later as
+-/// explicit typed payloads once their runtime contracts are stable.
++/// The neutral scheduler is generic over this closed typed payload set.
+ #[derive(Debug, Clone, PartialEq)]
+ pub enum CompiledTimelinePayload {
+@@ -595,6 +696,10 @@ pub enum CompiledTimelinePayload {
+     TransformProperty(CompiledTransformPayload),
+     /// Runtime-only game-camera override request.
+     CameraCut(CompiledCameraCutPayload),
++    /// ADR 0122 tracked-voice request.
++    Audio(CompiledAudioPayload),
++    /// ADR 0125 deterministic VFX request.
++    Vfx(CompiledVfxPayload),
+     /// Sequence-level Event marker request.
+     Event(CompiledEventPayload),
+ }
