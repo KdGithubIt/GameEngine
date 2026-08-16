@@ -1,0 +1,159 @@
+diff --git a/crates/editor/src/navmesh_shared.rs b/crates/editor/src/navmesh_shared.rs
+--- a/crates/editor/src/navmesh_shared.rs
++++ b/crates/editor/src/navmesh_shared.rs
+@@ -5,8 +5,8 @@
+ //! `engine::navigation_bake` and `engine-physics`.
+ 
+ pub use engine::navigation_bake::{
+-    bake_scene_navmesh, collect_navigation_source, is_scene_navmesh_stale, prepare_scene_navmesh,
+-    NavMeshBakeDocument, NavMeshBakeError, NavMeshBakeResult, NavMeshBakeSettings,
+-    NavigationBakeOutput, NavigationBakeService, NavigationBakeServiceError, NavigationBakeStats,
+-    NavigationSource, NAVMESH_BAKE_SCHEMA_VERSION,
++    bake_scene_navmesh, collect_navigation_source, is_scene_navmesh_current,
++    is_scene_navmesh_stale, prepare_scene_navmesh, NavMeshBakeDocument, NavMeshBakeError,
++    NavMeshBakeResult, NavMeshBakeSettings, NavigationBakeOutput, NavigationBakeService,
++    NavigationBakeServiceError, NavigationBakeStats, NavigationSource, NAVMESH_BAKE_SCHEMA_VERSION,
+ };
+diff --git a/crates/editor/src/ui/game_tools.rs b/crates/editor/src/ui/game_tools.rs
+--- a/crates/editor/src/ui/game_tools.rs
++++ b/crates/editor/src/ui/game_tools.rs
+@@ -458,6 +458,106 @@ impl EditorApp {
+         }
+     }
+ 
++    pub(super) fn active_navigation_currentness_error(&self) -> Option<String> {
++        let project = self.project_root.as_ref()?;
++        let scene = self.session.scene()?;
++        let surface_type = engine_authoring::ComponentTypeId::new(
++            engine::scene_bridge::NAV_MESH_SURFACE_COMPONENT,
++        );
++        let (_, surface) = scene
++            .entities()
++            .find(|(_, entity)| entity.components.contains_key(&surface_type))?;
++        let source = match surface.components.get(&surface_type) {
++            Some(engine_authoring::Value::Object(fields)) => match fields.get("source") {
++                Some(engine_authoring::Value::AssetRef(asset)) => asset,
++                _ => {
++                    return Some(
++                        "navigation surface has no assigned NavMesh; bake navigation before continuing"
++                            .to_owned(),
++                    )
++                }
++            },
++            _ => {
++                return Some(
++                    "navigation surface value is invalid; repair it and rebake navigation"
++                        .to_owned(),
++                )
++            }
++        };
++        let scene_path = self.session.current_document_path()?;
++        let scene_stem = scene_path
++            .file_stem()
++            .and_then(|stem| stem.to_str())
++            .unwrap_or("arena")
++            .trim_end_matches(".scene");
++        let document_path = project
++            .assets_root()
++            .join("navigation")
++            .join(format!("{scene_stem}.navmesh.bake.json"));
++        let document_json = match std::fs::read_to_string(&document_path) {
++            Ok(json) => json,
++            Err(error) => {
++                return Some(format!(
++                    "navigation bake document {} is unavailable: {error}",
++                    document_path.display()
++                ))
++            }
++        };
++        let document = match crate::navmesh_shared::NavMeshBakeDocument::from_json(&document_json) {
++            Ok(document) => document,
++            Err(error) => {
++                return Some(format!(
++                    "navigation bake document {} is invalid: {error}",
++                    document_path.display()
++                ))
++            }
++        };
++        let Some(entry) = self.asset_manifest.get(source) else {
++            return Some(format!(
++                "navigation surface references unregistered asset `{}`",
++                source.as_str()
++            ));
++        };
++        if entry.path != document.output_asset {
++            return Some(format!(
++                "navigation surface uses `{}` but the active bake document outputs `{}`; rebake navigation",
++                entry.path, document.output_asset
++            ));
++        }
++        let asset_path = match project.resolve_asset(&entry.path) {
++            Ok(path) => path,
++            Err(error) => return Some(format!("navigation asset is unavailable: {error}")),
++        };
++        let nav_mesh = match std::fs::read_to_string(&asset_path)
++            .map_err(|error| error.to_string())
++            .and_then(|json| {
++                serde_json::from_str::<engine::navmesh::NavMesh>(&json)
++                    .map_err(|error| error.to_string())
++            })
++        {
++            Ok(nav_mesh) => nav_mesh,
++            Err(error) => {
++                return Some(format!(
++                    "navigation asset {} is invalid: {error}",
++                    asset_path.display()
++                ))
++            }
++        };
++        match crate::navmesh_shared::is_scene_navmesh_current(
++            scene,
++            project,
++            &self.asset_manifest,
++            &document,
++            &nav_mesh,
++        ) {
++            Ok(true) => None,
++            Ok(false) => {
++                Some("navigation bake is stale; rebake navigation before continuing".to_owned())
++            }
++            Err(error) => Some(format!("navigation currentness check failed: {error}")),
++        }
++    }
++
+     pub(super) fn bake_current_navmesh(&mut self) {
+         if self.navigation_bake.is_running() {
+             return;
+@@ -617,6 +707,14 @@ impl EditorApp {
+         let Some(project_root) = self.project_root.clone() else {
+             return;
+         };
++        if let Some(error) = self.active_navigation_currentness_error() {
++            self.session
++                .push_diagnostic(engine_authoring::Diagnostic::error(
++                    "editor.package_navigation_not_current",
++                    error,
++                ));
++            return;
++        }
+         let settings = match ProjectSettings::load(project_root.path()) {
+             Ok(settings) => settings,
+             Err(error) => {
+diff --git a/crates/editor/src/ui/play.rs b/crates/editor/src/ui/play.rs
+--- a/crates/editor/src/ui/play.rs
++++ b/crates/editor/src/ui/play.rs
+@@ -580,6 +580,14 @@ impl EditorApp {
+     }
+ 
+     pub(super) fn start_play_ready(&mut self) {
++        if let Some(error) = self.active_navigation_currentness_error() {
++            self.session
++                .push_diagnostic(engine_authoring::Diagnostic::error(
++                    "editor.play_navigation_not_current",
++                    error,
++                ));
++            return;
++        }
+         self.session.set_diagnostics(Vec::new());
+         // The Console was just cleared, so let the following refresh re-log
+         // every still-present problem into the fresh Play log.
