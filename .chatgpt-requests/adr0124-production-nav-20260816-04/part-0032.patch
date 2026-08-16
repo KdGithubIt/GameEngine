@@ -1,0 +1,17 @@
++        let path = std::env::temp_dir().join(format!(
++            "engine_navigation_cancel_preserves_{}.json",
++            std::process::id()
++        ));
++        fs::write(&path, b"previous").unwrap();
++        let cancelled = AtomicBool::new(true);
++        let result = NavigationBakeService.bake_to_path(
++            &source(),
++            &NavMeshBakeDocument::default(),
++            &path,
++            &cancelled,
++        );
++        assert!(matches!(result, Err(NavigationBakeServiceError::Cancelled)));
++        assert_eq!(fs::read(&path).unwrap(), b"previous");
++        let _ = fs::remove_file(path);
++    }
++}

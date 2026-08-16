@@ -1,0 +1,62 @@
++            || !self.settings.tile_size.is_finite()
++            || self.settings.tile_size <= 0.0
++            || self.settings.profiles.is_empty()
++            || !self.output_asset.ends_with(".navmesh.json")
++            || Path::new(&self.output_asset).is_absolute()
++            || Path::new(&self.output_asset)
++                .components()
++                .any(|part| matches!(part, std::path::Component::ParentDir))
++        {
++            return Err(NavigationBakeServiceError::InvalidSettings);
++        }
++        let mut ids = BTreeSet::new();
++        for profile in &self.settings.profiles {
++            if profile.id.as_str().is_empty()
++                || profile.name.trim().is_empty()
++                || !ids.insert(profile.id.as_str())
++                || !profile.radius.is_finite()
++                || profile.radius < 0.0
++                || !profile.height.is_finite()
++                || profile.height <= 0.0
++                || !profile.max_slope_degrees.is_finite()
++                || !(0.0..90.0).contains(&profile.max_slope_degrees)
++                || !profile.max_climb.is_finite()
++                || profile.max_climb < 0.0
++                || profile
++                    .area_costs
++                    .values()
++                    .any(|cost| !cost.is_finite() || *cost <= 0.0)
++            {
++                return Err(NavigationBakeServiceError::InvalidSettings);
++            }
++        }
++        Ok(())
++    }
++}
++
++#[derive(Debug, Deserialize)]
++struct LegacyBakeVector3([f32; 3]);
++
++#[derive(Debug, Deserialize)]
++struct LegacyNavMeshBakeSettings {
++    cell_size: f32,
++    agent_radius: f32,
++    world_min: LegacyBakeVector3,
++    world_max: LegacyBakeVector3,
++    walkable_height: f32,
++    agent_height: f32,
++}
++
++#[derive(Debug, Deserialize)]
++struct LegacyNavMeshBakeDocument {
++    output_asset: String,
++    source_fingerprint: Option<String>,
++    settings: LegacyNavMeshBakeSettings,
++}
++
++fn migrate_v1_document(legacy: LegacyNavMeshBakeDocument) -> NavMeshBakeDocument {
++    let extent_x = (legacy.settings.world_max.0[0] - legacy.settings.world_min.0[0]).abs();
++    let extent_z = (legacy.settings.world_max.0[2] - legacy.settings.world_min.0[2]).abs();
++    let extent = extent_x.max(extent_z).max(1.0);
++    let _legacy_height = legacy.settings.walkable_height;
++    NavMeshBakeDocument {

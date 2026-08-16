@@ -1,0 +1,73 @@
++                    maximum: (center + half).to_array(),
++                    profiles,
++                    mode,
++                })
++            })
++        })
++        .collect()
++}
++
++fn scene_without_navigation_derived_components(
++    scene: &AuthoringScene,
++) -> Result<AuthoringScene, NavMeshBakeError> {
++    let mut normalized = scene.clone();
++    let ignored = [
++        ComponentTypeId::new(crate::scene_bridge::NAV_MESH_SURFACE_COMPONENT),
++        ComponentTypeId::new(NAVIGATION_LINK_COMPONENT),
++        ComponentTypeId::new(NAVIGATION_MODIFIER_COMPONENT),
++    ];
++    let removals = normalized
++        .entities()
++        .flat_map(|(id, entity)| {
++            ignored.iter().filter_map(move |component| {
++                entity
++                    .components
++                    .contains_key(component)
++                    .then(|| (id.clone(), component.clone()))
++            })
++        })
++        .collect::<Vec<_>>();
++    if removals.is_empty() {
++        return Ok(normalized);
++    }
++    let mut transaction = engine_authoring::Transaction::begin(&normalized);
++    for (entity, component_type) in removals {
++        transaction.apply(AuthoringCommand::RemoveComponent {
++            entity,
++            component_type,
++        });
++    }
++    transaction
++        .commit(&mut normalized)
++        .map_err(|error| NavMeshBakeError::Scene(error.to_string()))?;
++    Ok(normalized)
++}
++
++type ObjectFields<'a> = &'a BTreeMap<String, Value>;
++
++fn object_fields<'a>(
++    value: &'a Value,
++    component: &str,
++) -> Result<ObjectFields<'a>, NavMeshBakeError> {
++    match value {
++        Value::Object(fields) => Ok(fields),
++        _ => Err(NavMeshBakeError::Scene(format!(
++            "`{component}` must be an object"
++        ))),
++    }
++}
++
++fn vector_field(fields: ObjectFields<'_>, prefix: &str) -> Result<Vec3, NavMeshBakeError> {
++    Ok(Vec3::new(
++        f32_field(fields, &format!("{prefix}_x"))?,
++        f32_field(fields, &format!("{prefix}_y"))?,
++        f32_field(fields, &format!("{prefix}_z"))?,
++    ))
++}
++
++fn f32_field(fields: ObjectFields<'_>, key: &str) -> Result<f32, NavMeshBakeError> {
++    let value = match fields.get(key) {
++        Some(Value::F64(value)) => *value as f32,
++        Some(Value::I64(value)) => *value as f32,
++        Some(Value::U64(value)) => *value as f32,
++        _ => {
