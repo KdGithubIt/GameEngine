@@ -396,32 +396,42 @@ Last confirmed: 2026-08-16
 
 ### Symptom
 
-ADR 0112 Draft PR #28 requested Editor visual validation, but the capture job
-built the Editor and then panicked before any screenshot was produced.
+Desktop Visual Validation could build the requested application but failed to
+produce complete screenshot evidence when the harness delegated capture to
+eframe's native `EFRAME_SCREENSHOT_TO` helper. The issue first blocked Editor
+validation for ADR 0112 PR #28 and later blocked Launcher evidence while
+validating renderer Phase 9 PR #57.
 
 ### Evidence
 
 - Visual Validation run `31930038159` reached the Editor capture invocation and
   panicked in eframe 0.34.3's native wgpu integration with
   `EFRAME_SCREENSHOT_TO not yet implemented for wgpu backend`.
-- No PNG was generated, so the failing workflow could not establish visual
-  correctness for PR #28.
 - A first infrastructure-only Glow attempt in Draft PR #45 was not a valid
   resolution: Visual Validation run `31930753037` was rejected by Cargo because
   enabling Glow changed dependency resolution while the capture command uses
   `--locked`.
-- Commit `ac8e755e1031b180f924d8a61a0e054f38350972` kept the default wgpu
+- Editor commit `ac8e755e1031b180f924d8a61a0e054f38350972` kept the default wgpu
   renderer and moved Editor capture to egui's normal screenshot command/event
-  path. Visual Validation run `31930981030` then completed successfully and
-  uploaded artifact `9259315213` containing a non-empty `editor.png`.
-- Final commit `ff2254a12648db7d91d0a27526d529f5fe94fcd7` also bounded a missing
-  screenshot response so the validation-only process cannot wait indefinitely.
-  Visual Validation run `31931147173` completed successfully and artifact
-  `9259358605` contained `editor.png` with SHA-256
-  `574200f7ef80e07331f454b38a6f032d4668790001533b7dd06ca56950e5b030`.
-- ChatGPT retrieved and visually inspected the successful screenshots. The
-  Editor startup layout showed no clipping, overlap, broken spacing, missing
-  panels, or obvious color/background regression.
+  path. Visual Validation runs `31930981030` and `31931147173` then succeeded,
+  with the latter bounded by a capture timeout.
+- Phase 9 PR #57 Visual Validation run `31933289795` captured `editor.png` but
+  failed before Launcher capture because the helper rejected the Launcher's
+  intentional empty program-argument array. PR #60 first added
+  `[AllowEmptyCollection()]`, allowing the Launcher invocation to start.
+- PR #60 Visual Validation run `31933535710` then reached the Launcher itself
+  and exposed the same renderer incompatibility: eframe 0.34.3 panicked with
+  `EFRAME_SCREENSHOT_TO not yet implemented for wgpu backend`.
+- PR #60 commit `83600f7889e7bdba073a5da74596244f09a6e287` moved Launcher capture to
+  egui's normal screenshot command/event path without adding a dependency to
+  the normal Launcher graph. Visual Validation run `31934104701` completed
+  successfully for `both` and artifact `9260186862` contained non-empty
+  `editor.png`, `launcher.png`, and `summary.json`.
+- ChatGPT retrieved and inspected both screenshots from artifact `9260186862`.
+  The Editor and Launcher startup layouts showed no clipping, overlap, broken
+  spacing, missing panels/icons, or obvious color/background regression.
+- Windows Validation run `31934105921` completed successfully in `full` mode for
+  the final PR #60 head.
 
 ### Root cause
 
@@ -430,39 +440,46 @@ The visual harness treated eframe's `__screenshot` /
 the default native renderer, while the helper path used by the harness is not
 implemented by eframe 0.34.3's native wgpu integration. The validation contract
 therefore depended on an example/helper capture mechanism that did not support
-the renderer used by the actual Editor.
+the renderer used by the actual Editor or Launcher. Separately, the shared
+helper incorrectly assumed every desktop application had at least one program
+argument, even though the Launcher normally has none.
 
 ### Resolution
 
-Keep the normal Editor renderer and Cargo dependency graph unchanged. The
-Editor `visual-validation` feature is now application-owned: the script passes
-`GAMEENGINE_SCREENSHOT_TO`, the Editor requests a frame with egui
-`ViewportCommand::Screenshot`, receives `Event::Screenshot`, writes the image
-with its existing PNG encoder, and closes. A bounded capture timeout turns a
-missing response into an explicit failed artifact instead of a hanging job.
+Keep the normal desktop renderer and Cargo dependency graph unchanged. Editor
+capture remains application-owned through `GAMEENGINE_SCREENSHOT_TO`. Launcher
+capture now follows the same ownership model through
+`GAMEENGINE_LAUNCHER_SCREENSHOT_TO`: the application requests a frame with egui
+`ViewportCommand::Screenshot`, receives `Event::Screenshot`, writes a PNG, and
+closes. Both paths use a bounded response timeout, and the shared PowerShell
+helper explicitly accepts an empty program-argument collection for Launcher.
 
-This resolution was validated by successful Visual Validation runs
-`31930981030` and `31931147173` and by direct review of their PNG artifacts.
+The final Launcher implementation stays dependency-neutral under the
+`visual-validation` feature so `cargo --locked` remains valid. The resolution
+was confirmed by successful Visual Validation run `31934104701`, full Windows
+Validation run `31934105921`, and direct review of both PNG artifacts.
 
 ### Prevention / ChatGPT next action
 
-Do not use `EFRAME_SCREENSHOT_TO` for Editor capture while the native Editor uses
-wgpu. Prefer egui's renderer-independent screenshot command/event path and keep
-capture-only behavior dependency-neutral so `cargo --locked` remains valid.
-Always inspect the produced PNG before reporting Visual Validation PASS. The
-Launcher still uses a separate capture path and must not be reported fixed or
-visually validated by this Editor-only incident.
+Do not use `EFRAME_SCREENSHOT_TO` for GameEngine desktop capture while the
+native applications use wgpu. Prefer each application's egui screenshot
+command/event path, keep capture-only behavior dependency-neutral, and treat an
+empty application-argument list as a valid Launcher invocation. Always inspect
+all requested PNGs before reporting Visual Validation PASS; a successful
+Editor-only image is not evidence that a requested Launcher capture succeeded.
 
 ### References
 
 - Request: N/A; trusted visual-validation infrastructure change
-- Blocked product PR: `#28`
-- Infrastructure PR: `#45`
-- Failed Visual Validation run: `31930038159`
+- Blocked product PRs: `#28`, `#57`
+- Infrastructure PRs: `#45`, `#60`
+- Initial failed Visual Validation run: `31930038159`
 - Unsuccessful Glow-attempt run: `31930753037`
-- Successful Visual Validation runs: `31930981030`, `31931147173`
-- Successful artifacts: `9259315213`, `9259358605`
-- Commit: `ff2254a12648db7d91d0a27526d529f5fe94fcd7`
+- Launcher-revealing failed runs: `31933289795`, `31933535710`
+- Successful Visual Validation runs: `31930981030`, `31931147173`, `31934104701`
+- Successful artifacts: `9259315213`, `9259358605`, `9260186862`
+- Final infrastructure validation run: `31934105921`
+- Final Launcher capture commit: `83600f7889e7bdba073a5da74596244f09a6e287`
 
 ## Entry template
 
