@@ -1,0 +1,116 @@
++    let normalized = distance / range;
++    let cutoff = max(1.0 - normalized * normalized * normalized * normalized, 0.0);
++    return cutoff * cutoff / max(distance * distance, 0.01);
++}
++
++fn standard_lit(
++    base: vec3<f32>,
++    n: vec3<f32>,
++    l: vec3<f32>,
++    v: vec3<f32>,
++    world_position: vec3<f32>,
++    surface: vec4<f32>,
++    visibility: f32,
++    occlusion: f32,
++) -> vec3<f32> {
++    var direct = standard_direct(
++        base, n, l, v, surface, light.dir_color * light.dir_intensity, visibility,
++    );
++
++    for (var i: u32 = 0u; i < light.counts.x; i = i + 1u) {
++        let point = light.point_lights[i];
++        let to_light = point.position_range.xyz - world_position;
++        let distance = length(to_light);
++        if (distance > 0.0001) {
++            let attenuation = local_light_attenuation(distance, point.position_range.w);
++            let radiance = point.color_intensity.rgb * point.color_intensity.w * attenuation;
++            direct += standard_direct(base, n, to_light / distance, v, surface, radiance, 1.0);
++        }
++    }
++
++    for (var i: u32 = 0u; i < light.counts.y; i = i + 1u) {
++        let spot = light.spot_lights[i];
++        let to_light = spot.position_range.xyz - world_position;
++        let distance = length(to_light);
++        if (distance > 0.0001) {
++            let l_local = to_light / distance;
++            let cone_cosine = dot(normalize(spot.direction_outer.xyz), -l_local);
++            let cone = smoothstep(spot.direction_outer.w, spot.params.x, cone_cosine);
++            let attenuation = local_light_attenuation(distance, spot.position_range.w) * cone;
++            let radiance = spot.color_intensity.rgb * spot.color_intensity.w * attenuation;
++            direct += standard_direct(base, n, l_local, v, surface, radiance, 1.0);
++        }
++    }
++
++    let ndv = max(dot(n, v), 0.0001);
++    let roughness = clamp(surface.x, 0.04, 1.0); let metallic = clamp(surface.y, 0.0, 1.0);
++    let f0 = mix(vec3<f32>(0.04), base, vec3<f32>(metallic));
+ 
+     var indirect_diffuse = light.ambient_color * light.ambient_intensity * base * (1.0 - metallic);
+@@ -266,3 +339,12 @@
+     if (model < 0.5) {
+-        shaded = standard_lit(base_color.rgb, n, l, v, pbr_surface, visibility, occlusion);
++        shaded = standard_lit(
++            base_color.rgb,
++            n,
++            l,
++            v,
++            input.world_position,
++            pbr_surface,
++            visibility,
++            occlusion,
++        );
+     } else if (model < 1.5) {
+diff --git a/crates/render-runtime/src/render_backend.rs b/crates/render-runtime/src/render_backend.rs
+--- a/crates/render-runtime/src/render_backend.rs
++++ b/crates/render-runtime/src/render_backend.rs
+@@ -6,3 +6,3 @@
+ use crate::environment::EnvironmentGpuState;
+-use crate::light::{AmbientLight, DirectionalLight, SkySettings};
++use crate::light::{AmbientLight, DirectionalLight, PointLight, SkySettings, SpotLight};
+ use crate::lod::InstanceStats;
+@@ -15,2 +15,3 @@
+ use crate::postprocess::{PostProcessSettings, ToneMapOperator};
++use crate::render_limits::{MAX_POINT_LIGHTS, MAX_SPOT_LIGHTS};
+ use crate::shadow::{
+@@ -112,7 +113,88 @@
+-// Must match the LightUniform struct in mesh.wgsl — 48 bytes, stride 16.
+-// ambient_color[0-11], ambient_intensity[12-15],
+-// dir_direction[16-27], dir_intensity[28-31],
+-// dir_color[32-43], _padding[44-47]
++#[repr(C)]
++#[derive(Debug, Clone, Copy, Default, Pod, Zeroable)]
++struct PointLightUniform {
++    position_range: [f32; 4],
++    color_intensity: [f32; 4],
++}
++
++impl PointLightUniform {
++    fn from_component(light: &PointLight, transform: &GlobalTransform) -> Option<Self> {
++        let position = transform.0.w_axis.truncate();
++        if !position.is_finite()
++            || !light.color.is_finite()
++            || light.color.min_element() < 0.0
++            || !light.intensity.is_finite()
++            || light.intensity < 0.0
++            || !light.range.is_finite()
++            || light.range <= 0.0
++        {
++            return None;
++        }
++        Some(Self {
++            position_range: [position.x, position.y, position.z, light.range],
++            color_intensity: [
++                light.color.x,
++                light.color.y,
++                light.color.z,
++                light.intensity,
++            ],
++        })
++    }
++}
++
++#[repr(C)]
++#[derive(Debug, Clone, Copy, Default, Pod, Zeroable)]
++struct SpotLightUniform {
++    position_range: [f32; 4],
