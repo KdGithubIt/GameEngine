@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "request_id": "20260816-phase7-toonlit-quality-755e3e0-r2",
+  "target_branch": "chatgpt/gameengine-render-toonlit-quality-v2",
+  "expected_head_sha": "755e3e0018b2f68b95823a725fa8a5c119d9c338",
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Renderer: improve generic ToonLit lighting",
+  "pr_title": "Renderer: improve generic ToonLit quality",
+  "pr_body": "## Summary\n\n- evaluate generic ToonLit under directional, point, and spot lights through the shared material fragment stage\n- make directional color, intensity, and CSM visibility drive toon ramp and compact specular response\n- keep one material shadow floor so additional local lights do not stack dark terms\n- soften the compact specular band and add a fixed-camera GPU regression for point/spot ToonLit\n- preserve the public Material, serialization, Stable ID, importer, outline, and sphere-map contracts"
+}
