@@ -1,1 +1,85 @@
-
+@@ -52,7 +53,15 @@
+                 mcp_server.authorization_token(),
+             )
+             .map_err(|error| error.to_string())?;
++        let ai_studio = AiStudioPanel::new(
++            &root,
++            AiStudioConnection::new(
++                mcp_server.endpoint().to_string(),
++                mcp_server.authorization_token().to_owned(),
++            ),
++        )?;
+         project_lease.mark_ready().map_err(|error| error.to_string())?;
+         Ok(Self {
+             app,
++            ai_studio,
+             authoring_windows: AuthoringWindows::default(),
+@@ -136,6 +145,11 @@
+             .order(eframe::egui::Order::Foreground)
+             .show(context, |ui| {
+-                if ui.button("Authoring Tools").clicked() {
+-                    self.show_authoring_tools = true;
+-                }
++                ui.horizontal(|ui| {
++                    if ui.button("AI Studio").clicked() {
++                        self.ai_studio.open();
++                    }
++                    if ui.button("Authoring Tools").clicked() {
++                        self.show_authoring_tools = true;
++                    }
++                });
+             });
+@@ -228,3 +242,4 @@
+         eframe::App::ui(&mut self.app, ui, frame);
+         self.show_authoring_tools_launcher(&context);
+         self.authoring_windows.show(&context, frame);
++        self.ai_studio.show(&context);
+diff --git a/docs/adr/README.md b/docs/adr/README.md
+--- a/docs/adr/README.md
++++ b/docs/adr/README.md
+@@ -113,5 +113,6 @@
+ - **AI, CLI, and MCP:** [0015](0015-mcp-behavior-tree-tool-adapter.md),
+-  [0035](0035-ai-agent-bridge-ipc.md), and
+-  [0121](0121-ai-native-authoring-parity-and-project-scoped-mcp-lifecycle.md).
++  [0035](0035-ai-agent-bridge-ipc.md),
++  [0121](0121-ai-native-authoring-parity-and-project-scoped-mcp-lifecycle.md), and
++  [0131](0131-conversational-ai-studio-agent-runtime-and-governed-workspace.md).
+ 
+ ## Proposed Decisions
+@@ -269,2 +270,3 @@
+ | [0129](0129-generic-directional-point-spot-lighting.md) | Generic Directional, Point, and Spot Direct Lighting |
+ | [0130](0130-renderer-temporal-history-infrastructure.md) | Renderer Temporal History Infrastructure |
++| [0131](0131-conversational-ai-studio-agent-runtime-and-governed-workspace.md) | Conversational AI Studio Agent Runtime and Governed Workspace |
+diff --git a/docs/AI_FRIENDLY_AUTHORING_SPEC.md b/docs/AI_FRIENDLY_AUTHORING_SPEC.md
+--- a/docs/AI_FRIENDLY_AUTHORING_SPEC.md
++++ b/docs/AI_FRIENDLY_AUTHORING_SPEC.md
+@@ -3,3 +3,3 @@
+-Status: Draft  
+-Version: 0.1.0  
++Status: Draft
++Version: 0.2.0
+ Canonical location: `docs/AI_FRIENDLY_AUTHORING_SPEC.md`
+@@ -930,4 +930,4 @@
+-## 16. CLI and MCP Adapters
++## 16. CLI, MCP, and Conversational Agent Adapters
+ 
+ CLI and MCP are adapters over the command and query API. They MUST NOT implement
+ their own authoring rules.
+@@ -943,6 +943,22 @@
+ command sequences when an edit must commit atomically; the initial contract does
+ not keep transactions open across multiple MCP calls. Preview/apply flows MUST
+ carry document revision or generation identity so stale applies are rejected.
++
++ADR 0131 adds AI Studio above MCP as a project-scoped conversational frontend.
++AI Studio MUST be a client of a GUI-free agent host rather than a second
++authoring implementation. A session owns conversation history and a versioned
++structured proposal. Starting a run snapshots the exact proposal version; the
++resulting run has a resumable state and structured event timeline. Continuing
++the conversation MAY revise the live proposal without mutating an existing run
++snapshot.
++
++External coding-agent runtimes and native model backends are separate
++abstractions. An external `AgentRuntime` MAY own its own model/tool loop and
++provider-managed authentication, while a native runtime uses a `ModelBackend`
++for inference and owns the GameEngine tool loop itself. Provider credentials,
++subscription tokens, local model handles, and Editor MCP credentials MUST NOT be

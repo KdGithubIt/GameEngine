@@ -1,16 +1,3 @@
-+a typed service. The safer long-term design is managed-by-default with explicit
-+permission escalation and auditable low-level access.
-+
-+### Use Git commits as AgentRun checkpoints
-+
-+Rejected. Internal run lifecycle must not silently rewrite or pollute the user's
-+source-control history. Git remains a user/team collaboration tool; agent
-+checkpoints are independent session metadata.
-+
-+### Store all AI sessions only in user-local application data
-+
-+Rejected. It prevents deliberate continuation across machines and team
-+collaboration. Local-private remains the default, with an explicit project-shared
 +option that is safe to version in Git.
 +
 +### Store all AI conversation and workspace state in canonical project data
@@ -72,3 +59,30 @@ diff --git a/crates/editor/src/lib.rs b/crates/editor/src/lib.rs
  mod animation_set_editor;
  pub mod asset_browser;
 @@ -44,6 +46,7 @@
+ mod view_resolution;
+ mod workspace;
+ 
++pub use ai_studio::{AiStudioConnection, AiStudioPanel};
+ pub use anim_ux::{
+     build_retarget_map_inspector_model, build_skeleton_bind_report, find_skeleton_display_name,
+     find_skeleton_record, merge_bone_pairs, rerun_name_matching, resolve_bone_name,
+diff --git a/crates/editor/src/main.rs b/crates/editor/src/main.rs
+--- a/crates/editor/src/main.rs
++++ b/crates/editor/src/main.rs
+@@ -14,2 +14,2 @@
+-use engine_editor::{AuthoringTool, AuthoringWindows};
++use engine_editor::{AiStudioConnection, AiStudioPanel, AuthoringTool, AuthoringWindows};
+ use engine_project_lifecycle::{acquire_editor_project, EditorLease};
+@@ -25,4 +25,5 @@
+ struct EditorShell {
+     app: engine_editor::EditorApp,
++    ai_studio: AiStudioPanel,
+     authoring_windows: AuthoringWindows,
+     show_authoring_tools: bool,
+@@ -44,5 +45,5 @@
+         let root = project_lease.project_root().clone();
+-        let app = engine_editor::EditorApp::from_project(root);
++        let app = engine_editor::EditorApp::from_project(root.clone());
+         let (mcp_server, mcp_requests) =
+             EditorMcpServer::start(context.clone()).map_err(|error| error.to_string())?;
+         project_lease

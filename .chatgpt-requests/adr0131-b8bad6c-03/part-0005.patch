@@ -62,3 +62,16 @@
 +
 +Rejected. Coding agents sometimes require build products, generated files,
 +custom tools, or diagnostics that are impractical to model immediately through
++a typed service. The safer long-term design is managed-by-default with explicit
++permission escalation and auditable low-level access.
++
++### Use Git commits as AgentRun checkpoints
++
++Rejected. Internal run lifecycle must not silently rewrite or pollute the user's
++source-control history. Git remains a user/team collaboration tool; agent
++checkpoints are independent session metadata.
++
++### Store all AI sessions only in user-local application data
++
++Rejected. It prevents deliberate continuation across machines and team
++collaboration. Local-private remains the default, with an explicit project-shared
