@@ -1,7 +1,7 @@
 # ChatGPT GitHub Automation
 
 Status: Accepted
-Version: 1.4.1
+Version: 1.4.2
 Canonical location: `docs/CHATGPT_AUTOMATION.md`
 
 ## Purpose
@@ -115,6 +115,12 @@ informal file upload. For every new implementation or correction request:
    HEAD. If it differs from `expected_head_sha`, abandon the unpublished
    request, regenerate the patch from the new target tree, and use a new request
    ID. Do not update `expected_head_sha` without regenerating the patch.
+   For a normal task branch whose intended baseline is `main`, also re-read
+   `main`. If `main` advanced after that task branch's baseline and the branch
+   does not already contain the new baseline, create a new task branch and
+   regenerate the request from current `main` before publishing `ready.json`,
+   unless the task intentionally targets the older baseline. A stable target
+   HEAD alone does not guarantee clean PR validation scope.
 8. Add `ready.json` in its own final transport commit and change no other file in
    that commit. After this point the request is immutable.
 9. Follow the signal, dispatcher, Draft PR, and Windows validation through to a
