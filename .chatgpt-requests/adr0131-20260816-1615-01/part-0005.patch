@@ -1,0 +1,313 @@
++repair loop for the later capability slices listed above. The completion model
++already records those gates explicitly, so an unimplemented or unperformed gate
++cannot be presented as a pass. Moving the GUI-free host from the Editor
++application package into a dedicated workspace crate later does not change the
++contract.
++
++## Consequences
++
++- GameEngine gains a first-class conversational AI creation workflow rather
++  than a vendor-specific prompt launcher.
++- Users can use external subscription/account-backed coding agents without
++  requiring GameEngine to possess a model API key, while direct API and local
++  model backends remain possible through the native runtime.
++- The proposal snapshot gives Go a precise meaning and prevents a running agent
++  from silently drifting as the conversation continues.
++- Human editing stays responsive while agent work proceeds; stale authoring
++  mutations fail safely and are re-read instead of force-applied.
++- Managed authoring, code, asset, validation, and runtime services provide a
++  consistent audit and permission surface across providers.
++- The escape hatch preserves practical coding-agent flexibility, but external
++  agents are not falsely described as OS-sandboxed when they are not.
++- Session-scoped code workspaces and run checkpoints add storage, diff, and
++  reconciliation complexity, but make code changes reviewable and reversible
++  without abusing Git commits as internal agent state.
++- Project-shared AI history improves multi-PC and team continuity while keeping
++  credentials, caches, and transient state out of Git and packaged games.
++- Native agent support requires GameEngine to own a real model/tool loop,
++  context management, cancellation, and backend abstraction in addition to the
++  simpler external-agent process adapters.
++- Completion becomes stricter and more meaningful because playable and visual
++  behavior is observed rather than inferred from compilation alone.
++
++## Alternatives Considered
++
++### Make AI Studio a thin terminal wrapper around Claude Code or Codex
++
++Rejected. It would expose provider-specific output and capabilities directly,
++provide no stable proposal/run/audit model, and make future native or local
++agents second-class.
++
++### Treat every integration as an LLM API provider
++
++Rejected. External coding agents and direct model backends own different
++responsibilities and authentication lifecycles. An API-key-shaped abstraction
++would not represent provider-managed subscription/account sessions or local
++models cleanly.
++
++### Use a one-way Ask -> Plan -> Build -> Autopilot mode pipeline
++
++Rejected. The primary workflow is collaborative conversation. The agent must be
++able to ask questions before Go and return to the user during execution when a
++meaningful decision is required.
++
++### Let agents directly edit all project files and run unrestricted shell commands
++
++Rejected as the default. It bypasses the semantic authoring model, weakens
++reviewability, and makes provider behavior inconsistent. Low-level access
++remains an explicit escape hatch for operations that managed services cannot
++express.
++
++### Prohibit all raw filesystem and shell access
++
++Rejected. Coding agents sometimes require build products, generated files,
++custom tools, or diagnostics that are impractical to model immediately through
++a typed service. The safer long-term design is managed-by-default with explicit
++permission escalation and auditable low-level access.
++
++### Use Git commits as AgentRun checkpoints
++
++Rejected. Internal run lifecycle must not silently rewrite or pollute the user's
++source-control history. Git remains a user/team collaboration tool; agent
++checkpoints are independent session metadata.
++
++### Store all AI sessions only in user-local application data
++
++Rejected. It prevents deliberate continuation across machines and team
++collaboration. Local-private remains the default, with an explicit project-shared
++option that is safe to version in Git.
++
++### Store all AI conversation and workspace state in canonical project data
++
++Rejected. Conversation, credentials, provider state, caches, and agent process
++metadata are not gameplay authoring semantics and must not affect packaged game
++content or canonical project validation.
++
++### Lock the Editor while an AI run is active
++
++Rejected. It would make the AI feature hostile to normal interactive editing.
++Existing stale-revision checks already provide the correct semantic conflict
++boundary for authoring data.
++
++### Claim application permissions provide a universal sandbox
++
++Rejected. An external process running under the user's OS identity may retain
++capabilities outside GameEngine's application policy. Strong confinement must
++come from a real provider or operating-system isolation mechanism.
++
++## Compatibility and Migration
++
++This ADR does not change existing persisted authoring document schemas, stable
++IDs, MCP tool names, CLI command meanings, or runtime ECS contracts.
++
++If accepted, ADR 0121 remains authoritative for the Editor-scoped MCP writer
++and shared authoring transaction semantics. This decision extends the
++application layer above that interface with conversational agent orchestration,
++provider/runtime abstractions, permission policy, code workspace management,
++asset acquisition, and AI session persistence.
++
++Implementing project-shared AI history introduces a reserved collaboration
++metadata area under the project tree. That metadata is explicitly not canonical
++authoring data and is excluded from packaged game content. Its own session
++schema MUST be versioned before cross-machine persistence is shipped.
++
++Implementing the native agent runtime, code workspace, asset acquisition
++service, and any new workspace crates adds public internal architecture but does
++not authorize runtime crates to depend on Editor, MCP transport, provider SDKs,
++or AI session types.
++
++Provider credentials and login sessions remain user-private. Migration from
++local-only sessions to project-shared sessions is an explicit user action and
++must sanitize non-portable or secret fields before writing the shared record.
++
++If this ADR is accepted, `docs/AI_FRIENDLY_AUTHORING_SPEC.md` sections 16-18
++MUST be updated before or with implementation so the canonical specification
++reflects the accepted agent-runtime, permission, and collaboration contracts.
+diff --git a/crates/editor/src/lib.rs b/crates/editor/src/lib.rs
+--- a/crates/editor/src/lib.rs
++++ b/crates/editor/src/lib.rs
+@@ -7,6 +7,8 @@
+ #![warn(missing_docs)]
+ #![warn(rustdoc::broken_intra_doc_links)]
+ 
++mod agent_host;
++pub mod ai_studio;
+ pub mod anim_ux;
+ mod animation_set_editor;
+ pub mod asset_browser;
+@@ -44,6 +46,7 @@
+ mod view_resolution;
+ mod workspace;
+ 
++pub use ai_studio::{AiStudioConnection, AiStudioPanel};
+ pub use anim_ux::{
+     build_retarget_map_inspector_model, build_skeleton_bind_report, find_skeleton_display_name,
+     find_skeleton_record, merge_bone_pairs, rerun_name_matching, resolve_bone_name,
+diff --git a/crates/editor/src/main.rs b/crates/editor/src/main.rs
+--- a/crates/editor/src/main.rs
++++ b/crates/editor/src/main.rs
+@@ -13,2 +13,2 @@
+-use engine_editor::{AuthoringTool, AuthoringWindows};
++use engine_editor::{AiStudioConnection, AiStudioPanel, AuthoringTool, AuthoringWindows};
+ use engine_project_lifecycle::{acquire_editor_project, EditorLease};
+@@ -25,4 +25,5 @@
+ struct EditorShell {
+     app: engine_editor::EditorApp,
++    ai_studio: AiStudioPanel,
+     authoring_windows: AuthoringWindows,
+     show_authoring_tools: bool,
+@@ -40,5 +41,5 @@
+         let root = project_lease.project_root().clone();
+-        let app = engine_editor::EditorApp::from_project(root);
++        let app = engine_editor::EditorApp::from_project(root.clone());
+         let (mcp_server, mcp_requests) =
+             EditorMcpServer::start(context.clone()).map_err(|error| error.to_string())?;
+         project_lease
+@@ -48,7 +49,15 @@
+                 mcp_server.authorization_token(),
+             )
+             .map_err(|error| error.to_string())?;
++        let ai_studio = AiStudioPanel::new(
++            &root,
++            AiStudioConnection::new(
++                mcp_server.endpoint().to_string(),
++                mcp_server.authorization_token().to_owned(),
++            ),
++        )?;
+         project_lease.mark_ready().map_err(|error| error.to_string())?;
+         Ok(Self {
+             app,
++            ai_studio,
+             authoring_windows: AuthoringWindows::default(),
+@@ -135,6 +144,11 @@
+             .order(eframe::egui::Order::Foreground)
+             .show(context, |ui| {
+-                if ui.button("Authoring Tools").clicked() {
+-                    self.show_authoring_tools = true;
+-                }
++                ui.horizontal(|ui| {
++                    if ui.button("AI Studio").clicked() {
++                        self.ai_studio.open();
++                    }
++                    if ui.button("Authoring Tools").clicked() {
++                        self.show_authoring_tools = true;
++                    }
++                });
+             });
+@@ -226,3 +240,4 @@
+         eframe::App::ui(&mut self.app, ui, frame);
+         self.show_authoring_tools_launcher(&context);
+         self.authoring_windows.show(&context, frame);
++        self.ai_studio.show(&context);
+diff --git a/docs/adr/README.md b/docs/adr/README.md
+--- a/docs/adr/README.md
++++ b/docs/adr/README.md
+@@ -113,5 +113,6 @@
+ - **AI, CLI, and MCP:** [0015](0015-mcp-behavior-tree-tool-adapter.md),
+-  [0035](0035-ai-agent-bridge-ipc.md), and
+-  [0121](0121-ai-native-authoring-parity-and-project-scoped-mcp-lifecycle.md).
++  [0035](0035-ai-agent-bridge-ipc.md),
++  [0121](0121-ai-native-authoring-parity-and-project-scoped-mcp-lifecycle.md), and
++  [0131](0131-conversational-ai-studio-agent-runtime-and-governed-workspace.md).
+ 
+ ## Proposed Decisions
+@@ -269,2 +270,3 @@
+ | [0129](0129-generic-directional-point-spot-lighting.md) | Generic Directional, Point, and Spot Direct Lighting |
+ | [0130](0130-renderer-temporal-history-infrastructure.md) | Renderer Temporal History Infrastructure |
++| [0131](0131-conversational-ai-studio-agent-runtime-and-governed-workspace.md) | Conversational AI Studio Agent Runtime and Governed Workspace |
+diff --git a/docs/AI_FRIENDLY_AUTHORING_SPEC.md b/docs/AI_FRIENDLY_AUTHORING_SPEC.md
+--- a/docs/AI_FRIENDLY_AUTHORING_SPEC.md
++++ b/docs/AI_FRIENDLY_AUTHORING_SPEC.md
+@@ -3,3 +3,3 @@
+-Status: Draft  
+-Version: 0.1.0  
++Status: Draft
++Version: 0.2.0
+ Canonical location: `docs/AI_FRIENDLY_AUTHORING_SPEC.md`
+@@ -900,4 +900,4 @@
+-## 16. CLI and MCP Adapters
++## 16. CLI, MCP, and Conversational Agent Adapters
+ 
+ CLI and MCP are adapters over the command and query API. They MUST NOT implement
+ their own authoring rules.
+@@ -913,6 +913,22 @@
+ command sequences when an edit must commit atomically; the initial contract does
+ not keep transactions open across multiple MCP calls. Preview/apply flows MUST
+ carry document revision or generation identity so stale applies are rejected.
++
++ADR 0131 adds AI Studio above MCP as a project-scoped conversational frontend.
++AI Studio MUST be a client of a GUI-free agent host rather than a second
++authoring implementation. A session owns conversation history and a versioned
++structured proposal. Starting a run snapshots the exact proposal version; the
++resulting run has a resumable state and structured event timeline. Continuing
++the conversation MAY revise the live proposal without mutating an existing run
++snapshot.
++
++External coding-agent runtimes and native model backends are separate
++abstractions. An external `AgentRuntime` MAY own its own model/tool loop and
++provider-managed authentication, while a native runtime uses a `ModelBackend`
++for inference and owns the GameEngine tool loop itself. Provider credentials,
++subscription tokens, local model handles, and Editor MCP credentials MUST NOT be
++serialized into session records or canonical project data. External runtimes
++receive only the ephemeral MCP connection needed for the active run.
+ 
+ The ADR 0035 AI Agent Bridge remains the input, frame-observation, and visual
+ interaction path. It MUST NOT be treated as a substitute for semantic authoring
+@@ -992,15 +1008,56 @@
+ 
+ Permission checks belong at a shared boundary, not only in the MCP adapter.
+ 
++ADR 0131 adds an application-level permission broker for operations outside the
++structured authoring transaction boundary. At minimum the broker MUST be able to
++represent network access, external asset acquisition, runtime launch, runtime
++input/control, frame capture, raw workspace filesystem access, arbitrary command
++execution, and managed code-workspace apply. Approvals MUST distinguish
++`Allow once`, `Allow for this run`, `Allow for this project`, and `Deny`.
++Persistent project decisions are policy, not credentials.
++
++Managed services are the default. Semantic project data goes through MCP/shared
++authoring services; code goes through an isolated code workspace and reviewed
++apply; assets go through acquisition/import services; validation and Play use
++engine-managed paths. Raw filesystem and arbitrary command execution are escape
++hatches and MUST NOT silently become the normal provider path.
++
++GameEngine application permissions are not an operating-system sandbox. An
++external process started under the user's OS identity may technically possess
++more authority than the application broker models. UI and audit output MUST NOT
++describe such a process as sandboxed unless an independent OS sandbox is really
++in use.
++
+ Asset loading and writing paths MUST be resolved below their configured root.
+ Absolute paths, parent traversal, and resolved symlink escapes MUST be rejected
+ unless a separately approved operation explicitly grants broader filesystem
+ access.
+ 
+-## 18. Multi-Agent and Git Collaboration
++## 18. Multi-Agent, Session, and Git Collaboration
+ 
+ The project is expected to be edited by multiple humans and AI agents over
+ time. The implementation MUST favor reviewable and mergeable changes.
++
++At most one write-capable AI run owns the initial Editor project writer slot at
++a time, while read-only sessions and normal human editing MAY continue. Human
++edits are not blocked by an AI run; stale authoring applies and stale managed
++code applies MUST fail and require re-read/reconciliation rather than forcing an
++older snapshot over newer work.
++
++AI sessions are private application data by default and MUST survive Editor
++restart. The storage key MUST distinguish both stable project identity and
++canonical project location. A user MAY explicitly publish portable history to
++`.gameengine/ai/sessions/<session-id>/`. Project-shared history MAY contain
++conversation, proposal versions, run summaries, and sanitized audit events, but
++MUST NOT contain credentials, ephemeral MCP endpoints, process IDs, absolute
++machine paths, full code workspaces, build outputs, or caches.
++
++Agent code work MUST use a session/run-scoped working copy or equivalent
++isolated source state. Checkpoints and diffs are agent lifecycle data, not Git
++commits. Applying code back to the project MUST be an explicit reviewed host
++operation with path confinement and stale-source checks. Git remains the
++human/team collaboration boundary and MUST NOT be silently rewritten as an
++internal agent checkpoint mechanism.
+ 
+ Contributors MUST:
+ 
