@@ -1,0 +1,336 @@
+diff --git a/crates/physics/src/secondary_motion.rs b/crates/physics/src/secondary_motion.rs
+index 7e09005..a518329 100644
+--- a/crates/physics/src/secondary_motion.rs
++++ b/crates/physics/src/secondary_motion.rs
+@@ -518,3 +518,266 @@ fn write_simulated_bones(
+             translation
+         } else {
+             procedural_local.translation
++        };
++        resolved_worlds[joint_index] = parent_world
++            * Transform {
++                translation: resolved_translation,
++                rotation,
++                scale: procedural_local.scale,
++            }
++            .to_matrix();
++    }
++
++    // Rotation-only bodies are kept at the resolved bone position before the
++    // next fixed step so hidden solver translation cannot accumulate.
++    for (index, body) in rig.bodies.iter().enumerate() {
++        if body.mode != RigidBodyMode::DynamicWithBonePosition
++            || state.bone_driven.get(index).copied().unwrap_or(false)
++        {
++            continue;
++        }
++        let Some(bone) = body.bone else {
++            continue;
++        };
++        let Some(joint_index) = joint_indices.get(&bone).copied() else {
++            continue;
++        };
++        let Some(bone_world) = resolved_worlds.get(joint_index).copied() else {
++            continue;
++        };
++        let target = pose_from_matrix(bone_world * offset_matrix(body));
++        let Some(rigid_body) = state
++            .body_handles
++            .get(index)
++            .and_then(|handle| state.world.bodies.get_mut(*handle))
++        else {
++            continue;
++        };
++        let mut pinned = *rigid_body.position();
++        pinned.translation = target.translation;
++        rigid_body.set_position(pinned, true);
++    }
++}
++
++fn body_pose_from_bone_worlds(
++    body: &RigidBodyDef,
++    joint_indices: &HashMap<BoneId, usize>,
++    bone_worlds: &[Mat4],
++) -> Option<Pose> {
++    let joint_index = *joint_indices.get(&body.bone?)?;
++    let bone_world = *bone_worlds.get(joint_index)?;
++    Some(pose_from_matrix(bone_world * offset_matrix(body)))
++}
++
++fn insert_joint(
++    world: &mut PhysicsWorld,
++    handles: &[RigidBodyHandle],
++    rest_body_poses: &[Pose],
++    joint: &JointDef,
++    root_matrix: Mat4,
++) {
++    let (Some(index_a), Some(index_b)) = (joint.body_a, joint.body_b) else {
++        return;
++    };
++    let (Some(handle_a), Some(handle_b)) = (handles.get(index_a), handles.get(index_b)) else {
++        return;
++    };
++    let (Some(rest_body_a), Some(rest_body_b)) =
++        (rest_body_poses.get(index_a), rest_body_poses.get(index_b))
++    else {
++        return;
++    };
++    let joint_world = pose_from_matrix(root_matrix * joint_matrix(joint));
++    let mut builder = GenericJointBuilder::new(JointAxesMask::empty())
++        .local_frame1(rest_body_a.inv_mul(&joint_world))
++        .local_frame2(rest_body_b.inv_mul(&joint_world))
++        .contacts_enabled(false);
++
++    let mut locked = JointAxesMask::empty();
++    for axis in 0..3 {
++        let translation = (
++            [JointAxis::LinX, JointAxis::LinY, JointAxis::LinZ][axis],
++            AuthoredLimit::from_pair(joint.translation_lower[axis], joint.translation_upper[axis]),
++            non_negative(joint.spring_translation[axis]),
++        );
++        let rotation = (
++            [JointAxis::AngX, JointAxis::AngY, JointAxis::AngZ][axis],
++            AuthoredLimit::from_pair(joint.rotation_lower[axis], joint.rotation_upper[axis]),
++            non_negative(joint.spring_rotation[axis]),
++        );
++        for (joint_axis, limit, stiffness) in [translation, rotation] {
++            let locked_axis = matches!(limit, AuthoredLimit::Locked(_));
++            match limit {
++                AuthoredLimit::Locked(0.0) => locked |= joint_axis.into(),
++                AuthoredLimit::Locked(offset) => {
++                    builder = builder.limits(joint_axis, [offset, offset]);
++                }
++                AuthoredLimit::Ranged(range) => builder = builder.limits(joint_axis, range),
++                AuthoredLimit::Free => {}
++            }
++            if stiffness > 0.0 && !locked_axis {
++                builder = builder
++                    .motor_model(joint_axis, MotorModel::ForceBased)
++                    .motor_position(joint_axis, 0.0, stiffness, 0.0);
++            }
++        }
++    }
++
++    world
++        .impulse_joints
++        .insert(*handle_a, *handle_b, builder.locked_axes(locked), true);
++}
++
++#[derive(Debug, Clone, Copy, PartialEq)]
++enum AuthoredLimit {
++    Locked(f32),
++    Free,
++    Ranged([f32; 2]),
++}
++
++impl AuthoredLimit {
++    fn from_pair(lower: f32, upper: f32) -> Self {
++        if !lower.is_finite() || !upper.is_finite() || lower > upper {
++            Self::Free
++        } else if lower == upper {
++            Self::Locked(lower)
++        } else {
++            Self::Ranged([lower, upper])
++        }
++    }
++}
++
++fn rigid_body_shape(shape: RigidBodyShape) -> SharedShape {
++    match shape {
++        RigidBodyShape::Sphere { radius } => SharedShape::ball(radius.max(f32::EPSILON)),
++        RigidBodyShape::Box { half_extents } => SharedShape::cuboid(
++            half_extents[0].max(f32::EPSILON),
++            half_extents[1].max(f32::EPSILON),
++            half_extents[2].max(f32::EPSILON),
++        ),
++        RigidBodyShape::Capsule {
++            radius,
++            half_height,
++        } => SharedShape::capsule_y(
++            half_height.max(f32::EPSILON),
++            radius.max(f32::EPSILON),
++        ),
++    }
++}
++
++fn secondary_motion_collision_groups(body: &RigidBodyDef) -> InteractionGroups {
++    let membership = 1_u32.checked_shl(u32::from(body.group)).unwrap_or(0);
++    InteractionGroups::new(
++        Group::from_bits_truncate(membership),
++        Group::from_bits_truncate(u32::from(body.collides_with)),
++        InteractionTestMode::And,
++    )
++}
++
++fn offset_matrix(body: &RigidBodyDef) -> Mat4 {
++    let (translation, rotation) = body.bone_offset();
++    Mat4::from_rotation_translation(normalized_quat(rotation), translation)
++}
++
++fn scaled_offset_matrix(body: &RigidBodyDef, world_scale: Vec3) -> Mat4 {
++    let (translation, rotation) = body.bone_offset();
++    Mat4::from_rotation_translation(normalized_quat(rotation), translation * world_scale)
++}
++
++fn joint_matrix(joint: &JointDef) -> Mat4 {
++    Mat4::from_rotation_translation(
++        normalized_quat(Quat::from_array(joint.rotation)),
++        Vec3::from_array(joint.translation),
++    )
++}
++
++fn normalized_quat(rotation: Quat) -> Quat {
++    if rotation.is_finite() && rotation.length_squared() > f32::EPSILON {
++        rotation.normalize()
++    } else {
++        Quat::IDENTITY
++    }
++}
++
++fn pose_from_matrix(matrix: Mat4) -> Pose {
++    let (_, rotation, translation) = matrix.to_scale_rotation_translation();
++    Pose::from_parts(
++        Vector::new(translation.x, translation.y, translation.z),
++        Rotation::from_xyzw(rotation.x, rotation.y, rotation.z, rotation.w),
++    )
++}
++
++fn matrix_from_pose(pose: Pose) -> Mat4 {
++    Mat4::from_rotation_translation(
++        Quat::from_xyzw(
++            pose.rotation.x,
++            pose.rotation.y,
++            pose.rotation.z,
++            pose.rotation.w,
++        ),
++        Vec3::new(pose.translation.x, pose.translation.y, pose.translation.z),
++    )
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn discontinuity_reseat_clears_linear_and_angular_velocity() {
++        let mut world = PhysicsWorld::new();
++        let handle = world.bodies.insert(
++            RigidBodyBuilder::dynamic()
++                .translation(Vector::new(4.0, 5.0, 6.0))
++                .linvel(Vector::new(1.0, 2.0, 3.0))
++                .angvel(Vector::new(3.0, 2.0, 1.0)),
++        );
++        let mut state = CharacterPhysicsWorld {
++            rig_id: "test".to_owned(),
++            world,
++            body_handles: vec![handle],
++            bone_driven: vec![false],
++            presentation_previous: Vec::new(),
++            presentation_current: Vec::new(),
++        };
++        let target = Pose::from_parts(Vector::new(9.0, 8.0, 7.0), Rotation::identity());
++
++        reseat_bodies(&mut state, &[Some(target)]);
++
++        let body = state.world.bodies.get(handle).expect("body must remain alive");
++        assert_eq!(*body.linvel(), Vector::zeros());
++        assert_eq!(*body.angvel(), Vector::zeros());
++        assert_eq!(*body.position(), target);
++    }
++
++    #[test]
++    fn presentation_interpolation_never_overshoots_fixed_samples() {
++        let previous = Transform {
++            translation: Vec3::ZERO,
++            rotation: Quat::IDENTITY,
++            scale: Vec3::ONE,
++        };
++        let current = Transform {
++            translation: Vec3::new(10.0, 0.0, 0.0),
++            rotation: Quat::from_rotation_y(1.0),
++            scale: Vec3::splat(2.0),
++        };
++        assert_eq!(
++            interpolate_presentation_transform(&previous, &current, -1.0).translation,
++            Vec3::ZERO
++        );
++        assert_eq!(
++            interpolate_presentation_transform(&previous, &current, 2.0).translation,
++            current.translation
++        );
++    }
++
++    #[test]
++    fn invalid_limits_are_treated_as_free() {
++        assert_eq!(AuthoredLimit::from_pair(1.0, -1.0), AuthoredLimit::Free);
++        assert_eq!(
++            AuthoredLimit::from_pair(f32::NAN, 1.0),
++            AuthoredLimit::Free
++        );
++    }
++}
++diff --git a/crates/physics/src/lib.rs b/crates/physics/src/lib.rs
++--- a/crates/physics/src/lib.rs
+++++ b/crates/physics/src/lib.rs
++@@ -22,6 +22,9 @@ pub mod navmesh;
++ /// Rapier-backed gameplay rigid-body integration.
++ #[cfg(feature = "solver")]
++ pub mod physics;
+++/// Isolated engine-native secondary-motion simulation (ADR 0112).
+++#[cfg(feature = "solver")]
+++pub mod secondary_motion;
++ 
++ // Keep the feature-off contract implementations in the normal compiler/Clippy
++ // path as well. Cargo feature unification can otherwise make an affected CI run
++diff --git a/crates/engine/src/secondary_motion.rs b/crates/engine/src/secondary_motion.rs
++new file mode 100644
++index 0000000..f876ba4f7aaa5db01d3a2eb053bd65313acb2c0d
++--- /dev/null
+++++ b/crates/engine/src/secondary_motion.rs
++@@ -0,0 +1,9 @@
+++//! Engine-native secondary-motion facade (ADR 0112).
+++
+++pub use engine_physics::secondary_motion::{
+++    secondary_motion_presentation_system, secondary_motion_system, SecondaryMotionWorlds,
+++};
+++pub use engine_rig::rigid_body_rig::{
+++    JointDef, RigidBodyDef, RigidBodyMode, RigidBodyShape, SecondaryMotion,
+++    SecondaryMotionRigAsset, SecondaryMotionRigRegistry, SECONDARY_MOTION_RIG_SCHEMA_VERSION,
+++};
++diff --git a/crates/engine/src/lib.rs b/crates/engine/src/lib.rs
++--- a/crates/engine/src/lib.rs
+++++ b/crates/engine/src/lib.rs
++@@ -91,8 +91,8 @@ pub mod material;
++ /// CPU and GPU mesh types.
++ pub mod mesh;
++-/// Isolated Rapier secondary-motion bridge for imported MMD rigid-body rigs.
++-pub mod mmd_physics;
+++/// Engine-native secondary-motion facade (ADR 0112).
+++pub mod secondary_motion;
++ /// Format-independent asset builder consuming [`model_ir`] (ADR 0078):
++ /// sub-asset IDs, skeleton identity/dedupe/rebind, and clip BoneId
++ /// resolution.
++@@ -295,7 +295,10 @@ pub use mesh::{
++     extract_baked_submesh, mesh_to_obj, GpuMesh, GpuMeshCache, InstanceData, Mesh,
++     MeshValidationError, SharedGpuMeshCache, SkinningVertexData, Submesh, Vertex,
++ };
++-pub use mmd_physics::{mmd_rigid_body_physics_system, MmdPhysicsWorlds};
+++pub use secondary_motion::{
+++    secondary_motion_presentation_system, secondary_motion_system, SecondaryMotion,
+++    SecondaryMotionRigAsset, SecondaryMotionRigRegistry, SecondaryMotionWorlds,
+++    SECONDARY_MOTION_RIG_SCHEMA_VERSION,
+++};
++ pub use model_import::{
++     fingerprint_model_source, import_model_bytes, import_model_path,
++     import_model_path_with_contact_bones, model_source_dependencies, GltfAnimationData,
++diff --git a/crates/import/src/model_import.rs b/crates/import/src/model_import.rs
++--- a/crates/import/src/model_import.rs
+++++ b/crates/import/src/model_import.rs
++@@ -1269,6 +1269,7 @@ fn build_rigid_body_rig(
++                 mass: body.mass,
++                 linear_damping: body.linear_damping,
++                 angular_damping: body.angular_damping,
+++                gravity_scale: 1.0,
++                 restitution: body.restitution,
++                 friction: body.friction,
++                 mode: match body.mode {
