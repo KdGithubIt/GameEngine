@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "request_id": "20260816-adr0125-vfx-registry-order-dffe65b-r1",
+  "target_branch": "chatgpt/gameengine-vfx-adr0125-v2",
+  "expected_head_sha": "dffe65b67f86366c19f737b38eb229b764a74412",
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Update ADR 0125 VFX registry-order test",
+  "pr_title": "GameEngine: implement ADR 0125 VFX architecture",
+  "pr_body": "## Summary\n\nContinues ADR 0125 and updates the built-in component registration-order golden test for the intentionally appended `engine.vfx_player` component.\n\nThis remains a Draft PR while Builder authoring and visual validation are completed."
+}
