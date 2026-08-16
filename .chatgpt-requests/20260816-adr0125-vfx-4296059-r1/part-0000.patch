@@ -1,0 +1,54 @@
+diff --git a/crates/editor/src/vfx_builder_completion.rs b/crates/editor/src/vfx_builder_completion.rs
+index 828eb35..7f1d779 100644
+--- a/crates/editor/src/vfx_builder_completion.rs
++++ b/crates/editor/src/vfx_builder_completion.rs
+@@ -733,7 +733,7 @@ fn draw_curve(ui: &mut egui::Ui, curve: &VfxCurve) {
+             )
+         })
+         .collect::<Vec<_>>();
+-    painter.line(points, egui::Stroke::new(2.0, ui.visuals().text_color()));
++    painter.line(points, egui::Stroke::new(2.0_f32, ui.visuals().text_color()));
+     for point in curve.keys.iter().map(|key| {
+         egui::pos2(
+             egui::lerp(rect.left()..=rect.right(), key.time.clamp(0.0, 1.0)),
+@@ -900,11 +900,11 @@ fn draw_preview_viewport(
+         let offset = index as f32 * scale * 0.5;
+         painter.line_segment(
+             [egui::pos2(rect.left(), center.y + offset), egui::pos2(rect.right(), center.y + offset)],
+-            egui::Stroke::new(1.0, egui::Color32::from_gray(32)),
++            egui::Stroke::new(1.0_f32, egui::Color32::from_gray(32)),
+         );
+         painter.line_segment(
+             [egui::pos2(center.x + offset, rect.top()), egui::pos2(center.x + offset, rect.bottom())],
+-            egui::Stroke::new(1.0, egui::Color32::from_gray(32)),
++            egui::Stroke::new(1.0_f32, egui::Color32::from_gray(32)),
+         );
+     }
+ 
+@@ -940,7 +940,7 @@ fn draw_preview_viewport(
+     }
+ 
+     if let Some(player) = player {
+-        let mut bounds = None;
++        let mut bounds: Option<(Vec3, Vec3)> = None;
+         for runtime in player.instance().emitters() {
+             if let Some((min, max)) = runtime.live_bounds() {
+                 bounds = Some(match bounds {
+@@ -970,7 +970,7 @@ fn draw_shape(
+     scale: f32,
+     shape: &VfxShape,
+ ) {
+-    let stroke = egui::Stroke::new(1.5, egui::Color32::YELLOW);
++    let stroke = egui::Stroke::new(1.5_f32, egui::Color32::YELLOW);
+     match shape {
+         VfxShape::Point => {
+             painter.line_segment([center - egui::vec2(8.0, 0.0), center + egui::vec2(8.0, 0.0)], stroke);
+@@ -1027,7 +1027,7 @@ fn draw_bounds(
+     let right = a.x.max(b.x);
+     let top = a.y.min(b.y);
+     let bottom = a.y.max(b.y);
+-    let stroke = egui::Stroke::new(1.0, color);
++    let stroke = egui::Stroke::new(1.0_f32, color);
+     painter.line_segment([egui::pos2(left, top), egui::pos2(right, top)], stroke);
+     painter.line_segment([egui::pos2(right, top), egui::pos2(right, bottom)], stroke);
+     painter.line_segment([egui::pos2(right, bottom), egui::pos2(left, bottom)], stroke);
