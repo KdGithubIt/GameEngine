@@ -1,0 +1,83 @@
+diff --git a/crates/editor/src/ui/behavior_debug.rs b/crates/editor/src/ui/behavior_debug.rs
+--- a/crates/editor/src/ui/behavior_debug.rs
++++ b/crates/editor/src/ui/behavior_debug.rs
+@@ -37,6 +37,7 @@ impl GraphFileFingerprint {
+ }
+ 
+ /// Transient Play-mode Behavior Tree graph-debug presentation state.
++#[derive(Default)]
+ pub(super) struct BehaviorTreeDebugState {
+     pub(super) visible: bool,
+     source_key: Option<BehaviorDebugSourceKey>,
+@@ -50,22 +51,6 @@ pub(super) struct BehaviorTreeDebugState {
+     fixture_snapshot: Option<BehaviorExecutionSnapshot>,
+ }
+ 
+-impl Default for BehaviorTreeDebugState {
+-    fn default() -> Self {
+-        Self {
+-            visible: false,
+-            source_key: None,
+-            source_path: None,
+-            source_fingerprint: None,
+-            graph_session: None,
+-            invalidated: false,
+-            message: None,
+-            canvas: GraphCanvasState::default(),
+-            #[cfg(feature = "visual-validation")]
+-            fixture_snapshot: None,
+-        }
+-    }
+-}
+-
+ impl BehaviorTreeDebugState {
+     /// Clears all Play-mode Behavior Tree debug presentation.
+     pub(super) fn clear(&mut self) {
+@@ -361,19 +346,18 @@ impl EditorApp {
+             });
+             return;
+         };
+-        if !is_fixture {
+-            if let Some(key) = runtime_entity {
+-                self.behavior_debug
+-                    .sync(key, self.project_root.as_ref(), &snapshot);
+-            }
++        if !is_fixture && let Some(key) = runtime_entity {
++            self.behavior_debug
++                .sync(key, self.project_root.as_ref(), &snapshot);
+         }
+         let presentation = BehaviorTreeDebugPresentation::from_snapshot(&snapshot);
+ 
+-        egui::SidePanel::right("behavior_tree_debug_details")
++        egui::Panel::right("behavior_tree_debug_details")
+             .resizable(true)
+-            .default_width(280.0)
+-            .min_width(220.0)
+-            .max_width(420.0)
++            .default_size(280.0)
++            .min_size(220.0)
++            .max_size(420.0)
+             .show_inside(ui, |ui| show_behavior_debug_details(ui, &presentation));
+         self.behavior_debug.show_graph(ui, &presentation);
+     }
+diff --git a/crates/editor/src/canvas/mod.rs b/crates/editor/src/canvas/mod.rs
+--- a/crates/editor/src/canvas/mod.rs
++++ b/crates/editor/src/canvas/mod.rs
+@@ -1233,7 +1233,7 @@ fn draw_debug_overlay(
+         painter.rect_stroke(
+             rect.shrink(2.0),
+             4.0,
+-            Stroke::new(3.0, Color32::from_rgb(93, 190, 244)),
++            Stroke::new(3.0_f32, Color32::from_rgb(93, 190, 244)),
+             StrokeKind::Inside,
+         );
+     }
+@@ -1266,7 +1266,7 @@ fn draw_debug_overlay(
+             painter.rect_stroke(
+                 rect,
+                 4.0,
+-                Stroke::new(4.0, color),
++                Stroke::new(4.0_f32, color),
+                 StrokeKind::Inside,
+             );
+         }
