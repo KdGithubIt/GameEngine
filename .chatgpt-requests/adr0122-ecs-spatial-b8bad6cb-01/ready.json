@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0122-ecs-spatial-b8bad6cb-01",
+  "target_branch": "chatgpt/gameengine-adr0122-spatial-audio-ecs",
+  "expected_head_sha": "b8bad6cb6043025d53e83aca8ccc81fc580264b8",
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Add ADR 0122 spatial audio ECS synchronization",
+  "pr_title": "Continue ADR 0122 spatial audio ECS synchronization",
+  "pr_body": "Continues ADR 0122 after the merged spatial-math and managed-voice slices. This slice adds engine-owned final composition between GlobalTransform, AudioListener/AudioEmitter, and the platform managed-voice API; keeps AudioVoiceId process-local; deterministically selects an enabled listener; updates moving emitter/listener gains without decode or restart; retires stale/completed voices; preserves the non-spatial portion when no listener exists; and registers the shared runtime system after transform propagation and before legacy authored-audio fallback. It does not change serialized component IDs or add the ADR 0122 priority/loop/rolloff authoring schema yet."
+}
