@@ -1,0 +1,125 @@
++    for message in conversation.iter().rev().take(MAX_CONVERSATION_MESSAGES).rev() {
++        prompt.push_str(message.role.label());
++        prompt.push_str(": ");
++        prompt.push_str(&truncate_text(
++            message.text.trim(),
++            MAX_CONVERSATION_MESSAGE_CHARS,
++        ));
++        prompt.push('\n');
++    }
++    prompt.push_str("Assistant: ");
++    prompt
++}
++
++fn truncate_text(text: &str, max_chars: usize) -> String {
++    if text.chars().count() <= max_chars {
++        return text.to_owned();
++    }
++    let mut output = text.chars().take(max_chars).collect::<String>();
++    output.push('…');
++    output
++}
++
++fn discover_engine_root() -> Option<PathBuf> {
++    let mut starts = Vec::new();
++    if let Ok(current_dir) = std::env::current_dir() {
++        starts.push(current_dir);
++    }
++    if let Ok(executable) = std::env::current_exe()
++        && let Some(parent) = executable.parent()
++    {
++        starts.push(parent.to_path_buf());
++    }
++    for start in starts {
++        for ancestor in start.ancestors() {
++            if ancestor.join("AGENTS.md").is_file()
++                && ancestor.join("docs/AI_FRIENDLY_AUTHORING_SPEC.md").is_file()
++                && ancestor.join("crates/editor/Cargo.toml").is_file()
++            {
++                return Some(ancestor.to_path_buf());
++            }
++        }
++    }
++    None
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    fn temp_path(name: &str) -> PathBuf {
++        std::env::temp_dir().join(format!(
++            "gameengine-native-agent-{name}-{}",
++            std::process::id()
++        ))
++    }
++
++    #[test]
++    fn local_endpoint_accepts_only_loopback_http() {
++        assert!(LocalHttpEndpoint::parse("http://127.0.0.1:11434").is_ok());
++        assert!(LocalHttpEndpoint::parse("http://localhost:11434/").is_ok());
++        assert!(LocalHttpEndpoint::parse("http://[::1]:11434").is_ok());
++        assert!(LocalHttpEndpoint::parse("https://127.0.0.1:11434").is_err());
++        assert!(LocalHttpEndpoint::parse("http://192.168.1.2:11434").is_err());
++        assert!(LocalHttpEndpoint::parse("http://localhost:11434/api").is_err());
++    }
++
++    #[test]
++    fn http_parser_handles_content_length_and_chunked_body() {
++        let content_length = b"HTTP/1.1 200 OK\r\nContent-Length: 7\r\n\r\n{\"a\":1}";
++        let parsed = parse_http_response(content_length).expect("content-length response");
++        assert_eq!(parsed.status, 200);
++        assert_eq!(parsed.body, b"{\"a\":1}");
++
++        let chunked = concat!(
++            "HTTP/1.1 200 OK\r\n",
++            "Transfer-Encoding: chunked\r\n\r\n",
++            "4\r\nWiki\r\n5\r\npedia\r\n0\r\n\r\n"
++        );
++        let parsed = parse_http_response(chunked.as_bytes()).expect("chunked response");
++        assert_eq!(parsed.body, b"Wikipedia");
++    }
++
++    #[test]
++    fn retrieval_keeps_paths_relative_and_prefers_matching_project_source() {
++        let project = temp_path("retrieval");
++        let _ = fs::remove_dir_all(&project);
++        fs::create_dir_all(project.join("game/src")).expect("project source directory");
++        fs::write(
++            project.join("game/src/player.rs"),
++            "pub struct PlayerHealth { pub current: u32 }\n",
++        )
++        .expect("player source");
++        fs::write(
++            project.join("game/src/unrelated.rs"),
++            "pub struct CameraSettings;\n",
++        )
++        .expect("unrelated source");
++
++        let evidence = retrieve_evidence("PlayerHealth current", None, &project)
++            .expect("retrieval evidence");
++        assert!(!evidence.is_empty());
++        assert_eq!(evidence[0].source.kind, SourceKind::ProjectFile);
++        assert_eq!(evidence[0].source.path, "game/src/player.rs");
++        assert!(!evidence[0].source.path.contains(project.to_string_lossy().as_ref()));
++        let _ = fs::remove_dir_all(project);
++    }
++
++    #[test]
++    fn query_terms_keep_ascii_identifiers_inside_japanese_text() {
++        let terms = query_terms("アニメーションfadeはどこで決まる？");
++        assert!(terms.contains("fade"));
++    }
++
++    #[test]
++    fn read_harness_prompt_forbids_silent_mutation() {
++        let conversation = vec![QuestionMessage {
++            role: QuestionRole::User,
++            text: "How does this work?".to_owned(),
++        }];
++        let prompt = build_prompt(&conversation, &[]);
++        assert!(prompt.contains("not a write-capable AgentRun"));
++        assert!(prompt.contains("Do not claim to edit files"));
++        assert!(prompt.contains("not established by the current sources"));
++    }
++}
