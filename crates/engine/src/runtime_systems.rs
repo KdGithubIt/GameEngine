@@ -450,19 +450,19 @@ mod tests {
         assert!(descriptor("engine.collision_detection")
             .after()
             .iter()
-            .any(|id| id.as_str() == "engine.mmd_physics_transform_propagation"));
-        assert!(descriptor("engine.mmd_rigid_body_physics")
+            .any(|id| id.as_str() == "engine.secondary_motion_transform_propagation"));
+        assert!(descriptor("engine.secondary_motion")
             .after()
             .iter()
             .any(|id| id.as_str() == "engine.fixed_transform_propagation"));
-        assert!(descriptor("engine.mmd_physics_transform_propagation")
+        assert!(descriptor("engine.secondary_motion_transform_propagation")
             .after()
             .iter()
             .any(|id| id.as_str() == "engine.rig_pose_publish_final"));
         assert!(descriptor("engine.rig_pose_publish_final")
             .after()
             .iter()
-            .any(|id| id.as_str() == "engine.mmd_rigid_body_physics"));
+            .any(|id| id.as_str() == "engine.secondary_motion"));
         assert!(descriptor("engine.combat_contacts")
             .after()
             .iter()

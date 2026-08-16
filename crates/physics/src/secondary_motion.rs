@@ -740,13 +740,13 @@ mod tests {
             presentation_previous: Vec::new(),
             presentation_current: Vec::new(),
         };
-        let target = Pose::from_parts(Vector::new(9.0, 8.0, 7.0), Rotation::identity());
+        let target = Pose::from_parts(Vector::new(9.0, 8.0, 7.0), Rotation::IDENTITY);
 
         reseat_bodies(&mut state, &[Some(target)]);
 
         let body = state.world.bodies.get(handle).expect("body must remain alive");
-        assert_eq!(*body.linvel(), Vector::zeros());
-        assert_eq!(*body.angvel(), Vector::zeros());
+        assert_eq!(*body.linvel(), Vector::ZERO);
+        assert_eq!(*body.angvel(), Vector::ZERO);
         assert_eq!(*body.position(), target);
     }
 
