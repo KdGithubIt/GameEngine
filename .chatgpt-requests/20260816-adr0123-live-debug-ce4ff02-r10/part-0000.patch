@@ -1,0 +1,222 @@
+diff --git a/crates/editor/src/canvas/mod.rs b/crates/editor/src/canvas/mod.rs
+--- a/crates/editor/src/canvas/mod.rs
++++ b/crates/editor/src/canvas/mod.rs
+@@ -60,6 +60,43 @@ impl GraphCanvasState {
+     }
+ }
+ 
++/// Runtime-only status shown over one Behavior Tree source node.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub(crate) enum GraphDebugBadge {
++    /// The node is the deepest currently running node.
++    Running,
++    /// The node most recently completed successfully.
++    Success,
++    /// The node most recently completed with failure.
++    Failure,
++    /// A long-running action was recently entered.
++    Entered,
++    /// Active work was recently aborted.
++    Aborted,
++    /// Runtime state was recently reset.
++    Reset,
++}
++
++/// Transient runtime presentation for one graph node.
++#[derive(Debug, Clone, PartialEq, Default)]
++pub(crate) struct GraphDebugNodePresentation {
++    /// Whether this node belongs to the runtime active path.
++    pub(crate) active: bool,
++    /// Most relevant current or recent runtime status.
++    pub(crate) badge: Option<GraphDebugBadge>,
++    /// Runtime-reported active duration for this node.
++    pub(crate) elapsed_seconds: Option<f64>,
++    /// Optional lifecycle detail shown on hover.
++    pub(crate) detail: Option<String>,
++}
++
++/// Read-only runtime overlay keyed by source authoring node ID.
++#[derive(Debug, Clone, PartialEq, Default)]
++pub(crate) struct GraphDebugOverlay {
++    /// Per-node presentation keyed by stable source NodeId.
++    pub(crate) nodes: BTreeMap<NodeId, GraphDebugNodePresentation>,
++}
++
+ /// Screen placement of the graph's coordinate origin.
+ ///
+ /// Panning moves only this origin. Node positions stay in graph space, so
+@@ -545,6 +582,106 @@ pub fn show_graph_canvas(
+     actions
+ }
+ 
++/// Draws a read-only graph canvas with transient runtime debug presentation.
++///
++/// Unlike [`show_graph_canvas`], this surface never emits authoring actions and
++/// never writes to `GraphView`. Panning and framing stay in [`GraphCanvasState`]
++/// so Play-mode inspection cannot dirty the document it visualizes.
++pub(crate) fn show_graph_debug_canvas(
++    ui: &mut egui::Ui,
++    session: &EditorSession,
++    state: &mut GraphCanvasState,
++    overlay: &GraphDebugOverlay,
++) {
++    let desired_size = ui.available_size();
++    let (canvas_rect, canvas_response) = ui.allocate_exact_size(desired_size, Sense::click());
++    let painter = ui.painter_at(canvas_rect);
++    painter.rect_filled(canvas_rect, 0.0, Color32::from_rgb(24, 27, 31));
++    painter.rect_stroke(
++        canvas_rect,
++        0.0,
++        Stroke::new(1.0_f32, Color32::from_rgb(58, 64, 72)),
++        StrokeKind::Inside,
++    );
++
++    let positions = node_positions(session);
++    if std::mem::take(&mut state.frame_all_requested) {
++        state.pan = frame_all_pan(canvas_rect, &positions);
++    }
++    apply_canvas_pan(ui, state, canvas_rect);
++    let canvas_view = CanvasView::new(canvas_rect, state.pan);
++    state.visible_center_graph = Some(canvas_view.to_graph(canvas_rect.center()));
++
++    canvas_response.context_menu(|ui| {
++        if ui
++            .button("Frame All Nodes")
++            .on_hover_text("Pan the view until every node is visible again")
++            .clicked()
++        {
++            state.frame_all_requested = true;
++            ui.close();
++        }
++        if ui
++            .button("Reset View")
++            .on_hover_text("Return the view to the graph origin")
++            .clicked()
++        {
++            state.pan = EguiVec2::ZERO;
++            ui.close();
++        }
++    });
++
++    paint_edges(&painter, canvas_view, session, &positions, None);
++    for (node_id, node) in &session.graph().nodes {
++        let Some(position) = positions.get(node_id).copied() else {
++            continue;
++        };
++        let rect = canvas_view.node_rect(position);
++        let presentation = overlay.nodes.get(node_id);
++        let mut hover = format!("{}\n{}", node_title(node), node_id.as_str());
++        if let Some(detail) = presentation.and_then(|presentation| presentation.detail.as_deref()) {
++            hover.push('\n');
++            hover.push_str(detail);
++        }
++        ui.interact(
++            rect,
++            ui.make_persistent_id(("graph_debug_node", node_id.as_str())),
++            Sense::hover(),
++        )
++        .on_hover_text(hover);
++        draw_node(
++            &painter,
++            canvas_view,
++            DrawNodeParams {
++                position,
++                node_id,
++                title: compact_canvas_text(&node_title(node)),
++                subtitle: node_subtitle(session, node),
++                selected: false,
++                pinned: false,
++                show_id: true,
++            },
++        );
++        if let Some(presentation) = presentation {
++            draw_debug_overlay(&painter, rect, presentation);
++        }
++    }
++
++    if !positions.is_empty()
++        && !positions
++            .values()
++            .any(|position| canvas_view.node_rect(*position).intersects(canvas_rect))
++    {
++        painter.text(
++            canvas_rect.center(),
++            Align2::CENTER_CENTER,
++            "No node is in view — middle-drag to pan, or right-click for Frame All Nodes",
++            FontId::proportional(13.0),
++            Color32::from_rgb(170, 178, 188),
++        );
++    }
++}
++
+ /// Applies a middle-button drag to the canvas pan offset.
+ ///
+ /// The gesture is read from raw pointer input instead of a widget response
+@@ -1085,10 +1222,69 @@ fn draw_node(painter: &egui::Painter, view: CanvasView, params: DrawNodeParams<'_>) {
+             Color32::from_rgb(238, 197, 97),
+         );
+     }
+ }
+ 
++fn draw_debug_overlay(
++    painter: &egui::Painter,
++    rect: Rect,
++    presentation: &GraphDebugNodePresentation,
++) {
++    if presentation.active {
++        painter.rect_stroke(
++            rect.shrink(2.0),
++            4.0,
++            Stroke::new(3.0_f32, Color32::from_rgb(93, 190, 244)),
++            StrokeKind::Inside,
++        );
++    }
++
++    if let Some(badge) = presentation.badge {
++        let (label, color) = match badge {
++            GraphDebugBadge::Running => ("RUN", Color32::from_rgb(238, 197, 97)),
++            GraphDebugBadge::Success => ("OK", Color32::from_rgb(105, 194, 126)),
++            GraphDebugBadge::Failure => ("FAIL", Color32::from_rgb(235, 104, 104)),
++            GraphDebugBadge::Entered => ("ENTER", Color32::from_rgb(93, 190, 244)),
++            GraphDebugBadge::Aborted => ("ABORT", Color32::from_rgb(235, 145, 92)),
++            GraphDebugBadge::Reset => ("RESET", Color32::from_rgb(175, 151, 218)),
++        };
++        let galley = painter.layout_no_wrap(
++            label.to_owned(),
++            FontId::monospace(9.0),
++            Color32::from_rgb(22, 24, 28),
++        );
++        let badge_rect = Rect::from_min_size(
++            rect.right_top() - EguiVec2::new(galley.size().x + 18.0, -5.0),
++            galley.size() + EguiVec2::new(12.0, 6.0),
++        );
++        painter.rect_filled(badge_rect, 3.0, color);
++        painter.galley(
++            badge_rect.center() - galley.size() * 0.5,
++            galley,
++            Color32::from_rgb(22, 24, 28),
++        );
++        if badge == GraphDebugBadge::Running {
++            painter.rect_stroke(
++                rect,
++                4.0,
++                Stroke::new(4.0_f32, color),
++                StrokeKind::Inside,
++            );
++        }
++    }
++
++    if let Some(elapsed) = presentation.elapsed_seconds {
++        painter.text(
++            rect.right_bottom() - EguiVec2::new(8.0, 7.0),
++            Align2::RIGHT_BOTTOM,
++            format!("{elapsed:.2}s"),
++            FontId::monospace(9.0),
++            Color32::from_rgb(206, 215, 225),
++        );
++    }
++}
++
+ /// Paints one line of node text, elided to the node's own width.
+ ///
+ /// A character-count limit cannot know how wide the glyphs are: a name made of
