@@ -1,0 +1,174 @@
+@@ -419,21 +457,25 @@ impl EditorApp {
+-                                let mut selected_clip = state
++                                let mut selected_motion = state
+                                     .document
+                                     .bindings
+                                     .get(&slot.id)
+                                     .map(|binding| binding.clip.clone());
+-                                let selected_label = selected_clip
++                                let selected_label = selected_motion
+                                     .as_ref()
+                                     .and_then(|selected| {
+-                                        clip_choices
++                                        motion_choices
+                                             .iter()
+-                                            .find(|choice| &choice.id == selected)
+-                                            .map(|choice| choice.label.as_str())
++                                            .find(|(motion, _)| motion == selected)
++                                            .map(|(_, label)| label.as_str())
+                                     })
+                                     .map(str::to_owned)
+                                     .or_else(|| {
+-                                        selected_clip.as_ref().map(|clip| {
+-                                            format!("Missing ({})", clip.as_str())
++                                        selected_motion.as_ref().map(|motion| {
++                                            format!(
++                                                "[{}] Missing ({})",
++                                                motion_source_variant_label(motion.variant),
++                                                motion.asset.as_str()
++                                            )
+                                         })
+                                     })
+                                     .unwrap_or_else(|| "(Unassigned)".to_owned());
+                                 let response =
+@@ -469,6 +501,6 @@ impl EditorApp {
+                                         if ui
+                                             .selectable_value(
+-                                                &mut selected_clip,
++                                                &mut selected_motion,
+                                                 None,
+                                                 "(Unassigned)",
+                                             )
+@@ -477,24 +509,23 @@ impl EditorApp {
+                                         {
+                                             action = Some(AnimationSetUiAction::SetBinding {
+                                                 slot: slot.clone(),
+-                                                clip: None,
++                                                motion: None,
+                                             });
+                                         }
+-                                        for choice in &clip_choices {
++                                        for (motion, label) in &motion_choices {
+                                             if ui
+                                                 .selectable_value(
+-                                                    &mut selected_clip,
+-                                                    Some(choice.id.clone()),
+-                                                    &choice.label,
++                                                    &mut selected_motion,
++                                                    Some(motion.clone()),
++                                                    label,
+                                                 )
+                                                 .changed()
+                                             {
+-                                                action =
+-                                                    Some(AnimationSetUiAction::SetBinding {
+-                                                        slot: slot.clone(),
+-                                                        clip: Some(choice.id.clone()),
+-                                                    });
++                                                action = Some(AnimationSetUiAction::SetBinding {
++                                                    slot: slot.clone(),
++                                                    motion: Some(motion.clone()),
++                                                });
+                                             }
+                                         }
+                                     })
+                                     .response;
+@@ -523,6 +554,7 @@ impl EditorApp {
+                                         action = Some(AnimationSetUiAction::SetBinding {
+                                             slot: slot.clone(),
+-                                            clip: Some(payload.asset_id.clone()),
++                                            motion: Some(engine_authoring::MotionSourceRef::native(payload.asset_id.clone())),
+                                         });
+                                     }
++                                ui.small("Source variant is explicit and persisted: Auto / Native / Humanoid.");
+                                 if let Some(binding) = state.document.bindings.get(&slot.id) {
+@@ -534,9 +566,9 @@ impl EditorApp {
+                                     for (index, overlay) in binding.overlays.iter().enumerate() {
+                                         ui.horizontal(|ui| {
+-                                            let label = clip_choices
++                                            let label = motion_choices
+                                                 .iter()
+-                                                .find(|choice| choice.id == *overlay)
+-                                                .map(|choice| choice.label.clone())
++                                                .find(|(motion, _)| motion == overlay)
++                                                .map(|(_, label)| label.clone())
+                                                 .unwrap_or_else(|| {
+-                                                    format!("Missing ({})", overlay.as_str())
++                                                    format!("[{}] Missing ({})", motion_source_variant_label(overlay.variant), overlay.asset.as_str())
+                                                 });
+@@ -570,18 +602,18 @@ impl EditorApp {
+                                     .selected_text("Add overlay…")
+                                     .show_ui(ui, |ui| {
+-                                        for choice in &clip_choices {
+-                                            let duplicate = binding.clip == choice.id
+-                                                || binding.overlays.contains(&choice.id);
++                                        for (motion, label) in &motion_choices {
++                                            let duplicate = binding.clip == *motion
++                                                || binding.overlays.contains(motion);
+                                             if ui
+                                                 .add_enabled(
+                                                     !duplicate,
+-                                                    egui::Button::new(&choice.label),
++                                                    egui::Button::new(label),
+                                                 )
+                                                 .clicked()
+                                             {
+                                                 action = Some(
+                                                     AnimationSetUiAction::AddOverlay {
+                                                         slot: slot.id.clone(),
+-                                                        clip: choice.id.clone(),
++                                                        motion: motion.clone(),
+                                                     },
+                                                 );
+@@ -825,10 +857,9 @@ impl EditorApp {
+-            AnimationSetUiAction::SetBinding { slot, clip } => {
+-                // Clearing a binding carries no reference, so nothing needs to
+-                // be validated. When an ID is given, confirm it is an Animation
+-                // sub-asset before the document and its undo history change.
+-                if let Some(clip) = clip.as_ref()
+-                    && let Err(error) =
+-                        validate_imported_animation_clip_reference(&self.asset_manifest, clip)
++            AnimationSetUiAction::SetBinding { slot, motion } => {
++                if let Some(motion) = motion.as_ref()
++                    && let Err(error) = validate_animation_set_motion_source_reference(
++                        &self.asset_manifest,
++                        motion,
++                    )
+                 {
+                     self.report_error(
+                         "editor.animation_set_binding_failed",
+@@ -855,18 +885,17 @@ impl EditorApp {
+                 let result = self
+                     .animation_set_editor
+                     .as_mut()
+                     .ok_or_else(|| "Animation Set editor is closed".to_owned())
+-                    .and_then(|state| state.set_binding(&slot, clip));
++                    .and_then(|state| state.set_binding_source(&slot, motion));
+                 if let Err(error) = result {
+                     self.report_error("editor.animation_set_binding_failed", error);
+                 }
+             }
+-            AnimationSetUiAction::AddOverlay { slot, clip } => {
+-                // An overlay accepts the same imported Animation Clips as a
+-                // primary binding. Validate first so a failure leaves the undo
+-                // history and the overlay order untouched.
+-                if let Err(error) =
+-                    validate_imported_animation_clip_reference(&self.asset_manifest, &clip)
++            AnimationSetUiAction::AddOverlay { slot, motion } => {
++                if let Err(error) = validate_animation_set_motion_source_reference(
++                    &self.asset_manifest,
++                    &motion,
++                )
+                 {
+                     self.report_error(
+                         "editor.animation_set_binding_failed",
+@@ -885,8 +913,8 @@ impl EditorApp {
+                 let result = self
+                     .animation_set_editor
+                     .as_mut()
+                     .ok_or_else(|| "Animation Set editor is closed".to_owned())
+-                    .and_then(|state| state.add_overlay(&slot, clip));
++                    .and_then(|state| state.add_overlay_source(&slot, motion));
+                 if let Err(error) = result {
+                     self.report_error("editor.animation_set_binding_failed", error);
+                 }
