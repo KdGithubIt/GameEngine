@@ -1,0 +1,28 @@
+    app.add_fixed_system(engine::rig_pose_clear_transient_system);
+@@ -2197,7 +2197,7 @@ fn install_animation_preview_systems(
+     app.add_fixed_system(engine::transform_propagation_system);
+     app.add_fixed_system(engine::foot_ik_system);
+     if secondary_physics_enabled {
+-        app.add_fixed_system(engine::mmd_rigid_body_physics_system);
++        app.add_fixed_system(engine::secondary_motion_system);
+     }
+     app.add_fixed_system(engine::publish_final_rig_pose_system);
+     app.add_fixed_system(engine::transform_propagation_system);
+@@ -3981,7 +3981,7 @@ mod tests {
+         assert!(
+             animation_only
+                 .world()
+-                .get_resource::<engine::MmdPhysicsWorlds>()
++                .get_resource::<engine::SecondaryMotionWorlds>()
+                 .is_none()
+         );
+         run_animation_preview_step(&mut animation_only, 0.0);
+@@ -3991,7 +3991,7 @@ mod tests {
+         assert!(
+             with_secondary_physics
+                 .world()
+-                .get_resource::<engine::MmdPhysicsWorlds>()
++                .get_resource::<engine::SecondaryMotionWorlds>()
+                 .is_some()
+         );
+         run_animation_preview_step(&mut with_secondary_physics, 0.0);
