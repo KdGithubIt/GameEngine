@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "request_id": "20260816-adr0126-rebase-loop-85955ca-r1",
+  "target_branch": "chatgpt/gameengine-adr0126-timeline-sequencer-v2",
+  "expected_head_sha": "85955cabfad6cf869cb60d030ee6e842af54be81",
+  "patch_parts": ["part-0000.patch"],
+  "commit_message": "Implement Timeline loop boundaries and replay reconstruction",
+  "pr_title": "Implement ADR 0126 Timeline and Sequencer runtime",
+  "pr_body": "## ADR 0126 implementation\n\nCurrent-main implementation of ADR 0126. This request restores exact loop-boundary event semantics and bounded forward-only ReplayRequired reconstruction with cancellation on top of the refreshed Timeline foundation.\n\nThe PR remains Draft until the full ADR Definition of Done and required Windows/Visual validation are complete."
+}
