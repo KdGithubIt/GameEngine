@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "request_id": "renderer-fixed-reference-scene-20260816-01",
+  "target_branch": "chatgpt/gameengine-render-pbr-material-foundation",
+  "expected_head_sha": "1c53f2842e2d5e509a7ac406ae97b41d5d3604e7",
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Renderer: add fixed PBR reference render regression",
+  "pr_title": "Renderer: add PBR material texture contract",
+  "pr_body": "## Summary\n\nCompletes the renderer PBR foundation with a fixed-camera/fixed-light offscreen StandardLit regression. The scene renders matched quads with AO=1 and AO=0, exercises normal/MR/AO material bindings and the main MSAA resolve path, reads the sRGB target back, and checks robust relative luminance invariants rather than vendor-sensitive exact pixels.\n\n## Validation\n\nWindows Validation is dispatched by the trusted GameEngine dispatcher. The cumulative PR includes Cargo.lock changes, so full workspace validation is expected."
+}
