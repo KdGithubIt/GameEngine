@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0121-graph-ui-services-20260816-01",
+  "target_branch": "chatgpt/gameengine-adr-0121-graph-ui-services",
+  "expected_head_sha": "b8bad6cb6043025d53e83aca8ccc81fc580264b8",
+  "patch_parts": [
+    "part-0000.patch",
+    "part-0001.patch",
+    "part-0002.patch",
+    "part-0003.patch",
+    "part-0004.patch"
+  ],
+  "commit_message": "Add shared Graph and UI authoring services",
+  "pr_title": "GameEngine: add Graph and UI authoring service foundation",
+  "pr_body": "## Summary\n\nAdds the ADR 0121 shared authoring-service foundation for generic semantic Graph documents and declarative UI documents.\n\n- centralizes Read/Preview/ProjectDataWrite permission enforcement\n- adds revision + generation stale-base protection without changing persisted Graph/UI formats\n- makes Graph preview/apply domain-aware while preserving the separate GraphView presentation boundary\n- adds UI preview/apply over UiDocumentTransaction with atomic rejection on invalid commands or final validation\n- makes UiDocumentCommand and UiDocumentChange structured serde payloads for later CLI/MCP adapters\n\nThis PR intentionally establishes the shared service boundary first. Editor/CLI/MCP adapter routing and generic layout exposure follow in the next ADR 0121 PR."
+}
