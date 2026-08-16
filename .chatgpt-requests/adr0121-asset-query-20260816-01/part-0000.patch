@@ -1,0 +1,155 @@
+diff --git a/crates/assets/src/lib.rs b/crates/assets/src/lib.rs
+--- a/crates/assets/src/lib.rs
++++ b/crates/assets/src/lib.rs
+@@ -5,6 +5,8 @@
+ 
+ /// Runtime asset handles and persisted import metadata.
+ pub mod asset;
++/// Shared read-only project asset discovery and inspection.
++pub mod catalog;
+ /// Generic author-owned data assets and stable component references.
+ pub mod data_asset;
+ /// Content-addressed storage for disposable derived assets.
+diff --git a/crates/assets/src/catalog.rs b/crates/assets/src/catalog.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/assets/src/catalog.rs
+@@ -0,0 +1,414 @@
++//! Shared read-only asset discovery and inspection over the project manifest.
++//!
++//! The catalog keeps stable [`AssetId`] lookup and search semantics outside
++//! Editor, CLI, and MCP adapters. File existence checks always pass through
++//! [`ProjectRoot`] so manifest paths cannot bypass the project boundary.
++
++use crate::asset::{AssetManifest, ImportSettings, ImportedSubAsset, ImportedSubAssetKind};
++use engine_authoring::{
++    AssetId, AuthoringPermission, AuthoringPermissionError, AuthoringPermissions, IdError,
++    ProjectError, ProjectRoot, StableId,
++};
++use serde::{Deserialize, Serialize};
++use std::fmt;
++use std::io;
++
++/// One stable asset visible through catalog search.
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++pub struct AssetCatalogEntry {
++    /// Stable asset identity used for all subsequent operations.
++    pub id: AssetId,
++    /// Searchable authoring name when one is available.
++    #[serde(skip_serializing_if = "Option::is_none")]
++    pub name: Option<String>,
++    /// Asset-root-relative source path owning this asset.
++    pub path: String,
++    /// Source asset that owns an imported sub-asset.
++    #[serde(skip_serializing_if = "Option::is_none")]
++    pub source_asset: Option<AssetId>,
++    /// Imported category when this row represents a deterministic sub-asset.
++    #[serde(skip_serializing_if = "Option::is_none")]
++    pub imported_kind: Option<ImportedSubAssetKind>,
++}
++
++/// Deterministic search output from the project asset catalog.
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++pub struct AssetCatalogSearch {
++    /// Matching assets sorted by stable ID.
++    pub assets: Vec<AssetCatalogEntry>,
++}
++
++/// Detailed information about one stable asset.
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++pub struct AssetInspection {
++    /// Stable identity that was inspected.
++    pub id: AssetId,
++    /// Searchable authoring name when one is available.
++    #[serde(skip_serializing_if = "Option::is_none")]
++    pub name: Option<String>,
++    /// Asset-root-relative source path.
++    pub path: String,
++    /// Whether the source file currently exists as a regular file inside the project.
++    pub file_exists: bool,
++    /// Import metadata owned by the registered source asset.
++    pub import_settings: ImportSettings,
++    /// Source asset that owns this imported sub-asset.
++    #[serde(skip_serializing_if = "Option::is_none")]
++    pub source_asset: Option<AssetId>,
++    /// Imported selector metadata when this asset is a deterministic sub-asset.
++    #[serde(skip_serializing_if = "Option::is_none")]
++    pub imported: Option<ImportedSubAsset>,
++}
++
++/// Failure from shared asset catalog operations.
++#[derive(Debug)]
++pub enum AssetCatalogError {
++    /// The caller lacks read permission.
++    Permission(AuthoringPermissionError),
++    /// A manifest path could not be resolved safely through the project root.
++    Project(ProjectError),
++    /// Imported metadata contains a malformed stable asset ID.
++    InvalidImportedAssetId {
++        /// Rejected persisted ID.
++        id: String,
++        /// Typed stable-ID validation error.
++        source: IdError,
++    },
++    /// No manifest entry or imported sub-asset has the requested stable ID.
++    NotFound(AssetId),
++}
++
++impl AssetCatalogError {
++    /// Returns the stable diagnostic-style code for this failure.
++    pub fn code(&self) -> &'static str {
++        match self {
++            Self::Permission(source) => source.code(),
++            Self::Project(_) => "asset.invalid_path",
++            Self::InvalidImportedAssetId { .. } => "asset.invalid_imported_id",
++            Self::NotFound(_) => "asset.not_found",
++        }
++    }
++}
++
++impl fmt::Display for AssetCatalogError {
++    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
++        match self {
++            Self::Permission(source) => source.fmt(formatter),
++            Self::Project(source) => write!(formatter, "asset path is not readable: {source}"),
++            Self::InvalidImportedAssetId { id, source } => {
++                write!(formatter, "imported asset ID `{id}` is invalid: {source}")
++            }
++            Self::NotFound(id) => {
++                write!(formatter, "asset `{id}` is not registered in the project")
++            }
++        }
++    }
++}
++
++impl std::error::Error for AssetCatalogError {
++    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
++        match self {
++            Self::Permission(source) => Some(source),
++            Self::Project(source) => Some(source),
++            Self::InvalidImportedAssetId { source, .. } => Some(source),
++            Self::NotFound(_) => None,
++        }
++    }
++}
++
++impl From<AuthoringPermissionError> for AssetCatalogError {
++    fn from(source: AuthoringPermissionError) -> Self {
++        Self::Permission(source)
++    }
++}
++
++/// Shared read-only asset discovery service.
++#[derive(Debug, Default, Clone, Copy)]
++pub struct AssetCatalogService;
++
++impl AssetCatalogService {
++    /// Creates the shared project asset catalog service.
++    pub fn new() -> Self {
++        Self
++    }
++
++    /// Searches registered source assets and imported sub-assets.
++    ///
++    /// Matching is case-insensitive across stable ID, authoring name, source
++    /// path, and imported kind. An empty query returns the 
