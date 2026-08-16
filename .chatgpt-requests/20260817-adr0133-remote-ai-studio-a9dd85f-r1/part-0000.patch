@@ -1,0 +1,197 @@
+diff --git a/docs/adr/0133-remote-ai-studio-companion-access-and-private-network-boundary.md b/docs/adr/0133-remote-ai-studio-companion-access-and-private-network-boundary.md
+new file mode 100644
+index 0000000..9a19e1d
+--- /dev/null
++++ b/docs/adr/0133-remote-ai-studio-companion-access-and-private-network-boundary.md
+@@ -0,0 +1,566 @@
++# ADR 0133: Remote AI Studio Companion Access and Private Network Boundary
++
++Status: Accepted
++Date: 2026-08-17
++Amends: ADR 0131
++Relates to: ADR 0035, ADR 0117, ADR 0121, ADR 0132
++
++## Context
++
++ADR 0131 defines AI Studio as the project-scoped conversational surface for
++planning, authorizing, executing, validating, playtesting, and reviewing AI
++work. It also defines provider-independent `AgentEvent` progress, a resumable
++`AgentRun` state machine, layered permissions, governed source-code mutation,
++frame capture, and session persistence. Those contracts are sufficient for a
++local Editor UI, but they do not define how the same AI Studio session may be
++used from a phone or another personal device when the user is away from the
++host PC.
++
++The desired remote workflow is intentionally narrower than a remote Editor. A
++phone does not need a second Hierarchy, Inspector, Scene manipulation surface,
++or direct authoring controls. The useful remote interaction is conversation
++with the same AI Studio agent, proposal review, Go and Stop, permission
++responses, semantic progress, validation and playtest results, and captured
++frames. When a live view of the Windows Editor is useful, it is an observation
++and remote-display concern rather than a reason to duplicate Editor authoring
++semantics on the phone.
++
++ADR 0121 requires the initial write-capable MCP endpoint to remain
++Editor-attached, project-scoped, authenticated with ephemeral session metadata,
++and bound only to the local machine. Exposing that endpoint directly to a LAN,
++VPN address, or the public Internet would weaken the single-authority and
++transport assumptions of ADR 0121. A remote companion therefore needs an
++application boundary above the agent host rather than a remotely reachable MCP
++server or a second project writer.
++
++Mobile connectivity is also intermittent. A phone may move between Wi-Fi and
++cellular networks, suspend its browser, or disconnect while an `AgentRun` is
++executing. Remote use must not make the lifetime of an agent run depend on one
++HTTP connection, and reconnecting must not duplicate Go, Stop, permission, or
++other state-changing actions.
++
++Finally, GameEngine does not need to become a general remote-desktop or video
++streaming product in order to support this workflow. A private authenticated
++network and an existing remote-display stack can provide secure reachability
++and optional low-latency screen viewing while GameEngine remains responsible
++for AI Studio semantics, structured status, captured frames, and permissions.
++
++A project-wide decision is therefore required for the remote AI Studio product
++surface, gateway trust boundary, private-network deployment model, reconnect
++semantics, security constraints, captured-frame delivery, and the relationship
++to optional live desktop streaming.
++
++## Decision
++
++### 1. Remote AI Studio is a frontend over the existing project agent host
++
++GameEngine will support a **Remote AI Studio** companion surface for personal
++remote access. It is another frontend over the same project-scoped agent host
++defined by ADR 0131, not a second AI runtime, a second authoring writer, or a
++phone-specific automation system.
++
++The intended architecture is:
++
++```text
++Remote browser / companion UI
++  -> authenticated private network
++  -> loopback-only Remote AI Studio Gateway
++  -> project Agent Host
++       -> Agent Runtime
++       -> Agent Code Workspace
++       -> managed Validation / Playtest
++       -> local Editor MCP endpoint
++       -> AI Agent Bridge for runtime observation
++```
++
++The local Editor AI Studio and Remote AI Studio MUST observe and control the
++same authoritative `AgentSession`, proposal versions, `AgentRun` state,
++permission broker, and audit history. The remote frontend MUST NOT implement
++provider-specific orchestration, authoring rules, code mutation, validation
++rules, or permission policy independently.
++
++### 2. The remote product surface is conversation and run control, not a remote Editor
++
++The initial Remote AI Studio surface MUST support the user actions and state
++needed to continue an AI creation session away from the host PC:
++
++- view and continue the AI conversation;
++- view proposal revisions and acceptance criteria;
++- invoke Go for an exact proposal version;
++- invoke Stop for the active run;
++- view the current run state and structured progress events;
++- answer `AwaitingUser` questions;
++- approve or deny agent permission requests using ADR 0131 approval scopes;
++- view code-change, authoring-change, validation, playtest, repair, and
++  completion summaries; and
++- view captured frames and visual-evaluation results when they are part of the
++  run.
++
++The initial companion does not need direct remote Hierarchy, Inspector, Scene,
++graph, asset, material, or component editing. If a user wants one of those
++changes, the normal remote path is to describe the desired result to the agent,
++which then uses the same governed authoring and code services as a local AI
++Studio run.
++
++Direct semantic authoring controls may be added to a future remote UI only when
++they remain thin clients of the same shared authoring capabilities defined by
++ADR 0121 and ADR 0132. Their absence is not a parity defect for this companion
++surface.
++
++### 3. A GUI-free Remote AI Studio Gateway owns the remote application boundary
++
++Remote access is served by a small GUI-free **Remote AI Studio Gateway** above
++the agent host. The gateway owns remote session transport, authenticated client
++identity, request idempotency, event delivery, reconnect snapshots, and safe
++presentation of agent-host state.
++
++The gateway MUST NOT become a new authoring or execution authority. In
++particular, it MUST NOT expose generic endpoints that directly execute arbitrary
++shell commands, write arbitrary workspace files, invoke Git commands, proxy raw
++MCP requests, or bypass the agent permission broker.
++
++The initial transport SHOULD use ordinary HTTP request/response operations for
++client actions plus Server-Sent Events for the ordered agent event stream. A
++WebSocket transport MAY be added later if a demonstrated interaction requires
++full-duplex messaging, but the agent-host contract MUST remain transport
++independent.
++
++Conceptually, the surface may provide operations equivalent to:
++
++```text
++GET  session snapshot
++GET  active run snapshot
++POST conversation message
++POST go
++POST stop
++POST awaiting-user response
++POST permission response
++GET  ordered event stream
++GET  captured frame
++```
++
++These are application operations over existing agent-host semantics. Their
++exact URL paths and wire DTOs are implementation details until published as a
++separate stable external API contract.
++
++### 4. The gateway binds to loopback; remote reachability is provided externally
++
++The initial Remote AI Studio Gateway MUST bind only to a loopback interface on
++the host PC. GameEngine does not directly bind the gateway to a public address,
++forward a home-router port, or expose it to the public Internet.
++
++Personal remote reachability is provided by an authenticated private overlay
++network or equivalent trusted reverse proxy. The reference deployment may use
++Tailscale and Tailscale Serve, but the GameEngine application contract MUST NOT
++depend on Tailscale-specific APIs, address formats, account models, or client
++libraries.
++
++The reference topology is:
++
++```text
++iPhone / remote personal device
++  -> authenticated private overlay network
++  -> private HTTPS reverse proxy / Serve endpoint
++  -> 127.0.0.1 Remote AI Studio Gateway
++```
++
++Public ingress mechanisms such as an Internet-wide tunnel or public reverse
++proxy are outside the initial supported deployment. Adding supported public
++Internet access requires an explicit threat model, authentication design,
++abuse controls, credential policy, and deployment decision rather than merely
++changing the bind address.
++
++### 5. The ADR 0121 MCP endpoint remains loopback-only and is never the remote API
++
++ADR 0121 remains authoritative for MCP lifecycle and Editor ownership. Remote
++AI Studio MUST NOT make the project-scoped MCP endpoint remotely reachable.
++
++The path remains:
++
++```text
++Remote user
++  -> Remote AI Studio Gateway
++  -> Agent Host
++  -> local MCP client/runtime integration
++  -> loopback-only Editor MCP endpoint
++  -> live Editor authoring services
++```
++
++A remote connection therefore grants access to AI Studio user actions, not to a
++raw authoring protocol. MCP credentials, endpoint ports, bearer material, and
++other ephemeral Editor discovery metadata MUST NOT be forwarded to the remote

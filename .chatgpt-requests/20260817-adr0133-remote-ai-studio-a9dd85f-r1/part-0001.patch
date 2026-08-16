@@ -1,0 +1,198 @@
++browser or stored in remote UI state.
++
++The active Editor remains the authoritative project writer exactly as defined
++by ADR 0121. Remote access does not create a headless second writer and does not
++weaken stale-revision or transaction checks.
++
++### 6. Remote authentication does not replace GameEngine authorization
++
++Network membership or reverse-proxy authentication answers who may reach the
++Remote AI Studio Gateway. It does not grant project mutation, network,
++filesystem, command execution, runtime control, or other agent capabilities.
++
++All AI work continues to use the ADR 0131 permission broker. Remote permission
++requests MUST present the same semantic capability, reason, and available
++approval scopes as the local AI Studio surface, including when applicable:
++
++```text
++Allow once
++Allow for this run
++Allow for this project
++Deny
++```
++
++The gateway MAY consume authenticated identity asserted by a trusted local
++reverse proxy only when the gateway is loopback-only and the deployment ensures
++that untrusted clients cannot connect directly while spoofing those headers.
++If the gateway adds its own session credential, that credential MUST be
++short-lived or revocable, stored outside canonical project data, and protected
++against cross-site request forgery and accidental disclosure.
++
++Secrets, provider credentials, MCP credentials, private-network credentials,
++and reverse-proxy authentication material MUST NOT be placed in canonical
++project files or project-shared AI session records.
++
++### 7. Remote state-changing requests are idempotent
++
++Mobile retries and reconnects MUST NOT duplicate state-changing operations.
++Every remote mutation whose duplicate execution could matter MUST carry a
++client-generated request identity or equivalent idempotency key.
++
++At minimum this applies to:
++
++- Go;
++- Stop;
++- permission responses;
++- `AwaitingUser` responses; and
++- any future remote operation that creates or commits work.
++
++The gateway or agent host MUST remember the result of a recently accepted
++request identity for a bounded period sufficient to make normal client retry
++safe. Repeating the same request identity returns or reconstructs the original
++outcome rather than starting a second run or applying the decision twice.
++
++Go also identifies the proposal version being authorized. A retry MUST NOT
++implicitly authorize a newer proposal version that appeared after the original
++request.
++
++### 8. Runs survive client disconnects and reconnect through snapshots plus event cursors
++
++The lifetime of an `AgentRun` belongs to the project agent host, not to the
++remote browser connection. Suspending Safari, losing cellular coverage, or
++closing the companion UI MUST NOT cancel a run unless the user explicitly
++requested Stop or host policy requires cancellation for another reason.
++
++Agent events exposed to remote clients MUST have an ordered cursor or sequence
++identity suitable for reconnect. The remote client reconnects by obtaining an
++authoritative session/run snapshot and then requesting events after its last
++confirmed cursor.
++
++The host MUST make reconnect correct even when an old event is no longer
++retained. In that case the snapshot is authoritative and the client resumes
++from the oldest available event after the snapshot boundary instead of assuming
++that every historical event can be replayed forever.
++
++An `AwaitingUser` question or permission request remains pending across a remote
++disconnect. Reconnecting shows the current pending decision rather than relying
++on a transient notification that may have been missed.
++
++### 9. Remote conversation and history reuse ADR 0131 persistence semantics
++
++Remote access does not create a separate conversation store. The companion uses
++the same local-private or explicitly project-shared `AgentSession` persistence
++rules defined by ADR 0131.
++
++A remote browser MAY cache presentation state such as the last event cursor,
++scroll position, draft message, or selected run, but that cache is not the
++authoritative conversation, proposal, run, permission, or audit record.
++
++Project-shared session records continue to exclude secrets, machine-specific
++endpoint metadata, transient ports, process identifiers, and complete local
++agent workspaces. Remote transport details do not become project authoring data.
++
++### 10. Captured frames are the built-in remote visual result
++
++The built-in visual result for Remote AI Studio is the frame-capture and visual
++evaluation path already required by ADR 0131 and provided through the AI Agent
++Bridge boundary from ADR 0035.
++
++When a run captures a relevant frame, the remote frontend SHOULD be able to
++show that frame with the corresponding run step, playtest result, and visual
++evaluation. Frame delivery MUST use bounded artifacts or streaming responses
++appropriate for individual captures and MUST NOT require the phone to connect
++directly to the AI Agent Bridge.
++
++Captured frames are sufficient for the initial remote completion workflow:
++
++```text
++request work
++  -> implementation
++  -> validation
++  -> playtest
++  -> frame capture
++  -> visual evaluation
++  -> remote review
++```
++
++Failure to provide a live video stream does not make Remote AI Studio
++incomplete when the required captured-frame review is available.
++
++### 11. Live Editor video is an optional external remote-display integration
++
++Low-latency live viewing of the Windows Editor or running game is useful but is
++not part of the core Remote AI Studio transport. The initial recommended
++approach is to use an existing remote-display or game-streaming host/client,
++such as Sunshine and Moonlight or an equivalent system, through the same
++private network.
++
++GameEngine therefore does not initially implement a custom H.264/HEVC encoder,
++WebRTC media server, desktop-capture stack, NAT traversal service, or mobile
++video client solely for Remote AI Studio.
++
++The remote display is observation and optional manual desktop access. It MUST
++NOT become the semantic path by which the AI performs normal project authoring.
++AI authoring continues through MCP and shared services; runtime visual
++interaction continues through the AI Agent Bridge where ADR 0035 applies.
++
++A future engine-native low-latency video surface requires a separate decision
++if it introduces renderer readback contracts, encoder dependencies, media
++transport, or security responsibilities inside GameEngine.
++
++### 12. The initial host must already be online with the target Editor project open
++
++The first Remote AI Studio implementation assumes:
++
++- the host Windows PC is powered on and connected to the private network;
++- the GameEngine application services required by the gateway are running; and
++- the target project is open in its project-scoped Editor process when
++  write-capable MCP authoring is required.
++
++Remote machine power-on, OS login, Launcher control, arbitrary project
++selection, and remote Editor process startup are separate lifecycle concerns.
++They MAY be added later through narrow authenticated application operations,
++but the first implementation MUST NOT solve them by exposing a generic remote
++process launcher or shell.
++
++If the required Editor project is not available, the companion reports that
++state clearly and does not silently open the project through an ungoverned
++second writer.
++
++### 13. Remote actions are auditable and errors are sanitized
++
++Remote user actions that affect agent execution SHOULD be represented in the
++same AI Studio audit history as equivalent local actions, with enough origin
++metadata to distinguish local and remote user decisions when useful for
++security or diagnosis.
++
++The remote surface MUST NOT expose raw provider credentials, environment
++variables, private filesystem paths, MCP bearer material, reverse-proxy
++secrets, or unrestricted process output merely because those values exist in a
++local diagnostic context.
++
++Structured errors sent to the remote client SHOULD contain a stable category,
++human-readable explanation, and retryability information where relevant.
++Detailed local diagnostics may remain available in host logs without being
++copied verbatim to the phone.
++
++### 14. The first client is a responsive web companion, not a required native app
++
++The initial client SHOULD be a responsive web UI suitable for mobile Safari and
++other modern browsers. It MAY be installable as a Progressive Web App, but
++GameEngine does not require a native iOS or Android application to satisfy this
++ADR.
++
++The mobile layout prioritizes:
++
++- conversation;
++- proposal and acceptance criteria;
++- Go and Stop;
++- pending user or permission decisions;
++- semantic run progress;
++- validation and playtest result summaries; and
++- captured frames.
++
++Desktop-only Editor panels and pointer-precise controls are not copied into the
++mobile layout merely for visual parity.
++
++### 15. Implementation proceeds in capability slices
++

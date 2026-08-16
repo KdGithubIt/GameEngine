@@ -1,0 +1,175 @@
++Implementation should proceed in the following order so remote access does not
++create a parallel AI architecture:
++
++1. **Agent-host remote contracts**
++   - expose GUI-free session snapshots, active-run snapshots, pending decisions,
++     ordered event subscription, and idempotent user-intent operations above
++     the existing agent host;
++   - keep provider and authoring logic below that boundary.
++2. **Loopback gateway**
++   - add the loopback-only HTTP application service;
++   - implement request identity, event cursors, bounded event retention,
++     sanitized errors, and captured-frame retrieval;
++   - add security tests proving that forbidden generic execution surfaces do
++     not exist.
++3. **Responsive companion UI**
++   - implement conversation, proposal, Go, Stop, pending decisions, run
++     progress, result summaries, and frame viewing;
++   - reuse semantic status and permission vocabulary from local AI Studio.
++4. **Private-network deployment**
++   - document and validate the reference private-overlay and local reverse-proxy
++     topology;
++   - keep the gateway loopback-only and avoid public router port forwarding.
++5. **Disconnect and retry hardening**
++   - test browser suspension, network changes, event replay, stale cursors,
++     duplicate requests, and pending decisions across reconnect.
++6. **Remote visual review**
++   - integrate captured frames into the run timeline and completion result;
++   - document optional external remote-display use for live viewing.
++7. **Later lifecycle extensions**
++   - consider narrow remote project/Editor activation only after the core
++     companion is reliable and only with an explicit lifecycle and security
++     contract.
++
++A slice MUST NOT bypass Agent Host, MCP, permission, or project-writer
++boundaries merely to make the mobile UI functional sooner.
++
++### 16. Validation includes mobile reconnect, security, and existing run-completion semantics
++
++Implementation of this ADR requires automated tests at the lowest useful layer
++for at least:
++
++- Go retry with the same request identity creates only one run;
++- permission and `AwaitingUser` retry does not apply a decision twice;
++- reconnect restores the authoritative session/run snapshot;
++- event cursors resume ordered delivery without inventing missing state;
++- a disconnected remote client does not cancel an active run;
++- pending decisions remain visible after reconnect;
++- stale proposal authorization is rejected;
++- remote clients cannot obtain MCP credentials through the gateway;
++- remote actions cannot invoke generic shell, raw filesystem, or Git endpoints;
++  and
++- captured frames are associated with the correct project session and run.
++
++Manual deployment validation SHOULD cover access from the host LAN, cellular or
++another external network through the private overlay, and denial when the
++private-network identity is absent.
++
++When the responsive companion UI is implemented or materially changed, normal
++Windows Validation remains required and Visual Validation SHOULD inspect the
++relevant desktop and mobile-sized layouts when their presentation affects
++correctness.
++
++ADR 0131 completion semantics remain unchanged. Remote use MUST NOT report a
++run as completed when required authoring validation, source validation,
++playtest, frame capture, visual evaluation, or interaction scenarios have not
++actually passed.
++
++## Consequences
++
++A user can continue the same AI Studio conversation and authorize implementation
++from a phone without turning the phone into a second Editor or project writer.
++The difficult implementation logic remains in the agent host, shared authoring
++services, code workspace, validation, and playtest systems, so local and remote
++surfaces are less likely to drift.
++
++The MCP endpoint remains local and retains the live Editor as the authoritative
++writer. Private remote reachability is separated from GameEngine application
++semantics, reducing the need for custom NAT traversal, public ingress, or
++Internet-facing credential infrastructure in the engine.
++
++Mobile reliability requires explicit idempotency, snapshots, event cursors, and
++bounded replay rather than assuming a permanent connection. These contracts
++also improve resilience for a future desktop web client or other companion
++surfaces.
++
++The first remote client is intentionally limited. Users do not receive a full
++remote Inspector or native mobile Editor, and the host PC and target Editor
++must already be available. That limitation keeps the initial security and
++lifecycle boundary narrow.
++
++Live low-latency Editor viewing depends on an external remote-display solution
++in the initial design. This avoids introducing video encoding and streaming
++complexity into GameEngine, at the cost of a separate optional application on
++the host and phone.
++
++## Alternatives Considered
++
++### Expose the existing MCP endpoint through the VPN
++
++Rejected. ADR 0121 intentionally makes the write-capable MCP endpoint
++loopback-only, project-scoped, and owned by the active Editor. Remote AI Studio
++needs user-facing agent orchestration, not raw authoring transport access.
++
++### Build a complete remote Editor for mobile
++
++Rejected for the initial goal. Hierarchy, Inspector, Scene manipulation, graph
++editing, and pointer-precise desktop UI add substantial presentation and
++interaction work without improving the core need to converse with the agent and
++review implementation results.
++
++### Add generic remote shell, Git, and filesystem endpoints
++
++Rejected. Those endpoints would create a broad remote execution surface outside
++ADR 0131's permission broker and governed code workspace. The remote client
++should express user intent and decisions; the agent host remains responsible
++for performing governed work.
++
++### Bind the gateway to the LAN or public Internet and use a password
++
++Rejected as the default. A private authenticated overlay keeps the initial
++exposure narrow and avoids making GameEngine responsible for an Internet-facing
++account, password-reset, brute-force protection, certificate, and public ingress
++system. Public deployment requires a separate explicit security decision.
++
++### Implement engine-native WebRTC video streaming immediately
++
++Rejected. Captured frames already satisfy structured visual review, while
++mature external remote-display systems solve low-latency desktop viewing. A
++custom media stack would add renderer readback, encoding, transport, NAT, and
++mobile-client complexity before the AI companion itself is proven useful.
++
++### Require a native iOS or Android client
++
++Rejected. A responsive private web companion can provide conversation, run
++control, permissions, progress, and frame review with less platform-specific
++code. Native clients remain possible later if they provide a demonstrated
++benefit such as better background notifications or media integration.
++
++### Use remote desktop alone instead of Remote AI Studio
++
++Rejected as the primary workflow. Remote desktop can show the local Editor, but
++it does not provide mobile-appropriate semantic progress, reliable permission
++prompts, reconnect-safe run control, structured validation results, or direct
++conversation history. It remains a useful optional live-view companion.
++
++### Cancel the agent whenever the remote client disconnects
++
++Rejected. Mobile connections are routinely interrupted, and ADR 0131 already
++models a run as host-owned resumable state. Disconnect is a transport event, not
++an explicit user cancellation decision.
++
++## Compatibility and Migration
++
++This decision does not change canonical project serialization, stable IDs,
++authoring command semantics, existing MCP tool names, or the ADR 0121
++project-scoped MCP lifecycle. The MCP endpoint remains loopback-only.
++
++ADR 0131 local AI Studio behavior remains valid. Remote AI Studio is additive
++and reuses the same session, proposal, run, permission, code-workspace,
++validation, playtest, capture, and audit contracts. Existing AI sessions do not
++require migration merely because a remote frontend becomes available.
++
++Remote gateway endpoint metadata, request identities, event cursors,
++private-network information, and web-session credentials are application state.
++They MUST NOT be serialized into `project.json`, Scene files, Graph files,
++asset manifests, project settings, or packaged game content.
++
++The initial private-network reference deployment may depend operationally on an
++external overlay-network and remote-display installation, but those products do
++not become Rust workspace dependencies or persisted project contracts.
++
++Future public Internet access, native mobile clients, remote process launch,
++full remote Editor controls, or engine-native live video may be added without
++changing this ADR only when they preserve the boundaries above. If they require
++a broader trust model, new project-writer model, public authentication system,
