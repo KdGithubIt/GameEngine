@@ -1233,7 +1233,7 @@ fn draw_debug_overlay(
         painter.rect_stroke(
             rect.shrink(2.0),
             4.0,
-            Stroke::new(3.0, Color32::from_rgb(93, 190, 244)),
+            Stroke::new(3.0_f32, Color32::from_rgb(93, 190, 244)),
             StrokeKind::Inside,
         );
     }
@@ -1266,7 +1266,7 @@ fn draw_debug_overlay(
             painter.rect_stroke(
                 rect,
                 4.0,
-                Stroke::new(4.0, color),
+                Stroke::new(4.0_f32, color),
                 StrokeKind::Inside,
             );
         }

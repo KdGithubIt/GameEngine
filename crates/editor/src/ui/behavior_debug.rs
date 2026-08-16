@@ -37,6 +37,7 @@ impl GraphFileFingerprint {
 }
 
 /// Transient Play-mode Behavior Tree graph-debug presentation state.
+#[derive(Default)]
 pub(super) struct BehaviorTreeDebugState {
     pub(super) visible: bool,
     source_key: Option<BehaviorDebugSourceKey>,
@@ -48,23 +49,6 @@ pub(super) struct BehaviorTreeDebugState {
     canvas: GraphCanvasState,
     #[cfg(feature = "visual-validation")]
     fixture_snapshot: Option<BehaviorExecutionSnapshot>,
-}
-
-impl Default for BehaviorTreeDebugState {
-    fn default() -> Self {
-        Self {
-            visible: false,
-            source_key: None,
-            source_path: None,
-            source_fingerprint: None,
-            graph_session: None,
-            invalidated: false,
-            message: None,
-            canvas: GraphCanvasState::default(),
-            #[cfg(feature = "visual-validation")]
-            fixture_snapshot: None,
-        }
-    }
 }
 
 impl BehaviorTreeDebugState {
@@ -361,19 +345,17 @@ impl EditorApp {
             });
             return;
         };
-        if !is_fixture {
-            if let Some(key) = runtime_entity {
-                self.behavior_debug
-                    .sync(key, self.project_root.as_ref(), &snapshot);
-            }
+        if !is_fixture && let Some(key) = runtime_entity {
+            self.behavior_debug
+                .sync(key, self.project_root.as_ref(), &snapshot);
         }
         let presentation = BehaviorTreeDebugPresentation::from_snapshot(&snapshot);
 
-        egui::SidePanel::right("behavior_tree_debug_details")
+        egui::Panel::right("behavior_tree_debug_details")
             .resizable(true)
-            .default_width(280.0)
-            .min_width(220.0)
-            .max_width(420.0)
+            .default_size(280.0)
+            .min_size(220.0)
+            .max_size(420.0)
             .show_inside(ui, |ui| show_behavior_debug_details(ui, &presentation));
         self.behavior_debug.show_graph(ui, &presentation);
     }
