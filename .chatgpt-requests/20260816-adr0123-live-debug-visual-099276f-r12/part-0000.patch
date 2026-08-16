@@ -1,0 +1,58 @@
+diff --git a/crates/editor/src/ui/mod.rs b/crates/editor/src/ui/mod.rs
+--- a/crates/editor/src/ui/mod.rs
++++ b/crates/editor/src/ui/mod.rs
+@@ -804,26 +804,31 @@
+-        let inspector_maximum_width = inspector_max_width(ui.available_width());
+-        show_inspector_panel(ui, inspector_maximum_width, |ui| {
+-            self.show_data_asset_tools(ui);
+-            ui.separator();
+-            // The three inspector surfaces replace one another inside this
+-            // panel, so each needs its own scope rather than the panel's.
+-            let showed_asset_inspector = ui
+-                .push_id(dock_surface_id("asset_inspector", active_tab), |ui| {
+-                    self.show_asset_inspector(ui)
+-                })
+-                .inner;
+-            if !showed_asset_inspector {
+-                if self.session.is_animation_graph() {
+-                    ui.push_id(
+-                        dock_surface_id("animation_graph_inspector", active_tab),
+-                        |ui| self.show_animation_graph_parameter_inspector(ui),
+-                    );
+-                } else {
+-                    ui.push_id(dock_surface_id("entity_inspector", active_tab), |ui| {
+-                        self.show_inspector(ui)
+-                    });
++        // Behavior Tree live debug already owns a runtime-specific details pane.
++        // Hiding the generic Inspector here preserves enough horizontal graph
++        // space for node labels and badges instead of showing two inspectors.
++        if !self.behavior_debug.visible {
++            let inspector_maximum_width = inspector_max_width(ui.available_width());
++            show_inspector_panel(ui, inspector_maximum_width, |ui| {
++                self.show_data_asset_tools(ui);
++                ui.separator();
++                // The three inspector surfaces replace one another inside this
++                // panel, so each needs its own scope rather than the panel's.
++                let showed_asset_inspector = ui
++                    .push_id(dock_surface_id("asset_inspector", active_tab), |ui| {
++                        self.show_asset_inspector(ui)
++                    })
++                    .inner;
++                if !showed_asset_inspector {
++                    if self.session.is_animation_graph() {
++                        ui.push_id(
++                            dock_surface_id("animation_graph_inspector", active_tab),
++                            |ui| self.show_animation_graph_parameter_inspector(ui),
++                        );
++                    } else {
++                        ui.push_id(dock_surface_id("entity_inspector", active_tab), |ui| {
++                            self.show_inspector(ui)
++                        });
++                    }
+                 }
+-            }
+-        });
++            });
++        }
+ 
+         egui::CentralPanel::default().show_inside(ui, |ui| {
