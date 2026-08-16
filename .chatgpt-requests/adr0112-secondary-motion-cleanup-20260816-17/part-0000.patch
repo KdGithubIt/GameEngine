@@ -213,7 +213,7 @@ diff --git a/crates/engine/src/scene_bridge/spawn.rs b/crates/engine/src/scene_b
  }
  
  pub(crate) fn spawn_bone_attachment_component(
- diff --git a/crates/engine/src/components/builtins.rs b/crates/engine/src/components/builtins.rs
+diff --git a/crates/engine/src/components/builtins.rs b/crates/engine/src/components/builtins.rs
 --- a/crates/engine/src/components/builtins.rs
 +++ b/crates/engine/src/components/builtins.rs
 @@ -181,7 +181,7 @@
