@@ -1,0 +1,190 @@
+@@ -68,2 +71,3 @@
+         self.current_document = doc;
++        self.ui_authoring_session = None;
+         self.undo_stack.clear();
+@@ -117,3 +121,4 @@
+         self.undo_stack.clear();
+         self.scene_session = None;
++        self.ui_authoring_session = None;
+         self.current_document = doc;
+@@ -151,6 +156,10 @@
+         self.restore_newer_recovery();
++        self.ui_authoring_session = self
++            .ui_document()
++            .cloned()
++            .map(UiAuthoringSession::new);
+         self.bump_document_revision();
+         Ok(())
+     }
+ 
+     /// Applies one UI authoring command as one undoable editor operation.
+@@ -190,7 +199,8 @@
+         if let CurrentDocument::Ui {
+             document: current, ..
+         } = &mut self.current_document
+         {
+-            *current = document;
++            *current = document.clone();
+         }
++        self.ui_authoring_session = Some(UiAuthoringSession::new(document));
+         self.diagnostics = diagnostics;
+diff --git a/crates/editor/src/session/undo.rs b/crates/editor/src/session/undo.rs
+--- a/crates/editor/src/session/undo.rs
++++ b/crates/editor/src/session/undo.rs
+@@ -9,3 +9,3 @@
+-use engine_authoring::{AuthoringSession, Graph, GraphView, UiDocument};
++use engine_authoring::{AuthoringSession, Graph, GraphView, UiAuthoringSession, UiDocument};
+ 
+ /// Maximum number of retained undo snapshots (ADR 0018).
+@@ -248,13 +248,15 @@
+                 self.diagnostics = self.domain.validate_domain(&self.graph);
++                self.ui_authoring_session = None;
+             }
+             UndoEntry::Ui(json) => {
+                 if let Ok(document) = serde_json::from_str::<UiDocument>(&json) {
+                     self.diagnostics = document.validate();
+                     if let CurrentDocument::Ui {
+                         document: current, ..
+                     } = &mut self.current_document
+                     {
+-                        *current = document;
++                        *current = document.clone();
+                     }
++                    self.ui_authoring_session = Some(UiAuthoringSession::new(document));
+                 }
+             }
+         }
+     }
+diff --git a/crates/editor/src/ui/mcp.rs b/crates/editor/src/ui/mcp.rs
+--- a/crates/editor/src/ui/mcp.rs
++++ b/crates/editor/src/ui/mcp.rs
+@@ -3,2 +3,3 @@
+ use super::EditorApp;
++use crate::session::StructuredAuthoringError;
+ use engine_authoring::{
+@@ -8,6 +9,6 @@
+     AssetInspectInput, AssetMcpTools, AssetSearchInput, BehaviorTreeApplyInput,
+     BehaviorTreeGraphInput, BehaviorTreeMcpTools, EntityFindInput, EntityInspectInput,
+-    McpToolError, PrefabCreateInput, PrefabInstantiateInput, PrefabMcpTools, SceneMcpTools,
+-    SceneMutationInput,
++    GraphMutationInput, GraphViewMutationInput, McpToolError, PrefabCreateInput,
++    PrefabInstantiateInput, PrefabMcpTools, SceneMcpTools, SceneMutationInput, UiMutationInput,
+ };
+ use serde::de::DeserializeOwned;
+@@ -47,6 +48,11 @@
+     fn tool(error: McpToolError) -> Self {
+         let code = error.code().to_owned();
+         Self::new(code, error.to_string())
+     }
+ 
++    fn structured(error: StructuredAuthoringError) -> Self {
++        let code = error.code().to_owned();
++        Self::new(code, error.to_string())
++    }
++
+     fn no_scene() -> Self {
+@@ -201,4 +207,82 @@
++            "graph.inspect" => {
++                require_empty_arguments(arguments)?;
++                to_value(self.session.structured_graph_inspect(&permissions)?)
++            }
++            "graph.validate" => {
++                require_empty_arguments(arguments)?;
++                to_value(self.session.structured_graph_validate(&permissions)?)
++            }
++            "graph.preview" => {
++                let input: GraphMutationInput = decode(arguments)?;
++                to_value(self.session.structured_graph_preview(
++                    &permissions,
++                    input.expected_revision,
++                    input.expected_generation,
++                    input.commands,
++                )?)
++            }
++            "graph.apply" => {
++                let input: GraphMutationInput = decode(arguments)?;
++                to_value(self.session.structured_graph_apply(
++                    &permissions,
++                    input.expected_revision,
++                    input.expected_generation,
++                    input.commands,
++                )?)
++            }
++            "graph.layout.inspect" => {
++                require_empty_arguments(arguments)?;
++                to_value(self.session.structured_graph_view_inspect(&permissions)?)
++            }
++            "graph.layout.validate" => {
++                require_empty_arguments(arguments)?;
++                to_value(self.session.structured_graph_view_validate(&permissions)?)
++            }
++            "graph.layout.preview" => {
++                let input: GraphViewMutationInput = decode(arguments)?;
++                to_value(self.session.structured_graph_view_preview(
++                    &permissions,
++                    input.expected_revision,
++                    input.expected_generation,
++                    input.commands,
++                )?)
++            }
++            "graph.layout.apply" => {
++                let input: GraphViewMutationInput = decode(arguments)?;
++                to_value(self.session.structured_graph_view_apply(
++                    &permissions,
++                    input.expected_revision,
++                    input.expected_generation,
++                    input.commands,
++                )?)
++            }
++            "ui.inspect" => {
++                require_empty_arguments(arguments)?;
++                to_value(self.session.structured_ui_inspect(&permissions)?)
++            }
++            "ui.validate" => {
++                require_empty_arguments(arguments)?;
++                to_value(self.session.structured_ui_validate(&permissions)?)
++            }
++            "ui.preview" => {
++                let input: UiMutationInput = decode(arguments)?;
++                to_value(self.session.structured_ui_preview(
++                    &permissions,
++                    input.expected_revision,
++                    input.expected_generation,
++                    input.commands,
++                )?)
++            }
++            "ui.apply" => {
++                let input: UiMutationInput = decode(arguments)?;
++                to_value(self.session.structured_ui_apply(
++                    &permissions,
++                    input.expected_revision,
++                    input.expected_generation,
++                    input.commands,
++                )?)
++            }
+             "behavior_tree.schemas" => {
+@@ -292,7 +376,13 @@
+ impl From<McpToolError> for EditorMcpCallFailure {
+     fn from(error: McpToolError) -> Self {
+         Self::tool(error)
+     }
+ }
+ 
++impl From<StructuredAuthoringError> for EditorMcpCallFailure {
++    fn from(error: StructuredAuthoringError) -> Self {
++        Self::structured(error)
++    }
++}
++
+ #[cfg(test)]
+@@ -415,6 +505,356 @@
+         assert_eq!(
+             assets[0]["id"],
+             Value::String(asset_id.as_str().to_owned())
+         );
+     }
+ }
++
++#[cfg(test)]
++mod parity_tests {
++    use super::*;
