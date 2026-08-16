@@ -1,0 +1,204 @@
+diff --git a/crates/authoring/src/graph_view.rs b/crates/authoring/src/graph_view.rs
+--- a/crates/authoring/src/graph_view.rs
++++ b/crates/authoring/src/graph_view.rs
+@@ -1,3 +1,5 @@
+ //! renderer state.
+ 
++pub mod authoring_service;
++
+ use crate::diagnostic::{Diagnostic, DiagnosticTarget};
+diff --git a/crates/authoring/src/lib.rs b/crates/authoring/src/lib.rs
+--- a/crates/authoring/src/lib.rs
++++ b/crates/authoring/src/lib.rs
+@@ -1,3 +1,4 @@
+ pub mod graph;
+ pub mod graph_domain;
++pub mod graph_routing;
+ pub mod graph_view;
+diff --git a/crates/authoring/src/lib.rs b/crates/authoring/src/lib.rs
+--- a/crates/authoring/src/lib.rs
++++ b/crates/authoring/src/lib.rs
+@@ -2,4 +2,9 @@
+     apply_graph_commands_with_domain, validate_graph_with_domain, GraphCommandApplication,
+     GraphDomain, TestGraphDomain,
+ };
++pub use graph_routing::{AuthoringGraphDomain, UnsupportedGraphKind};
++pub use graph_view::authoring_service::{
++    GraphViewAuthoringError, GraphViewAuthoringMutation, GraphViewAuthoringService,
++    GraphViewAuthoringSnapshot, GraphViewAuthoringValidation,
++};
+ pub use graph_view::{
+diff --git a/crates/authoring/src/graph_routing.rs b/crates/authoring/src/graph_routing.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/authoring/src/graph_routing.rs
+@@ -0,0 +1,91 @@
++//! Shared routing from persisted graph kinds to built-in authoring domains.
++//!
++//! Adapters use this module so Editor, CLI, and MCP select the same domain
++//! validation rules for a semantic Graph. The graph foundation remains
++//! domain-neutral; this router only composes the built-in authoring domains.
++
++use crate::animation_graph::AnimationGraphDomain;
++use crate::behavior_tree::BehaviorTreeDomain;
++use crate::diagnostic::Diagnostic;
++use crate::graph::{Graph, GraphKind, GraphSchemaRegistry};
++use crate::graph_domain::GraphDomain;
++use std::fmt;
++
++/// Built-in graph domain selected for a persisted semantic Graph.
++pub enum AuthoringGraphDomain {
++    /// Behavior Tree graph semantics.
++    BehaviorTree(BehaviorTreeDomain),
++    /// Animation state-machine graph semantics.
++    Animation(AnimationGraphDomain),
++}
++
++impl AuthoringGraphDomain {
++    /// Resolves the built-in domain matching `graph.kind`.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`UnsupportedGraphKind`] when no built-in authoring domain owns
++    /// the persisted graph kind.
++    pub fn for_graph(graph: &Graph) -> Result<Self, UnsupportedGraphKind> {
++        let behavior = BehaviorTreeDomain::new();
++        if graph.kind == *behavior.graph_kind() {
++            return Ok(Self::BehaviorTree(behavior));
++        }
++        let animation = AnimationGraphDomain::new();
++        if graph.kind == *animation.graph_kind() {
++            return Ok(Self::Animation(animation));
++        }
++        Err(UnsupportedGraphKind {
++            kind: graph.kind.clone(),
++        })
++    }
++}
++
++impl GraphDomain for AuthoringGraphDomain {
++    fn graph_kind(&self) -> &GraphKind {
++        match self {
++            Self::BehaviorTree(domain) => domain.graph_kind(),
++            Self::Animation(domain) => domain.graph_kind(),
++        }
++    }
++
++    fn schema_registry(&self) -> &dyn GraphSchemaRegistry {
++        match self {
++            Self::BehaviorTree(domain) => domain.schema_registry(),
++            Self::Animation(domain) => domain.schema_registry(),
++        }
++    }
++
++    fn validate_domain(&self, graph: &Graph) -> Vec<Diagnostic> {
++        match self {
++            Self::BehaviorTree(domain) => domain.validate_domain(graph),
++            Self::Animation(domain) => domain.validate_domain(graph),
++        }
++    }
++}
++
++/// Reports that a semantic graph has no built-in structured authoring domain.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct UnsupportedGraphKind {
++    /// Persisted graph kind that could not be routed.
++    pub kind: GraphKind,
++}
++
++impl UnsupportedGraphKind {
++    /// Stable diagnostic-style code used by structured adapters.
++    pub fn code(&self) -> &'static str {
++        "authoring.unsupported_graph_kind"
++    }
++}
++
++impl fmt::Display for UnsupportedGraphKind {
++    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
++        write!(
++            formatter,
++            "no built-in authoring domain is registered for graph kind `{}`",
++            self.kind.as_str()
++        )
++    }
++}
++
++impl std::error::Error for UnsupportedGraphKind {}
+diff --git a/crates/authoring/src/graph_view/authoring_service.rs b/crates/authoring/src/graph_view/authoring_service.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/authoring/src/graph_view/authoring_service.rs
+@@ -0,0 +1,343 @@
++//! Shared structured authoring service for GraphView presentation documents.
++//!
++//! GraphView remains a separate presentation document from the semantic Graph.
++//! This service centralizes permission checks, stale-base rejection, preview
++//! diffs, validation, and atomic presentation commits for structured adapters.
++
++use super::{GraphView, GraphViewChange, GraphViewCommand, GraphViewTransaction, GraphViewTransactionError};
++use crate::access::{AuthoringPermission, AuthoringPermissionError, AuthoringPermissions};
++use crate::diagnostic::Diagnostic;
++use crate::graph::Graph;
++use serde::Serialize;
++use std::fmt;
++
++/// Immutable GraphView state returned by structured authoring inspection.
++#[derive(Debug, Serialize)]
++pub struct GraphViewAuthoringSnapshot {
++    /// Logical content revision of the committed GraphView.
++    pub revision: u64,
++    /// In-memory generation used to reject stale edits across reopen or undo.
++    pub generation: u64,
++    /// Complete committed presentation document.
++    pub view: GraphView,
++}
++
++/// Structured validation result for one committed GraphView.
++#[derive(Debug, Clone, PartialEq, Serialize)]
++pub struct GraphViewAuthoringValidation {
++    /// Logical content revision validated by this result.
++    pub revision: u64,
++    /// In-memory generation validated by this result.
++    pub generation: u64,
++    /// Whether no blocking presentation diagnostic was produced.
++    pub success: bool,
++    /// Structured GraphView diagnostics.
++    pub diagnostics: Vec<Diagnostic>,
++}
++
++/// Result of previewing or applying one GraphView command batch.
++#[derive(Debug, Clone, PartialEq, Serialize)]
++pub struct GraphViewAuthoringMutation {
++    /// Whether the complete command batch passed validation.
++    pub success: bool,
++    /// Revision supplied by the caller as its base.
++    pub base_revision: u64,
++    /// Generation supplied by the caller as its base.
++    pub base_generation: u64,
++    /// Current committed revision after this operation.
++    pub revision: u64,
++    /// Current committed generation after this operation.
++    pub generation: u64,
++    /// Structured command or presentation diagnostics.
++    pub diagnostics: Vec<Diagnostic>,
++    /// Deterministic presentation diff proposed or committed by the batch.
++    pub diff: Vec<GraphViewChange>,
++}
++
++/// Shared GraphView authoring service failure.
++#[derive(Debug)]
++pub enum GraphViewAuthoringError {
++    /// The application did not grant the permission required by this operation.
++    Permission(AuthoringPermissionError),
++    /// The supplied mutation base no longer matches the live GraphView.
++    Stale {
++        /// Revision supplied by the caller.
++        expected_revision: u64,
++        /// Generation supplied by the caller.
++        expected_generation: u64,
++        /// Current committed GraphView revision.
++        actual_revision: u64,
++        /// Current committed GraphView generation.
++        actual_generation: u64,
++    },
++}
