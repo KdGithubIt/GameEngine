@@ -1,0 +1,121 @@
++    fn step(&mut self, dt: f32, origin: Vec3) {
++        let definition = self.compiled_effect();
++        match &mut self.runtime {
++            Some(runtime) => runtime.reconfigure(definition),
++            None => self.runtime = Some(VfxInstance::new(definition, None)),
+         }
+-        self.spawn_accumulator += self.spawn_rate * dt;
+-        let mut to_spawn = self.spawn_accumulator.floor() as u32;
+-        self.spawn_accumulator -= to_spawn as f32;
+-        to_spawn = to_spawn.min(MAX_SPAWNS_PER_FRAME);
+-
+-        for _ in 0..to_spawn {
+-            if self.particles.len() >= self.max_particles {
+-                break;
+-            }
+-            let particle = self.spawn_one(origin);
+-            self.particles.push(particle);
++        let runtime = self
++            .runtime
++            .as_mut()
++            .expect("ParticleEmitter runtime is initialized above");
++        runtime.step(dt, origin);
++        self.particles.clear();
++        if let Some(emitter) = runtime.emitters().first() {
++            self.particles.extend(emitter.particles().iter().map(|particle| Particle {
++                position: particle.position,
++                velocity: particle.velocity,
++                age: particle.age,
++                lifetime: particle.lifetime,
++            }));
+         }
+     }
++}
+ 
+-    /// Creates one particle at `origin` using the emitter's random stream.
+-    fn spawn_one(&mut self, origin: Vec3) -> Particle {
+-        let lifetime = self.rng.range(self.lifetime.0, self.lifetime.1).max(0.01);
+-        let speed = self.rng.range(self.initial_speed.0, self.initial_speed.1);
+-
+-        // Build an orthonormal basis around the emission direction and tilt
+-        // by a random angle within the cone.
+-        let axis = self.direction.normalize_or_zero();
+-        let axis = if axis == Vec3::ZERO { Vec3::Y } else { axis };
+-        let ortho = if axis.x.abs() < 0.9 { Vec3::X } else { Vec3::Z };
+-        let tangent = axis.cross(ortho).normalize();
+-        let bitangent = axis.cross(tangent);
+-        let tilt = self.rng.range(0.0, self.spread);
+-        let around = self.rng.range(0.0, std::f32::consts::TAU);
+-        let direction = (axis * tilt.cos()
+-            + (tangent * around.cos() + bitangent * around.sin()) * tilt.sin())
+-        .normalize_or_zero();
+-
+-        Particle {
+-            position: origin,
+-            velocity: direction * speed,
+-            age: 0.0,
+-            lifetime,
+-        }
++fn simple_emitter_id() -> VfxEmitterId {
++    VfxEmitterId::try_new("vfxemitter_00000000000000000000000000")
++        .expect("hard-coded simple VFX emitter ID must be valid")
++}
++
++fn simple_module_id(index: u8) -> VfxModuleId {
++    VfxModuleId::try_new(format!("vfxmodule_0000000000000000000000000{index:X}"))
++        .expect("hard-coded simple VFX module ID must be valid")
++}
++
++fn compiled_operation(index: u8, operation: VfxModuleOperation) -> CompiledVfxOperation {
++    CompiledVfxOperation {
++        source_module: simple_module_id(index),
++        operation,
++    }
++}
++
++fn simple_curve_key_id(index: u8) -> VfxCurveKeyId {
++    VfxCurveKeyId::try_new(format!("vfxkey_0000000000000000000000000{index:X}"))
++        .expect("hard-coded simple VFX curve key ID must be valid")
++}
++
++fn simple_gradient_key_id(index: u8) -> VfxGradientKeyId {
++    VfxGradientKeyId::try_new(format!("vfxgradient_0000000000000000000000000{index:X}"))
++        .expect("hard-coded simple VFX gradient key ID must be valid")
++}
++
++fn simple_size_curve(start: f32, end: f32) -> VfxCurve {
++    VfxCurve {
++        keys: vec![
++            VfxCurveKey {
++                id: simple_curve_key_id(0),
++                time: 0.0,
++                value: start,
++                interpolation: VfxCurveInterpolation::Linear,
++            },
++            VfxCurveKey {
++                id: simple_curve_key_id(1),
++                time: 1.0,
++                value: end,
++                interpolation: VfxCurveInterpolation::Linear,
++            },
++        ],
++    }
++}
++
++fn simple_color_gradient(start: [f32; 4], end: [f32; 4]) -> VfxGradient {
++    VfxGradient {
++        keys: vec![
++            VfxGradientKey {
++                id: simple_gradient_key_id(0),
++                time: 0.0,
++                color: start,
++            },
++            VfxGradientKey {
++                id: simple_gradient_key_id(1),
++                time: 1.0,
++                color: end,
++            },
++        ],
+     }
+ }
+ 
