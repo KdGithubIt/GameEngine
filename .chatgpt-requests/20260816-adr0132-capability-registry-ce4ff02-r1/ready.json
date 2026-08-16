@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "request_id": "20260816-adr0132-capability-registry-ce4ff02-r1",
+  "target_branch": "chatgpt/gameengine-adr0132-declarative-capability-exposure",
+  "expected_head_sha": "ce4ff02883046c9853a8966e165e53b4118e33c0",
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Add ADR 0132 declarative capability exposure",
+  "pr_title": "GameEngine: add ADR 0132 declarative capability registry",
+  "pr_body": "## Summary\n\nAdds Accepted ADR 0132 to make an authoring-owned capability registry the canonical semantic discovery contract and require registry-driven generic MCP/CLI exposure. Updates the canonical authoring specification and ADR registry accordingly.\n\n## Validation\n\nDocumentation-only change; expected Windows Validation mode: docs."
+}
