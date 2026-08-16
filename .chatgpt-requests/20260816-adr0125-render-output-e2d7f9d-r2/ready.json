@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "request_id": "20260816-adr0125-render-output-e2d7f9d-r2",
+  "target_branch": "chatgpt/gameengine-vfx-adr0125-v2",
+  "expected_head_sha": "e2d7f9da71dc7e6d8cd96e552154eb7b5f41668e",
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Implement ADR 0125 VFX render outputs",
+  "pr_title": "GameEngine: implement ADR 0125 VFX architecture",
+  "pr_body": "## Summary\n\nContinues ADR 0125 on Draft PR #54. Adds runtime VFX render-output integration through the existing material instancing path, including billboard facing and texture-sheet UV transforms. Scene wiring and VFX Builder follow in subsequent dispatcher requests.\n\n<!-- gameengine-chatgpt-dispatcher -->"
+}
