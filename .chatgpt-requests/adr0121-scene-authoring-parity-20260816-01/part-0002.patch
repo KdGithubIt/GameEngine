@@ -1,0 +1,41 @@
+diff --git a/crates/authoring/src/lib.rs b/crates/authoring/src/lib.rs
+--- a/crates/authoring/src/lib.rs
++++ b/crates/authoring/src/lib.rs
+@@ -35,6 +35,7 @@
+ #![warn(missing_docs)]
+ #![warn(rustdoc::broken_intra_doc_links)]
+
++pub mod access;
+ pub mod animation_graph;
+ pub mod animation_set;
+ pub mod behavior_tree;
+@@ -55,6 +56,7 @@
+ pub mod project;
+ pub mod project_settings;
+ pub mod scene;
++pub mod scene_authoring;
+ pub mod schema;
+ pub mod test_fixtures;
+ pub mod transaction;
+@@ -65,6 +67,9 @@
+ pub mod validation;
+ pub mod value;
+
++pub use access::{
++    AuthoringPermission, AuthoringPermissionError, AuthoringPermissions,
++};
+ pub use animation_graph::{
+     animation_graph_motion_slots, compile_animation_graph, motion_slots_annotation_value,
+     AnimState, AnimTransition, AnimationGraphDomain, AnimationStatePlaybackMode, CompiledAnimGraph,
+@@ -112,6 +117,10 @@
+     AxisBinding, InputAction, KeyAxisBinding, Layer, ProjectSettings, ProjectSettingsError,
+     PROJECT_SETTINGS_SCHEMA_VERSION,
+ };
+ pub use scene::{AuthoringScene, SceneSaveError};
++pub use scene_authoring::{
++    SceneAuthoringError, SceneAuthoringMutation, SceneAuthoringService, SceneAuthoringSnapshot,
++    SceneAuthoringValidation,
++};
+ pub use schema::{ComponentSchema, ComponentSchemaRegistry, FieldSchema, FieldType};
+ pub use transaction::{AuthoringSession, Transaction, TransactionError};
+ pub use ui::{
