@@ -1,0 +1,171 @@
++    /// Marks a run complete only when every applicable acceptance, validation,
++    /// runtime, frame, visual, and interaction check passes.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`AgentHostError`] when evidence is incomplete or the run is unknown.
++    pub fn complete_run(
++        &mut self,
++        session_id: &AgentSessionId,
++        run_id: &AgentRunId,
++        evidence: &CompletionReport,
++    ) -> Result<(), AgentHostError> {
++        if !evidence.is_complete() {
++            return Err(AgentHostError::new(
++                "agent.completion_incomplete",
++                format!(
++                    "run `{run_id}` cannot complete; unresolved checks: {}",
++                    evidence.unresolved_summary()
++                ),
++            ));
++        }
++        let session = self.session_mut(session_id)?;
++        let run = session.run_mut(run_id).ok_or_else(|| {
++            AgentHostError::new(
++                "agent.run_not_found",
++                format!("agent run `{run_id}` does not exist"),
++            )
++        })?;
++        if run.state.is_terminal() {
++            return Err(AgentHostError::new(
++                "agent.run_already_terminal",
++                format!("agent run `{run_id}` is already terminal"),
++            ));
++        }
++        let from = run.state;
++        run.state = AgentRunState::Completed;
++        session.emit(AgentEventKind::StateChanged {
++            run_id: run_id.clone(),
++            from,
++            to: AgentRunState::Completed,
++        });
++        session.emit(AgentEventKind::Completed(run_id.clone()));
++        self.finish_writer(session_id, run_id);
++        Ok(())
++    }
++
++    fn finish_writer(&mut self, session_id: &AgentSessionId, run_id: &AgentRunId) {
++        if self
++            .active_writer
++            .as_ref()
++            .is_some_and(|active| &active.0 == session_id && &active.1 == run_id)
++        {
++            self.active_writer = None;
++        }
++        self.permissions.finish_run(run_id);
++    }
++
++    /// Returns the currently active AI writer role, if any.
++    pub fn active_writer(&self) -> Option<(&AgentSessionId, &AgentRunId)> {
++        self.active_writer
++            .as_ref()
++            .map(|(session, run)| (session, run))
++    }
++
++    /// Loads durable project-level capability toggles from user-local application data.
++    ///
++    /// A missing policy file is treated as the secure default of no project grants.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`AgentHostError`] when an existing policy file is malformed or unsupported.
++    pub fn load_project_policy(&mut self) -> Result<(), AgentHostError> {
++        let path = self.project_policy_path();
++        if !path.exists() {
++            return Ok(());
++        }
++        let bytes = fs::read(&path)
++            .map_err(|error| AgentHostError::new("agent.policy_load_failed", error.to_string()))?;
++        let policy: PersistedProjectPolicy = serde_json::from_slice(&bytes)
++            .map_err(|error| AgentHostError::new("agent.policy_parse_failed", error.to_string()))?;
++        if policy.schema_version != AGENT_POLICY_SCHEMA_VERSION {
++            return Err(AgentHostError::new(
++                "agent.policy_schema_unsupported",
++                format!(
++                    "agent policy schema {} is unsupported; expected {}",
++                    policy.schema_version, AGENT_POLICY_SCHEMA_VERSION
++                ),
++            ));
++        }
++        self.permissions = AgentPermissionBroker::with_project_grants(policy.project_grants);
++        Ok(())
++    }
++
++    /// Persists durable project-level capability toggles without credentials or command strings.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`AgentHostError`] when serialization or atomic persistence fails.
++    pub fn save_project_policy(&self) -> Result<PathBuf, AgentHostError> {
++        let path = self.project_policy_path();
++        let bytes = serde_json::to_vec_pretty(&PersistedProjectPolicy {
++            schema_version: AGENT_POLICY_SCHEMA_VERSION,
++            project_grants: self.permissions.project_grants().clone(),
++        })
++        .map_err(|error| AgentHostError::new("agent.policy_serialize_failed", error.to_string()))?;
++        atomic_write(&path, &bytes)
++            .map_err(|error| AgentHostError::new("agent.policy_save_failed", error.to_string()))?;
++        Ok(path)
++    }
++
++    fn project_policy_path(&self) -> PathBuf {
++        self.local_store_root
++            .join(project_storage_key(&self.project_root))
++            .join("policy.json")
++    }
++
++    /// Changes whether one session is local-private or project-shared.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`AgentHostError`] when the session is unknown.
++    pub fn set_visibility(
++        &mut self,
++        session_id: &AgentSessionId,
++        visibility: SessionVisibility,
++    ) -> Result<(), AgentHostError> {
++        self.session_mut(session_id)?.visibility = visibility;
++        Ok(())
++    }
++
++    /// Persists a loaded session atomically to its configured local/private or
++    /// project-shared location.
++    ///
++    /// Credentials are not represented by any persisted AI session type. The
++    /// caller remains responsible for not inserting secret material into free-form
++    /// user conversation text before deliberately sharing a session.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`AgentHostError`] for an unknown session or persistence failure.
++    pub fn save_session(&self, session_id: &AgentSessionId) -> Result<PathBuf, AgentHostError> {
++        let session = self.session(session_id).ok_or_else(|| {
++            AgentHostError::new(
++                "agent.session_not_found",
++                format!("AI session `{session_id}` is not loaded"),
++            )
++        })?;
++        let path = self.session_path(session);
++        let contents = serde_json::to_string_pretty(&PersistedAgentSession {
++            schema_version: AI_SESSION_SCHEMA_VERSION,
++            session: session.clone(),
++        })
++        .map_err(|error| AgentHostError::new("agent.session_serialize_failed", error.to_string()))?;
++        atomic_write(&path, contents.as_bytes())
++            .map_err(|error| AgentHostError::new("agent.session_save_failed", error.to_string()))?;
++        Ok(path)
++    }
++
++    /// Restores the most recently modified local-private or project-shared session.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`AgentHostError`] when session discovery or loading fails.
++    pub fn restore_latest_session(&mut self) -> Result<Option<AgentSessionId>, AgentHostError> {
++        let mut candidates = Vec::new();
++        let local_sessions = self
++            .local_store_root
++            .join(project_storage_key(&self.project_root))
++            .join("sessions");
++        collect_session_candidates(&local_sessions, false, &mut candidates)?;
++        let shared_sessions = self
