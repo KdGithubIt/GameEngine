@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "request_id": "adr-audit-index-20260816-04",
+  "target_branch": "chatgpt/gameengine-adr-audit-index",
+  "expected_head_sha": "a7b8ffcc333576e6c8860bee45c320350d65e5de",
+  "patch_parts": [
+    "part-0000.patch",
+    "part-0001.patch",
+    "part-0002.patch",
+    "part-0003.patch",
+    "part-0004.patch"
+  ],
+  "commit_message": "Audit and reorganize ADR documentation",
+  "pr_title": "GameEngine: audit and reorganize ADR documentation",
+  "pr_body": "## Summary\n\n- audit the complete ADR registry through ADR 0121\n- add a current architecture overview and audit record\n- repair ADR index omissions and supersession visibility\n- align the canonical authoring spec and ADR 0113 operational wording with the current architecture and CI contract\n\n## Scope\n\nDocumentation only. No runtime behavior, serialized format, Stable ID, public Rust API, or crate dependency changes."
+}
