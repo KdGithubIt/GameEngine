@@ -1,0 +1,426 @@
+diff --git a/crates/engine/src/game_host/core.rs b/crates/engine/src/game_host/core.rs
+index 235d0a4..abaa13f 100644
+--- a/crates/engine/src/game_host/core.rs
++++ b/crates/engine/src/game_host/core.rs
+@@ -1094,8 +1094,12 @@
+             let status = match agent.status {
+                 crate::navmesh::NavMeshAgentStatus::Idle => "idle",
+                 crate::navmesh::NavMeshAgentStatus::MissingNavMesh => "missing_navmesh",
++                crate::navmesh::NavMeshAgentStatus::MissingProfile => "missing_profile",
++                crate::navmesh::NavMeshAgentStatus::StartOutside => "start_outside",
++                crate::navmesh::NavMeshAgentStatus::EndOutside => "end_outside",
+                 crate::navmesh::NavMeshAgentStatus::NoPath => "no_path",
+                 crate::navmesh::NavMeshAgentStatus::Moving => "moving",
++                crate::navmesh::NavMeshAgentStatus::PartialPath => "partial_path",
+                 crate::navmesh::NavMeshAgentStatus::Arrived => "arrived",
+             };
+             Value::Object(BTreeMap::from([
+diff --git a/crates/engine/src/navigation_bake.rs b/crates/engine/src/navigation_bake.rs
+index 02f2231..0007fb0 100644
+--- a/crates/engine/src/navigation_bake.rs
++++ b/crates/engine/src/navigation_bake.rs
+@@ -7,7 +7,7 @@
+ 
+ use std::collections::{BTreeMap, BTreeSet};
+ use std::fmt;
+-use std::path::{Path, PathBuf};
++use std::path::PathBuf;
+ use std::sync::atomic::AtomicBool;
+ 
+ use engine_authoring::{
+@@ -20,6 +20,7 @@ use glam::Vec3;
+ use crate::asset::{Assets, Handle};
+ use crate::collision::{Collider, PhysicsBody, TriggerVolume};
+ use crate::mesh::Mesh;
++use crate::script_api::RuntimeEntityIdentity;
+ use crate::transform::GlobalTransform;
+ use crate::{AssetManifest, AssetServer, ManifestEntry};
+ use engine_physics::navigation::{
+@@ -33,9 +34,9 @@ pub use engine_physics::navigation_bake::{
+ };
+ 
+ /// Stable authoring component used to emit one explicit off-mesh traversal.
+-pub const NAVIGATION_LINK_COMPONENT: &str = "engine.nav_mesh_link";
++pub const NAVIGATION_LINK_COMPONENT: &str = "engine.nav_link";
+ /// Stable authoring component used to exclude or reclassify navigation geometry.
+-pub const NAVIGATION_MODIFIER_COMPONENT: &str = "engine.nav_mesh_modifier";
++pub const NAVIGATION_MODIFIER_COMPONENT: &str = "engine.nav_modifier";
+ 
+ /// Successful scene bake output and registered stable asset ID.
+ pub struct NavMeshBakeResult {
+@@ -124,12 +125,13 @@ pub fn collect_navigation_source(
+ 
+     let mut generated_modifiers = Vec::new();
+     if let Ok(query) = world.query::<(
++        &RuntimeEntityIdentity,
+         &GlobalTransform,
+         &Collider,
+         Option<&PhysicsBody>,
+         Option<&TriggerVolume>,
+     )>() {
+-        for (entity, (transform, collider, body, trigger)) in query.iter() {
++        for (entity, (identity, transform, collider, body, trigger)) in query.iter() {
+             if body != Some(&PhysicsBody::Static) || trigger.is_some() {
+                 continue;
+             }
+@@ -158,7 +160,7 @@ pub fn collect_navigation_source(
+                 maximum.y
+             };
+             generated_modifiers.push(NavigationModifier {
+-                id: format!("runtime-collider-{}-{}", entity.id(), entity.generation()),
++                id: format!("collider:{}", identity.authoring_id.as_str()),
+                 minimum: [minimum.x, minimum.y, minimum.z],
+                 maximum: [maximum.x, exclusion_maximum_y, maximum.z],
+                 profiles: Vec::new(),
+ diff --git a/crates/physics/src/navigation.rs b/crates/physics/src/navigation.rs
+index 6cea250..5bb8bdd 100644
+--- a/crates/physics/src/navigation.rs
++++ b/crates/physics/src/navigation.rs
+@@ -1147,6 +1147,54 @@ enum SearchOutcome {
+     Partial(SearchResult),
+ }
+ 
++struct SearchFrontier {
++    open: BinaryHeap<OpenEntry>,
++    costs: HashMap<NavigationPolygonRef, f32>,
++    previous: HashMap<NavigationPolygonRef, (NavigationPolygonRef, SearchEdge)>,
++}
++
++impl SearchFrontier {
++    fn new(start: NavigationPolygonRef, estimated_total: f32) -> Self {
++        let mut costs = HashMap::new();
++        costs.insert(start, 0.0);
++        let mut open = BinaryHeap::new();
++        open.push(OpenEntry {
++            estimated_total,
++            cost: 0.0,
++            node: start,
++        });
++        Self {
++            open,
++            costs,
++            previous: HashMap::new(),
++        }
++    }
++
++    fn relax(
++        &mut self,
++        next: NavigationPolygonRef,
++        current: NavigationPolygonRef,
++        edge: SearchEdge,
++        new_cost: f32,
++        end_center: Vec3,
++        centers: &HashMap<NavigationPolygonRef, Vec3>,
++    ) {
++        if new_cost + 1e-5 >= self.costs.get(&next).copied().unwrap_or(f32::INFINITY) {
++            return;
++        }
++        self.costs.insert(next, new_cost);
++        self.previous.insert(next, (current, edge));
++        let heuristic = centers
++            .get(&next)
++            .map_or(0.0, |center| center.distance(end_center));
++        self.open.push(OpenEntry {
++            estimated_total: new_cost + heuristic,
++            cost: new_cost,
++            node: next,
++        });
++    }
++}
++
+ fn astar_polygons(
+     profile: &NavigationProfileMesh,
+     start: NavigationPolygonRef,
+@@ -1155,21 +1203,13 @@ fn astar_polygons(
+     let index = polygon_index(&profile.tiles);
+     let centers = polygon_centers(profile, &index);
+     let end_center = *centers.get(&end)?;
+-    let mut open = BinaryHeap::new();
+-    let mut costs = HashMap::new();
+-    let mut previous: HashMap<NavigationPolygonRef, (NavigationPolygonRef, SearchEdge)> =
+-        HashMap::new();
+     let mut best_partial = start;
+     let mut best_distance = centers.get(&start)?.distance_squared(end_center);
+-    costs.insert(start, 0.0_f32);
+-    open.push(OpenEntry {
+-        estimated_total: best_distance.sqrt(),
+-        cost: 0.0,
+-        node: start,
+-    });
+-
+-    while let Some(entry) = open.pop() {
+-        if costs
++    let mut frontier = SearchFrontier::new(start, best_distance.sqrt());
++
++    while let Some(entry) = frontier.open.pop() {
++        if frontier
++            .costs
+             .get(&entry.node)
+             .is_some_and(|best| entry.cost > *best + 1e-5)
+         {
+@@ -1186,7 +1226,7 @@ fn astar_polygons(
+             return Some(SearchOutcome::Complete(reconstruct_search(
+                 end,
+                 entry.cost,
+-                &previous,
++                &frontier.previous,
+             )));
+         }
+         let (tile_index, polygon_index) = *index.get(&entry.node)?;
+@@ -1200,21 +1240,18 @@ fn astar_polygons(
+             let step = from_center.distance(to_center)
+                 * profile.profile.area_cost(destination_polygon.area)
+                 * destination_polygon.cost_multiplier;
+-            relax(
++            frontier.relax(
+                 portal.to,
+                 entry.node,
+                 SearchEdge::Portal(portal.clone()),
+                 entry.cost + step,
+                 end_center,
+                 &centers,
+-                &mut costs,
+-                &mut previous,
+-                &mut open,
+             );
+         }
+         for link in &profile.links {
+             if link.from == entry.node {
+-                relax(
++                frontier.relax(
+                     link.to,
+                     entry.node,
+                     SearchEdge::Link(link.clone(), false),
+@@ -1224,13 +1261,10 @@ fn astar_polygons(
+                             * Vec3::from_array(link.start).distance(Vec3::from_array(link.end)),
+                     end_center,
+                     &centers,
+-                    &mut costs,
+-                    &mut previous,
+-                    &mut open,
+                 );
+             }
+             if link.bidirectional && link.to == entry.node {
+-                relax(
++                frontier.relax(
+                     link.from,
+                     entry.node,
+                     SearchEdge::Link(link.clone(), true),
+@@ -1240,9 +1274,6 @@ fn astar_polygons(
+                             * Vec3::from_array(link.start).distance(Vec3::from_array(link.end)),
+                     end_center,
+                     &centers,
+-                    &mut costs,
+-                    &mut previous,
+-                    &mut open,
+                 );
+             }
+         }
+@@ -1250,11 +1281,11 @@ fn astar_polygons(
+     if best_partial == start {
+         return None;
+     }
+-    let cost = costs.get(&best_partial).copied()?;
++    let cost = frontier.costs.get(&best_partial).copied()?;
+     Some(SearchOutcome::Partial(reconstruct_search(
+         best_partial,
+         cost,
+-        &previous,
++        &frontier.previous,
+     )))
+ }
+ 
+@@ -1280,32 +1311,6 @@ fn reconstruct_search(
+     }
+ }
+ 
+-fn relax(
+-    next: NavigationPolygonRef,
+-    current: NavigationPolygonRef,
+-    edge: SearchEdge,
+-    new_cost: f32,
+-    end_center: Vec3,
+-    centers: &HashMap<NavigationPolygonRef, Vec3>,
+-    costs: &mut HashMap<NavigationPolygonRef, f32>,
+-    previous: &mut HashMap<NavigationPolygonRef, (NavigationPolygonRef, SearchEdge)>,
+-    open: &mut BinaryHeap<OpenEntry>,
+-) {
+-    if new_cost + 1e-5 >= costs.get(&next).copied().unwrap_or(f32::INFINITY) {
+-        return;
+-    }
+-    costs.insert(next, new_cost);
+-    previous.insert(next, (current, edge));
+-    let heuristic = centers
+-        .get(&next)
+-        .map_or(0.0, |center| center.distance(end_center));
+-    open.push(OpenEntry {
+-        estimated_total: new_cost + heuristic,
+-        cost: new_cost,
+-        node: next,
+-    });
+-}
+-
+ fn polygon_centers(
+     profile: &NavigationProfileMesh,
+     index: &HashMap<NavigationPolygonRef, (usize, usize)>,
+diff --git a/crates/physics/src/navigation_bake.rs b/crates/physics/src/navigation_bake.rs
+index 5cb7f29..0e0f11e 100644
+--- a/crates/physics/src/navigation_bake.rs
++++ b/crates/physics/src/navigation_bake.rs
+@@ -67,27 +67,19 @@ impl Default for NavMeshBakeDocument {
+ }
+ 
+ impl NavMeshBakeDocument {
+-    /// Parses schema v2, migrating the previous planar schema v1 in memory.
++    /// Parses exactly the current production bake-document schema.
+     ///
+     /// # Errors
+     ///
+-    /// Returns [`NavigationBakeServiceError`] when JSON or settings are invalid.
++    /// Returns [`NavigationBakeServiceError`] when JSON, version, or settings are invalid.
+     pub fn from_json(json: &str) -> Result<Self, NavigationBakeServiceError> {
+-        let value: serde_json::Value =
++        let document: Self =
+             serde_json::from_str(json).map_err(NavigationBakeServiceError::Json)?;
+-        let version = value
+-            .get("schema_version")
+-            .and_then(serde_json::Value::as_u64)
+-            .unwrap_or(1) as u32;
+-        let document = match version {
+-            1 => migrate_v1_document(
+-                serde_json::from_value(value).map_err(NavigationBakeServiceError::Json)?,
+-            ),
+-            NAVMESH_BAKE_SCHEMA_VERSION => {
+-                serde_json::from_value(value).map_err(NavigationBakeServiceError::Json)?
+-            }
+-            other => return Err(NavigationBakeServiceError::UnsupportedVersion(other)),
+-        };
++        if document.schema_version != NAVMESH_BAKE_SCHEMA_VERSION {
++            return Err(NavigationBakeServiceError::UnsupportedVersion(
++                document.schema_version,
++            ));
++        }
+         document.validate()?;
+         Ok(document)
+     }
+@@ -145,50 +137,6 @@ impl NavMeshBakeDocument {
+     }
+ }
+ 
+-#[derive(Debug, Deserialize)]
+-struct LegacyBakeVector3([f32; 3]);
+-
+-#[derive(Debug, Deserialize)]
+-struct LegacyNavMeshBakeSettings {
+-    cell_size: f32,
+-    agent_radius: f32,
+-    world_min: LegacyBakeVector3,
+-    world_max: LegacyBakeVector3,
+-    walkable_height: f32,
+-    agent_height: f32,
+-}
+-
+-#[derive(Debug, Deserialize)]
+-struct LegacyNavMeshBakeDocument {
+-    output_asset: String,
+-    source_fingerprint: Option<String>,
+-    settings: LegacyNavMeshBakeSettings,
+-}
+-
+-fn migrate_v1_document(legacy: LegacyNavMeshBakeDocument) -> NavMeshBakeDocument {
+-    let extent_x = (legacy.settings.world_max.0[0] - legacy.settings.world_min.0[0]).abs();
+-    let extent_z = (legacy.settings.world_max.0[2] - legacy.settings.world_min.0[2]).abs();
+-    let extent = extent_x.max(extent_z).max(1.0);
+-    let _legacy_height = legacy.settings.walkable_height;
+-    NavMeshBakeDocument {
+-        schema_version: NAVMESH_BAKE_SCHEMA_VERSION,
+-        output_asset: legacy.output_asset,
+-        // A v1 fingerprint describes the retired planar input contract. Retain
+-        // only the information that a bake existed; never mark it current.
+-        source_fingerprint: legacy
+-            .source_fingerprint
+-            .map(|_| "legacy-v1-stale".to_owned()),
+-        settings: NavMeshBakeSettings {
+-            tile_size: (legacy.settings.cell_size.max(0.01) * 32.0)
+-                .clamp(4.0, extent.max(4.0)),
+-            profiles: vec![NavigationAgentProfile {
+-                radius: legacy.settings.agent_radius.max(0.0),
+-                height: legacy.settings.agent_height.max(0.01),
+-                ..NavigationAgentProfile::default()
+-            }],
+-        },
+-    }
+-}
+-
+ 
+ 
+ 
+@@ -410,13 +358,7 @@ fn replace_preserving_previous(
+         return Err(NavigationBakeServiceError::Io(error));
+     }
+ 
+-    let had_previous = path.exists();
+-    if had_previous {
+-        if let Err(error) = fs::rename(path, &backup) {
+-            let _ = fs::remove_file(&temporary);
+-            return Err(NavigationBakeServiceError::Io(error));
+-        }
+-    }
++    let had_previous = move_previous_to_backup(path, &backup, &temporary)?;
+     match fs::rename(&temporary, path) {
+         Ok(()) => {
+             if had_previous {
+@@ -434,6 +376,21 @@ fn replace_preserving_previous(
+     }
+ }
+ 
++fn move_previous_to_backup(
++    path: &Path,
++    backup: &Path,
++    temporary: &Path,
++) -> Result<bool, NavigationBakeServiceError> {
++    if !path.exists() {
++        return Ok(false);
++    }
++    if let Err(error) = fs::rename(path, backup) {
++        let _ = fs::remove_file(temporary);
++        return Err(NavigationBakeServiceError::Io(error));
++    }
++    Ok(true)
++}
++
+ /// Error from shared bake-document validation, normalization, execution, or persistence.
+ #[derive(Debug)]
+ pub enum NavigationBakeServiceError {
+@@ -498,24 +455,20 @@ mod tests {
+     }
+ 
+     #[test]
+-    fn schema_v1_migrates_to_production_profile_and_stays_stale() {
++    fn schema_v1_is_rejected_by_current_format_only_reader() {
+         let json = r#"{
+             "schema_version": 1,
+             "output_asset": "navigation/arena.navmesh.json",
+             "source_fingerprint": "old",
+             "settings": {
+-                "cell_size": 0.5,
+-                "agent_radius": 0.6,
+-                "world_min": [-10.0, 0.0, -10.0],
+-                "world_max": [10.0, 0.0, 10.0],
+-                "walkable_height": 0.0,
+-                "agent_height": 2.0
++                "tile_size": 16.0,
++                "profiles": []
+             }
+         }"#;
+-        let migrated = NavMeshBakeDocument::from_json(json).expect("v1 must migrate");
+-        assert_eq!(migrated.schema_version, NAVMESH_BAKE_SCHEMA_VERSION);
+-        assert_eq!(migrated.settings.profiles[0].radius, 0.6);
+-        assert_eq!(migrated.source_fingerprint.as_deref(), Some("legacy-v1-stale"));
++        assert!(matches!(
++            NavMeshBakeDocument::from_json(json),
++            Err(NavigationBakeServiceError::UnsupportedVersion(1))
++        ));
+     }
+ 
+     #[test]
