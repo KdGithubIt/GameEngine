@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "request_id": "20260816-inc007-current-main-aaa54f2-r1",
+  "target_branch": "chatgpt/gameengine-transport-publisher-incident-007-v2",
+  "expected_head_sha": "aaa54f22f9749a7ed54326b08ea758c3fdff8d5d",
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Record transport publisher missing-tree incident",
+  "pr_title": "GameEngine: record transport publisher missing-tree incident",
+  "pr_body": "## Summary\n\n- record confirmed Transport Publisher incident INC-007 on the current `main` baseline\n- document the false request-ID conflict caused by non-verifying `git rev-parse`\n- link the merged PR #76 fix and production E2E confirmation from unchanged-stage replay and fresh requests\n- preserve the incident document's normal final newline\n\nDocumentation-only operational incident record. No trusted workflow or product code is changed.\n\nKeep this PR Draft. Do not auto-merge."
+}
