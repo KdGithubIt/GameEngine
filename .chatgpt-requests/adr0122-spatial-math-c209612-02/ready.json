@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0122-spatial-math-c209612-02",
+  "target_branch": "chatgpt/gameengine-adr0122-spatial-audio-v2",
+  "expected_head_sha": "c20961255f7844d8aeb8c8bd02e994ecf6d25ca1",
+  "patch_parts": ["part-0000.patch"],
+  "commit_message": "Implement ADR 0122 spatial audio math contracts",
+  "pr_title": "Implement ADR 0122 spatial audio mixer and authoring UX",
+  "pr_body": "Implements ADR 0122 in staged, validated slices. This first slice adds backend-neutral spatial-audio DTOs, runtime-only voice identity, deterministic linear/inverse attenuation, equal-power pan, 2D bypass, finite sanitization, and unit tests in engine-platform. Follow-up commits on this Draft PR will add managed backend voices, ECS synchronization, authoring schema/validation, project-Rust spatial playback, and Editor authoring UX."
+}
