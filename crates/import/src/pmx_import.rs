@@ -2448,7 +2448,7 @@ pub(crate) mod tests {
             imported
                 .imported_sub_assets()
                 .iter()
-                .filter(|asset| asset.kind == ImportedSubAssetKind::RigidBodyRig)
+                .filter(|asset| asset.kind == ImportedSubAssetKind::SecondaryMotionRig)
                 .count(),
             1
         );

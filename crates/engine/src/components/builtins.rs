@@ -184,8 +184,8 @@ const LOD_GROUP_FIELDS: &[FieldDef] = &[FieldDef::new(
 const RIGID_BODY_PHYSICS_FIELDS: &[FieldDef] = &[asset_ref(
     "rig",
     "Rig",
-    "The Rigid Body Rig sub-asset imported from this character's model. The rig's author already tuned every body and joint, so there is nothing else to configure here.",
-    AssetKind::RigidBodyRig,
+    "The Secondary Motion Rig sub-asset imported from this character's model. Bodies and joints are editable engine-native starting values produced by import.",
+    AssetKind::SecondaryMotionRig,
     FieldDefaultSpec::Unassigned,
 )];
 
@@ -1729,8 +1729,8 @@ pub(super) fn builtin_components() -> Vec<BuiltinComponent> {
         ),
         BuiltinComponent::new(
             RIGID_BODY_PHYSICS_COMPONENT,
-            "Rigid Body Physics",
-            "Simulates this Skinned Model's imported rigid-body rig, so hair, skirts, and accessories move on their own.",
+            "Secondary Motion",
+            "Simulates the assigned engine-native Secondary Motion Rig for hair, skirts, and accessories.",
             "Physics",
             1,
             RIGID_BODY_PHYSICS_FIELDS,

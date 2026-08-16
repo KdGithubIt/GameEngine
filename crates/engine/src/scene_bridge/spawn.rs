@@ -339,19 +339,19 @@ pub(crate) fn spawn_rigid_body_physics_component(
 fn register_rigid_body_rig(rig_asset: &AssetId, context: &mut SpawnContext<'_>) {
     let Some((source_id, _, sub_asset)) = context.manifest.imported_sub_asset(rig_asset) else {
         context.asset_diagnostics.push(Diagnostic::warning(
-            "scene_bridge.rigid_body_rig_unresolved",
+            "scene_bridge.secondary_motion_rig_unresolved",
             format!(
-                "rigid-body rig `{}` is not an imported sub-asset of any registered model source",
+                "secondary-motion rig `{}` is not an imported sub-asset of any registered model source",
                 rig_asset.as_str()
             ),
         ));
         return;
     };
-    if sub_asset.kind != ImportedSubAssetKind::RigidBodyRig {
+    if sub_asset.kind != ImportedSubAssetKind::SecondaryMotionRig {
         context.asset_diagnostics.push(Diagnostic::warning(
-            "scene_bridge.rigid_body_rig_unresolved",
+            "scene_bridge.secondary_motion_rig_unresolved",
             format!(
-                "asset `{}` is {:?}, not a rigid-body rig",
+                "asset `{}` is {:?}, not a secondary-motion rig",
                 rig_asset.as_str(),
                 sub_asset.kind
             ),
@@ -363,9 +363,9 @@ fn register_rigid_body_rig(rig_asset: &AssetId, context: &mut SpawnContext<'_>) 
         Ok(imported) => imported,
         Err(error) => {
             context.asset_diagnostics.push(Diagnostic::warning(
-                "scene_bridge.rigid_body_rig_unresolved",
+                "scene_bridge.secondary_motion_rig_unresolved",
                 format!(
-                    "could not import the model source owning rigid-body rig `{}`: {error}",
+                    "could not import the model source owning secondary-motion rig `{}`: {error}",
                     rig_asset.as_str()
                 ),
             ));
@@ -378,9 +378,9 @@ fn register_rigid_body_rig(rig_asset: &AssetId, context: &mut SpawnContext<'_>) 
         .filter(|rig| &rig.id == rig_asset)
     else {
         context.asset_diagnostics.push(Diagnostic::warning(
-            "scene_bridge.rigid_body_rig_unresolved",
+            "scene_bridge.secondary_motion_rig_unresolved",
             format!(
-                "the model source no longer contains rigid-body rig `{}`; reimport it",
+                "the model source no longer contains secondary-motion rig `{}`; reimport it",
                 rig_asset.as_str()
             ),
         ));

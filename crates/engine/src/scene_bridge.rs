@@ -88,9 +88,9 @@ pub const SKINNED_MODEL_COMPONENT: &str = "engine.skinned_model";
 /// The authoring component that mounts an entity on a rig bone (ADR 0088).
 pub const BONE_ATTACHMENT_COMPONENT: &str = "engine.bone_attachment";
 
-/// The authoring component that opts an entity into simulating its imported
-/// rigid-body rig (ADR 0097 §6).
-pub const RIGID_BODY_PHYSICS_COMPONENT: &str = "engine.rigid_body_physics";
+/// The authoring component that opts an entity into engine-native secondary
+/// motion (ADR 0112).
+pub const RIGID_BODY_PHYSICS_COMPONENT: &str = "engine.secondary_motion";
 
 /// The authorable distance-based mesh LOD group recognised by the bridge.
 pub const LOD_GROUP_COMPONENT: &str = "engine.lod_group";

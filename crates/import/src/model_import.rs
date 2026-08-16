@@ -24,7 +24,7 @@ use crate::mesh::{Mesh, SkinningVertexData, Submesh, Vertex};
 use crate::model_ir::{IrAnimProperty, IrMeshData, ModelDocument, SkeletonScope};
 use crate::morph::{MaterialMorphOffset, MaterialMorphOperation, MorphAsset};
 use crate::rigid_body_rig::{
-    JointDef, RigidBodyDef, RigidBodyMode, RigidBodyRigAsset, RigidBodyShape,
+    JointDef, RigidBodyDef, RigidBodyMode, RigidBodyShape, SecondaryMotionRigAsset,
 };
 use crate::skeleton_asset::{compute_skeleton_identity, BoneDef, BoneId, SkeletonAsset};
 use crate::skinning::SkeletonNodeDesc;
@@ -192,9 +192,9 @@ pub struct GltfImportResult {
     pub textures: Vec<GltfTextureData>,
     /// PBR materials converted to the engine material v2 schema.
     pub materials: Vec<GltfMaterialData>,
-    /// The source's secondary-motion rigid-body rig, if it declared one
-    /// (ADR 0097 §6). `None` for every glTF and FBX source.
-    pub rigid_body_rig: Option<RigidBodyRigAsset>,
+    /// The source's engine-native secondary-motion rig, if it declared one
+    /// (ADR 0112). `None` for every glTF and FBX source.
+    pub rigid_body_rig: Option<SecondaryMotionRigAsset>,
     /// Non-fatal diagnostics (missing normals, unsupported features).
     pub diagnostics: Vec<Diagnostic>,
     /// Bone-catalog records for every skeleton this import bound to, one per
@@ -302,7 +302,7 @@ impl GltfImportResult {
         if let Some(rig) = &self.rigid_body_rig {
             assets.push(make(
                 &rig.id,
-                ImportedSubAssetKind::RigidBodyRig,
+                ImportedSubAssetKind::SecondaryMotionRig,
                 rig.name.clone(),
                 0,
             ));
@@ -1224,7 +1224,7 @@ fn build_rigid_body_rig(
     document: &ModelDocument,
     skins: &[GltfSkinData],
     diagnostics: &mut Vec<Diagnostic>,
-) -> Option<RigidBodyRigAsset> {
+) -> Option<SecondaryMotionRigAsset> {
     let ir_rig = document.rigid_body_rig.as_ref()?;
     let shared_skeleton = matches!(
         document.skeleton_scope,
@@ -1322,12 +1322,12 @@ fn build_rigid_body_rig(
         })
         .collect();
 
-    Some(RigidBodyRigAsset {
-        schema_version: crate::rigid_body_rig::RIGID_BODY_RIG_SCHEMA_VERSION,
-        // A source declares at most one rig, so selector 0 is the whole
-        // space and the ID stays stable no matter how the rig changes.
-        id: imported_sub_asset_id(source_id, ImportedSubAssetKind::RigidBodyRig, 0),
-        name: "Rigid Body Rig".to_owned(),
+    Some(SecondaryMotionRigAsset {
+        schema_version: crate::rigid_body_rig::SECONDARY_MOTION_RIG_SCHEMA_VERSION,
+        // ADR 0112 deliberately gives the authored rig a new selector
+        // namespace instead of reinterpreting the previous serialized kind.
+        id: imported_sub_asset_id(source_id, ImportedSubAssetKind::SecondaryMotionRig, 0),
+        name: "Secondary Motion Rig".to_owned(),
         skeleton: shared_skeleton.map(|skeleton| skeleton.id.clone()),
         skeleton_identity: shared_skeleton.map(|skeleton| skeleton.identity),
         bodies,
