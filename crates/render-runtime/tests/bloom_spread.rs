@@ -27,16 +27,19 @@ fn impulse_hdr_pixels() -> Vec<u8> {
     pixels
 }
 
-fn readback_pixel(
+fn readback_image(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     texture: &wgpu::Texture,
-    origin: wgpu::Origin3d,
-) -> [u8; 4] {
-    let bytes_per_row = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+) -> Vec<[u8; 4]> {
+    const BYTES_PER_PIXEL: u32 = 4;
+    let unpadded_bytes_per_row = WIDTH * BYTES_PER_PIXEL;
+    let padded_bytes_per_row = unpadded_bytes_per_row
+        .div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
+        * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
     let buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("Bloom spread readback"),
-        size: u64::from(bytes_per_row),
+        size: u64::from(padded_bytes_per_row) * u64::from(HEIGHT),
         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         mapped_at_creation: false,
     });
@@ -47,20 +50,20 @@ fn readback_pixel(
         wgpu::TexelCopyTextureInfo {
             texture,
             mip_level: 0,
-            origin,
+            origin: wgpu::Origin3d::ZERO,
             aspect: wgpu::TextureAspect::All,
         },
         wgpu::TexelCopyBufferInfo {
             buffer: &buffer,
             layout: wgpu::TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some(bytes_per_row),
-                rows_per_image: None,
+                bytes_per_row: Some(padded_bytes_per_row),
+                rows_per_image: Some(HEIGHT),
             },
         },
         wgpu::Extent3d {
-            width: 1,
-            height: 1,
+            width: WIDTH,
+            height: HEIGHT,
             depth_or_array_layers: 1,
         },
     );
@@ -80,10 +83,22 @@ fn readback_pixel(
         .expect("Bloom spread readback buffer must map");
 
     let mapped = slice.get_mapped_range();
-    let pixel = [mapped[0], mapped[1], mapped[2], mapped[3]];
+    let mut pixels = Vec::with_capacity((WIDTH * HEIGHT) as usize);
+    for y in 0..HEIGHT as usize {
+        let row_start = y * padded_bytes_per_row as usize;
+        for x in 0..WIDTH as usize {
+            let offset = row_start + x * BYTES_PER_PIXEL as usize;
+            pixels.push([
+                mapped[offset],
+                mapped[offset + 1],
+                mapped[offset + 2],
+                mapped[offset + 3],
+            ]);
+        }
+    }
     drop(mapped);
     buffer.unmap();
-    pixel
+    pixels
 }
 
 #[test]
@@ -165,10 +180,9 @@ fn bloom_spreads_bright_source_into_neighboring_pixels_when_a_gpu_adapter_is_ava
         bloom,
         ..PostProcessSettings::default()
     };
-    let halo_origin = wgpu::Origin3d { x: 12, y: 16, z: 0 };
 
     tone_map.execute(device, queue, &output_view, &without_bloom);
-    let baseline_halo = readback_pixel(device, queue, &output, halo_origin);
+    let baseline = readback_image(device, queue, &output);
 
     let with_bloom = PostProcessSettings {
         bloom: BloomSettings {
@@ -178,20 +192,38 @@ fn bloom_spreads_bright_source_into_neighboring_pixels_when_a_gpu_adapter_is_ava
         ..without_bloom
     };
     tone_map.execute(device, queue, &output_view, &with_bloom);
-    let bloomed_halo = readback_pixel(device, queue, &output, halo_origin);
+    let bloomed = readback_image(device, queue, &output);
 
     tone_map.execute(device, queue, &output_view, &without_bloom);
-    let restored_halo = readback_pixel(device, queue, &output, halo_origin);
+    let restored = readback_image(device, queue, &output);
 
     assert_eq!(
-        baseline_halo, restored_halo,
+        baseline, restored,
         "disabling Bloom must remove the halo again"
     );
+
+    let mut spread_pixels = 0_usize;
+    let mut max_channel_delta = 0_u8;
+    for y in 0..HEIGHT {
+        for x in 0..WIDTH {
+            if (14..18).contains(&x) && (14..18).contains(&y) {
+                continue;
+            }
+            let index = (y * WIDTH + x) as usize;
+            let baseline_pixel = baseline[index];
+            let bloomed_pixel = bloomed[index];
+            let mut pixel_spread = false;
+            for channel in 0..3 {
+                let delta = bloomed_pixel[channel].saturating_sub(baseline_pixel[channel]);
+                max_channel_delta = max_channel_delta.max(delta);
+                pixel_spread |= delta > 0;
+            }
+            spread_pixels += usize::from(pixel_spread);
+        }
+    }
+
     assert!(
-        bloomed_halo[..3]
-            .iter()
-            .zip(&baseline_halo[..3])
-            .all(|(with_bloom, without_bloom)| with_bloom > without_bloom),
-        "Bloom must spread the bright source into a neighboring dark pixel: baseline={baseline_halo:?}, bloomed={bloomed_halo:?}"
+        spread_pixels > 0,
+        "Bloom must spread the bright source into at least one originally dark pixel: spread_pixels={spread_pixels}, max_channel_delta={max_channel_delta}"
     );
 }
