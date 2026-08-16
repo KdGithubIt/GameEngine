@@ -1,0 +1,162 @@
+     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+         match self {
+             Self::Session(error) => write!(formatter, "prefab scene transaction failed: {error}"),
++            Self::Authoring(error) => write!(formatter, "prefab authoring failed: {error}"),
+             Self::Prefab(error) => write!(formatter, "prefab asset is invalid: {error}"),
+             Self::Io(error) => write!(formatter, "prefab IO failed: {error}"),
+             Self::Persist(error) => write!(formatter, "prefab persistence failed: {error}"),
+@@ -68,6 +72,11 @@ impl From<EditorSessionError> for PrefabWorkflowError {
+         Self::Session(value)
+     }
+ }
++impl From<PrefabAuthoringError> for PrefabWorkflowError {
++    fn from(value: PrefabAuthoringError) -> Self {
++        Self::Authoring(value)
++    }
++}
+ impl From<PrefabError> for PrefabWorkflowError {
+     fn from(value: PrefabError) -> Self {
+         Self::Prefab(value)
+@@ -81,12 +90,32 @@ pub fn instantiate_prefab(
+     parent: Option<EntityId>,
+ ) -> Result<EntityId, PrefabWorkflowError> {
+     let prefab = load_prefab(source)?;
+-    let mut instance = prefab.instantiate_with_root(parent)?;
+-    instance.commands.push(AuthoringCommand::AddComponent {
+-        entity: instance.root.clone(),
+-        component_type: ComponentTypeId::new(EDITOR_PREFAB_INSTANCE_COMPONENT),
+-        value: marker_value(source),
+-    });
+-    session.apply_scene_commands(instance.commands)?;
+-    Ok(instance.root)
++    let permissions = AuthoringPermissions::read_only()
++        .with(AuthoringPermission::ProjectDataWrite);
++    let (revision, generation) = {
++        let authoring = session
++            .scene_authoring_session()
++            .ok_or(EditorSessionError::NoSceneDocument)?;
++        (authoring.scene().revision(), authoring.scene().generation())
++    };
++    let result = {
++        let authoring = session
++            .scene_authoring_session_mut()
++            .ok_or(EditorSessionError::NoSceneDocument)?;
++        PrefabAuthoringService::new().apply_instantiation(
++            authoring,
++            &permissions,
++            &prefab,
++            source,
++            parent,
++            revision,
++            generation,
++        )?
++    };
++    session.extend_diagnostics(result.mutation.diagnostics.iter().cloned());
++    if !result.mutation.success {
++        return Err(EditorSessionError::Diagnostics.into());
++    }
++    session.finish_external_scene_mutation();
++    Ok(result.proposed_root)
+ }
+diff --git a/crates/cli/src/asset_cli.rs b/crates/cli/src/asset_cli.rs
+--- a/crates/cli/src/asset_cli.rs
++++ b/crates/cli/src/asset_cli.rs
+@@ -58,7 +58,9 @@ fn asset_inspect(project_path: &Path, asset_id: &str) -> Result<CliRunResult, Cl
+     }
+ }
+ 
+-fn load_catalog(project_path: &Path) -> Result<(ProjectRoot, AssetManifest), CliRunResult> {
++pub(super) fn load_catalog(
++    project_path: &Path,
++) -> Result<(ProjectRoot, AssetManifest), CliRunResult> {
+     let project = ProjectRoot::open(project_path).map_err(|error| {
+         input_error("project_error", project_path, &error.to_string())
+     })?;
+diff --git a/crates/cli/src/scene_cli.rs b/crates/cli/src/scene_cli.rs
+--- a/crates/cli/src/scene_cli.rs
++++ b/crates/cli/src/scene_cli.rs
+@@ -52,7 +52,7 @@ struct AuthoringErrorBody {
+     message: String,
+ }
+ 
+-struct SceneContext {
+-    path: PathBuf,
+-    session: AuthoringSession,
++pub(super) struct SceneContext {
++    pub(super) path: PathBuf,
++    pub(super) session: AuthoringSession,
+ }
+@@ -276,7 +276,7 @@ fn component_schemas() -> Result<CliRunResult, CliError> {
+     Ok(CliRunResult::success(to_json(&output)?))
+ }
+ 
+-fn load_scene_context(
++pub(super) fn load_scene_context(
+     project_path: &Path,
+     scene_relative: &str,
+ ) -> Result<SceneContext, CliRunResult> {
+diff --git a/crates/cli/src/lib.rs b/crates/cli/src/lib.rs
+--- a/crates/cli/src/lib.rs
++++ b/crates/cli/src/lib.rs
+@@ -5,3 +5,4 @@
+ 
+ mod asset_cli;
++mod prefab_cli;
+ mod scene_cli;
+@@ -51,6 +52,9 @@ where
+     if let Some(result) = asset_cli::dispatch(&args) {
+         return result;
+     }
++    if let Some(result) = prefab_cli::dispatch(&args) {
++        return result;
++    }
+     if let Some(result) = scene_cli::dispatch(&args) {
+         return result;
+     }
+@@ -589,3 +593,3 @@
+ fn help_text() -> &'static str {
+-    "Usage:\n  engine-cli project describe <project-root>\n  engine-cli asset search <project-root> [query]\n  engine-cli asset inspect <project-root> <asset-id>\n  engine-cli scene inspect <project-root> <scene-relative-path>\n  engine-cli scene validate <project-root> <scene-relative-path>\n  engine-cli scene preview <project-root> <scene-relative-path> <commands.json>\n  engine-cli scene apply <project-root> <scene-relative-path> <commands.json>\n  engine-cli entity find <project-root> <scene-relative-path> [query]\n  engine-cli entity inspect <project-root> <scene-relative-path> <entity-id>\n  engine-cli component schemas\n  engine-cli behavior-tree schemas\n  engine-cli behavior-tree example\n  engine-cli behavior-tree validate <graph.json>\n  engine-cli behavior-tree compile <graph.json>\n  engine-cli behavior-tree layout <graph.json>\n  engine-cli behavior-tree nodes <graph.json>\n  engine-cli behavior-tree edges <graph.json>\n  engine-cli behavior-tree preview <graph.json> <commands.json>\n  engine-cli behavior-tree apply <graph.json> <commands.json>\n  engine-cli ai-agent describe-tools\n  engine-cli ai-agent validate-input <json>\n  engine-cli ai-agent inject-input <inbox_path> <json>\n  engine-cli ai-agent capture-frame <inbox_path>"
++    "Usage:\n  engine-cli project describe <project-root>\n  engine-cli asset search <project-root> [query]\n  engine-cli asset inspect <project-root> <asset-id>\n  engine-cli prefab create <project-root> <scene-relative-path> <root-entity-id> <destination-relative-path>\n  engine-cli prefab preview <project-root> <scene-relative-path> <source-relative-path> [parent-entity-id]\n  engine-cli prefab instantiate <project-root> <scene-relative-path> <source-relative-path> [parent-entity-id]\n  engine-cli scene inspect <project-root> <scene-relative-path>\n  engine-cli scene validate <project-root> <scene-relative-path>\n  engine-cli scene preview <project-root> <scene-relative-path> <commands.json>\n  engine-cli scene apply <project-root> <scene-relative-path> <commands.json>\n  engine-cli entity find <project-root> <scene-relative-path> [query]\n  engine-cli entity inspect <project-root> <scene-relative-path> <entity-id>\n  engine-cli component schemas\n  engine-cli behavior-tree schemas\n  engine-cli behavior-tree example\n  engine-cli behavior-tree validate <graph.json>\n  engine-cli behavior-tree compile <graph.json>\n  engine-cli behavior-tree layout <graph.json>\n  engine-cli behavior-tree nodes <graph.json>\n  engine-cli behavior-tree edges <graph.json>\n  engine-cli behavior-tree preview <graph.json> <commands.json>\n  engine-cli behavior-tree apply <graph.json> <commands.json>\n  engine-cli ai-agent describe-tools\n  engine-cli ai-agent validate-input <json>\n  engine-cli ai-agent inject-input <inbox_path> <json>\n  engine-cli ai-agent capture-frame <inbox_path>"
+ }
+diff --git a/crates/mcp/src/lib.rs b/crates/mcp/src/lib.rs
+--- a/crates/mcp/src/lib.rs
++++ b/crates/mcp/src/lib.rs
+@@ -11,6 +11,8 @@
+ pub mod ai_agent;
+ /// Asset discovery and inspection tool handlers backed by the shared asset catalog.
+ pub mod asset;
++/// Prefab creation and instantiation tool handlers backed by shared services.
++pub mod prefab;
+ /// Scene/project tool handlers backed by the shared authoring services.
+ pub mod scene;
+ 
+@@ -19,6 +21,7 @@ pub use ai_agent::{
+     validate_ai_agent_input, AiAgentInput, AiAgentOutput,
+ };
+ pub use asset::{AssetInspectInput, AssetMcpTools, AssetSearchInput};
++pub use prefab::{PrefabCreateInput, PrefabInstantiateInput, PrefabMcpTools};
+ pub use scene::{
+     ComponentSchemasOutput, EntityFindInput, EntityFindOutput, EntityInspectInput,
+     EntityInspectOutput, ProjectDescribeOutput, SceneMcpTools, SceneMutationInput,
+@@ -28,9 +31,10 @@ use engine_authoring::{
+     BehaviorTreeApply, BehaviorTreeAuthoringService, BehaviorTreeCompilation,
+     BehaviorTreeEdgeSummary, BehaviorTreeLayout, BehaviorTreeNodeSummary,
+     BehaviorTreeSchemaCatalog, BehaviorTreeServiceError, BehaviorTreeValidation, Graph,
+-    GraphCommand, SceneAuthoringError,
++    GraphCommand, PrefabAuthoringError, SceneAuthoringError,
+ };
+ use engine_assets::catalog::AssetCatalogError;
++use engine_assets::prefab::PrefabAssetError;
+ use serde::{Deserialize, Serialize};
+ use serde_json::json;
+ use std::fmt;
+@@ -53,6 +57,16 @@ pub enum McpToolError {
+         /// Source asset catalog error.
+         source: AssetCatalogError,
+     },
++    /// The shared prefab asset service rejected the request.
++    PrefabAsset {
++        /// Source prefab asset error.
++        source: PrefabAssetError,
++    },
++    /// The shared prefab Scene authoring service rejected the request.
