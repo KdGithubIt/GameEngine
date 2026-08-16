@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "request_id": "20260816-bloom-spatial-spread-e6ae211-r1",
+  "target_branch": "chatgpt/gameengine-bloom-functional-readback",
+  "expected_head_sha": "e6ae2112b0fe5d3c9b819790d322a7fa3bd27384",
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Renderer: verify Bloom spatial spread",
+  "pr_title": "Renderer: verify Bloom affects final pixels",
+  "pr_body": "## Summary\n\nAdds GPU readback coverage for the merged multi-resolution Bloom path without changing production renderer code. The existing integration test verifies that Bloom contributes to final tone-mapped pixels and that disabling it restores the baseline. This follow-up adds a localized HDR impulse test and verifies that Bloom raises a neighboring dark output pixel, exercising spatial halo spread through the real multi-resolution path.\n\nBoth tests use the public `ToneMapPass` facade and real GPU texture readback. Public APIs, serialization, render resources, and runtime behavior are unchanged.\n\n## Validation\n\nRun affected Windows Validation for `engine-render-runtime` against the exact PR head. Visual Validation is not required because this PR is test-only; these readback tests verify functional pixel contribution and spatial spread, not subjective Bloom aesthetics.\n\n<!-- gameengine-chatgpt-dispatcher -->"
+}
