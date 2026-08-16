@@ -1705,7 +1705,7 @@ fn animation_set_validation_enforces_motion_source_variant_sub_asset_kinds() {
     let motion_source = AssetId::generate();
     let primary_clip = AssetId::derive(&motion_source, "animation:0");
     let overlay_clip = AssetId::derive(&motion_source, "animation:1");
-    let humanoid_motion = engine::imported_humanoid_motion_sub_asset_id(&primary_clip);
+    let humanoid_motion = engine::asset::imported_humanoid_motion_sub_asset_id(&primary_clip);
 
     let mut manifest = engine::AssetManifest::default();
     manifest.insert(

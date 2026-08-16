@@ -113,11 +113,6 @@ impl AnimationSetEditorState {
         }
     }
 
-    /// Assigns or clears an explicit Native clip for one graph-owned slot.
-    pub fn set_binding(&mut self, slot: &MotionSlot, clip: Option<AssetId>) -> Result<(), String> {
-        self.set_binding_source(slot, clip.map(MotionSourceRef::native))
-    }
-
     /// Assigns or clears one explicitly tagged motion source for a graph-owned slot.
     pub fn set_binding_source(
         &mut self,
@@ -157,11 +152,6 @@ impl AnimationSetEditorState {
             }
         }
         Ok(())
-    }
-
-    /// Appends one explicit Native clip to a slot's ordered composition.
-    pub fn add_overlay(&mut self, slot: &MotionSlotId, clip: AssetId) -> Result<(), String> {
-        self.add_overlay_source(slot, MotionSourceRef::native(clip))
     }
 
     /// Appends one explicitly tagged supplemental motion source.
@@ -458,15 +448,18 @@ mod tests {
         let motion = slot("Dance");
         let mut state = editor(AnimationSet::new(AssetId::generate()));
         state
-            .set_binding(&motion, Some(AssetId::generate()))
+            .set_binding_source(
+                &motion,
+                Some(MotionSourceRef::native(AssetId::generate())),
+            )
             .expect("primary clip must bind");
         let first = AssetId::generate();
         let second = AssetId::generate();
         state
-            .add_overlay(&motion.id, first.clone())
+            .add_overlay_source(&motion.id, MotionSourceRef::native(first.clone()))
             .expect("first overlay must be added");
         state
-            .add_overlay(&motion.id, second.clone())
+            .add_overlay_source(&motion.id, MotionSourceRef::native(second.clone()))
             .expect("second overlay must be added");
         state
             .move_overlay(&motion.id, 1, 0)
@@ -491,7 +484,10 @@ mod tests {
         let motion = slot("Attack");
         let mut state = editor(AnimationSet::new(AssetId::generate()));
         state
-            .set_binding(&motion, Some(AssetId::generate()))
+            .set_binding_source(
+                &motion,
+                Some(MotionSourceRef::native(AssetId::generate())),
+            )
             .expect("primary clip must bind");
         for _ in 0..2 {
             state.add_event(&motion.id).expect("event must be added");
@@ -520,7 +516,10 @@ mod tests {
         let motion = slot("Attack");
         let mut state = editor(AnimationSet::new(AssetId::generate()));
         state
-            .set_binding(&motion, Some(AssetId::generate()))
+            .set_binding_source(
+                &motion,
+                Some(MotionSourceRef::native(AssetId::generate())),
+            )
             .expect("primary clip must bind");
         state.add_event(&motion.id).expect("event must be added");
         let before = state.document.clone();
@@ -542,12 +541,18 @@ mod tests {
         let motion = slot("Attack");
         let mut state = editor(AnimationSet::new(AssetId::generate()));
         state
-            .set_binding(&motion, Some(AssetId::generate()))
+            .set_binding_source(
+                &motion,
+                Some(MotionSourceRef::native(AssetId::generate())),
+            )
             .expect("primary clip must bind");
         state.add_event(&motion.id).expect("event must be added");
 
         state
-            .set_binding(&motion, Some(AssetId::generate()))
+            .set_binding_source(
+                &motion,
+                Some(MotionSourceRef::native(AssetId::generate())),
+            )
             .expect("clip must be reassigned");
         assert_eq!(state.document.bindings[&motion.id].events.len(), 1);
 

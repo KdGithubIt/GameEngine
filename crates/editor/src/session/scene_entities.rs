@@ -278,7 +278,6 @@ impl EditorSession {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeMap;
 
     #[test]
     fn scene_entity_create_delete_and_undo_redo_use_authoring_session() {
