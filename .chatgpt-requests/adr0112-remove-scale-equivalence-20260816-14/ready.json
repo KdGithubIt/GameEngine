@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0112-remove-scale-equivalence-20260816-14",
+  "target_branch": "chatgpt/gameengine-adr-0112-secondary-motion-v2",
+  "expected_head_sha": "568a4ee102e2634ab12299bc34ab0ca14371fe2a",
+  "patch_parts": ["part-0000.patch"],
+  "commit_message": "Remove obsolete MMD scale equivalence test",
+  "pr_title": "Implement ADR 0112 engine-native secondary motion",
+  "pr_body": "## Summary\n\nImplements ADR 0112 engine-native Secondary Motion. This follow-up removes the obsolete engine-level test that required PMX import scale to match the removed MMD physics bridge. ADR 0112 intentionally drops the MMD/Bullet runtime-fidelity contract, so restoring that compatibility module would be incorrect.\n\nThe PR remains Draft while compatibility aliases, PMX best-effort conversion diagnostics, authoring docs, final Windows Validation, and Visual Validation are completed."
+}
