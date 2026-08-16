@@ -1,0 +1,15 @@
+diff --git a/crates/physics/src/navigation_bake.rs b/crates/physics/src/navigation_bake.rs
+--- a/crates/physics/src/navigation_bake.rs
++++ b/crates/physics/src/navigation_bake.rs
+@@ -415,6 +415,6 @@
+-    if had_previous {
+-        if let Err(error) = fs::rename(path, &backup) {
+-            let _ = fs::remove_file(&temporary);
+-            return Err(NavigationBakeServiceError::Io(error));
+-        }
++    if had_previous
++        && let Err(error) = fs::rename(path, &backup)
++    {
++        let _ = fs::remove_file(&temporary);
++        return Err(NavigationBakeServiceError::Io(error));
+     }
