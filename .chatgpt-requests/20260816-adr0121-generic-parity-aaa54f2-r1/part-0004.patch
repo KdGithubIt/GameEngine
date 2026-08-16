@@ -1,0 +1,218 @@
++fn descriptor(name: &'static str, description: &'static str, input_schema: serde_json::Value) -> McpToolDescriptor {
++    McpToolDescriptor {
++        name: name.into(),
++        description: description.into(),
++        input_schema,
++    }
++}
++
++fn empty_schema() -> serde_json::Value {
++    json!({"type":"object","properties":{},"additionalProperties":false})
++}
++
++fn graph_mutation_schema() -> serde_json::Value {
++    mutation_schema("GraphCommand")
++}
++
++fn graph_view_mutation_schema() -> serde_json::Value {
++    mutation_schema("GraphViewCommand")
++}
++
++fn ui_mutation_schema() -> serde_json::Value {
++    mutation_schema("UiDocumentCommand")
++}
++
++fn mutation_schema(command_title: &'static str) -> serde_json::Value {
++    json!({
++        "type": "object",
++        "required": ["expected_revision", "expected_generation", "commands"],
++        "properties": {
++            "expected_revision": {"type": "integer", "minimum": 0},
++            "expected_generation": {"type": "integer", "minimum": 0},
++            "commands": {
++                "type": "array",
++                "items": {"type": "object", "title": command_title}
++            }
++        },
++        "additionalProperties": false
++    })
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn descriptors_cover_generic_graph_layout_and_ui_surfaces() {
++        let names = GenericAuthoringMcpTools::new()
++            .tool_descriptors()
++            .into_iter()
++            .map(|descriptor| descriptor.name)
++            .collect::<Vec<_>>();
++
++        assert!(names.contains(&"graph.inspect".to_owned()));
++        assert!(names.contains(&"graph.layout.apply".to_owned()));
++        assert!(names.contains(&"ui.apply".to_owned()));
++        assert_eq!(names.len(), 12);
++    }
++}
+diff --git a/crates/cli/src/lib.rs b/crates/cli/src/lib.rs
+--- a/crates/cli/src/lib.rs
++++ b/crates/cli/src/lib.rs
+@@ -1,3 +1,4 @@
+ mod asset_cli;
++mod generic_cli;
+ mod prefab_cli;
+ mod scene_cli;
+diff --git a/crates/cli/src/lib.rs b/crates/cli/src/lib.rs
+--- a/crates/cli/src/lib.rs
++++ b/crates/cli/src/lib.rs
+@@ -1,4 +1,7 @@
+     if let Some(result) = asset_cli::dispatch(&args) {
+         return result;
+     }
++    if let Some(result) = generic_cli::dispatch(&args) {
++        return result;
++    }
+     if let Some(result) = prefab_cli::dispatch(&args) {
+diff --git a/crates/cli/src/generic_cli.rs b/crates/cli/src/generic_cli.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/cli/src/generic_cli.rs
+@@ -0,0 +1,322 @@
++//! Thin file-oriented CLI adapter for generic Graph, GraphView, and UI authoring.
++
++use super::{CliError, CliRunResult, to_json};
++use engine_authoring::{
++    AuthoringGraphDomain, AuthoringPermission, AuthoringPermissions, Diagnostic, Graph,
++    GraphAuthoringService, GraphCommand, GraphDomain, GraphView, GraphViewAuthoringService,
++    GraphViewCommand, UiAuthoringService, UiAuthoringSession, UiDocument, UiDocumentCommand,
++    replace_file_contents,
++};
++use serde::de::DeserializeOwned;
++use std::fs;
++use std::path::Path;
++
++pub(super) fn dispatch(args: &[String]) -> Option<Result<CliRunResult, CliError>> {
++    match args {
++        [domain, command, path] if domain == "graph" && command == "inspect" => {
++            Some(graph_inspect(Path::new(path)))
++        }
++        [domain, command, path] if domain == "graph" && command == "validate" => {
++            Some(graph_validate(Path::new(path)))
++        }
++        [domain, command, graph_path, commands_path]
++            if domain == "graph" && command == "preview" =>
++        {
++            Some(graph_mutate(
++                Path::new(graph_path),
++                Path::new(commands_path),
++                false,
++            ))
++        }
++        [domain, command, graph_path, commands_path]
++            if domain == "graph" && command == "apply" =>
++        {
++            Some(graph_mutate(
++                Path::new(graph_path),
++                Path::new(commands_path),
++                true,
++            ))
++        }
++        [domain, area, command, graph_path, view_path]
++            if domain == "graph" && area == "layout" && command == "inspect" =>
++        {
++            Some(graph_view_inspect(
++                Path::new(graph_path),
++                Path::new(view_path),
++            ))
++        }
++        [domain, area, command, graph_path, view_path]
++            if domain == "graph" && area == "layout" && command == "validate" =>
++        {
++            Some(graph_view_validate(
++                Path::new(graph_path),
++                Path::new(view_path),
++            ))
++        }
++        [domain, area, command, graph_path, view_path, commands_path]
++            if domain == "graph" && area == "layout" && command == "preview" =>
++        {
++            Some(graph_view_mutate(
++                Path::new(graph_path),
++                Path::new(view_path),
++                Path::new(commands_path),
++                false,
++            ))
++        }
++        [domain, area, command, graph_path, view_path, commands_path]
++            if domain == "graph" && area == "layout" && command == "apply" =>
++        {
++            Some(graph_view_mutate(
++                Path::new(graph_path),
++                Path::new(view_path),
++                Path::new(commands_path),
++                true,
++            ))
++        }
++        [domain, command, path] if domain == "ui" && command == "inspect" => {
++            Some(ui_inspect(Path::new(path)))
++        }
++        [domain, command, path] if domain == "ui" && command == "validate" => {
++            Some(ui_validate(Path::new(path)))
++        }
++        [domain, command, path, commands_path] if domain == "ui" && command == "preview" => {
++            Some(ui_mutate(
++                Path::new(path),
++                Path::new(commands_path),
++                false,
++            ))
++        }
++        [domain, command, path, commands_path] if domain == "ui" && command == "apply" => {
++            Some(ui_mutate(
++                Path::new(path),
++                Path::new(commands_path),
++                true,
++            ))
++        }
++        _ if args.first().is_some_and(|value| value == "graph" || value == "ui") => {
++            Some(Err(CliError::UnknownCommand {
++                args: args.join(" "),
++            }))
++        }
++        _ => None,
++    }
++}
++
++fn graph_inspect(path: &Path) -> Result<CliRunResult, CliError> {
++    let graph: Graph = load_json(path)?;
++    let output = GraphAuthoringService::new()
++        .inspect(&graph, &read_permissions())
++        .map_err(authoring_error)?;
++    Ok(CliRunResult::success(to_json(&output)?))
++}
++
++fn graph_validate(path: &Path) -> Result<CliRunResult, CliError> {
++    let graph: Graph = load_json(path)?;
++    let domain = AuthoringGraphDomain::for_graph(&graph).map_err(authoring_error)?;
++    let output = GraphAuthoringService::new()
++        .validate(&graph, &domain, &read_permissions())
++        .map_err(authoring_error)?;
++    Ok(CliRunResult::diagnostics(
++        to_json(&output)?,
++        !output.success,
++    ))
++}
++
++fn graph_mutate(
++    graph_path: &Path,
++    commands_path: &Path,
++    persist: bool,
++) -> Result<CliRunResult, CliError> {
++    let mut graph: Graph = load_json(graph_path)?;
++    let commands: Vec<GraphCommand> = load_json(commands_path)?;
++    let domain = AuthoringGraphDomain::for_graph(&graph).map_err(authoring_error)?;
++    let service = GraphAuthoringService::new();
++    let permissions = writable_permissions();
++    let base = service
++        .inspect(&graph, &permissions)

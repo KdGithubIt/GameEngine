@@ -1,0 +1,198 @@
++            .ok_or(StructuredAuthoringError::NoGraphView)?;
++        Ok(GraphViewAuthoringService::new().inspect(view, permissions)?)
++    }
++
++    /// Validates the active GraphView against its semantic Graph.
++    pub fn structured_graph_view_validate(
++        &self,
++        permissions: &AuthoringPermissions,
++    ) -> Result<GraphViewAuthoringValidation, StructuredAuthoringError> {
++        self.require_structured_graph_document()?;
++        let view = self
++            .graph_view
++            .as_ref()
++            .ok_or(StructuredAuthoringError::NoGraphView)?;
++        Ok(GraphViewAuthoringService::new().validate(&self.graph, view, permissions)?)
++    }
++
++    /// Previews one GraphView presentation command batch.
++    pub fn structured_graph_view_preview(
++        &self,
++        permissions: &AuthoringPermissions,
++        expected_revision: u64,
++        expected_generation: u64,
++        commands: Vec<GraphViewCommand>,
++    ) -> Result<GraphViewAuthoringMutation, StructuredAuthoringError> {
++        self.require_structured_graph_document()?;
++        let view = self
++            .graph_view
++            .as_ref()
++            .ok_or(StructuredAuthoringError::NoGraphView)?;
++        Ok(GraphViewAuthoringService::new().preview(
++            &self.graph,
++            view,
++            permissions,
++            expected_revision,
++            expected_generation,
++            commands,
++        )?)
++    }
++
++    /// Applies one GraphView batch as one Editor undo operation.
++    pub fn structured_graph_view_apply(
++        &mut self,
++        permissions: &AuthoringPermissions,
++        expected_revision: u64,
++        expected_generation: u64,
++        commands: Vec<GraphViewCommand>,
++    ) -> Result<GraphViewAuthoringMutation, StructuredAuthoringError> {
++        self.require_structured_graph_document()?;
++        let checkpoint = self.snapshot();
++        let view = self
++            .graph_view
++            .as_mut()
++            .ok_or(StructuredAuthoringError::NoGraphView)?;
++        let mutation = GraphViewAuthoringService::new().apply(
++            &self.graph,
++            view,
++            permissions,
++            expected_revision,
++            expected_generation,
++            commands,
++        )?;
++        self.diagnostics = mutation.diagnostics.clone();
++        if mutation.success && !mutation.diff.is_empty() {
++            if let Some(checkpoint) = checkpoint {
++                self.undo_stack.push(checkpoint);
++            }
++            self.mark_dirty();
++        }
++        Ok(mutation)
++    }
++
++    /// Inspects the active declarative UI document through its live shared session.
++    pub fn structured_ui_inspect(
++        &self,
++        permissions: &AuthoringPermissions,
++    ) -> Result<UiAuthoringSnapshot, StructuredAuthoringError> {
++        let session = self
++            .ui_authoring_session
++            .as_ref()
++            .ok_or(StructuredAuthoringError::NoUiDocument)?;
++        Ok(UiAuthoringService::new().inspect(session, permissions)?)
++    }
++
++    /// Validates the active declarative UI document through its live shared session.
++    pub fn structured_ui_validate(
++        &self,
++        permissions: &AuthoringPermissions,
++    ) -> Result<UiAuthoringValidation, StructuredAuthoringError> {
++        let session = self
++            .ui_authoring_session
++            .as_ref()
++            .ok_or(StructuredAuthoringError::NoUiDocument)?;
++        Ok(UiAuthoringService::new().validate(session, permissions)?)
++    }
++
++    /// Previews one declarative UI command batch.
++    pub fn structured_ui_preview(
++        &self,
++        permissions: &AuthoringPermissions,
++        expected_revision: u64,
++        expected_generation: u64,
++        commands: Vec<UiDocumentCommand>,
++    ) -> Result<UiAuthoringMutation, StructuredAuthoringError> {
++        let session = self
++            .ui_authoring_session
++            .as_ref()
++            .ok_or(StructuredAuthoringError::NoUiDocument)?;
++        Ok(UiAuthoringService::new().preview(
++            session,
++            permissions,
++            expected_revision,
++            expected_generation,
++            commands,
++        )?)
++    }
++
++    /// Applies one declarative UI batch as one Editor undo operation.
++    pub fn structured_ui_apply(
++        &mut self,
++        permissions: &AuthoringPermissions,
++        expected_revision: u64,
++        expected_generation: u64,
++        commands: Vec<UiDocumentCommand>,
++    ) -> Result<UiAuthoringMutation, StructuredAuthoringError> {
++        let checkpoint = self.snapshot();
++        let (mutation, updated_document) = {
++            let session = self
++                .ui_authoring_session
++                .as_mut()
++                .ok_or(StructuredAuthoringError::NoUiDocument)?;
++            let mutation = UiAuthoringService::new().apply(
++                session,
++                permissions,
++                expected_revision,
++                expected_generation,
++                commands,
++            )?;
++            let updated_document = (mutation.success && !mutation.diff.is_empty())
++                .then(|| session.document().clone());
++            (mutation, updated_document)
++        };
++        self.diagnostics = mutation.diagnostics.clone();
++        if let Some(updated_document) = updated_document {
++            if let Some(checkpoint) = checkpoint {
++                self.undo_stack.push(checkpoint);
++            }
++            if let CurrentDocument::Ui { document, .. } = &mut self.current_document {
++                *document = updated_document;
++            }
++            self.mark_dirty();
++        }
++        Ok(mutation)
++    }
++}
+diff --git a/crates/editor/src/session/documents.rs b/crates/editor/src/session/documents.rs
+--- a/crates/editor/src/session/documents.rs
++++ b/crates/editor/src/session/documents.rs
+@@ -1 +1,3 @@
+-use engine_authoring::{AuthoringSession, UiDocument, UiDocumentCommand, UiDocumentTransaction};
++use engine_authoring::{
++    AuthoringSession, UiAuthoringSession, UiDocument, UiDocumentCommand, UiDocumentTransaction,
++};
+diff --git a/crates/editor/src/session/documents.rs b/crates/editor/src/session/documents.rs
+--- a/crates/editor/src/session/documents.rs
++++ b/crates/editor/src/session/documents.rs
+@@ -1,3 +1,4 @@
+         self.current_document = CurrentDocument::None;
+         self.scene_session = None;
++        self.ui_authoring_session = None;
+         self.undo_stack.clear();
+diff --git a/crates/editor/src/session/documents.rs b/crates/editor/src/session/documents.rs
+--- a/crates/editor/src/session/documents.rs
++++ b/crates/editor/src/session/documents.rs
+@@ -1,2 +1,3 @@
+         self.current_document = doc;
++        self.ui_authoring_session = None;
+         self.undo_stack.clear();
+diff --git a/crates/editor/src/session/documents.rs b/crates/editor/src/session/documents.rs
+--- a/crates/editor/src/session/documents.rs
++++ b/crates/editor/src/session/documents.rs
+@@ -1,3 +1,4 @@
+         self.undo_stack.clear();
+         self.scene_session = None;
++        self.ui_authoring_session = None;
+         self.current_document = doc;
+diff --git a/crates/editor/src/session/documents.rs b/crates/editor/src/session/documents.rs
+--- a/crates/editor/src/session/documents.rs
++++ b/crates/editor/src/session/documents.rs
+@@ -1,4 +1,8 @@
+         self.restore_newer_recovery();
++        self.ui_authoring_session = self
++            .ui_document()
++            .cloned()
++            .map(UiAuthoringSession::new);
+         self.bump_document_revision();
+         Ok(())
+     }
