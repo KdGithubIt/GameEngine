@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "request_id": "20260816-adr0125-vfx-tail-fix-47f9626-r1",
+  "target_branch": "chatgpt/gameengine-vfx-adr0125-v2",
+  "expected_head_sha": "47f96265c5a3bcf26fcadf4e5615f88e02636f00",
+  "patch_parts": ["part-0000.patch"],
+  "commit_message": "Repair truncated ADR 0125 VFX player test tail",
+  "pr_title": "GameEngine: implement ADR 0125 VFX architecture",
+  "pr_body": "## Summary\n\nContinues Draft PR #54 and repairs the pre-existing truncated VFX runtime source revealed by full Windows Validation.\n\n<!-- gameengine-chatgpt-dispatcher -->"
+}
