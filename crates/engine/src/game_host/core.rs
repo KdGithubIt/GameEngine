@@ -31,6 +31,7 @@ use crate::script_api::RuntimeEntityIdentity;
 use crate::time::{FixedTime, Time};
 use crate::transform::{GlobalTransform, Transform};
 use crate::ui_document::{UiBindingValue, UiBindings, UiEventFrame};
+use crate::vfx::{VfxPlayer, VfxRuntimeBackend};
 use engine_authoring::Value;
 use engine_ecs::{Entity, SystemId, SystemIdError, World};
 use serde_json::Error as JsonError;
@@ -1037,6 +1038,41 @@ fn copy_engine_view(world: &World, entity: Entity, view: EngineViewKind) -> Opti
                 ("time".to_owned(), Value::F64(f64::from(animator.time))),
                 ("looping".to_owned(), Value::Bool(animator.looping)),
                 ("fading".to_owned(), Value::Bool(animator.is_fading())),
+            ]))
+        }
+        EngineViewKind::VfxState => {
+            let player = world.get_component::<VfxPlayer>(entity)?;
+            let instance = player.instance();
+            let stats = instance.stats();
+            let backend = match stats.backend {
+                VfxRuntimeBackend::CpuReference => "cpu_reference",
+            };
+            Value::Object(BTreeMap::from([
+                ("playing".to_owned(), Value::Bool(player.is_playing())),
+                ("complete".to_owned(), Value::Bool(instance.is_complete())),
+                (
+                    "elapsed_seconds".to_owned(),
+                    Value::F64(f64::from(instance.elapsed_seconds())),
+                ),
+                (
+                    "live_particles".to_owned(),
+                    Value::String(stats.live_particles.to_string()),
+                ),
+                (
+                    "spawned_particles".to_owned(),
+                    Value::String(stats.spawned_particles.to_string()),
+                ),
+                (
+                    "dropped_particles".to_owned(),
+                    Value::String(stats.dropped_particles.to_string()),
+                ),
+                ("backend".to_owned(), Value::String(backend.to_owned())),
+                (
+                    "seed_override".to_owned(),
+                    instance
+                        .seed_override()
+                        .map_or(Value::Null, |seed| Value::I64(i64::from(seed))),
+                ),
             ]))
         }
         EngineViewKind::LockOnState => {

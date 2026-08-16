@@ -26,6 +26,7 @@ use crate::save::{
 use crate::scene_manager::SceneManager;
 use crate::transform::Transform;
 use crate::ui_document::{UiBindingValue, UiBindings, UiDocumentRef, UiDocumentVisibility};
+use crate::vfx::VfxPlayer;
 use engine_authoring::{AssetId, ComponentTypeId, StableId, Value};
 use engine_ecs::{Entity, SystemId, World};
 use glam::{Quat, Vec3};
@@ -67,6 +68,10 @@ pub(crate) enum PreparedGameCommand {
     },
     LockOn(LockOnOperation),
     Animation(animation::PreparedAnimationCommand),
+    Vfx {
+        entity: Entity,
+        operation: VfxPlaybackOperation,
+    },
     SetUiBinding {
         name: String,
         value: UiBindingValue,
@@ -145,6 +150,12 @@ pub(crate) enum LockOnOperation {
     Acquire,
     Cycle,
     Release,
+}
+
+pub(crate) enum VfxPlaybackOperation {
+    Start,
+    Pause,
+    Restart,
 }
 
 /// Validates every command payload and target without mutating the world.
@@ -285,6 +296,25 @@ pub(crate) fn prepare_game_commands(
                     &command.payload,
                 )?));
             }
+            GameCommandFamily::Vfx => {
+                let (target, entity) = targeted_entity(world, command, index, &despawned)?;
+                if world.get_component::<VfxPlayer>(entity).is_none() {
+                    return Err(GameCommandError::MissingVfxPlayer { index, target });
+                }
+                let fields = object(&command.payload, index, "VFX payload")?;
+                let operation = match string_field(fields, "operation", index)? {
+                    "start" => VfxPlaybackOperation::Start,
+                    "pause" | "stop" => VfxPlaybackOperation::Pause,
+                    "restart" => VfxPlaybackOperation::Restart,
+                    other => {
+                        return Err(GameCommandError::InvalidPayload {
+                            index,
+                            message: format!("unknown VFX operation `{other}`"),
+                        })
+                    }
+                };
+                prepared.push(PreparedGameCommand::Vfx { entity, operation });
+            }
             GameCommandFamily::Ui => prepared.push(parse_ui_command(
                 world,
                 command,
@@ -422,6 +452,16 @@ pub(crate) fn apply_prepared_game_commands(world: &mut World, commands: Vec<Prep
                 }
             }
             PreparedGameCommand::Animation(command) => animation::apply(world, command),
+            PreparedGameCommand::Vfx { entity, operation } => {
+                let player = world
+                    .get_component_mut::<VfxPlayer>(entity)
+                    .expect("preflighted VFX player must remain live during exclusive apply");
+                match operation {
+                    VfxPlaybackOperation::Start => player.play(),
+                    VfxPlaybackOperation::Pause => player.pause(),
+                    VfxPlaybackOperation::Restart => player.restart(),
+                }
+            }
             PreparedGameCommand::SetUiBinding { name, value } => {
                 world
                     .get_resource_mut::<UiBindings>()
@@ -1601,6 +1641,13 @@ pub enum GameCommandError {
         /// Rejected target.
         target: GameEntityHandle,
     },
+    /// A VFX command targeted an entity without a runtime VFX player.
+    MissingVfxPlayer {
+        /// Zero-based command index.
+        index: usize,
+        /// Rejected target.
+        target: GameEntityHandle,
+    },
     /// A graph-parameter command targeted an entity without a graph player.
     MissingAnimationGraph {
         /// Zero-based command index.
@@ -1818,6 +1865,11 @@ impl fmt::Display for GameCommandError {
             Self::MissingAnimator { index, target } => write!(
                 formatter,
                 "game command {index} targets entity {} generation {} without Animator",
+                target.id, target.generation
+            ),
+            Self::MissingVfxPlayer { index, target } => write!(
+                formatter,
+                "game command {index} targets entity {} generation {} without VfxPlayer",
                 target.id, target.generation
             ),
             Self::MissingAnimationGraph { index, target } => write!(

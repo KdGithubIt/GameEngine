@@ -967,6 +967,62 @@ impl EngineView for AnimationStateView {
     }
 }
 
+/// Runtime backend reported by a copied VFX player state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VfxBackendView {
+    /// Deterministic CPU reference backend.
+    CpuReference,
+}
+
+/// VFX player state copied for one entity.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct VfxStateView {
+    /// Whether the player currently advances simulation.
+    pub playing: bool,
+    /// Whether no live particles or future emission remain.
+    pub complete: bool,
+    /// Current deterministic simulation time in seconds.
+    pub elapsed_seconds: f32,
+    /// Current live-particle count.
+    pub live_particles: u64,
+    /// Particles accepted since the last restart.
+    pub spawned_particles: u64,
+    /// Particles refused by budgets or per-step caps since the last restart.
+    pub dropped_particles: u64,
+    /// Runtime backend executing the effect.
+    pub backend: VfxBackendView,
+    /// Optional deterministic instance seed override.
+    pub seed_override: Option<u32>,
+}
+
+impl EngineView for VfxStateView {
+    const KIND: EngineViewKind = EngineViewKind::VfxState;
+    fn decode(value: &Value) -> Result<Self, String> {
+        let fields = object(value)?;
+        let backend = match string_field(fields, "backend")? {
+            "cpu_reference" => VfxBackendView::CpuReference,
+            value => return Err(format!("unknown VFX backend `{value}`")),
+        };
+        let seed_override = optional_unsigned(field(fields, "seed_override")?)?
+            .map(|value| {
+                value
+                    .try_into()
+                    .map_err(|_| "VFX seed override is outside u32".to_owned())
+            })
+            .transpose()?;
+        Ok(Self {
+            playing: bool_field(fields, "playing")?,
+            complete: bool_field(fields, "complete")?,
+            elapsed_seconds: number_field(fields, "elapsed_seconds")? as f32,
+            live_particles: unsigned_field(fields, "live_particles")?,
+            spawned_particles: unsigned_field(fields, "spawned_particles")?,
+            dropped_particles: unsigned_field(fields, "dropped_particles")?,
+            backend,
+            seed_override,
+        })
+    }
+}
+
 /// Current lock-on selection copied for each queried entity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LockOnStateView {
@@ -1806,6 +1862,22 @@ impl Commands {
     pub fn stop_animation(&mut self, target: GameEntityHandle) {
         self.push(GameCommand::stop_animation(target));
     }
+    /// Starts or resumes scene VFX playback.
+    pub fn start_vfx(&mut self, target: GameEntityHandle) {
+        self.push(GameCommand::start_vfx(target));
+    }
+    /// Pauses scene VFX playback without discarding transient state.
+    pub fn pause_vfx(&mut self, target: GameEntityHandle) {
+        self.push(GameCommand::pause_vfx(target));
+    }
+    /// Stops scene VFX advancement while retaining state for restart.
+    pub fn stop_vfx(&mut self, target: GameEntityHandle) {
+        self.push(GameCommand::stop_vfx(target));
+    }
+    /// Restarts scene VFX from deterministic time zero and resumes playback.
+    pub fn restart_vfx(&mut self, target: GameEntityHandle) {
+        self.push(GameCommand::restart_vfx(target));
+    }
     /// Creates a command-owned hitbox.
     #[allow(clippy::too_many_arguments)]
     pub fn create_hitbox(
@@ -1998,6 +2070,7 @@ impl GameSystemParam for Commands {
             GameCommandFamily::Despawn,
             GameCommandFamily::Component,
             GameCommandFamily::Animation,
+            GameCommandFamily::Vfx,
             GameCommandFamily::Hitbox,
             GameCommandFamily::Audio,
             GameCommandFamily::LockOn,
@@ -2108,6 +2181,13 @@ fn optional_string(value: &Value) -> Result<Option<&str>, String> {
         Ok(None)
     } else {
         string(value).map(Some)
+    }
+}
+fn optional_unsigned(value: &Value) -> Result<Option<u64>, String> {
+    if matches!(value, Value::Null) {
+        Ok(None)
+    } else {
+        unsigned(value).map(Some)
     }
 }
 fn vec3(value: &Value) -> Result<Vec3, String> {
