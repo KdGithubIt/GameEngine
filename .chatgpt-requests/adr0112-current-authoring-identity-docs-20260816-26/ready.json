@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0112-current-authoring-identity-docs-20260816-26",
+  "target_branch": "chatgpt/gameengine-adr-0112-secondary-motion-v2",
+  "expected_head_sha": "f0e1a5f25bb16c9f6d42a5795c17f3d0138cd759",
+  "patch_parts": ["part-0000.patch"],
+  "commit_message": "Document Secondary Motion authoring identity",
+  "pr_title": "Implement ADR 0112 engine-native secondary motion",
+  "pr_body": "## Summary\n\nImplements ADR 0112 engine-native Secondary Motion. This documentation follow-up records the landed `engine.secondary_motion` authoring schema and explicitly documents the `secondary_motion_rig` imported kind and `secondarymotionrig` stable-ID namespace cutover. The PR remains Draft."
+}
