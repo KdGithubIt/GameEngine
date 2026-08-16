@@ -1,12 +1,18 @@
 //! MCP adapters for VFX semantic authoring.
+//!
+//! The shared VFX service operates on documents supplied in the request rather
+//! than on a permissioned session, so this adapter authorizes each call against
+//! the permission its capability declares in the canonical registry (ADR 0132
+//! sections 5 and 6). The permission itself is never retyped here.
 
-use crate::McpToolDescriptor;
+use crate::capability::{authorize_capability, domain_tool_descriptors};
+use crate::{McpToolDescriptor, McpToolError};
 use engine_authoring::{
-    VfxApply, VfxAuthoringService, VfxCommand, VfxCompilation, VfxEffect, VfxSchemaCatalog,
-    VfxTemplate, VfxValidation,
+    AuthoringCapabilityRegistry, AuthoringDomain, AuthoringPermissions, VfxApply,
+    VfxAuthoringService, VfxCommand, VfxCompilation, VfxEffect, VfxSchemaCatalog, VfxTemplate,
+    VfxValidation,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 
 /// Input carrying one VFX document for read-only tools.
 #[derive(Debug, Clone, Deserialize)]
@@ -47,6 +53,7 @@ pub struct VfxInspectOutput {
 /// Transport-shaped VFX tools backed only by [`VfxAuthoringService`].
 pub struct VfxMcpTools {
     service: VfxAuthoringService,
+    registry: AuthoringCapabilityRegistry,
 }
 
 impl VfxMcpTools {
@@ -54,64 +61,115 @@ impl VfxMcpTools {
     pub fn new() -> Self {
         Self {
             service: VfxAuthoringService::new(),
+            registry: AuthoringCapabilityRegistry::builtin(),
         }
     }
 
     /// Returns the VFX tool family advertised to MCP transports.
+    ///
+    /// Names, descriptions, and argument schemas come from the canonical
+    /// authoring capability registry (ADR 0132).
     pub fn tool_descriptors(&self) -> Vec<McpToolDescriptor> {
-        vec![
-            descriptor("vfx.schemas", "Discover stable VFX module schemas and execution phases.", json!({"type":"object","properties":{},"additionalProperties":false})),
-            descriptor("vfx.inspect", "Inspect one semantic VFX document and its compiled backend-neutral plan.", effect_schema()),
-            descriptor("vfx.validate", "Validate one semantic VFX document with stable-ID diagnostics.", effect_schema()),
-            descriptor("vfx.preview", "Preview a VFX command transaction without committing the source document.", mutation_schema()),
-            descriptor("vfx.apply", "Apply one atomic VFX command transaction and return the committed document plus undo commands.", mutation_schema()),
-            descriptor("vfx.template", "Create ordinary VFX document data from a built-in starting template.", json!({
-                "type":"object",
-                "required":["template"],
-                "properties":{"template":{"type":"string","enum":["spark","smoke","burst","trail"]}},
-                "additionalProperties":false
-            })),
-        ]
+        domain_tool_descriptors(&self.registry, &[AuthoringDomain::Vfx])
     }
 
     /// Returns the deterministic shared VFX module catalog.
-    pub fn schemas(&self) -> VfxSchemaCatalog {
-        self.service.schemas()
+    ///
+    /// # Errors
+    ///
+    /// Returns [`McpToolError`] when the session lacks the permission declared
+    /// for `vfx.schemas`.
+    pub fn schemas(
+        &self,
+        permissions: &AuthoringPermissions,
+    ) -> Result<VfxSchemaCatalog, McpToolError> {
+        authorize_capability(&self.registry, "vfx.schemas", permissions)?;
+        Ok(self.service.schemas())
     }
 
     /// Inspects and compiles one VFX document without mutation.
-    pub fn inspect(&self, input: VfxEffectInput) -> VfxInspectOutput {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`McpToolError`] when the session lacks the permission declared
+    /// for `vfx.inspect`.
+    pub fn inspect(
+        &self,
+        permissions: &AuthoringPermissions,
+        input: VfxEffectInput,
+    ) -> Result<VfxInspectOutput, McpToolError> {
+        authorize_capability(&self.registry, "vfx.inspect", permissions)?;
         let validation = self.service.validate(&input.effect);
         let success = validation.success;
-        VfxInspectOutput {
+        Ok(VfxInspectOutput {
             success,
             compilation: self.service.compile(&input.effect),
             validation,
             effect: input.effect,
-        }
+        })
     }
 
     /// Validates one VFX document.
-    pub fn validate(&self, input: VfxEffectInput) -> VfxValidation {
-        self.service.validate(&input.effect)
+    ///
+    /// # Errors
+    ///
+    /// Returns [`McpToolError`] when the session lacks the permission declared
+    /// for `vfx.validate`.
+    pub fn validate(
+        &self,
+        permissions: &AuthoringPermissions,
+        input: VfxEffectInput,
+    ) -> Result<VfxValidation, McpToolError> {
+        authorize_capability(&self.registry, "vfx.validate", permissions)?;
+        Ok(self.service.validate(&input.effect))
     }
 
     /// Previews an atomic semantic mutation without changing the source document.
-    pub fn preview(&self, input: VfxMutationInput) -> VfxApply {
-        self.service.apply(&input.effect, &input.commands)
+    ///
+    /// # Errors
+    ///
+    /// Returns [`McpToolError`] when the session lacks the permission declared
+    /// for `vfx.preview`.
+    pub fn preview(
+        &self,
+        permissions: &AuthoringPermissions,
+        input: VfxMutationInput,
+    ) -> Result<VfxApply, McpToolError> {
+        authorize_capability(&self.registry, "vfx.preview", permissions)?;
+        Ok(self.service.apply(&input.effect, &input.commands))
     }
 
     /// Applies an atomic semantic mutation and returns the committed document.
     ///
     /// Persistence remains the responsibility of the owning project/editor host;
     /// MCP does not implement a second VFX file-mutation policy.
-    pub fn apply(&self, input: VfxMutationInput) -> VfxApply {
-        self.service.apply(&input.effect, &input.commands)
+    ///
+    /// # Errors
+    ///
+    /// Returns [`McpToolError`] when the session lacks the permission declared
+    /// for `vfx.apply`.
+    pub fn apply(
+        &self,
+        permissions: &AuthoringPermissions,
+        input: VfxMutationInput,
+    ) -> Result<VfxApply, McpToolError> {
+        authorize_capability(&self.registry, "vfx.apply", permissions)?;
+        Ok(self.service.apply(&input.effect, &input.commands))
     }
 
     /// Creates an editable VFX document from a shared service template.
-    pub fn template(&self, input: VfxTemplateInput) -> VfxEffect {
-        self.service.template(input.template)
+    ///
+    /// # Errors
+    ///
+    /// Returns [`McpToolError`] when the session lacks the permission declared
+    /// for `vfx.template`.
+    pub fn template(
+        &self,
+        permissions: &AuthoringPermissions,
+        input: VfxTemplateInput,
+    ) -> Result<VfxEffect, McpToolError> {
+        authorize_capability(&self.registry, "vfx.template", permissions)?;
+        Ok(self.service.template(input.template))
     }
 }
 
@@ -121,42 +179,16 @@ impl Default for VfxMcpTools {
     }
 }
 
-fn descriptor(
-    name: &'static str,
-    description: &'static str,
-    input_schema: serde_json::Value,
-) -> McpToolDescriptor {
-    McpToolDescriptor {
-        name: name.to_owned(),
-        description: description.to_owned(),
-        input_schema,
-    }
-}
-
-fn effect_schema() -> serde_json::Value {
-    json!({
-        "type":"object",
-        "required":["effect"],
-        "properties":{"effect":{"type":"object"}},
-        "additionalProperties":false
-    })
-}
-
-fn mutation_schema() -> serde_json::Value {
-    json!({
-        "type":"object",
-        "required":["effect","commands"],
-        "properties":{
-            "effect":{"type":"object"},
-            "commands":{"type":"array","items":{"type":"object"}}
-        },
-        "additionalProperties":false
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use engine_authoring::AuthoringPermission;
+
+    fn writable() -> AuthoringPermissions {
+        AuthoringPermissions::read_only()
+            .with(AuthoringPermission::Preview)
+            .with(AuthoringPermission::ProjectDataWrite)
+    }
 
     #[test]
     fn descriptors_expose_complete_vfx_authoring_family() {
@@ -168,12 +200,12 @@ mod tests {
         assert_eq!(
             names,
             [
-                "vfx.schemas",
-                "vfx.inspect",
-                "vfx.validate",
-                "vfx.preview",
                 "vfx.apply",
+                "vfx.inspect",
+                "vfx.preview",
+                "vfx.schemas",
                 "vfx.template",
+                "vfx.validate",
             ]
         );
     }
@@ -181,14 +213,72 @@ mod tests {
     #[test]
     fn preview_and_apply_delegate_identical_semantic_transactions() {
         let tools = VfxMcpTools::new();
+        let permissions = writable();
         let effect = VfxAuthoringService::new().template(VfxTemplate::Burst);
         let commands = vec![VfxCommand::SetEffectSeed { seed: 99 }];
-        let preview = tools.preview(VfxMutationInput {
-            effect: effect.clone(),
-            commands: commands.clone(),
-        });
-        let applied = tools.apply(VfxMutationInput { effect, commands });
+        let preview = tools
+            .preview(
+                &permissions,
+                VfxMutationInput {
+                    effect: effect.clone(),
+                    commands: commands.clone(),
+                },
+            )
+            .expect("preview permission");
+        let applied = tools
+            .apply(&permissions, VfxMutationInput { effect, commands })
+            .expect("apply permission");
         assert_eq!(preview, applied);
         assert_eq!(preview.effect.expect("preview result").seed, 99);
+    }
+
+    #[test]
+    fn read_only_sessions_cannot_commit_vfx_mutations() {
+        let tools = VfxMcpTools::new();
+        let read_only = AuthoringPermissions::read_only();
+        let effect = VfxAuthoringService::new().template(VfxTemplate::Spark);
+
+        tools
+            .validate(
+                &read_only,
+                VfxEffectInput {
+                    effect: effect.clone(),
+                },
+            )
+            .expect("read-only sessions may validate");
+        let error = tools
+            .apply(
+                &read_only,
+                VfxMutationInput {
+                    effect,
+                    commands: vec![VfxCommand::SetEffectSeed { seed: 7 }],
+                },
+            )
+            .expect_err("read-only sessions must not commit");
+
+        assert_eq!(error.code(), "authoring.permission_denied");
+    }
+
+    #[test]
+    fn preview_permission_does_not_authorize_apply() {
+        let tools = VfxMcpTools::new();
+        let preview_only = AuthoringPermissions::read_only().with(AuthoringPermission::Preview);
+        let effect = VfxAuthoringService::new().template(VfxTemplate::Smoke);
+        let commands = vec![VfxCommand::SetEffectSeed { seed: 11 }];
+
+        tools
+            .preview(
+                &preview_only,
+                VfxMutationInput {
+                    effect: effect.clone(),
+                    commands: commands.clone(),
+                },
+            )
+            .expect("preview permission");
+        let error = tools
+            .apply(&preview_only, VfxMutationInput { effect, commands })
+            .expect_err("preview permission must not commit");
+
+        assert_eq!(error.code(), "authoring.permission_denied");
     }
 }

@@ -325,55 +325,55 @@ impl EditorApp {
             }
             "vfx.schemas" => {
                 require_empty_arguments(arguments)?;
-                to_value(vfx_tools.schemas())
+                to_value(vfx_tools.schemas(&permissions)?)
             }
             "vfx.inspect" => {
                 let input: VfxEffectInput = decode(arguments)?;
-                to_value(vfx_tools.inspect(input))
+                to_value(vfx_tools.inspect(&permissions, input)?)
             }
             "vfx.validate" => {
                 let input: VfxEffectInput = decode(arguments)?;
-                to_value(vfx_tools.validate(input))
+                to_value(vfx_tools.validate(&permissions, input)?)
             }
             "vfx.preview" => {
                 let input: VfxMutationInput = decode(arguments)?;
-                to_value(vfx_tools.preview(input))
+                to_value(vfx_tools.preview(&permissions, input)?)
             }
             "vfx.apply" => {
                 let input: VfxMutationInput = decode(arguments)?;
-                to_value(vfx_tools.apply(input))
+                to_value(vfx_tools.apply(&permissions, input)?)
             }
             "vfx.template" => {
                 let input: VfxTemplateInput = decode(arguments)?;
-                to_value(vfx_tools.template(input))
+                to_value(vfx_tools.template(&permissions, input)?)
             }
             "behavior_tree.schemas" => {
                 require_empty_arguments(arguments)?;
-                to_value(behavior_tools.behavior_tree_schemas())
+                to_value(behavior_tools.behavior_tree_schemas(&permissions)?)
             }
             "behavior_tree.validate" => {
                 let input: BehaviorTreeGraphInput = decode(arguments)?;
-                to_value(behavior_tools.behavior_tree_validate(input)?)
+                to_value(behavior_tools.behavior_tree_validate(&permissions, input)?)
             }
             "behavior_tree.compile" => {
                 let input: BehaviorTreeGraphInput = decode(arguments)?;
-                to_value(behavior_tools.behavior_tree_compile(input)?)
+                to_value(behavior_tools.behavior_tree_compile(&permissions, input)?)
             }
             "behavior_tree.layout" => {
                 let input: BehaviorTreeGraphInput = decode(arguments)?;
-                to_value(behavior_tools.behavior_tree_layout(input)?)
+                to_value(behavior_tools.behavior_tree_layout(&permissions, input)?)
             }
             "behavior_tree.nodes" => {
                 let input: BehaviorTreeGraphInput = decode(arguments)?;
-                to_value(behavior_tools.behavior_tree_nodes(input)?)
+                to_value(behavior_tools.behavior_tree_nodes(&permissions, input)?)
             }
             "behavior_tree.edges" => {
                 let input: BehaviorTreeGraphInput = decode(arguments)?;
-                to_value(behavior_tools.behavior_tree_edges(input)?)
+                to_value(behavior_tools.behavior_tree_edges(&permissions, input)?)
             }
             "behavior_tree.apply" => {
                 let input: BehaviorTreeApplyInput = decode(arguments)?;
-                to_value(behavior_tools.behavior_tree_apply(input)?)
+                to_value(behavior_tools.behavior_tree_apply(&permissions, input)?)
             }
             _ => Err(EditorMcpCallFailure::new(
                 "mcp.unknown_tool",

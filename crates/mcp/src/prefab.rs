@@ -1,14 +1,15 @@
 //! MCP adapters for shared prefab asset and Scene authoring services.
 
+use crate::capability::domain_tool_descriptors;
 use crate::{McpToolDescriptor, McpToolError};
 use engine_assets::asset::AssetManifest;
 use engine_assets::prefab::{PrefabAssetService, PrefabCreation};
 use engine_authoring::{
-    AuthoringPermissions, AuthoringScene, AuthoringSession, EntityId, PrefabAuthoringService,
-    PrefabInstantiationMutation, PrefabInstantiationRequest, ProjectRoot,
+    AuthoringCapabilityRegistry, AuthoringDomain, AuthoringPermissions, AuthoringScene,
+    AuthoringSession, EntityId, PrefabAuthoringService, PrefabInstantiationMutation,
+    PrefabInstantiationRequest, ProjectRoot,
 };
 use serde::Deserialize;
-use serde_json::json;
 
 /// Input for `prefab.create`.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -49,38 +50,14 @@ impl PrefabMcpTools {
     }
 
     /// Returns descriptors for the prefab parity surface.
+    ///
+    /// Names, descriptions, and argument schemas come from the canonical
+    /// authoring capability registry (ADR 0132).
     pub fn tool_descriptors(&self) -> Vec<McpToolDescriptor> {
-        vec![
-            McpToolDescriptor {
-                name: "prefab.create".into(),
-                description:
-                    "Create a prefab from one Scene entity and all descendants, then register it with a fresh AssetId."
-                        .into(),
-                input_schema: json!({
-                    "type": "object",
-                    "required": ["root_entity", "destination"],
-                    "properties": {
-                        "root_entity": {"type": "string"},
-                        "destination": {"type": "string"}
-                    },
-                    "additionalProperties": false
-                }),
-            },
-            McpToolDescriptor {
-                name: "prefab.preview".into(),
-                description:
-                    "Preview one prefab instantiation against an exact Scene revision/generation without mutating it."
-                        .into(),
-                input_schema: instantiation_schema(),
-            },
-            McpToolDescriptor {
-                name: "prefab.instantiate".into(),
-                description:
-                    "Instantiate a prefab into the live Scene as one validated transaction and one undo entry."
-                        .into(),
-                input_schema: instantiation_schema(),
-            },
-        ]
+        domain_tool_descriptors(
+            &AuthoringCapabilityRegistry::builtin(),
+            &[AuthoringDomain::Prefab],
+        )
     }
 
     /// Creates and registers one prefab asset through the shared asset service.
@@ -176,20 +153,6 @@ impl Default for PrefabMcpTools {
     }
 }
 
-fn instantiation_schema() -> serde_json::Value {
-    json!({
-        "type": "object",
-        "required": ["source", "expected_revision", "expected_generation"],
-        "properties": {
-            "source": {"type": "string"},
-            "parent": {"type": ["string", "null"]},
-            "expected_revision": {"type": "integer", "minimum": 0},
-            "expected_generation": {"type": "integer", "minimum": 0}
-        },
-        "additionalProperties": false
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -203,7 +166,7 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(
             names,
-            vec!["prefab.create", "prefab.preview", "prefab.instantiate"]
+            vec!["prefab.create", "prefab.instantiate", "prefab.preview"]
         );
     }
 }
