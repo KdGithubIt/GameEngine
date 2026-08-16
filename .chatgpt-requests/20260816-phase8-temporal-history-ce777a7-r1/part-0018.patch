@@ -1,0 +1,22 @@
++so existing hosts do not need a migration step.
+diff --git a/docs/adr/README.md b/docs/adr/README.md
+--- a/docs/adr/README.md
++++ b/docs/adr/README.md
+@@ -99,8 +99,9 @@
+   [0118](0118-rendering-color-space-and-texture-semantics.md),
+   [0119](0119-tangent-space-gpu-contract-and-shared-material-fragment.md),
+   [0120](0120-generic-pbr-material-texture-contract.md),
+-  [0128](0128-renderer-owned-full-image-based-lighting.md), and
+-  [0129](0129-generic-directional-point-spot-lighting.md).
++  [0128](0128-renderer-owned-full-image-based-lighting.md),
++  [0129](0129-generic-directional-point-spot-lighting.md), and
++  [0130](0130-renderer-temporal-history-infrastructure.md).
+ - **Animation, rig, and physics:**
+   [0077](0077-skeleton-assets-and-stable-bone-ids.md),
+   [0085](0085-animation-sets-and-motion-slots.md),
+@@ -266,4 +267,5 @@
+ | [0127](0127-native-2d-gameplay-and-authoring-architecture.md) | **Proposed** — Native 2D Gameplay and Authoring Architecture |
+ | [0128](0128-renderer-owned-full-image-based-lighting.md) | Renderer-Owned Full Image-Based Lighting |
+ | [0129](0129-generic-directional-point-spot-lighting.md) | Generic Directional, Point, and Spot Direct Lighting |
++| [0130](0130-renderer-temporal-history-infrastructure.md) | Renderer Temporal History Infrastructure |
+ 

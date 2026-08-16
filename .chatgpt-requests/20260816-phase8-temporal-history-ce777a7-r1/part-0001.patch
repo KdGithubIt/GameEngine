@@ -1,0 +1,49 @@
++                write!(formatter, "temporal render pipeline validation failed: {error}")
++            }
++        }
+     }
+ }
+ 
+ impl std::error::Error for RenderStateError {
+     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+-        Some(&self.0)
++        match &self.0 {
++            RenderStateErrorKind::Backend(error) => Some(error),
++            RenderStateErrorKind::Temporal(error) => Some(error),
++        }
+     }
+ }
+ 
+@@ -43,6 +58,7 @@ impl std::error::Error for RenderFrameError {
+ /// Stateful renderer for ECS worlds and caller-owned render targets.
+ pub struct WorldRenderer {
+     inner: crate::render_backend::WorldRenderer,
++    temporal: TemporalHistory,
+ }
+ 
+ impl WorldRenderer {
+@@ -54,8 +70,11 @@ impl WorldRenderer {
+     ) -> Result<Self, RenderStateError> {
+         let inner = crate::render_backend::WorldRenderer::new(device, queue, format)
+             .await
+-            .map_err(RenderStateError)?;
+-        Ok(Self { inner })
++            .map_err(|error| RenderStateError(RenderStateErrorKind::Backend(error)))?;
++        let temporal = TemporalHistory::new(device, format)
++            .await
++            .map_err(|error| RenderStateError(RenderStateErrorKind::Temporal(error)))?;
++        Ok(Self { inner, temporal })
+     }
+ 
+     /// Renders the active game camera into caller-owned color and depth views.
+@@ -67,9 +86,24 @@ impl WorldRenderer {
+         color_view: &wgpu::TextureView,
+         depth_view: &wgpu::TextureView,
+     ) -> Result<(), RenderFrameError> {
++        if color_view.texture().sample_count() != 1 {
++            return self
++                .inner
++                .render_to_view(world, device, queue, color_view, depth_view)
++                .map_err(RenderFrameError);
++        }
++

@@ -1,0 +1,61 @@
+index 0000000..9566457
+--- /dev/null
++++ b/crates/render-runtime/src/temporal.rs
+@@ -0,0 +1,471 @@
++//! Process-local temporal frame history owned by the runtime renderer.
++
++use bytemuck::{Pod, Zeroable};
++use glam::{Mat4, Vec2};
++
++const JITTER_PERIOD: u64 = 8;
++
++/// Identifies the camera source so a camera switch invalidates accumulation.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub(crate) enum TemporalCameraSource {
++    WorldEntity { id: u32, generation: u32 },
++    Explicit,
++}
++
++/// Unjittered camera state retained across successful render frames.
++#[derive(Debug, Clone, Copy)]
++pub(crate) struct TemporalCameraSample {
++    source: TemporalCameraSource,
++    view_projection: Mat4,
++}
++
++impl TemporalCameraSample {
++    pub(crate) fn new(source: TemporalCameraSource, view_projection: Mat4) -> Self {
++        Self {
++            source,
++            view_projection,
++        }
++    }
++}
++
++// Fields are consumed as one raw GPU uniform block rather than read individually in Rust.
++#[allow(dead_code)]
++#[repr(C)]
++#[derive(Clone, Copy, Pod, Zeroable)]
++struct TemporalUniformData {
++    current_view_projection: [[f32; 4]; 4],
++    previous_view_projection: [[f32; 4]; 4],
++    /// xy=current candidate jitter in NDC, zw=previous candidate jitter in NDC.
++    jitter: [f32; 4],
++    /// x=history usable, y=frame index modulo 65536, z/w reserved.
++    params: [f32; 4],
++}
++
++impl TemporalUniformData {
++    fn initial() -> Self {
++        Self {
++            current_view_projection: Mat4::IDENTITY.to_cols_array_2d(),
++            previous_view_projection: Mat4::IDENTITY.to_cols_array_2d(),
++            jitter: [0.0; 4],
++            params: [0.0; 4],
++        }
++    }
++}
++
++struct TemporalTarget {
++    _texture: wgpu::Texture,
++    view: wgpu::TextureView,
