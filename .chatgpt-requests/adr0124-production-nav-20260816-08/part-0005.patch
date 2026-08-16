@@ -1,0 +1,58 @@
+diff --git a/crates/engine/src/lib.rs b/crates/engine/src/lib.rs
+index b96a148..74c5e97 100644
+--- a/crates/engine/src/lib.rs
++++ b/crates/engine/src/lib.rs
+@@ -10,7 +10,9 @@ pub mod model_ir;
+ /// Morph targets: named vertex and material deformations blended on top of a
+ /// mesh (ADR 0097 §5).
+ pub mod morph;
+-/// Grid-backed navigation mesh and A* pathfinding.
++/// GUI-free production navigation bake service shared by authoring adapters.
++pub mod navigation_bake;
++/// Production tiled polygon navigation and runtime query facade.
+ pub mod navmesh;
+ /// CPU particle simulation rendered through GPU instancing (ADR 0044).
+ pub mod particles;
+diff --git a/crates/engine/src/navigation_bake.rs b/crates/engine/src/navigation_bake.rs
+new file mode 100644
+index 0000000..80a3e35
+--- /dev/null
++++ b/crates/engine/src/navigation_bake.rs
+@@ -0,0 +1,523 @@
++//! Scene-to-navigation adapter for the shared production bake service (ADR 0124).
++//!
++//! `engine-physics` owns the GUI-free bake document and deterministic service.
++//! This composition-layer adapter is responsible only for collecting runtime
++//! geometry from an authoring scene and registering the resulting asset in the
++//! project manifest.
++
++use std::collections::{BTreeMap, BTreeSet};
++use std::fmt;
++use std::path::{Path, PathBuf};
++use std::sync::atomic::AtomicBool;
++
++use engine_authoring::{
++    replace_file_contents, AssetId, AuthoringCommand, AuthoringScene, ComponentTypeId,
++    ProjectRoot, Value,
++};
++use engine_ecs::Query;
++use glam::Vec3;
++
++use crate::asset::{Assets, Handle};
++use crate::collision::{Collider, PhysicsBody, TriggerVolume};
++use crate::mesh::Mesh;
++use crate::transform::GlobalTransform;
++use crate::{AssetManifest, AssetServer, ManifestEntry};
++use engine_physics::navigation::{
++    NavigationBuildLink, NavigationModifier, NavigationModifierMode, NavigationProfileId,
++    NavigationTriangle,
++};
++
++pub use engine_physics::navigation_bake::{
++    NavMeshBakeDocument, NavMeshBakeSettings, NavigationBakeOutput, NavigationBakeService,
++    NavigationBakeServiceError, NavigationBakeStats, NavigationSource, NAVMESH_BAKE_SCHEMA_VERSION,
++};
++
++/// Stable authoring component used to emit one explicit off-mesh traversal.
++pub const NAVIGATION_LINK_COMPONENT: &str = "engine.nav_mesh_link";
++/// Stable authoring component used to exclude or reclassify navigation geometry.
