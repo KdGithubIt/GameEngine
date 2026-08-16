@@ -1,0 +1,110 @@
+     let directional = ComponentTypeId::new(DIRECTIONAL_LIGHT_COMPONENT);
++    let point = ComponentTypeId::new(POINT_LIGHT_COMPONENT);
++    let spot = ComponentTypeId::new(SPOT_LIGHT_COMPONENT);
+     let ambient = ComponentTypeId::new(AMBIENT_LIGHT_COMPONENT);
+     let mut diagnostics = Vec::new();
+     let mut worst_case_instances = 0_usize;
+     let mut directional_count = 0_usize;
++    let mut point_count = 0_usize;
++    let mut spot_count = 0_usize;
+     let mut ambient_count = 0_usize;
+ 
+     for (entity_id, entity) in scene.entities() {
+@@ -39,4 +44,6 @@
+         directional_count += usize::from(entity.components.contains_key(&directional));
++        point_count += usize::from(entity.components.contains_key(&point));
++        spot_count += usize::from(entity.components.contains_key(&spot));
+         ambient_count += usize::from(entity.components.contains_key(&ambient));
+ 
+         let Some(Value::Object(fields)) = entity.components.get(&particles) else {
+@@ -74,3 +81,15 @@
++    push_light_limit(
++        point_count,
++        MAX_POINT_LIGHTS,
++        "point",
++        &mut diagnostics,
++    );
++    push_light_limit(
++        spot_count,
++        MAX_SPOT_LIGHTS,
++        "spot",
++        &mut diagnostics,
++    );
+     push_light_limit(
+         ambient_count,
+         MAX_AMBIENT_LIGHTS,
+diff --git a/crates/engine/src/scene_bridge.rs b/crates/engine/src/scene_bridge.rs
+--- a/crates/engine/src/scene_bridge.rs
++++ b/crates/engine/src/scene_bridge.rs
+@@ -20,2 +20,2 @@
+-use crate::light::{AmbientLight, DirectionalLight};
++use crate::light::{AmbientLight, DirectionalLight, PointLight, SpotLight};
+ use crate::lock_on::LockOnTarget;
+@@ -100,5 +100,11 @@
+ /// The `"engine.directional_light"` component type string recognised by the bridge.
+ pub const DIRECTIONAL_LIGHT_COMPONENT: &str = "engine.directional_light";
+ 
++/// The stable authoring component for a transform-positioned point light.
++pub const POINT_LIGHT_COMPONENT: &str = "engine.point_light";
++
++/// The stable authoring component for a transform-oriented spot light.
++pub const SPOT_LIGHT_COMPONENT: &str = "engine.spot_light";
++
+ /// The `"engine.ambient_light"` component type string recognised by the bridge.
+ pub const AMBIENT_LIGHT_COMPONENT: &str = "engine.ambient_light";
+diff --git a/crates/engine/src/scene_bridge/spawn.rs b/crates/engine/src/scene_bridge/spawn.rs
+--- a/crates/engine/src/scene_bridge/spawn.rs
++++ b/crates/engine/src/scene_bridge/spawn.rs
+@@ -2255,3 +2255,75 @@
++pub(crate) fn spawn_point_light_component(
++    entity: Entity,
++    value: &Value,
++    context: &mut SpawnContext<'_>,
++) -> Result<(), ComponentSpawnError> {
++    const EXPECTED: &str = "an object with unit-range color, non-negative intensity, and positive range";
++    let component_type = ComponentTypeId::new(POINT_LIGHT_COMPONENT);
++    let fields = ComponentFields::new(context.authoring_entity, &component_type, value, EXPECTED)?;
++    let color = fields.color()?;
++    let intensity = fields.f32("intensity")?;
++    let range = fields.f32("range")?;
++    if color.min_element() < 0.0
++        || color.max_element() > 1.0
++        || !intensity.is_finite()
++        || intensity < 0.0
++        || !range.is_finite()
++        || range <= 0.0
++    {
++        return Err(fields.invalid(EXPECTED).into());
++    }
++    context.world.add_component(
++        entity,
++        PointLight {
++            color,
++            intensity,
++            range,
++        },
++    )?;
++    Ok(())
++}
++
++pub(crate) fn spawn_spot_light_component(
++    entity: Entity,
++    value: &Value,
++    context: &mut SpawnContext<'_>,
++) -> Result<(), ComponentSpawnError> {
++    const EXPECTED: &str =
++        "an object with unit-range color, non-negative intensity, positive range, and 0 <= inner_angle_degrees < outer_angle_degrees < 90";
++    let component_type = ComponentTypeId::new(SPOT_LIGHT_COMPONENT);
++    let fields = ComponentFields::new(context.authoring_entity, &component_type, value, EXPECTED)?;
++    let color = fields.color()?;
++    let intensity = fields.f32("intensity")?;
++    let range = fields.f32("range")?;
++    let inner_angle_degrees = fields.f32("inner_angle_degrees")?;
++    let outer_angle_degrees = fields.f32("outer_angle_degrees")?;
++    if color.min_element() < 0.0
++        || color.max_element() > 1.0
++        || !intensity.is_finite()
++        || intensity < 0.0
++        || !range.is_finite()
++        || range <= 0.0
++        || !inner_angle_degrees.is_finite()
