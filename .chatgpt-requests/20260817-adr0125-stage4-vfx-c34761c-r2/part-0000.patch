@@ -1,0 +1,248 @@
+diff --git a/crates/scripting/src/lib.rs b/crates/scripting/src/lib.rs
+--- a/crates/scripting/src/lib.rs
++++ b/crates/scripting/src/lib.rs
+@@ -1,4 +1,6 @@
+ #[doc(hidden)]
+ pub mod animation_commands;
++#[doc(hidden)]
++pub mod vfx_commands;
+ 
+ /// Rust gameplay field, component, resource, and schedule contracts.
+diff --git a/crates/scripting/src/game_io.rs b/crates/scripting/src/game_io.rs
+--- a/crates/scripting/src/game_io.rs
++++ b/crates/scripting/src/game_io.rs
+@@ -1,9 +1,13 @@
+     /// Current animator clip, playback position, and transition state.
+     AnimationState,
++    /// Current VFX playback state and runtime particle counters.
++    VfxState,
+     /// Current lock-on target and selection state.
+     LockOnState,
+ 
+     /// Animation clip and Animation Graph control.
+     Animation,
++    /// Scene VFX playback control.
++    Vfx,
+     /// Attack hitbox creation, activation, and removal.
+     Hitbox,
+diff --git a/crates/scripting/src/vfx_commands.rs b/crates/scripting/src/vfx_commands.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/scripting/src/vfx_commands.rs
+@@ -0,0 +1,89 @@
++//! VFX-specific deferred command constructors owned with [`crate::game_io::GameCommand`].
++
++use std::collections::BTreeMap;
++
++use engine_authoring::Value;
++
++use crate::game_api::Commands;
++use crate::game_io::{GameCommand, GameCommandFamily, GameEntityHandle};
++
++impl GameCommand {
++    /// Starts or resumes one scene VFX player without resetting transient state.
++    pub fn play_vfx(target: GameEntityHandle) -> Self {
++        vfx_command(target, "play")
++    }
++
++    /// Pauses one scene VFX player while preserving deterministic transient state.
++    pub fn pause_vfx(target: GameEntityHandle) -> Self {
++        vfx_command(target, "pause")
++    }
++
++    /// Stops one scene VFX player without resetting it.
++    ///
++    /// Stage 4 stop is intentionally the same non-destructive transition as
++    /// pause. Use [`Self::restart_vfx`] to rebuild deterministic state.
++    pub fn stop_vfx(target: GameEntityHandle) -> Self {
++        Self::pause_vfx(target)
++    }
++
++    /// Restarts one scene VFX player from time zero and resumes playback.
++    pub fn restart_vfx(target: GameEntityHandle) -> Self {
++        vfx_command(target, "restart")
++    }
++}
++
++fn vfx_command(target: GameEntityHandle, operation: &str) -> GameCommand {
++    GameCommand {
++        family: GameCommandFamily::Vfx,
++        request_id: None,
++        target: Some(target),
++        payload: Value::Object(BTreeMap::from([(
++            "operation".to_owned(),
++            Value::String(operation.to_owned()),
++        )])),
++    }
++}
++
++impl Commands {
++    /// Starts or resumes one scene VFX player at the next host boundary.
++    pub fn play_vfx(&mut self, target: GameEntityHandle) {
++        self.push(GameCommand::play_vfx(target));
++    }
++
++    /// Pauses one scene VFX player at the next host boundary.
++    pub fn pause_vfx(&mut self, target: GameEntityHandle) {
++        self.push(GameCommand::pause_vfx(target));
++    }
++
++    /// Stops one scene VFX player without discarding transient state.
++    pub fn stop_vfx(&mut self, target: GameEntityHandle) {
++        self.push(GameCommand::stop_vfx(target));
++    }
++
++    /// Restarts one scene VFX player from time zero at the next host boundary.
++    pub fn restart_vfx(&mut self, target: GameEntityHandle) {
++        self.push(GameCommand::restart_vfx(target));
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn vfx_commands_use_the_deferred_vfx_family() {
++        let target = GameEntityHandle {
++            id: 7,
++            generation: 3,
++        };
++        for command in [
++            GameCommand::play_vfx(target),
++            GameCommand::pause_vfx(target),
++            GameCommand::restart_vfx(target),
++        ] {
++            assert_eq!(command.family, GameCommandFamily::Vfx);
++            assert_eq!(command.target, Some(target));
++        }
++        assert_eq!(GameCommand::stop_vfx(target), GameCommand::pause_vfx(target));
++    }
++}
+diff --git a/crates/engine/src/game_commands.rs b/crates/engine/src/game_commands.rs
+--- a/crates/engine/src/game_commands.rs
++++ b/crates/engine/src/game_commands.rs
+@@ -1,7 +1,9 @@
+ mod animation;
++mod vfx;
+ 
+ use crate::asset::AssetManifest;
+ 
+     Animation(animation::PreparedAnimationCommand),
++    Vfx(vfx::PreparedVfxCommand),
+     SetUiBinding {
+ 
+@@ -16,6 +18,17 @@
+                 )?));
+             }
++            GameCommandFamily::Vfx => {
++                let (target, entity) = targeted_entity(world, command, index, &despawned)?;
++                prepared.push(PreparedGameCommand::Vfx(vfx::prepare(
++                    world,
++                    index,
++                    target,
++                    entity,
++                    &command.payload,
++                )?));
++            }
+             GameCommandFamily::Ui => prepared.push(parse_ui_command(
+ 
+             PreparedGameCommand::Animation(command) => animation::apply(world, command),
++            PreparedGameCommand::Vfx(command) => vfx::apply(world, command),
+             PreparedGameCommand::SetUiBinding { name, value } => {
+diff --git a/crates/engine/src/game_commands/vfx.rs b/crates/engine/src/game_commands/vfx.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/engine/src/game_commands/vfx.rs
+@@ -0,0 +1,58 @@
++//! Deferred Project Rust VFX command preparation and application.
++
++use crate::game_commands::{object, string_field, GameCommandError};
++use crate::game_io::GameEntityHandle;
++use crate::vfx::VfxPlayer;
++use engine_authoring::Value;
++use engine_ecs::{Entity, World};
++
++pub(super) enum PreparedVfxCommand {
++    Play { entity: Entity },
++    Pause { entity: Entity },
++    Restart { entity: Entity },
++}
++
++pub(super) fn prepare(
++    world: &World,
++    index: usize,
++    target: GameEntityHandle,
++    entity: Entity,
++    payload: &Value,
++) -> Result<PreparedVfxCommand, GameCommandError> {
++    if world.get_component::<VfxPlayer>(entity).is_none() {
++        return Err(GameCommandError::InvalidPayload {
++            index,
++            message: format!(
++                "VFX command target {}:{} does not have engine.vfx_player",
++                target.id, target.generation
++            ),
++        });
++    }
++    let fields = object(payload, index, "VFX payload")?;
++    match string_field(fields, "operation", index)? {
++        "play" => Ok(PreparedVfxCommand::Play { entity }),
++        "pause" => Ok(PreparedVfxCommand::Pause { entity }),
++        "restart" => Ok(PreparedVfxCommand::Restart { entity }),
++        other => Err(GameCommandError::InvalidPayload {
++            index,
++            message: format!("unknown VFX operation `{other}`"),
++        }),
++    }
++}
++
++pub(super) fn apply(world: &mut World, command: PreparedVfxCommand) {
++    match command {
++        PreparedVfxCommand::Play { entity } => world
++            .get_component_mut::<VfxPlayer>(entity)
++            .expect("preflighted VFX player must remain live during exclusive apply")
++            .play(),
++        PreparedVfxCommand::Pause { entity } => world
++            .get_component_mut::<VfxPlayer>(entity)
++            .expect("preflighted VFX player must remain live during exclusive apply")
++            .pause(),
++        PreparedVfxCommand::Restart { entity } => world
++            .get_component_mut::<VfxPlayer>(entity)
++            .expect("preflighted VFX player must remain live during exclusive apply")
++            .restart(),
++    }
++}
+diff --git a/crates/engine/src/game_host/core.rs b/crates/engine/src/game_host/core.rs
+--- a/crates/engine/src/game_host/core.rs
++++ b/crates/engine/src/game_host/core.rs
+@@ -1,5 +1,29 @@
+ use crate::ui_document::{UiBindingValue, UiBindings, UiEventFrame};
++use crate::vfx::VfxPlayer;
+ use engine_authoring::Value;
+ 
++        EngineViewKind::VfxState => {
++            let player = world.get_component::<VfxPlayer>(entity)?;
++            let stats = player.instance().stats();
++            Value::Object(BTreeMap::from([
++                ("playing".to_owned(), Value::Bool(player.is_playing())),
++                (
++                    "elapsed_seconds".to_owned(),
++                    Value::F64(f64::from(player.instance().elapsed_seconds())),
++                ),
++                ("live_particles".to_owned(), Value::U64(stats.live_particles as u64)),
++                (
++                    "spawned_particles".to_owned(),
++                    Value::U64(stats.spawned_particles),
++                ),
++                (
++                    "dropped_particles".to_owned(),
++                    Value::U64(stats.dropped_particles),
++                ),
++                ("looping".to_owned(), Value::Bool(player.looping)),
++                ("time_scale".to_owned(), Value::F64(f64::from(player.time_scale))),
++                ("backend".to_owned(), Value::String(format!("{:?}", stats.backend))),
++            ]))
++        }
+         EngineViewKind::UiBindings => {
+             let bindings = world.get_resource::<UiBindings>()?;
