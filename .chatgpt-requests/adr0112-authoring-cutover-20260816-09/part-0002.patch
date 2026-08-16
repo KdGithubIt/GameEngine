@@ -1,0 +1,43 @@
+diff --git a/crates/import/src/model_import.rs b/crates/import/src/model_import.rs
+--- a/crates/import/src/model_import.rs
++++ b/crates/import/src/model_import.rs
+@@ -26,5 +26,5 @@ use crate::morph::{MaterialMorphOffset, MaterialMorphOperation, MorphAsset};
+ use crate::rigid_body_rig::{
+-    JointDef, RigidBodyDef, RigidBodyMode, RigidBodyRigAsset, RigidBodyShape,
++    JointDef, RigidBodyDef, RigidBodyMode, RigidBodyShape, SecondaryMotionRigAsset,
+ };
+@@ -196,4 +196,4 @@ pub struct GltfImportResult {
+-    /// The source's secondary-motion rigid-body rig, if it declared one
+-    /// (ADR 0097 §6). `None` for every glTF and FBX source.
+-    pub rigid_body_rig: Option<RigidBodyRigAsset>,
++    /// The source's engine-native secondary-motion rig, if it declared one
++    /// (ADR 0112). `None` for every glTF and FBX source.
++    pub rigid_body_rig: Option<SecondaryMotionRigAsset>,
+@@ -292,5 +292,5 @@ impl GltfImportResult {
+         if let Some(rig) = &self.rigid_body_rig {
+             assets.push(make(
+                 &rig.id,
+-                ImportedSubAssetKind::RigidBodyRig,
++                ImportedSubAssetKind::SecondaryMotionRig,
+                 rig.name.clone(),
+                 0,
+@@ -1224,5 +1224,5 @@ fn build_rigid_body_rig(
+     document: &ModelDocument,
+     skins: &[GltfSkinData],
+     diagnostics: &mut Vec<Diagnostic>,
+-) -> Option<RigidBodyRigAsset> {
++) -> Option<SecondaryMotionRigAsset> {
+@@ -1315,10 +1315,10 @@ fn build_rigid_body_rig(
+-    Some(RigidBodyRigAsset {
+-        schema_version: crate::rigid_body_rig::RIGID_BODY_RIG_SCHEMA_VERSION,
++    Some(SecondaryMotionRigAsset {
++        schema_version: crate::rigid_body_rig::SECONDARY_MOTION_RIG_SCHEMA_VERSION,
+         // A source declares at most one rig, so selector 0 is the whole
+-        // space and the ID stays stable no matter how the rig changes.
+-        id: imported_sub_asset_id(source_id, ImportedSubAssetKind::RigidBodyRig, 0),
+-        name: "Rigid Body Rig".to_owned(),
++        // space. ADR 0112 deliberately gives this new authored asset kind a
++        // new selector namespace instead of reinterpreting the old ID.
++        id: imported_sub_asset_id(source_id, ImportedSubAssetKind::SecondaryMotionRig, 0),
++        name: "Secondary Motion Rig".to_owned(),
+         skeleton: shared_skeleton.map(|skeleton| skeleton.id.clone()),
