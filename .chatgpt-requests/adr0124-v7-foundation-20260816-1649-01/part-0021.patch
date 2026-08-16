@@ -1,0 +1,71 @@
+         if transform.translation.distance(final_waypoint) <= agent.stopping_distance {
+             agent.current_path.clear();
+             agent.path_index = 0;
+-            agent.status = NavMeshAgentStatus::Arrived;
++            agent.status = if agent.current_path_partial {
++                NavMeshAgentStatus::PartialPath
++            } else {
++                NavMeshAgentStatus::Arrived
++            };
+             continue;
+         }
+         while agent.path_index < agent.current_path.len()
+@@ -1828,6 +1955,132 @@ mod tests {
+         ));
+     }
+ 
++
++    #[test]
++    fn max_climb_connects_matching_xz_edges_without_linking_stacked_floors() {
++        let mut build = input(vec![
++            triangle(
++                Vec3::new(0.0, 0.0, 0.0),
++                Vec3::new(2.0, 0.0, 0.0),
++                Vec3::new(2.0, 0.0, 2.0),
++            ),
++            triangle(
++                Vec3::new(2.0, 0.3, 0.0),
++                Vec3::new(4.0, 0.3, 2.0),
++                Vec3::new(2.0, 0.3, 2.0),
++            ),
++        ]);
++        build.profiles[0].max_climb = 0.4;
++        let query = NavMeshQuery::new(
++            ProductionNavigationBaker
++                .bake(&build, &|| false)
++                .expect("step fixture must bake"),
++        );
++        assert!(matches!(
++            query.query_path(
++                DEFAULT_NAVIGATION_PROFILE,
++                Vec3::new(1.5, 0.0, 0.5),
++                Vec3::new(2.5, 0.3, 1.5),
++            ),
++            NavigationPathResult::Complete(_)
++        ));
++
++        build.profiles[0].max_climb = 0.2;
++        let query = NavMeshQuery::new(
++            ProductionNavigationBaker
++                .bake(&build, &|| false)
++                .expect("blocked step fixture must bake"),
++        );
++        assert!(matches!(
++            query.query_path(
++                DEFAULT_NAVIGATION_PROFILE,
++                Vec3::new(1.5, 0.0, 0.5),
++                Vec3::new(2.5, 0.3, 1.5),
++            ),
++            NavigationPathResult::Failure(NavigationQueryFailure::NoPath)
++        ));
++    }
++
++    #[test]
++    fn radius_rejects_portals_narrower_than_agent_diameter() {
++        let triangles = vec![
++            triangle(
++                Vec3::new(0.0, 0.0, 0.0),
++                Vec3::new(1.0, 0.0, 0.0),
++                Vec3::new(1.0, 0.0, 1.0),
++            ),
++            triangle(
