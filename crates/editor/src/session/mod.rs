@@ -10,18 +10,18 @@
 //! command funnel every scene-editing submodule commits through. Each
 //! submodule extends [`EditorSession`] with one area:
 //!
-//! - [`undo`] — snapshot history, dirty tracking, and clean baselines
-//! - [`graph_edit`] — domain-neutral semantic graph and presentation editing
-//! - [`behavior_edit`] — Behavior Tree node creation and child edges
-//! - [`animation_edit`] — Animation Graph states, transitions, motion slots
-//! - [`scene_entities`] — scene entity lifecycle, hierarchy, and metadata
-//! - [`scene_components`] — component add, remove, and value edits
-//! - [`scene_models`] — Skinned Model and renderer part relationships
-//! - [`scene_clipboard`] — duplicate and paste with stable ID remapping
-//! - [`scene_transform`] — batch transform, align, and distribute operations
-//! - [`documents`] — opening scene, graph, and UI documents
-//! - [`persistence`] — saving, crash recovery, and loading
-//! - [`errors`] — the error types every area returns
+//! - `undo` — snapshot history, dirty tracking, and clean baselines
+//! - `graph_edit` — domain-neutral semantic graph and presentation editing
+//! - `behavior_edit` — Behavior Tree node creation and child edges
+//! - `animation_edit` — Animation Graph states, transitions, motion slots
+//! - `scene_entities` — scene entity lifecycle, hierarchy, and metadata
+//! - `scene_components` — component add, remove, and value edits
+//! - `scene_models` — Skinned Model and renderer part relationships
+//! - `scene_clipboard` — duplicate and paste with stable ID remapping
+//! - `scene_transform` — batch transform, align, and distribute operations
+//! - `documents` — opening scene, graph, and UI documents
+//! - `persistence` — saving, crash recovery, and loading
+//! - `errors` — the error types every area returns
 
 mod animation_edit;
 mod behavior_edit;
