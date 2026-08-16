@@ -111,8 +111,9 @@ the beginning:
   [0112](0112-engine-native-secondary-motion-and-pmx-physics-conversion.md), and
   [0116](0116-animation-events-owned-by-animation-set-bindings.md).
 - **AI, CLI, and MCP:** [0015](0015-mcp-behavior-tree-tool-adapter.md),
-  [0035](0035-ai-agent-bridge-ipc.md), and
-  [0121](0121-ai-native-authoring-parity-and-project-scoped-mcp-lifecycle.md).
+  [0035](0035-ai-agent-bridge-ipc.md),
+  [0121](0121-ai-native-authoring-parity-and-project-scoped-mcp-lifecycle.md), and
+  [0131](0131-conversational-ai-studio-agent-runtime-and-governed-workspace.md).
 
 ## Proposed Decisions
 
@@ -268,3 +269,4 @@ implementation contract.
 | [0128](0128-renderer-owned-full-image-based-lighting.md) | Renderer-Owned Full Image-Based Lighting |
 | [0129](0129-generic-directional-point-spot-lighting.md) | Generic Directional, Point, and Spot Direct Lighting |
 | [0130](0130-renderer-temporal-history-infrastructure.md) | Renderer Temporal History Infrastructure |
+| [0131](0131-conversational-ai-studio-agent-runtime-and-governed-workspace.md) | Conversational AI Studio Agent Runtime and Governed Workspace |

@@ -7,6 +7,8 @@
 #![warn(missing_docs)]
 #![warn(rustdoc::broken_intra_doc_links)]
 
+mod agent_host;
+pub mod ai_studio;
 pub mod anim_ux;
 mod animation_set_editor;
 pub mod asset_browser;
@@ -44,6 +46,7 @@ pub mod view_aspect;
 mod view_resolution;
 mod workspace;
 
+pub use ai_studio::{AiStudioConnection, AiStudioPanel};
 pub use anim_ux::{
     build_retarget_map_inspector_model, build_skeleton_bind_report, find_skeleton_display_name,
     find_skeleton_record, merge_bone_pairs, rerun_name_matching, resolve_bone_name,
