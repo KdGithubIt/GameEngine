@@ -1,0 +1,151 @@
+diff --git a/docs/adr/0127-native-2d-gameplay-and-authoring-architecture.md b/docs/adr/0127-native-2d-gameplay-and-authoring-architecture.md
+new file mode 100644
+index 0000000..b5aa989
+--- /dev/null
++++ b/docs/adr/0127-native-2d-gameplay-and-authoring-architecture.md
+@@ -0,0 +1,414 @@
++# ADR 0127: Native 2D Gameplay and Authoring Architecture
++
++Status: Proposed
++Date: 2026-08-16
++Builds on: ADR 0053, ADR 0054, ADR 0072, ADR 0107, ADR 0113, ADR 0114, ADR 0118, ADR 0121
++Relates to: ADR 0125, ADR 0126
++
++## Context
++
++GameEngine is currently 3D-first. It already has the reusable foundations a 2D
++workflow should keep: ECS, scenes/prefabs, input actions, save/audio/UI, asset
++management, one Transform hierarchy, Editor transactions, persistent Scene View
++preview, mesh/material rendering, `Camera3D`, and a Rapier 3D physics backend.
++
++A textured 3D quad is not a complete 2D workflow. Practical 2D games need stable
++sprite regions and pivots, explicit draw order, orthographic/pixel-aware cameras,
++sprite animation, tile authoring, 2D physics/queries, one-way platforms, and
++Editor tools built for those concepts. The existing Editor UX plan also left the
++sprite component as future work rather than defining a full 2D architecture.
++
++The engine must not solve this by creating a second 2D engine beside the 3D
++engine, nor by hiding all 2D semantics inside 3D meshes and constrained 3D
++physics. This ADR defines native 2D as a first-class capability distributed
++across the existing domain owners, with an authoring-first Editor workflow and
++stable extension points for later lighting, parallax, VFX, and Timeline work.
++
++## Decision
++
++### 1. 2D uses existing domain ownership; there is no `engine-2d` mega-crate
++
++Ownership follows ADR 0113:
++
++- `engine-authoring`: Sprite Atlas, Sprite Animation, Tile Set, Tile Map,
++  project 2D settings, schemas, commands, validation, and GUI-free services.
++- `engine-assets`: backend-neutral compiled/runtime sprite-region and tile data
++  consumed by several domains.
++- `engine-animation`: sprite animation playback/time evaluation.
++- `engine-physics`: 2D bodies, colliders, joints, queries, controller state,
++  events, and solver adapters.
++- `engine-render-runtime`: `Camera2D`, sprite batching/sorting, tile rendering,
++  and later 2D lighting/presentation.
++- `engine-scene`: authoring-to-runtime conversion for 2D scene components.
++- top-level `engine`: cross-domain composition such as a Tile Map that creates
++  both render chunks and physics collision chunks.
++- Editor: presentation and interaction only, never alternate runtime semantics.
++
++No lower crate depends upward merely because a feature is called 2D. The
++`engine` facade continues to re-export supported public types.
++
++### 2. One Transform hierarchy remains the only spatial authority
++
++The existing `Transform`, `GlobalTransform`, `Parent`, and `Children` hierarchy
++is reused. No parallel `Transform2D` or second hierarchy is introduced.
++
++Native 2D convention is:
++
++- gameplay plane: world XY;
++- +X right, +Y up;
++- sprites lie in local XY facing +Z;
++- 2D rotation is rotation around Z;
++- ordinary 2D scale uses X/Y; and
++- logical draw order is not encoded by mutating Transform Z.
++
++The Editor's 2D mode exposes the common X/Y, Z-rotation, and X/Y-scale controls
++with planar gizmos, but still edits the normal Transform through
++`AuthoringCommand`.
++
++2D physics projects the resolved pose to solver X/Y plus Z rotation only when
++the hierarchy is representable as planar 2D. Non-planar rotation, non-finite
++values, or another unsupported effective transform shape produces a structured
++diagnostic instead of silent projection.
++
++### 3. Project Settings owns 2D defaults and stable sorting layers
++
++Project Settings gains a typed 2D section with at least:
++
++- default pixels per world unit;
++- default sprite filtering policy;
++- 2D gravity;
++- default Camera2D/pixel-preview policy; and
++- ordered named sorting layers with stable `SortingLayerId` values.
++
++Sprites and Tile Maps persist the stable sorting-layer ID, not its display name.
++Renaming a layer therefore keeps content bound to the same layer. Sorting layers
++are distinct from collision layers and render/culling masks.
++
++Editor, CLI, and MCP use the same Project Settings service/transaction contract
++per ADR 0121.
++
++### 4. Sprite regions use stable IDs and derived GPU packing
++
++Introduce versioned `*.spriteatlas.json` `SpriteAtlasDocument` assets. Each
++sprite region owns:
++
++- stable `SpriteId`;
++- display name;
++- source texture reference and integer pixel rectangle;
++- normalized pivot;
++- pixels-per-unit policy; and
++- sampling/extrusion metadata needed to avoid atlas bleeding.
++
++A single image uses the same model with one full-image region. Sprite sheets use
++slicing tools to create multiple regions. Renaming, reordering, or derived atlas
++repacking does not change `SpriteId`.
++
++`SpriteRef` identifies the atlas asset plus stable `SpriteId`. Scene/animation
++data never persists GPU handles, UV floats, packed-page indices, or filesystem
++paths as logical sprite identity. Runtime atlas packing is derived cache/build
++work and can change without rewriting authored references.
++
++### 5. `engine.sprite_renderer_2d` has a dedicated batched render path
++
++A stable SpriteRenderer2D authoring component contains a `SpriteRef`, tint,
++flip flags, sorting layer, `order_in_layer`, visibility, and only the material/
++blend overrides that are meaningful to the supported 2D renderer.
++
++Runtime rendering generates shared quad/instance data from sprite regions rather
++than creating one Mesh asset per sprite. Compatible sprites batch by texture
++page/material/sampler/render state while preserving deterministic authored draw
++order.
++
++Sorting layer + `order_in_layer` define logical order. Equal authored order has
++a deterministic runtime tie-break; authors do not need presentation-only Z magic
++numbers.
++
++The default path is unlit and alpha-aware and follows ADR 0118 color/texture
++semantics. Lit sprites/normal maps may extend this later without replacing
++SpriteId, sorting, or Transform contracts. 3D world-space billboards remain a
++separate rendering use case.
++
++### 6. `Camera2D` is orthographic and shares one active-camera arbitration rule
++
++`engine-render-runtime` gains `Camera2D` with enabled/priority,
++orthographic size/zoom, near/far range, pixel-perfect mode, reference
++pixels-per-unit/resolution, and viewport fitting/crop policy.
++
++Camera2D uses the normal Transform and views the XY gameplay plane. Invalid
++non-planar tilt is rejected or diagnosed when it violates 2D camera semantics.
++
++ADR 0107's active-camera rule is generalized rather than copied. `Camera3D` and
++`Camera2D` contribute to one common enabled/priority ordering, and highest-
++priority ties across camera types receive an authoring diagnostic rather than
++being resolved by query order as persisted intent.
++
++Pixel-perfect mode adjusts projection/camera
