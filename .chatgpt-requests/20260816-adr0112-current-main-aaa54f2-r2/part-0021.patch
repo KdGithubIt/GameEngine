@@ -1,0 +1,19 @@
+diff --git a/crates/import/src/lib.rs b/crates/import/src/lib.rs
+--- a/crates/import/src/lib.rs
++++ b/crates/import/src/lib.rs
+@@ -107,15 +107,3 @@ pub mod scene_bridge {
+     /// Transform authoring component ID.
+     pub const TRANSFORM_COMPONENT: &str = "engine.transform";
+ }
+-
+-/// Temporary compatibility namespace for the PMX authoring-unit scale test.
+-///
+-/// The high-level facade retains a second test against the real physics bridge,
+-/// so moving the importer does not erase the cross-domain drift guard.
+-#[cfg(all(feature = "mmd-import", not(target_arch = "wasm32")))]
+-#[doc(hidden)]
+-pub mod mmd_physics {
+-    /// PMX authored-unit scale mirrored only for importer-local regression tests.
+-    #[doc(hidden)]
+-    pub const PMX_AUTHORING_SCALE: f32 = 0.08;
+-}
