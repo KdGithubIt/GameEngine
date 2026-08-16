@@ -1,0 +1,60 @@
++
++Rejected. Internal run lifecycle must not silently rewrite or pollute the user's
++source-control history. Git remains a user/team collaboration tool; agent
++checkpoints are independent session metadata.
++
++### Store all AI sessions only in user-local application data
++
++Rejected. It prevents deliberate continuation across machines and team
++collaboration. Local-private remains the default, with an explicit project-shared
++option that is safe to version in Git.
++
++### Store all AI conversation and workspace state in canonical project data
++
++Rejected. Conversation, credentials, provider state, caches, and agent process
++metadata are not gameplay authoring semantics and must not affect packaged game
++content or canonical project validation.
++
++### Lock the Editor while an AI run is active
++
++Rejected. It would make the AI feature hostile to normal interactive editing.
++Existing stale-revision checks already provide the correct semantic conflict
++boundary for authoring data.
++
++### Claim application permissions provide a universal sandbox
++
++Rejected. An external process running under the user's OS identity may retain
++capabilities outside GameEngine's application policy. Strong confinement must
++come from a real provider or operating-system isolation mechanism.
++
++## Compatibility and Migration
++
++This ADR does not change existing persisted authoring document schemas, stable
++IDs, MCP tool names, CLI command meanings, or runtime ECS contracts.
++
++If accepted, ADR 0121 remains authoritative for the Editor-scoped MCP writer
++and shared authoring transaction semantics. This decision extends the
++application layer above that interface with conversational agent orchestration,
++provider/runtime abstractions, permission policy, code workspace management,
++asset acquisition, and AI session persistence.
++
++Implementing project-shared AI history introduces a reserved collaboration
++metadata area under the project tree. That metadata is explicitly not canonical
++authoring data and is excluded from packaged game content. Its own session
++schema MUST be versioned before cross-machine persistence is shipped.
++
++Implementing the native agent runtime, code workspace, asset acquisition
++service, and any new workspace crates adds public internal architecture but does
++not authorize runtime crates to depend on Editor, MCP transport, provider SDKs,
++or AI session types.
++
++Provider credentials and login sessions remain user-private. Migration from
++local-only sessions to project-shared sessions is an explicit user action and
++must sanitize non-portable or secret fields before writing the shared record.
++
++If this ADR is accepted, `docs/AI_FRIENDLY_AUTHORING_SPEC.md` sections 16-18
++MUST be updated before or with implementation so the canonical specification
++reflects the accepted agent-runtime, permission, and collaboration contracts.
++diff --git a/docs/adr/README.md b/docs/adr/README.md
++index a762cd2..6a061e1 100644
++--- a/docs/adr/README.md
