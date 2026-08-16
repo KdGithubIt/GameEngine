@@ -1,0 +1,6 @@
+diff --git a/crates/engine/src/navigation_bake.rs b/crates/engine/src/navigation_bake.rs
+--- a/crates/engine/src/navigation_bake.rs
++++ b/crates/engine/src/navigation_bake.rs
+@@ -10,1 +10,1 @@
+-use std::path::{Path, PathBuf};
++use std::path::PathBuf;
