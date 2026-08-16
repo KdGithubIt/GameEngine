@@ -895,6 +895,22 @@ and persistence ownership are resolved.
 CLI and MCP are adapters over the command and query API. They MUST NOT implement
 their own authoring rules.
 
+For a project open in the Editor, MCP is the standard structured AI authoring
+interface. CLI remains the headless scripting and automation adapter. ADR 0121
+defines the MCP lifecycle: the active project-scoped Editor owns the initial
+write-capable loopback endpoint, while `engine-mcp` remains a transport-agnostic
+tool-handler crate. Endpoint discovery and credentials are ephemeral
+application state and MUST NOT enter canonical project files.
+
+Each MCP mutation call is one authoring transaction. Tools SHOULD accept bulk
+command sequences when an edit must commit atomically; the initial contract does
+not keep transactions open across multiple MCP calls. Preview/apply flows MUST
+carry document revision or generation identity so stale applies are rejected.
+
+The ADR 0035 AI Agent Bridge remains the input, frame-observation, and visual
+interaction path. It MUST NOT be treated as a substitute for semantic authoring
+parity when a capability changes persisted project data.
+
 Example CLI:
 
 ```text
@@ -1545,8 +1561,9 @@ Phase 6 intentionally does not implement:
 - Visual graph editing.
 - Runtime ECS execution.
 
-ADR 0015 records the adapter boundary. Open Decision #7 still covers the final
-transport and process lifecycle.
+ADR 0015 records the adapter boundary. ADR 0121 resolves the project-scoped MCP
+transport/process lifecycle and the cross-call transaction policy; implementing
+that lifecycle remains follow-up work beyond the completed Phase 6 handler crate.
 
 ### Phase 7: ECS Behavior Tree Integration
 
@@ -1748,8 +1765,6 @@ an Architecture Decision Record before broad implementation depends on them:
    layout beyond the Phase 8 editor merge policy accepted in ADR 0016.
 6. Authoring-to-runtime build artifact format and the crate that owns the
    build pipeline.
-7. MCP transport and process lifecycle, including transaction identity across
-   multiple MCP tool calls.
 
 ADRs SHOULD be stored under:
 
@@ -1767,6 +1782,10 @@ Resolved authoring, adapter, and runtime decisions:
 - ADR 0015 defines the Phase 6 MCP Behavior Tree tool adapter boundary.
 - ADR 0016 defines the Phase 8 human visual editor command and presentation
   boundary.
+- ADR 0121 makes MCP the standard structured AI authoring interface for an
+  active Editor project, defines the project-scoped Editor-owned loopback
+  lifecycle, and uses bulk single-call transactions instead of cross-call
+  transaction identity.
 - ADR 0017 defines the Phase 8-A human editor GUI toolkit and crate boundary.
 - ADR 0018 defines the Phase 8-B undo/redo snapshot strategy (JSON snapshots, 100-step limit).
 - ADR 0019 defines the Phase 8-C editor combined-file persistence format (superseded by ADR 0022).

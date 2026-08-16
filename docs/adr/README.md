@@ -178,6 +178,7 @@ canonical specification MUST also update
 | [0118](0118-rendering-color-space-and-texture-semantics.md) | Rendering Color-Space and Texture-Semantics Contract |
 | [0119](0119-tangent-space-gpu-contract-and-shared-material-fragment.md) | Tangent-Space GPU Contract and Shared Material Fragment Stage |
 | [0120](0120-generic-pbr-material-texture-contract.md) | Generic PBR Material Texture Contract |
+| [0121](0121-ai-native-authoring-parity-and-project-scoped-mcp-lifecycle.md) | AI-Native Authoring Parity and Project-Scoped MCP Lifecycle |
 
 ## Phase 41+ ADR Targets
 
