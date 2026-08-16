@@ -1,0 +1,318 @@
++fn triangle_is_walkable(points: [Vec3; 3], profile: &NavigationAgentProfile) -> bool {
++    let normal = (points[1] - points[0])
++        .cross(points[2] - points[0])
++        .try_normalize()
++        .unwrap_or(Vec3::ZERO);
++    normal.y.abs() >= profile.max_slope_degrees.to_radians().cos()
++}
++
++fn has_clearance(
++    candidate: NavigationTriangle,
++    input: &NavigationBuildInput,
++    profile: &NavigationAgentProfile,
++) -> bool {
++    let point = candidate.centroid();
++    for ceiling in input.triangles.iter().copied() {
++        if ceiling == candidate {
++            continue;
++        }
++        let ceiling_points = ceiling.points();
++        let minimum_y = ceiling_points
++            .iter()
++            .map(|point| point.y)
++            .fold(f32::INFINITY, f32::min);
++        if minimum_y <= point.y + PORTAL_EPSILON || minimum_y - point.y >= profile.height {
++            continue;
++        }
++        if point_in_triangle_xz(point, ceiling_points) {
++            return false;
++        }
++    }
++    true
++}
++
++fn point_in_triangle_xz(point: Vec3, triangle: [Vec3; 3]) -> bool {
++    let p = Vec2::new(point.x, point.z);
++    let a = Vec2::new(triangle[0].x, triangle[0].z);
++    let b = Vec2::new(triangle[1].x, triangle[1].z);
++    let c = Vec2::new(triangle[2].x, triangle[2].z);
++    let ab = cross_2d(b - a, p - a);
++    let bc = cross_2d(c - b, p - b);
++    let ca = cross_2d(a - c, p - c);
++    (ab >= -PORTAL_EPSILON && bc >= -PORTAL_EPSILON && ca >= -PORTAL_EPSILON)
++        || (ab <= PORTAL_EPSILON && bc <= PORTAL_EPSILON && ca <= PORTAL_EPSILON)
++}
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
++struct QuantizedPoint2(i32, i32);
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
++struct EdgeKey(QuantizedPoint2, QuantizedPoint2);
++
++#[derive(Debug, Clone, Copy)]
++struct EdgeRecord {
++    polygon: NavigationPolygonRef,
++    a: Vec3,
++    b: Vec3,
++}
++
++fn quantize_xz(point: Vec3) -> QuantizedPoint2 {
++    QuantizedPoint2(
++        (point.x * EDGE_QUANTIZATION).round() as i32,
++        (point.z * EDGE_QUANTIZATION).round() as i32,
++    )
++}
++
++fn build_adjacency(tiles: &mut [NavigationTile], profile: &NavigationAgentProfile) {
++    let mut edges: BTreeMap<EdgeKey, Vec<EdgeRecord>> = BTreeMap::new();
++    let mut centers = HashMap::new();
++    for tile in tiles.iter() {
++        for (polygon_index, polygon) in tile.polygons.iter().enumerate() {
++            let reference = NavigationPolygonRef {
++                tile: tile.id,
++                polygon: polygon_index as u32,
++            };
++            let points = polygon_points(tile, polygon);
++            if points.is_empty() {
++                continue;
++            }
++            centers.insert(
++                reference,
++                points.iter().copied().sum::<Vec3>() / points.len() as f32,
++            );
++            for edge_index in 0..points.len() {
++                let a = points[edge_index];
++                let b = points[(edge_index + 1) % points.len()];
++                let qa = quantize_xz(a);
++                let qb = quantize_xz(b);
++                let key = if qa <= qb {
++                    EdgeKey(qa, qb)
++                } else {
++                    EdgeKey(qb, qa)
++                };
++                edges.entry(key).or_default().push(EdgeRecord {
++                    polygon: reference,
++                    a,
++                    b,
++                });
++            }
++        }
++    }
++
++    let index = polygon_index(tiles);
++    let minimum_width = profile.radius.max(0.0) * 2.0;
++    for shared in edges.values().filter(|records| records.len() > 1) {
++        for first_index in 0..shared.len() {
++            for second_index in (first_index + 1)..shared.len() {
++                let first = shared[first_index];
++                let second = shared[second_index];
++                if first.polygon == second.polygon {
++                    continue;
++                }
++                let Some((portal_a, portal_b, climb)) = matched_portal(first, second) else {
++                    continue;
++                };
++                let width = Vec2::new(portal_b.x - portal_a.x, portal_b.z - portal_a.z).length();
++                if climb > profile.max_climb + PORTAL_EPSILON
++                    || width + PORTAL_EPSILON < minimum_width
++                {
++                    continue;
++                }
++                let Some(first_center) = centers.get(&first.polygon).copied() else {
++                    continue;
++                };
++                let Some(second_center) = centers.get(&second.polygon).copied() else {
++                    continue;
++                };
++                insert_portal(
++                    tiles,
++                    &index,
++                    first.polygon,
++                    second.polygon,
++                    portal_a,
++                    portal_b,
++                    first_center,
++                    second_center,
++                );
++                insert_portal(
++                    tiles,
++                    &index,
++                    second.polygon,
++                    first.polygon,
++                    portal_a,
++                    portal_b,
++                    second_center,
++                    first_center,
++                );
++            }
++        }
++    }
++
++    for tile in tiles {
++        for polygon in &mut tile.polygons {
++            polygon.portals.sort_by_key(|portal| portal.to);
++            polygon.portals.dedup_by_key(|portal| portal.to);
++        }
++    }
++}
++
++fn matched_portal(first: EdgeRecord, second: EdgeRecord) -> Option<(Vec3, Vec3, f32)> {
++    let first_a = quantize_xz(first.a);
++    let first_b = quantize_xz(first.b);
++    let second_a = quantize_xz(second.a);
++    let second_b = quantize_xz(second.b);
++    let (second_for_a, second_for_b) = if first_a == second_a && first_b == second_b {
++        (second.a, second.b)
++    } else if first_a == second_b && first_b == second_a {
++        (second.b, second.a)
++    } else {
++        return None;
++    };
++    let climb = (first.a.y - second_for_a.y)
++        .abs()
++        .max((first.b.y - second_for_b.y).abs());
++    let a = (first.a + second_for_a) * 0.5;
++    let b = (first.b + second_for_b) * 0.5;
++    Some((a, b, climb))
++}
++
++#[allow(clippy::too_many_arguments)]
++fn insert_portal(
++    tiles: &mut [NavigationTile],
++    index: &HashMap<NavigationPolygonRef, (usize, usize)>,
++    from: NavigationPolygonRef,
++    to: NavigationPolygonRef,
++    a: Vec3,
++    b: Vec3,
++    from_center: Vec3,
++    to_center: Vec3,
++) {
++    let Some((tile_index, polygon_index)) = index.get(&from).copied() else {
++        return;
++    };
++    let (left, right) = orient_portal(a, b, from_center, to_center);
++    tiles[tile_index].polygons[polygon_index]
++        .portals
++        .push(NavigationPortal {
++            to,
++            left: left.to_array(),
++            right: right.to_array(),
++        });
++}
++
++fn orient_portal(a: Vec3, b: Vec3, from: Vec3, to: Vec3) -> (Vec3, Vec3) {
++    let direction = Vec2::new(to.x - from.x, to.z - from.z);
++    let edge = Vec2::new(b.x - a.x, b.z - a.z);
++    if cross_2d(direction, edge) >= 0.0 {
++        (a, b)
++    } else {
++        (b, a)
++    }
++}
++
++fn resolve_links(input: &NavigationBuildInput, profile: &mut NavigationProfileMesh) {
++    for link in &input.links {
++        if !link.profiles.is_empty() && !link.profiles.contains(&profile.profile.id) {
++            continue;
++        }
++        let Some((from, _)) = nearest_polygon_in_profile(profile, Vec3::from_array(link.start))
++        else {
++            continue;
++        };
++        let Some((to, _)) = nearest_polygon_in_profile(profile, Vec3::from_array(link.end)) else {
++            continue;
++        };
++        profile.links.push(NavigationLink {
++            id: link.id.clone(),
++            from,
++            to,
++            start: link.start,
++            end: link.end,
++            bidirectional: link.bidirectional,
++            area: link.area,
++            cost: link.cost,
++            traversal_tag: link.traversal_tag.clone(),
++        });
++    }
++    profile.links.sort_by(|left, right| left.id.cmp(&right.id));
++}
++
++fn polygon_points(tile: &NavigationTile, polygon: &NavigationPolygon) -> Vec<Vec3> {
++    polygon
++        .vertices
++        .iter()
++        .filter_map(|index| tile.vertices.get(*index as usize).copied())
++        .map(Vec3::from_array)
++        .collect()
++}
++
++fn polygon_index(tiles: &[NavigationTile]) -> HashMap<NavigationPolygonRef, (usize, usize)> {
++    let mut index = HashMap::new();
++    for (tile_index, tile) in tiles.iter().enumerate() {
++        for polygon_index in 0..tile.polygons.len() {
++            index.insert(
++                NavigationPolygonRef {
++                    tile: tile.id,
++                    polygon: polygon_index as u32,
++                },
++                (tile_index, polygon_index),
++            );
++        }
++    }
++    index
++}
++
++/// Typed failure from a production path query.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub enum NavigationQueryFailure {
++    /// Requested profile does not exist in the loaded asset.
++    MissingProfile(String),
++    /// No production navigation polygons are available for the profile.
++    MissingNavigationData,
++    /// Start position cannot be projected within the requested tolerance.
++    StartOutside,
++    /// Destination cannot be projected to any navigation polygon.
++    EndOutside,
++    /// No useful route can be produced from the start polygon.
++    NoPath,
++}
++
++/// Successful or partial production navigation path.
++#[derive(Debug, Clone, PartialEq)]
++pub struct NavigationPath {
++    /// Smoothed world-space steering points.
++    pub waypoints: Vec<Vec3>,
++    /// Polygon corridor retained for diagnostics and Editor path testing.
++    pub corridor: Vec<NavigationPolygonRef>,
++    /// Stable off-mesh link IDs used in traversal order.
++    pub links: Vec<String>,
++    /// Deterministic traversal cost including areas and links.
++    pub total_cost: f32,
++}
++
++/// Typed path-query result.
++#[derive(Debug, Clone, PartialEq)]
++pub enum NavigationPathResult {
++    /// Destination was reached through the selected profile.
++    Complete(NavigationPath),
++    /// The best reachable corridor was returned but the destination was not reached.
++    Partial(NavigationPath),
++    /// Query could not produce a usable route.
++    Failure(NavigationQueryFailure),
++}
++
++/// Runtime resource wrapping one loaded production navigation asset.
++pub struct NavMeshQuery {
++    /// Underlying tiled production asset.
++    pub nav_mesh: NavMesh,
++}
++
++impl NavMeshQuery {
++    /// Creates a query resource from a production asset.
++    pub fn new(nav_mesh: NavMesh) -> Self {
++        Self { nav_mesh }
++    }
++
++    /// Finds only a complete path using the default profile.
++    ///
++    /// Use [`Self::query_path`] when typed failure and partial-path detail matters.
