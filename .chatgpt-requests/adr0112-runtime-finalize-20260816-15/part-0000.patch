@@ -1,0 +1,329 @@
+diff --git a/crates/engine/src/components/builtins.rs b/crates/engine/src/components/builtins.rs
+--- a/crates/engine/src/components/builtins.rs
++++ b/crates/engine/src/components/builtins.rs
+@@ -181,7 +181,7 @@
+ )
+ .with_control(InspectorFieldControl::LodLevels)];
+ 
+-const RIGID_BODY_PHYSICS_FIELDS: &[FieldDef] = &[asset_ref(
++const SECONDARY_MOTION_FIELDS: &[FieldDef] = &[asset_ref(
+     "rig",
+     "Rig",
+     "The Secondary Motion Rig sub-asset imported from this character's model. Bodies and joints are editable engine-native starting values produced by import.",
+@@ -1812,13 +1812,13 @@
+             spawn_foot_ik_component,
+         ),
+         BuiltinComponent::new(
+-            RIGID_BODY_PHYSICS_COMPONENT,
++            SECONDARY_MOTION_COMPONENT,
+             "Secondary Motion",
+             "Simulates the assigned engine-native Secondary Motion Rig for hair, skirts, and accessories.",
+             "Physics",
+             1,
+-            RIGID_BODY_PHYSICS_FIELDS,
+-            spawn_rigid_body_physics_component,
++            SECONDARY_MOTION_FIELDS,
++            spawn_secondary_motion_component,
+         ),
+         BuiltinComponent::new(
+             POINT_LIGHT_COMPONENT,
+diff --git a/crates/engine/src/components/tests.rs b/crates/engine/src/components/tests.rs
+--- a/crates/engine/src/components/tests.rs
++++ b/crates/engine/src/components/tests.rs
+@@ -201,7 +201,7 @@
+             AUDIO_LISTENER_COMPONENT,
+             MUSIC_CONTROLLER_COMPONENT,
+             FOOT_IK_COMPONENT,
+-            RIGID_BODY_PHYSICS_COMPONENT,
++            SECONDARY_MOTION_COMPONENT,
+             POINT_LIGHT_COMPONENT,
+             SPOT_LIGHT_COMPONENT,
+         ]
+diff --git a/crates/engine/src/scene_bridge.rs b/crates/engine/src/scene_bridge.rs
+--- a/crates/engine/src/scene_bridge.rs
++++ b/crates/engine/src/scene_bridge.rs
+@@ -35,7 +35,9 @@
+     BloomSettings, ColorGradingSettings, PostProcessSettings, ToneMapOperator,
+ };
+ use crate::morph::{MorphBaseColor, MorphDirtyVertices, MorphTargets, MorphWeights};
+-use crate::rigid_body_rig::{RigidBodyPhysics, RigidBodyRigRegistry};
++use crate::secondary_motion::{
++    SecondaryMotion, SecondaryMotionRigAsset, SecondaryMotionRigRegistry,
++};
+ use crate::runtime_metadata::RuntimeMetadata;
+ use crate::script_api::RuntimeEntityIdentity;
+ use crate::shadow::{EnvironmentLighting, ShadowSettings};
+@@ -90,7 +92,7 @@
+ 
+ /// The authoring component that opts an entity into engine-native secondary
+ /// motion (ADR 0112).
+-pub const RIGID_BODY_PHYSICS_COMPONENT: &str = "engine.secondary_motion";
++pub const SECONDARY_MOTION_COMPONENT: &str = "engine.secondary_motion";
+ 
+ /// The authorable distance-based mesh LOD group recognised by the bridge.
+ pub const LOD_GROUP_COMPONENT: &str = "engine.lod_group";
+@@ -445,11 +447,12 @@
+     /// spawning `engine.skeleton` this conversion (ADR 0080 §2), tracked for
+     /// the same atomic-rollback reason as the `added_*_handles` fields above.
+     pub(crate) added_skeleton_asset_ids: Vec<AssetId>,
+-    /// Rigid-body rig IDs registered into
+-    /// [`crate::rigid_body_rig::RigidBodyRigRegistry`] while spawning
+-    /// `engine.rigid_body_physics` this conversion (ADR 0097 §6), tracked for
+-    /// the same atomic-rollback reason.
+-    pub(crate) added_rigid_body_rig_ids: Vec<AssetId>,
++    /// Secondary Motion rig definitions replaced while converting this scene.
++    ///
++    /// Each entry keeps the previous value, if any, so rollback restores the
++    /// registry exactly instead of only removing newly inserted IDs.
++    pub(crate) secondary_motion_rig_rollbacks:
++        Vec<(AssetId, Option<SecondaryMotionRigAsset>)>,
+     /// Skeleton entities are runtime-only and must be removed if any later
+     /// component makes the otherwise atomic scene conversion fail.
+     pub(crate) auxiliary_entities: Vec<Entity>,
+@@ -458,6 +461,7 @@
+     remove_animation_store: bool,
+     remove_audio_store: bool,
+     remove_skeleton_registry_store: bool,
++    remove_secondary_motion_registry_store: bool,
+ }
+ 
+ /// Spawns one runtime entity for every [`AuthoringEntity`] in `scene`.
+@@ -1477,6 +1481,15 @@
+     if let Some(skeletons) = world.get_resource_mut::<SkeletonAssetRegistry>() {
+         for id in &assets.added_skeleton_asset_ids {
+             skeletons.remove(id);
++        }
++    }
++    if let Some(rigs) = world.get_resource_mut::<SecondaryMotionRigRegistry>() {
++        for (id, previous) in assets.secondary_motion_rig_rollbacks.iter().rev() {
++            if let Some(previous) = previous {
++                rigs.insert(previous.clone());
++            } else {
++                rigs.remove(id);
++            }
+         }
+     }
+     if assets.remove_mesh_store {
+@@ -1494,6 +1507,9 @@
+     if assets.remove_skeleton_registry_store {
+         world.remove_resource::<SkeletonAssetRegistry>();
+     }
++    if assets.remove_secondary_motion_registry_store {
++        world.remove_resource::<SecondaryMotionRigRegistry>();
++    }
+     errors
+ }
+ 
+diff --git a/crates/engine/src/scene_bridge/spawn.rs b/crates/engine/src/scene_bridge/spawn.rs
+--- a/crates/engine/src/scene_bridge/spawn.rs
++++ b/crates/engine/src/scene_bridge/spawn.rs
+@@ -310,12 +310,12 @@
+     .map_err(|error| error.to_string())
+ }
+ 
+-pub(crate) fn spawn_rigid_body_physics_component(
++pub(crate) fn spawn_secondary_motion_component(
+     entity: Entity,
+     value: &Value,
+     context: &mut SpawnContext<'_>,
+ ) -> Result<(), ComponentSpawnError> {
+-    let component_type = ComponentTypeId::new(RIGID_BODY_PHYSICS_COMPONENT);
++    let component_type = ComponentTypeId::new(SECONDARY_MOTION_COMPONENT);
+     const EXPECTED: &str = "an object with a rig AssetRef field";
+     let fields = ComponentFields::new(context.authoring_entity, &component_type, value, EXPECTED)?;
+     let Some(rig_asset) = fields.assignable_asset_ref("rig")?.cloned() else {
+@@ -329,14 +329,14 @@
+         return Ok(());
+     };
+ 
+-    register_rigid_body_rig(&rig_asset, context);
++    register_secondary_motion_rig(&rig_asset, context);
+     context
+         .world
+-        .add_component(entity, RigidBodyPhysics::new(rig_asset))?;
++        .add_component(entity, SecondaryMotion::new(rig_asset))?;
+     Ok(())
+ }
+ 
+-fn register_rigid_body_rig(rig_asset: &AssetId, context: &mut SpawnContext<'_>) {
++fn register_secondary_motion_rig(rig_asset: &AssetId, context: &mut SpawnContext<'_>) {
+     let Some((source_id, _, sub_asset)) = context.manifest.imported_sub_asset(rig_asset) else {
+         context.asset_diagnostics.push(Diagnostic::warning(
+             "scene_bridge.secondary_motion_rig_unresolved",
+@@ -386,20 +386,26 @@
+         ));
+         return;
+     };
++    if context
++        .world
++        .get_resource::<SecondaryMotionRigRegistry>()
++        .is_none()
++    {
++        context
++            .world
++            .insert_resource(SecondaryMotionRigRegistry::new());
++        context.asset_state.remove_secondary_motion_registry_store = true;
++    }
+     let registry = context
+         .world
+-        .get_resource_mut::<RigidBodyRigRegistry>()
+-        .is_none();
+-    if registry {
+-        context.world.insert_resource(RigidBodyRigRegistry::new());
+-    }
+-    if let Some(registry) = context.world.get_resource_mut::<RigidBodyRigRegistry>() {
+-        registry.insert(rig.clone());
+-        context
+-            .asset_state
+-            .added_rigid_body_rig_ids
+-            .push(rig.id.clone());
+-    }
++        .get_resource_mut::<SecondaryMotionRigRegistry>()
++        .expect("scene bridge must install the Secondary Motion registry before registration");
++    let previous = registry.remove(&rig.id);
++    registry.insert(rig.clone());
++    context
++        .asset_state
++        .secondary_motion_rig_rollbacks
++        .push((rig.id.clone(), previous));
+ }
+ 
+ pub(crate) fn spawn_bone_attachment_component(
+diff --git a/crates/engine/src/lib.rs b/crates/engine/src/lib.rs
+--- a/crates/engine/src/lib.rs
++++ b/crates/engine/src/lib.rs
+@@ -102,8 +102,8 @@
+ pub mod material;
+ /// CPU and GPU mesh types.
+ pub mod mesh;
+-/// Isolated Rapier secondary-motion bridge for imported MMD rigid-body rigs.
+-pub mod mmd_physics;
++/// Engine-native secondary-motion facade (ADR 0112).
++pub mod secondary_motion;
+ /// Format-independent asset builder consuming [`model_ir`] (ADR 0078):
+ /// sub-asset IDs, skeleton identity/dedupe/rebind, and clip BoneId
+ /// resolution.
+@@ -124,8 +124,8 @@
+ pub mod player;
+ /// Pure skeletal clip sampling and pose blending.
+ pub mod pose_graph;
+-/// PMX (MMD model) static mesh / skin / material import pipeline via
+-/// `mmd-anim-format` (ADR 0097 §1, §2, §4).
++/// PMX model import pipeline for mesh, skin, material, morph, and best-effort
++/// engine-native Secondary Motion hints (ADR 0097, ADR 0112).
+ ///
+ /// Desktop-only, same rationale as [`fbx_import`]: PMX import is an
+ /// authoring-time operation, so this module is absent from wasm32 builds
+@@ -144,8 +144,8 @@
+ /// Retarget maps, the pure FK retarget function, and the baked-clip cache
+ /// wiring (ADR 0079).
+ pub mod retarget;
+-/// Imported secondary-motion rigid-body rigs and the marker component that
+-/// opts an entity into simulating one (ADR 0097 §6).
++/// Generic rigid-body definitions shared by the engine-native Secondary Motion
++/// facade and low-level rig tooling (ADR 0111, ADR 0112).
+ pub mod rigid_body_rig;
+ /// Layered rig pose buffers and deterministic world-space pose evaluation.
+ pub mod rig_pose;
+@@ -303,7 +303,11 @@
+     extract_baked_submesh, mesh_to_obj, GpuMesh, GpuMeshCache, InstanceData, Mesh,
+     MeshValidationError, SharedGpuMeshCache, SkinningVertexData, Submesh, Vertex,
+ };
+-pub use mmd_physics::{mmd_rigid_body_physics_system, MmdPhysicsWorlds};
++pub use secondary_motion::{
++    secondary_motion_presentation_system, secondary_motion_system, JointDef, RigidBodyDef,
++    RigidBodyMode, RigidBodyShape, SecondaryMotion, SecondaryMotionRigAsset,
++    SecondaryMotionRigRegistry, SecondaryMotionWorlds, SECONDARY_MOTION_RIG_SCHEMA_VERSION,
++};
+ pub use model_import::{
+     fingerprint_model_source, import_model_bytes, import_model_path,
+     import_model_path_with_contact_bones, model_source_dependencies, GltfAnimationData,
+@@ -344,10 +348,6 @@
+     MaterialMorphOffset, MaterialMorphOperation, MorphAsset, MorphBaseColor, MorphDirtyVertices,
+     MorphTargets, MorphWeights,
+ };
+-pub use rigid_body_rig::{
+-    JointDef, RigidBodyDef, RigidBodyMode, RigidBodyPhysics, RigidBodyRigAsset,
+-    RigidBodyRigRegistry, RigidBodyShape, RIGID_BODY_RIG_SCHEMA_VERSION,
+-};
+ pub use rig_pose::{
+     publish_final_rig_pose_system, rig_pose_clear_transient_system, PoseBlend, PoseBuffer,
+     PoseChannels, PoseLayer, PoseStage, RigPose,
+diff --git a/docs/AI_FRIENDLY_AUTHORING_SPEC.md b/docs/AI_FRIENDLY_AUTHORING_SPEC.md
+--- a/docs/AI_FRIENDLY_AUTHORING_SPEC.md
++++ b/docs/AI_FRIENDLY_AUTHORING_SPEC.md
+@@ -536,6 +536,32 @@
+ 
+ Tools MUST be able to query schemas before creating or connecting nodes.
+ 
++### 8.3 Engine-Native Secondary Motion Schema
++
++ADR 0112 defines one engine-owned authoring component for cosmetic secondary
++motion. Its current schema is:
++
++| Property | Current contract |
++| --- | --- |
++| Component type ID | `engine.secondary_motion` |
++| Schema version | 1 |
++| Category | `Physics` |
++| Field | `rig` |
++| Field type | `AssetRef` constrained to `SecondaryMotionRig` |
++| Default | Unassigned |
++
++An unassigned `rig` is a valid authoring state. Assigning a Secondary Motion Rig
++opts the entity into runtime Secondary Motion; merely importing a model that can
++produce a rig does not make the imported character simulate automatically. The
++serialized field value follows the tagged `AssetRef` form in §7.4.
++
++When model import produces a generated Secondary Motion Rig, the imported
++sub-asset kind serializes as `secondary_motion_rig`. Its deterministic imported
++ID derives from prefix `secondarymotionrig`; the model-level generated rig uses
++selector index 0. The former `rigid_body_rig` kind and `rigidbodyrig` derivation
++namespace are not compatibility aliases and MUST NOT be silently interpreted as
++the current kind (ADR 0112, ADR 0115).
++
+ ## 9. Domain-Neutral Graph Model
+ 
+ Shader Graph, Behavior Tree, Animation Graph, and future graph types MUST share
+diff --git a/docs/MMD_IMPORT.md b/docs/MMD_IMPORT.md
+--- a/docs/MMD_IMPORT.md
++++ b/docs/MMD_IMPORT.md
+@@ -170,20 +170,26 @@
+ scene tracks were ignored. Camera/light/self-shadow-only VMDs are recognized
+ and are not paired with a PMX model.
+ 
+-## Rigid bodies and joints (jiggle physics)
++## Secondary Motion from PMX rigid bodies and joints
+ 
+-A PMX's rigid bodies and six-degree-of-freedom spring joints import as one
+-`RigidBodyRig` sub-asset per model, in engine units and axes. Add
+-**Rigid Body Physics** to the character's Skinned Model entity and point it
+-at that sub-asset — one component, one reference, nothing else to configure,
+-because the model's author already tuned every body and joint in their own
+-tool.
++A PMX's rigid bodies and six-degree-of-freedom spring joints are converted
++best-effort into one engine-native `SecondaryMotionRig` sub-asset per model.
++The importer normalizes source-specific values into engine units and axes and
++emits diagnostics when a shape, body mode, joint kind, binding, or tuning value
++cannot be represented exactly.
+ 
+-The rig is engine-native data plus intent. At runtime, ADR 0096's isolated
+-Rapier bridge creates one solver world per opted-in character, drives
+-follow-bone bodies from animation, simulates dynamic bodies and 6-DOF spring
+-joints, then writes corrected poses back to the skeleton. These cosmetic
+-bodies never enter gameplay collision events or spatial queries.
++Add **Secondary Motion** to the character's Skinned Model entity and assign
++that rig. The component serializes as `engine.secondary_motion` and contains
++only the rig reference. The imported rig is editable engine-native starting
++data, not a promise to reproduce a particular MMD/Bullet solver exactly.
++
++At runtime, ADR 0112's isolated fixed-step solver creates one simulation world
++per opted-in character, drives follow-bone bodies from the procedural pose,
++simulates dynamic bodies and 6-DOF constraints, and writes corrections only to
++the RigPose physics layer. Presentation interpolates fixed-step poses for
++rendering. These cosmetic bodies never enter gameplay collision events or
++spatial queries, and discontinuities reset derived simulation state rather than
++reconstructing hidden animation history.
+ 
+ ## Not yet imported
+ 
