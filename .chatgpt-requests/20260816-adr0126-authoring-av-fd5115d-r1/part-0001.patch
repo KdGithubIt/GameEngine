@@ -1,0 +1,187 @@
+etId,
++    /// Optional stable spatial emitter entity.
++    pub emitter: Option<EntityId>,
++    /// Linear gain.
++    pub volume: f32,
++    /// ADR 0122 spatial blend.
++    pub spatial_blend: f32,
++    /// Whether the tracked voice loops.
++    pub looping: bool,
++}
++
++/// Pre-resolved stable VFX Track payload.
++#[derive(Debug, Clone, PartialEq)]
++pub struct CompiledVfxPayload {
++    /// Stable source track.
++    pub track: TimelineTrackId,
++    /// Stable source clip.
++    pub clip: TimelineClipId,
++    /// Stable VFX effect asset.
++    pub effect_asset: AssetId,
++    /// Stable target entity.
++    pub target: EntityId,
++    /// Simulation multiplier.
++    pub time_scale: f32,
++    /// Optional deterministic seed override.
++    pub seed_override: Option<u32>,
++}
++
+ /// Pre-resolved stable Event Track marker payload.
+ #[derive(Debug, Clone, PartialEq, Eq)]
+ pub struct CompiledEventPayload {
++    /// Stable source Timeline identity.
++    pub timeline: TimelineId,
+     /// Stable source track.
+     pub track: TimelineTrackId,
+     /// Stable marker/event identity.
+@@ -259,7 +402,84 @@
+                     ));
+                 }
+             }
+-            TimelineTrackKind::Event { markers } => {
++            TimelineTrackKind::Audio { clips } => {
++                let mut clips = clips.iter().collect::<Vec<_>>();
++                clips.sort_by_key(|clip| (clip.timing.start_tick, clip.timing.id.clone()));
++                for (item_order, clip) in clips.into_iter().enumerate() {
++                    entries.push(CompiledEntry::interval(
++                        track_order,
++                        u32::try_from(item_order).unwrap_or(u32::MAX),
++                        clip.timing.start_tick,
++                        clip.timing.end_tick,
++                        SeekCapability::NonSeekable,
++                        CompiledTimelinePayload::Audio(CompiledAudioPayload {
++                            track: track.id.clone(),
++                            clip: clip.timing.id.clone(),
++                            audio_asset: clip.audio_asset.clone(),
++                            emitter: clip.emitter.clone(),
++                            volume: clip.volume,
++                            spatial_blend: clip.spatial_blend,
++                            looping: clip.looping,
++                        }),
++                    ));
++                }
++            }
++            TimelineTrackKind::Vfx { clips } => {
++                let mut clips = clips.iter().collect::<Vec<_>>();
++                clips.sort_by_key(|clip| (clip.timing.start_tick, clip.timing.id.clone()));
++                for (item_order, clip) in clips.into_iter().enumerate() {
++                    entries.push(CompiledEntry::interval(
++                        track_order,
++                        u32::try_from(item_order).unwrap_or(u32::MAX),
++                        clip.timing.start_tick,
++                        clip.timing.end_tick,
++                        SeekCapability::ReplayRequired,
++                        CompiledTimelinePayload::Vfx(CompiledVfxPayload {
++                            track: track.id.clone(),
++                            clip: clip.timing.id.clone(),
++                            effect_asset: clip.effect_asset.clone(),
++                            target: clip.target.clone(),
++                            time_scale: clip.time_scale,
++                            seed_override: clip.seed_override,
++                        }),
++                    ));
++                }
++            }
++            TimelineTrackKind::Audio { clips } => {
++            for clip in clips {
++                validate_clip_timing(&track.id, &clip.timing, timeline_duration, clip_ids, diagnostics);
++                if !clip.volume.is_finite() || clip.volume < 0.0 {
++                    diagnostics.push(Diagnostic::error(
++                        "timeline.invalid_audio_volume",
++                        format!("Audio clip `{}` has invalid volume {}", clip.timing.id, clip.volume),
++                    ));
++                }
++                if !clip.spatial_blend.is_finite() || !(0.0..=1.0).contains(&clip.spatial_blend) {
++                    diagnostics.push(Diagnostic::error(
++                        "timeline.invalid_audio_spatial_blend",
++                        format!(
++                            "Audio clip `{}` spatial blend {} is outside [0, 1]",
++                            clip.timing.id, clip.spatial_blend
++                        ),
++                    ));
++                }
++            }
++        }
++        TimelineTrackKind::Vfx { clips } => {
++            for clip in clips {
++                validate_clip_timing(&track.id, &clip.timing, timeline_duration, clip_ids, diagnostics);
++                if !clip.time_scale.is_finite() || clip.time_scale < 0.0 {
++                    diagnostics.push(Diagnostic::error(
++                        "timeline.invalid_vfx_time_scale",
++                        format!(
++                            "VFX clip `{}` has invalid time scale {}",
++                            clip.timing.id, clip.time_scale
++                        ),
++                    ));
++                }
++            }
++        }
++        TimelineTrackKind::Event { markers } => {
+                 let mut markers = markers.iter().collect::<Vec<_>>();
+                 markers.sort_by_key(|marker| (marker.tick, marker.id.clone()));
+                 for (item_order, marker) in markers.into_iter().enumerate() {
+@@ -270,6 +490,7 @@
+                         SeekCapability::Stateless,
+                         true,
+                         CompiledTimelinePayload::Event(CompiledEventPayload {
++                            timeline: document.id.clone(),
+                             track: track.id.clone(),
+                             marker: marker.id.clone(),
+                             name: marker.name.clone(),
+diff --git a/crates/authoring/src/timeline_authoring.rs b/crates/authoring/src/timeline_authoring.rs
+--- a/crates/authoring/src/timeline_authoring.rs
++++ b/crates/authoring/src/timeline_authoring.rs
+@@ -2,9 +2,9 @@
+ use crate::diagnostic::Diagnostic;
+ use crate::id::{TimelineClipId, TimelineMarkerId, TimelineTrackId};
+ use crate::timeline::{
+-    TimelineAnimationClip, TimelineCameraCutClip, TimelineDisplayRate, TimelineDocument,
+-    TimelineEventMarker, TimelineTrack, TimelineTrackKind, TimelineTrackType,
+-    TimelineTransformClip,
++    TimelineAnimationClip, TimelineAudioClip, TimelineCameraCutClip, TimelineDisplayRate,
++    TimelineDocument, TimelineEventMarker, TimelineTrack, TimelineTrackKind, TimelineTrackType,
++    TimelineTransformClip, TimelineVfxClip,
+ };
+ use engine_timeline::TimelineTick;
+ use serde::{Deserialize, Serialize};
+@@ -21,6 +21,10 @@
+     TransformProperty(TimelineTransformClip),
+     /// Camera Cut Track clip.
+     CameraCut(TimelineCameraCutClip),
++    /// Audio Track clip.
++    Audio(TimelineAudioClip),
++    /// VFX Track clip.
++    Vfx(TimelineVfxClip),
+ }
+ 
+ impl TimelineEditableClip {
+@@ -30,6 +34,8 @@
+             Self::Animation(clip) => &clip.timing.id,
+             Self::TransformProperty(clip) => &clip.timing.id,
+             Self::CameraCut(clip) => &clip.timing.id,
++            Self::Audio(clip) => &clip.timing.id,
++            Self::Vfx(clip) => &clip.timing.id,
+         }
+     }
+ 
+@@ -39,6 +45,8 @@
+             Self::Animation(_) => TimelineTrackType::Animation,
+             Self::TransformProperty(_) => TimelineTrackType::TransformProperty,
+             Self::CameraCut(_) => TimelineTrackType::CameraCut,
++            Self::Audio(_) => TimelineTrackType::Audio,
++            Self::Vfx(_) => TimelineTrackType::Vfx,
+         }
+     }
+ }
+@@ -68,6 +76,20 @@
+                 })
+             }
+         }
++    }
++
++    /// Serializes the committed document through the same canonical boundary
++    /// used by Editor, CLI, and MCP adapters.
++    pub fn canonical_save(
++        &self,
++        session: &TimelineAuthoringSession,
++        permissions

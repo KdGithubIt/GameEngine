@@ -1,0 +1,64 @@
+: &AuthoringPermissions,
++    ) -> Result<String, TimelineAuthoringError> {
++        permissions.require(AuthoringPermission::Read)?;
++        Ok(session
++            .document
++            .to_canonical_json()
++            .expect("committed Timeline session must remain canonical-saveable"))
+     }
+ }
+ 
+@@ -99,6 +121,8 @@
+         (TimelineTrackKind::CameraCut { clips }, TimelineEditableClip::CameraCut(clip)) => {
+             clips.push(clip)
+         }
++        (TimelineTrackKind::Audio { clips }, TimelineEditableClip::Audio(clip)) => clips.push(clip),
++        (TimelineTrackKind::Vfx { clips }, TimelineEditableClip::Vfx(clip)) => clips.push(clip),
+         _ => {
+             return Err(TimelineEditError::TrackTypeMismatch {
+                 track_type,
+@@ -125,6 +149,12 @@
+             TimelineEditableClip::TransformProperty(replacement),
+         ) => replace_by_id(clips, id, replacement, |clip| &clip.timing.id),
+         (TimelineTrackKind::CameraCut { clips }, TimelineEditableClip::CameraCut(replacement)) => {
++            replace_by_id(clips, id, replacement, |clip| &clip.timing.id)
++        }
++        (TimelineTrackKind::Audio { clips }, TimelineEditableClip::Audio(replacement)) => {
++            replace_by_id(clips, id, replacement, |clip| &clip.timing.id)
++        }
++        (TimelineTrackKind::Vfx { clips }, TimelineEditableClip::Vfx(replacement)) => {
+             replace_by_id(clips, id, replacement, |clip| &clip.timing.id)
+         }
+         _ => Err(TimelineEditError::TrackTypeMismatch {
+@@ -154,6 +184,8 @@
+             remove_by_id(clips, id, |clip| &clip.timing.id)
+         }
+         TimelineTrackKind::CameraCut { clips } => remove_by_id(clips, id, |clip| &clip.timing.id),
++        TimelineTrackKind::Audio { clips } => remove_by_id(clips, id, |clip| &clip.timing.id),
++        TimelineTrackKind::Vfx { clips } => remove_by_id(clips, id, |clip| &clip.timing.id),
+         TimelineTrackKind::Event { .. } => Err(TimelineEditError::ClipNotFound(id.clone())),
+     }
+ }
+diff --git a/crates/authoring/src/lib.rs b/crates/authoring/src/lib.rs
+--- a/crates/authoring/src/lib.rs
++++ b/crates/authoring/src/lib.rs
+@@ -1,11 +1,12 @@
+ pub use timeline::{
+-    compile_timeline, CompiledAnimationPayload, CompiledCameraCutPayload, CompiledEventPayload,
+-    CompiledTimelinePayload, CompiledTransformPayload, TimelineAnimationClip,
+-    TimelineBindingResolver, TimelineBlend, TimelineCameraCutClip, TimelineClipRef,
+-    TimelineClipTiming, TimelineCompileError, TimelineDisplayRate, TimelineDocument,
+-    TimelineDocumentError, TimelineEventMarker, TimelineQuatKey, TimelineTrack, TimelineTrackKind,
+-    TimelineTrackType, TimelineTransformClip, TimelineTransformCurve, TimelineTransformSample,
+-    TimelineVec3Key, TIMELINE_FILE_SUFFIX, TIMELINE_SCHEMA_VERSION,
++    compile_timeline, CompiledAnimationPayload, CompiledAudioPayload, CompiledCameraCutPayload,
++    CompiledEventPayload, CompiledTimelinePayload, CompiledTransformPayload, CompiledVfxPayload,
++    TimelineAnimationClip, TimelineAudioClip, TimelineBindingResolver, TimelineBlend,
++    TimelineCameraCutClip, TimelineClipRef, TimelineClipTiming, TimelineCompileError,
++    TimelineDisplayRate, TimelineDocument, TimelineDocumentError, TimelineEventMarker,
++    TimelineQuatKey, TimelineTrack, TimelineTrackKind, TimelineTrackType, TimelineTransformClip,
++    TimelineTransformCurve, TimelineTransformSample, TimelineVec3Key, TimelineVfxClip,
++    TIMELINE_FILE_SUFFIX, TIMELINE_SCHEMA_VERSION,
+ };
+ 
+ pub use timeline_authoring::{
