@@ -1,0 +1,13 @@
+diff --git a/docs/adr/0122-renderer-owned-full-image-based-lighting.md b/docs/adr/0128-renderer-owned-full-image-based-lighting.md
+similarity index 99%
+rename from docs/adr/0122-renderer-owned-full-image-based-lighting.md
+rename to docs/adr/0128-renderer-owned-full-image-based-lighting.md
+index e37c2dc..e48d009 100644
+--- a/docs/adr/0122-renderer-owned-full-image-based-lighting.md
++++ b/docs/adr/0128-renderer-owned-full-image-based-lighting.md
+@@ -1,4 +1,4 @@
+-# ADR 0122: Renderer-Owned Full Image-Based Lighting
++# ADR 0128: Renderer-Owned Full Image-Based Lighting
+ 
+ Status: Accepted
+ Date: 2026-08-16

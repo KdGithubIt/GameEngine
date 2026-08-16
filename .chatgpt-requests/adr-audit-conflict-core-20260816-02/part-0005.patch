@@ -1,0 +1,12 @@
+diff --git a/docs/AI_FRIENDLY_AUTHORING_SPEC.md b/docs/AI_FRIENDLY_AUTHORING_SPEC.md
+--- a/docs/AI_FRIENDLY_AUTHORING_SPEC.md
++++ b/docs/AI_FRIENDLY_AUTHORING_SPEC.md
+@@ -389,7 +389,7 @@
+ global-light semantics. `engine.point_light` and `engine.spot_light` are
+ finite-range local lights whose runtime position comes from the owning entity's
+ transform; spot-light orientation is the transformed local `-Z` axis. Their
+-renderer budgets and shading semantics are defined by ADR 0123.
++renderer budgets and shading semantics are defined by ADR 0129.
+ 
+ Project Rust component identity is stored in a JSON sidecar beside its source:
+ `player.rs.meta.json` for `player.rs`. Sidecar schema version 1 contains only

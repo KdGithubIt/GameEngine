@@ -1,0 +1,165 @@
+diff --git a/docs/adr/README.md b/docs/adr/README.md
+index 6273ad2..0d58c58 100644
+--- a/docs/adr/README.md
++++ b/docs/adr/README.md
+@@ -1,11 +1,13 @@
+ # Architecture Decision Records
+ 
+-- [ADR 0052: Project Rust Gameplay Queries and Deferred Commands](0052-project-rust-gameplay-io.md)
+-
+ Use this directory for decisions that change contracts shared across crates,
+ serialized project data, authoring commands, graph behavior, CLI, MCP, or the
+ visual editor.
+ 
++For the current architecture, start with
++[`docs/ARCHITECTURE_OVERVIEW.md`](../ARCHITECTURE_OVERVIEW.md). This directory
++keeps the decision history that explains why the current architecture exists.
++
+ ADR file names SHOULD use:
+ 
+ ```text
+@@ -59,7 +61,79 @@ Accepted ADRs are part of the implementation contract. An ADR that changes the
+ canonical specification MUST also update
+ `docs/AI_FRIENDLY_AUTHORING_SPEC.md`.
+ 
+-## Accepted Decisions
++Later Accepted ADRs may amend an earlier Accepted ADR without changing the
++earlier record's status. A `Superseded` record is historical and is not part of
++the current implementation contract. See
++[`AUDIT_2026-08-16.md`](AUDIT_2026-08-16.md) for the latest full registry audit.
++
++## Current Decision Map
++
++Use these as entry points rather than reading the chronological register from
++the beginning:
++
++- **Runtime boundaries:** [0001](0001-runtime-ecs-access-and-safety-model.md),
++  [0003](0003-runtime-renderer-ownership-boundary.md),
++  [0111](0111-runtime-rig-crate-boundary.md),
++  [0113](0113-runtime-domain-crate-decomposition.md), and
++  [0114](0114-heavy-third-party-dependency-isolation.md).
++- **Authoring, persistence, and compatibility:**
++  [0002](0002-runtime-and-authoring-identifier-boundary.md),
++  [0004](0004-stable-identifier-format.md),
++  [0005](0005-authoring-transaction-and-undo-strategy.md),
++  [0091](0091-remove-authoring-compatibility-surface.md), and
++  [0115](0115-current-format-only-baseline.md).
++- **Project and Editor lifecycle:**
++  [0023](0023-project-root-ownership.md),
++  [0103](0103-play-mode-editor-viewport.md),
++  [0104](0104-editor-edit-responsiveness.md), and
++  [0117](0117-project-first-launcher-and-editor-application-lifecycle.md).
++- **Assets and import:** [0021](0021-asset-reference-model-and-manifest.md),
++  [0078](0078-format-independent-model-ir.md),
++  [0081](0081-fbx-import-via-ufbx.md),
++  [0094](0094-generic-data-assets.md),
++  [0101](0101-imported-material-extraction-and-remap.md), and
++  [0105](0105-model-level-material-and-texture-sub-asset-overrides.md).
++- **Rendering and materials:**
++  [0055](0055-render-authoring-and-material-v2-contract.md),
++  [0100](0100-generic-shading-models-and-outline-pass.md),
++  [0118](0118-rendering-color-space-and-texture-semantics.md),
++  [0119](0119-tangent-space-gpu-contract-and-shared-material-fragment.md),
++  [0120](0120-generic-pbr-material-texture-contract.md),
++  [0128](0128-renderer-owned-full-image-based-lighting.md), and
++  [0129](0129-generic-directional-point-spot-lighting.md).
++- **Animation, rig, and physics:**
++  [0077](0077-skeleton-assets-and-stable-bone-ids.md),
++  [0085](0085-animation-sets-and-motion-slots.md),
++  [0096](0096-rapier-physics-adoption-and-mmd-rigid-body-bridge.md),
++  [0106](0106-layered-rig-pose-and-pose-graph-boundary.md),
++  [0110](0110-humanoid-profiles-and-skeleton-independent-motion.md),
++  [0112](0112-engine-native-secondary-motion-and-pmx-physics-conversion.md), and
++  [0116](0116-animation-events-owned-by-animation-set-bindings.md).
++- **AI, CLI, and MCP:** [0015](0015-mcp-behavior-tree-tool-adapter.md),
++  [0035](0035-ai-agent-bridge-ipc.md), and
++  [0121](0121-ai-native-authoring-parity-and-project-scoped-mcp-lifecycle.md).
++
++## Proposed Decisions
++
++These records are design proposals, not part of the current implementation
++contract unless and until their status becomes `Accepted`:
++
++- [0122](0122-spatial-audio-mixer-and-authoring-ux.md) — Spatial Audio Mixer and Authoring UX
++- [0123](0123-stateful-behavior-tree-execution-and-debugging.md) — Stateful Behavior Tree Execution and Debugging
++- [0124](0124-production-navigation-mesh-and-bake-workflow.md) — Production Navigation Mesh and Bake Workflow
++- [0125](0125-vfx-effect-authoring-and-runtime-architecture.md) — VFX Effect Authoring and Runtime Architecture
++- [0126](0126-timeline-sequencer-authoring-and-runtime.md) — Timeline / Sequencer Authoring and Runtime
++- [0127](0127-native-2d-gameplay-and-authoring-architecture.md) — Native 2D Gameplay and Authoring Architecture
++
++The later Accepted renderer records originally reused ADR 0122 and ADR 0123.
++They are registered as ADR 0128 and ADR 0129 so the first-merged Proposed
++sequence remains stable and every ADR number is unique.
++
++## All Decision Records
++
++This chronological register contains every ADR. Status is shown explicitly for
++non-Accepted records so Proposed work cannot be mistaken for the current
++implementation contract.
+ 
+ | ADR | Decision |
+ | --- | --- |
+@@ -81,7 +155,7 @@ canonical specification MUST also update
+ | [0016](0016-human-visual-editor-command-boundary.md) | Human Visual Editor Command Boundary |
+ | [0017](0017-phase8a-human-editor-gui-toolkit.md) | Phase 8-A Human Editor GUI Toolkit |
+ | [0018](0018-phase8b-undo-redo-snapshot-strategy.md) | Phase 8-B Undo/Redo Snapshot Strategy |
+-| [0019](0019-phase8c-editor-file-persistence.md) | Phase 8-C Editor File Persistence (superseded by ADR 0022) |
++| [0019](0019-phase8c-editor-file-persistence.md) | **Superseded by ADR 0022** — Phase 8-C Editor File Persistence |
+ | [0020](0020-scene-document-schema-version.md) | Scene Document Schema Version |
+ | [0021](0021-asset-reference-model-and-manifest.md) | Asset Reference Model and Asset Manifest |
+ | [0022](0022-project-document-file-layout.md) | Project Document File Layout (Return to ADR 0008) |
+@@ -155,18 +229,23 @@ canonical specification MUST also update
+ | [0090](0090-ui-layout-screen-versus-presented-rect.md) | UI Layout Screen Separated from the Presented Rectangle |
+ | [0091](0091-remove-authoring-compatibility-surface.md) | Remove the Authoring Compatibility Surface |
+ | [0092](0092-unified-project-rust-module-tree.md) | Unified Project Rust Module Tree |
++| [0093](0093-game-component-skipped-fields.md) | **Superseded by ADR 0095** — Runtime-only GameComponent Fields |
++| [0094](0094-generic-data-assets.md) | Generic Data Assets |
++| [0095](0095-explicit-game-component-fields.md) | Explicit GameComponent Authoring Fields |
+ | [0096](0096-rapier-physics-adoption-and-mmd-rigid-body-bridge.md) | Rapier Physics Adoption and the MMD Rigid-Body Bridge Boundary |
+ | [0097](0097-mmd-pmx-vmd-import.md) | MMD (PMX/VMD) Import — Mesh, Baked Animation, Morphs, and Skin Splitting |
+ | [0098](0098-vmd-motion-composition-and-content-routing.md) | VMD Motion Composition and Content Routing |
+ | [0099](0099-vmd-multi-target-derived-clips.md) | VMD Multi-Target Derived Clips |
+ | [0100](0100-generic-shading-models-and-outline-pass.md) | Generic Shading Models and Outline Pass |
+ | [0101](0101-imported-material-extraction-and-remap.md) | Imported Material Extraction and Remap |
++| [0102](0102-builtin-component-declaration-table.md) | Built-in Component Declaration Table |
+ | [0103](0103-play-mode-editor-viewport.md) | Play Mode Editor Viewport |
+ | [0104](0104-editor-edit-responsiveness.md) | Editor Edit Responsiveness |
++| [0105](0105-model-level-material-and-texture-sub-asset-overrides.md) | Model-level Material and Texture Sub-asset Overrides |
+ | [0106](0106-layered-rig-pose-and-pose-graph-boundary.md) | Layered Rig Pose and Pose Graph Boundary |
+ | [0107](0107-active-game-camera-selection.md) | Active Game Camera Selection |
+-| [0108](0108-mmd-secondary-motion-simulation-units.md) | MMD Secondary-Motion Constraint and Unit Semantics (superseded by ADR 0112) |
+-| [0109](0109-mmd-seek-physics-preroll.md) | MMD Seek Physics Pre-Roll (superseded by ADR 0112) |
++| [0108](0108-mmd-secondary-motion-simulation-units.md) | **Superseded by ADR 0112** — MMD Secondary-Motion Constraint and Unit Semantics |
++| [0109](0109-mmd-seek-physics-preroll.md) | **Superseded by ADR 0112** — MMD Seek Physics Pre-Roll |
+ | [0110](0110-humanoid-profiles-and-skeleton-independent-motion.md) | Humanoid Profiles and Skeleton-Independent Motion |
+ | [0111](0111-runtime-rig-crate-boundary.md) | Runtime Rig Crate Boundary |
+ | [0112](0112-engine-native-secondary-motion-and-pmx-physics-conversion.md) | Engine-Native Secondary Motion and Best-Effort PMX Physics Conversion |
+@@ -179,20 +258,11 @@ canonical specification MUST also update
+ | [0119](0119-tangent-space-gpu-contract-and-shared-material-fragment.md) | Tangent-Space GPU Contract and Shared Material Fragment Stage |
+ | [0120](0120-generic-pbr-material-texture-contract.md) | Generic PBR Material Texture Contract |
+ | [0121](0121-ai-native-authoring-parity-and-project-scoped-mcp-lifecycle.md) | AI-Native Authoring Parity and Project-Scoped MCP Lifecycle |
+-| [0122](0122-renderer-owned-full-image-based-lighting.md) | Renderer-Owned Full Image-Based Lighting |
+-| [0123](0123-generic-directional-point-spot-lighting.md) | Generic Directional, Point, and Spot Direct Lighting |
+-
+-## Phase 41+ ADR Targets
+-
+-| ADR | Target Phase | Decision Area | Status |
+-| --- | --- | --- | --- |
+-| [0036](0036-shadow-map-and-environment-lighting.md) | Phase 41 | Shadow map format, resolution, and cascade policy | Accepted |
+-| [0037](0037-rhai-scripting-runtime.md) | Phase 42 | Rhai scripting runtime and sandbox boundary | Accepted |
+-| [0038](0038-gamepad-input-and-gilrs.md) | Phase 43 | Gamepad / `gilrs` integration and platform build gates | Accepted |
+-| [0039](0039-navmesh-and-pathfinding-mvp.md) | Phase 44 | NavMesh library selection and bake strategy | Accepted |
+-| [0040](0040-post-processing-pipeline.md) | Phase 45 | Post-processing pipeline and HDR render target strategy | Accepted |
+-| [0041](0041-wasm32-build-strategy.md) | Phase 46 | WASM / web build target strategy | Accepted |
+-| [0042](0042-gpu-instancing-and-lod.md) | Phase 47 | GPU instancing and LOD selection | Accepted |
+-| [0043](0043-skinned-mesh-skeletal-animation.md) | Phase 48 | Skinned mesh vertex layout, skeleton representation, joint palette, clip targets | Accepted |
+-| [0044](0044-particle-system.md) | Phase 49 | Particle simulation ownership, rendering path, RNG policy | Accepted |
+-| [0045](0045-player-binary-and-package-execution.md) | Phase 51 | Player binary strategy, package layout, blocking policy | Accepted |
++| [0122](0122-spatial-audio-mixer-and-authoring-ux.md) | **Proposed** — Spatial Audio Mixer and Authoring UX |
++| [0123](0123-stateful-behavior-tree-execution-and-debugging.md) | **Proposed** — Stateful Behavior Tree Execution and Debugging |
++| [0124](0124-production-navigation-mesh-and-bake-workflow.md) | **Proposed** — Production Navigation Mesh and Bake Workflow |
++| [0125](0125-vfx-effect-authoring-and-runtime-architecture.md) | **Proposed** — VFX Effect Authoring and Runtime Architecture |
++| [0126](0126-timeline-sequencer-authoring-and-runtime.md) | **Proposed** — Timeline / Sequencer Authoring and Runtime |
++| [0127](0127-native-2d-gameplay-and-authoring-architecture.md) | **Proposed** — Native 2D Gameplay and Authoring Architecture |
++| [0128](0128-renderer-owned-full-image-based-lighting.md) | Renderer-Owned Full Image-Based Lighting |
++| [0129](0129-generic-directional-point-spot-lighting.md) | Generic Directional, Point, and Spot Direct Lighting |

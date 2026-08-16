@@ -1,0 +1,204 @@
+diff --git a/docs/adr/AUDIT_2026-08-16.md b/docs/adr/AUDIT_2026-08-16.md
+new file mode 100644
+index 0000000..c8b315f
+--- /dev/null
++++ b/docs/adr/AUDIT_2026-08-16.md
+@@ -0,0 +1,198 @@
++# ADR Audit — 2026-08-16
++
++Status: Completed
++Repository: `KdGithubIt/GameEngine`
++Baseline: `e99d227ab40a7d839afa718e40ab372ec1899f32`
++
++## Scope
++
++This audit separates two questions that had become mixed together after the ADR
++sequence passed 100 records:
++
++1. **Registry integrity:** Does every ADR exist, have a usable status, and appear
++   in the chronological index with supersession represented correctly?
++2. **Current-contract alignment:** Do the recent/cross-cutting ADRs, canonical
++   specification, workspace structure, and representative implementation
++   surfaces still describe the same architecture?
++
++Registry integrity was checked across every numbered ADR file in the baseline.
++Implementation alignment was intentionally risk-based rather than a claim that
++every line of every historical ADR was re-proven against code.
++
++## Registry result
++
++The baseline contains 129 ADR files but only 127 distinct ADR numbers. Two
++concurrent decision streams reused ADR 0122, and a later renderer change also
++reused ADR 0123. This audit keeps the first-merged Proposed sequence as ADR
++0122–0126 and the already-merged Native 2D proposal as ADR 0127. The later
++Accepted renderer-owned full-IBL record moves from ADR 0122 to ADR 0128, and the
++later Accepted generic directional/point/spot-lighting record moves from ADR
++0123 to ADR 0129.
++
++After that correction:
++
++- 119 records are Accepted.
++- 4 records are Superseded.
++- 6 records are Proposed.
++- No Rejected ADR file is present.
++
++The Superseded records are:
++
++| ADR | Replaced by |
++| --- | --- |
++| 0019 | ADR 0022 |
++| 0093 | ADR 0095 |
++| 0108 | ADR 0112 |
++| 0109 | ADR 0112 |
++
++The Proposed records are:
++
++| ADR | Proposal area |
++| --- | --- |
++| 0122 | Spatial audio mixer and authoring UX |
++| 0123 | Stateful Behavior Tree execution and debugging |
++| 0124 | Production navigation mesh and bake workflow |
++| 0125 | VFX effect authoring and runtime architecture |
++| 0126 | Timeline / Sequencer authoring and runtime |
++| 0127 | Native 2D gameplay and authoring architecture |
++
++These six proposals are deliberately excluded from the current-decision map and
++from implementation-conformance claims in this audit.
++
++### Concurrent ADR-number collisions
++
++The Proposed 0122–0126 bundle reached `main` before the renderer full-IBL change.
++The later renderer merge introduced another ADR 0122. A subsequent Accepted
++generic-lighting merge introduced ADR 0123 while the Proposed Behavior Tree
++record already owned that number. Native 2D then reached `main` as Proposed ADR
++0127 before this conflict repair was finalized.
++
++Renumbering only the later Accepted renderer records to ADR 0128 and ADR 0129 is
++the smallest collision-free repair. It leaves the first-merged Proposed sequence,
++its cross-references, and the already-merged Native 2D identity intact. The
++renderer decisions, statuses, public/runtime contracts, and implementations do
++not change; only their ADR identities and references are repaired.
++
++The previous `docs/adr/README.md` was not a faithful registry:
++
++- it omitted ADRs 0093, 0094, 0095, 0102, 0105, and the Proposed ADRs 0122
++  through 0127;
++- it contained duplicate ADR 0122 and ADR 0123 identities while showing only
++  the later renderer records in the README;
++- it placed 0019, 0108, and 0109 under a heading named `Accepted Decisions`;
++- it contained a one-off ADR 0052 link above the index; and
++- it retained a `Phase 41+ ADR Targets` table that duplicated a small historical
++  slice after the repository had progressed to ADR 0129.
++
++The reorganized index distinguishes the current decision map from the full
++chronological history, includes all previously missing records, keeps Proposed
++records visibly separate from the current contract, and makes every ADR number
++unique through ADR 0129.
++
++## Current-contract alignment
++
++### ADR-number repair
++
++Renderer-owned full IBL is now ADR 0128. Generic directional, point, and spot
++direct lighting is now ADR 0129. Both decisions remain Accepted. The code merged
++with those records already implements their renderer behavior, so this is an
++identifier repair rather than an architecture reversal.
++
++### Runtime decomposition
++
++ADR 0113's package set is present in the workspace: `core`, `assets`, `rig`,
++`physics`, `animation`, `gameplay`, `render-runtime`, `platform`, `import`,
++`scripting`, and `scene` exist alongside `renderer`, `engine`, `ecs`, and
++`authoring`.
++
++The audit does **not** interpret that as "every old `engine` file must be gone".
++The `engine` package still contains compatibility facade modules and concrete
++cross-domain composition, which ADR 0113 explicitly allows when moving the code
++downward would introduce the wrong dependency direction or a cycle.
++
++One real documentation drift was found inside ADR 0113 itself: its CI section
++still described per-crate changed-path mapping and referred to full validation
++on `master`. The current workflow derives package ownership from Cargo metadata,
++forbids a duplicated package/path table, and uses `main`. The operational text
++is updated without changing the runtime architecture decision.
++
++### Canonical authoring specification
++
++`docs/AI_FRIENDLY_AUTHORING_SPEC.md` had accumulated current-contract drift:
++
++- Section 6 still presented the pre-0113 `graph`/`graph_bt` future workspace
++  sketch instead of the current runtime-domain package structure.
++- Section 7.2 still required compatibility loading for entities missing fields
++  that ADR 0115 makes mandatory in the current format.
++- Section 15 still described migration as part of the normal save pipeline even
++  though ADR 0115 establishes current-format-only loading.
++- Historical Phase 2.5 text referred to a nonexistent `Open Decision #7`.
++- Section 23 still summarized ADR 0099 as retaining the legacy singular
++  VMD/old-ID compatibility path that ADR 0115 removes.
++- The single-version table still listed material schema version 2 even though
++  ADR 0120 and the current authoring code use material schema version 3.
++- The same table treated `project.json` as version 1 even though the current
++  project identity contract is schema version 2 with `ProjectId` and
++  `engine_version`.
++- The newly merged local-light authoring contract referred to the colliding ADR
++  0123 identity instead of the repaired ADR 0129 identity.
++
++Those contradictions are corrected. Historical phase descriptions remain in the
++specification, but they are explicitly subordinate to later Accepted ADRs and
++current normative sections.
++
++### Representative implementation checks
++
++The following current surfaces were sampled because they exercise recent
++cross-cutting decisions:
++
++- ADR 0116: animation event installation is present through the animation
++  runtime and scene-spawn integration rather than a separate component-level
++  authoring event contract.
++- ADR 0117: `ProjectId`, project schema version 2, and
++  `engine-project-lifecycle` are present.
++- ADRs 0118–0120: material schema version 3 and the generic
++  metallic/roughness, occlusion, normal-scale, and occlusion-strength fields
++  are present across authoring/runtime/import boundaries.
++- ADR 0121: Editor MCP transport and shared Scene/Asset MCP/CLI authoring slices
++  are present in the baseline.
++- ADRs 0122–0127 are Proposed and were status/index audited only. Their decisions
++  are not treated as current implementation requirements and were not scored as
++  implementation drift.
++- ADR 0128 is Accepted and its renderer-owned full-IBL implementation is present
++  in the render-runtime changes that introduced the decision.
++- ADR 0129 is Accepted and the baseline contains the stable
++  `engine.point_light` / `engine.spot_light` authoring IDs, 16/8 local-light
++  budgets, deterministic selection, and shared StandardLit direct-light path
++  introduced with that decision.
++
++These checks support the conclusion that the recent architecture is broadly
++tracking implementation. They do not certify every historical phase-specific
++statement as current.
++
++## What was deliberately not changed
++
++- Historical ADR numbers and file names were not renumbered except for the two
++  later colliding Accepted renderer records, which moved to 0128 and 0129
++  without changing their decisions or statuses.
++- Accepted ADRs were not marked Superseded merely because their implementation
++  details are old; a later decision must actually replace the decision.
++- Historical metadata formatting (`Status:` versus `- Status:` and title
++  punctuation) was not normalized across the full registry, because that would
++  create large review noise without changing the contract.
++- No serialized schema, Stable ID, public Rust API, crate dependency, or runtime
++  behavior changed in this audit.
++- No `.github/**` or Dispatcher trust-boundary file changed.
++
++## Follow-up
++
++A lightweight ADR-registry checker would be useful to prevent future duplicate
++numeric prefixes, index omissions, and invalid status values. That should be
++implemented separately if it is made a CI requirement, because CI/build
++infrastructure has a different validation and trust-boundary impact from this
++documentation cleanup.
++
++A second future cleanup may move long completed phase narratives out of the
++canonical authoring specification into historical phase documentation. This
++audit only corrected statements that could mislead a contributor about the
++current contract.
