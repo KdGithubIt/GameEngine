@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "request_id": "20260816-adr0124-currentness-bac7d7e-r1",
+  "target_branch": "chatgpt/gameengine-adr-0124-production-navmesh-v6",
+  "expected_head_sha": "bac7d7e8c7b339cfd40492a1870099d1f9c34f03",
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Add shared NavMesh currentness gate",
+  "pr_title": "Implement ADR 0124 production navigation mesh workflow",
+  "pr_body": "Continue ADR 0124 by centralizing production NavMesh currentness on the normalized source/settings fingerprint so Play and packaging can share one stale-artifact gate."
+}
