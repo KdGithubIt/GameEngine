@@ -1,0 +1,207 @@
++        modifiers,
++        links,
++    })
++}
++
++fn world_triangle(
++    matrix: glam::Mat4,
++    a: [f32; 3],
++    b: [f32; 3],
++    c: [f32; 3],
++) -> NavigationTriangle {
++    NavigationTriangle {
++        a: matrix.transform_point3(Vec3::from_array(a)).to_array(),
++        b: matrix.transform_point3(Vec3::from_array(b)).to_array(),
++        c: matrix.transform_point3(Vec3::from_array(c)).to_array(),
++        area: 0,
++    }
++}
++
++/// Prepares deterministic shared build input for one scene/document pair.
++///
++/// # Errors
++///
++/// Returns [`NavMeshBakeError`] for collection or shared-service validation failure.
++pub fn prepare_scene_navmesh(
++    scene: &AuthoringScene,
++    project_root: &ProjectRoot,
++    manifest: &AssetManifest,
++    document: &NavMeshBakeDocument,
++) -> Result<engine_physics::navigation::NavigationBuildInput, NavMeshBakeError> {
++    let source = collect_navigation_source(scene, project_root, manifest)?;
++    NavigationBakeService
++        .prepare(&source, document)
++        .map_err(NavMeshBakeError::Shared)
++}
++
++/// Returns whether navigation-relevant scene data/settings differ from the last bake.
++///
++/// # Errors
++///
++/// Returns [`NavMeshBakeError`] when collection or shared preparation fails.
++pub fn is_scene_navmesh_stale(
++    scene: &AuthoringScene,
++    project_root: &ProjectRoot,
++    manifest: &AssetManifest,
++    document: &NavMeshBakeDocument,
++) -> Result<bool, NavMeshBakeError> {
++    let source = collect_navigation_source(scene, project_root, manifest)?;
++    NavigationBakeService
++        .is_stale(&source, document)
++        .map_err(NavMeshBakeError::Shared)
++}
++
++/// Bakes, safely replaces, registers, and fingerprints one scene NavMesh.
++///
++/// # Errors
++///
++/// Returns [`NavMeshBakeError`] for collection, cancellation, bake, project,
++/// asset replacement, or manifest persistence failure.
++pub fn bake_scene_navmesh(
++    scene: &AuthoringScene,
++    project_root: &ProjectRoot,
++    manifest: &mut AssetManifest,
++    document: &mut NavMeshBakeDocument,
++    cancelled: &AtomicBool,
++) -> Result<NavMeshBakeResult, NavMeshBakeError> {
++    let source = collect_navigation_source(scene, project_root, manifest)?;
++    let output_path = project_root
++        .resolve_asset_for_write(&document.output_asset)
++        .map_err(|error| NavMeshBakeError::Project(error.to_string()))?;
++    let output = NavigationBakeService
++        .bake_to_path(&source, document, &output_path, cancelled)
++        .map_err(NavMeshBakeError::Shared)?;
++
++    let asset_id = manifest
++        .iter()
++        .find(|(_, entry)| entry.path == document.output_asset)
++        .map(|(id, _)| id.clone())
++        .unwrap_or_else(AssetId::generate);
++    let mut next_manifest = manifest.clone();
++    next_manifest.insert(
++        asset_id.clone(),
++        ManifestEntry {
++            path: document.output_asset.clone(),
++            name: Some("Navigation Mesh".to_owned()),
++            import_settings: Default::default(),
++        },
++    );
++    let manifest_json = next_manifest
++        .to_canonical_json()
++        .map_err(NavMeshBakeError::Json)?;
++    replace_file_contents(
++        &project_root.path().join("asset_manifest.json"),
++        &manifest_json,
++    )
++    .map_err(|error| NavMeshBakeError::Persist(error.to_string()))?;
++    *manifest = next_manifest;
++    document.source_fingerprint = Some(output.source_fingerprint.clone());
++
++    Ok(NavMeshBakeResult {
++        nav_mesh: output.nav_mesh,
++        asset_id,
++        output_path,
++        stats: output.stats,
++    })
++}
++
++fn collect_authored_links(
++    scene: &AuthoringScene,
++) -> Result<Vec<NavigationBuildLink>, NavMeshBakeError> {
++    let component = ComponentTypeId::new(NAVIGATION_LINK_COMPONENT);
++    scene
++        .entities()
++        .filter_map(|(entity_id, entity)| {
++            entity.components.get(&component).map(|value| {
++                let fields = object_fields(value, NAVIGATION_LINK_COMPONENT)?;
++                let profiles = string_array_field(fields, "profiles")?
++                    .into_iter()
++                    .map(NavigationProfileId::new)
++                    .collect();
++                Ok(NavigationBuildLink {
++                    id: entity_id.as_str().to_owned(),
++                    start: vector_field(fields, "start")?.to_array(),
++                    end: vector_field(fields, "end")?.to_array(),
++                    bidirectional: bool_field(fields, "bidirectional")?,
++                    profiles,
++                    area: u16_field(fields, "area")?,
++                    cost: f32_field(fields, "cost")?,
++                    traversal_tag: string_field(fields, "traversal_tag")?.to_owned(),
++                })
++            })
++        })
++        .collect()
++}
++
++fn collect_authored_modifiers(
++    scene: &AuthoringScene,
++) -> Result<Vec<NavigationModifier>, NavMeshBakeError> {
++    let component = ComponentTypeId::new(NAVIGATION_MODIFIER_COMPONENT);
++    scene
++        .entities()
++        .filter_map(|(entity_id, entity)| {
++            entity.components.get(&component).map(|value| {
++                let fields = object_fields(value, NAVIGATION_MODIFIER_COMPONENT)?;
++                let center = vector_field(fields, "center")?;
++                let half = vector_field(fields, "half_extents")?;
++                if half.min_element() < 0.0 {
++                    return Err(NavMeshBakeError::Scene(
++                        "navigation modifier half extents must be non-negative".to_owned(),
++                    ));
++                }
++                let profiles = string_array_field(fields, "profiles")?
++                    .into_iter()
++                    .map(NavigationProfileId::new)
++                    .collect();
++                let mode = match string_field(fields, "mode")? {
++                    "exclude" => NavigationModifierMode::Exclude,
++                    "area" => NavigationModifierMode::Area {
++                        area: u16_field(fields, "area")?,
++                        cost_multiplier: f32_field(fields, "cost_multiplier")?,
++                    },
++                    other => {
++                        return Err(NavMeshBakeError::Scene(format!(
++                            "unsupported navigation modifier mode `{other}`"
++                        )))
++                    }
++                };
++                Ok(NavigationModifier {
++                    id: entity_id.as_str().to_owned(),
++                    minimum: (center - half).to_array(),
++                    maximum: (center + half).to_array(),
++                    profiles,
++                    mode,
++                })
++            })
++        })
++        .collect()
++}
++
++fn scene_without_navigation_derived_components(
++    scene: &AuthoringScene,
++) -> Result<AuthoringScene, NavMeshBakeError> {
++    let mut normalized = scene.clone();
++    let ignored = [
++        ComponentTypeId::new(crate::scene_bridge::NAV_MESH_SURFACE_COMPONENT),
++        ComponentTypeId::new(NAVIGATION_LINK_COMPONENT),
++        ComponentTypeId::new(NAVIGATION_MODIFIER_COMPONENT),
++    ];
++    let removals = normalized
++        .entities()
++        .flat_map(|(id, entity)| {
++            ignored.iter().filter_map(move |component| {
++                entity
++                    .components
++                    .contains_key(component)
++                    .then(|| (id.clone(), component.clone()))
++            })
++        })
++        .collect::<Vec<_>>();
++    if removals.is_empty() {
++        return Ok(normalized);
++    }
++    let mut transaction = engine_authoring::Transaction::begin(&normalized);
++    for (entity, component_type) in removals {
++        transaction.apply(AuthoringCommand::RemoveComponent {
++            entity,
++            component_type,
