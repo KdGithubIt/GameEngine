@@ -1,0 +1,54 @@
++                success: false,
++                base_revision,
++                base_generation,
++                revision: base_revision,
++                generation: base_generation,
++                diagnostics,
++                diff,
++            })
++        }
++        Err(GraphViewTransactionError::Conflict {
++            expected_identity,
++            expected_revision,
++            actual_identity,
++            actual_revision,
++        }) => Err(GraphViewAuthoringError::Stale {
++            expected_revision,
++            expected_generation: expected_identity,
++            actual_revision,
++            actual_generation: actual_identity,
++        })
++    }
++}
++
++fn ensure_current(
++    view: &GraphView,
++    expected_revision: u64,
++    expected_generation: u64,
++) -> Result<(), GraphViewAuthoringError> {
++    let actual_revision = view.revision();
++    let actual_generation = view.identity();
++    if actual_revision == expected_revision && actual_generation == expected_generation {
++        return Ok(());
++    }
++    Err(GraphViewAuthoringError::Stale {
++        expected_revision,
++        expected_generation,
++        actual_revision,
++        actual_generation,
++    })
++}
+diff --git a/crates/mcp/src/lib.rs b/crates/mcp/src/lib.rs
+--- a/crates/mcp/src/lib.rs
++++ b/crates/mcp/src/lib.rs
+@@ -11,5 +11,7 @@
+ pub mod ai_agent;
+ /// Asset discovery and inspection tool handlers backed by the shared asset catalog.
+ pub mod asset;
++/// Generic Graph, GraphView, and declarative UI authoring tool handlers.
++pub mod generic_authoring;
+ /// Prefab creation and instantiation tool handlers backed by shared services.
+ pub mod prefab;
+@@ -23,2 +25,6 @@
+ pub use asset::{AssetInspectInput, AssetMcpTools, AssetSearchInput};
++pub use generic_authoring::{

@@ -1,0 +1,39 @@
++pub enum StructuredAuthoringError {
++    /// No built-in authoring domain owns the active graph kind.
++    UnsupportedGraphKind(UnsupportedGraphKind),
++    /// The active Editor tab is not a Graph document.
++    NoGraphDocument,
++    /// Shared semantic Graph authoring rejected the request.
++    Graph(GraphAuthoringError),
++    /// The active Graph has no GraphView presentation document.
++    NoGraphView,
++    /// Shared GraphView authoring rejected the request.
++    GraphView(GraphViewAuthoringError),
++    /// The active document is not a declarative UI document.
++    NoUiDocument,
++    /// Shared declarative UI authoring rejected the request.
++    Ui(UiAuthoringError),
++}
++
++impl StructuredAuthoringError {
++    /// Returns a stable diagnostic-style code for adapter responses.
++    pub fn code(&self) -> &'static str {
++        match self {
++            Self::UnsupportedGraphKind(error) => error.code(),
++            Self::NoGraphDocument => "editor.no_graph_document",
++            Self::Graph(error) => error.code(),
++            Self::NoGraphView => "editor.no_graph_view_document",
++            Self::GraphView(error) => error.code(),
++            Self::NoUiDocument => "editor.no_ui_document",
++            Self::Ui(error) => error.code(),
++        }
++    }
++}
++
++impl fmt::Display for StructuredAuthoringError {
++    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
++        match self {
++            Self::UnsupportedGraphKind(error) => error.fmt(formatter),
++            Self::NoGraphDocument => formatter.write_str("the active Editor tab is not a Graph document"),
++            Self::Graph(error) => error.fmt(formatter),
++            Self::NoGraphView => formatter.write_str("the active Graph has no GraphView document"),

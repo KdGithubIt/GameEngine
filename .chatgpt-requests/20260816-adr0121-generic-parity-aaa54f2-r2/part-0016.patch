@@ -1,0 +1,51 @@
++    /// Inspects a live declarative UI authoring session.
++    pub fn ui_inspect(
++        &self,
++        session: &UiAuthoringSession,
++        permissions: &AuthoringPermissions,
++    ) -> Result<UiAuthoringSnapshot, GenericAuthoringMcpError> {
++        Ok(UiAuthoringService::new().inspect(session, permissions)?)
++    }
++
++    /// Validates a live declarative UI authoring session.
++    pub fn ui_validate(
++        &self,
++        session: &UiAuthoringSession,
++        permissions: &AuthoringPermissions,
++    ) -> Result<UiAuthoringValidation, GenericAuthoringMcpError> {
++        Ok(UiAuthoringService::new().validate(session, permissions)?)
++    }
++
++    /// Previews declarative UI commands without mutation.
++    pub fn ui_preview(
++        &self,
++        session: &UiAuthoringSession,
++        permissions: &AuthoringPermissions,
++        input: UiMutationInput,
++    ) -> Result<UiAuthoringMutation, GenericAuthoringMcpError> {
++        Ok(UiAuthoringService::new().preview(
++            session,
++            permissions,
++            input.expected_revision,
++            input.expected_generation,
++            input.commands,
++        )?)
++    }
++
++    /// Applies declarative UI commands to the authoritative live UI session.
++    pub fn ui_apply(
++        &self,
++        session: &mut UiAuthoringSession,
++        permissions: &AuthoringPermissions,
++        input: UiMutationInput,
++    ) -> Result<UiAuthoringMutation, GenericAuthoringMcpError> {
++        Ok(UiAuthoringService::new().apply(
++            session,
++            permissions,
++            input.expected_revision,
++            input.expected_generation,
++            input.commands,
++        )?)
++    }
++}
++

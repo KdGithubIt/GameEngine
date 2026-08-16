@@ -1,0 +1,45 @@
++    /// Logical content revision of the committed GraphView.
++    pub revision: u64,
++    /// In-memory generation used to reject stale edits across reopen or undo.
++    pub generation: u64,
++    /// Complete committed presentation document.
++    pub view: GraphView,
++}
++
++/// Structured validation result for one committed GraphView.
++#[derive(Debug, Clone, PartialEq, Serialize)]
++pub struct GraphViewAuthoringValidation {
++    /// Logical content revision validated by this result.
++    pub revision: u64,
++    /// In-memory generation validated by this result.
++    pub generation: u64,
++    /// Whether no blocking presentation diagnostic was produced.
++    pub success: bool,
++    /// Structured GraphView diagnostics.
++    pub diagnostics: Vec<Diagnostic>,
++}
++
++/// Result of previewing or applying one GraphView command batch.
++#[derive(Debug, Clone, PartialEq, Serialize)]
++pub struct GraphViewAuthoringMutation {
++    /// Whether the complete command batch passed validation.
++    pub success: bool,
++    /// Revision supplied by the caller as its base.
++    pub base_revision: u64,
++    /// Generation supplied by the caller as its base.
++    pub base_generation: u64,
++    /// Current committed revision after this operation.
++    pub revision: u64,
++    /// Current committed generation after this operation.
++    pub generation: u64,
++    /// Structured command or presentation diagnostics.
++    pub diagnostics: Vec<Diagnostic>,
++    /// Deterministic presentation diff proposed or committed by the batch.
++    pub diff: Vec<GraphViewChange>,
++}
++
++/// Shared GraphView authoring service failure.
++#[derive(Debug)]
++pub enum GraphViewAuthoringError {
++    /// The application did not grant the permission required by this operation.
++    Permission(AuthoringPermissionError),

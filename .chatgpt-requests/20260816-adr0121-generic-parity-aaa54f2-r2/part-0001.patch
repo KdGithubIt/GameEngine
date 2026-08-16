@@ -1,0 +1,53 @@
++/// Built-in graph domain selected for a persisted semantic Graph.
++pub enum AuthoringGraphDomain {
++    /// Behavior Tree graph semantics.
++    BehaviorTree(BehaviorTreeDomain),
++    /// Animation state-machine graph semantics.
++    Animation(AnimationGraphDomain),
++}
++
++impl AuthoringGraphDomain {
++    /// Resolves the built-in domain matching `graph.kind`.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`UnsupportedGraphKind`] when no built-in authoring domain owns
++    /// the persisted graph kind.
++    pub fn for_graph(graph: &Graph) -> Result<Self, UnsupportedGraphKind> {
++        let behavior = BehaviorTreeDomain::new();
++        if graph.kind == *behavior.graph_kind() {
++            return Ok(Self::BehaviorTree(behavior));
++        }
++        let animation = AnimationGraphDomain::new();
++        if graph.kind == *animation.graph_kind() {
++            return Ok(Self::Animation(animation));
++        }
++        Err(UnsupportedGraphKind {
++            kind: graph.kind.clone(),
++        })
++    }
++}
++
++impl GraphDomain for AuthoringGraphDomain {
++    fn graph_kind(&self) -> &GraphKind {
++        match self {
++            Self::BehaviorTree(domain) => domain.graph_kind(),
++            Self::Animation(domain) => domain.graph_kind(),
++        }
++    }
++
++    fn schema_registry(&self) -> &dyn GraphSchemaRegistry {
++        match self {
++            Self::BehaviorTree(domain) => domain.schema_registry(),
++            Self::Animation(domain) => domain.schema_registry(),
++        }
++    }
++
++    fn validate_domain(&self, graph: &Graph) -> Vec<Diagnostic> {
++        match self {
++            Self::BehaviorTree(domain) => domain.validate_domain(graph),
++            Self::Animation(domain) => domain.validate_domain(graph),
++        }
++    }
++}
++

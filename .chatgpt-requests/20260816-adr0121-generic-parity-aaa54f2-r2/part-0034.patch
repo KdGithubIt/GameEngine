@@ -1,0 +1,42 @@
+                     }
++                    self.ui_authoring_session = Some(UiAuthoringSession::new(document));
+diff --git a/crates/editor/src/ui/mcp.rs b/crates/editor/src/ui/mcp.rs
+--- a/crates/editor/src/ui/mcp.rs
++++ b/crates/editor/src/ui/mcp.rs
+@@ -3,2 +3,3 @@
+ use super::EditorApp;
++use crate::session::StructuredAuthoringError;
+ use engine_authoring::{
+@@ -8,6 +9,6 @@
+     AssetInspectInput, AssetMcpTools, AssetSearchInput, BehaviorTreeApplyInput,
+     BehaviorTreeGraphInput, BehaviorTreeMcpTools, EntityFindInput, EntityInspectInput,
+-    McpToolError, PrefabCreateInput, PrefabInstantiateInput, PrefabMcpTools, SceneMcpTools,
+-    SceneMutationInput,
++    GraphMutationInput, GraphViewMutationInput, McpToolError, PrefabCreateInput,
++    PrefabInstantiateInput, PrefabMcpTools, SceneMcpTools, SceneMutationInput, UiMutationInput,
+ };
+ use serde::de::DeserializeOwned;
+@@ -47,6 +48,11 @@
+     fn tool(error: McpToolError) -> Self {
+         let code = error.code().to_owned();
+         Self::new(code, error.to_string())
+     }
+ 
++    fn structured(error: StructuredAuthoringError) -> Self {
++        let code = error.code().to_owned();
++        Self::new(code, error.to_string())
++    }
++
+     fn no_scene() -> Self {
+@@ -201,4 +207,82 @@
++            "graph.inspect" => {
++                require_empty_arguments(arguments)?;
++                to_value(self.session.structured_graph_inspect(&permissions)?)
++            }
++            "graph.validate" => {
++                require_empty_arguments(arguments)?;
++                to_value(self.session.structured_graph_validate(&permissions)?)
++            }
++            "graph.preview" => {
++                let input: GraphMutationInput = decode(arguments)?;
++                to_value(self.session.structured_graph_preview(

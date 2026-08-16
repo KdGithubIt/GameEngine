@@ -1,0 +1,52 @@
++        Ok(GraphAuthoringService::new().inspect(graph, permissions)?)
++    }
++
++    /// Validates a semantic Graph through its shared built-in domain.
++    pub fn graph_validate(
++        &self,
++        graph: &Graph,
++        permissions: &AuthoringPermissions,
++    ) -> Result<GraphAuthoringValidation, GenericAuthoringMcpError> {
++        let domain = AuthoringGraphDomain::for_graph(graph)?;
++        Ok(GraphAuthoringService::new().validate(graph, &domain, permissions)?)
++    }
++
++    /// Previews semantic Graph commands without mutation.
++    pub fn graph_preview(
++        &self,
++        graph: &Graph,
++        permissions: &AuthoringPermissions,
++        input: GraphMutationInput,
++    ) -> Result<GraphAuthoringMutation, GenericAuthoringMcpError> {
++        let domain = AuthoringGraphDomain::for_graph(graph)?;
++        Ok(GraphAuthoringService::new().preview(
++            graph,
++            &domain,
++            permissions,
++            input.expected_revision,
++            input.expected_generation,
++            input.commands,
++        )?)
++    }
++
++    /// Applies semantic Graph commands to the authoritative live Graph.
++    pub fn graph_apply(
++        &self,
++        graph: &mut Graph,
++        permissions: &AuthoringPermissions,
++        input: GraphMutationInput,
++    ) -> Result<GraphAuthoringMutation, GenericAuthoringMcpError> {
++        let domain = AuthoringGraphDomain::for_graph(graph)?;
++        Ok(GraphAuthoringService::new().apply(
++            graph,
++            &domain,
++            permissions,
++            input.expected_revision,
++            input.expected_generation,
++            input.commands,
++        )?)
++    }
++
++    /// Inspects GraphView presentation state through the shared service.
++    pub fn graph_view_inspect(
++        &self,

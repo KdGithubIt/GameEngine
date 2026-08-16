@@ -1,0 +1,54 @@
++        .map_err(authoring_error)?;
++    Ok(CliRunResult::success(to_json(&output)?))
++}
++
++fn ui_validate(path: &Path) -> Result<CliRunResult, CliError> {
++    let session = UiAuthoringSession::new(load_ui(path)?);
++    let output = UiAuthoringService::new()
++        .validate(&session, &read_permissions())
++        .map_err(authoring_error)?;
++    Ok(CliRunResult::diagnostics(
++        to_json(&output)?,
++        !output.success,
++    ))
++}
++
++fn ui_mutate(path: &Path, commands_path: &Path, persist: bool) -> Result<CliRunResult, CliError> {
++    let mut session = UiAuthoringSession::new(load_ui(path)?);
++    let commands: Vec<UiDocumentCommand> = load_json(commands_path)?;
++    let service = UiAuthoringService::new();
++    let permissions = writable_permissions();
++    let base = service
++        .inspect(&session, &permissions)
++        .map_err(authoring_error)?;
++    let output = if persist {
++        service.apply(
++            &mut session,
++            &permissions,
++            base.revision,
++            base.generation,
++            commands,
++        )
++    } else {
++        service.preview(
++            &session,
++            &permissions,
++            base.revision,
++            base.generation,
++            commands,
++        )
++    }
++    .map_err(authoring_error)?;
++
++    if persist && output.success && !output.diff.is_empty() {
++        let json = session.document().to_json_string().map_err(CliError::Json)?;
++        replace_file_contents(path, &json).map_err(|source| CliError::Persist { source })?;
++    }
++    Ok(CliRunResult::diagnostics(to_json(&output)?, !output.success))
++}
++
++fn read_permissions() -> AuthoringPermissions {
++    AuthoringPermissions::read_only()
++}
++
++fn writable_permissions() -> AuthoringPermissions {

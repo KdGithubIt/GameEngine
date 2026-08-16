@@ -1,0 +1,46 @@
++        permissions: &AuthoringPermissions,
++    ) -> Result<GraphAuthoringValidation, StructuredAuthoringError> {
++        self.require_structured_graph_document()?;
++        let domain = AuthoringGraphDomain::for_graph(&self.graph)?;
++        Ok(GraphAuthoringService::new().validate(&self.graph, &domain, permissions)?)
++    }
++
++    /// Previews one atomic semantic Graph command batch.
++    pub fn structured_graph_preview(
++        &self,
++        permissions: &AuthoringPermissions,
++        expected_revision: u64,
++        expected_generation: u64,
++        commands: Vec<GraphCommand>,
++    ) -> Result<GraphAuthoringMutation, StructuredAuthoringError> {
++        self.require_structured_graph_document()?;
++        let domain = AuthoringGraphDomain::for_graph(&self.graph)?;
++        Ok(GraphAuthoringService::new().preview(
++            &self.graph,
++            &domain,
++            permissions,
++            expected_revision,
++            expected_generation,
++            commands,
++        )?)
++    }
++
++    /// Applies one semantic Graph batch as one Editor undo operation.
++    pub fn structured_graph_apply(
++        &mut self,
++        permissions: &AuthoringPermissions,
++        expected_revision: u64,
++        expected_generation: u64,
++        commands: Vec<GraphCommand>,
++    ) -> Result<GraphAuthoringMutation, StructuredAuthoringError> {
++        self.require_structured_graph_document()?;
++        let domain = AuthoringGraphDomain::for_graph(&self.graph)?;
++        let checkpoint = self.snapshot();
++        let mutation = GraphAuthoringService::new().apply(
++            &mut self.graph,
++            &domain,
++            permissions,
++            expected_revision,
++            expected_generation,
++            commands,
++        )?;

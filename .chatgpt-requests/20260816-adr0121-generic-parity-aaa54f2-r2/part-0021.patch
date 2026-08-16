@@ -1,0 +1,49 @@
++    let commands: Vec<GraphCommand> = load_json(commands_path)?;
++    let domain = AuthoringGraphDomain::for_graph(&graph).map_err(authoring_error)?;
++    let service = GraphAuthoringService::new();
++    let permissions = writable_permissions();
++    let base = service
++        .inspect(&graph, &permissions)
++        .map_err(authoring_error)?;
++    let output = if persist {
++        service.apply(
++            &mut graph,
++            &domain,
++            &permissions,
++            base.revision,
++            base.generation,
++            commands,
++        )
++    } else {
++        service.preview(
++            &graph,
++            &domain,
++            &permissions,
++            base.revision,
++            base.generation,
++            commands,
++        )
++    }
++    .map_err(authoring_error)?;
++
++    if persist && output.success && !output.diff.is_empty() {
++        let json = graph
++            .to_canonical_json(domain.schema_registry())
++            .map_err(authoring_error)?;
++        replace_file_contents(graph_path, &json).map_err(|source| CliError::Persist { source })?;
++    }
++    Ok(CliRunResult::diagnostics(to_json(&output)?, !output.success))
++}
++
++fn graph_view_inspect(graph_path: &Path, view_path: &Path) -> Result<CliRunResult, CliError> {
++    let _graph: Graph = load_json(graph_path)?;
++    let view: GraphView = load_json(view_path)?;
++    let output = GraphViewAuthoringService::new()
++        .inspect(&view, &read_permissions())
++        .map_err(authoring_error)?;
++    Ok(CliRunResult::success(to_json(&output)?))
++}
++
++fn graph_view_validate(graph_path: &Path, view_path: &Path) -> Result<CliRunResult, CliError> {
++    let graph: Graph = load_json(graph_path)?;
++    let view: GraphView = load_json(view_path)?;

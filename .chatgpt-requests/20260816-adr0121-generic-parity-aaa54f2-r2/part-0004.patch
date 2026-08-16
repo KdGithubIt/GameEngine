@@ -1,0 +1,51 @@
++    /// The supplied mutation base no longer matches the live GraphView.
++    Stale {
++        /// Revision supplied by the caller.
++        expected_revision: u64,
++        /// Generation supplied by the caller.
++        expected_generation: u64,
++        /// Current committed GraphView revision.
++        actual_revision: u64,
++        /// Current committed GraphView generation.
++        actual_generation: u64,
++    },
++}
++
++impl GraphViewAuthoringError {
++    /// Returns a stable diagnostic-style error code for adapter responses.
++    pub fn code(&self) -> &'static str {
++        match self {
++            Self::Permission(error) => error.code(),
++            Self::Stale { .. } => "authoring.stale_revision",
++        }
++    }
++}
++
++impl fmt::Display for GraphViewAuthoringError {
++    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
++        match self {
++            Self::Permission(error) => error.fmt(formatter),
++            Self::Stale {
++                expected_revision,
++                expected_generation,
++                actual_revision,
++                actual_generation,
++            } => write!(
++                formatter,
++                "stale GraphView base: expected revision {expected_revision} generation {expected_generation}, current revision {actual_revision} generation {actual_generation}"
++            ),
++        }
++    }
++}
++
++impl std::error::Error for GraphViewAuthoringError {
++    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
++        match self {
++            Self::Permission(error) => Some(error),
++            Self::Stale { .. } => None,
++        }
++    }
++}
++
++impl From<AuthoringPermissionError> for GraphViewAuthoringError {
++    fn from(value: AuthoringPermissionError) -> Self {

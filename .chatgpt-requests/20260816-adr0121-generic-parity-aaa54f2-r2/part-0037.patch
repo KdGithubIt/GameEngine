@@ -1,0 +1,40 @@
++    use crate::session::EditorSession;
++    use engine_authoring::{
++        GraphCommand, GraphViewCommand, UiDocumentCommand, Value as AuthoringValue, Vec2, Viewport,
++    };
++    use serde_json::{json, Value};
++
++    fn editor_app() -> (tempfile::TempDir, EditorApp) {
++        let parent = tempfile::tempdir().expect("temporary project parent");
++        let path = parent.path().join("McpParityGame");
++        let root = engine_project_lifecycle::create_standard_project(&path, "McpParityGame")
++            .expect("project scaffold");
++        (parent, EditorApp::from_project(root))
++    }
++
++    #[test]
++    fn generic_graph_and_layout_adapters_produce_equivalent_results() {
++        let seed = EditorSession::behavior_tree_example().expect("behavior tree example");
++        let graph_json = serde_json::to_string_pretty(seed.graph()).expect("graph JSON");
++        let view_json = serde_json::to_string_pretty(
++            seed.graph_view().expect("behavior tree example view"),
++        )
++        .expect("view JSON");
++        let graph_command = GraphCommand::SetGraphAnnotation {
++            key: "parity.marker".into(),
++            value: AuthoringValue::String("same".into()),
++        };
++        let permissions = mcp_authoring_permissions();
++
++        let mut direct = EditorSession::new(
++            serde_json::from_str(&graph_json).expect("direct graph"),
++            Some(serde_json::from_str(&view_json).expect("direct view")),
++        );
++        let direct_base = direct
++            .structured_graph_inspect(&permissions)
++            .expect("direct inspect");
++        let direct_preview = direct
++            .structured_graph_preview(
++                &permissions,
++                direct_base.revision,
++                direct_base.generation,

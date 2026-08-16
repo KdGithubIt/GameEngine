@@ -1,0 +1,23 @@
++    pub fn tool_descriptors(&self) -> Vec<McpToolDescriptor> {
++        vec![
++            descriptor("graph.inspect", "Inspect the active semantic Graph.", empty_schema()),
++            descriptor("graph.validate", "Validate the active semantic Graph with its built-in domain.", empty_schema()),
++            descriptor("graph.preview", "Preview one atomic semantic Graph command batch.", graph_mutation_schema()),
++            descriptor("graph.apply", "Apply one atomic semantic Graph command batch.", graph_mutation_schema()),
++            descriptor("graph.layout.inspect", "Inspect the active GraphView presentation document.", empty_schema()),
++            descriptor("graph.layout.validate", "Validate the active GraphView against its semantic Graph.", empty_schema()),
++            descriptor("graph.layout.preview", "Preview one atomic GraphView presentation command batch.", graph_view_mutation_schema()),
++            descriptor("graph.layout.apply", "Apply one atomic GraphView presentation command batch.", graph_view_mutation_schema()),
++            descriptor("ui.inspect", "Inspect the active declarative UI document.", empty_schema()),
++            descriptor("ui.validate", "Validate the active declarative UI document.", empty_schema()),
++            descriptor("ui.preview", "Preview one atomic declarative UI command batch.", ui_mutation_schema()),
++            descriptor("ui.apply", "Apply one atomic declarative UI command batch.", ui_mutation_schema()),
++        ]
++    }
++
++    /// Inspects a semantic Graph through the shared service.
++    pub fn graph_inspect(
++        &self,
++        graph: &Graph,
++        permissions: &AuthoringPermissions,
++    ) -> Result<GraphAuthoringSnapshot, GenericAuthoringMcpError> {

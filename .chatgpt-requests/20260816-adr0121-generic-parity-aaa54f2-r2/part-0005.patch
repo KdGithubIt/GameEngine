@@ -1,0 +1,54 @@
++        Self::Permission(value)
++    }
++}
++
++/// GUI-free GraphView authoring behavior shared by structured adapters.
++#[derive(Debug, Default, Clone, Copy)]
++pub struct GraphViewAuthoringService;
++
++impl GraphViewAuthoringService {
++    /// Creates the stateless GraphView authoring service.
++    pub fn new() -> Self {
++        Self
++    }
++
++    /// Inspects the current committed GraphView presentation document.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`GraphViewAuthoringError`] when read permission is absent.
++    pub fn inspect(
++        &self,
++        view: &GraphView,
++        permissions: &AuthoringPermissions,
++    ) -> Result<GraphViewAuthoringSnapshot, GraphViewAuthoringError> {
++        permissions.require(AuthoringPermission::Read)?;
++        Ok(GraphViewAuthoringSnapshot {
++            revision: view.revision(),
++            generation: view.identity(),
++            view: view.clone_for_transaction(),
++        })
++    }
++
++    /// Validates the current GraphView against its semantic Graph.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`GraphViewAuthoringError`] when read permission is absent.
++    pub fn validate(
++        &self,
++        graph: &Graph,
++        view: &GraphView,
++        permissions: &AuthoringPermissions,
++    ) -> Result<GraphViewAuthoringValidation, GraphViewAuthoringError> {
++        permissions.require(AuthoringPermission::Read)?;
++        let diagnostics = view.validate(graph);
++        let success = !diagnostics.iter().any(Diagnostic::is_blocking);
++        Ok(GraphViewAuthoringValidation {
++            revision: view.revision(),
++            generation: view.identity(),
++            success,
++            diagnostics,
++        })
++    }
++

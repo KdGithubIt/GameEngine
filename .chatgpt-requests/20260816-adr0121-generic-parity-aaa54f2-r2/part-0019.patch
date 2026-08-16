@@ -1,0 +1,50 @@
++                false,
++            ))
++        }
++        [domain, command, graph_path, commands_path]
++            if domain == "graph" && command == "apply" =>
++        {
++            Some(graph_mutate(
++                Path::new(graph_path),
++                Path::new(commands_path),
++                true,
++            ))
++        }
++        [domain, area, command, graph_path, view_path]
++            if domain == "graph" && area == "layout" && command == "inspect" =>
++        {
++            Some(graph_view_inspect(
++                Path::new(graph_path),
++                Path::new(view_path),
++            ))
++        }
++        [domain, area, command, graph_path, view_path]
++            if domain == "graph" && area == "layout" && command == "validate" =>
++        {
++            Some(graph_view_validate(
++                Path::new(graph_path),
++                Path::new(view_path),
++            ))
++        }
++        [domain, area, command, graph_path, view_path, commands_path]
++            if domain == "graph" && area == "layout" && command == "preview" =>
++        {
++            Some(graph_view_mutate(
++                Path::new(graph_path),
++                Path::new(view_path),
++                Path::new(commands_path),
++                false,
++            ))
++        }
++        [domain, area, command, graph_path, view_path, commands_path]
++            if domain == "graph" && area == "layout" && command == "apply" =>
++        {
++            Some(graph_view_mutate(
++                Path::new(graph_path),
++                Path::new(view_path),
++                Path::new(commands_path),
++                true,
++            ))
++        }
++        [domain, command, path] if domain == "ui" && command == "inspect" => {
++            Some(ui_inspect(Path::new(path)))

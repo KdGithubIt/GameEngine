@@ -1,0 +1,44 @@
++    /// Previews one atomic GraphView command batch without changing live state.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`GraphViewAuthoringError`] when preview permission is absent or
++    /// the supplied revision/generation pair is stale.
++    pub fn preview(
++        &self,
++        graph: &Graph,
++        view: &GraphView,
++        permissions: &AuthoringPermissions,
++        expected_revision: u64,
++        expected_generation: u64,
++        commands: Vec<GraphViewCommand>,
++    ) -> Result<GraphViewAuthoringMutation, GraphViewAuthoringError> {
++        permissions.require(AuthoringPermission::Preview)?;
++        ensure_current(view, expected_revision, expected_generation)?;
++        evaluate(graph, view, expected_revision, expected_generation, commands)
++    }
++
++    /// Applies one atomic GraphView command batch to the live presentation document.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`GraphViewAuthoringError`] when project-data-write permission is
++    /// absent or the supplied revision/generation pair is stale.
++    pub fn apply(
++        &self,
++        graph: &Graph,
++        view: &mut GraphView,
++        permissions: &AuthoringPermissions,
++        expected_revision: u64,
++        expected_generation: u64,
++        commands: Vec<GraphViewCommand>,
++    ) -> Result<GraphViewAuthoringMutation, GraphViewAuthoringError> {
++        permissions.require(AuthoringPermission::ProjectDataWrite)?;
++        ensure_current(view, expected_revision, expected_generation)?;
++
++        let mut transaction = GraphViewTransaction::begin(view);
++        for command in commands {
++            transaction.apply(command);
++        }
++        let diff = transaction.preview_diff().to_vec();
++        if diff.is_empty() {
