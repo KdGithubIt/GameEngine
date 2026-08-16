@@ -625,7 +625,7 @@ mod tests {
 
         assert_eq!(json["graph_kind"], "behavior_tree.graph");
         assert_eq!(json["layout_policy"], "behavior_tree.top_down");
-        assert_eq!(json["nodes"].as_array().unwrap().len(), 6);
+        assert_eq!(json["nodes"].as_array().unwrap().len(), 10);
     }
 
     #[test]
