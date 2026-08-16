@@ -1,0 +1,31 @@
+diff --git a/crates/physics/src/navigation.rs b/crates/physics/src/navigation.rs
+--- a/crates/physics/src/navigation.rs
++++ b/crates/physics/src/navigation.rs
+@@ -1280,6 +1280,7 @@
+     }
+ }
+ 
++#[allow(clippy::too_many_arguments)]
+ fn relax(
+     next: NavigationPolygonRef,
+     current: NavigationPolygonRef,
+diff --git a/crates/physics/src/navigation_bake.rs b/crates/physics/src/navigation_bake.rs
+--- a/crates/physics/src/navigation_bake.rs
++++ b/crates/physics/src/navigation_bake.rs
+@@ -412,11 +412,11 @@
+     }
+ 
+     let had_previous = path.exists();
+-    if had_previous {
+-        if let Err(error) = fs::rename(path, &backup) {
+-            let _ = fs::remove_file(&temporary);
+-            return Err(NavigationBakeServiceError::Io(error));
+-        }
++    if had_previous
++        && let Err(error) = fs::rename(path, &backup)
++    {
++        let _ = fs::remove_file(&temporary);
++        return Err(NavigationBakeServiceError::Io(error));
+     }
+     match fs::rename(&temporary, path) {
+         Ok(()) => {
