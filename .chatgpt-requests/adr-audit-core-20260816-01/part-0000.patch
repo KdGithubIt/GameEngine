@@ -1,0 +1,14 @@
+diff --git a/docs/ARCHITECTURE_OVERVIEW.md b/docs/ARCHITECTURE_OVERVIEW.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..39c21a7d2dc939913c99eeda1fd757bd4db9b8ce
+--- /dev/null
++++ b/docs/ARCHITECTURE_OVERVIEW.md
+@@ -0,0 +1,167 @@
++# Current Architecture Overview
++
++Status: Current overview
++Last audited: 2026-08-16
++Audit baseline: `e9c1a060b63b8b2ff93e1f45115047f69d0a1a15`
++
++This document answers **what the GameEngine architecture is now**. Architecture
++Decision Records answer **why the project chose that architecture**. When this
