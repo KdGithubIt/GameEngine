@@ -1,0 +1,380 @@
+diff --git a/crates/editor/src/mcp_transport.rs b/crates/editor/src/mcp_transport.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/editor/src/mcp_transport.rs
+@@ -0,0 +1,753 @@
++//! Loopback Streamable HTTP transport for the Editor-attached MCP endpoint.
++//!
++//! The transport owns HTTP/JSON-RPC framing and authentication only. Tool
++//! business logic is dispatched back to the Editor thread, where the live
++//! project authoring session remains authoritative.
++
++use eframe::egui;
++use engine_mcp::{BehaviorTreeMcpTools, McpToolDescriptor, SceneMcpTools};
++use serde_json::{json, Value};
++use std::collections::BTreeMap;
++use std::fmt;
++use std::io::{self, Read, Write};
++use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
++use std::sync::atomic::{AtomicBool, Ordering};
++use std::sync::{mpsc, Arc};
++use std::thread::{self, JoinHandle};
++use std::time::Duration;
++
++pub(crate) const MCP_PROTOCOL_VERSION: &str = "2025-11-25";
++const MCP_PATH: &str = "/mcp";
++const MAX_HEADER_BYTES: usize = 32 * 1024;
++const MAX_BODY_BYTES: usize = 1024 * 1024;
++const IO_TIMEOUT: Duration = Duration::from_secs(5);
++const HOST_RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
++
++/// Result returned by the live Editor host for one MCP tool request.
++pub(crate) enum EditorMcpHostResult {
++    Success(Value),
++    ToolError { code: String, message: String },
++}
++
++/// One tool invocation waiting to run against the live Editor state.
++pub(crate) struct EditorMcpRequest {
++    name: String,
++    arguments: Value,
++    response: mpsc::SyncSender<EditorMcpHostResult>,
++}
++
++impl EditorMcpRequest {
++    pub(crate) fn name(&self) -> &str {
++        &self.name
++    }
++
++    pub(crate) fn arguments(&self) -> &Value {
++        &self.arguments
++    }
++
++    pub(crate) fn respond(self, result: EditorMcpHostResult) {
++        let _ = self.response.send(result);
++    }
++}
++
++/// Failure to start the local Editor MCP transport.
++#[derive(Debug)]
++pub(crate) enum EditorMcpServerError {
++    Bind(io::Error),
++    Configure(io::Error),
++    Random(String),
++    Thread(io::Error),
++}
++
++impl fmt::Display for EditorMcpServerError {
++    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
++        match self {
++            Self::Bind(error) => write!(formatter, "could not bind Editor MCP loopback endpoint: {error}"),
++            Self::Configure(error) => {
++                write!(formatter, "could not configure Editor MCP loopback endpoint: {error}")
++            }
++            Self::Random(error) => {
++                write!(formatter, "could not create Editor MCP session credential: {error}")
++            }
++            Self::Thread(error) => write!(formatter, "could not start Editor MCP listener thread: {error}"),
++        }
++    }
++}
++
++impl std::error::Error for EditorMcpServerError {
++    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
++        match self {
++            Self::Bind(error) | Self::Configure(error) | Self::Thread(error) => Some(error),
++            Self::Random(_) => None,
++        }
++    }
++}
++
++/// Running loopback-only MCP server owned by one Editor process.
++pub(crate) struct EditorMcpServer {
++    local_addr: SocketAddr,
++    endpoint: String,
++    authorization_token: String,
++    shutdown: Arc<AtomicBool>,
++    listener_thread: Option<JoinHandle<()>>,
++}
++
++impl EditorMcpServer {
++    pub(crate) fn start(
++        context: egui::Context,
++    ) -> Result<(Self, mpsc::Receiver<EditorMcpRequest>), EditorMcpServerError> {
++        let listener =
++            TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).map_err(EditorMcpServerError::Bind)?;
++        listener
++            .set_nonblocking(true)
++            .map_err(EditorMcpServerError::Configure)?;
++        let local_addr = listener.local_addr().map_err(EditorMcpServerError::Configure)?;
++        let endpoint = format!("http://{local_addr}{MCP_PATH}");
++        let authorization_token = new_authorization_token()?;
++        let worker_token = authorization_token.clone();
++        let shutdown = Arc::new(AtomicBool::new(false));
++        let worker_shutdown = Arc::clone(&shutdown);
++        let (request_sender, request_receiver) = mpsc::channel();
++
++        let listener_thread = thread::Builder::new()
++            .name("gameengine-editor-mcp".into())
++            .spawn(move || {
++                serve_loop(
++                    listener,
++                    worker_token,
++                    request_sender,
++                    context,
++                    worker_shutdown,
++                );
++            })
++            .map_err(EditorMcpServerError::Thread)?;
++
++        Ok((
++            Self {
++                local_addr,
++                endpoint,
++                authorization_token,
++                shutdown,
++                listener_thread: Some(listener_thread),
++            },
++            request_receiver,
++        ))
++    }
++
++    pub(crate) fn endpoint(&self) -> &str {
++        &self.endpoint
++    }
++
++    pub(crate) fn authorization_token(&self) -> &str {
++        &self.authorization_token
++    }
++}
++
++impl Drop for EditorMcpServer {
++    fn drop(&mut self) {
++        self.shutdown.store(true, Ordering::Release);
++        let _ = TcpStream::connect_timeout(&self.local_addr, Duration::from_millis(100));
++        if let Some(thread) = self.listener_thread.take() {
++            let _ = thread.join();
++        }
++    }
++}
++
++fn new_authorization_token() -> Result<String, EditorMcpServerError> {
++    let mut bytes = [0_u8; 32];
++    getrandom::fill(&mut bytes)
++        .map_err(|error| EditorMcpServerError::Random(error.to_string()))?;
++    let mut token = String::with_capacity(bytes.len() * 2);
++    for byte in bytes {
++        use std::fmt::Write as _;
++        write!(&mut token, "{byte:02x}")
++            .expect("writing hexadecimal text into String cannot fail");
++    }
++    Ok(token)
++}
++
++fn serve_loop(
++    listener: TcpListener,
++    authorization_token: String,
++    request_sender: mpsc::Sender<EditorMcpRequest>,
++    context: egui::Context,
++    shutdown: Arc<AtomicBool>,
++) {
++    while !shutdown.load(Ordering::Acquire) {
++        match listener.accept() {
++            Ok((stream, _peer)) => {
++                if shutdown.load(Ordering::Acquire) {
++                    break;
++                }
++                let token = authorization_token.clone();
++                let sender = request_sender.clone();
++                let context = context.clone();
++                let _ = thread::Builder::new()
++                    .name("gameengine-editor-mcp-request".into())
++                    .spawn(move || {
++                        let _ = handle_connection(stream, &token, &sender, &context);
++                    });
++            }
++            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
++                thread::sleep(Duration::from_millis(10));
++            }
++            Err(_) => break,
++        }
++    }
++}
++
++fn handle_connection(
++    mut stream: TcpStream,
++    authorization_token: &str,
++    request_sender: &mpsc::Sender<EditorMcpRequest>,
++    context: &egui::Context,
++) -> io::Result<()> {
++    stream.set_read_timeout(Some(IO_TIMEOUT))?;
++    stream.set_write_timeout(Some(IO_TIMEOUT))?;
++
++    let request = match read_http_request(&mut stream) {
++        Ok(request) => request,
++        Err(HttpReadError::RequestTooLarge) => {
++            return write_http_response(&mut stream, 413, "text/plain", b"request too large");
++        }
++        Err(HttpReadError::LengthRequired) => {
++            return write_http_response(&mut stream, 411, "text/plain", b"content length required");
++        }
++        Err(HttpReadError::UnsupportedTransferEncoding) => {
++            return write_http_response(
++                &mut stream,
++                501,
++                "text/plain",
++                b"transfer encoding is not supported",
++            );
++        }
++        Err(HttpReadError::BadRequest) => {
++            return write_http_response(&mut stream, 400, "text/plain", b"bad request");
++        }
++        Err(HttpReadError::Io(error)) => return Err(error),
++    };
++
++    let path = request.path.split('?').next().unwrap_or(request.path.as_str());
++    if path != MCP_PATH {
++        return write_http_response(&mut stream, 404, "text/plain", b"not found");
++    }
++
++    if request
++        .headers
++        .get("origin")
++        .is_some_and(|origin| !origin_is_loopback(origin))
++    {
++        return write_http_response(&mut stream, 403, "text/plain", b"forbidden origin");
++    }
++
++    let expected_authorization = format!("Bearer {authorization_token}");
++    if request.headers.get("authorization") != Some(&expected_authorization) {
++        return write_http_response(&mut stream, 401, "text/plain", b"unauthorized");
++    }
++
++    match request.method.as_str() {
++        "GET" => {
++            return write_http_response(
++                &mut stream,
++                405,
++                "text/plain",
++                b"server-sent event stream is not enabled",
++            );
++        }
++        "POST" => {}
++        _ => {
++            return write_http_response(&mut stream, 405, "text/plain", b"method not allowed");
++        }
++    }
++
++    if !request
++        .headers
++        .get("content-type")
++        .is_some_and(|value| value.to_ascii_lowercase().starts_with("application/json"))
++    {
++        return write_http_response(
++            &mut stream,
++            415,
++            "text/plain",
++            b"application/json is required",
++        );
++    }
++
++    let accepts = request
++        .headers
++        .get("accept")
++        .map(|value| value.to_ascii_lowercase())
++        .unwrap_or_default();
++    if !accepts.contains("application/json") || !accepts.contains("text/event-stream") {
++        return write_http_response(
++            &mut stream,
++            406,
++            "text/plain",
++            b"accept must include application/json and text/event-stream",
++        );
++    }
++
++    let message: Value = match serde_json::from_slice(&request.body) {
++        Ok(Value::Object(message)) => Value::Object(message),
++        Ok(_) => {
++            return write_json_rpc_error(
++                &mut stream,
++                Value::Null,
++                -32600,
++                "invalid JSON-RPC request",
++            );
++        }
++        Err(_) => {
++            return write_json_rpc_error(&mut stream, Value::Null, -32700, "parse error");
++        }
++    };
++
++    let object = message
++        .as_object()
++        .expect("JSON object was checked before dispatch");
++    if object.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
++        return write_json_rpc_error(
++            &mut stream,
++            object.get("id").cloned().unwrap_or(Value::Null),
++            -32600,
++            "jsonrpc must be 2.0",
++        );
++    }
++    let Some(method) = object.get("method").and_then(Value::as_str) else {
++        return write_json_rpc_error(
++            &mut stream,
++            object.get("id").cloned().unwrap_or(Value::Null),
++            -32600,
++            "method is required",
++        );
++    };
++    let id = object.get("id").cloned();
++
++    if method != "initialize"
++        && request.headers.get("mcp-protocol-version").map(String::as_str)
++            != Some(MCP_PROTOCOL_VERSION)
++    {
++        return write_http_response(
++            &mut stream,
++            400,
++            "text/plain",
++            b"missing or unsupported MCP-Protocol-Version",
++        );
++    }
++
++    if id.is_none() {
++        handle_notification(method);
++        return write_http_response(&mut stream, 202, "text/plain", b"");
++    }
++
++    let id = id.unwrap_or(Value::Null);
++    let result = match method {
++        "initialize" => initialize_result(),
++        "ping" => json!({}),
++        "tools/list" => tools_list_result(),
++        "tools/call" => {
++            let params = object.get("params").and_then(Value::as_object);
++            let Some(name) = params
++                .and_then(|params| params.get("name"))
++                .and_then(Value::as_str)
++            else {
++                return write_json_rpc_error(
++                    &mut stream,
++                    id,
++                    -32602,
++                    "tools/call requires a tool name",
++                );
++            };
++            let arguments = params
++                .and_then(|params| params.get("arguments"))
++                .cloned()
++                .unwrap_or_else(|| json!({}));
++            match dispatch_tool_call(name, arguments, request_sender, context) {
++                Ok(result) => result,
++                Err(DispatchError::HostDisconnected) => {
++                    return write_json_rpc_error(
++                        &mut stream,
++                        id,
++                        -32603,
++                        "Editor authoring host is unavailable",
++                    );
++                }
++                Err(DispatchError::Timeout) => {
