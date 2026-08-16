@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "request_id": "vfx-adr0125-simple-adapter-20260816-05",
+  "target_branch": "chatgpt/gameengine-vfx-adr0125",
+  "expected_head_sha": "6894f014f449a7c46406de99bb0a402449659c5b",
+  "patch_parts": [
+    "part-0000.patch",
+    "part-0001.patch",
+    "part-0002.patch",
+    "part-0003.patch"
+  ],
+  "commit_message": "Route ParticleEmitter through ADR 0125 VFX runtime",
+  "pr_title": "GameEngine: implement ADR 0125 VFX architecture",
+  "pr_body": "Implements ADR 0125 in staged commits. This stage removes the legacy ParticleEmitter's parallel RNG/simulator and compiles its convenience fields into the same CompiledVfxEffect/VfxInstance CPU reference path used by authored VFX. Stable source/module/key IDs keep recompilation deterministic and live pools reconfigure in place; the existing mesh render adapter remains API-compatible."
+}
