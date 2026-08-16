@@ -1,0 +1,76 @@
+
++                schema_version: PROJECT_SCHEMA_VERSION,
++            },
++        )
++        .expect("project fixture must be created");
++        (directory, root)
++    }
++
++    fn manifest_with_imported_asset(root: &ProjectRoot) -> (AssetManifest, AssetId, AssetId) {
++        let source_id = AssetId::generate();
++        let imported_id = imported_sub_asset_id(&source_id, ImportedSubAssetKind::Mesh, 0);
++        fs::create_dir_all(root.assets_root().join("models"))
++            .expect("models directory must be created");
++        fs::write(root.assets_root().join("models/hero.glb"), b"glTF")
++            .expect("source fixture must be written");
++
++        let mut manifest = AssetManifest::default();
++        manifest.insert(
++            source_id.clone(),
++            ManifestEntry {
++                path: "models/hero.glb".into(),
++                name: Some("hero_model".into()),
++                import_settings: ImportSettings {
++                    sub_assets: vec![ImportedSubAsset {
++                        id: imported_id.as_str().to_owned(),
++                        kind: ImportedSubAssetKind::Mesh,
++                        name: "hero_body".into(),
++                        index: 0,
++                        target_model_source: None,
++                    }],
++                    ..ImportSettings::default()
++                },
++            },
++        );
++        (manifest, source_id, imported_id)
++    }
++
++    #[test]
++    fn search_finds_source_and_imported_assets_with_stable_ids() {
++        let (_directory, root) = project();
++        let (manifest, source_id, imported_id) = manifest_with_imported_asset(&root);
++        let service = AssetCatalogService::new();
++        let permissions = AuthoringPermissions::read_only();
++
++        let source = service
++            .search(&root, &manifest, &permissions, "hero_model")
++            .expect("source search must succeed");
++        assert_eq!(source.assets.len(), 1);
++        assert_eq!(source.assets[0].id, source_id);
++
++        let by_kind = service
++            .search(&root, &manifest, &permissions, "mesh")
++            .expect("kind search must succeed");
++        assert_eq!(by_kind.assets.len(), 1);
++        assert_eq!(by_kind.assets[0].id, imported_id);
++    }
++
++    #[test]
++    fn inspect_imported_asset_reports_source_metadata_and_file_state() {
++        let (_directory, root) = project();
++        let (manifest, source_id, imported_id) = manifest_with_imported_asset(&root);
++
++        let inspection = AssetCatalogService::new()
++            .inspect(
++                &root,
++                &manifest,
++                &AuthoringPermissions::read_only(),
++                &imported_id,
++            )
++            .expect("imported inspection must succeed");
++
++        assert_eq!(inspection.source_asset, Some(source_id));
++        assert!(inspection.file_exists);
++        assert_eq!(
++            inspection.imported.as_ref().map(|asset| asset.kind),
++            Some(ImportedS
