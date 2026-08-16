@@ -100,6 +100,8 @@ struct ShadowUniform {
     light_view_proj: [[[f32; 4]; 4]; SHADOW_CASCADE_COUNT],
     /// x: depth bias, y: normal bias, z: enabled (>0.5), w: shadow texel size.
     params: [f32; 4],
+    /// x: blend start, y: first cascade far depth, z/w: reserved.
+    cascade_depths: [f32; 4],
 }
 
 impl ShadowUniform {
@@ -107,6 +109,7 @@ impl ShadowUniform {
         Self {
             light_view_proj: [glam::Mat4::IDENTITY.to_cols_array_2d(); SHADOW_CASCADE_COUNT],
             params: [0.0; 4],
+            cascade_depths: [0.0; 4],
         }
     }
 }
@@ -1289,17 +1292,25 @@ impl WorldRenderer {
             && directional.intensity > 0.0
             && shadow_camera.is_some()
             && directional.direction.normalize_or_zero() != glam::Vec3::ZERO;
-        let cascade_matrices = match (shadow_camera, shadows_enabled) {
-            (Some((camera, camera_transform)), true) => cascade_view_projections(
-                camera,
-                camera_transform,
-                directional.direction,
-                &shadow_settings,
+        let (cascade_matrices, cascade_blend_depths) = match (shadow_camera, shadows_enabled) {
+            (Some((camera, camera_transform)), true) => (
+                cascade_view_projections(
+                    camera,
+                    camera_transform,
+                    directional.direction,
+                    &shadow_settings,
+                ),
+                shadow_settings.cascade_blend_depths(camera.near, camera.far),
             ),
-            _ => [glam::Mat4::IDENTITY; SHADOW_CASCADE_COUNT],
+            _ => ([glam::Mat4::IDENTITY; SHADOW_CASCADE_COUNT], [0.0; 2]),
         };
-        self.render
-            .update_shadows(queue, &cascade_matrices, &shadow_settings, shadows_enabled);
+        self.render.update_shadows(
+            queue,
+            &cascade_matrices,
+            cascade_blend_depths,
+            &shadow_settings,
+            shadows_enabled,
+        );
 
         let batches = self.collect_batches(world, device, queue, camera_position);
         let skinned_draws = self.collect_skinned_draws(world, device, queue, camera_position);
@@ -1427,8 +1438,8 @@ impl WorldRenderer {
         });
 
         // Depth-only shadow passes, one per cascade (Phase 50, ADR 0036).
-        // Skinned meshes do not cast shadows in v1; batched static and
-        // particle instances do.
+        // Static, particle, and skinned casters share the same stabilized
+        // cascade matrices.
         if shadows_enabled {
             for (cascade_index, layer_view) in self.render.shadow_layer_views.iter().enumerate() {
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -3539,6 +3550,7 @@ impl RenderState {
         &self,
         queue: &wgpu::Queue,
         matrices: &[glam::Mat4; SHADOW_CASCADE_COUNT],
+        cascade_blend_depths: [f32; 2],
         settings: &ShadowSettings,
         enabled: bool,
     ) {
@@ -3553,6 +3565,12 @@ impl RenderState {
                 settings.normal_bias,
                 if enabled { 1.0 } else { 0.0 },
                 1.0 / settings.resolution.max(1) as f32,
+            ],
+            cascade_depths: [
+                cascade_blend_depths[0],
+                cascade_blend_depths[1],
+                0.0,
+                0.0,
             ],
         };
         queue.write_buffer(&self.shadow_uniform_buffer, 0, bytemuck::bytes_of(&uniform));

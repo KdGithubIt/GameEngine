@@ -11,6 +11,12 @@ use crate::transform::Transform;
 /// Number of directional-light cascades used by the Phase 41 MVP.
 pub const SHADOW_CASCADE_COUNT: usize = 2;
 
+/// Fraction of the first cascade kept as overlap for transition blending.
+///
+/// This is a renderer quality policy rather than persisted authoring state, so
+/// ADR 0036's two-cascade settings contract stays unchanged.
+const SHADOW_CASCADE_BLEND_FRACTION: f32 = 0.10;
+
 /// Texture format used for the Phase 41 directional shadow map.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShadowMapFormat {
@@ -106,6 +112,31 @@ impl ShadowSettings {
         ]
     }
 
+    /// Returns camera-depth bounds for the first/second cascade transition.
+    pub(crate) fn cascade_blend_depths(&self, camera_near: f32, camera_far: f32) -> [f32; 2] {
+        let cascades = self.cascades(camera_near, camera_far);
+        let first_span = (cascades[0].far - cascades[0].near).max(0.0);
+        let blend_start =
+            (cascades[0].far - first_span * SHADOW_CASCADE_BLEND_FRACTION).max(cascades[0].near);
+        [blend_start, cascades[0].far]
+    }
+
+    /// Returns cascade slices used to fit shadow projections.
+    ///
+    /// The second cascade starts at the blend region so both maps contain
+    /// valid depth throughout the transition.
+    fn fitting_cascades(&self, camera_near: f32, camera_far: f32) -> [ShadowCascade; 2] {
+        let cascades = self.cascades(camera_near, camera_far);
+        let [blend_start, _] = self.cascade_blend_depths(camera_near, camera_far);
+        [
+            cascades[0],
+            ShadowCascade {
+                near: blend_start,
+                far: cascades[1].far,
+            },
+        ]
+    }
+
     /// Returns the texture contract for the directional shadow atlas.
     pub fn map_descriptor(&self) -> ShadowMapDescriptor {
         ShadowMapDescriptor {
@@ -130,15 +161,17 @@ impl Default for ShadowSettings {
     }
 }
 
-/// Computes one light view-projection matrix per cascade (Phase 50).
+/// Computes one stabilized light view-projection matrix per cascade.
 ///
-/// Each cascade slice of the camera frustum is transformed into light space
-/// and enclosed in an orthographic box, so every visible point of the slice
-/// lands inside the corresponding shadow map. The near plane is pulled back
-/// by the slice's own light-space depth range so casters behind the slice
-/// still write shadow depth.
+/// Each camera slice is enclosed by a rotation-invariant bounding sphere. The
+/// resulting square projection keeps a constant world-space extent while the
+/// camera rotates, and its light-space center is snapped to whole shadow
+/// texels so sub-texel camera translation does not move the projected grid.
 ///
-/// A zero `light_direction` degrades to straight down instead of failing.
+/// The second cascade overlaps the first transition region. The near plane is
+/// pulled back by the slice's light-space depth range so off-slice casters can
+/// still write shadow depth. A zero `light_direction` degrades to straight
+/// down instead of failing.
 pub fn cascade_view_projections(
     camera: &Camera3D,
     camera_transform: &Transform,
@@ -158,7 +191,9 @@ pub fn cascade_view_projections(
     };
 
     let view = Camera3D::view_matrix(camera_transform);
-    let cascades = settings.cascades(camera.near, camera.far);
+    let cascades = settings.fitting_cascades(camera.near, camera.far);
+    let resolution = settings.resolution.max(1) as f32;
+    let light_orientation = Mat4::look_to_rh(Vec3::ZERO, direction, up);
 
     cascades.map(|cascade| {
         let near = cascade.near.max(0.001);
@@ -180,26 +215,44 @@ pub fn cascade_view_projections(
         }
 
         let center = corners.iter().copied().sum::<Vec3>() / corners.len() as f32;
-        let light_view = Mat4::look_to_rh(center, direction, up);
+        let base_radius = corners
+            .iter()
+            .map(|corner| center.distance(*corner))
+            .fold(0.0_f32, f32::max)
+            .max(0.001);
 
-        let mut minimum = Vec3::splat(f32::MAX);
-        let mut maximum = Vec3::splat(f32::MIN);
+        // A two-texel guard band retains every corner after center snapping.
+        let radius = base_radius * (1.0 + 2.0 / resolution);
+        let world_units_per_texel = (radius * 2.0) / resolution;
+        let center_light = light_orientation.transform_point3(center);
+        let snapped_center_light = Vec3::new(
+            (center_light.x / world_units_per_texel).round() * world_units_per_texel,
+            (center_light.y / world_units_per_texel).round() * world_units_per_texel,
+            center_light.z,
+        );
+        let snapped_center = light_orientation
+            .inverse()
+            .transform_point3(snapped_center_light);
+        let light_view = Mat4::look_to_rh(snapped_center, direction, up);
+
+        let mut minimum_z = f32::MAX;
+        let mut maximum_z = f32::MIN;
         for corner in corners {
             let light_space = light_view.transform_point3(corner);
-            minimum = minimum.min(light_space);
-            maximum = maximum.max(light_space);
+            minimum_z = minimum_z.min(light_space.z);
+            maximum_z = maximum_z.max(light_space.z);
         }
 
         // look_to_rh looks down -Z: nearer points have larger z. Pull the
         // near plane back so off-slice casters still occlude.
-        let depth_backup = (maximum.z - minimum.z).max(1.0);
+        let depth_backup = (maximum_z - minimum_z).max(1.0);
         let projection = Mat4::orthographic_rh(
-            minimum.x,
-            maximum.x,
-            minimum.y,
-            maximum.y,
-            -(maximum.z + depth_backup),
-            -minimum.z,
+            -radius,
+            radius,
+            -radius,
+            radius,
+            -(maximum_z + depth_backup),
+            -minimum_z,
         );
         projection * light_view
     })
@@ -409,6 +462,24 @@ mod tests {
     }
 
     #[test]
+    fn cascade_blend_region_overlaps_the_second_projection() {
+        let settings = ShadowSettings::default();
+        let [blend_start, split] = settings.cascade_blend_depths(1.0, 101.0);
+        let fitting = settings.fitting_cascades(1.0, 101.0);
+
+        assert!((blend_start - 19.0).abs() < 1.0e-6);
+        assert!((split - 21.0).abs() < 1.0e-6);
+        assert_eq!(fitting[0], ShadowCascade { near: 1.0, far: 21.0 });
+        assert_eq!(
+            fitting[1],
+            ShadowCascade {
+                near: 19.0,
+                far: 101.0,
+            }
+        );
+    }
+
+    #[test]
     fn cascade_matrices_enclose_every_frustum_corner() {
         let camera = Camera3D::new(60.0, 16.0 / 9.0, 0.1, 100.0);
         let camera_transform =
@@ -446,6 +517,38 @@ mod tests {
                         );
                     }
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn cascade_matrices_ignore_sub_texel_camera_translation() {
+        let camera = Camera3D::new(60.0, 1.0, 0.1, 100.0);
+        let settings = ShadowSettings::default();
+        let light_direction = Vec3::NEG_Z;
+        let first_transform =
+            Transform::looking_at(Vec3::new(0.0, 0.0, 5.0), Vec3::ZERO, Vec3::Y);
+        let second_transform = Transform::looking_at(
+            Vec3::new(0.001, 0.0, 5.0),
+            Vec3::new(0.001, 0.0, 0.0),
+            Vec3::Y,
+        );
+
+        let first =
+            cascade_view_projections(&camera, &first_transform, light_direction, &settings);
+        let second =
+            cascade_view_projections(&camera, &second_transform, light_direction, &settings);
+
+        for (first_matrix, second_matrix) in first.iter().zip(second) {
+            for (first_value, second_value) in first_matrix
+                .to_cols_array()
+                .iter()
+                .zip(second_matrix.to_cols_array())
+            {
+                assert!(
+                    (first_value - second_value).abs() < 1.0e-5,
+                    "sub-texel translation must keep the snapped shadow matrix stable: {first_matrix:?} vs {second_matrix:?}"
+                );
             }
         }
     }
