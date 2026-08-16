@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "request_id": "20260816-pr66-mcp-schema-4f48d8c-r3",
+  "target_branch": "chatgpt/gameengine-pr66-launcher-visual-v3",
+  "expected_head_sha": "4f48d8c5212e377951252bc27be50020150f5c82",
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Update MCP Behavior Tree schema-count regression",
+  "pr_title": "CI: repair desktop visual validation on current main",
+  "pr_body": "## Summary\n\nRebuilds the work from #66 on current `main` and repairs the stale validation expectations exposed by the current 10-node Behavior Tree schema catalog.\n\n- migrates Launcher visual capture off eframe's unsupported `EFRAME_SCREENSHOT_TO` wgpu helper to a Launcher-owned egui screenshot command/event path with bounded timeout\n- accepts the Launcher's intentional empty argument list in the visual-validation script\n- short-circuits known workspace-wide validation paths before Cargo metadata and keeps metadata-failure reasons single-line\n- updates both CLI and MCP Behavior Tree schema-count regressions from 6 legacy schemas to the current 10-schema catalog\n- updates `docs/EDITOR_VISUAL_VALIDATION.md` to match the new Launcher capture contract\n\n## Validation required\n\n- Windows Validation: `full`\n- `cargo fmt --all --check`\n- `cargo check --workspace`\n- `cargo clippy --workspace --all-targets -- -D warnings`\n- `cargo test --workspace`\n- `cargo doc --workspace --no-deps`\n- Visual Validation: Editor + Launcher; both PNG artifacts must be inspected\n\nThis Draft PR supersedes #66 after the replacement validation succeeds.\n\n<!-- gameengine-visual-validation: both -->"
+}
