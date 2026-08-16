@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "request_id": "20260816-pr91-cfg-aware-mut-57305fe-r1",
+  "target_branch": "chatgpt/gameengine-visual-authoring-tool-scenario",
+  "expected_head_sha": "57305fe028aac397a498dbb986d0ae6c526a0b4e",
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Make visual validation mut binding cfg-aware",
+  "pr_title": "GameEngine: add authoring-tool visual validation scenario",
+  "pr_body": "## Summary\n\nAdds an explicit Visual Validation scenario for modeless Editor authoring-tool windows.\n\n- parses an optional `gameengine-visual-authoring-tool` marker in the trusted `pull_request_target` context\n- accepts the scenario only with explicit `editor` or `both` capture targets\n- passes the requested label through the validation script only for the Editor child process\n- resolves the label dynamically from the exact PR head's `AuthoringTool::ALL` catalog\n- opens the requested modeless window before the renderer-independent screenshot request\n- documents that this validates tool startup state only; document-dependent UI still requires a separate explicit scenario\n- keeps the Editor authoring-window binding mutable only in `visual-validation` builds\n\nThis is automation/visual-validation infrastructure and is intentionally isolated from ADR 0125 product changes. It must remain Draft and must not be merged automatically.\n\nThe existing trusted `main` visual workflow is requested below to exercise the changed PR-head Editor/script capture path. The new authoring-tool marker parsing itself remains production E2E unverified before merge because `pull_request_target` loads the workflow definition from `main`; this PR cannot safely prove its own new trusted workflow logic before review/merge.\n\n<!-- gameengine-visual-validation: editor -->"
+}
