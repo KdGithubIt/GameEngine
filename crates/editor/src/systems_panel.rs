@@ -479,7 +479,7 @@ mod tests {
             fixed_ids,
             [
                 "engine.fixed_transform_propagation",
-                "engine.mmd_physics_transform_propagation"
+                "engine.secondary_motion_transform_propagation"
             ]
         );
     }

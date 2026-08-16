@@ -22,15 +22,14 @@ pub mod collision;
 #[cfg(not(feature = "solver"))]
 #[path = "collision_contract.rs"]
 pub mod collision;
-/// Production tiled polygon navigation assets, baking, queries, and agents.
-pub mod navigation;
-/// Shared GUI-free navigation bake document and service contracts.
-pub mod navigation_bake;
-/// Legacy grid navigation retained for focused compatibility tests and layered utilities.
+/// Grid navigation baking, persistence, queries, and agents.
 pub mod navmesh;
 /// Rapier-backed gameplay rigid-body integration.
 #[cfg(feature = "solver")]
 pub mod physics;
+/// Isolated engine-native secondary-motion simulation (ADR 0112).
+#[cfg(feature = "solver")]
+pub mod secondary_motion;
 
 // Keep the feature-off contract implementations in the normal compiler/Clippy
 // path as well. Cargo feature unification can otherwise make an affected CI run

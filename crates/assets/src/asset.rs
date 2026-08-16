@@ -480,8 +480,8 @@ pub enum ImportedSubAssetKind {
     HumanoidMotion,
     /// Named vertex or material deformation.
     Morph,
-    /// Secondary-motion rigid-body rig.
-    RigidBodyRig,
+    /// Engine-native secondary-motion rig.
+    SecondaryMotionRig,
 }
 
 impl ImportedSubAssetKind {
@@ -495,7 +495,7 @@ impl ImportedSubAssetKind {
             Self::Animation => "animation",
             Self::HumanoidMotion => "humanoid_motion",
             Self::Morph => "morph",
-            Self::RigidBodyRig => "rigidbodyrig",
+            Self::SecondaryMotionRig => "secondarymotionrig",
         }
     }
 }
