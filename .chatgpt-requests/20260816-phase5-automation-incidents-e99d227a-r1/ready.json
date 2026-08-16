@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "request_id": "20260816-phase5-automation-incidents-e99d227a-r1",
+  "target_branch": "chatgpt/gameengine-automation-phase5-incidents",
+  "expected_head_sha": "e99d227ab40a7d839afa718e40ab372ec1899f32",
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Docs: record Phase 5 automation incidents",
+  "pr_title": "Docs: record Phase 5 automation incident learnings",
+  "pr_body": "## Summary\n- update the dispatcher producer protocol to require repository-root patch paths\n- require newline-boundary splitting when publishing patch parts through text-valued APIs\n- record the repeated INC-003 byte-divergence occurrence caught before ready\n- add INC-005 for checkout-directory prefixes in unified-diff paths and its confirmed recovery\n\n<!-- gameengine-chatgpt-dispatcher -->"
+}
