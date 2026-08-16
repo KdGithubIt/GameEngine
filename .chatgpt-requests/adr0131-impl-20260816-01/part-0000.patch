@@ -1,0 +1,225 @@
+diff --git a/crates/editor/src/agent.rs b/crates/editor/src/agent.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..3410700b2dff40cbfe2e061b18c993b059ad14ed
+--- /dev/null
++++ b/crates/editor/src/agent.rs
+@@ -0,0 +1,2633 @@
++//! GUI-free AI Studio agent orchestration contracts and managed services.
++//!
++//! The Editor frontend may depend on this module, but the contracts in this
++//! module intentionally do not depend on egui. Structured project authoring
++//! remains owned by the Editor MCP endpoint and `engine-authoring`; this module
++//! owns only AI session/run orchestration, application-level permissions,
++//! session persistence, managed source workspaces, provider descriptors, and
++//! completion evidence.
++
++use engine_authoring::{AuthoringPermission, AuthoringPermissions};
++use serde::{Deserialize, Serialize};
++use std::collections::{BTreeMap, BTreeSet};
++use std::fmt;
++use std::fs;
++use std::io;
++use std::path::{Component, Path, PathBuf};
++use std::sync::atomic::{AtomicU64, Ordering};
++use std::time::{SystemTime, UNIX_EPOCH};
++
++/// Current portable AI session document schema.
++pub const AI_SESSION_SCHEMA_VERSION: u32 = 1;
++/// Current code-workspace checkpoint schema.
++pub const CODE_CHECKPOINT_SCHEMA_VERSION: u32 = 1;
++/// Current persisted project-level agent policy schema.
++pub const AGENT_POLICY_SCHEMA_VERSION: u32 = 1;
++
++static NEXT_GENERATED_ID: AtomicU64 = AtomicU64::new(1);
++
++fn generated_id(prefix: &str) -> String {
++    let nanos = SystemTime::now()
++        .duration_since(UNIX_EPOCH)
++        .unwrap_or_default()
++        .as_nanos();
++    let serial = NEXT_GENERATED_ID.fetch_add(1, Ordering::Relaxed);
++    format!("{prefix}-{nanos:032x}-{serial:016x}")
++}
++
++macro_rules! string_id {
++    ($name:ident, $prefix:literal, $docs:literal) => {
++        #[doc = $docs]
++        #[derive(
++            Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
++        )]
++        #[serde(transparent)]
++        pub struct $name(String);
++
++        impl $name {
++            /// Generates a process-local unique identifier suitable for persisted history.
++            pub fn generate() -> Self {
++                Self(generated_id($prefix))
++            }
++
++            /// Creates an identifier from an already validated persisted value.
++            pub fn from_string(value: impl Into<String>) -> Self {
++                Self(value.into())
++            }
++
++            /// Returns the serialized identifier text.
++            pub fn as_str(&self) -> &str {
++                &self.0
++            }
++        }
++
++        impl fmt::Display for $name {
++            fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
++                formatter.write_str(&self.0)
++            }
++        }
++    };
++}
++
++string_id!(
++    AgentSessionId,
++    "session",
++    "Stable identifier for one project-scoped AI Studio conversation."
++);
++string_id!(
++    AgentRunId,
++    "run",
++    "Stable identifier for one immutable proposal execution attempt."
++);
++string_id!(
++    PermissionRequestId,
++    "permission",
++    "Stable identifier for one agent permission escalation request."
++);
++
++/// Monotonic proposal revision within one [`AgentSession`].
++#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
++#[serde(transparent)]
++pub struct ProposalVersion(u64);
++
++impl ProposalVersion {
++    /// Creates a proposal version from its monotonic number.
++    pub const fn new(value: u64) -> Self {
++        Self(value)
++    }
++
++    /// Returns the numeric proposal revision.
++    pub const fn get(self) -> u64 {
++        self.0
++    }
++}
++
++/// Origin of one conversational message.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case")]
++pub enum ConversationRole {
++    /// Human-authored request, answer, or clarification.
++    User,
++    /// Agent-authored question, proposal explanation, or result.
++    Agent,
++    /// Host-authored lifecycle or policy notice shown in the conversation.
++    System,
++}
++
++/// One portable AI Studio conversation entry.
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++pub struct ConversationMessage {
++    role: ConversationRole,
++    text: String,
++}
++
++impl ConversationMessage {
++    /// Creates one conversation entry.
++    pub fn new(role: ConversationRole, text: impl Into<String>) -> Self {
++        Self {
++            role,
++            text: text.into(),
++        }
++    }
++
++    /// Returns the message origin.
++    pub const fn role(&self) -> ConversationRole {
++        self.role
++    }
++
++    /// Returns the message text.
++    pub fn text(&self) -> &str {
++        &self.text
++    }
++}
++
++/// One capability that belongs to the agent application layer rather than the
++/// shared authoring permission vocabulary.
++#[derive(
++    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
++)]
++#[serde(rename_all = "snake_case")]
++pub enum AgentCapability {
++    /// Access remote network services.
++    NetworkAccess,
++    /// Search for or acquire external assets.
++    ExternalAssetAcquisition,
++    /// Launch the normal project runtime.
++    RuntimeLaunch,
++    /// Send input or other interactive control to the running project.
++    RuntimeControl,
++    /// Capture rendered frames for evaluation.
++    FrameCapture,
++    /// Use raw workspace filesystem access outside managed source operations.
++    WorkspaceFilesystem,
++    /// Execute commands outside the engine-managed validation allow-list.
++    ArbitraryCommandExecution,
++}
++
++/// Unified capability subject used by the agent permission broker.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case", tag = "domain", content = "capability")]
++pub enum AgentPermission {
++    /// Existing shared authoring permission enforced by `engine-authoring`.
++    Authoring(AuthoringPermission),
++    /// AI Studio application-level capability.
++    Agent(AgentCapability),
++}
++
++/// Scope chosen by the user for a permission escalation.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case")]
++pub enum ApprovalScope {
++    /// Permit exactly one matching authorization check.
++    AllowOnce,
++    /// Permit the capability until the current run reaches a terminal state.
++    AllowForRun,
++    /// Persist the capability decision for the current project host.
++    AllowForProject,
++    /// Reject the requested capability.
++    Deny,
++}
++
++/// Pending escalation that explains why a run needs a capability.
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++pub struct PermissionRequest {
++    id: PermissionRequestId,
++    run_id: AgentRunId,
++    permission: AgentPermission,
++    reason: String,
++}
++
++impl PermissionRequest {
++    /// Returns the request identifier.
++    pub fn id(&self) -> &PermissionRequestId {
++        &self.id
++    }
++
++    /// Returns the run that requested escalation.
++    pub fn run_id(&self) -> &AgentRunId {
++        &self.run_id
++    }
++
++    /// Returns the requested capability.
++    pub const fn permission(&self) -> AgentPermission {
++        self.permission
++    }
++
++    /// Returns the human-readable escalation reason.
++    pub fn reason(&self) -> &str {
++        &self.reason
++    }
