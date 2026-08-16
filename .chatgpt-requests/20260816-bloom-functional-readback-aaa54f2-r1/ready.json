@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "request_id": "20260816-bloom-functional-readback-aaa54f2-r1",
+  "target_branch": "chatgpt/gameengine-bloom-functional-readback",
+  "expected_head_sha": "aaa54f22f9749a7ed54326b08ea758c3fdff8d5d",
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Renderer: verify Bloom affects final pixels",
+  "pr_title": "Renderer: verify Bloom affects final pixels",
+  "pr_body": "## Summary\n\nAdds a GPU integration test for the merged multi-resolution Bloom path. The test clears an HDR source to a deterministic bright value, runs the public `ToneMapPass` with Bloom disabled and enabled, reads back the real RGBA8 output, and verifies that enabling Bloom increases the final RGB pixel. It then disables Bloom again and verifies the original output is restored.\n\nThis exercises the actual public HDR -> Bloom -> tone-map facade and validates real pixel output rather than only pipeline construction/validation. Production renderer code and public APIs are unchanged.\n\n## Validation\n\nRun affected Windows Validation for `engine-render-runtime` against the exact PR head. Visual Validation is not required because this is test-only and does not alter runtime behavior. The test skips only when no GPU adapter is available, matching the existing GPU validation convention."
+}
