@@ -1,0 +1,230 @@
+diff --git a/crates/render-runtime/src/render_backend.rs b/crates/render-runtime/src/render_backend.rs
+--- a/crates/render-runtime/src/render_backend.rs
++++ b/crates/render-runtime/src/render_backend.rs
+@@ -4,4 +4,5 @@
+ use crate::camera::{select_active_game_camera, Camera3D, ViewportSize};
+ use crate::debug_draw::{DebugLine, DebugLines};
++use crate::ibl::{BrdfLut, EnvironmentMap, GpuIblEnvironment};
+ use crate::light::{AmbientLight, DirectionalLight, SkySettings};
+ use crate::lod::InstanceStats;
+@@ -138,5 +139,44 @@
+     }
+ }
+ 
++#[repr(C)]
++#[derive(Debug, Clone, Copy, Pod, Zeroable)]
++struct IblUniformData {
++    fallback_radiance: [f32; 4],
++    params: [f32; 4],
++}
++
++impl IblUniformData {
++    fn disabled() -> Self {
++        Self {
++            fallback_radiance: [0.0; 4],
++            params: [0.0; 4],
++        }
++    }
++
++    fn from_resources(
++        ambient: &AmbientLight,
++        environment: &EnvironmentLighting,
++        has_map: bool,
++        max_specular_lod: f32,
++    ) -> Self {
++        let color = environment.diffuse_color;
++        Self {
++            fallback_radiance: [
++                color.x,
++                color.y,
++                color.z,
++                ambient.intensity.max(0.0) * environment.intensity.max(0.0),
++            ],
++            params: [
++                f32::from(environment.diffuse_ibl_enabled),
++                f32::from(has_map),
++                max_specular_lod,
++                0.0,
++            ],
++        }
++    }
++}
++
+ #[derive(Debug)]
+ pub(crate) enum RenderPreparationError {
+@@ -411,5 +451,9 @@
+     white_texture: Arc<Texture>,
+     flat_normal_texture: Arc<Texture>,
+     light_buffer: wgpu::Buffer,
++    ibl_uniform_buffer: wgpu::Buffer,
++    ibl_environment: GpuIblEnvironment,
++    ibl_brdf_lut: BrdfLut,
++    ibl_sampler: wgpu::Sampler,
+     pub(crate) light_bind_group: wgpu::BindGroup,
+     pipelines: [[wgpu::RenderPipeline; 3]; 3],
+@@ -1118,10 +1162,18 @@
+-        let mut ambient = world
++        let ambient = world
+             .get_resource::<AmbientLight>()
+             .cloned()
+             .unwrap_or_default();
+-        if let Some(environment) = world.get_resource::<EnvironmentLighting>() {
+-            ambient = environment.apply_to_ambient(&ambient);
+-        }
++        let environment = world
++            .get_resource::<EnvironmentLighting>()
++            .cloned()
++            .unwrap_or_default();
++        let environment_map = world.get_resource::<EnvironmentMap>().cloned();
++        self.render.update_environment(
++            queue,
++            &ambient,
++            &environment,
++            environment_map.as_ref(),
++        );
+         let directional = world
+             .get_resource::<DirectionalLight>()
+             .cloned()
+@@ -2526,6 +2578,23 @@
+             LightUniform::from_resources(&AmbientLight::default(), &DirectionalLight::default());
+         let light_buffer =
+             Self::make_uniform_buffer(device, bytemuck::bytes_of(&default_light), "Light");
++        let ibl_uniform_buffer = Self::make_uniform_buffer(
++            device,
++            bytemuck::bytes_of(&IblUniformData::disabled()),
++            "IBL uniform",
++        );
++        let ibl_environment = GpuIblEnvironment::new(device);
++        let ibl_brdf_lut = BrdfLut::new(device, queue);
++        let ibl_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
++            label: Some("IBL sampler"),
++            address_mode_u: wgpu::AddressMode::ClampToEdge,
++            address_mode_v: wgpu::AddressMode::ClampToEdge,
++            address_mode_w: wgpu::AddressMode::ClampToEdge,
++            mag_filter: wgpu::FilterMode::Linear,
++            min_filter: wgpu::FilterMode::Linear,
++            mipmap_filter: wgpu::MipmapFilterMode::Linear,
++            ..Default::default()
++        });
+ 
+         // Shadow resources (Phase 50, ADR 0036): the map size is fixed at
+         // startup from the default settings; runtime resolution changes are
+@@ -2631,6 +2700,52 @@
+                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
+                     count: None,
+                 },
++                wgpu::BindGroupLayoutEntry {
++                    binding: 4,
++                    visibility: wgpu::ShaderStages::FRAGMENT,
++                    ty: wgpu::BindingType::Texture {
++                        multisampled: false,
++                        view_dimension: wgpu::TextureViewDimension::Cube,
++                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
++                    },
++                    count: None,
++                },
++                wgpu::BindGroupLayoutEntry {
++                    binding: 5,
++                    visibility: wgpu::ShaderStages::FRAGMENT,
++                    ty: wgpu::BindingType::Texture {
++                        multisampled: false,
++                        view_dimension: wgpu::TextureViewDimension::Cube,
++                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
++                    },
++                    count: None,
++                },
++                wgpu::BindGroupLayoutEntry {
++                    binding: 6,
++                    visibility: wgpu::ShaderStages::FRAGMENT,
++                    ty: wgpu::BindingType::Texture {
++                        multisampled: false,
++                        view_dimension: wgpu::TextureViewDimension::D2,
++                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
++                    },
++                    count: None,
++                },
++                wgpu::BindGroupLayoutEntry {
++                    binding: 7,
++                    visibility: wgpu::ShaderStages::FRAGMENT,
++                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
++                    count: None,
++                },
++                wgpu::BindGroupLayoutEntry {
++                    binding: 8,
++                    visibility: wgpu::ShaderStages::FRAGMENT,
++                    ty: wgpu::BindingType::Buffer {
++                        ty: wgpu::BufferBindingType::Uniform,
++                        has_dynamic_offset: false,
++                        min_binding_size: None,
++                    },
++                    count: None,
++                },
+             ],
+         });
+ 
+@@ -2650,6 +2765,26 @@
+                 wgpu::BindGroupEntry {
+                     binding: 3,
+                     resource: wgpu::BindingResource::Sampler(&shadow_sampler),
++                },
++                wgpu::BindGroupEntry {
++                    binding: 4,
++                    resource: wgpu::BindingResource::TextureView(&ibl_environment.irradiance_view),
++                },
++                wgpu::BindGroupEntry {
++                    binding: 5,
++                    resource: wgpu::BindingResource::TextureView(&ibl_environment.prefiltered_view),
++                },
++                wgpu::BindGroupEntry {
++                    binding: 6,
++                    resource: wgpu::BindingResource::TextureView(&ibl_brdf_lut.view),
++                },
++                wgpu::BindGroupEntry {
++                    binding: 7,
++                    resource: wgpu::BindingResource::Sampler(&ibl_sampler),
++                },
++                wgpu::BindGroupEntry {
++                    binding: 8,
++                    resource: ibl_uniform_buffer.as_entire_binding(),
+                 },
+             ],
+         });
+@@ -3105,5 +3240,9 @@
+             white_texture: white_tex,
+             flat_normal_texture: flat_normal_tex,
+             light_buffer,
++            ibl_uniform_buffer,
++            ibl_environment,
++            ibl_brdf_lut,
++            ibl_sampler,
+             light_bind_group,
+             pipelines,
+@@ -3223,6 +3362,28 @@
+         queue.write_buffer(&self.camera_buffer, 0, bytemuck::bytes_of(&uniform));
+     }
+ 
++    pub(crate) fn update_environment(
++        &mut self,
++        queue: &wgpu::Queue,
++        ambient: &AmbientLight,
++        environment: &EnvironmentLighting,
++        source: Option<&EnvironmentMap>,
++    ) {
++        let active_source = environment.diffuse_ibl_enabled.then_some(source).flatten();
++        self.ibl_environment.upload_if_changed(queue, active_source);
++        let uniform = IblUniformData::from_resources(
++            ambient,
++            environment,
++            self.ibl_environment.has_source(),
++            self.ibl_environment.max_specular_lod(),
++        );
++        queue.write_buffer(
++            &self.ibl_uniform_buffer,
++            0,
++            bytemuck::bytes_of(&uniform),
++        );
++    }
++
+     pub(crate) fn update_light(
+         &self,
+         queue: &wgpu::Queue,
