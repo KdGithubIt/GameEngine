@@ -18,7 +18,7 @@ pub(super) enum NavigationBakeCompletion {
         tab_id: WorkspaceTabId,
         project: ProjectRoot,
         manifest: AssetManifest,
-        result: NavMeshBakeResult,
+        result: Box<NavMeshBakeResult>,
     },
     Cancelled {
         tab_id: WorkspaceTabId,
@@ -29,20 +29,11 @@ pub(super) enum NavigationBakeCompletion {
     },
 }
 
+#[derive(Default)]
 pub(super) struct NavigationBakeManager {
     receiver: Option<Receiver<NavigationBakeCompletion>>,
     cancelled: Option<Arc<AtomicBool>>,
     cancel_requested: bool,
-}
-
-impl Default for NavigationBakeManager {
-    fn default() -> Self {
-        Self {
-            receiver: None,
-            cancelled: None,
-            cancel_requested: false,
-        }
-    }
 }
 
 impl NavigationBakeManager {
@@ -155,6 +146,6 @@ fn run_navigation_bake(
         tab_id,
         project,
         manifest,
-        result,
+        result: Box::new(result),
     }
 }
