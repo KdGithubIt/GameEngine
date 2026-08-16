@@ -1,0 +1,299 @@
++                    format!(
++                        "authored rate, bursts, and lifetime imply about {estimated} particles, capped to {}",
++                        emitter.max_particles
++                    ),
++                    Some(&emitter.id),
++                    None,
++                ));
++            }
++        }
++        if total_budget > u64::from(effect.max_particles) {
++            diagnostics.push(VfxDiagnostic::warning(
++                "vfx.effect_budget_exceeded",
++                format!(
++                    "emitter budgets total {total_budget}, exceeding effect cap {}",
++                    effect.max_particles
++                ),
++                None,
++                None,
++            ));
++        }
++
++        VfxValidation {
++            success: !diagnostics.iter().any(VfxDiagnostic::is_blocking),
++            diagnostics,
++        }
++    }
++
++    /// Validates and compiles a VFX document to backend-neutral runtime IR.
++    pub fn compile(&self, effect: &VfxEffect) -> VfxCompilation {
++        let validation = self.validate(effect);
++        if !validation.success {
++            return VfxCompilation {
++                success: false,
++                diagnostics: validation.diagnostics,
++                compiled_effect: None,
++            };
++        }
++
++        let mut capabilities = VfxCapabilityRequirements::default();
++        let mut emitters = Vec::new();
++        for emitter in effect.emitters.iter().filter(|emitter| emitter.enabled) {
++            let mut attribute_layout = VfxAttributeLayout::default();
++            let mut spawn_operations = Vec::new();
++            let mut update_operations = Vec::new();
++            let mut render_operations = Vec::new();
++            for module in emitter.modules.iter().filter(|module| module.enabled) {
++                update_attribute_layout(&mut attribute_layout, &module.operation);
++                update_capabilities(&mut capabilities, &module.operation);
++                let operation = CompiledVfxOperation {
++                    source_module: module.id.clone(),
++                    operation: module.operation.clone(),
++                };
++                match module.phase {
++                    VfxPhase::Spawn => spawn_operations.push(operation),
++                    VfxPhase::Update => update_operations.push(operation),
++                    VfxPhase::Render => render_operations.push(operation),
++                }
++            }
++            emitters.push(CompiledVfxEmitter {
++                source: emitter.id.clone(),
++                name: emitter.name.clone(),
++                max_particles: emitter.max_particles,
++                attribute_layout,
++                spawn_operations,
++                update_operations,
++                render_operations,
++                estimated_capacity: estimate_capacity(emitter),
++            });
++        }
++
++        VfxCompilation {
++            success: true,
++            diagnostics: validation.diagnostics,
++            compiled_effect: Some(CompiledVfxEffect {
++                source_schema_version: effect.schema_version,
++                seed: effect.seed,
++                max_particles: effect.max_particles,
++                emitters,
++                capabilities,
++            }),
++        }
++    }
++
++    /// Applies commands to a clone, validates once, and commits atomically on success.
++    ///
++    /// The input document is never mutated. Successful results also contain an
++    /// ordered inverse command list that restores the input document.
++    pub fn apply(&self, effect: &VfxEffect, commands: &[VfxCommand]) -> VfxApply {
++        let mut draft = effect.clone();
++        let mut undo_commands = Vec::new();
++        for command in commands {
++            match apply_command(&mut draft, command) {
++                Ok(inverse) => undo_commands.push(inverse),
++                Err(diagnostic) => {
++                    return VfxApply {
++                        success: false,
++                        diagnostics: vec![diagnostic],
++                        effect: None,
++                        undo_commands: Vec::new(),
++                    };
++                }
++            }
++        }
++        undo_commands.reverse();
++        let validation = self.validate(&draft);
++        if !validation.success {
++            return VfxApply {
++                success: false,
++                diagnostics: validation.diagnostics,
++                effect: None,
++                undo_commands: Vec::new(),
++            };
++        }
++        VfxApply {
++            success: true,
++            diagnostics: validation.diagnostics,
++            effect: Some(draft),
++            undo_commands,
++        }
++    }
++
++    /// Creates one ordinary VFX document from a built-in starting template.
++    pub fn template(&self, template: VfxTemplate) -> VfxEffect {
++        match template {
++            VfxTemplate::Spark => spark_template(),
++            VfxTemplate::Smoke => smoke_template(),
++            VfxTemplate::Burst => burst_template(),
++            VfxTemplate::Trail => trail_template(),
++        }
++    }
++}
++
++fn finite3(value: [f32; 3]) -> bool {
++    value.into_iter().all(f32::is_finite)
++}
++
++fn finite4(value: [f32; 4]) -> bool {
++    value.into_iter().all(f32::is_finite)
++}
++
++fn validate_operation(
++    emitter: &VfxEmitter,
++    module: &VfxModule,
++    diagnostics: &mut Vec<VfxDiagnostic>,
++) {
++    let valid = match &module.operation {
++        VfxModuleOperation::SpawnRate {
++            particles_per_second,
++        } => particles_per_second.is_finite() && *particles_per_second >= 0.0,
++        VfxModuleOperation::Burst { time, .. } => time.is_finite() && *time >= 0.0,
++        VfxModuleOperation::Shape { shape } => shape.validate(),
++        VfxModuleOperation::Lifetime { value } => value.validate() && value.maximum() > 0.0,
++        VfxModuleOperation::InitialVelocity { value } => value.validate(),
++        VfxModuleOperation::InitialColor { color } => finite4(*color),
++        VfxModuleOperation::InitialSize { value } => value.validate() && value.maximum() >= 0.0,
++        VfxModuleOperation::InitialRotation { value } => value.validate(),
++        VfxModuleOperation::Force { acceleration } => finite3(*acceleration),
++        VfxModuleOperation::Drag { coefficient } => coefficient.is_finite() && *coefficient >= 0.0,
++        VfxModuleOperation::ColorOverLife { gradient } => gradient.is_valid(),
++        VfxModuleOperation::SizeOverLife { curve }
++        | VfxModuleOperation::RotationOverLife { curve } => curve.is_valid(),
++        VfxModuleOperation::Billboard { texture_sheet, .. }
++        | VfxModuleOperation::Mesh { texture_sheet, .. } => texture_sheet
++            .as_ref()
++            .is_none_or(VfxTextureSheet::is_valid),
++    };
++    if !valid {
++        diagnostics.push(VfxDiagnostic::error(
++            "vfx.invalid_module_properties",
++            format!(
++                "module `{}` (`{}`) contains non-finite, out-of-range, or invalid ordered data",
++                module.id,
++                module.operation.type_id()
++            ),
++            Some(&emitter.id),
++            Some(&module.id),
++        ));
++    }
++}
++
++fn estimate_capacity(emitter: &VfxEmitter) -> u32 {
++    let mut rate = 0.0_f32;
++    let mut burst = 0_u64;
++    let mut lifetime = 1.0_f32;
++    for module in emitter.modules.iter().filter(|module| module.enabled) {
++        match &module.operation {
++            VfxModuleOperation::SpawnRate {
++                particles_per_second,
++            } if particles_per_second.is_finite() => rate += particles_per_second.max(0.0),
++            VfxModuleOperation::Burst { count, .. } => burst = burst.saturating_add(u64::from(*count)),
++            VfxModuleOperation::Lifetime { value } if value.validate() => {
++                lifetime = lifetime.max(value.maximum().max(0.0));
++            }
++            _ => {}
++        }
++    }
++    let continuous = (rate * lifetime).ceil().max(0.0) as u64;
++    continuous
++        .saturating_add(burst)
++        .min(u64::from(u32::MAX)) as u32
++}
++
++fn update_attribute_layout(layout: &mut VfxAttributeLayout, operation: &VfxModuleOperation) {
++    match operation {
++        VfxModuleOperation::InitialVelocity { .. }
++        | VfxModuleOperation::Force { .. }
++        | VfxModuleOperation::Drag { .. } => layout.velocity = true,
++        VfxModuleOperation::InitialColor { .. } | VfxModuleOperation::ColorOverLife { .. } => {
++            layout.color = true;
++        }
++        VfxModuleOperation::InitialSize { .. } | VfxModuleOperation::SizeOverLife { .. } => {
++            layout.size = true;
++        }
++        VfxModuleOperation::InitialRotation { .. } | VfxModuleOperation::RotationOverLife { .. } => {
++            layout.rotation = true;
++        }
++        _ => {}
++    }
++}
++
++fn update_capabilities(
++    capabilities: &mut VfxCapabilityRequirements,
++    operation: &VfxModuleOperation,
++) {
++    match operation {
++        VfxModuleOperation::Billboard { texture_sheet, .. } => {
++            capabilities.billboard_rendering = true;
++            capabilities.texture_sheet_animation |= texture_sheet.is_some();
++        }
++        VfxModuleOperation::Mesh { texture_sheet, .. } => {
++            capabilities.mesh_rendering = true;
++            capabilities.texture_sheet_animation |= texture_sheet.is_some();
++        }
++        _ => {}
++    }
++}
++
++fn emitter_index(effect: &VfxEffect, id: &VfxEmitterId) -> Option<usize> {
++    effect.emitters.iter().position(|emitter| &emitter.id == id)
++}
++
++fn emitter_mut<'a>(effect: &'a mut VfxEffect, id: &VfxEmitterId) -> Option<&'a mut VfxEmitter> {
++    effect.emitters.iter_mut().find(|emitter| &emitter.id == id)
++}
++
++fn module_index(emitter: &VfxEmitter, id: &VfxModuleId) -> Option<usize> {
++    emitter.modules.iter().position(|module| &module.id == id)
++}
++
++fn edit_error(
++    code: &'static str,
++    message: impl Into<String>,
++    emitter: Option<&VfxEmitterId>,
++    module: Option<&VfxModuleId>,
++) -> VfxDiagnostic {
++    VfxDiagnostic::error(code, message, emitter, module)
++}
++
++fn apply_command(effect: &mut VfxEffect, command: &VfxCommand) -> Result<VfxCommand, VfxDiagnostic> {
++    match command {
++        VfxCommand::SetEffectName { name } => {
++            let previous = std::mem::replace(&mut effect.name, name.clone());
++            Ok(VfxCommand::SetEffectName { name: previous })
++        }
++        VfxCommand::SetEffectSeed { seed } => {
++            let previous = std::mem::replace(&mut effect.seed, *seed);
++            Ok(VfxCommand::SetEffectSeed { seed: previous })
++        }
++        VfxCommand::SetEffectMaxParticles { max_particles } => {
++            let previous = std::mem::replace(&mut effect.max_particles, *max_particles);
++            Ok(VfxCommand::SetEffectMaxParticles {
++                max_particles: previous,
++            })
++        }
++        VfxCommand::AddEmitter { emitter, index } => {
++            if *index > effect.emitters.len() {
++                return Err(edit_error(
++                    "vfx.edit.index_out_of_range",
++                    format!("emitter insertion index {index} is out of range"),
++                    Some(&emitter.id),
++                    None,
++                ));
++            }
++            if effect.emitters.iter().any(|entry| entry.id == emitter.id) {
++                return Err(edit_error(
++                    "vfx.edit.duplicate_emitter_id",
++                    format!("emitter `{}` already exists", emitter.id),
++                    Some(&emitter.id),
++                    None,
++                ));
++            }
++            effect.emitters.insert(*index, emitter.clone());
++            Ok(VfxCommand::RemoveEmitter {
++                emitter: emitter.id.clone(),
++            })
++        }
++        VfxCommand::RemoveEmitter { emitter } => {
++            let index = emitter_index(effect, emitter).ok_or_else(|| {
++                edit_error(
