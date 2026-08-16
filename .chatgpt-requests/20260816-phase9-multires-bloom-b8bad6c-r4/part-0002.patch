@@ -1,0 +1,179 @@
++                wgpu::BindGroupLayoutEntry {
++                    binding: 3,
++                    visibility: wgpu::ShaderStages::FRAGMENT,
++                    ty: wgpu::BindingType::Buffer {
++                        ty: wgpu::BufferBindingType::Uniform,
++                        has_dynamic_offset: false,
++                        min_binding_size: None,
++                    },
++                    count: None,
++                },
++            ],
++        });
++        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
++            label: Some("Bloom shader"),
++            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/bloom.wgsl").into()),
++        });
++        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
++            label: Some("Bloom pipeline layout"),
++            bind_group_layouts: &[Some(&bgl)],
++            immediate_size: 0,
++        });
++        let prefilter_pipeline = create_pipeline(
++            device,
++            &layout,
++            &shader,
++            format,
++            "fs_prefilter",
++            "Bloom prefilter pipeline",
++        );
++        let downsample_pipeline = create_pipeline(
++            device,
++            &layout,
++            &shader,
++            format,
++            "fs_downsample",
++            "Bloom downsample pipeline",
++        );
++        let upsample_pipeline = create_pipeline(
++            device,
++            &layout,
++            &shader,
++            format,
++            "fs_upsample",
++            "Bloom upsample pipeline",
++        );
++        let composite_pipeline = create_pipeline(
++            device,
++            &layout,
++            &shader,
++            format,
++            "fs_composite",
++            "Bloom composite pipeline",
++        );
++        let targets = BloomTargets::new(device, source_view, format, &bgl, &sampler, &uniform_buffer);
++
++        if let Some(error) = error_scope.pop().await {
++            return Err(error);
++        }
++
++        Ok(Self {
++            format,
++            bgl,
++            sampler,
++            uniform_buffer,
++            prefilter_pipeline,
++            downsample_pipeline,
++            upsample_pipeline,
++            composite_pipeline,
++            targets,
++        })
++    }
++
++    pub(crate) fn update_source(
++        &mut self,
++        device: &wgpu::Device,
++        source_view: &wgpu::TextureView,
++    ) {
++        debug_assert_eq!(source_view.texture().format(), self.format);
++        self.targets = BloomTargets::new(
++            device,
++            source_view,
++            self.format,
++            &self.bgl,
++            &self.sampler,
++            &self.uniform_buffer,
++        );
++    }
++
++    pub(crate) fn execute(
++        &mut self,
++        device: &wgpu::Device,
++        queue: &wgpu::Queue,
++        settings: &BloomSettings,
++    ) {
++        let uniform = BloomUniformData::from_settings(settings);
++        queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniform));
++
++        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
++            label: Some("Bloom encoder"),
++        });
++        encode_fullscreen_pass(
++            &mut encoder,
++            &self.prefilter_pipeline,
++            &self.targets.prefilter_bind_group,
++            &self.targets.downsampled[0].view,
++            "Bloom prefilter pass",
++        );
++        for (index, bind_group) in self.targets.downsample_bind_groups.iter().enumerate() {
++            encode_fullscreen_pass(
++                &mut encoder,
++                &self.downsample_pipeline,
++                bind_group,
++                &self.targets.downsampled[index + 1].view,
++                "Bloom downsample pass",
++            );
++        }
++        for index in (0..self.targets.upsampled.len()).rev() {
++            encode_fullscreen_pass(
++                &mut encoder,
++                &self.upsample_pipeline,
++                &self.targets.upsample_bind_groups[index],
++                &self.targets.upsampled[index].view,
++                "Bloom upsample pass",
++            );
++        }
++        encode_fullscreen_pass(
++            &mut encoder,
++            &self.composite_pipeline,
++            &self.targets.composite_bind_group,
++            &self.targets.composite.view,
++            "Bloom composite pass",
++        );
++        queue.submit(std::iter::once(encoder.finish()));
++    }
++
++    pub(crate) fn output_view(&self) -> &wgpu::TextureView {
++        &self.targets.composite.view
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn bloom_pyramid_halves_extent_and_stays_bounded() {
++        assert_eq!(
++            bloom_level_extents([1920, 1080]),
++            vec![[960, 540], [480, 270], [240, 135], [120, 68], [60, 34]]
++        );
++        assert_eq!(bloom_level_extents([1, 1]), vec![[1, 1]]);
++        assert_eq!(bloom_level_extents([3, 2]), vec![[2, 1], [1, 1]]);
++    }
++
++    #[test]
++    fn bloom_uniform_rejects_negative_and_non_finite_values() {
++        let uniform = BloomUniformData::from_settings(&BloomSettings {
++            enabled: true,
++            threshold: f32::NAN,
++            intensity: -2.0,
++            radius: f32::INFINITY,
++        });
++
++        assert_eq!(uniform.threshold, 0.0);
++        assert_eq!(uniform.intensity, 0.0);
++        assert_eq!(uniform.radius, 0.0);
++    }
++
++    #[test]
++    fn bloom_pipeline_validates_when_a_gpu_adapter_is_available() {
++        let instance = wgpu::Instance::default();
++        let context = match pollster::block_on(engine_renderer::GpuContext::new(&instance, None)) {
++            Ok(context) => context,
++            Err(engine_renderer::GpuContextError::AdapterUnavailable) => return,
++            Err(error) => panic!("GPU device creation failed: {error}"),
++        };
++        let device = context.device();
++        let queue = context.queue();
++        let source = device.create_texture(&wgpu::TextureDescriptor {
