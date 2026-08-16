@@ -155,6 +155,7 @@ pub(crate) enum LockOnOperation {
 pub(crate) enum VfxPlaybackOperation {
     Start,
     Pause,
+    Stop,
     Restart,
 }
 
@@ -304,7 +305,8 @@ pub(crate) fn prepare_game_commands(
                 let fields = object(&command.payload, index, "VFX payload")?;
                 let operation = match string_field(fields, "operation", index)? {
                     "start" => VfxPlaybackOperation::Start,
-                    "pause" | "stop" => VfxPlaybackOperation::Pause,
+                    "pause" => VfxPlaybackOperation::Pause,
+                    "stop" => VfxPlaybackOperation::Stop,
                     "restart" => VfxPlaybackOperation::Restart,
                     other => {
                         return Err(GameCommandError::InvalidPayload {
@@ -459,6 +461,7 @@ pub(crate) fn apply_prepared_game_commands(world: &mut World, commands: Vec<Prep
                 match operation {
                     VfxPlaybackOperation::Start => player.play(),
                     VfxPlaybackOperation::Pause => player.pause(),
+                    VfxPlaybackOperation::Stop => player.stop(),
                     VfxPlaybackOperation::Restart => player.restart(),
                 }
             }

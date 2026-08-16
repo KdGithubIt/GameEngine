@@ -31,7 +31,7 @@ use crate::script_api::RuntimeEntityIdentity;
 use crate::time::{FixedTime, Time};
 use crate::transform::{GlobalTransform, Transform};
 use crate::ui_document::{UiBindingValue, UiBindings, UiEventFrame};
-use crate::vfx::{VfxPlayer, VfxRuntimeBackend};
+use crate::vfx::{VfxPlaybackState, VfxPlayer, VfxRuntimeBackend};
 use engine_authoring::Value;
 use engine_ecs::{Entity, SystemId, SystemIdError, World};
 use serde_json::Error as JsonError;
@@ -1047,7 +1047,13 @@ fn copy_engine_view(world: &World, entity: Entity, view: EngineViewKind) -> Opti
             let backend = match stats.backend {
                 VfxRuntimeBackend::CpuReference => "cpu_reference",
             };
+            let state = match player.playback_state() {
+                VfxPlaybackState::Stopped => "stopped",
+                VfxPlaybackState::Playing => "playing",
+                VfxPlaybackState::Paused => "paused",
+            };
             Value::Object(BTreeMap::from([
+                ("state".to_owned(), Value::String(state.to_owned())),
                 ("playing".to_owned(), Value::Bool(player.is_playing())),
                 ("complete".to_owned(), Value::Bool(instance.is_complete())),
                 (

@@ -421,11 +421,23 @@ pub enum VfxRestartPolicy {
     OnComplete,
 }
 
+/// Observable playback state for a scene VFX player.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum VfxPlaybackState {
+    /// Playback is stopped. An explicit stop resets deterministic state to zero.
+    #[default]
+    Stopped,
+    /// Playback advances on each runtime VFX update.
+    Playing,
+    /// Playback retains its current simulation state without advancing.
+    Paused,
+}
+
 /// Transient scene runtime component that plays one compiled VFX effect.
 #[derive(Debug, Clone)]
 pub struct VfxPlayer {
     instance: VfxInstance,
-    playing: bool,
+    playback_state: VfxPlaybackState,
     /// Starts playback when the runtime component is created.
     pub autoplay: bool,
     /// Restarts immediately after a finite effect completes.
@@ -451,7 +463,11 @@ impl VfxPlayer {
     ) -> Self {
         Self {
             instance: VfxInstance::new(effect, seed_override),
-            playing: autoplay,
+            playback_state: if autoplay {
+                VfxPlaybackState::Playing
+            } else {
+                VfxPlaybackState::Stopped
+            },
             autoplay,
             looping,
             restart_policy,
@@ -472,7 +488,12 @@ impl VfxPlayer {
 
     /// Whether simulation currently advances.
     pub fn is_playing(&self) -> bool {
-        self.playing
+        self.playback_state == VfxPlaybackState::Playing
+    }
+
+    /// Current start/stop/pause state exposed to gameplay views and tooling.
+    pub fn playback_state(&self) -> VfxPlaybackState {
+        self.playback_state
     }
 
     /// Extracts backend-neutral presentation records for every live Render output.
@@ -506,23 +527,31 @@ impl VfxPlayer {
 
     /// Resumes playback without resetting transient state.
     pub fn play(&mut self) {
-        self.playing = true;
+        self.playback_state = VfxPlaybackState::Playing;
     }
 
     /// Pauses playback without discarding transient state.
     pub fn pause(&mut self) {
-        self.playing = false;
+        if self.playback_state == VfxPlaybackState::Playing {
+            self.playback_state = VfxPlaybackState::Paused;
+        }
+    }
+
+    /// Stops playback and resets deterministic simulation to time zero.
+    pub fn stop(&mut self) {
+        self.instance.restart();
+        self.playback_state = VfxPlaybackState::Stopped;
     }
 
     /// Restarts deterministic state and resumes playback.
     pub fn restart(&mut self) {
         self.instance.restart();
-        self.playing = true;
+        self.playback_state = VfxPlaybackState::Playing;
     }
 
     /// Advances playback and applies the configured completion policy.
     pub fn step(&mut self, dt: f32, origin: Vec3) {
-        if !self.playing {
+        if !self.is_playing() {
             return;
         }
         self.instance.step(dt * self.time_scale, origin);
@@ -530,7 +559,7 @@ impl VfxPlayer {
             if self.looping || self.restart_policy == VfxRestartPolicy::OnComplete {
                 self.instance.restart();
             } else {
-                self.playing = false;
+                self.playback_state = VfxPlaybackState::Stopped;
             }
         }
     }
@@ -1068,12 +1097,20 @@ mod tests {
             BTreeMap::new(),
         );
         assert!(!player.is_playing());
+        assert_eq!(player.playback_state(), VfxPlaybackState::Stopped);
         player.play();
         player.step(0.05, Vec3::ZERO);
         assert!(player.is_playing());
         player.pause();
         assert!(!player.is_playing());
+        assert_eq!(player.playback_state(), VfxPlaybackState::Paused);
         player.restart();
         assert!(player.is_playing());
+        assert_eq!(player.playback_state(), VfxPlaybackState::Playing);
+        player.step(0.05, Vec3::ZERO);
+        assert!(player.instance().elapsed_seconds() > 0.0);
+        player.stop();
+        assert_eq!(player.playback_state(), VfxPlaybackState::Stopped);
+        assert_eq!(player.instance().elapsed_seconds(), 0.0);
     }
 }

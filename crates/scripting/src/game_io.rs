@@ -805,7 +805,7 @@ impl GameCommand {
         simple_target_command(GameCommandFamily::Vfx, "pause", target)
     }
 
-    /// Stops VFX advancement while preserving state for an explicit restart.
+    /// Stops a VFX player and resets deterministic simulation to time zero.
     pub fn stop_vfx(target: GameEntityHandle) -> Self {
         simple_target_command(GameCommandFamily::Vfx, "stop", target)
     }

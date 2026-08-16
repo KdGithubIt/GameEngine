@@ -967,6 +967,17 @@ impl EngineView for AnimationStateView {
     }
 }
 
+/// Playback state reported by a copied VFX player state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VfxPlaybackView {
+    /// Playback is stopped.
+    Stopped,
+    /// Playback advances simulation.
+    Playing,
+    /// Playback retains transient particles without advancing.
+    Paused,
+}
+
 /// Runtime backend reported by a copied VFX player state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VfxBackendView {
@@ -977,6 +988,8 @@ pub enum VfxBackendView {
 /// VFX player state copied for one entity.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct VfxStateView {
+    /// Current start/stop/pause state.
+    pub state: VfxPlaybackView,
     /// Whether the player currently advances simulation.
     pub playing: bool,
     /// Whether no live particles or future emission remain.
@@ -1003,6 +1016,12 @@ impl EngineView for VfxStateView {
             "cpu_reference" => VfxBackendView::CpuReference,
             value => return Err(format!("unknown VFX backend `{value}`")),
         };
+        let state = match string_field(fields, "state")? {
+            "stopped" => VfxPlaybackView::Stopped,
+            "playing" => VfxPlaybackView::Playing,
+            "paused" => VfxPlaybackView::Paused,
+            value => return Err(format!("unknown VFX playback state `{value}`")),
+        };
         let seed_override = optional_unsigned(field(fields, "seed_override")?)?
             .map(|value| {
                 value
@@ -1011,6 +1030,7 @@ impl EngineView for VfxStateView {
             })
             .transpose()?;
         Ok(Self {
+            state,
             playing: bool_field(fields, "playing")?,
             complete: bool_field(fields, "complete")?,
             elapsed_seconds: number_field(fields, "elapsed_seconds")? as f32,
