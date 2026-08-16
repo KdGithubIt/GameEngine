@@ -1760,29 +1760,41 @@ fn animation_set_validation_enforces_motion_source_variant_sub_asset_kinds() {
         super::assets::validate_animation_set_clip_references(&document, &manifest).is_ok()
     );
 
-    let binding = document
+    document
         .bindings
         .get_mut(&slot)
-        .expect("the test binding must exist");
-    binding.clip = engine_authoring::MotionSourceRef::native(humanoid_motion.clone());
+        .expect("the test binding must exist")
+        .clip = engine_authoring::MotionSourceRef::native(humanoid_motion.clone());
     let native_error =
         super::assets::validate_animation_set_clip_references(&document, &manifest)
             .expect_err("Native must reject a HumanoidMotion sub-asset");
     assert!(native_error.contains("primary clip"));
     assert!(native_error.contains("Animation Clip"));
 
-    binding.clip = engine_authoring::MotionSourceRef::humanoid(primary_clip.clone());
+    document
+        .bindings
+        .get_mut(&slot)
+        .expect("the test binding must exist")
+        .clip = engine_authoring::MotionSourceRef::humanoid(primary_clip.clone());
     let humanoid_error =
         super::assets::validate_animation_set_clip_references(&document, &manifest)
             .expect_err("Humanoid must reject a Native Animation sub-asset");
     assert!(humanoid_error.contains("HumanoidMotion"));
 
-    binding.clip = engine_authoring::MotionSourceRef::auto(motion_source.clone());
+    document
+        .bindings
+        .get_mut(&slot)
+        .expect("the test binding must exist")
+        .clip = engine_authoring::MotionSourceRef::auto(motion_source.clone());
     let source_error =
         super::assets::validate_animation_set_clip_references(&document, &manifest)
             .expect_err("a parent source must never be stored as an Auto motion");
     assert!(source_error.contains("source asset"));
 
+    let binding = document
+        .bindings
+        .get_mut(&slot)
+        .expect("the test binding must exist");
     binding.clip = engine_authoring::MotionSourceRef::native(primary_clip);
     binding.overlays = vec![engine_authoring::MotionSourceRef::humanoid(overlay_clip)];
     let overlay_error =
