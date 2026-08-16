@@ -1,7 +1,7 @@
 # Editor Visual Validation
 
 Status: Accepted
-Version: 1.1.0
+Version: 1.2.0
 Canonical location: `docs/EDITOR_VISUAL_VALIDATION.md`
 
 ## Purpose
@@ -41,6 +41,38 @@ crate, `auto` captures both rather than silently producing no evidence.
 The explicit `editor`, `launcher`, and `both` targets are available when the
 caller already knows which desktop surface needs review.
 
+### Authoring-tool scenario
+
+A PR that needs one modeless Editor authoring window visible in the screenshot
+MAY add exactly one secondary marker alongside an explicit `editor` or `both`
+target:
+
+```text
+<!-- gameengine-visual-validation: editor -->
+<!-- gameengine-visual-authoring-tool: Ability Designer -->
+```
+
+The value is the human-readable [`AuthoringTool`] label exposed by the exact PR
+head being validated. The trusted workflow accepts only a bounded plain-text
+label and passes it to the checked-out Editor; the Editor resolves that label
+against its own `AuthoringTool::ALL` catalog and fails startup if no exact match
+exists. The workflow does not hard-code product-specific enum variants.
+
+The scenario is available only with explicit `editor` or `both`. It is rejected
+with `auto` or `launcher` so a requested tool window cannot be silently omitted
+by automatic target classification.
+
+The validation-only Editor process receives the requested label through
+`GAMEENGINE_VISUAL_AUTHORING_TOOL` and opens that modeless window before the
+screenshot request. Normal Editor builds and launches do not set or depend on
+this environment variable. No coordinate click, synthetic pointer input, or
+sleep-based automation is used.
+
+This scenario validates the authoring window's deterministic startup state. A
+state that additionally requires a specific asset or document to be loaded
+still requires a separate explicit document scenario; opening an authoring tool
+alone is not evidence for document-dependent controls that are not visible yet.
+
 ## Trusted workflow boundary
 
 `.github/workflows/gameengine-editor-visual-validation.yml` uses
@@ -52,6 +84,9 @@ trusted default branch. Before a Windows job is selected, the workflow requires:
 - the head branch to use the `chatgpt/gameengine-*` namespace;
 - one valid visual-validation marker; and
 - exact 40-character base and head commit SHAs from the pull request event.
+
+The optional authoring-tool scenario is also parsed inside this trusted context
+job before its value can reach the checked-out Editor process.
 
 The Windows job checks out that exact head SHA with persisted Git credentials
 disabled. It may use the same trusted self-hosted Windows runner configuration
@@ -73,6 +108,11 @@ receives the renderer-independent `Event::Screenshot`, and writes the returned
 image with its existing PNG encoder. The capture path is bounded: if the
 screenshot response is not returned, the validation-only process closes and the
 script reports a missing artifact instead of waiting indefinitely.
+
+When an authoring-tool scenario is requested, the same script additionally sets
+`GAMEENGINE_VISUAL_AUTHORING_TOOL` for the Editor child process only. The Editor
+resolves the label from its own catalog and marks the corresponding modeless
+window open before the screenshot frame is rendered.
 
 Launcher capture also keeps eframe's normal wgpu renderer. The capture script
 sets `GAMEENGINE_LAUNCHER_SCREENSHOT_TO` only for the validation invocation.
@@ -110,9 +150,10 @@ launcher.png
 summary.json
 ```
 
-`summary.json` records the resolved target, project source, screenshot byte
-size, SHA-256 digest, and generation timestamp. The PNG files are the visual
-evidence that ChatGPT or a human reviewer should inspect.
+`summary.json` records the resolved target, project source, optional authoring
+tool scenario, screenshot byte size, SHA-256 digest, and generation timestamp.
+The PNG files are the visual evidence that ChatGPT or a human reviewer should
+inspect.
 
 A screenshot being generated successfully proves that the requested desktop
 application built, started, rendered a frame, and exported that frame. It does
@@ -121,13 +162,16 @@ only after the PNG is actually reviewed.
 
 ## Current scope and extensions
 
-Version 1 captures the deterministic initial Launcher or Editor window. It is
-intended for shell layout, toolbar, panels visible at startup, typography,
-colors, clipping, spacing, and similar initial-state regressions.
+Version 1.2 captures the deterministic initial Launcher or Editor window and can
+open one modeless authoring-tool window before an Editor screenshot. It is
+intended for shell layout, toolbar, startup-visible panels, authoring-window
+startup layout, typography, colors, clipping, spacing, and similar regressions.
 
-UI states that require interaction, a specific document, a particular tool
-window, or a sequence of inputs need an explicit future visual scenario rather
-than hidden sleeps or coordinate-based automation. Such scenarios should keep
-the same principles: deterministic setup, an explicit opt-in request, exact-head
+UI states that require a specific document, populated tool state, or a sequence
+of inputs still need an explicit future visual scenario rather than hidden
+sleeps or coordinate-based automation. Such scenarios should keep the same
+principles: deterministic setup, an explicit opt-in request, exact-head
 execution, and screenshot artifacts that can be reviewed independently of the
 normal Rust validation result.
+
+[`AuthoringTool`]: ../crates/editor/src/authoring_tools.rs
