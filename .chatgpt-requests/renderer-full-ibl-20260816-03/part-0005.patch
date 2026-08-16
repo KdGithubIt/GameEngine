@@ -62,7 +62,7 @@ diff --git a/crates/render-runtime/src/render_backend.rs b/crates/render-runtime
 +    ibl_sampler: wgpu::Sampler,
      pub(crate) light_bind_group: wgpu::BindGroup,
      pipelines: [[wgpu::RenderPipeline; 3]; 3],
-@@ -1118,10 +1162,18 @@
+@@ -1118,12 +1162,22 @@
 -        let mut ambient = world
 +        let ambient = world
              .get_resource::<AmbientLight>()
@@ -82,10 +82,15 @@ diff --git a/crates/render-runtime/src/render_backend.rs b/crates/render-runtime
 +            &environment,
 +            environment_map.as_ref(),
 +        );
++        let light_ambient = environment.apply_to_ambient(&ambient);
          let directional = world
              .get_resource::<DirectionalLight>()
              .cloned()
-@@ -2526,6 +2578,23 @@
+             .unwrap_or_default();
+-        self.render.update_light(queue, &ambient, &directional);
++        self.render
++            .update_light(queue, &light_ambient, &directional);
+@@ -2526,6 +2580,23 @@
              LightUniform::from_resources(&AmbientLight::default(), &DirectionalLight::default());
          let light_buffer =
              Self::make_uniform_buffer(device, bytemuck::bytes_of(&default_light), "Light");
@@ -109,7 +114,7 @@ diff --git a/crates/render-runtime/src/render_backend.rs b/crates/render-runtime
  
          // Shadow resources (Phase 50, ADR 0036): the map size is fixed at
          // startup from the default settings; runtime resolution changes are
-@@ -2631,6 +2700,52 @@
+@@ -2631,6 +2702,52 @@
                      ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
                      count: None,
                  },
@@ -162,7 +167,7 @@ diff --git a/crates/render-runtime/src/render_backend.rs b/crates/render-runtime
              ],
          });
  
-@@ -2650,6 +2765,26 @@
+@@ -2650,6 +2767,26 @@
                  wgpu::BindGroupEntry {
                      binding: 3,
                      resource: wgpu::BindingResource::Sampler(&shadow_sampler),
@@ -189,7 +194,7 @@ diff --git a/crates/render-runtime/src/render_backend.rs b/crates/render-runtime
                  },
              ],
          });
-@@ -3105,5 +3240,9 @@
+@@ -3105,5 +3242,9 @@
              white_texture: white_tex,
              flat_normal_texture: flat_normal_tex,
              light_buffer,
@@ -199,7 +204,7 @@ diff --git a/crates/render-runtime/src/render_backend.rs b/crates/render-runtime
 +            ibl_sampler,
              light_bind_group,
              pipelines,
-@@ -3223,6 +3362,28 @@
+@@ -3223,6 +3364,28 @@
          queue.write_buffer(&self.camera_buffer, 0, bytemuck::bytes_of(&uniform));
      }
  
