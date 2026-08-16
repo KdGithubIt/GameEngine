@@ -552,7 +552,15 @@ pub enum VfxModuleOperation {
         /// Lifetime in seconds.
         value: VfxScalarValue,
     },
-    /// Chooses initial local velocity at spawn.
+    /// Chooses initial speed along the direction produced by the active shape.
+    ///
+    /// This keeps the simple-emitter cone contract on the same compiled IR as
+    /// advanced effects without introducing a second runtime simulator.
+    InitialSpeed {
+        /// Initial speed in units per second.
+        value: VfxScalarValue,
+    },
+    /// Chooses initial local velocity at spawn, replacing shape-directed speed.
     InitialVelocity {
         /// Initial XYZ velocity in units per second.
         value: VfxVectorValue,
@@ -623,6 +631,7 @@ impl VfxModuleOperation {
             Self::Burst { .. } => "engine.vfx.burst",
             Self::Shape { .. } => "engine.vfx.shape",
             Self::Lifetime { .. } => "engine.vfx.lifetime",
+            Self::InitialSpeed { .. } => "engine.vfx.initial_speed",
             Self::InitialVelocity { .. } => "engine.vfx.initial_velocity",
             Self::InitialColor { .. } => "engine.vfx.initial_color",
             Self::InitialSize { .. } => "engine.vfx.initial_size",
@@ -644,6 +653,7 @@ impl VfxModuleOperation {
             | Self::Burst { .. }
             | Self::Shape { .. }
             | Self::Lifetime { .. }
+            | Self::InitialSpeed { .. }
             | Self::InitialVelocity { .. }
             | Self::InitialColor { .. }
             | Self::InitialSize { .. }
@@ -1104,6 +1114,12 @@ impl VfxAuthoringService {
             ("engine.vfx.shape", "Shape", "Spawn", VfxPhase::Spawn),
             ("engine.vfx.lifetime", "Lifetime", "Spawn", VfxPhase::Spawn),
             (
+                "engine.vfx.initial_speed",
+                "Initial Speed",
+                "Spawn",
+                VfxPhase::Spawn,
+            ),
+            (
                 "engine.vfx.initial_velocity",
                 "Initial Velocity",
                 "Spawn",
@@ -1492,6 +1508,7 @@ fn validate_operation(
         VfxModuleOperation::Burst { time, .. } => time.is_finite() && *time >= 0.0,
         VfxModuleOperation::Shape { shape } => shape.validate(),
         VfxModuleOperation::Lifetime { value } => value.validate() && value.maximum() > 0.0,
+        VfxModuleOperation::InitialSpeed { value } => value.validate(),
         VfxModuleOperation::InitialVelocity { value } => value.validate(),
         VfxModuleOperation::InitialColor { color } => finite4(*color),
         VfxModuleOperation::InitialSize { value } => value.validate() && value.maximum() >= 0.0,
@@ -1544,7 +1561,8 @@ fn estimate_capacity(emitter: &VfxEmitter) -> u32 {
 
 fn update_attribute_layout(layout: &mut VfxAttributeLayout, operation: &VfxModuleOperation) {
     match operation {
-        VfxModuleOperation::InitialVelocity { .. }
+        VfxModuleOperation::InitialSpeed { .. }
+        | VfxModuleOperation::InitialVelocity { .. }
         | VfxModuleOperation::Force { .. }
         | VfxModuleOperation::Drag { .. } => layout.velocity = true,
         VfxModuleOperation::InitialColor { .. } | VfxModuleOperation::ColorOverLife { .. } => {
