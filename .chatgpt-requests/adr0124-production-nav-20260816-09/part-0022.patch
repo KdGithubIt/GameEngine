@@ -1,0 +1,65 @@
++                Vec3::new(1.0, 0.0, 0.0),
++                Vec3::new(2.0, 0.0, 1.0),
++                Vec3::new(1.0, 0.0, 1.0),
++            ),
++        ];
++        let mut build = input(triangles);
++        build.profiles = vec![
++            NavigationAgentProfile {
++                id: NavigationProfileId::new("small"),
++                name: "Small".to_owned(),
++                radius: 0.2,
++                ..NavigationAgentProfile::default()
++            },
++            NavigationAgentProfile {
++                id: NavigationProfileId::new("large"),
++                name: "Large".to_owned(),
++                radius: 0.6,
++                ..NavigationAgentProfile::default()
++            },
++        ];
++        let query = NavMeshQuery::new(
++            ProductionNavigationBaker
++                .bake(&build, &|| false)
++                .expect("portal fixture must bake"),
++        );
++        assert!(matches!(
++            query.query_path("small", Vec3::new(0.7, 0.0, 0.3), Vec3::new(1.3, 0.0, 0.7)),
++            NavigationPathResult::Complete(_)
++        ));
++        assert!(matches!(
++            query.query_path("large", Vec3::new(0.7, 0.0, 0.3), Vec3::new(1.3, 0.0, 0.7)),
++            NavigationPathResult::Failure(NavigationQueryFailure::NoPath)
++        ));
++    }
++
++    #[test]
++    fn disconnected_destination_returns_best_reachable_partial_path() {
++        let build = input(vec![
++            triangle(
++                Vec3::new(0.0, 0.0, 0.0),
++                Vec3::new(2.0, 0.0, 0.0),
++                Vec3::new(2.0, 0.0, 2.0),
++            ),
++            triangle(
++                Vec3::new(2.0, 0.0, 0.0),
++                Vec3::new(4.0, 0.0, 2.0),
++                Vec3::new(2.0, 0.0, 2.0),
++            ),
++            triangle(
++                Vec3::new(7.0, 0.0, 0.0),
++                Vec3::new(9.0, 0.0, 0.0),
++                Vec3::new(9.0, 0.0, 2.0),
++            ),
++        ]);
++        let query = NavMeshQuery::new(
++            ProductionNavigationBaker
++                .bake(&build, &|| false)
++                .expect("partial fixture must bake"),
++        );
++        let result = query.query_path(
++            DEFAULT_NAVIGATION_PROFILE,
++            Vec3::new(1.0, 0.0, 0.5),
++            Vec3::new(8.0, 0.0, 0.5),
++        );
++        let NavigationPathResult::Partial(path) = result else {

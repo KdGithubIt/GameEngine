@@ -1,0 +1,66 @@
++            let _ = fs::remove_file(&temporary);
++            if had_previous {
++                let _ = fs::rename(&backup, path);
++            }
++            Err(NavigationBakeServiceError::Io(error))
++        }
++    }
++}
++
++/// Error from shared bake-document validation, normalization, execution, or persistence.
++#[derive(Debug)]
++pub enum NavigationBakeServiceError {
++    /// JSON parse or serialization failure.
++    Json(serde_json::Error),
++    /// Document schema is newer than this engine.
++    UnsupportedVersion(u32),
++    /// Output path or profile settings are invalid.
++    InvalidSettings,
++    /// Production baker rejected input.
++    Bake(String),
++    /// Derived output replacement failed.
++    Io(std::io::Error),
++    /// Cancellation was observed before output replacement.
++    Cancelled,
++}
++
++impl fmt::Display for NavigationBakeServiceError {
++    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
++        match self {
++            Self::Json(error) => write!(formatter, "navigation bake JSON error: {error}"),
++            Self::UnsupportedVersion(version) => {
++                write!(formatter, "unsupported navigation bake schema version {version}")
++            }
++            Self::InvalidSettings => formatter.write_str("invalid navigation bake settings"),
++            Self::Bake(error) => write!(formatter, "navigation production bake failed: {error}"),
++            Self::Io(error) => write!(formatter, "navigation persistence failed: {error}"),
++            Self::Cancelled => formatter.write_str("navigation bake cancelled"),
++        }
++    }
++}
++
++impl std::error::Error for NavigationBakeServiceError {
++    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
++        match self {
++            Self::Json(error) => Some(error),
++            Self::Io(error) => Some(error),
++            Self::UnsupportedVersion(_)
++            | Self::InvalidSettings
++            | Self::Bake(_)
++            | Self::Cancelled => None,
++        }
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use crate::navigation::NavigationProfileId;
++    use glam::Vec3;
++
++    fn source() -> NavigationSource {
++        NavigationSource {
++            triangles: vec![NavigationTriangle {
++                a: Vec3::ZERO.to_array(),
++                b: Vec3::X.to_array(),
++                c: Vec3::Z.to_array(),
