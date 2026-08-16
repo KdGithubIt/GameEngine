@@ -97,7 +97,6 @@ jobs:
             "refs/heads/main:refs/remotes/origin/main" \
             "refs/heads/chatgpt-dispatch:refs/remotes/origin/chatgpt-dispatch" \
             "refs/heads/$STAGE_BRANCH:refs/remotes/origin/$STAGE_BRANCH"
-
           stage_head="$(git rev-parse "refs/remotes/origin/$STAGE_BRANCH")"
           [[ "$stage_head" == "$REQUEST_COMMIT" ]] ||
             fail "The stage branch moved after the ready signal. Publish a new immutable stage branch."
@@ -189,7 +188,7 @@ jobs:
             fail "The reconstructed patch may not exceed 4 MiB."
 
           stage_tree="$(git rev-parse "$REQUEST_COMMIT:$request_dir")"
-          existing_tree="$(git rev-parse "$transport_head:$request_dir" 2>/dev/null || true)"
+          existing_tree="$(git rev-parse --verify "$transport_head:$request_dir" 2>/dev/null || true)"
 
           if [[ -n "$existing_tree" ]]; then
             [[ "$existing_tree" == "$stage_tree" ]] ||
