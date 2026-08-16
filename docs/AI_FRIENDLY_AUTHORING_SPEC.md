@@ -997,6 +997,36 @@ project://assets/materials/player
 project://diagnostics
 ```
 
+### 16.1 AI Studio Agent Orchestration
+
+ADR 0131 defines the Editor's project-scoped AI Studio above the MCP authoring
+interface. AI Studio is conversation-first. Conversation produces versioned
+structured proposals, and **Go** MUST snapshot one exact proposal revision into
+an immutable `AgentRun` input. Continuing conversation MUST NOT silently change
+the goal or acceptance criteria of a running run.
+
+The agent host is an application-layer, GUI-free boundary. It owns session/run
+lifecycle, provider registration, application-level permission policy,
+cancellation, portable event history, managed code workspaces, and completion
+evidence. The AI Studio GUI is a frontend over that host and MUST NOT own
+provider-specific orchestration or unique authoring rules. Agent lifecycle,
+provider authentication, network access, and shell policy MUST NOT be moved into
+`engine-authoring`, runtime ECS crates, or `engine-mcp`.
+
+External agent runtimes and native model backends are distinct abstractions. An
+external coding agent already owns its model/tool loop and MAY own a
+provider-managed authenticated account session. A native GameEngine agent owns
+its tool loop and delegates inference to a `ModelBackend`. Integrations MUST NOT
+force both shapes into one API-key-shaped provider contract. Provider-managed
+credentials remain provider-owned; GameEngine-owned API credentials MUST use a
+secure user secret store and MUST NOT enter project data or portable AI history.
+
+Structured project inspection and authoring mutations from either runtime shape
+continue through the active Editor's project-scoped MCP endpoint. AI Studio MUST
+NOT introduce a second Scene/Graph/Prefab/UI/Material/settings writer or replace
+authoring files directly. Runtime input, frame capture, and visual interaction
+continue through the ADR 0035 AI Agent Bridge.
+
 ## 17. Permissions and Safety
 
 Authoring clients SHOULD support permission levels equivalent to:
@@ -1027,6 +1057,30 @@ Absolute paths, parent traversal, and resolved symlink escapes MUST be rejected
 unless a separately approved operation explicitly grants broader filesystem
 access.
 
+AI Studio extends this shared authoring vocabulary with application-level agent
+capabilities for network access, external asset acquisition, runtime launch,
+runtime input/control, frame capture, raw workspace filesystem access, and
+arbitrary command execution broader than an engine-managed tool. Permission
+escalation MUST support scopes equivalent to **Allow once**, **Allow for this
+run**, **Allow for this project**, and **Deny** when the operation permits them.
+Persistent project policy stores capability decisions, not credentials or
+brittle literal command strings.
+
+The normal agent path is managed: project authoring uses MCP, source changes use
+a session-scoped code workspace/patch service, external assets use a provider
+service followed by the normal import/manifest pipeline, validation uses an
+engine-managed command allow-list, and runtime observation uses normal Play plus
+the AI Agent Bridge. Raw filesystem writes and arbitrary shell execution are
+escape hatches disabled by default and MUST be separately visible in run audit
+history. Engine-managed formatting, metadata/check, Clippy, tests, and
+documentation MAY execute without granting arbitrary shell access.
+
+GameEngine permission policy is application-level authorization, not a universal
+OS sandbox. If an external process runs with the user's normal OS identity, the
+Editor MUST NOT claim that its toggles prevent every access available to that
+identity. Strong confinement requires a provider or OS sandbox, restricted
+token, container, VM, or equivalent mechanism.
+
 ## 18. Multi-Agent and Git Collaboration
 
 The project is expected to be edited by multiple humans and AI agents over
@@ -1047,6 +1101,43 @@ Contributors SHOULD:
 - Prefer deterministic generated output.
 - Treat the specification as the shared source of truth rather than relying on
   chat history.
+
+### 18.1 AI Session Concurrency, Code Workspaces, and Persistence
+
+Human Editor work remains available while an AI run executes. Structured
+authoring retains revision/generation stale-apply checks; an agent MUST re-read
+and repair or re-plan instead of force-applying stale commands. Multiple
+read-oriented AI sessions MAY coexist, but the initial agent host permits at
+most one AI run per Editor project to hold the agent writer role at a time.
+Human editing is not counted as that AI writer.
+
+Normal AI source mutation MUST occur in a session-scoped isolated code workspace
+or equivalent isolated source state rather than directly in the live working
+tree. Each run records reviewable before/after checkpoints and changed-file
+provenance. Applying changes to the project is an explicit managed service
+operation with project-root confinement and `CodeWrite` authorization. Agent
+checkpoints are not Git commits and MUST NOT silently rewrite Git history.
+
+AI sessions survive Editor restarts. The default is local/private user
+application data outside the project tree. A deliberate project-shared session
+uses the reserved `.gameengine/ai/sessions/<session-id>/` collaboration metadata
+area. Shared history is not canonical authoring data and MUST NOT be packaged.
+It MUST NOT contain credentials, provider login/session material, MCP bearer
+credentials, machine-specific absolute paths when a project-relative identity is
+possible, transient process identifiers/ports, full code workspaces, build
+outputs, or caches. Shared-session schemas MUST be versioned.
+
+### 18.2 Run Completion Contract
+
+An autonomous run MUST NOT report completion solely because source compilation
+or one authoring mutation succeeded. When applicable to the proposal, completion
+requires explicit evidence that acceptance criteria passed, blocking authoring
+validation passed, required source validation passed, Play launched, at least
+one relevant frame was captured, that frame was visually evaluated, and
+required interaction scenarios passed. A criterion marked not applicable MUST
+be reported as such rather than represented as a pass. If required visual
+evidence cannot be captured or inspected, the run is incomplete or partially
+validated.
 
 ## 19. First Graph Domain
 

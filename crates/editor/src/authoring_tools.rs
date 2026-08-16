@@ -3,6 +3,8 @@
 /// Modeless authoring windows available from the main editor shell.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthoringTool {
+    /// Conversational AI creation, proposal, run, permissions, and audit surface.
+    AiStudio,
     /// Startup, Active, Recovery, and Cooldown timeline authoring.
     AbilityDesigner,
     /// Live combat-hit and animation-event inspection.
@@ -15,7 +17,8 @@ pub enum AuthoringTool {
 
 impl AuthoringTool {
     /// Stable display order used by editor menus.
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 5] = [
+        Self::AiStudio,
         Self::AbilityDesigner,
         Self::RuntimeEventTimeline,
         Self::UiContractDesigner,
@@ -25,6 +28,7 @@ impl AuthoringTool {
     /// Human-readable tool name.
     pub const fn label(self) -> &'static str {
         match self {
+            Self::AiStudio => "AI Studio",
             Self::AbilityDesigner => "Ability Designer",
             Self::RuntimeEventTimeline => "Runtime Event Timeline",
             Self::UiContractDesigner => "UI Contract Designer",
@@ -35,6 +39,9 @@ impl AuthoringTool {
     /// Short description presented in the main editor.
     pub const fn description(self) -> &'static str {
         match self {
+            Self::AiStudio => {
+                "Discuss a game, version the proposal, authorize Go, and inspect agent progress."
+            }
             Self::AbilityDesigner => {
                 "Author reusable Startup, Active, Recovery, and Cooldown timings."
             }
@@ -57,10 +64,11 @@ mod tests {
 
     #[test]
     fn catalog_order_and_labels_are_stable() {
-        assert_eq!(AuthoringTool::ALL.len(), 4);
-        assert_eq!(AuthoringTool::ALL[0].label(), "Ability Designer");
+        assert_eq!(AuthoringTool::ALL.len(), 5);
+        assert_eq!(AuthoringTool::ALL[0].label(), "AI Studio");
+        assert_eq!(AuthoringTool::ALL[1].label(), "Ability Designer");
         assert_eq!(
-            AuthoringTool::ALL[3].label(),
+            AuthoringTool::ALL[4].label(),
             "Advanced Geometry Designer"
         );
     }

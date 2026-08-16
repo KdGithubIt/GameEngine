@@ -2,6 +2,7 @@
 
 use crate::authoring_tools::AuthoringTool;
 use eframe::{egui, Frame};
+use std::path::Path;
 
 /// Owns the state and visibility of every project authoring window.
 ///
@@ -9,6 +10,8 @@ use eframe::{egui, Frame};
 /// therefore never starts Cargo or a sibling executable.
 #[derive(Default)]
 pub struct AuthoringWindows {
+    ai_studio_open: bool,
+    ai_studio: Option<crate::ai_studio::AiStudioWindow>,
     ability_open: bool,
     runtime_event_open: bool,
     ui_contract_open: bool,
@@ -19,11 +22,16 @@ pub struct AuthoringWindows {
     advanced_geometry: advanced_geometry::EmbeddedWindow,
 }
 
-
 impl AuthoringWindows {
     /// Makes the selected authoring window visible.
-    pub fn open(&mut self, tool: AuthoringTool) {
+    pub fn open(&mut self, tool: AuthoringTool, project_root: &Path) {
         match tool {
+            AuthoringTool::AiStudio => {
+                self.ai_studio.get_or_insert_with(|| {
+                    crate::ai_studio::AiStudioWindow::new(project_root.to_path_buf())
+                });
+                self.ai_studio_open = true;
+            }
             AuthoringTool::AbilityDesigner => self.ability_open = true,
             AuthoringTool::RuntimeEventTimeline => self.runtime_event_open = true,
             AuthoringTool::UiContractDesigner => self.ui_contract_open = true,
@@ -33,6 +41,9 @@ impl AuthoringWindows {
 
     /// Draws every visible authoring window into the current editor frame.
     pub fn show(&mut self, context: &egui::Context, frame: &mut Frame) {
+        if let Some(ai_studio) = self.ai_studio.as_mut() {
+            ai_studio.show(context, &mut self.ai_studio_open);
+        }
         self.ability
             .show(context, frame, &mut self.ability_open);
         self.runtime_event

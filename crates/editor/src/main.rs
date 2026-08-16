@@ -188,7 +188,7 @@ impl EditorShell {
 
                 ui.separator();
                 ui.small(
-                    "All four tools now share this editor process. Runtime Event Timeline keeps its existing live-capture launch flow inside the embedded viewer window.",
+                    "All five tools share this editor process. AI Studio keeps orchestration in GUI-free host contracts while Runtime Event Timeline retains its live-capture flow.",
                 );
                 if let Some(status) = &self.authoring_status {
                     ui.separator();
@@ -198,7 +198,7 @@ impl EditorShell {
         self.show_authoring_tools = open;
 
         if let (Some(tool), Some(project)) = (requested_tool, project.as_deref()) {
-            self.authoring_windows.open(tool);
+            self.authoring_windows.open(tool, project);
             self.authoring_status = Some(format!(
                 "Opened {} inside Engine Editor for {}",
                 tool.label(),
