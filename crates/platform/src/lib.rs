@@ -10,6 +10,8 @@
 /// Runtime audio assets, authored playback, and native output backend.
 #[cfg(feature = "audio")]
 pub mod audio;
+/// Backend-neutral spatial-audio math and runtime voice contracts.
+pub mod spatial_audio;
 /// Desktop gamepad event ingestion.
 #[cfg(feature = "gamepad")]
 pub mod gamepad;

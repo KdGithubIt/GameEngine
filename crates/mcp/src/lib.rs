@@ -11,6 +11,8 @@
 pub mod ai_agent;
 /// Asset discovery and inspection tool handlers backed by the shared asset catalog.
 pub mod asset;
+/// Prefab creation and instantiation tool handlers backed by shared services.
+pub mod prefab;
 /// Scene/project tool handlers backed by the shared authoring services.
 pub mod scene;
 
@@ -19,6 +21,7 @@ pub use ai_agent::{
     validate_ai_agent_input, AiAgentInput, AiAgentOutput,
 };
 pub use asset::{AssetInspectInput, AssetMcpTools, AssetSearchInput};
+pub use prefab::{PrefabCreateInput, PrefabInstantiateInput, PrefabMcpTools};
 pub use scene::{
     ComponentSchemasOutput, EntityFindInput, EntityFindOutput, EntityInspectInput,
     EntityInspectOutput, ProjectDescribeOutput, SceneMcpTools, SceneMutationInput,
@@ -28,9 +31,10 @@ use engine_authoring::{
     BehaviorTreeApply, BehaviorTreeAuthoringService, BehaviorTreeCompilation,
     BehaviorTreeEdgeSummary, BehaviorTreeLayout, BehaviorTreeNodeSummary,
     BehaviorTreeSchemaCatalog, BehaviorTreeServiceError, BehaviorTreeValidation, Graph,
-    GraphCommand, SceneAuthoringError,
+    GraphCommand, PrefabAuthoringError, SceneAuthoringError,
 };
 use engine_assets::catalog::AssetCatalogError;
+use engine_assets::prefab::PrefabAssetError;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::fmt;
@@ -98,6 +102,16 @@ pub enum McpToolError {
         /// Source asset catalog error.
         source: AssetCatalogError,
     },
+    /// The shared prefab asset service rejected the request.
+    PrefabAsset {
+        /// Source prefab asset error.
+        source: PrefabAssetError,
+    },
+    /// The shared prefab Scene authoring service rejected the request.
+    PrefabAuthoring {
+        /// Source prefab authoring error.
+        source: PrefabAuthoringError,
+    },
 }
 
 impl fmt::Display for McpToolError {
@@ -106,6 +120,8 @@ impl fmt::Display for McpToolError {
             Self::Authoring { source } => source.fmt(formatter),
             Self::SceneAuthoring { source } => source.fmt(formatter),
             Self::AssetCatalog { source } => source.fmt(formatter),
+            Self::PrefabAsset { source } => source.fmt(formatter),
+            Self::PrefabAuthoring { source } => source.fmt(formatter),
         }
     }
 }
@@ -116,6 +132,8 @@ impl std::error::Error for McpToolError {
             Self::Authoring { source } => Some(source),
             Self::SceneAuthoring { source } => Some(source),
             Self::AssetCatalog { source } => Some(source),
+            Self::PrefabAsset { source } => Some(source),
+            Self::PrefabAuthoring { source } => Some(source),
         }
     }
 }
@@ -138,6 +156,18 @@ impl From<AssetCatalogError> for McpToolError {
     }
 }
 
+impl From<PrefabAssetError> for McpToolError {
+    fn from(source: PrefabAssetError) -> Self {
+        Self::PrefabAsset { source }
+    }
+}
+
+impl From<PrefabAuthoringError> for McpToolError {
+    fn from(source: PrefabAuthoringError) -> Self {
+        Self::PrefabAuthoring { source }
+    }
+}
+
 impl McpToolError {
     /// Returns a stable diagnostic-style code when the source exposes one.
     pub fn code(&self) -> &'static str {
@@ -145,6 +175,8 @@ impl McpToolError {
             Self::Authoring { .. } => "mcp.authoring_error",
             Self::SceneAuthoring { source } => source.code(),
             Self::AssetCatalog { source } => source.code(),
+            Self::PrefabAsset { source } => source.code(),
+            Self::PrefabAuthoring { source } => source.code(),
         }
     }
 }

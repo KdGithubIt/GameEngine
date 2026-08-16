@@ -1,7 +1,7 @@
 name: GameEngine ChatGPT Dispatcher
 
 run-name: >-
-  ChatGPT dispatcher ${{ github.event.workflow_run.head_sha }}
+  ChatGPT dispatcher ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.request_commit || github.event.workflow_run.head_sha }}
 
 on:
   workflow_run:
@@ -11,6 +11,12 @@ on:
       - completed
     branches:
       - chatgpt-dispatch
+  workflow_dispatch:
+    inputs:
+      request_commit:
+        description: Published chatgpt-dispatch ready commit SHA
+        required: true
+        type: string
 
 permissions:
   actions: write
@@ -20,6 +26,7 @@ permissions:
 concurrency:
   group: gameengine-chatgpt-dispatcher
   cancel-in-progress: false
+  queue: max
 
 jobs:
   dispatch:
@@ -41,7 +48,11 @@ jobs:
         shell: bash
         env:
           EXPECTED_REPOSITORY: KdGithubIt/GameEngine
-          REQUEST_COMMIT: ${{ github.event.workflow_run.head_sha }}
+          REQUEST_COMMIT: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.request_commit || github.event.workflow_run.head_sha }}
+          SIGNAL_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          SIGNAL_EVENT: ${{ github.event.workflow_run.event }}
+          SIGNAL_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          SIGNAL_REPOSITORY: ${{ github.event.workflow_run.head_repository.full_name }}
         run: |
           set -euo pipefail
 
@@ -54,16 +65,29 @@ jobs:
             fail "This workflow is restricted to $EXPECTED_REPOSITORY."
           [[ "$GITHUB_REF_NAME" == "main" ]] ||
             fail "The write-capable dispatcher must run from main."
-          [[ "${{ github.event.workflow_run.conclusion }}" == "success" ]] ||
-            fail "The read-only dispatch signal did not complete successfully."
-          [[ "${{ github.event.workflow_run.event }}" == "push" ]] ||
-            fail "The dispatch signal must originate from a push event."
-          [[ "${{ github.event.workflow_run.head_branch }}" == "chatgpt-dispatch" ]] ||
-            fail "The dispatch signal must originate from chatgpt-dispatch."
-          [[ "${{ github.event.workflow_run.head_repository.full_name }}" == "$EXPECTED_REPOSITORY" ]] ||
-            fail "The dispatch signal must originate from this repository."
+
+          case "$GITHUB_EVENT_NAME" in
+            workflow_run)
+              [[ "$SIGNAL_CONCLUSION" == "success" ]] ||
+                fail "The read-only dispatch signal did not complete successfully."
+              [[ "$SIGNAL_EVENT" == "push" ]] ||
+                fail "The dispatch signal must originate from a push event."
+              [[ "$SIGNAL_BRANCH" == "chatgpt-dispatch" ]] ||
+                fail "The dispatch signal must originate from chatgpt-dispatch."
+              [[ "$SIGNAL_REPOSITORY" == "$EXPECTED_REPOSITORY" ]] ||
+                fail "The dispatch signal must originate from this repository."
+              ;;
+            workflow_dispatch)
+              [[ "${{ github.event.inputs.request_commit }}" == "$REQUEST_COMMIT" ]] ||
+                fail "workflow_dispatch must provide request_commit explicitly."
+              ;;
+            *)
+              fail "Unsupported dispatcher event: $GITHUB_EVENT_NAME"
+              ;;
+          esac
+
           [[ "$REQUEST_COMMIT" =~ ^[0-9a-fA-F]{40}$ ]] ||
-            fail "The signal head SHA must be a full commit SHA."
+            fail "request_commit must be a full SHA."
 
           cd "$GITHUB_WORKSPACE/request-source"
           git cat-file -e "$REQUEST_COMMIT^{commit}" 2>/dev/null ||
@@ -156,6 +180,7 @@ jobs:
           done
 
           {
+            echo "request_commit=${REQUEST_COMMIT,,}"
             echo "ready_path=$ready_path"
             echo "request_id=$request_id"
             echo "target_branch=$target_branch"
@@ -173,7 +198,7 @@ jobs:
         id: patch
         shell: bash
         env:
-          REQUEST_COMMIT: ${{ github.event.workflow_run.head_sha }}
+          REQUEST_COMMIT: ${{ steps.request.outputs.request_commit }}
           READY_PATH: ${{ steps.request.outputs.ready_path }}
           TARGET_BRANCH: ${{ steps.request.outputs.target_branch }}
           EXPECTED_HEAD_SHA: ${{ steps.request.outputs.expected_head_sha }}
