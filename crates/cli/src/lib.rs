@@ -4,6 +4,7 @@
 //! only. Domain behavior is delegated to shared authoring and asset services.
 
 mod asset_cli;
+mod generic_cli;
 mod prefab_cli;
 mod scene_cli;
 
@@ -55,6 +56,9 @@ where
 {
     let args: Vec<String> = args.into_iter().map(Into::into).collect();
     if let Some(result) = asset_cli::dispatch(&args) {
+        return result;
+    }
+    if let Some(result) = generic_cli::dispatch(&args) {
         return result;
     }
     if let Some(result) = prefab_cli::dispatch(&args) {

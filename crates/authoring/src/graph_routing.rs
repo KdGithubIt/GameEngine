@@ -1,0 +1,91 @@
+//! Shared routing from persisted graph kinds to built-in authoring domains.
+//!
+//! Adapters use this module so Editor, CLI, and MCP select the same domain
+//! validation rules for a semantic Graph. The graph foundation remains
+//! domain-neutral; this router only composes the built-in authoring domains.
+
+use crate::animation_graph::AnimationGraphDomain;
+use crate::behavior_tree::BehaviorTreeDomain;
+use crate::diagnostic::Diagnostic;
+use crate::graph::{Graph, GraphKind, GraphSchemaRegistry};
+use crate::graph_domain::GraphDomain;
+use std::fmt;
+
+/// Built-in graph domain selected for a persisted semantic Graph.
+pub enum AuthoringGraphDomain {
+    /// Behavior Tree graph semantics.
+    BehaviorTree(BehaviorTreeDomain),
+    /// Animation state-machine graph semantics.
+    Animation(AnimationGraphDomain),
+}
+
+impl AuthoringGraphDomain {
+    /// Resolves the built-in domain matching `graph.kind`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`UnsupportedGraphKind`] when no built-in authoring domain owns
+    /// the persisted graph kind.
+    pub fn for_graph(graph: &Graph) -> Result<Self, UnsupportedGraphKind> {
+        let behavior = BehaviorTreeDomain::new();
+        if graph.kind == *behavior.graph_kind() {
+            return Ok(Self::BehaviorTree(behavior));
+        }
+        let animation = AnimationGraphDomain::new();
+        if graph.kind == *animation.graph_kind() {
+            return Ok(Self::Animation(animation));
+        }
+        Err(UnsupportedGraphKind {
+            kind: graph.kind.clone(),
+        })
+    }
+}
+
+impl GraphDomain for AuthoringGraphDomain {
+    fn graph_kind(&self) -> &GraphKind {
+        match self {
+            Self::BehaviorTree(domain) => domain.graph_kind(),
+            Self::Animation(domain) => domain.graph_kind(),
+        }
+    }
+
+    fn schema_registry(&self) -> &dyn GraphSchemaRegistry {
+        match self {
+            Self::BehaviorTree(domain) => domain.schema_registry(),
+            Self::Animation(domain) => domain.schema_registry(),
+        }
+    }
+
+    fn validate_domain(&self, graph: &Graph) -> Vec<Diagnostic> {
+        match self {
+            Self::BehaviorTree(domain) => domain.validate_domain(graph),
+            Self::Animation(domain) => domain.validate_domain(graph),
+        }
+    }
+}
+
+/// Reports that a semantic graph has no built-in structured authoring domain.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnsupportedGraphKind {
+    /// Persisted graph kind that could not be routed.
+    pub kind: GraphKind,
+}
+
+impl UnsupportedGraphKind {
+    /// Stable diagnostic-style code used by structured adapters.
+    pub fn code(&self) -> &'static str {
+        "authoring.unsupported_graph_kind"
+    }
+}
+
+impl fmt::Display for UnsupportedGraphKind {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "no built-in authoring domain is registered for graph kind `{}`",
+            self.kind.as_str()
+        )
+    }
+}
+
+impl std::error::Error for UnsupportedGraphKind {}

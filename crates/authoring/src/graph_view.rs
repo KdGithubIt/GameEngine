@@ -7,6 +7,8 @@
 //! auto-layout execution, concrete graph domains, runtime execution, or
 //! renderer state.
 
+pub mod authoring_service;
+
 use crate::diagnostic::{Diagnostic, DiagnosticTarget};
 use crate::graph::{DottedIdError, Graph};
 use crate::id::{EdgeId, GraphId, GroupId, NodeId};
