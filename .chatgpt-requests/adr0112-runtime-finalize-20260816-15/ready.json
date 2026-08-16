@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0112-runtime-finalize-20260816-15",
+  "target_branch": "chatgpt/gameengine-adr-0112-secondary-motion-v2",
+  "expected_head_sha": "2dcab86fc45af4ef5ea7be7ae38798cd0388b281",
+  "patch_parts": ["part-0000.patch"],
+  "commit_message": "Finalize ADR 0112 runtime naming and rollback",
+  "pr_title": "Implement ADR 0112 engine-native secondary motion",
+  "pr_body": "## Summary\n\nImplements ADR 0112 engine-native Secondary Motion, including canonical authoring identity, engine-native runtime naming, atomic scene-bridge rollback, best-effort PMX conversion, and updated authoring/MMD documentation. The PR remains Draft.\n\n<!-- gameengine-visual-validation: editor -->\n\n<!-- gameengine-chatgpt-dispatcher -->\n"
+}
