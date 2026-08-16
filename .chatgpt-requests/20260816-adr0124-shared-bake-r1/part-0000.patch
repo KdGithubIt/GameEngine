@@ -1,0 +1,195 @@
+diff --git a/crates/engine/src/lib.rs b/crates/engine/src/lib.rs
+index b96a148..74c5e97 100644
+--- a/crates/engine/src/lib.rs
++++ b/crates/engine/src/lib.rs
+@@ -10,7 +10,9 @@ pub mod model_ir;
+ /// Morph targets: named vertex and material deformations blended on top of a
+ /// mesh (ADR 0097 §5).
+ pub mod morph;
+-/// Grid-backed navigation mesh and A* pathfinding.
++/// GUI-free production navigation bake service shared by authoring adapters.
++pub mod navigation_bake;
++/// Production tiled polygon navigation and runtime query facade.
+ pub mod navmesh;
+ /// CPU particle simulation rendered through GPU instancing (ADR 0044).
+ pub mod particles;
+diff --git a/crates/engine/src/navigation_bake.rs b/crates/engine/src/navigation_bake.rs
+new file mode 100644
+index 0000000..80a3e35
+--- /dev/null
++++ b/crates/engine/src/navigation_bake.rs
+@@ -0,0 +1,523 @@
++//! Scene-to-navigation adapter for the shared production bake service (ADR 0124).
++//!
++//! `engine-physics` owns the GUI-free bake document and deterministic service.
++//! This composition-layer adapter is responsible only for collecting runtime
++//! geometry from an authoring scene and registering the resulting asset in the
++//! project manifest.
++
++use std::collections::{BTreeMap, BTreeSet};
++use std::fmt;
++use std::path::{Path, PathBuf};
++use std::sync::atomic::AtomicBool;
++
++use engine_authoring::{
++    replace_file_contents, AssetId, AuthoringCommand, AuthoringScene, ComponentTypeId,
++    ProjectRoot, Value,
++};
++use engine_ecs::Query;
++use glam::Vec3;
++
++use crate::asset::{Assets, Handle};
++use crate::collision::{Collider, PhysicsBody, TriggerVolume};
++use crate::mesh::Mesh;
++use crate::transform::GlobalTransform;
++use crate::{AssetManifest, AssetServer, ManifestEntry};
++use engine_physics::navigation::{
++    NavigationBuildLink, NavigationModifier, NavigationModifierMode, NavigationProfileId,
++    NavigationTriangle,
++};
++
++pub use engine_physics::navigation_bake::{
++    NavMeshBakeDocument, NavMeshBakeSettings, NavigationBakeOutput, NavigationBakeService,
++    NavigationBakeServiceError, NavigationBakeStats, NavigationSource, NAVMESH_BAKE_SCHEMA_VERSION,
++};
++
++/// Stable authoring component used to emit one explicit off-mesh traversal.
++pub const NAVIGATION_LINK_COMPONENT: &str = "engine.nav_mesh_link";
++/// Stable authoring component used to exclude or reclassify navigation geometry.
++pub const NAVIGATION_MODIFIER_COMPONENT: &str = "engine.nav_mesh_modifier";
++
++/// Successful scene bake output and registered stable asset ID.
++pub struct NavMeshBakeResult {
++    /// Newly baked production runtime asset.
++    pub nav_mesh: crate::navmesh::NavMesh,
++    /// Stable manifest ID associated with the output path.
++    pub asset_id: AssetId,
++    /// Absolute output path.
++    pub output_path: PathBuf,
++    /// Production bake statistics.
++    pub stats: NavigationBakeStats,
++}
++
++/// Collects navigation-relevant scene data without mutating output files.
++///
++/// # Errors
++///
++/// Returns [`NavMeshBakeError`] when scene conversion or authored navigation
++/// component parsing fails.
++pub fn collect_navigation_source(
++    scene: &AuthoringScene,
++    project_root: &ProjectRoot,
++    manifest: &AssetManifest,
++) -> Result<NavigationSource, NavMeshBakeError> {
++    let normalized_scene = scene_without_navigation_derived_components(scene)?;
++    let mut world = engine_ecs::World::new();
++    world.insert_resource(AssetServer::with_assets_root(project_root.assets_root()));
++    world.insert_resource(manifest.clone());
++    crate::scene_bridge::spawn_from_authoring_scene(&mut world, &normalized_scene)
++        .map_err(|error| NavMeshBakeError::Scene(error.to_string()))?;
++    crate::transform_propagation_system(Query::new(&mut world));
++
++    let render_instances = if let Ok(query) = world.query::<(
++        &GlobalTransform,
++        &Handle<Mesh>,
++        Option<&PhysicsBody>,
++    )>() {
++        query
++            .iter()
++            .filter_map(|(entity, (transform, mesh, body))| {
++                (body.is_none() || body == Some(&PhysicsBody::Static))
++                    .then_some((entity, transform.matrix(), *mesh))
++            })
++            .collect::<Vec<_>>()
++    } else {
++        Vec::new()
++    };
++    let render_entities = render_instances
++        .iter()
++        .map(|(entity, _, _)| *entity)
++        .collect::<BTreeSet<_>>();
++    let mut triangles = Vec::new();
++    if let Some(meshes) = world.get_resource::<Assets<Mesh>>() {
++        for (_, matrix, handle) in &render_instances {
++            let Some(mesh) = meshes.get(handle) else {
++                continue;
++            };
++            if mesh.skinning.is_some() {
++                continue;
++            }
++            if let Some(indices) = &mesh.indices {
++                for indices in indices.chunks_exact(3) {
++                    let Some(a) = mesh.vertices.get(indices[0] as usize) else {
++                        continue;
++                    };
++                    let Some(b) = mesh.vertices.get(indices[1] as usize) else {
++                        continue;
++                    };
++                    let Some(c) = mesh.vertices.get(indices[2] as usize) else {
++                        continue;
++                    };
++                    triangles.push(world_triangle(*matrix, a.position, b.position, c.position));
++                }
++            } else {
++                for vertices in mesh.vertices.chunks_exact(3) {
++                    triangles.push(world_triangle(
++                        *matrix,
++                        vertices[0].position,
++                        vertices[1].position,
++                        vertices[2].position,
++                    ));
++                }
++            }
++        }
++    }
++
++    let mut generated_modifiers = Vec::new();
++    if let Ok(query) = world.query::<(
++        &GlobalTransform,
++        &Collider,
++        Option<&PhysicsBody>,
++        Option<&TriggerVolume>,
++    )>() {
++        for (entity, (transform, collider, body, trigger)) in query.iter() {
++            if body != Some(&PhysicsBody::Static) || trigger.is_some() {
++                continue;
++            }
++            let aabb = collider.world_aabb(transform);
++            let minimum = aabb.center - aabb.half_extents;
++            let maximum = aabb.center + aabb.half_extents;
++            if !render_entities.contains(&entity)
++                && matches!(collider, Collider::Aabb { .. })
++            {
++                let y = maximum.y;
++                let a = [minimum.x, y, minimum.z];
++                let b = [maximum.x, y, minimum.z];
++                let c = [maximum.x, y, maximum.z];
++                let d = [minimum.x, y, maximum.z];
++                triangles.push(NavigationTriangle { a, b, c, area: 0 });
++                triangles.push(NavigationTriangle {
++                    a,
++                    b: c,
++                    c: d,
++                    area: 0,
++                });
++            }
++            let exclusion_maximum_y = if matches!(collider, Collider::Aabb { .. }) {
++                (maximum.y - 0.01).max(minimum.y)
++            } else {
++                maximum.y
++            };
++            generated_modifiers.push(NavigationModifier {
++                id: format!("runtime-collider-{}-{}", entity.id(), entity.generation()),
++                minimum: [minimum.x, minimum.y, minimum.z],
++                maximum: [maximum.x, exclusion_maximum_y, maximum.z],
++                profiles: Vec::new(),
++                mode: NavigationModifierMode::Exclude,
++            });
++        }
++    }
++
++    let mut modifiers = collect_authored_modifiers(scene)?;
++    modifiers.extend(generated_modifiers);
++    let links = collect_authored_links(scene)?;
++    Ok(NavigationSource {
++        triangles,
