@@ -144,6 +144,11 @@ pub mod replay;
 /// Retarget maps, the pure FK retarget function, and the baked-clip cache
 /// wiring (ADR 0079).
 pub mod retarget;
+/// Public rigid-body rig facade owned by `engine-rig` (ADR 0111).
+///
+/// The facade exposes the current engine-native rig contract only; obsolete
+/// pre-ADR-0112 type aliases are intentionally not retained.
+pub mod rigid_body_rig;
 /// Layered rig pose buffers and deterministic world-space pose evaluation.
 pub mod rig_pose;
 pub mod runtime_metadata;
