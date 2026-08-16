@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "request_id": "20260817-adr0133-remote-ai-studio-a9dd85f-r1",
+  "target_branch": "chatgpt/gameengine-adr0133-remote-ai-studio",
+  "expected_head_sha": "a9dd85f72fad2607a2f8f751b1b3ca9f4f060fee",
+  "patch_parts": [
+    "part-0000.patch",
+    "part-0001.patch",
+    "part-0002.patch",
+    "part-0003.patch"
+  ],
+  "commit_message": "Add ADR 0133 for Remote AI Studio",
+  "pr_title": "GameEngine: define Remote AI Studio companion access",
+  "pr_body": "## Summary\n\n- adds accepted ADR 0133 for remote/mobile AI Studio access\n- keeps MCP loopback-only behind the existing Agent Host\n- defines a loopback gateway, private-network boundary, reconnect/idempotency semantics, captured-frame review, and optional external live display\n- registers ADR 0133 in the ADR decision map and chronological index\n\n## Validation\n\nDocumentation-only change; expect Windows Validation `docs` mode."
+}
