@@ -536,7 +536,7 @@ mod parity_tests {
         .expect("view JSON");
         let graph_command = GraphCommand::SetGraphAnnotation {
             key: "parity.marker".into(),
-            value: AuthoringValue::String("same".into()),
+            value: Some(AuthoringValue::String("same".into())),
         };
         let permissions = mcp_authoring_permissions();
 
@@ -575,10 +575,10 @@ mod parity_tests {
         assert_eq!(stale.code(), "authoring.stale_revision");
 
         let (_project, mut app) = editor_app();
-        app.session = EditorSession::new(
+        app.session.reset(EditorSession::new(
             serde_json::from_str(&graph_json).expect("MCP graph"),
             Some(serde_json::from_str(&view_json).expect("MCP view")),
-        );
+        ));
         let mcp_base = app
             .handle_mcp_tool_call("graph.inspect", json!({}))
             .expect("MCP inspect");
