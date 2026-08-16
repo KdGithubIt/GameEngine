@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Validate connector-authored producer branches and build Dispatcher requests."""
+"""Build Dispatcher requests from immutable connector-authored edit plans."""
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import subprocess
 import sys
@@ -17,6 +18,8 @@ import request_protocol
 PRODUCER_BRANCH_RE = re.compile(r"^chatgpt-producer-stage-([A-Za-z0-9][A-Za-z0-9._-]{0,63})$")
 PRODUCER_SCHEMA_VERSION = 1
 PRODUCER_ROOT = ".chatgpt-producer"
+MAX_EDIT_BYTES = 256_000
+MAX_TOTAL_EDIT_BYTES = 4 * 1024 * 1024
 
 
 class ProducerProtocolError(RuntimeError):
@@ -38,8 +41,28 @@ def _require_sha40(name: str, value: str) -> str:
         raise ProducerProtocolError(str(exc)) from exc
 
 
+def _request_dir(request_id: str) -> str:
+    return f"{PRODUCER_ROOT}/{request_id}"
+
+
 def _ready_path(request_id: str) -> str:
-    return f"{PRODUCER_ROOT}/{request_id}/ready.json"
+    return f"{_request_dir(request_id)}/ready.json"
+
+
+def _validate_product_path(path: str) -> str:
+    if not path or "\\" in path:
+        raise ProducerProtocolError("edit path must be a repository-relative POSIX path")
+    pure = PurePosixPath(path)
+    if pure.is_absolute() or any(part in {"", ".", ".."} for part in pure.parts):
+        raise ProducerProtocolError("edit path must not be absolute or contain dot traversal")
+    normalized = pure.as_posix()
+    if normalized != path:
+        raise ProducerProtocolError("edit path must already be normalized")
+    try:
+        request_protocol._validate_product_path(path)
+    except request_protocol.ProtocolError as exc:
+        raise ProducerProtocolError(str(exc)) from exc
+    return path
 
 
 def _validate_text_fields(manifest: dict[str, Any]) -> None:
@@ -63,6 +86,7 @@ def validate_manifest(manifest: dict[str, Any], request_id: str) -> None:
         "target_branch": str,
         "expected_head_sha": str,
         "baseline_main_sha": str,
+        "edit_parts": list,
         "commit_message": str,
         "pr_title": str,
         "pr_body": str,
@@ -82,6 +106,13 @@ def validate_manifest(manifest: dict[str, Any], request_id: str) -> None:
         raise ProducerProtocolError(str(exc)) from exc
     _require_sha40("expected_head_sha", manifest["expected_head_sha"])
     _require_sha40("baseline_main_sha", manifest["baseline_main_sha"])
+
+    parts = manifest["edit_parts"]
+    if not 1 <= len(parts) <= 64 or any(not isinstance(part, str) for part in parts):
+        raise ProducerProtocolError("edit_parts must contain 1 to 64 string entries")
+    expected_parts = [f"edit-{index:04d}.json" for index in range(len(parts))]
+    if parts != expected_parts:
+        raise ProducerProtocolError("edit_parts must be contiguous edit-NNNN.json entries")
     _validate_text_fields(manifest)
 
 
@@ -113,40 +144,117 @@ def _load_manifest(repo: Path, producer_commit: str, request_id: str) -> dict[st
     return manifest
 
 
-def _validate_product_history(repo: Path, expected: str, producer_commit: str, request_id: str) -> str:
-    ancestry = request_protocol._run(repo, "git", "merge-base", "--is-ancestor", expected, producer_commit, check=False)
-    if ancestry.returncode != 0:
-        raise ProducerProtocolError("producer branch is not based on expected_head_sha")
-
-    commits = _text(_git(repo, "rev-list", "--reverse", f"{expected}..{producer_commit}")).splitlines()
-    if len(commits) < 2:
-        raise ProducerProtocolError("producer branch must contain product edits followed by one ready commit")
-    if commits[-1] != producer_commit:
-        raise ProducerProtocolError("producer ready commit must be the branch head")
-
+def _validate_history(repo: Path, baseline: str, producer_commit: str, manifest: dict[str, Any]) -> None:
+    request_id = manifest["request_id"]
+    request_dir = _request_dir(request_id)
     ready_path = _ready_path(request_id)
+    ancestry = request_protocol._run(repo, "git", "merge-base", "--is-ancestor", baseline, producer_commit, check=False)
+    if ancestry.returncode != 0:
+        raise ProducerProtocolError("producer branch is not based on baseline_main_sha")
+
+    commits = _text(_git(repo, "rev-list", "--reverse", f"{baseline}..{producer_commit}")).splitlines()
+    if len(commits) < 2 or commits[-1] != producer_commit:
+        raise ProducerProtocolError("producer branch must contain edit payload commits followed by one ready commit")
+
     for index, commit in enumerate(commits):
-        parent = _single_parent(repo, commit)
+        _single_parent(repo, commit)
         entries = _changed_entries(repo, commit)
         if not entries:
             raise ProducerProtocolError("producer commits may not be empty")
         if index == len(commits) - 1:
             if entries != [("A", ready_path)]:
                 raise ProducerProtocolError(f"final producer commit must add only {ready_path}")
-            mode = _text(_git(repo, "ls-tree", producer_commit, "--", ready_path)).split()[0]
-            if mode != "100644":
-                raise ProducerProtocolError("producer ready.json must be a normal non-executable file")
-            return parent
-
+            continue
         for status, path in entries:
-            if status not in {"A", "M", "D"}:
-                raise ProducerProtocolError(f"unsupported producer change status {status!r} for {path}")
-            try:
-                request_protocol._validate_product_path(path)
-            except request_protocol.ProtocolError as exc:
-                raise ProducerProtocolError(str(exc)) from exc
+            if status != "A" or not re.fullmatch(re.escape(request_dir) + r"/edit-[0-9]{4}\.json", path):
+                raise ProducerProtocolError("producer payload commits may only add edit-NNNN.json files for this request")
 
-    raise ProducerProtocolError("producer ready commit was not found")
+    listed = _text(_git(repo, "ls-tree", "-r", "--name-only", producer_commit, "--", request_dir)).splitlines()
+    relative = sorted(path[len(request_dir) + 1 :] for path in listed if path.startswith(request_dir + "/"))
+    expected_files = sorted([*manifest["edit_parts"], "ready.json"])
+    if relative != expected_files:
+        raise ProducerProtocolError("producer request directory contains unexpected files")
+
+    ready_mode = _text(_git(repo, "ls-tree", producer_commit, "--", ready_path)).split()[0]
+    if ready_mode != "100644":
+        raise ProducerProtocolError("producer ready.json must be a normal non-executable file")
+
+
+def _load_edits(repo: Path, producer_commit: str, manifest: dict[str, Any]) -> list[dict[str, Any]]:
+    request_dir = _request_dir(manifest["request_id"])
+    edits: list[dict[str, Any]] = []
+    total_bytes = 0
+    for part in manifest["edit_parts"]:
+        path = f"{request_dir}/{part}"
+        mode = _text(_git(repo, "ls-tree", producer_commit, "--", path)).split()[0]
+        if mode != "100644":
+            raise ProducerProtocolError(f"{part} must be a normal non-executable file")
+        raw = _git(repo, "show", f"{producer_commit}:{path}")
+        if not 1 <= len(raw) <= MAX_EDIT_BYTES:
+            raise ProducerProtocolError(f"{part} is outside the allowed size range")
+        total_bytes += len(raw)
+        if total_bytes > MAX_TOTAL_EDIT_BYTES:
+            raise ProducerProtocolError("producer edit payload exceeds 4 MiB")
+        try:
+            edit = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ProducerProtocolError(f"{part} is invalid JSON: {exc}") from exc
+        if not isinstance(edit, dict):
+            raise ProducerProtocolError(f"{part} must contain one JSON object")
+        edits.append(edit)
+    return edits
+
+
+def _apply_edit(workspace: Path, edit: dict[str, Any], part_name: str) -> str:
+    operation = edit.get("operation")
+    path_value = edit.get("path")
+    if not isinstance(operation, str) or not isinstance(path_value, str):
+        raise ProducerProtocolError(f"{part_name} requires string operation and path fields")
+    path = _validate_product_path(path_value)
+    target = workspace.joinpath(*PurePosixPath(path).parts)
+
+    if operation == "replace_text":
+        if set(edit) != {"operation", "path", "old", "new"} or not isinstance(edit.get("old"), str) or not isinstance(edit.get("new"), str):
+            raise ProducerProtocolError(f"{part_name} has invalid replace_text fields")
+        old = edit["old"]
+        if not old:
+            raise ProducerProtocolError(f"{part_name} replace_text old value must not be empty")
+        if not target.is_file():
+            raise ProducerProtocolError(f"{part_name} replace_text target does not exist: {path}")
+        try:
+            current = target.read_bytes().decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ProducerProtocolError(f"{part_name} target is not UTF-8 text: {path}") from exc
+        count = current.count(old)
+        if count != 1:
+            raise ProducerProtocolError(f"{part_name} replace_text expected exactly one match in {path}, found {count}")
+        target.write_bytes(current.replace(old, edit["new"], 1).encode("utf-8"))
+        return path
+
+    if operation == "create_text":
+        if set(edit) != {"operation", "path", "content"} or not isinstance(edit.get("content"), str):
+            raise ProducerProtocolError(f"{part_name} has invalid create_text fields")
+        if target.exists():
+            raise ProducerProtocolError(f"{part_name} create_text target already exists: {path}")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(edit["content"].encode("utf-8"))
+        return path
+
+    if operation == "delete_file":
+        if set(edit) != {"operation", "path", "expected_blob_sha"} or not isinstance(edit.get("expected_blob_sha"), str):
+            raise ProducerProtocolError(f"{part_name} has invalid delete_file fields")
+        expected_blob = _require_sha40("expected_blob_sha", edit["expected_blob_sha"])
+        if not target.is_file():
+            raise ProducerProtocolError(f"{part_name} delete_file target does not exist: {path}")
+        actual_blob = _text(_git(workspace, "hash-object", "--", path)).lower()
+        if actual_blob != expected_blob:
+            raise ProducerProtocolError(
+                f"{part_name} delete_file blob mismatch for {path}: observed {actual_blob}, expected {expected_blob}"
+            )
+        target.unlink()
+        return path
+
+    raise ProducerProtocolError(f"{part_name} has unsupported operation {operation!r}")
 
 
 def build_producer_request(args: argparse.Namespace) -> dict[str, Any]:
@@ -189,28 +297,18 @@ def build_producer_request(args: argparse.Namespace) -> dict[str, Any]:
     if ancestry.returncode != 0:
         raise ProducerProtocolError("target branch does not contain the declared current-main baseline")
 
-    product_head = _validate_product_history(repo, expected, producer_commit, request_id)
-    patch = _git(repo, "diff", "--binary", "--full-index", "--no-ext-diff", expected, product_head, "--")
-    if not patch:
-        raise ProducerProtocolError("producer branch contains no final product changes")
+    _validate_history(repo, baseline, producer_commit, manifest)
+    edits = _load_edits(repo, producer_commit, manifest)
 
     with tempfile.TemporaryDirectory(prefix="gameengine-chatgpt-producer-") as temp_dir:
         workspace = Path(temp_dir) / "target"
         _git(repo, "worktree", "add", "--detach", "--force", str(workspace), expected)
         try:
-            apply_result = request_protocol._run(
-                workspace,
-                "git",
-                "apply",
-                "--index",
-                "--whitespace=nowarn",
-                "-",
-                input_bytes=patch,
-                check=False,
-            )
-            if apply_result.returncode != 0:
-                detail = apply_result.stderr.decode("utf-8", errors="replace").strip()
-                raise ProducerProtocolError(f"could not stage producer product state on exact target: {detail}")
+            changed_paths: list[str] = []
+            for part_name, edit in zip(manifest["edit_parts"], edits, strict=True):
+                changed_paths.append(_apply_edit(workspace, edit, part_name))
+            unique_paths = list(dict.fromkeys(changed_paths))
+            _git(workspace, "add", "-A", "--", *unique_paths)
 
             build_args = argparse.Namespace(
                 workspace=str(workspace),
@@ -236,15 +334,17 @@ def build_producer_request(args: argparse.Namespace) -> dict[str, Any]:
     return {
         "producer_branch": args.producer_branch,
         "producer_commit": producer_commit,
-        "product_head_sha": product_head,
         "request": request_manifest,
+        "edit_payload_sha256": hashlib.sha256(
+            b"".join(_git(repo, "show", f"{producer_commit}:{_request_dir(request_id)}/{part}") for part in manifest["edit_parts"])
+        ).hexdigest(),
     }
 
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
-    build = sub.add_parser("build", help="build a Dispatcher request from an immutable connector producer branch")
+    build = sub.add_parser("build", help="build a Dispatcher request from an immutable connector edit plan")
     build.add_argument("--request-repo", required=True)
     build.add_argument("--producer-branch", required=True)
     build.add_argument("--producer-commit", required=True)
