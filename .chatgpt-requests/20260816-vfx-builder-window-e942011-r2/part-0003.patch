@@ -1,0 +1,86 @@
++            let Some(emitter) = effect.emitters.iter().find(|entry| entry.id == emitter_id) else {
++                columns[1].label("The selected emitter no longer exists.");
++                return;
++            };
++
++            columns[1].group(|ui| {
++                ui.strong("Emitter Properties");
++                ui.horizontal(|ui| {
++                    ui.label("Name");
++                    ui.text_edit_singleline(&mut self.emitter_name);
++                });
++                ui.horizontal(|ui| {
++                    ui.label("Max particles");
++                    ui.add(egui::DragValue::new(&mut self.emitter_max_particles).range(1..=u32::MAX));
++                });
++                if ui.button("Apply Emitter Properties").clicked() {
++                    let commands = vec![
++                        VfxCommand::RenameEmitter {
++                            emitter: emitter.id.clone(),
++                            name: self.emitter_name.clone(),
++                        },
++                        VfxCommand::SetEmitterMaxParticles {
++                            emitter: emitter.id.clone(),
++                            max_particles: self.emitter_max_particles,
++                        },
++                    ];
++                    self.apply_user_commands(commands);
++                }
++            });
++
++            columns[1].horizontal(|ui| {
++                ui.add(
++                    egui::TextEdit::singleline(&mut self.module_filter)
++                        .hint_text("Search modules...")
++                        .desired_width(240.0),
++                );
++                show_add_module_menu(ui, emitter, &self.module_filter, &mut pending_command);
++            });
++            columns[1].separator();
++
++            let display_names = VfxAuthoringService::new()
++                .schemas()
++                .modules
++                .into_iter()
++                .map(|schema| (schema.type_id, schema.display_name))
++                .collect::<std::collections::BTreeMap<_, _>>();
++
++            egui::ScrollArea::vertical()
++                .id_salt("vfx_module_stack")
++                .show(&mut columns[1], |ui| {
++                    for phase in [VfxPhase::Spawn, VfxPhase::Update, VfxPhase::Render] {
++                        ui.strong(phase_label(phase));
++                        let modules = emitter
++                            .modules
++                            .iter()
++                            .filter(|module| module.phase == phase)
++                            .collect::<Vec<_>>();
++                        if modules.is_empty() {
++                            ui.small("No modules");
++                        }
++                        for (phase_index, module) in modules.iter().enumerate() {
++                            egui::Frame::group(ui.style()).show(ui, |ui| {
++                                ui.horizontal(|ui| {
++                                    let mut enabled = module.enabled;
++                                    if ui.checkbox(&mut enabled, "").changed() {
++                                        pending_command = Some(VfxCommand::SetModuleEnabled {
++                                            emitter: emitter.id.clone(),
++                                            module: module.id.clone(),
++                                            enabled,
++                                        });
++                                    }
++                                    let label = display_names
++                                        .get(module.operation.type_id())
++                                        .map(String::as_str)
++                                        .unwrap_or_else(|| module.operation.type_id());
++                                    ui.label(label);
++                                    ui.with_layout(
++                                        egui::Layout::right_to_left(egui::Align::Center),
++                                        |ui| {
++                                            if ui.small_button("Delete").clicked() {
++                                                pending_command = Some(VfxCommand::RemoveModule {
++                                                    emitter: emitter.id.clone(),
++                                                    module: module.id.clone(),
++                                                });
++                                            }
++                                            if ui

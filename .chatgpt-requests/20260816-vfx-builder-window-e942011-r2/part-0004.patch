@@ -1,0 +1,101 @@
++                                                .add_enabled(
++                                                    phase_index + 1 < modules.len(),
++                                                    egui::Button::new("Down"),
++                                                )
++                                                .clicked()
++                                            {
++                                                pending_command = Some(VfxCommand::MoveModule {
++                                                    emitter: emitter.id.clone(),
++                                                    module: module.id.clone(),
++                                                    phase_index: phase_index + 1,
++                                                });
++                                            }
++                                            if ui
++                                                .add_enabled(
++                                                    phase_index > 0,
++                                                    egui::Button::new("Up"),
++                                                )
++                                                .clicked()
++                                            {
++                                                pending_command = Some(VfxCommand::MoveModule {
++                                                    emitter: emitter.id.clone(),
++                                                    module: module.id.clone(),
++                                                    phase_index: phase_index - 1,
++                                                });
++                                            }
++                                        },
++                                    );
++                                });
++                                ui.small(module_summary(&module.operation));
++                            });
++                            ui.add_space(4.0);
++                        }
++                        ui.add_space(8.0);
++                    }
++                });
++        });
++
++        if let Some(command) = pending_command {
++            self.apply_user_commands(vec![command]);
++        }
++
++        if !compilation.diagnostics.is_empty() {
++            ui.separator();
++            ui.collapsing("Diagnostics", |ui| {
++                for diagnostic in compilation.diagnostics {
++                    ui.label(format!("{}: {}", diagnostic.code, diagnostic.message));
++                }
++            });
++        }
++        self.show_status(ui);
++    }
++
++    fn open_with_picker(&mut self, project: &ProjectRoot) {
++        let Some(path) = rfd::FileDialog::new()
++            .set_directory(project.assets_root())
++            .add_filter("VFX effect", &["json"])
++            .pick_file()
++        else {
++            return;
++        };
++        if !is_project_vfx_path(project, &path) {
++            self.status = Some("VFX Builder only opens project-local *.vfx.json assets.".to_owned());
++            return;
++        }
++        let json = match std::fs::read_to_string(&path) {
++            Ok(json) => json,
++            Err(error) => {
++                self.status = Some(format!("Open failed: {error}"));
++                return;
++            }
++        };
++        match VfxAuthoringService::new().effect_from_json(&json) {
++            Ok(effect) => {
++                self.effect = Some(effect);
++                self.path = Some(path);
++                self.undo_stack.clear();
++                self.redo_stack.clear();
++                self.status = Some("Opened VFX effect.".to_owned());
++                self.selected_emitter = None;
++                if let Some(effect) = self.effect.clone() {
++                    self.normalize_selection(&effect);
++                }
++            }
++            Err(error) => {
++                self.status = Some(format!("Open failed: {error}"));
++            }
++        }
++    }
++
++    fn save(&mut self) {
++        let (Some(effect), Some(path)) = (self.effect.as_ref(), self.path.as_ref()) else {
++            return;
++        };
++        let json = match VfxAuthoringService::new().effect_to_canonical_json(effect) {
++            Ok(json) => json,
++            Err(error) => {
++                self.status = Some(format!("Save blocked: {error}"));
++                return;
++            }
++        };
++        match replace_file_contents(path, &json) {

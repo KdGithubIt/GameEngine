@@ -1,0 +1,92 @@
++        ui.horizontal_wrapped(|ui| {
++            ui.heading(&effect.name);
++            ui.label(format!("Seed {}", effect.seed));
++            ui.label(format!("Effect cap {}", effect.max_particles));
++            let estimated = compilation
++                .compiled_effect
++                .as_ref()
++                .map(|compiled| {
++                    compiled
++                        .emitters
++                        .iter()
++                        .fold(0_u32, |total, emitter| {
++                            total.saturating_add(emitter.estimated_capacity)
++                        })
++                })
++                .unwrap_or(0);
++            ui.label(format!("Estimated live {estimated}"));
++        });
++
++        ui.columns(2, |columns| {
++            columns[0].set_min_width(270.0);
++            columns[0].heading("Emitters");
++            if columns[0].button("+ Add Emitter").clicked() {
++                pending_command = Some(VfxCommand::AddEmitter {
++                    emitter: VfxEmitter::new("Emitter", 512),
++                    index: effect.emitters.len(),
++                });
++            }
++            columns[0].separator();
++
++            egui::ScrollArea::vertical()
++                .id_salt("vfx_emitter_list")
++                .show(&mut columns[0], |ui| {
++                    for (index, emitter) in effect.emitters.iter().enumerate() {
++                        let selected = self.selected_emitter.as_ref() == Some(&emitter.id);
++                        ui.horizontal(|ui| {
++                            if ui.selectable_label(selected, &emitter.name).clicked() {
++                                self.select_emitter(emitter);
++                            }
++                            let mut enabled = emitter.enabled;
++                            if ui.checkbox(&mut enabled, "").changed() {
++                                pending_command = Some(VfxCommand::SetEmitterEnabled {
++                                    emitter: emitter.id.clone(),
++                                    enabled,
++                                });
++                            }
++                        });
++                        if selected {
++                            ui.horizontal(|ui| {
++                                if ui
++                                    .add_enabled(index > 0, egui::Button::new("Up"))
++                                    .clicked()
++                                {
++                                    pending_command = Some(VfxCommand::MoveEmitter {
++                                        emitter: emitter.id.clone(),
++                                        index: index - 1,
++                                    });
++                                }
++                                if ui
++                                    .add_enabled(
++                                        index + 1 < effect.emitters.len(),
++                                        egui::Button::new("Down"),
++                                    )
++                                    .clicked()
++                                {
++                                    pending_command = Some(VfxCommand::MoveEmitter {
++                                        emitter: emitter.id.clone(),
++                                        index: index + 1,
++                                    });
++                                }
++                                if ui.button("Duplicate").clicked() {
++                                    pending_command = Some(VfxCommand::AddEmitter {
++                                        emitter: duplicate_emitter(emitter),
++                                        index: index + 1,
++                                    });
++                                }
++                                if ui.button("Delete").clicked() {
++                                    pending_command = Some(VfxCommand::RemoveEmitter {
++                                        emitter: emitter.id.clone(),
++                                    });
++                                }
++                            });
++                        }
++                        ui.add_space(4.0);
++                    }
++                });
++
++            columns[1].heading("Module Stack");
++            let Some(emitter_id) = self.selected_emitter.clone() else {
++                columns[1].label("Add an emitter to begin authoring modules.");
++                return;
++            };

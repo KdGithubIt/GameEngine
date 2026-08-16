@@ -1,0 +1,121 @@
+ pub mod systems_panel;
+ pub mod ui;
+ pub mod ui_builder;
++mod vfx_builder;
+ pub mod view_aspect;
+ mod view_resolution;
+ mod workspace;
+diff --git a/crates/editor/src/main.rs b/crates/editor/src/main.rs
+index 07013df..c66f1ce 100644
+--- a/crates/editor/src/main.rs
++++ b/crates/editor/src/main.rs
+@@ -130,7 +130,7 @@ impl EditorShell {
+ 
+                 ui.separator();
+                 ui.small(
+-                    "All four tools now share this editor process. Runtime Event Timeline keeps its existing live-capture launch flow inside the embedded viewer window.",
++                    "All authoring tools share this editor process. Runtime Event Timeline keeps its existing live-capture launch flow inside the embedded viewer window.",
+                 );
+                 if let Some(status) = &self.authoring_status {
+                     ui.separator();
+@@ -167,7 +167,8 @@ impl eframe::App for EditorShell {
+         let context = ui.ctx().clone();
+         eframe::App::ui(&mut self.app, ui, frame);
+         self.show_authoring_tools_launcher(&context);
+-        self.authoring_windows.show(&context, frame);
++        self.authoring_windows
++            .show(&context, frame, self.app.project_root());
+     }
+ 
+     fn clear_color(&self, _visuals: &eframe::egui::Visuals) -> [f32; 4] {
+diff --git a/crates/editor/src/vfx_builder.rs b/crates/editor/src/vfx_builder.rs
+new file mode 100644
+index 0000000..e78646d
+--- /dev/null
++++ b/crates/editor/src/vfx_builder.rs
+@@ -0,0 +1,729 @@
++//! Typed visual authoring surface for `*.vfx.json` effect assets.
++//!
++//! The window translates gestures into [`VfxCommand`] values and applies them
++//! through [`VfxAuthoringService`]. It never edits raw JSON as business logic.
++
++use eframe::egui;
++use engine_authoring::{
++    replace_file_contents, ProjectRoot, VfxAuthoringService, VfxCommand, VfxCurve, VfxEmitter,
++    VfxEmitterId, VfxEffect, VfxGradient, VfxModule, VfxModuleOperation, VfxPhase,
++    VfxScalarValue, VfxShape, VfxVectorValue,
++};
++use std::path::{Path, PathBuf};
++
++const MAX_HISTORY: usize = 100;
++
++/// Transient state owned by the modeless VFX Builder window.
++#[derive(Default)]
++pub(crate) struct VfxBuilderState {
++    effect: Option<VfxEffect>,
++    path: Option<PathBuf>,
++    selected_emitter: Option<VfxEmitterId>,
++    module_filter: String,
++    emitter_name: String,
++    emitter_max_particles: u32,
++    undo_stack: Vec<Vec<VfxCommand>>,
++    redo_stack: Vec<Vec<VfxCommand>>,
++    status: Option<String>,
++}
++
++impl VfxBuilderState {
++    /// Draws the VFX Builder for the current project.
++    pub(crate) fn show(&mut self, ui: &mut egui::Ui, project: &ProjectRoot) {
++        let mut pending_command = None;
++        let mut request_open = false;
++        let mut request_save = false;
++        let mut request_undo = false;
++        let mut request_redo = false;
++
++        ui.horizontal(|ui| {
++            request_open = ui.button("Open VFX...").clicked();
++            request_save = ui
++                .add_enabled(self.effect.is_some(), egui::Button::new("Save"))
++                .clicked();
++            ui.separator();
++            request_undo = ui
++                .add_enabled(!self.undo_stack.is_empty(), egui::Button::new("Undo"))
++                .clicked();
++            request_redo = ui
++                .add_enabled(!self.redo_stack.is_empty(), egui::Button::new("Redo"))
++                .clicked();
++            if let Some(path) = &self.path {
++                ui.separator();
++                ui.monospace(project_relative_label(project, path));
++            }
++        });
++
++        if request_open {
++            self.open_with_picker(project);
++        }
++        if request_save {
++            self.save();
++        }
++        if request_undo {
++            self.undo();
++        }
++        if request_redo {
++            self.redo();
++        }
++
++        let Some(effect) = self.effect.clone() else {
++            ui.separator();
++            ui.vertical_centered(|ui| {
++                ui.add_space(60.0);
++                ui.heading("VFX Builder");
++                ui.label("Open a project-local *.vfx.json asset to begin authoring.");
++                ui.small("All edits use the shared typed VFX authoring service.");
++            });
++            self.show_status(ui);
++            return;
++        };
++
++        self.normalize_selection(&effect);
++        let compilation = VfxAuthoringService::new().compile(&effect);
++
++        ui.separator();
