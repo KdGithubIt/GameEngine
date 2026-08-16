@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0112-public-facade-20260816-18",
+  "target_branch": "chatgpt/gameengine-adr-0112-secondary-motion-v2",
+  "expected_head_sha": "dae346dc06b8bdfa5c4fe3bf5f2822bf1211ee3e",
+  "patch_parts": ["part-0000.patch"],
+  "commit_message": "Restore current rigid-body rig public facade",
+  "pr_title": "Implement ADR 0112 engine-native secondary motion",
+  "pr_body": "## Summary\n\nImplements ADR 0112 engine-native Secondary Motion. This follow-up restores the intentional ADR 0111 `engine::rigid_body_rig` public umbrella path after the compatibility cleanup, while keeping the obsolete pre-ADR-0112 type aliases removed. The facade now exposes only the current types owned by `engine-rig`.\n\nThe PR remains Draft while PMX best-effort conversion diagnostics, stale MMD compatibility cleanup, documentation cleanup, and final validation are completed."
+}
