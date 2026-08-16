@@ -1,0 +1,180 @@
+diff --git a/crates/render-runtime/src/lib.rs b/crates/render-runtime/src/lib.rs
+index 674bf039e5ee4c7ad14eb64bea44010d2abe5324..0d2b82eed2fb0dd2eef1e4607210cd8fc8824523 100644
+--- a/crates/render-runtime/src/lib.rs
++++ b/crates/render-runtime/src/lib.rs
+@@ -46,6 +46,8 @@ pub mod particles;
+ /// HDR, bloom, tone-mapping, and color-grading settings.
+ #[cfg(feature = "gpu")]
+ pub mod postprocess;
++#[cfg(feature = "gpu")]
++mod postprocess_gpu;
+ /// Offscreen rendering helpers for editor integrations.
+ #[cfg(feature = "gpu")]
+ pub mod preview;
+diff --git a/crates/render-runtime/src/postprocess_gpu.rs b/crates/render-runtime/src/postprocess_gpu.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..936971d8fda87d1f6028b6f50d37a1471aaf1c16
+--- /dev/null
++++ b/crates/render-runtime/src/postprocess_gpu.rs
+@@ -0,0 +1,587 @@
++use bytemuck::{Pod, Zeroable};
++
++use crate::postprocess::PostProcessSettings;
++
++const BLOOM_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
++const MAX_BLOOM_LEVELS: usize = 6;
++
++#[repr(C)]
++#[derive(Clone, Copy, Pod, Zeroable)]
++struct BloomUniformData {
++    threshold: f32,
++    radius: f32,
++    intensity: f32,
++    _padding: f32,
++}
++
++impl BloomUniformData {
++    fn downsample(settings: &PostProcessSettings, level: usize) -> Self {
++        Self {
++            threshold: if level == 0 {
++                settings.bloom.threshold.max(0.0)
++            } else {
++                0.0
++            },
++            radius: bloom_filter_radius(settings.bloom.radius),
++            intensity: 0.0,
++            _padding: 0.0,
++        }
++    }
++
++    fn upsample(settings: &PostProcessSettings) -> Self {
++        Self {
++            threshold: 0.0,
++            radius: bloom_filter_radius(settings.bloom.radius),
++            intensity: 0.0,
++            _padding: 0.0,
++        }
++    }
++
++    fn composite(settings: &PostProcessSettings) -> Self {
++        Self {
++            threshold: 0.0,
++            radius: 0.0,
++            intensity: settings.bloom.intensity.max(0.0),
++            _padding: 0.0,
++        }
++    }
++}
++
++fn bloom_filter_radius(radius: f32) -> f32 {
++    if radius.is_finite() {
++        (radius.max(0.0) / 4.0).min(4.0)
++    } else {
++        1.0
++    }
++}
++
++fn bloom_pyramid_extents(width: u32, height: u32) -> Vec<[u32; 2]> {
++    let mut width = width.max(1);
++    let mut height = height.max(1);
++    let mut extents = Vec::with_capacity(MAX_BLOOM_LEVELS);
++
++    for _ in 0..MAX_BLOOM_LEVELS {
++        width = (width / 2).max(1);
++        height = (height / 2).max(1);
++        extents.push([width, height]);
++        if width == 1 && height == 1 {
++            break;
++        }
++    }
++
++    extents
++}
++
++struct BloomTarget {
++    _texture: wgpu::Texture,
++    view: wgpu::TextureView,
++}
++
++impl BloomTarget {
++    fn new(device: &wgpu::Device, extent: [u32; 2], label: &str) -> Self {
++        let texture = device.create_texture(&wgpu::TextureDescriptor {
++            label: Some(label),
++            size: wgpu::Extent3d {
++                width: extent[0],
++                height: extent[1],
++                depth_or_array_layers: 1,
++            },
++            mip_level_count: 1,
++            sample_count: 1,
++            dimension: wgpu::TextureDimension::D2,
++            format: BLOOM_FORMAT,
++            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
++            view_formats: &[],
++        });
++        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
++        Self {
++            _texture: texture,
++            view,
++        }
++    }
++}
++
++struct BloomResources {
++    source_view: wgpu::TextureView,
++    downsample_targets: Vec<BloomTarget>,
++    upsample_targets: Vec<BloomTarget>,
++    composite_target: BloomTarget,
++    downsample_uniforms: Vec<wgpu::Buffer>,
++    upsample_uniforms: Vec<wgpu::Buffer>,
++    composite_uniform: wgpu::Buffer,
++    downsample_bind_groups: Vec<wgpu::BindGroup>,
++    upsample_bind_groups: Vec<wgpu::BindGroup>,
++    composite_bind_group: wgpu::BindGroup,
++}
++
++impl BloomResources {
++    fn new(
++        device: &wgpu::Device,
++        source_view: &wgpu::TextureView,
++        bgl: &wgpu::BindGroupLayout,
++        sampler: &wgpu::Sampler,
++    ) -> Self {
++        let source_texture = source_view.texture();
++        let source_extent = [source_texture.width(), source_texture.height()];
++        let extents = bloom_pyramid_extents(source_extent[0], source_extent[1]);
++
++        let downsample_targets = extents
++            .iter()
++            .enumerate()
++            .map(|(index, extent)| {
++                BloomTarget::new(device, *extent, &format!("Bloom downsample {index}"))
++            })
++            .collect::<Vec<_>>();
++        let upsample_targets = extents
++            .iter()
++            .take(extents.len().saturating_sub(1))
++            .enumerate()
++            .map(|(index, extent)| {
++                BloomTarget::new(device, *extent, &format!("Bloom upsample {index}"))
++            })
++            .collect::<Vec<_>>();
++        let composite_target = BloomTarget::new(device, source_extent, "Bloom HDR composite");
++
++        let downsample_uniforms = (0..downsample_targets.len())
++            .map(|index| make_uniform_buffer(device, &format!("Bloom downsample uniform {index}")))
++            .collect::<Vec<_>>();
++        let upsample_uniforms = (0..upsample_targets.len())
++            .map(|index| make_uniform_buffer(device, &format!("Bloom upsample uniform {index}")))
++            .collect::<Vec<_>>();
++        let composite_uniform = make_uniform_buffer(device, "Bloom composite uniform");
++
++        let downsample_bind_groups = downsample_targets
++            .iter()
++            .enumerate()
++            .map(|(index, _)| {
++                let primary = if index == 0 {
++                    source_view
++                } else {
++                    &downsample_targets[index - 1].view
++                };
