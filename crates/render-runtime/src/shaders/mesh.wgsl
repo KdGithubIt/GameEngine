@@ -24,6 +24,7 @@ struct LightUniform {
 }
 struct ShadowUniform {
     light_view_proj_0: mat4x4<f32>, light_view_proj_1: mat4x4<f32>, params: vec4<f32>,
+    cascade_depths: vec4<f32>, // x=blend start, y=first cascade far depth
 }
 struct EnvironmentUniform {
     diffuse_color: vec3<f32>,
@@ -112,24 +113,44 @@ fn sample_shadow_cascade(layer: i32, view_proj: mat4x4<f32>, world_pos: vec3<f32
     let uv = vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
     let reference = ndc.z - shadow.params.x;
     var sum = 0.0;
+    var weight_sum = 0.0;
     for (var dy: i32 = -1; dy <= 1; dy++) {
         for (var dx: i32 = -1; dx <= 1; dx++) {
+            let weight_x = select(1.0, 2.0, dx == 0);
+            let weight_y = select(1.0, 2.0, dy == 0);
+            let weight = weight_x * weight_y;
             sum += textureSampleCompareLevel(
                 t_shadow, s_shadow, uv + vec2<f32>(f32(dx), f32(dy)) * shadow.params.w,
                 layer, reference,
-            );
+            ) * weight;
+            weight_sum += weight;
         }
     }
-    return vec2<f32>(sum / 9.0, 1.0);
+    return vec2<f32>(sum / weight_sum, 1.0);
 }
 
 fn shadow_visibility(world_pos: vec3<f32>, normal: vec3<f32>) -> f32 {
     if (shadow.params.z < 0.5 || material.toon_ambient.w < 0.5) { return 1.0; }
     let biased = world_pos + normal * shadow.params.y;
+    let view_depth = max(-(camera.view * vec4<f32>(world_pos, 1.0)).z, 0.0);
+    let blend_start = shadow.cascade_depths.x;
+    let first_far = shadow.cascade_depths.y;
+
     let first = sample_shadow_cascade(0, shadow.light_view_proj_0, biased);
-    if (first.y > 0.5) { return first.x; }
+    if (view_depth < blend_start) {
+        if (first.y > 0.5) { return first.x; }
+        let second = sample_shadow_cascade(1, shadow.light_view_proj_1, biased);
+        return select(1.0, second.x, second.y > 0.5);
+    }
+
     let second = sample_shadow_cascade(1, shadow.light_view_proj_1, biased);
+    if (view_depth <= first_far && first.y > 0.5 && second.y > 0.5 && first_far > blend_start) {
+        let blend = smoothstep(blend_start, first_far, view_depth);
+        return mix(first.x, second.x, blend);
+    }
+    if (view_depth <= first_far && first.y > 0.5) { return first.x; }
     if (second.y > 0.5) { return second.x; }
+    if (first.y > 0.5) { return first.x; }
     return 1.0;
 }
 
