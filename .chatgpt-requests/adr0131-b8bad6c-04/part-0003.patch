@@ -1,0 +1,512 @@
++            ui.small("Project-level approval persists as user application state; credentials never do.");
++            ui.horizontal(|ui| {
++                for (label, scope) in [
++                    ("Allow once", ApprovalScope::Once),
++                    ("This run", ApprovalScope::Run),
++                    ("This project", ApprovalScope::Project),
++                    ("Deny", ApprovalScope::Deny),
++                ] {
++                    if ui.button(label).clicked() {
++                        self.resolve_pending_permission(&run_id, capability, action, scope);
++                    }
++                }
++            });
++        });
++    }
++
++    fn show_code_changes(&mut self, ui: &mut egui::Ui) {
++        if self.pending_code_changes.is_empty() {
++            return;
++        }
++        ui.separator();
++        egui::CollapsingHeader::new(format!(
++            "Managed code diff · {} file(s)",
++            self.pending_code_changes.len()
++        ))
++        .default_open(true)
++        .show(ui, |ui| {
++            for change in &self.pending_code_changes {
++                ui.horizontal(|ui| {
++                    ui.monospace(change.relative_path.display().to_string());
++                    ui.weak(change_summary(change));
++                });
++            }
++            let can_apply = self.pending_permission.is_none()
++                && self.code_workspace.is_some()
++                && self.active_run_id.is_some();
++            if ui
++                .add_enabled(can_apply, egui::Button::new("Review complete — apply code changes"))
++                .clicked()
++            {
++                self.request_code_apply();
++            }
++            ui.small(
++                "Only game/** and assets/scripts/{rust,rhai}/** are eligible. Deletions and stale live files are rejected rather than forced.",
++            );
++        });
++    }
++
++    fn show_run_timeline(&mut self, ui: &mut egui::Ui) {
++        let Some(run_id) = self.active_run_id.clone() else {
++            return;
++        };
++        let Ok(run) = self.host.run(&run_id).cloned() else {
++            return;
++        };
++        ui.separator();
++        egui::CollapsingHeader::new(format!("Run timeline · {:?}", run.state))
++            .default_open(true)
++            .show(ui, |ui| {
++                ui.horizontal_wrapped(|ui| {
++                    ui.strong(format!("Proposal v{}", run.proposal_snapshot.version));
++                    ui.label(format!("Provider: {}", run.provider_label));
++                });
++                egui::ScrollArea::vertical()
++                    .id_salt("ai_studio_timeline")
++                    .max_height(180.0)
++                    .show(ui, |ui| {
++                        for event in run.events.iter().rev().take(120).rev() {
++                            ui.horizontal_wrapped(|ui| {
++                                ui.monospace(format!("#{:03}", event.sequence));
++                                ui.strong(format!("{:?}", event.kind));
++                                ui.label(&event.message);
++                            });
++                        }
++                    });
++                self.show_completion_contract(ui, &run_id, run.state, run.completion);
++            });
++    }
++
++    fn show_completion_contract(
++        &mut self,
++        ui: &mut egui::Ui,
++        run_id: &str,
++        state: AgentRunState,
++        mut report: crate::agent_host::CompletionReport,
++    ) {
++        ui.separator();
++        ui.strong("Completion contract");
++        let mut changed = false;
++        changed |= completion_row(ui, "Acceptance criteria", &mut report.acceptance_criteria);
++        changed |= completion_row(ui, "Authoring validation", &mut report.authoring_validation);
++        changed |= completion_row(ui, "Source validation", &mut report.source_validation);
++        changed |= completion_row(ui, "Play launch", &mut report.play_launch);
++        changed |= completion_row(ui, "Frame capture", &mut report.frame_capture);
++        changed |= completion_row(ui, "Visual evaluation", &mut report.visual_evaluation);
++        changed |= completion_row(ui, "Interaction scenarios", &mut report.interaction_scenarios);
++        if changed {
++            let copy = report.clone();
++            if let Err(error) = self.host.set_completion_status(run_id, move |target| *target = copy) {
++                self.status = Some(error.to_string());
++            }
++        }
++        if ui.button("Complete run").clicked() {
++            let result = if state == AgentRunState::Validating {
++                self.host.transition_run(
++                    run_id,
++                    AgentRunState::Evaluating,
++                    "Human review advanced the run to final evaluation.",
++                )
++            } else {
++                Ok(())
++            }
++            .and_then(|()| self.host.complete_run(run_id));
++            match result {
++                Ok(()) => self.status = Some("Run completion contract satisfied.".to_owned()),
++                Err(error) => self.status = Some(error.to_string()),
++            }
++        }
++    }
++
++    fn begin_run(&mut self) {
++        if let Err(error) = self
++            .host
++            .update_proposal(&self.selected_session, self.proposal_draft.clone())
++        {
++            self.status = Some(error.to_string());
++            return;
++        }
++        let provider = self.provider_program.trim().to_owned();
++        match self.host.start_run(&self.selected_session, provider) {
++            Ok(run_id) => {
++                self.active_run_id = Some(run_id.clone());
++                self.request_permission(
++                    run_id,
++                    AgentCapability::ExternalAgentProcess,
++                    PendingPermissionAction::LaunchExternalAgent,
++                );
++            }
++            Err(error) => self.status = Some(error.to_string()),
++        }
++    }
++
++    fn request_code_apply(&mut self) {
++        let Some(run_id) = self.active_run_id.clone() else {
++            return;
++        };
++        self.request_permission(
++            run_id,
++            AgentCapability::CodeWorkspaceApply,
++            PendingPermissionAction::ApplyCodeChanges,
++        );
++    }
++
++    fn request_permission(
++        &mut self,
++        run_id: String,
++        capability: AgentCapability,
++        action: PendingPermissionAction,
++    ) {
++        match self.host.check_permission(&run_id, capability) {
++            Ok(PermissionCheck::Granted) => self.execute_permission_action(&run_id, action),
++            Ok(PermissionCheck::RequiresApproval) => {
++                self.pending_permission = Some(PendingPermission {
++                    run_id,
++                    capability,
++                    action,
++                });
++            }
++            Ok(PermissionCheck::Denied) => {
++                self.status = Some(format!("Permission denied: {}.", capability.label()));
++            }
++            Err(error) => self.status = Some(error.to_string()),
++        }
++    }
++
++    fn resolve_pending_permission(
++        &mut self,
++        run_id: &str,
++        capability: AgentCapability,
++        action: PendingPermissionAction,
++        scope: ApprovalScope,
++    ) {
++        self.pending_permission = None;
++        if let Err(error) = self
++            .host
++            .resolve_permission(run_id, capability, scope)
++        {
++            self.status = Some(error.to_string());
++            return;
++        }
++        if scope == ApprovalScope::Deny {
++            self.status = Some(format!("Denied {}.", capability.label()));
++            return;
++        }
++        match self.host.check_permission(run_id, capability) {
++            Ok(PermissionCheck::Granted) => self.execute_permission_action(run_id, action),
++            Ok(_) => self.status = Some("Permission was not granted.".to_owned()),
++            Err(error) => self.status = Some(error.to_string()),
++        }
++    }
++
++    fn execute_permission_action(&mut self, run_id: &str, action: PendingPermissionAction) {
++        match action {
++            PendingPermissionAction::LaunchExternalAgent => self.launch_external_agent(run_id),
++            PendingPermissionAction::ApplyCodeChanges => self.apply_code_changes(run_id),
++        }
++    }
++
++    fn launch_external_agent(&mut self, run_id: &str) {
++        let workspace_root = self.host.workspace_root(run_id);
++        let workspace = match CodeWorkspace::create(&self.project_root, workspace_root) {
++            Ok(workspace) => workspace,
++            Err(error) => {
++                self.fail_run(run_id, format!("Could not prepare code workspace: {error}"));
++                return;
++            }
++        };
++        if let Err(error) = self.host.record_event(
++            run_id,
++            AgentEventKind::CodeWorkspacePrepared,
++            "Prepared isolated managed code workspace.",
++        ) {
++            self.status = Some(error.to_string());
++        }
++        let proposal_json = match self.host.run(run_id).and_then(|run| {
++            serde_json::to_string(&run.proposal_snapshot).map_err(Into::into)
++        }) {
++            Ok(json) => json,
++            Err(error) => {
++                self.fail_run(run_id, format!("Could not serialize proposal: {error}"));
++                return;
++            }
++        };
++        let environment = vec![
++            (
++                OsString::from("GAMEENGINE_MCP_ENDPOINT"),
++                OsString::from(&self.connection.endpoint),
++            ),
++            (
++                OsString::from("GAMEENGINE_MCP_AUTH_TOKEN"),
++                OsString::from(&self.connection.authorization_token),
++            ),
++            (
++                OsString::from("GAMEENGINE_AGENT_RUN_ID"),
++                OsString::from(run_id),
++            ),
++            (
++                OsString::from("GAMEENGINE_AGENT_PROPOSAL_JSON"),
++                OsString::from(proposal_json),
++            ),
++            (
++                OsString::from("GAMEENGINE_AGENT_AUTHORING_CONTRACT"),
++                OsString::from(
++                    "Use the injected Editor MCP endpoint for persisted authoring changes. Use this isolated workspace only for project code and return code changes for review.",
++                ),
++            ),
++        ];
++        let args = split_direct_args(&self.provider_args);
++        match ExternalAgentProcess::spawn(
++            OsStr::new(self.provider_program.trim()),
++            &args,
++            workspace.root(),
++            &environment,
++        ) {
++            Ok(process) => {
++                self.code_workspace = Some(workspace);
++                self.process = Some(process);
++                if let Err(error) = self.host.transition_run(
++                    run_id,
++                    AgentRunState::Executing,
++                    "External agent runtime started in the isolated code workspace.",
++                ) {
++                    self.status = Some(error.to_string());
++                }
++                self.status = Some("External agent runtime started.".to_owned());
++            }
++            Err(error) => {
++                self.fail_run(run_id, format!("Could not launch external agent: {error}"));
++            }
++        }
++    }
++
++    fn poll_external_process(&mut self, context: &egui::Context) {
++        let Some(run_id) = self.active_run_id.clone() else {
++            return;
++        };
++        let output = self
++            .process
++            .as_ref()
++            .map(ExternalAgentProcess::drain_output)
++            .unwrap_or_default();
++        for line in output {
++            let stream = match line.stream {
++                ProcessStream::Stdout => "stdout",
++                ProcessStream::Stderr => "stderr",
++            };
++            if let Err(error) = self.host.record_event(
++                &run_id,
++                AgentEventKind::ProviderOutput,
++                format!("{stream}: {}", line.text),
++            ) {
++                self.status = Some(error.to_string());
++            }
++        }
++        let exit = match self.process.as_mut() {
++            Some(process) => process.poll_exit(),
++            None => return,
++        };
++        match exit {
++            Ok(None) => context.request_repaint_after(std::time::Duration::from_millis(100)),
++            Ok(Some(status)) => {
++                self.process = None;
++                if status.success() {
++                    self.finish_provider_execution(&run_id, status.code());
++                } else {
++                    self.fail_run(
++                        &run_id,
++                        format!("External agent exited unsuccessfully with {:?}.", status.code()),
++                    );
++                }
++            }
++            Err(error) => {
++                self.process = None;
++                self.fail_run(&run_id, format!("Could not poll external agent: {error}"));
++            }
++        }
++    }
++
++    fn finish_provider_execution(&mut self, run_id: &str, exit_code: Option<i32>) {
++        let changes = match self.code_workspace.as_ref() {
++            Some(workspace) => match workspace.collect_changes() {
++                Ok(changes) => changes,
++                Err(error) => {
++                    self.fail_run(run_id, format!("Could not inspect code workspace: {error}"));
++                    return;
++                }
++            },
++            None => Vec::new(),
++        };
++        if let Err(error) = self.host.record_event(
++            run_id,
++            AgentEventKind::CodeChangesDetected,
++            format!("Detected {} managed code file change(s).", changes.len()),
++        ) {
++            self.status = Some(error.to_string());
++        }
++        self.pending_code_changes = changes;
++        if let Err(error) = self.host.transition_run(
++            run_id,
++            AgentRunState::Validating,
++            format!(
++                "External agent exited with {:?}; validation and completion checks are still required.",
++                exit_code
++            ),
++        ) {
++            self.status = Some(error.to_string());
++        } else {
++            self.status = Some(
++                "Provider execution finished. Review code changes and complete validation/playtest evidence before completion."
++                    .to_owned(),
++            );
++        }
++    }
++
++    fn apply_code_changes(&mut self, run_id: &str) {
++        let Some(workspace) = self.code_workspace.as_mut() else {
++            self.status = Some("No managed code workspace is available.".to_owned());
++            return;
++        };
++        match workspace.apply_changes(&self.pending_code_changes) {
++            Ok(()) => {
++                let count = self.pending_code_changes.len();
++                self.pending_code_changes.clear();
++                if let Err(error) = self.host.record_event(
++                    run_id,
++                    AgentEventKind::CodeChangesApplied,
++                    format!("Applied {count} reviewed code file change(s) after stale checks."),
++                ) {
++                    self.status = Some(error.to_string());
++                } else {
++                    self.status = Some(format!("Applied {count} reviewed code file change(s)."));
++                }
++            }
++            Err(error) => self.status = Some(error.to_string()),
++        }
++    }
++
++    fn fail_run(&mut self, run_id: &str, message: String) {
++        let _ = self
++            .host
++            .record_event(run_id, AgentEventKind::Failure, message.clone());
++        let _ = self
++            .host
++            .transition_run(run_id, AgentRunState::Failed, message.clone());
++        self.status = Some(message);
++    }
++}
++
++fn edit_lines(ui: &mut egui::Ui, label: &str, values: &mut Vec<String>) {
++    let mut text = values.join("\n");
++    ui.label(label);
++    if ui
++        .add(
++            egui::TextEdit::multiline(&mut text)
++                .desired_rows(2)
++                .hint_text("One item per line"),
++        )
++        .changed()
++    {
++        *values = text
++            .lines()
++            .map(str::trim)
++            .filter(|line| !line.is_empty())
++            .map(ToOwned::to_owned)
++            .collect();
++    }
++}
++
++fn split_direct_args(text: &str) -> Vec<String> {
++    text.split_whitespace().map(ToOwned::to_owned).collect()
++}
++
++fn change_summary(change: &CodeChange) -> &'static str {
++    match (&change.before, &change.after) {
++        (None, Some(_)) => "new",
++        (Some(_), None) => "delete (apply blocked)",
++        (Some(_), Some(_)) => "modified",
++        (None, None) => "unchanged",
++    }
++}
++
++fn completion_row(ui: &mut egui::Ui, label: &str, status: &mut CompletionStatus) -> bool {
++    let before = *status;
++    ui.horizontal(|ui| {
++        ui.label(label);
++        egui::ComboBox::from_id_salt(("ai_completion", label))
++            .selected_text(completion_label(*status))
++            .show_ui(ui, |ui| {
++                for candidate in [
++                    CompletionStatus::Pending,
++                    CompletionStatus::Passed,
++                    CompletionStatus::Failed,
++                    CompletionStatus::NotApplicable,
++                ] {
++                    ui.selectable_value(status, candidate, completion_label(candidate));
++                }
++            });
++    });
++    *status != before
++}
++
++fn completion_label(status: CompletionStatus) -> &'static str {
++    match status {
++        CompletionStatus::Pending => "Pending",
++        CompletionStatus::Passed => "Passed",
++        CompletionStatus::Failed => "Failed",
++        CompletionStatus::NotApplicable => "N/A",
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn direct_args_do_not_invoke_shell_parsing() {
++        assert_eq!(
++            split_direct_args("--flag value ; echo nope"),
++            ["--flag", "value", ";", "echo", "nope"]
++        );
++    }
++
++    #[test]
++    fn code_change_summary_keeps_deletion_blocked() {
++        let change = CodeChange {
++            relative_path: PathBuf::from("game/src/lib.rs"),
++            before: Some("old".to_owned()),
++            after: None,
++        };
++        assert_eq!(change_summary(&change), "delete (apply blocked)");
++    }
++}
+diff --git a/docs/adr/0131-conversational-ai-studio-agent-runtime-and-governed-workspace.md b/docs/adr/0131-conversational-ai-studio-agent-runtime-and-governed-workspace.md
+new file mode 100644
+--- /dev/null
++++ b/docs/adr/0131-conversational-ai-studio-agent-runtime-and-governed-workspace.md
+@@ -0,0 +1,576 @@
++# ADR 0131: Conversational AI Studio Agent Runtime and Governed Workspace
++
++Status: Accepted
++Date: 2026-08-16
++Relates to: ADR 0035, ADR 0117, ADR 0121
++
++## Context
++
++ADR 0121 establishes MCP as the standard structured AI authoring interface for
++an Editor-open project and keeps the live Editor authoring session authoritative.
++ADR 0035 separately defines runtime input and frame observation. Those decisions
++make external AI authoring possible, but they do not define a first-class
++product experience for asking an AI to design, build, test, and iteratively
++refine a game from inside GameEngine.
++
++A production-quality AI creation workflow needs more than a prompt box or a
++single model API integration. Different users may have access to external agent
++runtimes such as Claude Code or Codex through provider-managed accounts, direct
++model APIs through separate credentials, or local models through runtimes such
++as Ollama. External coding agents already own tool loops, context management,
++process execution, and provider authentication, while a native in-engine agent
++must own those concerns itself. Treating both shapes as one undifferentiated
++"LLM provider" would produce a weak abstraction and tie the Editor to one
++vendor's authentication and process model.
++
