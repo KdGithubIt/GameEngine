@@ -1,0 +1,92 @@
+diff --git a/crates/editor/src/agent_host.rs b/crates/editor/src/agent_host.rs
+index c314cb0..b00fd50 100644
+--- a/crates/editor/src/agent_host.rs
++++ b/crates/editor/src/agent_host.rs
+@@ -1,4 +1,4 @@
+-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
++#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+ #[serde(rename_all = "snake_case")]
+ pub(crate) enum ManagedValidationGate {
+     Formatting,
+@@ -19,26 +19,55 @@ fn managed_validation_plan(
+         if normalized.is_empty() {
+             continue;
+         }
+-        let all = normalized == "all"
+-            || normalized == "full"
+-            || normalized.contains("full validation")
+-            || normalized.contains("source validation");
++        let all = matches!(
++            normalized.as_str(),
++            "all" | "full" | "full validation" | "source validation"
++        );
+         if all {
+             gates.extend(STANDARD_VALIDATION_GATES);
+             continue;
+         }
+         let mut matched = false;
+         for (gate, needles) in [
+-            (ManagedValidationGate::Formatting, &["format", "fmt"][..]),
+-            (ManagedValidationGate::Check, &["cargo check", "check"][..]),
+-            (ManagedValidationGate::Clippy, &["clippy"][..]),
+-            (ManagedValidationGate::Tests, &["test", "tests"][..]),
++            (
++                ManagedValidationGate::Formatting,
++                &[
++                    "format",
++                    "formatting",
++                    "fmt",
++                    "cargo fmt",
++                    "cargo fmt --all --check",
++                ][..],
++            ),
++            (
++                ManagedValidationGate::Check,
++                &["check", "cargo check", "cargo check --all-targets"][..],
++            ),
++            (
++                ManagedValidationGate::Clippy,
++                &[
++                    "clippy",
++                    "cargo clippy",
++                    "cargo clippy --all-targets",
++                    "cargo clippy --all-targets -- -d warnings",
++                ][..],
++            ),
++            (
++                ManagedValidationGate::Tests,
++                &["test", "tests", "cargo test", "cargo test --all-targets"][..],
++            ),
+             (
+                 ManagedValidationGate::Documentation,
+-                &["documentation", "rustdoc", "cargo doc"][..],
++                &[
++                    "documentation",
++                    "docs",
++                    "rustdoc",
++                    "cargo doc",
++                    "cargo doc --no-deps",
++                ][..],
+             ),
+         ] {
+-            if needles.iter().any(|needle| normalized.contains(needle)) {
++            if needles.iter().any(|needle| normalized == *needle) {
+                 gates.insert(gate);
+                 matched = true;
+             }
+@@ -60,10 +89,13 @@ fn managed_validation_plan(
+ #[test]
+ fn managed_validation_plan_never_turns_unknown_text_into_a_command() {
+     let mut proposal = AgentProposal::default();
+-    proposal.validation_plan = vec!["echo should-not-run".to_owned()];
++    proposal.validation_plan = vec![
++        "echo should-not-run".to_owned(),
++        "powershell cargo check; Write-Host should-not-run".to_owned(),
++    ];
+     let (gates, unmanaged) = managed_validation_plan(&proposal, false);
+     assert!(gates.is_empty());
+-    assert_eq!(unmanaged, 1);
++    assert_eq!(unmanaged, 2);
+ }
+ 
+ #[test]
