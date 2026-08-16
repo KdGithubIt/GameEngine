@@ -1,0 +1,268 @@
+diff --git a/crates/physics/src/secondary_motion.rs b/crates/physics/src/secondary_motion.rs
+index 649b95b..7e09005 100644
+--- a/crates/physics/src/secondary_motion.rs
++++ b/crates/physics/src/secondary_motion.rs
+@@ -258,3 +258,263 @@ fn build_character_world(
+     world.gravity = Vector::new(
+         0.0,
+         -STANDARD_GRAVITY_METERS_PER_SECOND_SQUARED,
++        0.0,
++    );
++    let bone_driven = bone_driven_bodies(rig);
++    let mut body_handles = Vec::with_capacity(rig.bodies.len());
++    let mut rest_body_poses = Vec::with_capacity(rig.bodies.len());
++
++    for (index, body) in rig.bodies.iter().enumerate() {
++        let rest_body_pose = body_pose_from_bone_worlds(body, joint_indices, rest_worlds)
++            .unwrap_or_else(|| pose_from_matrix(root_matrix * offset_matrix(body)));
++        let body_pose = body_pose_from_bone_worlds(body, joint_indices, procedural_worlds)
++            .unwrap_or_else(|| pose_from_matrix(root_matrix * offset_matrix(body)));
++        let body_type = if bone_driven[index] {
++            RigidBodyType::KinematicPositionBased
++        } else {
++            RigidBodyType::Dynamic
++        };
++        let builder = RigidBodyBuilder::new(body_type)
++            .pose(body_pose)
++            .linear_damping(non_negative(body.linear_damping))
++            .angular_damping(non_negative(body.angular_damping))
++            .gravity_scale(finite_or(body.gravity_scale, 1.0))
++            .can_sleep(false)
++            .ccd_enabled(false);
++        let handle = world.bodies.insert(builder);
++        let collider = ColliderBuilder::new(rigid_body_shape(body.shape))
++            .mass(non_negative(body.mass))
++            .restitution(finite_or(body.restitution, 0.0).clamp(0.0, 1.0))
++            .restitution_combine_rule(CoefficientCombineRule::Multiply)
++            .friction(non_negative(body.friction))
++            .friction_combine_rule(CoefficientCombineRule::Multiply)
++            .collision_groups(secondary_motion_collision_groups(body))
++            .build();
++        world
++            .colliders
++            .insert_with_parent(collider, handle, &mut world.bodies);
++        body_handles.push(handle);
++        rest_body_poses.push(rest_body_pose);
++    }
++
++    for joint in &rig.joints {
++        insert_joint(
++            &mut world,
++            &body_handles,
++            &rest_body_poses,
++            joint,
++            root_matrix,
++        );
++    }
++
++    CharacterPhysicsWorld {
++        rig_id: rig.id.as_str().to_owned(),
++        world,
++        body_handles,
++        bone_driven,
++        presentation_previous: Vec::new(),
++        presentation_current: Vec::new(),
++    }
++}
++
++fn non_negative(value: f32) -> f32 {
++    if value.is_finite() {
++        value.max(0.0)
++    } else {
++        0.0
++    }
++}
++
++fn finite_or(value: f32, fallback: f32) -> f32 {
++    if value.is_finite() { value } else { fallback }
++}
++
++/// Returns bodies whose pose is fully determined by the resolved rig pose.
++///
++/// A fully locked constraint propagates follow intent transitively, avoiding
++/// numerical drift in bodies that have no actual simulated degree of freedom.
++fn bone_driven_bodies(rig: &SecondaryMotionRigAsset) -> Vec<bool> {
++    let mut driven = rig
++        .bodies
++        .iter()
++        .map(|body| body.mode == RigidBodyMode::FollowBone)
++        .collect::<Vec<_>>();
++    let welds = rig
++        .joints
++        .iter()
++        .filter(|joint| joint_welds_its_bodies(joint))
++        .filter_map(|joint| Some((joint.body_a?, joint.body_b?)))
++        .filter(|(a, b)| *a < driven.len() && *b < driven.len())
++        .collect::<Vec<_>>();
++
++    let mut changed = true;
++    while changed {
++        changed = false;
++        for (a, b) in &welds {
++            if driven[*a] != driven[*b] {
++                driven[*a] = true;
++                driven[*b] = true;
++                changed = true;
++            }
++        }
++    }
++    driven
++}
++
++fn joint_welds_its_bodies(joint: &JointDef) -> bool {
++    (0..3).all(|axis| {
++        matches!(
++            AuthoredLimit::from_pair(joint.translation_lower[axis], joint.translation_upper[axis]),
++            AuthoredLimit::Locked(_)
++        ) && matches!(
++            AuthoredLimit::from_pair(joint.rotation_lower[axis], joint.rotation_upper[axis]),
++            AuthoredLimit::Locked(_)
++        )
++    })
++}
++
++fn resolved_body_poses(
++    rig: &SecondaryMotionRigAsset,
++    joint_indices: &HashMap<BoneId, usize>,
++    procedural_worlds: &[Mat4],
++) -> Vec<Option<Pose>> {
++    rig.bodies
++        .iter()
++        .map(|body| body_pose_from_bone_worlds(body, joint_indices, procedural_worlds))
++        .collect()
++}
++
++/// Reseats all bound bodies on a discontinuity and erases solver history.
++fn reseat_bodies(state: &mut CharacterPhysicsWorld, targets: &[Option<Pose>]) {
++    for (index, target) in targets.iter().enumerate() {
++        let Some(target) = target else {
++            continue;
++        };
++        let Some(rigid_body) = state
++            .body_handles
++            .get(index)
++            .and_then(|handle| state.world.bodies.get_mut(*handle))
++        else {
++            continue;
++        };
++        rigid_body.set_position(*target, true);
++        if rigid_body.is_kinematic() {
++            rigid_body.set_next_kinematic_position(*target);
++        }
++        rigid_body.set_linvel(Vector::new(0.0, 0.0, 0.0), true);
++        rigid_body.set_angvel(Vector::new(0.0, 0.0, 0.0), true);
++    }
++}
++
++fn drive_follow_bodies(
++    state: &mut CharacterPhysicsWorld,
++    rig: &SecondaryMotionRigAsset,
++    targets: &[Option<Pose>],
++) {
++    for index in 0..rig.bodies.len() {
++        if !state.bone_driven.get(index).copied().unwrap_or(false) {
++            continue;
++        }
++        let Some(Some(target)) = targets.get(index).copied() else {
++            continue;
++        };
++        let Some(rigid_body) = state
++            .body_handles
++            .get(index)
++            .and_then(|handle| state.world.bodies.get_mut(*handle))
++        else {
++            continue;
++        };
++        rigid_body.set_next_kinematic_position(target);
++    }
++}
++
++fn write_simulated_bones(
++    state: &mut CharacterPhysicsWorld,
++    rig: &SecondaryMotionRigAsset,
++    joint_indices: &HashMap<BoneId, usize>,
++    root_matrix: Mat4,
++    procedural_worlds: &[Mat4],
++    rig_pose: &mut RigPose,
++) {
++    let mut desired_worlds = HashMap::<usize, (Mat4, RigidBodyMode)>::new();
++    for (index, body) in rig.bodies.iter().enumerate() {
++        if state.bone_driven.get(index).copied().unwrap_or(false) {
++            continue;
++        }
++        let Some(bone) = body.bone else {
++            continue;
++        };
++        let Some(joint_index) = joint_indices.get(&bone).copied() else {
++            continue;
++        };
++        let Some(rigid_body) = state
++            .body_handles
++            .get(index)
++            .and_then(|handle| state.world.bodies.get(*handle))
++        else {
++            continue;
++        };
++        let Some(procedural_world) = procedural_worlds.get(joint_index).copied() else {
++            continue;
++        };
++
++        let (world_scale, _, procedural_translation) =
++            procedural_world.to_scale_rotation_translation();
++        let posed = matrix_from_pose(*rigid_body.position())
++            * scaled_offset_matrix(body, world_scale).inverse();
++        let (_, rotation, simulated_translation) = posed.to_scale_rotation_translation();
++        let translation = match body.mode {
++            RigidBodyMode::Dynamic => simulated_translation,
++            RigidBodyMode::DynamicWithBonePosition => procedural_translation,
++            RigidBodyMode::FollowBone => continue,
++        };
++        desired_worlds.insert(
++            joint_index,
++            (
++                Mat4::from_scale_rotation_translation(world_scale, rotation, translation),
++                body.mode,
++            ),
++        );
++    }
++
++    let procedural_locals = (0..rig_pose.joint_count())
++        .map(|joint_index| {
++            rig_pose
++                .local_transform(PoseStage::Procedural, joint_index)
++                .unwrap_or_default()
++        })
++        .collect::<Vec<_>>();
++    let mut resolved_worlds = vec![root_matrix; rig_pose.joint_count()];
++
++    for (joint_index, procedural_local) in procedural_locals.iter().enumerate() {
++        let parent_world = rig_pose
++            .parents()
++            .get(joint_index)
++            .copied()
++            .flatten()
++            .filter(|parent_index| *parent_index < joint_index)
++            .and_then(|parent_index| resolved_worlds.get(parent_index).copied())
++            .unwrap_or(root_matrix);
++
++        let Some((desired_world, mode)) = desired_worlds.get(&joint_index).copied() else {
++            resolved_worlds[joint_index] = parent_world * procedural_local.to_matrix();
++            continue;
++        };
++        let local_matrix = parent_world.inverse() * desired_world;
++        let (scale, rotation, translation) = local_matrix.to_scale_rotation_translation();
++        if !scale.is_finite() || !rotation.is_finite() || !translation.is_finite() {
++            resolved_worlds[joint_index] = parent_world * procedural_local.to_matrix();
++            continue;
++        }
++
++        rig_pose
++            .physics_layer_mut()
++            .write_rotation(joint_index, rotation);
++        let resolved_translation = if mode == RigidBodyMode::Dynamic {
++            rig_pose
++                .physics_layer_mut()
++                .write_translation(joint_index, translation);
++            translation
++        } else {
++            procedural_local.translation
