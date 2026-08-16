@@ -1,0 +1,57 @@
+contract uses only target-specific IDs.
+ - ADR 0110 adds model-owned `HumanoidProfile` metadata and a distinct
+   skeleton-independent `HumanoidMotion` variant while preserving every
+   skeleton-bound Native `AnimationClip`. Asset Browser and animation pickers
+@@ -1897,19 +1934,22 @@ Resolved authoring, adapter, and runtime decisions:
+ 
+ ### Single-version document policy
+ 
+-ADR 0091 removes every old-version reader. A document whose `schema_version` is
+-below the current version is an error, not an input to migrate:
++ADR 0115 establishes the current-format-only baseline. A versioned document
++whose `schema_version` differs from the current version is an error, not an
++input to migrate:
+ 
+ | Document | Accepted `schema_version` |
+ | --- | --- |
+ | `*.ui.json` | 3 |
+-| `*.material.json` | 2 |
++| `*.material.json` | 3 |
+ | `asset_manifest.json` | 2 |
++| `project.json` | 2 |
+ 
+-`*.ui.json` MUST state its `schema_version`; the field has no default.
+-Documents whose current version is 1 — scene, prefab, project, project
+-settings, graph, graph view, animation set, and component sidecar — are
+-unaffected.
++Versioned documents MUST state the current schema version required by their
++owner. Scene, prefab, project settings, graph, graph view, animation set, and
++component-sidecar documents remain on their current owner-defined versions;
++this specification MUST NOT be read as permission to accept an older or missing
++version.
+ 
+ Authoring components have exactly one shape each. The removed authoring
+ components `engine.mesh`, `engine.material`, `engine.material_slots`,
+@@ -1920,9 +1960,10 @@ through `motion_slot` only.
+ 
+ ### Editor-ready document extensions
+ 
+-`*.ui.json` schema version 2 adds image/nine-slice, progress, stack, grid,
+-overlay, and scroll-view nodes. Version 1 documents MUST migrate without
+-changing existing node meaning. UI mutations MUST use `UiDocumentCommand` and
++`*.ui.json` schema version 2 historically added image/nine-slice, progress,
++stack, grid, overlay, and scroll-view nodes. The current UI document is schema
++version 3; per ADR 0115, versions 1 and 2 are obsolete inputs rather than
++normal-load migration sources. UI mutations MUST use `UiDocumentCommand` and
+ whole-document validation before commit.
+ 
+ Scene hierarchy reparenting MUST use `AuthoringCommand::SetEntityParent`.
+diff --git a/docs/adr/0113-runtime-domain-crate-decomposition.md b/docs/adr/0113-runtime-domain-crate-decomposition.md
+--- a/docs/adr/0113-runtime-domain-crate-decomposition.md
++++ b/docs/adr/0113-runtime-domain-crate-decomposition.md
+@@ -4,6 +4,12 @@ Status: Accepted
+ Date: 2026-08-14
+ Builds on: ADR 0111, ADR 0112
+ 
++Current-status note (2026-08-16): the domain packages described here are now
++present in the workspace. The current CI package-selection cont

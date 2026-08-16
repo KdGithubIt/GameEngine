@@ -1,0 +1,50 @@
+ract is defined
++by `docs/DEVELOPMENT_WORKFLOW.md`: package ownership is derived from Cargo
++metadata, not from a duplicated hard-coded crate/path table. References below
++have been updated to that current operational contract.
++
+ ## Context
+ 
+ `engine-rig` established that low-level runtime domains can be separated from the
+@@ -211,8 +217,8 @@ Implementation proceeds in independently reviewable commits in this order:
+    APIs no longer point back to `engine`.
+ 9. Reduce `engine` to application/runtime-system composition, cross-domain
+    registration, and compatibility re-exports.
+-10. Update CI changed-path classification so every new known crate selects its
+-    own package instead of falling back to full validation.
++10. Verify that affected-package planning discovers every new package through
++    Cargo metadata without adding a second hard-coded package/path table.
+ 
+ A temporary facade in `engine` is acceptable during this sequence. A temporary
+ lower-crate dependency on `engine` is not.
+@@ -230,12 +236,13 @@ Conversely, tiny packages should not be invented only to reduce line counts.
+ 
+ ### 8. CI must preserve the latency benefit
+ 
+-The changed-path classifier must recognize the new crate directories and map
+-them to their package names. Workspace/Cargo/build-infrastructure changes still
+-select full validation as defined by `DEVELOPMENT_WORKFLOW.md`.
++Affected-package planning must derive package ownership from Cargo metadata.
++Workspace/Cargo/build-infrastructure changes still select full validation as
++defined by `DEVELOPMENT_WORKFLOW.md`; unclassifiable paths also fall back to
++full validation.
+ 
+ Domain-only changes should be able to use affected-package validation without
+-compiling unrelated high-level domains. Full validation on `master` and nightly
++compiling unrelated high-level domains. Full validation on `main` and nightly
+ continues to provide reverse-dependent workspace coverage.
+ 
+ ## Consequences
+@@ -251,9 +258,9 @@ continues to provide reverse-dependent workspace coverage.
+   remain intentionally in the final `engine` composition layer.
+ - The compatibility `engine` crate remains convenient for downstream users while
+   compile ownership moves to smaller packages.
+-- Cargo manifests and CI classification become part of the architectural change,
+-  because an unrecognized crate would otherwise erase much of the expected PR
+-  latency improvement.
++- Cargo manifests and metadata-derived CI planning are part of the architectural
++  change, because an unclassifiable package path would otherwise erase much of
++  the expected PR latency improvement.
+ - The migration produces several commits but one coherent final dependency DAG.
+ 
+ ## Alternatives considered

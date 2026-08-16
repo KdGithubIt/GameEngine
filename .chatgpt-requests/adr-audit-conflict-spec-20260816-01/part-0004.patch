@@ -1,0 +1,47 @@
+Completion criteria:
+   or partially added runtime assets.
+ - The example compiles and runs with no Graph or Behavior Tree crates present.
+ 
+-Note: The authoring-to-runtime conversion here is a minimal prototype. It
+-addresses Open Decision #8 at the smallest viable scale. The crate that
+-formally owns the conversion layer, the full artifact format, and build
+-pipeline optimization remain deferred.
++Note: The authoring-to-runtime conversion here is a historical minimal
++prototype. ADR 0113 now defines runtime-domain and composition ownership;
++the packaged artifact format and build optimization policy remain open.
+ 
+ #### Built-in Transform Authoring Contract
+ 
+@@ -1763,8 +1797,9 @@ an Architecture Decision Record before broad implementation depends on them:
+    history is implemented.
+ 5. Graph layout library versus custom layout implementation for general graph
+    layout beyond the Phase 8 editor merge policy accepted in ADR 0016.
+-6. Authoring-to-runtime build artifact format and the crate that owns the
+-   build pipeline.
++6. Packaged authoring-to-runtime build artifact format and build optimization
++   policy not already fixed by ADR 0113's runtime-domain ownership and
++   composition boundary.
+ 
+ ADRs SHOULD be stored under:
+ 
+@@ -1788,7 +1823,9 @@ Resolved authoring, adapter, and runtime decisions:
+   transaction identity.
+ - ADR 0017 defines the Phase 8-A human editor GUI toolkit and crate boundary.
+ - ADR 0018 defines the Phase 8-B undo/redo snapshot strategy (JSON snapshots, 100-step limit).
+-- ADR 0019 defines the Phase 8-C editor combined-file persistence format (superseded by ADR 0022).
++- ADR 0019 records the historical Phase 8-C combined-file persistence format;
++  ADR 0022 supersedes it, and ADR 0115 does not retain the obsolete combined
++  format as a current compatibility reader.
+ - ADR 0020 defines the scene document `schema_version` field policy.
+ - ADR 0021 defines the asset reference model (`asset_ref` only) and the `asset_manifest.json` format.
+ - ADR 0022 returns the editor to the ADR 0008 separate-file layout (`.graph.json` / `.graph.view.json`).
+@@ -1860,9 +1897,9 @@ Resolved authoring, adapter, and runtime decisions:
+ - ADR 0099 lets one registered VMD source target multiple PMX model sources.
+   Each baked clip ID includes the stable PMX source ID and source clip index;
+   picker labels resolve the target's current display name dynamically, so
+-  renaming a model changes presentation without changing references. Legacy
+-  singular VMD pairings retain a hidden old-ID alias for existing Animation
+-  Sets, while new selections use only target-specific IDs.
++  renaming a model changes presentation without changing references. ADR 0115
++  removes the pre-0099 singular model-source field and hidden old-ID alias;
++  the current 

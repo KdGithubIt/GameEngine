@@ -1,0 +1,51 @@
+diff --git a/docs/AI_FRIENDLY_AUTHORING_SPEC.md b/docs/AI_FRIENDLY_AUTHORING_SPEC.md
+--- a/docs/AI_FRIENDLY_AUTHORING_SPEC.md
++++ b/docs/AI_FRIENDLY_AUTHORING_SPEC.md
+@@ -132,8 +132,10 @@ state. During conversion:
+ This mapping MUST be discarded when the play session ends. Runtime `Entity`
+ and `RuntimeAssetId` values MUST NOT be persisted in project files.
+ 
+-The runtime ECS crate MUST NOT depend on authoring types. The crate that owns
+-the build pipeline is deferred to Open Decision #6.
++The runtime ECS crate MUST NOT depend on authoring types. Runtime-domain
++ownership and the final `engine` composition boundary follow ADR 0113. Open
++Decision #6 is limited to the packaged build-artifact format and related build
++pipeline policy that ADR 0113 does not define.
+ 
+ ### 5.3 Authoring-First Game Creation
+ 
+@@ -175,49 +177,77 @@ defined by ADR 0023.
+ 
+ ## 6. Crate and Module Boundaries
+ 
+-The preferred future workspace structure is:
++The current workspace is decomposed into runtime domain packages plus
++application and authoring packages. ADR 0113 defines the runtime ownership
++target, ADR 0114 defines heavyweight backend isolation, ADR 0117 defines the
++project application lifecycle, and ADR 0121 defines AI/MCP application
++integration.
+ 
+ ```text
+ crates/
+   ecs/                 # Runtime ECS only
+-  rig/                 # Low-level transform, skeleton, skin, and pose runtime
+-  engine/              # Runtime engine systems and build integration
+-  renderer/            # Runtime rendering
+-  authoring/            # Authoring data, schemas, commands, transactions
+-  graph/                # Domain-neutral graph model and layout contracts
+-  graph_bt/             # Behavior Tree domain
+-  project-lifecycle/    # GUI-free project application/process lifecycle
+-  launcher/             # Project selection/creation and Editor launch UI
+-  editor/               # Project-scoped human visual editor frontend
+-  cli/                  # Thin adapter over authoring API
+-  mcp/                  # Thin adapter over authoring API
++  core/                # Shared runtime primitives and small contracts
++  assets/              # Runtime asset contracts and format-neutral model IR
++  rig/                 # Transform, skeleton, skin, pose, and rig contracts
++  animation/           # Clips, animator, animation graph, pose, retargeting
++  physics/             # Collision, controller, navigation, solver boundary
++  render-runtime/      # Runtime mesh/material/light/UI/render-pass behavior
++  import/              # Format-neutral import orchestration and parsers
++  gameplay/            # Ability, behavior, combat, hitbox, gameplay control
++  platform/            # Native input, audio, gamepad, platform adapters
++  scripting/           # Host-independent project scripting/game

@@ -1,0 +1,45 @@
+ SDK contracts
++  scene/               # Scene load/management, save, and replay ownership
++  renderer/            # Low-level GPU context and optional surface integration
++  engine/              # Final composition and compatibility facade
++  authoring/           # Authoring data, schemas, commands, transactions
++  project-lifecycle/   # GUI-free project application/process lifecycle
++  launcher/            # Project selection/creation and Editor launch UI
++  editor/              # Project-scoped human visual editor frontend
++  cli/                 # Thin headless adapter over shared authoring services
++  mcp/                 # Transport-agnostic AI authoring tool handlers
++  game-*-macros/       # Project Rust derive/attribute support
+ ```
+ 
+-This structure MAY be introduced incrementally. Until separate crates exist,
+-the same ownership boundaries MUST be preserved with modules.
++The package list is not itself a complete dependency graph. The normative
++ownership and dependency rules are:
+ 
+-- `ecs` MUST NOT depend on editor, MCP, graph view, or serialized authoring
+-  types.
+-- `renderer` owns low-level GPU context and window surface initialization. It
+-  MUST NOT depend on `engine`, ECS, authoring, editor GUI, CLI, or MCP types.
++- `ecs` MUST NOT depend on editor, MCP, serialized authoring types, or higher
++  runtime domains.
++- No runtime domain package below `engine` may depend on `engine`, and circular
++  workspace package dependencies are forbidden.
++- `renderer` owns low-level GPU context and optional window-surface integration.
++  `render-runtime` MAY depend on it; `renderer` MUST NOT depend on
++  `render-runtime`, `engine`, authoring, editor, CLI, or MCP.
+ - `rig` owns transform hierarchy primitives, skeleton identity, skin binding,
+-  layered rig poses, and rigid-body rig descriptions. It MAY depend on `ecs`
+-  and stable authoring identifiers, but MUST NOT depend on `engine`, `renderer`,
+-  windowing, audio, model importers, or a physics solver.
+-- `engine` MAY depend on `renderer` for runtime rendering, but MUST NOT
+-  duplicate low-level GPU or window surface initialization logic.
+-- `authoring` MAY depend on schema and graph abstractions, but MUST NOT depend
+-  on a GUI framework.
++  layered rig poses, and rigid-body rig descriptions. It MUST NOT depend on
++  `engine`, renderer presentation, model importers, audio, or a physics solver.
++- `assets` and `core` MUST keep neutral contracts below higher runtime
++  implementations instead of importing format-specific or backend-specific
++  types to preserve an old implementation shape.
++- Heavy GPU, physics, windowing, audio, gamepad, GUI, and scripting-runtime
++  backends MUST remain at the owner or final composition boundary defined by
++  ADR 0114. Consumers that need only neutral contra

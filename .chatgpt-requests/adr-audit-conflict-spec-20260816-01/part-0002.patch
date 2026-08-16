@@ -1,0 +1,48 @@
+cts SHOULD disable those
++  backend features rather than inheriting them transitively.
++- `engine` is the final runtime composition and supported compatibility facade.
++  It MAY contain concrete cross-domain host adapters that would create an
++  upward dependency or cycle if pushed into a lower domain.
++- `authoring` owns persisted authoring semantics and MUST NOT depend on a GUI
++  framework. Domain-neutral graph storage and graph transaction contracts
++  remain authoring-owned rather than requiring separate graph workspace crates.
+ - `project-lifecycle` MAY depend on `authoring` for `ProjectRoot` and shared
+-  authoring creation services. It MUST NOT own authoring command semantics,
+-  runtime ECS behavior, Launcher UI, or Editor GUI state.
++  creation services. It MUST NOT own authoring command semantics, runtime ECS
++  behavior, Launcher UI, or Editor GUI state.
+ - `launcher` owns project-selection UI, recent-project application state, and
+   Editor process launch/activation. It MUST NOT implement unique authoring
+   rules.
+ - `editor` is project-scoped after bootstrap and MUST use shared authoring and
+   project-lifecycle contracts rather than duplicating them.
+-- `cli` and `mcp` MUST be adapters. They MUST NOT contain unique editing logic.
+-- Graph domains MUST NOT duplicate the domain-neutral graph storage model.
++- `cli` and `mcp` MUST remain adapters over shared GUI-free authoring services.
++  They MUST NOT contain unique editing logic.
++
++Compatibility facade modules or cross-domain composition code may remain in
++`engine` where ADR 0113 permits them. Their presence does not transfer ownership
++of the underlying domain contract back into the facade.
+ 
+ ## 7. Authoring Data Model
+ 
+@@ -300,9 +331,9 @@ and independent of `id`, consistent with the separation described in §7.1:
+ - `description`: Extended documentation and AI context for the entity.
+ 
+ The `name`, `display_name`, and `description` fields MUST always be present
+-in canonical serialized output, even when empty. Files that predate these
+-fields MUST deserialize successfully with the fields defaulting to empty
+-strings.
++in canonical serialized output, even when empty. Per ADR 0115, input that
++predates these required fields is obsolete rather than a compatibility shape;
++the current reader MUST NOT infer missing values solely to load an older writer.
+ 
+ The runtime build or play pipeline converts `AuthoringEntity` values into
+ runtime ECS entities. A runtime `Entity` ID MUST NOT be persisted as an
+@@ -866,14 +897,14 @@ Serialization MUST:
+ - Use stable formatting.
+ - Avoid persisting derived runtime-only data.
+ - Preserve unknown forward-compatible fields only when explicitly supported.
+-- Include schema versions for migratable documents.
++- Include schema versions for versioned do
