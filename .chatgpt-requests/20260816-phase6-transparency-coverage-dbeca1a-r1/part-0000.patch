@@ -1,0 +1,189 @@
+diff --git a/crates/render-runtime/src/mesh.rs b/crates/render-runtime/src/mesh.rs
+index 2203ac64bb5fa74137b02783664b7cc871f6c61c..b73a751ec096211e7aecbc1008ca685e7c071e5d 100644
+--- a/crates/render-runtime/src/mesh.rs
++++ b/crates/render-runtime/src/mesh.rs
+@@ -914,9 +914,25 @@
+         instance_buffer: &'a wgpu::Buffer,
+         instance_count: u32,
+         submesh: Option<usize>,
++    ) {
++        self.draw_material_instanced_submesh_range(
++            pass,
++            instance_buffer,
++            0..instance_count,
++            submesh,
++        );
++    }
++
++    /// Records a static material draw for an exact range in an instance buffer.
++    pub(crate) fn draw_material_instanced_submesh_range<'a>(
++        &'a self,
++        pass: &mut wgpu::RenderPass<'a>,
++        instance_buffer: &'a wgpu::Buffer,
++        instance_range: std::ops::Range<u32>,
++        submesh: Option<usize>,
+     ) {
+         pass.set_vertex_buffer(2, self.tangent_buffer.slice(..));
+-        self.draw_instanced_submesh(pass, instance_buffer, instance_count, submesh);
++        self.draw_instanced_submesh_range(pass, instance_buffer, instance_range, submesh);
+     }
+ 
+     /// Records one skinned material draw with the tangent stream at slot 3.
+@@ -947,18 +963,29 @@
+         instance_buffer: &'a wgpu::Buffer,
+         instance_count: u32,
+         submesh: Option<usize>,
++    ) {
++        self.draw_instanced_submesh_range(pass, instance_buffer, 0..instance_count, submesh);
++    }
++
++    /// Records a precise instance range without rebasing instance indices.
++    pub(crate) fn draw_instanced_submesh_range<'a>(
++        &'a self,
++        pass: &mut wgpu::RenderPass<'a>,
++        instance_buffer: &'a wgpu::Buffer,
++        instance_range: std::ops::Range<u32>,
++        submesh: Option<usize>,
+     ) {
+         let range = self.range(submesh);
+-        if range.is_empty() {
++        if range.is_empty() || instance_range.is_empty() {
+             return;
+         }
+         pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+         pass.set_vertex_buffer(1, instance_buffer.slice(..));
+         if let Some(index_buffer) = &self.index_buffer {
+             pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+-            pass.draw_indexed(range, 0, 0..instance_count);
++            pass.draw_indexed(range, 0, instance_range);
+         } else {
+-            pass.draw(range, 0..instance_count);
++            pass.draw(range, instance_range);
+         }
+     }
+ }
+diff --git a/crates/render-runtime/src/render_backend.rs b/crates/render-runtime/src/render_backend.rs
+index 17751aaa5bd5cfe693195057f1212869cbd38470..cef0d34abe299d4f3ff9b62e193bda792a7af575 100644
+--- a/crates/render-runtime/src/render_backend.rs
++++ b/crates/render-runtime/src/render_backend.rs
+@@ -534,8 +534,8 @@ pub(crate) struct RenderState {
+     outline_composite_bgl: wgpu::BindGroupLayout,
+     outline_composite_pipeline: wgpu::RenderPipeline,
+     joint_palette_bgl: wgpu::BindGroupLayout,
+-    shadow_pipeline: wgpu::RenderPipeline,
+-    shadow_skinned_pipeline: wgpu::RenderPipeline,
++    shadow_pipelines: [wgpu::RenderPipeline; 3],
++    shadow_skinned_pipelines: [wgpu::RenderPipeline; 3],
+     shadow_uniform_buffer: wgpu::Buffer,
+     shadow_cascade_buffers: Vec<wgpu::Buffer>,
+     shadow_cascade_bind_groups: Vec<wgpu::BindGroup>,
+@@ -786,12 +786,21 @@ struct StaticBatch {
+     outline_instances: Vec<OutlineInstanceData>,
+ }
+ 
+-#[derive(Debug, Clone, Copy)]
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+ enum BlendDraw {
+-    StaticBatch(usize),
++    StaticInstance { batch: usize, instance: u32 },
+     Skinned(usize),
+ }
+ 
++fn sort_blend_draws_back_to_front(draws: &mut [(BlendDraw, f32)]) {
++    draws.sort_by(|left, right| {
++        right
++            .1
++            .partial_cmp(&left.1)
++            .unwrap_or(std::cmp::Ordering::Equal)
++    });
++}
++
+ #[derive(Clone, Copy)]
+ struct MaterialShaderStages<'a> {
+     vertex: &'a wgpu::ShaderModule,
+@@ -1397,18 +1406,23 @@ fn create_material_pipeline(
+             })
+             .collect();
+ 
+-        // Blended static batches and skinned draws share one back-to-front
+-        // order. Sorting each family independently is insufficient when, for
+-        // example, a transparent environment mesh overlaps a character.
++        // Every blended static instance and skinned draw shares one global
++        // back-to-front order. Batch-level ordering is insufficient when the
++        // depth ranges of two transparent materials overlap.
+         let mut blend_draws = batches
+             .iter()
+             .enumerate()
+             .filter(|(_, batch)| batch.pipeline_key.alpha_mode == AlphaMode::Blend)
+-            .map(|(index, batch)| {
+-                (
+-                    BlendDraw::StaticBatch(index),
+-                    batch_distance_squared(batch, camera_position),
+-                )
++            .flat_map(|(batch_index, batch)| {
++                batch.instances.iter().enumerate().map(move |(instance_index, instance)| {
++                    (
++                        BlendDraw::StaticInstance {
++                            batch: batch_index,
++                            instance: instance_index as u32,
++                        },
++                        instance_distance_squared(instance, camera_position),
++                    )
++                })
+             })
+             .chain(
+                 skinned_draws
+@@ -1423,12 +1437,7 @@ fn create_material_pipeline(
+                     }),
+             )
+             .collect::<Vec<_>>();
+-        blend_draws.sort_by(|left, right| {
+-            right
+-                .1
+-                .partial_cmp(&left.1)
+-                .unwrap_or(std::cmp::Ordering::Equal)
+-        });
++        sort_blend_draws_back_to_front(&mut blend_draws);
+ 
+         self.ensure_main_pass_target(device, color_view, depth_view)
+             .map_err(RenderFrameError::Target)?;
+@@ -1438,8 +1447,9 @@ fn create_material_pipeline(
+         });
+ 
+         // Depth-only shadow passes, one per cascade (Phase 50, ADR 0036).
+-        // Static, particle, and skinned casters share the same stabilized
+-        // cascade matrices.
++        // Directional shadow coverage follows the same material alpha and
++        // culling contract as the visible surface. Mask keeps hard cutouts;
++        // Blend uses deterministic dither coverage in the single-sample map.
+         if shadows_enabled {
+             for (cascade_index, layer_view) in self.render.shadow_layer_views.iter().enumerate() {
+                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+@@ -1457,7 +1467,6 @@ fn create_material_pipeline(
+                     occlusion_query_set: None,
+                     multiview_mask: None,
+                 });
+-                pass.set_pipeline(&self.render.shadow_pipeline);
+                 pass.set_bind_group(
+                     0,
+                     &self.render.shadow_cascade_bind_groups[cascade_index],
+@@ -1467,6 +1476,10 @@ fn create_material_pipeline(
+                     if batch.instances.is_empty() || !batch.pipeline_key.cast_shadow {
+                         continue;
+                     }
++                    pass.set_pipeline(
++                        &self.render.shadow_pipelines[batch.pipeline_key.cull_index()],
++                    );
++                    pass.set_bind_group(2, batch.texture_bind_group.as_ref(), &[]);
+                     batch.gpu_mesh.draw_instanced_submesh(
+                         &mut pass,
+                         instance_buf,
+@@ -1475,46 +1488,47 @@ fn create_material_pipeline(
+                     );
+                 }
+ 
+-                // Skinned entities whose mesh has no skinning data cast a
+-                // static shadow while the static pipeline is still bound.
++                // A selected skinned primitive may have no skin attributes.
++                // It still uses the material-aware static shadow path.
+                 for 
