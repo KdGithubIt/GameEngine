@@ -1,0 +1,211 @@
+diff --git a/crates/editor/Cargo.toml b/crates/editor/Cargo.toml
+--- a/crates/editor/Cargo.toml
++++ b/crates/editor/Cargo.toml
+@@ -6,7 +6,7 @@ default-run = "engine-editor"
+ autobins = false
+ 
+ [features]
+-visual-validation = ["eframe/__screenshot"]
++visual-validation = []
+ 
+ [[bin]]
+ name = "engine-editor"
+diff --git a/crates/editor/src/main.rs b/crates/editor/src/main.rs
+--- a/crates/editor/src/main.rs
++++ b/crates/editor/src/main.rs
+@@ -1,7 +1,15 @@
+ mod mcp_transport;
+ 
++#[cfg(feature = "visual-validation")]
++use std::fs::File;
++#[cfg(feature = "visual-validation")]
++use std::io::BufWriter;
++#[cfg(feature = "visual-validation")]
++use std::path::Path;
+ use std::path::PathBuf;
+ use std::sync::mpsc;
++#[cfg(feature = "visual-validation")]
++use std::time::{Duration, Instant};
+ 
+ use engine_editor::{AuthoringTool, AuthoringWindows};
+ use engine_project_lifecycle::{acquire_editor_project, EditorLease};
+@@ -22,6 +30,10 @@ struct EditorShell {
+     project_lease: EditorLease,
+     _mcp_server: EditorMcpServer,
+     mcp_requests: mpsc::Receiver<EditorMcpRequest>,
++    #[cfg(feature = "visual-validation")]
++    visual_capture_path: Option<PathBuf>,
++    #[cfg(feature = "visual-validation")]
++    visual_capture_requested_at: Option<Instant>,
+ }
+ 
+ impl EditorShell {
+@@ -49,6 +61,10 @@ impl EditorShell {
+             project_lease,
+             _mcp_server: mcp_server,
+             mcp_requests,
++            #[cfg(feature = "visual-validation")]
++            visual_capture_path: std::env::var_os("GAMEENGINE_SCREENSHOT_TO").map(PathBuf::from),
++            #[cfg(feature = "visual-validation")]
++            visual_capture_requested_at: None,
+         })
+     }
+ 
+@@ -67,6 +83,48 @@ impl EditorShell {
+         }
+     }
+ 
++    #[cfg(feature = "visual-validation")]
++    fn handle_visual_validation_capture(&mut self, context: &eframe::egui::Context) {
++        let Some(path) = self.visual_capture_path.clone() else {
++            return;
++        };
++
++        let screenshot = context.input(|input| {
++            input.events.iter().find_map(|event| match event {
++                eframe::egui::Event::Screenshot { image, .. } => Some(image.clone()),
++                _ => None,
++            })
++        });
++        if let Some(image) = screenshot {
++            if let Err(error) = write_visual_validation_png(&path, image.as_ref()) {
++                let _ = std::fs::remove_file(&path);
++                eprintln!("[editor.visual_validation_capture_failed] {error}");
++            }
++            self.visual_capture_path = None;
++            context.send_viewport_cmd(eframe::egui::ViewportCommand::Close);
++            return;
++        }
++
++        match self.visual_capture_requested_at {
++            None => {
++                self.visual_capture_requested_at = Some(Instant::now());
++                context.send_viewport_cmd(eframe::egui::ViewportCommand::Screenshot(
++                    eframe::egui::UserData::default(),
++                ));
++                context.request_repaint();
++            }
++            Some(requested_at) if requested_at.elapsed() >= Duration::from_secs(5) => {
++                let _ = std::fs::remove_file(&path);
++                eprintln!(
++                    "[editor.visual_validation_capture_failed] screenshot event was not returned"
++                );
++                self.visual_capture_path = None;
++                context.send_viewport_cmd(eframe::egui::ViewportCommand::Close);
++            }
++            Some(_) => context.request_repaint(),
++        }
++    }
++
+     fn show_authoring_tools_launcher(&mut self, context: &eframe::egui::Context) {
+         eframe::egui::Area::new(eframe::egui::Id::new("authoring_tools_launcher"))
+             .anchor(
+@@ -161,6 +219,8 @@ impl eframe::App for EditorShell {
+             return;
+         }
+         eframe::App::logic(&mut self.app, context, frame);
++        #[cfg(feature = "visual-validation")]
++        self.handle_visual_validation_capture(context);
+     }
+ 
+     fn ui(&mut self, ui: &mut eframe::egui::Ui, frame: &mut eframe::Frame) {
+@@ -175,6 +235,28 @@ impl eframe::App for EditorShell {
+     }
+ }
+ 
++#[cfg(feature = "visual-validation")]
++fn write_visual_validation_png(
++    path: &Path,
++    image: &eframe::egui::ColorImage,
++) -> Result<(), String> {
++    let [width, height] = image.size;
++    let file = File::create(path).map_err(|error| error.to_string())?;
++    let mut encoder = png::Encoder::new(BufWriter::new(file), width as u32, height as u32);
++    encoder.set_color(png::ColorType::Rgba);
++    encoder.set_depth(png::BitDepth::Eight);
++    let mut writer = encoder.write_header().map_err(|error| error.to_string())?;
++    let rgba = image
++        .pixels
++        .iter()
++        .flat_map(|pixel| pixel.to_array())
++        .collect::<Vec<_>>();
++    writer
++        .write_image_data(&rgba)
++        .map_err(|error| error.to_string())?;
++    writer.finish().map_err(|error| error.to_string())
++}
++
+ fn project_argument() -> Result<PathBuf, String> {
+     let mut arguments = std::env::args_os().skip(1);
+     let mut project = None;
+diff --git a/scripts/ci/Invoke-EditorVisualValidation.ps1 b/scripts/ci/Invoke-EditorVisualValidation.ps1
+--- a/scripts/ci/Invoke-EditorVisualValidation.ps1
++++ b/scripts/ci/Invoke-EditorVisualValidation.ps1
+@@ -109,7 +109,7 @@ fn main() -> Result<(), Box<dyn Error>> {
+     return $projectRoot
+ }
+ 
+-function Invoke-EframeScreenshot {
++function Invoke-DesktopScreenshot {
+     param(
+         [Parameter(Mandatory = $true)][string]$Name,
+         [Parameter(Mandatory = $true)][string]$Package,
+@@ -119,10 +119,21 @@ function Invoke-EframeScreenshot {
+     $outputPath = Join-Path $OutputDirectory "$Name.png"
+     Remove-Item -LiteralPath $outputPath -Force -ErrorAction SilentlyContinue
+ 
+-    $hadPreviousValue = Test-Path Env:EFRAME_SCREENSHOT_TO
+-    $previousValue = $env:EFRAME_SCREENSHOT_TO
++    $captureVariable = if ($Package -eq "engine-editor") {
++        "GAMEENGINE_SCREENSHOT_TO"
++    } else {
++        "EFRAME_SCREENSHOT_TO"
++    }
++    $previousValue = [Environment]::GetEnvironmentVariable(
++        $captureVariable,
++        [EnvironmentVariableTarget]::Process
++    )
+     try {
+-        $env:EFRAME_SCREENSHOT_TO = $outputPath
++        [Environment]::SetEnvironmentVariable(
++            $captureVariable,
++            $outputPath,
++            [EnvironmentVariableTarget]::Process
++        )
+         $cargoArguments = @(
+             "run",
+             "--locked",
+@@ -137,11 +148,11 @@ function Invoke-EframeScreenshot {
+         }
+         Invoke-CargoChecked -Arguments $cargoArguments
+     } finally {
+-        if ($hadPreviousValue) {
+-            $env:EFRAME_SCREENSHOT_TO = $previousValue
+-        } else {
+-            Remove-Item Env:EFRAME_SCREENSHOT_TO -ErrorAction SilentlyContinue
+-        }
++        [Environment]::SetEnvironmentVariable(
++            $captureVariable,
++            $previousValue,
++            [EnvironmentVariableTarget]::Process
++        )
+     }
+ 
+     if (-not (Test-Path -LiteralPath $outputPath -PathType Leaf)) {
+@@ -175,14 +186,14 @@ try {
+             $projectRoot = New-StandardVisualValidationProject
+             $projectSource = "generated-standard-project"
+         }
+-        $captures += Invoke-EframeScreenshot `
++        $captures += Invoke-DesktopScreenshot `
+             -Name "editor" `
+             -Package "engine-editor" `
+             -ProgramArguments @("--project", $projectRoot)
+     }
+ 
+     if ($Target -eq "launcher" -or $Target -eq "both") {
+-        $captures += Invoke-EframeScreenshot `
++        $captures += Invoke-DesktopScreenshot `
+             -Name "launcher" `
+             -Package "engine-launcher" `
+             -ProgramArguments @()
