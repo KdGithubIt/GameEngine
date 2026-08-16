@@ -1,0 +1,29 @@
++        assert_eq!(first.content_key(), second.content_key());
++        assert_ne!(first.content_key(), changed.content_key());
++    }
++
++    #[test]
++    fn constant_environment_stays_constant_through_convolution() {
++        let source = constant_source([255, 255, 255], "constant");
++        let linear = LinearEnvironment::from_source(&source);
++        let baked = bake_environment_with_options(&linear, 2, 4, 16);
++        for pixel in baked.irradiance {
++            assert!((pixel - Vec3::splat(std::f32::consts::PI)).abs().max_element() < 0.01);
++        }
++        for mip in baked.specular_mips {
++            for pixel in mip {
++                assert!((pixel - Vec3::ONE).abs().max_element() < 0.01);
++            }
++        }
++    }
++
++    #[test]
++    fn split_sum_brdf_is_finite_and_non_negative() {
++        for (ndv, roughness) in [(0.1, 0.1), (0.5, 0.5), (1.0, 1.0)] {
++            let integrated = integrate_brdf(ndv, roughness, 64);
++            assert!(integrated.is_finite());
++            assert!(integrated.min_element() >= 0.0);
++            assert!(integrated.max_element() <= 1.1);
++        }
++    }
++}
