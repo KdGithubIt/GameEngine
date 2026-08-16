@@ -1,0 +1,243 @@
+diff --git a/crates/platform/src/audio.rs b/crates/platform/src/audio.rs
+--- a/crates/platform/src/audio.rs
++++ b/crates/platform/src/audio.rs
+@@ -3,3 +3,3 @@
+-pub use crate::spatial_audio::{AudioVoiceId, StereoGains};
++pub use crate::spatial_audio::{AudioRolloffMode, AudioVoiceId, StereoGains};
+ 
+ use std::fmt;
+diff --git a/crates/platform/src/audio.rs b/crates/platform/src/audio.rs
+--- a/crates/platform/src/audio.rs
++++ b/crates/platform/src/audio.rs
+@@ -123,4 +123,4 @@
+-/// Authorable one-shot sound emitter attached to a spatial entity.
++/// Authorable sound emitter attached to a spatial entity.
+ pub struct AudioEmitter {
+     /// Decoded clip played when autoplay is enabled.
+     pub clip: Handle<AudioAsset>,
+@@ -132,13 +132,17 @@
+     pub min_distance: f32,
+     /// Distance at which attenuation reaches its floor.
+     pub max_distance: f32,
++    /// Distance attenuation curve selected by authoring.
++    pub rolloff: AudioRolloffMode,
++    /// Whether the managed voice repeats until stopped or despawned.
++    pub looping: bool,
+     /// Whether conversion should produce one automatic playback request.
+     pub autoplay: bool,
+     state: AuthoredAudioState,
+ }
+ 
+ impl AudioEmitter {
+-    /// Creates a validated pending emitter.
++    /// Creates a validated pending emitter with backward-compatible spatial defaults.
+     pub fn new(
+         clip: Handle<AudioAsset>,
+         volume: f32,
+@@ -153,9 +157,18 @@
+             spatial_blend,
+             min_distance,
+             max_distance,
++            rolloff: AudioRolloffMode::Linear,
++            looping: false,
+             autoplay,
+             state: AuthoredAudioState::Pending,
+         }
++    }
++
++    /// Applies the authorable spatial playback policy without exposing backend voice state.
++    pub fn with_spatial_playback(mut self, rolloff: AudioRolloffMode, looping: bool) -> Self {
++        self.rolloff = rolloff;
++        self.looping = looping;
++        self
+     }
+ 
+     /// Returns the latest automatic playback state.
+@@ -184,6 +197,17 @@
+ pub struct AudioListener {
+     /// Disabled listeners remain authored but do not participate in selection.
+     pub enabled: bool,
++    /// Higher enabled priorities win; equal priorities use deterministic entity order.
++    pub priority: i64,
++}
++
++impl Default for AudioListener {
++    fn default() -> Self {
++        Self {
++            enabled: true,
++            priority: 0,
++        }
++    }
+ }
+ 
+ /// Authorable background-music startup policy.
+diff --git a/crates/engine/src/audio.rs b/crates/engine/src/audio.rs
+--- a/crates/engine/src/audio.rs
++++ b/crates/engine/src/audio.rs
+@@ -20,6 +20,24 @@
++#[derive(Debug, Clone, Copy, PartialEq)]
++pub(crate) struct GameSpatialAudioOptions {
++    pub(crate) volume: f32,
++    pub(crate) spatial_blend: f32,
++    pub(crate) min_distance: f32,
++    pub(crate) max_distance: f32,
++    pub(crate) rolloff: AudioRolloffMode,
++    pub(crate) looping: bool,
++}
++
++#[derive(Debug, Clone, Copy)]
++struct GameSpatialVoice {
++    source: Entity,
++    voice_id: AudioVoiceId,
++    options: GameSpatialAudioOptions,
++}
++
+ #[derive(Debug, Default)]
+ pub(crate) struct SpatialAudioRuntime {
+     voices: HashMap<Entity, AudioVoiceId>,
++    game_voices: Vec<GameSpatialVoice>,
+ }
+ 
+ /// Selects the active listener and synchronizes authored emitters to managed voices.
+diff --git a/crates/engine/src/audio.rs b/crates/engine/src/audio.rs
+--- a/crates/engine/src/audio.rs
++++ b/crates/engine/src/audio.rs
+@@ -37,4 +37,5 @@
+     let Some(audio) = audio.as_deref_mut() else {
+         runtime.voices.clear();
++        runtime.game_voices.clear();
+         for (_, (emitter, _)) in &mut emitters {
+             if emitter.autoplay && emitter.state() == &AuthoredAudioState::Pending {
+diff --git a/crates/engine/src/audio.rs b/crates/engine/src/audio.rs
+--- a/crates/engine/src/audio.rs
++++ b/crates/engine/src/audio.rs
+@@ -48,6 +48,9 @@
+     runtime
+         .voices
+         .retain(|_, voice_id| !completed.contains(voice_id));
++    runtime
++        .game_voices
++        .retain(|voice| !completed.contains(&voice.voice_id));
+ 
+     let listener = active_listener_pose(&mut listeners);
+     let mut live_emitters = HashSet::new();
+diff --git a/crates/engine/src/audio.rs b/crates/engine/src/audio.rs
+--- a/crates/engine/src/audio.rs
++++ b/crates/engine/src/audio.rs
+@@ -59,7 +59,7 @@
+             spatial_blend: emitter.spatial_blend,
+             min_distance: emitter.min_distance,
+             max_distance: emitter.max_distance,
+-            rolloff: AudioRolloffMode::Linear,
++            rolloff: emitter.rolloff,
+         };
+         let gains = emitter_gains(listener, emitter_pose(transform), settings);
+ 
+diff --git a/crates/engine/src/audio.rs b/crates/engine/src/audio.rs
+--- a/crates/engine/src/audio.rs
++++ b/crates/engine/src/audio.rs
+@@ -80,4 +80,4 @@
+-        match audio.start_voice(asset, gains, false) {
++        match audio.start_voice(asset, gains, emitter.looping) {
+             Ok(voice_id) => {
+                 runtime.voices.insert(entity, voice_id);
+                 emitter.mark_playback_started();
+diff --git a/crates/engine/src/audio.rs b/crates/engine/src/audio.rs
+--- a/crates/engine/src/audio.rs
++++ b/crates/engine/src/audio.rs
+@@ -104,21 +104,24 @@
+ fn active_listener_pose(
+     listeners: &mut Query<(&AudioListener, &GlobalTransform)>,
+ ) -> Option<AudioListenerPose> {
+-    let mut selected: Option<(Entity, AudioListenerPose)> = None;
++    let mut selected: Option<(i64, Entity, AudioListenerPose)> = None;
+     for (entity, (listener, transform)) in listeners {
+         if !listener.enabled {
+             continue;
+         }
+         let pose = listener_pose(transform);
+         let should_select = match selected.as_ref() {
+-            Some((selected_entity, _)) => entity < *selected_entity,
++            Some((priority, selected_entity, _)) => {
++                listener.priority > *priority
++                    || (listener.priority == *priority && entity < *selected_entity)
++            }
+             None => true,
+         };
+         if should_select {
+-            selected = Some((entity, pose));
++            selected = Some((listener.priority, entity, pose));
+         }
+     }
+-    selected.map(|(_, pose)| pose)
++    selected.map(|(_, _, pose)| pose)
+ }
+ 
+ fn listener_pose(transform: &GlobalTransform) -> AudioListenerPose {
+diff --git a/crates/engine/src/audio.rs b/crates/engine/src/audio.rs
+--- a/crates/engine/src/audio.rs
++++ b/crates/engine/src/audio.rs
+@@ -173,5 +173,10 @@
+ pub(crate) enum GameAudioCommand {
+     PlaySoundEffect { asset_id: String },
++    PlaySpatialSoundEffect {
++        asset_id: String,
++        source: Entity,
++        options: GameSpatialAudioOptions,
++    },
+     PlayBackgroundMusic { asset_id: String, fade_seconds: f32 },
+     StopBackgroundMusic,
+     SetMasterVolume(f32),
+diff --git a/crates/engine/src/audio.rs b/crates/engine/src/audio.rs
+--- a/crates/engine/src/audio.rs
++++ b/crates/engine/src/audio.rs
+@@ -199,10 +199,37 @@
+ pub(crate) fn game_audio_effect_system(
+     mut queue: ResMut<GameAudioCommandQueue>,
++    mut transforms: Query<&GlobalTransform>,
++    mut listeners: Query<(&AudioListener, &GlobalTransform)>,
++    mut runtime: ResMut<SpatialAudioRuntime>,
+     mut audio_system: Option<ResMut<AudioSystem>>,
+     mut asset_server: Option<ResMut<AssetServer>>,
+     manifest: Option<Res<AssetManifest>>,
+     mut audio_assets: Option<ResMut<Assets<AudioAsset>>>,
+ ) {
++    let listener = active_listener_pose(&mut listeners);
++    let poses = (&mut transforms)
++        .into_iter()
++        .map(|(entity, transform)| (entity, emitter_pose(transform)))
++        .collect::<HashMap<_, _>>();
++
++    if let Some(audio) = audio_system.as_deref_mut() {
++        runtime.game_voices.retain(|voice| {
++            let Some(emitter) = poses.get(&voice.source).copied() else {
++                if let Err(error) = audio.stop_voice(voice.voice_id) {
++                    log::error!("failed to stop stale project spatial voice: {error}");
++                }
++                return false;
++            };
++            let gains = emitter_gains(listener, emitter, voice.options.settings());
++            if let Err(error) = audio.update_voice(voice.voice_id, gains) {
++                log::error!("failed to update project spatial voice: {error}");
++            }
++            true
++        });
++    } else {
++        runtime.game_voices.clear();
++    }
++
+     for command in queue.commands.drain(..) {
+         let result = match command {
+             GameAudioCommand::StopBackgroundMusic => {
+diff --git a/crates/engine/src/audio.rs b/crates/engine/src/audio.rs
+--- a/crates/engine/src/audio.rs
++++ b/crates/engine/src/audio.rs
+@@ -226,6 +226,37 @@
+                 manifest.as_deref(),
+                 audio_assets.as_deref_mut(),
+             ),
++            GameAudioCommand::PlaySpatialSoundEffect {
++                asset_id,
++                source,
++                options,
++            } => {
