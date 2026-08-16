@@ -1,0 +1,52 @@
++                    TimelineTick::new(100),
++                    SeekCapability::NonSeekable,
++                    TestPayload::State(2),
++                ),
++            ],
++        )
++        .expect("valid timeline");
++        let request = EvaluationRequest {
++            previous_tick: TimelineTick::ZERO,
++            current_tick: TimelineTick::new(10),
++            mode: EvaluationMode::Seek {
++                preview_events: false,
++            },
++            generation: 1,
++        };
++        let items = timeline.evaluate(&request);
++        assert_eq!(
++            items[0].decision(),
++            EvaluationDecision::ReplayRequired {
++                from_tick: TimelineTick::ZERO
++            }
++        );
++        assert_eq!(items[1].decision(), EvaluationDecision::NonSeekable);
++    }
++
++    #[test]
++    fn players_sharing_one_compiled_timeline_do_not_share_state() {
++        let compiled = CompiledTimeline::<TestPayload>::new(TimelineTick::new(100), Vec::new())
++            .expect("valid timeline");
++        let mut first = TimelinePlayer::new();
++        let second = TimelinePlayer::new();
++        first.play();
++        first.advance_ticks(10, compiled.duration());
++
++        assert_eq!(first.current_tick(), TimelineTick::new(10));
++        assert_eq!(second.current_tick(), TimelineTick::ZERO);
++        assert_eq!(second.state(), TimelinePlaybackState::Stopped);
++    }
++
++    #[test]
++    fn stop_and_seek_advance_generation_and_clamp() {
++        let mut player = TimelinePlayer::new();
++        player.play();
++        player.advance_ticks(20, TimelineTick::new(100));
++        let seek = player.seek(TimelineTick::new(500), TimelineTick::new(100), false);
++        assert_eq!(seek.current_tick, TimelineTick::new(100));
++        let generation = seek.generation;
++        let stop = player.stop();
++        assert_eq!(stop.current_tick, TimelineTick::ZERO);
++        assert!(stop.generation > generation);
++    }
++}
