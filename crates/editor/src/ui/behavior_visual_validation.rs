@@ -24,7 +24,7 @@ pub(super) fn show_behavior_tree_visual_palette(
     egui::Window::new("Behavior Tree Add Node Palette")
         .id(egui::Id::new("behavior_tree_visual_palette"))
         .fixed_pos(egui::pos2(18.0, 108.0))
-        .fixed_size(egui::vec2(285.0, 455.0))
+        .fixed_size(egui::vec2(285.0, 520.0))
         .resizable(false)
         .collapsible(false)
         .show(context, |ui| {
