@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0122-spatial-authoring-pr71-r3-d5e2bd4-01",
+  "target_branch": "chatgpt/gameengine-adr0122-spatial-audio-ecs",
+  "expected_head_sha": "dd13e1593ac71f478bb933b3f9aed02fb982dffc",
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Continue ADR 0122 spatial audio authoring",
+  "pr_title": "Continue ADR 0122 spatial audio ECS synchronization",
+  "pr_body": "Continues ADR 0122 on the existing Draft PR after the engine-owned listener/emitter ECS synchronization slice. This request adds authoring-facing spatial options without changing stable component IDs: Audio Emitter and Audio Listener schemas advance to version 2 with linear/inverse rolloff, looping, and listener priority defaults; existing AudioEmitter::new behavior remains linear and non-looping; runtime listener selection prefers the greatest priority with deterministic Entity fallback; and authored autoplay uses the selected rolloff and loop policy. Shared scene-level warning diagnostics and Project Rust spatial playback remain in following validated slices."
+}
