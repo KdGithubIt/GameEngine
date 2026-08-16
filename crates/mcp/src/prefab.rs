@@ -5,7 +5,7 @@ use engine_assets::asset::AssetManifest;
 use engine_assets::prefab::{PrefabAssetService, PrefabCreation};
 use engine_authoring::{
     AuthoringPermissions, AuthoringScene, AuthoringSession, EntityId, PrefabAuthoringService,
-    PrefabInstantiationMutation, ProjectRoot,
+    PrefabInstantiationMutation, PrefabInstantiationRequest, ProjectRoot,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -123,15 +123,18 @@ impl PrefabMcpTools {
         input: PrefabInstantiateInput,
     ) -> Result<PrefabInstantiationMutation, McpToolError> {
         let loaded = self.assets.load(project, permissions, &input.source)?;
+        let request = PrefabInstantiationRequest::new(
+            loaded.source,
+            input.parent,
+            input.expected_revision,
+            input.expected_generation,
+        );
         self.authoring
             .preview_instantiation(
                 session,
                 permissions,
                 &loaded.prefab,
-                &loaded.source,
-                input.parent,
-                input.expected_revision,
-                input.expected_generation,
+                request,
             )
             .map_err(McpToolError::from)
     }
@@ -150,15 +153,18 @@ impl PrefabMcpTools {
         input: PrefabInstantiateInput,
     ) -> Result<PrefabInstantiationMutation, McpToolError> {
         let loaded = self.assets.load(project, permissions, &input.source)?;
+        let request = PrefabInstantiationRequest::new(
+            loaded.source,
+            input.parent,
+            input.expected_revision,
+            input.expected_generation,
+        );
         self.authoring
             .apply_instantiation(
                 session,
                 permissions,
                 &loaded.prefab,
-                &loaded.source,
-                input.parent,
-                input.expected_revision,
-                input.expected_generation,
+                request,
             )
             .map_err(McpToolError::from)
     }

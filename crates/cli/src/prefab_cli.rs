@@ -2,7 +2,8 @@ use super::{asset_cli, scene_cli, to_json, CliError, CliRunResult};
 use engine_assets::prefab::{PrefabAssetError, PrefabAssetService};
 use engine_authoring::{
     replace_file_contents, AuthoringPermission, AuthoringPermissions, EntityId,
-    PrefabAuthoringError, PrefabAuthoringService, SceneAuthoringService, SceneSaveError, StableId,
+    PrefabAuthoringError, PrefabAuthoringService, PrefabInstantiationRequest,
+    SceneAuthoringService, SceneSaveError, StableId,
 };
 use serde::Serialize;
 use std::path::Path;
@@ -141,26 +142,21 @@ fn prefab_mutate(
     };
     let revision = snapshot.revision;
     let generation = snapshot.generation;
+    let request = PrefabInstantiationRequest::new(loaded.source, parent, revision, generation);
     let service = PrefabAuthoringService::new();
     let result = if persist {
         service.apply_instantiation(
             &mut context.session,
             &permissions,
             &loaded.prefab,
-            &loaded.source,
-            parent,
-            revision,
-            generation,
+            request,
         )
     } else {
         service.preview_instantiation(
             &context.session,
             &permissions,
             &loaded.prefab,
-            &loaded.source,
-            parent,
-            revision,
-            generation,
+            request,
         )
     };
     let output = match result {

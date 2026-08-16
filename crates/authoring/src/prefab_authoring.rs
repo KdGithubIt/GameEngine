@@ -12,10 +12,44 @@ use crate::{
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::fmt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Persisted editor-only component that records the source of a prefab instance.
 pub const PREFAB_INSTANCE_COMPONENT: &str = "editor.prefab_instance";
+
+/// Complete request metadata for one prefab instantiation attempt.
+///
+/// Keeping the source marker, parent override, and stale-Scene token together
+/// prevents adapters from growing parallel method signatures as prefab
+/// instantiation gains more structured options.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrefabInstantiationRequest {
+    /// Canonical prefab source path persisted on the instantiated root marker.
+    pub source: PathBuf,
+    /// Optional Scene parent assigned to the freshly remapped prefab root.
+    pub parent: Option<EntityId>,
+    /// Scene revision used as the mutation base.
+    pub expected_revision: u64,
+    /// Scene generation used as the mutation base.
+    pub expected_generation: u64,
+}
+
+impl PrefabInstantiationRequest {
+    /// Creates one request from adapter-resolved prefab and Scene state.
+    pub fn new(
+        source: impl Into<PathBuf>,
+        parent: Option<EntityId>,
+        expected_revision: u64,
+        expected_generation: u64,
+    ) -> Self {
+        Self {
+            source: source.into(),
+            parent,
+            expected_revision,
+            expected_generation,
+        }
+    }
+}
 
 /// Result of previewing or applying one prefab instantiation.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -96,12 +130,15 @@ impl PrefabAuthoringService {
         session: &AuthoringSession,
         permissions: &AuthoringPermissions,
         prefab: &PrefabAsset,
-        source: &Path,
-        parent: Option<EntityId>,
-        expected_revision: u64,
-        expected_generation: u64,
+        request: PrefabInstantiationRequest,
     ) -> Result<PrefabInstantiationMutation, PrefabAuthoringError> {
-        let (proposed_root, commands) = instantiation_commands(prefab, source, parent)?;
+        let PrefabInstantiationRequest {
+            source,
+            parent,
+            expected_revision,
+            expected_generation,
+        } = request;
+        let (proposed_root, commands) = instantiation_commands(prefab, &source, parent)?;
         let mutation = SceneAuthoringService::new().preview(
             session,
             permissions,
@@ -127,12 +164,15 @@ impl PrefabAuthoringService {
         session: &mut AuthoringSession,
         permissions: &AuthoringPermissions,
         prefab: &PrefabAsset,
-        source: &Path,
-        parent: Option<EntityId>,
-        expected_revision: u64,
-        expected_generation: u64,
+        request: PrefabInstantiationRequest,
     ) -> Result<PrefabInstantiationMutation, PrefabAuthoringError> {
-        let (proposed_root, commands) = instantiation_commands(prefab, source, parent)?;
+        let PrefabInstantiationRequest {
+            source,
+            parent,
+            expected_revision,
+            expected_generation,
+        } = request;
+        let (proposed_root, commands) = instantiation_commands(prefab, &source, parent)?;
         let mutation = SceneAuthoringService::new().apply(
             session,
             permissions,
@@ -193,10 +233,12 @@ mod tests {
                 &session,
                 &permissions(),
                 &prefab(),
-                Path::new("/project/assets/prefabs/enemy.prefab.json"),
-                None,
-                base.revision,
-                base.generation,
+                PrefabInstantiationRequest::new(
+                    Path::new("/project/assets/prefabs/enemy.prefab.json"),
+                    None,
+                    base.revision,
+                    base.generation,
+                ),
             )
             .expect("preview");
 
@@ -212,17 +254,18 @@ mod tests {
         let base = SceneAuthoringService::new()
             .inspect(&session, &permissions)
             .expect("base snapshot");
-        let source = Path::new("/project/assets/prefabs/enemy.prefab.json");
 
         let result = PrefabAuthoringService::new()
             .apply_instantiation(
                 &mut session,
                 &permissions,
                 &prefab(),
-                source,
-                None,
-                base.revision,
-                base.generation,
+                PrefabInstantiationRequest::new(
+                    Path::new("/project/assets/prefabs/enemy.prefab.json"),
+                    None,
+                    base.revision,
+                    base.generation,
+                ),
             )
             .expect("apply");
 
@@ -251,10 +294,12 @@ mod tests {
                 &mut session,
                 &permissions,
                 &prefab(),
-                Path::new("enemy.prefab.json"),
-                None,
-                base.revision,
-                base.generation,
+                PrefabInstantiationRequest::new(
+                    Path::new("enemy.prefab.json"),
+                    None,
+                    base.revision,
+                    base.generation,
+                ),
             )
             .expect("first apply");
         assert!(first.mutation.success);
@@ -264,10 +309,12 @@ mod tests {
                 &mut session,
                 &permissions,
                 &prefab(),
-                Path::new("enemy.prefab.json"),
-                None,
-                base.revision,
-                base.generation,
+                PrefabInstantiationRequest::new(
+                    Path::new("enemy.prefab.json"),
+                    None,
+                    base.revision,
+                    base.generation,
+                ),
             )
             .expect_err("stale apply must fail");
         assert_eq!(error.code(), "authoring.stale_revision");

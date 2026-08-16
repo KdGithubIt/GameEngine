@@ -129,7 +129,7 @@ pub use persist::{replace_file_contents, PersistError, PersistOperation};
 pub use prefab::{PrefabAsset, PrefabError, PrefabInstantiation, PREFAB_SCHEMA_VERSION};
 pub use prefab_authoring::{
     PrefabAuthoringError, PrefabAuthoringService, PrefabInstantiationMutation,
-    PREFAB_INSTANCE_COMPONENT,
+    PrefabInstantiationRequest, PREFAB_INSTANCE_COMPONENT,
 };
 pub use project::{ProjectConfig, ProjectError, ProjectRoot, PROJECT_SCHEMA_VERSION};
 pub use project_settings::{

@@ -9,7 +9,8 @@ use crate::session::{EditorSession, EditorSessionError};
 use engine_authoring::{
     replace_file_contents, AuthoringCommand, AuthoringEntity, AuthoringScene, ComponentTypeId,
     AuthoringPermission, AuthoringPermissions, EntityId, PersistError, PrefabAsset,
-    PrefabAuthoringError, PrefabAuthoringService, PrefabError, SceneAuthoringService, Value,
+    PrefabAuthoringError, PrefabAuthoringService, PrefabError, PrefabInstantiationRequest,
+    SceneAuthoringService, Value,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -138,10 +139,12 @@ pub fn instantiate_prefab(
             authoring,
             &permissions,
             &prefab,
-            source,
-            parent,
-            base.revision,
-            base.generation,
+            PrefabInstantiationRequest::new(
+                source,
+                parent,
+                base.revision,
+                base.generation,
+            ),
         )?
     };
     session.extend_diagnostics(result.mutation.diagnostics.iter().cloned());
