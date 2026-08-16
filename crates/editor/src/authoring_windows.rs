@@ -1,6 +1,8 @@
 //! Modeless authoring windows embedded in the main Engine Editor process.
 
 use crate::authoring_tools::AuthoringTool;
+use crate::vfx_builder::VfxBuilderState;
+use engine_authoring::ProjectRoot;
 use eframe::{egui, Frame};
 
 /// Owns the state and visibility of every project authoring window.
@@ -13,10 +15,12 @@ pub struct AuthoringWindows {
     runtime_event_open: bool,
     ui_contract_open: bool,
     advanced_geometry_open: bool,
+    vfx_open: bool,
     ability: ability::EmbeddedWindow,
     runtime_event: runtime_event::EmbeddedWindow,
     ui_contract: ui_contract::EmbeddedWindow,
     advanced_geometry: advanced_geometry::EmbeddedWindow,
+    vfx: VfxBuilderState,
 }
 
 
@@ -28,11 +32,12 @@ impl AuthoringWindows {
             AuthoringTool::RuntimeEventTimeline => self.runtime_event_open = true,
             AuthoringTool::UiContractDesigner => self.ui_contract_open = true,
             AuthoringTool::AdvancedGeometryDesigner => self.advanced_geometry_open = true,
+            AuthoringTool::VfxBuilder => self.vfx_open = true,
         }
     }
 
     /// Draws every visible authoring window into the current editor frame.
-    pub fn show(&mut self, context: &egui::Context, frame: &mut Frame) {
+    pub fn show(&mut self, context: &egui::Context, frame: &mut Frame, project: &ProjectRoot) {
         self.ability
             .show(context, frame, &mut self.ability_open);
         self.runtime_event
@@ -41,6 +46,17 @@ impl AuthoringWindows {
             .show(context, frame, &mut self.ui_contract_open);
         self.advanced_geometry
             .show(context, frame, &mut self.advanced_geometry_open);
+        if self.vfx_open {
+            let vfx_open = &mut self.vfx_open;
+            let vfx = &mut self.vfx;
+            egui::Window::new("VFX Builder")
+                .id(egui::Id::new("embedded_vfx_builder"))
+                .open(vfx_open)
+                .default_width(1_180.0)
+                .default_height(780.0)
+                .resizable(true)
+                .show(context, |ui| vfx.show(ui, project));
+        }
     }
 }
 

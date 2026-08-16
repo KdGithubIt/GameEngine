@@ -11,15 +11,18 @@ pub enum AuthoringTool {
     UiContractDesigner,
     /// Layered NavMesh, links, static meshes, and spatial-query authoring.
     AdvancedGeometryDesigner,
+    /// Typed multi-emitter VFX asset authoring.
+    VfxBuilder,
 }
 
 impl AuthoringTool {
     /// Stable display order used by editor menus.
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 5] = [
         Self::AbilityDesigner,
         Self::RuntimeEventTimeline,
         Self::UiContractDesigner,
         Self::AdvancedGeometryDesigner,
+        Self::VfxBuilder,
     ];
 
     /// Human-readable tool name.
@@ -29,6 +32,7 @@ impl AuthoringTool {
             Self::RuntimeEventTimeline => "Runtime Event Timeline",
             Self::UiContractDesigner => "UI Contract Designer",
             Self::AdvancedGeometryDesigner => "Advanced Geometry Designer",
+            Self::VfxBuilder => "VFX Builder",
         }
     }
 
@@ -47,6 +51,9 @@ impl AuthoringTool {
             Self::AdvancedGeometryDesigner => {
                 "Author layered NavMeshes, floor links, static triangles, paths, and raycasts."
             }
+            Self::VfxBuilder => {
+                "Author typed emitters and ordered spawn, update, and render modules."
+            }
         }
     }
 }
@@ -57,11 +64,12 @@ mod tests {
 
     #[test]
     fn catalog_order_and_labels_are_stable() {
-        assert_eq!(AuthoringTool::ALL.len(), 4);
+        assert_eq!(AuthoringTool::ALL.len(), 5);
         assert_eq!(AuthoringTool::ALL[0].label(), "Ability Designer");
         assert_eq!(
             AuthoringTool::ALL[3].label(),
             "Advanced Geometry Designer"
         );
+        assert_eq!(AuthoringTool::ALL[4].label(), "VFX Builder");
     }
 }
