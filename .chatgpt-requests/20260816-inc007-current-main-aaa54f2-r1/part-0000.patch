@@ -1,0 +1,93 @@
+diff --git a/docs/CHATGPT_AUTOMATION_INCIDENTS.md b/docs/CHATGPT_AUTOMATION_INCIDENTS.md
+--- a/docs/CHATGPT_AUTOMATION_INCIDENTS.md
++++ b/docs/CHATGPT_AUTOMATION_INCIDENTS.md
+@@ -47,6 +47,7 @@ INC-003  Published patch bytes differed from preflight artifact    Transport
+ INC-004  Main advanced after task baseline and polluted validation  Validation         Resolved
+ INC-005  Patch headers included checkout-directory prefix           Dispatcher         Resolved
+ INC-006  eframe screenshot helper incompatible with default wgpu    Visual validation  Resolved
++INC-007  Missing-request probe misread unresolved revision text     Transport          Resolved
+ ```
+ 
+ ## INC-001: Markdown trailing whitespace rejected by patch preflight
+@@ -464,6 +465,81 @@ visually validated by this Editor-only incident.
+ - Successful artifacts: `9259315213`, `9259358605`
+ - Commit: `ff2254a12648db7d91d0a27526d529f5fe94fcd7`
+ 
++## INC-007: Missing-request probe misread unresolved revision text
++
++Status: Resolved
++Layer: Transport publisher
++First confirmed: 2026-08-16
++Last confirmed: 2026-08-16
++
++### Symptom
++
++A fresh staged request could pass the stage signal and then fail in the trusted
++Transport Publisher with `request ID already exists on chatgpt-dispatch with
++different content`, even though `.chatgpt-requests/<request-id>` did not exist
++on the current `chatgpt-dispatch` tree.
++
++### Evidence
++
++- ADR 0131 request `adr0131-36ffbb09-0822-r7` reached the trusted publisher but
++  publisher run `31936294990` rejected it as a conflicting existing request.
++  Reading the exact transport tree showed that request directory was absent.
++- ADR 0112 independently reproduced the same false-positive with fresh request
++  `adr0112-source-order-20260816-17` in publisher run `31937239061`; the exact
++  `chatgpt-dispatch` tree at `f8cef7b8667b0e3f17d628b9efa7eea9a00f9ebc`
++  also lacked the request directory.
++- The publisher's optional lookup used
++  `git rev-parse "$transport_head:$request_dir" 2>/dev/null || true` without
++  `--verify`. For a missing tree, Git could emit the unresolved revision
++  expression to stdout before returning non-zero, leaving command substitution
++  non-empty after `|| true`.
++- Infrastructure PR #76 changed that lookup to `git rev-parse --verify` and was
++  merged as `6e5162f70b2c7f15666f8659ebd3978eaf3f00ef`.
++- After the merge, the previously rejected immutable Phase 9 stage replayed
++  unchanged: publisher run `31938218225` succeeded, published transport commit
++  `7b9f3b79fdbcc980c5d79b96a4100ae7e97d271c`, and Dispatcher run
++  `31938224725` successfully applied the product patch.
++- Fresh post-fix publisher runs `31938262049`, `31938631848`, and `31939039568`
++  also succeeded for the ADR 0131 implementation and corrections.
++
++### Root cause
++
++The trusted publisher treated non-empty stdout from a non-verifying
++`git rev-parse` call as proof that the request tree already existed. Missing Git
++objects can leave an unresolved revision expression on stdout, so the optional
++existence probe confused a failed resolution with a valid object ID and routed
++fresh requests into the request-ID conflict path.
++
++### Resolution
++
++Use `git rev-parse --verify "$transport_head:$request_dir"` for the optional
++request-tree lookup. A real existing tree resolves to its object ID; a missing
++tree now leaves `existing_tree` empty and follows the normal publication path.
++PR #76 merged this one-line trusted-workflow fix, and both unchanged-stage replay
++and fresh production requests subsequently published successfully.
++
++### Prevention / ChatGPT next action
++
++For optional Git object existence probes in trusted transport code, require
++`git rev-parse --verify` or an equivalent object-existence check before treating
++stdout as an object ID. When the publisher reports a request-ID conflict but the
++transport tree appears not to contain that request, inspect the existence probe
++before republishing, changing the product patch, or bypassing the trusted
++publisher. Preserve the immutable stage and replay it only through the formal
++workflow once the transport defect is corrected.
++
++### References
++
++- Failed ADR 0131 request: `adr0131-36ffbb09-0822-r7`
++- Failed publisher run: `31936294990`
++- Independent failed publisher run: `31937239061`
++- Infrastructure PR: `#76`
++- Infrastructure merge commit: `6e5162f70b2c7f15666f8659ebd3978eaf3f00ef`
++- Confirmed unchanged-stage recovery publisher run: `31938218225`
++- Confirmed unchanged-stage recovery Dispatcher run: `31938224725`
++- Confirmed recovery transport commit: `7b9f3b79fdbcc980c5d79b96a4100ae7e97d271c`
++- Fresh successful ADR 0131 publisher runs: `31938262049`, `31938631848`, `31939039568`
++
+ ## Entry template
+ 
+ Copy this section for a materially new root cause. Incident IDs are monotonic
