@@ -1,0 +1,18 @@
+diff --git a/crates/assets/src/asset.rs b/crates/assets/src/asset.rs
+--- a/crates/assets/src/asset.rs
++++ b/crates/assets/src/asset.rs
+@@ -481,5 +481,5 @@ pub enum ImportedSubAssetKind {
+     /// Named vertex or material deformation.
+     Morph,
+-    /// Secondary-motion rigid-body rig.
+-    RigidBodyRig,
++    /// Engine-native secondary-motion rig.
++    SecondaryMotionRig,
+ }
+@@ -495,5 +495,5 @@ impl ImportedSubAssetKind {
+             Self::Animation => "animation",
+             Self::HumanoidMotion => "humanoid_motion",
+             Self::Morph => "morph",
+-            Self::RigidBodyRig => "rigidbodyrig",
++            Self::SecondaryMotionRig => "secondarymotionrig",
+         }
