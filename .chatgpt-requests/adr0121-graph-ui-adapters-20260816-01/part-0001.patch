@@ -1,0 +1,338 @@
+diff --git a/crates/cli/src/graph_cli.rs b/crates/cli/src/graph_cli.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/cli/src/graph_cli.rs
+@@ -0,0 +1,333 @@
++use super::{input_error_json, to_json, CliError, CliRunResult};
++use engine_authoring::{
++    replace_file_contents, AnimationGraphDomain, AuthoringPermission, AuthoringPermissions,
++    BehaviorTreeDomain, Graph, GraphAuthoringError, GraphAuthoringService, GraphCommand,
++    GraphDomain, GraphSaveError, ProjectRoot,
++};
++use serde::Serialize;
++use std::fs;
++use std::path::{Path, PathBuf};
++
++#[derive(Debug, Serialize)]
++struct AuthoringErrorOutput {
++    success: bool,
++    error: AuthoringErrorBody,
++}
++
++#[derive(Debug, Serialize)]
++struct AuthoringErrorBody {
++    code: &'static str,
++    message: String,
++}
++
++pub(super) fn dispatch(args: &[String]) -> Option<Result<CliRunResult, CliError>> {
++    match args {
++        [domain, command, project, graph] if domain == "graph" && command == "inspect" => {
++            Some(graph_inspect(Path::new(project), graph))
++        }
++        [domain, command, project, graph] if domain == "graph" && command == "validate" => {
++            Some(graph_validate(Path::new(project), graph))
++        }
++        [domain, command, project, graph, commands]
++            if domain == "graph" && command == "preview" =>
++        {
++            Some(graph_mutate(
++                Path::new(project),
++                graph,
++                Path::new(commands),
++                false,
++            ))
++        }
++        [domain, command, project, graph, commands]
++            if domain == "graph" && command == "apply" =>
++        {
++            Some(graph_mutate(
++                Path::new(project),
++                graph,
++                Path::new(commands),
++                true,
++            ))
++        }
++        _ => None,
++    }
++}
++
++fn graph_inspect(project_path: &Path, graph_relative: &str) -> Result<CliRunResult, CliError> {
++    let context = match load_graph_context(project_path, graph_relative) {
++        Ok(context) => context,
++        Err(result) => return Ok(result),
++    };
++    let service = GraphAuthoringService::new();
++    match service.inspect(&context.graph, &read_permissions()) {
++        Ok(output) => Ok(CliRunResult::success(to_json(&output)?)),
++        Err(error) => authoring_error(error),
++    }
++}
++
++fn graph_validate(project_path: &Path, graph_relative: &str) -> Result<CliRunResult, CliError> {
++    let context = match load_graph_context(project_path, graph_relative) {
++        Ok(context) => context,
++        Err(result) => return Ok(result),
++    };
++    let service = GraphAuthoringService::new();
++    match service.validate(&context.graph, context.domain.as_domain(), &read_permissions()) {
++        Ok(output) => Ok(CliRunResult::diagnostics(to_json(&output)?, !output.success)),
++        Err(error) => authoring_error(error),
++    }
++}
++
++fn graph_mutate(
++    project_path: &Path,
++    graph_relative: &str,
++    commands_path: &Path,
++    persist: bool,
++) -> Result<CliRunResult, CliError> {
++    let mut context = match load_graph_context(project_path, graph_relative) {
++        Ok(context) => context,
++        Err(result) => return Ok(result),
++    };
++    let commands = match load_commands(commands_path) {
++        Ok(commands) => commands,
++        Err(result) => return Ok(result),
++    };
++    let service = GraphAuthoringService::new();
++    let permissions = write_permissions();
++    let base = match service.inspect(&context.graph, &permissions) {
++        Ok(base) => base,
++        Err(error) => return authoring_error(error),
++    };
++
++    let mutation = if persist {
++        service.apply(
++            &mut context.graph,
++            context.domain.as_domain(),
++            &permissions,
++            base.revision,
++            base.generation,
++            commands,
++        )
++    } else {
++        service.preview(
++            &context.graph,
++            context.domain.as_domain(),
++            &permissions,
++            base.revision,
++            base.generation,
++            commands,
++        )
++    };
++    let mutation = match mutation {
++        Ok(mutation) => mutation,
++        Err(error) => return authoring_error(error),
++    };
++
++    if persist && mutation.success {
++        let json = context
++            .graph
++            .to_canonical_json(context.domain.as_domain().schema_registry())
++            .map_err(|error| match error {
++                GraphSaveError::ValidationFailed { diagnostics } => CliError::Authoring { diagnostics },
++                GraphSaveError::Json(error) => CliError::Json(error),
++            })?;
++        replace_file_contents(&context.path, &json)
++            .map_err(|source| CliError::Persist { source })?;
++    }
++
++    Ok(CliRunResult::diagnostics(
++        to_json(&mutation)?,
++        !mutation.success,
++    ))
++}
++
++struct GraphContext {
++    path: PathBuf,
++    graph: Graph,
++    domain: CliGraphDomain,
++}
++
++enum CliGraphDomain {
++    BehaviorTree(BehaviorTreeDomain),
++    Animation(AnimationGraphDomain),
++}
++
++impl CliGraphDomain {
++    fn for_graph(graph: &Graph) -> Option<Self> {
++        let behavior = BehaviorTreeDomain::new();
++        if graph.kind == *behavior.graph_kind() {
++            return Some(Self::BehaviorTree(behavior));
++        }
++        let animation = AnimationGraphDomain::new();
++        if graph.kind == *animation.graph_kind() {
++            return Some(Self::Animation(animation));
++        }
++        None
++    }
++
++    fn as_domain(&self) -> &dyn GraphDomain {
++        match self {
++            Self::BehaviorTree(domain) => domain,
++            Self::Animation(domain) => domain,
++        }
++    }
++}
++
++fn load_graph_context(
++    project_path: &Path,
++    graph_relative: &str,
++) -> Result<GraphContext, CliRunResult> {
++    let project = ProjectRoot::open(project_path)
++        .map_err(|error| input_error("project_error", project_path, &error.to_string()))?;
++    let graph_path = project.resolve_asset(graph_relative).map_err(|error| {
++        input_error(
++            "project_path_error",
++            Path::new(graph_relative),
++            &error.to_string(),
++        )
++    })?;
++    let json = fs::read_to_string(&graph_path)
++        .map_err(|error| input_error("io_error", &graph_path, &error.to_string()))?;
++    let graph: Graph = serde_json::from_str(&json)
++        .map_err(|error| input_error("invalid_json", &graph_path, &error.to_string()))?;
++    let domain = CliGraphDomain::for_graph(&graph).ok_or_else(|| {
++        input_error(
++            "unsupported_graph_domain",
++            &graph_path,
++            &format!("unsupported graph kind `{}`", graph.kind.as_str()),
++        )
++    })?;
++    Ok(GraphContext {
++        path: graph_path,
++        graph,
++        domain,
++    })
++}
++
++fn load_commands(path: &Path) -> Result<Vec<GraphCommand>, CliRunResult> {
++    let json = fs::read_to_string(path)
++        .map_err(|error| input_error("io_error", path, &error.to_string()))?;
++    serde_json::from_str(&json)
++        .map_err(|error| input_error("invalid_json", path, &error.to_string()))
++}
++
++fn authoring_error(error: GraphAuthoringError) -> Result<CliRunResult, CliError> {
++    let output = AuthoringErrorOutput {
++        success: false,
++        error: AuthoringErrorBody {
++            code: error.code(),
++            message: error.to_string(),
++        },
++    };
++    Ok(CliRunResult::diagnostics(to_json(&output)?, true))
++}
++
++fn input_error(kind: &'static str, path: &Path, message: &str) -> CliRunResult {
++    CliRunResult::input_error(input_error_json(kind, path, message))
++}
++
++fn read_permissions() -> AuthoringPermissions {
++    AuthoringPermissions::read_only()
++}
++
++fn write_permissions() -> AuthoringPermissions {
++    AuthoringPermissions::read_only()
++        .with(AuthoringPermission::Preview)
++        .with(AuthoringPermission::ProjectDataWrite)
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use crate::run_cli_with_status;
++    use engine_authoring::{
++        BehaviorTreeAuthoringService, GraphAuthoringService, ProjectConfig, PROJECT_SCHEMA_VERSION,
++    };
++    use serde_json::Value;
++
++    #[test]
++    fn graph_apply_matches_shared_service_diff_and_persists() {
++        let directory = tempfile::tempdir().expect("temporary project parent");
++        let root = directory.path().join("GraphCliGame");
++        let project = ProjectRoot::create(
++            &root,
++            ProjectConfig {
++                name: "Graph CLI Test".into(),
++                schema_version: PROJECT_SCHEMA_VERSION,
++            },
++        )
++        .expect("project creation");
++        let graph_relative = "graphs/main.graph.json";
++        let graph_path = project
++            .resolve_asset_for_write(graph_relative)
++            .expect("graph path");
++        fs::create_dir_all(graph_path.parent().expect("graph parent"))
++            .expect("graph parent directory");
++        let example = BehaviorTreeAuthoringService::new()
++            .example()
++            .expect("behavior tree example");
++        fs::write(
++            &graph_path,
++            serde_json::to_string_pretty(&example.graph).expect("graph JSON"),
++        )
++        .expect("graph fixture");
++        let node = example
++            .graph
++            .nodes
++            .keys()
++            .next()
++            .expect("example node")
++            .clone();
++        let command = GraphCommand::SetNodeName {
++            node: node.clone(),
++            name: Some("renamed_by_cli".into()),
++        };
++        let commands_path = root.join("graph-commands.json");
++        fs::write(
++            &commands_path,
++            serde_json::to_string_pretty(&vec![command.clone()]).expect("command JSON"),
++        )
++        .expect("command fixture");
++
++        let source_json = fs::read_to_string(&graph_path).expect("source graph");
++        let mut direct_graph: Graph = serde_json::from_str(&source_json).expect("direct graph");
++        let direct_domain = CliGraphDomain::for_graph(&direct_graph).expect("direct domain");
++        let direct_service = GraphAuthoringService::new();
++        let permissions = write_permissions();
++        let base = direct_service
++            .inspect(&direct_graph, &permissions)
++            .expect("direct inspect");
++        let direct = direct_service
++            .apply(
++                &mut direct_graph,
++                direct_domain.as_domain(),
++                &permissions,
++                base.revision,
++                base.generation,
++                vec![command],
++            )
++            .expect("direct apply");
++
++        let result = run_cli_with_status([
++            "graph".to_owned(),
++            "apply".to_owned(),
++            root.display().to_string(),
++            graph_relative.to_owned(),
++            commands_path.display().to_string(),
++        ])
++        .expect("graph CLI apply");
++        let output: Value = serde_json::from_str(&result.output).expect("CLI JSON");
++        let persisted: Graph = serde_json::from_str(
++            &fs::read_to_string(&graph_path).expect("persisted graph"),
++        )
++        .expect("persisted graph parse");
++
++        assert_eq!(result.exit_code, 0);
++        assert_eq!(
++            output["diff"],
++            serde_json::to_value(&direct.diff).expect("direct diff JSON")
++        );
++        assert_eq!(
++            persisted.nodes.get(&node).and_then(|node| node.name.as_deref()),
++            Some("renamed_by_cli")
++        );
++    }
++}
