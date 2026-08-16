@@ -5,7 +5,7 @@
 //! project authoring session remains authoritative.
 
 use eframe::egui;
-use engine_mcp::{BehaviorTreeMcpTools, McpToolDescriptor, SceneMcpTools};
+use engine_mcp::{AssetMcpTools, BehaviorTreeMcpTools, McpToolDescriptor, SceneMcpTools};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::fmt;
@@ -409,6 +409,7 @@ fn initialize_result() -> Value {
 fn tools_list_result() -> Value {
     let mut descriptors = BehaviorTreeMcpTools::new().tool_descriptors();
     descriptors.extend(SceneMcpTools::new().tool_descriptors());
+    descriptors.extend(AssetMcpTools::new().tool_descriptors());
     json!({
         "tools": descriptors.into_iter().map(tool_descriptor_json).collect::<Vec<_>>()
     })

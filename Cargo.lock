@@ -1368,6 +1368,7 @@ dependencies = [
 name = "engine-cli"
 version = "0.1.0"
 dependencies = [
+ "engine-assets",
  "engine-authoring",
  "engine-mcp",
  "serde",
@@ -1489,6 +1490,7 @@ dependencies = [
 name = "engine-mcp"
 version = "0.1.0"
 dependencies = [
+ "engine-assets",
  "engine-authoring",
  "serde",
  "serde_json",

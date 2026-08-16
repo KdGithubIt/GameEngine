@@ -5,8 +5,9 @@ use engine_authoring::{
     AuthoringPermission, AuthoringPermissions, AuthoringSession, ComponentSchemaRegistry,
 };
 use engine_mcp::{
-    BehaviorTreeApplyInput, BehaviorTreeGraphInput, BehaviorTreeMcpTools, EntityFindInput,
-    EntityInspectInput, McpToolError, SceneMcpTools, SceneMutationInput,
+    AssetInspectInput, AssetMcpTools, AssetSearchInput, BehaviorTreeApplyInput,
+    BehaviorTreeGraphInput, BehaviorTreeMcpTools, EntityFindInput, EntityInspectInput,
+    McpToolError, SceneMcpTools, SceneMutationInput,
 };
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -82,6 +83,7 @@ impl EditorApp {
     ) -> Result<Value, EditorMcpCallFailure> {
         let permissions = mcp_authoring_permissions();
         let scene_tools = SceneMcpTools::new();
+        let asset_tools = AssetMcpTools::new();
         let behavior_tools = BehaviorTreeMcpTools::new();
 
         match name {
@@ -131,6 +133,24 @@ impl EditorApp {
                 require_empty_arguments(arguments)?;
                 let registry = self.mcp_component_schema_registry();
                 to_value(scene_tools.component_schemas(&registry, &permissions)?)
+            }
+            "asset.search" => {
+                let input: AssetSearchInput = decode(arguments)?;
+                to_value(asset_tools.asset_search(
+                    self.project_root(),
+                    &self.asset_manifest,
+                    &permissions,
+                    input,
+                )?)
+            }
+            "asset.inspect" => {
+                let input: AssetInspectInput = decode(arguments)?;
+                to_value(asset_tools.asset_inspect(
+                    self.project_root(),
+                    &self.asset_manifest,
+                    &permissions,
+                    input,
+                )?)
             }
             "behavior_tree.schemas" => {
                 require_empty_arguments(arguments)?;
@@ -324,5 +344,30 @@ mod tests {
         assert!(schemas.iter().any(|schema| {
             schema["type_id"] == Value::String("engine.camera".into())
         }));
+    }
+
+    #[test]
+    fn asset_search_reads_the_live_editor_manifest() {
+        let (_directory, mut app) = editor_app();
+        let asset_id = engine_authoring::AssetId::generate();
+        app.asset_manifest.insert(
+            asset_id.clone(),
+            engine::ManifestEntry {
+                path: "textures/hero.png".into(),
+                name: Some("hero_texture".into()),
+                import_settings: engine::ImportSettings::default(),
+            },
+        );
+
+        let output = app
+            .handle_mcp_tool_call("asset.search", json!({"query": "hero"}))
+            .expect("asset search");
+        let assets = output["assets"].as_array().expect("asset array");
+
+        assert_eq!(assets.len(), 1);
+        assert_eq!(
+            assets[0]["id"],
+            Value::String(asset_id.as_str().to_owned())
+        );
     }
 }
