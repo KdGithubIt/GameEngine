@@ -1,0 +1,12 @@
+diff --git a/docs/adr/AUDIT_2026-08-16.md b/docs/adr/AUDIT_2026-08-16.md
+--- a/docs/adr/AUDIT_2026-08-16.md
++++ b/docs/adr/AUDIT_2026-08-16.md
+@@ -168,7 +168,7 @@
+ - Accepted ADRs were not marked Superseded merely because their implementation
+   details are old; a later decision must actually replace the decision.
+ - Historical metadata formatting (`Status:` versus `- Status:` and title
+-  punctuation) was not normalized across 121 files, because that would create
++  punctuation) was not normalized across the full registry, because that would create
+   large review noise without changing the contract.
+ - No serialized schema, Stable ID, public Rust API, crate dependency, or runtime
+   behavior changed in this audit.
