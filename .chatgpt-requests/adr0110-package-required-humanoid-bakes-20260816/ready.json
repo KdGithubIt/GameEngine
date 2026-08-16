@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0110-package-required-humanoid-bakes-20260816",
+  "target_branch": "chatgpt/gameengine-adr-0110-humanoid-motion",
+  "expected_head_sha": "1f0e2149ea39a15cdade81cd25461c73e9d48756",
+  "patch_parts": ["part-0000.patch"],
+  "commit_message": "Enforce required ADR 0110 packaged Humanoid bakes",
+  "pr_title": "ADR 0110: implement humanoid animation sources",
+  "pr_body": "Implements ADR 0110 Humanoid profiles and skeleton-independent motion. This packaging follow-up traces statically reachable Animation Set sources using the same Native / explicit RetargetMap / Humanoid priority as runtime, blocks packaging when a required portable motion or target HumanoidProfile cannot produce its bake, and shares scene/prefab traversal with existing retarget reachability. PR remains Draft; merge is manual."
+}
