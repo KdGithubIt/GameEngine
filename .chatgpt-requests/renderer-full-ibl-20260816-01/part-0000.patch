@@ -1,0 +1,746 @@
+diff --git a/crates/render-runtime/src/lib.rs b/crates/render-runtime/src/lib.rs
+index 7431340..1111111 100644
+--- a/crates/render-runtime/src/lib.rs
++++ b/crates/render-runtime/src/lib.rs
+@@ -12,6 +12,9 @@ pub mod camera;
+ /// Immediate-mode runtime debug line presentation.
+ #[cfg(feature = "gpu")]
+ pub mod debug_draw;
++/// Image-based lighting source and precomputation contracts.
++#[cfg(feature = "gpu")]
++pub mod ibl;
+ /// Runtime light resources and authored light mirroring.
+ #[cfg(feature = "gpu")]
+ pub mod light;
+diff --git a/crates/render-runtime/src/ibl.rs b/crates/render-runtime/src/ibl.rs
+new file mode 100644
+index 0000000..2222222
+--- /dev/null
++++ b/crates/render-runtime/src/ibl.rs
+@@ -0,0 +1,522 @@
++//! Generic image-based lighting source and GPU precomputation.
++//!
++//! Environment lighting consumes a scene-linear representation derived from an
++//! sRGB equirectangular source. The visible sky remains a separate render-pass
++//! responsibility; this module only owns lighting data.
++
++use std::fmt;
++use std::sync::{Arc, OnceLock};
++
++use glam::{Vec2, Vec3};
++use wgpu::util::DeviceExt;
++
++use crate::material::DecodedTexture;
++
++/// Diffuse irradiance cubemap edge length.
++pub(crate) const IRRADIANCE_CUBE_SIZE: u32 = 16;
++/// Base edge length of the prefiltered specular cubemap.
++pub(crate) const PREFILTERED_CUBE_SIZE: u32 = 64;
++/// Split-sum BRDF lookup-table edge length.
++pub(crate) const BRDF_LUT_SIZE: u32 = 128;
++const ENVIRONMENT_SAMPLE_COUNT: u32 = 64;
++const BRDF_SAMPLE_COUNT: u32 = 64;
++
++/// Reports malformed CPU environment-map input.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub enum EnvironmentMapError {
++    /// Environment images must contain at least one texel.
++    EmptyDimensions,
++    /// RGBA8 storage does not match the declared dimensions.
++    InvalidDataLength {
++        /// Required number of tightly packed RGBA8 bytes.
++        expected: usize,
++        /// Actual number of supplied bytes.
++        actual: usize,
++    },
++}
++
++impl fmt::Display for EnvironmentMapError {
++    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
++        match self {
++            Self::EmptyDimensions => write!(formatter, "environment-map dimensions must be non-zero"),
++            Self::InvalidDataLength { expected, actual } => write!(
++                formatter,
++                "environment-map RGBA8 storage has {actual} bytes but dimensions require {expected}"
++            ),
++        }
++    }
++}
++
++impl std::error::Error for EnvironmentMapError {}
++
++/// Runtime lighting source resolved before GPU environment precomputation.
++///
++/// The source is an equirectangular sRGB image. Construction validates its
++/// immutable pixel storage and records a content key, allowing the renderer to
++/// avoid rebuilding irradiance/specular maps every frame. This is a runtime
++/// resource rather than a serialized scene format; authoring asset resolution
++/// may populate it without coupling the renderer to an importer.
++#[derive(Debug, Clone)]
++pub struct EnvironmentMap {
++    source: Arc<DecodedTexture>,
++    content_key: u64,
++}
++
++impl EnvironmentMap {
++    /// Creates a validated environment source from decoded equirectangular pixels.
++    ///
++    /// # Errors
++    ///
++    /// Returns an error for zero dimensions or mismatched tightly-packed RGBA8 storage.
++    pub fn new(source: Arc<DecodedTexture>) -> Result<Self, EnvironmentMapError> {
++        if source.width == 0 || source.height == 0 {
++            return Err(EnvironmentMapError::EmptyDimensions);
++        }
++        let expected = source.width as usize * source.height as usize * 4;
++        if source.rgba8.len() != expected {
++            return Err(EnvironmentMapError::InvalidDataLength {
++                expected,
++                actual: source.rgba8.len(),
++            });
++        }
++        let content_key = environment_content_key(&source);
++        Ok(Self { source, content_key })
++    }
++
++    pub(crate) fn source(&self) -> &DecodedTexture {
++        &self.source
++    }
++
++    pub(crate) fn content_key(&self) -> u64 {
++        self.content_key
++    }
++}
++
++fn environment_content_key(source: &DecodedTexture) -> u64 {
++    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
++    const PRIME: u64 = 0x0000_0100_0000_01b3;
++    let mut hash = OFFSET;
++    for byte in source
++        .width
++        .to_le_bytes()
++        .into_iter()
++        .chain(source.height.to_le_bytes())
++        .chain(source.rgba8.iter().copied())
++    {
++        hash ^= u64::from(byte);
++        hash = hash.wrapping_mul(PRIME);
++    }
++    hash
++}
++
++#[derive(Clone)]
++struct LinearEnvironment {
++    width: u32,
++    height: u32,
++    pixels: Vec<Vec3>,
++}
++
++impl LinearEnvironment {
++    fn from_source(source: &DecodedTexture) -> Self {
++        let pixels = source
++            .rgba8
++            .chunks_exact(4)
++            .map(|rgba| {
++                Vec3::new(
++                    srgb_u8_to_linear(rgba[0]),
++                    srgb_u8_to_linear(rgba[1]),
++                    srgb_u8_to_linear(rgba[2]),
++                )
++            })
++            .collect();
++        Self {
++            width: source.width,
++            height: source.height,
++            pixels,
++        }
++    }
++
++    fn sample(&self, direction: Vec3) -> Vec3 {
++        let direction = direction.normalize_or_zero();
++        if direction == Vec3::ZERO {
++            return Vec3::ZERO;
++        }
++        let u = direction.z.atan2(direction.x) / std::f32::consts::TAU + 0.5;
++        let v = direction.y.clamp(-1.0, 1.0).acos() / std::f32::consts::PI;
++        let x = u * self.width as f32 - 0.5;
++        let y = v * self.height.saturating_sub(1) as f32;
++        let x0 = x.floor() as i32;
++        let y0 = y.floor().clamp(0.0, self.height.saturating_sub(1) as f32) as u32;
++        let x1 = x0 + 1;
++        let y1 = (y0 + 1).min(self.height - 1);
++        let tx = x - x.floor();
++        let ty = y - y.floor();
++        let width = self.width as i32;
++        let wrap = |value: i32| value.rem_euclid(width) as u32;
++        let at = |px: u32, py: u32| self.pixels[(py * self.width + px) as usize];
++        let top = at(wrap(x0), y0).lerp(at(wrap(x1), y0), tx);
++        let bottom = at(wrap(x0), y1).lerp(at(wrap(x1), y1), tx);
++        top.lerp(bottom, ty)
++    }
++}
++
++fn srgb_u8_to_linear(value: u8) -> f32 {
++    let value = f32::from(value) / 255.0;
++    if value <= 0.04045 {
++        value / 12.92
++    } else {
++        ((value + 0.055) / 1.055).powf(2.4)
++    }
++}
++
++#[derive(Debug)]
++struct BakedEnvironment {
++    irradiance: Vec<Vec3>,
++    prefiltered: Vec<Vec3>,
++    specular_mip_count: u32,
++}
++
++fn bake_environment(source: &LinearEnvironment) -> BakedEnvironment {
++    bake_environment_with_options(
++        source,
++        IRRADIANCE_CUBE_SIZE,
++        PREFILTERED_CUBE_SIZE,
++        ENVIRONMENT_SAMPLE_COUNT,
++    )
++}
++
++fn bake_environment_with_options(
++    source: &LinearEnvironment,
++    irradiance_size: u32,
++    prefiltered_size: u32,
++    sample_count: u32,
++) -> BakedEnvironment {
++    let irradiance = bake_diffuse_irradiance(source, irradiance_size, sample_count);
++    let specular_mip_count = prefiltered_size.ilog2() + 1;
++    let mut prefiltered = Vec::new();
++    for mip in 0..specular_mip_count {
++        let size = (prefiltered_size >> mip).max(1);
++        let roughness = if specular_mip_count > 1 {
++            mip as f32 / (specular_mip_count - 1) as f32
++        } else {
++            0.0
++        };
++        for face in 0..6 {
++            for y in 0..size {
++                for x in 0..size {
++                    let normal = cube_direction(face, x, y, size);
++                    prefiltered.push(prefilter_specular(
++                        source,
++                        normal,
++                        roughness,
++                        sample_count,
++                    ));
++                }
++            }
++        }
++    }
++    BakedEnvironment {
++        irradiance,
++        prefiltered,
++        specular_mip_count,
++    }
++}
++
++fn bake_diffuse_irradiance(
++    source: &LinearEnvironment,
++    size: u32,
++    sample_count: u32,
++) -> Vec<Vec3> {
++    let mut pixels = Vec::with_capacity((size * size * 6) as usize);
++    for face in 0..6 {
++        for y in 0..size {
++            for x in 0..size {
++                let normal = cube_direction(face, x, y, size);
++                let (tangent, bitangent) = tangent_basis(normal);
++                let mut radiance = Vec3::ZERO;
++                for sample in 0..sample_count.max(1) {
++                    let xi = hammersley(sample, sample_count.max(1));
++                    let phi = std::f32::consts::TAU * xi.x;
++                    let sin_theta = xi.y.sqrt();
++                    let cos_theta = (1.0 - xi.y).sqrt();
++                    let local = Vec3::new(phi.cos() * sin_theta, phi.sin() * sin_theta, cos_theta);
++                    let direction = (tangent * local.x + bitangent * local.y + normal * local.z)
++                        .normalize_or_zero();
++                    radiance += source.sample(direction);
++                }
++                pixels.push(radiance * (std::f32::consts::PI / sample_count.max(1) as f32));
++            }
++        }
++    }
++    pixels
++}
++
++fn prefilter_specular(
++    source: &LinearEnvironment,
++    normal: Vec3,
++    roughness: f32,
++    sample_count: u32,
++) -> Vec3 {
++    if roughness <= 0.0001 {
++        return source.sample(normal);
++    }
++    let view = normal;
++    let mut radiance = Vec3::ZERO;
++    let mut weight = 0.0;
++    for sample in 0..sample_count.max(1) {
++        let half_vector = importance_sample_ggx(
++            hammersley(sample, sample_count.max(1)),
++            normal,
++            roughness,
++        );
++        let light = (2.0 * view.dot(half_vector) * half_vector - view).normalize_or_zero();
++        let ndl = normal.dot(light).max(0.0);
++        if ndl > 0.0 {
++            radiance += source.sample(light) * ndl;
++            weight += ndl;
++        }
++    }
++    if weight > 0.0 {
++        radiance / weight
++    } else {
++        source.sample(normal)
++    }
++}
++
++fn cube_direction(face: u32, x: u32, y: u32, size: u32) -> Vec3 {
++    let u = (2.0 * (x as f32 + 0.5) / size.max(1) as f32) - 1.0;
++    let v = (2.0 * (y as f32 + 0.5) / size.max(1) as f32) - 1.0;
++    match face {
++        0 => Vec3::new(1.0, -v, -u),
++        1 => Vec3::new(-1.0, -v, u),
++        2 => Vec3::new(u, 1.0, v),
++        3 => Vec3::new(u, -1.0, -v),
++        4 => Vec3::new(u, -v, 1.0),
++        _ => Vec3::new(-u, -v, -1.0),
++    }
++    .normalize()
++}
++
++fn tangent_basis(normal: Vec3) -> (Vec3, Vec3) {
++    let helper = if normal.z.abs() < 0.999 { Vec3::Z } else { Vec3::X };
++    let tangent = helper.cross(normal).normalize();
++    (tangent, normal.cross(tangent).normalize())
++}
++
++fn hammersley(index: u32, count: u32) -> Vec2 {
++    Vec2::new(index as f32 / count.max(1) as f32, radical_inverse_vdc(index))
++}
++
++fn radical_inverse_vdc(mut bits: u32) -> f32 {
++    bits = bits.rotate_right(16);
++    bits = ((bits & 0x5555_5555) << 1) | ((bits & 0xaaaa_aaaa) >> 1);
++    bits = ((bits & 0x3333_3333) << 2) | ((bits & 0xcccc_cccc) >> 2);
++    bits = ((bits & 0x0f0f_0f0f) << 4) | ((bits & 0xf0f0_f0f0) >> 4);
++    bits = ((bits & 0x00ff_00ff) << 8) | ((bits & 0xff00_ff00) >> 8);
++    bits as f32 * 2.328_306_4e-10
++}
++
++fn importance_sample_ggx(xi: Vec2, normal: Vec3, roughness: f32) -> Vec3 {
++    let alpha = (roughness * roughness).max(0.0001);
++    let alpha2 = alpha * alpha;
++    let phi = std::f32::consts::TAU * xi.x;
++    let cos_theta = ((1.0 - xi.y) / (1.0 + (alpha2 - 1.0) * xi.y).max(0.0001)).sqrt();
++    let sin_theta = (1.0 - cos_theta * cos_theta).max(0.0).sqrt();
++    let local = Vec3::new(phi.cos() * sin_theta, phi.sin() * sin_theta, cos_theta);
++    let (tangent, bitangent) = tangent_basis(normal);
++    (tangent * local.x + bitangent * local.y + normal * local.z).normalize()
++}
++
++fn integrate_brdf(ndv: f32, roughness: f32, sample_count: u32) -> Vec2 {
++    let ndv = ndv.clamp(0.0001, 1.0);
++    let view = Vec3::new((1.0 - ndv * ndv).sqrt(), 0.0, ndv);
++    let normal = Vec3::Z;
++    let mut scale = 0.0;
++    let mut bias = 0.0;
++    for sample in 0..sample_count.max(1) {
++        let half_vector = importance_sample_ggx(
++            hammersley(sample, sample_count.max(1)),
++            normal,
++            roughness,
++        );
++        let light = (2.0 * view.dot(half_vector) * half_vector - view).normalize_or_zero();
++        let ndl = light.z.max(0.0);
++        let ndh = half_vector.z.max(0.0);
++        let vdh = view.dot(half_vector).max(0.0);
++        if ndl > 0.0 && ndh > 0.0 {
++            let geometry = geometry_smith(ndv, ndl, roughness);
++            let visibility = geometry * vdh / (ndh * ndv).max(0.0001);
++            let fresnel = (1.0 - vdh).powi(5);
++            scale += (1.0 - fresnel) * visibility;
++            bias += fresnel * visibility;
++        }
++    }
++    Vec2::new(scale, bias) / sample_count.max(1) as f32
++}
++
++fn geometry_smith(ndv: f32, ndl: f32, roughness: f32) -> f32 {
++    let k = roughness * roughness * 0.5;
++    let visibility = |nd: f32| nd / (nd * (1.0 - k) + k).max(0.0001);
++    visibility(ndv) * visibility(ndl)
++}
++
++fn generate_brdf_lut() -> Vec<Vec2> {
++    let mut pixels = Vec::with_capacity((BRDF_LUT_SIZE * BRDF_LUT_SIZE) as usize);
++    for y in 0..BRDF_LUT_SIZE {
++        let roughness = (y as f32 + 0.5) / BRDF_LUT_SIZE as f32;
++        for x in 0..BRDF_LUT_SIZE {
++            let ndv = (x as f32 + 0.5) / BRDF_LUT_SIZE as f32;
++            pixels.push(integrate_brdf(ndv, roughness, BRDF_SAMPLE_COUNT));
++        }
++    }
++    pixels
++}
++
++fn f32_to_f16_bits(value: f32) -> u16 {
++    let bits = value.to_bits();
++    let sign = ((bits >> 16) & 0x8000) as u16;
++    let exponent = ((bits >> 23) & 0xff) as i32;
++    let mantissa = bits & 0x007f_ffff;
++    if exponent == 0xff {
++        return sign | if mantissa == 0 { 0x7c00 } else { 0x7e00 };
++    }
++    let half_exponent = exponent - 127 + 15;
++    if half_exponent >= 31 {
++        return sign | 0x7c00;
++    }
++    if half_exponent <= 0 {
++        if half_exponent < -10 {
++            return sign;
++        }
++        let mantissa = mantissa | 0x0080_0000;
++        let shift = (14 - half_exponent) as u32;
++        let rounded = (mantissa + (1 << (shift - 1))) >> shift;
++        return sign | rounded as u16;
++    }
++    let rounded_mantissa = mantissa + 0x0000_1000;
++    if rounded_mantissa & 0x0080_0000 != 0 {
++        let exponent = half_exponent + 1;
++        if exponent >= 31 {
++            return sign | 0x7c00;
++        }
++        return sign | ((exponent as u16) << 10);
++    }
++    sign | ((half_exponent as u16) << 10) | ((rounded_mantissa >> 13) as u16 & 0x03ff)
++}
++
++fn rgba16_bytes(pixels: &[Vec3]) -> Vec<u8> {
++    let mut words = Vec::with_capacity(pixels.len() * 4);
++    for pixel in pixels {
++        words.extend([
++            f32_to_f16_bits(pixel.x),
++            f32_to_f16_bits(pixel.y),
++            f32_to_f16_bits(pixel.z),
++            f32_to_f16_bits(1.0),
++        ]);
++    }
++    bytemuck::cast_slice(&words).to_vec()
++}
++
++fn rg16_bytes(pixels: &[Vec2]) -> Vec<u8> {
++    let mut words = Vec::with_capacity(pixels.len() * 2);
++    for pixel in pixels {
++        words.extend([f32_to_f16_bits(pixel.x), f32_to_f16_bits(pixel.y)]);
++    }
++    bytemuck::cast_slice(&words).to_vec()
++}
++
++/// GPU cubemaps backing StandardLit diffuse and specular environment lighting.
++pub(crate) struct GpuIblEnvironment {
++    _irradiance_texture: wgpu::Texture,
++    pub(crate) irradiance_view: wgpu::TextureView,
++    _prefiltered_texture: wgpu::Texture,
++    pub(crate) prefiltered_view: wgpu::TextureView,
++    specular_mip_count: u32,
++    source_key: Option<u64>,
++}
++
++impl GpuIblEnvironment {
++    pub(crate) fn fallback(device: &wgpu::Device, queue: &wgpu::Queue) -> Self {
++        let black = vec![Vec3::ZERO; 6];
++        let baked = BakedEnvironment {
++            irradiance: black.clone(),
++            prefiltered: black,
++            specular_mip_count: 1,
++        };
++        Self::upload(device, queue, &baked, 1, 1, None)
++    }
++
++    pub(crate) fn from_environment(
++        device: &wgpu::Device,
++        queue: &wgpu::Queue,
++        source: &EnvironmentMap,
++    ) -> Self {
++        let linear = LinearEnvironment::from_source(source.source());
++        let baked = bake_environment(&linear);
++        Self::upload(
++            device,
++            queue,
++            &baked,
++            IRRADIANCE_CUBE_SIZE,
++            PREFILTERED_CUBE_SIZE,
++            Some(source.content_key()),
++        )
++    }
++
++    fn upload(
++        device: &wgpu::Device,
++        queue: &wgpu::Queue,
++        baked: &BakedEnvironment,
++        irradiance_size: u32,
++        prefiltered_size: u32,
++        source_key: Option<u64>,
++    ) -> Self {
++        let irradiance_texture = device.create_texture_with_data(
++            queue,
++            &wgpu::TextureDescriptor {
++                label: Some("IBL diffuse irradiance cube"),
++                size: wgpu::Extent3d {
++                    width: irradiance_size,
++                    height: irradiance_size,
++                    depth_or_array_layers: 6,
++                },
++                mip_level_count: 1,
++                sample_count: 1,
++                dimension: wgpu::TextureDimension::D2,
++                format: wgpu::TextureFormat::Rgba16Float,
++                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
++                view_formats: &[],
++            },
++            wgpu::util::TextureDataOrder::MipMajor,
++            &rgba16_bytes(&baked.irradiance),
++        );
++        let irradiance_view = irradiance_texture.create_view(&wgpu::TextureViewDescriptor {
++            label: Some("IBL diffuse irradiance cube view"),
++            dimension: Some(wgpu::TextureViewDimension::Cube),
++            ..Default::default()
++        });
++
++        let prefiltered_texture = device.create_texture_with_data(
++            queue,
++            &wgpu::TextureDescriptor {
++                label: Some("IBL prefiltered specular cube"),
++                size: wgpu::Extent3d {
++                    width: prefiltered_size,
++                    height: prefiltered_size,
++                    depth_or_array_layers: 6,
++                },
++                mip_level_count: baked.specular_mip_count,
++                sample_count: 1,
++                dimension: wgpu::TextureDimension::D2,
++                format: wgpu::TextureFormat::Rgba16Float,
++                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
++                view_formats: &[],
++            },
++            wgpu::util::TextureDataOrder::MipMajor,
++            &rgba16_bytes(&baked.prefiltered),
++        );
++        let prefiltered_view = prefiltered_texture.create_view(&wgpu::TextureViewDescriptor {
++            label: Some("IBL prefiltered specular cube view"),
++            dimension: Some(wgpu::TextureViewDimension::Cube),
++            ..Default::default()
++        });
++
++        Self {
++            _irradiance_texture: irradiance_texture,
++            irradiance_view,
++            _prefiltered_texture: prefiltered_texture,
++            prefiltered_view,
++            specular_mip_count: baked.specular_mip_count,
++            source_key,
++        }
++    }
++
++    pub(crate) fn source_key(&self) -> Option<u64> {
++        self.source_key
++    }
++
++    pub(crate) fn max_specular_lod(&self) -> f32 {
++        self.specular_mip_count.saturating_sub(1) as f32
++    }
++}
++
++/// Device-local split-sum BRDF integration texture shared by every environment.
++pub(crate) struct BrdfLut {
++    _texture: wgpu::Texture,
++    pub(crate) view: wgpu::TextureView,
++}
++
++impl BrdfLut {
++    pub(crate) fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Self {
++        static LUT_BYTES: OnceLock<Vec<u8>> = OnceLock::new();
++        let bytes = LUT_BYTES.get_or_init(|| rg16_bytes(&generate_brdf_lut()));
++        let texture = device.create_texture_with_data(
++            queue,
++            &wgpu::TextureDescriptor {
++                label: Some("IBL split-sum BRDF LUT"),
++                size: wgpu::Extent3d {
++                    width: BRDF_LUT_SIZE,
++                    height: BRDF_LUT_SIZE,
++                    depth_or_array_layers: 1,
++                },
++                mip_level_count: 1,
++                sample_count: 1,
++                dimension: wgpu::TextureDimension::D2,
++                format: wgpu::TextureFormat::Rg16Float,
++                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
++                view_formats: &[],
++            },
++            wgpu::util::TextureDataOrder::MipMajor,
++            bytes,
++        );
++        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
++        Self {
++            _texture: texture,
++            view,
++        }
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    fn constant_source(rgb: [u8; 3]) -> Arc<DecodedTexture> {
++        let mut rgba8 = Vec::new();
++        for _ in 0..8 {
++            rgba8.extend([rgb[0], rgb[1], rgb[2], 255]);
++        }
++        Arc::new(DecodedTexture {
++            label: "constant_environment".into(),
++            width: 4,
++            height: 2,
++            rgba8,
++        })
++    }
++
++    #[test]
++    fn environment_map_rejects_malformed_storage() {
++        let source = Arc::new(DecodedTexture {
++            label: "invalid_environment".into(),
++            width: 2,
++            height: 2,
++            rgba8: vec![0; 4],
++        });
++        assert_eq!(
++            EnvironmentMap::new(source).unwrap_err(),
++            EnvironmentMapError::InvalidDataLength {
++                expected: 16,
++                actual: 4,
++            }
++        );
++    }
++
++    #[test]
++    fn content_key_depends_on_pixels_not_debug_label() {
++        let first = EnvironmentMap::new(constant_source([128, 64, 32])).unwrap();
++        let mut second_source = (*constant_source([128, 64, 32])).clone();
++        second_source.label = "renamed_environment".into();
++        let second = EnvironmentMap::new(Arc::new(second_source)).unwrap();
++        let changed = EnvironmentMap::new(constant_source([129, 64, 32])).unwrap();
++        assert_eq!(first.content_key(), second.content_key());
++        assert_ne!(first.content_key(), changed.content_key());
++    }
++
++    #[test]
++    fn constant_environment_stays_constant_across_diffuse_and_specular_convolution() {
++        let source = constant_source([255, 255, 255]);
++        let linear = LinearEnvironment::from_source(&source);
++        let baked = bake_environment_with_options(&linear, 2, 4, 16);
++        for pixel in baked.irradiance {
++            assert!((pixel.x - std::f32::consts::PI).abs() < 0.01);
++            assert!((pixel.y - std::f32::consts::PI).abs() < 0.01);
++            assert!((pixel.z - std::f32::consts::PI).abs() < 0.01);
++        }
++        for pixel in baked.prefiltered {
++            assert!((pixel - Vec3::ONE).abs().max_element() < 0.01);
++        }
++    }
++
++    #[test]
++    fn split_sum_brdf_is_finite_and_non_negative() {
++        for (ndv, roughness) in [(0.1, 0.1), (0.5, 0.5), (1.0, 1.0)] {
++            let integrated = integrate_brdf(ndv, roughness, 64);
++            assert!(integrated.is_finite());
++            assert!(integrated.min_element() >= 0.0);
++            assert!(integrated.max_element() <= 1.1);
++        }
++    }
++
++    #[test]
++    fn half_encoding_matches_known_values() {
++        assert_eq!(f32_to_f16_bits(0.0), 0x0000);
++        assert_eq!(f32_to_f16_bits(1.0), 0x3c00);
++        assert_eq!(f32_to_f16_bits(-2.0), 0xc000);
++    }
++}
++diff --git a/crates/render-runtime/src/shaders/mesh.wgsl b/crates/render-runtime/src/shaders/mesh.wgsl
++index 7695f61..3333333 100644
++--- a/crates/render-runtime/src/shaders/mesh.wgsl
+++++ b/crates/render-runtime/src/shaders/mesh.wgsl
++@@ -12,6 +12,10 @@ struct ShadowUniform {
++ struct MaterialUniform {
++@@
++     pbr_params: vec4<f32>,       // x=normal scale, y=occlusion strength
++ }
+++struct IblUniform {
+++    fallback_radiance: vec4<f32>, // rgb=constant source, w=effective intensity
+++    params: vec4<f32>,            // x=enabled, y=has map, z=max specular lod
+++}
++ 
++ @group(0) @binding(0) var<uniform> camera: CameraUniform;
++@@ -36,6 +40,11 @@ struct MaterialUniform {
++ @group(2) @binding(1) var<uniform> shadow: ShadowUniform;
++ @group(2) @binding(2) var t_shadow: texture_depth_2d_array;
++ @group(2) @binding(3) var s_shadow: sampler_comparison;
+++@group(2) @binding(4) var t_irradiance: texture_cube<f32>;
+++@group(2) @binding(5) var t_prefiltered: texture_cube<f32>;
+++@group(2) @binding(6) var t_brdf_lut: texture_2d<f32>;
+++@group(2) @binding(7) var s_ibl: sampler;
+++@group(2) @binding(8) var<uniform> ibl: IblUniform;
++ 
++ struct VertexInput {
++@@ -140,6 +149,34 @@ fn mapped_normal(
++     return normalize(mat3x3<f32>(tangent, bitangent, normal) * tangent_normal);
++ }
++ 
+++fn fresnel_schlick_roughness(ndv: f32, f0: vec3<f32>, roughness: f32) -> vec3<f32> {
+++    let grazing = max(vec3<f32>(1.0 - roughness), f0);
+++    return f0 + (grazing - f0) * pow(1.0 - ndv, 5.0);
+++}
+++
+++fn standard_indirect(
+++    base: vec3<f32>, n: vec3<f32>, v: vec3<f32>, roughness: f32, metallic: f32,
+++    f0: vec3<f32>, occlusion: f32,
+++) -> vec3<f32> {
+++    if (ibl.params.x < 0.5) {
+++        return light.ambient_color * light.ambient_intensity * base * (1.0 - metallic) * occlusion;
+++    }
+++    let ndv = max(dot(n, v), 0.0001);
+++    let fresnel = fresnel_schlick_roughness(ndv, f0, roughness);
+++    let diffuse_weight = (vec3<f32>(1.0) - fresnel) * (1.0 - metallic);
+++    var irradiance = ibl.fallback_radiance.rgb * 3.14159265;
+++    var prefiltered = ibl.fallback_radiance.rgb;
+++    if (ibl.params.y > 0.5) {
+++        irradiance = textureSample(t_irradiance, s_ibl, n).rgb;
+++        let reflected = reflect(-v, n);
+++        prefiltered = textureSampleLevel(
+++            t_prefiltered, s_ibl, reflected, roughness * ibl.params.z
+++        ).rgb;
+++    }
+++    let brdf = textureSample(t_brdf_lut, s_ibl, vec2<f32>(ndv, roughness)).rg;
+++    let diffuse = diffuse_weight * base * irradiance / 3.14159265;
+++    let specular = prefiltered * (f0 * brdf.x + vec3<f32>(brdf.y));
+++    return (diffuse + specular) * ibl.fallback_radiance.w * occlusion;
+++}
+++
++ fn standard_lit(base: vec3<f32>, n: vec3<f32>, l: vec3<f32>, v: vec3<f32>, surface: vec4<f32>, visibility: f32, occlusion: f32) -> vec3<f32> {
++     let h = normalize(l + v);
++@@ -157,9 +194,9 @@ fn standard_lit(base: vec3<f32>, n: vec3<f32>, l: vec3<f32>, v: vec3<f32>, su
++     let diffuse_weight = (vec3<f32>(1.0) - fresnel) * (1.0 - metallic);
++     let direct = (diffuse_weight * base / 3.14159265 + specular)
++         * light.dir_color * light.dir_intensity * visibility * ndl;
++-    let indirect = light.ambient_color * light.ambient_intensity * base * (1.0 - metallic) * occlusion;
+++    let indirect = standard_indirect(base, n, v, roughness, metallic, f0, occlusion);
++     return indirect + direct;
++ }
