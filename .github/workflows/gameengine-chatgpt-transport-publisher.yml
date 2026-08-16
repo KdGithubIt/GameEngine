@@ -19,6 +19,7 @@ permissions:
 concurrency:
   group: gameengine-chatgpt-transport-publisher
   cancel-in-progress: false
+  queue: max
 
 jobs:
   publish:
