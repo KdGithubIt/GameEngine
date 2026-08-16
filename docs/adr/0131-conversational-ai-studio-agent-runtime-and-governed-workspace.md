@@ -434,6 +434,153 @@ architecture:
 A partial implementation MUST NOT bypass the architecture by placing unique
 editing rules in one provider adapter or the AI Studio UI.
 
+### 16. Local-model setup is catalog-assisted without model-family lock-in
+
+Native local-model support is runtime-oriented rather than model-family-oriented.
+GameEngine SHOULD integrate a small number of local runtime or compatible
+backend shapes and MUST NOT require one engine adapter per model family.
+Compatible models exposed by a supported runtime may therefore be used without
+adding model-specific authoring logic to GameEngine.
+
+AI Studio SHOULD provide a curated local-model setup path for users who do not
+already manage local models. The recommended catalog SHOULD present a small
+number of understandable profiles such as lightweight, balanced, and
+high-quality rather than exposing an unfiltered model registry as the default
+experience. A catalog entry SHOULD record enough metadata to make the choice
+reviewable, including:
+
+- runtime/backend identity;
+- exact model and version identity;
+- download source and license/provenance information;
+- expected download/storage size;
+- recommended system memory and GPU memory where known;
+- context and modality capabilities;
+- structured-output and tool-use capabilities; and
+- the GameEngine benchmark version and result that justified recommendation.
+
+Model weights are not bundled merely because a model appears in the catalog.
+Downloading a recommended model is an explicit user action, and AI Studio SHOULD
+show the source and expected transfer/storage size before acquisition.
+
+Where reliable, AI Studio SHOULD detect already-installed compatible local
+runtimes and models and allow the user to select them. Advanced users MUST be
+able to configure a compatible custom local backend without requiring that its
+model appear in the curated catalog.
+
+The native runtime maintains a provider-independent `ModelCapabilityProfile` or
+equivalent description. Capabilities SHOULD include, when discoverable,
+structured output, tool use, image input, reasoning support, context limits, and
+other features required by the active harness. A model that can connect but has
+not passed the relevant GameEngine benchmark may be shown as compatible but
+unverified rather than being presented as officially recommended.
+
+Specific model families and model versions are deliberately not pinned by this
+ADR. Recommendations are product data derived from current compatibility,
+hardware requirements, licensing constraints, and GameEngine-specific measured
+results. Updating that catalog MUST NOT require changing the native agent
+architecture.
+
+### 17. The native runtime starts from one measurable baseline harness
+
+GameEngine owns one provider-independent baseline native-agent harness. The
+initial harness SHOULD use the same orchestration policy across compatible
+models so model comparisons do not accidentally compare different agents.
+Model-specific behavior MUST NOT fork the semantic authoring, workspace,
+permission, validation, or completion architecture defined by this ADR.
+
+The architecture boundaries are stable, while performance-sensitive harness
+policy is expected to evolve. Tunable policy MAY include:
+
+- whether planning is required or may be skipped for simple work;
+- which tools are exposed in each run state;
+- retrieval, context selection, compaction, and pinned working-set policy;
+- validation cadence and validator ordering;
+- repair budgets and re-plan thresholds;
+- model reasoning-mode selection when supported;
+- frame-observation and visual-evaluation cadence; and
+- stop and completion-decision policy above the deterministic completion gates.
+
+The host SHOULD instrument native runs so these decisions can be measured.
+Metrics SHOULD include, when available, task and acceptance-criteria success,
+model turns, tool calls, invalid or failed tool calls, context compactions,
+token usage, code-edit counts, validation attempts, repair loops, Play and
+visual-evaluation attempts, human interventions, elapsed time, and peak memory
+or GPU-memory use. Missing backend-specific metrics MUST be represented as
+unavailable rather than fabricated.
+
+GameEngine SHOULD maintain a representative **GameEngine Agent Benchmark** for
+native-agent evaluation. Candidate models MUST be compared with the same harness
+version, tool and permission budget, task corpus, backend configuration, and
+completion criteria when the comparison is intended to choose a recommended
+model. Results SHOULD retain the exact model version, quantization or equivalent
+runtime representation, backend version, and relevant hardware configuration.
+Third-party benchmark scores MAY inform candidate selection, but MUST NOT be the
+sole basis for the default GameEngine recommendation.
+
+Harness changes SHOULD be evaluated against recorded failures and benchmark
+results. When practical, change one policy dimension at a time and retain a
+change only when it improves the relevant task set without unacceptable
+regressions. If a model demonstrates a repeatable need for a different planning,
+context, tool, or reasoning policy, that difference SHOULD be represented by a
+small `HarnessPolicy` or model profile rather than by a separate agent
+implementation.
+
+### 18. Questions and learning use the same conversation with a read-oriented harness
+
+AI Studio is also the first-class surface for asking questions about GameEngine
+and about game development. This does not introduce a mandatory user-visible
+Ask/Build mode pipeline. The same conversation MAY move naturally between
+questions, design discussion, learning, debugging, and an authorized build run.
+
+The host SHOULD classify or otherwise route the current intent to an appropriate
+harness policy. Read-oriented question and learning work normally follows a
+retrieve -> reason -> answer flow and MUST NOT acquire mutation permissions
+merely because the same session could later create a run. Useful read sources
+include:
+
+- accepted ADRs and canonical GameEngine documentation;
+- current source code and generated/public API documentation;
+- read-only Editor MCP inspection of the open project and diagnostics; and
+- general model knowledge for game-development concepts not specific to the
+  current GameEngine implementation.
+
+For GameEngine-specific questions, current repository and Editor evidence is
+authoritative over stale model memory. The answer flow SHOULD retain source
+provenance sufficient for the UI to distinguish repository-derived facts,
+current project observations, general model knowledge, and optional external
+research. Network-backed research remains subject to the normal network
+permission policy.
+
+GameEngine-specific knowledge SHOULD primarily be supplied through retrieval
+rather than by baking one repository snapshot into model weights. This keeps
+answers aligned with changing ADRs, documentation, APIs, and project state
+without requiring a model fine-tune after ordinary engine changes.
+
+If a conversation moves from explanation to mutation, the host creates or
+revises the structured proposal and still requires the normal explicit **Go**
+snapshot before starting the corresponding write-capable `AgentRun`. Asking a
+question MUST NOT silently escalate into project mutation.
+
+### 19. One selected model is the baseline; multi-model routing is an optimization
+
+The initial native experience SHOULD use one user-selected model for
+conversation, questions, planning, and build work whenever that model satisfies
+the required capabilities. This keeps conversation continuity, evaluation, and
+failure diagnosis understandable while the native harness is being established.
+
+A later `ModelRouter` MAY use different models for different workloads, for
+example a smaller model for simple questions, a stronger coding model for
+implementation, or a vision-capable model for frame evaluation. Such routing is
+an optimization rather than a correctness dependency.
+
+Routing policy MUST preserve the active session and proposal semantics, source
+provenance, permission boundaries, immutable run input, and completion gates.
+The host MUST NOT hide a capability loss caused by switching models. Context
+handoff and routing choices SHOULD be measurable, and a multi-model policy
+SHOULD be adopted only after GameEngine-specific evaluation demonstrates a
+meaningful quality, latency, memory, or power benefit over the single-model
+baseline.
+
 ## Initial implementation status
 
 The first accepted implementation ships the architectural foundation without
