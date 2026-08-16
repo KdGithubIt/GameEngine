@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "request_id": "20260816-adr0126-timeline-av-core-fd5115d-r4",
+  "target_branch": "chatgpt/gameengine-adr0126-timeline-sequencer-v2",
+  "expected_head_sha": "fd5115d752a76f51d7d59ed663fa648d0e152aef",
+  "patch_parts": [
+    "part-0000.patch",
+    "part-0001.patch"
+  ],
+  "commit_message": "Add Timeline Audio and VFX track contracts",
+  "pr_title": "Implement ADR 0126 Timeline and Sequencer runtime",
+  "pr_body": "Adds current-format Timeline Audio/VFX typed tracks, deterministic compiled payloads, stable event source identity, binding validation, and correct seek capabilities on top of the ADR 0126 implementation. The PR remains Draft until the full ADR Definition of Done and Windows/Visual validation complete."
+}
