@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0131-visual-layer-ad90948-r10",
+  "target_branch": "chatgpt/gameengine-adr0131-ai-studio-impl-v11",
+  "expected_head_sha": "ad90948d2c9eb5bc3d0954033b2350dbe8430313",
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Fix ADR 0131 AI Studio launcher layering",
+  "pr_title": "GameEngine: implement ADR 0131 conversational AI Studio foundation",
+  "pr_body": "## Summary\n\n- implement the ADR 0131 conversational AI Studio foundation on the current main baseline\n- add the GUI-free agent host, resumable project-scoped state, permission boundaries, isolated code workspace, and thin Editor AI Studio frontend\n- preserve the validated foundation behavior and the Editor Clippy cleanup\n- keep the toolbar launcher below modeless Editor windows so AI Studio content is not obscured when window bounds overlap the toolbar region\n\n## Validation\n\n- Windows affected validation for engine-editor\n- Editor visual validation with screenshot inspection\n\n<!-- gameengine-visual-validation: editor -->"
+}
