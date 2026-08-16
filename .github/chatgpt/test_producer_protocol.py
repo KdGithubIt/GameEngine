@@ -139,17 +139,15 @@ class ProducerProtocolTests(unittest.TestCase):
                     )
                 )
 
-    def test_producer_signal_is_read_only_and_trusted_producer_dispatches_publisher(self) -> None:
+    def test_trusted_producer_uses_default_branch_issue_signal(self) -> None:
         root = Path(__file__).resolve().parents[2]
-        signal = (root / ".github" / "workflows" / "gameengine-chatgpt-producer-stage-signal.yml").read_text(
-            encoding="utf-8"
-        )
         trusted = (root / ".github" / "workflows" / "gameengine-chatgpt-trusted-producer.yml").read_text(
             encoding="utf-8"
         )
-        self.assertIn("permissions:\n  contents: read", signal)
-        self.assertNotIn("contents: write", signal)
-        self.assertIn("GameEngine ChatGPT Producer Stage Signal", trusted)
+        self.assertIn("issues:\n    types:\n      - opened", trusted)
+        self.assertIn("ISSUE_ASSOCIATION", trusted)
+        self.assertIn("OWNER|MEMBER|COLLABORATOR", trusted)
+        self.assertIn("gameengine-chatgpt-producer-v1", trusted)
         self.assertIn("gh workflow run gameengine-chatgpt-transport-publisher.yml", trusted)
         self.assertNotIn("HEAD:refs/heads/chatgpt-dispatch\n", trusted)
 
