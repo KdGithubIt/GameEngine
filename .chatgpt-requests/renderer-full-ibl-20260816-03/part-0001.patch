@@ -1,0 +1,200 @@
++    let irradiance = bake_diffuse(source, irradiance_size, sample_count);
++    let mip_count = specular_size.ilog2() + 1;
++    let mut specular_mips = Vec::with_capacity(mip_count as usize);
++    for mip in 0..mip_count {
++        let size = (specular_size >> mip).max(1);
++        let roughness = mip as f32 / (mip_count - 1).max(1) as f32;
++        let mut pixels = Vec::with_capacity((size * size * 6) as usize);
++        for face in 0..6 {
++            for y in 0..size {
++                for x in 0..size {
++                    pixels.push(prefilter_specular(
++                        source,
++                        cube_direction(face, x, y, size),
++                        roughness,
++                        sample_count,
++                    ));
++                }
++            }
++        }
++        specular_mips.push(pixels);
++    }
++    BakedEnvironment {
++        irradiance,
++        specular_mips,
++    }
++}
++
++fn bake_diffuse(source: &LinearEnvironment, size: u32, samples: u32) -> Vec<Vec3> {
++    let samples = samples.max(1);
++    let mut pixels = Vec::with_capacity((size * size * 6) as usize);
++    for face in 0..6 {
++        for y in 0..size {
++            for x in 0..size {
++                let normal = cube_direction(face, x, y, size);
++                let (tangent, bitangent) = tangent_basis(normal);
++                let mut sum = Vec3::ZERO;
++                for index in 0..samples {
++                    let xi = hammersley(index, samples);
++                    let phi = std::f32::consts::TAU * xi.x;
++                    let sin_theta = xi.y.sqrt();
++                    let local = Vec3::new(
++                        phi.cos() * sin_theta,
++                        phi.sin() * sin_theta,
++                        (1.0 - xi.y).sqrt(),
++                    );
++                    let direction =
++                        (tangent * local.x + bitangent * local.y + normal * local.z)
++                            .normalize_or_zero();
++                    sum += source.sample(direction);
++                }
++                pixels.push(sum * (std::f32::consts::PI / samples as f32));
++            }
++        }
++    }
++    pixels
++}
++
++fn prefilter_specular(
++    source: &LinearEnvironment,
++    normal: Vec3,
++    roughness: f32,
++    samples: u32,
++) -> Vec3 {
++    if roughness <= 0.0001 {
++        return source.sample(normal);
++    }
++    let samples = samples.max(1);
++    let mut sum = Vec3::ZERO;
++    let mut weight = 0.0;
++    for index in 0..samples {
++        let half_vector = importance_sample_ggx(hammersley(index, samples), normal, roughness);
++        let light =
++            (2.0 * normal.dot(half_vector) * half_vector - normal).normalize_or_zero();
++        let ndl = normal.dot(light).max(0.0);
++        if ndl > 0.0 {
++            sum += source.sample(light) * ndl;
++            weight += ndl;
++        }
++    }
++    if weight > 0.0 {
++        sum / weight
++    } else {
++        source.sample(normal)
++    }
++}
++
++fn cube_direction(face: u32, x: u32, y: u32, size: u32) -> Vec3 {
++    let u = 2.0 * (x as f32 + 0.5) / size.max(1) as f32 - 1.0;
++    let v = 2.0 * (y as f32 + 0.5) / size.max(1) as f32 - 1.0;
++    match face {
++        0 => Vec3::new(1.0, -v, -u),
++        1 => Vec3::new(-1.0, -v, u),
++        2 => Vec3::new(u, 1.0, v),
++        3 => Vec3::new(u, -1.0, -v),
++        4 => Vec3::new(u, -v, 1.0),
++        _ => Vec3::new(-u, -v, -1.0),
++    }
++    .normalize()
++}
++
++fn tangent_basis(normal: Vec3) -> (Vec3, Vec3) {
++    let helper = if normal.z.abs() < 0.999 {
++        Vec3::Z
++    } else {
++        Vec3::X
++    };
++    let tangent = helper.cross(normal).normalize();
++    (tangent, normal.cross(tangent).normalize())
++}
++
++fn hammersley(index: u32, count: u32) -> Vec2 {
++    Vec2::new(index as f32 / count.max(1) as f32, radical_inverse_vdc(index))
++}
++
++fn radical_inverse_vdc(mut bits: u32) -> f32 {
++    bits = bits.rotate_right(16);
++    bits = ((bits & 0x5555_5555) << 1) | ((bits & 0xaaaa_aaaa) >> 1);
++    bits = ((bits & 0x3333_3333) << 2) | ((bits & 0xcccc_cccc) >> 2);
++    bits = ((bits & 0x0f0f_0f0f) << 4) | ((bits & 0xf0f0_f0f0) >> 4);
++    bits = ((bits & 0x00ff_00ff) << 8) | ((bits & 0xff00_ff00) >> 8);
++    bits as f32 * 2.328_306_4e-10
++}
++
++fn importance_sample_ggx(xi: Vec2, normal: Vec3, roughness: f32) -> Vec3 {
++    let alpha = (roughness * roughness).max(0.0001);
++    let alpha2 = alpha * alpha;
++    let phi = std::f32::consts::TAU * xi.x;
++    let cos_theta =
++        ((1.0 - xi.y) / (1.0 + (alpha2 - 1.0) * xi.y).max(0.0001)).sqrt();
++    let sin_theta = (1.0 - cos_theta * cos_theta).max(0.0).sqrt();
++    let local = Vec3::new(phi.cos() * sin_theta, phi.sin() * sin_theta, cos_theta);
++    let (tangent, bitangent) = tangent_basis(normal);
++    (tangent * local.x + bitangent * local.y + normal * local.z).normalize()
++}
++
++fn integrate_brdf(ndv: f32, roughness: f32, samples: u32) -> Vec2 {
++    let samples = samples.max(1);
++    let ndv = ndv.clamp(0.0001, 1.0);
++    let view = Vec3::new((1.0 - ndv * ndv).sqrt(), 0.0, ndv);
++    let normal = Vec3::Z;
++    let mut scale = 0.0;
++    let mut bias = 0.0;
++    for index in 0..samples {
++        let half_vector = importance_sample_ggx(hammersley(index, samples), normal, roughness);
++        let light =
++            (2.0 * view.dot(half_vector) * half_vector - view).normalize_or_zero();
++        let ndl = light.z.max(0.0);
++        let ndh = half_vector.z.max(0.0);
++        let vdh = view.dot(half_vector).max(0.0);
++        if ndl > 0.0 && ndh > 0.0 {
++            let k = roughness * roughness * 0.5;
++            let g1 = |nd: f32| nd / (nd * (1.0 - k) + k).max(0.0001);
++            let geometry = g1(ndv) * g1(ndl);
++            let visibility = geometry * vdh / (ndh * ndv).max(0.0001);
++            let fresnel = (1.0 - vdh).powi(5);
++            scale += (1.0 - fresnel) * visibility;
++            bias += fresnel * visibility;
++        }
++    }
++    Vec2::new(scale, bias) / samples as f32
++}
++
++fn brdf_lut_bytes() -> Vec<u8> {
++    let mut words = Vec::with_capacity((BRDF_LUT_SIZE * BRDF_LUT_SIZE * 2) as usize);
++    for y in 0..BRDF_LUT_SIZE {
++        let roughness = (y as f32 + 0.5) / BRDF_LUT_SIZE as f32;
++        for x in 0..BRDF_LUT_SIZE {
++            let ndv = (x as f32 + 0.5) / BRDF_LUT_SIZE as f32;
++            let integrated = integrate_brdf(ndv, roughness, BRDF_SAMPLE_COUNT);
++            words.extend([
++                f16::from_f32(integrated.x).to_bits(),
++                f16::from_f32(integrated.y).to_bits(),
++            ]);
++        }
++    }
++    bytemuck::cast_slice(&words).to_vec()
++}
++
++fn rgba16_bytes(pixels: &[Vec3]) -> Vec<u8> {
++    let mut words = Vec::with_capacity(pixels.len() * 4);
++    for pixel in pixels {
++        words.extend([
++            f16::from_f32(pixel.x).to_bits(),
++            f16::from_f32(pixel.y).to_bits(),
++            f16::from_f32(pixel.z).to_bits(),
++            f16::from_f32(1.0).to_bits(),
++        ]);
++    }
++    bytemuck::cast_slice(&words).to_vec()
++}
++
++/// Fixed-size GPU cubemaps backing StandardLit diffuse and specular IBL.
++pub(crate) struct GpuIblEnvironment {
++    _irradiance_texture: wgpu::Texture,
++    pub(crate) irradiance_view: wgpu::TextureView,
++    _prefiltered_texture: wgpu::Texture,
++    pub(crate) prefiltered_view: wgpu::TextureView,
++    source_key: Option<u64>,
++}
++
