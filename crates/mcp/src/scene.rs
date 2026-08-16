@@ -1,6 +1,6 @@
 //! Transport-agnostic Scene and project MCP handlers.
 //!
-//! The caller supplies the live [`AuthoringSession`] owned by the application.
+//! The caller supplies the live `engine_authoring::AuthoringSession` owned by the application.
 //! This keeps `engine-mcp` free of persistence, process lifecycle, and
 //! Editor-specific mutation rules while still exercising the same shared Scene
 //! authoring service as human and CLI clients.
