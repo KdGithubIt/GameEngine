@@ -1,0 +1,88 @@
++option that is safe to version in Git.
++
++### Store all AI conversation and workspace state in canonical project data
++
++Rejected. Conversation, credentials, provider state, caches, and agent process
++metadata are not gameplay authoring semantics and must not affect packaged game
++content or canonical project validation.
++
++### Lock the Editor while an AI run is active
++
++Rejected. It would make the AI feature hostile to normal interactive editing.
++Existing stale-revision checks already provide the correct semantic conflict
++boundary for authoring data.
++
++### Claim application permissions provide a universal sandbox
++
++Rejected. An external process running under the user's OS identity may retain
++capabilities outside GameEngine's application policy. Strong confinement must
++come from a real provider or operating-system isolation mechanism.
++
++## Compatibility and Migration
++
++This ADR does not change existing persisted authoring document schemas, stable
++IDs, MCP tool names, CLI command meanings, or runtime ECS contracts.
++
++If accepted, ADR 0121 remains authoritative for the Editor-scoped MCP writer
++and shared authoring transaction semantics. This decision extends the
++application layer above that interface with conversational agent orchestration,
++provider/runtime abstractions, permission policy, code workspace management,
++asset acquisition, and AI session persistence.
++
++Implementing project-shared AI history introduces a reserved collaboration
++metadata area under the project tree. That metadata is explicitly not canonical
++authoring data and is excluded from packaged game content. Its own session
++schema MUST be versioned before cross-machine persistence is shipped.
++
++Implementing the native agent runtime, code workspace, asset acquisition
++service, and any new workspace crates adds public internal architecture but does
++not authorize runtime crates to depend on Editor, MCP transport, provider SDKs,
++or AI session types.
++
++Provider credentials and login sessions remain user-private. Migration from
++local-only sessions to project-shared sessions is an explicit user action and
++must sanitize non-portable or secret fields before writing the shared record.
++
++If this ADR is accepted, `docs/AI_FRIENDLY_AUTHORING_SPEC.md` sections 16-18
++MUST be updated before or with implementation so the canonical specification
++reflects the accepted agent-runtime, permission, and collaboration contracts.
+diff --git a/crates/editor/src/lib.rs b/crates/editor/src/lib.rs
+--- a/crates/editor/src/lib.rs
++++ b/crates/editor/src/lib.rs
+@@ -7,6 +7,8 @@
+ #![warn(missing_docs)]
+ #![warn(rustdoc::broken_intra_doc_links)]
+ 
++mod agent_host;
++pub mod ai_studio;
+ pub mod anim_ux;
+ mod animation_set_editor;
+ pub mod asset_browser;
+@@ -44,6 +46,7 @@
+ mod view_resolution;
+ mod workspace;
+ 
++pub use ai_studio::{AiStudioConnection, AiStudioPanel};
+ pub use anim_ux::{
+     build_retarget_map_inspector_model, build_skeleton_bind_report, find_skeleton_display_name,
+     find_skeleton_record, merge_bone_pairs, rerun_name_matching, resolve_bone_name,
+diff --git a/crates/editor/src/main.rs b/crates/editor/src/main.rs
+--- a/crates/editor/src/main.rs
++++ b/crates/editor/src/main.rs
+@@ -14,2 +14,2 @@
+-use engine_editor::{AuthoringTool, AuthoringWindows};
++use engine_editor::{AiStudioConnection, AiStudioPanel, AuthoringTool, AuthoringWindows};
+ use engine_project_lifecycle::{acquire_editor_project, EditorLease};
+@@ -25,4 +25,5 @@
+ struct EditorShell {
+     app: engine_editor::EditorApp,
++    ai_studio: AiStudioPanel,
+     authoring_windows: AuthoringWindows,
+     show_authoring_tools: bool,
+@@ -44,5 +45,5 @@
+         let root = project_lease.project_root().clone();
+-        let app = engine_editor::EditorApp::from_project(root);
++        let app = engine_editor::EditorApp::from_project(root.clone());
+         let (mcp_server, mcp_requests) =
+             EditorMcpServer::start(context.clone()).map_err(|error| error.to_string())?;
+         project_lease
