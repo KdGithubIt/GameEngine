@@ -5,6 +5,8 @@ use crate::canvas::{
     show_graph_debug_canvas, GraphCanvasState, GraphDebugBadge, GraphDebugNodePresentation,
     GraphDebugOverlay,
 };
+#[cfg(feature = "visual-validation")]
+use crate::canvas::show_graph_node_palette_visual_fixture;
 use engine::behavior_tree::{
     BehaviorExecutionSnapshot, BehaviorExecutionTransitionKind, BehaviorResetReason, BehaviorStatus,
 };
@@ -187,6 +189,15 @@ impl BehaviorTreeDebugState {
                 reason: Some(BehaviorResetReason::Interrupted),
             });
         }
+        if let Some(node) = nodes.get(4) {
+            recent_transitions.push(engine::behavior_tree::BehaviorExecutionTransition {
+                generation: 4,
+                node: Some(node.clone()),
+                behavior_id: Some("enemy.fallback_failed".into()),
+                kind: BehaviorExecutionTransitionKind::Failure,
+                reason: None,
+            });
+        }
         let snapshot = BehaviorExecutionSnapshot {
             tree_source: session.graph().id.clone(),
             tree_generation: 2,
@@ -355,6 +366,18 @@ impl EditorApp {
                 .sync(key, self.project_root.as_ref(), &snapshot);
         }
         let presentation = BehaviorTreeDebugPresentation::from_snapshot(runtime_entity, &snapshot);
+
+        #[cfg(feature = "visual-validation")]
+        if is_fixture {
+            egui::Panel::left("behavior_tree_visual_validation_palette")
+                .resizable(false)
+                .default_size(470.0)
+                .show_inside(ui, |ui| {
+                    if let Some(session) = self.behavior_debug.graph_session.as_ref() {
+                        show_graph_node_palette_visual_fixture(ui, session);
+                    }
+                });
+        }
 
         egui::Panel::right("behavior_tree_debug_details")
             .resizable(true)

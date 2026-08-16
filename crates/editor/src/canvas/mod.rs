@@ -366,28 +366,13 @@ pub fn show_graph_canvas(
                 .desired_width(180.0),
         );
         ui.menu_button("Add Node", |ui| {
-            let mut last_category = String::new();
-            for kind in session
-                .available_graph_node_kinds()
-                .into_iter()
-                .filter(|kind| kind.matches_search(&state.node_search))
-            {
-                if kind.category() != last_category.as_str() {
-                    if !last_category.is_empty() {
-                        ui.separator();
-                    }
-                    last_category = kind.category().to_owned();
-                    ui.strong(&last_category);
-                }
-                let label = kind.label().to_owned();
-                if ui.button(label).clicked() {
-                    actions.push(GraphCanvasAction::AddNode {
-                        kind,
-                        position: context_add_position,
-                    });
-                    state.context_add_position = None;
-                    ui.close();
-                }
+            if let Some(kind) = show_graph_node_catalog(ui, session, &state.node_search) {
+                actions.push(GraphCanvasAction::AddNode {
+                    kind,
+                    position: context_add_position,
+                });
+                state.context_add_position = None;
+                ui.close();
             }
         });
         if ui.button("Incremental Layout").clicked() {
@@ -600,6 +585,64 @@ pub fn show_graph_canvas(
     }
 
     actions
+}
+
+fn show_graph_node_catalog(
+    ui: &mut egui::Ui,
+    session: &EditorSession,
+    query: &str,
+) -> Option<GraphNodeInsertKind> {
+    let mut selected = None;
+    let mut last_category = String::new();
+    for kind in session
+        .available_graph_node_kinds()
+        .into_iter()
+        .filter(|kind| kind.matches_search(query))
+    {
+        if kind.category() != last_category.as_str() {
+            if !last_category.is_empty() {
+                ui.separator();
+            }
+            last_category = kind.category().to_owned();
+            ui.strong(&last_category);
+        }
+        let label = kind.label().to_owned();
+        if ui.button(label).clicked() {
+            selected = Some(kind);
+        }
+    }
+    selected
+}
+
+#[cfg(feature = "visual-validation")]
+pub(crate) fn show_graph_node_palette_visual_fixture(
+    ui: &mut egui::Ui,
+    session: &EditorSession,
+) {
+    ui.heading("Behavior Tree Add Node");
+    ui.small("Schema-driven node palette");
+    ui.separator();
+
+    let mut catalog_query = String::new();
+    let mut search_query = "decorator".to_owned();
+    ui.columns(2, |columns| {
+        columns[0].strong("Schema catalog");
+        columns[0].add(
+            egui::TextEdit::singleline(&mut catalog_query)
+                .hint_text("Search nodes...")
+                .desired_width(180.0),
+        );
+        let _ = show_graph_node_catalog(&mut columns[0], session, &catalog_query);
+
+        columns[1].strong("Search preview");
+        columns[1].add(
+            egui::TextEdit::singleline(&mut search_query)
+                .hint_text("Search nodes...")
+                .desired_width(180.0),
+        );
+        columns[1].small("Matches schema labels, categories, type IDs, and search tags.");
+        let _ = show_graph_node_catalog(&mut columns[1], session, &search_query);
+    });
 }
 
 /// Draws a read-only graph canvas with transient runtime debug presentation.
