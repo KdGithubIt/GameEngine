@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "request_id": "20260816-adr0124-authoring-9f82ca4-r1",
+  "target_branch": "chatgpt/gameengine-adr-0124-production-navmesh-v6",
+  "expected_head_sha": "9f82ca4e5711cf2a717086f7488eb6cfc62a0928",
+  "patch_parts": [
+    "part-0000.patch",
+    "part-0001.patch",
+    "part-0002.patch",
+    "part-0003.patch",
+    "part-0004.patch"
+  ],
+  "commit_message": "Expose ADR 0124 navigation authoring contracts",
+  "pr_title": "GameEngine: implement ADR 0124 production navigation",
+  "pr_body": "## Summary\n\nContinues ADR 0124 production navigation on the current main baseline. The production runtime/bake foundation and structural validation fixes are already present.\n\nThis slice exposes stable agent profile selection through the normal authoring component registry, registers the canonical `engine.nav_link` and `engine.nav_modifier` schemas for shared Inspector/CLI/MCP authoring, keeps those bake-only concepts out of runtime ECS conversion, and centralizes their canonical component IDs in the scene bridge contract.\n\nEditor background bake, dedicated Navigation UX, stale/rebake lifecycle, path-test/debug visualization, Play/package stale gates, and final verification remain follow-up slices on this Draft PR.\n\n<!-- gameengine-chatgpt-dispatcher -->\n"
+}
