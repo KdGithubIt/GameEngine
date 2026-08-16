@@ -1,7 +1,7 @@
 # AI-Friendly Authoring and Graph System Specification
 
-Status: Draft  
-Version: 0.1.0  
+Status: Draft
+Version: 0.2.0
 Canonical location: `docs/AI_FRIENDLY_AUTHORING_SPEC.md`
 
 Rust implementation and documentation style is defined separately in
@@ -927,7 +927,7 @@ deterministic JSON serialization; persistence is owned by the document or
 service that writes the validated canonical result. Historical phase sequencing
 must not be used to reintroduce a compatibility migration path.
 
-## 16. CLI and MCP Adapters
+## 16. CLI, MCP, and Conversational Agent Adapters
 
 CLI and MCP are adapters over the command and query API. They MUST NOT implement
 their own authoring rules.
@@ -943,6 +943,22 @@ Each MCP mutation call is one authoring transaction. Tools SHOULD accept bulk
 command sequences when an edit must commit atomically; the initial contract does
 not keep transactions open across multiple MCP calls. Preview/apply flows MUST
 carry document revision or generation identity so stale applies are rejected.
+
+ADR 0131 adds AI Studio above MCP as a project-scoped conversational frontend.
+AI Studio MUST be a client of a GUI-free agent host rather than a second
+authoring implementation. A session owns conversation history and a versioned
+structured proposal. Starting a run snapshots the exact proposal version; the
+resulting run has a resumable state and structured event timeline. Continuing
+the conversation MAY revise the live proposal without mutating an existing run
+snapshot.
+
+External coding-agent runtimes and native model backends are separate
+abstractions. An external `AgentRuntime` MAY own its own model/tool loop and
+provider-managed authentication, while a native runtime uses a `ModelBackend`
+for inference and owns the GameEngine tool loop itself. Provider credentials,
+subscription tokens, local model handles, and Editor MCP credentials MUST NOT be
+serialized into session records or canonical project data. External runtimes
+receive only the ephemeral MCP connection needed for the active run.
 
 The ADR 0035 AI Agent Bridge remains the input, frame-observation, and visual
 interaction path. It MUST NOT be treated as a substitute for semantic authoring
@@ -1022,15 +1038,56 @@ permission:
 
 Permission checks belong at a shared boundary, not only in the MCP adapter.
 
+ADR 0131 adds an application-level permission broker for operations outside the
+structured authoring transaction boundary. At minimum the broker MUST be able to
+represent network access, external asset acquisition, runtime launch, runtime
+input/control, frame capture, raw workspace filesystem access, arbitrary command
+execution, and managed code-workspace apply. Approvals MUST distinguish
+`Allow once`, `Allow for this run`, `Allow for this project`, and `Deny`.
+Persistent project decisions are policy, not credentials.
+
+Managed services are the default. Semantic project data goes through MCP/shared
+authoring services; code goes through an isolated code workspace and reviewed
+apply; assets go through acquisition/import services; validation and Play use
+engine-managed paths. Raw filesystem and arbitrary command execution are escape
+hatches and MUST NOT silently become the normal provider path.
+
+GameEngine application permissions are not an operating-system sandbox. An
+external process started under the user's OS identity may technically possess
+more authority than the application broker models. UI and audit output MUST NOT
+describe such a process as sandboxed unless an independent OS sandbox is really
+in use.
+
 Asset loading and writing paths MUST be resolved below their configured root.
 Absolute paths, parent traversal, and resolved symlink escapes MUST be rejected
 unless a separately approved operation explicitly grants broader filesystem
 access.
 
-## 18. Multi-Agent and Git Collaboration
+## 18. Multi-Agent, Session, and Git Collaboration
 
 The project is expected to be edited by multiple humans and AI agents over
 time. The implementation MUST favor reviewable and mergeable changes.
+
+At most one write-capable AI run owns the initial Editor project writer slot at
+a time, while read-only sessions and normal human editing MAY continue. Human
+edits are not blocked by an AI run; stale authoring applies and stale managed
+code applies MUST fail and require re-read/reconciliation rather than forcing an
+older snapshot over newer work.
+
+AI sessions are private application data by default and MUST survive Editor
+restart. The storage key MUST distinguish both stable project identity and
+canonical project location. A user MAY explicitly publish portable history to
+`.gameengine/ai/sessions/<session-id>/`. Project-shared history MAY contain
+conversation, proposal versions, run summaries, and sanitized audit events, but
+MUST NOT contain credentials, ephemeral MCP endpoints, process IDs, absolute
+machine paths, full code workspaces, build outputs, or caches.
+
+Agent code work MUST use a session/run-scoped working copy or equivalent
+isolated source state. Checkpoints and diffs are agent lifecycle data, not Git
+commits. Applying code back to the project MUST be an explicit reviewed host
+operation with path confinement and stale-source checks. Git remains the
+human/team collaboration boundary and MUST NOT be silently rewritten as an
+internal agent checkpoint mechanism.
 
 Contributors MUST:
 
