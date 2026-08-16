@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "request_id": "adr-audit-count-fix-20260816-01",
+  "target_branch": "chatgpt/gameengine-adr-audit-current",
+  "expected_head_sha": "707345406bd818ef69d8c8cfded0304624cb2827",
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Fix ADR audit registry-count wording",
+  "pr_title": "GameEngine: audit and normalize current ADR registry",
+  "pr_body": "Final audit correction: replace the stale 121-file wording with a count-independent full-registry statement. Documentation only."
+}
