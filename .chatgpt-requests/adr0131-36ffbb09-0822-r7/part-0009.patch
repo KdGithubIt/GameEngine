@@ -1,0 +1,43 @@
++engine-managed paths. Raw filesystem and arbitrary command execution are escape
++hatches and MUST NOT silently become the normal provider path.
++
++GameEngine application permissions are not an operating-system sandbox. An
++external process started under the user's OS identity may technically possess
++more authority than the application broker models. UI and audit output MUST NOT
++describe such a process as sandboxed unless an independent OS sandbox is really
++in use.
++
+ Asset loading and writing paths MUST be resolved below their configured root.
+ Absolute paths, parent traversal, and resolved symlink escapes MUST be rejected
+ unless a separately approved operation explicitly grants broader filesystem
+ access.
+ 
+-## 18. Multi-Agent and Git Collaboration
++## 18. Multi-Agent, Session, and Git Collaboration
+ 
+ The project is expected to be edited by multiple humans and AI agents over
+ time. The implementation MUST favor reviewable and mergeable changes.
++
++At most one write-capable AI run owns the initial Editor project writer slot at
++a time, while read-only sessions and normal human editing MAY continue. Human
++edits are not blocked by an AI run; stale authoring applies and stale managed
++code applies MUST fail and require re-read/reconciliation rather than forcing an
++older snapshot over newer work.
++
++AI sessions are private application data by default and MUST survive Editor
++restart. The storage key MUST distinguish both stable project identity and
++canonical project location. A user MAY explicitly publish portable history to
++`.gameengine/ai/sessions/<session-id>/`. Project-shared history MAY contain
++conversation, proposal versions, run summaries, and sanitized audit events, but
++MUST NOT contain credentials, ephemeral MCP endpoints, process IDs, absolute
++machine paths, full code workspaces, build outputs, or caches.
++
++Agent code work MUST use a session/run-scoped working copy or equivalent
++isolated source state. Checkpoints and diffs are agent lifecycle data, not Git
++commits. Applying code back to the project MUST be an explicit reviewed host
++operation with path confinement and stale-source checks. Git remains the
++human/team collaboration boundary and MUST NOT be silently rewritten as an
++internal agent checkpoint mechanism.
+ 
+ Contributors MUST:
+ 
