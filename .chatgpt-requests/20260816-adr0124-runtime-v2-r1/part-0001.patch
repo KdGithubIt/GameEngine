@@ -1,0 +1,189 @@
++pub struct NavigationBuildLink {
++    /// Stable authoring/gameplay identity.
++    pub id: String,
++    /// World-space source endpoint.
++    pub start: [f32; 3],
++    /// World-space destination endpoint.
++    pub end: [f32; 3],
++    /// Whether reverse traversal is also permitted.
++    pub bidirectional: bool,
++    /// Optional profile filter; an empty list applies to every profile.
++    pub profiles: Vec<NavigationProfileId>,
++    /// Traversal area used for area-cost policy.
++    pub area: u16,
++    /// Additional fixed traversal cost.
++    pub cost: f32,
++    /// Stable project-facing tag such as `jump`, `door`, or `ladder`.
++    pub traversal_tag: String,
++}
++
++/// Deterministic backend-neutral input consumed by [`NavigationBaker`].
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++pub struct NavigationBuildInput {
++    /// Fingerprint of normalized navigation-relevant source data.
++    pub source_fingerprint: String,
++    /// World-space geometry considered for walkability.
++    pub triangles: Vec<NavigationTriangle>,
++    /// Area and exclusion modifiers.
++    pub modifiers: Vec<NavigationModifier>,
++    /// Explicit off-mesh traversals.
++    pub links: Vec<NavigationBuildLink>,
++    /// Stable agent profiles baked into independent tile sets.
++    pub profiles: Vec<NavigationAgentProfile>,
++    /// World-space XZ tile edge length.
++    pub tile_size: f32,
++}
++
++impl NavigationBuildInput {
++    /// Validates normalized build input before a backend starts work.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`NavigationBakeError`] when geometry, profiles, links, modifiers,
++    /// or stable identities violate the production bake contract.
++    pub fn validate(&self) -> Result<(), NavigationBakeError> {
++        if self.source_fingerprint.trim().is_empty()
++            || !self.tile_size.is_finite()
++            || self.tile_size <= 0.0
++            || self.triangles.is_empty()
++            || self.profiles.is_empty()
++        {
++            return Err(NavigationBakeError::InvalidInput);
++        }
++
++        let mut profile_ids = BTreeSet::new();
++        for profile in &self.profiles {
++            profile.validate()?;
++            if !profile_ids.insert(profile.id.clone()) {
++                return Err(NavigationBakeError::DuplicateProfile(
++                    profile.id.as_str().to_owned(),
++                ));
++            }
++        }
++
++        for (index, triangle) in self.triangles.iter().copied().enumerate() {
++            let [a, b, c] = triangle.points();
++            if !a.is_finite()
++                || !b.is_finite()
++                || !c.is_finite()
++                || (b - a).cross(c - a).length_squared() <= f32::EPSILON
++            {
++                return Err(NavigationBakeError::InvalidTriangle(index));
++            }
++        }
++
++        let mut stable_ids = BTreeSet::new();
++        for link in &self.links {
++            if link.id.trim().is_empty()
++                || link.traversal_tag.trim().is_empty()
++                || !Vec3::from_array(link.start).is_finite()
++                || !Vec3::from_array(link.end).is_finite()
++                || !link.cost.is_finite()
++                || link.cost < 0.0
++                || !stable_ids.insert(format!("link:{}", link.id))
++                || link
++                    .profiles
++                    .iter()
++                    .any(|profile| !profile_ids.contains(profile))
++            {
++                return Err(NavigationBakeError::InvalidLink(link.id.clone()));
++            }
++        }
++
++        for modifier in &self.modifiers {
++            let minimum = Vec3::from_array(modifier.minimum);
++            let maximum = Vec3::from_array(modifier.maximum);
++            let mode_is_valid = match modifier.mode {
++                NavigationModifierMode::Exclude => true,
++                NavigationModifierMode::Area {
++                    cost_multiplier, ..
++                } => cost_multiplier.is_finite() && cost_multiplier > 0.0,
++            };
++            if modifier.id.trim().is_empty()
++                || !minimum.is_finite()
++                || !maximum.is_finite()
++                || minimum.cmpgt(maximum).any()
++                || !mode_is_valid
++                || !stable_ids.insert(format!("modifier:{}", modifier.id))
++                || modifier
++                    .profiles
++                    .iter()
++                    .any(|profile| !profile_ids.contains(profile))
++            {
++                return Err(NavigationBakeError::InvalidModifier(
++                    modifier.id.clone(),
++                ));
++            }
++        }
++        Ok(())
++    }
++}
++
++/// Stable independently replaceable tile coordinate.
++#[derive(
++    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
++)]
++pub struct NavigationTileId {
++    /// Tile coordinate along world X.
++    pub x: i32,
++    /// Tile coordinate along world Z.
++    pub z: i32,
++}
++
++/// Runtime polygon identity within one stable tile.
++#[derive(
++    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
++)]
++pub struct NavigationPolygonRef {
++    /// Stable tile coordinate.
++    pub tile: NavigationTileId,
++    /// Tile-local polygon index.
++    pub polygon: u32,
++}
++
++/// Portal connecting one polygon to an adjacent polygon.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++pub struct NavigationPortal {
++    /// Adjacent polygon.
++    pub to: NavigationPolygonRef,
++    /// Left world-space portal endpoint for funnel smoothing.
++    pub left: [f32; 3],
++    /// Right world-space portal endpoint for funnel smoothing.
++    pub right: [f32; 3],
++}
++
++/// One neutral convex runtime polygon.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++pub struct NavigationPolygon {
++    /// Tile-local vertex indices.
++    pub vertices: Vec<u32>,
++    /// Adjacency portals.
++    pub portals: Vec<NavigationPortal>,
++    /// Traversal area identifier.
++    pub area: u16,
++    /// Additional cost multiplier baked from modifiers.
++    pub cost_multiplier: f32,
++    /// Traversal flags reserved for future policy filtering.
++    pub traversal_flags: u32,
++}
++
++/// One independently addressable runtime navigation tile.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++pub struct NavigationTile {
++    /// Stable tile coordinate.
++    pub id: NavigationTileId,
++    /// Inclusive world-space minimum bound.
++    pub minimum: [f32; 3],
++    /// Inclusive world-space maximum bound.
++    pub maximum: [f32; 3],
++    /// Tile-local vertices.
++    pub vertices: Vec<[f32; 3]>,
++    /// Tile-local polygons.
++    pub polygons: Vec<NavigationPolygon>,
++    /// Source/build hash used for future local invalidation.
++    pub build_fingerprint: String,
++}
++
++/// Runtime off-mesh traversal resolved to polygons for one profile.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++pub struct NavigationLink {
