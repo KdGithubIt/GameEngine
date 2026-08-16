@@ -1,0 +1,97 @@
+--- a/crates/assets/src/catalog.rs
++++ b/crates/assets/src/catalog.rs
+@@ -1,5 +1,5 @@
+         ImportedSubAssetKind::HumanoidMotion => "humanoid_motion",
+         ImportedSubAssetKind::Morph => "morph",
+-        ImportedSubAssetKind::RigidBodyRig => "rigid_body_rig",
++        ImportedSubAssetKind::SecondaryMotionRig => "secondary_motion_rig",
+     }
+ }
+--- a/crates/engine/src/components/builtins.rs
++++ b/crates/engine/src/components/builtins.rs
+@@ -1,7 +1,7 @@
+ const RIGID_BODY_PHYSICS_FIELDS: &[FieldDef] = &[asset_ref(
+     "rig",
+     "Rig",
+-    "The Rigid Body Rig sub-asset imported from this character's model. The rig's author already tuned every body and joint, so there is nothing else to configure here.",
+-    AssetKind::RigidBodyRig,
++    "The Secondary Motion Rig sub-asset imported from this character's model. Bodies and joints are editable engine-native starting values produced by import.",
++    AssetKind::SecondaryMotionRig,
+     FieldDefaultSpec::Unassigned,
+ )];
+--- a/crates/engine/src/components/builtins.rs
++++ b/crates/engine/src/components/builtins.rs
+@@ -1,7 +1,7 @@
+         BuiltinComponent::new(
+             RIGID_BODY_PHYSICS_COMPONENT,
+-            "Rigid Body Physics",
+-            "Simulates this Skinned Model's imported rigid-body rig, so hair, skirts, and accessories move on their own.",
++            "Secondary Motion",
++            "Simulates the assigned engine-native Secondary Motion Rig for hair, skirts, and accessories.",
+             "Physics",
+             1,
+             RIGID_BODY_PHYSICS_FIELDS,
+--- a/crates/engine/src/scene_bridge.rs
++++ b/crates/engine/src/scene_bridge.rs
+@@ -1,5 +1,5 @@
+-/// The authoring component that opts an entity into simulating its imported
+-/// rigid-body rig (ADR 0097 §6).
+-pub const RIGID_BODY_PHYSICS_COMPONENT: &str = "engine.rigid_body_physics";
++/// The authoring component that opts an entity into engine-native secondary
++/// motion (ADR 0112).
++pub const RIGID_BODY_PHYSICS_COMPONENT: &str = "engine.secondary_motion";
+ 
+ /// The authorable distance-based mesh LOD group recognised by the bridge.
+--- a/crates/engine/src/scene_bridge/spawn.rs
++++ b/crates/engine/src/scene_bridge/spawn.rs
+@@ -1,19 +1,19 @@
+ fn register_rigid_body_rig(rig_asset: &AssetId, context: &mut SpawnContext<'_>) {
+     let Some((source_id, _, sub_asset)) = context.manifest.imported_sub_asset(rig_asset) else {
+         context.asset_diagnostics.push(Diagnostic::warning(
+-            "scene_bridge.rigid_body_rig_unresolved",
++            "scene_bridge.secondary_motion_rig_unresolved",
+             format!(
+-                "rigid-body rig `{}` is not an imported sub-asset of any registered model source",
++                "secondary-motion rig `{}` is not an imported sub-asset of any registered model source",
+                 rig_asset.as_str()
+             ),
+         ));
+         return;
+     };
+-    if sub_asset.kind != ImportedSubAssetKind::RigidBodyRig {
++    if sub_asset.kind != ImportedSubAssetKind::SecondaryMotionRig {
+         context.asset_diagnostics.push(Diagnostic::warning(
+-            "scene_bridge.rigid_body_rig_unresolved",
++            "scene_bridge.secondary_motion_rig_unresolved",
+             format!(
+-                "asset `{}` is {:?}, not a rigid-body rig",
++                "asset `{}` is {:?}, not a secondary-motion rig",
+                 rig_asset.as_str(),
+                 sub_asset.kind
+             ),
+--- a/crates/engine/src/scene_bridge/spawn.rs
++++ b/crates/engine/src/scene_bridge/spawn.rs
+@@ -1,8 +1,8 @@
+         Err(error) => {
+             context.asset_diagnostics.push(Diagnostic::warning(
+-                "scene_bridge.rigid_body_rig_unresolved",
++                "scene_bridge.secondary_motion_rig_unresolved",
+                 format!(
+-                    "could not import the model source owning rigid-body rig `{}`: {error}",
++                    "could not import the model source owning secondary-motion rig `{}`: {error}",
+                     rig_asset.as_str()
+                 ),
+             ));
+--- a/crates/engine/src/scene_bridge/spawn.rs
++++ b/crates/engine/src/scene_bridge/spawn.rs
+@@ -1,8 +1,8 @@
+     else {
+         context.asset_diagnostics.push(Diagnostic::warning(
+-            "scene_bridge.rigid_body_rig_unresolved",
++            "scene_bridge.secondary_motion_rig_unresolved",
+             format!(
+-                "the model source no longer contains rigid-body rig `{}`; reimport it",
++                "the model source no longer contains secondary-motion rig `{}`; reimport it",
+                 rig_asset.as_str()
+             ),
+         ));
