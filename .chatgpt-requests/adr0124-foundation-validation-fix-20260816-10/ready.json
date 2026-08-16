@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0124-foundation-validation-fix-20260816-10",
+  "target_branch": "chatgpt/gameengine-adr-0124-production-navmesh-v6",
+  "expected_head_sha": "942be7c4b4efe1a7e31e6adffe5ef6ca270f6590",
+  "patch_parts": ["part-0000.patch"],
+  "commit_message": "Fix ADR 0124 navigation validation findings",
+  "pr_title": "GameEngine: implement ADR 0124 production navigation",
+  "pr_body": "## Summary\n\nContinues the ADR 0124 production navigation Draft PR. This correction fixes the affected-validation findings at their source: it models A* frontier state as a cohesive internal object instead of suppressing Clippy, completes production agent-status serialization, removes the unused path import, qualifies rustdoc links, and simplifies last-good artifact replacement without changing the public navigation asset/query contracts."
+}
