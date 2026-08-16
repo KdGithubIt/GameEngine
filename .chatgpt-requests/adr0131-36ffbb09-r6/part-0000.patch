@@ -1,0 +1,602 @@
+diff --git a/crates/editor/src/agent_host.rs b/crates/editor/src/agent_host.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/editor/src/agent_host.rs
+@@ -0,0 +1,1280 @@
++//! GUI-free orchestration primitives for the Editor-owned AI Studio.
++//!
++//! The module deliberately has no egui/eframe dependencies. It owns the
++//! project-scoped agent session/run model, permission decisions, resumable
++//! persistence, an isolated code workspace, and the generic external-process
++//! adapter. The UI in `ai_studio` is only a frontend over these contracts.
++
++use serde::{Deserialize, Serialize};
++use std::collections::{BTreeMap, BTreeSet};
++use std::ffi::{OsStr, OsString};
++use std::fmt;
++use std::fs;
++use std::hash::{Hash, Hasher};
++use std::io::{self, BufRead, BufReader, Write};
++use std::path::{Component, Path, PathBuf};
++use std::process::{Child, Command, ExitStatus, Stdio};
++use std::sync::atomic::{AtomicU64, Ordering};
++use std::sync::mpsc::{self, Receiver};
++use std::time::{SystemTime, UNIX_EPOCH};
++
++const SESSION_SCHEMA_VERSION: u32 = 1;
++const POLICY_SCHEMA_VERSION: u32 = 1;
++const MAX_PROVIDER_EVENT_CHARS: usize = 4_000;
++static ID_COUNTER: AtomicU64 = AtomicU64::new(0);
++
++#[derive(Debug)]
++pub(crate) enum AgentHostError {
++    SessionNotFound(String),
++    RunNotFound(String),
++    ActiveWriterRun(String),
++    InvalidTransition {
++        from: AgentRunState,
++        to: AgentRunState,
++    },
++    CompletionPending,
++    InvalidRelativePath(PathBuf),
++    UnsupportedCodeDeletion(PathBuf),
++    StaleCodeFile(PathBuf),
++    NonUtf8CodeFile(PathBuf),
++    Serialization(serde_json::Error),
++    Io(io::Error),
++}
++
++impl fmt::Display for AgentHostError {
++    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
++        match self {
++            Self::SessionNotFound(id) => write!(formatter, "agent session `{id}` was not found"),
++            Self::RunNotFound(id) => write!(formatter, "agent run `{id}` was not found"),
++            Self::ActiveWriterRun(id) => write!(
++                formatter,
++                "agent run `{id}` already owns the project writer slot"
++            ),
++            Self::InvalidTransition { from, to } => {
++                write!(formatter, "agent run cannot transition from {from:?} to {to:?}")
++            }
++            Self::CompletionPending => write!(
++                formatter,
++                "agent run cannot complete while required completion checks are unresolved"
++            ),
++            Self::InvalidRelativePath(path) => {
++                write!(formatter, "path `{}` is outside the managed code scope", path.display())
++            }
++            Self::UnsupportedCodeDeletion(path) => write!(
++                formatter,
++                "deleting `{}` is not supported by the managed code apply path",
++                path.display()
++            ),
++            Self::StaleCodeFile(path) => write!(
++                formatter,
++                "live code file `{}` changed after the run workspace was created",
++                path.display()
++            ),
++            Self::NonUtf8CodeFile(path) => {
++                write!(formatter, "managed code file `{}` is not UTF-8 text", path.display())
++            }
++            Self::Serialization(error) => write!(formatter, "agent state JSON error: {error}"),
++            Self::Io(error) => write!(formatter, "agent state I/O error: {error}"),
++        }
++    }
++}
++
++impl std::error::Error for AgentHostError {
++    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
++        match self {
++            Self::Serialization(error) => Some(error),
++            Self::Io(error) => Some(error),
++            _ => None,
++        }
++    }
++}
++
++impl From<io::Error> for AgentHostError {
++    fn from(value: io::Error) -> Self {
++        Self::Io(value)
++    }
++}
++
++impl From<serde_json::Error> for AgentHostError {
++    fn from(value: serde_json::Error) -> Self {
++        Self::Serialization(value)
++    }
++}
++
++#[allow(dead_code)]
++#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case")]
++pub(crate) enum AgentCapability {
++    ExternalAgentProcess,
++    NetworkAccess,
++    ExternalAssetAcquisition,
++    RuntimeLaunch,
++    RuntimeInputControl,
++    FrameCapture,
++    RawWorkspaceFilesystem,
++    ArbitraryCommandExecution,
++    CodeWorkspaceApply,
++}
++
++impl AgentCapability {
++    pub(crate) fn label(self) -> &'static str {
++        match self {
++            Self::ExternalAgentProcess => "Launch external agent runtime",
++            Self::NetworkAccess => "Network access",
++            Self::ExternalAssetAcquisition => "External asset acquisition",
++            Self::RuntimeLaunch => "Launch Play/runtime",
++            Self::RuntimeInputControl => "Runtime input/control",
++            Self::FrameCapture => "Frame capture",
++            Self::RawWorkspaceFilesystem => "Raw workspace filesystem access",
++            Self::ArbitraryCommandExecution => "Arbitrary command execution",
++            Self::CodeWorkspaceApply => "Apply managed code changes",
++        }
++    }
++}
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub(crate) enum ApprovalScope {
++    Once,
++    Run,
++    Project,
++    Deny,
++}
++
++#[allow(dead_code)]
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub(crate) enum PermissionCheck {
++    Granted,
++    RequiresApproval,
++    Denied,
++}
++
++#[allow(dead_code)]
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case")]
++enum ProjectPermission {
++    Allow,
++    Deny,
++}
++
++#[derive(Debug, Clone, Serialize, Deserialize)]
++struct PersistedPermissionPolicy {
++    schema_version: u32,
++    decisions: BTreeMap<AgentCapability, ProjectPermission>,
++}
++
++#[derive(Debug, Default)]
++struct PermissionBroker {
++    project: BTreeMap<AgentCapability, ProjectPermission>,
++    run: BTreeSet<(String, AgentCapability)>,
++    once: BTreeMap<(String, AgentCapability), u32>,
++}
++
++impl PermissionBroker {
++    fn load(path: &Path) -> Result<Self, AgentHostError> {
++        if !path.is_file() {
++            return Ok(Self::default());
++        }
++        let bytes = fs::read(path)?;
++        let persisted: PersistedPermissionPolicy = serde_json::from_slice(&bytes)?;
++        if persisted.schema_version != POLICY_SCHEMA_VERSION {
++            return Ok(Self::default());
++        }
++        Ok(Self {
++            project: persisted.decisions,
++            run: BTreeSet::new(),
++            once: BTreeMap::new(),
++        })
++    }
++
++    fn save(&self, path: &Path) -> Result<(), AgentHostError> {
++        let persisted = PersistedPermissionPolicy {
++            schema_version: POLICY_SCHEMA_VERSION,
++            decisions: self.project.clone(),
++        };
++        write_json_atomic(path, &persisted)
++    }
++
++    fn check(&mut self, run_id: &str, capability: AgentCapability) -> PermissionCheck {
++        if let Some(project) = self.project.get(&capability) {
++            return match project {
++                ProjectPermission::Allow => PermissionCheck::Granted,
++                ProjectPermission::Deny => PermissionCheck::Denied,
++            };
++        }
++        let key = (run_id.to_owned(), capability);
++        if self.run.contains(&key) {
++            return PermissionCheck::Granted;
++        }
++        if let Some(remaining) = self.once.get_mut(&key) {
++            if *remaining > 0 {
++                *remaining -= 1;
++                if *remaining == 0 {
++                    self.once.remove(&key);
++                }
++                return PermissionCheck::Granted;
++            }
++        }
++        PermissionCheck::RequiresApproval
++    }
++
++    fn resolve(
++        &mut self,
++        run_id: &str,
++        capability: AgentCapability,
++        scope: ApprovalScope,
++    ) {
++        let key = (run_id.to_owned(), capability);
++        match scope {
++            ApprovalScope::Once => {
++                self.once.insert(key, 1);
++            }
++            ApprovalScope::Run => {
++                self.run.insert(key);
++            }
++            ApprovalScope::Project => {
++                self.project.insert(capability, ProjectPermission::Allow);
++            }
++            ApprovalScope::Deny => {
++                self.once.remove(&key);
++                self.run.remove(&key);
++            }
++        }
++    }
++
++    fn clear_run(&mut self, run_id: &str) {
++        self.run.retain(|(id, _)| id != run_id);
++        self.once.retain(|(id, _), _| id != run_id);
++    }
++}
++
++#[allow(dead_code)]
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case")]
++pub(crate) enum ConversationRole {
++    User,
++    Assistant,
++    System,
++}
++
++#[derive(Debug, Clone, Serialize, Deserialize)]
++pub(crate) struct ConversationMessage {
++    pub(crate) role: ConversationRole,
++    pub(crate) text: String,
++    pub(crate) created_unix_ms: u64,
++}
++
++#[derive(Debug, Clone, Serialize, Deserialize)]
++pub(crate) struct AgentProposal {
++    pub(crate) version: u64,
++    pub(crate) goal: String,
++    pub(crate) requirements: Vec<String>,
++    pub(crate) assumptions: Vec<String>,
++    pub(crate) acceptance_criteria: Vec<String>,
++    pub(crate) planned_project_changes: Vec<String>,
++    pub(crate) planned_code_changes: Vec<String>,
++    pub(crate) planned_assets: Vec<String>,
++    pub(crate) validation_plan: Vec<String>,
++    pub(crate) playtest_plan: Vec<String>,
++    pub(crate) requested_capabilities: BTreeSet<AgentCapability>,
++}
++
++impl Default for AgentProposal {
++    fn default() -> Self {
++        Self {
++            version: 1,
++            goal: String::new(),
++            requirements: Vec::new(),
++            assumptions: Vec::new(),
++            acceptance_criteria: Vec::new(),
++            planned_project_changes: Vec::new(),
++            planned_code_changes: Vec::new(),
++            planned_assets: Vec::new(),
++            validation_plan: Vec::new(),
++            playtest_plan: Vec::new(),
++            requested_capabilities: BTreeSet::new(),
++        }
++    }
++}
++
++#[allow(dead_code)]
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case")]
++pub(crate) enum AgentRunState {
++    Inspecting,
++    Planning,
++    Executing,
++    AwaitingUser,
++    Validating,
++    Playtesting,
++    Evaluating,
++    Repairing,
++    Completed,
++    Failed,
++    Cancelled,
++}
++
++impl AgentRunState {
++    fn is_terminal(self) -> bool {
++        matches!(self, Self::Completed | Self::Failed | Self::Cancelled)
++    }
++}
++
++#[allow(dead_code)]
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case")]
++pub(crate) enum AgentEventKind {
++    RunStarted,
++    StateChanged,
++    UserMessage,
++    AssistantMessage,
++    PermissionRequested,
++    PermissionResolved,
++    ProviderOutput,
++    CodeWorkspacePrepared,
++    CodeChangesDetected,
++    CodeChangesApplied,
++    Validation,
++    Playtest,
++    Cancellation,
++    Failure,
++    Completion,
++}
++
++#[derive(Debug, Clone, Serialize, Deserialize)]
++pub(crate) struct AgentEvent {
++    pub(crate) sequence: u64,
++    pub(crate) created_unix_ms: u64,
++    pub(crate) kind: AgentEventKind,
++    pub(crate) message: String,
++}
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case")]
++pub(crate) enum CompletionStatus {
++    Pending,
++    Passed,
++    Failed,
++    NotApplicable,
++}
++
++#[derive(Debug, Clone, Serialize, Deserialize)]
++pub(crate) struct CompletionReport {
++    pub(crate) acceptance_criteria: CompletionStatus,
++    pub(crate) authoring_validation: CompletionStatus,
++    pub(crate) source_validation: CompletionStatus,
++    pub(crate) play_launch: CompletionStatus,
++    pub(crate) frame_capture: CompletionStatus,
++    pub(crate) visual_evaluation: CompletionStatus,
++    pub(crate) interaction_scenarios: CompletionStatus,
++}
++
++impl Default for CompletionReport {
++    fn default() -> Self {
++        Self {
++            acceptance_criteria: CompletionStatus::Pending,
++            authoring_validation: CompletionStatus::Pending,
++            source_validation: CompletionStatus::Pending,
++            play_launch: CompletionStatus::Pending,
++            frame_capture: CompletionStatus::Pending,
++            visual_evaluation: CompletionStatus::Pending,
++            interaction_scenarios: CompletionStatus::Pending,
++        }
++    }
++}
++
++impl CompletionReport {
++    fn is_complete(&self) -> bool {
++        [
++            self.acceptance_criteria,
++            self.authoring_validation,
++            self.source_validation,
++            self.play_launch,
++            self.frame_capture,
++            self.visual_evaluation,
++            self.interaction_scenarios,
++        ]
++        .into_iter()
++        .all(|status| matches!(status, CompletionStatus::Passed | CompletionStatus::NotApplicable))
++    }
++}
++
++#[derive(Debug, Clone, Serialize, Deserialize)]
++pub(crate) struct AgentRun {
++    pub(crate) id: String,
++    pub(crate) proposal_snapshot: AgentProposal,
++    pub(crate) provider_label: String,
++    pub(crate) state: AgentRunState,
++    pub(crate) events: Vec<AgentEvent>,
++    pub(crate) completion: CompletionReport,
++    pub(crate) started_unix_ms: u64,
++    pub(crate) finished_unix_ms: Option<u64>,
++}
++
++#[derive(Debug, Clone, Serialize, Deserialize)]
++pub(crate) struct AgentSession {
++    schema_version: u32,
++    pub(crate) id: String,
++    pub(crate) title: String,
++    pub(crate) messages: Vec<ConversationMessage>,
++    pub(crate) proposal: AgentProposal,
++    pub(crate) runs: Vec<AgentRun>,
++    pub(crate) shared_with_project: bool,
++}
++
++impl AgentSession {
++    fn new(title: String) -> Self {
++        Self {
++            schema_version: SESSION_SCHEMA_VERSION,
++            id: next_id("session"),
++            title,
++            messages: Vec::new(),
++            proposal: AgentProposal::default(),
++            runs: Vec::new(),
++            shared_with_project: false,
++        }
++    }
++}
++
++pub(crate) struct AgentHost {
++    project_root: PathBuf,
++    storage_root: PathBuf,
++    sessions: BTreeMap<String, AgentSession>,
++    active_writer_run: Option<String>,
++    permissions: PermissionBroker,
++}
++
++impl AgentHost {
++    pub(crate) fn open(project_root: PathBuf, storage_root: PathBuf) -> Result<Self, AgentHostError> {
++        fs::create_dir_all(storage_root.join("sessions"))?;
++        let policy_path = storage_root.join("permissions.json");
++        let permissions = PermissionBroker::load(&policy_path)?;
++        let mut sessions = BTreeMap::new();
++        for entry in fs::read_dir(storage_root.join("sessions"))? {
++            let entry = entry?;
++            let path = entry.path();
++            if path.extension() != Some(OsStr::new("json")) {
++                continue;
++            }
++            let bytes = fs::read(&path)?;
++            let session: AgentSession = match serde_json::from_slice(&bytes) {
++                Ok(session) => session,
++                Err(_) => continue,
++            };
++            if session.schema_version == SESSION_SCHEMA_VERSION {
++                sessions.insert(session.id.clone(), session);
++            }
++        }
++        Ok(Self {
++            project_root,
++            storage_root,
++            sessions,
++            active_writer_run: None,
++            permissions,
++        })
++    }
++
++    pub(crate) fn session_ids(&self) -> Vec<String> {
++        self.sessions.keys().cloned().collect()
++    }
++
++    pub(crate) fn session(&self, id: &str) -> Result<&AgentSession, AgentHostError> {
++        self.sessions
++            .get(id)
++            .ok_or_else(|| AgentHostError::SessionNotFound(id.to_owned()))
++    }
++
++    pub(crate) fn create_session(&mut self, title: impl Into<String>) -> Result<String, AgentHostError> {
++        let session = AgentSession::new(title.into());
++        let id = session.id.clone();
++        self.sessions.insert(id.clone(), session);
++        self.persist_session(&id)?;
++        Ok(id)
++    }
++
++    pub(crate) fn append_message(
++        &mut self,
++        session_id: &str,
++        role: ConversationRole,
++        text: impl Into<String>,
++    ) -> Result<(), AgentHostError> {
++        let text = text.into();
++        let session = self.session_mut(session_id)?;
++        session.messages.push(ConversationMessage {
++            role: role.clone(),
++            text: text.clone(),
++            created_unix_ms: unix_ms(),
++        });
++        if let Some(run) = session.runs.last_mut().filter(|run| !run.state.is_terminal()) {
++            let kind = match role {
++                ConversationRole::User => AgentEventKind::UserMessage,
++                ConversationRole::Assistant | ConversationRole::System => AgentEventKind::AssistantMessage,
++            };
++            push_event(run, kind, text);
++        }
++        self.persist_session(session_id)
++    }
++
++    pub(crate) fn update_proposal(
++        &mut self,
++        session_id: &str,
++        mut proposal: AgentProposal,
++    ) -> Result<u64, AgentHostError> {
++        let session = self.session_mut(session_id)?;
++        proposal.version = session.proposal.version.saturating_add(1);
++        let version = proposal.version;
++        session.proposal = proposal;
++        self.persist_session(session_id)?;
++        Ok(version)
++    }
++
++    pub(crate) fn start_run(
++        &mut self,
++        session_id: &str,
++        provider_label: impl Into<String>,
++    ) -> Result<String, AgentHostError> {
++        if let Some(active) = &self.active_writer_run {
++            return Err(AgentHostError::ActiveWriterRun(active.clone()));
++        }
++        let run_id = next_id("run");
++        let provider_label = provider_label.into();
++        let session = self.session_mut(session_id)?;
++        let mut run = AgentRun {
++            id: run_id.clone(),
++            proposal_snapshot: session.proposal.clone(),
++            provider_label,
++            state: AgentRunState::Inspecting,
++            events: Vec::new(),
++            completion: CompletionReport::default(),
++            started_unix_ms: unix_ms(),
++            finished_unix_ms: None,
++        };
++        let snapshot_version = run.proposal_snapshot.version;
++        push_event(
++            &mut run,
++            AgentEventKind::RunStarted,
++            format!("Run started from immutable proposal version {snapshot_version}."),
++        );
++        session.runs.push(run);
++        self.active_writer_run = Some(run_id.clone());
++        self.persist_session(session_id)?;
++        Ok(run_id)
++    }
++
++    pub(crate) fn run(&self, run_id: &str) -> Result<&AgentRun, AgentHostError> {
++        self.sessions
++            .values()
++            .flat_map(|session| session.runs.iter())
++            .find(|run| run.id == run_id)
++            .ok_or_else(|| AgentHostError::RunNotFound(run_id.to_owned()))
++    }
++
++    pub(crate) fn transition_run(
++        &mut self,
++        run_id: &str,
++        state: AgentRunState,
++        message: impl Into<String>,
++    ) -> Result<(), AgentHostError> {
++        let (session_id, current) = self.run_location(run_id)?;
++        if !valid_transition(current, state) {
++            return Err(AgentHostError::InvalidTransition {
++                from: current,
++                to: state,
++            });
++        }
++        {
++            let session = self.session_mut(&session_id)?;
++            let run = session
++                .runs
++                .iter_mut()
++                .find(|run| run.id == run_id)
++                .ok_or_else(|| AgentHostError::RunNotFound(run_id.to_owned()))?;
++            run.state = state;
++            push_event(run, AgentEventKind::StateChanged, message.into());
++            if state.is_terminal() {
++                run.finished_unix_ms = Some(unix_ms());
++            }
++        }
++        if state.is_terminal() {
