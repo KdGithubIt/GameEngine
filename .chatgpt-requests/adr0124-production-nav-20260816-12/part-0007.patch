@@ -1,0 +1,59 @@
++                for indices in indices.chunks_exact(3) {
++                    let Some(a) = mesh.vertices.get(indices[0] as usize) else {
++                        continue;
++                    };
++                    let Some(b) = mesh.vertices.get(indices[1] as usize) else {
++                        continue;
++                    };
++                    let Some(c) = mesh.vertices.get(indices[2] as usize) else {
++                        continue;
++                    };
++                    triangles.push(world_triangle(*matrix, a.position, b.position, c.position));
++                }
++            } else {
++                for vertices in mesh.vertices.chunks_exact(3) {
++                    triangles.push(world_triangle(
++                        *matrix,
++                        vertices[0].position,
++                        vertices[1].position,
++                        vertices[2].position,
++                    ));
++                }
++            }
++        }
++    }
++
++    let mut generated_modifiers = Vec::new();
++    if let Ok(query) = world.query::<(
++        &GlobalTransform,
++        &Collider,
++        Option<&PhysicsBody>,
++        Option<&TriggerVolume>,
++    )>() {
++        for (entity, (transform, collider, body, trigger)) in query.iter() {
++            if body != Some(&PhysicsBody::Static) || trigger.is_some() {
++                continue;
++            }
++            let aabb = collider.world_aabb(transform);
++            let minimum = aabb.center - aabb.half_extents;
++            let maximum = aabb.center + aabb.half_extents;
++            if !render_entities.contains(&entity)
++                && matches!(collider, Collider::Aabb { .. })
++            {
++                let y = maximum.y;
++                let a = [minimum.x, y, minimum.z];
++                let b = [maximum.x, y, minimum.z];
++                let c = [maximum.x, y, maximum.z];
++                let d = [minimum.x, y, maximum.z];
++                triangles.push(NavigationTriangle { a, b, c, area: 0 });
++                triangles.push(NavigationTriangle {
++                    a,
++                    b: c,
++                    c: d,
++                    area: 0,
++                });
++            }
++            let exclusion_maximum_y = if matches!(collider, Collider::Aabb { .. }) {
++                (maximum.y - 0.01).max(minimum.y)
++            } else {
++                maximum.y
