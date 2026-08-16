@@ -1,13 +1,17 @@
-diff --git a/crates/engine/src/navigation_bake.rs b/crates/engine/src/navigation_bake.rs
-index 3ee6516..b6b1af0 100644
---- a/crates/engine/src/navigation_bake.rs
-+++ b/crates/engine/src/navigation_bake.rs
-@@ -7,7 +7,7 @@ use crate::physics::navigation::{
-     NavigationArea, NavigationBuildInput, NavigationLink, NavigationModifier,
- };
- use serde::{Deserialize, Serialize};
--use std::path::{Path, PathBuf};
-+use std::path::PathBuf;
- 
- const NAVIGATION_BAKE_DOCUMENT_VERSION: u32 = 1;
- 
++        let path = std::env::temp_dir().join(format!(
++            "engine_navigation_cancel_preserves_{}.json",
++            std::process::id()
++        ));
++        fs::write(&path, b"previous").unwrap();
++        let cancelled = AtomicBool::new(true);
++        let result = NavigationBakeService.bake_to_path(
++            &source(),
++            &NavMeshBakeDocument::default(),
++            &path,
++            &cancelled,
++        );
++        assert!(matches!(result, Err(NavigationBakeServiceError::Cancelled)));
++        assert_eq!(fs::read(&path).unwrap(), b"previous");
++        let _ = fs::remove_file(path);
++    }
++}
