@@ -1061,3 +1061,13 @@ mod tests {
             VfxRestartPolicy::Manual,
             1.0,
             Some(9),
+            BTreeMap::new(),
+        );
+        assert!(!player.is_playing());
+        player.play();
+        player.step(0.05, Vec3::ZERO);
+        assert!(player.is_playing());
+        player.pause();
+        assert!(!player.is_playing());
+        player.restart();
+        assert!(player.is_playing());
