@@ -6,7 +6,7 @@ default-run = "engine-editor"
 autobins = false
 
 [features]
-visual-validation = ["eframe/__screenshot"]
+visual-validation = []
 
 [[bin]]
 name = "engine-editor"
