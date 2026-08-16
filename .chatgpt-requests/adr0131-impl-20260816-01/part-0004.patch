@@ -1,0 +1,217 @@
++    /// Whether this provider is an external agent or native model-backed runtime.
++    pub runtime_kind: ProviderRuntimeKind,
++    /// Authentication lifecycle owned by the provider.
++    pub authentication: AuthenticationClass,
++    /// Current connection status.
++    pub connection_state: ProviderConnectionState,
++}
++
++/// Structured runtime error independent of one provider's stdout/stderr format.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct AgentRuntimeError {
++    code: String,
++    message: String,
++}
++
++impl AgentRuntimeError {
++    /// Creates a provider-independent runtime error.
++    pub fn new(code: impl Into<String>, message: impl Into<String>) -> Self {
++        Self {
++            code: code.into(),
++            message: message.into(),
++        }
++    }
++
++    /// Returns the stable error code.
++    pub fn code(&self) -> &str {
++        &self.code
++    }
++
++    /// Returns the human-readable explanation.
++    pub fn message(&self) -> &str {
++        &self.message
++    }
++}
++
++impl fmt::Display for AgentRuntimeError {
++    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
++        write!(formatter, "{}: {}", self.code, self.message)
++    }
++}
++
++impl std::error::Error for AgentRuntimeError {}
++
++/// Provider-independent sink used by an agent runtime to publish semantic host events.
++pub trait AgentEventSink {
++    /// Publishes one semantic runtime event.
++    fn emit(&mut self, event: AgentEventKind);
++}
++
++/// External or native agent-loop abstraction.
++pub trait AgentRuntime {
++    /// Returns provider metadata without credential contents.
++    fn descriptor(&self) -> ProviderDescriptor;
++
++    /// Starts work on one immutable run input.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`AgentRuntimeError`] when the provider cannot start or execute the run.
++    fn start(
++        &mut self,
++        input: &AgentRunInput,
++        events: &mut dyn AgentEventSink,
++    ) -> Result<(), AgentRuntimeError>;
++
++    /// Requests cancellation of provider work associated with `run_id`.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`AgentRuntimeError`] if cancellation cannot be requested.
++    fn cancel(&mut self, run_id: &AgentRunId) -> Result<(), AgentRuntimeError>;
++}
++
++/// One native-runtime model request. Tool execution remains owned by the host.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct ModelRequest {
++    /// System or policy context supplied by the native agent loop.
++    pub system: String,
++    /// Conversation/context messages supplied to the model backend.
++    pub messages: Vec<ConversationMessage>,
++}
++
++/// One native-runtime model response before the host interprets tool intent.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct ModelResponse {
++    /// Provider-produced assistant text.
++    pub text: String,
++}
++
++/// Inference-only backend used by a GameEngine-owned native agent loop.
++pub trait ModelBackend {
++    /// Returns a stable backend identifier for settings and diagnostics.
++    fn backend_id(&self) -> &str;
++
++    /// Performs one model inference request without owning the outer tool loop.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`AgentRuntimeError`] for backend connection or inference failures.
++    fn infer(&mut self, request: &ModelRequest) -> Result<ModelResponse, AgentRuntimeError>;
++}
++
++/// Typed host failure for invalid session/run lifecycle operations.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct AgentHostError {
++    code: String,
++    message: String,
++}
++
++impl AgentHostError {
++    /// Creates one host error.
++    pub fn new(code: impl Into<String>, message: impl Into<String>) -> Self {
++        Self {
++            code: code.into(),
++            message: message.into(),
++        }
++    }
++
++    /// Returns the stable diagnostic-style code.
++    pub fn code(&self) -> &str {
++        &self.code
++    }
++
++    /// Returns the human-readable error message.
++    pub fn message(&self) -> &str {
++        &self.message
++    }
++}
++
++impl fmt::Display for AgentHostError {
++    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
++        write!(formatter, "{}: {}", self.code, self.message)
++    }
++}
++
++impl std::error::Error for AgentHostError {}
++
++#[derive(Debug, Serialize, Deserialize)]
++struct PersistedAgentSession {
++    schema_version: u32,
++    session: AgentSession,
++}
++
++#[derive(Debug, Serialize, Deserialize)]
++struct PersistedProjectPolicy {
++    schema_version: u32,
++    project_grants: BTreeSet<AgentPermission>,
++}
++
++/// Project-scoped session/run host that keeps one AI writer active at a time.
++#[derive(Debug)]
++pub struct AgentHost {
++    project_root: PathBuf,
++    local_store_root: PathBuf,
++    sessions: BTreeMap<AgentSessionId, AgentSession>,
++    providers: BTreeMap<String, ProviderDescriptor>,
++    active_writer: Option<(AgentSessionId, AgentRunId)>,
++    permissions: AgentPermissionBroker,
++}
++
++impl AgentHost {
++    /// Creates a host for one Editor-open project.
++    pub fn new(project_root: PathBuf, local_store_root: PathBuf) -> Self {
++        Self {
++            project_root,
++            local_store_root,
++            sessions: BTreeMap::new(),
++            providers: BTreeMap::new(),
++            active_writer: None,
++            permissions: AgentPermissionBroker::default(),
++        }
++    }
++
++    /// Returns the project root governed by this host.
++    pub fn project_root(&self) -> &Path {
++        &self.project_root
++    }
++
++    /// Returns the layered application-level permission broker.
++    pub fn permissions(&self) -> &AgentPermissionBroker {
++        &self.permissions
++    }
++
++    /// Returns mutable access to the permission broker for explicit UI decisions.
++    pub fn permissions_mut(&mut self) -> &mut AgentPermissionBroker {
++        &mut self.permissions
++    }
++
++    /// Registers or refreshes provider metadata without storing credentials.
++    pub fn register_provider(&mut self, provider: ProviderDescriptor) {
++        self.providers.insert(provider.id.clone(), provider);
++    }
++
++    /// Returns registered provider descriptors in stable identifier order.
++    pub fn providers(&self) -> impl Iterator<Item = &ProviderDescriptor> {
++        self.providers.values()
++    }
++
++    /// Creates a local-private conversation for this project.
++    pub fn create_session(&mut self, title: impl Into<String>) -> AgentSessionId {
++        let id = AgentSessionId::generate();
++        self.sessions.insert(
++            id.clone(),
++            AgentSession {
++                id: id.clone(),
++                title: title.into(),
++                visibility: SessionVisibility::LocalPrivate,
++                conversation: Vec::new(),
++                proposals: Vec::new(),
++                runs: Vec::new(),
++                events: Vec::new(),
++            },
++        );
++        id
++    }
++
++    /// Returns one session by identifier.
