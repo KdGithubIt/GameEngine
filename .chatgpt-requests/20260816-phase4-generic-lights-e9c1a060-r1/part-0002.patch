@@ -1,0 +1,114 @@
++        || !outer_angle_degrees.is_finite()
++        || inner_angle_degrees < 0.0
++        || inner_angle_degrees >= outer_angle_degrees
++        || outer_angle_degrees >= 90.0
++    {
++        return Err(fields.invalid(EXPECTED).into());
++    }
++    context.world.add_component(
++        entity,
++        SpotLight {
++            color,
++            intensity,
++            range,
++            inner_angle_radians: inner_angle_degrees.to_radians(),
++            outer_angle_radians: outer_angle_degrees.to_radians(),
++        },
++    )?;
++    Ok(())
++}
++
+ pub(crate) fn spawn_ambient_light_component(
+     entity: Entity,
+     value: &Value,
+diff --git a/crates/engine/src/components/builtins.rs b/crates/engine/src/components/builtins.rs
+--- a/crates/engine/src/components/builtins.rs
++++ b/crates/engine/src/components/builtins.rs
+@@ -20,2 +20,2 @@
+-use crate::light::{AmbientLight, DirectionalLight};
++use crate::light::{AmbientLight, DirectionalLight, PointLight, SpotLight};
+ use crate::lock_on::LockOnTarget;
+@@ -250,2 +250,72 @@
++const POINT_LIGHT_FIELDS: &[FieldDef] = &[
++    color("color_r", "Color R", default_point_color_r)
++        .with_control(InspectorFieldControl::Number(UNIT_INTERVAL)),
++    color("color_g", "Color G", default_point_color_g)
++        .with_control(InspectorFieldControl::Number(UNIT_INTERVAL)),
++    color("color_b", "Color B", default_point_color_b)
++        .with_control(InspectorFieldControl::Number(UNIT_INTERVAL)),
++    FieldDef::new(
++        "intensity",
++        "Intensity",
++        "Local-light radiant intensity multiplier before distance attenuation.",
++        FieldKind::F64,
++        FieldDefaultSpec::Computed(default_point_intensity),
++    )
++    .with_control(InspectorFieldControl::Number(NON_NEGATIVE)),
++    FieldDef::new(
++        "range",
++        "Range",
++        "Maximum world-space influence distance.",
++        FieldKind::F64,
++        FieldDefaultSpec::Computed(default_point_range),
++    )
++    .with_control(InspectorFieldControl::Number(POSITIVE)),
++];
++
++const SPOT_LIGHT_FIELDS: &[FieldDef] = &[
++    color("color_r", "Color R", default_spot_color_r)
++        .with_control(InspectorFieldControl::Number(UNIT_INTERVAL)),
++    color("color_g", "Color G", default_spot_color_g)
++        .with_control(InspectorFieldControl::Number(UNIT_INTERVAL)),
++    color("color_b", "Color B", default_spot_color_b)
++        .with_control(InspectorFieldControl::Number(UNIT_INTERVAL)),
++    FieldDef::new(
++        "intensity",
++        "Intensity",
++        "Local-light radiant intensity multiplier before distance and cone attenuation.",
++        FieldKind::F64,
++        FieldDefaultSpec::Computed(default_spot_intensity),
++    )
++    .with_control(InspectorFieldControl::Number(NON_NEGATIVE)),
++    FieldDef::new(
++        "range",
++        "Range",
++        "Maximum world-space influence distance.",
++        FieldKind::F64,
++        FieldDefaultSpec::Computed(default_spot_range),
++    )
++    .with_control(InspectorFieldControl::Number(POSITIVE)),
++    FieldDef::new(
++        "inner_angle_degrees",
++        "Inner Angle",
++        "Full-intensity spot-cone half-angle in degrees.",
++        FieldKind::F64,
++        FieldDefaultSpec::Computed(default_spot_inner_angle),
++    )
++    .with_control(InspectorFieldControl::Number(NumericRange::inclusive(
++        0.0, 89.0,
++    ))),
++    FieldDef::new(
++        "outer_angle_degrees",
++        "Outer Angle",
++        "Zero-intensity spot-cone half-angle in degrees; must exceed Inner Angle.",
++        FieldKind::F64,
++        FieldDefaultSpec::Computed(default_spot_outer_angle),
++    )
++    .with_control(InspectorFieldControl::Number(NumericRange::inclusive(
++        0.0, 89.0,
++    ))),
++];
++
+ const AMBIENT_LIGHT_FIELDS: &[FieldDef] = &[
+     color("color_r", "Color R", default_ambient_color_r),
+@@ -1294,3 +1364,17 @@
+     default_sun_intensity => Value::F64(DirectionalLight::default().intensity as f64);
+ 
++    default_point_color_r => Value::F64(PointLight::default().color.x as f64);
++    default_point_color_g => Value::F64(PointLight::default().color.y as f64);
++    default_point_color_b => Value::F64(PointLight::default().color.z as f64);
++    default_point_intensity => Value::F64(PointLight::default().intensity as f64);
++    default_point_range => Value::F64(PointLight::default().range as f64);
++
++    default_spot_color_r => Value::F64(SpotLight::default().color.x as f64);
++    default_spot_color_g => Value::F64(SpotLight::default().color.y as f64);
