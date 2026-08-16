@@ -1,0 +1,1 @@
+Fresh branch is required because current main advanced while the original task branch retained the old baseline.
