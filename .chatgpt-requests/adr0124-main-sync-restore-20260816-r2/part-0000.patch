@@ -1,0 +1,62 @@
+diff --git a/crates/engine/src/lib.rs b/crates/engine/src/lib.rs
+index 49e0ff6..0e3bab1 100644
+--- a/crates/engine/src/lib.rs
++++ b/crates/engine/src/lib.rs
+@@ -114,7 +114,9 @@ pub mod model_ir;
+ /// Morph targets: named vertex and material deformations blended on top of a
+ /// mesh (ADR 0097 §5).
+ pub mod morph;
+-/// Grid-backed navigation mesh and A* pathfinding.
++/// GUI-free production navigation bake service shared by authoring adapters.
++pub mod navigation_bake;
++/// Production tiled polygon navigation and runtime query facade.
+ pub mod navmesh;
+ /// CPU particle simulation rendered through GPU instancing (ADR 0044).
+ pub mod particles;
+diff --git a/crates/physics/src/lib.rs b/crates/physics/src/lib.rs
+index 0631f5b..b5e1dbb 100644
+--- a/crates/physics/src/lib.rs
++++ b/crates/physics/src/lib.rs
+@@ -22,7 +22,11 @@ pub mod collision;
+ #[cfg(not(feature = "solver"))]
+ #[path = "collision_contract.rs"]
+ pub mod collision;
+-/// Grid navigation baking, persistence, queries, and agents.
++/// Production tiled polygon navigation assets, baking, queries, and agents.
++pub mod navigation;
++/// Shared GUI-free navigation bake document and service contracts.
++pub mod navigation_bake;
++/// Legacy grid navigation retained for focused compatibility tests and layered utilities.
+ pub mod navmesh;
+ /// Rapier-backed gameplay rigid-body integration.
+ #[cfg(feature = "solver")]
+diff --git a/crates/engine/src/scene_bridge/tests.rs b/crates/engine/src/scene_bridge/tests.rs
+index 9a05e05..e870632 100644
+--- a/crates/engine/src/scene_bridge/tests.rs
++++ b/crates/engine/src/scene_bridge/tests.rs
+@@ -967,14 +967,17 @@
+     assert_eq!(metadata.team, "heroes");
+ 
+     world.insert_resource(crate::time::FixedTime::with_delta(0.5));
+-    world.insert_resource(crate::navmesh::NavMeshQuery::new(crate::navmesh::NavMesh {
+-        origin_x: -5.0,
+-        origin_z: -5.0,
+-        cols: 10,
+-        rows: 10,
+-        cell_size: 1.0,
+-        walkable: vec![true; 100],
+-    }));
++    let nav_mesh = crate::navmesh::bake_from_obstacles(
++        &[],
++        &crate::navmesh::NavMeshSettings {
++            cell_size: 1.0,
++            agent_radius: 0.0,
++            world_min: Vec3::new(-5.0, 0.0, -5.0),
++            world_max: Vec3::new(5.0, 0.0, 5.0),
++            ..crate::navmesh::NavMeshSettings::default()
++        },
++    );
++    world.insert_resource(crate::navmesh::NavMeshQuery::new(nav_mesh));
+     let mut system = crate::navmesh::nav_mesh_agent_system
+         .into_system()
+         .expect("navigation system");
