@@ -13,3 +13,5 @@ pub mod data_asset;
 pub mod derived_cache;
 /// Format-independent model intermediate representation.
 pub mod model_ir;
+/// Shared prefab creation and loading within a project asset boundary.
+pub mod prefab;

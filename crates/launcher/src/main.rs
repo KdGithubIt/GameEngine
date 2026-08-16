@@ -3,6 +3,8 @@
 mod fonts;
 mod icon;
 mod theme;
+#[cfg(feature = "visual-validation")]
+mod visual_capture;
 
 use eframe::egui;
 use engine_project_lifecycle::{
@@ -282,6 +284,8 @@ struct LauncherApp {
     status: Option<StatusMessage>,
     switch_from: Option<PathBuf>,
     pending_switch: Option<PendingSwitch>,
+    #[cfg(feature = "visual-validation")]
+    visual_capture: visual_capture::VisualCapture,
 }
 
 impl LauncherApp {
@@ -294,6 +298,8 @@ impl LauncherApp {
             status: None,
             switch_from: None,
             pending_switch: None,
+            #[cfg(feature = "visual-validation")]
+            visual_capture: visual_capture::VisualCapture::from_environment(),
         }
     }
 
@@ -643,6 +649,8 @@ impl eframe::App for LauncherApp {
         // Editor ownership is written by other processes, so the row badges
         // only stay honest if the window wakes up without user input.
         context.request_repaint_after(RECENT_REFRESH_INTERVAL);
+        #[cfg(feature = "visual-validation")]
+        self.visual_capture.update(context);
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {

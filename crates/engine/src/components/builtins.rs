@@ -181,11 +181,11 @@ const LOD_GROUP_FIELDS: &[FieldDef] = &[FieldDef::new(
 )
 .with_control(InspectorFieldControl::LodLevels)];
 
-const RIGID_BODY_PHYSICS_FIELDS: &[FieldDef] = &[asset_ref(
+const SECONDARY_MOTION_FIELDS: &[FieldDef] = &[asset_ref(
     "rig",
     "Rig",
-    "The Rigid Body Rig sub-asset imported from this character's model. The rig's author already tuned every body and joint, so there is nothing else to configure here.",
-    AssetKind::RigidBodyRig,
+    "The Secondary Motion Rig sub-asset imported from this character's model. Bodies and joints are editable engine-native starting values produced by import.",
+    AssetKind::SecondaryMotionRig,
     FieldDefaultSpec::Unassigned,
 )];
 
@@ -800,57 +800,6 @@ const PARTICLE_EMITTER_FIELDS: &[FieldDef] = &[
         FieldDefaultSpec::Computed(default_emitter_seed),
     )
     .with_control(InspectorFieldControl::Number(U32_RANGE)),
-];
-
-const VFX_PLAYER_FIELDS: &[FieldDef] = &[
-    asset_ref(
-        "effect",
-        "Effect",
-        "The typed VFX effect asset played by this entity.",
-        AssetKind::VfxEffect,
-        FieldDefaultSpec::Unassigned,
-    ),
-    boolean(
-        "autoplay",
-        "Autoplay",
-        "Start the effect when the runtime component is created.",
-        true,
-    ),
-    boolean(
-        "looping",
-        "Looping",
-        "Restart the effect whenever all finite emission and particles complete.",
-        false,
-    ),
-    enumeration(
-        "restart_policy",
-        "Restart Policy",
-        "Completion policy when looping is disabled.",
-        "manual",
-        &["manual", "on_complete"],
-    ),
-    number(
-        "time_scale",
-        "Time Scale",
-        "Per-instance playback speed multiplier.",
-        1.0,
-        NON_NEGATIVE,
-    ),
-    integer(
-        "seed_override",
-        "Seed Override",
-        "Deterministic instance seed; -1 uses the effect asset seed.",
-        -1,
-        NumericRange::inclusive(-1.0, u32::MAX as f64),
-    ),
-    FieldDef::new(
-        "parameter_overrides",
-        "Parameter Overrides",
-        "Named finite scalar overrides reserved by the VFX instance contract.",
-        FieldKind::Object,
-        FieldDefaultSpec::Unassigned,
-    )
-    .optional(),
 ];
 
 const UI_DOCUMENT_FIELDS: &[FieldDef] = &[];
@@ -1863,13 +1812,13 @@ pub(super) fn builtin_components() -> Vec<BuiltinComponent> {
             spawn_foot_ik_component,
         ),
         BuiltinComponent::new(
-            RIGID_BODY_PHYSICS_COMPONENT,
-            "Rigid Body Physics",
-            "Simulates this Skinned Model's imported rigid-body rig, so hair, skirts, and accessories move on their own.",
+            SECONDARY_MOTION_COMPONENT,
+            "Secondary Motion",
+            "Simulates the assigned engine-native Secondary Motion Rig for hair, skirts, and accessories.",
             "Physics",
             1,
-            RIGID_BODY_PHYSICS_FIELDS,
-            spawn_rigid_body_physics_component,
+            SECONDARY_MOTION_FIELDS,
+            spawn_secondary_motion_component,
         ),
         BuiltinComponent::new(
             POINT_LIGHT_COMPONENT,
@@ -1889,15 +1838,5 @@ pub(super) fn builtin_components() -> Vec<BuiltinComponent> {
             SPOT_LIGHT_FIELDS,
             spawn_spot_light_component,
         ),
-        BuiltinComponent::new(
-            VFX_PLAYER_COMPONENT,
-            "VFX Player",
-            "Plays one typed VFX effect asset with deterministic per-instance playback controls.",
-            "Rendering",
-            1,
-            VFX_PLAYER_FIELDS,
-            spawn_vfx_player_component,
-        )
-        .collapsed_by_default(),
     ]
 }

@@ -4,6 +4,7 @@
 //! only. Domain behavior is delegated to shared authoring and asset services.
 
 mod asset_cli;
+mod prefab_cli;
 mod scene_cli;
 
 use engine_authoring::{
@@ -54,6 +55,9 @@ where
 {
     let args: Vec<String> = args.into_iter().map(Into::into).collect();
     if let Some(result) = asset_cli::dispatch(&args) {
+        return result;
+    }
+    if let Some(result) = prefab_cli::dispatch(&args) {
         return result;
     }
     if let Some(result) = scene_cli::dispatch(&args) {
@@ -602,7 +606,7 @@ fn ai_agent_capture_frame(inbox_path: &str) -> Result<CliRunResult, CliError> {
 }
 
 fn help_text() -> &'static str {
-    "Usage:\n  engine-cli project describe <project-root>\n  engine-cli asset search <project-root> [query]\n  engine-cli asset inspect <project-root> <asset-id>\n  engine-cli scene inspect <project-root> <scene-relative-path>\n  engine-cli scene validate <project-root> <scene-relative-path>\n  engine-cli scene preview <project-root> <scene-relative-path> <commands.json>\n  engine-cli scene apply <project-root> <scene-relative-path> <commands.json>\n  engine-cli entity find <project-root> <scene-relative-path> [query]\n  engine-cli entity inspect <project-root> <scene-relative-path> <entity-id>\n  engine-cli component schemas\n  engine-cli behavior-tree schemas\n  engine-cli behavior-tree example\n  engine-cli behavior-tree validate <graph.json>\n  engine-cli behavior-tree compile <graph.json>\n  engine-cli behavior-tree layout <graph.json>\n  engine-cli behavior-tree nodes <graph.json>\n  engine-cli behavior-tree edges <graph.json>\n  engine-cli behavior-tree preview <graph.json> <commands.json>\n  engine-cli behavior-tree apply <graph.json> <commands.json>\n  engine-cli ai-agent describe-tools\n  engine-cli ai-agent validate-input <json>\n  engine-cli ai-agent inject-input <inbox_path> <json>\n  engine-cli ai-agent capture-frame <inbox_path>"
+    "Usage:\n  engine-cli project describe <project-root>\n  engine-cli asset search <project-root> [query]\n  engine-cli asset inspect <project-root> <asset-id>\n  engine-cli prefab create <project-root> <scene-relative-path> <root-entity-id> <destination-relative-path>\n  engine-cli prefab preview <project-root> <scene-relative-path> <source-relative-path> [parent-entity-id]\n  engine-cli prefab instantiate <project-root> <scene-relative-path> <source-relative-path> [parent-entity-id]\n  engine-cli scene inspect <project-root> <scene-relative-path>\n  engine-cli scene validate <project-root> <scene-relative-path>\n  engine-cli scene preview <project-root> <scene-relative-path> <commands.json>\n  engine-cli scene apply <project-root> <scene-relative-path> <commands.json>\n  engine-cli entity find <project-root> <scene-relative-path> [query]\n  engine-cli entity inspect <project-root> <scene-relative-path> <entity-id>\n  engine-cli component schemas\n  engine-cli behavior-tree schemas\n  engine-cli behavior-tree example\n  engine-cli behavior-tree validate <graph.json>\n  engine-cli behavior-tree compile <graph.json>\n  engine-cli behavior-tree layout <graph.json>\n  engine-cli behavior-tree nodes <graph.json>\n  engine-cli behavior-tree edges <graph.json>\n  engine-cli behavior-tree preview <graph.json> <commands.json>\n  engine-cli behavior-tree apply <graph.json> <commands.json>\n  engine-cli ai-agent describe-tools\n  engine-cli ai-agent validate-input <json>\n  engine-cli ai-agent inject-input <inbox_path> <json>\n  engine-cli ai-agent capture-frame <inbox_path>"
 }
 
 #[cfg(test)]
@@ -619,9 +623,10 @@ mod tests {
         let output = run_cli(["behavior-tree", "schemas"]).expect("schema command must succeed");
         let json: Value = serde_json::from_str(&output).expect("output must be JSON");
 
-        assert_eq!(json["graph_kind"], "behavior_tree.graph");
-        assert_eq!(json["layout_policy"], "behavior_tree.top_down");
-        assert_eq!(json["nodes"].as_array().unwrap().len(), 6);
+        let expected = serde_json::to_value(BehaviorTreeAuthoringService::new().schemas())
+            .expect("schema catalog must serialize");
+
+        assert_eq!(json, expected);
     }
 
     #[test]

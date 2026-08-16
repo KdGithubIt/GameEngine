@@ -310,12 +310,12 @@ fn import_source_cached(
     .map_err(|error| error.to_string())
 }
 
-pub(crate) fn spawn_rigid_body_physics_component(
+pub(crate) fn spawn_secondary_motion_component(
     entity: Entity,
     value: &Value,
     context: &mut SpawnContext<'_>,
 ) -> Result<(), ComponentSpawnError> {
-    let component_type = ComponentTypeId::new(RIGID_BODY_PHYSICS_COMPONENT);
+    let component_type = ComponentTypeId::new(SECONDARY_MOTION_COMPONENT);
     const EXPECTED: &str = "an object with a rig AssetRef field";
     let fields = ComponentFields::new(context.authoring_entity, &component_type, value, EXPECTED)?;
     let Some(rig_asset) = fields.assignable_asset_ref("rig")?.cloned() else {
@@ -329,29 +329,29 @@ pub(crate) fn spawn_rigid_body_physics_component(
         return Ok(());
     };
 
-    register_rigid_body_rig(&rig_asset, context);
+    register_secondary_motion_rig(&rig_asset, context);
     context
         .world
-        .add_component(entity, RigidBodyPhysics::new(rig_asset))?;
+        .add_component(entity, SecondaryMotion::new(rig_asset))?;
     Ok(())
 }
 
-fn register_rigid_body_rig(rig_asset: &AssetId, context: &mut SpawnContext<'_>) {
+fn register_secondary_motion_rig(rig_asset: &AssetId, context: &mut SpawnContext<'_>) {
     let Some((source_id, _, sub_asset)) = context.manifest.imported_sub_asset(rig_asset) else {
         context.asset_diagnostics.push(Diagnostic::warning(
-            "scene_bridge.rigid_body_rig_unresolved",
+            "scene_bridge.secondary_motion_rig_unresolved",
             format!(
-                "rigid-body rig `{}` is not an imported sub-asset of any registered model source",
+                "secondary-motion rig `{}` is not an imported sub-asset of any registered model source",
                 rig_asset.as_str()
             ),
         ));
         return;
     };
-    if sub_asset.kind != ImportedSubAssetKind::RigidBodyRig {
+    if sub_asset.kind != ImportedSubAssetKind::SecondaryMotionRig {
         context.asset_diagnostics.push(Diagnostic::warning(
-            "scene_bridge.rigid_body_rig_unresolved",
+            "scene_bridge.secondary_motion_rig_unresolved",
             format!(
-                "asset `{}` is {:?}, not a rigid-body rig",
+                "asset `{}` is {:?}, not a secondary-motion rig",
                 rig_asset.as_str(),
                 sub_asset.kind
             ),
@@ -363,9 +363,9 @@ fn register_rigid_body_rig(rig_asset: &AssetId, context: &mut SpawnContext<'_>) 
         Ok(imported) => imported,
         Err(error) => {
             context.asset_diagnostics.push(Diagnostic::warning(
-                "scene_bridge.rigid_body_rig_unresolved",
+                "scene_bridge.secondary_motion_rig_unresolved",
                 format!(
-                    "could not import the model source owning rigid-body rig `{}`: {error}",
+                    "could not import the model source owning secondary-motion rig `{}`: {error}",
                     rig_asset.as_str()
                 ),
             ));
@@ -378,28 +378,34 @@ fn register_rigid_body_rig(rig_asset: &AssetId, context: &mut SpawnContext<'_>) 
         .filter(|rig| &rig.id == rig_asset)
     else {
         context.asset_diagnostics.push(Diagnostic::warning(
-            "scene_bridge.rigid_body_rig_unresolved",
+            "scene_bridge.secondary_motion_rig_unresolved",
             format!(
-                "the model source no longer contains rigid-body rig `{}`; reimport it",
+                "the model source no longer contains secondary-motion rig `{}`; reimport it",
                 rig_asset.as_str()
             ),
         ));
         return;
     };
+    if context
+        .world
+        .get_resource::<SecondaryMotionRigRegistry>()
+        .is_none()
+    {
+        context
+            .world
+            .insert_resource(SecondaryMotionRigRegistry::new());
+        context.asset_state.remove_secondary_motion_registry_store = true;
+    }
     let registry = context
         .world
-        .get_resource_mut::<RigidBodyRigRegistry>()
-        .is_none();
-    if registry {
-        context.world.insert_resource(RigidBodyRigRegistry::new());
-    }
-    if let Some(registry) = context.world.get_resource_mut::<RigidBodyRigRegistry>() {
-        registry.insert(rig.clone());
-        context
-            .asset_state
-            .added_rigid_body_rig_ids
-            .push(rig.id.clone());
-    }
+        .get_resource_mut::<SecondaryMotionRigRegistry>()
+        .expect("scene bridge must install the Secondary Motion registry before registration");
+    let previous = registry.remove(&rig.id);
+    registry.insert(rig.clone());
+    context
+        .asset_state
+        .secondary_motion_rig_rollbacks
+        .push((rig.id.clone(), previous));
 }
 
 pub(crate) fn spawn_bone_attachment_component(
@@ -1062,149 +1068,6 @@ pub(crate) fn spawn_behavior_tree_runner_component(
     let mut runner = BehaviorTreeRunner::with_blackboard(tree, blackboard);
     runner.set_enabled(enabled);
     context.world.add_component(entity, runner)?;
-    Ok(())
-}
-
-pub(crate) fn spawn_vfx_player_component(
-    entity: Entity,
-    value: &Value,
-    context: &mut SpawnContext<'_>,
-) -> Result<(), ComponentSpawnError> {
-    let component_type = ComponentTypeId::new(VFX_PLAYER_COMPONENT);
-    const EXPECTED: &str = "an object with effect and VFX playback fields";
-    let fields = ComponentFields::new(context.authoring_entity, &component_type, value, EXPECTED)?;
-    let Some(effect_asset) = fields.assignable_asset_ref("effect")?.cloned() else {
-        context
-            .asset_diagnostics
-            .push(component_inactive_diagnostic(
-                context.authoring_entity,
-                &component_type,
-                "effect",
-            ));
-        return Ok(());
-    };
-
-    let path = manifest_asset_path(&effect_asset, context)?;
-    let json = std::fs::read_to_string(&path).map_err(|source| SceneBridgeError::AssetLoad {
-        asset: effect_asset.clone(),
-        source: AssetLoadError::Io {
-            path: path.clone(),
-            source,
-        },
-    })?;
-    let service = VfxAuthoringService::new();
-    let effect = service
-        .effect_from_json(&json)
-        .map_err(|source| SceneBridgeError::AssetLoad {
-            asset: effect_asset.clone(),
-            source: AssetLoadError::InvalidAsset {
-                path: path.clone(),
-                message: source.to_string(),
-            },
-        })?;
-    let compilation = service.compile(&effect);
-    let compiled = compilation.compiled_effect.ok_or_else(|| {
-        let details = compilation
-            .diagnostics
-            .iter()
-            .map(|diagnostic| format!("[{}] {}", diagnostic.code, diagnostic.message))
-            .collect::<Vec<_>>()
-            .join("; ");
-        SceneBridgeError::AssetLoad {
-            asset: effect_asset.clone(),
-            source: AssetLoadError::InvalidAsset {
-                path: path.clone(),
-                message: format!("VFX effect did not compile: {details}"),
-            },
-        }
-    })?;
-
-    let autoplay = fields.bool_or("autoplay", true)?;
-    let looping = fields.bool_or("looping", false)?;
-    let restart_policy = match fields.get("restart_policy") {
-        None => VfxRestartPolicy::Manual,
-        Some(Value::String(policy)) if policy == "manual" => VfxRestartPolicy::Manual,
-        Some(Value::String(policy)) if policy == "on_complete" => VfxRestartPolicy::OnComplete,
-        _ => return Err(fields.invalid(EXPECTED).into()),
-    };
-    let time_scale = fields.f32_or("time_scale", 1.0)?;
-    if !time_scale.is_finite() || time_scale < 0.0 {
-        return Err(fields.invalid("a finite non-negative time_scale").into());
-    }
-    let seed_override = match fields.get("seed_override") {
-        None | Some(Value::I64(-1)) => None,
-        Some(Value::I64(seed)) if (0..=i64::from(u32::MAX)).contains(seed) => Some(*seed as u32),
-        _ => return Err(fields.invalid("seed_override equal to -1 or a u32 value").into()),
-    };
-    let parameter_overrides = match fields.get("parameter_overrides") {
-        None => BTreeMap::new(),
-        Some(Value::Object(values)) => {
-            let mut overrides = BTreeMap::new();
-            for (name, value) in values {
-                let value = match value {
-                    Value::F64(value) => *value as f32,
-                    Value::I64(value) => *value as f32,
-                    Value::U64(value) => *value as f32,
-                    _ => return Err(fields.invalid("finite scalar parameter overrides").into()),
-                };
-                if name.trim().is_empty() || !value.is_finite() {
-                    return Err(fields.invalid("finite scalar parameter overrides").into());
-                }
-                overrides.insert(name.clone(), value);
-            }
-            overrides
-        }
-        _ => return Err(fields.invalid("a string-to-number parameter override object").into()),
-    };
-
-    let built_in_quad = AssetId::from_stable_id(StableId::new(BUILTIN_QUAD_ASSET_ID))
-        .expect("built-in quad asset ID is valid");
-    let built_in_white = AssetId::from_stable_id(StableId::new(BUILTIN_WHITE_MATERIAL_ASSET_ID))
-        .expect("built-in white material asset ID is valid");
-    let mut bindings = VfxRenderBindings::default();
-    for emitter in &compiled.emitters {
-        for operation in &emitter.render_operations {
-            match &operation.operation {
-                VfxModuleOperation::Billboard { material, .. } => {
-                    let material_asset = material.as_ref().unwrap_or(&built_in_white);
-                    bindings.insert(
-                        operation.source_module.clone(),
-                        VfxRenderBinding {
-                            mesh: resolve_mesh_handle(&built_in_quad, context),
-                            material: resolve_material_value(material_asset, context),
-                            billboard: true,
-                        },
-                    );
-                }
-                VfxModuleOperation::Mesh { mesh, material, .. } => {
-                    let material_asset = material.as_ref().unwrap_or(&built_in_white);
-                    bindings.insert(
-                        operation.source_module.clone(),
-                        VfxRenderBinding {
-                            mesh: resolve_mesh_handle(mesh, context),
-                            material: resolve_material_value(material_asset, context),
-                            billboard: false,
-                        },
-                    );
-                }
-                _ => {}
-            }
-        }
-    }
-
-    context.world.add_component(
-        entity,
-        VfxPlayer::new(
-            compiled,
-            autoplay,
-            looping,
-            restart_policy,
-            time_scale,
-            seed_override,
-            parameter_overrides,
-        ),
-    )?;
-    context.world.add_component(entity, bindings)?;
     Ok(())
 }
 

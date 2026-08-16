@@ -37,6 +37,11 @@
 pub mod access;
 pub mod animation_graph;
 pub mod animation_set;
+// The stateful wrapper delegates only part of this compatibility surface.
+#[allow(dead_code)]
+#[path = "behavior_tree.rs"]
+mod behavior_tree_legacy;
+#[path = "behavior_tree_stateful.rs"]
 pub mod behavior_tree;
 pub mod command;
 pub mod component_metadata;
@@ -52,6 +57,7 @@ pub mod load;
 pub mod material_asset;
 pub mod persist;
 pub mod prefab;
+pub mod prefab_authoring;
 pub mod project;
 pub mod project_settings;
 pub mod scene;
@@ -65,7 +71,6 @@ pub mod ui_contract_runtime;
 pub mod ui_edit;
 pub mod validation;
 pub mod value;
-pub mod vfx;
 
 pub use access::{
     AuthoringPermission, AuthoringPermissionError, AuthoringPermissions,
@@ -100,6 +105,10 @@ pub use game_project::{
     refresh_game_module_indexes, rust_declarations, GameProjectError, RustDeclaration,
     RustDeclarationKind, RustScriptKind, RustScriptSchedule, RECOMMENDED_RUST_SCRIPT_FOLDERS,
 };
+pub use graph::authoring_service::{
+    GraphAuthoringError, GraphAuthoringMutation, GraphAuthoringService, GraphAuthoringSnapshot,
+    GraphAuthoringValidation,
+};
 pub use graph::{
     Annotations, DottedIdError, Edge, Graph, GraphChange, GraphCommand, GraphCommandResult,
     GraphKind, GraphSaveError, GraphSchemaRegistry, GraphTransaction, GraphTransactionCommit,
@@ -127,6 +136,10 @@ pub use material_asset::{
 };
 pub use persist::{replace_file_contents, PersistError, PersistOperation};
 pub use prefab::{PrefabAsset, PrefabError, PrefabInstantiation, PREFAB_SCHEMA_VERSION};
+pub use prefab_authoring::{
+    PrefabAuthoringError, PrefabAuthoringService, PrefabInstantiationMutation,
+    PrefabInstantiationRequest, PREFAB_INSTANCE_COMPONENT,
+};
 pub use project::{ProjectConfig, ProjectError, ProjectRoot, PROJECT_SCHEMA_VERSION};
 pub use project_settings::{
     AxisBinding, InputAction, KeyAxisBinding, Layer, ProjectSettings, ProjectSettingsError,
@@ -139,6 +152,10 @@ pub use scene_authoring::{
 };
 pub use schema::{ComponentSchema, ComponentSchemaRegistry, FieldSchema, FieldType};
 pub use transaction::{AuthoringSession, Transaction, TransactionError};
+pub use ui::authoring_service::{
+    UiAuthoringError, UiAuthoringMutation, UiAuthoringService, UiAuthoringSession,
+    UiAuthoringSnapshot, UiAuthoringValidation,
+};
 pub use ui::{
     UiAnchor, UiDocument, UiDocumentError, UiElementConstraints, UiLayout, UiNode, UiNodeKind,
     UiNumber, UiScaleMatch, UiScalePolicy, UiString, UI_SCHEMA_VERSION,
@@ -156,12 +173,3 @@ pub use validation::{
     validate_asset_manifest, validate_scene, validate_scene_asset_refs, validate_start_scene,
 };
 pub use value::Value;
-pub use vfx::{
-    CompiledVfxEffect, CompiledVfxEmitter, CompiledVfxOperation, VfxApply, VfxAttributeLayout,
-    VfxAuthoringService, VfxCapabilityRequirements, VfxCommand, VfxCompilation, VfxCurve,
-    VfxCurveInterpolation, VfxCurveKey, VfxCurveKeyId, VfxDiagnostic, VfxDiagnosticSeverity,
-    VfxDocumentError, VfxEffect, VfxEmitter, VfxEmitterId, VfxGradient, VfxGradientKey,
-    VfxGradientKeyId, VfxIdError, VfxModule, VfxModuleId, VfxModuleOperation, VfxModuleSchema,
-    VfxPhase, VfxRandomChannel, VfxScalarValue, VfxSchemaCatalog, VfxShape, VfxTemplate,
-    VfxTextureSheet, VfxValidation, VfxVectorValue, VFX_FILE_SUFFIX, VFX_SCHEMA_VERSION,
-};

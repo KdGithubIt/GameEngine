@@ -102,8 +102,8 @@ pub mod lod;
 pub mod material;
 /// CPU and GPU mesh types.
 pub mod mesh;
-/// Isolated Rapier secondary-motion bridge for imported MMD rigid-body rigs.
-pub mod mmd_physics;
+/// Engine-native secondary-motion facade (ADR 0112).
+pub mod secondary_motion;
 /// Format-independent asset builder consuming [`model_ir`] (ADR 0078):
 /// sub-asset IDs, skeleton identity/dedupe/rebind, and clip BoneId
 /// resolution.
@@ -118,16 +118,14 @@ pub mod morph;
 pub mod navmesh;
 /// CPU particle simulation rendered through GPU instancing (ADR 0044).
 pub mod particles;
-/// Typed VFX effect playback and deterministic runtime simulation (ADR 0125).
-pub mod vfx;
 /// Velocity, gravity, and restitution for dynamic physics bodies.
 pub mod physics;
 /// Player-controlled entity marker component.
 pub mod player;
 /// Pure skeletal clip sampling and pose blending.
 pub mod pose_graph;
-/// PMX (MMD model) static mesh / skin / material import pipeline via
-/// `mmd-anim-format` (ADR 0097 §1, §2, §4).
+/// PMX model import pipeline for mesh, skin, material, morph, and best-effort
+/// engine-native Secondary Motion hints (ADR 0097, ADR 0112).
 ///
 /// Desktop-only, same rationale as [`fbx_import`]: PMX import is an
 /// authoring-time operation, so this module is absent from wasm32 builds
@@ -146,8 +144,8 @@ pub mod replay;
 /// Retarget maps, the pure FK retarget function, and the baked-clip cache
 /// wiring (ADR 0079).
 pub mod retarget;
-/// Imported secondary-motion rigid-body rigs and the marker component that
-/// opts an entity into simulating one (ADR 0097 §6).
+/// Generic rigid-body definitions shared by the engine-native Secondary Motion
+/// facade and low-level rig tooling (ADR 0111, ADR 0112).
 pub mod rigid_body_rig;
 /// Layered rig pose buffers and deterministic world-space pose evaluation.
 pub mod rig_pose;
@@ -305,7 +303,11 @@ pub use mesh::{
     extract_baked_submesh, mesh_to_obj, GpuMesh, GpuMeshCache, InstanceData, Mesh,
     MeshValidationError, SharedGpuMeshCache, SkinningVertexData, Submesh, Vertex,
 };
-pub use mmd_physics::{mmd_rigid_body_physics_system, MmdPhysicsWorlds};
+pub use secondary_motion::{
+    secondary_motion_presentation_system, secondary_motion_system, JointDef, RigidBodyDef,
+    RigidBodyMode, RigidBodyShape, SecondaryMotion, SecondaryMotionRigAsset,
+    SecondaryMotionRigRegistry, SecondaryMotionWorlds, SECONDARY_MOTION_RIG_SCHEMA_VERSION,
+};
 pub use model_import::{
     fingerprint_model_source, import_model_bytes, import_model_path,
     import_model_path_with_contact_bones, model_source_dependencies, GltfAnimationData,
@@ -322,11 +324,6 @@ pub use navmesh::{
 #[cfg(not(target_arch = "wasm32"))]
 pub use navmesh::{bake_navmesh, load_navmesh, save_navmesh};
 pub use particles::{particle_update_system, ParticleEmitter};
-pub use vfx::{
-    vfx_update_system, VfxInstance, VfxPlayer, VfxRenderBinding, VfxRenderBindings,
-    VfxRenderParticle, VfxRestartPolicy, VfxRuntimeBackend, VfxRuntimeStats,
-    VFX_PREVIEW_STEP_SECONDS,
-};
 pub use physics::{
     gravity_system, restitution_system, velocity_system, GameplayPhysicsWorld, Gravity,
     GravityScale, Velocity,
@@ -350,10 +347,6 @@ pub use morph::{
     apply_morph_blend, blended_base_color, material_morph_system, morph_blend_system,
     MaterialMorphOffset, MaterialMorphOperation, MorphAsset, MorphBaseColor, MorphDirtyVertices,
     MorphTargets, MorphWeights,
-};
-pub use rigid_body_rig::{
-    JointDef, RigidBodyDef, RigidBodyMode, RigidBodyPhysics, RigidBodyRigAsset,
-    RigidBodyRigRegistry, RigidBodyShape, RIGID_BODY_RIG_SCHEMA_VERSION,
 };
 pub use rig_pose::{
     publish_final_rig_pose_system, rig_pose_clear_transient_system, PoseBlend, PoseBuffer,

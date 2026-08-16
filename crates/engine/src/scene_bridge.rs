@@ -35,7 +35,9 @@ use crate::postprocess::{
     BloomSettings, ColorGradingSettings, PostProcessSettings, ToneMapOperator,
 };
 use crate::morph::{MorphBaseColor, MorphDirtyVertices, MorphTargets, MorphWeights};
-use crate::rigid_body_rig::{RigidBodyPhysics, RigidBodyRigRegistry};
+use crate::secondary_motion::{
+    SecondaryMotion, SecondaryMotionRigAsset, SecondaryMotionRigRegistry,
+};
 use crate::runtime_metadata::RuntimeMetadata;
 use crate::script_api::RuntimeEntityIdentity;
 use crate::shadow::{EnvironmentLighting, ShadowSettings};
@@ -45,14 +47,13 @@ use crate::skinning::{
 };
 use crate::transform::{Children, GlobalTransform, Parent, Transform};
 use crate::ui_document::{load_ui_document, UiDocumentRef};
-use crate::vfx::{VfxPlayer, VfxRenderBinding, VfxRenderBindings, VfxRestartPolicy};
-use engine_authoring::id::{AssetId, ComponentTypeId, EntityId, StableId};
+use engine_authoring::id::{AssetId, ComponentTypeId, EntityId};
 use engine_authoring::scene::AuthoringScene;
 use engine_authoring::ui::{UiDocument, UiNode, UiNodeKind, UiString};
 use engine_authoring::value::Value;
 use engine_authoring::{
     AnimationSet, AuthoringEntity, BehaviorTreeAuthoringService, Diagnostic, DiagnosticTarget,
-    Graph, VfxAuthoringService, VfxModuleOperation,
+    Graph,
 };
 use engine_ecs::{Entity, World};
 use glam::{EulerRot, Mat4, Quat, Vec3};
@@ -89,9 +90,9 @@ pub const SKINNED_MODEL_COMPONENT: &str = "engine.skinned_model";
 /// The authoring component that mounts an entity on a rig bone (ADR 0088).
 pub const BONE_ATTACHMENT_COMPONENT: &str = "engine.bone_attachment";
 
-/// The authoring component that opts an entity into simulating its imported
-/// rigid-body rig (ADR 0097 §6).
-pub const RIGID_BODY_PHYSICS_COMPONENT: &str = "engine.rigid_body_physics";
+/// The authoring component that opts an entity into engine-native secondary
+/// motion (ADR 0112).
+pub const SECONDARY_MOTION_COMPONENT: &str = "engine.secondary_motion";
 
 /// The authorable distance-based mesh LOD group recognised by the bridge.
 pub const LOD_GROUP_COMPONENT: &str = "engine.lod_group";
@@ -131,9 +132,6 @@ pub const FOLLOW_CAMERA_COMPONENT: &str = "engine.follow_camera";
 
 /// The `"engine.particle_emitter"` component type string recognised by the bridge.
 pub const PARTICLE_EMITTER_COMPONENT: &str = "engine.particle_emitter";
-
-/// The typed scene VFX player component defined by ADR 0125.
-pub const VFX_PLAYER_COMPONENT: &str = "engine.vfx_player";
 
 /// The `"engine.ui_document"` component type string recognised by the bridge
 /// (Phase 54).
@@ -449,11 +447,12 @@ pub(crate) struct BridgeAssetState {
     /// spawning `engine.skeleton` this conversion (ADR 0080 §2), tracked for
     /// the same atomic-rollback reason as the `added_*_handles` fields above.
     pub(crate) added_skeleton_asset_ids: Vec<AssetId>,
-    /// Rigid-body rig IDs registered into
-    /// [`crate::rigid_body_rig::RigidBodyRigRegistry`] while spawning
-    /// `engine.rigid_body_physics` this conversion (ADR 0097 §6), tracked for
-    /// the same atomic-rollback reason.
-    pub(crate) added_rigid_body_rig_ids: Vec<AssetId>,
+    /// Secondary Motion rig definitions replaced while converting this scene.
+    ///
+    /// Each entry keeps the previous value, if any, so rollback restores the
+    /// registry exactly instead of only removing newly inserted IDs.
+    pub(crate) secondary_motion_rig_rollbacks:
+        Vec<(AssetId, Option<SecondaryMotionRigAsset>)>,
     /// Skeleton entities are runtime-only and must be removed if any later
     /// component makes the otherwise atomic scene conversion fail.
     pub(crate) auxiliary_entities: Vec<Entity>,
@@ -462,6 +461,7 @@ pub(crate) struct BridgeAssetState {
     remove_animation_store: bool,
     remove_audio_store: bool,
     remove_skeleton_registry_store: bool,
+    remove_secondary_motion_registry_store: bool,
 }
 
 /// Spawns one runtime entity for every [`AuthoringEntity`] in `scene`.
@@ -1483,6 +1483,15 @@ fn rollback_bridge_changes(
             skeletons.remove(id);
         }
     }
+    if let Some(rigs) = world.get_resource_mut::<SecondaryMotionRigRegistry>() {
+        for (id, previous) in assets.secondary_motion_rig_rollbacks.iter().rev() {
+            if let Some(previous) = previous {
+                rigs.insert(previous.clone());
+            } else {
+                rigs.remove(id);
+            }
+        }
+    }
     if assets.remove_mesh_store {
         world.remove_resource::<Assets<Mesh>>();
     }
@@ -1497,6 +1506,9 @@ fn rollback_bridge_changes(
     }
     if assets.remove_skeleton_registry_store {
         world.remove_resource::<SkeletonAssetRegistry>();
+    }
+    if assets.remove_secondary_motion_registry_store {
+        world.remove_resource::<SecondaryMotionRigRegistry>();
     }
     errors
 }

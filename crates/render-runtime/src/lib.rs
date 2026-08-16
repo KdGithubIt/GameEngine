@@ -14,6 +14,8 @@ pub mod camera;
 #[cfg(feature = "gpu")]
 pub mod debug_draw;
 #[cfg(feature = "gpu")]
+mod bloom;
+#[cfg(feature = "gpu")]
 mod environment;
 /// Runtime light resources and authored light mirroring.
 #[cfg(feature = "gpu")]
@@ -43,9 +45,6 @@ pub mod morph;
 /// CPU particle simulation rendered through runtime mesh instancing.
 #[cfg(feature = "gpu")]
 pub mod particles;
-/// Backend-neutral compiled VFX CPU reference runtime (ADR 0125).
-#[cfg(feature = "gpu")]
-pub mod vfx;
 /// HDR, bloom, tone-mapping, and color-grading settings.
 #[cfg(feature = "gpu")]
 pub mod postprocess;

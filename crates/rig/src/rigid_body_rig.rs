@@ -1,63 +1,18 @@
-//! Secondary-motion rigid-body rigs and the component that activates one
-//! (ADR 0097 §6).
+//! Engine-native secondary-motion rig data (ADR 0112).
 //!
-//! An MMD character's hair, skirt, and accessories move because its author
-//! tuned a rig of rigid bodies and six-degree-of-freedom spring joints in
-//! their own tool. This module is where that authored rig lives once it has
-//! been imported: a [`RigidBodyRigAsset`] is an engine-native, serializable
-//! description of the bodies and constraints, produced by
-//! [`crate::pmx_import`] at authoring time and readable on every target
-//! afterwards.
-//!
-//! # Why the asset is engine-native
-//!
-//! ADR 0096 §1 draws the line this module sits on: the *importer* is
-//! desktop-only and depends on an MMD parser, but the *physics bridge* that
-//! consumes this data has to run everywhere the game does, wasm32 included.
-//! Keeping the rig in an engine-native form — plain [`glam`] vectors,
-//! [`crate::skeleton_asset::BoneId`] bone references, serde-serializable like
-//! any other sub-asset — is what lets the bridge read it without ever
-//! linking `mmd-anim-format`.
-//!
-//! # Runtime bridge
-//!
-//! This module owns the serialized data and activation marker. The isolated
-//! Rapier solver lives in [`crate::mmd_physics`], which reads both values on
-//! the fixed schedule and writes simulated poses back to skeleton joints.
-//!
-//! # Activation
-//!
-//! Simulation is opt-in through a single marker component, mirroring
-//! [`crate::foot_ik::FootIk`]'s established "present = active, absent =
-//! no-op" pattern:
-//!
-//! ```text
-//! Skinned Model entity
-//!   + engine.rigid_body_physics { rig: <RigidBodyRig sub-asset> }
-//! ```
-//!
-//! One component, one reference field, and no further configuration for the
-//! common case — the PMX author already tuned every body and joint, so
-//! re-exposing mass and damping as editable engine state would duplicate an
-//! authoring surface that already exists elsewhere for no user-visible gain
-//! (ADR 0097's Alternatives).
+//! The types in this module are intentionally source-format and solver
+//! independent. Importers may convert external rigid-body metadata into this
+//! representation, while runtime simulation is owned by `engine-physics`.
 
 use crate::skeleton_asset::{BoneId, SkeletonIdentity};
 use engine_authoring::id::AssetId;
 use glam::{Quat, Vec3};
 use serde::{Deserialize, Serialize};
 
-/// Serialized schema version of a [`RigidBodyRigAsset`] document.
-///
-/// Bumped only by a change that older readers could not interpret
-/// correctly; additive fields carry `#[serde(default)]` instead.
-pub const RIGID_BODY_RIG_SCHEMA_VERSION: u32 = 1;
+/// Current serialized schema version of a [`SecondaryMotionRigAsset`].
+pub const SECONDARY_MOTION_RIG_SCHEMA_VERSION: u32 = 1;
 
-/// The collision volume of one [`RigidBodyDef`].
-///
-/// Serialized as an internally tagged enum so a document stays readable and
-/// diffable, and so a future shape is additive rather than a numbering
-/// change.
+/// Collision volume attached to one secondary-motion body.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "shape", rename_all = "camelCase")]
 pub enum RigidBodyShape {
@@ -66,7 +21,7 @@ pub enum RigidBodyShape {
         /// Sphere radius.
         radius: f32,
     },
-    /// A box with the given half-extents, in meters, on the body's own axes.
+    /// A box with the given half-extents, in meters, on the body's local axes.
     Box {
         /// Half-extent on each local axis.
         half_extents: [f32; 3],
@@ -75,81 +30,64 @@ pub enum RigidBodyShape {
     Capsule {
         /// Cross-section radius, in meters.
         radius: f32,
-        /// Half the length of the cylindrical section, excluding the caps.
+        /// Half the length of the cylindrical section, excluding caps.
         half_height: f32,
     },
 }
 
-/// How one [`RigidBodyDef`] relates to the bone it rides.
+/// How a secondary-motion body relates to its bound bone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum RigidBodyMode {
-    /// Animation drives the body: it follows its bone exactly and pushes
-    /// other bodies without being pushed back.
-    ///
-    /// The default because it is the mode that cannot misbehave — a body
-    /// that should have simulated simply stays rigid, rather than a
-    /// character coming apart.
+    /// The resolved pre-physics pose drives the body.
     #[default]
     FollowBone,
-    /// The body simulates freely and writes its position and orientation back
-    /// to its bone.
+    /// Simulation drives both position and rotation of the bound bone.
     Dynamic,
-    /// The body simulates its rotation while the bone keeps its
-    /// animation/procedural position.
-    ///
-    /// After write-back, the solver body's position is realigned to that bone
-    /// position while its simulated rotation is retained. This is PMX mode 2:
-    /// the position alignment affects the next physics step as well as the
-    /// visible skeleton.
+    /// Simulation drives rotation while the resolved pose keeps bone position.
     DynamicWithBonePosition,
 }
 
-/// One rigid body in a [`RigidBodyRigAsset`].
+/// One body in a [`SecondaryMotionRigAsset`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RigidBodyDef {
-    /// Human-readable name from the source document, for diagnostics.
+    /// Human-readable name for diagnostics and authoring UI.
     pub name: String,
-    /// The bone this body rides, as a stable identity within
-    /// [`RigidBodyRigAsset::skeleton`].
-    ///
-    /// `None` for a body attached to no bone, which the source format may
-    /// permit; such a body still collides but drives nothing.
+    /// Stable bone identity within [`SecondaryMotionRigAsset::skeleton`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bone: Option<BoneId>,
-    /// The bone's name at import time. Diagnostics and Inspector display
-    /// only — every binding resolves through [`Self::bone`].
+    /// Bone name captured when the binding was authored or imported.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub bone_name: String,
     /// Collision volume.
     pub shape: RigidBodyShape,
-    /// Rest position relative to [`Self::bone`], in meters.
+    /// Rest position relative to the bound bone, in meters.
     pub bone_offset_translation: [f32; 3],
-    /// Rest rotation relative to [`Self::bone`], as `(x, y, z, w)`.
+    /// Rest rotation relative to the bound bone, as `(x, y, z, w)`.
     pub bone_offset_rotation: [f32; 4],
-    /// Mass in kilograms. Ignored for [`RigidBodyMode::FollowBone`].
+    /// Mass in kilograms. Ignored by [`RigidBodyMode::FollowBone`].
     pub mass: f32,
-    /// Linear velocity damping factor.
+    /// Non-negative linear velocity damping rate in inverse seconds.
     pub linear_damping: f32,
-    /// Angular velocity damping factor.
+    /// Non-negative angular velocity damping rate in inverse seconds.
     pub angular_damping: f32,
-    /// Bounciness in `0..=1`.
+    /// Multiplier applied to the secondary-motion world's gravity.
+    pub gravity_scale: f32,
+    /// Restitution in `0..=1`.
     pub restitution: f32,
     /// Coulomb friction coefficient.
     pub friction: f32,
-    /// How this body relates to its bone.
-    #[serde(default)]
+    /// Relationship between simulation and the bound bone.
     pub mode: RigidBodyMode,
-    /// Collision group index this body belongs to.
+    /// Collision group index used only inside this rig's isolated world.
     pub group: u8,
-    /// Bitmask of groups this body collides with; bit *n* set means it
-    /// collides with group *n*.
+    /// Bitmask of groups this body collides with inside the isolated world.
     pub collides_with: u16,
 }
 
 impl RigidBodyDef {
-    /// Returns this body's rest offset from its bone as engine types.
+    /// Returns this body's rest offset from its bound bone as engine math types.
     pub fn bone_offset(&self) -> (Vec3, Quat) {
         (
             Vec3::from_array(self.bone_offset_translation),
@@ -162,73 +100,59 @@ impl RigidBodyDef {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct JointDef {
-    /// Human-readable name from the source document, for diagnostics.
+    /// Human-readable constraint name.
     pub name: String,
-    /// Index into [`RigidBodyRigAsset::bodies`] of the first body, or `None`
-    /// when the source referenced a body that does not exist.
+    /// Index into [`SecondaryMotionRigAsset::bodies`] of the first body.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub body_a: Option<usize>,
-    /// Index into [`RigidBodyRigAsset::bodies`] of the second body.
+    /// Index into [`SecondaryMotionRigAsset::bodies`] of the second body.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub body_b: Option<usize>,
-    /// Constraint frame position in the model's space, in meters.
+    /// Constraint-frame position in model space, in meters.
     pub translation: [f32; 3],
-    /// Constraint frame rotation, as `(x, y, z, w)`.
+    /// Constraint-frame rotation as `(x, y, z, w)`.
     pub rotation: [f32; 4],
     /// Lower translation limit per axis, in meters.
     pub translation_lower: [f32; 3],
     /// Upper translation limit per axis, in meters.
     pub translation_upper: [f32; 3],
-    /// Lower rotation limit per axis, in radians.
+    /// Lower angular limit per axis, in radians.
     pub rotation_lower: [f32; 3],
-    /// Upper rotation limit per axis, in radians.
+    /// Upper angular limit per axis, in radians.
     pub rotation_upper: [f32; 3],
-    /// Per-axis translation spring stiffness; zero disables that axis'
-    /// spring.
+    /// Translation spring stiffness per axis; zero disables that spring.
     pub spring_translation: [f32; 3],
-    /// Per-axis rotation spring stiffness; zero disables that axis' spring.
+    /// Angular spring stiffness per axis; zero disables that spring.
     pub spring_rotation: [f32; 3],
 }
 
-/// An imported secondary-motion rig: the bodies and constraints a model's
-/// author tuned (ADR 0097 §6).
+/// Editable engine-native secondary-motion rig.
 ///
-/// Produced as an imported sub-asset
-/// ([`crate::asset::ImportedSubAssetKind::RigidBodyRig`]) of the model source
-/// that declared it, so its ID is stable across reimports exactly like a
-/// mesh's or a skeleton's.
+/// Imported PMX rigid bodies and joints are merely one producer of this asset;
+/// the runtime contract does not preserve source-format or solver identities.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct RigidBodyRigAsset {
-    /// Serialized schema version ([`RIGID_BODY_RIG_SCHEMA_VERSION`]).
+pub struct SecondaryMotionRigAsset {
+    /// Serialized schema version.
     pub schema_version: u32,
-    /// Imported sub-asset ID.
+    /// Stable asset identity.
     pub id: AssetId,
-    /// Human-readable name from the source document.
+    /// Human-readable asset name.
     pub name: String,
-    /// The skeleton whose [`BoneId`]s [`RigidBodyDef::bone`] refers to.
-    ///
-    /// `None` only for a rig imported from a source with no skeleton at all,
-    /// in which case no body drives a bone.
+    /// Skeleton whose stable [`BoneId`] values body bindings reference.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skeleton: Option<AssetId>,
-    /// That skeleton's structure hash when this rig was imported, so a stale
-    /// binding (the rig was reimported and its bones changed) is detectable
-    /// instead of silently driving the wrong bones — the same guard
-    /// [`crate::animation::AnimationClip`] carries.
+    /// Skeleton structure identity captured when this rig was built.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skeleton_identity: Option<SkeletonIdentity>,
-    /// Bodies in source order; [`JointDef`] endpoints index into this list.
+    /// Bodies in stable authoring order; constraints index this list.
     pub bodies: Vec<RigidBodyDef>,
     /// Constraints between pairs of [`Self::bodies`].
     pub joints: Vec<JointDef>,
 }
 
-impl RigidBodyRigAsset {
-    /// Returns the number of bodies that actually simulate.
-    ///
-    /// A rig where this is zero is inert: every body follows its bone, so
-    /// running a solver over it could not change the pose.
+impl SecondaryMotionRigAsset {
+    /// Returns how many bodies have solver-owned motion.
     pub fn dynamic_body_count(&self) -> usize {
         self.bodies
             .iter()
@@ -237,63 +161,44 @@ impl RigidBodyRigAsset {
     }
 }
 
-/// Opts one Skinned Model entity into simulating its imported rigid-body rig
-/// (ADR 0097 §6).
-///
-/// Present means "simulate this rig"; absent means no secondary motion at
-/// all. That is the whole authoring surface, mirroring
-/// [`crate::foot_ik::FootIk`]: the source's author already tuned every body
-/// and joint, so there is nothing left to configure per entity.
-///
-/// [`crate::mmd_physics::mmd_rigid_body_physics_system`] reads this marker;
-/// missing rigs or incompatible skeletons degrade to a no-op.
+/// Opts one rigged entity into engine-native secondary motion.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RigidBodyPhysics {
-    /// The [`RigidBodyRigAsset`] sub-asset to simulate.
+pub struct SecondaryMotion {
+    /// Secondary-motion rig asset to simulate.
     pub rig: AssetId,
 }
 
-impl RigidBodyPhysics {
-    /// Creates a marker referencing `rig`.
+impl SecondaryMotion {
+    /// Creates an activation component referencing `rig`.
     pub fn new(rig: AssetId) -> Self {
         Self { rig }
     }
 }
 
-/// Runtime lookup from a rig's stable [`AssetId`] to its full
-/// [`RigidBodyRigAsset`].
-///
-/// [`RigidBodyPhysics`] stores only the stable ID because it is
-/// scene-persisted, so a system holding one needs somewhere to reach the
-/// body and joint lists. This registry is that lookup, kept deliberately
-/// narrow rather than folded into `Assets<RigidBodyRigAsset>` — exactly the
-/// shape and rationale of [`crate::skeleton_asset::SkeletonAssetRegistry`].
+/// Runtime lookup from stable asset IDs to secondary-motion rig definitions.
 #[derive(Debug, Default)]
-pub struct RigidBodyRigRegistry {
-    by_id: hashbrown::HashMap<AssetId, RigidBodyRigAsset>,
+pub struct SecondaryMotionRigRegistry {
+    by_id: hashbrown::HashMap<AssetId, SecondaryMotionRigAsset>,
 }
 
-impl RigidBodyRigRegistry {
+impl SecondaryMotionRigRegistry {
     /// Creates an empty registry.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Inserts or replaces the entry for `asset.id`.
-    pub fn insert(&mut self, asset: RigidBodyRigAsset) {
+    /// Inserts or replaces one rig definition.
+    pub fn insert(&mut self, asset: SecondaryMotionRigAsset) {
         self.by_id.insert(asset.id.clone(), asset);
     }
 
-    /// Removes the entry for `id`, returning it.
-    ///
-    /// Used to roll back entries added during a scene conversion that later
-    /// fails atomically (`crate::scene_bridge::BridgeAssetState`).
-    pub fn remove(&mut self, id: &AssetId) -> Option<RigidBodyRigAsset> {
+    /// Removes and returns the rig registered under `id`.
+    pub fn remove(&mut self, id: &AssetId) -> Option<SecondaryMotionRigAsset> {
         self.by_id.remove(id)
     }
 
-    /// Returns the rig registered under `id`, if any.
-    pub fn get(&self, id: &AssetId) -> Option<&RigidBodyRigAsset> {
+    /// Returns the rig registered under `id`.
+    pub fn get(&self, id: &AssetId) -> Option<&SecondaryMotionRigAsset> {
         self.by_id.get(id)
     }
 
@@ -302,7 +207,7 @@ impl RigidBodyRigRegistry {
         self.by_id.len()
     }
 
-    /// Returns `true` when no rigs are registered.
+    /// Returns whether the registry is empty.
     pub fn is_empty(&self) -> bool {
         self.by_id.is_empty()
     }
@@ -312,9 +217,9 @@ impl RigidBodyRigRegistry {
 mod tests {
     use super::*;
 
-    fn body(name: &str, mode: RigidBodyMode) -> RigidBodyDef {
+    fn body(mode: RigidBodyMode) -> RigidBodyDef {
         RigidBodyDef {
-            name: name.to_owned(),
+            name: "hair".to_owned(),
             bone: Some(BoneId(7)),
             bone_name: "hair_01".to_owned(),
             shape: RigidBodyShape::Capsule {
@@ -324,81 +229,54 @@ mod tests {
             bone_offset_translation: [0.0, 0.1, 0.0],
             bone_offset_rotation: [0.0, 0.0, 0.0, 1.0],
             mass: 0.5,
-            linear_damping: 0.9,
-            angular_damping: 0.9,
+            linear_damping: 3.0,
+            angular_damping: 4.0,
+            gravity_scale: 1.0,
             restitution: 0.0,
             friction: 0.5,
             mode,
             group: 1,
-            collides_with: 0xFFFF,
+            collides_with: u16::MAX,
         }
     }
 
-    fn rig() -> RigidBodyRigAsset {
-        RigidBodyRigAsset {
-            schema_version: RIGID_BODY_RIG_SCHEMA_VERSION,
+    fn rig() -> SecondaryMotionRigAsset {
+        SecondaryMotionRigAsset {
+            schema_version: SECONDARY_MOTION_RIG_SCHEMA_VERSION,
             id: AssetId::generate(),
-            name: "character".to_owned(),
+            name: "secondary motion".to_owned(),
             skeleton: Some(AssetId::generate()),
             skeleton_identity: Some(SkeletonIdentity(0x1234)),
             bodies: vec![
-                body("anchor", RigidBodyMode::FollowBone),
-                body("hair", RigidBodyMode::Dynamic),
+                body(RigidBodyMode::FollowBone),
+                body(RigidBodyMode::Dynamic),
             ],
-            joints: vec![JointDef {
-                name: "hair_joint".to_owned(),
-                body_a: Some(0),
-                body_b: Some(1),
-                translation: [0.0, 1.2, 0.0],
-                rotation: [0.0, 0.0, 0.0, 1.0],
-                translation_lower: [0.0; 3],
-                translation_upper: [0.0; 3],
-                rotation_lower: [-0.5; 3],
-                rotation_upper: [0.5; 3],
-                spring_translation: [0.0; 3],
-                spring_rotation: [10.0; 3],
-            }],
+            joints: Vec::new(),
         }
     }
 
     #[test]
-    fn a_rig_round_trips_through_json() {
+    fn current_secondary_motion_schema_round_trips() {
         let rig = rig();
         let json = serde_json::to_string(&rig).expect("rig must serialize");
-        let restored: RigidBodyRigAsset =
+        let restored: SecondaryMotionRigAsset =
             serde_json::from_str(&json).expect("rig must deserialize");
         assert_eq!(rig, restored);
     }
 
     #[test]
-    fn only_simulating_bodies_are_counted_as_dynamic() {
-        // A rig whose bodies all follow their bones cannot change a pose, so
-        // a bridge can skip it entirely rather than build a solver for it.
-        assert_eq!(rig().dynamic_body_count(), 1);
-    }
-
-    #[test]
-    fn the_default_mode_is_the_one_that_cannot_misbehave() {
-        // Guards the serde default: a document written before `mode` existed,
-        // or one that omits it, must not silently start simulating.
-        let json = serde_json::to_value(rig()).expect("rig must serialize");
-        let mut body = json["bodies"][0].clone();
-        body.as_object_mut().expect("body object").remove("mode");
-        let restored: RigidBodyDef =
-            serde_json::from_value(body).expect("body must deserialize without a mode");
-        assert_eq!(restored.mode, RigidBodyMode::FollowBone);
-    }
-
-    #[test]
-    fn the_registry_returns_and_removes_rigs_by_id() {
+    fn missing_current_gravity_scale_is_rejected() {
         let rig = rig();
-        let id = rig.id.clone();
-        let mut registry = RigidBodyRigRegistry::new();
-        assert!(registry.is_empty());
-        registry.insert(rig.clone());
-        assert_eq!(registry.get(&id), Some(&rig));
-        assert_eq!(registry.len(), 1);
-        assert_eq!(registry.remove(&id), Some(rig));
-        assert!(registry.is_empty());
+        let mut value = serde_json::to_value(rig).expect("rig must serialize");
+        value["bodies"][0]
+            .as_object_mut()
+            .expect("body must be an object")
+            .remove("gravityScale");
+        assert!(serde_json::from_value::<SecondaryMotionRigAsset>(value).is_err());
+    }
+
+    #[test]
+    fn dynamic_body_count_ignores_follow_bodies() {
+        assert_eq!(rig().dynamic_body_count(), 1);
     }
 }

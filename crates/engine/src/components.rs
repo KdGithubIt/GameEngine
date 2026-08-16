@@ -51,8 +51,6 @@ pub enum AssetKind {
     UiDocument,
     /// A reusable authoring prefab document.
     Prefab,
-    /// A typed `*.vfx.json` visual-effect document (ADR 0125).
-    VfxEffect,
     /// A glTF/GLB, FBX, or PMX source document used for mesh, skin, or
     /// animation import (ADR 0081 widened this from glTF/GLB-only, ADR 0097
     /// widened it again to PMX; the variant name is a pre-existing misnomer
@@ -79,10 +77,10 @@ pub enum AssetKind {
     /// (ADR 0097 §5). Like [`Self::Skin`], morphs exist only as imported
     /// sub-assets.
     Morph,
-    /// A secondary-motion rigid-body rig imported from a model source
-    /// (ADR 0097 §6). Like [`Self::Skin`], rigs exist only as imported
+    /// An engine-native secondary-motion rig imported from a model source
+    /// (ADR 0112). Like [`Self::Skin`], rigs exist only as imported
     /// sub-assets, never as files.
-    RigidBodyRig,
+    SecondaryMotionRig,
 }
 
 /// Returns whether a manifest path can represent the requested asset category.
@@ -110,16 +108,15 @@ pub fn asset_path_matches_kind(kind: AssetKind, path: &Path) -> bool {
         AssetKind::NavMesh => file_name == "navmesh.bin" || file_name.ends_with(".navmesh.json"),
         AssetKind::UiDocument => file_name.ends_with(".ui.json"),
         AssetKind::Prefab => file_name.ends_with(".prefab.json"),
-        AssetKind::VfxEffect => file_name.ends_with(".vfx.json"),
         AssetKind::GltfSource => extension_matches(extension, &["gltf", "glb", "fbx", "pmx"]),
         AssetKind::MotionSource => extension_matches(extension, &["vmd"]),
-        // Skins, skeletons, morphs, and rigid-body rigs are only ever
+        // Skins, skeletons, morphs, and secondary-motion rigs are only ever
         // imported sub-assets of a model source, so no standalone path can
         // represent one.
         AssetKind::Skin
         | AssetKind::Skeleton
         | AssetKind::Morph
-        | AssetKind::RigidBodyRig => false,
+        | AssetKind::SecondaryMotionRig => false,
     }
 }
 
