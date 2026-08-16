@@ -1,0 +1,89 @@
+diff --git a/docs/AI_FRIENDLY_AUTHORING_SPEC.md b/docs/AI_FRIENDLY_AUTHORING_SPEC.md
+index 310b5a1f8e46b86c5b3dd8c631df1f6936d3f4f2..90d440e516871ff2ecc0f2fb4af6ccbc46ae68fe 100644
+--- a/docs/AI_FRIENDLY_AUTHORING_SPEC.md
++++ b/docs/AI_FRIENDLY_AUTHORING_SPEC.md
+@@ -132,8 +132,10 @@
+ This mapping MUST be discarded when the play session ends. Runtime `Entity`
+ and `RuntimeAssetId` values MUST NOT be persisted in project files.
+ 
+-The runtime ECS crate MUST NOT depend on authoring types. The crate that owns
+-the build pipeline is deferred to Open Decision #6.
++The runtime ECS crate MUST NOT depend on authoring types. Runtime-domain
++ownership and the final `engine` composition boundary follow ADR 0113. Open
++Decision #6 is limited to the packaged build-artifact format and related build
++pipeline policy that ADR 0113 does not define.
+ 
+ ### 5.3 Authoring-First Game Creation
+ 
+@@ -175,48 +177,77 @@
+ 
+ ## 6. Crate and Module Boundaries
+ 
+-The preferred future workspace structure is:
++The current workspace is decomposed into runtime domain packages plus
++application and authoring packages. ADR 0113 defines the runtime ownership
++target, ADR 0114 defines heavyweight backend isolation, ADR 0117 defines the
++project application lifecycle, and ADR 0121 defines AI/MCP application
++integration.
+ 
+ ```text
+ crates/
+   ecs/                 # Runtime ECS only
+-  rig/                 # Low-level transform, skeleton, skin, and pose runtime
+-  engine/              # Runtime engine systems and build integration
+-  renderer/            # Runtime rendering
+-  authoring/            # Authoring data, schemas, commands, transactions
+-  graph/                # Domain-neutral graph model and layout contracts
+-  graph_bt/             # Behavior Tree domain
+-  project-lifecycle/    # GUI-free project application/process lifecycle
+-  launcher/             # Project selection/creation and Editor launch UI
+-  editor/               # Project-scoped human visual editor frontend
+-  cli/                  # Thin adapter over authoring API
+-  mcp/                  # Thin adapter over authoring API
++  core/                # Shared runtime primitives and small contracts
++  assets/              # Runtime asset contracts and format-neutral model IR
++  rig/                 # Transform, skeleton, skin, pose, and rig contracts
++  animation/           # Clips, animator, animation graph, pose, retargeting
++  physics/             # Collision, controller, navigation, solver boundary
++  render-runtime/      # Runtime mesh/material/light/UI/render-pass behavior
++  import/              # Format-neutral import orchestration and parsers
++  gameplay/            # Ability, behavior, combat, hitbox, gameplay control
++  platform/            # Native input, audio, gamepad, platform adapters
++  scripting/           # Host-independent project scripting/game SDK contracts
++  scene/               # Scene load/management, save, and replay ownership
++  renderer/            # Low-level GPU context and optional surface integration
++  engine/              # Final composition and compatibility facade
++  authoring/           # Authoring data, schemas, commands, transactions
++  project-lifecycle/   # GUI-free project application/process lifecycle
++  launcher/            # Project selection/creation and Editor launch UI
++  editor/              # Project-scoped human visual editor frontend
++  cli/                 # Thin headless adapter over shared authoring services
++  mcp/                 # Transport-agnostic AI authoring tool handlers
++  game-*-macros/       # Project Rust derive/attribute support
+ ```
+ 
+-This structure MAY be introduced incrementally. Until separate crates exist,
+-the same ownership boundaries MUST be preserved with modules.
++The package list is not itself a complete dependency graph. The normative
++ownership and dependency rules are:
+ 
+-- `ecs` MUST NOT depend on editor, MCP, graph view, or serialized authoring
+-  types.
+-- `renderer` owns low-level GPU context and window surface initialization. It
+-  MUST NOT depend on `engine`, ECS, authoring, editor GUI, CLI, or MCP types.
++- `ecs` MUST NOT depend on editor, MCP, serialized authoring types, or higher
++  runtime domains.
++- No runtime domain package below `engine` may depend on `engine`, and circular
++  workspace package dependencies are forbidden.
++- `renderer` owns low-level GPU context and optional window-surface integration.
++  `render-runtime` MAY depend on it; `renderer` MUST NOT depend on
++  `render-runtime`, `engine`, authoring, editor, CLI, or MCP.
+ - `rig` owns transform hierarchy primitives, skeleton identity, skin binding,
+-  layered rig poses, and rigid-body rig descriptions. It MAY depend on `ecs`
+-  and stable authoring identifiers, but MUST NOT depend on `engine`, `renderer`,
+-  windowing, audio, model importers, or a physics solver.
+-- `engine` MAY depend on `renderer` for runtime rendering, but MUST NOT
+-  duplicate low-level GPU or window surface initialization logic.
+-- `authoring` MAY depend on schema and graph abstractions, but MUST NOT depend
+-  on a GUI framework.
++  layered rig poses, and rigid-body rig descriptions. It MUST NOT depend on
