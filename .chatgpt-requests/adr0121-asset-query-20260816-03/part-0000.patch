@@ -1,0 +1,7 @@
+diff --git a/crates/cli/src/asset_cli.rs b/crates/cli/src/asset_cli.rs
+--- a/crates/cli/src/asset_cli.rs
++++ b/crates/cli/src/asset_cli.rs
+@@ -95,3 +95,3 @@
+-fn input_error(kind: &str, path: &Path, message: &str) -> CliRunResult {
++fn input_error(kind: &'static str, path: &Path, message: &str) -> CliRunResult {
+     CliRunResult::input_error(input_error_json(kind, path, message))
