@@ -42,6 +42,7 @@ required by `docs/CHATGPT_AUTOMATION.md`.
 
 ```text
 INC-001  Markdown trailing whitespace rejected by patch preflight  Dispatcher  Resolved
+INC-002  Unified-diff old coordinates drifted from target tree     Dispatcher  Resolved
 ```
 
 ## INC-001: Markdown trailing whitespace rejected by patch preflight
@@ -93,6 +94,69 @@ new or changed lines; use a blank line when a visual line break is needed.
 - PR: N/A; patch application failed before PR creation
 - Workflow run: `31920548068`
 - Commit: N/A; target branch was not changed
+
+## INC-002: Unified-diff old coordinates drifted from target tree
+
+Status: Resolved
+Layer: Dispatcher
+First confirmed: 2026-08-16
+Last confirmed: 2026-08-16
+
+### Symptom
+
+Repeated correction requests for PR #23 passed request-envelope validation but
+failed in `Reconstruct and validate patch` because `git apply --check` rejected
+`crates/render-runtime/src/render_backend.rs`. The target branch did not move
+between those attempts.
+
+### Evidence
+
+- Request `20260816-phase3-full-ibl-bindgroups-r5` failed in Dispatcher run
+  `31921512779` at `render_backend.rs:2626`.
+- The target branch remained at
+  `acc2b01b0157c9b381c8b89a8f5e28d7c7f42df1`, ruling out a stale target HEAD.
+- Re-reading the exact target blob showed the Light BGL block began at old-file
+  line 2624, while the hand-built hunk declared line 2626. The producer had
+  incorrectly carried earlier added-line offsets into the old-file coordinates.
+- A following repair exposed the same class of error in the adjacent Light BG
+  hunk (`2666` versus the actual old-file line `2667`).
+- Request `20260816-phase3-full-ibl-bindgroups-r7` combined the dependent edit
+  into target-aligned context and Dispatcher run `31922381541` passed
+  `Reconstruct and validate patch`, committed, and pushed successfully.
+
+### Root cause
+
+The producer manually maintained unified-diff hunk coordinates across several
+edits in the same file. It adjusted later old-file coordinates as though prior
+added lines had already changed the source tree. Unified diff old coordinates
+must always refer to the unmodified target file. Adjacent dependent hunks also
+made the hand-maintained offsets fragile.
+
+### Resolution
+
+Re-read the exact target blob, rebuild the patch against that tree, and keep
+old-file hunk coordinates anchored to the unmodified source. For adjacent edits
+that depend on the same local context, combine them into one target-aligned hunk
+or generate the diff from old/new files instead of carrying offsets by hand.
+The corrected r7 request passed the dispatcher's strict reconstruction/apply
+preflight and produced commit
+`1e82c3beb53205404a5110828c5e8943f62d6aa7`.
+
+### Prevention / ChatGPT next action
+
+When `git apply --check` rejects a non-stale request, re-read the exact target
+file and regenerate the unified diff from that source. Never update old-file
+hunk coordinates by accumulating prior additions. Prefer generated diffs; when
+manual construction is unavoidable, merge adjacent dependent edits and verify
+the complete reconstructed request with
+`git apply --check --whitespace=error-all` before publishing `ready.json`.
+
+### References
+
+- Request: `20260816-phase3-full-ibl-bindgroups-r7`
+- PR: `#23`
+- Workflow run: `31922381541`
+- Commit: `1e82c3beb53205404a5110828c5e8943f62d6aa7`
 
 ## Entry template
 
