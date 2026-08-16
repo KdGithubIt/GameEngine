@@ -8,10 +8,12 @@
 
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::ui::{UiDocument, UiElementConstraints, UiNode, UiScalePolicy};
+use serde::{Deserialize, Serialize};
 use std::fmt;
 
 /// A reversible semantic operation over one UI document tree.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum UiDocumentCommand {
     /// Replaces document-wide responsive layout settings.
     SetResponsiveSettings {
@@ -69,7 +71,8 @@ pub enum UiDocumentCommand {
 }
 
 /// One semantic change produced by a [`UiDocumentCommand`].
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum UiDocumentChange {
     /// Document-wide responsive settings changed.
     ResponsiveSettingsChanged,

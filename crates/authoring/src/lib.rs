@@ -105,6 +105,10 @@ pub use game_project::{
     refresh_game_module_indexes, rust_declarations, GameProjectError, RustDeclaration,
     RustDeclarationKind, RustScriptKind, RustScriptSchedule, RECOMMENDED_RUST_SCRIPT_FOLDERS,
 };
+pub use graph::authoring_service::{
+    GraphAuthoringError, GraphAuthoringMutation, GraphAuthoringService, GraphAuthoringSnapshot,
+    GraphAuthoringValidation,
+};
 pub use graph::{
     Annotations, DottedIdError, Edge, Graph, GraphChange, GraphCommand, GraphCommandResult,
     GraphKind, GraphSaveError, GraphSchemaRegistry, GraphTransaction, GraphTransactionCommit,
@@ -148,6 +152,10 @@ pub use scene_authoring::{
 };
 pub use schema::{ComponentSchema, ComponentSchemaRegistry, FieldSchema, FieldType};
 pub use transaction::{AuthoringSession, Transaction, TransactionError};
+pub use ui::authoring_service::{
+    UiAuthoringError, UiAuthoringMutation, UiAuthoringService, UiAuthoringSession,
+    UiAuthoringSnapshot, UiAuthoringValidation,
+};
 pub use ui::{
     UiAnchor, UiDocument, UiDocumentError, UiElementConstraints, UiLayout, UiNode, UiNodeKind,
     UiNumber, UiScaleMatch, UiScalePolicy, UiString, UI_SCHEMA_VERSION,
