@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0123-stateful-bt-20260816-r3-doclinks-01",
+  "target_branch": "chatgpt/gameengine-adr0123-stateful-bt-r3",
+  "expected_head_sha": "37539c64f139bd08a53138bde4f83e938c1613cd",
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Fix Behavior Tree rustdoc links",
+  "pr_title": "GameEngine: implement stateful Behavior Tree runtime",
+  "pr_body": "## Summary\n\nImplements the core runtime and authoring slices of ADR 0123 on the current main baseline, including the stateful runtime, typed decorators, bounded debugging snapshots, and warning-clean documentation links.\n\nThe Editor live graph overlay remains a follow-up slice and is not claimed by this PR.\n\n## Validation\n\nWindows Validation is requested through the repository dispatcher.\n\n<!-- gameengine-chatgpt-dispatcher -->"
+}
