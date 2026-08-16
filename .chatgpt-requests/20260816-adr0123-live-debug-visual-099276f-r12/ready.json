@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "request_id": "20260816-adr0123-live-debug-visual-099276f-r12",
+  "target_branch": "chatgpt/gameengine-adr0123-live-debug-v3",
+  "expected_head_sha": "099276f0b725efab0a532a0a90b0ee87c9d0e591",
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Fix ADR 0123 live debug workspace layout",
+  "pr_title": "ADR 0123: add Play-mode Behavior Tree live debugging",
+  "pr_body": "## Summary\n\n- add a transient Play-mode Behavior Tree graph debugger sourced only from the runtime bounded execution snapshot\n- map runtime source GraphId/NodeId state to read-only graph presentation for Running, Success/Failure, lifecycle/abort/reset and elapsed time\n- discard stale presentation when Play stops, runners disappear, entity/tree generations change, or the source graph changes\n- keep Graph/GraphView documents and serialized formats unchanged\n- keep the visual-validation capture focused on the Behavior Tree debug surface without changing normal AI Studio behavior\n- hide the redundant generic Inspector while Behavior Tree debug is selected so the graph and runtime details remain readable\n\nRebased from current main after #96; the ADR 0131 changes already on main are retained and not duplicated. #84 remains separate. Audio, Navigation, and VFX implementation files are not changed.\n\nVisual validation is requested for the current PR head.\n\n<!-- gameengine-visual-validation: editor -->"
+}
