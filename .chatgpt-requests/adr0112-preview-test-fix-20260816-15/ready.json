@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0112-preview-test-fix-20260816-15",
+  "target_branch": "chatgpt/gameengine-adr-0112-secondary-motion-v2",
+  "expected_head_sha": "bc0878cd97282f3291193bfd6e1e968befec8faf",
+  "patch_parts": ["part-0000.patch"],
+  "commit_message": "Fix Secondary Motion preview tests",
+  "pr_title": "Implement ADR 0112 engine-native secondary motion",
+  "pr_body": "## Summary\n\nImplements ADR 0112 engine-native Secondary Motion. This follow-up updates the remaining Editor preview tests to assert the canonical `SecondaryMotionWorlds` resource instead of the removed MMD-specific physics resource.\n\nThe PR remains Draft while current-format-only alias cleanup, PMX best-effort conversion diagnostics, documentation updates, final Windows Validation, and Visual Validation are completed."
+}
