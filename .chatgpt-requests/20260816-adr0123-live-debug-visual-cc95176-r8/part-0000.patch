@@ -1,0 +1,59 @@
+diff --git a/crates/editor/src/main.rs b/crates/editor/src/main.rs
+index 625569f..5098ed8 100644
+--- a/crates/editor/src/main.rs
++++ b/crates/editor/src/main.rs
+@@ -36,4 +36,6 @@ struct EditorShell {
+     #[cfg(feature = "visual-validation")]
+     visual_capture_requested_at: Option<Instant>,
++    #[cfg(feature = "visual-validation")]
++    visual_behavior_debug_capture: bool,
+ }
+ 
+@@ -79,4 +81,6 @@ impl EditorShell {
+         }
+         project_lease.mark_ready().map_err(|error| error.to_string())?;
++        #[cfg(feature = "visual-validation")]
++        let visual_behavior_debug_capture = visual_validation_touches_behavior_debug();
+         Ok(Self {
+             app,
+@@ -92,4 +96,6 @@ impl EditorShell {
+             #[cfg(feature = "visual-validation")]
+             visual_capture_requested_at: None,
++            #[cfg(feature = "visual-validation")]
++            visual_behavior_debug_capture,
+         })
+     }
+@@ -263,5 +269,10 @@ impl eframe::App for EditorShell {
+         self.authoring_windows
+             .show(&context, frame, self.app.project_root());
++        #[cfg(not(feature = "visual-validation"))]
+         self.ai_studio.show(&context);
++        #[cfg(feature = "visual-validation")]
++        if !self.visual_behavior_debug_capture {
++            self.ai_studio.show(&context);
++        }
+     }
+ 
+@@ -271,4 +282,22 @@ impl eframe::App for EditorShell {
+ }
+ 
++#[cfg(feature = "visual-validation")]
++fn visual_validation_touches_behavior_debug() -> bool {
++    let base_ref = std::env::var("GITHUB_BASE_REF").unwrap_or_else(|_| "main".into());
++    let base = format!("origin/{base_ref}...HEAD");
++    std::process::Command::new("git")
++        .args([
++            "diff",
++            "--name-only",
++            &base,
++            "--",
++            "crates/editor/src/ui/behavior_debug.rs",
++        ])
++        .output()
++        .ok()
++        .filter(|output| output.status.success())
++        .is_some_and(|output| !output.stdout.is_empty())
++}
++
+ #[cfg(feature = "visual-validation")]
+ fn write_visual_validation_png(
