@@ -6,6 +6,9 @@
 //! those requests into domain operations without moving domain logic into the
 //! Timeline scheduler.
 
+use crate::audio::{AudioAsset, AudioError, AudioSystem, AudioVoiceId, StereoGains};
+use std::collections::{HashMap, HashSet};
+
 pub use engine_authoring::timeline::{
     compile_timeline, CompiledAnimationPayload, CompiledAudioPayload, CompiledCameraCutPayload,
     CompiledEventPayload, CompiledTimelinePayload, CompiledTransformPayload, CompiledVfxPayload,
@@ -154,4 +157,154 @@ where
 {
     let mut adapter = EngineTimelineAdapter::new(host);
     evaluate_with_adapter(timeline, request, &mut adapter)
+}
+
+/// Transient tracked-voice state for Audio Track clips.
+///
+/// Stable Timeline clip IDs are process-local lookup keys only. The
+/// [`AudioVoiceId`] values remain runtime-only and are never written back to
+/// authoring data. One instance belongs to one Timeline player/runtime host.
+#[derive(Default)]
+pub struct TimelineAudioVoices {
+    active: HashMap<TimelineClipId, AudioVoiceId>,
+    suppressed_until_exit: HashSet<TimelineClipId>,
+    selected_this_pass: HashSet<TimelineClipId>,
+}
+
+impl TimelineAudioVoices {
+    /// Creates empty tracked-voice state.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Begins one complete Timeline evaluation pass.
+    ///
+    /// Call this before [`evaluate_engine_timeline`], then call
+    /// [`Self::finish_pass`] after every selected item has been dispatched.
+    pub fn begin_pass(&mut self) {
+        self.selected_this_pass.clear();
+    }
+
+    /// Applies one selected Audio Track clip through ADR 0122's tracked voice API.
+    ///
+    /// Normal playback starts the voice once and then updates its gains while
+    /// the clip remains active. A naturally completed voice or discontinuous
+    /// `NonSeekable` result suppresses that clip until it leaves the selected
+    /// interval, preventing a one-shot from being restarted every frame.
+    ///
+    /// # Errors
+    ///
+    /// Returns the underlying platform-audio failure from start, update, or stop.
+    pub fn apply_selected(
+        &mut self,
+        payload: &CompiledAudioPayload,
+        decision: EvaluationDecision,
+        asset: &AudioAsset,
+        gains: StereoGains,
+        audio: &mut AudioSystem,
+    ) -> Result<(), AudioError> {
+        self.selected_this_pass.insert(payload.clip.clone());
+        match decision {
+            EvaluationDecision::Apply => {
+                if self.suppressed_until_exit.contains(&payload.clip) {
+                    return Ok(());
+                }
+                if let Some(&voice) = self.active.get(&payload.clip) {
+                    audio.update_voice(voice, gains)
+                } else {
+                    let voice = audio.start_voice(asset, gains, payload.looping)?;
+                    self.active.insert(payload.clip.clone(), voice);
+                    Ok(())
+                }
+            }
+            EvaluationDecision::NonSeekable | EvaluationDecision::ReplayRequired { .. } => {
+                self.stop_clip(&payload.clip, audio)?;
+                self.suppressed_until_exit.insert(payload.clip.clone());
+                Ok(())
+            }
+        }
+    }
+
+    /// Stops voices whose clips were not selected by the just-completed pass.
+    ///
+    /// This is the interval-exit path: neutral Timeline evaluation reports only
+    /// entries active at the current tick, so stale tracked voices are retired
+    /// here rather than by inventing interval-end events in `engine-timeline`.
+    /// Suppression is also cleared only after interval exit, allowing a later
+    /// loop/re-entry to start the clip again exactly once.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first platform-audio stop failure. Successfully stopped
+    /// voices are removed before an error is returned.
+    pub fn finish_pass(&mut self, audio: &mut AudioSystem) -> Result<(), AudioError> {
+        let stale = self
+            .active
+            .keys()
+            .filter(|clip| !self.selected_this_pass.contains(*clip))
+            .cloned()
+            .collect::<Vec<_>>();
+        for clip in stale {
+            self.stop_clip(&clip, audio)?;
+        }
+        self.suppressed_until_exit
+            .retain(|clip| self.selected_this_pass.contains(clip));
+        Ok(())
+    }
+
+    /// Retires naturally completed voices and suppresses their clips until exit.
+    pub fn drain_completed(&mut self, audio: &mut AudioSystem) {
+        let completed = audio
+            .drain_completed_voices()
+            .into_iter()
+            .collect::<HashSet<_>>();
+        if completed.is_empty() {
+            return;
+        }
+        let completed_clips = self
+            .active
+            .iter()
+            .filter(|(_, voice)| completed.contains(voice))
+            .map(|(clip, _)| clip.clone())
+            .collect::<Vec<_>>();
+        for clip in completed_clips {
+            self.active.remove(&clip);
+            self.suppressed_until_exit.insert(clip);
+        }
+    }
+
+    /// Stops every Timeline-owned tracked voice, for example when the player is
+    /// stopped, rebound to another compiled schedule, or destroyed.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first platform-audio stop failure after removing every voice
+    /// stopped before that failure.
+    pub fn stop_all(&mut self, audio: &mut AudioSystem) -> Result<(), AudioError> {
+        let clips = self.active.keys().cloned().collect::<Vec<_>>();
+        for clip in clips {
+            self.stop_clip(&clip, audio)?;
+        }
+        self.suppressed_until_exit.clear();
+        self.selected_this_pass.clear();
+        Ok(())
+    }
+
+    /// Returns the number of currently tracked Timeline-owned voices.
+    pub fn active_voice_count(&self) -> usize {
+        self.active.len()
+    }
+
+    fn stop_clip(
+        &mut self,
+        clip: &TimelineClipId,
+        audio: &mut AudioSystem,
+    ) -> Result<(), AudioError> {
+        let Some(voice) = self.active.get(clip).copied() else {
+            return Ok(());
+        };
+        audio.stop_voice(voice)?;
+        self.active.remove(clip);
+        Ok(())
+    }
 }
