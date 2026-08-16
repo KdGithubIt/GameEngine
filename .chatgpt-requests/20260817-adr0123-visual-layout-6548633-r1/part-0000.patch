@@ -1,0 +1,72 @@
+diff --git a/crates/editor/src/canvas/mod.rs b/crates/editor/src/canvas/mod.rs
+--- a/crates/editor/src/canvas/mod.rs
++++ b/crates/editor/src/canvas/mod.rs
+@@ -619,30 +619,18 @@
+     ui: &mut egui::Ui,
+     session: &EditorSession,
+ ) {
+-    ui.heading("Behavior Tree Add Node");
+     ui.small("Schema-driven node palette");
+     ui.separator();
+ 
+-    let mut catalog_query = String::new();
+-    let mut search_query = "decorator".to_owned();
+-    ui.columns(2, |columns| {
+-        columns[0].strong("Schema catalog");
+-        columns[0].add(
+-            egui::TextEdit::singleline(&mut catalog_query)
+-                .hint_text("Search nodes...")
+-                .desired_width(180.0),
+-        );
+-        let _ = show_graph_node_catalog(&mut columns[0], session, &catalog_query);
+-
+-        columns[1].strong("Search preview");
+-        columns[1].add(
+-            egui::TextEdit::singleline(&mut search_query)
+-                .hint_text("Search nodes...")
+-                .desired_width(180.0),
+-        );
+-        columns[1].small("Matches schema labels, categories, type IDs, and search tags.");
+-        let _ = show_graph_node_catalog(&mut columns[1], session, &search_query);
+-    });
++    let mut search_query = "behavior".to_owned();
++    ui.strong("Search preview");
++    ui.add(
++        egui::TextEdit::singleline(&mut search_query)
++            .hint_text("Search nodes...")
++            .desired_width(210.0),
++    );
++    ui.small("Matches schema labels, categories, type IDs, and search tags.");
++    let _ = show_graph_node_catalog(ui, session, &search_query);
+ }
+ 
+ /// Draws a read-only graph canvas with transient runtime debug presentation.
+diff --git a/crates/editor/src/ui/behavior_debug.rs b/crates/editor/src/ui/behavior_debug.rs
+--- a/crates/editor/src/ui/behavior_debug.rs
++++ b/crates/editor/src/ui/behavior_debug.rs
+@@ -361,14 +361,18 @@
+         let presentation = BehaviorTreeDebugPresentation::from_snapshot(runtime_entity, &snapshot);
+ 
+         #[cfg(feature = "visual-validation")]
+-        if is_fixture {
+-            egui::Panel::left("behavior_tree_visual_validation_palette")
++        if is_fixture
++            && let Some(session) = self.behavior_debug.graph_session.as_ref()
++        {
++            let context = ui.ctx().clone();
++            egui::Window::new("Behavior Tree Add Node")
++                .id(egui::Id::new("behavior_tree_visual_validation_palette"))
++                .fixed_pos(egui::pos2(8.0, 92.0))
++                .fixed_size(egui::vec2(245.0, 520.0))
+                 .resizable(false)
+-                .default_size(470.0)
+-                .show_inside(ui, |ui| {
+-                    if let Some(session) = self.behavior_debug.graph_session.as_ref() {
+-                        show_graph_node_palette_visual_fixture(ui, session);
+-                    }
++                .collapsible(false)
++                .show(&context, |ui| {
++                    show_graph_node_palette_visual_fixture(ui, session);
+                 });
+         }
+ 
