@@ -17,6 +17,8 @@ pub mod generic_authoring;
 pub mod prefab;
 /// Scene/project tool handlers backed by the shared authoring services.
 pub mod scene;
+/// VFX semantic authoring tool handlers backed by the shared VFX service.
+pub mod vfx;
 
 pub use ai_agent::{
     ai_agent_tool_descriptors, describe_session, handle_describe_session, handle_validate_input,
@@ -31,6 +33,9 @@ pub use prefab::{PrefabCreateInput, PrefabInstantiateInput, PrefabMcpTools};
 pub use scene::{
     ComponentSchemasOutput, EntityFindInput, EntityFindOutput, EntityInspectInput,
     EntityInspectOutput, ProjectDescribeOutput, SceneMcpTools, SceneMutationInput,
+};
+pub use vfx::{
+    VfxEffectInput, VfxInspectOutput, VfxMcpTools, VfxMutationInput, VfxTemplateInput,
 };
 
 use engine_authoring::{

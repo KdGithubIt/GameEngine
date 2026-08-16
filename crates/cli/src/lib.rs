@@ -7,6 +7,7 @@ mod asset_cli;
 mod generic_cli;
 mod prefab_cli;
 mod scene_cli;
+mod vfx_cli;
 
 use engine_authoring::{
     replace_file_contents, BehaviorTreeApply, BehaviorTreeAuthoringService,
@@ -65,6 +66,9 @@ where
         return result;
     }
     if let Some(result) = scene_cli::dispatch(&args) {
+        return result;
+    }
+    if let Some(result) = vfx_cli::dispatch(&args) {
         return result;
     }
     match args.as_slice() {

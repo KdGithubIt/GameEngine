@@ -3,6 +3,9 @@
 //! The window translates gestures into [`VfxCommand`] values and applies them
 //! through [`VfxAuthoringService`]. It never edits raw JSON as business logic.
 
+#[path = "vfx_builder_completion.rs"]
+mod completion;
+
 use eframe::egui;
 use engine_authoring::{
     replace_file_contents, ProjectRoot, VfxAuthoringService, VfxCommand, VfxCurve, VfxEmitter,
@@ -19,6 +22,7 @@ pub(crate) struct VfxBuilderState {
     effect: Option<VfxEffect>,
     path: Option<PathBuf>,
     selected_emitter: Option<VfxEmitterId>,
+    completion: completion::VfxCompletionState,
     module_filter: String,
     emitter_name: String,
     emitter_max_particles: u32,
@@ -74,6 +78,7 @@ impl VfxBuilderState {
                 ui.heading("VFX Builder");
                 ui.label("Open a project-local *.vfx.json asset to begin authoring.");
                 ui.small("All edits use the shared typed VFX authoring service.");
+                self.show_completion_empty(ui, project);
             });
             self.show_status(ui);
             return;
@@ -250,7 +255,10 @@ impl VfxBuilderState {
                                         .get(module.operation.type_id())
                                         .map(String::as_str)
                                         .unwrap_or_else(|| module.operation.type_id());
-                                    ui.label(label);
+                                    let selected = self.completion.is_selected(module);
+                                    if ui.selectable_label(selected, label).clicked() {
+                                        self.completion.select_module(module);
+                                    }
                                     ui.with_layout(
                                         egui::Layout::right_to_left(egui::Align::Center),
                                         |ui| {
@@ -296,7 +304,10 @@ impl VfxBuilderState {
                         ui.add_space(8.0);
                     }
                 });
+            self.show_completion_properties(&mut columns[1], &effect);
         });
+
+        self.show_completion_preview(ui, &effect);
 
         if let Some(command) = pending_command {
             self.apply_user_commands(vec![command]);

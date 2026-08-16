@@ -32,7 +32,11 @@ impl AuthoringWindows {
             AuthoringTool::RuntimeEventTimeline => self.runtime_event_open = true,
             AuthoringTool::UiContractDesigner => self.ui_contract_open = true,
             AuthoringTool::AdvancedGeometryDesigner => self.advanced_geometry_open = true,
-            AuthoringTool::VfxBuilder => self.vfx_open = true,
+            AuthoringTool::VfxBuilder => {
+                self.vfx_open = true;
+                #[cfg(feature = "visual-validation")]
+                self.vfx.prepare_visual_validation();
+            }
         }
     }
 

@@ -7,7 +7,7 @@
 use eframe::egui;
 use engine_mcp::{
     AssetMcpTools, BehaviorTreeMcpTools, GenericAuthoringMcpTools, McpToolDescriptor,
-    PrefabMcpTools, SceneMcpTools,
+    PrefabMcpTools, SceneMcpTools, VfxMcpTools,
 };
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -415,6 +415,7 @@ fn tools_list_result() -> Value {
     descriptors.extend(SceneMcpTools::new().tool_descriptors());
     descriptors.extend(AssetMcpTools::new().tool_descriptors());
     descriptors.extend(PrefabMcpTools::new().tool_descriptors());
+    descriptors.extend(VfxMcpTools::new().tool_descriptors());
     json!({
         "tools": descriptors.into_iter().map(tool_descriptor_json).collect::<Vec<_>>()
     })

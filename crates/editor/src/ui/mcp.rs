@@ -10,6 +10,7 @@ use engine_mcp::{
     BehaviorTreeGraphInput, BehaviorTreeMcpTools, EntityFindInput, EntityInspectInput,
     GraphMutationInput, GraphViewMutationInput, McpToolError, PrefabCreateInput,
     PrefabInstantiateInput, PrefabMcpTools, SceneMcpTools, SceneMutationInput, UiMutationInput,
+    VfxEffectInput, VfxMcpTools, VfxMutationInput, VfxTemplateInput,
 };
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -93,6 +94,7 @@ impl EditorApp {
         let asset_tools = AssetMcpTools::new();
         let prefab_tools = PrefabMcpTools::new();
         let behavior_tools = BehaviorTreeMcpTools::new();
+        let vfx_tools = VfxMcpTools::new();
 
         match name {
             "project.describe" => {
@@ -281,6 +283,30 @@ impl EditorApp {
                     input.expected_generation,
                     input.commands,
                 )?)
+            }
+            "vfx.schemas" => {
+                require_empty_arguments(arguments)?;
+                to_value(vfx_tools.schemas())
+            }
+            "vfx.inspect" => {
+                let input: VfxEffectInput = decode(arguments)?;
+                to_value(vfx_tools.inspect(input))
+            }
+            "vfx.validate" => {
+                let input: VfxEffectInput = decode(arguments)?;
+                to_value(vfx_tools.validate(input))
+            }
+            "vfx.preview" => {
+                let input: VfxMutationInput = decode(arguments)?;
+                to_value(vfx_tools.preview(input))
+            }
+            "vfx.apply" => {
+                let input: VfxMutationInput = decode(arguments)?;
+                to_value(vfx_tools.apply(input))
+            }
+            "vfx.template" => {
+                let input: VfxTemplateInput = decode(arguments)?;
+                to_value(vfx_tools.template(input))
             }
             "behavior_tree.schemas" => {
                 require_empty_arguments(arguments)?;
