@@ -1,0 +1,58 @@
++4. Play launches successfully;
++5. at least one relevant frame is captured;
++6. the agent performs visual evaluation of the captured result; and
++7. required interaction scenarios are exercised and pass.
++
++A proposal may explicitly mark a criterion as not applicable, but the run must
++report that fact rather than presenting an unperformed check as a pass.
++
++Visual evaluation supplements rather than replaces deterministic authoring,
++compiler, test, and runtime checks. If the agent cannot capture or inspect the
++required result, the run is incomplete or partially validated rather than
++completed.
++
++### 14. AI Studio presents semantic progress, changes, and audit history
++
++AI Studio SHOULD present structured work such as inspected documents, proposal
++steps, authoring mutations, code diffs, asset acquisitions, validation,
++playtest, and repair attempts in a human-readable timeline.
++
++Where the Editor can resolve a referenced entity, asset, graph node, material,
++UI document, or other object, the UI SHOULD provide navigation from the agent
++activity to the corresponding Editor context.
++
++Each run records an audit summary including at least the applicable counts or
++records for authoring operations, code changes, external acquisitions,
++low-level filesystem access, custom commands, permission escalations, and
++validation/playtest outcomes. Audit history MUST distinguish managed operations
++from escape-hatch operations.
++
++Cancellation is a first-class action. Stopping a run prevents new work from
++starting, requests provider/process cancellation, and leaves committed
++transactional authoring changes and already-applied code changes visible and
++reviewable. Cancellation MUST NOT imply an unsafe automatic rollback of
++external side effects that the host cannot prove reversible.
++
++### 15. Implementation is capability-sliced, but the contracts are designed together
++
++Implementation SHOULD proceed in vertical slices while preserving the full
++architecture:
++
++1. agent core/session/run/event contracts and AI Studio conversation UX;
++2. external agent runtime process integration and MCP connection injection;
++3. permission broker and managed validation;
++4. session-scoped code workspace, checkpoints, diff, and apply;
++5. native agent runtime with local-model backend support first where practical;
++6. hosted model backends and provider-managed authentication adapters;
++7. asset acquisition providers and network permission UX;
++8. Play, frame observation, evaluation, and repair loop; and
++9. project-shared portable session history and audit tooling.
++
++A partial implementation MUST NOT bypass the architecture by placing unique
++editing rules in one provider adapter or the AI Studio UI.
++
++## Consequences
++
++- GameEngine gains a first-class conversational AI creation workflow rather
++  than a vendor-specific prompt launcher.
++- Users can use external subscription/account-backed coding agents without
