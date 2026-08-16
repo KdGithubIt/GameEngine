@@ -1,0 +1,262 @@
+diff --git a/crates/authoring/src/graph.rs b/crates/authoring/src/graph.rs
+index dbf324bad454ebb1610180432616870003d20b39..1db1e40b0c0310d71dd95bb14176e488a2a7a0dd 100644
+--- a/crates/authoring/src/graph.rs
++++ b/crates/authoring/src/graph.rs
+@@ -6,6 +6,10 @@
+ //! serialization. It does not contain graph view data, auto-layout, concrete
+ //! graph domains, runtime execution, or renderer state.
+ 
++/// Shared structured authoring service for semantic Graph documents.
++#[path = "graph_authoring.rs"]
++pub mod authoring_service;
++
+ use crate::diagnostic::{Diagnostic, DiagnosticTarget};
+ use crate::id::{EdgeId, GraphId, GroupId, NodeId, PortId};
+ use crate::value::Value;
+diff --git a/crates/authoring/src/graph_authoring.rs b/crates/authoring/src/graph_authoring.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..14ca2614869abd5b0587c3a5467cd1e15443242a
+--- /dev/null
++++ b/crates/authoring/src/graph_authoring.rs
+@@ -0,0 +1,463 @@
++//! Shared domain-neutral Graph query and mutation service.
++//!
++//! The service is intentionally transport- and GUI-free. It centralizes
++//! permissions, stale-base checks, domain-aware validation, semantic preview
++//! diffs, and atomic Graph command application while leaving GraphView
++//! presentation transactions separate as required by ADR 0016.
++
++use super::{Graph, GraphChange, GraphCommand};
++use crate::access::{
++    AuthoringPermission, AuthoringPermissionError, AuthoringPermissions,
++};
++use crate::diagnostic::Diagnostic;
++use crate::graph_domain::{
++    apply_graph_commands_with_domain, validate_graph_with_domain, GraphCommandApplication,
++    GraphDomain,
++};
++use serde::Serialize;
++use std::fmt;
++
++/// Immutable semantic Graph state returned by structured authoring inspection.
++#[derive(Debug, Serialize)]
++pub struct GraphAuthoringSnapshot {
++    /// Logical content revision of the committed Graph.
++    pub revision: u64,
++    /// In-memory generation used to reject stale edits across reload or undo.
++    pub generation: u64,
++    /// Complete semantic Graph document at this revision.
++    pub graph: Graph,
++}
++
++/// Structured validation result for one committed semantic Graph.
++#[derive(Debug, Clone, PartialEq, Serialize)]
++pub struct GraphAuthoringValidation {
++    /// Logical content revision validated by this result.
++    pub revision: u64,
++    /// In-memory generation validated by this result.
++    pub generation: u64,
++    /// Whether structural and selected-domain validation produced no blocking diagnostic.
++    pub success: bool,
++    /// Structured structural and domain diagnostics.
++    pub diagnostics: Vec<Diagnostic>,
++}
++
++/// Result of previewing or applying one semantic Graph command batch.
++#[derive(Debug, Clone, PartialEq, Serialize)]
++pub struct GraphAuthoringMutation {
++    /// Whether the complete command batch passed structural and domain validation.
++    pub success: bool,
++    /// Revision supplied by the caller as its base.
++    pub base_revision: u64,
++    /// Generation supplied by the caller as its base.
++    pub base_generation: u64,
++    /// Current committed revision after this operation.
++    pub revision: u64,
++    /// Current committed generation after this operation.
++    pub generation: u64,
++    /// Structured command, structural, and domain diagnostics.
++    pub diagnostics: Vec<Diagnostic>,
++    /// Deterministic semantic diff proposed or committed by the command batch.
++    pub diff: Vec<GraphChange>,
++}
++
++/// Shared semantic Graph authoring service failure.
++#[derive(Debug)]
++pub enum GraphAuthoringError {
++    /// The application did not grant the permission required by this operation.
++    Permission(AuthoringPermissionError),
++    /// The supplied mutation base no longer matches the live Graph.
++    Stale {
++        /// Revision supplied by the caller.
++        expected_revision: u64,
++        /// Generation supplied by the caller.
++        expected_generation: u64,
++        /// Current committed Graph revision.
++        actual_revision: u64,
++        /// Current committed Graph generation.
++        actual_generation: u64,
++    },
++}
++
++impl GraphAuthoringError {
++    /// Returns a stable diagnostic-style error code for adapter responses.
++    pub fn code(&self) -> &'static str {
++        match self {
++            Self::Permission(error) => error.code(),
++            Self::Stale { .. } => "authoring.stale_revision",
++        }
++    }
++}
++
++impl fmt::Display for GraphAuthoringError {
++    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
++        match self {
++            Self::Permission(error) => error.fmt(formatter),
++            Self::Stale {
++                expected_revision,
++                expected_generation,
++                actual_revision,
++                actual_generation,
++            } => write!(
++                formatter,
++                "stale Graph base: expected revision {expected_revision} generation {expected_generation}, current revision {actual_revision} generation {actual_generation}"
++            ),
++        }
++    }
++}
++
++impl std::error::Error for GraphAuthoringError {
++    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
++        match self {
++            Self::Permission(error) => Some(error),
++            Self::Stale { .. } => None,
++        }
++    }
++}
++
++impl From<AuthoringPermissionError> for GraphAuthoringError {
++    fn from(value: AuthoringPermissionError) -> Self {
++        Self::Permission(value)
++    }
++}
++
++/// GUI-free semantic Graph authoring behavior shared by structured adapters.
++#[derive(Debug, Default, Clone, Copy)]
++pub struct GraphAuthoringService;
++
++impl GraphAuthoringService {
++    /// Creates the stateless Graph authoring service.
++    pub fn new() -> Self {
++        Self
++    }
++
++    /// Inspects the current committed semantic Graph.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`GraphAuthoringError`] when read permission is absent.
++    pub fn inspect(
++        &self,
++        graph: &Graph,
++        permissions: &AuthoringPermissions,
++    ) -> Result<GraphAuthoringSnapshot, GraphAuthoringError> {
++        permissions.require(AuthoringPermission::Read)?;
++        Ok(GraphAuthoringSnapshot {
++            revision: graph.revision(),
++            generation: graph.identity(),
++            graph: graph.clone_for_transaction(),
++        })
++    }
++
++    /// Validates the current Graph through foundation and selected-domain rules.
++    ///
++    /// GraphView presentation validity is deliberately not part of this result.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`GraphAuthoringError`] when read permission is absent.
++    pub fn validate(
++        &self,
++        graph: &Graph,
++        domain: &dyn GraphDomain,
++        permissions: &AuthoringPermissions,
++    ) -> Result<GraphAuthoringValidation, GraphAuthoringError> {
++        permissions.require(AuthoringPermission::Read)?;
++        let diagnostics = validate_graph_with_domain(graph, domain);
++        let success = !diagnostics.iter().any(Diagnostic::is_blocking);
++        Ok(GraphAuthoringValidation {
++            revision: graph.revision(),
++            generation: graph.identity(),
++            success,
++            diagnostics,
++        })
++    }
++
++    /// Previews one atomic semantic Graph command batch without mutation.
++    ///
++    /// The selected domain participates in validation before the batch is
++    /// reported successful. GraphView presentation state is never modified.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`GraphAuthoringError`] when preview permission is absent or the
++    /// supplied revision/generation pair is stale.
++    pub fn preview(
++        &self,
++        graph: &Graph,
++        domain: &dyn GraphDomain,
++        permissions: &AuthoringPermissions,
++        expected_revision: u64,
++        expected_generation: u64,
++        commands: Vec<GraphCommand>,
++    ) -> Result<GraphAuthoringMutation, GraphAuthoringError> {
++        permissions.require(AuthoringPermission::Preview)?;
++        ensure_current(graph, expected_revision, expected_generation)?;
++        Ok(mutation_from_application(
++            apply_graph_commands_with_domain(graph, domain, commands),
++            expected_revision,
++            expected_generation,
++        ))
++    }
++
++    /// Applies one atomic semantic Graph command batch.
++    ///
++    /// Domain or structural validation failure leaves the live Graph unchanged.
++    /// An empty successful batch is a no-op and does not advance the revision.
++    /// GraphView presentation state remains a separate transaction boundary.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`GraphAuthoringError`] when project-data-write permission is
++    /// absent or the supplied revision/generation pair is stale.
++    pub fn apply(
++        &self,
++        graph: &mut Graph,
++        domain: &dyn GraphDomain,
++        permissions: &AuthoringPermissions,
++        expected_revision: u64,
++        expected_generation: u64,
++        commands: Vec<GraphCommand>,
++    ) -> Result<GraphAuthoringMutation, GraphAuthoringError> {
++        permissions.require(AuthoringPermission::ProjectDataWrite)?;
++        ensure_current(graph, expected_revision, expected_generation)?;
++
++        let application = apply_graph_commands_with_domain(graph, domain, commands);
++        match application {
++            GraphCommandApplication::Applied {
++                diagnostics,
++                diff,
++                graph: candidate,
++            } => {
++                if diff.is_empty() {
++                    return Ok(GraphAuthoringMutation {
++                        success: true,
++                        base_revision: expected_revision,
++                        base_generation: expected_generation,
++                        revision: expected_revision,
++                        generation: expected_generation,
++                        diagnostics,
++                        diff,
++                    });
++                }
