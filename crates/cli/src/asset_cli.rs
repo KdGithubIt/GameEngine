@@ -92,7 +92,7 @@ fn catalog_error(path: &Path, error: AssetCatalogError) -> Result<CliRunResult, 
     Ok(input_error(error.code(), path, &error.to_string()))
 }
 
-fn input_error(kind: &str, path: &Path, message: &str) -> CliRunResult {
+fn input_error(kind: &'static str, path: &Path, message: &str) -> CliRunResult {
     CliRunResult::input_error(input_error_json(kind, path, message))
 }
 
