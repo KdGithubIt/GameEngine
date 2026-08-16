@@ -1,0 +1,1 @@
+Use a fresh request directory after creating the replacement task branch.
