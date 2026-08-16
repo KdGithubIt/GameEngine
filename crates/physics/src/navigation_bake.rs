@@ -412,11 +412,11 @@ fn replace_preserving_previous(
     }
 
     let had_previous = path.exists();
-    if had_previous {
-        if let Err(error) = fs::rename(path, &backup) {
-            let _ = fs::remove_file(&temporary);
-            return Err(NavigationBakeServiceError::Io(error));
-        }
+    if had_previous
+        && let Err(error) = fs::rename(path, &backup)
+    {
+        let _ = fs::remove_file(&temporary);
+        return Err(NavigationBakeServiceError::Io(error));
     }
     match fs::rename(&temporary, path) {
         Ok(()) => {

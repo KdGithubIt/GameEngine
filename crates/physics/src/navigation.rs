@@ -1280,6 +1280,7 @@ fn reconstruct_search(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn relax(
     next: NavigationPolygonRef,
     current: NavigationPolygonRef,
