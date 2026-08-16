@@ -204,6 +204,7 @@ fn registry_iterates_in_registration_order() {
             RIGID_BODY_PHYSICS_COMPONENT,
             POINT_LIGHT_COMPONENT,
             SPOT_LIGHT_COMPONENT,
+            VFX_PLAYER_COMPONENT,
         ]
     );
 }
