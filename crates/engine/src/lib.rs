@@ -102,8 +102,8 @@ pub mod lod;
 pub mod material;
 /// CPU and GPU mesh types.
 pub mod mesh;
-/// Isolated Rapier secondary-motion bridge for imported MMD rigid-body rigs.
-pub mod mmd_physics;
+/// Engine-native secondary-motion facade (ADR 0112).
+pub mod secondary_motion;
 /// Format-independent asset builder consuming [`model_ir`] (ADR 0078):
 /// sub-asset IDs, skeleton identity/dedupe/rebind, and clip BoneId
 /// resolution.
@@ -301,7 +301,11 @@ pub use mesh::{
     extract_baked_submesh, mesh_to_obj, GpuMesh, GpuMeshCache, InstanceData, Mesh,
     MeshValidationError, SharedGpuMeshCache, SkinningVertexData, Submesh, Vertex,
 };
-pub use mmd_physics::{mmd_rigid_body_physics_system, MmdPhysicsWorlds};
+pub use secondary_motion::{
+    secondary_motion_presentation_system, secondary_motion_system, SecondaryMotion,
+    SecondaryMotionRigAsset, SecondaryMotionRigRegistry, SecondaryMotionWorlds,
+    SECONDARY_MOTION_RIG_SCHEMA_VERSION,
+};
 pub use model_import::{
     fingerprint_model_source, import_model_bytes, import_model_path,
     import_model_path_with_contact_bones, model_source_dependencies, GltfAnimationData,

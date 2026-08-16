@@ -1279,6 +1279,7 @@ fn build_rigid_body_rig(
                 mass: body.mass,
                 linear_damping: body.linear_damping,
                 angular_damping: body.angular_damping,
+                gravity_scale: 1.0,
                 restitution: body.restitution,
                 friction: body.friction,
                 mode: match body.mode {
