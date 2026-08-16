@@ -1,0 +1,32 @@
+diff --git a/crates/render-runtime/src/shaders/mesh.wgsl b/crates/render-runtime/src/shaders/mesh.wgsl
+--- a/crates/render-runtime/src/shaders/mesh.wgsl
++++ b/crates/render-runtime/src/shaders/mesh.wgsl
+@@ -41,10 +41,10 @@
+ @group(2) @binding(1) var<uniform> shadow: ShadowUniform;
+ @group(2) @binding(2) var t_shadow: texture_depth_2d_array;
+ @group(2) @binding(3) var s_shadow: sampler_comparison;
+-@group(4) @binding(1) var t_environment_diffuse: texture_2d<f32>;
+-@group(4) @binding(2) var t_environment_specular: texture_2d<f32>;
+-@group(4) @binding(3) var t_environment_brdf: texture_2d<f32>;
+-@group(4) @binding(4) var s_environment: sampler;
+-@group(4) @binding(5) var<uniform> environment: EnvironmentUniform;
++@group(2) @binding(4) var t_environment_diffuse: texture_2d<f32>;
++@group(2) @binding(5) var t_environment_specular: texture_2d<f32>;
++@group(2) @binding(6) var t_environment_brdf: texture_2d<f32>;
++@group(2) @binding(7) var s_environment: sampler;
++@group(2) @binding(8) var<uniform> environment: EnvironmentUniform;
+ 
+ struct VertexInput {
+diff --git a/crates/render-runtime/src/shaders/sky.wgsl b/crates/render-runtime/src/shaders/sky.wgsl
+--- a/crates/render-runtime/src/shaders/sky.wgsl
++++ b/crates/render-runtime/src/shaders/sky.wgsl
+@@ -17,7 +17,7 @@ struct EnvironmentUniform {
+ 
+ @group(0) @binding(0) var<uniform> sky: SkyUniform;
+ @group(1) @binding(0) var t_environment_source: texture_2d<f32>;
+-@group(1) @binding(4) var s_environment: sampler;
+-@group(1) @binding(5) var<uniform> environment: EnvironmentUniform;
++@group(1) @binding(1) var s_environment: sampler;
++@group(1) @binding(2) var<uniform> environment: EnvironmentUniform;
+ 
+ struct VsOut {
