@@ -1,0 +1,23 @@
+diff --git a/docs/adr/AUDIT_2026-08-16.md b/docs/adr/AUDIT_2026-08-16.md
+--- a/docs/adr/AUDIT_2026-08-16.md
++++ b/docs/adr/AUDIT_2026-08-16.md
+@@ -168,14 +168,15 @@
+ - Accepted ADRs were not marked Superseded merely because their implementation
+   details are old; a later decision must actually replace the decision.
+ - Historical metadata formatting (`Status:` versus `- Status:` and title
+-  punctuation) was not normalized across 121 files, because that would create
+-  large review noise without changing the contract.
++  punctuation) was not normalized across the full registry, because that would
++  create large review noise without changing the contract.
+ - No serialized schema, Stable ID, public Rust API, crate dependency, or runtime
+   behavior changed in this audit.
+ - No `.github/**` or Dispatcher trust-boundary file changed.
+ ## Follow-up
+ 
+ A lightweight ADR-registry checker would be useful to prevent future duplicate
+-numeric prefixes, index omissions, and invalid status values. That should be implemented separately if
+-it is made a CI requirement, because CI/build infrastructure has a different
++numeric prefixes, index omissions, and invalid status values. That should be
++implemented separately if it is made a CI requirement, because CI/build
++infrastructure has a different
+ validation and trust-boundary impact from this documentation cleanup.
