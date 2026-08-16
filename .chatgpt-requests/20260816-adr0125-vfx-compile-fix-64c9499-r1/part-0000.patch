@@ -1,0 +1,27 @@
+diff --git a/crates/render-runtime/src/vfx.rs b/crates/render-runtime/src/vfx.rs
+index 3d75ccf..f1cb26a 100644
+--- a/crates/render-runtime/src/vfx.rs
++++ b/crates/render-runtime/src/vfx.rs
+@@ -478,8 +478,8 @@ pub struct VfxRenderParticle {
+         let mut output = Vec::new();
+         for emitter in self.instance.emitters() {
+             for operation in emitter.render_operations() {
+-                let VfxModuleOperation::Billboard { texture_sheet, .. }
+-                | VfxModuleOperation::Mesh { texture_sheet, .. } = &operation.operation
++                let (VfxModuleOperation::Billboard { texture_sheet, .. }
++                | VfxModuleOperation::Mesh { texture_sheet, .. }) = &operation.operation
+                 else {
+                     continue;
+                 };
+diff --git a/crates/render-runtime/src/render_backend.rs b/crates/render-runtime/src/render_backend.rs
+--- a/crates/render-runtime/src/render_backend.rs
++++ b/crates/render-runtime/src/render_backend.rs
+@@ -2015,7 +2015,7 @@ impl RenderBackend {
+         world: &mut engine_ecs::World,
+         device: &wgpu::Device,
+         queue: &wgpu::Queue,
+-        _camera_position: glam::Vec3,
++        camera_position: glam::Vec3,
+     ) -> Vec<StaticBatch> {
+         use crate::asset::Handle;
+         use engine_ecs::{Query, Without};
