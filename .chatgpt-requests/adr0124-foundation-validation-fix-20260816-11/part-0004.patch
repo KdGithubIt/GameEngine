@@ -1,0 +1,24 @@
+diff --git a/crates/physics/src/navmesh.rs b/crates/physics/src/navmesh.rs
+--- a/crates/physics/src/navmesh.rs
++++ b/crates/physics/src/navmesh.rs
+@@ -2,11 +2,12 @@
+ //!
+ //! ## Quick start
+ //!
+-//! 1. Build a [`NavMesh`] with [`bake_from_obstacles`] (or the ECS-aware
+-//!    [`bake_navmesh`] helper) and save it with [`save_navmesh`].
+-//! 2. Load it at runtime with [`load_navmesh`] and insert the result wrapped
+-//!    in a [`NavMeshQuery`] as a world resource.
+-//! 3. Add [`NavMeshAgent`] to entities you want to path-find; set
+-//!    [`NavMeshAgent::target`] to a world-space destination.
+-//! 4. Register [`nav_mesh_agent_system`] with
++//! 1. Build a [`crate::navmesh::NavMesh`] with
++//!    [`crate::navmesh::bake_from_obstacles`] (or the ECS-aware
++//!    [`crate::navmesh::bake_navmesh`] helper) and save it with
++//!    [`crate::navmesh::save_navmesh`].
++//! 2. Load it at runtime with [`crate::navmesh::load_navmesh`] and insert the
++//!    result wrapped in a [`crate::navmesh::NavMeshQuery`] as a world resource.
++//! 3. Add [`crate::navmesh::NavMeshAgent`] to entities you want to path-find;
++//!    set [`crate::navmesh::NavMeshAgent::target`] to a world-space destination.
++//! 4. Register [`crate::navmesh::nav_mesh_agent_system`] with
+ //!    [`engine_ecs::App::add_fixed_system`].
