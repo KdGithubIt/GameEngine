@@ -1,0 +1,151 @@
+diff --git a/crates/assets/src/asset.rs b/crates/assets/src/asset.rs
+--- a/crates/assets/src/asset.rs
++++ b/crates/assets/src/asset.rs
+@@ -365,3 +365,42 @@
+ impl HumanoidBone {
++    /// Complete stable semantic vocabulary exposed by the Humanoid authoring UI.
++    pub const ALL: [Self; 35] = [
++        Self::Hips,
++        Self::Spine,
++        Self::Chest,
++        Self::UpperChest,
++        Self::Neck,
++        Self::Head,
++        Self::LeftShoulder,
++        Self::LeftUpperArm,
++        Self::LeftLowerArm,
++        Self::LeftHand,
++        Self::RightShoulder,
++        Self::RightUpperArm,
++        Self::RightLowerArm,
++        Self::RightHand,
++        Self::LeftUpperLeg,
++        Self::LeftLowerLeg,
++        Self::LeftFoot,
++        Self::LeftToes,
++        Self::RightUpperLeg,
++        Self::RightLowerLeg,
++        Self::RightFoot,
++        Self::RightToes,
++        Self::LeftThumbProximal,
++        Self::LeftIndexProximal,
++        Self::LeftMiddleProximal,
++        Self::LeftRingProximal,
++        Self::LeftLittleProximal,
++        Self::RightThumbProximal,
++        Self::RightIndexProximal,
++        Self::RightMiddleProximal,
++        Self::RightRingProximal,
++        Self::RightLittleProximal,
++        Self::LeftEye,
++        Self::RightEye,
++        Self::Jaw,
++    ];
++
+     /// Semantics required for a profile to be structurally usable for humanoid conversion.
+     pub const REQUIRED: [Self; 15] = [
+diff --git a/crates/editor/src/ui/assets/mod.rs b/crates/editor/src/ui/assets/mod.rs
+--- a/crates/editor/src/ui/assets/mod.rs
++++ b/crates/editor/src/ui/assets/mod.rs
+@@ -10,3 +10,4 @@
+ mod browser;
+ mod document_creation;
++mod humanoid_profile_editor;
+ mod import_settings_window;
+diff --git a/crates/editor/src/ui/assets/import_settings_window.rs b/crates/editor/src/ui/assets/import_settings_window.rs
+--- a/crates/editor/src/ui/assets/import_settings_window.rs
++++ b/crates/editor/src/ui/assets/import_settings_window.rs
+@@ -6,4 +6,8 @@
+ use crate::ui::*;
++use super::humanoid_profile_editor::{
++    humanoid_profile_editor_states, persisted_humanoid_profiles, show_humanoid_profiles_editor,
++    HumanoidProfileEditorState,
++};
+ use super::manifest::save_asset_manifest;
+ use super::motion_pairing::show_motion_pairing_editor;
+ use super::retarget_window::{pmx_model_paths, pmx_model_sources, registered_model_retarget_pairs};
+@@ -21,6 +25,11 @@
+         let contact_bones = self
+             .asset_manifest
+             .get(&source_id)
+             .map(|entry| entry.import_settings.contact_bones.clone())
+             .unwrap_or_default();
++        let humanoid_profiles = self
++            .asset_manifest
++            .get(&source_id)
++            .map(|entry| humanoid_profile_editor_states(&entry.import_settings))
++            .unwrap_or_default();
+         let motion_pairing = engine::asset_path_matches_kind(
+@@ -77,6 +86,7 @@
+         self.import_settings_editor = Some(ImportSettingsEditorState {
+             source_id,
+             relative_path: entry.relative_path.clone(),
++            humanoid_profiles,
+             contact_bones,
+             motion_pairing,
+         });
+@@ -101,12 +111,15 @@
+                 if let Some(pairing) = &mut state.motion_pairing {
+                     show_motion_pairing_editor(ui, pairing);
+                     ui.separator();
+                 }
++                if !state.humanoid_profiles.is_empty() {
++                    show_humanoid_profiles_editor(ui, &mut state.humanoid_profiles);
++                    ui.separator();
++                }
+                 let _ = crate::anim_ux::show_contact_bones_editor(ui, &mut state.contact_bones);
+                 save_requested = ui
+                     .button("Save and Reimport")
+                     .on_hover_text(
+-                        "Writes the contact-bones override and re-detects contact intervals \
+-                         (ADR 0080 §1) by reimporting this source",
++                        "Writes import settings, preserves authored Humanoid mappings, and \
++                         reimports this source",
+                     )
+                     .clicked();
+@@ -153,3 +166,4 @@
+         };
+         let source_id = state.source_id.clone();
++        let humanoid_profiles = persisted_humanoid_profiles(&state.humanoid_profiles);
+         let contact_bones = state.contact_bones.clone();
+@@ -177,2 +191,3 @@
+         };
++        entry.import_settings.humanoid_profiles = humanoid_profiles;
+         entry.import_settings.contact_bones = contact_bones;
+@@ -210,3 +225,6 @@
+     /// Editable copy of `ImportSettings::contact_bones`; written back to the
++    /// Editable model-owned Humanoid profiles. Disabled drafts represent skeletons
++    /// that automatic detection could not map and are omitted until explicitly configured.
++    pub(in crate::ui) humanoid_profiles: Vec<HumanoidProfileEditorState>,
++    /// Editable copy of `ImportSettings::contact_bones`; written back to the
+     /// manifest and reimported when the user clicks Save.
+     pub(in crate::ui) contact_bones: Vec<String>,
+diff --git a/crates/editor/src/ui/assets/browser.rs b/crates/editor/src/ui/assets/browser.rs
+--- a/crates/editor/src/ui/assets/browser.rs
++++ b/crates/editor/src/ui/assets/browser.rs
+@@ -850,5 +850,12 @@
+                                         let registered = registered_asset.is_some();
++                                        let humanoid_configurable =
++                                            registered_asset.is_some_and(|(_, manifest_entry)| {
++                                                !manifest_entry
++                                                    .import_settings
++                                                    .skeleton_records
++                                                    .is_empty()
++                                            });
+                                         let gltf_source = engine::asset_path_matches_kind(
+                                             engine::AssetKind::GltfSource,
+                                             &entry.relative_path,
+@@ -1018,9 +1025,14 @@
+-                                            if registered
++                                            let import_settings_label = if humanoid_configurable {
++                                                "Configure Humanoid / Import Settings..."
++                                            } else {
++                                                "Edit Import Settings..."
++                                            };
++                                            if registered
+                                                 && import_source
+-                                                && ui.button("Edit Import Settings...").clicked()
++                                                && ui.button(import_settings_label).clicked()
+                                             {
+                                                 action = Some(
+                                                     AssetBrowserAction::EditImportSettings(*index),
