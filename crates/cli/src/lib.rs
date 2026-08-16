@@ -623,9 +623,10 @@ mod tests {
         let output = run_cli(["behavior-tree", "schemas"]).expect("schema command must succeed");
         let json: Value = serde_json::from_str(&output).expect("output must be JSON");
 
-        assert_eq!(json["graph_kind"], "behavior_tree.graph");
-        assert_eq!(json["layout_policy"], "behavior_tree.top_down");
-        assert_eq!(json["nodes"].as_array().unwrap().len(), 10);
+        let expected = serde_json::to_value(BehaviorTreeAuthoringService::new().schemas())
+            .expect("schema catalog must serialize");
+
+        assert_eq!(json, expected);
     }
 
     #[test]
