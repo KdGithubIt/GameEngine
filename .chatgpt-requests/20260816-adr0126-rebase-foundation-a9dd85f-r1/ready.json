@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "request_id": "20260816-adr0126-rebase-foundation-a9dd85f-r1",
+  "target_branch": "chatgpt/gameengine-adr0126-timeline-sequencer-v2",
+  "expected_head_sha": "a9dd85f72fad2607a2f8f751b1b3ca9f4f060fee",
+  "patch_parts": [
+    "part-0000.patch",
+    "part-0001.patch",
+    "part-0002.patch",
+    "part-0003.patch",
+    "part-0004.patch",
+    "part-0005.patch",
+    "part-0006.patch",
+    "part-0007.patch",
+    "part-0008.patch",
+    "part-0009.patch",
+    "part-0010.patch",
+    "part-0011.patch",
+    "part-0012.patch"
+  ],
+  "commit_message": "Add ADR 0126 Timeline foundation on refreshed main",
+  "pr_title": "Implement ADR 0126 Timeline and Sequencer runtime",
+  "pr_body": "## ADR 0126 implementation\n\nThis Draft PR is rebuilt from current `main` after ADR 0132 and ADR 0123 landed. It integrates the validated Timeline foundation from #90 without merging or force-applying the stale #90 branch. Follow-up Dispatcher requests on this same refreshed branch complete the ADR 0126 Definition of Done.\n\nThe PR remains Draft and must not be merged until runtime composition, Timeline Player / Project Rust control, shared Editor/CLI/MCP authoring parity, Sequencer, persistent Scene View preview, packaged Player, Windows Validation, and Visual Validation are complete."
+}
