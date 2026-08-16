@@ -1,0 +1,187 @@
++    /// Stable provider identifier.
++    fn provider_id(&self) -> &str;
++
++    /// Searches provider metadata without mutating project assets.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`AgentRuntimeError`] for provider connection or query failures.
++    fn search(&mut self, query: &AssetSearchQuery) -> Result<Vec<AssetCandidate>, AgentRuntimeError>;
++
++    /// Acquires one chosen candidate for the normal import/manifest pipeline.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`AgentRuntimeError`] when external acquisition fails.
++    fn acquire(&mut self, candidate: &AssetCandidate) -> Result<AcquiredAsset, AgentRuntimeError>;
++}
++
++/// One required completion evidence category from ADR 0131.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case")]
++pub enum CompletionCheckKind {
++    /// Proposal acceptance criteria.
++    AcceptanceCriteria,
++    /// Blocking authoring validation.
++    AuthoringValidation,
++    /// Required source-code validation.
++    SourceValidation,
++    /// Successful runtime launch.
++    PlayLaunch,
++    /// At least one relevant captured frame.
++    FrameCapture,
++    /// Agent inspection of the captured visual result.
++    VisualEvaluation,
++    /// Required interactive scenarios.
++    InteractionScenarios,
++}
++
++/// Pass/fail/not-applicable evidence for one completion category.
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++pub struct CompletionCheck {
++    /// Evidence category.
++    pub kind: CompletionCheckKind,
++    /// Whether the proposal requires this check.
++    pub applicable: bool,
++    /// Whether the applicable check passed.
++    pub passed: bool,
++    /// Human-readable evidence or reason it is not applicable.
++    pub detail: String,
++}
++
++/// Completion evidence that prevents compile-only success claims.
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++pub struct CompletionReport {
++    checks: BTreeMap<CompletionCheckKind, CompletionCheck>,
++}
++
++impl CompletionReport {
++    /// Creates a report from explicit evidence records.
++    pub fn new(checks: impl IntoIterator<Item = CompletionCheck>) -> Self {
++        Self {
++            checks: checks
++                .into_iter()
++                .map(|check| (check.kind, check))
++                .collect(),
++        }
++    }
++
++    /// Returns one evidence category when it was reported.
++    pub fn check(&self, kind: CompletionCheckKind) -> Option<&CompletionCheck> {
++        self.checks.get(&kind)
++    }
++
++    /// Returns whether all seven categories were explicitly reported and every
++    /// applicable category passed.
++    pub fn is_complete(&self) -> bool {
++        let required = [
++            CompletionCheckKind::AcceptanceCriteria,
++            CompletionCheckKind::AuthoringValidation,
++            CompletionCheckKind::SourceValidation,
++            CompletionCheckKind::PlayLaunch,
++            CompletionCheckKind::FrameCapture,
++            CompletionCheckKind::VisualEvaluation,
++            CompletionCheckKind::InteractionScenarios,
++        ];
++        required.into_iter().all(|kind| {
++            self.check(kind)
++                .is_some_and(|check| !check.applicable || check.passed)
++        })
++    }
++
++    /// Returns a compact explanation of missing or failing completion evidence.
++    pub fn unresolved_summary(&self) -> String {
++        let required = [
++            CompletionCheckKind::AcceptanceCriteria,
++            CompletionCheckKind::AuthoringValidation,
++            CompletionCheckKind::SourceValidation,
++            CompletionCheckKind::PlayLaunch,
++            CompletionCheckKind::FrameCapture,
++            CompletionCheckKind::VisualEvaluation,
++            CompletionCheckKind::InteractionScenarios,
++        ];
++        let unresolved = required
++            .into_iter()
++            .filter_map(|kind| match self.check(kind) {
++                None => Some(format!("{kind:?}:missing")),
++                Some(check) if check.applicable && !check.passed => Some(format!("{kind:?}:failed")),
++                Some(_) => None,
++            })
++            .collect::<Vec<_>>();
++        if unresolved.is_empty() {
++            "none".to_owned()
++        } else {
++            unresolved.join(", ")
++        }
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use std::time::Duration;
++
++    fn temp_root(name: &str) -> PathBuf {
++        let root = std::env::temp_dir().join(format!(
++            "gameengine-agent-test-{name}-{}",
++            generated_id("tmp")
++        ));
++        fs::create_dir_all(&root).expect("test root must be creatable");
++        root
++    }
++
++    fn draft(goal: &str) -> AgentProposalDraft {
++        AgentProposalDraft {
++            goal: goal.to_owned(),
++            acceptance_criteria: vec!["it works".to_owned()],
++            ..AgentProposalDraft::default()
++        }
++    }
++
++    #[test]
++    fn go_snapshots_exact_proposal_version() {
++        let project = temp_root("proposal-project");
++        let local = temp_root("proposal-local");
++        let mut host = AgentHost::new(project, local);
++        let session = host.create_session("test");
++        host.revise_proposal(&session, draft("first"))
++            .expect("proposal must revise");
++        let run = host.start_run(&session).expect("Go must start");
++        host.revise_proposal(&session, draft("second"))
++            .expect("later conversation may revise proposal");
++
++        let session = host.session(&session).expect("session must remain loaded");
++        assert_eq!(session.current_proposal().unwrap().version().get(), 2);
++        assert_eq!(
++            session.run(&run).unwrap().input().proposal().version().get(),
++            1
++        );
++        assert_eq!(
++            session.run(&run).unwrap().input().proposal().draft().goal,
++            "first"
++        );
++    }
++
++    #[test]
++    fn only_one_ai_writer_run_is_active() {
++        let project = temp_root("writer-project");
++        let local = temp_root("writer-local");
++        let mut host = AgentHost::new(project, local);
++        let first = host.create_session("first");
++        let second = host.create_session("second");
++        host.revise_proposal(&first, draft("one")).unwrap();
++        host.revise_proposal(&second, draft("two")).unwrap();
++        let run = host.start_run(&first).unwrap();
++
++        let error = host.start_run(&second).expect_err("second writer must wait");
++        assert_eq!(error.code(), "agent.writer_busy");
++        host.cancel_run(&first, &run).unwrap();
++        assert!(host.start_run(&second).is_ok());
++    }
++
++    #[test]
++    fn repair_and_awaiting_user_transitions_are_resumable() {
++        let project = temp_root("state-project");
++        let local = temp_root("state-local");
++        let mut host = AgentHost::new(project, local);
++        let session = host.create_session("state");
