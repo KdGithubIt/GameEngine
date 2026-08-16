@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "request_id": "20260817-adr0124-inc002-v12-6a8a605-r2",
+  "target_branch": "chatgpt/gameengine-adr0124-production-navigation-v12",
+  "expected_head_sha": "6a8a605b477e1ed15b0e227d8e81f5f2e01acccf",
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Record ADR 0124 Dispatcher recovery evidence",
+  "pr_title": "Implement ADR 0124 production navigation mesh workflow",
+  "pr_body": "Implement ADR 0124 production navigation mesh and non-blocking bake workflow on the current main baseline.\n\nRecord the confirmed INC-002 recurrence and recovery evidence for this implementation.\n\n<!-- gameengine-visual-validation: editor -->\n<!-- gameengine-visual-authoring-tool: Advanced Geometry Designer -->"
+}
