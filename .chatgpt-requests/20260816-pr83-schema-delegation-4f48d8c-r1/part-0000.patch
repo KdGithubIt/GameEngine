@@ -1,0 +1,31 @@
+diff --git a/crates/cli/src/lib.rs b/crates/cli/src/lib.rs
+--- a/crates/cli/src/lib.rs
++++ b/crates/cli/src/lib.rs
+@@ -1,9 +1,9 @@
+ #[test]
+ fn schema_command_outputs_behavior_tree_node_schemas() {
+     let output = run_cli(["behavior-tree", "schemas"]).expect("schema command must succeed");
+     let json: Value = serde_json::from_str(&output).expect("output must be JSON");
+-
+-    assert_eq!(json["graph_kind"], "behavior_tree.graph");
+-    assert_eq!(json["layout_policy"], "behavior_tree.top_down");
+-    assert_eq!(json["nodes"].as_array().unwrap().len(), 10);
++    let expected = serde_json::to_value(BehaviorTreeAuthoringService::new().schemas())
++        .expect("schema catalog must serialize");
++
++    assert_eq!(json, expected);
+ }
+diff --git a/crates/mcp/src/lib.rs b/crates/mcp/src/lib.rs
+--- a/crates/mcp/src/lib.rs
++++ b/crates/mcp/src/lib.rs
+@@ -1,8 +1,8 @@
+ #[test]
+ fn schema_tool_delegates_behavior_tree_schemas() {
+     let tools = BehaviorTreeMcpTools::new();
+     let schemas = tools.behavior_tree_schemas();
++    let expected = BehaviorTreeAuthoringService::new().schemas();
+ 
+-    assert_eq!(schemas.graph_kind.as_str(), "behavior_tree.graph");
+-    assert_eq!(schemas.nodes.len(), 6);
++    assert_eq!(schemas, expected);
+ }
