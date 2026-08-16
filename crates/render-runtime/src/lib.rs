@@ -54,6 +54,8 @@ pub mod preview;
 pub mod renderer;
 #[cfg(feature = "gpu")]
 mod render_backend;
+#[cfg(feature = "gpu")]
+mod temporal;
 /// Deterministic renderer and import-time content budgets.
 pub mod render_limits;
 /// Shadow mapping and environment-lighting runtime contracts.
