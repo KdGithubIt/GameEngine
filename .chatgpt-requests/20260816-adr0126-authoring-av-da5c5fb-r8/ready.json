@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "request_id": "20260816-adr0126-authoring-av-da5c5fb-r8",
+  "target_branch": "chatgpt/gameengine-adr0126-timeline-sequencer-v2",
+  "expected_head_sha": "da5c5fbbb623895d2ac2e9bc4842479f219eeb21",
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Add Timeline Audio/VFX authoring commands",
+  "pr_title": "Implement ADR 0126 Timeline and Sequencer runtime",
+  "pr_body": "Extends the shared GUI-free Timeline authoring command path to Audio and VFX clips, including typed add/replace/remove operations and public authoring exports. The PR remains Draft until ADR 0126 Definition of Done and required Windows/Visual validation complete.\n\n<!-- gameengine-chatgpt-dispatcher -->"
+}
