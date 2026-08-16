@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "request_id": "20260817-adr0125-vfx-stop-state-207674f-r1",
+  "target_branch": "chatgpt/gameengine-adr0125-first-release-completion-v3",
+  "expected_head_sha": "207674fa0875a2eee93308d73b820d18adba095d",
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Fix VFX stop and playback state",
+  "pr_title": "GameEngine: complete ADR 0125 first-release VFX scope",
+  "pr_body": "## Summary\n\nContinues ADR 0125 first-release completion on the existing Draft PR. This correction makes VFX stop distinct from pause, resets deterministic state on stop, and exposes stopped/playing/paused state through the copied Project Rust VFX view.\n\n## Safety\n\n- keeps gameplay control on the deferred GameCommand boundary\n- no persisted VFX schema or Stable ID changes\n- no direct project ECS access\n- no out-of-scope GPU simulation, collision events, sub-emitters, ribbon renderer, soft particles, or vector fields"
+}
