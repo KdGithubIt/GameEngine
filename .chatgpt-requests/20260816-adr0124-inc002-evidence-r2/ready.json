@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "request_id": "20260816-adr0124-inc002-evidence-r2",
+  "target_branch": "chatgpt/gameengine-adr0124-production-navigation-v11",
+  "expected_head_sha": "d7637f22edce8508639c9e2fd55c1a8ef7cfaab7",
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Record ADR 0124 Dispatcher recovery evidence",
+  "pr_title": "Implement ADR 0124 production navigation mesh workflow",
+  "pr_body": "Record the confirmed INC-002 recurrence and recovery evidence for the ADR 0124 current-main migration."
+}
