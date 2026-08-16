@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "request_id": "20260817-adr0126-audio-voices-c510232-r11",
+  "target_branch": "chatgpt/gameengine-adr0126-timeline-sequencer-v2",
+  "expected_head_sha": "c510232f22942f504551943e0ff3bc20e0f41aac",
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Add Timeline tracked audio voice lifecycle",
+  "pr_title": "Implement ADR 0126 Timeline and Sequencer runtime",
+  "pr_body": "Adds per-player transient Audio Track voice lifecycle state on top of ADR 0122 tracked voices: start once, update while active, stop on interval exit/seek, and suppress naturally completed one-shots until clip exit so they do not restart every frame. Runtime voice IDs remain non-persisted. The PR remains Draft until ADR 0126 Definition of Done and required Windows/Visual validation complete.\n\n<!-- gameengine-chatgpt-dispatcher -->"
+}
