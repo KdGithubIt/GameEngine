@@ -1,0 +1,197 @@
++    pub fn session(&self, session_id: &AgentSessionId) -> Option<&AgentSession> {
++        self.sessions.get(session_id)
++    }
++
++    /// Returns all sessions currently loaded in the host.
++    pub fn sessions(&self) -> impl Iterator<Item = &AgentSession> {
++        self.sessions.values()
++    }
++
++    fn session_mut(
++        &mut self,
++        session_id: &AgentSessionId,
++    ) -> Result<&mut AgentSession, AgentHostError> {
++        self.sessions.get_mut(session_id).ok_or_else(|| {
++            AgentHostError::new(
++                "agent.session_not_found",
++                format!("AI session `{session_id}` is not loaded"),
++            )
++        })
++    }
++
++    /// Appends a portable conversation message without changing an active run's
++    /// immutable proposal snapshot.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`AgentHostError`] when `session_id` is unknown.
++    pub fn add_message(
++        &mut self,
++        session_id: &AgentSessionId,
++        role: ConversationRole,
++        text: impl Into<String>,
++    ) -> Result<(), AgentHostError> {
++        self.session_mut(session_id)?
++            .conversation
++            .push(ConversationMessage::new(role, text));
++        Ok(())
++    }
++
++    /// Creates the next immutable proposal revision from collaborative conversation.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`AgentHostError`] when `session_id` is unknown.
++    pub fn revise_proposal(
++        &mut self,
++        session_id: &AgentSessionId,
++        draft: AgentProposalDraft,
++    ) -> Result<ProposalVersion, AgentHostError> {
++        let session = self.session_mut(session_id)?;
++        let version = ProposalVersion::new(
++            session
++                .current_proposal()
++                .map_or(1, |proposal| proposal.version().get() + 1),
++        );
++        session.proposals.push(AgentProposal { version, draft });
++        session.emit(AgentEventKind::ProposalUpdated(version));
++        Ok(version)
++    }
++
++    /// Implements Go by snapshotting the current proposal into one immutable run input.
++    ///
++    /// At most one AI writer run may be active for the project. Human Editor
++    /// mutations remain outside this writer role and use their normal revision checks.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`AgentHostError`] when no proposal exists or another run already
++    /// owns the project AI writer role.
++    pub fn start_run(&mut self, session_id: &AgentSessionId) -> Result<AgentRunId, AgentHostError> {
++        if let Some((active_session, active_run)) = &self.active_writer {
++            return Err(AgentHostError::new(
++                "agent.writer_busy",
++                format!(
++                    "AI writer is already held by session `{active_session}` run `{active_run}`"
++                ),
++            ));
++        }
++
++        let proposal = self
++            .sessions
++            .get(session_id)
++            .and_then(AgentSession::current_proposal)
++            .cloned()
++            .ok_or_else(|| {
++                AgentHostError::new(
++                    "agent.proposal_required",
++                    "Go requires a current structured proposal",
++                )
++            })?;
++
++        let run_id = AgentRunId::generate();
++        let input = AgentRunInput {
++            session_id: session_id.clone(),
++            run_id: run_id.clone(),
++            proposal: proposal.clone(),
++        };
++        let session = self.session_mut(session_id)?;
++        session.runs.push(AgentRun {
++            input,
++            state: AgentRunState::Inspecting,
++            changed_source_files: BTreeSet::new(),
++            audit: AgentRunAuditSummary::default(),
++        });
++        session.emit(AgentEventKind::RunStarted {
++            run_id: run_id.clone(),
++            proposal_version: proposal.version(),
++        });
++        self.active_writer = Some((session_id.clone(), run_id.clone()));
++        Ok(run_id)
++    }
++
++    /// Changes one run's resumable host state while preserving legal repair and
++    /// AwaitingUser loops.
++    ///
++    /// Completion is intentionally not available through this method; use
++    /// [`Self::complete_run`] so observed completion evidence is mandatory.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`AgentHostError`] for an unknown run or invalid transition.
++    pub fn transition_run(
++        &mut self,
++        session_id: &AgentSessionId,
++        run_id: &AgentRunId,
++        next: AgentRunState,
++    ) -> Result<(), AgentHostError> {
++        if next == AgentRunState::Completed {
++            return Err(AgentHostError::new(
++                "agent.completion_evidence_required",
++                "use complete_run so completion evidence is evaluated",
++            ));
++        }
++
++        let session = self.session_mut(session_id)?;
++        let run = session.run_mut(run_id).ok_or_else(|| {
++            AgentHostError::new(
++                "agent.run_not_found",
++                format!("agent run `{run_id}` does not exist"),
++            )
++        })?;
++        let from = run.state;
++        if !from.can_transition_to(next) {
++            return Err(AgentHostError::new(
++                "agent.invalid_run_transition",
++                format!("cannot transition run `{run_id}` from {from:?} to {next:?}"),
++            ));
++        }
++        run.state = next;
++        session.emit(AgentEventKind::StateChanged {
++            run_id: run_id.clone(),
++            from,
++            to: next,
++        });
++        if next.is_terminal() {
++            self.finish_writer(session_id, run_id);
++        }
++        Ok(())
++    }
++
++    /// Records a source path as run provenance after a managed code service applies it.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`AgentHostError`] when the session or run is unknown.
++    pub fn record_changed_source_file(
++        &mut self,
++        session_id: &AgentSessionId,
++        run_id: &AgentRunId,
++        path: PathBuf,
++    ) -> Result<(), AgentHostError> {
++        let path = validated_relative_path(&path).map_err(|error| {
++            AgentHostError::new("agent.code_path_invalid", error.to_string())
++        })?;
++        let session = self.session_mut(session_id)?;
++        let run = session.run_mut(run_id).ok_or_else(|| {
++            AgentHostError::new(
++                "agent.run_not_found",
++                format!("agent run `{run_id}` does not exist"),
++            )
++        })?;
++        if run.changed_source_files.insert(path) {
++            run.audit.code_changes += 1;
++        }
++        Ok(())
++    }
++
++    /// Records one managed or elevated operation in the run audit summary.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`AgentHostError`] when the session or run is unknown.
++    pub fn record_audit_operation(
++        &mut self,
++        session_id: &AgentSessionId,
++        run_id: &AgentRunId,
++        operation: AgentAuditOperation,
