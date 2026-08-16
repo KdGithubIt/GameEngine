@@ -1,0 +1,59 @@
++            TemporalTarget {
++                _texture: texture,
++                view,
++                copy_bind_group,
++            }
++        };
++
++        Self {
++            size,
++            targets: [
++                make_target("Temporal scene color A"),
++                make_target("Temporal scene color B"),
++            ],
++            write_index: 0,
++            history_valid: false,
++        }
++    }
++
++    fn current(&self) -> &TemporalTarget {
++        &self.targets[self.write_index]
++    }
++
++    fn advance(&mut self) {
++        self.history_valid = true;
++        self.write_index ^= 1;
++    }
++
++    fn reset(&mut self) {
++        self.write_index = 0;
++        self.history_valid = false;
++    }
++}
++
++/// Renderer-owned temporal resources around the ordinary scene renderer.
++pub(crate) struct TemporalHistory {
++    format: wgpu::TextureFormat,
++    copy_bgl: wgpu::BindGroupLayout,
++    copy_pipeline: wgpu::RenderPipeline,
++    uniform_buffer: wgpu::Buffer,
++    targets: Option<TemporalTargets>,
++    frame_index: u64,
++    previous_camera: Option<TemporalCameraSample>,
++    previous_jitter: Vec2,
++    pending_camera: Option<TemporalCameraSample>,
++    pending_jitter: Vec2,
++}
++
++impl TemporalHistory {
++    pub(crate) async fn new(
++        device: &wgpu::Device,
++        format: wgpu::TextureFormat,
++    ) -> Result<Self, wgpu::Error> {
++        use wgpu::util::DeviceExt;
++
++        let error_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
++        let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
++            label: Some("Temporal frame uniform"),
++            contents: bytemuck::bytes_of(&TemporalUniformData::initial()),
++            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,

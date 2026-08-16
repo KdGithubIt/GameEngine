@@ -1,0 +1,35 @@
++### 1. `WorldRenderer` owns process-local scene-color history
++
++The public render facade owns two single-sample scene-color textures in the
++same format and dimensions as the renderer output. The ordinary backend renders
++into the current history texture instead of directly into the caller-owned
++color view. After the frame, a fullscreen exact-copy pass writes the completed
++scene color into the caller view, then the history pair advances.
++
++Both history textures use `RENDER_ATTACHMENT | TEXTURE_BINDING`. The caller's
++existing color-view contract remains unchanged: temporal infrastructure does
++not require callers to add `COPY_SRC`, `COPY_DST`, or a new bindable usage to
++their textures.
++
++The previous history texture is retained even though this phase does not yet
++sample it. This establishes the resource lifetime and ping-pong ownership that
++a later temporal resolve will use.
++
++### 2. History invalidation is explicit and deterministic
++
++History is invalid after allocation or resize and becomes available only after
++a successful frame completes. Changing the selected active camera entity also
++invalidates accumulation for that frame. Camera identity follows the existing
++ADR 0107 selection result, including runtime entity generation, so selection
++order is not reimplemented.
++
++`WorldRenderer::reset_temporal_history()` is the explicit camera-cut API for a
++discontinuous transform or projection change that intentionally keeps the same
++camera source. The renderer does not guess cuts from translation, rotation, or
++matrix thresholds because those heuristics would impose undocumented gameplay
++semantics.
++
++### 3. Temporal camera metadata is renderer-owned and unjittered in this phase
++
++For every prepared frame the renderer records:
++

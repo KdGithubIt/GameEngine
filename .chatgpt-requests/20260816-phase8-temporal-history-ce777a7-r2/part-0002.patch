@@ -1,0 +1,49 @@
++        let camera_sample = Self::active_temporal_camera(world);
++        let temporal_view = self
++            .temporal
++            .prepare(device, queue, color_view, camera_sample);
+         self.inner
+-            .render_to_view(world, device, queue, color_view, depth_view)
+-            .map_err(RenderFrameError)
++            .render_to_view(world, device, queue, temporal_view, depth_view)
++            .map_err(RenderFrameError)?;
++        self.temporal
++            .copy_current_to(device, queue, color_view);
++        self.temporal.commit();
++        Ok(())
+     }
+ 
+     /// Renders through an explicit camera without mutating camera entities.
+@@ -84,6 +118,28 @@ impl WorldRenderer {
+         color_view: &wgpu::TextureView,
+         depth_view: &wgpu::TextureView,
+     ) -> Result<(), RenderFrameError> {
++        if color_view.texture().sample_count() != 1 {
++            return self
++                .inner
++                .render_to_view_with_camera(
++                    world,
++                    camera,
++                    camera_transform,
++                    device,
++                    queue,
++                    color_view,
++                    depth_view,
++                )
++                .map_err(RenderFrameError);
++        }
++
++        let camera_sample = Some(TemporalCameraSample::new(
++            TemporalCameraSource::Explicit,
++            camera.view_projection_matrix(camera_transform),
++        ));
++        let temporal_view = self
++            .temporal
++            .prepare(device, queue, color_view, camera_sample);
+         self.inner
+             .render_to_view_with_camera(
+                 world,
+@@ -91,10 +147,38 @@ impl WorldRenderer {
+                 camera_transform,
+                 device,
+                 queue,

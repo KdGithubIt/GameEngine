@@ -1,0 +1,50 @@
++        let needs_recreate = self
++            .targets
++            .as_ref()
++            .is_none_or(|targets| targets.size != size);
++        if needs_recreate {
++            self.targets = Some(TemporalTargets::new(
++                device,
++                self.format,
++                size,
++                &self.copy_bgl,
++                &self.uniform_buffer,
++            ));
++            self.reset_sequence();
++        }
++
++        let current_jitter = jitter_ndc(self.frame_index, size);
++        let targets = self
++            .targets
++            .as_ref()
++            .expect("temporal target creation must succeed for a valid device");
++        let history_usable = camera_history_usable(
++            self.previous_camera,
++            camera,
++            targets.history_valid,
++        );
++        let current_view_projection = camera
++            .map(|sample| sample.view_projection)
++            .unwrap_or(Mat4::IDENTITY);
++        let previous_view_projection = if history_usable {
++            self.previous_camera
++                .map(|sample| sample.view_projection)
++                .unwrap_or(current_view_projection)
++        } else {
++            current_view_projection
++        };
++        let previous_jitter = if history_usable {
++            self.previous_jitter
++        } else {
++            current_jitter
++        };
++        let uniform = TemporalUniformData {
++            current_view_projection: current_view_projection.to_cols_array_2d(),
++            previous_view_projection: previous_view_projection.to_cols_array_2d(),
++            jitter: [
++                current_jitter.x,
++                current_jitter.y,
++                previous_jitter.x,
++                previous_jitter.y,
++            ],
++            params: [

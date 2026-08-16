@@ -1,0 +1,46 @@
+-                color_view,
++                temporal_view,
+                 depth_view,
+             )
+-            .map_err(RenderFrameError)
++            .map_err(RenderFrameError)?;
++        self.temporal
++            .copy_current_to(device, queue, color_view);
++        self.temporal.commit();
++        Ok(())
++    }
++
++    /// Invalidates renderer-owned temporal history after a discontinuous camera change.
++    ///
++    /// Resizing the render target and switching to another active camera entity
++    /// invalidate history automatically. Call this after a cut, teleport, or
++    /// projection discontinuity that intentionally keeps the same camera source.
++    pub fn reset_temporal_history(&mut self) {
++        self.temporal.reset();
++    }
++
++    fn active_temporal_camera(
++        world: &mut engine_ecs::World,
++    ) -> Option<TemporalCameraSample> {
++        let query = engine_ecs::Query::<(&Camera3D, &Transform)>::new(world);
++        select_active_game_camera(query.iter()).map(|(entity, (camera, transform))| {
++            TemporalCameraSample::new(
++                TemporalCameraSource::WorldEntity {
++                    id: entity.id(),
++                    generation: entity.generation(),
++                },
++                camera.view_projection_matrix(transform),
++            )
++        })
+     }
+ }
+ 
+@@ -112,7 +196,7 @@ impl ToneMapPass {
+     ) -> Result<Self, RenderStateError> {
+         let inner = crate::render_backend::ToneMapPass::new(device, swapchain_format, hdr_view)
+             .await
+-            .map_err(RenderStateError)?;
++            .map_err(|error| RenderStateError(RenderStateErrorKind::Backend(error)))?;
+         Ok(Self { inner })
+     }
+ 

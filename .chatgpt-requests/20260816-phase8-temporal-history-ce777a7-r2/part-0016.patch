@@ -1,0 +1,35 @@
++- the current unjittered view-projection matrix;
++- the previous usable unjittered view-projection matrix;
++- the current and previous low-discrepancy sub-pixel jitter candidates; and
++- whether history is valid for accumulation.
++
++Jitter uses a deterministic eight-sample Halton sequence in bases 2 and 3 and
++is normalized to NDC from the current render-target extent. The sequence is
++prepared now so future temporal resolve work does not invent a second frame
++index or sampling convention.
++
++This phase deliberately does **not** apply jitter to the camera projection.
++Without a temporal resolve, applying it would make the presented frame visibly
++shake. Current rasterization therefore remains bit-for-bit governed by the
++existing unjittered camera matrices apart from the new internal output copy.
++
++### 4. TAA, motion vectors, and depth history remain separate follow-up work
++
++This ADR does not define a TAA blend filter, neighborhood clamp, reactive mask,
++velocity buffer, depth-history format, or previous object/skin transform
++contract. Static and skinned geometry continue to use the existing main-pass
++vertex contracts.
++
++When motion vectors are introduced, skinned meshes must receive a real previous
++pose/palette contract rather than silently reporting only rigid transform
++motion. Any new persisted quality setting or author-facing TAA control requires
++a separate authoring/settings decision.
++
++## Consequences
++
++- Future temporal effects have stable current/previous scene-color ownership
++  and deterministic frame metadata.
++- Resize and camera-source switches cannot accidentally reuse incompatible
++  history.
++- Explicit cuts can invalidate history without embedding gameplay-specific
++  motion thresholds in the renderer.

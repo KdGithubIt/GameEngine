@@ -1,0 +1,59 @@
++            });
++            pass.set_pipeline(&self.copy_pipeline);
++            pass.set_bind_group(0, &target.copy_bind_group, &[]);
++            pass.draw(0..3, 0..1);
++        }
++        queue.submit(std::iter::once(encoder.finish()));
++    }
++
++    pub(crate) fn commit(&mut self) {
++        self.previous_camera = self.pending_camera;
++        self.previous_jitter = self.pending_jitter;
++        self.frame_index = self.frame_index.wrapping_add(1);
++        if let Some(targets) = &mut self.targets {
++            targets.advance();
++        }
++    }
++
++    pub(crate) fn reset(&mut self) {
++        if let Some(targets) = &mut self.targets {
++            targets.reset();
++        }
++        self.reset_sequence();
++    }
++
++    fn reset_sequence(&mut self) {
++        self.frame_index = 0;
++        self.previous_camera = None;
++        self.previous_jitter = Vec2::ZERO;
++        self.pending_camera = None;
++        self.pending_jitter = Vec2::ZERO;
++    }
++}
++
++fn camera_history_usable(
++    previous: Option<TemporalCameraSample>,
++    current: Option<TemporalCameraSample>,
++    target_history_valid: bool,
++) -> bool {
++    target_history_valid
++        && previous
++            .zip(current)
++            .is_some_and(|(previous, current)| previous.source == current.source)
++}
++
++fn jitter_ndc(frame_index: u64, size: [u32; 2]) -> Vec2 {
++    let sample = frame_index % JITTER_PERIOD + 1;
++    let x = halton(sample, 2) - 0.5;
++    let y = halton(sample, 3) - 0.5;
++    Vec2::new(
++        2.0 * x / size[0].max(1) as f32,
++        2.0 * y / size[1].max(1) as f32,
++    )
++}
++
++fn halton(mut index: u64, base: u64) -> f32 {
++    let mut result = 0.0;
++    let mut fraction = 1.0 / base as f32;
++    while index > 0 {
++        result += fraction * (index % base) as f32;

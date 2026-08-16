@@ -1,0 +1,51 @@
+diff --git a/crates/render-runtime/src/shaders/temporal_copy.wgsl b/crates/render-runtime/src/shaders/temporal_copy.wgsl
+new file mode 100644
+index 0000000..f30c681
+--- /dev/null
++++ b/crates/render-runtime/src/shaders/temporal_copy.wgsl
+@@ -0,0 +1,43 @@
++// Exact single-sample scene-color copy used by the temporal history envelope.
++// The temporal uniform is bound alongside the source so a future temporal
++// resolve can consume camera/jitter history without changing the resource
++// layout established by this phase.
++
++struct TemporalUniform {
++    current_view_projection: mat4x4<f32>,
++    previous_view_projection: mat4x4<f32>,
++    jitter: vec4<f32>,
++    params: vec4<f32>,
++}
++
++@group(0) @binding(0) var t_scene: texture_2d<f32>;
++@group(0) @binding(1) var<uniform> temporal: TemporalUniform;
++
++struct VertexOutput {
++    @builtin(position) position: vec4<f32>,
++};
++
++@vertex
++fn vs_main(@builtin(vertex_index) index: u32) -> VertexOutput {
++    var positions = array<vec2<f32>, 3>(
++        vec2<f32>(-1.0, -1.0),
++        vec2<f32>(3.0, -1.0),
++        vec2<f32>(-1.0, 3.0),
++    );
++    var output: VertexOutput;
++    output.position = vec4<f32>(positions[index], 0.0, 1.0);
++    return output;
++}
++
++@fragment
++fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
++    let dimensions = vec2<i32>(textureDimensions(t_scene));
++    let pixel = clamp(
++        vec2<i32>(input.position.xy),
++        vec2<i32>(0),
++        dimensions - vec2<i32>(1),
++    );
++    // Keep this phase an exact copy. The bound temporal metadata becomes an
++    // input only when a later temporal resolve is introduced.
++    return textureLoad(t_scene, pixel, 0);
++}
+diff --git a/crates/render-runtime/src/temporal.rs b/crates/render-runtime/src/temporal.rs
+new file mode 100644

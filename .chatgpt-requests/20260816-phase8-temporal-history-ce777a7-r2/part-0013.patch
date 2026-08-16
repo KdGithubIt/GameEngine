@@ -1,0 +1,49 @@
++        index /= base;
++        fraction /= base as f32;
++    }
++    result
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn temporal_jitter_is_deterministic_bounded_and_periodic() {
++        let size = [1920, 1080];
++        let first = jitter_ndc(0, size);
++        assert_eq!(first, jitter_ndc(JITTER_PERIOD, size));
++        for frame in 0..JITTER_PERIOD {
++            let jitter = jitter_ndc(frame, size);
++            assert!(jitter.x.abs() <= 1.0 / size[0] as f32);
++            assert!(jitter.y.abs() <= 1.0 / size[1] as f32);
++        }
++    }
++
++    #[test]
++    fn temporal_camera_switch_invalidates_accumulation_without_heuristics() {
++        let matrix = Mat4::IDENTITY;
++        let first = Some(TemporalCameraSample::new(
++            TemporalCameraSource::WorldEntity { id: 1, generation: 0 },
++            matrix,
++        ));
++        let same = Some(TemporalCameraSample::new(
++            TemporalCameraSource::WorldEntity { id: 1, generation: 0 },
++            matrix,
++        ));
++        let switched = Some(TemporalCameraSample::new(
++            TemporalCameraSource::WorldEntity { id: 2, generation: 0 },
++            matrix,
++        ));
++
++        assert!(camera_history_usable(first, same, true));
++        assert!(!camera_history_usable(first, switched, true));
++        assert!(!camera_history_usable(first, same, false));
++        assert!(!camera_history_usable(first, None, true));
++    }
++
++    #[test]
++    fn temporal_copy_pipeline_validates_when_a_gpu_adapter_is_available() {
++        let instance = wgpu::Instance::default();
++        let context = match pollster::block_on(engine_renderer::GpuContext::new(&instance, None)) {
++            Ok(context) => context,

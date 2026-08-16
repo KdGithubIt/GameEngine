@@ -1,0 +1,46 @@
+diff --git a/crates/render-runtime/src/lib.rs b/crates/render-runtime/src/lib.rs
+index e1a654f..674bf03 100644
+--- a/crates/render-runtime/src/lib.rs
++++ b/crates/render-runtime/src/lib.rs
+@@ -54,6 +54,8 @@ pub mod preview;
+ pub mod renderer;
+ #[cfg(feature = "gpu")]
+ mod render_backend;
++#[cfg(feature = "gpu")]
++mod temporal;
+ /// Deterministic renderer and import-time content budgets.
+ pub mod render_limits;
+ /// Shadow mapping and environment-lighting runtime contracts.
+diff --git a/crates/render-runtime/src/renderer.rs b/crates/render-runtime/src/renderer.rs
+index 995b5c6..982de54 100644
+--- a/crates/render-runtime/src/renderer.rs
++++ b/crates/render-runtime/src/renderer.rs
+@@ -2,25 +2,40 @@
+ 
+ use std::fmt;
+ 
+-use crate::camera::Camera3D;
++use crate::camera::{select_active_game_camera, Camera3D};
++use crate::temporal::{TemporalCameraSample, TemporalCameraSource, TemporalHistory};
+ use crate::transform::Transform;
+ 
+ /// Fixed multisample count used by the primary 3D render pass.
+ pub const MAIN_PASS_SAMPLE_COUNT: u32 = crate::render_backend::MAIN_PASS_SAMPLE_COUNT;
+ 
++#[derive(Debug)]
++enum RenderStateErrorKind {
++    Backend(crate::render_backend::RenderStateError),
++    Temporal(wgpu::Error),
++}
++
+ /// Error returned while constructing runtime render pipelines.
+ #[derive(Debug)]
+-pub struct RenderStateError(crate::render_backend::RenderStateError);
++pub struct RenderStateError(RenderStateErrorKind);
+ 
+ impl fmt::Display for RenderStateError {
+     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+-        self.0.fmt(formatter)
++        match &self.0 {
++            RenderStateErrorKind::Backend(error) => error.fmt(formatter),
++            RenderStateErrorKind::Temporal(error) => {

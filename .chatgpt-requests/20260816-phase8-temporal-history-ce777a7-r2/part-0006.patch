@@ -1,0 +1,49 @@
++    copy_bind_group: wgpu::BindGroup,
++}
++
++struct TemporalTargets {
++    size: [u32; 2],
++    targets: [TemporalTarget; 2],
++    write_index: usize,
++    history_valid: bool,
++}
++
++impl TemporalTargets {
++    fn new(
++        device: &wgpu::Device,
++        format: wgpu::TextureFormat,
++        size: [u32; 2],
++        copy_bgl: &wgpu::BindGroupLayout,
++        uniform_buffer: &wgpu::Buffer,
++    ) -> Self {
++        let make_target = |label: &'static str| {
++            let texture = device.create_texture(&wgpu::TextureDescriptor {
++                label: Some(label),
++                size: wgpu::Extent3d {
++                    width: size[0],
++                    height: size[1],
++                    depth_or_array_layers: 1,
++                },
++                mip_level_count: 1,
++                sample_count: 1,
++                dimension: wgpu::TextureDimension::D2,
++                format,
++                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
++                    | wgpu::TextureUsages::TEXTURE_BINDING,
++                view_formats: &[],
++            });
++            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
++            let copy_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
++                label: Some("Temporal output copy BG"),
++                layout: copy_bgl,
++                entries: &[
++                    wgpu::BindGroupEntry {
++                        binding: 0,
++                        resource: wgpu::BindingResource::TextureView(&view),
++                    },
++                    wgpu::BindGroupEntry {
++                        binding: 1,
++                        resource: uniform_buffer.as_entire_binding(),
++                    },
++                ],
++            });

@@ -1,0 +1,38 @@
++- Existing hosts keep their caller-owned HDR texture usage and tone-map flow.
++- One fullscreen copy pass is added per rendered frame before tone mapping.
++- This phase does not claim TAA or motion-vector support; presented projection
++  remains unjittered.
++
++## Alternatives Considered
++
++### Require caller HDR textures to support copy operations
++
++Rejected because `WorldRenderer` currently accepts caller-owned render targets
++whose usage is outside the renderer's control. Requiring `COPY_SRC` or
++`COPY_DST` would silently strengthen a public runtime contract merely to
++implement an internal history mechanism.
++
++### Store history in the windowed application host
++
++Rejected because Editor previews and other renderer consumers also need the
++same temporal lifetime rules. History belongs to the stateful renderer facade,
++not one application shell.
++
++### Implement TAA and skinned motion vectors in the same change
++
++Rejected because it would couple history ownership to an incomplete motion
++contract. Establishing the lifetime and invalidation boundary first keeps the
++change reversible and lets later TAA work validate reprojection independently.
++
++### Detect camera cuts from motion thresholds
++
++Rejected because a threshold that is correct for one game or camera controller
++is not a generic renderer invariant. Camera-source changes are deterministic;
++other intentional cuts use the explicit reset API.
++
++## Compatibility and Migration
++
++No serialized scene, project setting, Material field, Stable ID, importer, or
++asset format changes are introduced. `WorldRenderer::reset_temporal_history()`
++is an additive runtime API. Existing render calls keep the same parameters and
++caller-owned color/depth target requirements. Resize invalidation is automatic,

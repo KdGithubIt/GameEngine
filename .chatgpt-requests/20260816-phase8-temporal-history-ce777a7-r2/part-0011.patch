@@ -1,0 +1,48 @@
++                f32::from(u8::from(history_usable)),
++                (self.frame_index % 65_536) as f32,
++                0.0,
++                0.0,
++            ],
++        };
++        queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniform));
++        self.pending_camera = camera;
++        self.pending_jitter = current_jitter;
++
++        &self
++            .targets
++            .as_ref()
++            .expect("temporal targets must exist after preparation")
++            .current()
++            .view
++    }
++
++    pub(crate) fn copy_current_to(
++        &self,
++        device: &wgpu::Device,
++        queue: &wgpu::Queue,
++        caller_color_view: &wgpu::TextureView,
++    ) {
++        let target = self
++            .targets
++            .as_ref()
++            .expect("temporal output copy requires a prepared target")
++            .current();
++        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
++            label: Some("Temporal output copy encoder"),
++        });
++        {
++            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
++                label: Some("Temporal output copy pass"),
++                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
++                    view: caller_color_view,
++                    resolve_target: None,
++                    depth_slice: None,
++                    ops: wgpu::Operations {
++                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
++                        store: wgpu::StoreOp::Store,
++                    },
++                })],
++                depth_stencil_attachment: None,
++                timestamp_writes: None,
++                occlusion_query_set: None,
++                multiview_mask: None,

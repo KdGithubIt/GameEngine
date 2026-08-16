@@ -1,0 +1,52 @@
++            label: Some("Temporal output copy pipeline"),
++            layout: Some(&layout),
++            vertex: wgpu::VertexState {
++                module: &shader,
++                entry_point: Some("vs_main"),
++                buffers: &[],
++                compilation_options: Default::default(),
++            },
++            fragment: Some(wgpu::FragmentState {
++                module: &shader,
++                entry_point: Some("fs_main"),
++                targets: &[Some(wgpu::ColorTargetState {
++                    format,
++                    blend: None,
++                    write_mask: wgpu::ColorWrites::ALL,
++                })],
++                compilation_options: Default::default(),
++            }),
++            primitive: wgpu::PrimitiveState::default(),
++            depth_stencil: None,
++            multisample: wgpu::MultisampleState::default(),
++            multiview_mask: None,
++            cache: None,
++        });
++
++        if let Some(error) = error_scope.pop().await {
++            return Err(error);
++        }
++
++        Ok(Self {
++            format,
++            copy_bgl,
++            copy_pipeline,
++            uniform_buffer,
++            targets: None,
++            frame_index: 0,
++            previous_camera: None,
++            previous_jitter: Vec2::ZERO,
++            pending_camera: None,
++            pending_jitter: Vec2::ZERO,
++        })
++    }
++
++    pub(crate) fn prepare<'a>(
++        &'a mut self,
++        device: &wgpu::Device,
++        queue: &wgpu::Queue,
++        caller_color_view: &wgpu::TextureView,
++        camera: Option<TemporalCameraSample>,
++    ) -> &'a wgpu::TextureView {
++        let extent = caller_color_view.texture().size();
++        let size = [extent.width.max(1), extent.height.max(1)];
