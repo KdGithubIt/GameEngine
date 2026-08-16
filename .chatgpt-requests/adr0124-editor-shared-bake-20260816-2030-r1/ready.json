@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0124-editor-shared-bake-20260816-2030-r1",
+  "target_branch": "chatgpt/gameengine-adr-0124-production-navmesh-v6",
+  "expected_head_sha": "d1e8c8e0ec2d31e09c820937c81f89d5c6cd872a",
+  "patch_parts": ["part-0000.patch"],
+  "commit_message": "Route Editor navigation baking through shared service",
+  "pr_title": "GameEngine: implement ADR 0124 production navigation",
+  "pr_body": "## Summary\n\nContinues ADR 0124 production navigation by removing the obsolete Editor-owned grid bake implementation from the active module graph and routing Editor bake calls through the shared production navigation service.\n\n<!-- gameengine-chatgpt-dispatcher -->"
+}
