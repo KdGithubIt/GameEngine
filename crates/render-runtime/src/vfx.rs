@@ -538,9 +538,13 @@ impl VfxPlayer {
 
 /// Advances every scene [`VfxPlayer`] from the frame clock.
 pub fn vfx_update_system(time: Res<'_, Time>, mut query: Query<'_, (&mut VfxPlayer, &GlobalTransform)>) {
-    let dt = time.delta_seconds();
-    for (player, transform) in &mut query {
-        player.step(dt, transform.translation());
+    let dt = time.delta_seconds;
+    if dt <= 0.0 {
+        return;
+    }
+    for (_, (player, transform)) in query.iter_mut() {
+        let origin = transform.matrix().col(3).truncate();
+        player.step(dt, origin);
     }
 }
 
