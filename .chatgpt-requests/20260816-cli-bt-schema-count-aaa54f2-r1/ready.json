@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "request_id": "20260816-cli-bt-schema-count-aaa54f2-r1",
+  "target_branch": "chatgpt/gameengine-cli-behavior-tree-schema-count",
+  "expected_head_sha": "aaa54f22f9749a7ed54326b08ea758c3fdff8d5d",
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "CLI: update Behavior Tree schema count test",
+  "pr_title": "CLI: update Behavior Tree schema count test",
+  "pr_body": "## Summary\n\nUpdates the stale `engine-cli` Behavior Tree schema-count test from 6 to 10. ADR 0123 added four typed stateful decorator schemas (`inverter`, `wait`, `timeout`, and `cooldown`) to the shared `BehaviorTreeAuthoringService` catalog, while the CLI test retained the legacy six-node expectation.\n\nThis is a test-only correction: the CLI already delegates `behavior-tree schemas` to the shared authoring service and production behavior is unchanged.\n\n## Root cause\n\nCommit `7468bd1e7079b79a590967e441cc9127d5cbf5b1` expanded the production schema catalog but did not update the dependent CLI assertion. Current-main full Windows Validation therefore fails `schema_command_outputs_behavior_tree_node_schemas` with `left: 10`, `right: 6`.\n\n## Validation\n\nRun affected Windows Validation for the exact PR head. This correction is intended to remove the existing current-main workspace test blocker; workspace-wide success can only be confirmed after a human-approved merge and the subsequent `main` full Validation.\n\nVisual validation is not required for this test-only change."
+}
