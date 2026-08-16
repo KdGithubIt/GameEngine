@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0124-authoring-20260816-2008-r1",
+  "target_branch": "chatgpt/gameengine-adr-0124-production-navmesh-v6",
+  "expected_head_sha": "0c0bfb91186d906c33fe09d7943ed04658d1a775",
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Add ADR 0124 navigation authoring contracts",
+  "pr_title": "GameEngine: implement ADR 0124 production navigation",
+  "pr_body": "## Summary\n\nContinues ADR 0124 production navigation on the current main baseline. Adds stable agent-profile authoring and normal-registry Navigation Link/Modifier authoring contracts consumed by the shared bake adapter.\n\n<!-- gameengine-chatgpt-dispatcher -->"
+}
