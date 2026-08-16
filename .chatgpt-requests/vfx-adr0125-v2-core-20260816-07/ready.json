@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "request_id": "vfx-adr0125-v2-core-20260816-07",
+  "target_branch": "chatgpt/gameengine-vfx-adr0125-v2",
+  "expected_head_sha": "2c26874cd1a590a5e3700a70a185ce0e0c33dbe1",
+  "patch_parts": [
+    "part-0000.patch",
+    "part-0001.patch",
+    "part-0002.patch",
+    "part-0003.patch",
+    "part-0004.patch",
+    "part-0005.patch",
+    "part-0006.patch",
+    "part-0007.patch",
+    "part-0008.patch",
+    "part-0009.patch",
+    "part-0010.patch",
+    "part-0011.patch",
+    "part-0012.patch"
+  ],
+  "commit_message": "Implement ADR 0125 VFX core architecture",
+  "pr_title": "GameEngine: implement ADR 0125 VFX architecture",
+  "pr_body": "Implements ADR 0125 in staged commits from the current main baseline. This core stage adds versioned VFX documents with stable IDs, typed Spawn/Update/Render modules, deterministic validation and compilation to backend-neutral IR, granular transactional emitter/module/curve/gradient edits with undo and canonical JSON, deterministic CPU reference simulation, runtime stats and preview replay, VfxPlayer playback state, and routes the existing ParticleEmitter convenience API through the same VfxInstance simulator. Scene asset/player wiring, render outputs, and the VFX Builder follow on this same Draft PR after this stage validates."
+}
