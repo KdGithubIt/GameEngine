@@ -1,4 +1,4 @@
-@@ -4390,4 +4551,136 @@
+@@ -4390,4 +4553,136 @@
              "full AO must preserve substantially more ambient StandardLit energy: unoccluded={unoccluded_peak}, occluded={occluded_peak}"
          );
      }
