@@ -1,0 +1,366 @@
+diff --git a/crates/platform/src/audio/spatial.rs b/crates/platform/src/audio/spatial.rs
+new file mode 100644
+index 0000000..96aa85f
+--- /dev/null
++++ b/crates/platform/src/audio/spatial.rs
+@@ -0,0 +1,291 @@
++//! Backend-neutral spatial-audio parameters and deterministic stereo mixing.
++
++use std::f32::consts::FRAC_PI_4;
++
++/// Transient identity for one backend playback voice.
++///
++/// Voice IDs are process-local runtime state. They are never serialized or
++/// exposed through the Project Rust ABI.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
++pub struct AudioVoiceId(pub(crate) u64);
++
++/// Distance rolloff used by positional sound emitters.
++#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
++pub enum AudioRolloff {
++    /// Gain falls linearly from the minimum distance to zero at the maximum.
++    #[default]
++    Linear,
++    /// Gain follows inverse-distance falloff normalized to reach zero at max.
++    Inverse,
++}
++
++/// World-space listener pose consumed by the platform-neutral mixer.
++#[derive(Debug, Clone, Copy, PartialEq)]
++pub struct AudioListenerPose {
++    /// Listener origin in world units.
++    pub position: [f32; 3],
++    /// Listener local +X direction in world space.
++    pub right: [f32; 3],
++}
++
++/// World-space emitter pose consumed by the platform-neutral mixer.
++#[derive(Debug, Clone, Copy, PartialEq)]
++pub struct AudioEmitterPose {
++    /// Emitter origin in world units.
++    pub position: [f32; 3],
++}
++
++/// Engine-owned parameters controlling one spatialized sound voice.
++#[derive(Debug, Clone, Copy, PartialEq)]
++pub struct AudioSpatialParams {
++    /// Linear source gain.
++    pub volume: f32,
++    /// Zero is 2D; one is fully positional.
++    pub spatial_blend: f32,
++    /// Distance where attenuation begins.
++    pub min_distance: f32,
++    /// Distance where attenuation reaches zero.
++    pub max_distance: f32,
++    /// Distance attenuation curve.
++    pub rolloff: AudioRolloff,
++}
++
++impl Default for AudioSpatialParams {
++    fn default() -> Self {
++        Self {
++            volume: 1.0,
++            spatial_blend: 1.0,
++            min_distance: 1.0,
++            max_distance: 20.0,
++            rolloff: AudioRolloff::Linear,
++        }
++    }
++}
++
++/// Per-channel gain produced by [`mix_spatial_audio`].
++#[derive(Debug, Clone, Copy, PartialEq)]
++pub struct AudioSpatialMix {
++    /// Left-channel linear gain.
++    pub left_gain: f32,
++    /// Right-channel linear gain.
++    pub right_gain: f32,
++}
++
++impl AudioSpatialMix {
++    pub(crate) fn sanitized(self) -> Self {
++        Self {
++            left_gain: sanitize_gain(self.left_gain),
++            right_gain: sanitize_gain(self.right_gain),
++        }
++    }
++}
++
++/// Computes deterministic stereo gains without consulting the audio backend.
++///
++/// Missing listeners mute only the positional contribution, so a partially
++/// spatialized voice retains its 2D contribution. Fully positional voices are
++/// therefore silent until a game listener is active.
++pub fn mix_spatial_audio(
++    listener: Option<AudioListenerPose>,
++    emitter: AudioEmitterPose,
++    params: AudioSpatialParams,
++) -> AudioSpatialMix {
++    let volume = sanitize_gain(params.volume);
++    let blend = sanitize_unit(params.spatial_blend);
++    let dry_gain = volume * (1.0 - blend);
++    let Some(listener) = listener else {
++        return AudioSpatialMix {
++            left_gain: dry_gain,
++            right_gain: dry_gain,
++        };
++    };
++
++    let offset = subtract(emitter.position, listener.position);
++    let distance = length(offset);
++    let min_distance = sanitize_distance(params.min_distance, 1.0);
++    let max_distance = sanitize_distance(params.max_distance, min_distance).max(min_distance);
++    let attenuation = attenuation(distance, min_distance, max_distance, params.rolloff);
++    let direction = normalize_or(offset, [0.0, 0.0, 0.0]);
++    let right = normalize_or(listener.right, [1.0, 0.0, 0.0]);
++    let pan = dot(direction, right).clamp(-1.0, 1.0);
++    let angle = (pan + 1.0) * FRAC_PI_4;
++    let spatial_gain = volume * blend * attenuation;
++
++    AudioSpatialMix {
++        left_gain: sanitize_gain(dry_gain + spatial_gain * angle.cos()),
++        right_gain: sanitize_gain(dry_gain + spatial_gain * angle.sin()),
++    }
++}
++
++fn attenuation(distance: f32, min_distance: f32, max_distance: f32, rolloff: AudioRolloff) -> f32 {
++    if distance <= min_distance {
++        return 1.0;
++    }
++    if distance >= max_distance || max_distance <= min_distance {
++        return 0.0;
++    }
++    match rolloff {
++        AudioRolloff::Linear => 1.0 - (distance - min_distance) / (max_distance - min_distance),
++        AudioRolloff::Inverse if min_distance > 0.0 => {
++            let at_distance = min_distance / distance;
++            let at_max = min_distance / max_distance;
++            ((at_distance - at_max) / (1.0 - at_max)).clamp(0.0, 1.0)
++        }
++        AudioRolloff::Inverse => {
++            1.0 - (distance - min_distance) / (max_distance - min_distance)
++        }
++    }
++}
++
++fn sanitize_gain(value: f32) -> f32 {
++    if value.is_finite() {
++        value.clamp(0.0, 1.0)
++    } else {
++        0.0
++    }
++}
++
++fn sanitize_unit(value: f32) -> f32 {
++    if value.is_finite() {
++        value.clamp(0.0, 1.0)
++    } else {
++        0.0
++    }
++}
++
++fn sanitize_distance(value: f32, fallback: f32) -> f32 {
++    if value.is_finite() && value >= 0.0 {
++        value
++    } else {
++        fallback
++    }
++}
++
++fn subtract(left: [f32; 3], right: [f32; 3]) -> [f32; 3] {
++    [left[0] - right[0], left[1] - right[1], left[2] - right[2]]
++}
++
++fn dot(left: [f32; 3], right: [f32; 3]) -> f32 {
++    left[0] * right[0] + left[1] * right[1] + left[2] * right[2]
++}
++
++fn length(value: [f32; 3]) -> f32 {
++    dot(value, value).sqrt()
++}
++
++fn normalize_or(value: [f32; 3], fallback: [f32; 3]) -> [f32; 3] {
++    let length = length(value);
++    if !length.is_finite() || length <= f32::EPSILON {
++        fallback
++    } else {
++        [value[0] / length, value[1] / length, value[2] / length]
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    fn listener() -> AudioListenerPose {
++        AudioListenerPose {
++            position: [0.0, 0.0, 0.0],
++            right: [1.0, 0.0, 0.0],
++        }
++    }
++
++    #[test]
++    fn two_dimensional_mix_ignores_listener_and_distance() {
++        let params = AudioSpatialParams {
++            spatial_blend: 0.0,
++            volume: 0.6,
++            ..AudioSpatialParams::default()
++        };
++        let near = mix_spatial_audio(
++            Some(listener()),
++            AudioEmitterPose { position: [0.0, 0.0, 0.0] },
++            params,
++        );
++        let far = mix_spatial_audio(
++            None,
++            AudioEmitterPose { position: [10_000.0, 0.0, 0.0] },
++            params,
++        );
++        assert_eq!(near, far);
++        assert!((near.left_gain - 0.6).abs() < 1.0e-6);
++        assert!((near.right_gain - 0.6).abs() < 1.0e-6);
++    }
++
++    #[test]
++    fn positional_mix_uses_equal_power_pan() {
++        let params = AudioSpatialParams::default();
++        let left = mix_spatial_audio(
++            Some(listener()),
++            AudioEmitterPose { position: [-1.0, 0.0, 0.0] },
++            params,
++        );
++        let center = mix_spatial_audio(
++            Some(listener()),
++            AudioEmitterPose { position: [0.0, 0.0, -1.0] },
++            params,
++        );
++        let right = mix_spatial_audio(
++            Some(listener()),
++            AudioEmitterPose { position: [1.0, 0.0, 0.0] },
++            params,
++        );
++        assert!(left.left_gain > 0.99 && left.right_gain < 1.0e-5);
++        assert!((center.left_gain - center.right_gain).abs() < 1.0e-6);
++        assert!(right.right_gain > 0.99 && right.left_gain < 1.0e-5);
++    }
++
++    #[test]
++    fn linear_rolloff_reaches_zero_at_max_distance() {
++        let params = AudioSpatialParams {
++            min_distance: 1.0,
++            max_distance: 5.0,
++            ..AudioSpatialParams::default()
++        };
++        let min = mix_spatial_audio(
++            Some(listener()),
++            AudioEmitterPose { position: [0.0, 0.0, -1.0] },
++            params,
++        );
++        let max = mix_spatial_audio(
++            Some(listener()),
++            AudioEmitterPose { position: [0.0, 0.0, -5.0] },
++            params,
++        );
++        assert!(min.left_gain > 0.7);
++        assert_eq!(max, AudioSpatialMix { left_gain: 0.0, right_gain: 0.0 });
++    }
++
++    #[test]
++    fn missing_listener_mutes_fully_positional_voice() {
++        let mix = mix_spatial_audio(
++            None,
++            AudioEmitterPose { position: [1.0, 2.0, 3.0] },
++            AudioSpatialParams::default(),
++        );
++        assert_eq!(mix, AudioSpatialMix { left_gain: 0.0, right_gain: 0.0 });
++    }
++
++    #[test]
++    fn invalid_inputs_never_produce_non_finite_output() {
++        let mix = mix_spatial_audio(
++            Some(AudioListenerPose {
++                position: [f32::NAN, 0.0, 0.0],
++                right: [f32::INFINITY, 0.0, 0.0],
++            }),
++            AudioEmitterPose { position: [0.0, 0.0, 0.0] },
++            AudioSpatialParams {
++                volume: f32::NAN,
++                spatial_blend: f32::INFINITY,
++                min_distance: -1.0,
++                max_distance: f32::NAN,
++                rolloff: AudioRolloff::Inverse,
++            },
++        );
++        assert!(mix.left_gain.is_finite());
++        assert!(mix.right_gain.is_finite());
++    }
++}
+diff --git a/crates/platform/src/audio.rs b/crates/platform/src/audio.rs
+--- a/crates/platform/src/audio.rs
++++ b/crates/platform/src/audio.rs
+@@ -1,4 +1,11 @@
+ //! Runtime audio assets, authored playback components, and platform backend.
++
++mod spatial;
++
++pub use spatial::{
++    mix_spatial_audio, AudioEmitterPose, AudioListenerPose, AudioRolloff, AudioSpatialMix,
++    AudioSpatialParams, AudioVoiceId,
++};
+ 
+ use std::fmt;
+ use std::io::Cursor;
+@@ -8,6 +15,8 @@
+ use engine_assets::asset::{Assets, Handle};
+ use engine_ecs::{Query, Res, ResMut};
+ 
++#[cfg(not(target_arch = "wasm32"))]
++use std::collections::BTreeMap;
+ #[cfg(not(target_arch = "wasm32"))]
+ use std::sync::{mpsc, Mutex};
+ #[cfg(not(target_arch = "wasm32"))]
+@@ -20,3 +29,7 @@
+ 
+ #[cfg(not(target_arch = "wasm32"))]
+ const AUDIO_POLL_INTERVAL: Duration = Duration::from_millis(10);
++#[cfg(not(target_arch = "wasm32"))]
++const AUDIO_COMMAND_CAPACITY: usize = 512;
++#[cfg(not(target_arch = "wasm32"))]
++const MAX_ACTIVE_VOICES: usize = 256;
+@@ -104,17 +104,19 @@
+     Pending,
+     /// The request reached the platform audio backend successfully.
+     Playing,
++    /// A non-looping voice finished and was retired by the backend.
++    Completed,
+     /// This host has no usable audio backend (for example a headless test).
+     Unavailable,
+     /// The backend rejected playback; the message is retained for runtime inspection.
+     Failed(String),
+ }
+ 
+-/// Authorable one-shot sound emitter attached to a spatial entity.
++/// Authorable sound emitter attached to a spatial entity.
+ pub struct AudioEmitter {
+     /// Decoded clip played when autoplay is enabled.
+     pub clip: Handle<AudioAsset>,
+-    /// Per-emitter gain reserved for the spatial mixer.
++    /// Per-emitter gain applied before bus volume.
+     pub volume: f32,
+     /// Zero is 2D and one is fully positional.
+     pub spatial_blend: f32,
+@@ -122,20 +124,27 @@
+     pub min_distance: f32,
+     /// Distance at which attenuation reaches its floor.
+     pub max_distance: f32,
++    /// Distance attenuation curve.
++    pub rolloff: AudioRolloff,
+     /// Whether conversion should produce one automatic playback request.
+     pub autoplay: bool,
++    /// Whether the automatic voice repeats until the component is removed.
++    pub looping: bool,
+     state: AuthoredAudioState,
+ }
+ 
+ impl AudioEmitter {
+     /// Creates a validated pending emitter.
