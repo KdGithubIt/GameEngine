@@ -100,221 +100,221 @@
 +        assert_eq!(catalog.modules.last().unwrap().phase, VfxPhase::Render);
 +    }
 +}
-+diff --git a/crates/render-runtime/src/lib.rs b/crates/render-runtime/src/lib.rs
-+index 674bf03..40bdb58 100644
-+--- a/crates/render-runtime/src/lib.rs
-++++ b/crates/render-runtime/src/lib.rs
-+@@ -43,6 +43,9 @@ pub mod morph;
-+ /// CPU particle simulation rendered through runtime mesh instancing.
-+ #[cfg(feature = "gpu")]
-+ pub mod particles;
-++/// Backend-neutral compiled VFX CPU reference runtime (ADR 0125).
-++#[cfg(feature = "gpu")]
-++pub mod vfx;
-+ /// HDR, bloom, tone-mapping, and color-grading settings.
-+ #[cfg(feature = "gpu")]
-+ pub mod postprocess;
-+diff --git a/crates/render-runtime/src/particles.rs b/crates/render-runtime/src/particles.rs
-+index 287b34b..34da0f8 100644
-+--- a/crates/render-runtime/src/particles.rs
-++++ b/crates/render-runtime/src/particles.rs
-+@@ -1,11 +1,18 @@
-+ //! CPU particle simulation rendered through GPU instancing (Phase 49,
-+ //! ADR 0044).
-+ //!
-+-//! A [`ParticleEmitter`] owns its particle pool; particles are never ECS
-+-//! entities. [`particle_update_system`] runs on the frame schedule and the
-+-//! render batch pass turns live particles into instanced draws of the
-+-//! emitter's mesh.
-+-
-++//! [`ParticleEmitter`] is the legacy convenience API. ADR 0125 compiles its
-++//! public fields into the same backend-neutral VFX IR and [`VfxInstance`] used
-++//! by authored effects; particles remain transient runtime state rather than
-++//! ECS entities. [`particle_update_system`] runs on the frame schedule and the
-++//! render batch pass turns the compatibility particle view into instanced draws.
-++
-++use engine_authoring::{
-++    CompiledVfxEffect, CompiledVfxEmitter, CompiledVfxOperation, VfxAttributeLayout,
-++    VfxCapabilityRequirements, VfxCurve, VfxCurveInterpolation, VfxCurveKey, VfxCurveKeyId,
-++    VfxEmitterId, VfxGradient, VfxGradientKey, VfxGradientKeyId, VfxModuleId,
-++    VfxModuleOperation, VfxRandomChannel, VfxScalarValue, VfxShape, VFX_SCHEMA_VERSION,
-++};
-+ use engine_ecs::{Query, Res};
-+ use glam::Vec3;
-+ 
-+@@ -13,12 +20,7 @@ use crate::asset::Handle;
-+ use crate::mesh::Mesh;
-+ use crate::time::Time;
-+ use crate::transform::GlobalTransform;
-+-
-+-/// Upper bound on particles spawned in a single frame per emitter.
-+-///
-+-/// Protects against a burst after a long frame (breakpoints, window drags)
-+-/// turning the accumulated spawn debt into one giant emission.
-+-const MAX_SPAWNS_PER_FRAME: u32 = 256;
-++use crate::vfx::VfxInstance;
-+ 
-+ /// One live particle inside an emitter pool.
-+ #[derive(Debug, Clone)]
-+@@ -26,7 +28,6 @@ const MAX_SPAWNS_PER_FRAME: u32 = 256;
-+ pub struct Particle {
-+     /// Current world-space position consumed by the render adapter.
-+     pub position: Vec3,
-+-    velocity: Vec3,
-+     age: f32,
-+     lifetime: f32,
-+ }
-+@@ -43,36 +44,6 @@ impl Particle {
-+     }
-+ }
-+ 
-+-/// A deterministic xorshift32 generator (ADR 0044: no `rand` dependency).
-+-#[derive(Debug, Clone)]
-+-struct XorShift32(u32);
-+-
-+-impl XorShift32 {
-+-    fn new(seed: u32) -> Self {
-+-        // Zero is a fixed point of xorshift; nudge it to a valid state.
-+-        Self(if seed == 0 { 0x9E37_79B9 } else { seed })
-+-    }
-+-
-+-    fn next_u32(&mut self) -> u32 {
-+-        let mut x = self.0;
-+-        x ^= x << 13;
-+-        x ^= x >> 17;
-+-        x ^= x << 5;
-+-        self.0 = x;
-+-        x
-+-    }
-+-
-+-    /// Returns a uniform value in `[0, 1)`.
-+-    fn next_f32(&mut self) -> f32 {
-+-        (self.next_u32() >> 8) as f32 / (1u32 << 24) as f32
-+-    }
-+-
-+-    /// Returns a uniform value in `[low, high]`.
-+-    fn range(&mut self, low: f32, high: f32) -> f32 {
-+-        low + (high - low) * self.next_f32()
-+-    }
-+-}
-+-
-+ /// Emits and simulates particles rendered as instanced meshes (ADR 0044).
-+ ///
-+ /// Particles simulate in world space: each spawn captures the emitter
-+@@ -110,9 +81,11 @@ pub struct ParticleEmitter {
-+     pub max_particles: usize,
-+     /// Seed for the emitter's deterministic random stream.
-+     pub seed: u32,
-+-    rng: XorShift32,
-+-    spawn_accumulator: f32,
-+-    /// Live particle storage consumed by the high-level render adapter.
-++    /// Shared ADR 0125 runtime instance. The public simple-emitter fields are
-++    /// compiled into this instance before every simulation step.
-++    runtime: Option<VfxInstance>,
-++    /// Compatibility particle view consumed by the existing high-level render
-++    /// adapter. Simulation ownership remains in [`VfxInstance`].
-+     #[doc(hidden)]
-+     pub particles: Vec<Particle>,
-+ }
-+@@ -136,8 +109,7 @@ impl ParticleEmitter {
-+             end_size: 0.02,
-+             max_particles: 1024,
-+             seed,
-+-            rng: XorShift32::new(seed),
-+-            spawn_accumulator: 0.0,
-++            runtime: None,
-+             particles: Vec::new(),
-+         }
-+     }
-+@@ -147,8 +119,7 @@ impl ParticleEmitter {
-+     /// Two emitters with equal configuration and seed produce identical
-+     /// particle streams after a reset.
-+     pub fn reset(&mut self) {
-+-        self.rng = XorShift32::new(self.seed);
-+-        self.spawn_accumulator = 0.0;
-++        self.runtime = None;
-+         self.particles.clear();
-+     }
-+ 
-+@@ -205,61 +176,192 @@ impl ParticleEmitter {
-+         self.start_size + (self.end_size - self.start_size) * factor
-+     }
-+ 
-+-    /// Advances the pool by `dt` seconds, spawning from `origin`.
-+-    fn step(&mut self, dt: f32, origin: Vec3) {
-+-        // Age and integrate existing particles, dropping expired ones.
-+-        let gravity = self.gravity;
-+-        for particle in &mut self.particles {
-+-            particle.age += dt;
-+-            particle.velocity += gravity * dt;
-+-            let velocity = particle.velocity;
-+-            particle.position += velocity * dt;
-++    /// Compiles the convenience API into the backend-neutral ADR 0125 IR.
-++    ///
-++    /// Stable source/module IDs intentionally do not change as public fields
-++    /// are edited. This lets [`VfxInstance::reconfigure`] preserve the live pool
-++    /// and keeps shape random channels deterministic across property updates.
-++    fn compiled_effect(&self) -> CompiledVfxEffect {
-++        let max_particles = u32::try_from(self.max_particles).unwrap_or(u32::MAX);
-++        let spawn_operations = vec![
-++            compiled_operation(
-++                1,
-++                VfxModuleOperation::SpawnRate {
-++                    particles_per_second: self.spawn_rate,
-++                },
-++            ),
-++            compiled_operation(
-++                2,
-++                VfxModuleOperation::Shape {
-++                    shape: VfxShape::Cone {
-++                        direction: self.direction.to_array(),
-++                        angle_radians: self.spread,
-++                        radius: 0.0,
-++                    },
-++                },
-++            ),
-++            compiled_operation(
-++                3,
-++                VfxModuleOperation::Lifetime {
-++                    value: VfxScalarValue::Range {
-++                        min: self.lifetime.0,
-++                        max: self.lifetime.1,
-++                        channel: VfxRandomChannel::new(0),
-++                    },
-++                },
-++            ),
-++            compiled_operation(
-++                4,
-++                VfxModuleOperation::InitialSpeed {
-++                    value: VfxScalarValue::Range {
-++                        min: self.initial_speed.0,
-++                        max: self.initial_speed.1,
-++                        channel: VfxRandomChannel::new(1),
-++                    },
-++                },
-++            ),
-++            compiled_operation(
-++                5,
-++                VfxModuleOperation::InitialColor {
-++                    color: self.start_color,
-++                },
-++            ),
-++            compiled_operation(
-++                6,
-++                VfxModuleOperation::InitialSize {
-++                    value: VfxScalarValue::Constant { value: 1.0 },
-++                },
-++            ),
-++        ];
-++        let update_operations = vec![
-++            compiled_operation(
-++                7,
-++                VfxModuleOperation::Force {
-++                    acceleration: self.gravity.to_array(),
-++                },
-++            ),
-++            compiled_operation(
-++                8,
-++                VfxModuleOperation::ColorOverLife {
-++                    gradient: simple_color_gradient(self.start_color, self.end_color),
-++                },
+diff --git a/crates/render-runtime/src/lib.rs b/crates/render-runtime/src/lib.rs
+index 674bf03..40bdb58 100644
+--- a/crates/render-runtime/src/lib.rs
++++ b/crates/render-runtime/src/lib.rs
+@@ -43,6 +43,9 @@ pub mod morph;
+ /// CPU particle simulation rendered through runtime mesh instancing.
+ #[cfg(feature = "gpu")]
+ pub mod particles;
++/// Backend-neutral compiled VFX CPU reference runtime (ADR 0125).
++#[cfg(feature = "gpu")]
++pub mod vfx;
+ /// HDR, bloom, tone-mapping, and color-grading settings.
+ #[cfg(feature = "gpu")]
+ pub mod postprocess;
+diff --git a/crates/render-runtime/src/particles.rs b/crates/render-runtime/src/particles.rs
+index 287b34b..34da0f8 100644
+--- a/crates/render-runtime/src/particles.rs
++++ b/crates/render-runtime/src/particles.rs
+@@ -1,11 +1,18 @@
+ //! CPU particle simulation rendered through GPU instancing (Phase 49,
+ //! ADR 0044).
+ //!
+-//! A [`ParticleEmitter`] owns its particle pool; particles are never ECS
+-//! entities. [`particle_update_system`] runs on the frame schedule and the
+-//! render batch pass turns live particles into instanced draws of the
+-//! emitter's mesh.
+-
++//! [`ParticleEmitter`] is the legacy convenience API. ADR 0125 compiles its
++//! public fields into the same backend-neutral VFX IR and [`VfxInstance`] used
++//! by authored effects; particles remain transient runtime state rather than
++//! ECS entities. [`particle_update_system`] runs on the frame schedule and the
++//! render batch pass turns the compatibility particle view into instanced draws.
++
++use engine_authoring::{
++    CompiledVfxEffect, CompiledVfxEmitter, CompiledVfxOperation, VfxAttributeLayout,
++    VfxCapabilityRequirements, VfxCurve, VfxCurveInterpolation, VfxCurveKey, VfxCurveKeyId,
++    VfxEmitterId, VfxGradient, VfxGradientKey, VfxGradientKeyId, VfxModuleId,
++    VfxModuleOperation, VfxRandomChannel, VfxScalarValue, VfxShape, VFX_SCHEMA_VERSION,
++};
+ use engine_ecs::{Query, Res};
+ use glam::Vec3;
+ 
+@@ -13,12 +20,7 @@ use crate::asset::Handle;
+ use crate::mesh::Mesh;
+ use crate::time::Time;
+ use crate::transform::GlobalTransform;
+-
+-/// Upper bound on particles spawned in a single frame per emitter.
+-///
+-/// Protects against a burst after a long frame (breakpoints, window drags)
+-/// turning the accumulated spawn debt into one giant emission.
+-const MAX_SPAWNS_PER_FRAME: u32 = 256;
++use crate::vfx::VfxInstance;
+ 
+ /// One live particle inside an emitter pool.
+ #[derive(Debug, Clone)]
+@@ -26,7 +28,6 @@ const MAX_SPAWNS_PER_FRAME: u32 = 256;
+ pub struct Particle {
+     /// Current world-space position consumed by the render adapter.
+     pub position: Vec3,
+-    velocity: Vec3,
+     age: f32,
+     lifetime: f32,
+ }
+@@ -43,36 +44,6 @@ impl Particle {
+     }
+ }
+ 
+-/// A deterministic xorshift32 generator (ADR 0044: no `rand` dependency).
+-#[derive(Debug, Clone)]
+-struct XorShift32(u32);
+-
+-impl XorShift32 {
+-    fn new(seed: u32) -> Self {
+-        // Zero is a fixed point of xorshift; nudge it to a valid state.
+-        Self(if seed == 0 { 0x9E37_79B9 } else { seed })
+-    }
+-
+-    fn next_u32(&mut self) -> u32 {
+-        let mut x = self.0;
+-        x ^= x << 13;
+-        x ^= x >> 17;
+-        x ^= x << 5;
+-        self.0 = x;
+-        x
+-    }
+-
+-    /// Returns a uniform value in `[0, 1)`.
+-    fn next_f32(&mut self) -> f32 {
+-        (self.next_u32() >> 8) as f32 / (1u32 << 24) as f32
+-    }
+-
+-    /// Returns a uniform value in `[low, high]`.
+-    fn range(&mut self, low: f32, high: f32) -> f32 {
+-        low + (high - low) * self.next_f32()
+-    }
+-}
+-
+ /// Emits and simulates particles rendered as instanced meshes (ADR 0044).
+ ///
+ /// Particles simulate in world space: each spawn captures the emitter
+@@ -110,9 +81,11 @@ pub struct ParticleEmitter {
+     pub max_particles: usize,
+     /// Seed for the emitter's deterministic random stream.
+     pub seed: u32,
+-    rng: XorShift32,
+-    spawn_accumulator: f32,
+-    /// Live particle storage consumed by the high-level render adapter.
++    /// Shared ADR 0125 runtime instance. The public simple-emitter fields are
++    /// compiled into this instance before every simulation step.
++    runtime: Option<VfxInstance>,
++    /// Compatibility particle view consumed by the existing high-level render
++    /// adapter. Simulation ownership remains in [`VfxInstance`].
+     #[doc(hidden)]
+     pub particles: Vec<Particle>,
+ }
+@@ -136,8 +109,7 @@ impl ParticleEmitter {
+             end_size: 0.02,
+             max_particles: 1024,
+             seed,
+-            rng: XorShift32::new(seed),
+-            spawn_accumulator: 0.0,
++            runtime: None,
+             particles: Vec::new(),
+         }
+     }
+@@ -147,8 +119,7 @@ impl ParticleEmitter {
+     /// Two emitters with equal configuration and seed produce identical
+     /// particle streams after a reset.
+     pub fn reset(&mut self) {
+-        self.rng = XorShift32::new(self.seed);
+-        self.spawn_accumulator = 0.0;
++        self.runtime = None;
+         self.particles.clear();
+     }
+ 
+@@ -205,61 +176,192 @@ impl ParticleEmitter {
+         self.start_size + (self.end_size - self.start_size) * factor
+     }
+ 
+-    /// Advances the pool by `dt` seconds, spawning from `origin`.
+-    fn step(&mut self, dt: f32, origin: Vec3) {
+-        // Age and integrate existing particles, dropping expired ones.
+-        let gravity = self.gravity;
+-        for particle in &mut self.particles {
+-            particle.age += dt;
+-            particle.velocity += gravity * dt;
+-            let velocity = particle.velocity;
+-            particle.position += velocity * dt;
++    /// Compiles the convenience API into the backend-neutral ADR 0125 IR.
++    ///
++    /// Stable source/module IDs intentionally do not change as public fields
++    /// are edited. This lets [`VfxInstance::reconfigure`] preserve the live pool
++    /// and keeps shape random channels deterministic across property updates.
++    fn compiled_effect(&self) -> CompiledVfxEffect {
++        let max_particles = u32::try_from(self.max_particles).unwrap_or(u32::MAX);
++        let spawn_operations = vec![
++            compiled_operation(
++                1,
++                VfxModuleOperation::SpawnRate {
++                    particles_per_second: self.spawn_rate,
++                },
++            ),
++            compiled_operation(
++                2,
++                VfxModuleOperation::Shape {
++                    shape: VfxShape::Cone {
++                        direction: self.direction.to_array(),
++                        angle_radians: self.spread,
++                        radius: 0.0,
++                    },
++                },
++            ),
++            compiled_operation(
++                3,
++                VfxModuleOperation::Lifetime {
++                    value: VfxScalarValue::Range {
++                        min: self.lifetime.0,
++                        max: self.lifetime.1,
++                        channel: VfxRandomChannel::new(0),
++                    },
++                },
++            ),
++            compiled_operation(
++                4,
++                VfxModuleOperation::InitialSpeed {
++                    value: VfxScalarValue::Range {
++                        min: self.initial_speed.0,
++                        max: self.initial_speed.1,
++                        channel: VfxRandomChannel::new(1),
++                    },
++                },
++            ),
++            compiled_operation(
++                5,
++                VfxModuleOperation::InitialColor {
++                    color: self.start_color,
++                },
++            ),
++            compiled_operation(
++                6,
++                VfxModuleOperation::InitialSize {
++                    value: VfxScalarValue::Constant { value: 1.0 },
++                },
++            ),
++        ];
++        let update_operations = vec![
++            compiled_operation(
++                7,
++                VfxModuleOperation::Force {
++                    acceleration: self.gravity.to_array(),
++                },
++            ),
++            compiled_operation(
++                8,
++                VfxModuleOperation::ColorOverLife {
++                    gradient: simple_color_gradient(self.start_color, self.end_color),
++                },
