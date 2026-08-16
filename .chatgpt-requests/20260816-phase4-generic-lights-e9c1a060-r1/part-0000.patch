@@ -1,0 +1,113 @@
+diff --git a/crates/render-runtime/src/light.rs b/crates/render-runtime/src/light.rs
+--- a/crates/render-runtime/src/light.rs
++++ b/crates/render-runtime/src/light.rs
+@@ -48,4 +48,60 @@
+     }
+ }
+ 
++/// A finite-range omnidirectional light attached to an entity transform.
++///
++/// The renderer reads the world-space position from the entity's
++/// [`crate::transform::GlobalTransform`]. Point lights do not cast shadows in
++/// the Phase 4 direct-light contract.
++#[derive(Debug, Clone)]
++pub struct PointLight {
++    /// Linear RGB light color.
++    pub color: Vec3,
++    /// Radiant-intensity multiplier before distance attenuation.
++    pub intensity: f32,
++    /// Maximum world-space influence distance.
++    pub range: f32,
++}
++
++impl Default for PointLight {
++    fn default() -> Self {
++        Self {
++            color: Vec3::ONE,
++            intensity: 10.0,
++            range: 10.0,
++        }
++    }
++}
++
++/// A finite-range cone light attached to an entity transform.
++///
++/// Position comes from [`crate::transform::GlobalTransform`] translation and
++/// the light travels along the entity's local `-Z` axis. Spot lights do not
++/// cast shadows in the Phase 4 direct-light contract.
++#[derive(Debug, Clone)]
++pub struct SpotLight {
++    /// Linear RGB light color.
++    pub color: Vec3,
++    /// Radiant-intensity multiplier before distance and cone attenuation.
++    pub intensity: f32,
++    /// Maximum world-space influence distance.
++    pub range: f32,
++    /// Full-intensity cone half-angle in radians.
++    pub inner_angle_radians: f32,
++    /// Zero-intensity cone half-angle in radians.
++    pub outer_angle_radians: f32,
++}
++
++impl Default for SpotLight {
++    fn default() -> Self {
++        Self {
++            color: Vec3::ONE,
++            intensity: 10.0,
++            range: 10.0,
++            inner_angle_radians: 20.0_f32.to_radians(),
++            outer_angle_radians: 30.0_f32.to_radians(),
++        }
++    }
++}
++
+ /// Procedural gradient sky drawn behind all scene geometry.
+@@ -116,4 +172,15 @@
+     }
+ 
+     #[test]
++    fn default_local_lights_have_finite_ranges_and_ordered_spot_cones() {
++        let point = PointLight::default();
++        let spot = SpotLight::default();
++        assert!(point.range.is_finite() && point.range > 0.0);
++        assert!(spot.range.is_finite() && spot.range > 0.0);
++        assert!(spot.inner_angle_radians >= 0.0);
++        assert!(spot.inner_angle_radians < spot.outer_angle_radians);
++        assert!(spot.outer_angle_radians < std::f32::consts::FRAC_PI_2);
++    }
++
++    #[test]
+     fn light_resource_mirror_system_uses_entity_components() {
+diff --git a/crates/render-runtime/src/render_limits.rs b/crates/render-runtime/src/render_limits.rs
+--- a/crates/render-runtime/src/render_limits.rs
++++ b/crates/render-runtime/src/render_limits.rs
+@@ -8,5 +8,9 @@
+ pub const MATERIAL_TEXTURE_SLOTS: usize = 3;
+ /// The renderer mirrors only one directional light resource.
+ pub const MAX_DIRECTIONAL_LIGHTS: usize = 1;
++/// Maximum point lights evaluated by the forward StandardLit pass.
++pub const MAX_POINT_LIGHTS: usize = 16;
++/// Maximum spot lights evaluated by the forward StandardLit pass.
++pub const MAX_SPOT_LIGHTS: usize = 8;
+ /// The renderer mirrors only one ambient light resource.
+ pub const MAX_AMBIENT_LIGHTS: usize = 1;
+diff --git a/crates/engine/src/render_limits.rs b/crates/engine/src/render_limits.rs
+--- a/crates/engine/src/render_limits.rs
++++ b/crates/engine/src/render_limits.rs
+@@ -7,10 +7,11 @@
+ use crate::scene_bridge::{
+     AMBIENT_LIGHT_COMPONENT, DIRECTIONAL_LIGHT_COMPONENT, LOD_GROUP_COMPONENT,
+-    PARTICLE_EMITTER_COMPONENT, SKINNED_MESH_RENDERER_COMPONENT, STATIC_MESH_RENDERER_COMPONENT,
++    PARTICLE_EMITTER_COMPONENT, POINT_LIGHT_COMPONENT, SKINNED_MESH_RENDERER_COMPONENT,
++    SPOT_LIGHT_COMPONENT, STATIC_MESH_RENDERER_COMPONENT,
+ };
+ use engine_authoring::{AuthoringScene, ComponentTypeId, Diagnostic, DiagnosticTarget, Value};
+ 
+ pub use engine_render_runtime::render_limits::{
+-    MATERIAL_TEXTURE_SLOTS, MAX_AMBIENT_LIGHTS, MAX_DIRECTIONAL_LIGHTS,
+-    MAX_PARTICLES_PER_EMITTER, MAX_RENDER_INSTANCES, MAX_TEXTURE_DIMENSION,
++    MATERIAL_TEXTURE_SLOTS, MAX_AMBIENT_LIGHTS, MAX_DIRECTIONAL_LIGHTS, MAX_PARTICLES_PER_EMITTER,
++    MAX_POINT_LIGHTS, MAX_RENDER_INSTANCES, MAX_SPOT_LIGHTS, MAX_TEXTURE_DIMENSION,
+ };
+@@ -22,9 +23,13 @@
+     let particles = ComponentTypeId::new(PARTICLE_EMITTER_COMPONENT);
