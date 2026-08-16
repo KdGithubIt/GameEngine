@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "request_id": "20260816-adr0124-editor-grid-compat-69010e1-r1",
+  "target_branch": "chatgpt/gameengine-adr-0124-production-navmesh-v6",
+  "expected_head_sha": "69010e1b861e78a81ead0b81eb85047cf50f327f",
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Keep advanced geometry designer on legacy grid navigation",
+  "pr_title": "GameEngine: implement ADR 0124 production navigation",
+  "pr_body": "Fixes the affected Editor validation failure by keeping the legacy layered advanced-geometry utility on the explicitly namespaced grid navigation compatibility API while production navigation remains the default facade."
+}
