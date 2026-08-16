@@ -1,0 +1,8 @@
+diff --git a/crates/render-runtime/src/vfx.rs b/crates/render-runtime/src/vfx.rs
+--- a/crates/render-runtime/src/vfx.rs
++++ b/crates/render-runtime/src/vfx.rs
+@@ -1072,2 +1072,4 @@ mod tests {
+         player.restart();
+         assert!(player.is_playing());
++    }
++}
