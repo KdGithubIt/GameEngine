@@ -2,6 +2,7 @@
 
 use std::fmt;
 
+use crate::bloom::BloomPass;
 use crate::camera::{select_active_game_camera, Camera3D};
 use crate::temporal::{TemporalCameraSample, TemporalCameraSource, TemporalHistory};
 use crate::transform::Transform;
@@ -12,6 +13,7 @@ pub const MAIN_PASS_SAMPLE_COUNT: u32 = crate::render_backend::MAIN_PASS_SAMPLE_
 #[derive(Debug)]
 enum RenderStateErrorKind {
     Backend(crate::render_backend::RenderStateError),
+    Bloom(wgpu::Error),
     Temporal(wgpu::Error),
 }
 
@@ -23,6 +25,9 @@ impl fmt::Display for RenderStateError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.0 {
             RenderStateErrorKind::Backend(error) => error.fmt(formatter),
+            RenderStateErrorKind::Bloom(error) => {
+                write!(formatter, "bloom render pipeline validation failed: {error}")
+            }
             RenderStateErrorKind::Temporal(error) => {
                 write!(formatter, "temporal render pipeline validation failed: {error}")
             }
@@ -34,6 +39,7 @@ impl std::error::Error for RenderStateError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match &self.0 {
             RenderStateErrorKind::Backend(error) => Some(error),
+            RenderStateErrorKind::Bloom(error) => Some(error),
             RenderStateErrorKind::Temporal(error) => Some(error),
         }
     }
@@ -185,6 +191,9 @@ impl WorldRenderer {
 /// Fullscreen HDR-to-output tone-map pass used by the windowed runtime host.
 pub struct ToneMapPass {
     inner: crate::render_backend::ToneMapPass,
+    bloom: BloomPass,
+    source_hdr_view: wgpu::TextureView,
+    inner_reads_bloom: bool,
 }
 
 impl ToneMapPass {
@@ -197,12 +206,23 @@ impl ToneMapPass {
         let inner = crate::render_backend::ToneMapPass::new(device, swapchain_format, hdr_view)
             .await
             .map_err(|error| RenderStateError(RenderStateErrorKind::Backend(error)))?;
-        Ok(Self { inner })
+        let bloom = BloomPass::new(device, hdr_view)
+            .await
+            .map_err(|error| RenderStateError(RenderStateErrorKind::Bloom(error)))?;
+        Ok(Self {
+            inner,
+            bloom,
+            source_hdr_view: hdr_view.clone(),
+            inner_reads_bloom: false,
+        })
     }
 
     /// Rebinds the source HDR texture after a render-target resize.
     pub fn update_bind_group(&mut self, device: &wgpu::Device, hdr_view: &wgpu::TextureView) {
+        self.source_hdr_view = hdr_view.clone();
+        self.bloom.update_source(device, hdr_view);
         self.inner.update_bind_group(device, hdr_view);
+        self.inner_reads_bloom = false;
     }
 
     /// Applies post-processing and writes the final frame into `swapchain_view`.
@@ -213,6 +233,26 @@ impl ToneMapPass {
         swapchain_view: &wgpu::TextureView,
         settings: &crate::postprocess::PostProcessSettings,
     ) {
-        self.inner.execute(device, queue, swapchain_view, settings);
+        let use_bloom = settings.enabled && settings.bloom.enabled;
+        if use_bloom {
+            self.bloom.execute(device, queue, &settings.bloom);
+            if !self.inner_reads_bloom {
+                let bloom_view = self.bloom.output_view().clone();
+                self.inner.update_bind_group(device, &bloom_view);
+                self.inner_reads_bloom = true;
+            }
+
+            let mut tone_map_settings = *settings;
+            tone_map_settings.bloom.enabled = false;
+            self.inner
+                .execute(device, queue, swapchain_view, &tone_map_settings);
+        } else {
+            if self.inner_reads_bloom {
+                self.inner
+                    .update_bind_group(device, &self.source_hdr_view);
+                self.inner_reads_bloom = false;
+            }
+            self.inner.execute(device, queue, swapchain_view, settings);
+        }
     }
 }
