@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "request_id": "20260816-adr0122-restore-d639bb7-r1",
+  "target_branch": "chatgpt/gameengine-adr0122-spatial-audio-ecs",
+  "expected_head_sha": "d639bb7a547b40e5212b39bbea6ca911391c9015",
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Restore ADR 0122 spatial audio ECS synchronization on current main",
+  "pr_title": "Continue ADR 0122 spatial audio ECS synchronization",
+  "pr_body": "Continues Draft PR #71 from the current main baseline. Restores the existing ADR 0122 ECS spatial synchronization semantics while preserving current-main Secondary Motion changes. Further ADR 0122 authoring, project-Rust, editor UX, and verification work follows on fresh dispatcher requests."
+}
