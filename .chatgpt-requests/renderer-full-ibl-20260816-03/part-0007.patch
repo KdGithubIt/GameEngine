@@ -1,0 +1,19 @@
+diff --git a/Cargo.lock b/Cargo.lock
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -1438,4 +1438,5 @@
+  "engine-rig",
+  "glam 0.29.3",
+  "hashbrown 0.14.5",
++ "half",
+  "image",
+diff --git a/docs/adr/README.md b/docs/adr/README.md
+--- a/docs/adr/README.md
++++ b/docs/adr/README.md
+@@ -179,4 +179,5 @@
+ | [0118](0118-rendering-color-space-and-texture-semantics.md) | Rendering Color-Space and Texture-Semantics Contract |
+ | [0119](0119-tangent-space-gpu-contract-and-shared-material-fragment.md) | Tangent-Space GPU Contract and Shared Material Fragment Stage |
+ | [0120](0120-generic-pbr-material-texture-contract.md) | Generic PBR Material Texture Contract |
++| [0121](0121-full-image-based-lighting.md) | Full Image-Based Lighting Contract |
+ 
+ ## Phase 41+ ADR Targets
