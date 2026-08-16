@@ -113,7 +113,7 @@ diff --git a/crates/editor/src/ui/assets/import_settings_window.rs b/crates/edit
 @@ -210,3 +226,6 @@
 +    /// Editable model-owned Humanoid profiles. Disabled drafts represent skeletons
 +    /// that automatic detection could not map and are omitted until explicitly configured.
-+    pub(in crate::ui) humanoid_profiles: Vec<HumanoidProfileEditorState>,
++    humanoid_profiles: Vec<HumanoidProfileEditorState>,
      /// Editable copy of `ImportSettings::contact_bones`; written back to the
      /// manifest and reimported when the user clicks Save.
      pub(in crate::ui) contact_bones: Vec<String>,
