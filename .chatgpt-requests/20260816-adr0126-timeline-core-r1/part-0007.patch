@@ -1,0 +1,351 @@
++        ensure_current(session, expected_revision, expected_generation)?;
++        let evaluated = evaluate(&session.document, commands);
++        match evaluated {
++            EvaluatedTimelineMutation::Accepted {
++                diagnostics,
++                diff,
++                document,
++            } => {
++                let committed = !diff.is_empty();
++                if committed {
++                    session.commit(*document);
++                }
++                Ok(TimelineAuthoringMutation {
++                    success: true,
++                    base_revision: expected_revision,
++                    base_generation: expected_generation,
++                    revision: session.revision,
++                    generation: session.generation,
++                    diagnostics,
++                    diff,
++                })
++            }
++            EvaluatedTimelineMutation::Rejected { diagnostics, diff } => {
++                Ok(TimelineAuthoringMutation {
++                    success: false,
++                    base_revision: expected_revision,
++                    base_generation: expected_generation,
++                    revision: expected_revision,
++                    generation: expected_generation,
++                    diagnostics,
++                    diff,
++                })
++            }
++        }
++    }
++}
++
++enum EvaluatedTimelineMutation {
++    Accepted {
++        diagnostics: Vec<Diagnostic>,
++        diff: Vec<TimelineChange>,
++        document: Box<TimelineDocument>,
++    },
++    Rejected {
++        diagnostics: Vec<Diagnostic>,
++        diff: Vec<TimelineChange>,
++    },
++}
++
++impl EvaluatedTimelineMutation {
++    fn mutation(
++        &self,
++        base_revision: u64,
++        base_generation: u64,
++        committed: bool,
++    ) -> TimelineAuthoringMutation {
++        match self {
++            Self::Accepted {
++                diagnostics, diff, ..
++            } => TimelineAuthoringMutation {
++                success: true,
++                base_revision,
++                base_generation,
++                revision: if committed && !diff.is_empty() {
++                    base_revision.saturating_add(1)
++                } else {
++                    base_revision
++                },
++                generation: base_generation,
++                diagnostics: diagnostics.clone(),
++                diff: diff.clone(),
++            },
++            Self::Rejected { diagnostics, diff } => TimelineAuthoringMutation {
++                success: false,
++                base_revision,
++                base_generation,
++                revision: base_revision,
++                generation: base_generation,
++                diagnostics: diagnostics.clone(),
++                diff: diff.clone(),
++            },
++        }
++    }
++}
++
++fn evaluate(document: &TimelineDocument, commands: Vec<TimelineCommand>) -> EvaluatedTimelineMutation {
++    let mut transaction = TimelineTransaction::begin(document);
++    for command in commands {
++        if let Err(error) = transaction.apply(command) {
++            return EvaluatedTimelineMutation::Rejected {
++                diagnostics: vec![diagnostic_for_edit_error(&error)],
++                diff: transaction.changes().to_vec(),
++            };
++        }
++    }
++    let diff = transaction.changes().to_vec();
++    match transaction.commit() {
++        Ok(commit) => EvaluatedTimelineMutation::Accepted {
++            diagnostics: commit.diagnostics,
++            diff: commit.changes,
++            document: Box::new(commit.document),
++        },
++        Err(error) => EvaluatedTimelineMutation::Rejected {
++            diagnostics: error.diagnostics,
++            diff,
++        },
++    }
++}
++
++fn diagnostic_for_edit_error(error: &TimelineEditError) -> Diagnostic {
++    let code = match error {
++        TimelineEditError::TrackNotFound(_) => "timeline.track_not_found",
++        TimelineEditError::DuplicateTrackId(_) => "timeline.duplicate_track_id",
++        TimelineEditError::DuplicateClipId(_) => "timeline.duplicate_clip_id",
++        TimelineEditError::DuplicateMarkerId(_) => "timeline.duplicate_marker_id",
++        TimelineEditError::ClipNotFound(_) => "timeline.clip_not_found",
++        TimelineEditError::MarkerNotFound(_) => "timeline.marker_not_found",
++        TimelineEditError::TrackTypeMismatch { .. } => "timeline.track_type_mismatch",
++        TimelineEditError::MarkerRequiresEventTrack { .. } => {
++            "timeline.marker_requires_event_track"
++        }
++        TimelineEditError::ReplacementClipIdMismatch { .. } => {
++            "timeline.replacement_clip_id_mismatch"
++        }
++        TimelineEditError::ReplacementMarkerIdMismatch { .. } => {
++            "timeline.replacement_marker_id_mismatch"
++        }
++    };
++    Diagnostic::error(code, error.to_string())
++}
++
++fn ensure_current(
++    session: &TimelineAuthoringSession,
++    expected_revision: u64,
++    expected_generation: u64,
++) -> Result<(), TimelineAuthoringError> {
++    if session.revision == expected_revision && session.generation == expected_generation {
++        return Ok(());
++    }
++    Err(TimelineAuthoringError::Stale {
++        expected_revision,
++        expected_generation,
++        actual_revision: session.revision,
++        actual_generation: session.generation,
++    })
++}
++
++fn next_timeline_generation() -> u64 {
++    static NEXT_GENERATION: AtomicU64 = AtomicU64::new(1);
++    NEXT_GENERATION.fetch_add(1, Ordering::Relaxed)
++}
++
++fn track_index(
++    document: &TimelineDocument,
++    id: &TimelineTrackId,
++) -> Result<usize, TimelineEditError> {
++    document
++        .tracks
++        .iter()
++        .position(|track| &track.id == id)
++        .ok_or_else(|| TimelineEditError::TrackNotFound(id.clone()))
++}
++
++fn track_mut<'a>(
++    document: &'a mut TimelineDocument,
++    id: &TimelineTrackId,
++) -> Result<&'a mut TimelineTrack, TimelineEditError> {
++    let index = track_index(document, id)?;
++    Ok(&mut document.tracks[index])
++}
++
++fn ensure_clip_id_absent(
++    document: &TimelineDocument,
++    id: &TimelineClipId,
++) -> Result<(), TimelineEditError> {
++    if document
++        .tracks
++        .iter()
++        .any(|track| track.kind.clip(id).is_some())
++    {
++        Err(TimelineEditError::DuplicateClipId(id.clone()))
++    } else {
++        Ok(())
++    }
++}
++
++fn ensure_marker_id_absent(
++    document: &TimelineDocument,
++    id: &TimelineMarkerId,
++) -> Result<(), TimelineEditError> {
++    let exists = document.tracks.iter().any(|track| match &track.kind {
++        TimelineTrackKind::Event { markers } => markers.iter().any(|marker| &marker.id == id),
++        _ => false,
++    });
++    if exists {
++        Err(TimelineEditError::DuplicateMarkerId(id.clone()))
++    } else {
++        Ok(())
++    }
++}
++
++fn insert_clip(track: &mut TimelineTrack, clip: TimelineEditableClip) -> Result<(), TimelineEditError> {
++    let track_type = track.kind.track_type();
++    let payload_type = clip.track_type();
++    match (&mut track.kind, clip) {
++        (TimelineTrackKind::Animation { clips }, TimelineEditableClip::Animation(clip)) => {
++            clips.push(clip)
++        }
++        (
++            TimelineTrackKind::TransformProperty { clips },
++            TimelineEditableClip::TransformProperty(clip),
++        ) => clips.push(clip),
++        (TimelineTrackKind::CameraCut { clips }, TimelineEditableClip::CameraCut(clip)) => {
++            clips.push(clip)
++        }
++        _ => {
++            return Err(TimelineEditError::TrackTypeMismatch {
++                track_type,
++                payload_type,
++            })
++        }
++    }
++    Ok(())
++}
++
++fn replace_clip(
++    track: &mut TimelineTrack,
++    id: &TimelineClipId,
++    replacement: TimelineEditableClip,
++) -> Result<(), TimelineEditError> {
++    let track_type = track.kind.track_type();
++    let payload_type = replacement.track_type();
++    match (&mut track.kind, replacement) {
++        (TimelineTrackKind::Animation { clips }, TimelineEditableClip::Animation(replacement)) => {
++            replace_by_id(clips, id, replacement, |clip| &clip.timing.id)
++        }
++        (
++            TimelineTrackKind::TransformProperty { clips },
++            TimelineEditableClip::TransformProperty(replacement),
++        ) => replace_by_id(clips, id, replacement, |clip| &clip.timing.id),
++        (TimelineTrackKind::CameraCut { clips }, TimelineEditableClip::CameraCut(replacement)) => {
++            replace_by_id(clips, id, replacement, |clip| &clip.timing.id)
++        }
++        _ => Err(TimelineEditError::TrackTypeMismatch {
++            track_type,
++            payload_type,
++        }),
++    }
++}
++
++fn replace_by_id<T>(
++    items: &mut [T],
++    id: &TimelineClipId,
++    replacement: T,
++    id_of: impl Fn(&T) -> &TimelineClipId,
++) -> Result<(), TimelineEditError> {
++    let Some(index) = items.iter().position(|item| id_of(item) == id) else {
++        return Err(TimelineEditError::ClipNotFound(id.clone()));
++    };
++    items[index] = replacement;
++    Ok(())
++}
++
++fn remove_clip(track: &mut TimelineTrack, id: &TimelineClipId) -> Result<(), TimelineEditError> {
++    match &mut track.kind {
++        TimelineTrackKind::Animation { clips } => remove_by_id(clips, id, |clip| &clip.timing.id),
++        TimelineTrackKind::TransformProperty { clips } => {
++            remove_by_id(clips, id, |clip| &clip.timing.id)
++        }
++        TimelineTrackKind::CameraCut { clips } => remove_by_id(clips, id, |clip| &clip.timing.id),
++        TimelineTrackKind::Event { .. } => Err(TimelineEditError::ClipNotFound(id.clone())),
++    }
++}
++
++fn remove_by_id<T>(
++    items: &mut Vec<T>,
++    id: &TimelineClipId,
++    id_of: impl Fn(&T) -> &TimelineClipId,
++) -> Result<(), TimelineEditError> {
++    let Some(index) = items.iter().position(|item| id_of(item) == id) else {
++        return Err(TimelineEditError::ClipNotFound(id.clone()));
++    };
++    items.remove(index);
++    Ok(())
++}
++
++fn insert_marker(
++    track: &mut TimelineTrack,
++    marker: TimelineEventMarker,
++) -> Result<(), TimelineEditError> {
++    match &mut track.kind {
++        TimelineTrackKind::Event { markers } => {
++            markers.push(marker);
++            Ok(())
++        }
++        other => Err(TimelineEditError::MarkerRequiresEventTrack {
++            track_type: other.track_type(),
++        }),
++    }
++}
++
++fn replace_marker(
++    track: &mut TimelineTrack,
++    id: &TimelineMarkerId,
++    replacement: TimelineEventMarker,
++) -> Result<(), TimelineEditError> {
++    match &mut track.kind {
++        TimelineTrackKind::Event { markers } => {
++            let Some(index) = markers.iter().position(|marker| &marker.id == id) else {
++                return Err(TimelineEditError::MarkerNotFound(id.clone()));
++            };
++            markers[index] = replacement;
++            Ok(())
++        }
++        other => Err(TimelineEditError::MarkerRequiresEventTrack {
++            track_type: other.track_type(),
++        }),
++    }
++}
++
++fn remove_marker(
++    track: &mut TimelineTrack,
++    id: &TimelineMarkerId,
++) -> Result<(), TimelineEditError> {
++    match &mut track.kind {
++        TimelineTrackKind::Event { markers } => {
++            let Some(index) = markers.iter().position(|marker| &marker.id == id) else {
++                return Err(TimelineEditError::MarkerNotFound(id.clone()));
++            };
++            markers.remove(index);
++            Ok(())
++        }
++        other => Err(TimelineEditError::MarkerRequiresEventTrack {
++            track_type: other.track_type(),
++        }),
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use crate::id::{EntityId, TimelineId};
++    use crate::timeline::{TimelineCameraCutClip, TimelineClipTiming};
++
++    fn writable() -> AuthoringPermissions {
++        AuthoringPermissions::read_only()
++            .with(AuthoringPermission::Preview)
++            .with(AuthoringPermission::ProjectDataWrite)
++    }
++
++    fn document() -> TimelineDocument {
