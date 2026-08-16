@@ -1,0 +1,28 @@
+diff --git a/crates/editor/src/ui/mcp.rs b/crates/editor/src/ui/mcp.rs
+--- a/crates/editor/src/ui/mcp.rs
++++ b/crates/editor/src/ui/mcp.rs
+@@ -537,3 +537,3 @@
+             key: "parity.marker".into(),
+-            value: AuthoringValue::String("same".into()),
++            value: Some(AuthoringValue::String("same".into())),
+         };
+@@ -577,6 +577,6 @@
+         let (_project, mut app) = editor_app();
+-        app.session = EditorSession::new(
++        app.session.reset(EditorSession::new(
+             serde_json::from_str(&graph_json).expect("MCP graph"),
+             Some(serde_json::from_str(&view_json).expect("MCP view")),
+-        );
++        ));
+         let mcp_base = app
+diff --git a/Cargo.lock b/Cargo.lock
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -1399,6 +1399,7 @@
+  "engine",
+  "engine-assets",
+  "engine-authoring",
++ "engine-cli",
+  "engine-mcp",
+  "engine-project-lifecycle",
+  "getrandom 0.3.4",
