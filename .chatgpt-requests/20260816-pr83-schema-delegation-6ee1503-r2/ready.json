@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "request_id": "20260816-pr83-schema-delegation-6ee1503-r2",
+  "target_branch": "chatgpt/gameengine-pr66-launcher-visual-v3",
+  "expected_head_sha": "6ee150362b1d970f149aa08cf39d5f731eb2bd14",
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Remove duplicated Behavior Tree schema-count expectations",
+  "pr_title": "CI: repair desktop visual validation on current main",
+  "pr_body": "## Summary\n\nRebuilds the #66 desktop visual-validation repair on current `main` and removes the validation regression at its source.\n\n- Launcher visual capture uses the renderer-independent egui screenshot command/event path instead of eframe's incompatible wgpu screenshot helper\n- visual-validation scripting accepts the Launcher's intentional empty argument list and uses `GAMEENGINE_LAUNCHER_SCREENSHOT_TO`\n- validation planning short-circuits known full-scope paths before Cargo metadata and normalizes metadata failures to one line\n- CLI and MCP schema adapter tests compare their outputs directly with the shared `BehaviorTreeAuthoringService` catalog instead of duplicating a fixed node-schema count\n- visual-validation documentation matches the Launcher-owned capture contract\n\n## Validation required\n\n- Windows Validation: `full`\n- `cargo fmt --all --check`\n- `cargo check --workspace`\n- `cargo clippy --workspace --all-targets -- -D warnings`\n- `cargo test --workspace`\n- `cargo doc --workspace --no-deps`\n- Visual Validation: Editor + Launcher; both PNG artifacts must be inspected\n\nThis Draft PR supersedes #66 after final validation succeeds.\n\n<!-- gameengine-visual-validation: both -->"
+}
