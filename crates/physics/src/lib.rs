@@ -22,7 +22,11 @@ pub mod collision;
 #[cfg(not(feature = "solver"))]
 #[path = "collision_contract.rs"]
 pub mod collision;
-/// Grid navigation baking, persistence, queries, and agents.
+/// Production tiled polygon navigation assets, baking, queries, and agents.
+pub mod navigation;
+/// Shared GUI-free navigation bake document and service contracts.
+pub mod navigation_bake;
+/// Legacy grid navigation retained for focused compatibility tests and layered utilities.
 pub mod navmesh;
 /// Rapier-backed gameplay rigid-body integration.
 #[cfg(feature = "solver")]
