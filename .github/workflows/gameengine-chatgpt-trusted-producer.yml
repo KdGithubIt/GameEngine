@@ -31,6 +31,12 @@ concurrency:
 jobs:
   produce:
     name: Build and publish immutable Dispatcher request
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      ((github.event.issue.author_association == 'OWNER' ||
+        github.event.issue.author_association == 'MEMBER' ||
+        github.event.issue.author_association == 'COLLABORATOR') &&
+       startsWith(github.event.issue.title, 'GameEngine ChatGPT Producer: '))
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -48,6 +54,7 @@ jobs:
           EXPECTED_REPOSITORY: KdGithubIt/GameEngine
           ISSUE_BODY: ${{ github.event.issue.body }}
           ISSUE_ASSOCIATION: ${{ github.event.issue.author_association }}
+          ISSUE_TITLE: ${{ github.event.issue.title }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
           DISPATCH_PRODUCER_BRANCH: ${{ github.event.inputs.producer_branch }}
           DISPATCH_PRODUCER_COMMIT: ${{ github.event.inputs.producer_commit }}
@@ -83,6 +90,8 @@ jobs:
               request_id="$(jq -r '.request_id' "$RUNNER_TEMP/chatgpt-producer-signal.json")"
               producer_branch="$(jq -r '.producer_branch' "$RUNNER_TEMP/chatgpt-producer-signal.json")"
               producer_commit="$(jq -r '.producer_commit' "$RUNNER_TEMP/chatgpt-producer-signal.json")"
+              [[ "$ISSUE_TITLE" == "GameEngine ChatGPT Producer: $request_id" ]] ||
+                fail "Producer signal Issue title must exactly identify request_id."
               issue_number="$ISSUE_NUMBER"
               ;;
             workflow_dispatch)
