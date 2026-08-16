@@ -1,0 +1,15 @@
+diff --git a/crates/engine/src/runtime_systems.rs b/crates/engine/src/runtime_systems.rs
+--- a/crates/engine/src/runtime_systems.rs
++++ b/crates/engine/src/runtime_systems.rs
+@@ -10,7 +10,9 @@ pub fn register_runtime_systems(app: &mut App) -> Result<(), SystemRegistration
+         engine_system(
+             "engine.authored_audio",
+             "Authored Audio",
+-            "Applies one-shot emitter and music-controller autoplay requests.",
+-        ),
++            "Starts authored audio and synchronizes spatial voices with world transforms.",
++        )
++        .try_after("engine.transform_propagation")
++        .expect("built-in system IDs are valid"),
+         authored_audio_system,
+     )?;

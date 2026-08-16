@@ -1,0 +1,18 @@
+diff --git a/crates/engine/src/scene_bridge/spawn.rs b/crates/engine/src/scene_bridge/spawn.rs
+--- a/crates/engine/src/scene_bridge/spawn.rs
++++ b/crates/engine/src/scene_bridge/spawn.rs
+@@ -1145,7 +1145,11 @@ pub(crate) fn spawn_audio_listener_component(
+     let fields = ComponentFields::new(context.authoring_entity, &component_type, value, expected)?;
+     let enabled = fields.bool_or("enabled", true)?;
+-    context
+-        .world
+-        .add_component(entity, AudioListener { enabled })?;
++    context.world.add_component(
++        entity,
++        AudioListener {
++            enabled,
++            priority: 0,
++        },
++    )?;
+     Ok(())
+ }
