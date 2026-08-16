@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "request_id": "20260816-adr0124-background-clippy-40e5ef4-r1",
+  "target_branch": "chatgpt/gameengine-adr-0124-production-navmesh-v6",
+  "expected_head_sha": "40e5ef41f13cedff5f0873d2680a821f37f11a28",
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Fix navigation background worker Clippy warnings",
+  "pr_title": "GameEngine: implement ADR 0124 production navigation",
+  "pr_body": "Fixes the affected Editor Clippy failures in the background navigation bake worker by reducing completion enum size through indirection and deriving its default state instead of suppressing lints."
+}
