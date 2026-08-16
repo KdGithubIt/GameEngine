@@ -1,0 +1,139 @@
++        assert!(extents.len() <= MAX_BLOOM_LEVELS);
++        assert!(extents.iter().all(|extent| extent[0] > 0 && extent[1] > 0));
++    }
++
++    #[test]
++    fn bloom_pyramid_reaches_one_by_one_for_small_targets() {
++        assert_eq!(
++            bloom_pyramid_extents(8, 4),
++            vec![[4, 2], [2, 1], [1, 1]]
++        );
++        assert_eq!(bloom_pyramid_extents(1, 1), vec![[1, 1]]);
++    }
++
++    #[test]
++    fn bloom_radius_maps_default_to_one_texel_filter_scale() {
++        assert_eq!(bloom_filter_radius(4.0), 1.0);
++        assert_eq!(bloom_filter_radius(0.0), 0.0);
++        assert_eq!(bloom_filter_radius(-4.0), 0.0);
++        assert_eq!(bloom_filter_radius(f32::INFINITY), 1.0);
++    }
++
++    #[test]
++    fn bloom_pipelines_validate_when_a_gpu_adapter_is_available() {
++        let instance = wgpu::Instance::default();
++        let context = match pollster::block_on(engine_renderer::GpuContext::new(&instance, None)) {
++            Ok(context) => context,
++            Err(engine_renderer::GpuContextError::AdapterUnavailable) => return,
++            Err(error) => panic!("GPU device creation failed: {error}"),
++        };
++        let source = context.device().create_texture(&wgpu::TextureDescriptor {
++            label: Some("Bloom validation source"),
++            size: wgpu::Extent3d {
++                width: 64,
++                height: 64,
++                depth_or_array_layers: 1,
++            },
++            mip_level_count: 1,
++            sample_count: 1,
++            dimension: wgpu::TextureDimension::D2,
++            format: BLOOM_FORMAT,
++            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
++            view_formats: &[],
++        });
++        let source_view = source.create_view(&wgpu::TextureViewDescriptor::default());
++
++        let mut bloom = pollster::block_on(BloomPass::new(context.device(), &source_view))
++            .expect("multi-resolution bloom pipelines must validate");
++        let settings = PostProcessSettings {
++            bloom: crate::postprocess::BloomSettings {
++                enabled: true,
++                ..Default::default()
++            },
++            ..Default::default()
++        };
++
++        let error_scope = context
++            .device()
++            .push_error_scope(wgpu::ErrorFilter::Validation);
++        bloom.execute(context.device(), context.queue(), &settings);
++        let execution_error = pollster::block_on(error_scope.pop());
++        assert!(
++            execution_error.is_none(),
++            "multi-resolution bloom execution must validate: {execution_error:?}"
++        );
++    }
++}
++diff --git a/crates/render-runtime/src/renderer.rs b/crates/render-runtime/src/renderer.rs
++index 982de5477aeccbda8da4936089b5bdb1523e222f..4776cc79d736eaacb26be0d2456ebd1159e13714 100644
++--- a/crates/render-runtime/src/renderer.rs
+++++ b/crates/render-runtime/src/renderer.rs
++@@ -12,6 +12,7 @@ pub const MAIN_PASS_SAMPLE_COUNT: u32 = crate::render_backend::MAIN_PASS_SAMPLE_
++ #[derive(Debug)]
++ enum RenderStateErrorKind {
++     Backend(crate::render_backend::RenderStateError),
+++    PostProcess(wgpu::Error),
++     Temporal(wgpu::Error),
++ }
++ 
++@@ -23,6 +24,9 @@ impl fmt::Display for RenderStateError {
++     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
++         match &self.0 {
++             RenderStateErrorKind::Backend(error) => error.fmt(formatter),
+++            RenderStateErrorKind::PostProcess(error) => {
+++                write!(formatter, "post-process render pipeline validation failed: {error}")
+++            }
++             RenderStateErrorKind::Temporal(error) => {
++                 write!(formatter, "temporal render pipeline validation failed: {error}")
++             }
++@@ -34,6 +38,7 @@ impl std::error::Error for RenderStateError {
++     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
++         match &self.0 {
++             RenderStateErrorKind::Backend(error) => Some(error),
+++            RenderStateErrorKind::PostProcess(error) => Some(error),
++             RenderStateErrorKind::Temporal(error) => Some(error),
++         }
++     }
++@@ -185,6 +190,7 @@ impl WorldRenderer {
++ /// Fullscreen HDR-to-output tone-map pass used by the windowed runtime host.
++ pub struct ToneMapPass {
++     inner: crate::render_backend::ToneMapPass,
+++    bloom: crate::postprocess_gpu::BloomPass,
++ }
++ 
++ impl ToneMapPass {
++@@ -194,14 +200,18 @@ impl ToneMapPass {
++         swapchain_format: wgpu::TextureFormat,
++         hdr_view: &wgpu::TextureView,
++     ) -> Result<Self, RenderStateError> {
+++        let bloom = crate::postprocess_gpu::BloomPass::new(device, hdr_view)
+++            .await
+++            .map_err(|error| RenderStateError(RenderStateErrorKind::PostProcess(error)))?;
++         let inner = crate::render_backend::ToneMapPass::new(device, swapchain_format, hdr_view)
++             .await
++             .map_err(|error| RenderStateError(RenderStateErrorKind::Backend(error)))?;
++-        Ok(Self { inner })
+++        Ok(Self { inner, bloom })
++     }
++ 
++     /// Rebinds the source HDR texture after a render-target resize.
++     pub fn update_bind_group(&mut self, device: &wgpu::Device, hdr_view: &wgpu::TextureView) {
+++        self.bloom.update_source(device, hdr_view);
++         self.inner.update_bind_group(device, hdr_view);
++     }
++ 
++@@ -213,6 +223,19 @@ impl ToneMapPass {
++         swapchain_view: &wgpu::TextureView,
++         settings: &crate::postprocess::PostProcessSettings,
++     ) {
++-        self.inner.execute(device, queue, swapchain_view, settings);
+++        if settings.enabled && settings.bloom.enabled {
+++            self.bloom.execute(device, queue, settings);
+++            self.inner
+++                .update_bind_group(device, self.bloom.output_view());
+++
+++            let mut tone_map_settings = *settings;
+++            tone_map_settings.bloom.enabled = false;
+++            self.inner
+++                .execute(device, queue, swapchain_view, &tone_map_settings);
+++        } else {
