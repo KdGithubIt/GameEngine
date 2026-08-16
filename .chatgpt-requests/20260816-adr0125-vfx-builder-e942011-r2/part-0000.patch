@@ -1,0 +1,173 @@
+diff --git a/crates/editor/src/document.rs b/crates/editor/src/document.rs
+index b5f6168..b8d9927 100644
+--- a/crates/editor/src/document.rs
++++ b/crates/editor/src/document.rs
+@@ -8,7 +8,7 @@
+ 
+ use engine_authoring::{
+     load_scene_from_json, AuthoringScene, Diagnostic, Graph, GraphView, SceneLoadError, Severity,
+-    UiDocument, UiDocumentError,
++    UiDocument, UiDocumentError, VfxAuthoringService, VfxDocumentError, VfxEffect,
+ };
+ use std::{
+     fmt, fs, io,
+@@ -80,6 +80,16 @@ pub enum CurrentDocument {
+         /// Whether the in-memory document differs from the file on disk.
+         is_dirty: bool,
+     },
++
++    /// A VFX effect authoring document (`*.vfx.json`) is open.
++    Vfx {
++        /// The parsed effect edited through the shared VFX authoring service.
++        effect: VfxEffect,
++        /// Absolute path to the `*.vfx.json` file.
++        path: PathBuf,
++        /// Whether the in-memory effect differs from the file on disk.
++        is_dirty: bool,
++    },
+ }
+ 
+ impl CurrentDocument {
+@@ -89,7 +99,8 @@ impl CurrentDocument {
+             Self::None => false,
+             Self::Scene { is_dirty, .. }
+             | Self::Graph { is_dirty, .. }
+-            | Self::Ui { is_dirty, .. } => *is_dirty,
++            | Self::Ui { is_dirty, .. }
++            | Self::Vfx { is_dirty, .. } => *is_dirty,
+         }
+     }
+ 
+@@ -101,7 +112,8 @@ impl CurrentDocument {
+             Self::None => {}
+             Self::Scene { is_dirty, .. }
+             | Self::Graph { is_dirty, .. }
+-            | Self::Ui { is_dirty, .. } => *is_dirty = true,
++            | Self::Ui { is_dirty, .. }
++            | Self::Vfx { is_dirty, .. } => *is_dirty = true,
+         }
+     }
+ 
+@@ -113,7 +125,8 @@ impl CurrentDocument {
+             Self::None => {}
+             Self::Scene { is_dirty, .. }
+             | Self::Graph { is_dirty, .. }
+-            | Self::Ui { is_dirty, .. } => *is_dirty = false,
++            | Self::Ui { is_dirty, .. }
++            | Self::Vfx { is_dirty, .. } => *is_dirty = false,
+         }
+     }
+ }
+@@ -137,6 +150,8 @@ pub enum OpenDocumentError {
+     UiDocument(UiDocumentError),
+     /// UI JSON parsed but failed whole-document validation.
+     UiValidation(Vec<Diagnostic>),
++    /// VFX JSON could not be parsed, versioned, or semantically validated.
++    VfxDocument(VfxDocumentError),
+     /// The current document has unsaved changes.  Open was refused to prevent
+     /// data loss.  Save or discard changes before opening another file.
+     UnsavedChanges,
+@@ -150,6 +165,7 @@ impl fmt::Display for OpenDocumentError {
+             Self::GraphDeserialize(e) => write!(f, "graph JSON error: {e}"),
+             Self::GraphViewDeserialize(e) => write!(f, "graph view JSON error: {e}"),
+             Self::UiDocument(e) => write!(f, "UI document load failed: {e}"),
++            Self::VfxDocument(e) => write!(f, "VFX document load failed: {e}"),
+             Self::UiValidation(diagnostics) => write!(
+                 f,
+                 "UI document validation failed with {} error(s)",
+@@ -173,6 +189,7 @@ impl std::error::Error for OpenDocumentError {
+             Self::SceneLoad(e) => Some(e),
+             Self::GraphDeserialize(e) | Self::GraphViewDeserialize(e) => Some(e),
+             Self::UiDocument(e) => Some(e),
++            Self::VfxDocument(e) => Some(e),
+             Self::UiValidation(_) | Self::UnsavedChanges => None,
+         }
+     }
+@@ -264,6 +281,19 @@ pub fn open_ui_from_path(path: &Path) -> Result<CurrentDocument, OpenDocumentErr
+     })
+ }
+ 
++/// Opens and validates a `*.vfx.json` effect through the shared authoring service.
++pub fn open_vfx_from_path(path: &Path) -> Result<CurrentDocument, OpenDocumentError> {
++    let json = fs::read_to_string(path).map_err(OpenDocumentError::Io)?;
++    let effect = VfxAuthoringService::new()
++        .effect_from_json(&json)
++        .map_err(OpenDocumentError::VfxDocument)?;
++    Ok(CurrentDocument::Vfx {
++        effect,
++        path: path.to_path_buf(),
++        is_dirty: false,
++    })
++}
++
+ // ---------------------------------------------------------------------------
+ // Path helpers
+ // ---------------------------------------------------------------------------
+diff --git a/crates/editor/src/lib.rs b/crates/editor/src/lib.rs
+index 2411e02..c471f33 100644
+--- a/crates/editor/src/lib.rs
++++ b/crates/editor/src/lib.rs
+@@ -40,6 +40,7 @@ pub mod skinned_model_bake;
+ pub mod systems_panel;
+ pub mod ui;
+ pub mod ui_builder;
++pub mod vfx_builder;
+ pub mod view_aspect;
+ mod view_resolution;
+ mod workspace;
+@@ -105,4 +106,5 @@ pub use skinned_model_bake::{
+ pub use systems_panel::{SystemsPanel, SystemsSaveState};
+ pub use ui::EditorApp;
+ pub use ui_builder::UiBuilderState;
++pub use vfx_builder::VfxBuilderState;
+ pub use view_aspect::ViewAspect;
+diff --git a/crates/editor/src/session/documents.rs b/crates/editor/src/session/documents.rs
+index bafd212..a1d6165 100644
+--- a/crates/editor/src/session/documents.rs
++++ b/crates/editor/src/session/documents.rs
+@@ -1,4 +1,4 @@
+-//! Opening scene, graph, and declarative UI documents.
++//! Opening scene, graph, declarative UI, and VFX documents.
+ //!
+ //! Each open method has a `_discarding_changes` counterpart. The plain form
+ //! refuses to replace a dirty document so the editor shell can present a
+@@ -8,8 +8,8 @@ use super::errors::EditorSessionError;
+ use super::persistence::remove_recovery_file;
+ use super::{EditorGraphDomain, EditorSession};
+ use crate::document::{
+-    open_graph_from_path, open_scene_from_path, open_ui_from_path, CurrentDocument,
+-    OpenDocumentError,
++    open_graph_from_path, open_scene_from_path, open_ui_from_path, open_vfx_from_path,
++    CurrentDocument, OpenDocumentError,
+ };
+ use engine_authoring::{AuthoringSession, UiDocument, UiDocumentCommand, UiDocumentTransaction};
+ use std::path::{Path, PathBuf};
+@@ -154,6 +154,39 @@ impl EditorSession {
+         Ok(())
+     }
+ 
++    /// Opens a validated `*.vfx.json` effect.
++    pub fn open_vfx(&mut self, path: PathBuf) -> Result<(), OpenDocumentError> {
++        if self.is_dirty() {
++            return Err(OpenDocumentError::UnsavedChanges);
++        }
++        self.open_vfx_discarding_changes(path)
++    }
++
++    /// Opens a validated VFX effect after the caller resolved unsaved changes.
++    pub fn open_vfx_discarding_changes(&mut self, path: PathBuf) -> Result<(), OpenDocumentError> {
++        let document = open_vfx_from_path(&path)?;
++        let diagnostics = match &document {
++            CurrentDocument::Vfx { effect, .. } => {
++                engine_authoring::VfxAuthoringService::new()
++                    .validate(effect)
++                    .diagnostics
++            }
++            CurrentDocument::None
++            | CurrentDocument::Scene { .. }
++            | CurrentDocument::Graph { .. }
++            | CurrentDocument::Ui { .. } => Vec::new(),
++        };
++        self.current_document = document;
++        self.scene_session = None;
++        self.undo_stack.clear();
