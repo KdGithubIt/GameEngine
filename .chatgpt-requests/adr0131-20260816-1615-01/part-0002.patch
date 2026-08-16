@@ -118,11 +118,11 @@
 +        let _ = fs::remove_dir_all(storage);
 +    }
 +}
-+diff --git a/crates/editor/src/ai_studio.rs b/crates/editor/src/ai_studio.rs
-+new file mode 100644
-+--- /dev/null
-++++ b/crates/editor/src/ai_studio.rs
-+@@ -0,0 +1,843 @@
+diff --git a/crates/editor/src/ai_studio.rs b/crates/editor/src/ai_studio.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/editor/src/ai_studio.rs
+@@ -0,0 +1,843 @@
 +//! Conversation-first AI Studio frontend.
 +//!
 +//! This module owns only presentation and direct user interaction. Agent
