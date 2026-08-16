@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0121-prefab-parity-20260816-06",
+  "target_branch": "chatgpt/gameengine-adr-0121-prefab-parity-v3",
+  "expected_head_sha": "5c350156e3d70e3e77dcb52610f5c151aa27a9ea",
+  "patch_parts": ["part-0000.patch"],
+  "commit_message": "Fix prefab CLI authoring snapshot access",
+  "pr_title": "GameEngine: add prefab authoring parity",
+  "pr_body": "Follow-up compile fix for the existing prefab parity Draft PR. The CLI adapter now obtains revision and generation from the public SceneAuthoringService snapshot contract instead of reaching into AuthoringScene crate-private generation state."
+}
