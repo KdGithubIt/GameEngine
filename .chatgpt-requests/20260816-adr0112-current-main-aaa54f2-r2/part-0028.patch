@@ -1,0 +1,44 @@
+diff --git a/docs/MMD_IMPORT.md b/docs/MMD_IMPORT.md
+--- a/docs/MMD_IMPORT.md
++++ b/docs/MMD_IMPORT.md
+@@ -170,20 +170,26 @@ paired with PMX. A mixed file imports its model tracks and reports that its
+ scene tracks were ignored. Camera/light/self-shadow-only VMDs are recognized
+ and are not paired with a PMX model.
+ 
+-## Rigid bodies and joints (jiggle physics)
+-
+-A PMX's rigid bodies and six-degree-of-freedom spring joints import as one
+-`RigidBodyRig` sub-asset per model, in engine units and axes. Add
+-**Rigid Body Physics** to the character's Skinned Model entity and point it
+-at that sub-asset — one component, one reference, nothing else to configure,
+-because the model's author already tuned every body and joint in their own
+-tool.
+-
+-The rig is engine-native data plus intent. At runtime, ADR 0096's isolated
+-Rapier bridge creates one solver world per opted-in character, drives
+-follow-bone bodies from animation, simulates dynamic bodies and 6-DOF spring
+-joints, then writes corrected poses back to the skeleton. These cosmetic
+-bodies never enter gameplay collision events or spatial queries.
++## Secondary Motion from PMX rigid bodies and joints
++
++A PMX's rigid bodies and six-degree-of-freedom spring joints are converted
++best-effort into one engine-native `SecondaryMotionRig` sub-asset per model.
++The importer normalizes source-specific values into engine units and axes and
++emits diagnostics when a shape, body mode, joint kind, binding, or tuning value
++cannot be represented exactly.
++
++Add **Secondary Motion** to the character's Skinned Model entity and assign
++that rig. The component serializes as `engine.secondary_motion` and contains
++only the rig reference. The imported rig is editable engine-native starting
++data, not a promise to reproduce a particular MMD/Bullet solver exactly.
++
++At runtime, ADR 0112's isolated fixed-step solver creates one simulation world
++per opted-in character, drives follow-bone bodies from the procedural pose,
++simulates dynamic bodies and 6-DOF constraints, and writes corrections only to
++the RigPose physics layer. Presentation interpolates fixed-step poses for
++rendering. These cosmetic bodies never enter gameplay collision events or
++spatial queries, and discontinuities reset derived simulation state rather than
++reconstructing hidden animation history.
+ 
+ ## Not yet imported
+ 
