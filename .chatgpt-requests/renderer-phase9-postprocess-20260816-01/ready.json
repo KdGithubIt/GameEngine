@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "request_id": "renderer-phase9-postprocess-20260816-01",
+  "target_branch": "chatgpt/gameengine-phase9-postprocess",
+  "expected_head_sha": "c20961255f7844d8aeb8c8bd02e994ecf6d25ca1",
+  "patch_parts": [
+    "part-0000.patch",
+    "part-0001.patch",
+    "part-0002.patch",
+    "part-0003.patch",
+    "part-0004.patch",
+    "part-0005.patch"
+  ],
+  "commit_message": "Add multi-resolution bloom postprocess",
+  "pr_title": "Renderer: add multi-resolution bloom postprocess",
+  "pr_body": "## Summary\n\n- replace the normal 9-tap bloom approximation with renderer-owned multi-resolution HDR bloom\n- run bright extraction, a bounded downsample pyramid, filtered upsample, and HDR composite before final tone mapping\n- preserve the existing PostProcessSettings, BloomSettings, scene schema, and caller-owned HDR target contract\n- rebuild size-dependent bloom resources when the source HDR target changes\n- validate bloom pipeline creation and execution when a GPU adapter is available\n- document the post-process pass ownership in ADR 0040 and Phase 45\n\nVisual validation is not requested because the repository's current visual workflow captures only the deterministic initial Editor/Launcher shell and does not exercise a bloom-enabled scene."
+}
