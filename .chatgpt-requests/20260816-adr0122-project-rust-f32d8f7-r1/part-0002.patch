@@ -1,0 +1,152 @@
+ use crate::asset::AssetManifest;
+-use crate::audio::{GameAudioCommand, GameAudioCommandQueue, MAX_GAME_AUDIO_COMMANDS};
++use crate::audio::{
++    AudioRolloffMode, GameAudioCommand, GameAudioCommandQueue, GameSpatialAudioOptions,
++    MAX_GAME_AUDIO_COMMANDS,
++};
+ use crate::behavior_tree::{BehaviorStatus, BehaviorTreeBehaviorRegistry};
+ use crate::character_controller::KinematicCharacterController;
+ use crate::collision::{Collider, CollisionLayers, PhysicsBody, TriggerVolume};
+@@ -292,4 +295,5 @@ pub(crate) fn prepare_game_commands(
+                     command,
+                     index,
++                    &despawned,
+                     &mut pending_audio_commands,
+                 )?));
+@@ -781,8 +785,8 @@ fn parse_audio_command(
+     world: &World,
+     command: &GameCommand,
+     index: usize,
++    despawned: &BTreeSet<(u32, u32)>,
+     pending_audio_commands: &mut usize,
+ ) -> Result<GameAudioCommand, GameCommandError> {
+-    require_targetless(command, index, "audio")?;
+     let queue = world
+         .get_resource::<GameAudioCommandQueue>()
+@@ -796,9 +800,55 @@ fn parse_audio_command(
+     }
+ 
+     let fields = object(&command.payload, index, "audio payload")?;
+-    let prepared = match string_field(fields, "operation", index)? {
++    let operation = string_field(fields, "operation", index)?;
++    if operation != "play_spatial_se" {
++        require_targetless(command, index, "audio")?;
++    }
++    let prepared = match operation {
+         "play_se" => GameAudioCommand::PlaySoundEffect {
+             asset_id: validate_audio_asset(world, fields, index)?,
+         },
++        "play_spatial_se" => {
++            let (target, source) = targeted_entity(world, command, index, despawned)?;
++            if world.get_component::<Transform>(source).is_none() {
++                return Err(GameCommandError::MissingTransform { index, target });
++            }
++            let volume = number_field(fields, "volume", index)?;
++            let spatial_blend = number_field(fields, "spatial_blend", index)?;
++            let min_distance = number_field(fields, "min_distance", index)?;
++            let max_distance = number_field(fields, "max_distance", index)?;
++            if !(0.0..=1.0).contains(&volume)
++                || !(0.0..=1.0).contains(&spatial_blend)
++                || min_distance < 0.0
++                || max_distance < min_distance
++            {
++                return Err(GameCommandError::InvalidPayload {
++                    index,
++                    message: "spatial audio requires volume/spatial_blend in 0..=1 and 0 <= min_distance <= max_distance".to_owned(),
++                });
++            }
++            let rolloff = match string_field(fields, "rolloff", index)? {
++                "linear" => AudioRolloffMode::Linear,
++                "inverse" => AudioRolloffMode::Inverse,
++                other => {
++                    return Err(GameCommandError::InvalidPayload {
++                        index,
++                        message: format!("unknown spatial audio rolloff `{other}`"),
++                    })
++                }
++            };
++            GameAudioCommand::PlaySpatialSoundEffect {
++                asset_id: validate_audio_asset(world, fields, index)?,
++                source,
++                options: GameSpatialAudioOptions {
++                    volume,
++                    spatial_blend,
++                    min_distance,
++                    max_distance,
++                    rolloff,
++                    looping: bool_field(fields, "looping", index)?,
++                },
++            }
++        }
+         "play_bgm" => GameAudioCommand::PlayBackgroundMusic {
+             asset_id: validate_audio_asset(world, fields, index)?,
+@@ -2645,4 +2695,13 @@ mod tests {
+         );
++        let source = world.spawn_with(Transform::default()).unwrap();
+         let commands = vec![
+             GameCommand::play_sound_effect("asset_01JP0000000000000000000601"),
++            GameCommand::play_spatial_sound_effect(
++                handle(source),
++                "asset_01JP0000000000000000000601",
++                crate::game_io::GameSpatialAudioOptions {
++                    looping: true,
++                    ..crate::game_io::GameSpatialAudioOptions::default()
++                },
++            ),
+             GameCommand::play_background_music("asset_01JP0000000000000000000602"),
+@@ -2662,8 +2721,54 @@ mod tests {
+         assert_eq!(
+             world.get_resource::<GameAudioCommandQueue>().unwrap().len(),
+-            7
++            8
+         );
+     }
++
++    #[test]
++    fn spatial_audio_command_rejects_stale_target_and_invalid_distances() {
++        let mut world = World::new();
++        world.insert_resource(GameAudioCommandQueue::default());
++        world.insert_resource(
++            AssetManifest::from_json(
++                r#"{"schema_version":2,"assets":{"asset_01JP0000000000000000000601":{"path":"audio/hit.wav"}}}"#,
++            )
++            .unwrap(),
++        );
++        let source = world.spawn_with(Transform::default()).unwrap();
++        let stale = GameEntityHandle {
++            id: source.id(),
++            generation: source.generation().wrapping_add(1),
++        };
++        assert!(matches!(
++            prepare_game_commands(
++                &world,
++                &[GameCommand::play_spatial_sound_effect(
++                    stale,
++                    "asset_01JP0000000000000000000601",
++                    crate::game_io::GameSpatialAudioOptions::default(),
++                )],
++            ),
++            Err(GameCommandError::StaleTarget { .. })
++        ));
++
++        let invalid = crate::game_io::GameSpatialAudioOptions {
++            min_distance: 5.0,
++            max_distance: 1.0,
++            ..crate::game_io::GameSpatialAudioOptions::default()
++        };
++        assert!(matches!(
++            prepare_game_commands(
++                &world,
++                &[GameCommand::play_spatial_sound_effect(
++                    handle(source),
++                    "asset_01JP0000000000000000000601",
++                    invalid,
++                )],
++            ),
++            Err(GameCommandError::InvalidPayload { .. })
++        ));
++        assert_eq!(world.get_resource::<GameAudioCommandQueue>().unwrap().len(), 0);
++    }
+ 
+     #[test]
+     fn unknown_audio_asset_rejects_without_enqueuing_prior_commands() {
