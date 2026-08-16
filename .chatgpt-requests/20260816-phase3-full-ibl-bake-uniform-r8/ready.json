@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "request_id": "20260816-phase3-full-ibl-bake-uniform-r8",
+  "target_branch": "chatgpt/gameengine-render-full-ibl",
+  "expected_head_sha": "1e82c3beb53205404a5110828c5e8943f62d6aa7",
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Renderer: align IBL bake uniform layout",
+  "pr_title": "Renderer: add full image-based lighting",
+  "pr_body": "## Summary\n- add renderer-owned diffuse irradiance, GGX specular prefilter, and split-sum BRDF LUT generation\n- feed generic StandardLit indirect lighting from existing EnvironmentLighting runtime texture IDs without changing material/scene/Stable ID contracts\n- render a resolved equirectangular skybox as the scene background and preserve procedural-sky fallback\n- keep AO scoped to StandardLit indirect light\n- keep mesh pipelines within the portable four-bind-group floor\n- align the IBL precompute uniform with the 16-byte CPU payload and keep the fixed-camera GPU regression\n- record the renderer-owned IBL contract in ADR 0122\n\n<!-- gameengine-chatgpt-dispatcher -->"
+}
