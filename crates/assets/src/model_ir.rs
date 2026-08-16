@@ -525,11 +525,21 @@ pub struct IrMaterial {
     /// Original selector of the tangent-space normal texture, if any and if
     /// it decoded successfully.
     pub normal_texture: Option<usize>,
+    /// Original selector of the packed metallic/roughness texture, if any.
+    /// Green stores roughness and blue stores metallic.
+    pub metallic_roughness_texture: Option<usize>,
+    /// Original selector of the ambient-occlusion texture, if any.
+    /// Red stores occlusion.
+    pub occlusion_texture: Option<usize>,
     /// Original selector of the emissive texture, if any and if it decoded
     /// successfully.
     pub emissive_texture: Option<usize>,
     /// Linear HDR emissive multiplier.
     pub emissive_color: LinearRgba,
+    /// Scale applied to tangent-space normal-map X/Y before normalization.
+    pub normal_scale: f32,
+    /// Ambient-occlusion texture strength in `[0, 1]`.
+    pub occlusion_strength: f32,
     /// Roughness in `[0, 1]`.
     pub roughness: f32,
     /// Metallic factor in `[0, 1]`.

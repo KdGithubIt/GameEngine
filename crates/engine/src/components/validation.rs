@@ -1318,6 +1318,14 @@ fn validate_material_dependencies(
     for (slot, texture_id) in [
         ("base_color_texture", material.base_color_texture.as_ref()),
         ("normal_texture", material.normal_texture.as_ref()),
+        (
+            "metallic_roughness_texture",
+            material.metallic_roughness_texture.as_ref(),
+        ),
+        (
+            "occlusion_texture",
+            material.occlusion_texture.as_ref(),
+        ),
         ("emissive_texture", material.emissive_texture.as_ref()),
     ] {
         let Some(texture_id) = texture_id else {

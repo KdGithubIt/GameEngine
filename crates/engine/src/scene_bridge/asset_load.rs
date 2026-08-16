@@ -191,6 +191,9 @@ pub(super) fn load_material_asset(
                     };
                 let base = decode_slot(&parsed.base_color_texture, "base color");
                 let normal = decode_slot(&parsed.normal_texture, "normal");
+                let metallic_roughness =
+                    decode_slot(&parsed.metallic_roughness_texture, "metallic/roughness");
+                let occlusion = decode_slot(&parsed.occlusion_texture, "occlusion");
                 let emissive = decode_slot(&parsed.emissive_texture, "emissive");
                 let ramp = decode_slot(&parsed.toon.ramp_texture, "toon ramp");
                 let sphere = decode_slot(&parsed.toon.sphere_texture, "sphere map");
@@ -202,10 +205,35 @@ pub(super) fn load_material_asset(
                         diagnostic.with_target(DiagnosticTarget::Asset { id: asset.clone() })
                     })
                     .collect::<Vec<_>>();
-                match (base, normal, emissive, ramp, sphere) {
-                    (Ok(base), Ok(normal), Ok(emissive), Ok(ramp), Ok(sphere)) => (
+                match (
+                    base,
+                    normal,
+                    metallic_roughness,
+                    occlusion,
+                    emissive,
+                    ramp,
+                    sphere,
+                ) {
+                    (
+                        Ok(base),
+                        Ok(normal),
+                        Ok(metallic_roughness),
+                        Ok(occlusion),
+                        Ok(emissive),
+                        Ok(ramp),
+                        Ok(sphere),
+                    ) => (
                         runtime_material_from_asset(
-                            parsed, base, normal, emissive, ramp, sphere,
+                            parsed,
+                            crate::material::PendingMaterialTextures {
+                                base,
+                                normal,
+                                metallic_roughness,
+                                occlusion,
+                                emissive,
+                                ramp,
+                                sphere,
+                            },
                         ),
                         diagnostics,
                     ),
@@ -217,6 +245,8 @@ pub(super) fn load_material_asset(
                                 results.2.err(),
                                 results.3.err(),
                                 results.4.err(),
+                                results.5.err(),
+                                results.6.err(),
                             ]
                             .into_iter()
                             .flatten()
@@ -287,12 +317,42 @@ pub(super) fn load_material_asset(
     };
     let base = decode_slot(&parsed.base_color_texture, "base color");
     let normal = decode_slot(&parsed.normal_texture, "normal");
+    let metallic_roughness =
+        decode_slot(&parsed.metallic_roughness_texture, "metallic/roughness");
+    let occlusion = decode_slot(&parsed.occlusion_texture, "occlusion");
     let emissive = decode_slot(&parsed.emissive_texture, "emissive");
     let ramp = decode_slot(&parsed.toon.ramp_texture, "toon ramp");
     let sphere = decode_slot(&parsed.toon.sphere_texture, "sphere map");
-    match (base, normal, emissive, ramp, sphere) {
-        (Ok(base), Ok(normal), Ok(emissive), Ok(ramp), Ok(sphere)) => (
-            runtime_material_from_asset(&parsed, base, normal, emissive, ramp, sphere),
+    match (
+        base,
+        normal,
+        metallic_roughness,
+        occlusion,
+        emissive,
+        ramp,
+        sphere,
+    ) {
+        (
+            Ok(base),
+            Ok(normal),
+            Ok(metallic_roughness),
+            Ok(occlusion),
+            Ok(emissive),
+            Ok(ramp),
+            Ok(sphere),
+        ) => (
+            runtime_material_from_asset(
+                &parsed,
+                crate::material::PendingMaterialTextures {
+                    base,
+                    normal,
+                    metallic_roughness,
+                    occlusion,
+                    emissive,
+                    ramp,
+                    sphere,
+                },
+            ),
             Vec::new(),
         ),
         results => {
@@ -302,6 +362,8 @@ pub(super) fn load_material_asset(
                 results.2.err(),
                 results.3.err(),
                 results.4.err(),
+                results.5.err(),
+                results.6.err(),
             ]
                 .into_iter()
                 .flatten()
@@ -633,19 +695,9 @@ fn decode_material_texture_inner(
 
 fn runtime_material_from_asset(
     asset: &engine_authoring::MaterialAsset,
-    pending_texture: Option<Arc<DecodedTexture>>,
-    pending_normal_texture: Option<Arc<DecodedTexture>>,
-    pending_emissive_texture: Option<Arc<DecodedTexture>>,
-    pending_ramp_texture: Option<Arc<DecodedTexture>>,
-    pending_sphere_texture: Option<Arc<DecodedTexture>>,
+    pending_textures: crate::material::PendingMaterialTextures,
 ) -> Material {
-    Material::from_authoring_asset(asset).with_pending_texture_slots(
-        pending_texture,
-        pending_normal_texture,
-        pending_emissive_texture,
-        pending_ramp_texture,
-        pending_sphere_texture,
-    )
+    Material::from_authoring_asset(asset).with_pending_texture_slots(pending_textures)
 }
 
 fn fallback_material() -> Material {

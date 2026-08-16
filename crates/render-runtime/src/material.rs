@@ -98,6 +98,26 @@ impl DecodedTexture {
     }
 }
 
+/// CPU-decoded material texture slots transferred from asset resolution into the renderer.
+#[doc(hidden)]
+#[derive(Debug, Default)]
+pub struct PendingMaterialTextures {
+    /// Base-color pixels awaiting sRGB GPU upload.
+    pub base: Option<Arc<DecodedTexture>>,
+    /// Tangent-space normal pixels awaiting linear GPU upload.
+    pub normal: Option<Arc<DecodedTexture>>,
+    /// Packed roughness/metallic pixels awaiting linear GPU upload.
+    pub metallic_roughness: Option<Arc<DecodedTexture>>,
+    /// Ambient-occlusion pixels awaiting linear GPU upload.
+    pub occlusion: Option<Arc<DecodedTexture>>,
+    /// Emissive-color pixels awaiting sRGB GPU upload.
+    pub emissive: Option<Arc<DecodedTexture>>,
+    /// Toon-ramp pixels awaiting sRGB GPU upload.
+    pub ramp: Option<Arc<DecodedTexture>>,
+    /// Sphere/matcap pixels awaiting sRGB GPU upload.
+    pub sphere: Option<Arc<DecodedTexture>>,
+}
+
 impl Texture {
     /// Decodes supported texture bytes and uploads the resulting texture.
     ///
@@ -580,12 +600,24 @@ pub struct Material {
     pub normal_texture: Option<Arc<Texture>>,
     /// CPU-decoded normal texture uploaded lazily as a linear texture.
     pub pending_normal_texture: Option<Arc<DecodedTexture>>,
+    /// GPU packed metallic/roughness texture sampled as linear data.
+    pub metallic_roughness_texture: Option<Arc<Texture>>,
+    /// CPU-decoded packed metallic/roughness texture uploaded lazily as linear data.
+    pub pending_metallic_roughness_texture: Option<Arc<DecodedTexture>>,
+    /// GPU ambient-occlusion texture sampled as linear data.
+    pub occlusion_texture: Option<Arc<Texture>>,
+    /// CPU-decoded ambient-occlusion texture uploaded lazily as linear data.
+    pub pending_occlusion_texture: Option<Arc<DecodedTexture>>,
     /// GPU emissive texture, sampled in sRGB color space.
     pub emissive_texture: Option<Arc<Texture>>,
     /// CPU-decoded emissive texture uploaded lazily by the renderer.
     pub pending_emissive_texture: Option<Arc<DecodedTexture>>,
     /// Linear HDR emissive RGB added after scene lighting.
     pub emissive_color: [f32; 3],
+    /// Scale applied to tangent-space normal-map X/Y before normalization.
+    pub normal_scale: f32,
+    /// Strength of ambient occlusion in the StandardLit indirect term.
+    pub occlusion_strength: f32,
     /// Micro-surface roughness used by the specular BRDF.
     pub roughness: f32,
     /// Metallic blend factor used by the diffuse/specular BRDF.
@@ -675,6 +707,8 @@ impl Material {
                 asset.emissive_color.g,
                 asset.emissive_color.b,
             ],
+            normal_scale: asset.normal_scale,
+            occlusion_strength: asset.occlusion_strength,
             roughness: asset.roughness,
             metallic: asset.metallic,
             alpha_mode: match asset.alpha_mode {
@@ -725,19 +759,14 @@ impl Material {
 
     /// Attaches CPU-decoded slot data after manifest resolution.
     #[doc(hidden)]
-    pub fn with_pending_texture_slots(
-        mut self,
-        base: Option<Arc<DecodedTexture>>,
-        normal: Option<Arc<DecodedTexture>>,
-        emissive: Option<Arc<DecodedTexture>>,
-        ramp: Option<Arc<DecodedTexture>>,
-        sphere: Option<Arc<DecodedTexture>>,
-    ) -> Self {
-        self.pending_texture = base;
-        self.pending_normal_texture = normal;
-        self.pending_emissive_texture = emissive;
-        self.toon.pending_ramp_texture = ramp;
-        self.toon.pending_sphere_texture = sphere;
+    pub fn with_pending_texture_slots(mut self, slots: PendingMaterialTextures) -> Self {
+        self.pending_texture = slots.base;
+        self.pending_normal_texture = slots.normal;
+        self.pending_metallic_roughness_texture = slots.metallic_roughness;
+        self.pending_occlusion_texture = slots.occlusion;
+        self.pending_emissive_texture = slots.emissive;
+        self.toon.pending_ramp_texture = slots.ramp;
+        self.toon.pending_sphere_texture = slots.sphere;
         self
     }
 
@@ -749,9 +778,15 @@ impl Material {
             pending_texture: None,
             normal_texture: None,
             pending_normal_texture: None,
+            metallic_roughness_texture: None,
+            pending_metallic_roughness_texture: None,
+            occlusion_texture: None,
+            pending_occlusion_texture: None,
             emissive_texture: None,
             pending_emissive_texture: None,
             emissive_color: [0.0; 3],
+            normal_scale: 1.0,
+            occlusion_strength: 1.0,
             roughness: 0.5,
             metallic: 0.0,
             alpha_mode: AlphaMode::Opaque,
@@ -887,6 +922,8 @@ mod tests {
                 b: 0.5,
                 a: 1.0,
             },
+            normal_scale: 0.6,
+            occlusion_strength: 0.4,
             roughness: 0.25,
             metallic: 0.75,
             alpha_mode: engine_authoring::MaterialAlphaMode::Blend,
@@ -899,6 +936,8 @@ mod tests {
         let runtime = Material::from_authoring_asset(&asset);
         assert_eq!(runtime.color, [0.1, 0.2, 0.3, 0.4]);
         assert_eq!(runtime.emissive_color, [2.0, 1.0, 0.5]);
+        assert_eq!(runtime.normal_scale, 0.6);
+        assert_eq!(runtime.occlusion_strength, 0.4);
         assert_eq!(runtime.roughness, 0.25);
         assert_eq!(runtime.metallic, 0.75);
         assert_eq!(runtime.alpha_mode, AlphaMode::Blend);

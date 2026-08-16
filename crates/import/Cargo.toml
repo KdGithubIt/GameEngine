@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+bevy_mikktspace = "1.0.0"
 engine-animation = { path = "../animation", default-features = false }
 engine-authoring = { path = "../authoring" }
 engine-assets = { path = "../assets" }
