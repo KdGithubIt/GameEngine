@@ -1,0 +1,41 @@
+diff --git a/crates/editor/src/lib.rs b/crates/editor/src/lib.rs
+index 3963ce2..8a672a0 100644
+--- a/crates/editor/src/lib.rs
++++ b/crates/editor/src/lib.rs
+@@ -1,5 +1,6 @@
+ pub mod geometry;
+ pub mod gizmo;
+ pub mod material_editor;
++#[path = "navmesh_shared.rs"]
+ pub mod navmesh_bake;
+ pub mod prefab_workflow;
+diff --git a/crates/editor/src/navmesh_shared.rs b/crates/editor/src/navmesh_shared.rs
+new file mode 100644
+index 0000000..3011392
+--- /dev/null
++++ b/crates/editor/src/navmesh_shared.rs
+@@ -0,0 +1,12 @@
++//! Thin Editor facade over the shared ADR 0124 production navigation bake service.
++//!
++//! The GUI owns workflow state only. Scene collection, deterministic fingerprints,
++//! staleness, cancellation, baking, safe replacement, and statistics are owned by
++//! `engine::navigation_bake` and `engine-physics`.
++
++pub use engine::navigation_bake::{
++    bake_scene_navmesh, collect_navigation_source, is_scene_navmesh_stale, prepare_scene_navmesh,
++    NavMeshBakeDocument, NavMeshBakeError, NavMeshBakeResult, NavMeshBakeSettings,
++    NavigationBakeOutput, NavigationBakeService, NavigationBakeServiceError, NavigationBakeStats,
++    NavigationSource, NAVMESH_BAKE_SCHEMA_VERSION,
++};
+diff --git a/crates/editor/src/ui/game_tools.rs b/crates/editor/src/ui/game_tools.rs
+index 733433d..dd275e9 100644
+--- a/crates/editor/src/ui/game_tools.rs
++++ b/crates/editor/src/ui/game_tools.rs
+@@ -1,4 +1,5 @@
+                 match document.to_canonical_json().and_then(|json| {
+-                    std::fs::write(&document_path, json)
+-                        .map_err(crate::navmesh_bake::NavMeshBakeError::Io)
++                    std::fs::write(&document_path, json).map_err(|error| {
++                        crate::navmesh_bake::NavMeshBakeError::Persist(error.to_string())
++                    })
+                 }) {
