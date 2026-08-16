@@ -1,0 +1,178 @@
++                make_bind_group(
++                    device,
++                    bgl,
++                    primary,
++                    primary,
++                    sampler,
++                    &downsample_uniforms[index],
++                    &format!("Bloom downsample BG {index}"),
++                )
++            })
++            .collect::<Vec<_>>();
++
++        let upsample_bind_groups = upsample_targets
++            .iter()
++            .enumerate()
++            .map(|(index, _)| {
++                let lower = if index + 1 == downsample_targets.len() - 1 {
++                    &downsample_targets[index + 1].view
++                } else {
++                    &upsample_targets[index + 1].view
++                };
++                make_bind_group(
++                    device,
++                    bgl,
++                    &downsample_targets[index].view,
++                    lower,
++                    sampler,
++                    &upsample_uniforms[index],
++                    &format!("Bloom upsample BG {index}"),
++                )
++            })
++            .collect::<Vec<_>>();
++
++        let bloom_root = if upsample_targets.is_empty() {
++            &downsample_targets[0].view
++        } else {
++            &upsample_targets[0].view
++        };
++        let composite_bind_group = make_bind_group(
++            device,
++            bgl,
++            source_view,
++            bloom_root,
++            sampler,
++            &composite_uniform,
++            "Bloom composite BG",
++        );
++
++        Self {
++            source_view: source_view.clone(),
++            downsample_targets,
++            upsample_targets,
++            composite_target,
++            downsample_uniforms,
++            upsample_uniforms,
++            composite_uniform,
++            downsample_bind_groups,
++            upsample_bind_groups,
++            composite_bind_group,
++        }
++    }
++}
++
++pub(crate) struct BloomPass {
++    bgl: wgpu::BindGroupLayout,
++    sampler: wgpu::Sampler,
++    downsample_pipeline: wgpu::RenderPipeline,
++    upsample_pipeline: wgpu::RenderPipeline,
++    composite_pipeline: wgpu::RenderPipeline,
++    resources: BloomResources,
++}
++
++impl BloomPass {
++    pub(crate) async fn new(
++        device: &wgpu::Device,
++        source_view: &wgpu::TextureView,
++    ) -> Result<Self, wgpu::Error> {
++        let error_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
++        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
++            label: Some("Bloom linear sampler"),
++            address_mode_u: wgpu::AddressMode::ClampToEdge,
++            address_mode_v: wgpu::AddressMode::ClampToEdge,
++            mag_filter: wgpu::FilterMode::Linear,
++            min_filter: wgpu::FilterMode::Linear,
++            ..Default::default()
++        });
++        let bgl = make_bind_group_layout(device);
++        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
++            label: Some("Bloom shader"),
++            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/bloom.wgsl").into()),
++        });
++        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
++            label: Some("Bloom pipeline layout"),
++            bind_group_layouts: &[Some(&bgl)],
++            immediate_size: 0,
++        });
++        let downsample_pipeline = make_pipeline(
++            device,
++            &layout,
++            &shader,
++            "fs_downsample",
++            "Bloom downsample pipeline",
++        );
++        let upsample_pipeline = make_pipeline(
++            device,
++            &layout,
++            &shader,
++            "fs_upsample",
++            "Bloom upsample pipeline",
++        );
++        let composite_pipeline = make_pipeline(
++            device,
++            &layout,
++            &shader,
++            "fs_composite",
++            "Bloom composite pipeline",
++        );
++        let resources = BloomResources::new(device, source_view, &bgl, &sampler);
++
++        if let Some(error) = error_scope.pop().await {
++            return Err(error);
++        }
++
++        Ok(Self {
++            bgl,
++            sampler,
++            downsample_pipeline,
++            upsample_pipeline,
++            composite_pipeline,
++            resources,
++        })
++    }
++
++    pub(crate) fn update_source(
++        &mut self,
++        device: &wgpu::Device,
++        source_view: &wgpu::TextureView,
++    ) {
++        self.resources = BloomResources::new(device, source_view, &self.bgl, &self.sampler);
++    }
++
++    pub(crate) fn source_view(&self) -> &wgpu::TextureView {
++        &self.resources.source_view
++    }
++
++    pub(crate) fn output_view(&self) -> &wgpu::TextureView {
++        &self.resources.composite_target.view
++    }
++
++    pub(crate) fn execute(
++        &mut self,
++        device: &wgpu::Device,
++        queue: &wgpu::Queue,
++        settings: &PostProcessSettings,
++    ) {
++        for (index, buffer) in self.resources.downsample_uniforms.iter().enumerate() {
++            let uniform = BloomUniformData::downsample(settings, index);
++            queue.write_buffer(buffer, 0, bytemuck::bytes_of(&uniform));
++        }
++        let upsample_uniform = BloomUniformData::upsample(settings);
++        for buffer in &self.resources.upsample_uniforms {
++            queue.write_buffer(buffer, 0, bytemuck::bytes_of(&upsample_uniform));
++        }
++        let composite_uniform = BloomUniformData::composite(settings);
++        queue.write_buffer(
++            &self.resources.composite_uniform,
++            0,
++            bytemuck::bytes_of(&composite_uniform),
++        );
++
++        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
++            label: Some("Bloom encoder"),
++        });
++
++        for (index, target) in self.resources.downsample_targets.iter().enumerate() {
++            run_fullscreen_pass(
++                &mut encoder,
++                &target.view,
