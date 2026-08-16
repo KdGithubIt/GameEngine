@@ -1,0 +1,54 @@
+diff --git a/docs/CHATGPT_AUTOMATION_INCIDENTS.md b/docs/CHATGPT_AUTOMATION_INCIDENTS.md
+index 337d8ba..d58ec71 100644
+--- a/docs/CHATGPT_AUTOMATION_INCIDENTS.md
++++ b/docs/CHATGPT_AUTOMATION_INCIDENTS.md
+@@ -131,6 +131,16 @@ between those attempts.
+   hunks that had been generated from stitched snippets rather than the exact
+   target files. The final exact-target regeneration was validated by the
+   successful ADR-audit request recorded in INC-003.
++- The same target-alignment class recurred in Phase 8 request
++  `20260816-phase8-temporal-history-ce777a7-r1`: Dispatcher run `31931155985`
++  rejected the final `docs/adr/README.md` hunk while the target branch remained
++  at `ce777a7ecf572001e727e10f470c7a1bebae6714`. The local preflight fixture had
++  an extra blank line after the target file's real EOF, so it validated context
++  that did not exist in the exact target blob.
++- Replacement request `20260816-phase8-temporal-history-ce777a7-r2` regenerated
++  that hunk against the exact target EOF. Dispatcher run `31931372697` passed
++  reconstruction/application and produced commit
++  `b3421b3c454ca7ebde31a2a9585e441d91ea7802` in Draft PR #49.
+ 
+ ### Root cause
+ 
+@@ -138,7 +148,9 @@ The producer manually maintained unified-diff hunk coordinates across several
+ edits in the same file. It adjusted later old-file coordinates as though prior
+ added lines had already changed the source tree. Unified diff old coordinates
+ must always refer to the unmodified target file. Adjacent dependent hunks also
+-made the hand-maintained offsets fragile.
++made the hand-maintained offsets fragile. The Phase 8 recurrence also showed
++that a synthetic or stitched preflight fixture can create the same mismatch
++when its EOF or surrounding context differs from the exact target blob.
+ 
+ ### Resolution
+ 
+@@ -158,6 +170,8 @@ hunk coordinates by accumulating prior additions. Prefer generated diffs; when
+ manual construction is unavoidable, merge adjacent dependent edits and verify
+ the complete reconstructed request with
+ `git apply --check --whitespace=error-all` before publishing `ready.json`.
++Do not substitute a synthetic partial file for the exact target during
++preflight; EOF presence and blank-line context are part of patch applicability.
+ 
+ ### References
+ 
+@@ -165,6 +179,12 @@ the complete reconstructed request with
+ - PR: `#23`
+ - Workflow run: `31922381541`
+ - Commit: `1e82c3beb53205404a5110828c5e8943f62d6aa7`
++- Repeated failed request: `20260816-phase8-temporal-history-ce777a7-r1`
++- Recovery request: `20260816-phase8-temporal-history-ce777a7-r2`
++- Repeated failed Dispatcher run: `31931155985`
++- Recovery Dispatcher run: `31931372697`
++- Recovery PR: `#49`
++- Recovery commit: `b3421b3c454ca7ebde31a2a9585e441d91ea7802`
+ 
+ ## INC-003: Published patch bytes differed from preflight artifact
+ 
