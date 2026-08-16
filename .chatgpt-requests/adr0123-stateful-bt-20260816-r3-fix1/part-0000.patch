@@ -1,0 +1,28 @@
+diff --git a/crates/gameplay/src/behavior_tree_stateful.rs b/crates/gameplay/src/behavior_tree_stateful.rs
+index fd4ebb672e3703d0beeed89176b6a2be59c062b5..09636a393646965536500abd996d44462e900a41 100644
+--- a/crates/gameplay/src/behavior_tree_stateful.rs
++++ b/crates/gameplay/src/behavior_tree_stateful.rs
+@@ -1042,6 +1042,8 @@ pub fn register_behavior_tree_system(
+     app.try_add_system(behavior_tree_tick_system)
+ }
+ 
++// Recursive evaluation keeps bounded tick state explicit instead of boxing it.
++#[allow(clippy::too_many_arguments)]
+ fn tick_node<C: BehaviorTreeContext>(
+     plan: &PreparedBehaviorTree,
+     instance: &mut BehaviorTreeInstance,
+@@ -1545,10 +1547,10 @@ fn abort_actions_in_subtree<C: BehaviorTreeContext>(
+         let Some(behavior_id) = plan.nodes[index].behavior.as_deref() else {
+             continue;
+         };
+-        if let Err(source) = context.action_abort(&plan.nodes[index].source, behavior_id, reason) {
+-            if first_error.is_none() {
+-                first_error = Some((behavior_id.to_owned(), source));
+-            }
++        if let Err(source) = context.action_abort(&plan.nodes[index].source, behavior_id, reason)
++            && first_error.is_none()
++        {
++            first_error = Some((behavior_id.to_owned(), source));
+         }
+         instance.node_state[index].action_entered = false;
+         instance.push_transition(BehaviorExecutionTransition {
