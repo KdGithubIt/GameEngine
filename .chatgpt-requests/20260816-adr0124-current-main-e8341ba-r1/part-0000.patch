@@ -1,0 +1,72 @@
+diff --git a/crates/editor/src/bin/advanced_geometry_designer.rs b/crates/editor/src/bin/advanced_geometry_designer.rs
+--- a/crates/editor/src/bin/advanced_geometry_designer.rs
++++ b/crates/editor/src/bin/advanced_geometry_designer.rs
+@@ -7,7 +7,7 @@ use engine::advanced_geometry::{
+     LayeredNavMesh, NavMeshLayer, NavMeshLayerLink, StaticTriangleMesh,
+ };
+ use engine::glam::Vec3;
+-use engine::navmesh::{bake_from_obstacles, NavMeshSettings};
++use engine::navmesh::grid::{bake_from_obstacles, NavMeshSettings};
+ use serde::{Deserialize, Serialize};
+ 
+ const GEOMETRY_PROJECT_SCHEMA_VERSION: u32 = 1;
+diff --git a/crates/editor/src/lib.rs b/crates/editor/src/lib.rs
+--- a/crates/editor/src/lib.rs
++++ b/crates/editor/src/lib.rs
+@@ -30,6 +30,7 @@ pub mod game_build;
+ pub mod geometry;
+ pub mod gizmo;
+ pub mod material_editor;
++#[path = "navmesh_shared.rs"]
+ pub mod navmesh_bake;
+ pub mod prefab_workflow;
+ pub mod preferences;
+diff --git a/crates/editor/src/navmesh_shared.rs b/crates/editor/src/navmesh_shared.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/editor/src/navmesh_shared.rs
+@@ -0,0 +1,12 @@
++//! Thin Editor facade over the shared ADR 0124 production navigation bake service.
++//!
++//! The GUI owns workflow state only. Scene collection, deterministic fingerprints,
++//! staleness, cancellation, baking, safe replacement, and statistics are owned by
++//! `engine::navigation_bake` and `engine-physics`.
++
++pub use engine::navigation_bake::{
++    bake_scene_navmesh, collect_navigation_source, is_scene_navmesh_stale, prepare_scene_navmesh,
++    NavMeshBakeDocument, NavMeshBakeError, NavMeshBakeResult, NavMeshBakeSettings,
++    NavigationBakeOutput, NavigationBakeService, NavigationBakeServiceError, NavigationBakeStats,
++    NavigationSource, NAVMESH_BAKE_SCHEMA_VERSION,
++};
+diff --git a/crates/editor/src/ui/chrome.rs b/crates/editor/src/ui/chrome.rs
+--- a/crates/editor/src/ui/chrome.rs
++++ b/crates/editor/src/ui/chrome.rs
+@@ -459,14 +459,27 @@ impl EditorApp {
+                 }
+                 if ui
+                     .add_enabled(
+-                        self.session.scene().is_some() && !self.is_playing(),
++                        self.session.scene().is_some()
++                            && !self.is_playing()
++                            && !self.navigation_bake.is_running(),
+                         egui::Button::new("Bake NavMesh"),
+                     )
+                     .clicked()
+                 {
+                     self.bake_current_navmesh();
+                     ui.close();
+                 }
++                if self.navigation_bake.is_running()
++                    && ui
++                        .add_enabled(
++                            !self.navigation_bake.is_cancelling(),
++                            egui::Button::new("Cancel NavMesh Bake"),
++                        )
++                        .clicked()
++                {
++                    self.cancel_current_navmesh_bake();
++                    ui.close();
++                }
+             });
+             ui.menu_button("Build", |ui| {
+                 let can_build = self.project_root.is_some()
