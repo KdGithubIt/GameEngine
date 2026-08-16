@@ -13,13 +13,6 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-#[path = "behavior_visual_validation.rs"]
-mod behavior_visual_validation;
-#[cfg(feature = "visual-validation")]
-use behavior_visual_validation::{
-    behavior_tree_visual_scenario_requested, show_behavior_tree_visual_palette,
-};
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct BehaviorDebugSourceKey {
     runtime_entity: (u32, u32),
@@ -370,12 +363,6 @@ impl EditorApp {
             .max_size(420.0)
             .show_inside(ui, |ui| show_behavior_debug_details(ui, &presentation));
         self.behavior_debug.show_graph(ui, &presentation);
-        #[cfg(feature = "visual-validation")]
-        if is_fixture
-            && let Some(session) = self.behavior_debug.graph_session.as_ref()
-        {
-            show_behavior_tree_visual_palette(ui.ctx(), session);
-        }
     }
 
     #[cfg(feature = "visual-validation")]
@@ -529,7 +516,10 @@ fn collect_graph_files(directory: &Path, output: &mut Vec<PathBuf>) {
 
 #[cfg(feature = "visual-validation")]
 fn visual_validation_touches_behavior_debug() -> bool {
-    if behavior_tree_visual_scenario_requested() {
+    if matches!(
+        std::env::var("GAMEENGINE_VISUAL_EDITOR_SCENARIO").as_deref(),
+        Ok("behavior-tree")
+    ) {
         return true;
     }
     let base_ref = std::env::var("GITHUB_BASE_REF").unwrap_or_else(|_| "main".into());
