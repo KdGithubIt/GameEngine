@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0124-foundation-validation-fix-20260816-01",
+  "target_branch": "chatgpt/gameengine-adr-0124-production-navmesh-v3",
+  "expected_head_sha": "50605991f819dfa735761048becc41176dc7068c",
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Fix ADR 0124 foundation validation failures",
+  "pr_title": "GameEngine: implement ADR 0124 production navigation",
+  "pr_body": "## Summary\n\nImplements the ADR 0124 production navigation foundation and fixes the first affected Windows Validation findings without suppressions: A* frontier state is grouped behind a focused helper, production agent statuses are fully surfaced by the engine view, safe replacement satisfies Clippy, and navigation rustdoc links resolve from their module scope.\n\nThe Draft PR remains the task branch for the remaining ADR 0124 Editor/background bake and adapter workflow slices."
+}
