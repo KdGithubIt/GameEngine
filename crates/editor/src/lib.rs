@@ -42,6 +42,7 @@ pub mod skinned_model_bake;
 pub mod systems_panel;
 pub mod ui;
 pub mod ui_builder;
+mod vfx_builder;
 pub mod view_aspect;
 mod view_resolution;
 mod workspace;

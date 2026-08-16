@@ -71,6 +71,7 @@ pub mod ui_contract_runtime;
 pub mod ui_edit;
 pub mod validation;
 pub mod value;
+pub mod vfx;
 
 pub use access::{
     AuthoringPermission, AuthoringPermissionError, AuthoringPermissions,
@@ -173,3 +174,12 @@ pub use validation::{
     validate_asset_manifest, validate_scene, validate_scene_asset_refs, validate_start_scene,
 };
 pub use value::Value;
+pub use vfx::{
+    CompiledVfxEffect, CompiledVfxEmitter, CompiledVfxOperation, VfxApply, VfxAttributeLayout,
+    VfxAuthoringService, VfxCapabilityRequirements, VfxCommand, VfxCompilation, VfxCurve,
+    VfxCurveInterpolation, VfxCurveKey, VfxCurveKeyId, VfxDiagnostic, VfxDiagnosticSeverity,
+    VfxDocumentError, VfxEffect, VfxEmitter, VfxEmitterId, VfxGradient, VfxGradientKey,
+    VfxGradientKeyId, VfxIdError, VfxModule, VfxModuleId, VfxModuleOperation, VfxModuleSchema,
+    VfxPhase, VfxRandomChannel, VfxScalarValue, VfxSchemaCatalog, VfxShape, VfxTemplate,
+    VfxTextureSheet, VfxValidation, VfxVectorValue, VFX_FILE_SUFFIX, VFX_SCHEMA_VERSION,
+};
