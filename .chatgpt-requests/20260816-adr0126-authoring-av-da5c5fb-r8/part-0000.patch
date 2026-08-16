@@ -1,0 +1,97 @@
+diff --git a/crates/authoring/src/timeline_authoring.rs b/crates/authoring/src/timeline_authoring.rs
+--- a/crates/authoring/src/timeline_authoring.rs
++++ b/crates/authoring/src/timeline_authoring.rs
+@@ -11,5 +11,5 @@
+ use crate::timeline::{
+-    TimelineAnimationClip, TimelineCameraCutClip, TimelineDisplayRate, TimelineDocument,
+-    TimelineEventMarker, TimelineTrack, TimelineTrackKind, TimelineTrackType,
+-    TimelineTransformClip,
++    TimelineAnimationClip, TimelineAudioClip, TimelineCameraCutClip, TimelineDisplayRate,
++    TimelineDocument, TimelineEventMarker, TimelineTrack, TimelineTrackKind, TimelineTrackType,
++    TimelineTransformClip, TimelineVfxClip,
+ };
+@@ -22,28 +22,36 @@
+ pub enum TimelineEditableClip {
+     /// Animation Track clip.
+     Animation(TimelineAnimationClip),
+     /// Transform/Property Track clip.
+     TransformProperty(TimelineTransformClip),
+     /// Camera Cut Track clip.
+     CameraCut(TimelineCameraCutClip),
++    /// Audio Track clip.
++    Audio(TimelineAudioClip),
++    /// VFX Track clip.
++    Vfx(TimelineVfxClip),
+ }
+ 
+ impl TimelineEditableClip {
+     /// Returns this clip's stable identity.
+     pub fn id(&self) -> &TimelineClipId {
+         match self {
+             Self::Animation(clip) => &clip.timing.id,
+             Self::TransformProperty(clip) => &clip.timing.id,
+             Self::CameraCut(clip) => &clip.timing.id,
++            Self::Audio(clip) => &clip.timing.id,
++            Self::Vfx(clip) => &clip.timing.id,
+         }
+     }
+ 
+     /// Returns the required destination track family.
+     pub const fn track_type(&self) -> TimelineTrackType {
+         match self {
+             Self::Animation(_) => TimelineTrackType::Animation,
+             Self::TransformProperty(_) => TimelineTrackType::TransformProperty,
+             Self::CameraCut(_) => TimelineTrackType::CameraCut,
++            Self::Audio(_) => TimelineTrackType::Audio,
++            Self::Vfx(_) => TimelineTrackType::Vfx,
+         }
+     }
+ }
+@@ -906,4 +906,10 @@
+         (TimelineTrackKind::CameraCut { clips }, TimelineEditableClip::CameraCut(clip)) => {
+             clips.push(clip)
+         }
++        (TimelineTrackKind::Audio { clips }, TimelineEditableClip::Audio(clip)) => {
++            clips.push(clip)
++        }
++        (TimelineTrackKind::Vfx { clips }, TimelineEditableClip::Vfx(clip)) => {
++            clips.push(clip)
++        }
+         _ => {
+@@ -936,4 +936,10 @@
+         (TimelineTrackKind::CameraCut { clips }, TimelineEditableClip::CameraCut(replacement)) => {
+             replace_by_id(clips, id, replacement, |clip| &clip.timing.id)
+         }
++        (TimelineTrackKind::Audio { clips }, TimelineEditableClip::Audio(replacement)) => {
++            replace_by_id(clips, id, replacement, |clip| &clip.timing.id)
++        }
++        (TimelineTrackKind::Vfx { clips }, TimelineEditableClip::Vfx(replacement)) => {
++            replace_by_id(clips, id, replacement, |clip| &clip.timing.id)
++        }
+         _ => Err(TimelineEditError::TrackTypeMismatch {
+@@ -968,2 +968,4 @@
+         TimelineTrackKind::CameraCut { clips } => remove_by_id(clips, id, |clip| &clip.timing.id),
++        TimelineTrackKind::Audio { clips } => remove_by_id(clips, id, |clip| &clip.timing.id),
++        TimelineTrackKind::Vfx { clips } => remove_by_id(clips, id, |clip| &clip.timing.id),
+         TimelineTrackKind::Event { .. } => Err(TimelineEditError::ClipNotFound(id.clone())),
+diff --git a/crates/authoring/src/lib.rs b/crates/authoring/src/lib.rs
+--- a/crates/authoring/src/lib.rs
++++ b/crates/authoring/src/lib.rs
+@@ -164,9 +164,10 @@
+ pub use timeline::{
+-    compile_timeline, CompiledAnimationPayload, CompiledCameraCutPayload, CompiledEventPayload,
+-    CompiledTimelinePayload, CompiledTransformPayload, TimelineAnimationClip,
+-    TimelineBindingResolver, TimelineBlend, TimelineCameraCutClip, TimelineClipRef,
+-    TimelineClipTiming, TimelineCompileError, TimelineDisplayRate, TimelineDocument,
+-    TimelineDocumentError, TimelineEventMarker, TimelineQuatKey, TimelineTrack, TimelineTrackKind,
+-    TimelineTrackType, TimelineTransformClip, TimelineTransformCurve, TimelineTransformSample,
+-    TimelineVec3Key, TIMELINE_FILE_SUFFIX, TIMELINE_SCHEMA_VERSION,
++    compile_timeline, CompiledAnimationPayload, CompiledAudioPayload, CompiledCameraCutPayload,
++    CompiledEventPayload, CompiledTimelinePayload, CompiledTransformPayload, CompiledVfxPayload,
++    TimelineAnimationClip, TimelineAudioClip, TimelineBindingResolver, TimelineBlend,
++    TimelineCameraCutClip, TimelineClipRef, TimelineClipTiming, TimelineCompileError,
++    TimelineDisplayRate, TimelineDocument, TimelineDocumentError, TimelineEventMarker,
++    TimelineQuatKey, TimelineTrack, TimelineTrackKind, TimelineTrackType, TimelineTransformClip,
++    TimelineTransformCurve, TimelineTransformSample, TimelineVec3Key, TimelineVfxClip,
++    TIMELINE_FILE_SUFFIX, TIMELINE_SCHEMA_VERSION,
+ };
