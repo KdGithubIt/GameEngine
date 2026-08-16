@@ -271,7 +271,7 @@ fn imported_kind_name(kind: ImportedSubAssetKind) -> &'static str {
         ImportedSubAssetKind::Animation => "animation",
         ImportedSubAssetKind::HumanoidMotion => "humanoid_motion",
         ImportedSubAssetKind::Morph => "morph",
-        ImportedSubAssetKind::RigidBodyRig => "rigid_body_rig",
+        ImportedSubAssetKind::SecondaryMotionRig => "secondary_motion_rig",
     }
 }
 

@@ -5,7 +5,7 @@ use crate::animation::{
     animation_system, root_motion_motor_system, AnimationClip, AnimationEvents,
 };
 use crate::asset::Assets;
-use crate::audio::{authored_audio_system, spatial_audio_system, SpatialAudioRuntime};
+use crate::audio::authored_audio_system;
 use crate::behavior_tree::{behavior_tree_tick_system, BehaviorTreeBehaviorRegistry};
 use crate::camera::{follow_camera_system, lock_on_camera_system, orbit_camera_system};
 use crate::character_controller::character_controller_system;
@@ -17,8 +17,8 @@ use crate::combat::{
 use crate::event_debug::{runtime_event_timeline_system, RuntimeEventTimeline};
 use crate::foot_ik::foot_ik_system;
 use crate::lock_on::lock_on_system;
-use crate::mmd_physics::{
-    mmd_rigid_body_physics_system, mmd_rigid_body_presentation_system, MmdPhysicsWorlds,
+use crate::secondary_motion::{
+    secondary_motion_presentation_system, secondary_motion_system, SecondaryMotionWorlds,
 };
 use crate::navmesh::{nav_mesh_agent_system, nav_mesh_debug_draw_system};
 use crate::physics::velocity_system;
@@ -55,8 +55,8 @@ pub fn register_runtime_systems(app: &mut App) -> Result<(), SystemRegistrationE
     if app.world().get_resource::<CollisionStats>().is_none() {
         app.insert_resource(CollisionStats::default());
     }
-    if app.world().get_resource::<MmdPhysicsWorlds>().is_none() {
-        app.insert_resource(MmdPhysicsWorlds::default());
+    if app.world().get_resource::<SecondaryMotionWorlds>().is_none() {
+        app.insert_resource(SecondaryMotionWorlds::default());
     }
     if app.world().get_resource::<HitResults>().is_none() {
         app.insert_resource(HitResults::default());
@@ -73,9 +73,6 @@ pub fn register_runtime_systems(app: &mut App) -> Result<(), SystemRegistrationE
         .is_none()
     {
         app.insert_resource(BehaviorTreeBehaviorRegistry::default());
-    }
-    if app.world().get_resource::<SpatialAudioRuntime>().is_none() {
-        app.insert_resource(SpatialAudioRuntime::default());
     }
     app.try_add_system_with_descriptor(
         engine_system(
@@ -111,25 +108,13 @@ pub fn register_runtime_systems(app: &mut App) -> Result<(), SystemRegistrationE
     )?;
     app.try_add_system_with_descriptor(
         engine_system(
-            "engine.spatial_audio",
-            "Spatial Audio",
-            "Selects the active listener and synchronizes authored emitters to managed voices.",
-        )
-        .try_after("engine.transform_propagation")
-        .expect("built-in system IDs are valid")
-        .try_before("engine.authored_audio")
-        .expect("built-in system IDs are valid"),
-        spatial_audio_system,
-    )?;
-    app.try_add_system_with_descriptor(
-        engine_system(
-            "engine.mmd_physics_presentation",
-            "MMD Physics Presentation",
-            "Interpolates fixed-step MMD rig poses for smooth render-time presentation.",
+            "engine.secondary_motion_presentation",
+            "Secondary Motion Presentation",
+            "Interpolates fixed-step secondary-motion poses for smooth render-time presentation.",
         )
         .try_before("engine.transform_propagation")
         .expect("built-in system IDs are valid"),
-        mmd_rigid_body_presentation_system,
+        secondary_motion_presentation_system,
     )?;
     app.try_add_system_with_descriptor(
         engine_system(
@@ -275,15 +260,15 @@ pub fn register_runtime_systems(app: &mut App) -> Result<(), SystemRegistrationE
     )?;
     app.try_add_fixed_system_with_descriptor(
         engine_system(
-            "engine.mmd_rigid_body_physics",
-            "MMD Rigid Body Physics",
-            "Advances isolated PMX secondary-motion bodies and writes the physics pose layer.",
+            "engine.secondary_motion",
+            "Secondary Motion",
+            "Advances isolated secondary-motion bodies and writes the physics pose layer.",
         )
         .try_after("engine.fixed_transform_propagation")
         .expect("built-in system IDs are valid")
         .try_after("engine.foot_ik")
         .expect("built-in system IDs are valid"),
-        mmd_rigid_body_physics_system,
+        secondary_motion_system,
     )?;
     app.try_add_fixed_system_with_descriptor(
         engine_system(
@@ -291,7 +276,7 @@ pub fn register_runtime_systems(app: &mut App) -> Result<(), SystemRegistrationE
             "Publish Final Rig Pose",
             "Composes pose layers and publishes final local joint transforms.",
         )
-        .try_after("engine.mmd_rigid_body_physics")
+        .try_after("engine.secondary_motion")
         .expect("built-in system IDs are valid")
         .try_after("engine.foot_ik")
         .expect("built-in system IDs are valid"),
@@ -299,7 +284,7 @@ pub fn register_runtime_systems(app: &mut App) -> Result<(), SystemRegistrationE
     )?;
     app.try_add_fixed_system_with_descriptor(
         engine_system(
-            "engine.mmd_physics_transform_propagation",
+            "engine.secondary_motion_transform_propagation",
             "Final Rig Transform Propagation",
             "Refreshes joint world transforms after publishing final rig poses.",
         )
@@ -313,7 +298,7 @@ pub fn register_runtime_systems(app: &mut App) -> Result<(), SystemRegistrationE
             "Collision Detection",
             "Detects current fixed-step overlaps, resolves bodies, and publishes contacts.",
         )
-        .try_after("engine.mmd_physics_transform_propagation")
+        .try_after("engine.secondary_motion_transform_propagation")
         .expect("built-in system IDs are valid"),
         collision_detection_system,
     )?;
@@ -401,31 +386,17 @@ mod tests {
         assert!(update
             .iter()
             .any(|info| info.descriptor.id().as_str() == "engine.authored_audio"));
-        let spatial_audio = update
+        let secondary_motion_presentation = update
             .iter()
-            .find(|info| info.descriptor.id().as_str() == "engine.spatial_audio")
-            .expect("spatial audio system must be registered");
-        assert!(spatial_audio
-            .descriptor
-            .after()
-            .iter()
-            .any(|id| id.as_str() == "engine.transform_propagation"));
-        assert!(spatial_audio
-            .descriptor
-            .before()
-            .iter()
-            .any(|id| id.as_str() == "engine.authored_audio"));
-        let mmd_presentation = update
-            .iter()
-            .find(|info| info.descriptor.id().as_str() == "engine.mmd_physics_presentation")
-            .expect("MMD presentation system must be registered");
+            .find(|info| info.descriptor.id().as_str() == "engine.secondary_motion_presentation")
+            .expect("secondary-motion presentation system must be registered");
         assert!(
-            mmd_presentation
+            secondary_motion_presentation
                 .descriptor
                 .before()
                 .iter()
                 .any(|id| id.as_str() == "engine.transform_propagation"),
-            "MMD presentation must update local joints before world propagation"
+            "secondary-motion presentation must update local joints before world propagation"
         );
         let fixed = player.system_infos(ProjectSystemSchedule::FixedUpdate);
         let fixed_ids: Vec<_> = fixed
@@ -443,9 +414,9 @@ mod tests {
             "engine.player_character_motor",
             "engine.character_controller",
             "engine.fixed_transform_propagation",
-            "engine.mmd_rigid_body_physics",
+            "engine.secondary_motion",
             "engine.rig_pose_publish_final",
-            "engine.mmd_physics_transform_propagation",
+            "engine.secondary_motion_transform_propagation",
             "engine.collision_detection",
             "engine.combat_contacts",
             "engine.knockback",
@@ -479,19 +450,19 @@ mod tests {
         assert!(descriptor("engine.collision_detection")
             .after()
             .iter()
-            .any(|id| id.as_str() == "engine.mmd_physics_transform_propagation"));
-        assert!(descriptor("engine.mmd_rigid_body_physics")
+            .any(|id| id.as_str() == "engine.secondary_motion_transform_propagation"));
+        assert!(descriptor("engine.secondary_motion")
             .after()
             .iter()
             .any(|id| id.as_str() == "engine.fixed_transform_propagation"));
-        assert!(descriptor("engine.mmd_physics_transform_propagation")
+        assert!(descriptor("engine.secondary_motion_transform_propagation")
             .after()
             .iter()
             .any(|id| id.as_str() == "engine.rig_pose_publish_final"));
         assert!(descriptor("engine.rig_pose_publish_final")
             .after()
             .iter()
-            .any(|id| id.as_str() == "engine.mmd_rigid_body_physics"));
+            .any(|id| id.as_str() == "engine.secondary_motion"));
         assert!(descriptor("engine.combat_contacts")
             .after()
             .iter()
