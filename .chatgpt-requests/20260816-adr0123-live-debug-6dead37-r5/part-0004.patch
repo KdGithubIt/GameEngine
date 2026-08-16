@@ -1,0 +1,185 @@
++            });
++    }
++
++    ui.separator();
++    ui.strong("Blackboard");
++    if presentation.blackboard.is_empty() {
++        ui.small("Empty");
++    } else {
++        egui::Grid::new("behavior_debug_blackboard")
++            .num_columns(2)
++            .striped(true)
++            .show(ui, |ui| {
++                for (key, value) in &presentation.blackboard {
++                    ui.label(key);
++                    ui.monospace(value);
++                    ui.end_row();
++                }
++            });
++    }
++    ui.separator();
++    ui.small("Live overlay is transient; it never edits the Graph document or GraphView.");
++}
++
++fn format_transition(transition: &engine::behavior_tree::BehaviorExecutionTransition) -> String {
++    let mut label = match transition.kind {
++        BehaviorExecutionTransitionKind::Enter => "ENTER".to_owned(),
++        BehaviorExecutionTransitionKind::Success => "SUCCESS".to_owned(),
++        BehaviorExecutionTransitionKind::Failure => "FAILURE".to_owned(),
++        BehaviorExecutionTransitionKind::Abort => "ABORT".to_owned(),
++        BehaviorExecutionTransitionKind::Reset => "RESET".to_owned(),
++    };
++    if let Some(node) = &transition.node {
++        label.push(' ');
++        label.push_str(node.as_str());
++    }
++    if let Some(behavior) = &transition.behavior_id {
++        label.push_str(" · ");
++        label.push_str(behavior);
++    }
++    if let Some(reason) = transition.reason {
++        label.push_str(" · ");
++        label.push_str(reset_reason_label(reason));
++    }
++    label
++}
++
++fn status_label(status: BehaviorStatus) -> &'static str {
++    match status {
++        BehaviorStatus::Success => "Success",
++        BehaviorStatus::Failure => "Failure",
++        BehaviorStatus::Running => "Running",
++    }
++}
++
++fn reset_reason_label(reason: BehaviorResetReason) -> &'static str {
++    match reason {
++        BehaviorResetReason::RunnerDisabled => "runner disabled",
++        BehaviorResetReason::ExplicitReset => "explicit reset",
++        BehaviorResetReason::TreeReplaced => "tree replaced",
++        BehaviorResetReason::Timeout => "timeout",
++        BehaviorResetReason::Interrupted => "interrupted",
++        BehaviorResetReason::RunnerRemoved => "runner removed",
++        BehaviorResetReason::EntityDespawned => "entity despawned",
++    }
++}
++
++fn find_graph_source(assets_root: &Path, graph_id: &GraphId) -> Option<PathBuf> {
++    let mut candidates = Vec::new();
++    collect_graph_files(assets_root, &mut candidates);
++    candidates.sort();
++    candidates.into_iter().find(|path| {
++        fs::read_to_string(path)
++            .ok()
++            .and_then(|json| serde_json::from_str::<Graph>(&json).ok())
++            .is_some_and(|graph| graph.id == *graph_id)
++    })
++}
++
++fn collect_graph_files(directory: &Path, output: &mut Vec<PathBuf>) {
++    let Ok(entries) = fs::read_dir(directory) else {
++        return;
++    };
++    for entry in entries.flatten() {
++        let path = entry.path();
++        if path.is_dir() {
++            collect_graph_files(&path, output);
++        } else if path
++            .file_name()
++            .and_then(|name| name.to_str())
++            .is_some_and(|name| name.ends_with(".graph.json"))
++        {
++            output.push(path);
++        }
++    }
++}
++
++#[cfg(feature = "visual-validation")]
++fn visual_validation_touches_behavior_debug() -> bool {
++    let base_ref = std::env::var("GITHUB_BASE_REF").unwrap_or_else(|_| "main".into());
++    let base = format!("origin/{base_ref}...HEAD");
++    std::process::Command::new("git")
++        .args([
++            "diff",
++            "--name-only",
++            &base,
++            "--",
++            "crates/editor/src/ui/behavior_debug.rs",
++        ])
++        .output()
++        .ok()
++        .filter(|output| output.status.success())
++        .is_some_and(|output| !output.stdout.is_empty())
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn presentation_maps_source_node_ids_without_mutating_runtime_snapshot() {
++        let session = EditorSession::behavior_tree_example().expect("reference tree");
++        let nodes = session.graph().nodes.keys().cloned().collect::<Vec<_>>();
++        let snapshot = BehaviorExecutionSnapshot {
++            tree_source: session.graph().id.clone(),
++            tree_generation: 3,
++            execution_generation: 7,
++            status: Some(BehaviorStatus::Running),
++            active_path: vec![engine::behavior_tree::BehaviorActiveNodeSnapshot {
++                node: nodes[0].clone(),
++                elapsed_seconds: 1.25,
++            }],
++            running_node: Some(nodes[0].clone()),
++            last_terminal_node: Some(nodes[1].clone()),
++            last_terminal_status: Some(BehaviorStatus::Failure),
++            last_reset_reason: None,
++            recent_transitions: Vec::new(),
++            blackboard: BTreeMap::new(),
++            error: None,
++        };
++        let before = snapshot.clone();
++
++        let presentation = BehaviorTreeDebugPresentation::from_snapshot(&snapshot);
++
++        assert_eq!(snapshot, before);
++        assert_eq!(presentation.graph, session.graph().id);
++        assert_eq!(
++            presentation.overlay.nodes[&nodes[0]].badge,
++            Some(GraphDebugBadge::Running)
++        );
++        assert_eq!(
++            presentation.overlay.nodes[&nodes[1]].badge,
++            Some(GraphDebugBadge::Failure)
++        );
++    }
++
++    #[test]
++    fn old_execution_generation_lifecycle_is_not_presented_as_current() {
++        let session = EditorSession::behavior_tree_example().expect("reference tree");
++        let node = session.graph().nodes.keys().next().unwrap().clone();
++        let snapshot = BehaviorExecutionSnapshot {
++            tree_source: session.graph().id.clone(),
++            tree_generation: 1,
++            execution_generation: 9,
++            status: None,
++            active_path: Vec::new(),
++            running_node: None,
++            last_terminal_node: None,
++            last_terminal_status: None,
++            last_reset_reason: Some(BehaviorResetReason::ExplicitReset),
++            recent_transitions: vec![engine::behavior_tree::BehaviorExecutionTransition {
++                generation: 8,
++                node: Some(node.clone()),
++                behavior_id: None,
++                kind: BehaviorExecutionTransitionKind::Abort,
++                reason: Some(BehaviorResetReason::Interrupted),
++            }],
++            blackboard: BTreeMap::new(),
++            error: None,
++        };
++
++        let presentation = BehaviorTreeDebugPresentation::from_snapshot(&snapshot);
++
++        assert!(!presentation.overlay.nodes.contains_key(&node));
++    }
++}
