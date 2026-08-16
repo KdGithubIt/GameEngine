@@ -55,9 +55,9 @@ struct AuthoringErrorBody {
     message: String,
 }
 
-struct SceneContext {
-    path: PathBuf,
-    session: AuthoringSession,
+pub(super) struct SceneContext {
+    pub(super) path: PathBuf,
+    pub(super) session: AuthoringSession,
 }
 
 pub(super) fn dispatch(args: &[String]) -> Option<Result<CliRunResult, CliError>> {
@@ -273,7 +273,7 @@ fn component_schemas() -> Result<CliRunResult, CliError> {
     Ok(CliRunResult::success(to_json(&output)?))
 }
 
-fn load_scene_context(
+pub(super) fn load_scene_context(
     project_path: &Path,
     scene_relative: &str,
 ) -> Result<SceneContext, CliRunResult> {

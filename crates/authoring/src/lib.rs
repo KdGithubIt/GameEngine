@@ -52,6 +52,7 @@ pub mod load;
 pub mod material_asset;
 pub mod persist;
 pub mod prefab;
+pub mod prefab_authoring;
 pub mod project;
 pub mod project_settings;
 pub mod scene;
@@ -126,6 +127,10 @@ pub use material_asset::{
 };
 pub use persist::{replace_file_contents, PersistError, PersistOperation};
 pub use prefab::{PrefabAsset, PrefabError, PrefabInstantiation, PREFAB_SCHEMA_VERSION};
+pub use prefab_authoring::{
+    PrefabAuthoringError, PrefabAuthoringService, PrefabInstantiationMutation,
+    PREFAB_INSTANCE_COMPONENT,
+};
 pub use project::{ProjectConfig, ProjectError, ProjectRoot, PROJECT_SCHEMA_VERSION};
 pub use project_settings::{
     AxisBinding, InputAction, KeyAxisBinding, Layer, ProjectSettings, ProjectSettingsError,

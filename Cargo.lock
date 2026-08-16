@@ -1397,6 +1397,7 @@ dependencies = [
  "dirs",
  "eframe",
  "engine",
+ "engine-assets",
  "engine-authoring",
  "engine-mcp",
  "engine-project-lifecycle",
