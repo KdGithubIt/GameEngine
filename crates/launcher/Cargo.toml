@@ -3,6 +3,9 @@ name = "engine-launcher"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+visual-validation = ["eframe/__screenshot"]
+
 [dependencies]
 dirs = "5"
 eframe = "0.34.3"

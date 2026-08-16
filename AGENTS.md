@@ -44,6 +44,11 @@ path additionally runs `cargo check --workspace` explicitly before Clippy, and
 runs workspace documentation after tests. A targeted `cargo check -p <package>`
 remains available when it is the fastest useful feedback during implementation.
 
+When a Launcher or Editor change needs human-visible confirmation, follow
+`docs/EDITOR_VISUAL_VALIDATION.md`. Visual validation is explicitly opt-in and
+supplements rather than replaces the normal Rust validation result; do not
+request it for changes that do not need screenshot review.
+
 Normal pull requests and merge-queue validation use affected-workspace planning.
 CI obtains the workspace package list from `cargo metadata`, maps changed files
 to their owning workspace packages, and validates the packages changed by that
