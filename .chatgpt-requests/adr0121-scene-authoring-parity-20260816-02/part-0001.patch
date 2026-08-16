@@ -1,0 +1,497 @@
+diff --git a/crates/authoring/src/scene_authoring.rs b/crates/authoring/src/scene_authoring.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/authoring/src/scene_authoring.rs
+@@ -0,0 +1,492 @@
++//! Shared Scene query and transaction service used by Editor, CLI, and MCP.
++//!
++//! The service deliberately operates on [`AuthoringSession`] rather than on
++//! files. Applications own document selection and persistence; this layer owns
++//! stale-revision checks, permission checks, validation, semantic diffs, and
++//! one-transaction mutation semantics.
++
++use crate::{
++    AuthoringCommand, AuthoringEntity, AuthoringPermission, AuthoringPermissionError,
++    AuthoringPermissions, AuthoringSession, Change, Diagnostic, EntityId, Severity,
++    TransactionError,
++};
++use serde::Serialize;
++use std::fmt;
++
++/// Immutable Scene state returned by structured authoring inspection.
++#[derive(Debug, Clone, PartialEq, Serialize)]
++pub struct SceneAuthoringSnapshot {
++    /// Logical content revision of the committed Scene.
++    pub revision: u64,
++    /// Monotonic generation used to reject stale mutations across undo/redo.
++    pub generation: u64,
++    /// Entities in deterministic stable-ID order.
++    pub entities: Vec<AuthoringEntity>,
++}
++
++/// Structured validation result for one committed Scene.
++#[derive(Debug, Clone, PartialEq, Serialize)]
++pub struct SceneAuthoringValidation {
++    /// Logical content revision validated by this result.
++    pub revision: u64,
++    /// Monotonic mutation generation validated by this result.
++    pub generation: u64,
++    /// Whether no blocking diagnostic was produced.
++    pub success: bool,
++    /// Structured Scene diagnostics.
++    pub diagnostics: Vec<Diagnostic>,
++}
++
++/// Result of previewing or committing one bulk Scene mutation.
++#[derive(Debug, Clone, PartialEq, Serialize)]
++pub struct SceneAuthoringMutation {
++    /// Whether the requested command batch passed validation.
++    pub success: bool,
++    /// Revision the caller supplied as its base.
++    pub base_revision: u64,
++    /// Generation the caller supplied as its base.
++    pub base_generation: u64,
++    /// Current committed revision after this operation.
++    ///
++    /// Preview leaves this equal to `base_revision`; apply advances it when the
++    /// mutation commits.
++    pub revision: u64,
++    /// Current committed generation after this operation.
++    ///
++    /// Preview leaves this equal to `base_generation`; apply advances it when
++    /// the mutation commits.
++    pub generation: u64,
++    /// Structured diagnostics produced by command and Scene validation.
++    pub diagnostics: Vec<Diagnostic>,
++    /// Deterministic semantic diff produced by the command batch.
++    pub diff: Vec<Change>,
++}
++
++/// Shared Scene authoring service failure.
++#[derive(Debug)]
++pub enum SceneAuthoringError {
++    /// The application did not grant the permission required by this operation.
++    Permission(AuthoringPermissionError),
++    /// The mutation/preview base no longer matches the live Scene.
++    Stale {
++        /// Revision supplied by the caller.
++        expected_revision: u64,
++        /// Generation supplied by the caller.
++        expected_generation: u64,
++        /// Current committed Scene revision.
++        actual_revision: u64,
++        /// Current committed Scene generation.
++        actual_generation: u64,
++    },
++    /// A transaction failed after the shared preflight checks.
++    Transaction(TransactionError),
++}
++
++impl SceneAuthoringError {
++    /// Returns a stable diagnostic-style error code.
++    pub fn code(&self) -> &'static str {
++        match self {
++            Self::Permission(error) => error.code(),
++            Self::Stale { .. } => "authoring.stale_revision",
++            Self::Transaction(TransactionError::ValidationFailed { .. }) => {
++                "authoring.validation_failed"
++            }
++            Self::Transaction(TransactionError::Conflict { .. }) => "authoring.transaction_conflict",
++        }
++    }
++}
++
++impl fmt::Display for SceneAuthoringError {
++    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
++        match self {
++            Self::Permission(error) => error.fmt(formatter),
++            Self::Stale {
++                expected_revision,
++                expected_generation,
++                actual_revision,
++                actual_generation,
++            } => write!(
++                formatter,
++                "stale Scene base: expected revision {expected_revision} generation {expected_generation}, current revision {actual_revision} generation {actual_generation}"
++            ),
++            Self::Transaction(error) => error.fmt(formatter),
++        }
++    }
++}
++
++impl std::error::Error for SceneAuthoringError {
++    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
++        match self {
++            Self::Permission(error) => Some(error),
++            Self::Transaction(error) => Some(error),
++            Self::Stale { .. } => None,
++        }
++    }
++}
++
++impl From<AuthoringPermissionError> for SceneAuthoringError {
++    fn from(value: AuthoringPermissionError) -> Self {
++        Self::Permission(value)
++    }
++}
++
++impl From<TransactionError> for SceneAuthoringError {
++    fn from(value: TransactionError) -> Self {
++        Self::Transaction(value)
++    }
++}
++
++/// GUI-free Scene authoring behavior shared by every structured adapter.
++#[derive(Debug, Default, Clone, Copy)]
++pub struct SceneAuthoringService;
++
++impl SceneAuthoringService {
++    /// Creates the stateless Scene authoring service.
++    pub fn new() -> Self {
++        Self
++    }
++
++    /// Inspects the current committed Scene.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`SceneAuthoringError`] when read permission is absent.
++    pub fn inspect(
++        &self,
++        session: &AuthoringSession,
++        permissions: &AuthoringPermissions,
++    ) -> Result<SceneAuthoringSnapshot, SceneAuthoringError> {
++        permissions.require(AuthoringPermission::Read)?;
++        let scene = session.scene();
++        Ok(SceneAuthoringSnapshot {
++            revision: scene.revision(),
++            generation: scene.generation(),
++            entities: scene.entities().map(|(_, entity)| entity.clone()).collect(),
++        })
++    }
++
++    /// Returns one entity by stable ID from the committed Scene.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`SceneAuthoringError`] when read permission is absent.
++    pub fn entity(
++        &self,
++        session: &AuthoringSession,
++        permissions: &AuthoringPermissions,
++        entity: &EntityId,
++    ) -> Result<Option<AuthoringEntity>, SceneAuthoringError> {
++        permissions.require(AuthoringPermission::Read)?;
++        Ok(session.scene().entity(entity).cloned())
++    }
++
++    /// Finds entities whose stable ID, search slug, display name, or
++    /// description contains `query` case-insensitively.
++    ///
++    /// Results preserve stable-ID order.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`SceneAuthoringError`] when read permission is absent.
++    pub fn find_entities(
++        &self,
++        session: &AuthoringSession,
++        permissions: &AuthoringPermissions,
++        query: &str,
++    ) -> Result<Vec<AuthoringEntity>, SceneAuthoringError> {
++        permissions.require(AuthoringPermission::Read)?;
++        let query = query.to_lowercase();
++        Ok(session
++            .scene()
++            .entities()
++            .filter_map(|(id, entity)| {
++                let matches = query.is_empty()
++                    || id.as_str().to_lowercase().contains(&query)
++                    || entity.name.to_lowercase().contains(&query)
++                    || entity.display_name.to_lowercase().contains(&query)
++                    || entity.description.to_lowercase().contains(&query);
++                matches.then(|| entity.clone())
++            })
++            .collect())
++    }
++
++    /// Validates the current committed Scene without mutation.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`SceneAuthoringError`] when read permission is absent.
++    pub fn validate(
++        &self,
++        session: &AuthoringSession,
++        permissions: &AuthoringPermissions,
++    ) -> Result<SceneAuthoringValidation, SceneAuthoringError> {
++        permissions.require(AuthoringPermission::Read)?;
++        let scene = session.scene();
++        let diagnostics = scene.validate();
++        let success = !diagnostics
++            .iter()
++            .any(|diagnostic| diagnostic.severity == Severity::Error);
++        Ok(SceneAuthoringValidation {
++            revision: scene.revision(),
++            generation: scene.generation(),
++            success,
++            diagnostics,
++        })
++    }
++
++    /// Previews one atomic command batch without changing the session or undo
++    /// history.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`SceneAuthoringError`] when preview permission is absent or the
++    /// supplied revision/generation pair is stale.
++    pub fn preview(
++        &self,
++        session: &AuthoringSession,
++        permissions: &AuthoringPermissions,
++        expected_revision: u64,
++        expected_generation: u64,
++        commands: Vec<AuthoringCommand>,
++    ) -> Result<SceneAuthoringMutation, SceneAuthoringError> {
++        permissions.require(AuthoringPermission::Preview)?;
++        ensure_current(session, expected_revision, expected_generation)?;
++
++        let mut transaction = session.begin_transaction();
++        for command in commands {
++            transaction.apply(command);
++        }
++        let diagnostics = transaction.preview_diagnostics();
++        let success = !diagnostics
++            .iter()
++            .any(|diagnostic| diagnostic.severity == Severity::Error);
++        Ok(SceneAuthoringMutation {
++            success,
++            base_revision: expected_revision,
++            base_generation: expected_generation,
++            revision: expected_revision,
++            generation: expected_generation,
++            diagnostics,
++            diff: transaction.preview_diff().to_vec(),
++        })
++    }
++
++    /// Applies one atomic command batch and creates at most one undo entry.
++    ///
++    /// Failed validation leaves the committed Scene and undo history unchanged
++    /// and is returned as `success: false`. Permission and stale-base failures
++    /// are returned as errors because the command batch was never eligible to
++    /// run.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`SceneAuthoringError`] when project-data-write permission is
++    /// absent, the base is stale, or an unexpected transaction failure occurs.
++    pub fn apply(
++        &self,
++        session: &mut AuthoringSession,
++        permissions: &AuthoringPermissions,
++        expected_revision: u64,
++        expected_generation: u64,
++        commands: Vec<AuthoringCommand>,
++    ) -> Result<SceneAuthoringMutation, SceneAuthoringError> {
++        permissions.require(AuthoringPermission::ProjectDataWrite)?;
++        ensure_current(session, expected_revision, expected_generation)?;
++
++        let mut transaction = session.begin_transaction();
++        for command in commands {
++            transaction.apply(command);
++        }
++        let diagnostics = transaction.preview_diagnostics();
++        let diff = transaction.preview_diff().to_vec();
++        let success = !diagnostics
++            .iter()
++            .any(|diagnostic| diagnostic.severity == Severity::Error);
++        if !success {
++            return Ok(SceneAuthoringMutation {
++                success: false,
++                base_revision: expected_revision,
++                base_generation: expected_generation,
++                revision: expected_revision,
++                generation: expected_generation,
++                diagnostics,
++                diff,
++            });
++        }
++
++        session.commit(transaction)?;
++        let scene = session.scene();
++        Ok(SceneAuthoringMutation {
++            success: true,
++            base_revision: expected_revision,
++            base_generation: expected_generation,
++            revision: scene.revision(),
++            generation: scene.generation(),
++            diagnostics,
++            diff,
++        })
++    }
++}
++
++fn ensure_current(
++    session: &AuthoringSession,
++    expected_revision: u64,
++    expected_generation: u64,
++) -> Result<(), SceneAuthoringError> {
++    let scene = session.scene();
++    let actual_revision = scene.revision();
++    let actual_generation = scene.generation();
++    if actual_revision == expected_revision && actual_generation == expected_generation {
++        return Ok(());
++    }
++
++    Err(SceneAuthoringError::Stale {
++        expected_revision,
++        expected_generation,
++        actual_revision,
++        actual_generation,
++    })
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use crate::EntityId;
++
++    fn writable() -> AuthoringPermissions {
++        AuthoringPermissions::read_only()
++            .with(AuthoringPermission::Preview)
++            .with(AuthoringPermission::ProjectDataWrite)
++    }
++
++    #[test]
++    fn preview_is_atomic_and_does_not_create_undo_history() {
++        let mut session = AuthoringSession::new(crate::AuthoringScene::new());
++        let service = SceneAuthoringService::new();
++        let base = service.inspect(&session, &writable()).expect("inspect");
++        let entity = EntityId::generate();
++
++        let preview = service
++            .preview(
++                &session,
++                &writable(),
++                base.revision,
++                base.generation,
++                vec![AuthoringCommand::CreateEntity {
++                    id: entity.clone(),
++                    name: "preview".into(),
++                    parent: None,
++                }],
++            )
++            .expect("preview must run");
++
++        assert!(preview.success);
++        assert_eq!(preview.diff.len(), 1);
++        assert!(session.scene().entity(&entity).is_none());
++        assert!(!session.can_undo());
++
++        let applied = service
++            .apply(
++                &mut session,
++                &writable(),
++                base.revision,
++                base.generation,
++                vec![AuthoringCommand::CreateEntity {
++                    id: entity.clone(),
++                    name: "preview".into(),
++                    parent: None,
++                }],
++            )
++            .expect("apply must run");
++
++        assert!(applied.success);
++        assert!(session.scene().entity(&entity).is_some());
++        assert!(session.can_undo());
++    }
++
++    #[test]
++    fn stale_apply_is_rejected_after_undo_even_if_content_revision_returns() {
++        let mut session = AuthoringSession::new(crate::AuthoringScene::new());
++        let service = SceneAuthoringService::new();
++        let base = service.inspect(&session, &writable()).expect("inspect");
++        let first = EntityId::generate();
++
++        service
++            .apply(
++                &mut session,
++                &writable(),
++                base.revision,
++                base.generation,
++                vec![AuthoringCommand::CreateEntity {
++                    id: first,
++                    name: "first".into(),
++                    parent: None,
++                }],
++            )
++            .expect("first apply");
++        assert!(session.undo());
++
++        let error = service
++            .apply(
++                &mut session,
++                &writable(),
++                base.revision,
++                base.generation,
++                Vec::new(),
++            )
++            .expect_err("generation must reject a transaction from the abandoned branch");
++
++        assert_eq!(error.code(), "authoring.stale_revision");
++    }
++
++    #[test]
++    fn validation_failure_keeps_scene_and_history_unchanged() {
++        let mut session = AuthoringSession::new(crate::AuthoringScene::new());
++        let service = SceneAuthoringService::new();
++        let base = service.inspect(&session, &writable()).expect("inspect");
++        let missing_parent = EntityId::generate();
++
++        let result = service
++            .apply(
++                &mut session,
++                &writable(),
++                base.revision,
++                base.generation,
++                vec![AuthoringCommand::CreateEntity {
++                    id: EntityId::generate(),
++                    name: "child".into(),
++                    parent: Some(missing_parent),
++                }],
++            )
++            .expect("validation is a structured result");
++
++        assert!(!result.success);
++        assert_eq!(session.scene().entity_count(), 0);
++        assert!(!session.can_undo());
++        assert!(result
++            .diagnostics
++            .iter()
++            .any(|diagnostic| diagnostic.severity == Severity::Error));
++    }
++
++    #[test]
++    fn write_requires_shared_project_data_permission() {
++        let mut session = AuthoringSession::new(crate::AuthoringScene::new());
++        let service = SceneAuthoringService::new();
++        let base = service
++            .inspect(&session, &AuthoringPermissions::read_only())
++            .expect("read is allowed");
++
++        let error = service
++            .apply(
++                &mut session,
++                &AuthoringPermissions::read_only(),
++                base.revision,
++                base.generation,
++                Vec::new(),
++            )
++            .expect_err("read-only access must reject apply");
++
++        assert_eq!(error.code(), "authoring.permission_denied");
++    }
++}
