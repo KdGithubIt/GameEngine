@@ -1,0 +1,218 @@
++fn active_level_count(radius: f32, available: usize) -> usize {
++    let available = available.max(1);
++    let radius = finite_or(radius, 0.0).max(0.0);
++    let mut count = 1usize;
++    let mut covered_radius = 1.0f32;
++    while count < available && covered_radius < radius {
++        covered_radius *= 2.0;
++        count += 1;
++    }
++    count
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use crate::postprocess::BloomSettings;
++
++    #[test]
++    fn bloom_level_extents_half_resolution_and_stop_at_budget() {
++        assert_eq!(
++            bloom_level_extents([1920, 1080]),
++            vec![[960, 540], [480, 270], [240, 135], [120, 68], [60, 34]]
++        );
++        assert_eq!(bloom_level_extents([1, 1]), vec![[1, 1]]);
++    }
++
++    #[test]
++    fn bloom_radius_selects_progressively_deeper_pyramid_levels() {
++        assert_eq!(active_level_count(0.0, 5), 1);
++        assert_eq!(active_level_count(1.0, 5), 1);
++        assert_eq!(active_level_count(2.0, 5), 2);
++        assert_eq!(active_level_count(4.0, 5), 3);
++        assert_eq!(active_level_count(8.0, 5), 4);
++        assert_eq!(active_level_count(16.0, 5), 5);
++        assert_eq!(active_level_count(64.0, 3), 3);
++    }
++
++    #[test]
++    fn multi_resolution_bloom_pipeline_validates_when_a_gpu_adapter_is_available() {
++        let instance = wgpu::Instance::default();
++        let context = match pollster::block_on(engine_renderer::GpuContext::new(&instance, None)) {
++            Ok(context) => context,
++            Err(engine_renderer::GpuContextError::AdapterUnavailable) => return,
++            Err(error) => panic!("GPU device creation failed: {error}"),
++        };
++        let texture = context.device().create_texture(&wgpu::TextureDescriptor {
++            label: Some("Bloom validation HDR source"),
++            size: wgpu::Extent3d {
++                width: 64,
++                height: 32,
++                depth_or_array_layers: 1,
++            },
++            mip_level_count: 1,
++            sample_count: 1,
++            dimension: wgpu::TextureDimension::D2,
++            format: BLOOM_FORMAT,
++            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
++            view_formats: &[],
++        });
++        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
++        let bloom = pollster::block_on(BloomPass::new(context.device(), &view))
++            .expect("multi-resolution bloom pipelines must validate");
++        let settings = PostProcessSettings {
++            bloom: BloomSettings {
++                enabled: true,
++                threshold: 1.0,
++                intensity: 0.2,
++                radius: 8.0,
++            },
++            ..PostProcessSettings::default()
++        };
++
++        context
++            .device()
++            .push_error_scope(wgpu::ErrorFilter::Validation);
++        bloom.execute(context.device(), context.queue(), &settings);
++        let error = pollster::block_on(context.device().pop_error_scope());
++        assert!(error.is_none(), "bloom execution validation failed: {error:?}");
++    }
++}
+diff --git a/crates/render-runtime/src/lib.rs b/crates/render-runtime/src/lib.rs
+index 674bf039e5ee4c7ad14eb64bea44010d2abe5324..515f95aa3086fc24924d3e4af1e0bbdf67dcd69f 100644
+--- a/crates/render-runtime/src/lib.rs
++++ b/crates/render-runtime/src/lib.rs
+@@ -7,6 +7,8 @@
+ 
+ #![warn(missing_docs)]
+ 
++#[cfg(feature = "gpu")]
++mod bloom;
+ /// Camera projection, viewport, and active-camera selection contracts.
+ #[cfg(feature = "gpu")]
+ pub mod camera;
+diff --git a/crates/render-runtime/src/renderer.rs b/crates/render-runtime/src/renderer.rs
+index 982de5477aeccbda8da4936089b5bdb1523e222f..56030ce95b7c9958b39c85217991c529a6ba8e80 100644
+--- a/crates/render-runtime/src/renderer.rs
++++ b/crates/render-runtime/src/renderer.rs
+@@ -2,6 +2,7 @@
+ 
+ use std::fmt;
+ 
++use crate::bloom::BloomPass;
+ use crate::camera::{select_active_game_camera, Camera3D};
+ use crate::temporal::{TemporalCameraSample, TemporalCameraSource, TemporalHistory};
+ use crate::transform::Transform;
+@@ -12,6 +13,7 @@ pub const MAIN_PASS_SAMPLE_COUNT: u32 = crate::render_backend::MAIN_PASS_SAMPLE_
+ #[derive(Debug)]
+ enum RenderStateErrorKind {
+     Backend(crate::render_backend::RenderStateError),
++    Bloom(wgpu::Error),
+     Temporal(wgpu::Error),
+ }
+ 
+@@ -23,6 +25,9 @@ impl fmt::Display for RenderStateError {
+     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+         match &self.0 {
+             RenderStateErrorKind::Backend(error) => error.fmt(formatter),
++            RenderStateErrorKind::Bloom(error) => {
++                write!(formatter, "bloom render pipeline validation failed: {error}")
++            }
+             RenderStateErrorKind::Temporal(error) => {
+                 write!(formatter, "temporal render pipeline validation failed: {error}")
+             }
+@@ -34,6 +39,7 @@ impl std::error::Error for RenderStateError {
+     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+         match &self.0 {
+             RenderStateErrorKind::Backend(error) => Some(error),
++            RenderStateErrorKind::Bloom(error) => Some(error),
+             RenderStateErrorKind::Temporal(error) => Some(error),
+         }
+     }
+@@ -184,6 +190,7 @@ impl WorldRenderer {
+ 
+ /// Fullscreen HDR-to-output tone-map pass used by the windowed runtime host.
+ pub struct ToneMapPass {
++    bloom: BloomPass,
+     inner: crate::render_backend::ToneMapPass,
+ }
+ 
+@@ -194,15 +201,24 @@ impl ToneMapPass {
+         swapchain_format: wgpu::TextureFormat,
+         hdr_view: &wgpu::TextureView,
+     ) -> Result<Self, RenderStateError> {
+-        let inner = crate::render_backend::ToneMapPass::new(device, swapchain_format, hdr_view)
++        let bloom = BloomPass::new(device, hdr_view)
+             .await
+-            .map_err(|error| RenderStateError(RenderStateErrorKind::Backend(error)))?;
+-        Ok(Self { inner })
++            .map_err(|error| RenderStateError(RenderStateErrorKind::Bloom(error)))?;
++        let inner = crate::render_backend::ToneMapPass::new(
++            device,
++            swapchain_format,
++            bloom.output_view(),
++        )
++        .await
++        .map_err(|error| RenderStateError(RenderStateErrorKind::Backend(error)))?;
++        Ok(Self { bloom, inner })
+     }
+ 
+     /// Rebinds the source HDR texture after a render-target resize.
+     pub fn update_bind_group(&mut self, device: &wgpu::Device, hdr_view: &wgpu::TextureView) {
+-        self.inner.update_bind_group(device, hdr_view);
++        self.bloom.update_source(device, hdr_view);
++        self.inner
++            .update_bind_group(device, self.bloom.output_view());
+     }
+ 
+     /// Applies post-processing and writes the final frame into `swapchain_view`.
+@@ -213,6 +229,10 @@ impl ToneMapPass {
+         swapchain_view: &wgpu::TextureView,
+         settings: &crate::postprocess::PostProcessSettings,
+     ) {
+-        self.inner.execute(device, queue, swapchain_view, settings);
++        self.bloom.execute(device, queue, settings);
++        let mut tone_map_settings = *settings;
++        tone_map_settings.bloom.enabled = false;
++        self.inner
++            .execute(device, queue, swapchain_view, &tone_map_settings);
+     }
+ }
+diff --git a/crates/render-runtime/src/shaders/bloom.wgsl b/crates/render-runtime/src/shaders/bloom.wgsl
+new file mode 100644
+index 0000000000000000000000000000000000000000..b6356b3cf973ed754fa20d5f68cce759b06dcdb4
+--- /dev/null
++++ b/crates/render-runtime/src/shaders/bloom.wgsl
+@@ -0,0 +1,116 @@
++// Multi-resolution bloom preprocessing in linear HDR space (ADR 0131).
++
++struct BloomUniforms {
++    threshold: f32,
++    intensity: f32,
++    radius: f32,
++    enabled: u32,
++}
++
++@group(0) @binding(0) var source_a: texture_2d<f32>;
++@group(0) @binding(1) var source_b: texture_2d<f32>;
++@group(0) @binding(2) var bloom_sampler: sampler;
++@group(0) @binding(3) var<uniform> bloom: BloomUniforms;
++
++struct VertexOutput {
++    @builtin(position) position: vec4<f32>,
++    @location(0) uv: vec2<f32>,
++}
++
++@vertex
++fn vs_main(@builtin(vertex_index) index: u32) -> VertexOutput {
++    var positions = array<vec2<f32>, 3>(
++        vec2<f32>(-1.0, -3.0),
++        vec2<f32>(-1.0, 1.0),
++        vec2<f32>(3.0, 1.0),
++    );
++    var uvs = array<vec2<f32>, 3>(
++        vec2<f32>(0.0, 2.0),
++        vec2<f32>(0.0, 0.0),
++        vec2<f32>(2.0, 0.0),
++    );
++    var output: VertexOutput;

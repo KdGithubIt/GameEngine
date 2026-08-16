@@ -1,0 +1,259 @@
++        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
++            label: Some("Bloom pipeline layout"),
++            bind_group_layouts: &[Some(&bgl)],
++            immediate_size: 0,
++        });
++        let extract_pipeline = make_pipeline(
++            device,
++            "Bloom threshold/downsample pipeline",
++            &layout,
++            &shader,
++            "fs_downsample_extract",
++        );
++        let downsample_pipeline = make_pipeline(
++            device,
++            "Bloom downsample pipeline",
++            &layout,
++            &shader,
++            "fs_downsample",
++        );
++        let upsample_pipeline = make_pipeline(
++            device,
++            "Bloom upsample pipeline",
++            &layout,
++            &shader,
++            "fs_upsample",
++        );
++        let composite_pipeline = make_pipeline(
++            device,
++            "Bloom HDR composite pipeline",
++            &layout,
++            &shader,
++            "fs_composite",
++        );
++        let targets = BloomTargets::new(device, source_view, &bgl, &sampler, &uniform_buffer);
++
++        if let Some(error) = error_scope.pop().await {
++            return Err(error);
++        }
++
++        Ok(Self {
++            bgl,
++            sampler,
++            uniform_buffer,
++            extract_pipeline,
++            downsample_pipeline,
++            upsample_pipeline,
++            composite_pipeline,
++            targets,
++        })
++    }
++
++    pub(crate) fn update_source(
++        &mut self,
++        device: &wgpu::Device,
++        source_view: &wgpu::TextureView,
++    ) {
++        self.targets = BloomTargets::new(
++            device,
++            source_view,
++            &self.bgl,
++            &self.sampler,
++            &self.uniform_buffer,
++        );
++    }
++
++    pub(crate) fn output_view(&self) -> &wgpu::TextureView {
++        &self.targets.composite.view
++    }
++
++    pub(crate) fn execute(
++        &self,
++        device: &wgpu::Device,
++        queue: &wgpu::Queue,
++        settings: &PostProcessSettings,
++    ) {
++        let uniform = BloomUniformData::from_settings(settings);
++        queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniform));
++
++        let active_levels = active_level_count(uniform.radius, self.targets.down.len());
++        let bloom_enabled = uniform.enabled != 0;
++        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
++            label: Some("Multi-resolution bloom encoder"),
++        });
++
++        if bloom_enabled {
++            for index in 0..active_levels {
++                let pipeline = if index == 0 {
++                    &self.extract_pipeline
++                } else {
++                    &self.downsample_pipeline
++                };
++                encode_fullscreen_pass(
++                    &mut encoder,
++                    "Bloom downsample pass",
++                    &self.targets.down[index].view,
++                    pipeline,
++                    &self.targets.down_bind_groups[index],
++                );
++            }
++
++            if active_levels > 1 {
++                for index in (0..active_levels - 1).rev() {
++                    let bind_group = if index == active_levels - 2 {
++                        &self.targets.up_from_down_bind_groups[index]
++                    } else {
++                        self.targets.up_from_up_bind_groups[index]
++                            .as_ref()
++                            .expect("non-terminal bloom upsample must have accumulated input")
++                    };
++                    encode_fullscreen_pass(
++                        &mut encoder,
++                        "Bloom upsample pass",
++                        &self.targets.up[index].view,
++                        &self.upsample_pipeline,
++                        bind_group,
++                    );
++                }
++            }
++        }
++
++        let composite_bind_group = if bloom_enabled && active_levels > 1 {
++            self.targets
++                .composite_from_up
++                .as_ref()
++                .expect("multi-level bloom must have an upsample composite source")
++        } else {
++            &self.targets.composite_from_down
++        };
++        encode_fullscreen_pass(
++            &mut encoder,
++            "Bloom HDR composite pass",
++            &self.targets.composite.view,
++            &self.composite_pipeline,
++            composite_bind_group,
++        );
++        queue.submit(Some(encoder.finish()));
++    }
++}
++
++fn texture_layout_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
++    wgpu::BindGroupLayoutEntry {
++        binding,
++        visibility: wgpu::ShaderStages::FRAGMENT,
++        ty: wgpu::BindingType::Texture {
++            sample_type: wgpu::TextureSampleType::Float { filterable: true },
++            view_dimension: wgpu::TextureViewDimension::D2,
++            multisampled: false,
++        },
++        count: None,
++    }
++}
++
++fn make_bind_group(
++    device: &wgpu::Device,
++    bgl: &wgpu::BindGroupLayout,
++    source_a: &wgpu::TextureView,
++    source_b: &wgpu::TextureView,
++    sampler: &wgpu::Sampler,
++    uniform_buffer: &wgpu::Buffer,
++) -> wgpu::BindGroup {
++    device.create_bind_group(&wgpu::BindGroupDescriptor {
++        label: Some("Bloom BG"),
++        layout: bgl,
++        entries: &[
++            wgpu::BindGroupEntry {
++                binding: 0,
++                resource: wgpu::BindingResource::TextureView(source_a),
++            },
++            wgpu::BindGroupEntry {
++                binding: 1,
++                resource: wgpu::BindingResource::TextureView(source_b),
++            },
++            wgpu::BindGroupEntry {
++                binding: 2,
++                resource: wgpu::BindingResource::Sampler(sampler),
++            },
++            wgpu::BindGroupEntry {
++                binding: 3,
++                resource: uniform_buffer.as_entire_binding(),
++            },
++        ],
++    })
++}
++
++fn make_pipeline(
++    device: &wgpu::Device,
++    label: &str,
++    layout: &wgpu::PipelineLayout,
++    shader: &wgpu::ShaderModule,
++    fragment_entry: &str,
++) -> wgpu::RenderPipeline {
++    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
++        label: Some(label),
++        layout: Some(layout),
++        vertex: wgpu::VertexState {
++            module: shader,
++            entry_point: Some("vs_main"),
++            buffers: &[],
++            compilation_options: Default::default(),
++        },
++        fragment: Some(wgpu::FragmentState {
++            module: shader,
++            entry_point: Some(fragment_entry),
++            targets: &[Some(wgpu::ColorTargetState {
++                format: BLOOM_FORMAT,
++                blend: None,
++                write_mask: wgpu::ColorWrites::ALL,
++            })],
++            compilation_options: Default::default(),
++        }),
++        primitive: wgpu::PrimitiveState::default(),
++        depth_stencil: None,
++        multisample: wgpu::MultisampleState::default(),
++        multiview_mask: None,
++        cache: None,
++    })
++}
++
++fn encode_fullscreen_pass(
++    encoder: &mut wgpu::CommandEncoder,
++    label: &str,
++    target: &wgpu::TextureView,
++    pipeline: &wgpu::RenderPipeline,
++    bind_group: &wgpu::BindGroup,
++) {
++    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
++        label: Some(label),
++        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
++            view: target,
++            resolve_target: None,
++            depth_slice: None,
++            ops: wgpu::Operations {
++                load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
++                store: wgpu::StoreOp::Store,
++            },
++        })],
++        depth_stencil_attachment: None,
++        timestamp_writes: None,
++        occlusion_query_set: None,
++        multiview_mask: None,
++    });
++    pass.set_pipeline(pipeline);
++    pass.set_bind_group(0, bind_group, &[]);
++    pass.draw(0..3, 0..1);
++}
++
++fn bloom_level_extents(size: [u32; 2]) -> Vec<[u32; 2]> {
++    let mut levels = Vec::with_capacity(MAX_BLOOM_LEVELS);
++    let mut current = [size[0].max(1), size[1].max(1)];
++    for _ in 0..MAX_BLOOM_LEVELS {
++        current = [current[0].div_ceil(2).max(1), current[1].div_ceil(2).max(1)];
++        levels.push(current);
++        if current == [1, 1] {
++            break;
++        }
++    }
++    levels
++}
++

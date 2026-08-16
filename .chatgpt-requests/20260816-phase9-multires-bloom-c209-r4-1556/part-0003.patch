@@ -1,0 +1,129 @@
++    output.position = vec4<f32>(positions[index], 0.0, 1.0);
++    output.uv = uvs[index];
++    return output;
++}
++
++fn luminance(color: vec3<f32>) -> f32 {
++    return dot(color, vec3<f32>(0.2126, 0.7152, 0.0722));
++}
++
++fn downsample_13_tap(uv: vec2<f32>) -> vec3<f32> {
++    let dimensions = vec2<f32>(textureDimensions(source_a));
++    let texel = vec2<f32>(1.0) / dimensions;
++    let a = textureSample(source_a, bloom_sampler, uv + texel * vec2<f32>(-2.0, -2.0)).rgb;
++    let b = textureSample(source_a, bloom_sampler, uv + texel * vec2<f32>(0.0, -2.0)).rgb;
++    let c = textureSample(source_a, bloom_sampler, uv + texel * vec2<f32>(2.0, -2.0)).rgb;
++    let d = textureSample(source_a, bloom_sampler, uv + texel * vec2<f32>(-2.0, 0.0)).rgb;
++    let e = textureSample(source_a, bloom_sampler, uv).rgb;
++    let f = textureSample(source_a, bloom_sampler, uv + texel * vec2<f32>(2.0, 0.0)).rgb;
++    let g = textureSample(source_a, bloom_sampler, uv + texel * vec2<f32>(-2.0, 2.0)).rgb;
++    let h = textureSample(source_a, bloom_sampler, uv + texel * vec2<f32>(0.0, 2.0)).rgb;
++    let i = textureSample(source_a, bloom_sampler, uv + texel * vec2<f32>(2.0, 2.0)).rgb;
++    let j = textureSample(source_a, bloom_sampler, uv + texel * vec2<f32>(-1.0, -1.0)).rgb;
++    let k = textureSample(source_a, bloom_sampler, uv + texel * vec2<f32>(1.0, -1.0)).rgb;
++    let l = textureSample(source_a, bloom_sampler, uv + texel * vec2<f32>(-1.0, 1.0)).rgb;
++    let m = textureSample(source_a, bloom_sampler, uv + texel * vec2<f32>(1.0, 1.0)).rgb;
++
++    return e * 0.125
++        + (a + c + g + i) * 0.03125
++        + (b + d + f + h) * 0.0625
++        + (j + k + l + m) * 0.125;
++}
++
++fn upsample_tent(uv: vec2<f32>) -> vec3<f32> {
++    let dimensions = vec2<f32>(textureDimensions(source_b));
++    let texel = vec2<f32>(1.0) / dimensions;
++    let spread = clamp(0.5 + max(bloom.radius, 0.0) * 0.125, 0.5, 2.0);
++    let offset = texel * spread;
++    var color = textureSample(source_b, bloom_sampler, uv).rgb * 4.0;
++    color += textureSample(source_b, bloom_sampler, uv + offset * vec2<f32>(-1.0, 0.0)).rgb * 2.0;
++    color += textureSample(source_b, bloom_sampler, uv + offset * vec2<f32>(1.0, 0.0)).rgb * 2.0;
++    color += textureSample(source_b, bloom_sampler, uv + offset * vec2<f32>(0.0, -1.0)).rgb * 2.0;
++    color += textureSample(source_b, bloom_sampler, uv + offset * vec2<f32>(0.0, 1.0)).rgb * 2.0;
++    color += textureSample(source_b, bloom_sampler, uv + offset * vec2<f32>(-1.0, -1.0)).rgb;
++    color += textureSample(source_b, bloom_sampler, uv + offset * vec2<f32>(1.0, -1.0)).rgb;
++    color += textureSample(source_b, bloom_sampler, uv + offset * vec2<f32>(-1.0, 1.0)).rgb;
++    color += textureSample(source_b, bloom_sampler, uv + offset * vec2<f32>(1.0, 1.0)).rgb;
++    return color / 16.0;
++}
++
++@fragment
++fn fs_downsample_extract(input: VertexOutput) -> @location(0) vec4<f32> {
++    let color = max(downsample_13_tap(input.uv), vec3<f32>(0.0));
++    let value = luminance(color);
++    let contribution = max(value - bloom.threshold, 0.0) / max(value, 0.0001);
++    return vec4<f32>(color * contribution, 1.0);
++}
++
++@fragment
++fn fs_downsample(input: VertexOutput) -> @location(0) vec4<f32> {
++    return vec4<f32>(max(downsample_13_tap(input.uv), vec3<f32>(0.0)), 1.0);
++}
++
++@fragment
++fn fs_upsample(input: VertexOutput) -> @location(0) vec4<f32> {
++    let base = textureSample(source_a, bloom_sampler, input.uv).rgb;
++    let wider = upsample_tent(input.uv);
++    return vec4<f32>(max(base + wider * 0.5, vec3<f32>(0.0)), 1.0);
++}
++
++@fragment
++fn fs_composite(input: VertexOutput) -> @location(0) vec4<f32> {
++    let dimensions = vec2<i32>(textureDimensions(source_a));
++    let pixel = clamp(
++        vec2<i32>(input.position.xy),
++        vec2<i32>(0),
++        dimensions - vec2<i32>(1),
++    );
++    let scene = textureLoad(source_a, pixel, 0).rgb;
++    if bloom.enabled == 0u {
++        return vec4<f32>(scene, 1.0);
++    }
++    let glow = textureSample(source_b, bloom_sampler, input.uv).rgb;
++    return vec4<f32>(scene + glow * bloom.intensity, 1.0);
++}
+diff --git a/crates/render-runtime/src/shaders/tonemap.wgsl b/crates/render-runtime/src/shaders/tonemap.wgsl
+index 0c7a0b9d10f49b8754300d4c715e915914ec09d8..8b9062dec981ac0e2a2a229e913ab912f49fd75c 100644
+--- a/crates/render-runtime/src/shaders/tonemap.wgsl
++++ b/crates/render-runtime/src/shaders/tonemap.wgsl
+@@ -1,6 +1,8 @@
+-// Post-processing pass: tone mapping and bloom (Phase 45, ADR 0040).
++// Post-processing pass: tone mapping after renderer-owned HDR bloom composition.
+ //
+-// Reads from an Rgba16Float HDR texture and writes to the swapchain surface.
++// Reads the Rgba16Float output of the multi-resolution bloom compositor and
++// writes to the swapchain surface. Bloom uniforms remain in the shared block
++// for Rust/WGSL layout compatibility but bloom is not evaluated in this shader.
+ // A fullscreen triangle is emitted from vertex indices (no vertex buffer).
+ 
+ struct PostProcessUniforms {
+@@ -89,28 +91,7 @@ fn linear_to_srgb(c: vec3<f32>) -> vec3<f32> {
+ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+     let hdr = textureSample(hdr_texture, hdr_sampler, in.uv).rgb;
+ 
+-    // Simple 9-tap neighbourhood bloom extraction (Phase 45 MVP approximation).
+-    // A dedicated multi-pass blur is deferred to a later phase.
+-    var bloom = vec3<f32>(0.0);
+-    if pp.bloom_enabled != 0u {
+-        let dims = vec2<f32>(textureDimensions(hdr_texture));
+-        let texel = vec2<f32>(1.0) / dims;
+-        let spread = max(pp.bloom_radius, 0.0);
+-        let threshold = pp.bloom_threshold;
+-        let intensity = pp.bloom_intensity;
+-        for (var dy: i32 = -1; dy <= 1; dy++) {
+-            for (var dx: i32 = -1; dx <= 1; dx++) {
+-                let offset = vec2<f32>(f32(dx), f32(dy)) * texel * spread;
+-                let s = textureSample(hdr_texture, hdr_sampler, in.uv + offset).rgb;
+-                if luminance(s) > threshold {
+-                    bloom += max(s - vec3<f32>(threshold), vec3<f32>(0.0)) * intensity;
+-                }
+-            }
+-        }
+-        bloom = bloom / 9.0;
+-    }
+-
+-    let exposed = (hdr + bloom) * max(pp.exposure, 0.0);
++    let exposed = hdr * max(pp.exposure, 0.0);
+     var mapped = apply_tone_map(exposed, pp.tone_map_op);
+     if pp.grading_enabled != 0u {
+         mapped *= vec3<f32>(pp.grading_tint_r, pp.grading_tint_g, pp.grading_tint_b);
