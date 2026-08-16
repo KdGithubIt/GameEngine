@@ -1,0 +1,291 @@
++    mut agents: Query<(&mut NavMeshAgent, &mut Transform)>,
++) {
++    let dt = fixed_time.fixed_delta;
++    let Some(nav_mesh) = nav_mesh else {
++        for (_, (agent, _)) in agents.iter_mut() {
++            agent.status = if agent.target.is_some() {
++                NavMeshAgentStatus::MissingNavMesh
++            } else {
++                NavMeshAgentStatus::Idle
++            };
++        }
++        return;
++    };
++
++    for (_, (agent, transform)) in agents.iter_mut() {
++        agent.repath_remaining = (agent.repath_remaining - dt).max(0.0);
++        let target_changed = agent.target != agent.computed_target;
++        if target_changed || (agent.target.is_some() && agent.repath_remaining <= 0.0) {
++            refresh_agent_path(&nav_mesh, agent, transform.translation);
++        }
++        follow_agent_path(agent, transform, dt);
++    }
++    separate_agents(&mut agents);
++}
++
++fn refresh_agent_path(nav_mesh: &NavMeshQuery, agent: &mut NavMeshAgent, position: Vec3) {
++    agent.computed_target = agent.target;
++    agent.repath_remaining = agent.repath_interval.max(0.0);
++    agent.current_path.clear();
++    agent.path_index = 0;
++    agent.current_path_complete = false;
++    let Some(target) = agent.target else {
++        agent.status = NavMeshAgentStatus::Idle;
++        return;
++    };
++    match nav_mesh.query_path(agent.profile_id.as_str(), position, target) {
++        NavigationPathResult::Complete(path) => {
++            agent.current_path = path.waypoints;
++            agent.current_path_complete = true;
++            agent.status = NavMeshAgentStatus::Moving;
++        }
++        NavigationPathResult::Partial(path) => {
++            agent.current_path = path.waypoints;
++            agent.status = NavMeshAgentStatus::PartialPath;
++        }
++        NavigationPathResult::Failure(NavigationQueryFailure::MissingProfile(_)) => {
++            agent.status = NavMeshAgentStatus::MissingProfile;
++        }
++        NavigationPathResult::Failure(NavigationQueryFailure::MissingNavigationData) => {
++            agent.status = NavMeshAgentStatus::MissingNavMesh;
++        }
++        NavigationPathResult::Failure(
++            NavigationQueryFailure::StartOutside
++            | NavigationQueryFailure::EndOutside
++            | NavigationQueryFailure::NoPath,
++        ) => {
++            agent.status = NavMeshAgentStatus::NoPath;
++        }
++    }
++}
++
++fn follow_agent_path(agent: &mut NavMeshAgent, transform: &mut Transform, dt: f32) {
++    if agent.current_path.is_empty() {
++        return;
++    }
++    let Some(final_waypoint) = agent.current_path.last().copied() else {
++        return;
++    };
++    if transform.translation.distance(final_waypoint) <= agent.stopping_distance {
++        agent.current_path.clear();
++        agent.path_index = 0;
++        agent.status = if agent.current_path_complete {
++            NavMeshAgentStatus::Arrived
++        } else {
++            NavMeshAgentStatus::PartialPath
++        };
++        agent.current_path_complete = false;
++        return;
++    }
++    while agent.path_index < agent.current_path.len()
++        && transform
++            .translation
++            .distance(agent.current_path[agent.path_index])
++            < agent.speed * dt * 1.5
++    {
++        agent.path_index += 1;
++    }
++    let Some(waypoint) = agent.current_path.get(agent.path_index).copied() else {
++        return;
++    };
++    let delta = waypoint - transform.translation;
++    let distance = delta.length();
++    if distance > 1.0e-4 {
++        transform.translation += delta / distance * (agent.speed * dt).min(distance);
++    }
++}
++
++fn separate_agents(agents: &mut Query<(&mut NavMeshAgent, &mut Transform)>) {
++    let snapshots = agents
++        .iter_mut()
++        .map(|(entity, (agent, transform))| {
++            (
++                entity,
++                transform.translation,
++                agent.avoidance_radius.max(0.0),
++            )
++        })
++        .collect::<Vec<_>>();
++    let mut corrections = BTreeMap::new();
++    for first_index in 0..snapshots.len() {
++        for second_index in (first_index + 1)..snapshots.len() {
++            let (first, first_position, first_radius) = snapshots[first_index];
++            let (second, second_position, second_radius) = snapshots[second_index];
++            let delta = Vec3::new(
++                first_position.x - second_position.x,
++                0.0,
++                first_position.z - second_position.z,
++            );
++            let minimum = first_radius + second_radius;
++            let distance = delta.length();
++            if distance >= minimum || minimum <= 0.0 {
++                continue;
++            }
++            let direction = if distance > 1.0e-5 {
++                delta / distance
++            } else if first <= second {
++                Vec3::X
++            } else {
++                -Vec3::X
++            };
++            let correction = direction * ((minimum - distance) * 0.5);
++            *corrections.entry(first).or_insert(Vec3::ZERO) += correction;
++            *corrections.entry(second).or_insert(Vec3::ZERO) -= correction;
++        }
++    }
++    for (entity, (_, transform)) in agents.iter_mut() {
++        if let Some(correction) = corrections.get(&entity) {
++            transform.translation += *correction;
++        }
++    }
++}
++
++/// Compatibility settings for the existing single-profile planar bake entry point.
++#[derive(Debug, Clone)]
++pub struct NavMeshSettings {
++    /// Compatibility grid cell size used to tessellate the planar source.
++    pub cell_size: f32,
++    /// Default production profile radius.
++    pub agent_radius: f32,
++    /// Compatibility world minimum bound.
++    pub world_min: Vec3,
++    /// Compatibility world maximum bound.
++    pub world_max: Vec3,
++    /// Compatibility planar floor height.
++    pub walkable_height: f32,
++    /// Default production profile clearance height.
++    pub agent_height: f32,
++}
++
++impl Default for NavMeshSettings {
++    fn default() -> Self {
++        Self {
++            cell_size: 0.5,
++            agent_radius: 0.4,
++            world_min: Vec3::new(-50.0, 0.0, -50.0),
++            world_max: Vec3::new(50.0, 0.0, 50.0),
++            walkable_height: 0.0,
++            agent_height: 1.8,
++        }
++    }
++}
++
++/// Builds a production tiled polygon asset from compatibility obstacle AABBs.
++pub fn bake_from_obstacles(obstacles: &[(Vec3, Vec3)], settings: &NavMeshSettings) -> NavMesh {
++    let cell_size = settings.cell_size.max(0.01);
++    let columns = ((settings.world_max.x - settings.world_min.x) / cell_size)
++        .ceil()
++        .max(1.0) as usize;
++    let rows = ((settings.world_max.z - settings.world_min.z) / cell_size)
++        .ceil()
++        .max(1.0) as usize;
++    let mut triangles = Vec::new();
++    for row in 0..rows {
++        for column in 0..columns {
++            let minimum_x = settings.world_min.x + column as f32 * cell_size;
++            let minimum_z = settings.world_min.z + row as f32 * cell_size;
++            let maximum_x = minimum_x + cell_size;
++            let maximum_z = minimum_z + cell_size;
++            let center = Vec3::new(
++                (minimum_x + maximum_x) * 0.5,
++                settings.walkable_height,
++                (minimum_z + maximum_z) * 0.5,
++            );
++            let blocked = obstacles.iter().any(|(obstacle_center, half)| {
++                let radius = settings.agent_radius;
++                center.x >= obstacle_center.x - half.x - radius
++                    && center.x <= obstacle_center.x + half.x + radius
++                    && center.z >= obstacle_center.z - half.z - radius
++                    && center.z <= obstacle_center.z + half.z + radius
++            });
++            if blocked {
++                continue;
++            }
++            let y = settings.walkable_height;
++            let a = [minimum_x, y, minimum_z];
++            let b = [maximum_x, y, minimum_z];
++            let c = [maximum_x, y, maximum_z];
++            let d = [minimum_x, y, maximum_z];
++            triangles.push(NavigationTriangle { a, b, c, area: 0 });
++            triangles.push(NavigationTriangle {
++                a,
++                b: c,
++                c: d,
++                area: 0,
++            });
++        }
++    }
++    if triangles.is_empty() {
++        return empty_compatibility_asset(settings);
++    }
++    let input = NavigationBuildInput {
++        source_fingerprint: "compat-planar-v2".to_owned(),
++        triangles,
++        modifiers: Vec::new(),
++        links: Vec::new(),
++        profiles: vec![NavigationAgentProfile {
++            radius: settings.agent_radius,
++            height: settings.agent_height,
++            max_climb: cell_size,
++            ..NavigationAgentProfile::default()
++        }],
++        tile_size: (cell_size * 16.0).max(1.0),
++    };
++    ProductionNavigationBaker
++        .bake(&input, &|| false)
++        .unwrap_or_else(|_| empty_compatibility_asset(settings))
++}
++
++fn empty_compatibility_asset(settings: &NavMeshSettings) -> NavMesh {
++    NavMesh {
++        schema_version: NAV_MESH_SCHEMA_VERSION,
++        source_fingerprint: "compat-planar-v2-empty".to_owned(),
++        profiles: vec![NavigationProfileMesh {
++            profile: NavigationAgentProfile {
++                radius: settings.agent_radius.max(0.0),
++                height: settings.agent_height.max(0.01),
++                ..NavigationAgentProfile::default()
++            },
++            tiles: Vec::new(),
++            links: Vec::new(),
++        }],
++    }
++}
++
++/// Queries static non-trigger colliders and writes a production compatibility bake.
++///
++/// # Errors
++///
++/// Returns [`NavMeshError`] if persistence fails.
++#[cfg(not(target_arch = "wasm32"))]
++pub fn bake_navmesh(
++    world: &mut engine_ecs::World,
++    settings: &NavMeshSettings,
++    output_path: &Path,
++) -> Result<NavMesh, NavMeshError> {
++    use crate::collision::{Collider, PhysicsBody, TriggerVolume};
++    use crate::transform::GlobalTransform;
++
++    let obstacles = if let Ok(query) = world.query::<(
++        &GlobalTransform,
++        &Collider,
++        Option<&PhysicsBody>,
++        Option<&TriggerVolume>,
++    )>() {
++        query
++            .iter()
++            .filter_map(|(_, (transform, collider, body, trigger))| {
++                if body != Some(&PhysicsBody::Static) || trigger.is_some() {
++                    return None;
++                }
++                let aabb = collider.world_aabb(transform);
++                let minimum_y = aabb.center.y - aabb.half_extents.y;
++                let maximum_y = aabb.center.y + aabb.half_extents.y;
++                let clearance_top = settings.walkable_height + settings.agent_height;
++                if maximum_y <= settings.walkable_height + 0.05 || minimum_y >= clearance_top {
++                    return None;
++                }
++                Some((aabb.center, aabb.half_extents))
++            })
++            .collect::<Vec<_>>()
++    } else {
