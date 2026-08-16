@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "request_id": "20260817-adr0125-stage4-vfx-c34761c-r2",
+  "target_branch": "chatgpt/gameengine-adr0125-first-release-completion",
+  "expected_head_sha": "c34761c51901f36136b985b8567124e13dec7674",
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Implement ADR 0125 Project Rust VFX gameplay control",
+  "pr_title": "GameEngine: complete ADR 0125 VFX first-release scope",
+  "pr_body": "Completes the remaining ADR 0125 first-release VFX architecture after a current-main re-audit. This first request adds the formal Project Rust deferred VFX command/view boundary; follow-up requests on the same task branch complete schema-driven authoring, shared production preview, Problems integration, and performance/visual validation evidence."
+}
