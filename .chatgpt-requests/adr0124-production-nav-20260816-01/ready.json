@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0124-production-nav-20260816-01",
+  "target_branch": "chatgpt/gameengine-adr-0124-production-navmesh",
+  "expected_head_sha": "ce777a7ecf572001e727e10f470c7a1bebae6714",
+  "patch_parts": [
+    "part-0000.patch",
+    "part-0001.patch",
+    "part-0002.patch",
+    "part-0003.patch"
+  ],
+  "commit_message": "Add production tiled navigation runtime",
+  "pr_title": "GameEngine: implement ADR 0124 production navigation",
+  "pr_body": "## Summary\n\nImplements the ADR 0124 production navigation foundation: engine-owned tiled polygon assets, stable agent profiles, neutral bake input/backend boundary, multi-height polygon queries, portals, off-mesh links, modifiers/area costs, typed path results, funnel-style smoothing, persistence, and compatibility through the existing NavMesh surface/agent runtime facade.\n\nThis Draft PR remains the task branch for the remaining ADR 0124 authoring and Editor workflow slices."
+}
