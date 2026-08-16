@@ -1,0 +1,304 @@
+diff --git a/crates/authoring/src/lib.rs b/crates/authoring/src/lib.rs
+--- a/crates/authoring/src/lib.rs
++++ b/crates/authoring/src/lib.rs
+@@ -129,7 +129,7 @@ pub use persist::{replace_file_contents, PersistError, PersistOperation};
+ pub use prefab::{PrefabAsset, PrefabError, PrefabInstantiation, PREFAB_SCHEMA_VERSION};
+ pub use prefab_authoring::{
+-    PrefabAuthoringError, PrefabAuthoringService, PrefabInstantiationMutation,
+-    PREFAB_INSTANCE_COMPONENT,
++    PrefabAuthoringError, PrefabAuthoringService, PrefabInstantiationMutation,
++    PrefabInstantiationRequest, PREFAB_INSTANCE_COMPONENT,
+ };
+ pub use project::{ProjectConfig, ProjectError, ProjectRoot, PROJECT_SCHEMA_VERSION};
+ pub use project_settings::{
+diff --git a/crates/authoring/src/prefab_authoring.rs b/crates/authoring/src/prefab_authoring.rs
+--- a/crates/authoring/src/prefab_authoring.rs
++++ b/crates/authoring/src/prefab_authoring.rs
+@@ -12,11 +12,45 @@ use crate::{
+ use serde::Serialize;
+ use std::collections::BTreeMap;
+ use std::fmt;
+-use std::path::Path;
++use std::path::{Path, PathBuf};
+ 
+ /// Persisted editor-only component that records the source of a prefab instance.
+ pub const PREFAB_INSTANCE_COMPONENT: &str = "editor.prefab_instance";
+ 
++/// Complete request metadata for one prefab instantiation attempt.
++///
++/// Keeping the source marker, parent override, and stale-Scene token together
++/// prevents adapters from growing parallel method signatures as prefab
++/// instantiation gains more structured options.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct PrefabInstantiationRequest {
++    /// Canonical prefab source path persisted on the instantiated root marker.
++    pub source: PathBuf,
++    /// Optional Scene parent assigned to the freshly remapped prefab root.
++    pub parent: Option<EntityId>,
++    /// Scene revision used as the mutation base.
++    pub expected_revision: u64,
++    /// Scene generation used as the mutation base.
++    pub expected_generation: u64,
++}
++
++impl PrefabInstantiationRequest {
++    /// Creates one request from adapter-resolved prefab and Scene state.
++    pub fn new(
++        source: impl Into<PathBuf>,
++        parent: Option<EntityId>,
++        expected_revision: u64,
++        expected_generation: u64,
++    ) -> Self {
++        Self {
++            source: source.into(),
++            parent,
++            expected_revision,
++            expected_generation,
++        }
++    }
++}
++
+ /// Result of previewing or applying one prefab instantiation.
+ #[derive(Debug, Clone, PartialEq, Serialize)]
+ pub struct PrefabInstantiationMutation {
+@@ -92,12 +115,15 @@ impl PrefabAuthoringService {
+         session: &AuthoringSession,
+         permissions: &AuthoringPermissions,
+         prefab: &PrefabAsset,
+-        source: &Path,
+-        parent: Option<EntityId>,
+-        expected_revision: u64,
+-        expected_generation: u64,
++        request: PrefabInstantiationRequest,
+     ) -> Result<PrefabInstantiationMutation, PrefabAuthoringError> {
+-        let (proposed_root, commands) = instantiation_commands(prefab, source, parent)?;
++        let PrefabInstantiationRequest {
++            source,
++            parent,
++            expected_revision,
++            expected_generation,
++        } = request;
++        let (proposed_root, commands) = instantiation_commands(prefab, &source, parent)?;
+         let mutation = SceneAuthoringService::new().preview(
+             session,
+             permissions,
+@@ -125,12 +151,15 @@ impl PrefabAuthoringService {
+         session: &mut AuthoringSession,
+         permissions: &AuthoringPermissions,
+         prefab: &PrefabAsset,
+-        source: &Path,
+-        parent: Option<EntityId>,
+-        expected_revision: u64,
+-        expected_generation: u64,
++        request: PrefabInstantiationRequest,
+     ) -> Result<PrefabInstantiationMutation, PrefabAuthoringError> {
+-        let (proposed_root, commands) = instantiation_commands(prefab, source, parent)?;
++        let PrefabInstantiationRequest {
++            source,
++            parent,
++            expected_revision,
++            expected_generation,
++        } = request;
++        let (proposed_root, commands) = instantiation_commands(prefab, &source, parent)?;
+         let mutation = SceneAuthoringService::new().apply(
+             session,
+             permissions,
+@@ -190,10 +219,12 @@ mod tests {
+             .preview_instantiation(
+                 &session,
+                 &permissions(),
+                 &prefab(),
+-                Path::new("/project/assets/prefabs/enemy.prefab.json"),
+-                None,
+-                base.revision,
+-                base.generation,
++                PrefabInstantiationRequest::new(
++                    Path::new("/project/assets/prefabs/enemy.prefab.json"),
++                    None,
++                    base.revision,
++                    base.generation,
++                ),
+             )
+             .expect("preview");
+@@ -216,15 +246,16 @@ mod tests {
+             .inspect(&session, &permissions)
+             .expect("base snapshot");
+-        let source = Path::new("/project/assets/prefabs/enemy.prefab.json");
+ 
+         let result = PrefabAuthoringService::new()
+             .apply_instantiation(
+                 &mut session,
+                 &permissions,
+                 &prefab(),
+-                source,
+-                None,
+-                base.revision,
+-                base.generation,
++                PrefabInstantiationRequest::new(
++                    Path::new("/project/assets/prefabs/enemy.prefab.json"),
++                    None,
++                    base.revision,
++                    base.generation,
++                ),
+             )
+             .expect("apply");
+@@ -250,10 +281,12 @@ mod tests {
+             .apply_instantiation(
+                 &mut session,
+                 &permissions,
+                 &prefab(),
+-                Path::new("enemy.prefab.json"),
+-                None,
+-                base.revision,
+-                base.generation,
++                PrefabInstantiationRequest::new(
++                    Path::new("enemy.prefab.json"),
++                    None,
++                    base.revision,
++                    base.generation,
++                ),
+             )
+             .expect("first apply");
+@@ -267,10 +299,12 @@ mod tests {
+             .apply_instantiation(
+                 &mut session,
+                 &permissions,
+                 &prefab(),
+-                Path::new("enemy.prefab.json"),
+-                None,
+-                base.revision,
+-                base.generation,
++                PrefabInstantiationRequest::new(
++                    Path::new("enemy.prefab.json"),
++                    None,
++                    base.revision,
++                    base.generation,
++                ),
+             )
+             .expect_err("stale apply must fail");
+diff --git a/crates/mcp/src/prefab.rs b/crates/mcp/src/prefab.rs
+--- a/crates/mcp/src/prefab.rs
++++ b/crates/mcp/src/prefab.rs
+@@ -5,7 +5,7 @@ use engine_assets::asset::AssetManifest;
+ use engine_assets::prefab::{PrefabAssetService, PrefabCreation};
+ use engine_authoring::{
+     AuthoringPermissions, AuthoringScene, AuthoringSession, EntityId, PrefabAuthoringService,
+-    PrefabInstantiationMutation, ProjectRoot,
++    PrefabInstantiationMutation, PrefabInstantiationRequest, ProjectRoot,
+ };
+ use serde::Deserialize;
+ use serde_json::json;
+@@ -118,13 +118,16 @@ impl PrefabMcpTools {
+     ) -> Result<PrefabInstantiationMutation, McpToolError> {
+         let loaded = self.assets.load(project, permissions, &input.source)?;
++        let request = PrefabInstantiationRequest::new(
++            loaded.source,
++            input.parent,
++            input.expected_revision,
++            input.expected_generation,
++        );
+         self.authoring
+             .preview_instantiation(
+                 session,
+                 permissions,
+                 &loaded.prefab,
+-                &loaded.source,
+-                input.parent,
+-                input.expected_revision,
+-                input.expected_generation,
++                request,
+             )
+             .map_err(McpToolError::from)
+@@ -146,13 +147,16 @@ impl PrefabMcpTools {
+     ) -> Result<PrefabInstantiationMutation, McpToolError> {
+         let loaded = self.assets.load(project, permissions, &input.source)?;
++        let request = PrefabInstantiationRequest::new(
++            loaded.source,
++            input.parent,
++            input.expected_revision,
++            input.expected_generation,
++        );
+         self.authoring
+             .apply_instantiation(
+                 session,
+                 permissions,
+                 &loaded.prefab,
+-                &loaded.source,
+-                input.parent,
+-                input.expected_revision,
+-                input.expected_generation,
++                request,
+             )
+             .map_err(McpToolError::from)
+diff --git a/crates/cli/src/prefab_cli.rs b/crates/cli/src/prefab_cli.rs
+--- a/crates/cli/src/prefab_cli.rs
++++ b/crates/cli/src/prefab_cli.rs
+@@ -3,6 +3,7 @@ use engine_assets::prefab::{PrefabAssetError, PrefabAssetService};
+ use engine_authoring::{
+     replace_file_contents, AuthoringPermission, AuthoringPermissions, EntityId,
+-    PrefabAuthoringError, PrefabAuthoringService, SceneAuthoringService, SceneSaveError, StableId,
++    PrefabAuthoringError, PrefabAuthoringService, PrefabInstantiationRequest,
++    SceneAuthoringService, SceneSaveError, StableId,
+ };
+ use serde::Serialize;
+ use std::path::Path;
+@@ -137,26 +138,21 @@ fn prefab_mutate(
+     };
+     let revision = snapshot.revision;
+     let generation = snapshot.generation;
++    let request = PrefabInstantiationRequest::new(loaded.source, parent, revision, generation);
+     let service = PrefabAuthoringService::new();
+     let result = if persist {
+         service.apply_instantiation(
+             &mut context.session,
+             &permissions,
+             &loaded.prefab,
+-            &loaded.source,
+-            parent,
+-            revision,
+-            generation,
++            request,
+         )
+     } else {
+         service.preview_instantiation(
+             &context.session,
+             &permissions,
+             &loaded.prefab,
+-            &loaded.source,
+-            parent,
+-            revision,
+-            generation,
++            request,
+         )
+     };
+     let output = match result {
+diff --git a/crates/editor/src/prefab_workflow.rs b/crates/editor/src/prefab_workflow.rs
+--- a/crates/editor/src/prefab_workflow.rs
++++ b/crates/editor/src/prefab_workflow.rs
+@@ -9,7 +9,8 @@ use crate::session::{EditorSession, EditorSessionError};
+ use engine_authoring::{
+     replace_file_contents, AuthoringCommand, AuthoringEntity, AuthoringScene, ComponentTypeId,
+     AuthoringPermission, AuthoringPermissions, EntityId, PersistError, PrefabAsset,
+-    PrefabAuthoringError, PrefabAuthoringService, PrefabError, SceneAuthoringService, Value,
++    PrefabAuthoringError, PrefabAuthoringService, PrefabError, PrefabInstantiationRequest,
++    SceneAuthoringService, Value,
+ };
+ use std::collections::{BTreeMap, BTreeSet};
+ use std::fmt;
+@@ -132,10 +133,12 @@ pub fn instantiate_prefab(
+         PrefabAuthoringService::new().apply_instantiation(
+             authoring,
+             &permissions,
+             &prefab,
+-            source,
+-            parent,
+-            base.revision,
+-            base.generation,
++            PrefabInstantiationRequest::new(
++                source,
++                parent,
++                base.revision,
++                base.generation,
++            ),
+         )?
+     };
