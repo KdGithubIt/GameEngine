@@ -1,0 +1,81 @@
++                    &self.asset_manifest,
++                    &permissions,
++                    input,
++                )?)
++            }
++            "asset.inspect" => {
++                let input: AssetInspectInput = decode(arguments)?;
++                to_value(asset_tools.asset_inspect(
++                    self.project_root(),
++                    &self.asset_manifest,
++                    &permissions,
++                    input,
++                )?)
++            }
+             "behavior_tree.schemas" => {
+                 require_empty_arguments(arguments)?;
+                 to_value(behavior_tools.behavior_tree_schemas())
+@@ -294,4 +310,29 @@ mod tests {
+             schema["type_id"] == Value::String("engine.camera".into())
+         }));
+     }
++
++    #[test]
++    fn asset_search_reads_the_live_editor_manifest() {
++        let (_directory, mut app) = editor_app();
++        let asset_id = engine_authoring::AssetId::generate();
++        app.asset_manifest.insert(
++            asset_id.clone(),
++            engine::ManifestEntry {
++                path: "textures/hero.png".into(),
++                name: Some("hero_texture".into()),
++                import_settings: engine::ImportSettings::default(),
++            },
++        );
++
++        let output = app
++            .handle_mcp_tool_call("asset.search", json!({"query": "hero"}))
++            .expect("asset search");
++        let assets = output["assets"].as_array().expect("asset array");
++
++        assert_eq!(assets.len(), 1);
++        assert_eq!(
++            assets[0]["id"],
++            Value::String(asset_id.as_str().to_owned())
++        );
++    }
+ }
+diff --git a/crates/editor/src/mcp_transport.rs b/crates/editor/src/mcp_transport.rs
+--- a/crates/editor/src/mcp_transport.rs
++++ b/crates/editor/src/mcp_transport.rs
+@@ -5,5 +5,5 @@
+ //! project authoring session remains authoritative.
+ 
+ use eframe::egui;
+-use engine_mcp::{BehaviorTreeMcpTools, McpToolDescriptor, SceneMcpTools};
++use engine_mcp::{AssetMcpTools, BehaviorTreeMcpTools, McpToolDescriptor, SceneMcpTools};
+ use serde_json::{json, Value};
+@@ -379,5 +379,6 @@ fn tools_list_result() -> Value {
+     let mut descriptors = BehaviorTreeMcpTools::new().tool_descriptors();
+     descriptors.extend(SceneMcpTools::new().tool_descriptors());
++    descriptors.extend(AssetMcpTools::new().tool_descriptors());
+     json!({
+         "tools": descriptors.into_iter().map(tool_descriptor_json).collect::<Vec<_>>()
+     })
+diff --git a/Cargo.lock b/Cargo.lock
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -1362,5 +1362,6 @@ name = "engine-cli"
+ version = "0.1.0"
+ dependencies = [
++ "engine-assets",
+  "engine-authoring",
+  "engine-mcp",
+  "serde",
+@@ -1481,5 +1482,6 @@ name = "engine-mcp"
+ version = "0.1.0"
+ dependencies = [
++ "engine-assets",
+  "engine-authoring",
+  "serde",
+  "serde_json",
