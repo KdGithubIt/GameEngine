@@ -262,7 +262,7 @@ impl UiAuthoringService {
             } => {
                 let committed = !diff.is_empty();
                 if committed {
-                    session.commit(document);
+                    session.commit(*document);
                 }
                 Ok(UiAuthoringMutation {
                     success: true,
@@ -295,7 +295,7 @@ enum EvaluatedUiMutation {
     Accepted {
         diagnostics: Vec<Diagnostic>,
         diff: Vec<UiDocumentChange>,
-        document: UiDocument,
+        document: Box<UiDocument>,
     },
     Rejected {
         diagnostics: Vec<Diagnostic>,
@@ -366,7 +366,7 @@ fn evaluate(
     Ok(EvaluatedUiMutation::Accepted {
         diagnostics,
         diff,
-        document,
+        document: Box::new(document),
     })
 }
 
