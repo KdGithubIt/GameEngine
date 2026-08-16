@@ -81,7 +81,10 @@ impl EditorShell {
         }
         project_lease.mark_ready().map_err(|error| error.to_string())?;
         #[cfg(feature = "visual-validation")]
-        let visual_behavior_debug_capture = visual_validation_touches_behavior_debug();
+        let visual_behavior_debug_capture = matches!(
+            std::env::var("GAMEENGINE_VISUAL_EDITOR_SCENARIO").as_deref(),
+            Ok("behavior-tree")
+        ) || visual_validation_touches_behavior_debug();
         Ok(Self {
             app,
             ai_studio,
