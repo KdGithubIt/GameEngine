@@ -5,11 +5,19 @@ Before changing this project, read and follow:
 - `docs/AI_FRIENDLY_AUTHORING_SPEC.md`
 - `docs/RUST_CODE_STYLE.md`
 - `docs/DEVELOPMENT_WORKFLOW.md`
+- `docs/CHATGPT_AUTOMATION.md` when using the repository-native ChatGPT Dispatcher
 - Accepted records under `docs/adr/`
 
 These documents are the canonical product, architecture, code style, development
 workflow, and documentation specifications. Do not duplicate or redefine their
 contracts in this file.
+
+When a ChatGPT Dispatcher request fails, read
+`docs/CHATGPT_AUTOMATION_INCIDENTS.md` before retrying. After the root cause is
+confirmed and the recovery path succeeds, update the matching incident entry or
+add a new root-cause entry. Record the symptom, root cause, resolution, and
+prevention rule; do not turn the incident log into a chronological dump of CI
+runs or unconfirmed guesses.
 
 When an implementation decision is not covered by the specification:
 
