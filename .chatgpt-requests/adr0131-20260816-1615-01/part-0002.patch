@@ -1,0 +1,486 @@
++    pub(crate) fn cancel(&mut self) -> io::Result<()> {
++        if self.exit_status.is_none() {
++            match self.child.kill() {
++                Ok(()) => {}
++                Err(error) if error.kind() == io::ErrorKind::InvalidInput => {}
++                Err(error) => return Err(error),
++            }
++            self.exit_status = Some(self.child.wait()?);
++        }
++        Ok(())
++    }
++}
++
++impl Drop for ExternalAgentProcess {
++    fn drop(&mut self) {
++        if self.exit_status.is_none() {
++            let _ = self.child.kill();
++            let _ = self.child.wait();
++        }
++    }
++}
++
++fn truncate_provider_output(mut line: String) -> String {
++    if line.chars().count() <= MAX_PROVIDER_EVENT_CHARS {
++        return line;
++    }
++    line = line.chars().take(MAX_PROVIDER_EVENT_CHARS).collect();
++    line.push_str("… [truncated]");
++    line
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    fn temp_path(name: &str) -> PathBuf {
++        std::env::temp_dir().join(format!("gameengine-agent-{name}-{}", next_id("test")))
++    }
++
++    #[test]
++    fn run_snapshots_proposal_version() {
++        let project = temp_path("snapshot-project");
++        let storage = temp_path("snapshot-storage");
++        fs::create_dir_all(&project).expect("test project directory");
++        let mut host = AgentHost::open(project.clone(), storage.clone()).expect("host");
++        let session = host.create_session("Test").expect("session");
++        let mut proposal = host.session(&session).expect("session").proposal.clone();
++        proposal.goal = "First".to_owned();
++        host.update_proposal(&session, proposal).expect("proposal");
++        let run = host.start_run(&session, "test").expect("run");
++        let snapshot = host.run(&run).expect("run").proposal_snapshot.clone();
++        let mut proposal = host.session(&session).expect("session").proposal.clone();
++        proposal.goal = "Second".to_owned();
++        host.update_proposal(&session, proposal).expect("proposal");
++        assert_eq!(snapshot.goal, "First");
++        assert_ne!(snapshot.version, host.session(&session).expect("session").proposal.version);
++        let _ = fs::remove_dir_all(project);
++        let _ = fs::remove_dir_all(storage);
++    }
++
++    #[test]
++    fn only_one_writer_run_is_active() {
++        let project = temp_path("writer-project");
++        let storage = temp_path("writer-storage");
++        fs::create_dir_all(&project).expect("test project directory");
++        let mut host = AgentHost::open(project.clone(), storage.clone()).expect("host");
++        let first = host.create_session("First").expect("first session");
++        let second = host.create_session("Second").expect("second session");
++        let run = host.start_run(&first, "test").expect("first run");
++        assert!(matches!(
++            host.start_run(&second, "test"),
++            Err(AgentHostError::ActiveWriterRun(_))
++        ));
++        host.cancel_run(&run).expect("cancel run");
++        host.start_run(&second, "test").expect("second run");
++        let _ = fs::remove_dir_all(project);
++        let _ = fs::remove_dir_all(storage);
++    }
++
++    #[test]
++    fn code_apply_rejects_stale_live_file() {
++        let project = temp_path("code-project");
++        let workspace = temp_path("code-workspace");
++        fs::create_dir_all(project.join("game/src")).expect("project tree");
++        fs::write(project.join("game/src/lib.rs"), "pub fn value() -> u32 { 1 }\n")
++            .expect("base file");
++        let mut code = CodeWorkspace::create(&project, workspace.clone()).expect("workspace");
++        fs::write(
++            workspace.join("game/src/lib.rs"),
++            "pub fn value() -> u32 { 2 }\n",
++        )
++        .expect("workspace edit");
++        let changes = code.collect_changes().expect("changes");
++        fs::write(project.join("game/src/lib.rs"), "pub fn value() -> u32 { 3 }\n")
++            .expect("concurrent edit");
++        assert!(matches!(
++            code.apply_changes(&changes),
++            Err(AgentHostError::StaleCodeFile(_))
++        ));
++        let _ = fs::remove_dir_all(project);
++        let _ = fs::remove_dir_all(workspace);
++    }
++
++    #[test]
++    fn project_shared_export_omits_provider_output() {
++        let project = temp_path("shared-project");
++        let storage = temp_path("shared-storage");
++        fs::create_dir_all(&project).expect("test project directory");
++        let mut host = AgentHost::open(project.clone(), storage.clone()).expect("host");
++        let session = host.create_session("Shared").expect("session");
++        let run = host.start_run(&session, "test").expect("run");
++        host.record_event(&run, AgentEventKind::ProviderOutput, "secret-looking output")
++            .expect("event");
++        let path = host.export_shared_session(&session).expect("export");
++        let text = fs::read_to_string(path).expect("shared JSON");
++        assert!(!text.contains("secret-looking output"));
++        let _ = fs::remove_dir_all(project);
++        let _ = fs::remove_dir_all(storage);
++    }
++}
++diff --git a/crates/editor/src/ai_studio.rs b/crates/editor/src/ai_studio.rs
++new file mode 100644
++--- /dev/null
+++++ b/crates/editor/src/ai_studio.rs
++@@ -0,0 +1,843 @@
++//! Conversation-first AI Studio frontend.
++//!
++//! This module owns only presentation and direct user interaction. Agent
++//! lifecycle, permissions, persistence, provider process management, and code
++//! workspace rules live in the GUI-free `agent_host` module.
++
++use crate::agent_host::{
++    project_storage_key, AgentCapability, AgentEventKind, AgentHost, AgentProposal, AgentRunState,
++    ApprovalScope, CodeChange, CodeWorkspace, CompletionStatus, ConversationRole,
++    ExternalAgentProcess, PermissionCheck, ProcessStream,
++};
++use eframe::egui;
++use engine_authoring::id::StableId;
++use engine_authoring::ProjectRoot;
++use std::ffi::{OsStr, OsString};
++use std::path::{Path, PathBuf};
++
++/// Ephemeral Editor-owned MCP connection injected into compatible agent runtimes.
++///
++/// The authorization token is intentionally private and is never serialized by
++/// AI Studio. It is exposed to a launched child only through that child's
++/// process environment.
++pub struct AiStudioConnection {
++    endpoint: String,
++    authorization_token: String,
++}
++
++impl AiStudioConnection {
++    /// Creates an in-memory connection descriptor for the active Editor MCP host.
++    pub fn new(endpoint: impl Into<String>, authorization_token: impl Into<String>) -> Self {
++        Self {
++            endpoint: endpoint.into(),
++            authorization_token: authorization_token.into(),
++        }
++    }
++}
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++enum PendingPermissionAction {
++    LaunchExternalAgent,
++    ApplyCodeChanges,
++}
++
++struct PendingPermission {
++    run_id: String,
++    capability: AgentCapability,
++    action: PendingPermissionAction,
++}
++
++/// Project-scoped conversation-first AI Studio window.
++///
++/// The panel persists sessions outside canonical project data by default,
++/// snapshots proposal versions before starting a run, and routes code writes
++/// through a reviewable isolated workspace. Project-shared history is explicit.
++pub struct AiStudioPanel {
++    project_root: PathBuf,
++    connection: AiStudioConnection,
++    host: AgentHost,
++    selected_session: String,
++    proposal_draft: AgentProposal,
++    message_draft: String,
++    provider_program: String,
++    provider_args: String,
++    open: bool,
++    active_run_id: Option<String>,
++    process: Option<ExternalAgentProcess>,
++    code_workspace: Option<CodeWorkspace>,
++    pending_code_changes: Vec<CodeChange>,
++    pending_permission: Option<PendingPermission>,
++    status: Option<String>,
++}
++
++impl AiStudioPanel {
++    /// Opens the project-scoped AI Studio state for an Editor project.
++    pub fn new(project: &ProjectRoot, connection: AiStudioConnection) -> Result<Self, String> {
++        let data_root = dirs::data_local_dir()
++            .unwrap_or_else(std::env::temp_dir)
++            .join("GameEngine")
++            .join("ai")
++            .join(project_storage_key(project.project_id().as_str(), project.path()));
++        let mut host = AgentHost::open(project.path().to_path_buf(), data_root)
++            .map_err(|error| error.to_string())?;
++        let selected_session = match host.session_ids().into_iter().next_back() {
++            Some(id) => id,
++            None => host
++                .create_session("New AI Studio session")
++                .map_err(|error| error.to_string())?,
++        };
++        let proposal_draft = host
++            .session(&selected_session)
++            .map_err(|error| error.to_string())?
++            .proposal
++            .clone();
++        Ok(Self {
++            project_root: project.path().to_path_buf(),
++            connection,
++            host,
++            selected_session,
++            proposal_draft,
++            message_draft: String::new(),
++            provider_program: String::new(),
++            provider_args: String::new(),
++            open: true,
++            active_run_id: None,
++            process: None,
++            code_workspace: None,
++            pending_code_changes: Vec::new(),
++            pending_permission: None,
++            status: None,
++        })
++    }
++
++    /// Makes the AI Studio window visible.
++    pub fn open(&mut self) {
++        self.open = true;
++    }
++
++    /// Draws the AI Studio window and advances any active external agent process.
++    pub fn show(&mut self, context: &egui::Context) {
++        self.poll_external_process(context);
++        let mut open = self.open;
++        egui::Window::new("AI Studio")
++            .id(egui::Id::new("gameengine_ai_studio"))
++            .open(&mut open)
++            .default_pos(egui::pos2(940.0, 84.0))
++            .default_size(egui::vec2(600.0, 760.0))
++            .min_width(460.0)
++            .min_height(520.0)
++            .resizable(true)
++            .show(context, |ui| self.show_contents(ui));
++        self.open = open;
++    }
++
++    fn show_contents(&mut self, ui: &mut egui::Ui) {
++        ui.horizontal_wrapped(|ui| {
++            ui.strong("Conversation-first project agent");
++            ui.separator();
++            ui.label("Structured authoring stays on the Editor MCP host.");
++        });
++        ui.small(
++            "External agent processes are application-level integrations, not an OS sandbox. Code is prepared in an isolated managed workspace and must be reviewed before apply.",
++        );
++        ui.separator();
++
++        self.show_session_header(ui);
++        self.show_conversation(ui);
++        ui.separator();
++        self.show_proposal(ui);
++        ui.separator();
++        self.show_provider(ui);
++        self.show_permission_prompt(ui);
++        self.show_code_changes(ui);
++        self.show_run_timeline(ui);
++
++        if let Some(status) = &self.status {
++            ui.separator();
++            ui.label(status);
++        }
++    }
++
++    fn show_session_header(&mut self, ui: &mut egui::Ui) {
++        let session_ids = self.host.session_ids();
++        let current_title = self
++            .host
++            .session(&self.selected_session)
++            .map(|session| session.title.clone())
++            .unwrap_or_else(|_| "Unavailable session".to_owned());
++        ui.horizontal(|ui| {
++            egui::ComboBox::from_id_salt("ai_studio_session")
++                .selected_text(current_title)
++                .width(260.0)
++                .show_ui(ui, |ui| {
++                    for id in session_ids {
++                        let title = self
++                            .host
++                            .session(&id)
++                            .map(|session| session.title.as_str())
++                            .unwrap_or("Unavailable session");
++                        if ui
++                            .selectable_value(&mut self.selected_session, id.clone(), title)
++                            .changed()
++                        {
++                            if let Ok(session) = self.host.session(&id) {
++                                self.proposal_draft = session.proposal.clone();
++                            }
++                        }
++                    }
++                });
++            if ui.button("New session").clicked() {
++                match self.host.create_session("New AI Studio session") {
++                    Ok(id) => {
++                        self.selected_session = id;
++                        self.proposal_draft = AgentProposal::default();
++                        self.status = Some("Created a private local AI session.".to_owned());
++                    }
++                    Err(error) => self.status = Some(error.to_string()),
++                }
++            }
++            if ui.button("Share with project").clicked() {
++                match self.host.export_shared_session(&self.selected_session) {
++                    Ok(path) => {
++                        let relative = path
++                            .strip_prefix(&self.project_root)
++                            .unwrap_or(path.as_path());
++                        self.status = Some(format!(
++                            "Wrote sanitized project-shared history to {}.",
++                            relative.display()
++                        ));
++                    }
++                    Err(error) => self.status = Some(error.to_string()),
++                }
++            }
++        });
++    }
++
++    fn show_conversation(&mut self, ui: &mut egui::Ui) {
++        ui.heading("Conversation");
++        let messages = self
++            .host
++            .session(&self.selected_session)
++            .map(|session| session.messages.clone())
++            .unwrap_or_default();
++        egui::ScrollArea::vertical()
++            .id_salt("ai_studio_conversation")
++            .max_height(180.0)
++            .stick_to_bottom(true)
++            .show(ui, |ui| {
++                if messages.is_empty() {
++                    ui.weak("Describe what you want to build, change, inspect, or validate.");
++                }
++                for message in messages {
++                    ui.group(|ui| {
++                        ui.strong(match message.role {
++                            ConversationRole::User => "You",
++                            ConversationRole::Assistant => "Agent",
++                            ConversationRole::System => "System",
++                        });
++                        ui.label(message.text);
++                    });
++                }
++            });
++        ui.add(
++            egui::TextEdit::multiline(&mut self.message_draft)
++                .desired_rows(2)
++                .hint_text("Add a goal, clarification, constraint, or feedback…"),
++        );
++        ui.horizontal(|ui| {
++            let can_send = !self.message_draft.trim().is_empty();
++            if ui.add_enabled(can_send, egui::Button::new("Send")).clicked() {
++                let text = self.message_draft.trim().to_owned();
++                match self.host.append_message(
++                    &self.selected_session,
++                    ConversationRole::User,
++                    text,
++                ) {
++                    Ok(()) => self.message_draft.clear(),
++                    Err(error) => self.status = Some(error.to_string()),
++                }
++            }
++            ui.small("Clarifications remain in the same session; no forced planning mode switch.");
++        });
++    }
++
++    fn show_proposal(&mut self, ui: &mut egui::Ui) {
++        let current_version = self
++            .host
++            .session(&self.selected_session)
++            .map(|session| session.proposal.version)
++            .unwrap_or(self.proposal_draft.version);
++        egui::CollapsingHeader::new(format!("Structured proposal · v{current_version}"))
++            .default_open(true)
++            .show(ui, |ui| {
++                ui.label("Goal");
++                ui.text_edit_singleline(&mut self.proposal_draft.goal);
++                edit_lines(ui, "Requirements", &mut self.proposal_draft.requirements);
++                edit_lines(ui, "Assumptions", &mut self.proposal_draft.assumptions);
++                edit_lines(
++                    ui,
++                    "Acceptance criteria",
++                    &mut self.proposal_draft.acceptance_criteria,
++                );
++                edit_lines(
++                    ui,
++                    "Planned project changes",
++                    &mut self.proposal_draft.planned_project_changes,
++                );
++                edit_lines(
++                    ui,
++                    "Planned code changes",
++                    &mut self.proposal_draft.planned_code_changes,
++                );
++                edit_lines(ui, "Planned assets", &mut self.proposal_draft.planned_assets);
++                edit_lines(ui, "Validation plan", &mut self.proposal_draft.validation_plan);
++                edit_lines(ui, "Playtest plan", &mut self.proposal_draft.playtest_plan);
++                if ui.button("Save proposal version").clicked() {
++                    match self
++                        .host
++                        .update_proposal(&self.selected_session, self.proposal_draft.clone())
++                    {
++                        Ok(version) => {
++                            self.proposal_draft.version = version;
++                            self.status = Some(format!("Saved proposal version {version}."));
++                        }
++                        Err(error) => self.status = Some(error.to_string()),
++                    }
++                }
++            });
++    }
++
++    fn show_provider(&mut self, ui: &mut egui::Ui) {
++        ui.heading("Run");
++        ui.horizontal(|ui| {
++            ui.label("Compatible agent program");
++            ui.text_edit_singleline(&mut self.provider_program);
++        });
++        ui.horizontal(|ui| {
++            ui.label("Arguments");
++            ui.text_edit_singleline(&mut self.provider_args);
++        });
++        ui.small(
++            "The program is launched directly without a shell. GameEngine injects the immutable proposal and ephemeral MCP endpoint/token as process environment variables. Provider-specific Claude/Codex/native adapters can sit on this same runtime boundary without changing AI Studio semantics.",
++        );
++        let mut stop_requested = false;
++        ui.horizontal(|ui| {
++            let can_go = self.process.is_none()
++                && self.pending_permission.is_none()
++                && !self.provider_program.trim().is_empty();
++            if ui.add_enabled(can_go, egui::Button::new("Go")).clicked() {
++                self.begin_run();
++            }
++            if self.process.is_some() && ui.button("Stop").clicked() {
++                stop_requested = true;
++            }
++        });
++        if stop_requested {
++            let run_id = self.active_run_id.clone();
++            if let Some(process) = self.process.as_mut() {
++                if let Err(error) = process.cancel() {
++                    self.status = Some(format!("Could not stop agent process: {error}"));
++                }
++            }
++            self.process = None;
++            if let Some(run_id) = run_id {
++                if let Err(error) = self.host.cancel_run(&run_id) {
++                    self.status = Some(error.to_string());
++                }
++            }
++        }
++    }
++
++    fn show_permission_prompt(&mut self, ui: &mut egui::Ui) {
++        let Some(pending) = self.pending_permission.as_ref() else {
++            return;
++        };
++        let run_id = pending.run_id.clone();
++        let capability = pending.capability;
++        let action = pending.action;
++        ui.separator();
++        ui.group(|ui| {
++            ui.strong("Approval required");
++            ui.label(capability.label());
