@@ -1,0 +1,65 @@
+diff --git a/crates/engine/src/navigation_bake.rs b/crates/engine/src/navigation_bake.rs
+--- a/crates/engine/src/navigation_bake.rs
++++ b/crates/engine/src/navigation_bake.rs
+@@ -365,12 +365,11 @@ fn scene_without_navigation_derived_components(
+     let removals = normalized
+         .entities()
+         .flat_map(|(id, entity)| {
+-            ignored.iter().filter_map(move |component| {
+-                entity
+-                    .components
+-                    .contains_key(component)
+-                    .then(|| (id.clone(), component.clone()))
+-            })
++            ignored
++                .iter()
++                .filter(move |component| entity.components.contains_key(*component))
++                .map(move |component| (id.clone(), component.clone()))
+         })
+         .collect::<Vec<_>>();
+     if removals.is_empty() {
+diff --git a/crates/engine/src/scene_bridge/spawn.rs b/crates/engine/src/scene_bridge/spawn.rs
+--- a/crates/engine/src/scene_bridge/spawn.rs
++++ b/crates/engine/src/scene_bridge/spawn.rs
+@@ -2610,12 +2610,17 @@ pub(crate) fn spawn_nav_mesh_agent_component(
+     let component_type = ComponentTypeId::new(NAV_MESH_AGENT_COMPONENT);
+     let expected = "an object with finite non-negative navigation agent fields";
+     let fields = ComponentFields::new(context.authoring_entity, &component_type, value, expected)?;
+-    let profile_id = fields.string("profile_id")?;
+-    if profile_id.trim().is_empty() {
+-        return Err(fields.invalid("a non-empty stable navigation profile ID").into());
+-    }
++    let defaults = NavMeshAgent::default();
++    let profile_id = match fields.get("profile_id") {
++        None => defaults.profile_id.clone(),
++        Some(Value::String(profile_id)) if !profile_id.trim().is_empty() => {
++            crate::navmesh::NavigationProfileId::new(profile_id)
++        }
++        Some(_) => return Err(fields.invalid("a non-empty stable navigation profile ID").into()),
++    };
+     let speed = fields.f32("speed")?;
+     let stopping_distance = fields.f32("stopping_distance")?;
+-    let defaults = NavMeshAgent::default();
+     let repath_interval = fields.f32_or("repath_interval", defaults.repath_interval)?;
+     let avoidance_radius = fields.f32_or("avoidance_radius", defaults.avoidance_radius)?;
+     if speed < 0.0 || stopping_distance < 0.0 || repath_interval < 0.0 || avoidance_radius < 0.0 {
+@@ -2623,7 +2628,7 @@ pub(crate) fn spawn_nav_mesh_agent_component(
+     }
+     let has_target = fields.bool("has_target")?;
+     let mut agent = NavMeshAgent::new(speed);
+-    agent.profile_id = crate::navmesh::NavigationProfileId::new(profile_id);
++    agent.profile_id = profile_id;
+     agent.stopping_distance = stopping_distance;
+     agent.repath_interval = repath_interval;
+     agent.avoidance_radius = avoidance_radius;
+diff --git a/crates/engine/src/scene_bridge/tests.rs b/crates/engine/src/scene_bridge/tests.rs
+--- a/crates/engine/src/scene_bridge/tests.rs
++++ b/crates/engine/src/scene_bridge/tests.rs
+@@ -957,6 +957,7 @@ fn nav_agent_and_runtime_metadata_convert_from_authoring_defaults() {
+         .expect("navigation agent");
+     assert_eq!(agent.speed, 4.0);
+     assert_eq!(agent.stopping_distance, 0.25);
++    assert_eq!(agent.profile_id.as_str(), "default");
+     assert_eq!(agent.target, Some(Vec3::new(3.0, 0.0, -2.0)));
+     let metadata = world
+         .get_component::<RuntimeMetadata>(entity)
