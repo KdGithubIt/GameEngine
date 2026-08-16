@@ -97,6 +97,7 @@ jobs:
             "refs/heads/main:refs/remotes/origin/main" \
             "refs/heads/chatgpt-dispatch:refs/remotes/origin/chatgpt-dispatch" \
             "refs/heads/$STAGE_BRANCH:refs/remotes/origin/$STAGE_BRANCH"
+
           stage_head="$(git rev-parse "refs/remotes/origin/$STAGE_BRANCH")"
           [[ "$stage_head" == "$REQUEST_COMMIT" ]] ||
             fail "The stage branch moved after the ready signal. Publish a new immutable stage branch."
