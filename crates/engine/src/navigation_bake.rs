@@ -365,12 +365,10 @@ fn scene_without_navigation_derived_components(
     let removals = normalized
         .entities()
         .flat_map(|(id, entity)| {
-            ignored.iter().filter_map(move |component| {
-                entity
-                    .components
-                    .contains_key(component)
-                    .then(|| (id.clone(), component.clone()))
-            })
+            ignored
+                .iter()
+                .filter(move |component| entity.components.contains_key(*component))
+                .map(move |component| (id.clone(), component.clone()))
         })
         .collect::<Vec<_>>();
     if removals.is_empty() {

@@ -2611,10 +2611,15 @@ pub(crate) fn spawn_nav_mesh_agent_component(
     let component_type = ComponentTypeId::new(NAV_MESH_AGENT_COMPONENT);
     let expected = "an object with finite non-negative navigation agent fields";
     let fields = ComponentFields::new(context.authoring_entity, &component_type, value, expected)?;
-    let profile_id = fields.string("profile_id")?;
-    if profile_id.trim().is_empty() {
-        return Err(fields.invalid("a non-empty stable navigation profile ID").into());
-    }
+    let profile_id = match fields.get("profile_id") {
+        None => "default",
+        Some(Value::String(profile_id)) if !profile_id.trim().is_empty() => profile_id.as_str(),
+        Some(_) => {
+            return Err(fields
+                .invalid("a non-empty stable navigation profile ID")
+                .into())
+        }
+    };
     let speed = fields.f32("speed")?;
     let stopping_distance = fields.f32("stopping_distance")?;
     let defaults = NavMeshAgent::default();
