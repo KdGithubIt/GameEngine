@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "request_id": "20260816-bloom-spatial-spread-1221afa-r2",
+  "target_branch": "chatgpt/gameengine-bloom-functional-readback",
+  "expected_head_sha": "1221afad6d1b5fd735f51179c37ed0d02ab7c23c",
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Renderer: make Bloom spread test scan dark output",
+  "pr_title": "Renderer: verify Bloom affects final pixels",
+  "pr_body": "## Summary\n\nAdds GPU readback coverage for the merged multi-resolution Bloom path without changing production renderer code. The first integration test verifies Bloom contributes to final tone-mapped pixels and disabling it restores the baseline. The spatial follow-up uploads a localized HDR impulse, reads back the complete output, and verifies that Bloom increases at least one pixel outside the bright source region before disappearing again when disabled.\n\nThe first spatial attempt sampled one fixed dark pixel two pixels left of the source and failed because that coordinate remained black. The corrected test does not guess a particular halo radius; it verifies the actual contract that energy spreads beyond the source footprint.\n\nPublic APIs, serialization, render resources, and runtime behavior are unchanged.\n\n## Validation\n\nRun affected Windows Validation for `engine-render-runtime` against the exact PR head. Visual Validation is not required because this PR is test-only; these readback tests verify functional pixel contribution and spatial spread, not subjective Bloom aesthetics.\n\n<!-- gameengine-chatgpt-dispatcher -->"
+}
