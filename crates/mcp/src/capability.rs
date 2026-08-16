@@ -14,8 +14,9 @@
 use crate::McpToolDescriptor;
 use engine_authoring::{
     AuthoringCapability, AuthoringCapabilityError, AuthoringCapabilityExposure,
-    AuthoringCapabilityId, AuthoringCapabilityKind, AuthoringCapabilityRegistry, AuthoringDomain,
-    AuthoringPermission, AuthoringPermissionError, AuthoringPermissions,
+    AuthoringCapabilityId, AuthoringCapabilityIdError, AuthoringCapabilityKind,
+    AuthoringCapabilityRegistry, AuthoringDomain, AuthoringPermission, AuthoringPermissionError,
+    AuthoringPermissions,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -146,6 +147,8 @@ pub enum CapabilityMcpError {
         /// Exposure the registry declares for it.
         exposure: AuthoringCapabilityExposure,
     },
+    /// The requested capability name is not a valid capability identifier.
+    InvalidCapabilityId(AuthoringCapabilityIdError),
 }
 
 impl CapabilityMcpError {
@@ -156,6 +159,7 @@ impl CapabilityMcpError {
             Self::Permission(error) => error.code(),
             Self::VerbMismatch { .. } => "mcp.capability_verb_mismatch",
             Self::NotGeneric { .. } => "mcp.capability_not_generic",
+            Self::InvalidCapabilityId(_) => "mcp.capability_invalid_id",
         }
     }
 }
@@ -181,6 +185,7 @@ impl fmt::Display for CapabilityMcpError {
                 formatter,
                 "capability `{capability}` requires its specialized adapter operation ({exposure:?})"
             ),
+            Self::InvalidCapabilityId(error) => error.fmt(formatter),
         }
     }
 }
@@ -190,6 +195,7 @@ impl std::error::Error for CapabilityMcpError {
         match self {
             Self::Registry(error) => Some(error),
             Self::Permission(error) => Some(error),
+            Self::InvalidCapabilityId(error) => Some(error),
             Self::VerbMismatch { .. } | Self::NotGeneric { .. } => None,
         }
     }
@@ -420,6 +426,26 @@ pub fn uncovered_capabilities(
         .collect()
 }
 
+/// Requires the permission the registry declares for one capability.
+///
+/// Specialized adapters whose shared service does not itself receive the
+/// session permission set call this, so the enforced permission is the registry
+/// contract instead of a constant retyped in adapter code (ADR 0132 §5, §6).
+///
+/// # Errors
+///
+/// Returns [`CapabilityMcpError`] when `id` is malformed, is not registered, or
+/// the session lacks the declared permission.
+pub fn authorize_capability(
+    registry: &AuthoringCapabilityRegistry,
+    id: &str,
+    permissions: &AuthoringPermissions,
+) -> Result<(), CapabilityMcpError> {
+    let id = AuthoringCapabilityId::try_new(id).map_err(CapabilityMcpError::InvalidCapabilityId)?;
+    registry.authorize(&id, permissions)?;
+    Ok(())
+}
+
 /// Returns registry-derived tool descriptors for one or more authoring domains.
 ///
 /// Domain adapters call this instead of hand-writing tool names, descriptions,
@@ -545,6 +571,57 @@ mod tests {
             uncovered.is_empty(),
             "capabilities without an MCP tool: {uncovered:?}"
         );
+    }
+
+    #[test]
+    fn every_advertised_tool_is_derived_from_the_registry() {
+        let registry = AuthoringCapabilityRegistry::builtin();
+        let generic = AuthoringCapabilityMcpTools::new()
+            .tool_descriptors()
+            .into_iter()
+            .map(|descriptor| descriptor.name)
+            .collect::<Vec<_>>();
+
+        for descriptor in authoring_tool_descriptors() {
+            if generic.contains(&descriptor.name) {
+                continue;
+            }
+            let capability = registry
+                .require(&AuthoringCapabilityId::new(descriptor.name.clone()))
+                .unwrap_or_else(|_| {
+                    panic!("advertised tool `{}` is not a registered capability", descriptor.name)
+                });
+            assert_eq!(
+                descriptor.description, capability.description,
+                "`{}` description must come from the registry",
+                descriptor.name
+            );
+            assert_eq!(
+                descriptor.input_schema, capability.input.json_schema,
+                "`{}` argument schema must come from the registry",
+                descriptor.name
+            );
+        }
+    }
+
+    #[test]
+    fn specialized_adapters_enforce_registry_declared_permissions() {
+        let registry = AuthoringCapabilityRegistry::builtin();
+        let read_only = AuthoringPermissions::read_only();
+
+        for capability in registry
+            .capabilities()
+            .filter(|capability| !capability.is_generic())
+        {
+            let authorized =
+                authorize_capability(&registry, capability.id.as_str(), &read_only).is_ok();
+            assert_eq!(
+                authorized,
+                capability.permission == AuthoringPermission::Read,
+                "`{}` authorization must follow its declared permission",
+                capability.id
+            );
+        }
     }
 
     #[test]
