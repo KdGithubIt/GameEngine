@@ -114,7 +114,9 @@ pub mod model_ir;
 /// Morph targets: named vertex and material deformations blended on top of a
 /// mesh (ADR 0097 §5).
 pub mod morph;
-/// Grid-backed navigation mesh and A* pathfinding.
+/// GUI-free production navigation bake service shared by authoring adapters.
+pub mod navigation_bake;
+/// Production tiled polygon navigation and runtime query facade.
 pub mod navmesh;
 /// CPU particle simulation rendered through GPU instancing (ADR 0044).
 pub mod particles;

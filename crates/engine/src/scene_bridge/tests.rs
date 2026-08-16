@@ -967,14 +967,17 @@ fn nav_agent_and_runtime_metadata_convert_from_authoring_defaults() {
     assert_eq!(metadata.team, "heroes");
 
     world.insert_resource(crate::time::FixedTime::with_delta(0.5));
-    world.insert_resource(crate::navmesh::NavMeshQuery::new(crate::navmesh::NavMesh {
-        origin_x: -5.0,
-        origin_z: -5.0,
-        cols: 10,
-        rows: 10,
-        cell_size: 1.0,
-        walkable: vec![true; 100],
-    }));
+    let nav_mesh = crate::navmesh::bake_from_obstacles(
+        &[],
+        &crate::navmesh::NavMeshSettings {
+            cell_size: 1.0,
+            agent_radius: 0.0,
+            world_min: Vec3::new(-5.0, 0.0, -5.0),
+            world_max: Vec3::new(5.0, 0.0, 5.0),
+            ..crate::navmesh::NavMeshSettings::default()
+        },
+    );
+    world.insert_resource(crate::navmesh::NavMeshQuery::new(nav_mesh));
     let mut system = crate::navmesh::nav_mesh_agent_system
         .into_system()
         .expect("navigation system");
