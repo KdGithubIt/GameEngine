@@ -1,0 +1,43 @@
++            graph_path.to_string_lossy().into_owned(),
++            view_path.to_string_lossy().into_owned(),
++            layout_commands_path.to_string_lossy().into_owned(),
++        ])
++        .expect("CLI layout apply");
++        assert_eq!(cli_layout.exit_code, 0, "{}", cli_layout.output);
++        let cli_view_value: Value = serde_json::from_str(
++            &std::fs::read_to_string(&view_path).expect("read CLI view"),
++        )
++        .expect("CLI view value");
++        assert_eq!(
++            cli_view_value,
++            serde_json::to_value(direct.graph_view().expect("direct view")).expect("view value")
++        );
++    }
++
++    #[test]
++    fn generic_ui_adapters_produce_equivalent_results_and_stale_rejection() {
++        let permissions = mcp_authoring_permissions();
++        let cli_dir = tempfile::tempdir().expect("UI parity directory");
++        let ui_path = cli_dir.path().join("parity.ui.json");
++        let commands_path = cli_dir.path().join("ui-commands.json");
++        let baseline = engine_authoring::UiDocument::default();
++        std::fs::write(
++            &ui_path,
++            baseline.to_json_string().expect("baseline UI JSON"),
++        )
++        .expect("write baseline UI");
++        let command = UiDocumentCommand::RenameNode {
++            node: "root".into(),
++            new_id: "root_parity".into(),
++        };
++        std::fs::write(
++            &commands_path,
++            serde_json::to_string_pretty(&vec![command.clone()]).expect("UI command JSON"),
++        )
++        .expect("write UI commands");
++
++        let mut direct = EditorSession::empty_behavior_tree();
++        direct
++            .open_ui_discarding_changes(ui_path.clone())
++            .expect("open direct UI");
++        let direct_base = direct

@@ -1,0 +1,44 @@
++        )
++        .expect("write graph commands");
++        let cli_graph = engine_cli::run_cli_with_status([
++            "graph".to_owned(),
++            "apply".to_owned(),
++            graph_path.to_string_lossy().into_owned(),
++            graph_commands_path.to_string_lossy().into_owned(),
++        ])
++        .expect("CLI graph apply");
++        assert_eq!(cli_graph.exit_code, 0, "{}", cli_graph.output);
++        let cli_graph_value: Value = serde_json::from_str(
++            &std::fs::read_to_string(&graph_path).expect("read CLI graph"),
++        )
++        .expect("CLI graph value");
++        assert_eq!(
++            cli_graph_value,
++            serde_json::to_value(direct.graph()).expect("direct graph value")
++        );
++
++        let viewport_command = GraphViewCommand::SetViewport {
++            viewport: Viewport::new(Vec2::new(48.0, -12.0), 1.25),
++        };
++        let direct_layout_base = direct
++            .structured_graph_view_inspect(&permissions)
++            .expect("direct layout inspect");
++        let direct_layout_preview = direct
++            .structured_graph_view_preview(
++                &permissions,
++                direct_layout_base.revision,
++                direct_layout_base.generation,
++                vec![viewport_command.clone()],
++            )
++            .expect("direct layout preview");
++        direct
++            .structured_graph_view_apply(
++                &permissions,
++                direct_layout_base.revision,
++                direct_layout_base.generation,
++                vec![viewport_command.clone()],
++            )
++            .expect("direct layout apply");
++
++        let mcp_layout_base = app
++            .handle_mcp_tool_call("graph.layout.inspect", json!({}))

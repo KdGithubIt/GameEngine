@@ -1,0 +1,56 @@
++    base_revision: u64,
++    base_generation: u64,
++    commands: Vec<GraphViewCommand>,
++) -> Result<GraphViewAuthoringMutation, GraphViewAuthoringError> {
++    let mut candidate = view.clone_for_transaction();
++    let mut transaction = GraphViewTransaction::begin(&candidate);
++    for command in commands {
++        transaction.apply(command);
++    }
++    let diff = transaction.preview_diff().to_vec();
++    if diff.is_empty() {
++        let diagnostics = candidate.validate(graph);
++        let success = !diagnostics.iter().any(Diagnostic::is_blocking);
++        return Ok(GraphViewAuthoringMutation {
++            success,
++            base_revision,
++            base_generation,
++            revision: base_revision,
++            generation: base_generation,
++            diagnostics,
++            diff,
++        });
++    }
++    match transaction.commit(&mut candidate, graph) {
++        Ok(_) => {
++            let diagnostics = candidate.validate(graph);
++            Ok(GraphViewAuthoringMutation {
++                success: !diagnostics.iter().any(Diagnostic::is_blocking),
++                base_revision,
++                base_generation,
++                revision: base_revision,
++                generation: base_generation,
++                diagnostics,
++                diff,
++            })
++        },
++        Err(GraphViewTransactionError::ValidationFailed { diagnostics }) => {
++            Ok(GraphViewAuthoringMutation {
++                success: false,
++                base_revision,
++                base_generation,
++                revision: base_revision,
++                generation: base_generation,
++                diagnostics,
++                diff,
++            })
++        }
++        Err(GraphViewTransactionError::Conflict {
++            expected_identity,
++            expected_revision,
++            actual_identity,
++            actual_revision,
++        }) => Err(GraphViewAuthoringError::Stale {
++            expected_revision,
++            expected_generation: expected_identity,
++            actual_revision,

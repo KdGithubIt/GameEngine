@@ -1,0 +1,51 @@
++            "no built-in authoring domain is registered for graph kind `{}`",
++            self.kind.as_str()
++        )
++    }
++}
++
++impl std::error::Error for UnsupportedGraphKind {}
+diff --git a/crates/authoring/src/graph_view/authoring_service.rs b/crates/authoring/src/graph_view/authoring_service.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/authoring/src/graph_view/authoring_service.rs
+@@ -0,0 +1,343 @@
++//! Shared structured authoring service for GraphView presentation documents.
++//!
++//! GraphView remains a separate presentation document from the semantic Graph.
++//! This service centralizes permission checks, stale-base rejection, preview
++//! diffs, validation, and atomic presentation commits for structured adapters.
++
++use super::{GraphView, GraphViewChange, GraphViewCommand, GraphViewTransaction, GraphViewTransactionError};
++use crate::access::{AuthoringPermission, AuthoringPermissionError, AuthoringPermissions};
++use crate::diagnostic::Diagnostic;
++use crate::graph::Graph;
++use serde::Serialize;
++use std::fmt;
++
++/// Immutable GraphView state returned by structured authoring inspection.
++#[derive(Debug, Serialize)]
++pub struct GraphViewAuthoringSnapshot {
++    /// Logical content revision of the committed GraphView.
++    pub revision: u64,
++    /// In-memory generation used to reject stale edits across reopen or undo.
++    pub generation: u64,
++    /// Complete committed presentation document.
++    pub view: GraphView,
++}
++
++/// Structured validation result for one committed GraphView.
++#[derive(Debug, Clone, PartialEq, Serialize)]
++pub struct GraphViewAuthoringValidation {
++    /// Logical content revision validated by this result.
++    pub revision: u64,
++    /// In-memory generation validated by this result.
++    pub generation: u64,
++    /// Whether no blocking presentation diagnostic was produced.
++    pub success: bool,
++    /// Structured GraphView diagnostics.
++    pub diagnostics: Vec<Diagnostic>,
++}
++
++/// Result of previewing or applying one GraphView command batch.
++#[derive(Debug, Clone, PartialEq, Serialize)]
