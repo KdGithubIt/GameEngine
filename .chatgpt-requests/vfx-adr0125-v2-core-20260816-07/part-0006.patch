@@ -1,0 +1,299 @@
++            let insert_at = if *phase_index >= remaining_phase_positions.len() {
++                remaining_phase_positions
++                    .last()
++                    .map_or(target.modules.len(), |index| index + 1)
++            } else {
++                remaining_phase_positions[*phase_index]
++            };
++            target.modules.insert(insert_at, moved);
++            Ok(VfxCommand::MoveModule {
++                emitter: emitter.clone(),
++                module: module.clone(),
++                phase_index: previous_phase_index,
++            })
++        }
++        VfxCommand::SetModuleEnabled {
++            emitter,
++            module,
++            enabled,
++        } => {
++            let target = emitter_mut(effect, emitter).ok_or_else(|| {
++                edit_error(
++                    "vfx.edit.emitter_not_found",
++                    format!("emitter `{emitter}` was not found"),
++                    Some(emitter),
++                    Some(module),
++                )
++            })?;
++            let index = module_index(target, module).ok_or_else(|| {
++                edit_error(
++                    "vfx.edit.module_not_found",
++                    format!("module `{module}` was not found"),
++                    Some(emitter),
++                    Some(module),
++                )
++            })?;
++            let previous = std::mem::replace(&mut target.modules[index].enabled, *enabled);
++            Ok(VfxCommand::SetModuleEnabled {
++                emitter: emitter.clone(),
++                module: module.clone(),
++                enabled: previous,
++            })
++        }
++        VfxCommand::ReplaceModuleOperation {
++            emitter,
++            module,
++            operation,
++        } => {
++            let target = emitter_mut(effect, emitter).ok_or_else(|| {
++                edit_error(
++                    "vfx.edit.emitter_not_found",
++                    format!("emitter `{emitter}` was not found"),
++                    Some(emitter),
++                    Some(module),
++                )
++            })?;
++            let index = module_index(target, module).ok_or_else(|| {
++                edit_error(
++                    "vfx.edit.module_not_found",
++                    format!("module `{module}` was not found"),
++                    Some(emitter),
++                    Some(module),
++                )
++            })?;
++            if operation.required_phase() != target.modules[index].phase {
++                return Err(edit_error(
++                    "vfx.edit.phase_change_forbidden",
++                    "replace operation cannot move a module to another execution phase",
++                    Some(emitter),
++                    Some(module),
++                ));
++            }
++            let previous = std::mem::replace(&mut target.modules[index].operation, operation.clone());
++            Ok(VfxCommand::ReplaceModuleOperation {
++                emitter: emitter.clone(),
++                module: module.clone(),
++                operation: previous,
++            })
++        }
++        VfxCommand::InsertCurveKey { emitter, module, key, index } => {
++            let target = module_mut(effect, emitter, module)?;
++            let curve = operation_curve_mut(&mut target.operation).ok_or_else(|| {
++                edit_error(
++                    "vfx.edit.curve_not_found",
++                    "target module does not expose a scalar curve",
++                    Some(emitter),
++                    Some(module),
++                )
++            })?;
++            if *index > curve.keys.len() {
++                return Err(edit_error(
++                    "vfx.edit.index_out_of_range",
++                    format!("curve key insertion index {index} is out of range"),
++                    Some(emitter),
++                    Some(module),
++                ));
++            }
++            if curve.keys.iter().any(|entry| entry.id == key.id) {
++                return Err(edit_error(
++                    "vfx.edit.duplicate_curve_key_id",
++                    format!("curve key `{}` already exists", key.id),
++                    Some(emitter),
++                    Some(module),
++                ));
++            }
++            curve.keys.insert(*index, key.clone());
++            Ok(VfxCommand::RemoveCurveKey {
++                emitter: emitter.clone(),
++                module: module.clone(),
++                key: key.id.clone(),
++            })
++        }
++        VfxCommand::RemoveCurveKey { emitter, module, key } => {
++            let target = module_mut(effect, emitter, module)?;
++            let curve = operation_curve_mut(&mut target.operation).ok_or_else(|| {
++                edit_error(
++                    "vfx.edit.curve_not_found",
++                    "target module does not expose a scalar curve",
++                    Some(emitter),
++                    Some(module),
++                )
++            })?;
++            let index = curve.keys.iter().position(|entry| &entry.id == key).ok_or_else(|| {
++                edit_error(
++                    "vfx.edit.curve_key_not_found",
++                    format!("curve key `{key}` was not found"),
++                    Some(emitter),
++                    Some(module),
++                )
++            })?;
++            let removed = curve.keys.remove(index);
++            Ok(VfxCommand::InsertCurveKey {
++                emitter: emitter.clone(),
++                module: module.clone(),
++                key: removed,
++                index,
++            })
++        }
++        VfxCommand::SetCurveKey {
++            emitter, module, key, time, value, interpolation,
++        } => {
++            let target = module_mut(effect, emitter, module)?;
++            let curve = operation_curve_mut(&mut target.operation).ok_or_else(|| {
++                edit_error(
++                    "vfx.edit.curve_not_found",
++                    "target module does not expose a scalar curve",
++                    Some(emitter),
++                    Some(module),
++                )
++            })?;
++            let entry = curve.keys.iter_mut().find(|entry| &entry.id == key).ok_or_else(|| {
++                edit_error(
++                    "vfx.edit.curve_key_not_found",
++                    format!("curve key `{key}` was not found"),
++                    Some(emitter),
++                    Some(module),
++                )
++            })?;
++            let inverse = VfxCommand::SetCurveKey {
++                emitter: emitter.clone(),
++                module: module.clone(),
++                key: key.clone(),
++                time: entry.time,
++                value: entry.value,
++                interpolation: entry.interpolation,
++            };
++            entry.time = *time;
++            entry.value = *value;
++            entry.interpolation = *interpolation;
++            Ok(inverse)
++        }
++        VfxCommand::InsertGradientKey { emitter, module, key, index } => {
++            let target = module_mut(effect, emitter, module)?;
++            let gradient = operation_gradient_mut(&mut target.operation).ok_or_else(|| {
++                edit_error(
++                    "vfx.edit.gradient_not_found",
++                    "target module does not expose a color gradient",
++                    Some(emitter),
++                    Some(module),
++                )
++            })?;
++            if *index > gradient.keys.len() {
++                return Err(edit_error(
++                    "vfx.edit.index_out_of_range",
++                    format!("gradient key insertion index {index} is out of range"),
++                    Some(emitter),
++                    Some(module),
++                ));
++            }
++            if gradient.keys.iter().any(|entry| entry.id == key.id) {
++                return Err(edit_error(
++                    "vfx.edit.duplicate_gradient_key_id",
++                    format!("gradient key `{}` already exists", key.id),
++                    Some(emitter),
++                    Some(module),
++                ));
++            }
++            gradient.keys.insert(*index, key.clone());
++            Ok(VfxCommand::RemoveGradientKey {
++                emitter: emitter.clone(),
++                module: module.clone(),
++                key: key.id.clone(),
++            })
++        }
++        VfxCommand::RemoveGradientKey { emitter, module, key } => {
++            let target = module_mut(effect, emitter, module)?;
++            let gradient = operation_gradient_mut(&mut target.operation).ok_or_else(|| {
++                edit_error(
++                    "vfx.edit.gradient_not_found",
++                    "target module does not expose a color gradient",
++                    Some(emitter),
++                    Some(module),
++                )
++            })?;
++            let index = gradient.keys.iter().position(|entry| &entry.id == key).ok_or_else(|| {
++                edit_error(
++                    "vfx.edit.gradient_key_not_found",
++                    format!("gradient key `{key}` was not found"),
++                    Some(emitter),
++                    Some(module),
++                )
++            })?;
++            let removed = gradient.keys.remove(index);
++            Ok(VfxCommand::InsertGradientKey {
++                emitter: emitter.clone(),
++                module: module.clone(),
++                key: removed,
++                index,
++            })
++        }
++        VfxCommand::SetGradientKey { emitter, module, key, time, color } => {
++            let target = module_mut(effect, emitter, module)?;
++            let gradient = operation_gradient_mut(&mut target.operation).ok_or_else(|| {
++                edit_error(
++                    "vfx.edit.gradient_not_found",
++                    "target module does not expose a color gradient",
++                    Some(emitter),
++                    Some(module),
++                )
++            })?;
++            let entry = gradient.keys.iter_mut().find(|entry| &entry.id == key).ok_or_else(|| {
++                edit_error(
++                    "vfx.edit.gradient_key_not_found",
++                    format!("gradient key `{key}` was not found"),
++                    Some(emitter),
++                    Some(module),
++                )
++            })?;
++            let inverse = VfxCommand::SetGradientKey {
++                emitter: emitter.clone(),
++                module: module.clone(),
++                key: key.clone(),
++                time: entry.time,
++                color: entry.color,
++            };
++            entry.time = *time;
++            entry.color = *color;
++            Ok(inverse)
++        }
++    }
++}
++
++fn module(operation: VfxModuleOperation) -> VfxModule {
++    VfxModule::new(operation)
++}
++
++fn base_emitter(name: &str, max_particles: u32) -> VfxEmitter {
++    VfxEmitter::new(name, max_particles)
++}
++
++fn spark_template() -> VfxEffect {
++    let mut effect = VfxEffect::new("spark", 1024);
++    let mut emitter = base_emitter("sparks", 512);
++    emitter.modules = vec![
++        module(VfxModuleOperation::Burst { time: 0.0, count: 48 }),
++        module(VfxModuleOperation::Shape {
++            shape: VfxShape::Cone {
++                direction: [0.0, 1.0, 0.0],
++                angle_radians: 0.8,
++                radius: 0.05,
++            },
++        }),
++        module(VfxModuleOperation::Lifetime {
++            value: VfxScalarValue::Range {
++                min: 0.25,
++                max: 0.8,
++                channel: VfxRandomChannel::new(0),
++            },
++        }),
++        module(VfxModuleOperation::InitialVelocity {
++            value: VfxVectorValue::Range {
++                min: [-2.0, 2.0, -2.0],
++                max: [2.0, 7.0, 2.0],
++                channel: VfxRandomChannel::new(1),
++            },
++        }),
++        module(VfxModuleOperation::InitialColor {
++            color: [1.0, 0.8, 0.25, 1.0],
++        }),
++        module(VfxModuleOperation::InitialSize {
