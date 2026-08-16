@@ -49,6 +49,62 @@ impl Default for DirectionalLight {
     }
 }
 
+/// A finite-range omnidirectional light attached to an entity transform.
+///
+/// The renderer reads the world-space position from the entity's
+/// [`crate::transform::GlobalTransform`]. Point lights do not cast shadows in
+/// the Phase 4 direct-light contract.
+#[derive(Debug, Clone)]
+pub struct PointLight {
+    /// Linear RGB light color.
+    pub color: Vec3,
+    /// Radiant-intensity multiplier before distance attenuation.
+    pub intensity: f32,
+    /// Maximum world-space influence distance.
+    pub range: f32,
+}
+
+impl Default for PointLight {
+    fn default() -> Self {
+        Self {
+            color: Vec3::ONE,
+            intensity: 10.0,
+            range: 10.0,
+        }
+    }
+}
+
+/// A finite-range cone light attached to an entity transform.
+///
+/// Position comes from [`crate::transform::GlobalTransform`] translation and
+/// the light travels along the entity's local `-Z` axis. Spot lights do not
+/// cast shadows in the Phase 4 direct-light contract.
+#[derive(Debug, Clone)]
+pub struct SpotLight {
+    /// Linear RGB light color.
+    pub color: Vec3,
+    /// Radiant-intensity multiplier before distance and cone attenuation.
+    pub intensity: f32,
+    /// Maximum world-space influence distance.
+    pub range: f32,
+    /// Full-intensity cone half-angle in radians.
+    pub inner_angle_radians: f32,
+    /// Zero-intensity cone half-angle in radians.
+    pub outer_angle_radians: f32,
+}
+
+impl Default for SpotLight {
+    fn default() -> Self {
+        Self {
+            color: Vec3::ONE,
+            intensity: 10.0,
+            range: 10.0,
+            inner_angle_radians: 20.0_f32.to_radians(),
+            outer_angle_radians: 30.0_f32.to_radians(),
+        }
+    }
+}
+
 /// Procedural gradient sky drawn behind all scene geometry.
 ///
 /// Insert this as an ECS resource to control the background. When absent
@@ -114,6 +170,17 @@ mod tests {
     fn default_ambient_light_has_low_intensity() {
         let light = AmbientLight::default();
         assert!(light.intensity < 0.5, "ambient should be subtle by default");
+    }
+
+    #[test]
+    fn default_local_lights_have_finite_ranges_and_ordered_spot_cones() {
+        let point = PointLight::default();
+        let spot = SpotLight::default();
+        assert!(point.range.is_finite() && point.range > 0.0);
+        assert!(spot.range.is_finite() && spot.range > 0.0);
+        assert!(spot.inner_angle_radians >= 0.0);
+        assert!(spot.inner_angle_radians < spot.outer_angle_radians);
+        assert!(spot.outer_angle_radians < std::f32::consts::FRAC_PI_2);
     }
 
     #[test]

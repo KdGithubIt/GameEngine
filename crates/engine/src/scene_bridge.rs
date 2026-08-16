@@ -22,7 +22,7 @@ use crate::combat::DamageReceiver;
 use crate::components::{builtin_registry, ComponentRegistry, ComponentSpawnError, SpawnContext};
 use crate::foot_ik::FootIk;
 use crate::game_module::{GameModule, GameModuleResource, GameModuleRunError};
-use crate::light::{AmbientLight, DirectionalLight};
+use crate::light::{AmbientLight, DirectionalLight, PointLight, SpotLight};
 use crate::lock_on::LockOnTarget;
 use crate::lod::{LodGroup, LodLevel};
 #[cfg(test)]
@@ -100,6 +100,12 @@ pub const CAMERA_COMPONENT: &str = "engine.camera";
 
 /// The `"engine.directional_light"` component type string recognised by the bridge.
 pub const DIRECTIONAL_LIGHT_COMPONENT: &str = "engine.directional_light";
+
+/// The stable authoring component for a transform-positioned point light.
+pub const POINT_LIGHT_COMPONENT: &str = "engine.point_light";
+
+/// The stable authoring component for a transform-oriented spot light.
+pub const SPOT_LIGHT_COMPONENT: &str = "engine.spot_light";
 
 /// The `"engine.ambient_light"` component type string recognised by the bridge.
 pub const AMBIENT_LIGHT_COMPONENT: &str = "engine.ambient_light";

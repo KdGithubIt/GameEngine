@@ -2328,6 +2328,78 @@ pub(crate) fn spawn_directional_light_component(
     Ok(())
 }
 
+pub(crate) fn spawn_point_light_component(
+    entity: Entity,
+    value: &Value,
+    context: &mut SpawnContext<'_>,
+) -> Result<(), ComponentSpawnError> {
+    const EXPECTED: &str = "an object with unit-range color, non-negative intensity, and positive range";
+    let component_type = ComponentTypeId::new(POINT_LIGHT_COMPONENT);
+    let fields = ComponentFields::new(context.authoring_entity, &component_type, value, EXPECTED)?;
+    let color = fields.color()?;
+    let intensity = fields.f32("intensity")?;
+    let range = fields.f32("range")?;
+    if color.min_element() < 0.0
+        || color.max_element() > 1.0
+        || !intensity.is_finite()
+        || intensity < 0.0
+        || !range.is_finite()
+        || range <= 0.0
+    {
+        return Err(fields.invalid(EXPECTED).into());
+    }
+    context.world.add_component(
+        entity,
+        PointLight {
+            color,
+            intensity,
+            range,
+        },
+    )?;
+    Ok(())
+}
+
+pub(crate) fn spawn_spot_light_component(
+    entity: Entity,
+    value: &Value,
+    context: &mut SpawnContext<'_>,
+) -> Result<(), ComponentSpawnError> {
+    const EXPECTED: &str =
+        "an object with unit-range color, non-negative intensity, positive range, and 0 <= inner_angle_degrees < outer_angle_degrees < 90";
+    let component_type = ComponentTypeId::new(SPOT_LIGHT_COMPONENT);
+    let fields = ComponentFields::new(context.authoring_entity, &component_type, value, EXPECTED)?;
+    let color = fields.color()?;
+    let intensity = fields.f32("intensity")?;
+    let range = fields.f32("range")?;
+    let inner_angle_degrees = fields.f32("inner_angle_degrees")?;
+    let outer_angle_degrees = fields.f32("outer_angle_degrees")?;
+    if color.min_element() < 0.0
+        || color.max_element() > 1.0
+        || !intensity.is_finite()
+        || intensity < 0.0
+        || !range.is_finite()
+        || range <= 0.0
+        || !inner_angle_degrees.is_finite()
+        || !outer_angle_degrees.is_finite()
+        || inner_angle_degrees < 0.0
+        || inner_angle_degrees >= outer_angle_degrees
+        || outer_angle_degrees >= 90.0
+    {
+        return Err(fields.invalid(EXPECTED).into());
+    }
+    context.world.add_component(
+        entity,
+        SpotLight {
+            color,
+            intensity,
+            range,
+            inner_angle_radians: inner_angle_degrees.to_radians(),
+            outer_angle_radians: outer_angle_degrees.to_radians(),
+        },
+    )?;
+    Ok(())
+}
+
 pub(crate) fn spawn_ambient_light_component(
     entity: Entity,
     value: &Value,

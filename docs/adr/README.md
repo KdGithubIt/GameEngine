@@ -180,6 +180,7 @@ canonical specification MUST also update
 | [0120](0120-generic-pbr-material-texture-contract.md) | Generic PBR Material Texture Contract |
 | [0121](0121-ai-native-authoring-parity-and-project-scoped-mcp-lifecycle.md) | AI-Native Authoring Parity and Project-Scoped MCP Lifecycle |
 | [0122](0122-renderer-owned-full-image-based-lighting.md) | Renderer-Owned Full Image-Based Lighting |
+| [0123](0123-generic-directional-point-spot-lighting.md) | Generic Directional, Point, and Spot Direct Lighting |
 
 ## Phase 41+ ADR Targets
 
