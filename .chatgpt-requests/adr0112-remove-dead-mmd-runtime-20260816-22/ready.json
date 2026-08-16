@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0112-remove-dead-mmd-runtime-20260816-22",
+  "target_branch": "chatgpt/gameengine-adr-0112-secondary-motion-v2",
+  "expected_head_sha": "8444366ad3ed30563868e87fa6109973689eb1c3",
+  "patch_parts": ["part-0000.patch"],
+  "commit_message": "Remove obsolete MMD runtime physics implementation",
+  "pr_title": "Implement ADR 0112 engine-native secondary motion",
+  "pr_body": "## Summary\n\nImplements ADR 0112 engine-native Secondary Motion. This follow-up deletes the orphaned pre-cutover `crates/engine/src/mmd_physics.rs` implementation. The file is no longer compiled by the engine module graph and still encoded the removed MMD/Bullet runtime fidelity contract, old rigid-body aliases, MMD-specific gravity, damping, and seek pre-roll behavior.\n\nThe current engine-native Secondary Motion implementation remains in `engine-physics` / `engine-rig`. The PR remains Draft through final audit and validation."
+}
