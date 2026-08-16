@@ -3981,7 +3981,7 @@ mod tests {
         assert!(
             animation_only
                 .world()
-                .get_resource::<engine::MmdPhysicsWorlds>()
+                .get_resource::<engine::SecondaryMotionWorlds>()
                 .is_none()
         );
         run_animation_preview_step(&mut animation_only, 0.0);
@@ -3991,7 +3991,7 @@ mod tests {
         assert!(
             with_secondary_physics
                 .world()
-                .get_resource::<engine::MmdPhysicsWorlds>()
+                .get_resource::<engine::SecondaryMotionWorlds>()
                 .is_some()
         );
         run_animation_preview_step(&mut with_secondary_physics, 0.0);
