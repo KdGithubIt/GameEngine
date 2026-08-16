@@ -118,6 +118,8 @@ pub mod morph;
 pub mod navmesh;
 /// CPU particle simulation rendered through GPU instancing (ADR 0044).
 pub mod particles;
+/// Typed VFX effect playback and deterministic runtime simulation (ADR 0125).
+pub mod vfx;
 /// Velocity, gravity, and restitution for dynamic physics bodies.
 pub mod physics;
 /// Player-controlled entity marker component.
@@ -320,6 +322,11 @@ pub use navmesh::{
 #[cfg(not(target_arch = "wasm32"))]
 pub use navmesh::{bake_navmesh, load_navmesh, save_navmesh};
 pub use particles::{particle_update_system, ParticleEmitter};
+pub use vfx::{
+    vfx_update_system, VfxInstance, VfxPlayer, VfxRenderBinding, VfxRenderBindings,
+    VfxRenderParticle, VfxRestartPolicy, VfxRuntimeBackend, VfxRuntimeStats,
+    VFX_PREVIEW_STEP_SECONDS,
+};
 pub use physics::{
     gravity_system, restitution_system, velocity_system, GameplayPhysicsWorld, Gravity,
     GravityScale, Velocity,

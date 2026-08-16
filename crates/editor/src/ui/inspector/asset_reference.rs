@@ -100,6 +100,7 @@ pub(in crate::ui) fn asset_reference_browser_kind(
         engine::AssetKind::NavMesh => BrowserKind::NavMesh,
         engine::AssetKind::UiDocument => BrowserKind::UiDocument,
         engine::AssetKind::Prefab => BrowserKind::Prefab,
+        engine::AssetKind::VfxEffect => BrowserKind::Graph,
     }
 }
 

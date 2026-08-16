@@ -45,13 +45,14 @@ use crate::skinning::{
 };
 use crate::transform::{Children, GlobalTransform, Parent, Transform};
 use crate::ui_document::{load_ui_document, UiDocumentRef};
-use engine_authoring::id::{AssetId, ComponentTypeId, EntityId};
+use crate::vfx::{VfxPlayer, VfxRenderBinding, VfxRenderBindings, VfxRestartPolicy};
+use engine_authoring::id::{AssetId, ComponentTypeId, EntityId, StableId};
 use engine_authoring::scene::AuthoringScene;
 use engine_authoring::ui::{UiDocument, UiNode, UiNodeKind, UiString};
 use engine_authoring::value::Value;
 use engine_authoring::{
     AnimationSet, AuthoringEntity, BehaviorTreeAuthoringService, Diagnostic, DiagnosticTarget,
-    Graph,
+    Graph, VfxAuthoringService, VfxModuleOperation,
 };
 use engine_ecs::{Entity, World};
 use glam::{EulerRot, Mat4, Quat, Vec3};
@@ -130,6 +131,9 @@ pub const FOLLOW_CAMERA_COMPONENT: &str = "engine.follow_camera";
 
 /// The `"engine.particle_emitter"` component type string recognised by the bridge.
 pub const PARTICLE_EMITTER_COMPONENT: &str = "engine.particle_emitter";
+
+/// The typed scene VFX player component defined by ADR 0125.
+pub const VFX_PLAYER_COMPONENT: &str = "engine.vfx_player";
 
 /// The `"engine.ui_document"` component type string recognised by the bridge
 /// (Phase 54).
