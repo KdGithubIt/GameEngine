@@ -1,0 +1,421 @@
++    let required_width = profile.radius.max(0.0) * 2.0;
++    let climb_tolerance = profile.max_climb.max(1.0 / EDGE_QUANTIZATION) + 1.0e-4;
++    let index = polygon_index(tiles);
++    for (key, shared) in &edges {
++        if shared.len() < 2 {
++            continue;
++        }
++        for first_index in 0..shared.len() {
++            for second_index in (first_index + 1)..shared.len() {
++                let (first, first_a, first_b) = shared[first_index];
++                let (second, second_a, second_b) = shared[second_index];
++                let (first_a, first_b) = canonical_edge(*key, first_a, first_b);
++                let (second_a, second_b) = canonical_edge(*key, second_a, second_b);
++                let left = (first_a + second_a) * 0.5;
++                let right = (first_b + second_b) * 0.5;
++                let vertical_delta = (first_a.y - second_a.y)
++                    .abs()
++                    .max((first_b.y - second_b.y).abs());
++                if vertical_delta > climb_tolerance
++                    || left.distance(right) + 1.0e-4 < required_width
++                {
++                    continue;
++                }
++                let Some(first_center) = centers.get(&first).copied() else {
++                    continue;
++                };
++                let Some(second_center) = centers.get(&second).copied() else {
++                    continue;
++                };
++-                let (first_left, first_right) = orient_portal(first_a, first_b, first_center, second_center);
++-                let (second_left, second_right) = orient_portal(first_a, first_b, second_center, first_center);
+++                let (first_left, first_right) =
+++                    orient_portal(left, right, first_center, second_center);
+++                let (second_left, second_right) =
+++                    orient_portal(left, right, second_center, first_center);
++                 if let Some((tile_index, polygon_index)) = index.get(&first).copied() {
++                     tiles[tile_index].polygons[polygon_index]
++                         .portals
++@@ -1015,10 +1042,6 @@ impl NavMeshQuery {
++             NavigationPathResult::Failure(NavigationQueryFailure::MissingNavigationData)
++         }
++     }
++-    let Some((end_ref, end_point)) = nearest_polygon_in_profile(profile, end) else {
++-        return NavigationPathResult::Failure(NavigationQueryFailure::EndOutside);
++-    };
++-    let end_is_near = end.distance(end_point) <= DEFAULT_NEAREST_DISTANCE;
++     match astar_polygons(profile, start_ref, end_ref) {
++         Some(search) => {
++             let path = materialize_path(profile, start_point, end_point, search);
++@@ -1028,7 +1051,26 @@ impl NavMeshQuery {
++                 NavigationPathResult::Partial(path)
++             }
++         }
++-        None => NavigationPathResult::Failure(NavigationQueryFailure::NoPath),
+++        None => {
+++            let Some((search, partial_end)) = best_partial_search(profile, start_ref, end_point)
+++            else {
+++                return NavigationPathResult::Failure(NavigationQueryFailure::NoPath);
+++            };
+++            NavigationPathResult::Partial(materialize_path(
+++                profile,
+++                start_point,
+++                partial_end,
+++                search,
+++            ))
+++        }
++     }
++ }
+++
+++fn best_partial_search(
+++    profile: &NavigationProfileMesh,
+++    start: NavigationPolygonRef,
+++    requested_end: Vec3,
+++) -> Option<(SearchResult, Vec3)> {
+++    let centers = profile_polygon_centers(profile);
+++    let mut candidates = centers
+++        .iter()
+++        .map(|(reference, center)| (*reference, center.distance_squared(requested_end)))
+++        .collect::<Vec<_>>();
+++    candidates.sort_by(|left, right| {
+++        left.1
+++            .total_cmp(&right.1)
+++            .then_with(|| left.0.cmp(&right.0))
+++    });
+++    for (reference, _) in candidates {
+++        let Some(search) = astar_polygons(profile, start, reference) else {
+++            continue;
+++        };
+++        let end = nearest_point_on_polygon(profile, reference, requested_end)
+++            .or_else(|| centers.get(&reference).copied())?;
+++        return Some((search, end));
+++    }
+++    None
+++}
++ 
++ fn nearest_polygon_in_profile(
++     profile: &NavigationProfileMesh,
++@@ -1065,6 +1107,31 @@ fn nearest_polygon_in_profile(
++     best.map(|(reference, nearest, _)| (reference, nearest))
++ }
++ 
+++fn nearest_point_on_polygon(
+++    profile: &NavigationProfileMesh,
+++    reference: NavigationPolygonRef,
+++    point: Vec3,
+++) -> Option<Vec3> {
+++    let index = polygon_index(&profile.tiles);
+++    let (tile_index, polygon_index) = *index.get(&reference)?;
+++    let tile = &profile.tiles[tile_index];
+++    let polygon = &tile.polygons[polygon_index];
+++    if polygon.vertices.len() < 3 {
+++        return None;
+++    }
+++    let a = Vec3::from_array(tile.vertices[polygon.vertices[0] as usize]);
+++    let mut best = None;
+++    for pair in polygon.vertices[1..].windows(2) {
+++        let b = Vec3::from_array(tile.vertices[pair[0] as usize]);
+++        let c = Vec3::from_array(tile.vertices[pair[1] as usize]);
+++        let nearest = closest_point_on_triangle(point, a, b, c);
+++        let distance = point.distance_squared(nearest);
+++        if best
+++            .as_ref()
+++            .is_none_or(|(_, best_distance)| distance < *best_distance)
+++        {
+++            best = Some((nearest, distance));
+++        }
+++    }
+++    best.map(|(nearest, _)| nearest)
+++}
+++
++ fn closest_point_on_triangle(point: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Vec3 {
++     let ab = b - a;
++     let ac = c - a;
++@@ -1217,6 +1284,17 @@ fn astar_polygons(
++     None
++ }
++ 
+++fn profile_polygon_centers(
+++    profile: &NavigationProfileMesh,
+++) -> HashMap<NavigationPolygonRef, Vec3> {
+++    let index = polygon_index(&profile.tiles);
+++    polygon_centers(profile, &index)
+++}
+++
++ fn relax(
++     next: NavigationPolygonRef,
++     current: NavigationPolygonRef,
++@@ -1751,6 +1829,95 @@ mod tests {
++         ));
++     }
++ 
+++    #[test]
+++    fn adjacent_surfaces_with_excessive_step_do_not_connect() {
+++        let mut build = input(vec![
+++            triangle(
+++                Vec3::new(0.0, 0.0, 0.0),
+++                Vec3::new(1.0, 0.0, 0.0),
+++                Vec3::new(1.0, 0.0, 1.0),
+++            ),
+++            triangle(
+++                Vec3::new(0.0, 0.0, 0.0),
+++                Vec3::new(1.0, 0.0, 1.0),
+++                Vec3::new(0.0, 0.0, 1.0),
+++            ),
+++            triangle(
+++                Vec3::new(1.0, 0.5, 0.0),
+++                Vec3::new(2.0, 0.5, 0.0),
+++                Vec3::new(2.0, 0.5, 1.0),
+++            ),
+++            triangle(
+++                Vec3::new(1.0, 0.5, 0.0),
+++                Vec3::new(2.0, 0.5, 1.0),
+++                Vec3::new(1.0, 0.5, 1.0),
+++            ),
+++        ]);
+++        build.profiles[0].max_climb = 0.2;
+++        let asset = ProductionNavigationBaker
+++            .bake(&build, &|| false)
+++            .expect("fixture must bake");
+++        let query = NavMeshQuery::new(asset);
+++        assert!(matches!(
+++            query.query_path(
+++                DEFAULT_NAVIGATION_PROFILE,
+++                Vec3::new(0.25, 0.0, 0.5),
+++                Vec3::new(1.75, 0.5, 0.5),
+++            ),
+++            NavigationPathResult::Partial(_)
+++        ));
+++    }
+++
+++    #[test]
+++    fn agent_diameter_larger_than_portal_width_does_not_connect() {
+++        let mut build = input(vec![
+++            triangle(
+++                Vec3::new(0.0, 0.0, 0.0),
+++                Vec3::new(1.0, 0.0, 0.0),
+++                Vec3::new(1.0, 0.0, 1.0),
+++            ),
+++            triangle(
+++                Vec3::new(0.0, 0.0, 0.0),
+++                Vec3::new(1.0, 0.0, 1.0),
+++                Vec3::new(0.0, 0.0, 1.0),
+++            ),
+++            triangle(
+++                Vec3::new(1.0, 0.0, 0.0),
+++                Vec3::new(2.0, 0.0, 0.0),
+++                Vec3::new(2.0, 0.0, 0.5),
+++            ),
+++            triangle(
+++                Vec3::new(1.0, 0.0, 0.0),
+++                Vec3::new(2.0, 0.0, 0.5),
+++                Vec3::new(1.0, 0.0, 0.5),
+++            ),
+++        ]);
+++        build.profiles[0].radius = 0.3;
+++        let asset = ProductionNavigationBaker
+++            .bake(&build, &|| false)
+++            .expect("fixture must bake");
+++        let query = NavMeshQuery::new(asset);
+++        assert!(matches!(
+++            query.query_path(
+++                DEFAULT_NAVIGATION_PROFILE,
+++                Vec3::new(0.25, 0.0, 0.25),
+++                Vec3::new(1.75, 0.0, 0.25),
+++            ),
+++            NavigationPathResult::Partial(_)
+++        ));
+++    }
+++
++     #[test]
++     fn area_cost_prefers_lower_cost_corridor() {
++         let mut build = input(vec![
++diff --git a/crates/physics/src/navigation_bake.rs b/crates/physics/src/navigation_bake.rs
++new file mode 100644
++index 0000000..41a6171
++--- /dev/null
+++++ b/crates/physics/src/navigation_bake.rs
++@@ -0,0 +1,732 @@
+++//! GUI-free production navigation bake document and service (ADR 0124).
+++//!
+++//! This module deliberately has no Editor dependency. Editor, CLI, MCP, build, and future
+++//! automation adapters prepare [`NavigationSource`] values and invoke the same deterministic
+++//! service. Only a successful bake replaces the last-good derived asset.
+++
+++use std::fmt;
+++use std::fs::{self, OpenOptions};
+++use std::io::{self, Write};
+++use std::path::{Path, PathBuf};
+++use std::sync::atomic::{AtomicBool, Ordering};
+++use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+++
+++use serde::{Deserialize, Serialize};
+++
+++use crate::navigation::{
+++    NavMesh, NavigationAgentProfile, NavigationBakeError, NavigationBaker, NavigationBuildInput,
+++    NavigationBuildLink, NavigationModifier, NavigationTriangle, ProductionNavigationBaker,
+++};
+++
+++/// Current serialized `.navmesh.bake.json` schema.
+++pub const NAVMESH_BAKE_SCHEMA_VERSION: u32 = 2;
+++
+++/// Persisted production navigation bake settings.
+++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+++pub struct NavMeshBakeSettings {
+++    /// Edge length of one independently rebuildable tile in world units.
+++    pub tile_size: f32,
+++    /// Stable agent profiles baked into independent tile sets.
+++    pub profiles: Vec<NavigationAgentProfile>,
+++}
+++
+++impl Default for NavMeshBakeSettings {
+++    fn default() -> Self {
+++        Self {
+++            tile_size: 16.0,
+++            profiles: vec![NavigationAgentProfile::default()],
+++        }
+++    }
+++}
+++
+++/// Versioned scene-owned source document for one production navigation artifact.
+++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+++pub struct NavMeshBakeDocument {
+++    /// Document schema version.
+++    pub schema_version: u32,
+++    /// Relative `.navmesh.json` output path beneath the project assets root.
+++    pub output_asset: String,
+++    /// Normalized source fingerprint used by the last successful bake.
+++    pub source_fingerprint: Option<String>,
+++    /// User-editable production bake settings.
+++    pub settings: NavMeshBakeSettings,
+++}
+++
+++impl Default for NavMeshBakeDocument {
+++    fn default() -> Self {
+++        Self {
+++            schema_version: NAVMESH_BAKE_SCHEMA_VERSION,
+++            output_asset: "navigation/arena.navmesh.json".to_owned(),
+++            source_fingerprint: None,
+++            settings: NavMeshBakeSettings::default(),
+++        }
+++    }
+++}
+++
+++impl NavMeshBakeDocument {
+++    /// Parses the current schema and migrates legacy planar v1 documents in memory.
+++    ///
+++    /// # Errors
+++    ///
+++    /// Returns [`NavigationBakeServiceError`] for malformed JSON or unsupported versions.
+++    pub fn from_json(json: &str) -> Result<Self, NavigationBakeServiceError> {
+++        let value: serde_json::Value =
+++            serde_json::from_str(json).map_err(NavigationBakeServiceError::Json)?;
+++        let version = value
+++            .get("schema_version")
+++            .and_then(serde_json::Value::as_u64)
+++            .unwrap_or(1) as u32;
+++        let document = match version {
+++            1 => migrate_v1_document(
+++                serde_json::from_value(value).map_err(NavigationBakeServiceError::Json)?,
+++            ),
+++            NAVMESH_BAKE_SCHEMA_VERSION => {
+++                serde_json::from_value(value).map_err(NavigationBakeServiceError::Json)?
+++            }
+++            other => return Err(NavigationBakeServiceError::UnsupportedVersion(other)),
+++        };
+++        document.validate()?;
+++        Ok(document)
+++    }
+++
+++    /// Serializes stable pretty JSON.
+++    ///
+++    /// # Errors
+++    ///
+++    /// Returns [`NavigationBakeServiceError`] when validation or JSON serialization fails.
+++    pub fn to_canonical_json(&self) -> Result<String, NavigationBakeServiceError> {
+++        self.validate()?;
+++        serde_json::to_string_pretty(self).map_err(NavigationBakeServiceError::Json)
+++    }
+++
+++    /// Validates output confinement and production profile settings.
+++    ///
+++    /// # Errors
+++    ///
+++    /// Returns [`NavigationBakeServiceError::InvalidSettings`] when values are invalid.
+++    pub fn validate(&self) -> Result<(), NavigationBakeServiceError> {
+++        if self.schema_version != NAVMESH_BAKE_SCHEMA_VERSION
+++            || !self.settings.tile_size.is_finite()
+++            || self.settings.tile_size <= 0.0
+++            || self.settings.profiles.is_empty()
+++            || !self.output_asset.ends_with(".navmesh.json")
+++        {
+++            return Err(NavigationBakeServiceError::InvalidSettings);
+++        }
+++        let path = Path::new(&self.output_asset);
+++        if path.is_absolute()
+++            || path
+++                .components()
+++                .any(|part| matches!(part, std::path::Component::ParentDir))
+++        {
+++            return Err(NavigationBakeServiceError::InvalidSettings);
+++        }
+++        let input = NavigationBuildInput {
+++            source_fingerprint: "validation".to_owned(),
+++            triangles: vec![NavigationTriangle {
+++                a: [0.0, 0.0, 0.0],
+++                b: [1.0, 0.0, 0.0],
+++                c: [0.0, 0.0, 1.0],
+++                area: 0,
+++            }],
+++            modifiers: Vec::new(),
+++            links: Vec::new(),
+++            profiles: self.settings.profiles.clone(),
+++            tile_size: self.settings.tile_size,
+++        };
+++        input
+++            .validate()
+++            .map_err(|_| NavigationBakeServiceError::InvalidSettings)
+++    }
+++}
+++
+++#[derive(Debug, Deserialize)]
+++struct LegacyBakeVector3([f32; 3]);
+++
+++#[derive(Debug, Deserialize)]
+++struct LegacyNavMeshBakeSettings {
+++    cell_size: f32,
+++    agent_radius: f32,
+++    world_min: LegacyBakeVector3,
+++    world_max: LegacyBakeVector3,
+++    walkable_height: f32,
+++    agent_height: f32,
+++}
+++
+++#[derive(Debug, Deserialize)]
+++struct LegacyNavMeshBakeDocument {
+++    output_asset: String,
+++    source_fingerprint: Option<String>,
+++    settings: LegacyNavMeshBakeSettings,
+++}
+++
+++fn migrate_v1_document(legacy: LegacyNavMeshBakeDocument) -> NavMeshBakeDocument {
+++    let extent_x = (legacy.settings.world_max.0[0] - legacy.settings.world_min.0[0]).abs();
+++    let extent_z = (legacy.settings.world_max.0[2] - legacy.settings.world_min.0[2]).abs();
+++    let extent = extent_x.max(extent_z).max(1.0);
+++    let _legacy_height = legacy.settings.walkable_height;
+++    NavMeshBakeDocument {
+++        schema_version: NAVMESH_BAKE_SCHEMA_VERSION,
+++        output_asset: legacy.output_asset,
+++        // Legacy fingerprints describe the old planar source model. Even if one existed,
+++        // migration must force one production rebake instead of treating it as current.
+++        source_fingerprint: legacy.source_fingerprint.map(|_| "legacy-v1-stale".to_owned()),
+++        settings: NavMeshBakeSettings {
+++            tile_size: (legacy.settings.cell_size.max(0.01) * 32.0).clamp(4.0, extent.max(4.0)),
+++            profiles: vec![NavigationAgentProfile {
+++                radius: legacy.settings.agent_radius.max(0.0),
+++                height: legacy.settings.agent_height.max(0.01),
+++                ..NavigationAgentProfile::default()
+++            }],
+++        },
+++    }
+++}
