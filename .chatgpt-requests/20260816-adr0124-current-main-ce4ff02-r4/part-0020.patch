@@ -1,0 +1,65 @@
++            panic!("disconnected target should produce a partial route");
++        };
++        assert!(path.corridor.len() >= 2);
++        assert!(path.waypoints.last().unwrap().x < 5.0);
++    }
++
+     #[test]
+     fn slope_limit_changes_reachable_geometry_by_profile() {
+         let sloped = vec![triangle(
+diff --git a/crates/physics/src/navigation_bake.rs b/crates/physics/src/navigation_bake.rs
+new file mode 100644
+index 0000000..37da937
+--- /dev/null
++++ b/crates/physics/src/navigation_bake.rs
+@@ -0,0 +1,574 @@
++//! GUI-free production navigation bake service shared by Editor, CLI, and validation.
++//!
++//! This module owns the persisted bake-document schema, deterministic build-input
++//! normalization/fingerprinting, cancellation, bake statistics, and safe output
++//! replacement. Host layers only collect engine-neutral source geometry and manage
++//! project-specific asset registration.
++
++use std::collections::BTreeSet;
++use std::fmt;
++use std::fs;
++use std::io::Write;
++use std::path::{Path, PathBuf};
++use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
++use std::time::{Duration, Instant};
++
++use serde::{Deserialize, Serialize};
++
++use crate::navigation::{
++    NavMesh, NavigationAgentProfile, NavigationBakeError as RuntimeNavigationBakeError,
++    NavigationBaker, NavigationBuildInput, NavigationBuildLink, NavigationModifier,
++    NavigationTriangle, ProductionNavigationBaker,
++};
++
++/// Current serialized `.navmesh.bake.json` schema.
++pub const NAVMESH_BAKE_SCHEMA_VERSION: u32 = 2;
++
++/// Persisted production navigation bake settings.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++pub struct NavMeshBakeSettings {
++    /// Edge length of one independently rebuildable tile in world units.
++    pub tile_size: f32,
++    /// Stable agent profiles baked into independent tile sets.
++    pub profiles: Vec<NavigationAgentProfile>,
++}
++
++impl Default for NavMeshBakeSettings {
++    fn default() -> Self {
++        Self {
++            tile_size: 16.0,
++            profiles: vec![NavigationAgentProfile::default()],
++        }
++    }
++}
++
++/// Scene-owned source document for one production navigation artifact.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++pub struct NavMeshBakeDocument {
++    /// Document schema version.
++    pub schema_version: u32,
++    /// Adapter-owned project-relative output path.

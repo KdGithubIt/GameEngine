@@ -1,0 +1,63 @@
++                area: 0,
++            }],
++            ..NavigationSource::default()
++        }
++    }
++
++    #[test]
++    fn schema_v1_migrates_to_production_profile_and_stays_stale() {
++        let json = r#"{
++            "schema_version": 1,
++            "output_asset": "navigation/arena.navmesh.json",
++            "source_fingerprint": "old",
++            "settings": {
++                "cell_size": 0.5,
++                "agent_radius": 0.6,
++                "world_min": [-10.0, 0.0, -10.0],
++                "world_max": [10.0, 0.0, 10.0],
++                "walkable_height": 0.0,
++                "agent_height": 2.0
++            }
++        }"#;
++        let migrated = NavMeshBakeDocument::from_json(json).expect("v1 must migrate");
++        assert_eq!(migrated.schema_version, NAVMESH_BAKE_SCHEMA_VERSION);
++        assert_eq!(migrated.settings.profiles[0].radius, 0.6);
++        assert_eq!(migrated.source_fingerprint.as_deref(), Some("legacy-v1-stale"));
++    }
++
++    #[test]
++    fn equivalent_sources_have_the_same_fingerprint() {
++        let service = NavigationBakeService;
++        let document = NavMeshBakeDocument::default();
++        let mut first = source();
++        first.links = vec![NavigationBuildLink {
++            id: "b".to_owned(),
++            start: [0.0, 0.0, 0.0],
++            end: [1.0, 0.0, 0.0],
++            bidirectional: true,
++            profiles: Vec::new(),
++            area: 0,
++            cost: 0.0,
++            traversal_tag: "door".to_owned(),
++        }];
++        let mut second = first.clone();
++        second.links.reverse();
++        assert_eq!(
++            service.prepare(&first, &document).unwrap().source_fingerprint,
++            service.prepare(&second, &document).unwrap().source_fingerprint
++        );
++    }
++
++    #[test]
++    fn profile_change_marks_source_stale() {
++        let service = NavigationBakeService;
++        let mut document = NavMeshBakeDocument::default();
++        let prepared = service.prepare(&source(), &document).unwrap();
++        document.source_fingerprint = Some(prepared.source_fingerprint);
++        assert!(!service.is_stale(&source(), &document).unwrap());
++        document.settings.profiles[0].id = NavigationProfileId::new("large");
++        assert!(service.is_stale(&source(), &document).unwrap());
++    }
++
++    #[test]
++    fn cancellation_preserves_existing_artifact() {

@@ -1,0 +1,76 @@
++    while let Some((parent, edge)) = previous.get(&current).cloned() {
++        corridor.push(parent);
++        edges.push(edge);
++        current = parent;
++    }
++    corridor.reverse();
++    edges.reverse();
++    SearchResult {
++        corridor,
++        edges,
++        total_cost,
++    }
+ }
+ 
+ fn relax(
+@@ -1189,6 +1285,8 @@ fn relax(
+     current: NavigationPolygonRef,
+     edge: SearchEdge,
+     new_cost: f32,
++    end_center: Vec3,
++    centers: &HashMap<NavigationPolygonRef, Vec3>,
+     costs: &mut HashMap<NavigationPolygonRef, f32>,
+     previous: &mut HashMap<NavigationPolygonRef, (NavigationPolygonRef, SearchEdge)>,
+     open: &mut BinaryHeap<OpenEntry>,
+@@ -1198,8 +1296,11 @@ fn relax(
+     }
+     costs.insert(next, new_cost);
+     previous.insert(next, (current, edge));
++    let heuristic = centers
++        .get(&next)
++        .map_or(0.0, |center| center.distance(end_center));
+     open.push(OpenEntry {
+-        estimated_total: new_cost,
++        estimated_total: new_cost + heuristic,
+         cost: new_cost,
+         node: next,
+     });
+@@ -1359,10 +1460,18 @@ pub enum NavMeshAgentStatus {
+     Idle,
+     /// A target exists but the runtime has no baked navigation resource.
+     MissingNavMesh,
++    /// The selected stable profile is missing from the loaded asset.
++    MissingProfile,
++    /// The start position cannot be projected onto navigation for this profile.
++    StartOutside,
++    /// The destination cannot be projected onto navigation for this profile.
++    EndOutside,
+     /// No usable route could be produced for the current target.
+     NoPath,
+     /// The agent is following a complete route.
+     Moving,
++    /// The agent is following the best available partial corridor.
++    PartialPath,
+     /// The agent reached the target's stopping distance.
+     Arrived,
+ }
+@@ -1387,6 +1496,7 @@ pub struct NavMeshAgent {
+     path_index: usize,
+     computed_target: Option<Vec3>,
+     repath_remaining: f32,
++    current_path_partial: bool,
+ }
+ 
+ impl NavMeshAgent {
+@@ -1404,6 +1514,7 @@ impl NavMeshAgent {
+             path_index: 0,
+             computed_target: None,
+             repath_remaining: 0.0,
++            current_path_partial: false,
+         }
+     }
+ 
+@@ -1424,6 +1535,7 @@ impl NavMeshAgent {
+         if target.is_none() {
+             self.current_path.clear();
+             self.path_index = 0;
