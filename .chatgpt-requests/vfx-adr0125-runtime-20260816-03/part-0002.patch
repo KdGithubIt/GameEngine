@@ -1,0 +1,118 @@
++fn requested_spawns(runtime: &mut VfxEmitterRuntime, dt: f32, end_time: f32) -> u32 {
++    let mut rate = 0.0_f32;
++    let mut bursts = 0_u64;
++    for operation in &runtime.definition.spawn_operations {
++        match &operation.operation {
++            VfxModuleOperation::SpawnRate {
++                particles_per_second,
++            } => rate += (*particles_per_second).max(0.0),
++            VfxModuleOperation::Burst { time, count }
++                if *time <= end_time && !runtime.fired_bursts.contains(&operation.source_module) =>
++            {
++                runtime.fired_bursts.insert(operation.source_module.clone());
++                bursts = bursts.saturating_add(u64::from(*count));
++            }
++            _ => {}
++        }
++    }
++
++    runtime.spawn_accumulator += rate * dt;
++    let continuous = runtime.spawn_accumulator.floor().max(0.0) as u64;
++    runtime.spawn_accumulator -= continuous as f32;
++    continuous
++        .saturating_add(bursts)
++        .min(u64::from(u32::MAX)) as u32
++}
++
++fn update_particles(runtime: &mut VfxEmitterRuntime, dt: f32) {
++    for particle in &mut runtime.particles {
++        particle.age += dt;
++        let factor = particle.life_factor();
++        for operation in &runtime.definition.update_operations {
++            match &operation.operation {
++                VfxModuleOperation::Force { acceleration } => {
++                    particle.velocity += Vec3::from_array(*acceleration) * dt;
++                }
++                VfxModuleOperation::Drag { coefficient } => {
++                    particle.velocity /= 1.0 + (*coefficient).max(0.0) * dt;
++                }
++                VfxModuleOperation::ColorOverLife { gradient } => {
++                    particle.color = gradient.evaluate(factor);
++                }
++                VfxModuleOperation::SizeOverLife { curve } => {
++                    particle.size = particle.base_size * curve.evaluate(factor);
++                }
++                VfxModuleOperation::RotationOverLife { curve } => {
++                    particle.rotation = particle.base_rotation + curve.evaluate(factor);
++                }
++                _ => {}
++            }
++        }
++        particle.position += particle.velocity * dt;
++    }
++    runtime
++        .particles
++        .retain(|particle| particle.age < particle.lifetime);
++}
++
++fn spawn_particle(
++    definition: &CompiledVfxEmitter,
++    effect_seed: u32,
++    emitter_index: u32,
++    spawn_serial: u64,
++    origin: Vec3,
++) -> VfxParticle {
++    let mut position = origin;
++    let mut direction = Vec3::Y;
++    let mut lifetime = 1.0_f32;
++    let mut velocity = Vec3::ZERO;
++    let mut color = [1.0; 4];
++    let mut size = 1.0_f32;
++    let mut rotation = 0.0_f32;
++
++    for operation in &definition.spawn_operations {
++        match &operation.operation {
++            VfxModuleOperation::Shape { shape } => {
++                let sampled = sample_shape(
++                    shape,
++                    effect_seed,
++                    emitter_index,
++                    spawn_serial,
++                    module_salt(&operation.source_module),
++                );
++                position = origin + sampled.0;
++                direction = sampled.1;
++            }
++            VfxModuleOperation::Lifetime { value } => {
++                lifetime = sample_scalar(
++                    value,
++                    effect_seed,
++                    emitter_index,
++                    spawn_serial,
++                    0,
++                )
++                .max(0.01);
++            }
++            VfxModuleOperation::InitialSpeed { value } => {
++                let speed = sample_scalar(
++                    value,
++                    effect_seed,
++                    emitter_index,
++                    spawn_serial,
++                    0,
++                );
++                velocity = direction.normalize_or_zero() * speed;
++            }
++            VfxModuleOperation::InitialVelocity { value } => {
++                velocity = Vec3::from_array(sample_vector(
++                    value,
++                    effect_seed,
++                    emitter_index,
++                    spawn_serial,
++                ));
++            }
++            VfxModuleOperation::InitialColor { color: initial } => color = *initial,
++            VfxModuleOperation::InitialSize { value } => {
++                size = sample_scalar(
++                    value,
++                    effect_seed,
