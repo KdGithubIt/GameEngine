@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "request_id": "20260816-phase4-generic-lights-1aee2448-r2",
+  "target_branch": "chatgpt/gameengine-render-generic-lights",
+  "expected_head_sha": "1aee2448a7d51f57a7b65f5f1de11c369aae2967",
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Renderer: keep local light upload helper private",
+  "pr_title": "Renderer: add generic point and spot lighting",
+  "pr_body": "## Summary\n- add stable authoring/runtime Point Light and Spot Light components with bounded render budgets\n- evaluate directional, point, and spot direct Cook-Torrance lighting in generic StandardLit while preserving IBL/AO indirect semantics\n- keep directional CSM as the only shadowed direct light and keep ToonLit local-light styling deferred\n- add deterministic transform-derived GPU light packing and a fixed-camera GPU regression for point/spot contribution\n- keep GPU packing types module-private by narrowing the internal light upload helper\n- record the contract in ADR 0123\n"
+}
