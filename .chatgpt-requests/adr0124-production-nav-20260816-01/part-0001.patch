@@ -1,0 +1,504 @@
++                    .map(move |(index, polygon)| {
++                        (
++                            NavigationPolygonRef {
++                                tile: tile.id,
++                                polygon: index as u32,
++                            },
++                            tile,
++                            polygon,
++                        )
++                    })
++            })
++    }
++
++    fn validate(&self) -> Result<(), NavMeshError> {
++        if self.schema_version != NAV_MESH_SCHEMA_VERSION
++            || self.source_fingerprint.trim().is_empty()
++            || self.profiles.is_empty()
++        {
++            return Err(NavMeshError::InvalidAsset(
++                "unsupported or incomplete production NavMesh".to_owned(),
++            ));
++        }
++        let mut profile_ids = BTreeSet::new();
++        for profile in &self.profiles {
++            profile
++                .profile
++                .validate()
++                .map_err(|error| NavMeshError::InvalidAsset(error.to_string()))?;
++            if !profile_ids.insert(profile.profile.id.clone()) {
++                return Err(NavMeshError::InvalidAsset(format!(
++                    "duplicate navigation profile `{}`",
++                    profile.profile.id.as_str()
++                )));
++            }
++            let mut tile_ids = BTreeSet::new();
++            for tile in &profile.tiles {
++                if !tile_ids.insert(tile.id) {
++                    return Err(NavMeshError::InvalidAsset(format!(
++                        "duplicate navigation tile ({}, {})",
++                        tile.id.x, tile.id.z
++                    )));
++                }
++                for polygon in &tile.polygons {
++                    if polygon.vertices.len() < 3
++                        || polygon
++                            .vertices
++                            .iter()
++                            .any(|index| *index as usize >= tile.vertices.len())
++                        || !polygon.cost_multiplier.is_finite()
++                        || polygon.cost_multiplier <= 0.0
++                    {
++                        return Err(NavMeshError::InvalidAsset(
++                            "navigation polygon contains invalid indices or cost".to_owned(),
++                        ));
++                    }
++                }
++            }
++        }
++        Ok(())
++    }
++}
++
++/// Failure produced while validating or baking [`NavigationBuildInput`].
++#[derive(Debug, Clone, PartialEq)]
++pub enum NavigationBakeError {
++    /// Top-level input is missing required deterministic data.
++    InvalidInput,
++    /// A triangle is non-finite or degenerate.
++    InvalidTriangle(usize),
++    /// A profile contains invalid settings.
++    InvalidProfile(String),
++    /// A stable profile ID occurs more than once.
++    DuplicateProfile(String),
++    /// A link contains invalid endpoints, cost, ID, tag, or profile filters.
++    InvalidLink(String),
++    /// A modifier contains invalid bounds, cost, ID, or profile filters.
++    InvalidModifier(String),
++    /// Cancellation was requested before producing an asset.
++    Cancelled,
++}
++
++impl fmt::Display for NavigationBakeError {
++    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
++        match self {
++            Self::InvalidInput => formatter.write_str("invalid navigation build input"),
++            Self::InvalidTriangle(index) => {
++                write!(formatter, "invalid navigation triangle {index}")
++            }
++            Self::InvalidProfile(id) => write!(formatter, "invalid navigation profile `{id}`"),
++            Self::DuplicateProfile(id) => {
++                write!(formatter, "duplicate navigation profile `{id}`")
++            }
++            Self::InvalidLink(id) => write!(formatter, "invalid navigation link `{id}`"),
++            Self::InvalidModifier(id) => {
++                write!(formatter, "invalid navigation modifier `{id}`")
++            }
++            Self::Cancelled => formatter.write_str("navigation bake cancelled"),
++        }
++    }
++}
++
++impl std::error::Error for NavigationBakeError {}
++
++/// Backend boundary that converts neutral build input into the runtime asset.
++pub trait NavigationBaker {
++    /// Bakes one deterministic production asset.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`NavigationBakeError`] when input is invalid or cancellation is
++    /// observed.
++    fn bake(
++        &self,
++        input: &NavigationBuildInput,
++        cancelled: &dyn Fn() -> bool,
++    ) -> Result<NavMesh, NavigationBakeError>;
++}
++
++/// Engine-owned deterministic polygon baker used by the first production release.
++#[derive(Debug, Default, Clone, Copy)]
++pub struct ProductionNavigationBaker;
++
++impl NavigationBaker for ProductionNavigationBaker {
++    fn bake(
++        &self,
++        input: &NavigationBuildInput,
++        cancelled: &dyn Fn() -> bool,
++    ) -> Result<NavMesh, NavigationBakeError> {
++        input.validate()?;
++        if cancelled() {
++            return Err(NavigationBakeError::Cancelled);
++        }
++        let mut profiles = Vec::with_capacity(input.profiles.len());
++        for profile in &input.profiles {
++            if cancelled() {
++                return Err(NavigationBakeError::Cancelled);
++            }
++            profiles.push(bake_profile(input, profile));
++        }
++        Ok(NavMesh {
++            schema_version: NAV_MESH_SCHEMA_VERSION,
++            source_fingerprint: input.source_fingerprint.clone(),
++            profiles,
++        })
++    }
++}
++
++#[derive(Clone)]
++struct BakedTriangle {
++    points: [Vec3; 3],
++    area: u16,
++    cost_multiplier: f32,
++}
++
++fn bake_profile(
++    input: &NavigationBuildInput,
++    profile: &NavigationAgentProfile,
++) -> NavigationProfileMesh {
++    let mut accepted = Vec::new();
++    for triangle in input.triangles.iter().copied() {
++        let points = triangle.points();
++        if !triangle_is_walkable(points, profile) || !has_clearance(triangle, input, profile) {
++            continue;
++        }
++        let centroid = triangle.centroid();
++        let mut area = triangle.area;
++        let mut cost_multiplier = 1.0;
++        let mut excluded = false;
++        for modifier in &input.modifiers {
++            if !modifier.applies_to(&profile.id, centroid) {
++                continue;
++            }
++            match modifier.mode {
++                NavigationModifierMode::Exclude => excluded = true,
++                NavigationModifierMode::Area {
++                    area: replacement,
++                    cost_multiplier: multiplier,
++                } => {
++                    area = replacement;
++                    cost_multiplier *= multiplier;
++                }
++            }
++        }
++        if !excluded {
++            accepted.push(BakedTriangle {
++                points,
++                area,
++                cost_multiplier,
++            });
++        }
++    }
++
++    let mut grouped: BTreeMap<NavigationTileId, Vec<BakedTriangle>> = BTreeMap::new();
++    for triangle in accepted {
++        let centroid = (triangle.points[0] + triangle.points[1] + triangle.points[2]) / 3.0;
++        let id = NavigationTileId {
++            x: (centroid.x / input.tile_size).floor() as i32,
++            z: (centroid.z / input.tile_size).floor() as i32,
++        };
++        grouped.entry(id).or_default().push(triangle);
++    }
++
++    let mut tiles = Vec::with_capacity(grouped.len());
++    for (id, triangles) in grouped {
++        let mut vertices = Vec::with_capacity(triangles.len() * 3);
++        let mut polygons = Vec::with_capacity(triangles.len());
++        let mut minimum = Vec3::splat(f32::INFINITY);
++        let mut maximum = Vec3::splat(f32::NEG_INFINITY);
++        for triangle in triangles {
++            let base = vertices.len() as u32;
++            for point in triangle.points {
++                minimum = minimum.min(point);
++                maximum = maximum.max(point);
++                vertices.push(point.to_array());
++            }
++            polygons.push(NavigationPolygon {
++                vertices: vec![base, base + 1, base + 2],
++                portals: Vec::new(),
++                area: triangle.area,
++                cost_multiplier: triangle.cost_multiplier,
++                traversal_flags: u32::MAX,
++            });
++        }
++        tiles.push(NavigationTile {
++            id,
++            minimum: minimum.to_array(),
++            maximum: maximum.to_array(),
++            vertices,
++            polygons,
++            build_fingerprint: format!("{}:{}:{}", input.source_fingerprint, id.x, id.z),
++        });
++    }
++    build_adjacency(&mut tiles);
++
++    let mut profile_mesh = NavigationProfileMesh {
++        profile: profile.clone(),
++        tiles,
++        links: Vec::new(),
++    };
++    for link in &input.links {
++        if !link.profiles.is_empty() && !link.profiles.contains(&profile.id) {
++            continue;
++        }
++        let start = Vec3::from_array(link.start);
++        let end = Vec3::from_array(link.end);
++        let Some((from, _)) = nearest_polygon_in_profile(&profile_mesh, start) else {
++            continue;
++        };
++        let Some((to, _)) = nearest_polygon_in_profile(&profile_mesh, end) else {
++            continue;
++        };
++        profile_mesh.links.push(NavigationLink {
++            id: link.id.clone(),
++            from,
++            to,
++            start: link.start,
++            end: link.end,
++            bidirectional: link.bidirectional,
++            area: link.area,
++            cost: link.cost,
++            traversal_tag: link.traversal_tag.clone(),
++        });
++    }
++    profile_mesh.links.sort_by(|left, right| left.id.cmp(&right.id));
++    profile_mesh
++}
++
++fn triangle_is_walkable(points: [Vec3; 3], profile: &NavigationAgentProfile) -> bool {
++    let edge_a = points[1] - points[0];
++    let edge_b = points[2] - points[0];
++    let normal = edge_a.cross(edge_b).try_normalize().unwrap_or(Vec3::ZERO);
++    let slope_cosine = profile.max_slope_degrees.to_radians().cos();
++    normal.y.abs() >= slope_cosine
++}
++
++fn has_clearance(
++    candidate: NavigationTriangle,
++    input: &NavigationBuildInput,
++    profile: &NavigationAgentProfile,
++) -> bool {
++    let point = candidate.centroid();
++    for ceiling in input.triangles.iter().copied() {
++        if ceiling == candidate {
++            continue;
++        }
++        let ceiling_points = ceiling.points();
++        let minimum_y = ceiling_points
++            .iter()
++            .map(|point| point.y)
++            .fold(f32::INFINITY, f32::min);
++        if minimum_y <= point.y + 1e-4 || minimum_y - point.y >= profile.height {
++            continue;
++        }
++        if point_in_triangle_xz(point, ceiling_points) {
++            return false;
++        }
++    }
++    true
++}
++
++fn point_in_triangle_xz(point: Vec3, triangle: [Vec3; 3]) -> bool {
++    let p = Vec2::new(point.x, point.z);
++    let a = Vec2::new(triangle[0].x, triangle[0].z);
++    let b = Vec2::new(triangle[1].x, triangle[1].z);
++    let c = Vec2::new(triangle[2].x, triangle[2].z);
++    let ab = cross_2d(b - a, p - a);
++    let bc = cross_2d(c - b, p - b);
++    let ca = cross_2d(a - c, p - c);
++    (ab >= -1e-5 && bc >= -1e-5 && ca >= -1e-5)
++        || (ab <= 1e-5 && bc <= 1e-5 && ca <= 1e-5)
++}
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
++struct QuantizedPoint(i32, i32, i32);
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
++struct EdgeKey(QuantizedPoint, QuantizedPoint);
++
++fn quantize(point: Vec3) -> QuantizedPoint {
++    QuantizedPoint(
++        (point.x * EDGE_QUANTIZATION).round() as i32,
++        (point.y * EDGE_QUANTIZATION).round() as i32,
++        (point.z * EDGE_QUANTIZATION).round() as i32,
++    )
++}
++
++fn build_adjacency(tiles: &mut [NavigationTile]) {
++    let mut edges: BTreeMap<EdgeKey, Vec<(NavigationPolygonRef, Vec3, Vec3)>> = BTreeMap::new();
++    let mut centers = HashMap::new();
++    for tile in tiles.iter() {
++        for (polygon_index, polygon) in tile.polygons.iter().enumerate() {
++            let reference = NavigationPolygonRef {
++                tile: tile.id,
++                polygon: polygon_index as u32,
++            };
++            let points = polygon
++                .vertices
++                .iter()
++                .map(|index| Vec3::from_array(tile.vertices[*index as usize]))
++                .collect::<Vec<_>>();
++            let center = points.iter().copied().sum::<Vec3>() / points.len() as f32;
++            centers.insert(reference, center);
++            for edge_index in 0..points.len() {
++                let a = points[edge_index];
++                let b = points[(edge_index + 1) % points.len()];
++                let qa = quantize(a);
++                let qb = quantize(b);
++                let key = if qa <= qb {
++                    EdgeKey(qa, qb)
++                } else {
++                    EdgeKey(qb, qa)
++                };
++                edges.entry(key).or_default().push((reference, a, b));
++            }
++        }
++    }
++
++    let index = polygon_index(tiles);
++    for shared in edges.values().filter(|entries| entries.len() > 1) {
++        for first_index in 0..shared.len() {
++            for second_index in (first_index + 1)..shared.len() {
++                let (first, a, b) = shared[first_index];
++                let (second, _, _) = shared[second_index];
++                let Some(first_center) = centers.get(&first).copied() else {
++                    continue;
++                };
++                let Some(second_center) = centers.get(&second).copied() else {
++                    continue;
++                };
++                let (first_left, first_right) = orient_portal(a, b, first_center, second_center);
++                let (second_left, second_right) = orient_portal(a, b, second_center, first_center);
++                if let Some((tile_index, polygon_index)) = index.get(&first).copied() {
++                    tiles[tile_index].polygons[polygon_index]
++                        .portals
++                        .push(NavigationPortal {
++                            to: second,
++                            left: first_left.to_array(),
++                            right: first_right.to_array(),
++                        });
++                }
++                if let Some((tile_index, polygon_index)) = index.get(&second).copied() {
++                    tiles[tile_index].polygons[polygon_index]
++                        .portals
++                        .push(NavigationPortal {
++                            to: first,
++                            left: second_left.to_array(),
++                            right: second_right.to_array(),
++                        });
++                }
++            }
++        }
++    }
++    for tile in tiles {
++        for polygon in &mut tile.polygons {
++            polygon.portals.sort_by_key(|portal| portal.to);
++        }
++    }
++}
++
++fn orient_portal(a: Vec3, b: Vec3, from: Vec3, to: Vec3) -> (Vec3, Vec3) {
++    let direction = Vec2::new(to.x - from.x, to.z - from.z);
++    let edge = Vec2::new(b.x - a.x, b.z - a.z);
++    if cross_2d(direction, edge) >= 0.0 {
++        (a, b)
++    } else {
++        (b, a)
++    }
++}
++
++fn polygon_index(tiles: &[NavigationTile]) -> HashMap<NavigationPolygonRef, (usize, usize)> {
++    let mut index = HashMap::new();
++    for (tile_index, tile) in tiles.iter().enumerate() {
++        for polygon_index in 0..tile.polygons.len() {
++            index.insert(
++                NavigationPolygonRef {
++                    tile: tile.id,
++                    polygon: polygon_index as u32,
++                },
++                (tile_index, polygon_index),
++            );
++        }
++    }
++    index
++}
++
++/// Typed failure from a production path query.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub enum NavigationQueryFailure {
++    /// Requested profile does not exist in the loaded asset.
++    MissingProfile(String),
++    /// No production navigation data is available for the profile.
++    MissingNavigationData,
++    /// Start position cannot be projected to nearby navigation.
++    StartOutside,
++    /// Destination cannot be projected to any navigation polygon.
++    EndOutside,
++    /// Both endpoints resolve but no topological route exists.
++    NoPath,
++}
++
++/// Successful or partial production navigation path.
++#[derive(Debug, Clone, PartialEq)]
++pub struct NavigationPath {
++    /// Smoothed world-space steering points.
++    pub waypoints: Vec<Vec3>,
++    /// Polygon corridor retained for diagnostics and Editor path testing.
++    pub corridor: Vec<NavigationPolygonRef>,
++    /// Stable off-mesh link IDs used by this path, in traversal order.
++    pub links: Vec<String>,
++    /// Deterministic traversal cost including areas and off-mesh links.
++    pub total_cost: f32,
++}
++
++/// Typed path-query result.
++#[derive(Debug, Clone, PartialEq)]
++pub enum NavigationPathResult {
++    /// Destination was reached through the selected profile.
++    Complete(NavigationPath),
++    /// A best reachable point was found but the requested destination was not.
++    Partial(NavigationPath),
++    /// Query could not produce a usable route.
++    Failure(NavigationQueryFailure),
++}
++
++/// Runtime resource wrapping one loaded production navigation asset.
++pub struct NavMeshQuery {
++    /// Underlying tiled production asset.
++    pub nav_mesh: NavMesh,
++}
++
++impl NavMeshQuery {
++    /// Creates a query resource from a validated production asset.
++    pub fn new(nav_mesh: NavMesh) -> Self {
++        Self { nav_mesh }
++    }
++
++    /// Finds a complete path using the default profile.
++    ///
++    /// This compatibility method returns `None` for typed failures and partial
++    /// paths. Use [`Self::query_path`] when failure/partial detail matters.
++    pub fn find_path(&self, start: Vec3, end: Vec3) -> Option<Vec<Vec3>> {
++        match self.query_path(DEFAULT_NAVIGATION_PROFILE, start, end) {
++            NavigationPathResult::Complete(path) => Some(path.waypoints),
++            NavigationPathResult::Partial(_) | NavigationPathResult::Failure(_) => None,
++        }
++    }
++
++    /// Projects `point` to the nearest polygon for one profile.
++    pub fn nearest_point(
++        &self,
++        profile_id: &str,
++        point: Vec3,
++        maximum_distance: f32,
++    ) -> Result<(Vec3, NavigationPolygonRef), NavigationQueryFailure> {
++        let profile = self
++            .nav_mesh
++            .profile(profile_id)
++            .ok_or_else(|| NavigationQueryFailure::MissingProfile(profile_id.to_owned()))?;
++        if profile.tiles.is_empty() {
++            return Err(NavigationQueryFailure::MissingNavigationData);
++        }
++        let (reference, nearest) = nearest_polygon_in_profile(profile, point)
++            .ok_or(NavigationQueryFailure::MissingNavigationData)?;
++        if point.distance(nearest) > maximum_distance.max(0.0) {
