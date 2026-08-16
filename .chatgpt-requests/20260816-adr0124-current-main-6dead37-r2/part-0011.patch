@@ -1,0 +1,60 @@
++    build_adjacency(&mut tiles, profile);
+ 
+     let mut profile_mesh = NavigationProfileMesh {
+         profile: profile.clone(),
+@@ -735,20 +735,27 @@ fn point_in_triangle_xz(point: Vec3, triangle: [Vec3; 3]) -> bool {
+ }
+ 
+ #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+-struct QuantizedPoint(i32, i32, i32);
++struct QuantizedPointXZ(i32, i32);
+ 
+ #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+-struct EdgeKey(QuantizedPoint, QuantizedPoint);
++struct EdgeKey(QuantizedPointXZ, QuantizedPointXZ);
+ 
+-fn quantize(point: Vec3) -> QuantizedPoint {
+-    QuantizedPoint(
++fn quantize_xz(point: Vec3) -> QuantizedPointXZ {
++    QuantizedPointXZ(
+         (point.x * EDGE_QUANTIZATION).round() as i32,
+-        (point.y * EDGE_QUANTIZATION).round() as i32,
+         (point.z * EDGE_QUANTIZATION).round() as i32,
+     )
+ }
+ 
+-fn build_adjacency(tiles: &mut [NavigationTile]) {
++fn canonical_edge(key: EdgeKey, a: Vec3, b: Vec3) -> (Vec3, Vec3) {
++    if quantize_xz(a) == key.0 {
++        (a, b)
++    } else {
++        (b, a)
++    }
++}
++
++fn build_adjacency(tiles: &mut [NavigationTile], profile: &NavigationAgentProfile) {
+     let mut edges: BTreeMap<EdgeKey, Vec<(NavigationPolygonRef, Vec3, Vec3)>> = BTreeMap::new();
+     let mut centers = HashMap::new();
+     for tile in tiles.iter() {
+@@ -767,8 +774,8 @@ fn build_adjacency(tiles: &mut [NavigationTile]) {
+             for edge_index in 0..points.len() {
+                 let a = points[edge_index];
+                 let b = points[(edge_index + 1) % points.len()];
+-                let qa = quantize(a);
+-                let qb = quantize(b);
++                let qa = quantize_xz(a);
++                let qb = quantize_xz(b);
+                 let key = if qa <= qb {
+                     EdgeKey(qa, qb)
+                 } else {
+@@ -780,19 +787,39 @@ fn build_adjacency(tiles: &mut [NavigationTile]) {
+     }
+ 
+     let index = polygon_index(tiles);
+-    for shared in edges.values().filter(|entries| entries.len() > 1) {
++    for (key, shared) in edges.iter().filter(|(_, entries)| entries.len() > 1) {
+         for first_index in 0..shared.len() {
+             for second_index in (first_index + 1)..shared.len() {
+-                let (first, a, b) = shared[first_index];
+-                let (second, _, _) = shared[second_index];
++                let (first, first_a, first_b) = shared[first_index];
