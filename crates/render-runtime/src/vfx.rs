@@ -1071,3 +1071,5 @@ mod tests {
         assert!(!player.is_playing());
         player.restart();
         assert!(player.is_playing());
+    }
+}
