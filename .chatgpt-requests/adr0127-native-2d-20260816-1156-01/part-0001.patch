@@ -1,0 +1,141 @@
+ sampling without rewriting authored
++entity transforms. The Editor warns when arbitrary rotation/scale means exact
++pixel-grid alignment cannot be guaranteed.
++
++### 7. Sprite animation is a typed asset with independent runtime state
++
++Introduce versioned `*.spriteanim.json` Sprite Animation assets. Frames reference
++`SpriteRef` values and use exact non-negative integer durations. The asset also
++owns looping/default playback policy and optional named frame events.
++
++Immutable clip data is shared; current time/frame is per entity. Frame evaluation
++belongs to `engine-animation`; rendering consumes only the current SpriteRef.
++
++A stable `engine.sprite_animator_2d` component exposes autoplay, speed, looping
++override, and initial clip state. Project gameplay receives additive deferred
++commands/copied views for play, pause, stop, clip selection, and state queries.
++
++The first version does not force sprite clips into the skeletal Animation Graph.
++A later 2D state-machine/controller may select Sprite Animation assets through a
++typed domain without changing the base clip format.
++
++### 8. Tile Sets use stable TileIds; Tile Maps are sparse and chunked
++
++Introduce:
++
++- `*.tileset.json`: stable `TileId` -> SpriteRef plus collision shapes, tags,
++  custom values, and extension metadata for future terrain/autotile rules.
++- `*.tilemap.json`: stable layers plus sparse fixed-size chunks whose cells
++  reference TileIds.
++
++Tile layers have stable IDs, display names, enabled/locked state, and the same
++sorting-layer/order semantics as sprites. Cells never persist UV or atlas array
++indices.
++
++Chunking is the runtime and authoring unit. Render batches, collision extraction,
++preview invalidation, and future streaming update affected chunks rather than
++creating one ECS entity, draw call, or collider per tile.
++
++Backend-neutral compiled tile data lives below render/physics ownership so
++render-runtime and physics can consume it independently. Cross-domain assembly
++stays in the higher composition layer.
++
++### 9. Tile painting is transactional by gesture and incremental by chunk
++
++The Editor provides Tile Palette plus paint, erase, rectangle, line, fill,
++eyedropper, selection/stamp, layer, grid, collision-overlay, and chunk-overlay
++tools.
++
++One pointer stroke is one semantic TileMap transaction/undo entry. Preview during
++the gesture is transient; cancel restores the exact previous cells. Commands
++operate on bounded regions/chunks instead of issuing hundreds of unrelated
++per-cell document transactions.
++
++Changing one chunk invalidates only affected render/collision chunks where
++practical. Large fill/build work is bounded and cancellable; heavy work is kept
++off the immediate UI edit path in the spirit of ADR 0104, while cheap validation
++remains immediate.
++
++### 10. 2D physics has engine-owned contracts and an isolated dedicated solver
++
++`engine-physics` gains native 2D contracts rather than constraining the 3D
++solver to Z = 0. The initial surface includes:
++
++- `engine.rigid_body_2d`: fixed, dynamic, and kinematic modes;
++- `engine.collider_2d`: box, circle, capsule, and supported polygon shapes,
++  sensor state, material values, collision layers/masks;
++- ray/shape casts, overlap and contact queries;
++- fixed-step collision/trigger transitions;
++- continuous-collision policy for fast bodies; and
++- fixed, distance, revolute, and prismatic joint contracts where supported.
++
++The concrete backend may be Rapier 2D, but Rapier types never enter persisted
++scene data, scripting ABI, or neutral public contracts. Its heavy dependency is
++isolated behind an owner-local feature according to ADR 0114, so contract-only
++or 3D-only consumers do not compile the 2D solver unnecessarily.
++
++The 2D and 3D collision worlds are explicit and independent. They never collide
++through implicit projection. A future cross-dimensional proxy requires its own
++explicit bridge design.
++
++### 11. Platformer-critical movement is included in the usable baseline
++
++A kinematic CharacterController2D/motor path is built on the 2D query/solver
++contract. It exposes collider/skin configuration, grounded state/normal, slope
++limit, ground snap, wall/ceiling classification, deterministic fixed-step
++movement, and one-way-platform/drop-through support.
++
++One-way behavior is a collider/surface policy shared by scene-authored and
++project-code characters, not special-case position checks embedded in one game.
++
++Moving-platform gameplay, ladders, wall jumps, coyote time, jump buffering, and
++acceleration curves remain project gameplay policy. The engine supplies the
++collision/controller primitives those mechanics need.
++
++### 12. The existing Editor gains 2D mode and dedicated 2D document tools
++
++Scene View gains an explicit 2D mode with orthographic XY viewing,
++cursor-centered pan/zoom, planar gizmos, world/pixel grids, sorting inspection,
++sprite bounds/pivots, Camera2D framing, collider/joint/platform gizmos, and Tile
++Map painting. 2D/3D view mode is transient presentation state and does not
++rewrite scene content.
++
++Dragging a sprite into 2D Scene View creates Transform + SpriteRenderer2D through
++the shared Scene authoring service. Dedicated Sprite Atlas and Tile Set/Map
++workspaces provide slicing, pivot editing, palette/layer tools, collision-shape
++editing, and previews, but all persisted edits remain GUI-free service commands
++with transaction/undo/validation semantics shared by Editor, CLI, and MCP.
++
++Preview uses the same runtime SpriteRef, camera, tile, animation, and physics
++interpretation as Play. Scene View reuses ADR 0072 persistent preview and
++invalidates only affected entities/chunks where practical. No Editor-only sprite
++or physics interpreter is accepted.
++
++Screen-space UI remains a separate domain; world sprites/tile maps are not
++implemented through the UI document runtime.
++
++### 13. Lighting/parallax/VFX/Timeline are additive extensions
++
++The first production slice targets correct unlit sprites, Tile Maps, animation,
++and 2D physics. The design reserves typed extensions for Light2D/lit sprites,
++normal maps, occluders, parallax, sprite masks, and 2D VFX render outputs.
++
++Those extensions must reuse SpriteRef, Transform, sorting, Camera2D, and asset
++contracts instead of adding unrelated paths. ADR 0125 VFX and ADR 0126 Timeline
++may later add typed 2D adapters, but they do not become the owners of sprite or
++2D physics state.
++
++### 14. A first-party 2D proving project is part of the definition of done
++
++Implementation must include an editor-openable 2D project/template created by
++the standard Launcher/Project workflow. It exercises persisted authoring data
++for:
++
++- image -> Sprite Atlas -> SpriteRenderer2D;
++- Camera2D and pixel-aware Game View;
++- input actions and sprite animation;
++- Tile Set/Tile Map editing;
++- Rigidbody2D/Collider2D/CharacterController2D;
++- one-way platforms;
++- existing HUD, audio, and save systems; and
++- packaged-player execution f
