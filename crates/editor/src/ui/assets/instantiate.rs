@@ -5,7 +5,6 @@
 //! Entity back out as a prefab asset.
 
 use crate::ui::*;
-use super::manifest::save_asset_manifest;
 
 impl EditorApp {
     /// Creates an entity from a registered mesh asset via the context menu,
@@ -260,42 +259,37 @@ impl EditorApp {
                 ));
             return;
         };
-        match crate::prefab_workflow::create_prefab_from_selection(scene, selection, &destination) {
-            Ok(_) => {
-                let asset_id = AssetId::generate();
-                let mut manifest = self.asset_manifest.clone();
-                let name = unique_asset_name(
-                    destination
-                        .file_stem()
-                        .and_then(|stem| stem.to_str())
-                        .unwrap_or("prefab"),
-                    &manifest,
-                );
-                manifest.insert(
-                    asset_id.clone(),
-                    engine::ManifestEntry {
-                        path: relative.clone(),
-                        name: Some(name),
-                        import_settings: engine::ImportSettings::default(),
-                    },
-                );
-                if let Err(error) = save_asset_manifest(project, &manifest) {
-                    let _ = fs::remove_file(&destination);
-                    self.session
-                        .push_diagnostic(engine_authoring::Diagnostic::error(
-                            "editor.prefab_manifest_save_failed",
-                            error,
-                        ));
-                    return;
-                }
-                self.asset_manifest = manifest;
+        let Some(root) = selection.first() else {
+            self.session
+                .push_diagnostic(engine_authoring::Diagnostic::error(
+                    "editor.prefab_create_failed",
+                    "prefab creation requires one root entity",
+                ));
+            return;
+        };
+        let scene = scene.clone();
+        let permissions = engine_authoring::AuthoringPermissions::read_only()
+            .with(engine_authoring::AuthoringPermission::AssetWrite);
+        match engine_assets::prefab::PrefabAssetService::new().create_from_root(
+            project,
+            &mut self.asset_manifest,
+            &permissions,
+            &scene,
+            root,
+            &relative,
+        ) {
+            Ok(creation) => {
                 self.asset_browser.refresh(&project.assets_root());
                 self.asset_browser
-                    .select_relative_path(Path::new(&relative));
+                    .select_relative_path(Path::new(&creation.path));
                 self.session
                     .push_diagnostic(engine_authoring::Diagnostic::info(
                         "editor.prefab_created",
-                        format!("created prefab `{relative}` as `{}`", asset_id.as_str()),
+                        format!(
+                            "created prefab `{}` as `{}`",
+                            creation.path,
+                            creation.asset_id.as_str()
+                        ),
                     ));
             }
             Err(error) => self
