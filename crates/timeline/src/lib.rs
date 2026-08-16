@@ -531,6 +531,7 @@ pub struct TimelinePlayer {
     previous_tick: TimelineTick,
     state: TimelinePlaybackState,
     playback_rate: f64,
+    looping: bool,
     residual_ticks: f64,
     evaluation_generation: u64,
 }
@@ -549,6 +550,7 @@ impl TimelinePlayer {
             previous_tick: TimelineTick::ZERO,
             state: TimelinePlaybackState::Stopped,
             playback_rate: 1.0,
+            looping: false,
             residual_ticks: 0.0,
             evaluation_generation: 0,
         }
@@ -572,6 +574,16 @@ impl TimelinePlayer {
     /// Returns the non-negative playback multiplier.
     pub const fn playback_rate(&self) -> f64 {
         self.playback_rate
+    }
+
+    /// Returns whether segmented advancement wraps at the Timeline duration.
+    pub const fn looping(&self) -> bool {
+        self.looping
+    }
+
+    /// Enables or disables exact loop-boundary playback.
+    pub fn set_looping(&mut self, looping: bool) {
+        self.looping = looping;
     }
 
     /// Returns the monotonic evaluation generation for this player.
@@ -671,6 +683,52 @@ impl TimelinePlayer {
         )
     }
 
+    /// Advances by whole host ticks and returns every deterministic playback
+    /// segment needed to represent loop boundaries exactly.
+    ///
+    /// Non-looping players return zero or one segment. Looping players split a
+    /// wrap into `(previous, duration]` followed by `[-1, 0]`; the virtual
+    /// previous tick makes a marker authored at tick zero cross exactly once at
+    /// each loop restart without changing the persisted integer time domain.
+    pub fn advance_ticks_segmented(
+        &mut self,
+        elapsed_ticks: i64,
+        duration: TimelineTick,
+    ) -> Vec<EvaluationRequest> {
+        if self.state != TimelinePlaybackState::Playing || elapsed_ticks <= 0 {
+            return Vec::new();
+        }
+        if !self.looping {
+            return self
+                .advance_exact_ticks(elapsed_ticks as f64 * self.playback_rate, duration)
+                .into_iter()
+                .collect();
+        }
+        self.advance_exact_ticks_looping(elapsed_ticks as f64 * self.playback_rate, duration)
+    }
+
+    /// Advances from host seconds and returns exact loop-boundary segments.
+    pub fn advance_seconds_segmented(
+        &mut self,
+        delta_seconds: f64,
+        duration: TimelineTick,
+    ) -> Vec<EvaluationRequest> {
+        if self.state != TimelinePlaybackState::Playing
+            || !delta_seconds.is_finite()
+            || delta_seconds <= 0.0
+        {
+            return Vec::new();
+        }
+        let scaled = delta_seconds * TIMELINE_TICKS_PER_SECOND as f64 * self.playback_rate;
+        if !self.looping {
+            return self
+                .advance_exact_ticks(scaled, duration)
+                .into_iter()
+                .collect();
+        }
+        self.advance_exact_ticks_looping(scaled, duration)
+    }
+
     fn advance_exact_ticks(
         &mut self,
         scaled_ticks: f64,
@@ -703,6 +761,59 @@ impl TimelinePlayer {
         Some(self.next_request(previous, current, EvaluationMode::Playback))
     }
 
+    fn advance_exact_ticks_looping(
+        &mut self,
+        scaled_ticks: f64,
+        duration: TimelineTick,
+    ) -> Vec<EvaluationRequest> {
+        let duration = non_negative_duration(duration);
+        if duration == TimelineTick::ZERO {
+            self.current_tick = TimelineTick::ZERO;
+            self.previous_tick = TimelineTick::ZERO;
+            self.state = TimelinePlaybackState::Stopped;
+            self.residual_ticks = 0.0;
+            return Vec::new();
+        }
+
+        let exact = scaled_ticks + self.residual_ticks;
+        let whole = exact.floor();
+        self.residual_ticks = exact - whole;
+        if whole < 1.0 {
+            return Vec::new();
+        }
+
+        let mut remaining = whole.min(i64::MAX as f64) as i64;
+        let mut requests = Vec::new();
+        while remaining > 0 {
+            let previous = self.current_tick;
+            let until_end = duration.get().saturating_sub(previous.get());
+            if remaining < until_end {
+                let current = previous.saturating_add(remaining);
+                self.previous_tick = previous;
+                self.current_tick = current;
+                requests.push(self.next_request(previous, current, EvaluationMode::Playback));
+                break;
+            }
+
+            if until_end > 0 {
+                self.previous_tick = previous;
+                self.current_tick = duration;
+                requests.push(self.next_request(previous, duration, EvaluationMode::Playback));
+                remaining = remaining.saturating_sub(until_end);
+            }
+
+            self.current_tick = TimelineTick::ZERO;
+            let virtual_previous = TimelineTick::new(-1);
+            requests.push(self.next_request(
+                virtual_previous,
+                TimelineTick::ZERO,
+                EvaluationMode::Playback,
+            ));
+            self.previous_tick = TimelineTick::ZERO;
+        }
+        requests
+    }
+
     fn next_request(
         &mut self,
         previous_tick: TimelineTick,
@@ -725,6 +836,97 @@ fn non_negative_duration(duration: TimelineTick) -> TimelineTick {
     } else {
         duration
     }
+}
+
+/// Incremental forward-only reconstruction cursor for `ReplayRequired` tracks.
+///
+/// The owning runtime drives this cursor in bounded chunks (for example once
+/// per preview frame). A generation mismatch or explicit cancellation ends the
+/// work without applying stale state. Every emitted step has a non-negative
+/// delta, so callers never reconstruct state by feeding a negative timestep to
+/// simulation domains such as VFX.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplayReconstruction {
+    generation: u64,
+    cursor_tick: TimelineTick,
+    target_tick: TimelineTick,
+    cancelled: bool,
+}
+
+impl ReplayReconstruction {
+    /// Creates a reconstruction from `from_tick` through `target_tick`.
+    ///
+    /// Returns `None` when the requested target precedes the checkpoint/start.
+    pub fn new(
+        generation: u64,
+        from_tick: TimelineTick,
+        target_tick: TimelineTick,
+    ) -> Option<Self> {
+        (target_tick >= from_tick).then_some(Self {
+            generation,
+            cursor_tick: from_tick,
+            target_tick,
+            cancelled: false,
+        })
+    }
+
+    /// Cancels the remaining reconstruction work.
+    pub fn cancel(&mut self) {
+        self.cancelled = true;
+    }
+
+    /// Returns whether the target has been reconstructed.
+    pub const fn is_complete(&self) -> bool {
+        self.cursor_tick >= self.target_tick
+    }
+
+    /// Produces at most `max_ticks` of forward reconstruction work.
+    ///
+    /// A zero budget simply yields [`ReplayProgress::Pending`]. A generation
+    /// mismatch behaves like cancellation so a later seek can invalidate an
+    /// older preview job without blocking the UI thread.
+    pub fn next_step(&mut self, max_ticks: i64, current_generation: u64) -> ReplayProgress {
+        if self.cancelled || current_generation != self.generation {
+            self.cancelled = true;
+            return ReplayProgress::Cancelled;
+        }
+        if self.is_complete() {
+            return ReplayProgress::Complete;
+        }
+        if max_ticks <= 0 {
+            return ReplayProgress::Pending;
+        }
+        let from_tick = self.cursor_tick;
+        let to_tick = from_tick
+            .saturating_add(max_ticks)
+            .clamp(from_tick, self.target_tick);
+        self.cursor_tick = to_tick;
+        ReplayProgress::Step {
+            from_tick,
+            to_tick,
+            complete: self.is_complete(),
+        }
+    }
+}
+
+/// Result of one bounded [`ReplayReconstruction`] pump.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReplayProgress {
+    /// No work was performed because the supplied budget was zero.
+    Pending,
+    /// One forward-only interval should be simulated.
+    Step {
+        /// Inclusive reconstruction cursor before this step.
+        from_tick: TimelineTick,
+        /// New cursor after this step.
+        to_tick: TimelineTick,
+        /// Whether this step reached the target.
+        complete: bool,
+    },
+    /// The target was already fully reconstructed.
+    Complete,
+    /// Work was explicitly cancelled or invalidated by a newer generation.
+    Cancelled,
 }
 
 #[cfg(test)]
@@ -911,5 +1113,72 @@ mod tests {
         let stop = player.stop();
         assert_eq!(stop.current_tick, TimelineTick::ZERO);
         assert!(stop.generation > generation);
+    }
+
+    #[test]
+    fn looping_segments_fire_boundary_markers_once_per_wrap() {
+        let timeline = CompiledTimeline::new(
+            TimelineTick::new(10),
+            vec![
+                CompiledEntry::point(
+                    0,
+                    0,
+                    TimelineTick::ZERO,
+                    SeekCapability::Stateless,
+                    true,
+                    TestPayload::Event(0),
+                ),
+                CompiledEntry::point(
+                    0,
+                    1,
+                    TimelineTick::new(10),
+                    SeekCapability::Stateless,
+                    true,
+                    TestPayload::Event(10),
+                ),
+            ],
+        )
+        .expect("valid timeline");
+        let mut player = TimelinePlayer::new();
+        player.seek(TimelineTick::new(8), timeline.duration(), false);
+        player.set_looping(true);
+        player.play();
+
+        let requests = player.advance_ticks_segmented(5, timeline.duration());
+        assert_eq!(player.current_tick(), TimelineTick::new(3));
+        let fired = requests
+            .iter()
+            .flat_map(|request| timeline.evaluate(request))
+            .map(|item| *item.entry().payload())
+            .collect::<Vec<_>>();
+        assert_eq!(fired, vec![TestPayload::Event(10), TestPayload::Event(0)]);
+    }
+
+    #[test]
+    fn replay_reconstruction_is_forward_bounded_and_cancellable() {
+        let mut replay = ReplayReconstruction::new(7, TimelineTick::new(10), TimelineTick::new(25))
+            .expect("forward replay");
+        assert_eq!(
+            replay.next_step(6, 7),
+            ReplayProgress::Step {
+                from_tick: TimelineTick::new(10),
+                to_tick: TimelineTick::new(16),
+                complete: false,
+            }
+        );
+        assert_eq!(
+            replay.next_step(100, 7),
+            ReplayProgress::Step {
+                from_tick: TimelineTick::new(16),
+                to_tick: TimelineTick::new(25),
+                complete: true,
+            }
+        );
+        assert_eq!(replay.next_step(1, 7), ReplayProgress::Complete);
+
+        let mut stale = ReplayReconstruction::new(9, TimelineTick::ZERO, TimelineTick::new(5))
+            .expect("forward replay");
+        assert_eq!(stale.next_step(5, 10), ReplayProgress::Cancelled);
+        assert!(ReplayReconstruction::new(1, TimelineTick::new(5), TimelineTick::new(4)).is_none());
     }
 }
