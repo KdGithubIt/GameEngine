@@ -8,6 +8,7 @@
 #![warn(rustdoc::broken_intra_doc_links)]
 
 mod agent_host;
+mod native_agent;
 pub mod ai_studio;
 pub mod anim_ux;
 mod animation_set_editor;

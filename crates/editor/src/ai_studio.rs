@@ -9,6 +9,10 @@ use crate::agent_host::{
     ApprovalScope, CodeChange, CodeWorkspace, CompletionStatus, ConversationRole,
     ExternalAgentProcess, PermissionCheck, ProcessStream,
 };
+use crate::native_agent::{
+    LocalModelConfig, ModelCapabilityProfile, NativeAnswer, NativeQuestionTask, QuestionMessage,
+    QuestionRole, DEFAULT_LOCAL_MODEL_ENDPOINT,
+};
 use eframe::egui;
 use engine_authoring::ProjectRoot;
 use std::ffi::{OsStr, OsString};
@@ -58,6 +62,10 @@ pub struct AiStudioPanel {
     selected_session: String,
     proposal_draft: AgentProposal,
     message_draft: String,
+    local_model_endpoint: String,
+    local_model_name: String,
+    native_question: Option<NativeQuestionTask>,
+    native_question_session: Option<String>,
     provider_program: String,
     provider_args: String,
     open: bool,
@@ -98,6 +106,10 @@ impl AiStudioPanel {
             selected_session,
             proposal_draft,
             message_draft: String::new(),
+            local_model_endpoint: DEFAULT_LOCAL_MODEL_ENDPOINT.to_owned(),
+            local_model_name: String::new(),
+            native_question: None,
+            native_question_session: None,
             provider_program: String::new(),
             provider_args: String::new(),
             open: true,
@@ -117,6 +129,7 @@ impl AiStudioPanel {
 
     /// Draws the AI Studio window and advances any active external agent process.
     pub fn show(&mut self, context: &egui::Context) {
+        self.poll_native_question(context);
         self.poll_external_process(context);
         self.poll_managed_validation(context);
         let mut open = self.open;
@@ -239,13 +252,14 @@ impl AiStudioPanel {
                     });
                 }
             });
+        self.show_local_model_settings(ui);
         ui.add(
             egui::TextEdit::multiline(&mut self.message_draft)
                 .desired_rows(2)
-                .hint_text("Add a goal, clarification, constraint, or feedback…"),
+                .hint_text("Ask a question, add a constraint, or continue the same conversation…"),
         );
         ui.horizontal(|ui| {
-            let can_send = !self.message_draft.trim().is_empty();
+            let can_send = !self.message_draft.trim().is_empty() && self.native_question.is_none();
             if ui.add_enabled(can_send, egui::Button::new("Send")).clicked() {
                 let text = self.message_draft.trim().to_owned();
                 match self.host.append_message(
@@ -253,12 +267,127 @@ impl AiStudioPanel {
                     ConversationRole::User,
                     text,
                 ) {
-                    Ok(()) => self.message_draft.clear(),
+                    Ok(()) => {
+                        self.message_draft.clear();
+                        self.start_native_question();
+                    }
                     Err(error) => self.status = Some(error.to_string()),
                 }
             }
-            ui.small("Clarifications remain in the same session; no forced planning mode switch.");
+            if self.native_question.is_some() {
+                ui.spinner();
+                ui.small("Reading current GameEngine/project evidence…");
+            } else if self.local_model_name.trim().is_empty() {
+                ui.small("Set an installed local model to receive read-only answers.");
+            } else {
+                ui.small("Questions use the read-only native harness; Go remains explicit for writes.");
+            }
         });
+    }
+
+    fn show_local_model_settings(&mut self, ui: &mut egui::Ui) {
+        egui::CollapsingHeader::new("Local model · read-only questions")
+            .default_open(false)
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Endpoint");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.local_model_endpoint)
+                            .desired_width(250.0),
+                    );
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Installed model");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.local_model_name)
+                            .desired_width(250.0)
+                            .hint_text("model:tag"),
+                    );
+                });
+                let profile = LocalModelConfig {
+                    endpoint: self.local_model_endpoint.clone(),
+                    model: self.local_model_name.clone(),
+                }
+                .capability_profile();
+                ui.small(model_capability_summary(&profile));
+                ui.small(
+                    "The initial backend accepts loopback HTTP only. Model capabilities stay unverified until GameEngine Agent Benchmark evidence exists; entering a custom installed model does not label it recommended.",
+                );
+            });
+    }
+
+    fn start_native_question(&mut self) {
+        if self.local_model_name.trim().is_empty() {
+            return;
+        }
+        let session_id = self.selected_session.clone();
+        let conversation = match self.host.session(&session_id) {
+            Ok(session) => session
+                .messages
+                .iter()
+                .map(|message| QuestionMessage {
+                    role: match message.role {
+                        ConversationRole::User => QuestionRole::User,
+                        ConversationRole::Assistant => QuestionRole::Assistant,
+                        ConversationRole::System => QuestionRole::System,
+                    },
+                    text: message.text.clone(),
+                })
+                .collect::<Vec<_>>(),
+            Err(error) => {
+                self.status = Some(error.to_string());
+                return;
+            }
+        };
+        let config = LocalModelConfig {
+            endpoint: self.local_model_endpoint.clone(),
+            model: self.local_model_name.clone(),
+        };
+        match NativeQuestionTask::spawn(config, self.project_root.clone(), conversation) {
+            Ok(task) => {
+                self.native_question = Some(task);
+                self.native_question_session = Some(session_id);
+                self.status = Some(
+                    "Native read-only question started without acquiring mutation permissions."
+                        .to_owned(),
+                );
+            }
+            Err(error) => self.status = Some(error.to_string()),
+        }
+    }
+
+    fn poll_native_question(&mut self, context: &egui::Context) {
+        let Some(task) = self.native_question.as_ref() else {
+            return;
+        };
+        let Some(result) = task.poll() else {
+            context.request_repaint_after(std::time::Duration::from_millis(100));
+            return;
+        };
+        self.native_question = None;
+        let session_id = self
+            .native_question_session
+            .take()
+            .unwrap_or_else(|| self.selected_session.clone());
+        match result {
+            Ok(answer) => {
+                let message = format_native_answer(&answer);
+                match self.host.append_message(
+                    &session_id,
+                    ConversationRole::Assistant,
+                    message,
+                ) {
+                    Ok(()) => {
+                        self.status = Some(format!(
+                            "Local model answered with {} retrieved evidence source(s) in {} ms.",
+                            answer.sources.len(), answer.metrics.elapsed_ms
+                        ));
+                    }
+                    Err(error) => self.status = Some(error.to_string()),
+                }
+            }
+            Err(error) => self.status = Some(error.to_string()),
+        }
     }
 
     fn show_proposal(&mut self, ui: &mut egui::Ui) {
@@ -318,7 +447,7 @@ impl AiStudioPanel {
             ui.text_edit_singleline(&mut self.provider_args);
         });
         ui.small(
-            "The program is launched directly without a shell. GameEngine injects the immutable proposal and ephemeral MCP endpoint/token as process environment variables. Provider-specific Claude/Codex/native adapters can sit on this same runtime boundary without changing AI Studio semantics.",
+            "The write-capable Go path launches an external AgentRuntime directly without a shell and injects the immutable proposal plus ephemeral Editor MCP connection. The local question backend above is a separate ModelBackend; a native write-capable tool loop is not enabled by this slice.",
         );
         let mut stop_requested = false;
         ui.horizontal(|ui| {
@@ -756,6 +885,82 @@ impl AiStudioPanel {
             .transition_run(run_id, AgentRunState::Failed, message.clone());
         self.status = Some(message);
     }
+}
+
+fn model_capability_summary(profile: &ModelCapabilityProfile) -> String {
+    format!(
+        "Backend: {} · Model: {} · structured: {} · tools: {} · images: {} · reasoning: {} · context: {} · benchmark: {}",
+        profile.backend_id,
+        if profile.model_id.is_empty() {
+            "not selected"
+        } else {
+            profile.model_id.as_str()
+        },
+        capability_flag(profile.structured_output),
+        capability_flag(profile.tool_use),
+        capability_flag(profile.image_input),
+        capability_flag(profile.reasoning),
+        profile
+            .context_limit
+            .map(|limit| limit.to_string())
+            .unwrap_or_else(|| "unknown".to_owned()),
+        if profile.benchmark_verified {
+            "verified"
+        } else {
+            "unverified"
+        }
+    )
+}
+
+fn capability_flag(value: Option<bool>) -> &'static str {
+    match value {
+        Some(true) => "yes",
+        Some(false) => "no",
+        None => "unknown",
+    }
+}
+
+fn format_native_answer(answer: &NativeAnswer) -> String {
+    let mut message = answer.text.trim().to_owned();
+    message.push_str("\n\nSources / provenance:\n");
+    if answer.sources.is_empty() {
+        message.push_str(
+            "- No matching GameEngine repository or project source was retrieved; general model knowledge may have been used.\n",
+        );
+    } else {
+        for source in &answer.sources {
+            message.push_str(&format!(
+                "- {}:{}\n",
+                source.kind.label(),
+                source.path
+            ));
+        }
+        message.push_str(
+            "- General model knowledge may supplement the retrieved evidence where the answer says so.\n",
+        );
+    }
+    message.push_str("Harness evidence:\n");
+    message.push_str(&format!(
+        "- {} · backend={} · model={} · turns={} · retrieved_chunks={} · prompt_chars={} · response_chars={} · elapsed_ms={} · prompt_tokens={} · response_tokens={} · backend_ms={}",
+        answer.metrics.harness_version,
+        answer.metrics.backend_id,
+        answer.metrics.model_id,
+        answer.metrics.model_turns,
+        answer.metrics.retrieval_chunks,
+        answer.metrics.prompt_chars,
+        answer.metrics.response_chars,
+        answer.metrics.elapsed_ms,
+        optional_metric(answer.metrics.prompt_eval_tokens),
+        optional_metric(answer.metrics.response_tokens),
+        optional_metric(answer.metrics.backend_duration_ms),
+    ));
+    message
+}
+
+fn optional_metric(value: Option<u64>) -> String {
+    value
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "n/a".to_owned())
 }
 
 fn edit_lines(ui: &mut egui::Ui, label: &str, values: &mut Vec<String>) {
