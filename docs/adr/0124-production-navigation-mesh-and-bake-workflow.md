@@ -1,0 +1,296 @@
+# ADR 0124: Production Navigation Mesh and Bake Workflow
+
+Status: Proposed
+Date: 2026-08-16
+Builds on: ADR 0039, ADR 0057, ADR 0104, ADR 0113, ADR 0114, ADR 0121
+
+## Context
+
+The current navigation system intentionally began as a planar grid-backed
+`NavMesh` with A* queries. ADR 0039 explicitly treats that grid as the first
+runtime backend rather than the final editor bake format. ADR 0057 then made it
+usable from normal projects with `engine.nav_mesh_surface`, `.navmesh.bake.json`
+settings, `engine.nav_mesh_agent`, project-Rust navigation commands, path/status
+views, and debug drawing.
+
+This is sufficient for mostly planar arenas, but it cannot faithfully represent
+common 3D game spaces such as stacked floors, bridges over walkable ground,
+stairs, sloped surfaces, jump/drop connections, doors, or multiple agent body
+sizes. A production design also needs stale-bake detection, background baking,
+path-testing tools, and a representation that can later support local tile
+rebuilds/streaming without replacing every gameplay query.
+
+The goal is not to expose a Recast-shaped API or to make the Editor own a second
+navigation implementation. The project needs an engine-owned navigation asset,
+query contract, bake input, and authoring workflow that remain stable if the
+baker implementation changes.
+
+## Decision
+
+### 1. Preserve the high-level navigation API and replace the grid as the user-facing production format
+
+`NavMeshQuery`, navigation status, and the project gameplay command/view surface
+remain the high-level contract. `engine.nav_mesh_surface` and
+`engine.nav_mesh_agent` remain the stable scene component IDs.
+
+The production runtime representation becomes an engine-owned tiled polygonal
+navigation asset. A tile stores only neutral navigation data such as:
+
+- vertices and polygons;
+- polygon adjacency/portals;
+- area identifiers and traversal flags;
+- agent-profile identity/build metadata; and
+- tile bounds/version/fingerprint data.
+
+The exact bake library, if any, is not serialized into the runtime asset and is
+not exposed through gameplay APIs. The existing grid implementation may remain
+as a focused test/backend utility while the new implementation is brought up,
+but ordinary Editor bake output targets the production format.
+
+### 2. Bake through a backend-neutral `NavigationBuildInput`
+
+The bake front end collects a deterministic `NavigationBuildInput` from
+scene/project authoring data. It contains engine-owned triangle/shape geometry,
+walkability modifiers, links, and agent settings. A `NavigationBaker` boundary
+turns that input into the engine-owned tiled runtime asset.
+
+The first production baker is free to use an engine-owned rasterization/
+contouring implementation or a proven third-party backend, but any heavy/native
+baker dependency must be isolated behind the `engine-physics` owner or a narrow
+authoring/build feature according to ADR 0114. Runtime path queries must not
+compile a native bake dependency merely to load a baked asset.
+
+This boundary is tested with deterministic fixtures so replacing the baker does
+not require changing scene components or gameplay code.
+
+### 3. Multi-height walkability and agent profiles are first-class
+
+The bake model supports multiple walkable surfaces at the same XZ location.
+Walkability is derived from geometry with profile-specific constraints rather
+than one global `walkable_height` plane.
+
+A `.navmesh.bake.json` source document owns one or more named/stable agent
+profiles. Each profile includes at least:
+
+- radius;
+- height/clearance;
+- maximum walkable slope;
+- step/climb height; and
+- default traversal/area cost policy.
+
+The baked `.navmesh.json` artifact contains runtime data for those profiles.
+`engine.nav_mesh_agent` selects a profile by stable profile ID instead of
+copying bake parameters onto every entity. Missing profile IDs are blocking
+conversion diagnostics.
+
+The source bake document is canonical authoring data; the baked runtime file is
+derived output and records the normalized source fingerprint needed to detect
+staleness.
+
+### 4. Off-mesh links and area modifiers are authored in the scene
+
+Two reusable scene concepts are introduced through the normal component
+registry/authoring command path:
+
+- a navigation link for explicit traversals such as jump, drop, ladder, door,
+  or scripted transition; and
+- a navigation modifier for area type, exclusion, or traversal cost changes.
+
+Links use authoring entity/point references and stable link identity; runtime
+entity IDs are never persisted. A link records directionality, profile/area
+constraints, and a stable gameplay tag/ID that allows project code to decide
+how a special traversal is performed.
+
+Bake geometry and modifiers are collected through the same scene conversion/
+analysis rules used by Editor and validation. The Editor does not maintain a
+separate private list of navigation obstacles.
+
+### 5. Query, path following, and local avoidance stay separate responsibilities
+
+The navigation query layer owns nearest-point lookup, corridor/path queries,
+area costs, link edges, and partial-path results. Path smoothing/funnel
+processing converts polygon corridors into useful steering waypoints.
+
+`NavMeshAgent` path following remains a higher movement concern. Local
+separation/avoidance remains distinct from topology/pathfinding. A future crowd
+solver can replace the simple symmetric avoidance without changing the baked
+asset or path query format.
+
+This separation prevents `NavMesh` from becoming a monolithic AI movement
+component.
+
+### 6. The tiled format is the extension point for dynamic worlds
+
+Tiles are independently addressable and carry bounds plus source/build hashes.
+The first production release may still bake/reload a complete scene, but the
+format and query owner must permit:
+
+- rebuilding/invalidation of affected tiles;
+- temporary runtime obstacle overlays/carving;
+- loading/unloading tiles for future scene/world streaming; and
+- profile-specific tile sets.
+
+Dynamic carving and world streaming are follow-up implementation phases, not
+requirements for the first production bake. The design MUST NOT bake global
+array indices into public gameplay identity in a way that prevents tile
+replacement.
+
+### 7. Baking is an authoring service, never a UI-thread side effect
+
+A GUI-free Navigation authoring/bake service owns:
+
+- bake-document validation;
+- normalized build-input creation;
+- source fingerprinting/staleness checks;
+- bake invocation and cancellation;
+- derived artifact write/replace; and
+- structured diagnostics/statistics.
+
+Editor, future MCP tooling, CLI, validation, and packaging call this service
+rather than reimplementing bake rules. Per ADR 0121, semantic authoring parity
+is provided through shared commands/queries; the Editor is a thin visual client.
+
+Heavy geometry collection and baking run on a worker. Editing a Transform or
+Inspector field MUST NOT synchronously rebake navigation or hash large geometry
+on the UI thread. The Editor marks the bake stale immediately with cheap
+revision/stamp information and debounces optional Auto Bake.
+
+### 8. The Editor gets a dedicated Navigation workspace/panel
+
+The authoring UX provides:
+
+- agent-profile creation/editing with human-readable names;
+- Bake, Cancel, and optional debounced Auto Bake controls;
+- an explicit current/stale/baking/failed status with last successful bake
+  identity/time/statistics;
+- Scene View overlay toggles per agent profile;
+- distinct colors for walkable areas, costs, excluded regions, and off-mesh
+  links;
+- radius/height gizmos for selected agents/profiles;
+- direct link endpoint manipulation through ordinary authoring commands;
+- a path test tool: click/drag start and destination in Scene View and display
+  nearest points, corridor/waypoints, link usage, total cost, and failure
+  reason; and
+- Problems-panel diagnostics linked to the surface/profile/link/modifier that
+  caused them.
+
+The overlay renders the actual baked/query representation. It MUST NOT
+reconstruct an approximate grid just for the Editor.
+
+### 9. Stale data is visible and never silently trusted
+
+A nav surface compares its baked artifact fingerprint/profile schema against
+the current normalized bake source. Editor Play and packaging report stale or
+missing required navigation explicitly. Whether stale navigation is blocking is
+host policy, but a packaged build must not silently ship a stale artifact while
+reporting validation success.
+
+An interactive author may continue editing while a previous valid bake is
+visible; the overlay clearly labels it stale. A failed new bake does not delete
+the last valid artifact until a replacement is successfully produced.
+
+### 10. Runtime failure results are typed
+
+Navigation queries distinguish at least:
+
+- success;
+- partial path;
+- no reachable polygon/path;
+- start/end outside navigable space;
+- missing profile; and
+- missing/unavailable navigation data.
+
+The runtime does not fall back to straight-line movement through obstacles.
+Existing `NavMeshAgent` status is extended rather than replaced with log-only
+errors.
+
+### 11. Implementation is phased so each layer can be proven
+
+Implementation order is:
+
+1. versioned neutral tiled asset + query interface and deterministic fixtures;
+2. multi-height production bake input/baker for one agent profile;
+3. multiple profiles, nearest-point query, corridor smoothing, and runtime
+   agent integration;
+4. scene-authored links/modifiers and gameplay traversal metadata;
+5. shared background bake service, fingerprints, cancellation, and artifact
+   replacement;
+6. Navigation Editor panel, overlays, gizmos, and path test tool; and
+7. optional local tile rebuild/dynamic obstacle phase after profiling proves the
+   need.
+
+Every stage keeps `NavMeshQuery` as the gameplay-facing boundary and avoids
+binding project gameplay to baker implementation details.
+
+## Verification
+
+The accepted implementation must include fixtures for:
+
+- two walkable floors directly above one another without cross-linking them;
+- stairs/slope accepted or rejected according to profile limits;
+- a bridge over a lower walkable path;
+- different agent profiles producing different reachable space;
+- one-way and two-way off-mesh links;
+- area costs affecting chosen paths deterministically;
+- nearest-point and partial-path behavior;
+- path smoothing that stays inside the produced corridor;
+- stale-bake detection after relevant source edits but not irrelevant view
+  changes;
+- cancellation/failure preserving the last valid artifact;
+- Editor/CLI/service bake equivalence; and
+- packaged load producing the same query results as Editor Play.
+
+Navigation overlay, link gizmos, and the path test tool require Visual
+Validation when implemented. Bake responsiveness should also be measured on a
+representative non-trivial scene to confirm the UI thread remains interactive.
+
+## Consequences
+
+Navigation becomes suitable for normal multi-level 3D scenes while preserving
+the gameplay API established by the MVP. Tiled neutral data makes later dynamic
+obstacles and world streaming possible without making them prerequisites for
+the first implementation.
+
+The bake pipeline becomes significantly more complex and gains derived artifacts
+per agent profile. That complexity is isolated in a shared service and baker
+boundary rather than spread through Editor, scene conversion, and gameplay
+systems.
+
+## Alternatives Considered
+
+### Extend the current XZ grid with more ad-hoc height fields
+
+Rejected. Stacked floors, links, local rebuilding, and profile-specific
+clearance would turn the simple grid into an increasingly indirect polygonal
+navigation system while retaining poor path quality.
+
+### Expose a third-party Recast API directly
+
+Rejected. It would couple project files, Editor controls, and gameplay queries
+to one native dependency and violate the dependency-isolation goal of ADR
+0114.
+
+### Bake synchronously whenever the scene changes
+
+Rejected. Navigation baking is derived work and would recreate the Editor stalls
+addressed by ADR 0104. Staleness feedback is immediate; heavy bake work is
+background/debounced/explicit.
+
+### Let every NavMeshAgent carry its own radius/height settings
+
+Rejected for production baking. It creates unbounded bake variants and makes
+path validity ambiguous. Stable agent profiles make the authored contract
+explicit and reusable.
+
+## Compatibility and Migration
+
+`engine.nav_mesh_surface`, `engine.nav_mesh_agent`, project navigation commands,
+and high-level `NavMeshQuery` intent remain stable. The production artifact and
+bake-document schemas advance to the new current versions. Under ADR 0115,
+current in-repository nav assets and proving projects are regenerated/updated;
+compatibility-only readers for the old grid artifact are not required.
+
+If implementation adds `engine.nav_link` and `engine.nav_modifier`, their IDs
+and schemas become new current authoring contracts and must be registered,
+validated, exposed through the Inspector/CLI/MCP shared authoring path, and
+covered by package dependency analysis.
