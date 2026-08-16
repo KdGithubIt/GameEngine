@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "request_id": "20260816-adr0125-vfx-update-system-bd08db5-r3",
+  "target_branch": "chatgpt/gameengine-vfx-adr0125-v2",
+  "expected_head_sha": "bd08db56539aaaab827d805eb76aded68ee12082",
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Fix ADR 0125 VFX update system",
+  "pr_title": "GameEngine: implement ADR 0125 VFX architecture",
+  "pr_body": "## Summary\n\nContinues ADR 0125 and fixes the VFX frame-update system to follow the repository ECS query and Time contracts discovered by full Windows Validation.\n\nThis remains a Draft PR while Builder authoring and visual validation are completed."
+}
