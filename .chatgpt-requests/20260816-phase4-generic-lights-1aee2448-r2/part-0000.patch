@@ -1,0 +1,12 @@
+diff --git a/crates/render-runtime/src/render_backend.rs b/crates/render-runtime/src/render_backend.rs
+--- a/crates/render-runtime/src/render_backend.rs
++++ b/crates/render-runtime/src/render_backend.rs
+@@ -3492,7 +3492,7 @@
+         queue.write_buffer(&self.camera_buffer, 0, bytemuck::bytes_of(&uniform));
+     }
+ 
+-    pub(crate) fn update_light(
++    fn update_light(
+         &self,
+         queue: &wgpu::Queue,
+         ambient: &AmbientLight,
