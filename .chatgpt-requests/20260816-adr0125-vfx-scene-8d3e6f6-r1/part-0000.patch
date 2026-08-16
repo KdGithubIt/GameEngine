@@ -1,0 +1,341 @@
+diff --git a/crates/engine/src/vfx.rs b/crates/engine/src/vfx.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/engine/src/vfx.rs
+@@ -0,0 +1,3 @@
++//! Compatibility facade for render-runtime VFX simulation and playback.
++
++pub use engine_render_runtime::vfx::*;
+diff --git a/crates/engine/src/app.rs b/crates/engine/src/app.rs
+--- a/crates/engine/src/app.rs
++++ b/crates/engine/src/app.rs
+@@ -29,6 +29,7 @@ use crate::lod::{lod_selection_system, InstanceStats};
+ use crate::material::{Material, Texture};
+ use crate::mesh::{GpuMeshCache, Mesh};
+ use crate::particles::particle_update_system;
++use crate::vfx::vfx_update_system;
+ use crate::physics::{GameplayPhysicsWorld, Gravity};
+ use crate::player::PlayerMovementIntents;
+ use crate::postprocess::PostProcessSettings;
+@@ -205,6 +206,16 @@ impl App {
+             ),
+             particle_update_system,
+         );
++        ecs.add_system_with_descriptor(
++            builtin_system(
++                "engine.vfx_update",
++                "VFX Update",
++                "Advances scene VFX players from the frame clock.",
++            )
++            .try_after("engine.transform_propagation")
++            .expect("built-in system IDs are valid"),
++            vfx_update_system,
++        );
+         ecs.add_system_with_descriptor(
+             builtin_system(
+                 "engine.camera_aspect",
+diff --git a/crates/engine/src/lib.rs b/crates/engine/src/lib.rs
+--- a/crates/engine/src/lib.rs
++++ b/crates/engine/src/lib.rs
+@@ -116,6 +116,8 @@ pub mod morph;
+ pub mod navmesh;
+ /// CPU particle simulation rendered through GPU instancing (ADR 0044).
+ pub mod particles;
++/// Typed VFX effect playback and deterministic runtime simulation (ADR 0125).
++pub mod vfx;
+ /// Velocity, gravity, and restitution for dynamic physics bodies.
+ pub mod physics;
+ /// Player-controlled entity marker component.
+@@ -320,4 +322,9 @@ pub use navmesh::{bake_navmesh, load_navmesh, save_navmesh};
+ pub use particles::{particle_update_system, ParticleEmitter};
++pub use vfx::{
++    vfx_update_system, VfxInstance, VfxPlayer, VfxRenderBinding, VfxRenderBindings,
++    VfxRenderParticle, VfxRestartPolicy, VfxRuntimeBackend, VfxRuntimeStats,
++    VFX_PREVIEW_STEP_SECONDS,
++};
+ pub use physics::{
+     gravity_system, restitution_system, velocity_system, GameplayPhysicsWorld, Gravity,
+     GravityScale, Velocity,
+diff --git a/crates/engine/src/components.rs b/crates/engine/src/components.rs
+--- a/crates/engine/src/components.rs
++++ b/crates/engine/src/components.rs
+@@ -48,6 +48,8 @@ pub enum AssetKind {
+     UiDocument,
+     /// A reusable authoring prefab document.
+     Prefab,
++    /// A typed `*.vfx.json` visual-effect document (ADR 0125).
++    VfxEffect,
+     /// A glTF/GLB, FBX, or PMX source document used for mesh, skin, or
+     /// animation import (ADR 0081 widened this from glTF/GLB-only, ADR 0097
+     /// widened it again to PMX; the variant name is a pre-existing misnomer
+@@ -108,6 +110,7 @@ pub fn asset_path_matches_kind(kind: AssetKind, path: &Path) -> bool {
+         AssetKind::NavMesh => file_name == "navmesh.bin" || file_name.ends_with(".navmesh.json"),
+         AssetKind::UiDocument => file_name.ends_with(".ui.json"),
+         AssetKind::Prefab => file_name.ends_with(".prefab.json"),
++        AssetKind::VfxEffect => file_name.ends_with(".vfx.json"),
+         AssetKind::GltfSource => extension_matches(extension, &["gltf", "glb", "fbx", "pmx"]),
+         AssetKind::MotionSource => extension_matches(extension, &["vmd"]),
+         // Skins, skeletons, morphs, and rigid-body rigs are only ever
+diff --git a/crates/engine/src/components/builtins.rs b/crates/engine/src/components/builtins.rs
+--- a/crates/engine/src/components/builtins.rs
++++ b/crates/engine/src/components/builtins.rs
+@@ -801,4 +801,52 @@ const PARTICLE_EMITTER_FIELDS: &[FieldDef] = &[
+     .with_control(InspectorFieldControl::Number(U32_RANGE)),
+ ];
+ 
++const VFX_PLAYER_FIELDS: &[FieldDef] = &[
++    asset_ref(
++        "effect",
++        "Effect",
++        "The typed VFX effect asset played by this entity.",
++        AssetKind::VfxEffect,
++        FieldDefaultSpec::Unassigned,
++    ),
++    boolean(
++        "autoplay",
++        "Autoplay",
++        "Start the effect when the runtime component is created.",
++        true,
++    ),
++    boolean(
++        "looping",
++        "Looping",
++        "Restart the effect whenever all finite emission and particles complete.",
++        false,
++    ),
++    enumeration(
++        "restart_policy",
++        "Restart Policy",
++        "Completion policy when looping is disabled.",
++        "manual",
++        &["manual", "on_complete"],
++    ),
++    number(
++        "time_scale",
++        "Time Scale",
++        "Per-instance playback speed multiplier.",
++        1.0,
++        NON_NEGATIVE,
++    ),
++    integer(
++        "seed_override",
++        "Seed Override",
++        "Deterministic instance seed; -1 uses the effect asset seed.",
++        -1,
++        NumericRange::inclusive(-1.0, u32::MAX as f64),
++    ),
++    map(
++        "parameter_overrides",
++        "Parameter Overrides",
++        "Named finite scalar overrides reserved by the VFX instance contract.",
++    ),
++];
++
+ const UI_DOCUMENT_FIELDS: &[FieldDef] = &[];
+@@ -1847,5 +1883,15 @@ pub(super) fn builtin_components() -> Vec<BuiltinComponent> {
+             SPOT_LIGHT_FIELDS,
+             spawn_spot_light_component,
+         ),
++        BuiltinComponent::new(
++            VFX_PLAYER_COMPONENT,
++            "VFX Player",
++            "Plays one typed VFX effect asset with deterministic per-instance playback controls.",
++            "Rendering",
++            1,
++            VFX_PLAYER_FIELDS,
++            spawn_vfx_player_component,
++        )
++        .collapsed_by_default(),
+     ]
+ }
+diff --git a/crates/engine/src/scene_bridge.rs b/crates/engine/src/scene_bridge.rs
+--- a/crates/engine/src/scene_bridge.rs
++++ b/crates/engine/src/scene_bridge.rs
+@@ -40,11 +40,12 @@ use crate::skinning::{
+ };
+ use crate::transform::{Children, GlobalTransform, Parent, Transform};
+ use crate::ui_document::{load_ui_document, UiDocumentRef};
+-use engine_authoring::id::{AssetId, ComponentTypeId, EntityId};
++use crate::vfx::{VfxPlayer, VfxRenderBinding, VfxRenderBindings, VfxRestartPolicy};
++use engine_authoring::id::{AssetId, ComponentTypeId, EntityId, StableId};
+ use engine_authoring::scene::AuthoringScene;
+ use engine_authoring::ui::{UiDocument, UiNode, UiNodeKind, UiString};
+ use engine_authoring::value::Value;
+ use engine_authoring::{
+     AnimationSet, AuthoringEntity, BehaviorTreeAuthoringService, Diagnostic, DiagnosticTarget,
+-    Graph,
++    Graph, VfxAuthoringService, VfxModuleOperation,
+ };
+@@ -131,6 +135,9 @@ pub const FOLLOW_CAMERA_COMPONENT: &str = "engine.follow_camera";
+ /// The `"engine.particle_emitter"` component type string recognised by the bridge.
+ pub const PARTICLE_EMITTER_COMPONENT: &str = "engine.particle_emitter";
+ 
++/// The typed scene VFX player component defined by ADR 0125.
++pub const VFX_PLAYER_COMPONENT: &str = "engine.vfx_player";
++
+ /// The `"engine.ui_document"` component type string recognised by the bridge
+ /// (Phase 54).
+ pub const UI_DOCUMENT_COMPONENT: &str = "engine.ui_document";
+diff --git a/crates/engine/src/scene_bridge/spawn.rs b/crates/engine/src/scene_bridge/spawn.rs
+--- a/crates/engine/src/scene_bridge/spawn.rs
++++ b/crates/engine/src/scene_bridge/spawn.rs
+@@ -1067,6 +1067,149 @@ pub(crate) fn spawn_behavior_tree_runner_component(
+     Ok(())
+ }
+ 
++pub(crate) fn spawn_vfx_player_component(
++    entity: Entity,
++    value: &Value,
++    context: &mut SpawnContext<'_>,
++) -> Result<(), ComponentSpawnError> {
++    let component_type = ComponentTypeId::new(VFX_PLAYER_COMPONENT);
++    const EXPECTED: &str = "an object with effect and VFX playback fields";
++    let fields = ComponentFields::new(context.authoring_entity, &component_type, value, EXPECTED)?;
++    let Some(effect_asset) = fields.assignable_asset_ref("effect")?.cloned() else {
++        context
++            .asset_diagnostics
++            .push(component_inactive_diagnostic(
++                context.authoring_entity,
++                &component_type,
++                "effect",
++            ));
++        return Ok(());
++    };
++
++    let path = manifest_asset_path(&effect_asset, context)?;
++    let json = std::fs::read_to_string(&path).map_err(|source| SceneBridgeError::AssetLoad {
++        asset: effect_asset.clone(),
++        source: AssetLoadError::Io {
++            path: path.clone(),
++            source,
++        },
++    })?;
++    let service = VfxAuthoringService::new();
++    let effect = service
++        .effect_from_json(&json)
++        .map_err(|source| SceneBridgeError::AssetLoad {
++            asset: effect_asset.clone(),
++            source: AssetLoadError::InvalidAsset {
++                path: path.clone(),
++                message: source.to_string(),
++            },
++        })?;
++    let compilation = service.compile(&effect);
++    let compiled = compilation.compiled_effect.ok_or_else(|| {
++        let details = compilation
++            .diagnostics
++            .iter()
++            .map(|diagnostic| format!("[{}] {}", diagnostic.code, diagnostic.message))
++            .collect::<Vec<_>>()
++            .join("; ");
++        SceneBridgeError::AssetLoad {
++            asset: effect_asset.clone(),
++            source: AssetLoadError::InvalidAsset {
++                path: path.clone(),
++                message: format!("VFX effect did not compile: {details}"),
++            },
++        }
++    })?;
++
++    let autoplay = fields.bool_or("autoplay", true)?;
++    let looping = fields.bool_or("looping", false)?;
++    let restart_policy = match fields.get("restart_policy") {
++        None => VfxRestartPolicy::Manual,
++        Some(Value::String(policy)) if policy == "manual" => VfxRestartPolicy::Manual,
++        Some(Value::String(policy)) if policy == "on_complete" => VfxRestartPolicy::OnComplete,
++        _ => return Err(fields.invalid(EXPECTED).into()),
++    };
++    let time_scale = fields.f32_or("time_scale", 1.0)?;
++    if !time_scale.is_finite() || time_scale < 0.0 {
++        return Err(fields.invalid("a finite non-negative time_scale").into());
++    }
++    let seed_override = match fields.get("seed_override") {
++        None | Some(Value::I64(-1)) => None,
++        Some(Value::I64(seed)) if (0..=i64::from(u32::MAX)).contains(seed) => Some(*seed as u32),
++        _ => return Err(fields.invalid("seed_override equal to -1 or a u32 value").into()),
++    };
++    let parameter_overrides = match fields.get("parameter_overrides") {
++        None => BTreeMap::new(),
++        Some(Value::Object(values)) => {
++            let mut overrides = BTreeMap::new();
++            for (name, value) in values {
++                let value = match value {
++                    Value::F64(value) => *value as f32,
++                    Value::I64(value) => *value as f32,
++                    Value::U64(value) => *value as f32,
++                    _ => return Err(fields.invalid("finite scalar parameter overrides").into()),
++                };
++                if name.trim().is_empty() || !value.is_finite() {
++                    return Err(fields.invalid("finite scalar parameter overrides").into());
++                }
++                overrides.insert(name.clone(), value);
++            }
++            overrides
++        }
++        _ => return Err(fields.invalid("a string-to-number parameter override object").into()),
++    };
++
++    let built_in_quad = AssetId::from_stable_id(StableId::new(BUILTIN_QUAD_ASSET_ID))
++        .expect("built-in quad asset ID is valid");
++    let built_in_white = AssetId::from_stable_id(StableId::new(BUILTIN_WHITE_MATERIAL_ASSET_ID))
++        .expect("built-in white material asset ID is valid");
++    let mut bindings = VfxRenderBindings::default();
++    for emitter in &compiled.emitters {
++        for operation in &emitter.render_operations {
++            match &operation.operation {
++                VfxModuleOperation::Billboard { material, .. } => {
++                    let material_asset = material.as_ref().unwrap_or(&built_in_white);
++                    bindings.insert(
++                        operation.source_module.clone(),
++                        VfxRenderBinding {
++                            mesh: resolve_mesh_handle(&built_in_quad, context),
++                            material: resolve_material_value(material_asset, context),
++                            billboard: true,
++                        },
++                    );
++                }
++                VfxModuleOperation::Mesh { mesh, material, .. } => {
++                    let material_asset = material.as_ref().unwrap_or(&built_in_white);
++                    bindings.insert(
++                        operation.source_module.clone(),
++                        VfxRenderBinding {
++                            mesh: resolve_mesh_handle(mesh, context),
++                            material: resolve_material_value(material_asset, context),
++                            billboard: false,
++                        },
++                    );
++                }
++                _ => {}
++            }
++        }
++    }
++
++    context.world.add_component(
++        entity,
++        VfxPlayer::new(
++            compiled,
++            autoplay,
++            looping,
++            restart_policy,
++            time_scale,
++            seed_override,
++            parameter_overrides,
++        ),
++    )?;
++    context.world.add_component(entity, bindings)?;
++    Ok(())
++}
++
+ pub(crate) fn spawn_audio_emitter_component(
+     entity: Entity,
+     value: &Value,
+diff --git a/crates/editor/src/ui/inspector/asset_reference.rs b/crates/editor/src/ui/inspector/asset_reference.rs
+--- a/crates/editor/src/ui/inspector/asset_reference.rs
++++ b/crates/editor/src/ui/inspector/asset_reference.rs
+@@ -102,5 +102,6 @@ pub(in crate::ui) fn asset_reference_browser_kind(
+         engine::AssetKind::NavMesh => BrowserKind::NavMesh,
+         engine::AssetKind::UiDocument => BrowserKind::UiDocument,
+         engine::AssetKind::Prefab => BrowserKind::Prefab,
++        engine::AssetKind::VfxEffect => BrowserKind::Graph,
+     }
+ }
