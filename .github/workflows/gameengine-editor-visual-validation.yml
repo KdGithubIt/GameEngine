@@ -38,6 +38,7 @@ jobs:
       pull-requests: read
     outputs:
       target: ${{ steps.resolve.outputs.target }}
+      authoring_tool: ${{ steps.resolve.outputs.authoring_tool }}
       branch: ${{ steps.resolve.outputs.branch }}
       head_sha: ${{ steps.resolve.outputs.head_sha }}
       base_sha: ${{ steps.resolve.outputs.base_sha }}
@@ -57,6 +58,25 @@ jobs:
             const matches = [...body.matchAll(marker)];
             if (matches.length !== 1) {
               core.setFailed("PR body must contain exactly one valid GameEngine visual-validation marker.");
+              return;
+            }
+
+            const authoringToolMarker = /<!--\s*gameengine-visual-authoring-tool:\s*([^<>\r\n]{1,80})\s*-->/gi;
+            const authoringToolMatches = [...body.matchAll(authoringToolMarker)];
+            if (authoringToolMatches.length > 1) {
+              core.setFailed("PR body may contain at most one GameEngine authoring-tool visual scenario marker.");
+              return;
+            }
+            const requestedTarget = matches[0][1].toLowerCase();
+            const authoringTool = authoringToolMatches.length === 1
+              ? authoringToolMatches[0][1].trim()
+              : "";
+            if (authoringTool && !/^[A-Za-z0-9][A-Za-z0-9 ._()\/-]{0,79}$/.test(authoringTool)) {
+              core.setFailed("Authoring-tool visual scenario contains unsupported characters.");
+              return;
+            }
+            if (authoringTool && requestedTarget !== "editor" && requestedTarget !== "both") {
+              core.setFailed("Authoring-tool visual scenarios require an explicit editor or both capture target.");
               return;
             }
 
@@ -92,7 +112,8 @@ jobs:
               }
             }
 
-            core.setOutput("target", matches[0][1].toLowerCase());
+            core.setOutput("target", requestedTarget);
+            core.setOutput("authoring_tool", authoringTool);
             core.setOutput("branch", branch);
             core.setOutput("head_sha", headSha);
             core.setOutput("base_sha", baseSha);
@@ -175,10 +196,12 @@ jobs:
         shell: pwsh
         env:
           CAPTURE_TARGET: ${{ steps.target.outputs.target }}
+          AUTHORING_TOOL: ${{ needs.context.outputs.authoring_tool }}
         run: |
           $output = Join-Path $env:RUNNER_TEMP "gameengine-editor-visual-validation"
           ./scripts/ci/Invoke-EditorVisualValidation.ps1 `
               -Target $env:CAPTURE_TARGET `
+              -AuthoringTool $env:AUTHORING_TOOL `
               -WorkspaceRoot (Get-Location).Path `
               -OutputDirectory $output
 
@@ -187,6 +210,7 @@ jobs:
         shell: pwsh
         env:
           CAPTURE_TARGET: ${{ steps.target.outputs.target }}
+          AUTHORING_TOOL: ${{ needs.context.outputs.authoring_tool }}
         run: |
           $summaryPath = Join-Path $env:RUNNER_TEMP "gameengine-editor-visual-validation\summary.json"
           Add-Content $env:GITHUB_STEP_SUMMARY "### GameEngine desktop visual validation"
@@ -195,6 +219,9 @@ jobs:
           Add-Content $env:GITHUB_STEP_SUMMARY "- Commit: ``${{ needs.context.outputs.head_sha }}``"
           Add-Content $env:GITHUB_STEP_SUMMARY "- Requested target: ``${{ needs.context.outputs.target }}``"
           Add-Content $env:GITHUB_STEP_SUMMARY "- Resolved target: ``$env:CAPTURE_TARGET``"
+          if ($env:AUTHORING_TOOL) {
+              Add-Content $env:GITHUB_STEP_SUMMARY "- Authoring tool scenario: ``$env:AUTHORING_TOOL``"
+          }
           if (Test-Path -LiteralPath $summaryPath -PathType Leaf) {
               $summary = Get-Content -Raw -LiteralPath $summaryPath -Encoding utf8 | ConvertFrom-Json
               foreach ($screenshot in $summary.screenshots) {
