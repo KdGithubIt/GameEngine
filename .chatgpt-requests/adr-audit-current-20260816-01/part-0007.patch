@@ -1,0 +1,26 @@
+-| [0039](0039-navmesh-and-pathfinding-mvp.md) | Phase 44 | NavMesh library selection and bake strategy | Accepted |
+-| [0040](0040-post-processing-pipeline.md) | Phase 45 | Post-processing pipeline and HDR render target strategy | Accepted |
+-| [0041](0041-wasm32-build-strategy.md) | Phase 46 | WASM / web build target strategy | Accepted |
+-| [0042](0042-gpu-instancing-and-lod.md) | Phase 47 | GPU instancing and LOD selection | Accepted |
+-| [0043](0043-skinned-mesh-skeletal-animation.md) | Phase 48 | Skinned mesh vertex layout, skeleton representation, joint palette, clip targets | Accepted |
+-| [0044](0044-particle-system.md) | Phase 49 | Particle simulation ownership, rendering path, RNG policy | Accepted |
+-| [0045](0045-player-binary-and-package-execution.md) | Phase 51 | Player binary strategy, package layout, blocking policy | Accepted |
++| [0122](0122-spatial-audio-mixer-and-authoring-ux.md) | **Proposed** — Spatial Audio Mixer and Authoring UX |
++| [0123](0123-stateful-behavior-tree-execution-and-debugging.md) | **Proposed** — Stateful Behavior Tree Execution and Debugging |
++| [0124](0124-production-navigation-mesh-and-bake-workflow.md) | **Proposed** — Production Navigation Mesh and Bake Workflow |
++| [0125](0125-vfx-effect-authoring-and-runtime-architecture.md) | **Proposed** — VFX Effect Authoring and Runtime Architecture |
++| [0126](0126-timeline-sequencer-authoring-and-runtime.md) | **Proposed** — Timeline / Sequencer Authoring and Runtime |
++| [0128](0128-renderer-owned-full-image-based-lighting.md) | Renderer-Owned Full Image-Based Lighting |
+diff --git a/docs/adr/0122-renderer-owned-full-image-based-lighting.md b/docs/adr/0128-renderer-owned-full-image-based-lighting.md
+similarity index 100%
+rename from docs/adr/0122-renderer-owned-full-image-based-lighting.md
+rename to docs/adr/0128-renderer-owned-full-image-based-lighting.md
+diff --git a/docs/adr/0128-renderer-owned-full-image-based-lighting.md b/docs/adr/0128-renderer-owned-full-image-based-lighting.md
+--- a/docs/adr/0128-renderer-owned-full-image-based-lighting.md
++++ b/docs/adr/0128-renderer-owned-full-image-based-lighting.md
+@@ -1,4 +1,4 @@
+-# ADR 0122: Renderer-Owned Full Image-Based Lighting
++# ADR 0128: Renderer-Owned Full Image-Based Lighting
+ 
+ Status: Accepted
+ Date: 2026-08-16

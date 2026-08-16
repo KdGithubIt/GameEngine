@@ -1,0 +1,126 @@
++- The active Editor owns the initial project-scoped loopback MCP endpoint.
++- `engine-mcp` remains a transport-agnostic adapter over shared authoring
++  services.
++- CLI is the supported headless authoring/automation adapter.
++- The AI Agent Bridge is for runtime observation/input and visual interaction,
++  not a replacement semantic authoring model.
++
++## 5. Asset, animation, physics, and rendering boundaries
++
++Import formats normalize into shared engine contracts instead of creating
++format-specific runtime architecture.
++
++- glTF, FBX, PMX, and VMD parsing/import belong to the import boundary.
++- Model IR is format-independent and belongs to the neutral asset layer.
++- Skeleton/skin/rig identity belongs to `engine-rig`.
++- Animation playback, graph, pose, retargeting, and binding events belong to
++  the animation domain.
++- Engine-native secondary motion and collision/solver behavior belong to the
++  physics domain; PMX data is converted at import rather than leaking MMD
++  concepts into lower runtime contracts.
++- `StandardLit`, `ToonLit`, and `Unlit` share generic material/rendering
++  contracts. Outline remains an independent pass.
++- Scene-lighting arithmetic and HDR composition are linear; color/data texture
++  semantics follow ADR 0118.
++- Tangent-space material shading follows ADR 0119.
++- Material schema v3 PBR inputs follow ADR 0120.
++- Full image-based-lighting precomputation and process-local derived resources
++  are renderer-owned per ADR 0128.
++
++## 6. CI and validation architecture
++
++Package ownership for affected validation comes from Cargo metadata. The CI
++classifier must not duplicate workspace package names and crate directories in
++a second hard-coded table.
++
++The authoritative validation contract is
++[`docs/DEVELOPMENT_WORKFLOW.md`](DEVELOPMENT_WORKFLOW.md):
++
++- `affected` validates planner-selected package scope;
++- `full` validates the workspace, including Check and documentation;
++- `docs` skips Rust compilation for recognized documentation-only PRs.
++
++An affected success is not a full-workspace five-command success.
++
++## 7. How to maintain this overview
++
++Update this document when an Accepted ADR changes a current ownership boundary
++or when an accepted migration reaches a materially different steady state.
++Do not rewrite historical ADRs merely to make them read like current prose.
++
++When reviewing architecture:
++
++1. read this overview for the current map;
++2. follow the relevant links in `docs/adr/README.md` for rationale and
++   amendments;
++3. confirm implementation ownership in the current workspace; and
++4. update the canonical specification when the current contract changes.
+diff --git a/docs/adr/0113-runtime-domain-crate-decomposition.md b/docs/adr/0113-runtime-domain-crate-decomposition.md
+index 4eebb0b826c2ed7a5358e4e8580434add232c87d..8c79a58c47a1ebdebe8a5c8aefd81ad7dfbab738 100644
+--- a/docs/adr/0113-runtime-domain-crate-decomposition.md
++++ b/docs/adr/0113-runtime-domain-crate-decomposition.md
+@@ -4,6 +4,12 @@ Status: Accepted
+ Date: 2026-08-14
+ Builds on: ADR 0111, ADR 0112
+ 
++Current-status note (2026-08-16): the domain packages described here are now
++present in the workspace. The current CI package-selection contract is defined
++by `docs/DEVELOPMENT_WORKFLOW.md`: package ownership is derived from Cargo
++metadata, not from a duplicated hard-coded crate/path table. References below
++have been updated to that current operational contract.
++
+ ## Context
+ __FILLER_0008__
+ __FILLER_0009__
+@@ -211,8 +217,8 @@ __FILLER_0210__
+ __FILLER_0211__
+ 9. Reduce `engine` to application/runtime-system composition, cross-domain
+    registration, and compatibility re-exports.
+-10. Update CI changed-path classification so every new known crate selects its
+-    own package instead of falling back to full validation.
++10. Verify that affected-package planning discovers every new package through
++    Cargo metadata without adding a second hard-coded package/path table.
+ 
+ A temporary facade in `engine` is acceptable during this sequence. A temporary
+ __FILLER_0218__
+@@ -230,12 +236,13 @@ __FILLER_0229__
+ __FILLER_0230__
+ ### 8. CI must preserve the latency benefit
+ 
+-The changed-path classifier must recognize the new crate directories and map
+-them to their package names. Workspace/Cargo/build-infrastructure changes still
+-select full validation as defined by `DEVELOPMENT_WORKFLOW.md`.
++Affected-package planning must derive package ownership from Cargo metadata.
++Workspace/Cargo/build-infrastructure changes still select full validation as
++defined by `DEVELOPMENT_WORKFLOW.md`; unclassifiable paths also fall back to
++full validation.
+ 
+ Domain-only changes should be able to use affected-package validation without
+-compiling unrelated high-level domains. Full validation on `master` and nightly
++compiling unrelated high-level domains. Full validation on `main` and nightly
+ continues to provide reverse-dependent workspace coverage.
+ 
+ ## Consequences
+@@ -251,9 +258,9 @@ __FILLER_0250__
+ __FILLER_0251__
+ - The compatibility `engine` crate remains convenient for downstream users while
+   compile ownership moves to smaller packages.
+-- Cargo manifests and CI classification become part of the architectural change,
+-  because an unrecognized crate would otherwise erase much of the expected PR
+-  latency improvement.
++- Cargo manifests and metadata-derived CI planning are part of the architectural
++  change, because an unclassifiable package path would otherwise erase much of
++  the expected PR latency improvement.
+ - The migration produces several commits but one coherent final dependency DAG.
+ __FILLER_0258__
+ __FILLER_0259__
+diff --git a/docs/adr/AUDIT_2026-08-16.md b/docs/adr/AUDIT_2026-08-16.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..5e80fff1a92c8ef204f3abe7f3355b4b66ad1326
+--- /dev/null
++++ b/docs/adr/AUDIT_2026-08-16.md
+@@ -0,0 +1,187 @@
++# ADR Audit — 2026-08-16
++
++Status: Completed
++Repository: `KdGithubIt/GameEngine`
