@@ -1,0 +1,54 @@
++            let success = !diagnostics.iter().any(Diagnostic::is_blocking);
++            return Ok(GraphViewAuthoringMutation {
++                success,
++                base_revision: expected_revision,
++                base_generation: expected_generation,
++                revision: expected_revision,
++                generation: expected_generation,
++                diagnostics,
++                diff,
++            });
++        }
++
++        match transaction.commit(view, graph) {
++            Ok(committed_diff) => {
++                let diagnostics = view.validate(graph);
++                Ok(GraphViewAuthoringMutation {
++                    success: !diagnostics.iter().any(Diagnostic::is_blocking),
++                    base_revision: expected_revision,
++                    base_generation: expected_generation,
++                    revision: view.revision(),
++                    generation: view.identity(),
++                    diagnostics,
++                    diff: committed_diff,
++                })
++            },
++            Err(GraphViewTransactionError::ValidationFailed { diagnostics }) => {
++                Ok(GraphViewAuthoringMutation {
++                    success: false,
++                    base_revision: expected_revision,
++                    base_generation: expected_generation,
++                    revision: expected_revision,
++                    generation: expected_generation,
++                    diagnostics,
++                    diff,
++                })
++            }
++            Err(GraphViewTransactionError::Conflict {
++                expected_identity,
++                expected_revision: conflict_revision,
++                actual_identity,
++                actual_revision,
++            }) => Err(GraphViewAuthoringError::Stale {
++                expected_revision: conflict_revision,
++                expected_generation: expected_identity,
++                actual_revision,
++                actual_generation: actual_identity,
++            })
++        }
++    }
++}
++
++fn evaluate(
++    graph: &Graph,
++    view: &GraphView,
