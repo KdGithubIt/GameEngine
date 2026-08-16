@@ -1,0 +1,221 @@
+         "Distance where positional attenuation begins.",
+         1.0,
+-        POSITIVE,
++        NON_NEGATIVE,
+     ),
+     number(
+         "max_distance",
+         "Max Distance",
+         "Distance where positional attenuation reaches its floor.",
+         20.0,
+-        POSITIVE,
++        NON_NEGATIVE,
++    ),
++    enumeration(
++        "rolloff",
++        "Rolloff",
++        "Distance attenuation curve used by the shared spatial mixer.",
++        "linear",
++        &["linear", "inverse"],
++    ),
++    boolean(
++        "looping",
++        "Loop",
++        "Repeat the managed voice until the emitter is stopped or despawned.",
++        false,
+     ),
+     boolean(
+         "autoplay",
+@@ -27,12 +40,21 @@
+     ),
+ ];
+ 
+-const AUDIO_LISTENER_FIELDS: &[FieldDef] = &[boolean(
+-    "enabled",
+-    "Enabled",
+-    "Whether this listener participates in positional mixing.",
+-    true,
+-)];
++const AUDIO_LISTENER_FIELDS: &[FieldDef] = &[
++    boolean(
++        "enabled",
++        "Enabled",
++        "Whether this listener participates in positional mixing.",
++        true,
++    ),
++    FieldDef::new(
++        "priority",
++        "Priority",
++        "Higher enabled listener priorities win; ties use deterministic entity order.",
++        FieldKind::I64,
++        FieldDefaultSpec::I64(0),
++    ),
++];
+ 
+ const MUSIC_CONTROLLER_FIELDS: &[FieldDef] = &[
+     asset_ref(
+diff --git a/crates/engine/src/components/builtins.rs b/crates/engine/src/components/builtins.rs
+--- a/crates/engine/src/components/builtins.rs
++++ b/crates/engine/src/components/builtins.rs
+@@ -80,7 +80,7 @@
+             "Audio Emitter",
+             "Plays a registered sound from this entity's position.",
+             "Audio",
+-            1,
++            2,
+             AUDIO_EMITTER_FIELDS,
+             spawn_audio_emitter_component,
+         ),
+diff --git a/crates/engine/src/components/builtins.rs b/crates/engine/src/components/builtins.rs
+--- a/crates/engine/src/components/builtins.rs
++++ b/crates/engine/src/components/builtins.rs
+@@ -129,7 +129,7 @@
+             "Audio Listener",
+             "Marks this entity as a positional-audio listener.",
+             "Audio",
+-            1,
++            2,
+             AUDIO_LISTENER_FIELDS,
+             spawn_audio_listener_component,
+         )
+diff --git a/crates/engine/src/components/validation.rs b/crates/engine/src/components/validation.rs
+--- a/crates/engine/src/components/validation.rs
++++ b/crates/engine/src/components/validation.rs
+@@ -11,5 +11,18 @@
+                     .with_target(target.clone()),
+                 );
+             }
++            if component_type.as_str() == AUDIO_LISTENER_COMPONENT
++                && !entity
++                    .components
++                    .contains_key(&ComponentTypeId::new(TRANSFORM_COMPONENT))
++            {
++                diagnostics.push(
++                    Diagnostic::error(
++                        "scene.component_dependency_missing",
++                        "`engine.audio_listener` requires `engine.transform` on the same entity",
++                    )
++                    .with_target(target.clone()),
++                );
++            }
+             if component_type.as_str() == FOOT_IK_COMPONENT
+                 && !entity
+diff --git a/crates/engine/src/components/validation.rs b/crates/engine/src/components/validation.rs
+--- a/crates/engine/src/components/validation.rs
++++ b/crates/engine/src/components/validation.rs
+@@ -56,5 +56,76 @@
+     diagnostics.extend(validate_skinned_models_without_renderers(scene));
++    diagnostics.extend(validate_spatial_audio_scene(scene));
+     diagnostics.extend(crate::render_limits::validate_scene_render_limits(scene));
++    diagnostics
++}
++
++fn validate_spatial_audio_scene(scene: &AuthoringScene) -> Vec<Diagnostic> {
++    let listener_type = ComponentTypeId::new(AUDIO_LISTENER_COMPONENT);
++    let emitter_type = ComponentTypeId::new(AUDIO_EMITTER_COMPONENT);
++    let mut enabled = Vec::new();
++    for (entity_id, entity) in scene.entities() {
++        let Some(Value::Object(fields)) = entity.components.get(&listener_type) else {
++            continue;
++        };
++        if fields.get("enabled") != Some(&Value::Bool(true)) {
++            continue;
++        }
++        let Some(priority) = fields.get("priority").and_then(|value| match value {
++            Value::I64(value) => Some(*value),
++            Value::U64(value) => i64::try_from(*value).ok(),
++            _ => None,
++        }) else {
++            continue;
++        };
++        enabled.push((entity_id.clone(), priority));
++    }
++
++    let highest = enabled.iter().map(|(_, priority)| *priority).max();
++    let tied_highest = highest
++        .map(|priority| enabled.iter().filter(|(_, value)| *value == priority).count())
++        .unwrap_or(0);
++    if tied_highest > 1 {
++        for (entity_id, priority) in &enabled {
++            if Some(*priority) != highest {
++                continue;
++            }
++            diagnostics.push(
++                Diagnostic::warning(
++                    "scene.audio_listener_priority_ambiguous",
++                    "Multiple enabled Audio Listeners share the highest priority; runtime selection falls back to deterministic entity order.",
++                )
++                .with_target(DiagnosticTarget::Component {
++                    entity: entity_id.clone(),
++                    component_type: listener_type.clone(),
++                }),
++            );
++        }
++    }
++
++    if enabled.is_empty() {
++        for (entity_id, entity) in scene.entities() {
++            let Some(Value::Object(fields)) = entity.components.get(&emitter_type) else {
++                continue;
++            };
++            let spatial_blend = fields
++                .get("spatial_blend")
++                .and_then(value_as_f64)
++                .unwrap_or(0.0);
++            if spatial_blend <= 0.0 {
++                continue;
++            }
++            diagnostics.push(
++                Diagnostic::warning(
++                    "scene.spatial_audio_listener_missing",
++                    "This spatial Audio Emitter has no enabled Audio Listener; only its non-spatial mix is audible.",
++                )
++                .with_target(DiagnosticTarget::Component {
++                    entity: entity_id.clone(),
++                    component_type: emitter_type.clone(),
++                }),
++            );
++        }
++    }
+     diagnostics
+ }
+ 
+diff --git a/crates/engine/src/scene_bridge/tests.rs b/crates/engine/src/scene_bridge/tests.rs
+--- a/crates/engine/src/scene_bridge/tests.rs
++++ b/crates/engine/src/scene_bridge/tests.rs
+@@ -4,9 +4,11 @@
+                     "spatial_blend": 1.0,
+                     "min_distance": 1.0,
+                     "max_distance": 12.0,
++                    "rolloff": "linear",
++                    "looping": false,
+                     "autoplay": true
+                 },
+-                (AUDIO_LISTENER_COMPONENT): {"enabled": true},
++                (AUDIO_LISTENER_COMPONENT): {"enabled": true, "priority": 0},
+                 (MUSIC_CONTROLLER_COMPONENT): {
+                     "clip": {"$type": "asset_ref", "id": audio_asset.as_str()},
+                     "volume": 0.6,
+diff --git a/crates/engine/src/scene_bridge/tests.rs b/crates/engine/src/scene_bridge/tests.rs
+--- a/crates/engine/src/scene_bridge/tests.rs
++++ b/crates/engine/src/scene_bridge/tests.rs
+@@ -53,9 +53,13 @@
+-    assert!(
+-        world
+-            .get_component::<AudioListener>(entity)
+-            .expect("audio listener")
+-            .enabled
+-    );
++    let listener = world
++        .get_component::<AudioListener>(entity)
++        .expect("audio listener");
++    assert!(listener.enabled);
++    assert_eq!(listener.priority, 0);
++    let emitter = world
++        .get_component::<AudioEmitter>(entity)
++        .expect("audio emitter");
++    assert_eq!(emitter.rolloff, AudioRolloffMode::Linear);
++    assert!(!emitter.looping);
+     assert_eq!(world.get_resource::<Assets<AudioAsset>>().unwrap().len(), 1);
+ 
+     let mut system = crate::audio::authored_audio_system
