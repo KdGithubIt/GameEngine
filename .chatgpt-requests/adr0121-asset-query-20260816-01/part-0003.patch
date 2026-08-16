@@ -1,0 +1,167 @@
+ubAssetKind::Mesh)
++        );
++    }
++
++    #[test]
++    fn missing_source_file_is_nonfatal_but_unsafe_path_is_rejected() {
++        let (_directory, root) = project();
++        let missing = AssetId::generate();
++        let unsafe_id = AssetId::generate();
++        let mut manifest = AssetManifest::default();
++        manifest.insert(
++            missing.clone(),
++            ManifestEntry {
++                path: "models/missing.glb".into(),
++                name: Some("missing".into()),
++                import_settings: ImportSettings::default(),
++            },
++        );
++        manifest.insert(
++            unsafe_id.clone(),
++            ManifestEntry {
++                path: "../outside.glb".into(),
++                name: Some("unsafe".into()),
++                import_settings: ImportSettings::default(),
++            },
++        );
++
++        let service = AssetCatalogService::new();
++        let permissions = AuthoringPermissions::read_only();
++        let missing = service
++            .inspect(&root, &manifest, &permissions, &missing)
++            .expect("missing file must remain inspectable");
++        assert!(!missing.file_exists);
++
++        let error = service
++            .inspect(&root, &manifest, &permissions, &unsafe_id)
++            .expect_err("path traversal must reject inspection");
++        assert_eq!(error.code(), "asset.invalid_path");
++    }
++
++    #[test]
++    fn catalog_requires_shared_read_permission() {
++        let (_directory, root) = project();
++        let manifest = AssetManifest::default();
++        let error = AssetCatalogService::new()
++            .search(&root, &manifest, &AuthoringPermissions::none(), "")
++            .expect_err("catalog access must require read permission");
++        assert_eq!(error.code(), "authoring.permission_denied");
++    }
++}
+diff --git a/crates/mcp/Cargo.toml b/crates/mcp/Cargo.toml
+--- a/crates/mcp/Cargo.toml
++++ b/crates/mcp/Cargo.toml
+@@ -4,6 +4,7 @@ version = "0.1.0"
+ edition = "2024"
+ 
+ [dependencies]
++engine-assets = { path = "../assets" }
+ engine-authoring = { path = "../authoring" }
+ serde = { version = "1", features = ["derive"] }
+ serde_json = "1"
+diff --git a/crates/mcp/src/asset.rs b/crates/mcp/src/asset.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/mcp/src/asset.rs
+@@ -0,0 +1,178 @@
++//! MCP adapters for shared project asset discovery and inspection.
++
++use crate::{McpToolDescriptor, McpToolError};
++use engine_assets::asset::AssetManifest;
++use engine_assets::catalog::{AssetCatalogSearch, AssetCatalogService, AssetInspection};
++use engine_authoring::{AssetId, AuthoringPermissions, ProjectRoot};
++use serde::Deserialize;
++use serde_json::json;
++
++/// Input for `asset.search`.
++#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
++pub struct AssetSearchInput {
++    /// Case-insensitive search text. Empty text returns the complete catalog.
++    #[serde(default)]
++    pub query: String,
++}
++
++/// Input for `asset.inspect`.
++#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
++pub struct AssetInspectInput {
++    /// Stable asset identity selected from search or another authoring reference.
++    pub asset_id: AssetId,
++}
++
++/// Asset MCP tool handler collection backed by the shared catalog service.
++pub struct AssetMcpTools {
++    service: AssetCatalogService,
++}
++
++impl AssetMcpTools {
++    /// Creates asset tool handlers backed by the shared catalog service.
++    pub fn new() -> Self {
++        Self {
++            service: AssetCatalogService::new(),
++        }
++    }
++
++    /// Returns tool descriptors for registration by the MCP transport layer.
++    pub fn tool_descriptors(&self) -> Vec<McpToolDescriptor> {
++        vec![
++            McpToolDescriptor {
++                name: "asset.search".into(),
++                description: "Search project assets and imported sub-assets by stable ID, name, path, or imported kind."
++                    .into(),
++                input_schema: json!({
++                    "type": "object",
++                    "properties": {
++                        "query": {"type": "string"}
++                    },
++                    "additionalProperties": false
++                }),
++            },
++            McpToolDescriptor {
++                name: "asset.inspect".into(),
++                description: "Inspect one project asset by stable AssetId, including source import metadata and file state."
++                    .into(),
++                input_schema: json!({
++                    "type": "object",
++                    "required": ["asset_id"],
++                    "properties": {
++                        "asset_id": {"type": "string"}
++                    },
++                    "additionalProperties": false
++                }),
++            },
++        ]
++    }
++
++    /// Searches project assets through the shared asset catalog service.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`McpToolError`] when shared read permission is denied or the
++    /// manifest contains malformed imported asset identity.
++    pub fn asset_search(
++        &self,
++        project: &ProjectRoot,
++        manifest: &AssetManifest,
++        permissions: &AuthoringPermissions,
++        input: AssetSearchInput,
++    ) -> Result<AssetCatalogSearch, McpToolError> {
++        self.service
++            .search(project, manifest, permissions, &input.query)
++            .map_err(McpToolError::from)
++    }
++
++    /// Inspects one stable project asset through the shared catalog service.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`McpToolError`] when shared read permission is denied, the
++    /// asset is unknown, or its source path violates the project boundary.
++    pub fn asset_inspect(
++        &self,
++        project: &ProjectRoot,
++        manifest: &AssetManifest,
++        permissions: &AuthoringPermissions,
++        input: AssetInspectInput,
++    ) -> Result<AssetInspection, McpToolError> {
++        self.service
++            .inspect(project, manifest, permissions, &input.
