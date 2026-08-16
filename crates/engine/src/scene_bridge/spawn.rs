@@ -2754,6 +2754,15 @@ pub(crate) fn spawn_nav_mesh_agent_component(
     let component_type = ComponentTypeId::new(NAV_MESH_AGENT_COMPONENT);
     let expected = "an object with finite non-negative navigation agent fields";
     let fields = ComponentFields::new(context.authoring_entity, &component_type, value, expected)?;
+    let profile_id = match fields.get("profile_id") {
+        None => "default",
+        Some(Value::String(profile_id)) if !profile_id.trim().is_empty() => profile_id.as_str(),
+        Some(_) => {
+            return Err(fields
+                .invalid("a non-empty stable navigation profile ID")
+                .into())
+        }
+    };
     let speed = fields.f32("speed")?;
     let stopping_distance = fields.f32("stopping_distance")?;
     let defaults = NavMeshAgent::default();
@@ -2764,6 +2773,7 @@ pub(crate) fn spawn_nav_mesh_agent_component(
     }
     let has_target = fields.bool("has_target")?;
     let mut agent = NavMeshAgent::new(speed);
+    agent.profile_id = crate::navmesh::NavigationProfileId::new(profile_id);
     agent.stopping_distance = stopping_distance;
     agent.repath_interval = repath_interval;
     agent.avoidance_radius = avoidance_radius;
@@ -2821,6 +2831,16 @@ pub(crate) fn spawn_nav_mesh_surface_component(
     context
         .world
         .add_component(entity, crate::navmesh::NavMeshSurface { source: path })?;
+    Ok(())
+}
+
+pub(crate) fn spawn_navigation_authoring_only_component(
+    _entity: Entity,
+    _value: &Value,
+    _context: &mut SpawnContext<'_>,
+) -> Result<(), ComponentSpawnError> {
+    // Navigation links and modifiers are canonical scene authoring data.
+    // The shared bake adapter consumes them before runtime ECS conversion.
     Ok(())
 }
 

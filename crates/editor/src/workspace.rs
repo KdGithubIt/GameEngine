@@ -84,6 +84,10 @@ impl DocumentWorkspace {
         self.tabs.iter().any(|tab| tab.id == id)
     }
 
+    pub(crate) fn tab_session_mut(&mut self, id: WorkspaceTabId) -> Option<&mut EditorSession> {
+        self.tabs.iter_mut().find(|tab| tab.id == id).map(|tab| &mut tab.session)
+    }
+
     pub(crate) fn summaries(&self) -> Vec<WorkspaceTabSummary> {
         self.tabs
             .iter()

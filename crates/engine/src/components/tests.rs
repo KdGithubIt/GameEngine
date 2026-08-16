@@ -8,6 +8,7 @@ use crate::lock_on::LockOnTarget;
 use crate::mesh::Mesh;
 use crate::particles::ParticleEmitter;
 use crate::scene_bridge::*;
+use crate::navigation_bake::{NAVIGATION_LINK_COMPONENT, NAVIGATION_MODIFIER_COMPONENT};
 use engine_authoring::test_fixtures::load_scene_fixture;
 
 #[test]
@@ -204,6 +205,8 @@ fn registry_iterates_in_registration_order() {
             SECONDARY_MOTION_COMPONENT,
             POINT_LIGHT_COMPONENT,
             SPOT_LIGHT_COMPONENT,
+            NAVIGATION_LINK_COMPONENT,
+            NAVIGATION_MODIFIER_COMPONENT,
             VFX_PLAYER_COMPONENT,
         ]
     );

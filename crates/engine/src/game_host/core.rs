@@ -1094,8 +1094,12 @@ fn copy_engine_view(world: &World, entity: Entity, view: EngineViewKind) -> Opti
             let status = match agent.status {
                 crate::navmesh::NavMeshAgentStatus::Idle => "idle",
                 crate::navmesh::NavMeshAgentStatus::MissingNavMesh => "missing_navmesh",
+                crate::navmesh::NavMeshAgentStatus::MissingProfile => "missing_profile",
+                crate::navmesh::NavMeshAgentStatus::StartOutside => "start_outside",
+                crate::navmesh::NavMeshAgentStatus::EndOutside => "end_outside",
                 crate::navmesh::NavMeshAgentStatus::NoPath => "no_path",
                 crate::navmesh::NavMeshAgentStatus::Moving => "moving",
+                crate::navmesh::NavMeshAgentStatus::PartialPath => "partial_path",
                 crate::navmesh::NavMeshAgentStatus::Arrived => "arrived",
             };
             Value::Object(BTreeMap::from([
