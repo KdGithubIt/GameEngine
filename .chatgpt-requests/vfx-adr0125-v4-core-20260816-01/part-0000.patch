@@ -1,0 +1,356 @@
+diff --git a/crates/authoring/src/lib.rs b/crates/authoring/src/lib.rs
+--- a/crates/authoring/src/lib.rs
++++ b/crates/authoring/src/lib.rs
+@@ -68,6 +68,7 @@ pub mod ui_contract_runtime;
+ pub mod ui_edit;
+ pub mod validation;
+ pub mod value;
++pub mod vfx;
+ 
+ pub use access::{
+     AuthoringPermission, AuthoringPermissionError, AuthoringPermissions,
+@@ -158,3 +159,12 @@ pub use validation::{
+     validate_asset_manifest, validate_scene, validate_scene_asset_refs, validate_start_scene,
+ };
+ pub use value::Value;
++pub use vfx::{
++    CompiledVfxEffect, CompiledVfxEmitter, CompiledVfxOperation, VfxApply, VfxAttributeLayout,
++    VfxAuthoringService, VfxCapabilityRequirements, VfxCommand, VfxCompilation, VfxCurve,
++    VfxCurveInterpolation, VfxCurveKey, VfxCurveKeyId, VfxDiagnostic, VfxDiagnosticSeverity,
++    VfxDocumentError, VfxEffect, VfxEmitter, VfxEmitterId, VfxGradient, VfxGradientKey,
++    VfxGradientKeyId, VfxIdError, VfxModule, VfxModuleId, VfxModuleOperation, VfxModuleSchema,
++    VfxPhase, VfxRandomChannel, VfxScalarValue, VfxSchemaCatalog, VfxShape, VfxTemplate,
++    VfxTextureSheet, VfxValidation, VfxVectorValue, VFX_FILE_SUFFIX, VFX_SCHEMA_VERSION,
++};
+diff --git a/crates/authoring/src/vfx.rs b/crates/authoring/src/vfx.rs
+new file mode 100644
+index 0000000..4147c44
+--- /dev/null
++++ b/crates/authoring/src/vfx.rs
+@@ -0,0 +1,2698 @@
++//! Versioned VFX authoring documents and backend-neutral compilation (ADR 0125).
++//!
++//! This module owns persisted effect semantics, typed module schemas, deterministic
++//! validation, transactional edits, and the compiled intermediate representation.
++//! It deliberately contains no editor widgets, runtime ECS state, or GPU handles.
++
++use crate::id::AssetId;
++use serde::{Deserialize, Deserializer, Serialize};
++use std::collections::BTreeSet;
++use std::fmt;
++
++/// Current persisted VFX document schema version.
++pub const VFX_SCHEMA_VERSION: u32 = 1;
++/// File-name suffix used by persisted VFX documents.
++pub const VFX_FILE_SUFFIX: &str = ".vfx.json";
++
++fn is_valid_ulid_suffix(value: &str) -> bool {
++    value.len() == 26
++        && value
++            .as_bytes()
++            .first()
++            .is_some_and(|byte| matches!(byte, b'0'..=b'7'))
++        && value.bytes().all(|byte| {
++            matches!(
++                byte,
++                b'0'..=b'9'
++                    | b'A'..=b'H'
++                    | b'J'
++                    | b'K'
++                    | b'M'
++                    | b'N'
++                    | b'P'..=b'T'
++                    | b'V'..=b'Z'
++            )
++        })
++}
++
++fn validate_local_id(value: &str, prefix: &'static str) -> Result<(), VfxIdError> {
++    let required = format!("{prefix}_");
++    let Some(suffix) = value.strip_prefix(&required) else {
++        return Err(VfxIdError::WrongPrefix {
++            expected: prefix,
++            actual: value.to_owned(),
++        });
++    };
++    if !is_valid_ulid_suffix(suffix) {
++        return Err(VfxIdError::InvalidSuffix {
++            actual: value.to_owned(),
++        });
++    }
++    Ok(())
++}
++
++macro_rules! define_vfx_id {
++    ($(#[$attr:meta])* $name:ident, $prefix:literal) => {
++        $(#[$attr])*
++        #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
++        #[serde(transparent)]
++        pub struct $name(String);
++
++        impl $name {
++            /// Generates a new stable document-local identifier.
++            pub fn generate() -> Self {
++                Self(format!(concat!($prefix, "_{}"), ulid::Ulid::new()))
++            }
++
++            /// Parses and validates a stable document-local identifier.
++            ///
++            /// # Errors
++            ///
++            /// Returns [`VfxIdError`] when the prefix or ULID suffix is invalid.
++            pub fn try_new(value: impl Into<String>) -> Result<Self, VfxIdError> {
++                let value = value.into();
++                validate_local_id(&value, $prefix)?;
++                Ok(Self(value))
++            }
++
++            /// Returns the stable string representation.
++            pub fn as_str(&self) -> &str {
++                &self.0
++            }
++        }
++
++        impl fmt::Display for $name {
++            fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
++                self.0.fmt(formatter)
++            }
++        }
++
++        impl<'de> Deserialize<'de> for $name {
++            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
++            where
++                D: Deserializer<'de>,
++            {
++                let value = String::deserialize(deserializer)?;
++                Self::try_new(value).map_err(serde::de::Error::custom)
++            }
++        }
++    };
++}
++
++/// Reports why a VFX document-local stable identifier is invalid.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub enum VfxIdError {
++    /// The identifier does not use the required object-kind prefix.
++    WrongPrefix {
++        /// Required prefix without the underscore separator.
++        expected: &'static str,
++        /// Rejected identifier value.
++        actual: String,
++    },
++    /// The identifier suffix is not a valid 26-character Crockford ULID.
++    InvalidSuffix {
++        /// Rejected identifier value.
++        actual: String,
++    },
++}
++
++impl fmt::Display for VfxIdError {
++    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
++        match self {
++            Self::WrongPrefix { expected, actual } => {
++                write!(formatter, "expected VFX ID prefix `{expected}_`, got `{actual}`")
++            }
++            Self::InvalidSuffix { actual } => write!(
++                formatter,
++                "VFX ID `{actual}` has an invalid 26-character Crockford ULID suffix"
++            ),
++        }
++    }
++}
++
++impl std::error::Error for VfxIdError {}
++
++define_vfx_id!(
++    /// Stable identifier for one emitter inside a VFX document.
++    VfxEmitterId,
++    "vfxemitter"
++);
++define_vfx_id!(
++    /// Stable identifier for one typed module inside a VFX document.
++    VfxModuleId,
++    "vfxmodule"
++);
++define_vfx_id!(
++    /// Stable identifier for one scalar-curve key inside a VFX document.
++    VfxCurveKeyId,
++    "vfxkey"
++);
++define_vfx_id!(
++    /// Stable identifier for one color-gradient key inside a VFX document.
++    VfxGradientKeyId,
++    "vfxgradient"
++);
++
++/// Explicit execution phase for a typed VFX module.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case")]
++pub enum VfxPhase {
++    /// Initializes newly spawned particles.
++    Spawn,
++    /// Mutates live particles during simulation.
++    Update,
++    /// Describes how live particles are presented.
++    Render,
++}
++
++/// Stable deterministic random-stream selector used by authored ranges.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
++#[serde(transparent)]
++pub struct VfxRandomChannel(u32);
++
++impl VfxRandomChannel {
++    /// Creates a deterministic random channel from its stable numeric index.
++    pub const fn new(index: u32) -> Self {
++        Self(index)
++    }
++
++    /// Returns the stable numeric channel index.
++    pub const fn index(self) -> u32 {
++        self.0
++    }
++}
++
++/// A scalar authored either as a constant or deterministic random range.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++#[serde(tag = "mode", rename_all = "snake_case")]
++pub enum VfxScalarValue {
++    /// Uses one constant value for every particle.
++    Constant {
++        /// Authored scalar value.
++        value: f32,
++    },
++    /// Samples uniformly from an inclusive range using a named random channel.
++    Range {
++        /// Inclusive minimum value.
++        min: f32,
++        /// Inclusive maximum value.
++        max: f32,
++        /// Deterministic random channel used for the sample.
++        channel: VfxRandomChannel,
++    },
++}
++
++impl VfxScalarValue {
++    /// Returns the greatest possible authored value.
++    pub fn maximum(&self) -> f32 {
++        match self {
++            Self::Constant { value } => *value,
++            Self::Range { max, .. } => *max,
++        }
++    }
++
++    fn validate(&self) -> bool {
++        match self {
++            Self::Constant { value } => value.is_finite(),
++            Self::Range { min, max, .. } => min.is_finite() && max.is_finite() && min <= max,
++        }
++    }
++}
++
++/// A 3D vector authored either as a constant or per-axis deterministic range.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++#[serde(tag = "mode", rename_all = "snake_case")]
++pub enum VfxVectorValue {
++    /// Uses one constant vector.
++    Constant {
++        /// Authored XYZ vector.
++        value: [f32; 3],
++    },
++    /// Samples each axis between `min` and `max` using one deterministic channel.
++    Range {
++        /// Inclusive per-axis minima.
++        min: [f32; 3],
++        /// Inclusive per-axis maxima.
++        max: [f32; 3],
++        /// Deterministic random channel used for the sample.
++        channel: VfxRandomChannel,
++    },
++}
++
++impl VfxVectorValue {
++    fn validate(&self) -> bool {
++        match self {
++            Self::Constant { value } => finite3(*value),
++            Self::Range { min, max, .. } => {
++                finite3(*min)
++                    && finite3(*max)
++                    && min.iter().zip(max).all(|(min, max)| min <= max)
++            }
++        }
++    }
++}
++
++/// Interpolation mode between two scalar curve keys.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case")]
++pub enum VfxCurveInterpolation {
++    /// Holds the left key value until the next key.
++    Step,
++    /// Linearly interpolates between key values.
++    Linear,
++}
++
++/// One stable scalar-curve key on normalized particle lifetime.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++pub struct VfxCurveKey {
++    /// Stable key identifier preserved when the key is moved.
++    pub id: VfxCurveKeyId,
++    /// Normalized lifetime position in `[0, 1]`.
++    pub time: f32,
++    /// Scalar value at this key.
++    pub value: f32,
++    /// Interpolation leaving this key.
++    pub interpolation: VfxCurveInterpolation,
++}
++
++/// Ordered scalar curve evaluated over normalized particle lifetime.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++pub struct VfxCurve {
++    /// Strictly time-ordered curve keys.
++    pub keys: Vec<VfxCurveKey>,
++}
++
++impl VfxCurve {
++    /// Creates a constant two-key curve spanning normalized lifetime.
++    pub fn constant(value: f32) -> Self {
++        Self {
++            keys: vec![
++                VfxCurveKey {
++                    id: VfxCurveKeyId::generate(),
++                    time: 0.0,
++                    value,
++                    interpolation: VfxCurveInterpolation::Linear,
++                },
++                VfxCurveKey {
++                    id: VfxCurveKeyId::generate(),
++                    time: 1.0,
++                    value,
++                    interpolation: VfxCurveInterpolation::Linear,
++                },
++            ],
++        }
++    }
++
++    /// Evaluates the curve at normalized lifetime `time`.
++    ///
++    /// Values outside `[0, 1]` are clamped to the curve's endpoints. Invalid
++    /// curves return `0.0`; callers should normally validate the document first.
++    pub fn evaluate(&self, time: f32) -> f32 {
++        let Some(first) = self.keys.first() else {
++            return 0.0;
++        };
++        if time <= first.time {
++            return first.value;
++        }
++        let Some(last) = self.keys.last() else {
++            return first.value;
++        };
++        if time >= last.time {
++            return last.value;
++        }
++        for pair in self.keys.windows(2) {
++            let left = &pair[0];
++            let right = &pair[1];
++            if time <= right.time {
