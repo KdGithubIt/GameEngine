@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0121-graph-ui-services-20260816-02",
+  "target_branch": "chatgpt/gameengine-adr-0121-graph-ui-services",
+  "expected_head_sha": "b3bf6b7e71517d62b541f3d4e0eafb96d5d9ae19",
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Reduce UI authoring evaluation enum size",
+  "pr_title": "GameEngine: add Graph and UI authoring service foundation",
+  "pr_body": "## Summary\n\nAdds the ADR 0121 shared authoring-service foundation for generic semantic Graph documents and declarative UI documents.\n\nThis correction keeps the accepted UI candidate behind Box indirection so the private evaluation enum remains compact under the repository's Clippy -D warnings policy. The service behavior and persisted Graph/UI formats are unchanged.\n\nEditor/CLI/MCP adapter routing and generic layout exposure remain follow-up work."
+}
