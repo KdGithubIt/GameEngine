@@ -37,6 +37,7 @@ pub(crate) enum AgentHostError {
     UnsupportedCodeDeletion(PathBuf),
     StaleCodeFile(PathBuf),
     NonUtf8CodeFile(PathBuf),
+    MultipleActiveWriterRuns(Vec<String>),
     Serialization(serde_json::Error),
     Io(io::Error),
 }
@@ -73,6 +74,11 @@ impl fmt::Display for AgentHostError {
             Self::NonUtf8CodeFile(path) => {
                 write!(formatter, "managed code file `{}` is not UTF-8 text", path.display())
             }
+            Self::MultipleActiveWriterRuns(run_ids) => write!(
+                formatter,
+                "agent state contains multiple non-terminal writer runs: {}",
+                run_ids.join(", ")
+            ),
             Self::Serialization(error) => write!(formatter, "agent state JSON error: {error}"),
             Self::Io(error) => write!(formatter, "agent state I/O error: {error}"),
         }
@@ -346,6 +352,128 @@ pub(crate) struct AgentEvent {
     pub(crate) created_unix_ms: u64,
     pub(crate) kind: AgentEventKind,
     pub(crate) message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) validation: Option<ManagedValidationEvent>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ManagedValidationGate {
+    Formatting,
+    Check,
+    Clippy,
+    Tests,
+    Documentation,
+}
+
+impl ManagedValidationGate {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Formatting => "formatting",
+            Self::Check => "check",
+            Self::Clippy => "clippy",
+            Self::Tests => "tests",
+            Self::Documentation => "documentation",
+        }
+    }
+
+    fn cargo_arguments(self) -> &'static [&'static str] {
+        match self {
+            Self::Formatting => &["fmt", "--all", "--check"],
+            Self::Check => &["check", "--all-targets"],
+            Self::Clippy => &["clippy", "--all-targets", "--", "-D", "warnings"],
+            Self::Tests => &["test", "--all-targets"],
+            Self::Documentation => &["doc", "--no-deps"],
+        }
+    }
+}
+
+const STANDARD_VALIDATION_GATES: [ManagedValidationGate; 5] = [
+    ManagedValidationGate::Formatting,
+    ManagedValidationGate::Check,
+    ManagedValidationGate::Clippy,
+    ManagedValidationGate::Tests,
+    ManagedValidationGate::Documentation,
+];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ManagedValidationGateStatus {
+    Pending,
+    Running,
+    Passed,
+    Failed,
+    Cancelled,
+    Interrupted,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ManagedValidationFailureKind {
+    Preparation,
+    Spawn,
+    ProcessExit,
+    Poll,
+    Cancelled,
+    Interrupted,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ManagedValidationFailure {
+    pub(crate) kind: ManagedValidationFailureKind,
+    pub(crate) exit_code: Option<i32>,
+    pub(crate) message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ManagedValidationGateResult {
+    pub(crate) gate: ManagedValidationGate,
+    pub(crate) status: ManagedValidationGateStatus,
+    pub(crate) exit_code: Option<i32>,
+    pub(crate) failure: Option<ManagedValidationFailure>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ManagedValidationAttemptStatus {
+    Running,
+    Passed,
+    Failed,
+    Cancelled,
+    Interrupted,
+    NotApplicable,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ManagedValidationAttempt {
+    pub(crate) id: String,
+    pub(crate) gate_results: Vec<ManagedValidationGateResult>,
+    pub(crate) unmanaged_plan_items: usize,
+    pub(crate) status: ManagedValidationAttemptStatus,
+    pub(crate) started_unix_ms: u64,
+    pub(crate) finished_unix_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "event", rename_all = "snake_case")]
+pub(crate) enum ManagedValidationEvent {
+    Started {
+        attempt_id: String,
+        gates: Vec<ManagedValidationGate>,
+        unmanaged_plan_items: usize,
+    },
+    GateStarted {
+        attempt_id: String,
+        gate: ManagedValidationGate,
+    },
+    GateFinished {
+        attempt_id: String,
+        result: ManagedValidationGateResult,
+    },
+    Finished {
+        attempt_id: String,
+        status: ManagedValidationAttemptStatus,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -406,6 +534,8 @@ pub(crate) struct AgentRun {
     pub(crate) state: AgentRunState,
     pub(crate) events: Vec<AgentEvent>,
     pub(crate) completion: CompletionReport,
+    #[serde(default)]
+    pub(crate) validation_attempts: Vec<ManagedValidationAttempt>,
     pub(crate) started_unix_ms: u64,
     pub(crate) finished_unix_ms: Option<u64>,
 }
@@ -441,6 +571,7 @@ pub(crate) struct AgentHost {
     sessions: BTreeMap<String, AgentSession>,
     active_writer_run: Option<String>,
     permissions: PermissionBroker,
+    active_validation: Option<ManagedValidationProcess>,
 }
 
 impl AgentHost {
@@ -464,17 +595,27 @@ impl AgentHost {
                 sessions.insert(session.id.clone(), session);
             }
         }
-        Ok(Self {
+        let (active_writer_run, recovered_sessions) = recover_persisted_runs(&mut sessions)?;
+        let host = Self {
             project_root,
             storage_root,
             sessions,
-            active_writer_run: None,
+            active_writer_run,
             permissions,
-        })
+            active_validation: None,
+        };
+        for id in recovered_sessions {
+            host.persist_session(&id)?;
+        }
+        Ok(host)
     }
 
     pub(crate) fn session_ids(&self) -> Vec<String> {
         self.sessions.keys().cloned().collect()
+    }
+
+    pub(crate) fn active_writer_run_id(&self) -> Option<&str> {
+        self.active_writer_run.as_deref()
     }
 
     pub(crate) fn session(&self, id: &str) -> Result<&AgentSession, AgentHostError> {
@@ -545,6 +686,7 @@ impl AgentHost {
             state: AgentRunState::Inspecting,
             events: Vec::new(),
             completion: CompletionReport::default(),
+            validation_attempts: Vec::new(),
             started_unix_ms: unix_ms(),
             finished_unix_ms: None,
         };
@@ -618,6 +760,40 @@ impl AgentHost {
     }
 
     pub(crate) fn cancel_run(&mut self, run_id: &str) -> Result<(), AgentHostError> {
+        if self
+            .active_validation
+            .as_ref()
+            .is_some_and(|process| process.run_id == run_id)
+        {
+            let mut process = self
+                .active_validation
+                .take()
+                .ok_or_else(|| AgentHostError::RunNotFound(run_id.to_owned()))?;
+            let exit_code = process.cancel()?.and_then(|status| status.code());
+            self.finish_validation_gate(
+                run_id,
+                &process.attempt_id,
+                process.gate_index,
+                ManagedValidationGateStatus::Cancelled,
+                exit_code,
+                Some(ManagedValidationFailure {
+                    kind: ManagedValidationFailureKind::Cancelled,
+                    exit_code,
+                    message: "Managed validation was cancelled by the user.".to_owned(),
+                }),
+            )?;
+            self.finish_validation_attempt(
+                run_id,
+                &process.attempt_id,
+                ManagedValidationAttemptStatus::Cancelled,
+                CompletionStatus::Pending,
+            )?;
+        }
+        self.record_event(
+            run_id,
+            AgentEventKind::Cancellation,
+            "Run cancellation requested.",
+        )?;
         self.transition_run(
             run_id,
             AgentRunState::Cancelled,
@@ -625,20 +801,154 @@ impl AgentHost {
         )
     }
 
-    pub(crate) fn set_completion_status(
+    pub(crate) fn begin_managed_validation(
         &mut self,
         run_id: &str,
-        update: impl FnOnce(&mut CompletionReport),
+        code_changes_present: bool,
     ) -> Result<(), AgentHostError> {
+        let (_, state) = self.run_location(run_id)?;
+        if !matches!(
+            state,
+            AgentRunState::Executing | AgentRunState::AwaitingUser | AgentRunState::Repairing
+        ) {
+            return Err(AgentHostError::InvalidTransition {
+                from: state,
+                to: AgentRunState::Validating,
+            });
+        }
+        let proposal = self.run(run_id)?.proposal_snapshot.clone();
+        let (gates, unmanaged_plan_items) =
+            managed_validation_plan(&proposal, code_changes_present);
+        self.transition_run(
+            run_id,
+            AgentRunState::Validating,
+            "Engine-managed source validation started.",
+        )?;
+
+        let attempt_id = next_id("validation");
+        let started_unix_ms = unix_ms();
+        let gate_results = gates
+            .iter()
+            .copied()
+            .map(|gate| ManagedValidationGateResult {
+                gate,
+                status: ManagedValidationGateStatus::Pending,
+                exit_code: None,
+                failure: None,
+            })
+            .collect();
+        let attempt_status = if gates.is_empty() {
+            ManagedValidationAttemptStatus::NotApplicable
+        } else {
+            ManagedValidationAttemptStatus::Running
+        };
         let (session_id, _) = self.run_location(run_id)?;
-        let session = self.session_mut(&session_id)?;
-        let run = session
-            .runs
-            .iter_mut()
-            .find(|run| run.id == run_id)
-            .ok_or_else(|| AgentHostError::RunNotFound(run_id.to_owned()))?;
-        update(&mut run.completion);
-        self.persist_session(&session_id)
+        {
+            let run = self.run_mut_in_session(&session_id, run_id)?;
+            run.completion.source_validation = CompletionStatus::Pending;
+            run.validation_attempts.push(ManagedValidationAttempt {
+                id: attempt_id.clone(),
+                gate_results,
+                unmanaged_plan_items,
+                status: attempt_status,
+                started_unix_ms,
+                finished_unix_ms: gates.is_empty().then_some(started_unix_ms),
+            });
+            push_validation_event(
+                run,
+                format!(
+                    "Managed validation attempt started with {} allow-listed gate(s); {} plan item(s) require another capability.",
+                    gates.len(), unmanaged_plan_items
+                ),
+                ManagedValidationEvent::Started {
+                    attempt_id: attempt_id.clone(),
+                    gates: gates.clone(),
+                    unmanaged_plan_items,
+                },
+            );
+        }
+        self.persist_session(&session_id)?;
+
+        if gates.is_empty() {
+            self.finish_validation_without_process(run_id, &attempt_id, unmanaged_plan_items)?;
+            return Ok(());
+        }
+        self.spawn_validation_gate(run_id, &attempt_id, 0)
+    }
+
+    pub(crate) fn poll_managed_validation(
+        &mut self,
+        run_id: &str,
+    ) -> Result<bool, AgentHostError> {
+        let Some(process) = self.active_validation.as_mut() else {
+            return Ok(false);
+        };
+        if process.run_id != run_id {
+            return Ok(false);
+        }
+        let poll = process.poll_exit();
+        match poll {
+            Ok(None) => Ok(true),
+            Ok(Some(status)) => {
+                let process = self
+                    .active_validation
+                    .take()
+                    .ok_or_else(|| AgentHostError::RunNotFound(run_id.to_owned()))?;
+                let exit_code = status.code();
+                if !status.success() {
+                    self.fail_managed_validation(
+                        run_id,
+                        &process.attempt_id,
+                        process.gate_index,
+                        ManagedValidationFailure {
+                            kind: ManagedValidationFailureKind::ProcessExit,
+                            exit_code,
+                            message: format!(
+                                "Managed validation gate exited unsuccessfully with {exit_code:?}."
+                            ),
+                        },
+                    )?;
+                    return Ok(false);
+                }
+                self.finish_validation_gate(
+                    run_id,
+                    &process.attempt_id,
+                    process.gate_index,
+                    ManagedValidationGateStatus::Passed,
+                    exit_code,
+                    None,
+                )?;
+                let next_index = process.gate_index + 1;
+                let gate_count = self
+                    .validation_attempt(run_id, &process.attempt_id)?
+                    .gate_results
+                    .len();
+                if next_index < gate_count {
+                    self.spawn_validation_gate(run_id, &process.attempt_id, next_index)?;
+                    Ok(self.active_validation.is_some())
+                } else {
+                    self.complete_managed_validation(run_id, &process.attempt_id)?;
+                    Ok(false)
+                }
+            }
+            Err(error) => {
+                let process = self
+                    .active_validation
+                    .take()
+                    .ok_or_else(|| AgentHostError::RunNotFound(run_id.to_owned()))?;
+                self.fail_managed_validation(
+                    run_id,
+                    &process.attempt_id,
+                    process.gate_index,
+                    ManagedValidationFailure {
+                        kind: ManagedValidationFailureKind::Poll,
+                        exit_code: None,
+                        message: format!("Managed validation process status could not be read: {error}"),
+                    },
+                )?;
+                Ok(false)
+            }
+        }
     }
 
     pub(crate) fn complete_run(&mut self, run_id: &str) -> Result<(), AgentHostError> {
@@ -647,6 +957,269 @@ impl AgentHost {
         }
         self.transition_run(run_id, AgentRunState::Completed, "Completion contract satisfied.")?;
         self.record_event(run_id, AgentEventKind::Completion, "Run completed.")
+    }
+
+    fn spawn_validation_gate(
+        &mut self,
+        run_id: &str,
+        attempt_id: &str,
+        gate_index: usize,
+    ) -> Result<(), AgentHostError> {
+        let gate = self
+            .validation_attempt(run_id, attempt_id)?
+            .gate_results
+            .get(gate_index)
+            .ok_or_else(|| AgentHostError::RunNotFound(run_id.to_owned()))?
+            .gate;
+        let game_dir = self.workspace_root(run_id).join("game");
+        if !game_dir.join("Cargo.toml").is_file() {
+            self.fail_managed_validation(
+                run_id,
+                attempt_id,
+                gate_index,
+                ManagedValidationFailure {
+                    kind: ManagedValidationFailureKind::Preparation,
+                    exit_code: None,
+                    message: "Managed validation workspace is missing game/Cargo.toml.".to_owned(),
+                },
+            )?;
+            return Ok(());
+        }
+        let (session_id, _) = self.run_location(run_id)?;
+        {
+            let run = self.run_mut_in_session(&session_id, run_id)?;
+            let attempt = run
+                .validation_attempts
+                .iter_mut()
+                .find(|attempt| attempt.id == attempt_id)
+                .ok_or_else(|| AgentHostError::RunNotFound(run_id.to_owned()))?;
+            let result = attempt
+                .gate_results
+                .get_mut(gate_index)
+                .ok_or_else(|| AgentHostError::RunNotFound(run_id.to_owned()))?;
+            result.status = ManagedValidationGateStatus::Running;
+            push_validation_event(
+                run,
+                format!("Managed validation gate `{}` started.", gate.label()),
+                ManagedValidationEvent::GateStarted {
+                    attempt_id: attempt_id.to_owned(),
+                    gate,
+                },
+            );
+        }
+        self.persist_session(&session_id)?;
+        match ManagedValidationProcess::spawn(
+            run_id.to_owned(),
+            attempt_id.to_owned(),
+            gate_index,
+            gate,
+            &game_dir,
+        ) {
+            Ok(process) => {
+                self.active_validation = Some(process);
+                Ok(())
+            }
+            Err(error) => self.fail_managed_validation(
+                run_id,
+                attempt_id,
+                gate_index,
+                ManagedValidationFailure {
+                    kind: ManagedValidationFailureKind::Spawn,
+                    exit_code: None,
+                    message: format!("Managed validation gate could not be started: {error}"),
+                },
+            ),
+        }
+    }
+
+    fn finish_validation_gate(
+        &mut self,
+        run_id: &str,
+        attempt_id: &str,
+        gate_index: usize,
+        status: ManagedValidationGateStatus,
+        exit_code: Option<i32>,
+        failure: Option<ManagedValidationFailure>,
+    ) -> Result<(), AgentHostError> {
+        let (session_id, _) = self.run_location(run_id)?;
+        {
+            let run = self.run_mut_in_session(&session_id, run_id)?;
+            let attempt = run
+                .validation_attempts
+                .iter_mut()
+                .find(|attempt| attempt.id == attempt_id)
+                .ok_or_else(|| AgentHostError::RunNotFound(run_id.to_owned()))?;
+            let result = attempt
+                .gate_results
+                .get_mut(gate_index)
+                .ok_or_else(|| AgentHostError::RunNotFound(run_id.to_owned()))?;
+            result.status = status;
+            result.exit_code = exit_code;
+            result.failure = failure;
+            let event_result = result.clone();
+            push_validation_event(
+                run,
+                format!(
+                    "Managed validation gate `{}` finished as {:?}.",
+                    event_result.gate.label(), event_result.status
+                ),
+                ManagedValidationEvent::GateFinished {
+                    attempt_id: attempt_id.to_owned(),
+                    result: event_result,
+                },
+            );
+        }
+        self.persist_session(&session_id)
+    }
+
+    fn finish_validation_attempt(
+        &mut self,
+        run_id: &str,
+        attempt_id: &str,
+        status: ManagedValidationAttemptStatus,
+        source_validation: CompletionStatus,
+    ) -> Result<(), AgentHostError> {
+        let (session_id, _) = self.run_location(run_id)?;
+        {
+            let run = self.run_mut_in_session(&session_id, run_id)?;
+            let attempt = run
+                .validation_attempts
+                .iter_mut()
+                .find(|attempt| attempt.id == attempt_id)
+                .ok_or_else(|| AgentHostError::RunNotFound(run_id.to_owned()))?;
+            attempt.status = status;
+            attempt.finished_unix_ms = Some(unix_ms());
+            run.completion.source_validation = source_validation;
+            push_validation_event(
+                run,
+                format!("Managed validation attempt finished as {status:?}."),
+                ManagedValidationEvent::Finished {
+                    attempt_id: attempt_id.to_owned(),
+                    status,
+                },
+            );
+        }
+        self.persist_session(&session_id)
+    }
+
+    fn fail_managed_validation(
+        &mut self,
+        run_id: &str,
+        attempt_id: &str,
+        gate_index: usize,
+        failure: ManagedValidationFailure,
+    ) -> Result<(), AgentHostError> {
+        let exit_code = failure.exit_code;
+        let message = failure.message.clone();
+        self.finish_validation_gate(
+            run_id,
+            attempt_id,
+            gate_index,
+            ManagedValidationGateStatus::Failed,
+            exit_code,
+            Some(failure),
+        )?;
+        self.finish_validation_attempt(
+            run_id,
+            attempt_id,
+            ManagedValidationAttemptStatus::Failed,
+            CompletionStatus::Failed,
+        )?;
+        self.record_event(run_id, AgentEventKind::Failure, message.clone())?;
+        self.transition_run(
+            run_id,
+            AgentRunState::Repairing,
+            format!("Managed validation failed; repair is required. {message}"),
+        )
+    }
+
+    fn finish_validation_without_process(
+        &mut self,
+        run_id: &str,
+        attempt_id: &str,
+        unmanaged_plan_items: usize,
+    ) -> Result<(), AgentHostError> {
+        let source_status = if unmanaged_plan_items == 0 {
+            CompletionStatus::NotApplicable
+        } else {
+            CompletionStatus::Pending
+        };
+        self.finish_validation_attempt(
+            run_id,
+            attempt_id,
+            ManagedValidationAttemptStatus::NotApplicable,
+            source_status,
+        )?;
+        if unmanaged_plan_items > 0 {
+            return self.transition_run(
+                run_id,
+                AgentRunState::AwaitingUser,
+                "Validation plan contains items outside the managed allow-list; they were not executed and remain unresolved.",
+            );
+        }
+        self.advance_after_validation(run_id)
+    }
+
+    fn complete_managed_validation(
+        &mut self,
+        run_id: &str,
+        attempt_id: &str,
+    ) -> Result<(), AgentHostError> {
+        let unmanaged_plan_items = self
+            .validation_attempt(run_id, attempt_id)?
+            .unmanaged_plan_items;
+        let source_status = if unmanaged_plan_items == 0 {
+            CompletionStatus::Passed
+        } else {
+            CompletionStatus::Pending
+        };
+        self.finish_validation_attempt(
+            run_id,
+            attempt_id,
+            ManagedValidationAttemptStatus::Passed,
+            source_status,
+        )?;
+        if unmanaged_plan_items > 0 {
+            return self.transition_run(
+                run_id,
+                AgentRunState::AwaitingUser,
+                "Managed validation gates passed, but validation plan items outside the allow-list remain unresolved.",
+            );
+        }
+        self.advance_after_validation(run_id)
+    }
+
+    fn advance_after_validation(&mut self, run_id: &str) -> Result<(), AgentHostError> {
+        let next = if self.run(run_id)?.proposal_snapshot.playtest_plan.is_empty() {
+            AgentRunState::Evaluating
+        } else {
+            AgentRunState::Playtesting
+        };
+        self.transition_run(
+            run_id,
+            next,
+            match next {
+                AgentRunState::Playtesting => {
+                    "Managed source validation passed; playtest evidence is still required."
+                }
+                AgentRunState::Evaluating => {
+                    "Managed source validation passed; final evaluation remains required."
+                }
+                _ => unreachable!("post-validation state is fixed by the agent state machine"),
+            },
+        )
+    }
+
+    fn validation_attempt(
+        &self,
+        run_id: &str,
+        attempt_id: &str,
+    ) -> Result<&ManagedValidationAttempt, AgentHostError> {
+        self.run(run_id)?
+            .validation_attempts
+            .iter()
+            .find(|attempt| attempt.id == attempt_id)
+            .ok_or_else(|| AgentHostError::RunNotFound(run_id.to_owned()))
     }
 
     pub(crate) fn check_permission(
@@ -719,6 +1292,18 @@ impl AgentHost {
             .ok_or_else(|| AgentHostError::SessionNotFound(id.to_owned()))
     }
 
+    fn run_mut_in_session(
+        &mut self,
+        session_id: &str,
+        run_id: &str,
+    ) -> Result<&mut AgentRun, AgentHostError> {
+        self.session_mut(session_id)?
+            .runs
+            .iter_mut()
+            .find(|run| run.id == run_id)
+            .ok_or_else(|| AgentHostError::RunNotFound(run_id.to_owned()))
+    }
+
     fn run_location(&self, run_id: &str) -> Result<(String, AgentRunState), AgentHostError> {
         for (session_id, session) in &self.sessions {
             if let Some(run) = session.runs.iter().find(|run| run.id == run_id) {
@@ -761,6 +1346,7 @@ fn valid_transition(from: AgentRunState, to: AgentRunState) -> bool {
             | (AgentRunState::Executing, AgentRunState::Repairing)
             | (AgentRunState::AwaitingUser, AgentRunState::Executing)
             | (AgentRunState::AwaitingUser, AgentRunState::Validating)
+            | (AgentRunState::Validating, AgentRunState::AwaitingUser)
             | (AgentRunState::Validating, AgentRunState::Playtesting)
             | (AgentRunState::Validating, AgentRunState::Evaluating)
             | (AgentRunState::Validating, AgentRunState::Repairing)
@@ -782,7 +1368,223 @@ fn push_event(run: &mut AgentRun, kind: AgentEventKind, message: String) {
         created_unix_ms: unix_ms(),
         kind,
         message,
+        validation: None,
     });
+}
+
+fn push_validation_event(
+    run: &mut AgentRun,
+    message: String,
+    validation: ManagedValidationEvent,
+) {
+    let sequence = run.events.last().map_or(1, |event| event.sequence + 1);
+    run.events.push(AgentEvent {
+        sequence,
+        created_unix_ms: unix_ms(),
+        kind: AgentEventKind::Validation,
+        message,
+        validation: Some(validation),
+    });
+}
+
+fn managed_validation_plan(
+    proposal: &AgentProposal,
+    code_changes_present: bool,
+) -> (Vec<ManagedValidationGate>, usize) {
+    let mut gates = BTreeSet::new();
+    let mut unmanaged_plan_items = 0;
+    for item in &proposal.validation_plan {
+        let normalized = item.trim().to_ascii_lowercase();
+        if normalized.is_empty() {
+            continue;
+        }
+        let all = matches!(
+            normalized.as_str(),
+            "all" | "full" | "full validation" | "source validation"
+        );
+        if all {
+            gates.extend(STANDARD_VALIDATION_GATES);
+            continue;
+        }
+        let mut matched = false;
+        for (gate, needles) in [
+            (
+                ManagedValidationGate::Formatting,
+                &[
+                    "format",
+                    "formatting",
+                    "fmt",
+                    "cargo fmt",
+                    "cargo fmt --all --check",
+                ][..],
+            ),
+            (
+                ManagedValidationGate::Check,
+                &["check", "cargo check", "cargo check --all-targets"][..],
+            ),
+            (
+                ManagedValidationGate::Clippy,
+                &[
+                    "clippy",
+                    "cargo clippy",
+                    "cargo clippy --all-targets",
+                    "cargo clippy --all-targets -- -d warnings",
+                ][..],
+            ),
+            (
+                ManagedValidationGate::Tests,
+                &["test", "tests", "cargo test", "cargo test --all-targets"][..],
+            ),
+            (
+                ManagedValidationGate::Documentation,
+                &[
+                    "documentation",
+                    "docs",
+                    "rustdoc",
+                    "cargo doc",
+                    "cargo doc --no-deps",
+                ][..],
+            ),
+        ] {
+            if needles.iter().any(|needle| normalized == *needle) {
+                gates.insert(gate);
+                matched = true;
+            }
+        }
+        if !matched {
+            unmanaged_plan_items += 1;
+        }
+    }
+    if gates.is_empty() && code_changes_present {
+        gates.extend(STANDARD_VALIDATION_GATES);
+    }
+    let ordered = STANDARD_VALIDATION_GATES
+        .into_iter()
+        .filter(|gate| gates.contains(gate))
+        .collect();
+    (ordered, unmanaged_plan_items)
+}
+
+fn recover_persisted_runs(
+    sessions: &mut BTreeMap<String, AgentSession>,
+) -> Result<(Option<String>, BTreeSet<String>), AgentHostError> {
+    let mut active_runs = Vec::new();
+    let mut recovered_sessions = BTreeSet::new();
+    for session in sessions.values_mut() {
+        let session_id = session.id.clone();
+        for run in &mut session.runs {
+            if run.state.is_terminal() {
+                continue;
+            }
+            active_runs.push(run.id.clone());
+            let Some(attempt) = run
+                .validation_attempts
+                .last_mut()
+                .filter(|attempt| attempt.status == ManagedValidationAttemptStatus::Running)
+            else {
+                continue;
+            };
+            recovered_sessions.insert(session_id.clone());
+            for result in &mut attempt.gate_results {
+                if result.status == ManagedValidationGateStatus::Running {
+                    result.status = ManagedValidationGateStatus::Interrupted;
+                    result.failure = Some(ManagedValidationFailure {
+                        kind: ManagedValidationFailureKind::Interrupted,
+                        exit_code: None,
+                        message: "Managed validation process did not survive the Editor restart."
+                            .to_owned(),
+                    });
+                }
+            }
+            attempt.status = ManagedValidationAttemptStatus::Interrupted;
+            attempt.finished_unix_ms = Some(unix_ms());
+            let attempt_id = attempt.id.clone();
+            run.completion.source_validation = CompletionStatus::Pending;
+            push_validation_event(
+                run,
+                "Previous managed validation attempt was interrupted by Editor restart; no process was resumed.".to_owned(),
+                ManagedValidationEvent::Finished {
+                    attempt_id,
+                    status: ManagedValidationAttemptStatus::Interrupted,
+                },
+            );
+            if run.state == AgentRunState::Validating {
+                run.state = AgentRunState::Repairing;
+                push_event(
+                    run,
+                    AgentEventKind::StateChanged,
+                    "Validation execution was interrupted; a new attempt is required before completion."
+                        .to_owned(),
+                );
+            }
+        }
+    }
+    active_runs.sort();
+    active_runs.dedup();
+    let active_writer_run = match active_runs.as_slice() {
+        [] => None,
+        [run_id] => Some(run_id.clone()),
+        _ => return Err(AgentHostError::MultipleActiveWriterRuns(active_runs)),
+    };
+    Ok((active_writer_run, recovered_sessions))
+}
+
+struct ManagedValidationProcess {
+    run_id: String,
+    attempt_id: String,
+    gate_index: usize,
+    child: Child,
+}
+
+impl ManagedValidationProcess {
+    fn spawn(
+        run_id: String,
+        attempt_id: String,
+        gate_index: usize,
+        gate: ManagedValidationGate,
+        working_directory: &Path,
+    ) -> io::Result<Self> {
+        let child = Command::new("cargo")
+            .args(gate.cargo_arguments())
+            .current_dir(working_directory)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()?;
+        Ok(Self {
+            run_id,
+            attempt_id,
+            gate_index,
+            child,
+        })
+    }
+
+    fn poll_exit(&mut self) -> io::Result<Option<ExitStatus>> {
+        self.child.try_wait()
+    }
+
+    fn cancel(&mut self) -> io::Result<Option<ExitStatus>> {
+        match self.child.try_wait()? {
+            Some(status) => Ok(Some(status)),
+            None => {
+                match self.child.kill() {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == io::ErrorKind::InvalidInput => {}
+                    Err(error) => return Err(error),
+                }
+                self.child.wait().map(Some)
+            }
+        }
+    }
+}
+
+impl Drop for ManagedValidationProcess {
+    fn drop(&mut self) {
+        if self.child.try_wait().ok().flatten().is_none() {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+    }
 }
 
 fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), AgentHostError> {
@@ -1259,6 +2061,177 @@ mod tests {
         ));
         let _ = fs::remove_dir_all(project);
         let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn managed_validation_plan_never_turns_unknown_text_into_a_command() {
+        let mut proposal = AgentProposal::default();
+        proposal.validation_plan = vec![
+            "echo should-not-run".to_owned(),
+            "powershell cargo check; Write-Host should-not-run".to_owned(),
+        ];
+        let (gates, unmanaged) = managed_validation_plan(&proposal, false);
+        assert!(gates.is_empty());
+        assert_eq!(unmanaged, 2);
+    }
+
+    #[test]
+    fn code_changes_default_to_standard_managed_validation_gates() {
+        let (gates, unmanaged) = managed_validation_plan(&AgentProposal::default(), true);
+        assert_eq!(gates, STANDARD_VALIDATION_GATES);
+        assert_eq!(unmanaged, 0);
+    }
+
+    #[test]
+    fn managed_validation_without_source_work_needs_no_shell_permission() {
+        let project = temp_path("validation-na-project");
+        let storage = temp_path("validation-na-storage");
+        fs::create_dir_all(&project).expect("test project directory");
+        let mut host = AgentHost::open(project.clone(), storage.clone()).expect("host");
+        let session = host.create_session("Validation").expect("session");
+        let run = host.start_run(&session, "test").expect("run");
+        host.transition_run(&run, AgentRunState::Executing, "execute")
+            .expect("executing");
+        host.begin_managed_validation(&run, false)
+            .expect("managed validation");
+        let run_state = host.run(&run).expect("run");
+        assert_eq!(run_state.state, AgentRunState::Evaluating);
+        assert_eq!(
+            run_state.completion.source_validation,
+            CompletionStatus::NotApplicable
+        );
+        assert!(!run_state.events.iter().any(|event| {
+            event.kind == AgentEventKind::PermissionRequested
+                && event.message.contains("Arbitrary command execution")
+        }));
+        let _ = fs::remove_dir_all(project);
+        let _ = fs::remove_dir_all(storage);
+    }
+
+    #[test]
+    fn unmanaged_validation_plan_item_remains_pending_without_execution() {
+        let project = temp_path("validation-unmanaged-project");
+        let storage = temp_path("validation-unmanaged-storage");
+        fs::create_dir_all(&project).expect("test project directory");
+        let mut host = AgentHost::open(project.clone(), storage.clone()).expect("host");
+        let session = host.create_session("Validation").expect("session");
+        let mut proposal = host.session(&session).expect("session").proposal.clone();
+        proposal.validation_plan = vec!["powershell ./custom-validator.ps1".to_owned()];
+        host.update_proposal(&session, proposal).expect("proposal");
+        let run = host.start_run(&session, "test").expect("run");
+        host.transition_run(&run, AgentRunState::Executing, "execute")
+            .expect("executing");
+        host.begin_managed_validation(&run, false)
+            .expect("managed validation");
+        let run_state = host.run(&run).expect("run");
+        assert_eq!(run_state.state, AgentRunState::AwaitingUser);
+        assert_eq!(run_state.completion.source_validation, CompletionStatus::Pending);
+        assert_eq!(
+            run_state.validation_attempts.last().expect("attempt").unmanaged_plan_items,
+            1
+        );
+        let _ = fs::remove_dir_all(project);
+        let _ = fs::remove_dir_all(storage);
+    }
+
+    #[test]
+    fn validation_failure_moves_run_to_repairing_and_blocks_completion() {
+        let project = temp_path("validation-failure-project");
+        let storage = temp_path("validation-failure-storage");
+        fs::create_dir_all(&project).expect("test project directory");
+        let mut host = AgentHost::open(project.clone(), storage.clone()).expect("host");
+        let session = host.create_session("Validation").expect("session");
+        let run = host.start_run(&session, "test").expect("run");
+        host.transition_run(&run, AgentRunState::Executing, "execute")
+            .expect("executing");
+        host.transition_run(&run, AgentRunState::Validating, "validate")
+            .expect("validating");
+        let attempt_id = next_id("validation-test");
+        {
+            let session_id = host.run_location(&run).expect("location").0;
+            let run_state = host
+                .run_mut_in_session(&session_id, &run)
+                .expect("mutable run");
+            run_state.validation_attempts.push(ManagedValidationAttempt {
+                id: attempt_id.clone(),
+                gate_results: vec![ManagedValidationGateResult {
+                    gate: ManagedValidationGate::Check,
+                    status: ManagedValidationGateStatus::Running,
+                    exit_code: None,
+                    failure: None,
+                }],
+                unmanaged_plan_items: 0,
+                status: ManagedValidationAttemptStatus::Running,
+                started_unix_ms: unix_ms(),
+                finished_unix_ms: None,
+            });
+        }
+        host.fail_managed_validation(
+            &run,
+            &attempt_id,
+            0,
+            ManagedValidationFailure {
+                kind: ManagedValidationFailureKind::ProcessExit,
+                exit_code: Some(1),
+                message: "check failed".to_owned(),
+            },
+        )
+        .expect("failure handling");
+        let run_state = host.run(&run).expect("run");
+        assert_eq!(run_state.state, AgentRunState::Repairing);
+        assert_eq!(run_state.completion.source_validation, CompletionStatus::Failed);
+        assert!(matches!(host.complete_run(&run), Err(AgentHostError::CompletionPending)));
+        let _ = fs::remove_dir_all(project);
+        let _ = fs::remove_dir_all(storage);
+    }
+
+    #[test]
+    fn restart_marks_running_validation_as_interrupted_without_resuming_process() {
+        let project = temp_path("validation-restart-project");
+        let storage = temp_path("validation-restart-storage");
+        fs::create_dir_all(&project).expect("test project directory");
+        {
+            let mut host = AgentHost::open(project.clone(), storage.clone()).expect("host");
+            let session = host.create_session("Validation").expect("session");
+            let run = host.start_run(&session, "test").expect("run");
+            host.transition_run(&run, AgentRunState::Executing, "execute")
+                .expect("executing");
+            host.transition_run(&run, AgentRunState::Validating, "validate")
+                .expect("validating");
+            let session_id = host.run_location(&run).expect("location").0;
+            let run_state = host
+                .run_mut_in_session(&session_id, &run)
+                .expect("mutable run");
+            run_state.validation_attempts.push(ManagedValidationAttempt {
+                id: "validation_persisted".to_owned(),
+                gate_results: vec![ManagedValidationGateResult {
+                    gate: ManagedValidationGate::Check,
+                    status: ManagedValidationGateStatus::Running,
+                    exit_code: None,
+                    failure: None,
+                }],
+                unmanaged_plan_items: 0,
+                status: ManagedValidationAttemptStatus::Running,
+                started_unix_ms: unix_ms(),
+                finished_unix_ms: None,
+            });
+            host.persist_session(&session_id).expect("persist");
+        }
+        let host = AgentHost::open(project.clone(), storage.clone()).expect("reopen");
+        let run_state = host
+            .sessions
+            .values()
+            .flat_map(|session| session.runs.iter())
+            .find(|run| run.id.starts_with("run_"))
+            .expect("run");
+        assert_eq!(run_state.state, AgentRunState::Repairing);
+        assert_eq!(
+            run_state.validation_attempts.last().expect("attempt").status,
+            ManagedValidationAttemptStatus::Interrupted
+        );
+        assert!(host.active_validation.is_none());
+        let _ = fs::remove_dir_all(project);
+        let _ = fs::remove_dir_all(storage);
     }
 
     #[test]

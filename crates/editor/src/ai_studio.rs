@@ -90,6 +90,7 @@ impl AiStudioPanel {
             .map_err(|error| error.to_string())?
             .proposal
             .clone();
+        let active_run_id = host.active_writer_run_id().map(str::to_owned);
         Ok(Self {
             project_root: project.path().to_path_buf(),
             connection,
@@ -100,7 +101,7 @@ impl AiStudioPanel {
             provider_program: String::new(),
             provider_args: String::new(),
             open: true,
-            active_run_id: None,
+            active_run_id,
             process: None,
             code_workspace: None,
             pending_code_changes: Vec::new(),
@@ -117,6 +118,7 @@ impl AiStudioPanel {
     /// Draws the AI Studio window and advances any active external agent process.
     pub fn show(&mut self, context: &egui::Context) {
         self.poll_external_process(context);
+        self.poll_managed_validation(context);
         let mut open = self.open;
         egui::Window::new("AI Studio")
             .id(egui::Id::new("gameengine_ai_studio"))
@@ -326,7 +328,15 @@ impl AiStudioPanel {
             if ui.add_enabled(can_go, egui::Button::new("Go")).clicked() {
                 self.begin_run();
             }
-            if self.process.is_some() && ui.button("Stop").clicked() {
+            let can_stop = self.active_run_id.as_ref().is_some_and(|run_id| {
+                self.host.run(run_id).is_ok_and(|run| {
+                    !matches!(
+                        run.state,
+                        AgentRunState::Completed | AgentRunState::Failed | AgentRunState::Cancelled
+                    )
+                })
+            });
+            if ui.add_enabled(can_stop, egui::Button::new("Stop")).clicked() {
                 stop_requested = true;
             }
         });
@@ -432,7 +442,7 @@ impl AiStudioPanel {
                             });
                         }
                     });
-                self.show_completion_contract(ui, &run_id, run.state, run.completion);
+                self.show_completion_contract(ui, &run_id, run.completion);
             });
     }
 
@@ -440,37 +450,20 @@ impl AiStudioPanel {
         &mut self,
         ui: &mut egui::Ui,
         run_id: &str,
-        state: AgentRunState,
-        mut report: crate::agent_host::CompletionReport,
+        report: crate::agent_host::CompletionReport,
     ) {
         ui.separator();
         ui.strong("Completion contract");
-        let mut changed = false;
-        changed |= completion_row(ui, "Acceptance criteria", &mut report.acceptance_criteria);
-        changed |= completion_row(ui, "Authoring validation", &mut report.authoring_validation);
-        changed |= completion_row(ui, "Source validation", &mut report.source_validation);
-        changed |= completion_row(ui, "Play launch", &mut report.play_launch);
-        changed |= completion_row(ui, "Frame capture", &mut report.frame_capture);
-        changed |= completion_row(ui, "Visual evaluation", &mut report.visual_evaluation);
-        changed |= completion_row(ui, "Interaction scenarios", &mut report.interaction_scenarios);
-        if changed {
-            let copy = report.clone();
-            if let Err(error) = self.host.set_completion_status(run_id, move |target| *target = copy) {
-                self.status = Some(error.to_string());
-            }
-        }
+        completion_row(ui, "Acceptance criteria", report.acceptance_criteria);
+        completion_row(ui, "Authoring validation", report.authoring_validation);
+        completion_row(ui, "Source validation", report.source_validation);
+        completion_row(ui, "Play launch", report.play_launch);
+        completion_row(ui, "Frame capture", report.frame_capture);
+        completion_row(ui, "Visual evaluation", report.visual_evaluation);
+        completion_row(ui, "Interaction scenarios", report.interaction_scenarios);
+        ui.small("Completion evidence is owned by the agent host and managed engine services.");
         if ui.button("Complete run").clicked() {
-            let result = if state == AgentRunState::Validating {
-                self.host.transition_run(
-                    run_id,
-                    AgentRunState::Evaluating,
-                    "Human review advanced the run to final evaluation.",
-                )
-            } else {
-                Ok(())
-            }
-            .and_then(|()| self.host.complete_run(run_id));
-            match result {
+            match self.host.complete_run(run_id) {
                 Ok(()) => self.status = Some("Run completion contract satisfied.".to_owned()),
                 Err(error) => self.status = Some(error.to_string()),
             }
@@ -685,6 +678,20 @@ impl AiStudioPanel {
         }
     }
 
+    fn poll_managed_validation(&mut self, context: &egui::Context) {
+        let Some(run_id) = self.active_run_id.clone() else {
+            return;
+        };
+        match self.host.poll_managed_validation(&run_id) {
+            Ok(true) => context.request_repaint_after(std::time::Duration::from_millis(100)),
+            Ok(false) => {}
+            Err(error) => self.fail_run(
+                &run_id,
+                format!("Could not advance engine-managed validation: {error}"),
+            ),
+        }
+    }
+
     fn finish_provider_execution(&mut self, run_id: &str, exit_code: Option<i32>) {
         let changes = match self.code_workspace.as_ref() {
             Some(workspace) => match workspace.collect_changes() {
@@ -703,21 +710,17 @@ impl AiStudioPanel {
         ) {
             self.status = Some(error.to_string());
         }
+        let has_code_changes = !changes.is_empty();
         self.pending_code_changes = changes;
-        if let Err(error) = self.host.transition_run(
-            run_id,
-            AgentRunState::Validating,
-            format!(
-                "External agent exited with {:?}; validation and completion checks are still required.",
-                exit_code
-            ),
-        ) {
+        if let Err(error) = self
+            .host
+            .begin_managed_validation(run_id, has_code_changes)
+        {
             self.status = Some(error.to_string());
         } else {
-            self.status = Some(
-                "Provider execution finished. Review code changes and complete validation/playtest evidence before completion."
-                    .to_owned(),
-            );
+            self.status = Some(format!(
+                "Provider execution finished with {exit_code:?}; engine-managed validation is active or has recorded its result."
+            ));
         }
     }
 
@@ -788,24 +791,11 @@ fn change_summary(change: &CodeChange) -> &'static str {
     }
 }
 
-fn completion_row(ui: &mut egui::Ui, label: &str, status: &mut CompletionStatus) -> bool {
-    let before = *status;
+fn completion_row(ui: &mut egui::Ui, label: &str, status: CompletionStatus) {
     ui.horizontal(|ui| {
         ui.label(label);
-        egui::ComboBox::from_id_salt(("ai_completion", label))
-            .selected_text(completion_label(*status))
-            .show_ui(ui, |ui| {
-                for candidate in [
-                    CompletionStatus::Pending,
-                    CompletionStatus::Passed,
-                    CompletionStatus::Failed,
-                    CompletionStatus::NotApplicable,
-                ] {
-                    ui.selectable_value(status, candidate, completion_label(candidate));
-                }
-            });
+        ui.strong(completion_label(status));
     });
-    *status != before
 }
 
 fn completion_label(status: CompletionStatus) -> &'static str {
