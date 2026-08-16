@@ -1,0 +1,205 @@
++    }
++
++    /// Returns the run that requested escalation.
++    pub fn run_id(&self) -> &AgentRunId {
++        &self.run_id
++    }
++
++    /// Returns the requested capability.
++    pub const fn permission(&self) -> AgentPermission {
++        self.permission
++    }
++
++    /// Returns the human-readable escalation reason.
++    pub fn reason(&self) -> &str {
++        &self.reason
++    }
++}
++
++/// Application-level capability broker for AI Studio runs.
++///
++/// Project grants are durable policy. Run and one-shot grants are intentionally
++/// transient and are cleared when their run ends.
++#[derive(Debug, Default)]
++pub struct AgentPermissionBroker {
++    project_grants: BTreeSet<AgentPermission>,
++    run_grants: BTreeMap<AgentRunId, BTreeSet<AgentPermission>>,
++    once_grants: BTreeMap<AgentRunId, BTreeMap<AgentPermission, u32>>,
++    pending: BTreeMap<PermissionRequestId, PermissionRequest>,
++}
++
++impl AgentPermissionBroker {
++    /// Restores the persistent project policy without restoring transient run grants.
++    pub fn with_project_grants(project_grants: BTreeSet<AgentPermission>) -> Self {
++        Self {
++            project_grants,
++            ..Self::default()
++        }
++    }
++
++    /// Returns the durable project-level capability decisions.
++    pub fn project_grants(&self) -> &BTreeSet<AgentPermission> {
++        &self.project_grants
++    }
++
++    /// Returns all unresolved permission escalation requests.
++    pub fn pending_requests(&self) -> impl Iterator<Item = &PermissionRequest> {
++        self.pending.values()
++    }
++
++    /// Explicitly updates one durable project-level capability toggle.
++    pub fn set_project_grant(&mut self, permission: AgentPermission, allowed: bool) {
++        if allowed {
++            self.project_grants.insert(permission);
++        } else {
++            self.project_grants.remove(&permission);
++        }
++    }
++
++    /// Returns whether a permission is currently available without consuming
++    /// an allow-once grant.
++    pub fn is_allowed(&self, run_id: &AgentRunId, permission: AgentPermission) -> bool {
++        self.project_grants.contains(&permission)
++            || self
++                .run_grants
++                .get(run_id)
++                .is_some_and(|grants| grants.contains(&permission))
++            || self
++                .once_grants
++                .get(run_id)
++                .and_then(|grants| grants.get(&permission))
++                .is_some_and(|count| *count > 0)
++    }
++
++    /// Authorizes one operation and consumes an allow-once grant when that is
++    /// the only matching grant.
++    pub fn authorize(&mut self, run_id: &AgentRunId, permission: AgentPermission) -> bool {
++        if self.project_grants.contains(&permission)
++            || self
++                .run_grants
++                .get(run_id)
++                .is_some_and(|grants| grants.contains(&permission))
++        {
++            return true;
++        }
++
++        let Some(grants) = self.once_grants.get_mut(run_id) else {
++            return false;
++        };
++        let Some(count) = grants.get_mut(&permission) else {
++            return false;
++        };
++        if *count == 0 {
++            return false;
++        }
++        *count -= 1;
++        true
++    }
++
++    /// Creates a reviewable escalation request unless the permission is already granted.
++    pub fn request(
++        &mut self,
++        run_id: AgentRunId,
++        permission: AgentPermission,
++        reason: impl Into<String>,
++    ) -> Option<PermissionRequestId> {
++        if self.is_allowed(&run_id, permission) {
++            return None;
++        }
++
++        let id = PermissionRequestId::generate();
++        self.pending.insert(
++            id.clone(),
++            PermissionRequest {
++                id: id.clone(),
++                run_id,
++                permission,
++                reason: reason.into(),
++            },
++        );
++        Some(id)
++    }
++
++    /// Applies the user's decision to one pending request.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`AgentHostError`] if the request no longer exists.
++    pub fn resolve(
++        &mut self,
++        request_id: &PermissionRequestId,
++        scope: ApprovalScope,
++    ) -> Result<PermissionRequest, AgentHostError> {
++        let request = self.pending.remove(request_id).ok_or_else(|| {
++            AgentHostError::new(
++                "agent.permission_request_not_found",
++                format!("permission request `{request_id}` does not exist"),
++            )
++        })?;
++
++        match scope {
++            ApprovalScope::AllowOnce => {
++                *self
++                    .once_grants
++                    .entry(request.run_id.clone())
++                    .or_default()
++                    .entry(request.permission)
++                    .or_default() += 1;
++            }
++            ApprovalScope::AllowForRun => {
++                self.run_grants
++                    .entry(request.run_id.clone())
++                    .or_default()
++                    .insert(request.permission);
++            }
++            ApprovalScope::AllowForProject => {
++                self.project_grants.insert(request.permission);
++            }
++            ApprovalScope::Deny => {}
++        }
++        Ok(request)
++    }
++
++    /// Drops every transient decision associated with a terminal run.
++    pub fn finish_run(&mut self, run_id: &AgentRunId) {
++        self.run_grants.remove(run_id);
++        self.once_grants.remove(run_id);
++        self.pending.retain(|_, request| &request.run_id != run_id);
++    }
++}
++
++/// Editable, conversation-produced proposal content before the host assigns a
++/// monotonic version.
++#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
++pub struct AgentProposalDraft {
++    /// Human-visible objective for the requested work.
++    pub goal: String,
++    /// Requirements explicitly agreed in conversation.
++    pub agreed_requirements: Vec<String>,
++    /// Assumptions the run may rely on.
++    pub assumptions: Vec<String>,
++    /// Observable conditions required for completion.
++    pub acceptance_criteria: Vec<String>,
++    /// Planned project, source, and asset changes at a reviewable level.
++    pub planned_changes: Vec<String>,
++    /// Validation and playtest work expected before completion.
++    pub validation_and_playtest_plan: Vec<String>,
++    /// Capabilities expected to be required by the run.
++    pub expected_capabilities: Vec<AgentPermission>,
++}
++
++/// Immutable versioned proposal stored in the session history.
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++pub struct AgentProposal {
++    version: ProposalVersion,
++    draft: AgentProposalDraft,
++}
++
++impl AgentProposal {
++    /// Returns the immutable proposal revision.
++    pub const fn version(&self) -> ProposalVersion {
++        self.version
++    }
++
++    /// Returns the proposal body.
++    pub fn draft(&self) -> &AgentProposalDraft {
