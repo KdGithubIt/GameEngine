@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0121-scene-cli-20260816-01",
+  "target_branch": "chatgpt/gameengine-adr-0121-scene-cli",
+  "expected_head_sha": "bf21b073f0032b637e0663430370609f72d8d62b",
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Add Scene authoring CLI parity",
+  "pr_title": "GameEngine: add Scene authoring CLI parity",
+  "pr_body": "## Summary\n\nContinues ADR 0121 Scene/entity/schema parity by adding headless CLI adapters over the shared SceneAuthoringService.\n\n- adds project describe, Scene inspect/validate/preview/apply, entity find/inspect, and component schema commands\n- confines Scene paths through ProjectRoot\n- persists successful apply operations through the existing canonical Scene save path\n- adds adapter-equivalence, non-persistence preview, path-safety, and discovery tests\n\nThe CLI keeps file selection/persistence as adapter concerns; Scene mutation, validation, diagnostics, and semantic diff behavior remain owned by engine-authoring."
+}
