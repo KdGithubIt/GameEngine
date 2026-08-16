@@ -1,0 +1,199 @@
++            &brdf_pipeline_layout,
++            &shader,
++            "fs_brdf",
++        );
++
++        let brdf_texture = make_render_texture(
++            device,
++            "Environment BRDF integration LUT",
++            BRDF_LUT_SIZE,
++            BRDF_LUT_SIZE,
++            1,
++        );
++        let brdf_view = brdf_texture.create_view(&wgpu::TextureViewDescriptor::default());
++        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
++            label: Some("Environment BRDF integration encoder"),
++        });
++        {
++            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
++                label: Some("Environment BRDF integration pass"),
++                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
++                    view: &brdf_view,
++                    resolve_target: None,
++                    depth_slice: None,
++                    ops: wgpu::Operations {
++                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
++                        store: wgpu::StoreOp::Store,
++                    },
++                })],
++                depth_stencil_attachment: None,
++                timestamp_writes: None,
++                occlusion_query_set: None,
++                multiview_mask: None,
++            });
++            pass.set_pipeline(&brdf_pipeline);
++            pass.draw(0..3, 0..1);
++        }
++        queue.submit(Some(encoder.finish()));
++
++        let uniform =
++            EnvironmentUniform::from_settings(&EnvironmentLighting::default(), false, false);
++        let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
++            label: Some("Environment IBL uniform"),
++            contents: bytemuck::bytes_of(&uniform),
++            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
++        });
++        let bind_group = make_environment_bind_group(
++            device,
++            &bind_group_layout,
++            &fallback.view,
++            &fallback.view,
++            &fallback.view,
++            &brdf_view,
++            &sampler,
++            &uniform_buffer,
++        );
++
++        Self {
++            bind_group_layout,
++            bind_group,
++            uniform_buffer,
++            sampler,
++            fallback,
++            _brdf_texture: brdf_texture,
++            brdf_view,
++            _diffuse_texture: None,
++            diffuse_view: None,
++            _specular_texture: None,
++            specular_view: None,
++            source_bgl,
++            diffuse_pipeline,
++            specular_pipeline,
++            skybox_source: None,
++            diffuse_override_source: None,
++            has_skybox: false,
++        }
++    }
++
++    pub(crate) fn bind_group_layout(&self) -> &wgpu::BindGroupLayout {
++        &self.bind_group_layout
++    }
++
++    pub(crate) fn bind_group(&self) -> &wgpu::BindGroup {
++        &self.bind_group
++    }
++
++    pub(crate) fn has_skybox(&self) -> bool {
++        self.has_skybox
++    }
++
++    pub(crate) fn update(
++        &mut self,
++        device: &wgpu::Device,
++        queue: &wgpu::Queue,
++        settings: &EnvironmentLighting,
++        skybox: Option<&Arc<Texture>>,
++        diffuse_override: Option<&Arc<Texture>>,
++    ) {
++        let sky_changed = !weak_matches(&self.skybox_source, skybox);
++        let diffuse_changed = !weak_matches(&self.diffuse_override_source, diffuse_override);
++
++        if sky_changed {
++            self.skybox_source = skybox.map(Arc::downgrade);
++            self.has_skybox = skybox.is_some();
++            if let Some(source) = skybox {
++                let (diffuse_texture, diffuse_view, specular_texture, specular_view) =
++                    self.precompute_environment(device, queue, source);
++                self._diffuse_texture = Some(diffuse_texture);
++                self.diffuse_view = Some(diffuse_view);
++                self._specular_texture = Some(specular_texture);
++                self.specular_view = Some(specular_view);
++            } else {
++                self._diffuse_texture = None;
++                self.diffuse_view = None;
++                self._specular_texture = None;
++                self.specular_view = None;
++            }
++        }
++        if diffuse_changed {
++            self.diffuse_override_source = diffuse_override.map(Arc::downgrade);
++        }
++
++        let has_diffuse_texture = diffuse_override.is_some() || self.diffuse_view.is_some();
++        let uniform =
++            EnvironmentUniform::from_settings(settings, has_diffuse_texture, self.has_skybox);
++        queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniform));
++
++        if sky_changed || diffuse_changed {
++            let source_view = skybox
++                .map(|texture| &texture.view)
++                .unwrap_or(&self.fallback.view);
++            let diffuse_view = diffuse_override
++                .map(|texture| &texture.view)
++                .or(self.diffuse_view.as_ref())
++                .unwrap_or(&self.fallback.view);
++            let specular_view = self
++                .specular_view
++                .as_ref()
++                .unwrap_or(&self.fallback.view);
++            self.bind_group = make_environment_bind_group(
++                device,
++                &self.bind_group_layout,
++                source_view,
++                diffuse_view,
++                specular_view,
++                &self.brdf_view,
++                &self.sampler,
++                &self.uniform_buffer,
++            );
++        }
++    }
++
++    fn precompute_environment(
++        &self,
++        device: &wgpu::Device,
++        queue: &wgpu::Queue,
++        source: &Texture,
++    ) -> (wgpu::Texture, wgpu::TextureView, wgpu::Texture, wgpu::TextureView) {
++        use wgpu::util::DeviceExt;
++
++        let diffuse_texture = make_render_texture(
++            device,
++            "Environment diffuse irradiance",
++            DIFFUSE_WIDTH,
++            DIFFUSE_HEIGHT,
++            1,
++        );
++        let diffuse_view = diffuse_texture.create_view(&wgpu::TextureViewDescriptor::default());
++        let specular_texture = make_render_texture(
++            device,
++            "Environment prefiltered specular",
++            SPECULAR_WIDTH,
++            SPECULAR_HEIGHT,
++            SPECULAR_MIP_LEVELS,
++        );
++        let specular_view = specular_texture.create_view(&wgpu::TextureViewDescriptor::default());
++
++        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
++            label: Some("Environment precompute encoder"),
++        });
++
++        let diffuse_uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
++            label: Some("Environment diffuse bake uniform"),
++            contents: bytemuck::bytes_of(&BakeUniform::new(1.0)),
++            usage: wgpu::BufferUsages::UNIFORM,
++        });
++        let diffuse_bind_group = make_precompute_bind_group(
++            device,
++            &self.source_bgl,
++            source,
++            &self.sampler,
++            &diffuse_uniform,
++        );
++        {
++            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
++                label: Some("Environment diffuse irradiance pass"),
++                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
++                    view: &diffuse_view,
++                    resolve_target: None,
++                    depth_slice: None,
