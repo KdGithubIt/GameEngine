@@ -1,0 +1,179 @@
+asset_id)
++            .map_err(McpToolError::from)
++    }
++}
++
++impl Default for AssetMcpTools {
++    fn default() -> Self {
++        Self::new()
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use engine_assets::asset::{ImportSettings, ManifestEntry};
++    use engine_authoring::{ProjectConfig, PROJECT_SCHEMA_VERSION};
++    use std::fs;
++    use std::path::PathBuf;
++
++    fn project() -> (PathBuf, ProjectRoot) {
++        let path = std::env::temp_dir().join(format!(
++            "gameengine-mcp-asset-{}",
++            AssetId::generate().as_str()
++        ));
++        fs::create_dir_all(&path).expect("temporary project directory");
++        let root = ProjectRoot::create(
++            &path,
++            ProjectConfig {
++                name: "McpAssetTest".into(),
++                schema_version: PROJECT_SCHEMA_VERSION,
++            },
++        )
++        .expect("project fixture");
++        (path, root)
++    }
++
++    #[test]
++    fn descriptors_expose_asset_search_and_inspect() {
++        let names = AssetMcpTools::new()
++            .tool_descriptors()
++            .into_iter()
++            .map(|descriptor| descriptor.name)
++            .collect::<Vec<_>>();
++        assert_eq!(names, vec!["asset.search", "asset.inspect"]);
++    }
++
++    #[test]
++    fn mcp_search_matches_shared_catalog_result() {
++        let (path, root) = project();
++        let id = AssetId::generate();
++        let mut manifest = AssetManifest::default();
++        manifest.insert(
++            id,
++            ManifestEntry {
++                path: "textures/hero.png".into(),
++                name: Some("hero_texture".into()),
++                import_settings: ImportSettings::default(),
++            },
++        );
++        let permissions = AuthoringPermissions::read_only();
++        let direct = AssetCatalogService::new()
++            .search(&root, &manifest, &permissions, "hero")
++            .expect("direct catalog query");
++        let mcp = AssetMcpTools::new()
++            .asset_search(
++                &root,
++                &manifest,
++                &permissions,
++                AssetSearchInput {
++                    query: "hero".into(),
++                },
++            )
++            .expect("MCP catalog query");
++
++        assert_eq!(mcp, direct);
++        fs::remove_dir_all(path).expect("temporary project cleanup");
++    }
++}
+diff --git a/crates/mcp/src/lib.rs b/crates/mcp/src/lib.rs
+--- a/crates/mcp/src/lib.rs
++++ b/crates/mcp/src/lib.rs
+@@ -2,20 +2,23 @@
+ //!
+ //! This crate intentionally owns only tool-shaped inputs and outputs. It does
+ //! not own MCP transport lifecycle, process management, or editing rules. Each
+-//! tool delegates structured authoring work to `engine-authoring`.
++//! tool delegates structured work to the shared domain service that owns it.
+ 
+ #![warn(missing_docs)]
+ #![warn(rustdoc::broken_intra_doc_links)]
+ 
+ /// AI Agent Bridge tool handlers (Phase 40, ADR 0035).
+ pub mod ai_agent;
++/// Asset discovery and inspection tool handlers backed by the shared asset catalog.
++pub mod asset;
+ /// Scene/project tool handlers backed by the shared authoring services.
+ pub mod scene;
+ 
+ pub use ai_agent::{
+     ai_agent_tool_descriptors, describe_session, handle_describe_session, handle_validate_input,
+     validate_ai_agent_input, AiAgentInput, AiAgentOutput,
+ };
++pub use asset::{AssetInspectInput, AssetMcpTools, AssetSearchInput};
+ pub use scene::{
+     ComponentSchemasOutput, EntityFindInput, EntityFindOutput, EntityInspectInput,
+     EntityInspectOutput, ProjectDescribeOutput, SceneMcpTools, SceneMutationInput,
+@@ -22,6 +26,7 @@ use engine_authoring::{
+     BehaviorTreeSchemaCatalog, BehaviorTreeServiceError, BehaviorTreeValidation, Graph,
+     GraphCommand, SceneAuthoringError,
+ };
++use engine_assets::catalog::AssetCatalogError;
+ use serde::{Deserialize, Serialize};
+ use serde_json::json;
+ use std::fmt;
+@@ -63,6 +68,11 @@ pub enum McpToolError {
+         /// Source Scene authoring error.
+         source: SceneAuthoringError,
+     },
++    /// The shared asset catalog service rejected the request.
++    AssetCatalog {
++        /// Source asset catalog error.
++        source: AssetCatalogError,
++    },
+ }
+ 
+ impl fmt::Display for McpToolError {
+@@ -70,6 +80,7 @@ impl fmt::Display for McpToolError {
+         match self {
+             Self::Authoring { source } => source.fmt(formatter),
+             Self::SceneAuthoring { source } => source.fmt(formatter),
++            Self::AssetCatalog { source } => source.fmt(formatter),
+         }
+     }
+ }
+@@ -79,6 +90,7 @@ impl std::error::Error for McpToolError {
+         match self {
+             Self::Authoring { source } => Some(source),
+             Self::SceneAuthoring { source } => Some(source),
++            Self::AssetCatalog { source } => Some(source),
+         }
+     }
+ }
+@@ -95,12 +107,19 @@ impl From<SceneAuthoringError> for McpToolError {
+     }
+ }
+ 
++impl From<AssetCatalogError> for McpToolError {
++    fn from(source: AssetCatalogError) -> Self {
++        Self::AssetCatalog { source }
++    }
++}
++
+ impl McpToolError {
+     /// Returns a stable diagnostic-style code when the source exposes one.
+     pub fn code(&self) -> &'static str {
+         match self {
+             Self::Authoring { .. } => "mcp.authoring_error",
+             Self::SceneAuthoring { source } => source.code(),
++            Self::AssetCatalog { source } => source.code(),
+         }
+     }
+ }
+diff --git a/crates/cli/Cargo.toml b/crates/cli/Cargo.toml
+--- a/crates/cli/Cargo.toml
++++ b/crates/cli/Cargo.toml
+@@ -4,6 +4,7 @@ version = "0.1.0"
+ edition = "2024"
+ 
+ [dependencies]
++engine-assets = { path = "../assets" }
+ engine-authoring = { path = "../authoring" }
+ engine-mcp = { path = "../mcp" }
+ serde = { version = "1", features = ["derive"] }
+diff --git a/crates/cli/src/asset_cli.rs b/crates/cli/src/asset_cli.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/cli/src/asset_cli.rs
+@@ -0,0 +1,201 @@
++use super::{input_error_json, to_json, CliError, Cl
