@@ -302,6 +302,7 @@ pub fn validate_builtin_component_values(scene: &AuthoringScene) -> Vec<Diagnost
 }
 
 fn validate_spatial_audio_scene(scene: &AuthoringScene) -> Vec<Diagnostic> {
+    let mut diagnostics = Vec::new();
     let listener_type = ComponentTypeId::new(AUDIO_LISTENER_COMPONENT);
     let emitter_type = ComponentTypeId::new(AUDIO_EMITTER_COMPONENT);
     let mut enabled = Vec::new();

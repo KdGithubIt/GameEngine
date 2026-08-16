@@ -9,8 +9,7 @@ use crate::transform::GlobalTransform;
 use engine_authoring::{AssetId, StableId};
 use engine_ecs::{Entity, Query, Res, ResMut};
 use engine_platform::spatial_audio::{
-    spatial_stereo_gains, AudioEmitterPose, AudioListenerPose, AudioRolloffMode,
-    AudioVoiceSpatialSettings,
+    spatial_stereo_gains, AudioEmitterPose, AudioListenerPose, AudioVoiceSpatialSettings,
 };
 
 /// Process-local ownership of active authored spatial-audio voices.
