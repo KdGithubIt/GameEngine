@@ -8,6 +8,8 @@ struct LightUniform {
     ambient_color: vec3<f32>, ambient_intensity: f32,
     dir_direction: vec3<f32>, dir_intensity: f32,
     dir_color: vec3<f32>, _pad: f32,
+    environment_color: vec3<f32>, environment_intensity: f32,
+    environment_params: vec4<f32>,
 }
 struct ShadowUniform {
     light_view_proj_0: mat4x4<f32>, light_view_proj_1: mat4x4<f32>, params: vec4<f32>,
@@ -36,6 +38,11 @@ struct MaterialUniform {
 @group(2) @binding(1) var<uniform> shadow: ShadowUniform;
 @group(2) @binding(2) var t_shadow: texture_depth_2d_array;
 @group(2) @binding(3) var s_shadow: sampler_comparison;
+@group(2) @binding(4) var t_ibl_diffuse: texture_2d<f32>;
+@group(2) @binding(5) var t_ibl_specular: texture_2d<f32>;
+@group(2) @binding(6) var s_ibl: sampler;
+@group(2) @binding(7) var t_brdf_lut: texture_2d<f32>;
+@group(2) @binding(8) var s_brdf_lut: sampler;
 
 struct VertexInput {
     @location(0) position: vec3<f32>, @location(1) normal: vec3<f32>,
@@ -139,6 +146,18 @@ fn mapped_normal(
     return normalize(mat3x3<f32>(tangent, bitangent, normal) * tangent_normal);
 }
 
+fn environment_uv(direction: vec3<f32>) -> vec2<f32> {
+    let unit = normalize(direction);
+    let u = atan2(unit.z, unit.x) / 6.28318531 + 0.5;
+    let v = acos(clamp(unit.y, -1.0, 1.0)) / 3.14159265;
+    return vec2<f32>(u, v);
+}
+
+fn fresnel_schlick_roughness(ndv: f32, f0: vec3<f32>, roughness: f32) -> vec3<f32> {
+    let grazing = max(vec3<f32>(1.0 - roughness), f0);
+    return f0 + (grazing - f0) * pow(1.0 - ndv, 5.0);
+}
+
 fn standard_lit(base: vec3<f32>, n: vec3<f32>, l: vec3<f32>, v: vec3<f32>, surface: vec4<f32>, visibility: f32, occlusion: f32) -> vec3<f32> {
     let h = normalize(l + v);
     let ndl = max(dot(n, l), 0.0); let ndv = max(dot(n, v), 0.0001);
@@ -155,8 +174,24 @@ fn standard_lit(base: vec3<f32>, n: vec3<f32>, l: vec3<f32>, v: vec3<f32>, surfa
     let diffuse_weight = (vec3<f32>(1.0) - fresnel) * (1.0 - metallic);
     let direct = (diffuse_weight * base / 3.14159265 + specular)
         * light.dir_color * light.dir_intensity * visibility * ndl;
-    let indirect = light.ambient_color * light.ambient_intensity * base * (1.0 - metallic) * occlusion;
-    return indirect + direct;
+    var indirect = light.ambient_color * light.ambient_intensity * base * (1.0 - metallic);
+    if (light.environment_params.x > 0.5) {
+        let environment_tint = light.environment_color * light.environment_intensity;
+        let diffuse_fresnel = fresnel_schlick_roughness(ndv, f0, roughness);
+        let ibl_diffuse_weight = (vec3<f32>(1.0) - diffuse_fresnel) * (1.0 - metallic);
+        let irradiance = textureSampleLevel(t_ibl_diffuse, s_ibl, environment_uv(n), 0.0).rgb;
+        let diffuse_ibl = irradiance * base / 3.14159265;
+
+        let reflection = reflect(-v, n);
+        let specular_lod = roughness * light.environment_params.y;
+        let prefiltered = textureSampleLevel(
+            t_ibl_specular, s_ibl, environment_uv(reflection), specular_lod
+        ).rgb;
+        let brdf = textureSampleLevel(t_brdf_lut, s_brdf_lut, vec2<f32>(ndv, roughness), 0.0).rg;
+        let specular_ibl = prefiltered * (f0 * brdf.x + vec3<f32>(brdf.y));
+        indirect += (ibl_diffuse_weight * diffuse_ibl + specular_ibl) * environment_tint;
+    }
+    return indirect * occlusion + direct;
 }
 
 fn toon_lit(base: vec3<f32>, n: vec3<f32>, l: vec3<f32>, v: vec3<f32>, additional_uv: vec2<f32>, visibility: f32) -> vec3<f32> {

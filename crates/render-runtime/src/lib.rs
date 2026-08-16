@@ -16,6 +16,8 @@ pub mod debug_draw;
 /// Runtime light resources and authored light mirroring.
 #[cfg(feature = "gpu")]
 pub mod light;
+#[cfg(feature = "gpu")]
+mod ibl;
 /// Level-of-detail selection and render-instancing statistics.
 #[cfg(feature = "gpu")]
 pub mod lod;

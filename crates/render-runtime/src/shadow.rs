@@ -1,5 +1,7 @@
 //! Shadow mapping and environment-lighting runtime settings.
 
+use std::{fmt, sync::Arc};
+
 use glam::{Mat4, Vec3, Vec4};
 
 use crate::asset::RuntimeAssetId;
@@ -203,6 +205,170 @@ pub fn cascade_view_projections(
         );
         projection * light_view
     })
+}
+
+/// A resolved equirectangular environment-lighting source in linear HDR RGB.
+///
+/// This resource is intentionally separate from [`EnvironmentLighting`], which
+/// stores scene policy and persisted asset intent. Asset loading or procedural
+/// code resolves that intent into one `EnvironmentMap`; the renderer then
+/// derives diffuse irradiance and the roughness-prefiltered specular chain.
+/// The sky/background pass never reads this resource implicitly.
+#[derive(Debug, Clone)]
+pub struct EnvironmentMap {
+    data: Arc<EnvironmentMapData>,
+}
+
+#[derive(Debug)]
+struct EnvironmentMapData {
+    width: u32,
+    height: u32,
+    linear_rgb: Vec<[f32; 3]>,
+}
+
+/// Reports invalid resolved environment-map pixel storage.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EnvironmentMapError {
+    /// Width and height must both be non-zero.
+    EmptyDimensions,
+    /// Pixel storage does not match `width * height`.
+    PixelCount {
+        /// Number of pixels required by the dimensions.
+        expected: usize,
+        /// Number of supplied pixels.
+        actual: usize,
+    },
+    /// RGBA8 storage does not match `width * height * 4`.
+    Rgba8Length {
+        /// Number of bytes required by the dimensions.
+        expected: usize,
+        /// Number of supplied bytes.
+        actual: usize,
+    },
+    /// Linear HDR input contained a non-finite component.
+    NonFinitePixel {
+        /// Index of the invalid pixel.
+        index: usize,
+    },
+}
+
+impl fmt::Display for EnvironmentMapError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::EmptyDimensions => formatter.write_str("environment map dimensions must be non-zero"),
+            Self::PixelCount { expected, actual } => write!(
+                formatter,
+                "environment map has {actual} linear pixels but dimensions require {expected}"
+            ),
+            Self::Rgba8Length { expected, actual } => write!(
+                formatter,
+                "environment map has {actual} RGBA8 bytes but dimensions require {expected}"
+            ),
+            Self::NonFinitePixel { index } => {
+                write!(formatter, "environment map pixel {index} contains a non-finite value")
+            }
+        }
+    }
+}
+
+impl std::error::Error for EnvironmentMapError {}
+
+impl EnvironmentMap {
+    /// Builds an environment source from scene-linear RGB values.
+    ///
+    /// Values may exceed one for HDR lighting, but every component must be
+    /// finite. Negative values are retained because imported HDR sources may
+    /// contain small reconstruction undershoots that should be handled by the
+    /// lighting pipeline rather than silently clipped at this boundary.
+    pub fn from_linear_rgb(
+        width: u32,
+        height: u32,
+        linear_rgb: Vec<[f32; 3]>,
+    ) -> Result<Self, EnvironmentMapError> {
+        let expected = environment_pixel_count(width, height)?;
+        if linear_rgb.len() != expected {
+            return Err(EnvironmentMapError::PixelCount {
+                expected,
+                actual: linear_rgb.len(),
+            });
+        }
+        if let Some(index) = linear_rgb
+            .iter()
+            .position(|pixel| pixel.iter().any(|component| !component.is_finite()))
+        {
+            return Err(EnvironmentMapError::NonFinitePixel { index });
+        }
+        Ok(Self {
+            data: Arc::new(EnvironmentMapData {
+                width,
+                height,
+                linear_rgb,
+            }),
+        })
+    }
+
+    /// Decodes sRGB RGBA8 color into a scene-linear environment source.
+    /// Alpha is ignored because distant environment lighting has no coverage.
+    pub fn from_srgb_rgba8(
+        width: u32,
+        height: u32,
+        rgba8: &[u8],
+    ) -> Result<Self, EnvironmentMapError> {
+        let pixel_count = environment_pixel_count(width, height)?;
+        let expected = pixel_count.saturating_mul(4);
+        if rgba8.len() != expected {
+            return Err(EnvironmentMapError::Rgba8Length {
+                expected,
+                actual: rgba8.len(),
+            });
+        }
+        let linear_rgb = rgba8
+            .chunks_exact(4)
+            .map(|pixel| {
+                [
+                    srgb_u8_to_linear(pixel[0]),
+                    srgb_u8_to_linear(pixel[1]),
+                    srgb_u8_to_linear(pixel[2]),
+                ]
+            })
+            .collect();
+        Self::from_linear_rgb(width, height, linear_rgb)
+    }
+
+    /// Source width in equirectangular texels.
+    pub fn width(&self) -> u32 {
+        self.data.width
+    }
+
+    /// Source height in equirectangular texels.
+    pub fn height(&self) -> u32 {
+        self.data.height
+    }
+
+    pub(crate) fn linear_pixel(&self, x: u32, y: u32) -> Vec3 {
+        let index = y as usize * self.data.width as usize + x as usize;
+        Vec3::from_array(self.data.linear_rgb[index])
+    }
+
+    pub(crate) fn source_key(&self) -> usize {
+        Arc::as_ptr(&self.data) as usize
+    }
+}
+
+fn environment_pixel_count(width: u32, height: u32) -> Result<usize, EnvironmentMapError> {
+    if width == 0 || height == 0 {
+        return Err(EnvironmentMapError::EmptyDimensions);
+    }
+    Ok((u64::from(width) * u64::from(height)) as usize)
+}
+
+fn srgb_u8_to_linear(value: u8) -> f32 {
+    let encoded = f32::from(value) / 255.0;
+    if encoded <= 0.04045 {
+        encoded / 12.92
+    } else {
+        ((encoded + 0.055) / 1.055).powf(2.4)
+    }
 }
 
 /// Runtime environment-lighting settings consumed by the renderer.
