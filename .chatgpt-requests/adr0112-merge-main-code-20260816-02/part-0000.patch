@@ -1,0 +1,287 @@
+diff --git a/crates/engine/src/components/builtins.rs b/crates/engine/src/components/builtins.rs
+--- a/crates/engine/src/components/builtins.rs
++++ b/crates/engine/src/components/builtins.rs
+@@ -181,10 +181,10 @@ const LOD_GROUP_FIELDS: &[FieldDef] = &[FieldDef::new(
+ )
+ .with_control(InspectorFieldControl::LodLevels)];
+ 
+-const RIGID_BODY_PHYSICS_FIELDS: &[FieldDef] = &[asset_ref(
++const SECONDARY_MOTION_FIELDS: &[FieldDef] = &[asset_ref(
+     "rig",
+     "Rig",
+-    "The Rigid Body Rig sub-asset imported from this character's model. The rig's author already tuned every body and joint, so there is nothing else to configure here.",
+-    AssetKind::RigidBodyRig,
++    "The Secondary Motion Rig sub-asset imported from this character's model. Bodies and joints are editable engine-native starting values produced by import.",
++    AssetKind::SecondaryMotionRig,
+     FieldDefaultSpec::Unassigned,
+ )];
+@@ -1808,13 +1808,13 @@ pub(super) fn builtin_components() -> Vec<BuiltinComponent> {
+             spawn_foot_ik_component,
+         ),
+         BuiltinComponent::new(
+-            RIGID_BODY_PHYSICS_COMPONENT,
+-            "Rigid Body Physics",
+-            "Simulates this Skinned Model's imported rigid-body rig, so hair, skirts, and accessories move on their own.",
++            SECONDARY_MOTION_COMPONENT,
++            "Secondary Motion",
++            "Simulates the assigned engine-native Secondary Motion Rig for hair, skirts, and accessories.",
+             "Physics",
+             1,
+-            RIGID_BODY_PHYSICS_FIELDS,
+-            spawn_rigid_body_physics_component,
++            SECONDARY_MOTION_FIELDS,
++            spawn_secondary_motion_component,
+         ),
+         BuiltinComponent::new(
+             POINT_LIGHT_COMPONENT,
+diff --git a/crates/engine/src/components/tests.rs b/crates/engine/src/components/tests.rs
+--- a/crates/engine/src/components/tests.rs
++++ b/crates/engine/src/components/tests.rs
+@@ -195,7 +195,7 @@ fn registry_iterates_in_registration_order() {
+             AUDIO_LISTENER_COMPONENT,
+             MUSIC_CONTROLLER_COMPONENT,
+             FOOT_IK_COMPONENT,
+-            RIGID_BODY_PHYSICS_COMPONENT,
++            SECONDARY_MOTION_COMPONENT,
+             POINT_LIGHT_COMPONENT,
+             SPOT_LIGHT_COMPONENT,
+         ]
+diff --git a/crates/engine/src/lib.rs b/crates/engine/src/lib.rs
+--- a/crates/engine/src/lib.rs
++++ b/crates/engine/src/lib.rs
+@@ -105,8 +105,8 @@ pub mod mesh;
+ /// Morph targets: named vertex and material deformations blended on top of a
+ /// mesh (ADR 0097 §5).
+ pub mod morph;
+-/// Isolated Rapier secondary-motion bridge for imported MMD rigid-body rigs.
+-pub mod mmd_physics;
++/// Engine-native fixed-step secondary-motion runtime and rig facade (ADR 0112).
++pub mod secondary_motion;
+ /// Format-independent asset builder consuming [`model_ir`] (ADR 0078):
+ /// sub-asset IDs, skeleton identity/dedupe/rebind, and clip BoneId
+ /// resolution.
+@@ -125,9 +125,9 @@ pub mod player;
+ /// Player-controlled entity marker component.
+ pub mod player;
+ /// Pure skeletal clip sampling and pose blending.
+ pub mod pose_graph;
+-/// PMX (MMD model) static mesh / skin / material import pipeline via
+-/// `mmd-anim-format` (ADR 0097 §1, §2, §4).
++/// PMX model import pipeline for mesh, skin, material, morph, and best-effort
++/// engine-native Secondary Motion hints via `mmd-anim-format` (ADR 0097, ADR 0112).
+ ///
+ /// Desktop-only, same rationale as [`fbx_import`]: PMX import is an
+ /// authoring-time operation, so this module is absent from wasm32 builds
+@@ -304,7 +304,11 @@ pub use mesh::{
+     extract_baked_submesh, mesh_to_obj, GpuMesh, GpuMeshCache, InstanceData, Mesh,
+     MeshValidationError, SharedGpuMeshCache, SkinningVertexData, Submesh, Vertex,
+ };
+-pub use mmd_physics::{mmd_rigid_body_physics_system, MmdPhysicsWorlds};
++pub use secondary_motion::{
++    secondary_motion_presentation_system, secondary_motion_system, JointDef, RigidBodyDef,
++    RigidBodyMode, RigidBodyShape, SecondaryMotion, SecondaryMotionRigAsset,
++    SecondaryMotionRigRegistry, SecondaryMotionWorlds, SECONDARY_MOTION_RIG_SCHEMA_VERSION,
++};
+ pub use model_import::{
+     fingerprint_model_source, import_model_bytes, import_model_path,
+     import_model_path_with_contact_bones, model_source_dependencies, GltfAnimationData,
+@@ -348,10 +352,6 @@ pub use morph::{
+     MaterialMorphOffset, MaterialMorphOperation, MorphAsset, MorphBaseColor, MorphDirtyVertices,
+     MorphTargets, MorphWeights,
+ };
+-pub use rigid_body_rig::{
+-    JointDef, RigidBodyDef, RigidBodyMode, RigidBodyPhysics, RigidBodyRigAsset,
+-    RigidBodyRigRegistry, RigidBodyShape, RIGID_BODY_RIG_SCHEMA_VERSION,
+-};
+ pub use rig_pose::{
+     publish_final_rig_pose_system, rig_pose_clear_transient_system, PoseBlend, PoseBuffer,
+     PoseChannels, PoseLayer, PoseStage, RigPose,
+diff --git a/crates/engine/src/scene_bridge.rs b/crates/engine/src/scene_bridge.rs
+--- a/crates/engine/src/scene_bridge.rs
++++ b/crates/engine/src/scene_bridge.rs
+@@ -35,7 +35,9 @@ use crate::postprocess::{
+     BloomSettings, ColorGradingSettings, PostProcessSettings, ToneMapOperator,
+ };
+ use crate::morph::{MorphBaseColor, MorphDirtyVertices, MorphTargets, MorphWeights};
+-use crate::rigid_body_rig::{RigidBodyPhysics, RigidBodyRigRegistry};
++use crate::secondary_motion::{
++    SecondaryMotion, SecondaryMotionRigAsset, SecondaryMotionRigRegistry,
++};
+ use crate::runtime_metadata::RuntimeMetadata;
+ use crate::script_api::RuntimeEntityIdentity;
+ use crate::shadow::{EnvironmentLighting, ShadowSettings};
+@@ -89,9 +91,9 @@ pub const SKINNED_MODEL_COMPONENT: &str = "engine.skinned_model";
+ /// The authoring component that mounts an entity on a rig bone (ADR 0088).
+ pub const BONE_ATTACHMENT_COMPONENT: &str = "engine.bone_attachment";
+ 
+-/// The authoring component that opts an entity into simulating its imported
+-/// rigid-body rig (ADR 0097 §6).
+-pub const RIGID_BODY_PHYSICS_COMPONENT: &str = "engine.rigid_body_physics";
++/// The authoring component that opts an entity into engine-native secondary
++/// motion (ADR 0112).
++pub const SECONDARY_MOTION_COMPONENT: &str = "engine.secondary_motion";
+ 
+ /// The authorable distance-based mesh LOD group recognised by the bridge.
+ pub const LOD_GROUP_COMPONENT: &str = "engine.lod_group";
+@@ -438,11 +440,12 @@ pub(crate) struct BridgeAssetState {
+     /// spawning `engine.skeleton` this conversion (ADR 0080 §2), tracked for
+     /// the same atomic-rollback reason as the `added_*_handles` fields above.
+     pub(crate) added_skeleton_asset_ids: Vec<AssetId>,
+-    /// Rigid-body rig IDs registered into
+-    /// [`crate::rigid_body_rig::RigidBodyRigRegistry`] while spawning
+-    /// `engine.rigid_body_physics` this conversion (ADR 0097 §6), tracked for
+-    /// the same atomic-rollback reason.
+-    pub(crate) added_rigid_body_rig_ids: Vec<AssetId>,
++    /// Secondary Motion rig definitions replaced while converting this scene.
++    ///
++    /// Each entry keeps the previous value, if any, so rollback restores the
++    /// registry exactly instead of only removing newly inserted IDs.
++    pub(crate) secondary_motion_rig_rollbacks:
++        Vec<(AssetId, Option<SecondaryMotionRigAsset>)>,
+     /// Skeleton entities are runtime-only and must be removed if any later
+     /// component makes the otherwise atomic scene conversion fail.
+     pub(crate) auxiliary_entities: Vec<Entity>,
+@@ -452,4 +455,5 @@ pub(crate) struct BridgeAssetState {
+     remove_animation_store: bool,
+     remove_audio_store: bool,
+     remove_skeleton_registry_store: bool,
++    remove_secondary_motion_registry_store: bool,
+ }
+@@ -1470,6 +1474,15 @@ fn rollback_bridge_changes(
+             skeletons.remove(id);
+         }
+     }
++    if let Some(rigs) = world.get_resource_mut::<SecondaryMotionRigRegistry>() {
++        for (id, previous) in assets.secondary_motion_rig_rollbacks.iter().rev() {
++            if let Some(previous) = previous {
++                rigs.insert(previous.clone());
++            } else {
++                rigs.remove(id);
++            }
++        }
++    }
+     if assets.remove_mesh_store {
+         world.remove_resource::<Assets<Mesh>>();
+     }
+@@ -1488,5 +1501,8 @@ fn rollback_bridge_changes(
+     if assets.remove_skeleton_registry_store {
+         world.remove_resource::<SkeletonAssetRegistry>();
+     }
++    if assets.remove_secondary_motion_registry_store {
++        world.remove_resource::<SecondaryMotionRigRegistry>();
++    }
+     errors
+ }
+diff --git a/crates/engine/src/scene_bridge/spawn.rs b/crates/engine/src/scene_bridge/spawn.rs
+--- a/crates/engine/src/scene_bridge/spawn.rs
++++ b/crates/engine/src/scene_bridge/spawn.rs
+@@ -310,11 +310,11 @@ fn import_source_cached(
+     .map_err(|error| error.to_string())
+ }
+ 
+-pub(crate) fn spawn_rigid_body_physics_component(
++pub(crate) fn spawn_secondary_motion_component(
+     entity: Entity,
+     value: &Value,
+     context: &mut SpawnContext<'_>,
+ ) -> Result<(), ComponentSpawnError> {
+-    let component_type = ComponentTypeId::new(RIGID_BODY_PHYSICS_COMPONENT);
++    let component_type = ComponentTypeId::new(SECONDARY_MOTION_COMPONENT);
+     const EXPECTED: &str = "an object with a rig AssetRef field";
+     let fields = ComponentFields::new(context.authoring_entity, &component_type, value, EXPECTED)?;
+@@ -329,29 +329,29 @@ pub(crate) fn spawn_rigid_body_physics_component(
+         return Ok(());
+     };
+ 
+-    register_rigid_body_rig(&rig_asset, context);
++    register_secondary_motion_rig(&rig_asset, context);
+     context
+         .world
+-        .add_component(entity, RigidBodyPhysics::new(rig_asset))?;
++        .add_component(entity, SecondaryMotion::new(rig_asset))?;
+     Ok(())
+ }
+ 
+-fn register_rigid_body_rig(rig_asset: &AssetId, context: &mut SpawnContext<'_>) {
++fn register_secondary_motion_rig(rig_asset: &AssetId, context: &mut SpawnContext<'_>) {
+     let Some((source_id, _, sub_asset)) = context.manifest.imported_sub_asset(rig_asset) else {
+         context.asset_diagnostics.push(Diagnostic::warning(
+-            "scene_bridge.rigid_body_rig_unresolved",
++            "scene_bridge.secondary_motion_rig_unresolved",
+             format!(
+-                "rigid-body rig `{}` is not an imported sub-asset of any registered model source",
++                "secondary-motion rig `{}` is not an imported sub-asset of any registered model source",
+                 rig_asset.as_str()
+             ),
+         ));
+         return;
+     };
+-    if sub_asset.kind != ImportedSubAssetKind::RigidBodyRig {
++    if sub_asset.kind != ImportedSubAssetKind::SecondaryMotionRig {
+         context.asset_diagnostics.push(Diagnostic::warning(
+-            "scene_bridge.rigid_body_rig_unresolved",
++            "scene_bridge.secondary_motion_rig_unresolved",
+             format!(
+-                "asset `{}` is {:?}, not a rigid-body rig",
++                "asset `{}` is {:?}, not a secondary-motion rig",
+                 rig_asset.as_str(),
+                 sub_asset.kind
+             ),
+@@ -357,9 +357,9 @@ fn register_rigid_body_rig(rig_asset: &AssetId, context: &mut SpawnContext<'_>) {
+         Ok(imported) => imported,
+         Err(error) => {
+             context.asset_diagnostics.push(Diagnostic::warning(
+-                "scene_bridge.rigid_body_rig_unresolved",
++                "scene_bridge.secondary_motion_rig_unresolved",
+                 format!(
+-                    "could not import the model source owning rigid-body rig `{}`: {error}",
++                    "could not import the model source owning secondary-motion rig `{}`: {error}",
+                     rig_asset.as_str()
+                 ),
+             ));
+@@ -373,26 +373,32 @@ fn register_rigid_body_rig(rig_asset: &AssetId, context: &mut SpawnContext<'_>) {
+         .filter(|rig| &rig.id == rig_asset)
+     else {
+         context.asset_diagnostics.push(Diagnostic::warning(
+-            "scene_bridge.rigid_body_rig_unresolved",
++            "scene_bridge.secondary_motion_rig_unresolved",
+             format!(
+-                "the model source no longer contains rigid-body rig `{}`; reimport it",
++                "the model source no longer contains secondary-motion rig `{}`; reimport it",
+                 rig_asset.as_str()
+             ),
+         ));
+         return;
+     };
+-    let registry = context
++    if context
+         .world
+-        .get_resource_mut::<RigidBodyRigRegistry>()
+-        .is_none();
+-    if registry {
+-        context.world.insert_resource(RigidBodyRigRegistry::new());
+-    }
+-    if let Some(registry) = context.world.get_resource_mut::<RigidBodyRigRegistry>() {
+-        registry.insert(rig.clone());
++        .get_resource::<SecondaryMotionRigRegistry>()
++        .is_none()
++    {
+         context
+-            .asset_state
+-            .added_rigid_body_rig_ids
+-            .push(rig.id.clone());
++            .world
++            .insert_resource(SecondaryMotionRigRegistry::new());
++        context.asset_state.remove_secondary_motion_registry_store = true;
+     }
++    let registry = context
++        .world
++        .get_resource_mut::<SecondaryMotionRigRegistry>()
++        .expect("scene bridge must install the Secondary Motion registry before registration");
++    let previous = registry.remove(&rig.id);
++    registry.insert(rig.clone());
++    context
++        .asset_state
++        .secondary_motion_rig_rollbacks
++        .push((rig.id.clone(), previous));
+ }
