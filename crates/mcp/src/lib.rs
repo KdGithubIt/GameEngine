@@ -397,7 +397,7 @@ mod tests {
         let schemas = tools.behavior_tree_schemas();
 
         assert_eq!(schemas.graph_kind.as_str(), "behavior_tree.graph");
-        assert_eq!(schemas.nodes.len(), 6);
+        assert_eq!(schemas.nodes.len(), 10);
     }
 
     #[test]
