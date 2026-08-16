@@ -1180,7 +1180,8 @@ fn parse_rigid_body_rig(
         .joints
         .iter()
         .filter_map(|joint| {
-            if joint.kind != "spring6dof" {
+            // mmd-anim-format normalizes PMX joint type 0 to this canonical name.
+            if joint.kind != "generic6dofSpring" {
                 unsupported_joint_kinds += 1;
                 return None;
             }
@@ -3204,7 +3205,7 @@ pub(crate) mod tests {
         vec![PmxParsedJoint {
             name: "hair_joint".to_owned(),
             english_name: "hair_joint".to_owned(),
-            kind: "spring6dof".to_owned(),
+            kind: "generic6dofSpring".to_owned(),
             rigid_body_index_a: 0,
             rigid_body_index_b: 1,
             position: [0.0, 1.0, 2.0],
