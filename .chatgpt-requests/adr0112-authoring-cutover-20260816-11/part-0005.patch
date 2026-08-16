@@ -1,0 +1,40 @@
+diff --git a/crates/editor/src/ui/asset_inspector.rs b/crates/editor/src/ui/asset_inspector.rs
+--- a/crates/editor/src/ui/asset_inspector.rs
++++ b/crates/editor/src/ui/asset_inspector.rs
+@@ -739,5 +739,5 @@ fn imported_sub_asset_badge(kind: engine::ImportedSubAssetKind) -> &'static str {
+         engine::ImportedSubAssetKind::Animation => "[clip]",
+         engine::ImportedSubAssetKind::HumanoidMotion => "[humanoid]",
+         engine::ImportedSubAssetKind::Morph => "[morph]",
+-        engine::ImportedSubAssetKind::RigidBodyRig => "[physics]",
++        engine::ImportedSubAssetKind::SecondaryMotionRig => "[secondary]",
+     }
+@@ -753,5 +753,5 @@ fn imported_sub_asset_label(kind: engine::ImportedSubAssetKind) -> &'static str {
+         engine::ImportedSubAssetKind::Animation => "Animation Clip",
+         engine::ImportedSubAssetKind::HumanoidMotion => "Humanoid Motion",
+         engine::ImportedSubAssetKind::Morph => "Morph",
+-        engine::ImportedSubAssetKind::RigidBodyRig => "Rigid Body Rig",
++        engine::ImportedSubAssetKind::SecondaryMotionRig => "Secondary Motion Rig",
+     }
+diff --git a/crates/editor/src/ui/inspector/asset_reference.rs b/crates/editor/src/ui/inspector/asset_reference.rs
+--- a/crates/editor/src/ui/inspector/asset_reference.rs
++++ b/crates/editor/src/ui/inspector/asset_reference.rs
+@@ -85,8 +85,8 @@ pub(in crate::ui) fn asset_reference_browser_kind(
+         engine::AssetKind::Mesh
+         | engine::AssetKind::GltfSource
+         | engine::AssetKind::Skin
+         | engine::AssetKind::Skeleton
+-        // Morphs and rigid-body rigs have no file of their own; they are
++        // Morphs and secondary-motion rigs have no file of their own; they are
+         // revealed on their owning model's row, so they inherit its icon.
+         | engine::AssetKind::Morph
+-        | engine::AssetKind::RigidBodyRig => BrowserKind::Mesh,
++        | engine::AssetKind::SecondaryMotionRig => BrowserKind::Mesh,
+@@ -293,6 +293,6 @@ pub(in crate::ui) fn imported_sub_asset_matches_picker_kind(
+             | (engine::ImportedSubAssetKind::Skin, engine::AssetKind::Skin)
+             | (
+-                engine::ImportedSubAssetKind::RigidBodyRig,
+-                engine::AssetKind::RigidBodyRig
++                engine::ImportedSubAssetKind::SecondaryMotionRig,
++                engine::AssetKind::SecondaryMotionRig
+             )
+     )
