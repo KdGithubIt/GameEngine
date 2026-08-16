@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "request_id": "20260816-phase6-transparency-coverage-dbeca1a-r1",
+  "target_branch": "chatgpt/gameengine-render-transparency-coverage-v2",
+  "expected_head_sha": "dbeca1a994a854c828da1b9e85f5be274436fb2c",
+  "patch_parts": [
+    "part-0000.patch",
+    "part-0001.patch",
+    "part-0002.patch",
+    "part-0003.patch"
+  ],
+  "commit_message": "Renderer: harden transparency coverage",
+  "pr_title": "Renderer: harden transparency and shadow coverage",
+  "pr_body": "## Summary\n- sort blended static instances and skinned draws in one global back-to-front order\n- preserve static instance batching storage while drawing transparent instances by exact instance range\n- make directional shadow coverage honor material alpha mode, alpha cutoff, base/instance alpha, and cull mode\n- use deterministic dither coverage for blended shadow casters without changing public Material or serialization contracts\n- add regression coverage for interleaved transparent instance ordering"
+}
