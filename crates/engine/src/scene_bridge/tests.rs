@@ -109,6 +109,62 @@ fn bridge_spawns_one_entity_per_authoring_entity() {
     assert_eq!(world.entity_count(), 2);
 }
 
+fn secondary_motion_rig(id: AssetId, name: &str) -> SecondaryMotionRigAsset {
+    SecondaryMotionRigAsset {
+        schema_version: crate::secondary_motion::SECONDARY_MOTION_RIG_SCHEMA_VERSION,
+        id,
+        name: name.to_owned(),
+        skeleton: None,
+        skeleton_identity: None,
+        bodies: Vec::new(),
+        joints: Vec::new(),
+    }
+}
+
+#[test]
+fn rollback_restores_previous_secondary_motion_registry_entry() {
+    let id = AssetId::generate();
+    let previous = secondary_motion_rig(id.clone(), "previous");
+    let replacement = secondary_motion_rig(id.clone(), "replacement");
+    let mut registry = SecondaryMotionRigRegistry::new();
+    registry.insert(replacement);
+    let mut world = World::new();
+    world.insert_resource(registry);
+    let assets = BridgeAssetState {
+        secondary_motion_rig_rollbacks: vec![(id.clone(), Some(previous.clone()))],
+        ..BridgeAssetState::default()
+    };
+    let mut spawned = Vec::new();
+
+    let errors = rollback_bridge_changes(&mut world, &mut spawned, &assets);
+
+    assert!(errors.is_empty());
+    assert_eq!(
+        world
+            .get_resource::<SecondaryMotionRigRegistry>()
+            .and_then(|registry| registry.get(&id)),
+        Some(&previous)
+    );
+}
+
+#[test]
+fn rollback_removes_secondary_motion_registry_created_by_conversion() {
+    let mut world = World::new();
+    world.insert_resource(SecondaryMotionRigRegistry::new());
+    let assets = BridgeAssetState {
+        remove_secondary_motion_registry_store: true,
+        ..BridgeAssetState::default()
+    };
+    let mut spawned = Vec::new();
+
+    let errors = rollback_bridge_changes(&mut world, &mut spawned, &assets);
+
+    assert!(errors.is_empty());
+    assert!(world
+        .get_resource::<SecondaryMotionRigRegistry>()
+        .is_none());
+}
+
 #[test]
 fn disabled_entities_and_their_descendants_are_not_spawned() {
     let mut scene = AuthoringScene::new();

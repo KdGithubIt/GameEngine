@@ -181,7 +181,7 @@ const LOD_GROUP_FIELDS: &[FieldDef] = &[FieldDef::new(
 )
 .with_control(InspectorFieldControl::LodLevels)];
 
-const RIGID_BODY_PHYSICS_FIELDS: &[FieldDef] = &[asset_ref(
+const SECONDARY_MOTION_FIELDS: &[FieldDef] = &[asset_ref(
     "rig",
     "Rig",
     "The Secondary Motion Rig sub-asset imported from this character's model. Bodies and joints are editable engine-native starting values produced by import.",
@@ -1728,13 +1728,13 @@ pub(super) fn builtin_components() -> Vec<BuiltinComponent> {
             spawn_foot_ik_component,
         ),
         BuiltinComponent::new(
-            RIGID_BODY_PHYSICS_COMPONENT,
+            SECONDARY_MOTION_COMPONENT,
             "Secondary Motion",
             "Simulates the assigned engine-native Secondary Motion Rig for hair, skirts, and accessories.",
             "Physics",
             1,
-            RIGID_BODY_PHYSICS_FIELDS,
-            spawn_rigid_body_physics_component,
+            SECONDARY_MOTION_FIELDS,
+            spawn_secondary_motion_component,
         ),
     ]
 }

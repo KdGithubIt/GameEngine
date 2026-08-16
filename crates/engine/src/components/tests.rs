@@ -195,7 +195,7 @@ fn registry_iterates_in_registration_order() {
             AUDIO_LISTENER_COMPONENT,
             MUSIC_CONTROLLER_COMPONENT,
             FOOT_IK_COMPONENT,
-            RIGID_BODY_PHYSICS_COMPONENT,
+            SECONDARY_MOTION_COMPONENT,
         ]
     );
 }

@@ -213,16 +213,6 @@ impl SecondaryMotionRigRegistry {
     }
 }
 
-// Temporary migration aliases removed by the ADR 0112 authoring-schema cutover.
-#[doc(hidden)]
-pub type RigidBodyRigAsset = SecondaryMotionRigAsset;
-#[doc(hidden)]
-pub type RigidBodyPhysics = SecondaryMotion;
-#[doc(hidden)]
-pub type RigidBodyRigRegistry = SecondaryMotionRigRegistry;
-#[doc(hidden)]
-pub const RIGID_BODY_RIG_SCHEMA_VERSION: u32 = SECONDARY_MOTION_RIG_SCHEMA_VERSION;
-
 #[cfg(test)]
 mod tests {
     use super::*;

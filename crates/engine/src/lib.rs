@@ -144,9 +144,6 @@ pub mod replay;
 /// Retarget maps, the pure FK retarget function, and the baked-clip cache
 /// wiring (ADR 0079).
 pub mod retarget;
-/// Imported secondary-motion rigid-body rigs and the marker component that
-/// opts an entity into simulating one (ADR 0097 §6).
-pub mod rigid_body_rig;
 /// Layered rig pose buffers and deterministic world-space pose evaluation.
 pub mod rig_pose;
 pub mod runtime_metadata;
@@ -302,9 +299,9 @@ pub use mesh::{
     MeshValidationError, SharedGpuMeshCache, SkinningVertexData, Submesh, Vertex,
 };
 pub use secondary_motion::{
-    secondary_motion_presentation_system, secondary_motion_system, SecondaryMotion,
-    SecondaryMotionRigAsset, SecondaryMotionRigRegistry, SecondaryMotionWorlds,
-    SECONDARY_MOTION_RIG_SCHEMA_VERSION,
+    secondary_motion_presentation_system, secondary_motion_system, JointDef, RigidBodyDef,
+    RigidBodyMode, RigidBodyShape, SecondaryMotion, SecondaryMotionRigAsset,
+    SecondaryMotionRigRegistry, SecondaryMotionWorlds, SECONDARY_MOTION_RIG_SCHEMA_VERSION,
 };
 pub use model_import::{
     fingerprint_model_source, import_model_bytes, import_model_path,
@@ -345,10 +342,6 @@ pub use morph::{
     apply_morph_blend, blended_base_color, material_morph_system, morph_blend_system,
     MaterialMorphOffset, MaterialMorphOperation, MorphAsset, MorphBaseColor, MorphDirtyVertices,
     MorphTargets, MorphWeights,
-};
-pub use rigid_body_rig::{
-    JointDef, RigidBodyDef, RigidBodyMode, RigidBodyPhysics, RigidBodyRigAsset,
-    RigidBodyRigRegistry, RigidBodyShape, RIGID_BODY_RIG_SCHEMA_VERSION,
 };
 pub use rig_pose::{
     publish_final_rig_pose_system, rig_pose_clear_transient_system, PoseBlend, PoseBuffer,
