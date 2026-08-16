@@ -1,0 +1,39 @@
+diff --git a/crates/editor/src/ui/animation_preview.rs b/crates/editor/src/ui/animation_preview.rs
+--- a/crates/editor/src/ui/animation_preview.rs
++++ b/crates/editor/src/ui/animation_preview.rs
+@@ -542,7 +542,7 @@ impl AnimationPreviewWindow {
+ /// explicitly references it are visual roots. Their descendants are retained
+ /// for character attachments, and their ancestors are retained for transform
+ /// inheritance. Only transform, animation-model, mesh-rendering, and isolated
+-/// MMD secondary-physics components are copied. Cameras, UI, gameplay scripts,
++/// Secondary Motion components are copied. Cameras, UI, gameplay scripts,
+ /// lights, audio, colliders, and gameplay rigid bodies cannot leak into the
+ /// dedicated preview world.
+ fn isolate_animation_preview_scene(
+@@ -652,7 +652,7 @@ fn is_animation_preview_visual_component(component_type: &ComponentTypeId) -> bo
+         engine::scene_bridge::STATIC_MESH_RENDERER_COMPONENT,
+         engine::scene_bridge::SKINNED_MESH_RENDERER_COMPONENT,
+         engine::scene_bridge::LOD_GROUP_COMPONENT,
+-        engine::scene_bridge::RIGID_BODY_PHYSICS_COMPONENT,
++        engine::scene_bridge::SECONDARY_MOTION_COMPONENT,
+     ]
+     .contains(&component_type.as_str())
+ }
+@@ -900,7 +900,7 @@ mod isolation_tests {
+                                 "skeleton": {"$type": "asset_ref", "id": "asset_01JP0000000000000000000001"}
+                             },
+                             "engine.animation_controller": {},
+-                            "engine.rigid_body_physics": {
++                            "engine.secondary_motion": {
+                                 "rig": {"$type": "asset_ref", "id": "asset_01JP0000000000000000000004"}
+                             },
+                             "engine.physics_body": {"kind": "dynamic"},
+@@ -965,7 +965,7 @@ mod isolation_tests {
+         )));
+         assert!(target_components.contains_key(&animation_controller_type()));
+         assert!(target_components.contains_key(&ComponentTypeId::new(
+-            engine::scene_bridge::RIGID_BODY_PHYSICS_COMPONENT,
++            engine::scene_bridge::SECONDARY_MOTION_COMPONENT,
+         )));
+         assert!(!target_components.contains_key(&ComponentTypeId::new(
+             engine::scene_bridge::PHYSICS_BODY_COMPONENT,
