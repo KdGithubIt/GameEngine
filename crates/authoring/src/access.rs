@@ -1,0 +1,142 @@
+//! Shared authorization vocabulary for structured authoring clients.
+//!
+//! Permissions live in `engine-authoring` so Editor, CLI, and MCP adapters
+//! cannot silently disagree about which class of operation is allowed.
+
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
+use std::fmt;
+
+/// A stable authorization class for one authoring operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthoringPermission {
+    /// Inspect project and document state without computing mutations.
+    Read,
+    /// Compute validation and semantic diffs without committing them.
+    Preview,
+    /// Commit changes to persisted project authoring documents.
+    ProjectDataWrite,
+    /// Create, import, move, or otherwise mutate asset files.
+    AssetWrite,
+    /// Create or modify project source code.
+    CodeWrite,
+    /// Execute external commands or build/tool processes.
+    CommandExec,
+}
+
+/// Explicit permission set supplied by the application boundary.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct AuthoringPermissions {
+    permissions: BTreeSet<AuthoringPermission>,
+}
+
+impl AuthoringPermissions {
+    /// Creates an empty permission set.
+    pub fn none() -> Self {
+        Self::default()
+    }
+
+    /// Creates a permission set containing every currently-defined permission.
+    pub fn all() -> Self {
+        Self {
+            permissions: [
+                AuthoringPermission::Read,
+                AuthoringPermission::Preview,
+                AuthoringPermission::ProjectDataWrite,
+                AuthoringPermission::AssetWrite,
+                AuthoringPermission::CodeWrite,
+                AuthoringPermission::CommandExec,
+            ]
+            .into_iter()
+            .collect(),
+        }
+    }
+
+    /// Creates the minimum read-only inspection permission set.
+    pub fn read_only() -> Self {
+        Self::none().with(AuthoringPermission::Read)
+    }
+
+    /// Returns a copy with `permission` enabled.
+    pub fn with(mut self, permission: AuthoringPermission) -> Self {
+        self.permissions.insert(permission);
+        self
+    }
+
+    /// Returns whether `permission` is enabled.
+    pub fn contains(&self, permission: AuthoringPermission) -> bool {
+        self.permissions.contains(&permission)
+    }
+
+    /// Requires one permission before an authoring operation crosses the
+    /// shared boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AuthoringPermissionError`] when the permission is absent.
+    pub fn require(
+        &self,
+        permission: AuthoringPermission,
+    ) -> Result<(), AuthoringPermissionError> {
+        if self.contains(permission) {
+            Ok(())
+        } else {
+            Err(AuthoringPermissionError { required: permission })
+        }
+    }
+}
+
+/// Reports a denied shared authoring operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AuthoringPermissionError {
+    required: AuthoringPermission,
+}
+
+impl AuthoringPermissionError {
+    /// Returns the permission that was required.
+    pub fn required(self) -> AuthoringPermission {
+        self.required
+    }
+
+    /// Returns the stable diagnostic-style code for permission denial.
+    pub fn code(self) -> &'static str {
+        "authoring.permission_denied"
+    }
+}
+
+impl fmt::Display for AuthoringPermissionError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "authoring operation requires `{:?}` permission",
+            self.required
+        )
+    }
+}
+
+impl std::error::Error for AuthoringPermissionError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn permission_sets_are_explicit_and_composable() {
+        let permissions = AuthoringPermissions::read_only().with(AuthoringPermission::Preview);
+
+        assert!(permissions.contains(AuthoringPermission::Read));
+        assert!(permissions.contains(AuthoringPermission::Preview));
+        assert!(!permissions.contains(AuthoringPermission::ProjectDataWrite));
+    }
+
+    #[test]
+    fn denied_permission_has_stable_code() {
+        let error = AuthoringPermissions::read_only()
+            .require(AuthoringPermission::ProjectDataWrite)
+            .expect_err("read-only access must reject mutation");
+
+        assert_eq!(error.code(), "authoring.permission_denied");
+        assert_eq!(error.required(), AuthoringPermission::ProjectDataWrite);
+    }
+}

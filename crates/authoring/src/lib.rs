@@ -34,6 +34,7 @@
 #![warn(missing_docs)]
 #![warn(rustdoc::broken_intra_doc_links)]
 
+pub mod access;
 pub mod animation_graph;
 pub mod animation_set;
 pub mod behavior_tree;
@@ -54,6 +55,7 @@ pub mod prefab;
 pub mod project;
 pub mod project_settings;
 pub mod scene;
+pub mod scene_authoring;
 pub mod schema;
 pub mod test_fixtures;
 pub mod transaction;
@@ -64,6 +66,9 @@ pub mod ui_edit;
 pub mod validation;
 pub mod value;
 
+pub use access::{
+    AuthoringPermission, AuthoringPermissionError, AuthoringPermissions,
+};
 pub use animation_graph::{
     animation_graph_motion_slots, compile_animation_graph, motion_slots_annotation_value,
     AnimState, AnimTransition, AnimationGraphDomain, AnimationStatePlaybackMode, CompiledAnimGraph,
@@ -126,6 +131,10 @@ pub use project_settings::{
     PROJECT_SETTINGS_SCHEMA_VERSION,
 };
 pub use scene::{AuthoringScene, SceneSaveError};
+pub use scene_authoring::{
+    SceneAuthoringError, SceneAuthoringMutation, SceneAuthoringService, SceneAuthoringSnapshot,
+    SceneAuthoringValidation,
+};
 pub use schema::{ComponentSchema, ComponentSchemaRegistry, FieldSchema, FieldType};
 pub use transaction::{AuthoringSession, Transaction, TransactionError};
 pub use ui::{
