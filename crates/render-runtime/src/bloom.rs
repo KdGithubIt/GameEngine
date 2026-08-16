@@ -553,7 +553,7 @@ mod tests {
         let mut bloom = pollster::block_on(BloomPass::new(device, &source_view))
             .expect("multi-resolution bloom pipelines must validate");
 
-        device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let error_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
         bloom.execute(
             device,
             queue,
@@ -562,7 +562,7 @@ mod tests {
                 ..BloomSettings::default()
             },
         );
-        let validation_error = pollster::block_on(device.pop_error_scope());
+        let validation_error = pollster::block_on(error_scope.pop());
         assert!(
             validation_error.is_none(),
             "bloom execution must not report validation errors: {validation_error:?}"
