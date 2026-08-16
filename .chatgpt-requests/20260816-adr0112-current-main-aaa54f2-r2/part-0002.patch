@@ -1,0 +1,24 @@
+diff --git a/crates/editor/src/scene_view.rs b/crates/editor/src/scene_view.rs
+--- a/crates/editor/src/scene_view.rs
++++ b/crates/editor/src/scene_view.rs
+@@ -2173,7 +2173,7 @@ const ANIMATION_PREVIEW_FIXED_STEP_SECONDS: f32 = 1.0 / 60.0;
+ ///
+ /// Gameplay gravity, velocity integration, collision, scripts, and character
+ /// motors are deliberately absent. The optional physics stage is exclusively
+-/// the isolated MMD rigid-body system defined by ADR 0096.
++/// the isolated engine-native Secondary Motion system defined by ADR 0112.
+ fn install_animation_preview_systems(
+     app: &mut engine::App,
+     graph_enabled: bool,
+@@ -2183,10 +2183,10 @@ fn install_animation_preview_systems(
+     if secondary_physics_enabled
+         && app
+             .world()
+-            .get_resource::<engine::MmdPhysicsWorlds>()
++            .get_resource::<engine::SecondaryMotionWorlds>()
+             .is_none()
+     {
+-        app.insert_resource(engine::MmdPhysicsWorlds::default());
++        app.insert_resource(engine::SecondaryMotionWorlds::default());
+     }
+ 
