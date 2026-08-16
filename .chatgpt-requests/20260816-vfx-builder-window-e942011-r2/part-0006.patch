@@ -1,0 +1,109 @@
++        let mut current_category = String::new();
++        for schema in VfxAuthoringService::new().schemas().modules {
++            if !filter.is_empty()
++                && !schema.display_name.to_ascii_lowercase().contains(&filter)
++                && !schema.type_id.to_ascii_lowercase().contains(&filter)
++            {
++                continue;
++            }
++            if current_category != schema.category {
++                if !current_category.is_empty() {
++                    ui.separator();
++                }
++                ui.strong(&schema.category);
++                current_category = schema.category.clone();
++            }
++            if let Some(module) = default_module(&schema.type_id) {
++                if ui.button(&schema.display_name).clicked() {
++                    *command = Some(VfxCommand::AddModule {
++                        emitter: emitter.id.clone(),
++                        module,
++                        index: emitter.modules.len(),
++                    });
++                    ui.close();
++                }
++            } else {
++                ui.add_enabled(false, egui::Button::new(&schema.display_name))
++                    .on_hover_text("Choose required asset references before adding this module.");
++            }
++        }
++    });
++}
++
++fn default_module(type_id: &str) -> Option<VfxModule> {
++    let operation = match type_id {
++        "engine.vfx.spawn_rate" => VfxModuleOperation::SpawnRate {
++            particles_per_second: 10.0,
++        },
++        "engine.vfx.burst" => VfxModuleOperation::Burst {
++            time: 0.0,
++            count: 16,
++        },
++        "engine.vfx.shape" => VfxModuleOperation::Shape {
++            shape: VfxShape::Point,
++        },
++        "engine.vfx.lifetime" => VfxModuleOperation::Lifetime {
++            value: VfxScalarValue::Constant { value: 1.0 },
++        },
++        "engine.vfx.initial_speed" => VfxModuleOperation::InitialSpeed {
++            value: VfxScalarValue::Constant { value: 1.0 },
++        },
++        "engine.vfx.initial_velocity" => VfxModuleOperation::InitialVelocity {
++            value: VfxVectorValue::Constant {
++                value: [0.0, 1.0, 0.0],
++            },
++        },
++        "engine.vfx.initial_color" => VfxModuleOperation::InitialColor {
++            color: [1.0; 4],
++        },
++        "engine.vfx.initial_size" => VfxModuleOperation::InitialSize {
++            value: VfxScalarValue::Constant { value: 1.0 },
++        },
++        "engine.vfx.initial_rotation" => VfxModuleOperation::InitialRotation {
++            value: VfxScalarValue::Constant { value: 0.0 },
++        },
++        "engine.vfx.force" => VfxModuleOperation::Force {
++            acceleration: [0.0, -9.81, 0.0],
++        },
++        "engine.vfx.drag" => VfxModuleOperation::Drag { coefficient: 0.0 },
++        "engine.vfx.color_over_life" => VfxModuleOperation::ColorOverLife {
++            gradient: VfxGradient::linear([1.0; 4], [1.0, 1.0, 1.0, 0.0]),
++        },
++        "engine.vfx.size_over_life" => VfxModuleOperation::SizeOverLife {
++            curve: VfxCurve::constant(1.0),
++        },
++        "engine.vfx.rotation_over_life" => VfxModuleOperation::RotationOverLife {
++            curve: VfxCurve::constant(0.0),
++        },
++        "engine.vfx.billboard" => VfxModuleOperation::Billboard {
++            material: None,
++            texture_sheet: None,
++        },
++        "engine.vfx.mesh" => return None,
++        _ => return None,
++    };
++    Some(VfxModule::new(operation))
++}
++
++fn duplicate_emitter(source: &VfxEmitter) -> VfxEmitter {
++    let mut duplicate = VfxEmitter::new(format!("{} Copy", source.name), source.max_particles);
++    duplicate.enabled = source.enabled;
++    duplicate.modules = source
++        .modules
++        .iter()
++        .map(|module| {
++            let mut duplicate = VfxModule::new(module.operation.clone());
++            duplicate.enabled = module.enabled;
++            duplicate
++        })
++        .collect();
++    duplicate
++}
++
++fn module_summary(operation: &VfxModuleOperation) -> String {
++    match operation {
++        VfxModuleOperation::SpawnRate {
++            particles_per_second,
++        } => format!("{particles_per_second:.2} particles/sec"),
++        VfxModuleOperation::Burst { time, count } => format!("{count} particles at {time:.2}s"),
++        VfxModuleOperation::Shape { shape } => format!("{shape:?}"),

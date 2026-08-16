@@ -1,0 +1,127 @@
++            Ok(()) => self.status = Some("Saved VFX effect.".to_owned()),
++            Err(error) => self.status = Some(format!("Save failed: {error}")),
++        }
++    }
++
++    fn apply_user_commands(&mut self, commands: Vec<VfxCommand>) {
++        let Some(effect) = self.effect.as_ref() else {
++            return;
++        };
++        let result = VfxAuthoringService::new().apply(effect, &commands);
++        if !result.success {
++            self.status = Some(first_blocking_message(&result.diagnostics));
++            return;
++        }
++        let Some(effect) = result.effect else {
++            self.status = Some("VFX edit produced no committed effect.".to_owned());
++            return;
++        };
++        push_history(&mut self.undo_stack, result.undo_commands);
++        self.redo_stack.clear();
++        self.effect = Some(effect);
++        self.status = Some("VFX edit applied.".to_owned());
++        if let Some(effect) = self.effect.clone() {
++            self.normalize_selection(&effect);
++        }
++    }
++
++    fn undo(&mut self) {
++        let Some(commands) = self.undo_stack.pop() else {
++            return;
++        };
++        let Some(effect) = self.effect.as_ref() else {
++            return;
++        };
++        let result = VfxAuthoringService::new().apply(effect, &commands);
++        if !result.success {
++            self.status = Some(first_blocking_message(&result.diagnostics));
++            self.undo_stack.push(commands);
++            return;
++        }
++        if let Some(effect) = result.effect {
++            self.effect = Some(effect);
++            push_history(&mut self.redo_stack, result.undo_commands);
++            self.status = Some("Undid VFX edit.".to_owned());
++            if let Some(effect) = self.effect.clone() {
++                self.normalize_selection(&effect);
++            }
++            self.sync_selected_emitter();
++        }
++    }
++
++    fn redo(&mut self) {
++        let Some(commands) = self.redo_stack.pop() else {
++            return;
++        };
++        let Some(effect) = self.effect.as_ref() else {
++            return;
++        };
++        let result = VfxAuthoringService::new().apply(effect, &commands);
++        if !result.success {
++            self.status = Some(first_blocking_message(&result.diagnostics));
++            self.redo_stack.push(commands);
++            return;
++        }
++        if let Some(effect) = result.effect {
++            self.effect = Some(effect);
++            push_history(&mut self.undo_stack, result.undo_commands);
++            self.status = Some("Redid VFX edit.".to_owned());
++            if let Some(effect) = self.effect.clone() {
++                self.normalize_selection(&effect);
++            }
++            self.sync_selected_emitter();
++        }
++    }
++
++    fn normalize_selection(&mut self, effect: &VfxEffect) {
++        let selection_is_valid = self
++            .selected_emitter
++            .as_ref()
++            .is_some_and(|selected| effect.emitters.iter().any(|emitter| &emitter.id == selected));
++        if selection_is_valid {
++            return;
++        }
++        if let Some(emitter) = effect.emitters.first() {
++            self.select_emitter(emitter);
++        } else {
++            self.selected_emitter = None;
++            self.emitter_name.clear();
++            self.emitter_max_particles = 0;
++        }
++    }
++
++    fn sync_selected_emitter(&mut self) {
++        let selected = self.selected_emitter.clone();
++        let emitter = self.effect.as_ref().and_then(|effect| {
++            selected
++                .as_ref()
++                .and_then(|selected| effect.emitters.iter().find(|emitter| &emitter.id == selected))
++                .cloned()
++        });
++        if let Some(emitter) = emitter {
++            self.select_emitter(&emitter);
++        }
++    }
++
++    fn select_emitter(&mut self, emitter: &VfxEmitter) {
++        self.selected_emitter = Some(emitter.id.clone());
++        self.emitter_name = emitter.name.clone();
++        self.emitter_max_particles = emitter.max_particles;
++    }
++
++    fn show_status(&self, ui: &mut egui::Ui) {
++        if let Some(status) = &self.status {
++            ui.separator();
++            ui.small(status);
++        }
++    }
++}
++
++fn show_add_module_menu(
++    ui: &mut egui::Ui,
++    emitter: &VfxEmitter,
++    filter: &str,
++    command: &mut Option<VfxCommand>,
++) {
++    let filter = filter.trim().to_ascii_lowercase();
++    ui.menu_button("+ Add Module", |ui| {

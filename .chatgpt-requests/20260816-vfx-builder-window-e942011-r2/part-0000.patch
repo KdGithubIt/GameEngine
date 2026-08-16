@@ -1,0 +1,119 @@
+diff --git a/crates/editor/src/authoring_tools.rs b/crates/editor/src/authoring_tools.rs
+index 7f9126b..d7a34dc 100644
+--- a/crates/editor/src/authoring_tools.rs
++++ b/crates/editor/src/authoring_tools.rs
+@@ -11,15 +11,18 @@ pub enum AuthoringTool {
+     UiContractDesigner,
+     /// Layered NavMesh, links, static meshes, and spatial-query authoring.
+     AdvancedGeometryDesigner,
++    /// Typed multi-emitter VFX asset authoring.
++    VfxBuilder,
+ }
+ 
+ impl AuthoringTool {
+     /// Stable display order used by editor menus.
+-    pub const ALL: [Self; 4] = [
++    pub const ALL: [Self; 5] = [
+         Self::AbilityDesigner,
+         Self::RuntimeEventTimeline,
+         Self::UiContractDesigner,
+         Self::AdvancedGeometryDesigner,
++        Self::VfxBuilder,
+     ];
+ 
+     /// Human-readable tool name.
+@@ -29,6 +32,7 @@ impl AuthoringTool {
+             Self::RuntimeEventTimeline => "Runtime Event Timeline",
+             Self::UiContractDesigner => "UI Contract Designer",
+             Self::AdvancedGeometryDesigner => "Advanced Geometry Designer",
++            Self::VfxBuilder => "VFX Builder",
+         }
+     }
+ 
+@@ -47,6 +51,9 @@ impl AuthoringTool {
+             Self::AdvancedGeometryDesigner => {
+                 "Author layered NavMeshes, floor links, static triangles, paths, and raycasts."
+             }
++            Self::VfxBuilder => {
++                "Author typed emitters and ordered spawn, update, and render modules."
++            }
+         }
+     }
+ }
+@@ -57,11 +64,12 @@ mod tests {
+ 
+     #[test]
+     fn catalog_order_and_labels_are_stable() {
+-        assert_eq!(AuthoringTool::ALL.len(), 4);
++        assert_eq!(AuthoringTool::ALL.len(), 5);
+         assert_eq!(AuthoringTool::ALL[0].label(), "Ability Designer");
+         assert_eq!(
+             AuthoringTool::ALL[3].label(),
+             "Advanced Geometry Designer"
+         );
++        assert_eq!(AuthoringTool::ALL[4].label(), "VFX Builder");
+     }
+ }
+diff --git a/crates/editor/src/authoring_windows.rs b/crates/editor/src/authoring_windows.rs
+index 9e81065..fe3c2f6 100644
+--- a/crates/editor/src/authoring_windows.rs
++++ b/crates/editor/src/authoring_windows.rs
+@@ -1,6 +1,8 @@
+ //! Modeless authoring windows embedded in the main Engine Editor process.
+ 
+ use crate::authoring_tools::AuthoringTool;
++use crate::vfx_builder::VfxBuilderState;
++use engine_authoring::ProjectRoot;
+ use eframe::{egui, Frame};
+ 
+ /// Owns the state and visibility of every project authoring window.
+@@ -13,10 +15,12 @@ pub struct AuthoringWindows {
+     runtime_event_open: bool,
+     ui_contract_open: bool,
+     advanced_geometry_open: bool,
++    vfx_open: bool,
+     ability: ability::EmbeddedWindow,
+     runtime_event: runtime_event::EmbeddedWindow,
+     ui_contract: ui_contract::EmbeddedWindow,
+     advanced_geometry: advanced_geometry::EmbeddedWindow,
++    vfx: VfxBuilderState,
+ }
+ 
+ 
+@@ -28,11 +32,12 @@ impl AuthoringWindows {
+             AuthoringTool::RuntimeEventTimeline => self.runtime_event_open = true,
+             AuthoringTool::UiContractDesigner => self.ui_contract_open = true,
+             AuthoringTool::AdvancedGeometryDesigner => self.advanced_geometry_open = true,
++            AuthoringTool::VfxBuilder => self.vfx_open = true,
+         }
+     }
+ 
+     /// Draws every visible authoring window into the current editor frame.
+-    pub fn show(&mut self, context: &egui::Context, frame: &mut Frame) {
++    pub fn show(&mut self, context: &egui::Context, frame: &mut Frame, project: &ProjectRoot) {
+         self.ability
+             .show(context, frame, &mut self.ability_open);
+         self.runtime_event
+@@ -41,6 +46,17 @@ impl AuthoringWindows {
+             .show(context, frame, &mut self.ui_contract_open);
+         self.advanced_geometry
+             .show(context, frame, &mut self.advanced_geometry_open);
++        if self.vfx_open {
++            let vfx_open = &mut self.vfx_open;
++            let vfx = &mut self.vfx;
++            egui::Window::new("VFX Builder")
++                .id(egui::Id::new("embedded_vfx_builder"))
++                .open(vfx_open)
++                .default_width(1_180.0)
++                .default_height(780.0)
++                .resizable(true)
++                .show(context, |ui| vfx.show(ui, project));
++        }
+     }
+ }
+ 
+diff --git a/crates/editor/src/lib.rs b/crates/editor/src/lib.rs
+index b7daa82..41926df 100644
+--- a/crates/editor/src/lib.rs
++++ b/crates/editor/src/lib.rs
+@@ -40,6 +40,7 @@ pub mod skinned_model_bake;

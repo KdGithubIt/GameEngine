@@ -1,0 +1,10 @@
++        assert_eq!(renamed.emitters[0].name, "Renamed");
++
++        let undone = service.apply(&renamed, &applied.undo_commands);
++        let original = undone.effect.expect("undo commits");
++        assert_eq!(original.emitters[0].name, "Emitter");
++
++        let redone = service.apply(&original, &undone.undo_commands);
++        assert_eq!(redone.effect.expect("redo commits").emitters[0].name, "Renamed");
++    }
++}

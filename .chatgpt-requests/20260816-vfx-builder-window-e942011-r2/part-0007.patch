@@ -1,0 +1,119 @@
++        VfxModuleOperation::Lifetime { value } => format!("Lifetime {value:?}"),
++        VfxModuleOperation::InitialSpeed { value } => format!("Speed {value:?}"),
++        VfxModuleOperation::InitialVelocity { value } => format!("Velocity {value:?}"),
++        VfxModuleOperation::InitialColor { color } => format!("RGBA {color:?}"),
++        VfxModuleOperation::InitialSize { value } => format!("Size {value:?}"),
++        VfxModuleOperation::InitialRotation { value } => format!("Rotation {value:?}"),
++        VfxModuleOperation::Force { acceleration } => format!("Acceleration {acceleration:?}"),
++        VfxModuleOperation::Drag { coefficient } => format!("Coefficient {coefficient:.3}"),
++        VfxModuleOperation::ColorOverLife { gradient } => {
++            format!("{} gradient keys", gradient.keys.len())
++        }
++        VfxModuleOperation::SizeOverLife { curve }
++        | VfxModuleOperation::RotationOverLife { curve } => {
++            format!("{} curve keys", curve.keys.len())
++        }
++        VfxModuleOperation::Billboard { texture_sheet, .. } => {
++            if texture_sheet.is_some() {
++                "Billboard with texture sheet".to_owned()
++            } else {
++                "Billboard".to_owned()
++            }
++        }
++        VfxModuleOperation::Mesh { texture_sheet, .. } => {
++            if texture_sheet.is_some() {
++                "Mesh with texture sheet".to_owned()
++            } else {
++                "Mesh".to_owned()
++            }
++        }
++    }
++}
++
++fn phase_label(phase: VfxPhase) -> &'static str {
++    match phase {
++        VfxPhase::Spawn => "Spawn",
++        VfxPhase::Update => "Update",
++        VfxPhase::Render => "Render",
++    }
++}
++
++fn is_project_vfx_path(project: &ProjectRoot, path: &Path) -> bool {
++    path.starts_with(project.assets_root())
++        && path
++            .file_name()
++            .and_then(|name| name.to_str())
++            .is_some_and(|name| name.to_ascii_lowercase().ends_with(".vfx.json"))
++}
++
++fn project_relative_label(project: &ProjectRoot, path: &Path) -> String {
++    path.strip_prefix(project.path())
++        .unwrap_or(path)
++        .display()
++        .to_string()
++}
++
++fn first_blocking_message(diagnostics: &[engine_authoring::VfxDiagnostic]) -> String {
++    diagnostics
++        .iter()
++        .find(|diagnostic| diagnostic.is_blocking())
++        .map(|diagnostic| diagnostic.message.clone())
++        .unwrap_or_else(|| "VFX transaction was rejected.".to_owned())
++}
++
++fn push_history(stack: &mut Vec<Vec<VfxCommand>>, commands: Vec<VfxCommand>) {
++    if stack.len() >= MAX_HISTORY {
++        stack.remove(0);
++    }
++    stack.push(commands);
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn duplicate_emitter_regenerates_stable_ids() {
++        let mut source = VfxEmitter::new("Smoke", 128);
++        source.modules.push(VfxModule::new(VfxModuleOperation::Billboard {
++            material: None,
++            texture_sheet: None,
++        }));
++
++        let duplicate = duplicate_emitter(&source);
++
++        assert_ne!(duplicate.id, source.id);
++        assert_ne!(duplicate.modules[0].id, source.modules[0].id);
++        assert_eq!(duplicate.modules[0].operation, source.modules[0].operation);
++    }
++
++    #[test]
++    fn default_module_covers_every_asset_free_schema() {
++        for schema in VfxAuthoringService::new().schemas().modules {
++            if schema.type_id == "engine.vfx.mesh" {
++                assert!(default_module(&schema.type_id).is_none());
++            } else {
++                let module = default_module(&schema.type_id)
++                    .unwrap_or_else(|| panic!("missing default for {}", schema.type_id));
++                assert_eq!(module.operation.type_id(), schema.type_id);
++                assert_eq!(module.phase, schema.phase);
++            }
++        }
++    }
++
++    #[test]
++    fn undo_and_redo_use_service_inverse_commands() {
++        let mut effect = VfxEffect::new("Test", 256);
++        let emitter = VfxEmitter::new("Emitter", 128);
++        let emitter_id = emitter.id.clone();
++        effect.emitters.push(emitter);
++        let service = VfxAuthoringService::new();
++
++        let applied = service.apply(
++            &effect,
++            &[VfxCommand::RenameEmitter {
++                emitter: emitter_id.clone(),
++                name: "Renamed".to_owned(),
++            }],
++        );
++        let renamed = applied.effect.expect("rename commits");
