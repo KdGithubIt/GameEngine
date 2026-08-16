@@ -313,18 +313,90 @@ fn standard_lit(
     return (indirect_diffuse + indirect_specular) * occlusion + direct;
 }
 
-fn toon_lit(base: vec3<f32>, n: vec3<f32>, l: vec3<f32>, v: vec3<f32>, additional_uv: vec2<f32>, visibility: f32) -> vec3<f32> {
-    let ndl = clamp(dot(n, l) * visibility, -1.0, 1.0);
-    let ramp_u = ndl * 0.5 + 0.5;
+fn toon_ramp_factor(ndl: f32, visibility: f32) -> f32 {
+    // Push fully shadowed directional fragments to the authored dark end of
+    // the ramp instead of collapsing them to the half-lit midpoint.
+    let visible_ndl = mix(-1.0, clamp(ndl, -1.0, 1.0), clamp(visibility, 0.0, 1.0));
+    let ramp_u = visible_ndl * 0.5 + 0.5;
     let generated_ramp = smoothstep(0.45, 0.55, ramp_u);
     // MMD toon ramps are authored as a vertical gradient (bright at v=0,
     // dark at v=1); the horizontal axis carries no information.
     let sampled_ramp = textureSample(t_toon_ramp, s_material, vec2<f32>(0.5, 1.0 - ramp_u)).r;
-    let ramp = select(generated_ramp, sampled_ramp, material.toon_shadow.w > 0.5);
-    var color = base * mix(material.toon_shadow.rgb, vec3<f32>(1.0), vec3<f32>(ramp));
-    color += base * material.toon_ambient.rgb;
-    let highlight = pow(max(dot(n, normalize(l + v)), 0.0), max(material.toon_specular.w, 1.0));
-    color += material.toon_specular.rgb * step(0.5, highlight) * light.dir_intensity * visibility;
+    return select(generated_ramp, sampled_ramp, material.toon_shadow.w > 0.5);
+}
+
+fn toon_direct(
+    base: vec3<f32>,
+    n: vec3<f32>,
+    l: vec3<f32>,
+    v: vec3<f32>,
+    radiance: vec3<f32>,
+    visibility: f32,
+) -> vec3<f32> {
+    let ramp = toon_ramp_factor(dot(n, l), visibility);
+    // The material shadow color is the one shared floor. Each light adds only
+    // the bright-side delta, so adding local lights cannot stack dark terms.
+    let diffuse = base * (vec3<f32>(1.0) - material.toon_shadow.rgb) * ramp;
+
+    var specular = vec3<f32>(0.0);
+    let half_vector = l + v;
+    if (dot(half_vector, half_vector) > 0.000001) {
+        let highlight = pow(
+            max(dot(n, normalize(half_vector)), 0.0),
+            max(material.toon_specular.w, 1.0),
+        );
+        let highlight_band = smoothstep(0.45, 0.55, highlight)
+            * clamp(visibility, 0.0, 1.0);
+        specular = material.toon_specular.rgb * highlight_band;
+    }
+
+    return (diffuse + specular) * radiance;
+}
+
+fn toon_lit(
+    base: vec3<f32>,
+    n: vec3<f32>,
+    l: vec3<f32>,
+    v: vec3<f32>,
+    world_position: vec3<f32>,
+    additional_uv: vec2<f32>,
+    visibility: f32,
+) -> vec3<f32> {
+    var color = base * (material.toon_shadow.rgb + material.toon_ambient.rgb);
+    color += toon_direct(
+        base,
+        n,
+        l,
+        v,
+        light.dir_color * light.dir_intensity,
+        visibility,
+    );
+
+    for (var i: u32 = 0u; i < light.counts.x; i = i + 1u) {
+        let point = light.point_lights[i];
+        let to_light = point.position_range.xyz - world_position;
+        let distance = length(to_light);
+        if (distance > 0.0001) {
+            let attenuation = local_light_attenuation(distance, point.position_range.w);
+            let radiance = point.color_intensity.rgb * point.color_intensity.w * attenuation;
+            color += toon_direct(base, n, to_light / distance, v, radiance, 1.0);
+        }
+    }
+
+    for (var i: u32 = 0u; i < light.counts.y; i = i + 1u) {
+        let spot = light.spot_lights[i];
+        let to_light = spot.position_range.xyz - world_position;
+        let distance = length(to_light);
+        if (distance > 0.0001) {
+            let l_local = to_light / distance;
+            let cone_cosine = dot(normalize(spot.direction_outer.xyz), -l_local);
+            let cone = smoothstep(spot.direction_outer.w, spot.params.x, cone_cosine);
+            let attenuation = local_light_attenuation(distance, spot.position_range.w) * cone;
+            let radiance = spot.color_intensity.rgb * spot.color_intensity.w * attenuation;
+            color += toon_direct(base, n, l_local, v, radiance, 1.0);
+        }
+    }
+
     let rim = pow(max(1.0 - max(dot(n, v), 0.0), 0.0), max(material.toon_params.x, 0.0001));
     color += material.toon_rim.rgb * material.toon_rim.w * rim;
     if (material.toon_params.w > 0.5) {
@@ -369,7 +441,15 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
             occlusion,
         );
     } else if (model < 1.5) {
-        shaded = toon_lit(base_color.rgb, n, l, v, input.additional_uv, visibility);
+        shaded = toon_lit(
+            base_color.rgb,
+            n,
+            l,
+            v,
+            input.world_position,
+            input.additional_uv,
+            visibility,
+        );
     }
     let emissive = textureSample(t_emissive, s_material, input.uv).rgb * input.emissive_and_model.rgb;
     return vec4<f32>(shaded + emissive, select(1.0, base_color.a, alpha_mode > 1.5));

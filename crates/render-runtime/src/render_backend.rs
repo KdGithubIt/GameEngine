@@ -4627,6 +4627,185 @@ mod tests {
     }
 
     #[test]
+    fn fixed_camera_reference_scene_receives_point_and_spot_toon_lighting() {
+        const WIDTH: u32 = 64;
+        const HEIGHT: u32 = 64;
+        const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
+
+        let instance = wgpu::Instance::default();
+        let context = match pollster::block_on(engine_renderer::GpuContext::new(&instance, None)) {
+            Ok(context) => context,
+            Err(engine_renderer::GpuContextError::AdapterUnavailable) => return,
+            Err(error) => panic!("GPU device creation failed: {error}"),
+        };
+        let device = context.device();
+        let queue = context.queue();
+        let mut renderer = pollster::block_on(WorldRenderer::new(device, queue, FORMAT))
+            .expect("ToonLit local-light reference renderer pipelines must validate");
+
+        let color_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("ToonLit point/spot reference color"),
+            size: wgpu::Extent3d {
+                width: WIDTH,
+                height: HEIGHT,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let color_view = color_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let depth_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("ToonLit point/spot reference depth"),
+            size: wgpu::Extent3d {
+                width: WIDTH,
+                height: HEIGHT,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: MAIN_PASS_SAMPLE_COUNT,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Depth32Float,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let depth_view = depth_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        let mut world = engine_ecs::World::new();
+        world.insert_resource(AmbientLight {
+            color: glam::Vec3::ZERO,
+            intensity: 0.0,
+        });
+        world.insert_resource(DirectionalLight {
+            direction: glam::Vec3::NEG_Z,
+            color: glam::Vec3::ONE,
+            intensity: 0.0,
+        });
+        world.insert_resource(EnvironmentLighting {
+            intensity: 0.0,
+            diffuse_ibl_enabled: false,
+            ..EnvironmentLighting::default()
+        });
+        world.insert_resource(ShadowSettings {
+            enabled: false,
+            ..ShadowSettings::default()
+        });
+        world.insert_resource(SkySettings {
+            enabled: false,
+            ..SkySettings::default()
+        });
+
+        let reference_material = || Material {
+            color: [0.8, 0.8, 0.8, 1.0],
+            cull_mode: CullMode::None,
+            shading_model: ShadingModel::ToonLit,
+            toon: crate::material::ToonMaterial {
+                shadow_color: [0.0; 3],
+                ambient_color: [0.0; 3],
+                specular_color: [0.0; 3],
+                rim_intensity: 0.0,
+                ..crate::material::ToonMaterial::default()
+            },
+            cast_shadow: false,
+            receive_shadow: false,
+            ..Material::default()
+        };
+        for x in [-0.7_f32, 0.7] {
+            let surface = world.spawn().expect("ToonLit reference surface must spawn");
+            world
+                .add_component(surface, reference_quad())
+                .expect("ToonLit reference mesh must insert");
+            world
+                .add_component(
+                    surface,
+                    GlobalTransform(glam::Mat4::from_translation(glam::Vec3::new(
+                        x, 0.0, 0.0,
+                    ))),
+                )
+                .expect("ToonLit reference transform must insert");
+            world
+                .add_component(surface, reference_material())
+                .expect("ToonLit reference material must insert");
+        }
+
+        let point = world.spawn().expect("ToonLit point light must spawn");
+        world
+            .add_component(
+                point,
+                PointLight {
+                    color: glam::Vec3::ONE,
+                    intensity: 40.0,
+                    range: 1.25,
+                },
+            )
+            .expect("ToonLit point light must insert");
+        world
+            .add_component(
+                point,
+                GlobalTransform(glam::Mat4::from_translation(glam::Vec3::new(
+                    -0.7, 0.0, 1.0,
+                ))),
+            )
+            .expect("ToonLit point transform must insert");
+
+        let spot = world.spawn().expect("ToonLit spot light must spawn");
+        world
+            .add_component(
+                spot,
+                SpotLight {
+                    color: glam::Vec3::ONE,
+                    intensity: 40.0,
+                    range: 1.25,
+                    inner_angle_radians: 20.0_f32.to_radians(),
+                    outer_angle_radians: 30.0_f32.to_radians(),
+                },
+            )
+            .expect("ToonLit spot light must insert");
+        world
+            .add_component(
+                spot,
+                GlobalTransform(glam::Mat4::from_translation(glam::Vec3::new(
+                    0.7, 0.0, 1.0,
+                ))),
+            )
+            .expect("ToonLit spot transform must insert");
+
+        let camera = Camera3D::new(60.0, 1.0, 0.1, 10.0);
+        let camera_transform = crate::transform::Transform::looking_at(
+            glam::Vec3::new(0.0, 0.0, 3.0),
+            glam::Vec3::ZERO,
+            glam::Vec3::Y,
+        );
+        renderer
+            .render_to_view_with_camera(
+                &mut world,
+                &camera,
+                &camera_transform,
+                device,
+                queue,
+                &color_view,
+                &depth_view,
+            )
+            .expect("ToonLit point/spot reference scene must render");
+
+        let rgba8 = readback_rgba8(device, queue, &color_texture, WIDTH, HEIGHT);
+        let background = rgb_sum_at(&rgba8, WIDTH, 0, 0);
+        let point_peak = peak_rgb_sum(&rgba8, WIDTH, HEIGHT, 0, WIDTH / 2);
+        let spot_peak = peak_rgb_sum(&rgba8, WIDTH, HEIGHT, WIDTH / 2, WIDTH);
+        assert!(
+            point_peak > background + 100,
+            "point light must illuminate its local ToonLit surface: background={background}, point={point_peak}"
+        );
+        assert!(
+            spot_peak > background + 100,
+            "spot light must illuminate the ToonLit surface inside its cone: background={background}, spot={spot_peak}"
+        );
+    }
+
+    #[test]
     fn fixed_camera_light_reference_scene_preserves_standard_lit_occlusion_contrast() {
         const WIDTH: u32 = 64;
         const HEIGHT: u32 = 64;
