@@ -782,9 +782,47 @@ pub struct CompiledCameraCutPayload {
     pub override_priority: i32,
 }
 
+/// Pre-resolved stable Audio Track payload.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompiledAudioPayload {
+    /// Stable source track.
+    pub track: TimelineTrackId,
+    /// Stable source clip.
+    pub clip: TimelineClipId,
+    /// Stable audio asset.
+    pub audio_asset: AssetId,
+    /// Optional stable spatial emitter entity.
+    pub emitter: Option<EntityId>,
+    /// Linear gain.
+    pub volume: f32,
+    /// ADR 0122 spatial blend.
+    pub spatial_blend: f32,
+    /// Whether the tracked voice loops.
+    pub looping: bool,
+}
+
+/// Pre-resolved stable VFX Track payload.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompiledVfxPayload {
+    /// Stable source track.
+    pub track: TimelineTrackId,
+    /// Stable source clip.
+    pub clip: TimelineClipId,
+    /// Stable VFX effect asset.
+    pub effect_asset: AssetId,
+    /// Stable target entity.
+    pub target: EntityId,
+    /// Simulation multiplier.
+    pub time_scale: f32,
+    /// Optional deterministic seed override.
+    pub seed_override: Option<u32>,
+}
+
 /// Pre-resolved stable Event Track marker payload.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompiledEventPayload {
+    /// Stable source Timeline identity.
+    pub timeline: TimelineId,
     /// Stable source track.
     pub track: TimelineTrackId,
     /// Stable marker/event identity.
@@ -916,6 +954,49 @@ pub fn compile_timeline(
                     ));
                 }
             }
+            TimelineTrackKind::Audio { clips } => {
+                let mut clips = clips.iter().collect::<Vec<_>>();
+                clips.sort_by_key(|clip| (clip.timing.start_tick, clip.timing.id.clone()));
+                for (item_order, clip) in clips.into_iter().enumerate() {
+                    entries.push(CompiledEntry::interval(
+                        track_order,
+                        u32::try_from(item_order).unwrap_or(u32::MAX),
+                        clip.timing.start_tick,
+                        clip.timing.end_tick,
+                        SeekCapability::NonSeekable,
+                        CompiledTimelinePayload::Audio(CompiledAudioPayload {
+                            track: track.id.clone(),
+                            clip: clip.timing.id.clone(),
+                            audio_asset: clip.audio_asset.clone(),
+                            emitter: clip.emitter.clone(),
+                            volume: clip.volume,
+                            spatial_blend: clip.spatial_blend,
+                            looping: clip.looping,
+                        }),
+                    ));
+                }
+            }
+            TimelineTrackKind::Vfx { clips } => {
+                let mut clips = clips.iter().collect::<Vec<_>>();
+                clips.sort_by_key(|clip| (clip.timing.start_tick, clip.timing.id.clone()));
+                for (item_order, clip) in clips.into_iter().enumerate() {
+                    entries.push(CompiledEntry::interval(
+                        track_order,
+                        u32::try_from(item_order).unwrap_or(u32::MAX),
+                        clip.timing.start_tick,
+                        clip.timing.end_tick,
+                        SeekCapability::ReplayRequired,
+                        CompiledTimelinePayload::Vfx(CompiledVfxPayload {
+                            track: track.id.clone(),
+                            clip: clip.timing.id.clone(),
+                            effect_asset: clip.effect_asset.clone(),
+                            target: clip.target.clone(),
+                            time_scale: clip.time_scale,
+                            seed_override: clip.seed_override,
+                        }),
+                    ));
+                }
+            }
             TimelineTrackKind::Event { markers } => {
                 let mut markers = markers.iter().collect::<Vec<_>>();
                 markers.sort_by_key(|marker| (marker.tick, marker.id.clone()));
@@ -927,6 +1008,7 @@ pub fn compile_timeline(
                         SeekCapability::Stateless,
                         true,
                         CompiledTimelinePayload::Event(CompiledEventPayload {
+                            timeline: document.id.clone(),
                             track: track.id.clone(),
                             marker: marker.id.clone(),
                             name: marker.name.clone(),
@@ -979,6 +1061,57 @@ fn validate_track(
                 validate_clip_timing(&track.id, &clip.timing, timeline_duration, clip_ids, diagnostics);
             }
             warn_camera_cut_priority_ties(track, clips, diagnostics);
+        }
+        TimelineTrackKind::Audio { clips } => {
+            for clip in clips {
+                validate_clip_timing(
+                    &track.id,
+                    &clip.timing,
+                    timeline_duration,
+                    clip_ids,
+                    diagnostics,
+                );
+                if !clip.volume.is_finite() || clip.volume < 0.0 {
+                    diagnostics.push(Diagnostic::error(
+                        "timeline.invalid_audio_volume",
+                        format!(
+                            "Audio clip `{}` has invalid volume {}",
+                            clip.timing.id, clip.volume
+                        ),
+                    ));
+                }
+                if !clip.spatial_blend.is_finite()
+                    || !(0.0..=1.0).contains(&clip.spatial_blend)
+                {
+                    diagnostics.push(Diagnostic::error(
+                        "timeline.invalid_audio_spatial_blend",
+                        format!(
+                            "Audio clip `{}` spatial blend {} is outside [0, 1]",
+                            clip.timing.id, clip.spatial_blend
+                        ),
+                    ));
+                }
+            }
+        }
+        TimelineTrackKind::Vfx { clips } => {
+            for clip in clips {
+                validate_clip_timing(
+                    &track.id,
+                    &clip.timing,
+                    timeline_duration,
+                    clip_ids,
+                    diagnostics,
+                );
+                if !clip.time_scale.is_finite() || clip.time_scale < 0.0 {
+                    diagnostics.push(Diagnostic::error(
+                        "timeline.invalid_vfx_time_scale",
+                        format!(
+                            "VFX clip `{}` has invalid time scale {}",
+                            clip.timing.id, clip.time_scale
+                        ),
+                    ));
+                }
+            }
         }
         TimelineTrackKind::Event { markers } => {
             let mut ordered = markers.iter().collect::<Vec<_>>();
