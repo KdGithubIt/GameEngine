@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "request_id": "20260816-inc007-publisher-missing-tree-aaa54f2-r1",
+  "target_branch": "chatgpt/gameengine-automation-incident-publisher-missing-tree",
+  "expected_head_sha": "aaa54f22f9749a7ed54326b08ea758c3fdff8d5d",
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Docs: record transport publisher missing-tree incident",
+  "pr_title": "Docs: record transport publisher missing-tree incident",
+  "pr_body": "## Summary\n\nRecords the confirmed trusted transport publisher false-duplicate incident as INC-007 and updates the canonical automation protocol so repeated conflicts for fresh request IDs are checked against the exact observed transport head before more IDs are generated.\n\nThe incident records the production recovery after PR #76: the unchanged immutable r8 stage replay succeeded through publisher and Dispatcher, and a fresh r9 request also published successfully.\n\n## Validation\n\nDocumentation-only change. No Rust or visual behavior is modified."
+}
