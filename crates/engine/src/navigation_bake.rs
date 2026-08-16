@@ -227,6 +227,27 @@ pub fn is_scene_navmesh_stale(
         .map_err(NavMeshBakeError::Shared)
 }
 
+/// Returns whether both the bake document and runtime asset match the current source.
+///
+/// This is the shared consumption gate used by Play and packaging. A generated
+/// artifact is current only when the normalized source/settings fingerprint matches
+/// both the last-successful bake marker and the serialized production NavMesh.
+///
+/// # Errors
+///
+/// Returns [`NavMeshBakeError`] when source collection or preparation fails.
+pub fn is_scene_navmesh_current(
+    scene: &AuthoringScene,
+    project_root: &ProjectRoot,
+    manifest: &AssetManifest,
+    document: &NavMeshBakeDocument,
+    nav_mesh: &crate::navmesh::NavMesh,
+) -> Result<bool, NavMeshBakeError> {
+    let input = prepare_scene_navmesh(scene, project_root, manifest, document)?;
+    Ok(document.source_fingerprint.as_deref() == Some(input.source_fingerprint.as_str())
+        && nav_mesh.source_fingerprint == input.source_fingerprint)
+}
+
 /// Bakes, safely replaces, registers, and fingerprints one scene NavMesh.
 ///
 /// # Errors
