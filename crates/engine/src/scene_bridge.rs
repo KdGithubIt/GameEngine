@@ -13,7 +13,9 @@ use crate::animation::{
 use crate::asset::{
     AssetLoadError, AssetManifest, Assets, Handle, ImportedSubAssetKind, RuntimeAssetId,
 };
-use crate::audio::{AudioAsset, AudioEmitter, AudioListener, MusicController};
+use crate::audio::{
+    AudioAsset, AudioEmitter, AudioListener, AudioRolloffMode, MusicController,
+};
 use crate::behavior_tree::BehaviorTreeRunner;
 use crate::camera::{Camera3D, FollowCamera, LockOnCamera, OrbitCamera};
 use crate::character_controller::KinematicCharacterController;

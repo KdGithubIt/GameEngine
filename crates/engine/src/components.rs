@@ -16,6 +16,7 @@ use crate::scene_bridge::{
     SKINNED_MESH_RENDERER_COMPONENT, SKINNED_MODEL_COMPONENT, STATIC_MESH_RENDERER_COMPONENT,
     TRANSFORM_COMPONENT,
 };
+use crate::scene_bridge::AUDIO_LISTENER_COMPONENT;
 use engine_authoring::id::{AssetId, ComponentTypeId, EntityId};
 use engine_authoring::schema::{ComponentSchema, FieldType};
 use engine_authoring::value::Value;
