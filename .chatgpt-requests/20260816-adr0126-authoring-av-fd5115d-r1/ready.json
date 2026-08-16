@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "request_id": "20260816-adr0126-authoring-av-fd5115d-r1",
+  "target_branch": "chatgpt/gameengine-adr0126-timeline-sequencer-v2",
+  "expected_head_sha": "fd5115d752a76f51d7d59ed663fa648d0e152aef",
+  "patch_parts": [
+    "part-0000.patch",
+    "part-0001.patch",
+    "part-0002.patch"
+  ],
+  "commit_message": "Add ADR 0126 Audio and VFX Timeline authoring",
+  "pr_title": "Implement ADR 0126 Timeline and Sequencer runtime",
+  "pr_body": "## ADR 0126 implementation\n\nCurrent-main implementation of ADR 0126. This request adds typed ADR 0122 Audio and ADR 0125 VFX Timeline tracks through the shared Timeline authoring/validation/compiler boundary, adds canonical save to the GUI-free authoring service, and gives Events explicit source Timeline identity. Audio remains explicitly NonSeekable because the formal tracked-voice API exposes no seek offset; VFX is ReplayRequired and uses the bounded forward reconstruction contract.\n\nThe PR remains Draft until runtime composition, Timeline Player / Project Rust control, shared Editor/CLI/MCP authoring parity, Sequencer, persistent Scene View preview, packaged Player, Windows Validation, and Visual Validation are complete."
+}
