@@ -1,0 +1,222 @@
++        /// Underlying IO error.
++        source: io::Error,
++    },
++    /// Atomic prefab persistence failed.
++    PrefabPersist(PersistError),
++    /// Atomic asset-manifest persistence failed.
++    ManifestPersist(PersistError),
++}
++
++impl PrefabAssetError {
++    /// Returns the stable diagnostic-style code for this failure.
++    pub fn code(&self) -> &'static str {
++        match self {
++            Self::Permission(source) => source.code(),
++            Self::Project(_) => "asset.invalid_path",
++            Self::MissingEntity(_) => "prefab.entity_not_found",
++            Self::DestinationExists(_) => "prefab.destination_exists",
++            Self::ScriptFolder(_) => "prefab.script_folder",
++            Self::InvalidSuffix(_) => "prefab.invalid_path",
++            Self::Prefab(_) => "prefab.invalid_selection",
++            Self::PrefabJson(_) => "prefab.serialization_failed",
++            Self::ManifestJson(_) => "asset.manifest_serialization_failed",
++            Self::Io { .. } => "prefab.read_failed",
++            Self::PrefabPersist(_) => "prefab.write_failed",
++            Self::ManifestPersist(_) => "asset.manifest_write_failed",
++        }
++    }
++}
++
++impl fmt::Display for PrefabAssetError {
++    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
++        match self {
++            Self::Permission(source) => source.fmt(formatter),
++            Self::Project(source) => write!(formatter, "prefab path is invalid: {source}"),
++            Self::MissingEntity(entity) => {
++                write!(formatter, "entity `{entity}` is absent from the source Scene")
++            }
++            Self::DestinationExists(path) => {
++                write!(formatter, "prefab destination already exists: `{path}`")
++            }
++            Self::ScriptFolder(path) => {
++                write!(formatter, "prefab destination `{path}` is inside the script tree")
++            }
++            Self::InvalidSuffix(path) => {
++                write!(formatter, "prefab path `{path}` must end with .prefab.json")
++            }
++            Self::Prefab(source) => write!(formatter, "prefab selection is invalid: {source}"),
++            Self::PrefabJson(source) => write!(formatter, "failed to serialize prefab: {source}"),
++            Self::ManifestJson(source) => {
++                write!(formatter, "failed to serialize asset manifest: {source}")
++            }
++            Self::Io { path, source } => {
++                write!(formatter, "failed to read prefab `{}`: {source}", path.display())
++            }
++            Self::PrefabPersist(source) => write!(formatter, "failed to save prefab: {source}"),
++            Self::ManifestPersist(source) => {
++                write!(formatter, "failed to save asset manifest: {source}")
++            }
++        }
++    }
++}
++
++impl std::error::Error for PrefabAssetError {
++    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
++        match self {
++            Self::Permission(source) => Some(source),
++            Self::Project(source) => Some(source),
++            Self::Prefab(source) => Some(source),
++            Self::PrefabJson(source) | Self::ManifestJson(source) => Some(source),
++            Self::Io { source, .. } => Some(source),
++            Self::PrefabPersist(source) | Self::ManifestPersist(source) => Some(source),
++            Self::MissingEntity(_)
++            | Self::DestinationExists(_)
++            | Self::ScriptFolder(_)
++            | Self::InvalidSuffix(_) => None,
++        }
++    }
++}
++
++impl From<AuthoringPermissionError> for PrefabAssetError {
++    fn from(source: AuthoringPermissionError) -> Self {
++        Self::Permission(source)
++    }
++}
++
++impl From<ProjectError> for PrefabAssetError {
++    fn from(source: ProjectError) -> Self {
++        Self::Project(source)
++    }
++}
++
++impl From<PrefabError> for PrefabAssetError {
++    fn from(source: PrefabError) -> Self {
++        Self::Prefab(source)
++    }
++}
++
++/// GUI-free project prefab asset service.
++#[derive(Debug, Default, Clone, Copy)]
++pub struct PrefabAssetService;
++
++impl PrefabAssetService {
++    /// Creates the stateless prefab asset service.
++    pub fn new() -> Self {
++        Self
++    }
++
++    /// Creates one prefab from `root` and all descendants, then registers it
++    /// with a fresh [`AssetId`] in the project manifest.
++    ///
++    /// The destination is asset-root-relative. Existing files are rejected. If
++    /// manifest persistence fails after the new prefab file is written, the new
++    /// file is removed and the caller's in-memory manifest remains unchanged.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`PrefabAssetError`] for permission denial, unsafe paths,
++    /// missing Scene entities, invalid prefab structure, or persistence errors.
++    pub fn create_from_root(
++        &self,
++        project: &ProjectRoot,
++        manifest: &mut AssetManifest,
++        permissions: &AuthoringPermissions,
++        scene: &AuthoringScene,
++        root: &EntityId,
++        destination_relative: &str,
++    ) -> Result<PrefabCreation, PrefabAssetError> {
++        permissions.require(AuthoringPermission::Read)?;
++        permissions.require(AuthoringPermission::AssetWrite)?;
++
++        let normalized = normalize_relative_path(destination_relative)?;
++        require_prefab_suffix(&normalized)?;
++        let destination = project.resolve_asset_for_write(&normalized)?;
++        if Path::new(&normalized).starts_with("scripts") {
++            return Err(PrefabAssetError::ScriptFolder(normalized));
++        }
++        if destination.exists() {
++            return Err(PrefabAssetError::DestinationExists(normalized));
++        }
++
++        let ids = subtree_ids(scene, root)?;
++        let prefab = PrefabAsset::from_selection(ids.iter().map(|id| {
++            let entity = scene
++                .entity(id)
++                .expect("subtree IDs are collected from the same Scene");
++            (id, entity)
++        }))?;
++        let prefab_json = prefab.to_json().map_err(PrefabAssetError::PrefabJson)?;
++
++        let asset_id = AssetId::generate();
++        let name = unique_asset_name(&normalized, manifest);
++        let mut next_manifest = manifest.clone();
++        next_manifest.insert(
++            asset_id.clone(),
++            ManifestEntry {
++                path: normalized.clone(),
++                name: Some(name.clone()),
++                import_settings: ImportSettings::default(),
++            },
++        );
++        let manifest_json = next_manifest
++            .to_canonical_json()
++            .map_err(PrefabAssetError::ManifestJson)?;
++
++        replace_file_contents(&destination, &prefab_json)
++            .map_err(PrefabAssetError::PrefabPersist)?;
++        let manifest_path = project.path().join(ASSET_MANIFEST_FILE);
++        if let Err(source) = replace_file_contents(&manifest_path, &manifest_json) {
++            let _ = fs::remove_file(&destination);
++            return Err(PrefabAssetError::ManifestPersist(source));
++        }
++
++        *manifest = next_manifest;
++        Ok(PrefabCreation {
++            asset_id,
++            path: normalized,
++            name,
++            root: prefab.root,
++            entity_count: prefab.entities.len(),
++        })
++    }
++
++    /// Loads one author-owned prefab through the project asset boundary.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`PrefabAssetError`] for read permission denial, an unsafe or
++    /// missing source path, IO failure, or invalid prefab JSON/structure.
++    pub fn load(
++        &self,
++        project: &ProjectRoot,
++        permissions: &AuthoringPermissions,
++        source_relative: &str,
++    ) -> Result<LoadedPrefab, PrefabAssetError> {
++        permissions.require(AuthoringPermission::Read)?;
++        let normalized = normalize_relative_path(source_relative)?;
++        require_prefab_suffix(&normalized)?;
++        let source = project.resolve_asset(&normalized)?;
++        let json = fs::read_to_string(&source).map_err(|error| PrefabAssetError::Io {
++            path: source.clone(),
++            source: error,
++        })?;
++        let prefab = PrefabAsset::from_json(&json)?;
++        Ok(LoadedPrefab { prefab, source })
++    }
++}
++
++fn normalize_relative_path(relative: &str) -> Result<String, PrefabAssetError> {
++    let portable = relative.replace('\\', "/");
++    let mut parts = Vec::new();
++    for component in Path::new(&portable).components() {
++        match component {
++            Component::Normal(part) => {
++                let Some(part) = part.to_str() else {
++                    return Err(PrefabAssetError::Project(ProjectError::PathTraversal {
++                        requested: relative.to_owned(),
++                    }));
++                };
++                parts.push(part);
++            }
++            Component::CurDir => {}
++            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
