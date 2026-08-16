@@ -44,6 +44,14 @@ jobs:
           ref: chatgpt-dispatch
           fetch-depth: 0
 
+      - name: Check out trusted request controls
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: main
+          fetch-depth: 1
+          path: trusted-control
+          persist-credentials: false
+
       - name: Validate and publish staged request
         id: publish
         shell: bash
@@ -159,6 +167,9 @@ jobs:
           jq -e . "$manifest" >/dev/null || fail "ready.json is not valid JSON."
           [[ "$(jq -r '.request_id // empty' "$manifest")" == "$request_id" ]] ||
             fail "ready.json request_id must match the stage branch."
+          schema_version="$(jq -r '.schema_version // empty' "$manifest")"
+          [[ "$schema_version" == "1" || "$schema_version" == "2" ]] ||
+            fail "ready.json schema_version must be 1 or 2."
 
           mapfile -t stage_files < <(
             git ls-tree -r --name-only "$REQUEST_COMMIT" -- "$request_dir" |
@@ -187,6 +198,16 @@ jobs:
           done
           [[ "$total_bytes" -le 4194304 ]] ||
             fail "The reconstructed patch may not exceed 4 MiB."
+
+          preflight_output="$RUNNER_TEMP/chatgpt-prepublish-preflight.json"
+          if ! python3 "$GITHUB_WORKSPACE/trusted-control/.github/chatgpt/request_protocol.py" \
+            preflight-stage \
+            --request-repo "$GITHUB_WORKSPACE" \
+            --request-commit "$REQUEST_COMMIT" \
+            --request-id "$request_id" > "$preflight_output"; then
+            fail "Trusted pre-publish request preflight failed."
+          fi
+          cat "$preflight_output"
 
           stage_tree="$(git rev-parse "$REQUEST_COMMIT:$request_dir")"
           existing_tree="$(git rev-parse --verify "$transport_head:$request_dir" 2>/dev/null || true)"
@@ -252,5 +273,6 @@ jobs:
             echo "- Stage branch: \`$STAGE_BRANCH\`"
             echo "- Transport ready commit: \`$PUBLISHED_HEAD\`"
             echo "- Already present: \`$ALREADY_PUBLISHED\`"
+            echo "- Trusted pre-publish preflight: passed"
             echo "- Direct producer writes to chatgpt-dispatch: not used"
           } >> "$GITHUB_STEP_SUMMARY"
