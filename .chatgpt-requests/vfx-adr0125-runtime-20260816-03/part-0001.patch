@@ -1,0 +1,106 @@
++    /// Emitters are matched by stable source ID. This is used by affected VFX
++    /// recompilation and by the simple-emitter adapter when public properties
++    /// change. Removed emitters disappear; newly added emitters start empty.
++    pub fn reconfigure(&mut self, effect: CompiledVfxEffect) {
++        let mut previous = std::mem::take(&mut self.emitters);
++        let mut emitters = Vec::with_capacity(effect.emitters.len());
++        for definition in effect.emitters.iter().cloned() {
++            if let Some(index) = previous
++                .iter()
++                .position(|runtime| runtime.definition.source == definition.source)
++            {
++                let mut runtime = previous.remove(index);
++                runtime.definition = definition;
++                runtime
++                    .particles
++                    .truncate(runtime.definition.max_particles as usize);
++                emitters.push(runtime);
++            } else {
++                emitters.push(VfxEmitterRuntime::new(definition));
++            }
++        }
++        self.effect = effect;
++        self.emitters = emitters;
++        self.enforce_effect_cap();
++    }
++
++    /// Advances the effect by `dt` seconds using `origin` as emitter world origin.
++    ///
++    /// Non-finite or non-positive deltas are ignored. Particle simulation is
++    /// visual/runtime state and intentionally remains outside persisted ECS data.
++    pub fn step(&mut self, dt: f32, origin: Vec3) {
++        if !dt.is_finite() || dt <= 0.0 {
++            return;
++        }
++        let end_time = self.elapsed_seconds + dt;
++
++        for runtime in &mut self.emitters {
++            update_particles(runtime, dt);
++        }
++
++        let mut remaining_effect_capacity = (self.effect.max_particles as usize)
++            .saturating_sub(self.emitters.iter().map(VfxEmitterRuntime::live_count).sum());
++
++        for (emitter_index, runtime) in self.emitters.iter_mut().enumerate() {
++            let requested = requested_spawns(runtime, dt, end_time);
++            let accepted_by_step = requested.min(MAX_SPAWNS_PER_STEP);
++            runtime.dropped_particles = runtime
++                .dropped_particles
++                .saturating_add(u64::from(requested.saturating_sub(accepted_by_step)));
++
++            for _ in 0..accepted_by_step {
++                if runtime.particles.len() >= runtime.definition.max_particles as usize
++                    || remaining_effect_capacity == 0
++                {
++                    runtime.dropped_particles = runtime.dropped_particles.saturating_add(1);
++                    continue;
++                }
++                let particle = spawn_particle(
++                    &runtime.definition,
++                    self.active_seed,
++                    emitter_index as u32,
++                    runtime.spawn_serial,
++                    origin,
++                );
++                runtime.spawn_serial = runtime.spawn_serial.wrapping_add(1);
++                runtime.particles.push(particle);
++                remaining_effect_capacity -= 1;
++            }
++        }
++
++        self.elapsed_seconds = end_time;
++    }
++
++    /// Rebuilds deterministic preview state at an arbitrary non-negative time.
++    ///
++    /// Seeking backwards is implemented as Restart + fixed-step replay. The
++    /// same path is also used for forward seeks so preview results do not
++    /// depend on the Editor frame rate.
++    pub fn seek_preview(&mut self, elapsed_seconds: f32, origin: Vec3) {
++        self.restart();
++        if !elapsed_seconds.is_finite() || elapsed_seconds <= 0.0 {
++            return;
++        }
++        let mut remaining = elapsed_seconds;
++        while remaining > 0.0 {
++            let step = remaining.min(VFX_PREVIEW_STEP_SECONDS);
++            self.step(step, origin);
++            remaining -= step;
++        }
++    }
++
++    fn enforce_effect_cap(&mut self) {
++        let mut remaining = self.effect.max_particles as usize;
++        for runtime in &mut self.emitters {
++            if runtime.particles.len() <= remaining {
++                remaining -= runtime.particles.len();
++                continue;
++            }
++            let removed = runtime.particles.len() - remaining;
++            runtime.particles.truncate(remaining);
++            runtime.dropped_particles = runtime.dropped_particles.saturating_add(removed as u64);
++            remaining = 0;
++        }
++    }
++}
++
