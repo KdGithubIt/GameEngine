@@ -1,0 +1,308 @@
+diff --git a/crates/render-runtime/src/shaders/mesh.wgsl b/crates/render-runtime/src/shaders/mesh.wgsl
+--- a/crates/render-runtime/src/shaders/mesh.wgsl
++++ b/crates/render-runtime/src/shaders/mesh.wgsl
+@@ -313,18 +313,90 @@ fn standard_lit(
+     return (indirect_diffuse + indirect_specular) * occlusion + direct;
+ }
+ 
+-fn toon_lit(base: vec3<f32>, n: vec3<f32>, l: vec3<f32>, v: vec3<f32>, additional_uv: vec2<f32>, visibility: f32) -> vec3<f32> {
+-    let ndl = clamp(dot(n, l) * visibility, -1.0, 1.0);
+-    let ramp_u = ndl * 0.5 + 0.5;
++fn toon_ramp_factor(ndl: f32, visibility: f32) -> f32 {
++    // Push fully shadowed directional fragments to the authored dark end of
++    // the ramp instead of collapsing them to the half-lit midpoint.
++    let visible_ndl = mix(-1.0, clamp(ndl, -1.0, 1.0), clamp(visibility, 0.0, 1.0));
++    let ramp_u = visible_ndl * 0.5 + 0.5;
+     let generated_ramp = smoothstep(0.45, 0.55, ramp_u);
+     // MMD toon ramps are authored as a vertical gradient (bright at v=0,
+     // dark at v=1); the horizontal axis carries no information.
+     let sampled_ramp = textureSample(t_toon_ramp, s_material, vec2<f32>(0.5, 1.0 - ramp_u)).r;
+-    let ramp = select(generated_ramp, sampled_ramp, material.toon_shadow.w > 0.5);
+-    var color = base * mix(material.toon_shadow.rgb, vec3<f32>(1.0), vec3<f32>(ramp));
+-    color += base * material.toon_ambient.rgb;
+-    let highlight = pow(max(dot(n, normalize(l + v)), 0.0), max(material.toon_specular.w, 1.0));
+-    color += material.toon_specular.rgb * step(0.5, highlight) * light.dir_intensity * visibility;
++    return select(generated_ramp, sampled_ramp, material.toon_shadow.w > 0.5);
++}
++
++fn toon_direct(
++    base: vec3<f32>,
++    n: vec3<f32>,
++    l: vec3<f32>,
++    v: vec3<f32>,
++    radiance: vec3<f32>,
++    visibility: f32,
++) -> vec3<f32> {
++    let ramp = toon_ramp_factor(dot(n, l), visibility);
++    // The material shadow color is the one shared floor. Each light adds only
++    // the bright-side delta, so adding local lights cannot stack dark terms.
++    let diffuse = base * (vec3<f32>(1.0) - material.toon_shadow.rgb) * ramp;
++
++    var specular = vec3<f32>(0.0);
++    let half_vector = l + v;
++    if (dot(half_vector, half_vector) > 0.000001) {
++        let highlight = pow(
++            max(dot(n, normalize(half_vector)), 0.0),
++            max(material.toon_specular.w, 1.0),
++        );
++        let highlight_band = smoothstep(0.45, 0.55, highlight)
++            * clamp(visibility, 0.0, 1.0);
++        specular = material.toon_specular.rgb * highlight_band;
++    }
++
++    return (diffuse + specular) * radiance;
++}
++
++fn toon_lit(
++    base: vec3<f32>,
++    n: vec3<f32>,
++    l: vec3<f32>,
++    v: vec3<f32>,
++    world_position: vec3<f32>,
++    additional_uv: vec2<f32>,
++    visibility: f32,
++) -> vec3<f32> {
++    var color = base * (material.toon_shadow.rgb + material.toon_ambient.rgb);
++    color += toon_direct(
++        base,
++        n,
++        l,
++        v,
++        light.dir_color * light.dir_intensity,
++        visibility,
++    );
++
++    for (var i: u32 = 0u; i < light.counts.x; i = i + 1u) {
++        let point = light.point_lights[i];
++        let to_light = point.position_range.xyz - world_position;
++        let distance = length(to_light);
++        if (distance > 0.0001) {
++            let attenuation = local_light_attenuation(distance, point.position_range.w);
++            let radiance = point.color_intensity.rgb * point.color_intensity.w * attenuation;
++            color += toon_direct(base, n, to_light / distance, v, radiance, 1.0);
++        }
++    }
++
++    for (var i: u32 = 0u; i < light.counts.y; i = i + 1u) {
++        let spot = light.spot_lights[i];
++        let to_light = spot.position_range.xyz - world_position;
++        let distance = length(to_light);
++        if (distance > 0.0001) {
++            let l_local = to_light / distance;
++            let cone_cosine = dot(normalize(spot.direction_outer.xyz), -l_local);
++            let cone = smoothstep(spot.direction_outer.w, spot.params.x, cone_cosine);
++            let attenuation = local_light_attenuation(distance, spot.position_range.w) * cone;
++            let radiance = spot.color_intensity.rgb * spot.color_intensity.w * attenuation;
++            color += toon_direct(base, n, l_local, v, radiance, 1.0);
++        }
++    }
++
+     let rim = pow(max(1.0 - max(dot(n, v), 0.0), 0.0), max(material.toon_params.x, 0.0001));
+     color += material.toon_rim.rgb * material.toon_rim.w * rim;
+     if (material.toon_params.w > 0.5) {
+@@ -369,7 +441,15 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
+             occlusion,
+         );
+     } else if (model < 1.5) {
+-        shaded = toon_lit(base_color.rgb, n, l, v, input.additional_uv, visibility);
++        shaded = toon_lit(
++            base_color.rgb,
++            n,
++            l,
++            v,
++            input.world_position,
++            input.additional_uv,
++            visibility,
++        );
+     }
+     let emissive = textureSample(t_emissive, s_material, input.uv).rgb * input.emissive_and_model.rgb;
+     return vec4<f32>(shaded + emissive, select(1.0, base_color.a, alpha_mode > 1.5));
+diff --git a/crates/render-runtime/src/render_backend.rs b/crates/render-runtime/src/render_backend.rs
+--- a/crates/render-runtime/src/render_backend.rs
++++ b/crates/render-runtime/src/render_backend.rs
+@@ -4626,6 +4626,185 @@ mod tests {
+         );
+     }
+ 
++    #[test]
++    fn fixed_camera_reference_scene_receives_point_and_spot_toon_lighting() {
++        const WIDTH: u32 = 64;
++        const HEIGHT: u32 = 64;
++        const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
++
++        let instance = wgpu::Instance::default();
++        let context = match pollster::block_on(engine_renderer::GpuContext::new(&instance, None)) {
++            Ok(context) => context,
++            Err(engine_renderer::GpuContextError::AdapterUnavailable) => return,
++            Err(error) => panic!("GPU device creation failed: {error}"),
++        };
++        let device = context.device();
++        let queue = context.queue();
++        let mut renderer = pollster::block_on(WorldRenderer::new(device, queue, FORMAT))
++            .expect("ToonLit local-light reference renderer pipelines must validate");
++
++        let color_texture = device.create_texture(&wgpu::TextureDescriptor {
++            label: Some("ToonLit point/spot reference color"),
++            size: wgpu::Extent3d {
++                width: WIDTH,
++                height: HEIGHT,
++                depth_or_array_layers: 1,
++            },
++            mip_level_count: 1,
++            sample_count: 1,
++            dimension: wgpu::TextureDimension::D2,
++            format: FORMAT,
++            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
++            view_formats: &[],
++        });
++        let color_view = color_texture.create_view(&wgpu::TextureViewDescriptor::default());
++        let depth_texture = device.create_texture(&wgpu::TextureDescriptor {
++            label: Some("ToonLit point/spot reference depth"),
++            size: wgpu::Extent3d {
++                width: WIDTH,
++                height: HEIGHT,
++                depth_or_array_layers: 1,
++            },
++            mip_level_count: 1,
++            sample_count: MAIN_PASS_SAMPLE_COUNT,
++            dimension: wgpu::TextureDimension::D2,
++            format: wgpu::TextureFormat::Depth32Float,
++            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
++            view_formats: &[],
++        });
++        let depth_view = depth_texture.create_view(&wgpu::TextureViewDescriptor::default());
++
++        let mut world = engine_ecs::World::new();
++        world.insert_resource(AmbientLight {
++            color: glam::Vec3::ZERO,
++            intensity: 0.0,
++        });
++        world.insert_resource(DirectionalLight {
++            direction: glam::Vec3::NEG_Z,
++            color: glam::Vec3::ONE,
++            intensity: 0.0,
++        });
++        world.insert_resource(EnvironmentLighting {
++            intensity: 0.0,
++            diffuse_ibl_enabled: false,
++            ..EnvironmentLighting::default()
++        });
++        world.insert_resource(ShadowSettings {
++            enabled: false,
++            ..ShadowSettings::default()
++        });
++        world.insert_resource(SkySettings {
++            enabled: false,
++            ..SkySettings::default()
++        });
++
++        let reference_material = || Material {
++            color: [0.8, 0.8, 0.8, 1.0],
++            cull_mode: CullMode::None,
++            shading_model: ShadingModel::ToonLit,
++            toon: crate::material::ToonMaterial {
++                shadow_color: [0.0; 3],
++                ambient_color: [0.0; 3],
++                specular_color: [0.0; 3],
++                rim_intensity: 0.0,
++                ..crate::material::ToonMaterial::default()
++            },
++            cast_shadow: false,
++            receive_shadow: false,
++            ..Material::default()
++        };
++        for x in [-0.7_f32, 0.7] {
++            let surface = world.spawn().expect("ToonLit reference surface must spawn");
++            world
++                .add_component(surface, reference_quad())
++                .expect("ToonLit reference mesh must insert");
++            world
++                .add_component(
++                    surface,
++                    GlobalTransform(glam::Mat4::from_translation(glam::Vec3::new(
++                        x, 0.0, 0.0,
++                    ))),
++                )
++                .expect("ToonLit reference transform must insert");
++            world
++                .add_component(surface, reference_material())
++                .expect("ToonLit reference material must insert");
++        }
++
++        let point = world.spawn().expect("ToonLit point light must spawn");
++        world
++            .add_component(
++                point,
++                PointLight {
++                    color: glam::Vec3::ONE,
++                    intensity: 40.0,
++                    range: 1.25,
++                },
++            )
++            .expect("ToonLit point light must insert");
++        world
++            .add_component(
++                point,
++                GlobalTransform(glam::Mat4::from_translation(glam::Vec3::new(
++                    -0.7, 0.0, 1.0,
++                ))),
++            )
++            .expect("ToonLit point transform must insert");
++
++        let spot = world.spawn().expect("ToonLit spot light must spawn");
++        world
++            .add_component(
++                spot,
++                SpotLight {
++                    color: glam::Vec3::ONE,
++                    intensity: 40.0,
++                    range: 1.25,
++                    inner_angle_radians: 20.0_f32.to_radians(),
++                    outer_angle_radians: 30.0_f32.to_radians(),
++                },
++            )
++            .expect("ToonLit spot light must insert");
++        world
++            .add_component(
++                spot,
++                GlobalTransform(glam::Mat4::from_translation(glam::Vec3::new(
++                    0.7, 0.0, 1.0,
++                ))),
++            )
++            .expect("ToonLit spot transform must insert");
++
++        let camera = Camera3D::new(60.0, 1.0, 0.1, 10.0);
++        let camera_transform = crate::transform::Transform::looking_at(
++            glam::Vec3::new(0.0, 0.0, 3.0),
++            glam::Vec3::ZERO,
++            glam::Vec3::Y,
++        );
++        renderer
++            .render_to_view_with_camera(
++                &mut world,
++                &camera,
++                &camera_transform,
++                device,
++                queue,
++                &color_view,
++                &depth_view,
++            )
++            .expect("ToonLit point/spot reference scene must render");
++
++        let rgba8 = readback_rgba8(device, queue, &color_texture, WIDTH, HEIGHT);
++        let background = rgb_sum_at(&rgba8, WIDTH, 0, 0);
++        let point_peak = peak_rgb_sum(&rgba8, WIDTH, HEIGHT, 0, WIDTH / 2);
++        let spot_peak = peak_rgb_sum(&rgba8, WIDTH, HEIGHT, WIDTH / 2, WIDTH);
++        assert!(
++            point_peak > background + 100,
++            "point light must illuminate its local ToonLit surface: background={background}, point={point_peak}"
++        );
++        assert!(
++            spot_peak > background + 100,
++            "spot light must illuminate the ToonLit surface inside its cone: background={background}, spot={spot_peak}"
++        );
++    }
++
+     #[test]
+     fn fixed_camera_light_reference_scene_preserves_standard_lit_occlusion_contrast() {
+         const WIDTH: u32 = 64;
