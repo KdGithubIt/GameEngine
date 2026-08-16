@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0122-spatial-audio-runtime-fix-20260816-01",
+  "target_branch": "chatgpt/gameengine-adr-0122-spatial-audio-v2",
+  "expected_head_sha": "0e2f207317577f6409d4d67c52cb44b54d78d39f",
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Fix spatial audio sample trait bound",
+  "pr_title": "Implement ADR 0122 spatial audio",
+  "pr_body": "Fixes the runtime sample-type constraint found by the affected Windows Validation gate while implementing ADR 0122."
+}
