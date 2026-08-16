@@ -1,0 +1,315 @@
+diff --git a/crates/mcp/src/graph.rs b/crates/mcp/src/graph.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/mcp/src/graph.rs
+@@ -0,0 +1,155 @@
++//! Domain-neutral semantic Graph MCP tool handlers.
++
++use crate::McpToolDescriptor;
++use engine_authoring::{
++    AuthoringPermissions, Graph, GraphAuthoringMutation, GraphAuthoringService,
++    GraphAuthoringSnapshot, GraphAuthoringValidation, GraphCommand, GraphDomain,
++};
++use serde::Deserialize;
++use serde_json::json;
++
++/// Command-batch input shared by `graph.preview` and `graph.apply`.
++#[derive(Debug, Clone, Deserialize)]
++pub struct GraphMutationInput {
++    /// Semantic Graph revision observed by the caller.
++    pub expected_revision: u64,
++    /// In-memory Graph generation observed by the caller.
++    pub expected_generation: u64,
++    /// Complete command batch to evaluate atomically.
++    pub commands: Vec<GraphCommand>,
++}
++
++/// Domain-neutral Graph MCP tool handler collection.
++#[derive(Debug, Default, Clone, Copy)]
++pub struct GraphMcpTools {
++    service: GraphAuthoringService,
++}
++
++impl GraphMcpTools {
++    /// Creates Graph tool handlers backed by the shared authoring service.
++    pub fn new() -> Self {
++        Self {
++            service: GraphAuthoringService::new(),
++        }
++    }
++
++    /// Returns descriptors registered by the Editor MCP transport.
++    pub fn tool_descriptors(&self) -> Vec<McpToolDescriptor> {
++        vec![
++            descriptor(
++                "graph.inspect",
++                "Inspect the active semantic Graph document and its revision identity.",
++                json!({"type":"object","properties":{},"additionalProperties":false}),
++            ),
++            descriptor(
++                "graph.validate",
++                "Validate the active semantic Graph with its selected domain.",
++                json!({"type":"object","properties":{},"additionalProperties":false}),
++            ),
++            descriptor(
++                "graph.preview",
++                "Preview one atomic semantic Graph command batch without changing the live document.",
++                mutation_input_schema(),
++            ),
++            descriptor(
++                "graph.apply",
++                "Apply one atomic semantic Graph command batch to the live document.",
++                mutation_input_schema(),
++            ),
++        ]
++    }
++
++    /// Inspects one live semantic Graph.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`crate::McpToolError`] when read permission is absent.
++    pub fn graph_inspect(
++        &self,
++        graph: &Graph,
++        permissions: &AuthoringPermissions,
++    ) -> Result<GraphAuthoringSnapshot, crate::McpToolError> {
++        Ok(self.service.inspect(graph, permissions)?)
++    }
++
++    /// Validates one live semantic Graph with the selected domain.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`crate::McpToolError`] when read permission is absent.
++    pub fn graph_validate(
++        &self,
++        graph: &Graph,
++        domain: &dyn GraphDomain,
++        permissions: &AuthoringPermissions,
++    ) -> Result<GraphAuthoringValidation, crate::McpToolError> {
++        Ok(self.service.validate(graph, domain, permissions)?)
++    }
++
++    /// Previews one semantic Graph command batch.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`crate::McpToolError`] when preview permission is absent or the
++    /// supplied revision identity is stale.
++    pub fn graph_preview(
++        &self,
++        graph: &Graph,
++        domain: &dyn GraphDomain,
++        permissions: &AuthoringPermissions,
++        input: GraphMutationInput,
++    ) -> Result<GraphAuthoringMutation, crate::McpToolError> {
++        Ok(self.service.preview(
++            graph,
++            domain,
++            permissions,
++            input.expected_revision,
++            input.expected_generation,
++            input.commands,
++        )?)
++    }
++
++    /// Applies one semantic Graph command batch.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`crate::McpToolError`] when write permission is absent or the
++    /// supplied revision identity is stale.
++    pub fn graph_apply(
++        &self,
++        graph: &mut Graph,
++        domain: &dyn GraphDomain,
++        permissions: &AuthoringPermissions,
++        input: GraphMutationInput,
++    ) -> Result<GraphAuthoringMutation, crate::McpToolError> {
++        Ok(self.service.apply(
++            graph,
++            domain,
++            permissions,
++            input.expected_revision,
++            input.expected_generation,
++            input.commands,
++        )?)
++    }
++}
++
++fn descriptor(name: &str, description: &str, input_schema: serde_json::Value) -> McpToolDescriptor {
++    McpToolDescriptor {
++        name: name.to_owned(),
++        description: description.to_owned(),
++        input_schema,
++    }
++}
++
++fn mutation_input_schema() -> serde_json::Value {
++    json!({
++        "type": "object",
++        "required": ["expected_revision", "expected_generation", "commands"],
++        "properties": {
++            "expected_revision": {"type": "integer", "minimum": 0},
++            "expected_generation": {"type": "integer", "minimum": 0},
++            "commands": {"type": "array", "items": {"type": "object"}}
++        },
++        "additionalProperties": false
++    })
++}
+diff --git a/crates/mcp/src/ui.rs b/crates/mcp/src/ui.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/mcp/src/ui.rs
+@@ -0,0 +1,150 @@
++//! Declarative UI MCP tool handlers backed by the shared authoring service.
++
++use crate::McpToolDescriptor;
++use engine_authoring::{
++    AuthoringPermissions, UiAuthoringMutation, UiAuthoringService, UiAuthoringSession,
++    UiAuthoringSnapshot, UiAuthoringValidation, UiDocumentCommand,
++};
++use serde::Deserialize;
++use serde_json::json;
++
++/// Command-batch input shared by `ui.preview` and `ui.apply`.
++#[derive(Debug, Clone, Deserialize)]
++pub struct UiMutationInput {
++    /// UI revision observed by the caller.
++    pub expected_revision: u64,
++    /// In-memory UI generation observed by the caller.
++    pub expected_generation: u64,
++    /// Complete command batch to evaluate atomically.
++    pub commands: Vec<UiDocumentCommand>,
++}
++
++/// Declarative UI MCP tool handler collection.
++#[derive(Debug, Default, Clone, Copy)]
++pub struct UiMcpTools {
++    service: UiAuthoringService,
++}
++
++impl UiMcpTools {
++    /// Creates UI tool handlers backed by the shared authoring service.
++    pub fn new() -> Self {
++        Self {
++            service: UiAuthoringService::new(),
++        }
++    }
++
++    /// Returns descriptors registered by the Editor MCP transport.
++    pub fn tool_descriptors(&self) -> Vec<McpToolDescriptor> {
++        vec![
++            descriptor(
++                "ui.inspect",
++                "Inspect the active declarative UI document and its revision identity.",
++                json!({"type":"object","properties":{},"additionalProperties":false}),
++            ),
++            descriptor(
++                "ui.validate",
++                "Validate the active declarative UI document.",
++                json!({"type":"object","properties":{},"additionalProperties":false}),
++            ),
++            descriptor(
++                "ui.preview",
++                "Preview one atomic UI command batch without changing the live document.",
++                mutation_input_schema(),
++            ),
++            descriptor(
++                "ui.apply",
++                "Apply one atomic UI command batch to the live document.",
++                mutation_input_schema(),
++            ),
++        ]
++    }
++
++    /// Inspects one live UI authoring session.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`crate::McpToolError`] when read permission is absent.
++    pub fn ui_inspect(
++        &self,
++        session: &UiAuthoringSession,
++        permissions: &AuthoringPermissions,
++    ) -> Result<UiAuthoringSnapshot, crate::McpToolError> {
++        Ok(self.service.inspect(session, permissions)?)
++    }
++
++    /// Validates one live UI authoring session.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`crate::McpToolError`] when read permission is absent.
++    pub fn ui_validate(
++        &self,
++        session: &UiAuthoringSession,
++        permissions: &AuthoringPermissions,
++    ) -> Result<UiAuthoringValidation, crate::McpToolError> {
++        Ok(self.service.validate(session, permissions)?)
++    }
++
++    /// Previews one UI command batch.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`crate::McpToolError`] when preview permission is absent or the
++    /// supplied revision identity is stale.
++    pub fn ui_preview(
++        &self,
++        session: &UiAuthoringSession,
++        permissions: &AuthoringPermissions,
++        input: UiMutationInput,
++    ) -> Result<UiAuthoringMutation, crate::McpToolError> {
++        Ok(self.service.preview(
++            session,
++            permissions,
++            input.expected_revision,
++            input.expected_generation,
++            input.commands,
++        )?)
++    }
++
++    /// Applies one UI command batch.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`crate::McpToolError`] when write permission is absent or the
++    /// supplied revision identity is stale.
++    pub fn ui_apply(
++        &self,
++        session: &mut UiAuthoringSession,
++        permissions: &AuthoringPermissions,
++        input: UiMutationInput,
++    ) -> Result<UiAuthoringMutation, crate::McpToolError> {
++        Ok(self.service.apply(
++            session,
++            permissions,
++            input.expected_revision,
++            input.expected_generation,
++            input.commands,
++        )?)
++    }
++}
++
++fn descriptor(name: &str, description: &str, input_schema: serde_json::Value) -> McpToolDescriptor {
++    McpToolDescriptor {
++        name: name.to_owned(),
++        description: description.to_owned(),
++        input_schema,
++    }
++}
++
++fn mutation_input_schema() -> serde_json::Value {
++    json!({
++        "type": "object",
++        "required": ["expected_revision", "expected_generation", "commands"],
++        "properties": {
++            "expected_revision": {"type": "integer", "minimum": 0},
++            "expected_generation": {"type": "integer", "minimum": 0},
++            "commands": {"type": "array", "items": {"type": "object"}}
++        },
++        "additionalProperties": false
++    })
++}
