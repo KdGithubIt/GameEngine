@@ -1,0 +1,277 @@
+diff --git a/crates/cli/src/ui_cli.rs b/crates/cli/src/ui_cli.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/cli/src/ui_cli.rs
+@@ -0,0 +1,272 @@
++use super::{input_error_json, to_json, CliError, CliRunResult};
++use engine_authoring::{
++    replace_file_contents, AuthoringPermission, AuthoringPermissions, ProjectRoot,
++    UiAuthoringError, UiAuthoringService, UiAuthoringSession, UiDocument, UiDocumentCommand,
++};
++use serde::Serialize;
++use std::fs;
++use std::path::{Path, PathBuf};
++
++#[derive(Debug, Serialize)]
++struct AuthoringErrorOutput {
++    success: bool,
++    error: AuthoringErrorBody,
++}
++
++#[derive(Debug, Serialize)]
++struct AuthoringErrorBody {
++    code: &'static str,
++    message: String,
++}
++
++pub(super) fn dispatch(args: &[String]) -> Option<Result<CliRunResult, CliError>> {
++    match args {
++        [domain, command, project, document] if domain == "ui" && command == "inspect" => {
++            Some(ui_inspect(Path::new(project), document))
++        }
++        [domain, command, project, document] if domain == "ui" && command == "validate" => {
++            Some(ui_validate(Path::new(project), document))
++        }
++        [domain, command, project, document, commands]
++            if domain == "ui" && command == "preview" =>
++        {
++            Some(ui_mutate(
++                Path::new(project),
++                document,
++                Path::new(commands),
++                false,
++            ))
++        }
++        [domain, command, project, document, commands]
++            if domain == "ui" && command == "apply" =>
++        {
++            Some(ui_mutate(
++                Path::new(project),
++                document,
++                Path::new(commands),
++                true,
++            ))
++        }
++        _ => None,
++    }
++}
++
++fn ui_inspect(project_path: &Path, document_relative: &str) -> Result<CliRunResult, CliError> {
++    let context = match load_ui_context(project_path, document_relative) {
++        Ok(context) => context,
++        Err(result) => return Ok(result),
++    };
++    let service = UiAuthoringService::new();
++    match service.inspect(&context.session, &read_permissions()) {
++        Ok(output) => Ok(CliRunResult::success(to_json(&output)?)),
++        Err(error) => authoring_error(error),
++    }
++}
++
++fn ui_validate(project_path: &Path, document_relative: &str) -> Result<CliRunResult, CliError> {
++    let context = match load_ui_context(project_path, document_relative) {
++        Ok(context) => context,
++        Err(result) => return Ok(result),
++    };
++    let service = UiAuthoringService::new();
++    match service.validate(&context.session, &read_permissions()) {
++        Ok(output) => Ok(CliRunResult::diagnostics(to_json(&output)?, !output.success)),
++        Err(error) => authoring_error(error),
++    }
++}
++
++fn ui_mutate(
++    project_path: &Path,
++    document_relative: &str,
++    commands_path: &Path,
++    persist: bool,
++) -> Result<CliRunResult, CliError> {
++    let mut context = match load_ui_context(project_path, document_relative) {
++        Ok(context) => context,
++        Err(result) => return Ok(result),
++    };
++    let commands = match load_commands(commands_path) {
++        Ok(commands) => commands,
++        Err(result) => return Ok(result),
++    };
++    let service = UiAuthoringService::new();
++    let permissions = write_permissions();
++    let base = match service.inspect(&context.session, &permissions) {
++        Ok(base) => base,
++        Err(error) => return authoring_error(error),
++    };
++
++    let mutation = if persist {
++        service.apply(
++            &mut context.session,
++            &permissions,
++            base.revision,
++            base.generation,
++            commands,
++        )
++    } else {
++        service.preview(
++            &context.session,
++            &permissions,
++            base.revision,
++            base.generation,
++            commands,
++        )
++    };
++    let mutation = match mutation {
++        Ok(mutation) => mutation,
++        Err(error) => return authoring_error(error),
++    };
++
++    if persist && mutation.success {
++        let json = context
++            .session
++            .document()
++            .to_json_string()
++            .map_err(CliError::Json)?;
++        replace_file_contents(&context.path, &json)
++            .map_err(|source| CliError::Persist { source })?;
++    }
++
++    Ok(CliRunResult::diagnostics(
++        to_json(&mutation)?,
++        !mutation.success,
++    ))
++}
++
++struct UiContext {
++    path: PathBuf,
++    session: UiAuthoringSession,
++}
++
++fn load_ui_context(
++    project_path: &Path,
++    document_relative: &str,
++) -> Result<UiContext, CliRunResult> {
++    let project = ProjectRoot::open(project_path)
++        .map_err(|error| input_error("project_error", project_path, &error.to_string()))?;
++    let document_path = project.resolve_asset(document_relative).map_err(|error| {
++        input_error(
++            "project_path_error",
++            Path::new(document_relative),
++            &error.to_string(),
++        )
++    })?;
++    let json = fs::read_to_string(&document_path)
++        .map_err(|error| input_error("io_error", &document_path, &error.to_string()))?;
++    let document = UiDocument::from_json_str(&json)
++        .map_err(|error| input_error("invalid_ui_document", &document_path, &error.to_string()))?;
++    Ok(UiContext {
++        path: document_path,
++        session: UiAuthoringSession::new(document),
++    })
++}
++
++fn load_commands(path: &Path) -> Result<Vec<UiDocumentCommand>, CliRunResult> {
++    let json = fs::read_to_string(path)
++        .map_err(|error| input_error("io_error", path, &error.to_string()))?;
++    serde_json::from_str(&json)
++        .map_err(|error| input_error("invalid_json", path, &error.to_string()))
++}
++
++fn authoring_error(error: UiAuthoringError) -> Result<CliRunResult, CliError> {
++    let output = AuthoringErrorOutput {
++        success: false,
++        error: AuthoringErrorBody {
++            code: error.code(),
++            message: error.to_string(),
++        },
++    };
++    Ok(CliRunResult::diagnostics(to_json(&output)?, true))
++}
++
++fn input_error(kind: &'static str, path: &Path, message: &str) -> CliRunResult {
++    CliRunResult::input_error(input_error_json(kind, path, message))
++}
++
++fn read_permissions() -> AuthoringPermissions {
++    AuthoringPermissions::read_only()
++}
++
++fn write_permissions() -> AuthoringPermissions {
++    AuthoringPermissions::read_only()
++        .with(AuthoringPermission::Preview)
++        .with(AuthoringPermission::ProjectDataWrite)
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use crate::run_cli_with_status;
++    use engine_authoring::{ProjectConfig, UiDocumentCommand, PROJECT_SCHEMA_VERSION};
++    use serde_json::Value;
++
++    #[test]
++    fn ui_preview_is_non_destructive_and_apply_persists_shared_diff() {
++        let directory = tempfile::tempdir().expect("temporary project parent");
++        let root = directory.path().join("UiCliGame");
++        let project = ProjectRoot::create(
++            &root,
++            ProjectConfig {
++                name: "UI CLI Test".into(),
++                schema_version: PROJECT_SCHEMA_VERSION,
++            },
++        )
++        .expect("project creation");
++        let ui_relative = "ui/main.ui.json";
++        let ui_path = project
++            .resolve_asset_for_write(ui_relative)
++            .expect("UI path");
++        fs::create_dir_all(ui_path.parent().expect("UI parent"))
++            .expect("UI parent directory");
++        fs::write(
++            &ui_path,
++            UiDocument::default().to_json_string().expect("UI JSON"),
++        )
++        .expect("UI fixture");
++        let command = UiDocumentCommand::RenameNode {
++            node: "root".into(),
++            new_id: "cli_root".into(),
++        };
++        let commands_path = root.join("ui-commands.json");
++        fs::write(
++            &commands_path,
++            serde_json::to_string_pretty(&vec![command]).expect("command JSON"),
++        )
++        .expect("command fixture");
++
++        let preview = run_cli_with_status([
++            "ui".to_owned(),
++            "preview".to_owned(),
++            root.display().to_string(),
++            ui_relative.to_owned(),
++            commands_path.display().to_string(),
++        ])
++        .expect("UI preview");
++        let preview_json: Value = serde_json::from_str(&preview.output).expect("preview JSON");
++        let after_preview = UiDocument::from_json_str(
++            &fs::read_to_string(&ui_path).expect("UI after preview"),
++        )
++        .expect("UI after preview parse");
++        assert_eq!(preview.exit_code, 0);
++        assert_eq!(preview_json["diff"].as_array().expect("preview diff").len(), 1);
++        assert_eq!(after_preview.root.id, "root");
++
++        let apply = run_cli_with_status([
++            "ui".to_owned(),
++            "apply".to_owned(),
++            root.display().to_string(),
++            ui_relative.to_owned(),
++            commands_path.display().to_string(),
++        ])
++        .expect("UI apply");
++        let apply_json: Value = serde_json::from_str(&apply.output).expect("apply JSON");
++        let persisted = UiDocument::from_json_str(
++            &fs::read_to_string(&ui_path).expect("persisted UI"),
++        )
++        .expect("persisted UI parse");
++        assert_eq!(apply.exit_code, 0);
++        assert_eq!(apply_json["diff"], preview_json["diff"]);
++        assert_eq!(persisted.root.id, "cli_root");
++    }
++}
