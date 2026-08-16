@@ -1,0 +1,1 @@
+This staging directory is cancelled; no ready marker will be emitted.
