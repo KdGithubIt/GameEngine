@@ -42,6 +42,8 @@ required by `docs/CHATGPT_AUTOMATION.md`.
 
 ```text
 INC-001  Markdown trailing whitespace rejected by patch preflight  Dispatcher  Resolved
+INC-002  Unified-diff old coordinates drifted from target tree     Dispatcher  Resolved
+INC-003  Published patch bytes differed from preflight artifact    Transport   Resolved
 ```
 
 ## INC-001: Markdown trailing whitespace rejected by patch preflight
@@ -93,6 +95,136 @@ new or changed lines; use a blank line when a visual line break is needed.
 - PR: N/A; patch application failed before PR creation
 - Workflow run: `31920548068`
 - Commit: N/A; target branch was not changed
+
+## INC-002: Unified-diff old coordinates drifted from target tree
+
+Status: Resolved
+Layer: Dispatcher
+First confirmed: 2026-08-16
+Last confirmed: 2026-08-16
+
+### Symptom
+
+Repeated correction requests for PR #23 passed request-envelope validation but
+failed in `Reconstruct and validate patch` because `git apply --check` rejected
+`crates/render-runtime/src/render_backend.rs`. The target branch did not move
+between those attempts.
+
+### Evidence
+
+- Request `20260816-phase3-full-ibl-bindgroups-r5` failed in Dispatcher run
+  `31921512779` at `render_backend.rs:2626`.
+- The target branch remained at
+  `acc2b01b0157c9b381c8b89a8f5e28d7c7f42df1`, ruling out a stale target HEAD.
+- Re-reading the exact target blob showed the Light BGL block began at old-file
+  line 2624, while the hand-built hunk declared line 2626. The producer had
+  incorrectly carried earlier added-line offsets into the old-file coordinates.
+- A following repair exposed the same class of error in the adjacent Light BG
+  hunk (`2666` versus the actual old-file line `2667`).
+- Request `20260816-phase3-full-ibl-bindgroups-r7` combined the dependent edit
+  into target-aligned context and Dispatcher run `31922381541` passed
+  `Reconstruct and validate patch`, committed, and pushed successfully.
+- The same target-alignment class recurred in request
+  `adr-audit-index-20260816-02`: Dispatcher run `31922197791` rejected ADR/doc
+  hunks that had been generated from stitched snippets rather than the exact
+  target files. The final exact-target regeneration was validated by the
+  successful ADR-audit request recorded in INC-003.
+
+### Root cause
+
+The producer manually maintained unified-diff hunk coordinates across several
+edits in the same file. It adjusted later old-file coordinates as though prior
+added lines had already changed the source tree. Unified diff old coordinates
+must always refer to the unmodified target file. Adjacent dependent hunks also
+made the hand-maintained offsets fragile.
+
+### Resolution
+
+Re-read the exact target blob, rebuild the patch against that tree, and keep
+old-file hunk coordinates anchored to the unmodified source. For adjacent edits
+that depend on the same local context, combine them into one target-aligned hunk
+or generate the diff from old/new files instead of carrying offsets by hand.
+The corrected r7 request passed the dispatcher's strict reconstruction/apply
+preflight and produced commit
+`1e82c3beb53205404a5110828c5e8943f62d6aa7`.
+
+### Prevention / ChatGPT next action
+
+When `git apply --check` rejects a non-stale request, re-read the exact target
+file and regenerate the unified diff from that source. Never update old-file
+hunk coordinates by accumulating prior additions. Prefer generated diffs; when
+manual construction is unavoidable, merge adjacent dependent edits and verify
+the complete reconstructed request with
+`git apply --check --whitespace=error-all` before publishing `ready.json`.
+
+### References
+
+- Request: `20260816-phase3-full-ibl-bindgroups-r7`
+- PR: `#23`
+- Workflow run: `31922381541`
+- Commit: `1e82c3beb53205404a5110828c5e8943f62d6aa7`
+
+## INC-003: Published patch bytes differed from preflight artifact
+
+Status: Resolved
+Layer: Transport
+First confirmed: 2026-08-16
+Last confirmed: 2026-08-16
+
+### Symptom
+
+ADR-audit request `adr-audit-index-20260816-03` passed the request envelope and
+target-HEAD checks but failed `Reconstruct and validate patch` even though the
+corrected local patch had already passed the dispatcher's strict `git apply`
+preflight.
+
+### Evidence
+
+- Dispatcher run `31922629969` failed only the ADR 0113 hunk after the earlier
+  exact-target applicability problems had been corrected.
+- The intended preflighted `part-0001.patch` was 2,445 bytes with Git blob SHA
+  `b2cb31fff1dcec4cbae188f3dd74381aab82ab15`.
+- The published request's `part-0001.patch` was 2,444 bytes with Git blob SHA
+  `a68d723a0d3e51a7de2515966f53a851f9591548`; the other four published part
+  blobs matched their preflight artifacts.
+- Comparing the two artifacts found one missing leading `-` on a deleted
+  Markdown bullet. The target branch itself had not moved.
+- Request `adr-audit-index-20260816-04` published all five preflighted blobs with
+  matching byte counts and blob SHAs. Dispatcher run `31922738621` then passed,
+  produced commit `c689fff815f48ff2f56836fcfb096d443dee67ca` and Draft PR #30, and Windows
+  Validation run `31922746993` completed successfully in `docs` mode.
+
+### Root cause
+
+The producer manually transcribed one patch part after local preflight. That
+transcription changed one byte, so the artifact validated locally was not the
+artifact later reconstructed by the Dispatcher. A correct preflight cannot
+protect a different set of transport bytes.
+
+### Resolution
+
+Treat the preflighted patch as an immutable artifact. Split and publish those
+exact bytes, then verify the published part byte counts and Git blob SHAs before
+creating `ready.json`. The `-04` request used that process and completed patch
+application, Draft PR publication, and docs validation successfully.
+
+### Prevention / ChatGPT next action
+
+Never retype or manually reconstruct a patch after strict preflight. Publish the
+preflight artifact mechanically, verify the remote part blobs are byte-identical
+before `ready.json`, and only then re-read the target HEAD and release the ready
+marker. If any part hash or byte count differs, abandon that unpublished request
+and create a new request from the verified artifact.
+
+### References
+
+- Failed request: `adr-audit-index-20260816-03`
+- Successful request: `adr-audit-index-20260816-04`
+- PR: `#30`
+- Failed Dispatcher run: `31922629969`
+- Successful Dispatcher run: `31922738621`
+- Validation run: `31922746993`
+- Commit: `c689fff815f48ff2f56836fcfb096d443dee67ca`
 
 ## Entry template
 

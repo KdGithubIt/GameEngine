@@ -1,7 +1,7 @@
 # ChatGPT GitHub Automation
 
 Status: Accepted
-Version: 1.4.0
+Version: 1.4.1
 Canonical location: `docs/CHATGPT_AUTOMATION.md`
 
 ## Purpose
@@ -99,15 +99,17 @@ informal file upload. For every new implementation or correction request:
 4. Build one complete unified Git patch against the exact target tree. Keep
    product changes inside the public allow-list and never include `.github/**`
    or `.chatgpt-requests/**` in a normal dispatcher patch.
-5. Preflight the reconstructed patch before publication whenever the producer
-   has a local Git worktree available. Run
+5. Preflight the exact reconstructed patch bytes that will be published. Run
    `git apply --check --whitespace=error-all <reconstructed-patch>` against the
    captured target tree, then confirm that the patch contains only intended
    paths and no symlink or submodule changes. Using plain `git apply --check`
    is not equivalent because it can miss whitespace errors the dispatcher will
-   reject.
-6. Split the patch only for transport size. Publish every declared
-   `part-NNNN.patch` before publishing `ready.json`; never use `ready.json` as a
+   reject. Do not manually retype, reformat, or otherwise reconstruct a second
+   copy of the patch after this preflight.
+6. Split the preflighted patch only for transport size and publish those exact
+   bytes as the declared `part-NNNN.patch` files. Before publishing `ready.json`,
+   verify the published part byte counts and blob hashes, or the reconstructed
+   content hash, against the preflight artifact. Never use `ready.json` as a
    partial-progress marker.
 7. Immediately before creating `ready.json`, re-read the remote target branch
    HEAD. If it differs from `expected_head_sha`, abandon the unpublished
@@ -165,7 +167,10 @@ does not override it.
 
 Patch transport is byte-preserving concatenation. The dispatcher concatenates
 parts in the order declared by `patch_parts`; it does not add separators.
-Parts therefore do not need to be independently applicable patches.
+Parts therefore do not need to be independently applicable patches. The
+published blobs MUST reconstruct byte-for-byte to the artifact that passed
+producer preflight; a patch that was retyped or transformed after preflight has
+not been preflighted.
 
 Constraints:
 
