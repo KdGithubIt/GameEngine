@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "request_id": "20260816-phase5-stable-csm-e99d227a-r3",
+  "target_branch": "chatgpt/gameengine-render-stable-csm",
+  "expected_head_sha": "e99d227ab40a7d839afa718e40ab372ec1899f32",
+  "patch_parts": [
+    "part-0000.patch",
+    "part-0001.patch",
+    "part-0002.patch",
+    "part-0003.patch"
+  ],
+  "commit_message": "Renderer: stabilize cascaded directional shadows",
+  "pr_title": "Renderer: stabilize cascaded directional shadows",
+  "pr_body": "## Summary\n- stabilize two-cascade directional shadow projections with bounding-sphere square extents and light-space texel snapping\n- overlap adjacent cascades and blend by camera view depth to remove hard split transitions\n- use tent-weighted 3x3 PCF without increasing tap count\n- preserve ADR 0036 cascade count, ShadowSettings schema, point/spot shadow boundary, and existing bind-group layout\n- add regression coverage for cascade overlap and sub-texel camera stability\n- update Phase 50 renderer documentation\n\n<!-- gameengine-chatgpt-dispatcher -->"
+}
