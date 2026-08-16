@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "request_id": "20260817-adr0126-engine-facade-av-9a3214e-r9",
+  "target_branch": "chatgpt/gameengine-adr0126-timeline-sequencer-v2",
+  "expected_head_sha": "9a3214e2fe026472f30110d05a0d1eaa1b6d9b28",
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Expose Timeline Audio/VFX through engine facade",
+  "pr_title": "Implement ADR 0126 Timeline and Sequencer runtime",
+  "pr_body": "Keeps the top-level engine Timeline facade aligned with the typed Audio/VFX authoring and compiled payload contracts. The PR remains Draft until ADR 0126 Definition of Done and required Windows/Visual validation complete.\n\n<!-- gameengine-chatgpt-dispatcher -->"
+}
