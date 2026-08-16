@@ -29,3 +29,129 @@ pub use engine_timeline::{
     SeekCapability, TimelineEvaluationAdapter, TimelinePlaybackState, TimelinePlayer, TimelineTick,
     TIMELINE_TICKS_PER_SECOND,
 };
+
+/// Owning-domain operations required by the concrete engine Timeline adapter.
+///
+/// This trait lives in the final composition crate rather than `engine-timeline`:
+/// each method receives the original strongly typed payload plus the neutral
+/// scheduler's local time and discontinuous-time decision. Implementations may
+/// resolve stable authoring IDs to transient runtime handles, but must not
+/// persist those handles back into Timeline data.
+pub trait TimelineRuntimeHost {
+    /// Runtime-domain error returned to the Timeline player host.
+    type Error;
+
+    /// Applies or samples one Animation Set motion-slot clip.
+    fn animation(
+        &mut self,
+        request: &EvaluationRequest,
+        payload: &CompiledAnimationPayload,
+        local_tick: TimelineTick,
+        decision: EvaluationDecision,
+    ) -> Result<(), Self::Error>;
+
+    /// Applies one typed Transform property sample.
+    fn transform_property(
+        &mut self,
+        request: &EvaluationRequest,
+        payload: &CompiledTransformPayload,
+        local_tick: TimelineTick,
+        decision: EvaluationDecision,
+    ) -> Result<(), Self::Error>;
+
+    /// Installs or updates one transient game-camera override.
+    fn camera_cut(
+        &mut self,
+        request: &EvaluationRequest,
+        payload: &CompiledCameraCutPayload,
+        local_tick: TimelineTick,
+        decision: EvaluationDecision,
+    ) -> Result<(), Self::Error>;
+
+    /// Applies one ADR 0122 tracked-audio clip evaluation.
+    fn audio(
+        &mut self,
+        request: &EvaluationRequest,
+        payload: &CompiledAudioPayload,
+        local_tick: TimelineTick,
+        decision: EvaluationDecision,
+    ) -> Result<(), Self::Error>;
+
+    /// Applies or reconstructs one ADR 0125 VFX clip evaluation.
+    fn vfx(
+        &mut self,
+        request: &EvaluationRequest,
+        payload: &CompiledVfxPayload,
+        local_tick: TimelineTick,
+        decision: EvaluationDecision,
+    ) -> Result<(), Self::Error>;
+
+    /// Emits one exact sequence-level Event marker selected by the scheduler.
+    fn event(
+        &mut self,
+        request: &EvaluationRequest,
+        payload: &CompiledEventPayload,
+        decision: EvaluationDecision,
+    ) -> Result<(), Self::Error>;
+}
+
+/// Concrete typed adapter from the neutral scheduler into engine-owned domains.
+pub struct EngineTimelineAdapter<'a, H> {
+    host: &'a mut H,
+}
+
+impl<'a, H> EngineTimelineAdapter<'a, H> {
+    /// Borrows the composition host for one evaluation pass.
+    pub fn new(host: &'a mut H) -> Self {
+        Self { host }
+    }
+}
+
+impl<H> TimelineEvaluationAdapter<CompiledTimelinePayload> for EngineTimelineAdapter<'_, H>
+where
+    H: TimelineRuntimeHost,
+{
+    type Error = H::Error;
+
+    fn apply(
+        &mut self,
+        request: &EvaluationRequest,
+        item: EvaluationItem<'_, CompiledTimelinePayload>,
+    ) -> Result<(), Self::Error> {
+        let local_tick = item.local_tick();
+        let decision = item.decision();
+        match item.entry().payload() {
+            CompiledTimelinePayload::Animation(payload) => {
+                self.host.animation(request, payload, local_tick, decision)
+            }
+            CompiledTimelinePayload::TransformProperty(payload) => {
+                self.host
+                    .transform_property(request, payload, local_tick, decision)
+            }
+            CompiledTimelinePayload::CameraCut(payload) => {
+                self.host.camera_cut(request, payload, local_tick, decision)
+            }
+            CompiledTimelinePayload::Audio(payload) => {
+                self.host.audio(request, payload, local_tick, decision)
+            }
+            CompiledTimelinePayload::Vfx(payload) => {
+                self.host.vfx(request, payload, local_tick, decision)
+            }
+            CompiledTimelinePayload::Event(payload) => self.host.event(request, payload, decision),
+        }
+    }
+}
+
+/// Evaluates a compiled engine Timeline and dispatches selected payloads to
+/// their owning domains through [`TimelineRuntimeHost`].
+pub fn evaluate_engine_timeline<H>(
+    timeline: &CompiledTimeline<CompiledTimelinePayload>,
+    request: &EvaluationRequest,
+    host: &mut H,
+) -> Result<(), H::Error>
+where
+    H: TimelineRuntimeHost,
+{
+    let mut adapter = EngineTimelineAdapter::new(host);
+    evaluate_with_adapter(timeline, request, &mut adapter)
+}
