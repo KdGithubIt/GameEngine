@@ -1,0 +1,200 @@
+diff --git a/crates/render-runtime/src/ibl.rs b/crates/render-runtime/src/ibl.rs
+new file mode 100644
+index 0000000..24f5747
+--- /dev/null
++++ b/crates/render-runtime/src/ibl.rs
+@@ -0,0 +1,623 @@
++//! Generic image-based lighting source and GPU precomputation.
++//!
++//! Environment lighting consumes a scene-linear representation derived from an
++//! sRGB equirectangular source. The visible sky remains a separate render-pass
++//! responsibility; this module only owns lighting data.
++
++use std::fmt;
++use std::sync::{Arc, OnceLock};
++
++use glam::{Vec2, Vec3};
++use half::f16;
++use wgpu::util::DeviceExt;
++
++use crate::material::DecodedTexture;
++
++/// Diffuse irradiance cubemap edge length.
++pub(crate) const IRRADIANCE_CUBE_SIZE: u32 = 16;
++/// Base edge length of the prefiltered specular cubemap.
++pub(crate) const PREFILTERED_CUBE_SIZE: u32 = 64;
++/// Split-sum BRDF lookup-table edge length.
++pub(crate) const BRDF_LUT_SIZE: u32 = 128;
++const ENVIRONMENT_SAMPLE_COUNT: u32 = 64;
++const BRDF_SAMPLE_COUNT: u32 = 64;
++
++/// Reports malformed CPU environment-map input.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub enum EnvironmentMapError {
++    /// Environment images must contain at least one texel.
++    EmptyDimensions,
++    /// RGBA8 storage does not match the declared dimensions.
++    InvalidDataLength {
++        /// Required number of tightly packed RGBA8 bytes.
++        expected: usize,
++        /// Actual number of supplied bytes.
++        actual: usize,
++    },
++}
++
++impl fmt::Display for EnvironmentMapError {
++    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
++        match self {
++            Self::EmptyDimensions => {
++                write!(formatter, "environment-map dimensions must be non-zero")
++            }
++            Self::InvalidDataLength { expected, actual } => write!(
++                formatter,
++                "environment-map RGBA8 storage has {actual} bytes but dimensions require {expected}"
++            ),
++        }
++    }
++}
++
++impl std::error::Error for EnvironmentMapError {}
++
++/// Runtime equirectangular lighting source prepared independently from sky display.
++///
++/// Construction validates immutable sRGB RGBA8 storage and records a content key
++/// so GPU convolution is repeated only when the resolved source changes.
++#[derive(Debug, Clone)]
++pub struct EnvironmentMap {
++    source: Arc<DecodedTexture>,
++    content_key: u64,
++}
++
++impl EnvironmentMap {
++    /// Creates a validated environment source from decoded equirectangular pixels.
++    ///
++    /// # Errors
++    ///
++    /// Returns an error for zero dimensions or mismatched tightly packed RGBA8 storage.
++    pub fn new(source: Arc<DecodedTexture>) -> Result<Self, EnvironmentMapError> {
++        if source.width == 0 || source.height == 0 {
++            return Err(EnvironmentMapError::EmptyDimensions);
++        }
++        let expected = source.width as usize * source.height as usize * 4;
++        if source.rgba8.len() != expected {
++            return Err(EnvironmentMapError::InvalidDataLength {
++                expected,
++                actual: source.rgba8.len(),
++            });
++        }
++        Ok(Self {
++            content_key: content_key(&source),
++            source,
++        })
++    }
++
++    pub(crate) fn source(&self) -> &DecodedTexture {
++        &self.source
++    }
++
++    pub(crate) fn content_key(&self) -> u64 {
++        self.content_key
++    }
++}
++
++fn content_key(source: &DecodedTexture) -> u64 {
++    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
++    const PRIME: u64 = 0x0000_0100_0000_01b3;
++    let mut hash = OFFSET;
++    for byte in source
++        .width
++        .to_le_bytes()
++        .into_iter()
++        .chain(source.height.to_le_bytes())
++        .chain(source.rgba8.iter().copied())
++    {
++        hash ^= u64::from(byte);
++        hash = hash.wrapping_mul(PRIME);
++    }
++    hash
++}
++
++struct LinearEnvironment {
++    width: u32,
++    height: u32,
++    pixels: Vec<Vec3>,
++}
++
++impl LinearEnvironment {
++    fn from_source(source: &DecodedTexture) -> Self {
++        let pixels = source
++            .rgba8
++            .chunks_exact(4)
++            .map(|rgba| {
++                Vec3::new(
++                    srgb_u8_to_linear(rgba[0]),
++                    srgb_u8_to_linear(rgba[1]),
++                    srgb_u8_to_linear(rgba[2]),
++                )
++            })
++            .collect();
++        Self {
++            width: source.width,
++            height: source.height,
++            pixels,
++        }
++    }
++
++    fn sample(&self, direction: Vec3) -> Vec3 {
++        let direction = direction.normalize_or_zero();
++        if direction == Vec3::ZERO {
++            return Vec3::ZERO;
++        }
++        let u = direction.z.atan2(direction.x) / std::f32::consts::TAU + 0.5;
++        let v = direction.y.clamp(-1.0, 1.0).acos() / std::f32::consts::PI;
++        let x = u * self.width as f32 - 0.5;
++        let y = v * self.height.saturating_sub(1) as f32;
++        let x0 = x.floor() as i32;
++        let y0 = y
++            .floor()
++            .clamp(0.0, self.height.saturating_sub(1) as f32) as u32;
++        let x1 = x0 + 1;
++        let y1 = (y0 + 1).min(self.height - 1);
++        let tx = x - x.floor();
++        let ty = y - y.floor();
++        let width = self.width as i32;
++        let wrap = |value: i32| value.rem_euclid(width) as u32;
++        let at = |px: u32, py: u32| self.pixels[(py * self.width + px) as usize];
++        let top = at(wrap(x0), y0).lerp(at(wrap(x1), y0), tx);
++        let bottom = at(wrap(x0), y1).lerp(at(wrap(x1), y1), tx);
++        top.lerp(bottom, ty)
++    }
++}
++
++fn srgb_u8_to_linear(value: u8) -> f32 {
++    let value = f32::from(value) / 255.0;
++    if value <= 0.04045 {
++        value / 12.92
++    } else {
++        ((value + 0.055) / 1.055).powf(2.4)
++    }
++}
++
++struct BakedEnvironment {
++    irradiance: Vec<Vec3>,
++    specular_mips: Vec<Vec<Vec3>>,
++}
++
++fn bake_environment(source: &LinearEnvironment) -> BakedEnvironment {
++    bake_environment_with_options(
++        source,
++        IRRADIANCE_CUBE_SIZE,
++        PREFILTERED_CUBE_SIZE,
++        ENVIRONMENT_SAMPLE_COUNT,
++    )
++}
++
++fn bake_environment_with_options(
++    source: &LinearEnvironment,
++    irradiance_size: u32,
++    specular_size: u32,
++    sample_count: u32,
++) -> BakedEnvironment {
