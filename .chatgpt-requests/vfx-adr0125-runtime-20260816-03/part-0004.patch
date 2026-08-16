@@ -1,0 +1,121 @@
++fn module_salt(module: &VfxModuleId) -> u32 {
++    let mut hash = 0x811C_9DC5_u32;
++    for byte in module.as_str().bytes() {
++        hash ^= u32::from(byte);
++        hash = hash.wrapping_mul(0x0100_0193);
++    }
++    hash
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use engine_authoring::{
++        CompiledVfxOperation, VfxAttributeLayout, VfxCapabilityRequirements, VfxCurve,
++        VfxCurveInterpolation, VfxCurveKey, VfxCurveKeyId, VfxGradient, VfxModuleOperation,
++        VfxRandomChannel,
++    };
++
++    fn emitter_id() -> VfxEmitterId {
++        VfxEmitterId::try_new("vfxemitter_00000000000000000000000000")
++            .expect("test emitter ID")
++    }
++
++    fn module_id(index: u8) -> VfxModuleId {
++        VfxModuleId::try_new(format!("vfxmodule_0000000000000000000000000{index:X}"))
++            .expect("test module ID")
++    }
++
++    fn operation(index: u8, operation: VfxModuleOperation) -> CompiledVfxOperation {
++        CompiledVfxOperation {
++            source_module: module_id(index),
++            operation,
++        }
++    }
++
++    fn effect(max_particles: u32) -> CompiledVfxEffect {
++        CompiledVfxEffect {
++            source_schema_version: 1,
++            seed: 42,
++            max_particles,
++            emitters: vec![CompiledVfxEmitter {
++                source: emitter_id(),
++                name: "test".to_owned(),
++                max_particles,
++                attribute_layout: VfxAttributeLayout {
++                    velocity: true,
++                    color: true,
++                    size: true,
++                    rotation: false,
++                },
++                spawn_operations: vec![
++                    operation(
++                        1,
++                        VfxModuleOperation::SpawnRate {
++                            particles_per_second: 20.0,
++                        },
++                    ),
++                    operation(
++                        2,
++                        VfxModuleOperation::Shape {
++                            shape: VfxShape::Cone {
++                                direction: [0.0, 1.0, 0.0],
++                                angle_radians: 0.5,
++                                radius: 0.0,
++                            },
++                        },
++                    ),
++                    operation(
++                        3,
++                        VfxModuleOperation::Lifetime {
++                            value: VfxScalarValue::Range {
++                                min: 1.0,
++                                max: 2.0,
++                                channel: VfxRandomChannel::new(0),
++                            },
++                        },
++                    ),
++                    operation(
++                        4,
++                        VfxModuleOperation::InitialSpeed {
++                            value: VfxScalarValue::Range {
++                                min: 2.0,
++                                max: 4.0,
++                                channel: VfxRandomChannel::new(1),
++                            },
++                        },
++                    ),
++                    operation(
++                        5,
++                        VfxModuleOperation::InitialColor {
++                            color: [1.0, 0.5, 0.25, 1.0],
++                        },
++                    ),
++                    operation(
++                        6,
++                        VfxModuleOperation::InitialSize {
++                            value: VfxScalarValue::Constant { value: 2.0 },
++                        },
++                    ),
++                ],
++                update_operations: vec![
++                    operation(
++                        7,
++                        VfxModuleOperation::Force {
++                            acceleration: [0.0, -9.8, 0.0],
++                        },
++                    ),
++                    operation(
++                        8,
++                        VfxModuleOperation::ColorOverLife {
++                            gradient: VfxGradient::linear(
++                                [1.0, 0.5, 0.25, 1.0],
++                                [0.0, 0.0, 0.0, 0.0],
++                            ),
++                        },
++                    ),
++                    operation(
++                        9,
++                        VfxModuleOperation::SizeOverLife {
++                            curve: VfxCurve {
++                                keys: vec![
