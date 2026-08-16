@@ -1,0 +1,273 @@
++                *graph = *candidate;
++                Ok(GraphAuthoringMutation {
++                    success: true,
++                    base_revision: expected_revision,
++                    base_generation: expected_generation,
++                    revision: graph.revision(),
++                    generation: graph.identity(),
++                    diagnostics,
++                    diff,
++                })
++            }
++            GraphCommandApplication::Rejected { diagnostics, diff } => Ok(GraphAuthoringMutation {
++                success: false,
++                base_revision: expected_revision,
++                base_generation: expected_generation,
++                revision: expected_revision,
++                generation: expected_generation,
++                diagnostics,
++                diff,
++            }),
++        }
++    }
++}
++
++fn mutation_from_application(
++    application: GraphCommandApplication,
++    base_revision: u64,
++    base_generation: u64,
++) -> GraphAuthoringMutation {
++    match application {
++        GraphCommandApplication::Applied {
++            diagnostics, diff, ..
++        } => GraphAuthoringMutation {
++            success: true,
++            base_revision,
++            base_generation,
++            revision: base_revision,
++            generation: base_generation,
++            diagnostics,
++            diff,
++        },
++        GraphCommandApplication::Rejected { diagnostics, diff } => GraphAuthoringMutation {
++            success: false,
++            base_revision,
++            base_generation,
++            revision: base_revision,
++            generation: base_generation,
++            diagnostics,
++            diff,
++        },
++    }
++}
++
++fn ensure_current(
++    graph: &Graph,
++    expected_revision: u64,
++    expected_generation: u64,
++) -> Result<(), GraphAuthoringError> {
++    let actual_revision = graph.revision();
++    let actual_generation = graph.identity();
++    if actual_revision == expected_revision && actual_generation == expected_generation {
++        return Ok(());
++    }
++    Err(GraphAuthoringError::Stale {
++        expected_revision,
++        expected_generation,
++        actual_revision,
++        actual_generation,
++    })
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use crate::graph_domain::TestGraphDomain;
++    use crate::{EdgeId, GraphId, NodeId};
++
++    fn writable() -> AuthoringPermissions {
++        AuthoringPermissions::read_only()
++            .with(AuthoringPermission::Preview)
++            .with(AuthoringPermission::ProjectDataWrite)
++    }
++
++    fn valid_graph(domain: &TestGraphDomain) -> Graph {
++        let mut graph = Graph::new(
++            GraphId::generate(),
++            domain.graph_kind().clone(),
++            "shared_graph",
++        );
++        let root = NodeId::generate();
++        let action = NodeId::generate();
++        graph
++            .nodes
++            .insert(root.clone(), domain.root_node(root.clone()));
++        graph
++            .nodes
++            .insert(action.clone(), domain.action_node(action.clone(), "act"));
++        let edge = EdgeId::generate();
++        graph.edges.insert(
++            edge.clone(),
++            domain.root_to_action_edge(edge, root, action),
++        );
++        graph
++    }
++
++    #[test]
++    fn preview_is_non_destructive_and_apply_advances_one_revision() {
++        let domain = TestGraphDomain::new();
++        let service = GraphAuthoringService::new();
++        let mut graph = valid_graph(&domain);
++        let base = service.inspect(&graph, &writable()).expect("inspect");
++        let node = NodeId::generate();
++        let command = GraphCommand::AddNode {
++            node: domain.number_source_node(node.clone()),
++        };
++
++        let preview = service
++            .preview(
++                &graph,
++                &domain,
++                &writable(),
++                base.revision,
++                base.generation,
++                vec![command.clone()],
++            )
++            .expect("preview");
++        assert!(preview.success);
++        assert_eq!(preview.diff.len(), 1);
++        assert!(!graph.nodes.contains_key(&node));
++        assert_eq!(preview.revision, base.revision);
++
++        let applied = service
++            .apply(
++                &mut graph,
++                &domain,
++                &writable(),
++                base.revision,
++                base.generation,
++                vec![command],
++            )
++            .expect("apply");
++        assert!(applied.success);
++        assert!(graph.nodes.contains_key(&node));
++        assert_eq!(applied.revision, base.revision + 1);
++        assert_eq!(applied.generation, base.generation);
++    }
++
++    #[test]
++    fn domain_rejection_leaves_live_graph_unchanged() {
++        let domain = TestGraphDomain::new();
++        let service = GraphAuthoringService::new();
++        let mut graph = valid_graph(&domain);
++        let base = service.inspect(&graph, &writable()).expect("inspect");
++        let extra_root = NodeId::generate();
++
++        let result = service
++            .apply(
++                &mut graph,
++                &domain,
++                &writable(),
++                base.revision,
++                base.generation,
++                vec![GraphCommand::AddNode {
++                    node: domain.root_node(extra_root.clone()),
++                }],
++            )
++            .expect("domain rejection is a structured result");
++
++        assert!(!result.success);
++        assert!(!graph.nodes.contains_key(&extra_root));
++        assert_eq!(graph.revision(), base.revision);
++        assert!(result
++            .diagnostics
++            .iter()
++            .any(|diagnostic| diagnostic.code == "test_domain.multiple_roots"));
++    }
++
++    #[test]
++    fn stale_generation_rejects_an_aba_round_trip() {
++        let domain = TestGraphDomain::new();
++        let service = GraphAuthoringService::new();
++        let graph = valid_graph(&domain);
++        let base = service.inspect(&graph, &writable()).expect("inspect");
++        let json = serde_json::to_string(&graph).expect("serialize graph");
++        let mut restored: Graph = serde_json::from_str(&json).expect("restore graph");
++        assert_eq!(restored.revision(), base.revision);
++        assert_ne!(restored.identity(), base.generation);
++
++        let error = service
++            .apply(
++                &mut restored,
++                &domain,
++                &writable(),
++                base.revision,
++                base.generation,
++                Vec::new(),
++            )
++            .expect_err("restored generation must reject stale base");
++        assert_eq!(error.code(), "authoring.stale_revision");
++    }
++
++    #[test]
++    fn write_requires_shared_project_data_permission() {
++        let domain = TestGraphDomain::new();
++        let service = GraphAuthoringService::new();
++        let mut graph = valid_graph(&domain);
++        let permissions = AuthoringPermissions::read_only();
++        let base = service.inspect(&graph, &permissions).expect("read is allowed");
++
++        let error = service
++            .apply(
++                &mut graph,
++                &domain,
++                &permissions,
++                base.revision,
++                base.generation,
++                Vec::new(),
++            )
++            .expect_err("read-only access must reject apply");
++        assert_eq!(error.code(), "authoring.permission_denied");
++    }
++}
+diff --git a/crates/authoring/src/lib.rs b/crates/authoring/src/lib.rs
+index 63236d79cb5a26e30a7ca5e8fd60f7b9f1fb8725..b7c88b0689817622202f43ec590dc17d889ae0c5 100644
+--- a/crates/authoring/src/lib.rs
++++ b/crates/authoring/src/lib.rs
+@@ -105,6 +105,10 @@ pub use game_project::{
+     refresh_game_module_indexes, rust_declarations, GameProjectError, RustDeclaration,
+     RustDeclarationKind, RustScriptKind, RustScriptSchedule, RECOMMENDED_RUST_SCRIPT_FOLDERS,
+ };
++pub use graph::authoring_service::{
++    GraphAuthoringError, GraphAuthoringMutation, GraphAuthoringService, GraphAuthoringSnapshot,
++    GraphAuthoringValidation,
++};
+ pub use graph::{
+     Annotations, DottedIdError, Edge, Graph, GraphChange, GraphCommand, GraphCommandResult,
+     GraphKind, GraphSaveError, GraphSchemaRegistry, GraphTransaction, GraphTransactionCommit,
+@@ -148,6 +152,10 @@ pub use scene_authoring::{
+ };
+ pub use schema::{ComponentSchema, ComponentSchemaRegistry, FieldSchema, FieldType};
+ pub use transaction::{AuthoringSession, Transaction, TransactionError};
++pub use ui::authoring_service::{
++    UiAuthoringError, UiAuthoringMutation, UiAuthoringService, UiAuthoringSession,
++    UiAuthoringSnapshot, UiAuthoringValidation,
++};
+ pub use ui::{
+     UiAnchor, UiDocument, UiDocumentError, UiElementConstraints, UiLayout, UiNode, UiNodeKind,
+     UiNumber, UiScaleMatch, UiScalePolicy, UiString, UI_SCHEMA_VERSION,
+diff --git a/crates/authoring/src/ui.rs b/crates/authoring/src/ui.rs
+index bdb04a5f0e42a0f5b8b0a5dec1c2cab409fdd840..3346c6f724692db37a91f7668f0097257c5c6199 100644
+--- a/crates/authoring/src/ui.rs
++++ b/crates/authoring/src/ui.rs
+@@ -12,6 +12,10 @@
+ //! resolved at draw time from a `UiBindings` table; this module owns their
+ //! persisted representation, not runtime binding resolution.
+ 
++/// Shared structured authoring service for declarative UI documents.
++#[path = "ui_authoring.rs"]
++pub mod authoring_service;
++
+ use crate::diagnostic::Diagnostic;
+ use serde::{Deserialize, Deserializer, Serialize, Serializer};
+ use std::collections::{BTreeMap, BTreeSet};
+diff --git a/crates/authoring/src/ui_authoring.rs b/crates/authoring/src/ui_authoring.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..9efbe533383ab526dacc7bcc1f71eab9855a0f32
+--- /dev/null
++++ b/crates/authoring/src/ui_authoring.rs
+@@ -0,0 +1,546 @@
++//! Shared declarative UI query and mutation service.
++//!
++//! The service owns adapter-neutral permissions, stale-base protection,
++//! non-destructive preview, validation, and one-batch commit semantics over
