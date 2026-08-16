@@ -811,7 +811,7 @@ fn truncate_text(text: &str, max_chars: usize) -> String {
         return text.to_owned();
     }
     let mut output = text.chars().take(max_chars).collect::<String>();
-    output.push_str("…");
+    output.push('…');
     output
 }
 
