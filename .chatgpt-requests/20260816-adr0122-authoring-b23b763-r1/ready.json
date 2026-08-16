@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "request_id": "20260816-adr0122-authoring-b23b763-r1",
+  "target_branch": "chatgpt/gameengine-adr0122-spatial-audio-ecs",
+  "expected_head_sha": "b23b76351aa923796326a52744e8462c131faa2f",
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Add ADR 0122 spatial audio authoring policy",
+  "pr_title": "Continue ADR 0122 spatial audio ECS synchronization",
+  "pr_body": "Continues Draft PR #71 from the current main baseline. Adds the current Audio Emitter and Audio Listener authoring policy for ADR 0122: rolloff, looping, listener priority, deterministic selection, current schema versions, scene validation, and updated runtime conversion/tests. Project Rust spatial commands and Editor authoring UX follow on fresh dispatcher requests."
+}
