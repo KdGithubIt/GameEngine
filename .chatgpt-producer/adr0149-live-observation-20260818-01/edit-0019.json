@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/remote_ai_studio.rs","old":"renderSnapshot(s);const run=s.active_run;if(run){","new":"renderSnapshot(s);const run=s.active_run;if(live&&live.run_id!==run?.id)resetLiveView();if(run){"}
