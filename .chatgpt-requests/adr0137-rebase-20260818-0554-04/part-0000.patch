@@ -1,0 +1,523 @@
+diff --git a/crates/authoring/src/diagnostic.rs b/crates/authoring/src/diagnostic.rs
+index 46b67c58c1dbfc9d90a1c485724d44cf97a4f99b..0c39e1be315d58db9b8f66cd60557860ffe0e21b 100644
+--- a/crates/authoring/src/diagnostic.rs
++++ b/crates/authoring/src/diagnostic.rs
+@@ -7,6 +7,7 @@
+ 
+ use crate::id::{AssetId, ComponentTypeId, EdgeId, EntityId, GraphId, GroupId, NodeId, PortId};
+ use serde::{Deserialize, Serialize};
++use std::collections::BTreeMap;
+ 
+ /// The importance of a [`Diagnostic`] message.
+ #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+@@ -121,6 +122,20 @@ pub struct Diagnostic {
+     #[serde(skip_serializing_if = "Option::is_none")]
+     pub target: Option<DiagnosticTarget>,
+ 
++    /// Additional stable authoring objects that participate in the same semantic issue.
++    ///
++    /// Presentation layers may project these into repair actions. They are semantic
++    /// identities only: no window, tab, or widget routing is stored here.
++    #[serde(default, skip_serializing_if = "Vec::is_empty")]
++    pub related_targets: Vec<DiagnosticTarget>,
++
++    /// Domain-owned structured evidence that has no existing [`DiagnosticTarget`] variant.
++    ///
++    /// Keys are stable machine-readable names; values are stable IDs or explanatory
++    /// labels. Display labels must never be used as identity.
++    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
++    pub context: BTreeMap<String, String>,
++
+     /// Wall-clock time in milliseconds since the UNIX epoch when this diagnostic was created.
+     ///
+     /// `None` for diagnostics loaded from JSON that pre-dates this field.
+@@ -136,6 +151,8 @@ impl Diagnostic {
+             code: code.into(),
+             message: message.into(),
+             target: None,
++            related_targets: Vec::new(),
++            context: BTreeMap::new(),
+             timestamp_ms: None,
+         }
+     }
+@@ -147,6 +164,8 @@ impl Diagnostic {
+             code: code.into(),
+             message: message.into(),
+             target: None,
++            related_targets: Vec::new(),
++            context: BTreeMap::new(),
+             timestamp_ms: None,
+         }
+     }
+@@ -158,6 +177,8 @@ impl Diagnostic {
+             code: code.into(),
+             message: message.into(),
+             target: None,
++            related_targets: Vec::new(),
++            context: BTreeMap::new(),
+             timestamp_ms: None,
+         }
+     }
+@@ -168,6 +189,25 @@ impl Diagnostic {
+         self
+     }
+ 
++    /// Attaches additional semantic navigation targets to this diagnostic.
++    pub fn with_related_targets(
++        mut self,
++        targets: impl IntoIterator<Item = DiagnosticTarget>,
++    ) -> Self {
++        self.related_targets.extend(targets);
++        self
++    }
++
++    /// Attaches one domain-owned structured evidence value.
++    pub fn with_context_value(
++        mut self,
++        key: impl Into<String>,
++        value: impl Into<String>,
++    ) -> Self {
++        self.context.insert(key.into(), value.into());
++        self
++    }
++
+     /// Stamps this diagnostic with the current wall-clock time.
+     pub fn with_timestamp_now(mut self) -> Self {
+         self.timestamp_ms = Some(
+@@ -269,6 +309,26 @@ mod tests {
+         assert_eq!(diagnostic, loaded);
+     }
+ 
++    #[test]
++    fn diagnostic_related_targets_and_context_survive_roundtrip() {
++        let graph = GraphId::generate();
++        let node = NodeId::generate();
++        let diagnostic = Diagnostic::error("anim.binding", "missing binding")
++            .with_related_targets([DiagnosticTarget::Node {
++                graph: graph.clone(),
++                node: node.clone(),
++            }])
++            .with_context_value("motion_slot_id", "motion_01ARZ3NDEKTSV4RRFFQ69G5FAV");
++
++        let json = serde_json::to_string(&diagnostic).unwrap();
++        let loaded: Diagnostic = serde_json::from_str(&json).unwrap();
++        assert_eq!(diagnostic, loaded);
++        assert_eq!(
++            loaded.related_targets,
++            vec![DiagnosticTarget::Node { graph, node }]
++        );
++    }
++
+     #[test]
+     fn severity_ordering_error_greater_than_warning() {
+         assert!(Severity::Error > Severity::Warning);
+diff --git a/crates/editor/src/problems.rs b/crates/editor/src/problems.rs
+index 05b7ea9e9b9eb20c662a4a5190083848738290bb..0014ffc80c7de9bef6c88ec04a581302697d9a52 100644
+--- a/crates/editor/src/problems.rs
++++ b/crates/editor/src/problems.rs
+@@ -44,6 +44,8 @@ impl SeverityFilter {
+ pub struct ProblemsOutput {
+     /// Diagnostic clicked for editor navigation or a dedicated detail view.
+     pub clicked: Option<Diagnostic>,
++    /// Related semantic target selected from an explicit repair action.
++    pub navigate_to: Option<DiagnosticTarget>,
+     /// Whether the persistent code-suppression preference changed.
+     pub suppression_changed: bool,
+ }
+@@ -117,6 +119,20 @@ impl ProblemsPanel {
+         self.active_count(Severity::Error) + self.active_count(Severity::Warning)
+     }
+ 
++    /// Highest active severity targeting an entity or one of its components.
++    pub fn entity_severity(&self, entity: &engine_authoring::EntityId) -> Option<Severity> {
++        self.problems
++            .iter()
++            .filter(|diagnostic| !self.is_suppressed(diagnostic))
++            .filter(|diagnostic| match diagnostic.target.as_ref() {
++                Some(DiagnosticTarget::Entity { id }) => id == entity,
++                Some(DiagnosticTarget::Component { entity: id, .. }) => id == entity,
++                _ => false,
++            })
++            .map(|diagnostic| diagnostic.severity)
++            .max()
++    }
++
+     /// Draws the Problems panel into `ui`.
+     ///
+     /// Returns the full [`Diagnostic`] the user clicked, if any. Callers that
+@@ -237,6 +253,16 @@ impl ProblemsPanel {
+                             &group.code,
+                             &mut suppress_code,
+                         );
++                        if !diagnostic.related_targets.is_empty() {
++                            ui.horizontal_wrapped(|ui| {
++                                ui.small("Repair:");
++                                for target in &diagnostic.related_targets {
++                                    if ui.small_button(repair_action_label(target)).clicked() {
++                                        output.navigate_to = Some(target.clone());
++                                    }
++                                }
++                            });
++                        }
+                         continue;
+                     }
+ 
+@@ -274,6 +300,16 @@ impl ProblemsPanel {
+                                 }
+                                 response.clone().on_hover_text(target_hover_text(target));
+                             }
++                            if !diagnostic.related_targets.is_empty() {
++                                ui.horizontal_wrapped(|ui| {
++                                    ui.small("Repair:");
++                                    for target in &diagnostic.related_targets {
++                                        if ui.small_button(repair_action_label(target)).clicked() {
++                                            output.navigate_to = Some(target.clone());
++                                        }
++                                    }
++                                });
++                            }
+                         }
+                     });
+ 
+@@ -488,6 +524,21 @@ fn problem_text(diagnostic: &Diagnostic) -> String {
+     format!("[{}] {}", diagnostic.code, diagnostic.message)
+ }
+ 
++/// Compact label for one explicit Problems repair action.
++fn repair_action_label(target: &DiagnosticTarget) -> &'static str {
++    match target {
++        DiagnosticTarget::Entity { .. } => "Select Entity",
++        DiagnosticTarget::Component { .. } => "Reveal Component",
++        DiagnosticTarget::Asset { .. } => "Open Asset",
++        DiagnosticTarget::Graph { .. } => "Open Graph",
++        DiagnosticTarget::Node { .. } => "Frame State",
++        DiagnosticTarget::Edge { .. } => "Frame Edge",
++        DiagnosticTarget::Port { .. } => "Frame Port",
++        DiagnosticTarget::Group { .. } => "Frame Group",
++        DiagnosticTarget::SourceFile { .. } => "Open Source",
++    }
++}
++
+ /// Describes a diagnostic navigation target for the row's hover tooltip.
+ fn target_hover_text(target: &DiagnosticTarget) -> String {
+     match target {
+diff --git a/crates/editor/src/scene_view.rs b/crates/editor/src/scene_view.rs
+index 1a80ede19c672708178c353dd324b2059db54c86..9f3d77d88bc3d16a11230f13f5c519e4bd931575 100644
+--- a/crates/editor/src/scene_view.rs
++++ b/crates/editor/src/scene_view.rs
+@@ -877,14 +877,7 @@ impl PreviewNotice {
+     ///
+     /// The first skipped component target is preserved when available so a
+     /// Problems-panel click can navigate to the affected authoring component.
+-    fn skipped_components(
+-        message: String,
+-        target: Option<engine_authoring::DiagnosticTarget>,
+-    ) -> Self {
+-        let mut diagnostic = Diagnostic::warning("editor.scene_view.components_skipped", message);
+-        if let Some(target) = target {
+-            diagnostic = diagnostic.with_target(target);
+-        }
++    fn skipped_components(diagnostic: Diagnostic) -> Self {
+         Self::SkippedComponents(diagnostic)
+     }
+ 
+@@ -1961,42 +1954,46 @@ impl SceneView {
+                 .preview_notice
+                 .as_ref()
+                 .expect("a preview notice exists when it is ready to draw");
+-            let diagnostic = notice.diagnostic();
+-            let (background, foreground) = match notice {
+-                PreviewNotice::Failure(_) => (
+-                    egui::Color32::from_rgba_unmultiplied(80, 12, 12, 220),
+-                    egui::Color32::LIGHT_RED,
+-                ),
+-                PreviewNotice::SkippedComponents(_) => (
+-                    egui::Color32::from_rgba_unmultiplied(84, 62, 8, 220),
+-                    egui::Color32::LIGHT_YELLOW,
+-                ),
+-            };
+-            let text_padding = 12.0;
+-            let notice_width = (rect.width() - 16.0).max(1.0);
+-            let text_width = (notice_width - text_padding * 2.0).max(1.0);
+-            let galley = ui.painter().layout(
+-                diagnostic.message.clone(),
+-                egui::FontId::proportional(18.0),
+-                foreground,
+-                text_width,
+-            );
+-            let maximum_height = (rect.height() - 16.0).max(1.0);
+-            let notice_height = (galley.size().y + text_padding * 2.0)
+-                .max(56.0)
+-                .min(maximum_height);
+-            let notice_rect = egui::Rect::from_min_size(
+-                rect.left_top() + egui::vec2(8.0, 8.0),
+-                egui::vec2(notice_width, notice_height),
+-            );
+-            ui.painter().rect_filled(notice_rect, 4.0, background);
+-            ui.painter()
+-                .with_clip_rect(notice_rect.shrink(text_padding))
+-                .galley(
+-                    notice_rect.min + egui::vec2(text_padding, text_padding),
+-                    galley,
+-                    foreground,
+-                );
++            match notice {
++                PreviewNotice::Failure(diagnostic) => {
++                    let background = egui::Color32::from_rgba_unmultiplied(80, 12, 12, 220);
++                    let foreground = egui::Color32::LIGHT_RED;
++                    let text_padding = 12.0;
++                    let notice_width = (rect.width() - 16.0).max(1.0);
++                    let text_width = (notice_width - text_padding * 2.0).max(1.0);
++                    let galley = ui.painter().layout(
++                        diagnostic.message.clone(),
++                        egui::FontId::proportional(18.0),
++                        foreground,
++                        text_width,
++                    );
++                    let maximum_height = (rect.height() - 16.0).max(1.0);
++                    let notice_height = (galley.size().y + text_padding * 2.0)
++                        .max(56.0)
++                        .min(maximum_height);
++                    let notice_rect = egui::Rect::from_min_size(
++                        rect.left_top() + egui::vec2(8.0, 8.0),
++                        egui::vec2(notice_width, notice_height),
++                    );
++                    ui.painter().rect_filled(notice_rect, 4.0, background);
++                    ui.painter()
++                        .with_clip_rect(notice_rect.shrink(text_padding))
++                        .galley(
++                            notice_rect.min + egui::vec2(text_padding, text_padding),
++                            galley,
++                            foreground,
++                        );
++                }
++                PreviewNotice::SkippedComponents(_) => {
++                    ui.painter().text(
++                        rect.right_top() + egui::vec2(-8.0, 8.0),
++                        egui::Align2::RIGHT_TOP,
++                        "Preview incomplete · see Problems",
++                        egui::TextStyle::Small.resolve(ui.style()),
++                        egui::Color32::LIGHT_YELLOW,
++                    );
++                }
++            }
+         }
+ 
+         SceneViewOutput {
+@@ -2393,6 +2390,18 @@ fn skipped_component_notice(diagnostics: &[engine_authoring::Diagnostic]) -> Opt
+         .filter(|diagnostic| diagnostic.code == engine::scene_bridge::COMPONENT_SKIPPED_DIAGNOSTIC)
+         .collect();
+     let first = skipped.first()?;
++
++    // Prefer a domain-owned semantic cause emitted by the component converter.
++    // The mechanism-oriented skip remains in bridge diagnostics for Console and
++    // engineering evidence, but Problems receives the repairable fact.
++    if let Some(semantic) = diagnostics.iter().find(|diagnostic| {
++        diagnostic.code != engine::scene_bridge::COMPONENT_SKIPPED_DIAGNOSTIC
++            && diagnostic.target == first.target
++            && diagnostic.severity != engine_authoring::Severity::Info
++    }) {
++        return Some(PreviewNotice::skipped_components(semantic.clone()));
++    }
++
+     let message = if skipped.len() == 1 {
+         first.message.clone()
+     } else {
+@@ -2402,10 +2411,13 @@ fn skipped_component_notice(diagnostics: &[engine_authoring::Diagnostic]) -> Opt
+             first.message
+         )
+     };
+-    Some(PreviewNotice::skipped_components(
+-        message,
+-        first.target.clone(),
+-    ))
++    let mut fallback = Diagnostic::warning("editor.scene_view.components_skipped", message)
++        .with_related_targets(first.related_targets.clone())
++        .with_context_value("preview_incomplete", "true");
++    if let Some(target) = first.target.clone() {
++        fallback = fallback.with_target(target);
++    }
++    Some(PreviewNotice::skipped_components(fallback))
+ }
+ 
+ fn simulate_particle_preview(world: &mut engine::ecs::World, elapsed_seconds: f32) {
+diff --git a/crates/editor/src/ui/chrome.rs b/crates/editor/src/ui/chrome.rs
+index d0a0ad9bb9b766e3dbc50ed11ff0ad4908a4cf05..0b5d13a785e9f532cafaccdba02a9627c909f585 100644
+--- a/crates/editor/src/ui/chrome.rs
++++ b/crates/editor/src/ui/chrome.rs
+@@ -1097,6 +1097,9 @@ impl EditorApp {
+                         self.problems_panel.suppressed_codes();
+                     self.preferences.save();
+                 }
++                if let Some(target) = output.navigate_to {
++                    self.navigate_to_diagnostic_target(Some(target));
++                }
+                 if let Some(diagnostic) = output.clicked {
+                     // The skeleton bind report (ADR 0077 §6, AP-5) is a
+                     // detail view opened from its Problems entry rather than
+diff --git a/crates/editor/src/ui/hierarchy.rs b/crates/editor/src/ui/hierarchy.rs
+index e0f148ea3bc67648c5d5099f7b3888aa2bb69841..08cc84f2684624a0524693e95b2c793350685ced 100644
+--- a/crates/editor/src/ui/hierarchy.rs
++++ b/crates/editor/src/ui/hierarchy.rs
+@@ -140,6 +140,27 @@ impl EditorApp {
+                     egui::vec2(ui.available_width(), 24.0),
+                     egui::Layout::right_to_left(egui::Align::Center),
+                     |ui| {
++                        if let Some(severity) = self.problems_panel.entity_severity(&id) {
++                            let (symbol, color, label) = match severity {
++                                engine_authoring::Severity::Error => (
++                                    "●",
++                                    egui::Color32::from_rgb(220, 60, 60),
++                                    "Entity has errors in Problems",
++                                ),
++                                engine_authoring::Severity::Warning => (
++                                    "●",
++                                    egui::Color32::from_rgb(220, 180, 60),
++                                    "Entity has warnings in Problems",
++                                ),
++                                engine_authoring::Severity::Info => (
++                                    "●",
++                                    egui::Color32::LIGHT_GRAY,
++                                    "Entity has information in Problems",
++                                ),
++                            };
++                            ui.label(egui::RichText::new(symbol).color(color))
++                                .on_hover_text(label);
++                        }
+                         let has_state_override = !row.enabled || is_hidden || is_locked;
+                         let status_text = if has_state_override {
+                             egui::RichText::new("⋯").color(egui::Color32::YELLOW)
+diff --git a/crates/editor/src/ui/inspector/entity_panel.rs b/crates/editor/src/ui/inspector/entity_panel.rs
+index 5f4dc51ea3bc4b2a4d50c5d029b9c06a127a0237..c3efc2504c5efc657aca4fbdde0558860b9fb33c 100644
+--- a/crates/editor/src/ui/inspector/entity_panel.rs
++++ b/crates/editor/src/ui/inspector/entity_panel.rs
+@@ -235,6 +235,29 @@ impl EditorApp {
+         }
+ 
+         ui.label(format!("ID: {}", selected.as_str()));
++        if let Some(severity) = self.problems_panel.entity_severity(&selected) {
++            let (color, summary) = match severity {
++                engine_authoring::Severity::Error => (
++                    egui::Color32::from_rgb(220, 60, 60),
++                    "This entity has errors in Problems.",
++                ),
++                engine_authoring::Severity::Warning => (
++                    egui::Color32::from_rgb(220, 180, 60),
++                    "This entity has warnings in Problems.",
++                ),
++                engine_authoring::Severity::Info => (
++                    egui::Color32::LIGHT_GRAY,
++                    "This entity has information in Problems.",
++                ),
++            };
++            ui.horizontal_wrapped(|ui| {
++                ui.colored_label(color, summary);
++                if ui.small_button("Open Problems").clicked() {
++                    self.bottom_panel_tab = BottomPanelTab::Problems;
++                    self.bottom_panel_open = true;
++                }
++            });
++        }
+         if let Some(snapshot) = self
+             .runtime_state
+             .as_mut()
+diff --git a/crates/engine/src/scene_bridge.rs b/crates/engine/src/scene_bridge.rs
+index 04b473be59733fbd8f24b92c4c5484e63a6528b9..542a640842cb5d88dd77f7f25ca4c261d37c0ddd 100644
+--- a/crates/engine/src/scene_bridge.rs
++++ b/crates/engine/src/scene_bridge.rs
+@@ -1459,6 +1459,10 @@ fn component_skipped_diagnostic(
+             entity.as_str()
+         ),
+     )
++    .with_target(DiagnosticTarget::Component {
++        entity: entity.clone(),
++        component_type: component_type.clone(),
++    })
+ }
+ 
+ fn rollback_bridge_changes(
+diff --git a/crates/engine/src/scene_bridge/spawn.rs b/crates/engine/src/scene_bridge/spawn.rs
+index 1ad97a2d23a3cd83b4ec7bfb7932c59893fea72f..b6ebe0285f6e4e80f61ee1716e98e314c3cbb9ba 100644
+--- a/crates/engine/src/scene_bridge/spawn.rs
++++ b/crates/engine/src/scene_bridge/spawn.rs
+@@ -982,6 +982,80 @@ pub(crate) fn spawn_animation_controller_component(
+         if unresolved_motion_slots.contains(motion_key) {
+             return Ok(());
+         }
++
++        let slot_display_name = engine_authoring::animation_graph_motion_slots(&source_graph)
++            .ok()
++            .and_then(|slots| {
++                slots
++                    .into_iter()
++                    .find(|slot| slot.id.as_str() == motion_key)
++                    .map(|slot| slot.display_name)
++            })
++            .unwrap_or_else(|| motion_key.to_owned());
++        let requiring_states = compiled_graph
++            .states
++            .iter()
++            .filter(|state| state.motion_key() == Some(motion_key))
++            .collect::<Vec<_>>();
++        let state_summary = requiring_states
++            .iter()
++            .map(|state| {
++                source_graph
++                    .nodes
++                    .get(&state.node_id)
++                    .and_then(|node| node.name.as_deref())
++                    .filter(|name| !name.trim().is_empty())
++                    .map_or_else(
++                        || state.node_id.as_str().to_owned(),
++                        |name| format!("{name} ({})", state.node_id.as_str()),
++                    )
++            })
++            .collect::<Vec<_>>()
++            .join(", ");
++        let graph_label = if source_graph.display_name.trim().is_empty() {
++            source_graph.name.as_str()
++        } else {
++            source_graph.display_name.as_str()
++        };
++        let set_label = context
++            .manifest
++            .get(&animation_set_asset)
++            .and_then(|entry| entry.name.as_deref())
++            .filter(|name| !name.trim().is_empty())
++            .unwrap_or_else(|| animation_set_asset.as_str());
++        let mut related_targets = vec![
++            DiagnosticTarget::Asset {
++                id: graph_asset.clone(),
++            },
++            DiagnosticTarget::Asset {
++                id: animation_set_asset.clone(),
++            },
++            DiagnosticTarget::Graph {
++                id: source_graph.id.clone(),
++            },
++        ];
++        related_targets.extend(requiring_states.iter().map(|state| DiagnosticTarget::Node {
++            graph: source_graph.id.clone(),
++            node: state.node_id.clone(),
++        }));
++        context.asset_diagnostics.push(
++            Diagnostic::error(
++                "anim.animation_set_missing_motion_slot_binding",
++                format!(
++                    "Animation Set \"{set_label}\" is missing Motion Slot \"{slot_display_name}\" ({motion_key}) required by State(s) {state_summary} in Graph \"{graph_label}\"."
++                ),
++            )
++            .with_target(DiagnosticTarget::Component {
++                entity: context.authoring_entity.id.clone(),
++                component_type: component_type.clone(),
++            })
++            .with_related_targets(related_targets)
++            .with_context_value("graph_asset_id", graph_asset.as_str())
++            .with_context_value("graph_id", source_graph.id.as_str())
++            .with_context_value("animation_set_asset_id", animation_set_asset.as_str())
++            .with_context_value("motion_slot_id", motion_key)
++            .with_context_value("motion_slot_display_name", slot_display_name),
++        );
+         return Err(fields
+             .invalid("an Animation Set binding for every graph motion slot")
+             .into());
