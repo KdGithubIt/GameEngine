@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/native_agent.rs",
+  "old": "\nstruct ParsedHttpResponse {",
+  "new": "\nfn encode_base64(bytes: &[u8]) -> String {\n    const TABLE: &[u8; 64] = b\"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/\";\n    let mut output = String::with_capacity(bytes.len().div_ceil(3) * 4);\n    for chunk in bytes.chunks(3) {\n        let first = chunk[0];\n        let second = chunk.get(1).copied().unwrap_or(0);\n        let third = chunk.get(2).copied().unwrap_or(0);\n        output.push(TABLE[(first >> 2) as usize] as char);\n        output.push(TABLE[(((first & 0x03) << 4) | (second >> 4)) as usize] as char);\n        if chunk.len() > 1 {\n            output.push(TABLE[(((second & 0x0f) << 2) | (third >> 6)) as usize] as char);\n        } else {\n            output.push('=');\n        }\n        if chunk.len() > 2 {\n            output.push(TABLE[(third & 0x3f) as usize] as char);\n        } else {\n            output.push('=');\n        }\n    }\n    output\n}\n\nstruct ParsedHttpResponse {"
+}
