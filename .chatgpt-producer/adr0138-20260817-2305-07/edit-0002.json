@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ui/graph_debug.rs","old":"                observation: GraphDebugObservation::Animation(snapshot),","new":"                observation: GraphDebugObservation::Animation(Box::new(snapshot)),"}
