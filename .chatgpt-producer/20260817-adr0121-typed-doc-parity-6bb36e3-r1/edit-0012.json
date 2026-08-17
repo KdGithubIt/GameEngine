@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/mcp/src/generic_authoring.rs",
+  "old": "/// Failure returned by generic structured authoring MCP handlers.\n#[derive(Debug)]\npub enum GenericAuthoringMcpError",
+  "new": "/// Whole-document replacement request shared by persisted typed-document tools.\n///\n/// The active Editor supplies the authoritative document and revision state;\n/// this DTO carries only the adapter-neutral semantic intent.\n#[derive(Debug, Deserialize)]\npub struct TypedDocumentMutationInput<T> {\n    /// Authoritative document revision observed by the caller.\n    pub expected_revision: u64,\n    /// Authoritative in-memory generation observed by the caller.\n    pub expected_generation: u64,\n    /// Complete typed replacement evaluated by the shared authoring service.\n    pub replacement: T,\n}\n\n/// Failure returned by generic structured authoring MCP handlers.\n#[derive(Debug)]\npub enum GenericAuthoringMcpError"
+}
