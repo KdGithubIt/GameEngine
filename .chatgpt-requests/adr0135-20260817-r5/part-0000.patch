@@ -1,0 +1,135 @@
+diff --git a/crates/editor/src/agent_host.rs b/crates/editor/src/agent_host.rs
+index df8f7711a7284a49e39dde4f5d96866a61441353..936ab9971e168f514871a68b0dc91961536938b4 100644
+--- a/crates/editor/src/agent_host.rs
++++ b/crates/editor/src/agent_host.rs
+@@ -374,6 +374,8 @@ impl Default for AgentWorkingState {
+     }
+ }
+ 
++// First-release semantic working-state update contract; provider wiring is intentionally optional.
++#[allow(dead_code)]
+ #[derive(Debug, Clone, Default)]
+ pub(crate) struct AgentWorkingStateUpdate {
+     pub(crate) architecture_constraints: Vec<String>,
+@@ -925,6 +927,8 @@ impl AgentHost {
+         self.persist_session(&session_id)
+     }
+ 
++    // First-release semantic working-state update contract; providers may opt into it incrementally.
++    #[allow(dead_code)]
+     pub(crate) fn record_working_state_update(
+         &mut self,
+         run_id: &str,
+diff --git a/crates/editor/src/ai_studio.rs b/crates/editor/src/ai_studio.rs
+index 4b2ce292b2b9c989c0b85bd5929cd11cea7af0c2..ff64613eab0c42e30d0989007057b797d4c5cb61 100644
+--- a/crates/editor/src/ai_studio.rs
++++ b/crates/editor/src/ai_studio.rs
+@@ -63,6 +63,7 @@ fn default_local_model_endpoint() -> String {
+     DEFAULT_LOCAL_MODEL_ENDPOINT.to_owned()
+ }
+ 
++/// Authoritative Editor identity captured across native-inference interruption boundaries.
+ #[derive(Debug, Clone, PartialEq, Eq)]
+ pub struct AiStudioAuthoritativeState {
+     /// Unique Editor document revision observed at the resource-control boundary.
+@@ -216,7 +217,10 @@ impl AiStudioConnection {
+ #[derive(Debug, Clone, Copy, PartialEq)]
+ pub enum AiStudioRuntimeAction {
+     /// Suspend optional Editor presentation and release recreatable GPU resources.
+-    EnterInferenceFocused { reclaim: AiStudioReclaimLevel },
++    EnterInferenceFocused {
++        /// Reclaim level selected by the application-layer resource broker.
++        reclaim: AiStudioReclaimLevel,
++    },
+     /// Restore normal Editor presentation; completion is reported after one drawn frame.
+     RestoreEditorPresentation,
+     /// Capture current authoritative Editor revision/generation before resuming a run.
+@@ -234,9 +238,15 @@ pub enum AiStudioRuntimeAction {
+ /// Result of one managed Editor-runtime operation returned to AI Studio.
+ pub enum AiStudioRuntimeResult {
+     /// Optional Editor presentation is suspended at the requested reclaim level.
+-    InferenceFocusedEntered { reclaim: AiStudioReclaimLevel },
++    InferenceFocusedEntered {
++        /// Reclaim level that was applied before native inference.
++        reclaim: AiStudioReclaimLevel,
++    },
+     /// Restore was requested and authoritative state was captured before manual editing.
+-    EditorRestorePending { state: AiStudioAuthoritativeState },
++    EditorRestorePending {
++        /// Authoritative Editor identity captured before presentation restore completes.
++        state: AiStudioAuthoritativeState,
++    },
+     /// A normal Editor frame was drawn after restoration.
+     EditorRestored,
+     /// Current authoritative Editor identity was inspected for Resume.
+@@ -442,15 +452,13 @@ impl AiStudioPanel {
+                 if self.restore_for_editing {
+                     if let (Some(run_id), Some(snapshot)) =
+                         (self.active_run_id.clone(), self.interrupt_snapshot.take())
+-                    {
+-                        if let Err(error) = self
++                        && let Err(error) = self
+                             .host
+                             .interrupt_for_editing(&run_id, snapshot.into())
+-                        {
+-                            self.status = Some(error.to_string());
+-                            self.restore_for_editing = false;
+-                            return;
+-                        }
++                    {
++                        self.status = Some(error.to_string());
++                        self.restore_for_editing = false;
++                        return;
+                     }
+                     self.editing_interrupted = true;
+                     self.status = Some(
+diff --git a/crates/editor/src/resource_arbitration.rs b/crates/editor/src/resource_arbitration.rs
+index 6af068075e90fa47afa79beb285879e7145e5956..f5035d2df6579caa0225ead0a7c6a898d8e92033 100644
+--- a/crates/editor/src/resource_arbitration.rs
++++ b/crates/editor/src/resource_arbitration.rs
+@@ -114,7 +114,9 @@ impl Default for ModelResourceCapabilities {
+ }
+ 
+ /// Resource telemetry provenance. Unknown values remain explicitly unavailable.
+-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++// First-release benchmark telemetry contract; exact backend wiring is capability-dependent.
++#[allow(dead_code)]
++#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+ #[serde(tag = "availability", content = "value", rename_all = "snake_case")]
+ pub(crate) enum TelemetryValue<T> {
+     /// Value reported or measured by the owning subsystem.
+@@ -122,15 +124,10 @@ pub(crate) enum TelemetryValue<T> {
+     /// Conservative estimate used because exact measurement is unavailable.
+     ConservativeEstimate(T),
+     /// The owning subsystem cannot determine this value reliably.
++    #[default]
+     Unavailable,
+ }
+ 
+-impl<T> Default for TelemetryValue<T> {
+-    fn default() -> Self {
+-        Self::Unavailable
+-    }
+-}
+-
+ /// Observed pressure used by the application-layer broker.
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+ pub(crate) enum MemoryPressure {
+@@ -139,6 +136,8 @@ pub(crate) enum MemoryPressure {
+     /// Exact free memory is unavailable, so policy must retain conservative headroom.
+     Unknown,
+     /// Reliable evidence indicates shared-GPU pressure.
++    // Reserved for backends/renderers that can report reliable pressure in this release.
++    #[allow(dead_code)]
+     Constrained,
+ }
+ 
+@@ -283,6 +282,8 @@ pub(crate) fn resolve_resource_plan(
+ /// Every value that cannot be measured by the owning subsystem remains
+ /// [`TelemetryValue::Unavailable`]; callers must not replace it with a guessed
+ /// precise value.
++// First-release machine-readable benchmark schema; emission is enabled when owning telemetry exists.
++#[allow(dead_code)]
+ #[derive(Debug, Clone, Serialize, Deserialize)]
+ pub(crate) struct NativeBenchmarkRecord {
+     pub(crate) model_identity: String,
