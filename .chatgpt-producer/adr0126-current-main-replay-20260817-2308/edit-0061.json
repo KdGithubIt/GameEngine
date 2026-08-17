@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/engine/src/app.rs","old":"        ecs.insert_resource(Time::default());\n        ecs.insert_resource(ViewportSize::default());","new":"        ecs.insert_resource(Time::default());\n        ecs.insert_resource(ViewportSize::default());\n        ecs.insert_resource(GameCameraSelectionOverride::default());"}
