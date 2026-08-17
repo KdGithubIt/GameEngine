@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ui/mod.rs",
+  "old": "            inspector_cache: InspectorDerivedCache::default(),\n            pending_game_package: None,",
+  "new": "            inspector_cache: InspectorDerivedCache::default(),\n            inspector_scroll_request: None,\n            pending_game_package: None,"
+}
