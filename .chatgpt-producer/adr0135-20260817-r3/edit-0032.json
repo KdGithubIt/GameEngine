@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ai_studio.rs","old":"    native_question: Option<NativeQuestionTask>,\n    native_question_session: Option<String>,","new":"    native_question: Option<NativeQuestionTask>,\n    pending_native_question_start: Option<(LocalModelConfig, Vec<QuestionMessage>, String)>,\n    native_question_session: Option<String>,"}

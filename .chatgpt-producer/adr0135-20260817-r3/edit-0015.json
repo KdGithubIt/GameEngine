@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/agent_host.rs","old":"    Executing,\n    AwaitingUser,\n    Validating,","new":"    Executing,\n    AwaitingUser,\n    /// Explicit resumable control state for manual editing; not a product question.\n    InterruptedForEditing,\n    Validating,"}
