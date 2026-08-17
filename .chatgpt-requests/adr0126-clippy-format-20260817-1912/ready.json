@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0126-clippy-format-20260817-1912",
+  "target_branch": "chatgpt/gameengine-adr0126-first-release",
+  "expected_head_sha": "992671d2ab6b9065c8a08fe2148f61fbac03f41c",
+  "baseline_main_sha": "d03ed9e573818eb0ca088f37953f611d6ed4d22e",
+  "patch_sha256": "68c28778a166210da3c077e2bbe3ea27f62a7bb4d91d29a760104b39e1264aa5",
+  "patch_bytes": 7035,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Format Timeline authoring for Clippy",
+  "pr_title": "GameEngine: complete ADR0126 Timeline and Sequencer",
+  "pr_body": "## Summary\n\nContinues ADR 0126 first-release completion by removing the remaining Rust 1.97 Clippy failures in Timeline validation and command application without changing semantics.\n\n<!-- gameengine-visual-validation: editor -->\n<!-- gameengine-visual-authoring-tool: Sequencer -->"
+}
