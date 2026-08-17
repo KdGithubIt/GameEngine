@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/animation_set_editor.rs",
+  "old": "        self.push_undo();\n        let events = &mut self\n            .document\n            .bindings\n            .get_mut(slot)\n            .expect(\"binding validated before recording undo\")\n            .events;\n        events[index] = AnimationSetEvent {\n            time,\n            name: name.to_owned(),\n        };\n        events.sort_by(|left, right| {\n            left.time\n                .total_cmp(&right.time)\n                .then_with(|| left.name.cmp(&right.name))\n        });\n        Ok(())",
+  "new": "        let mut replacement = self.document.clone();\n        let events = &mut replacement\n            .bindings\n            .get_mut(slot)\n            .expect(\"binding validated before replacement\")\n            .events;\n        events[index] = AnimationSetEvent {\n            time,\n            name: name.to_owned(),\n        };\n        events.sort_by(|left, right| {\n            left.time\n                .total_cmp(&right.time)\n                .then_with(|| left.name.cmp(&right.name))\n        });\n        self.commit_editor_replacement(replacement).map(|_| ())"
+}
