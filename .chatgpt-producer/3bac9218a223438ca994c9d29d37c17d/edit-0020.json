@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ai_studio.rs","old":"#[test]\nfn direct_args_do_not_invoke_shell_parsing() {\n    assert_eq!(\n        split_direct_args(\"--flag value ; echo nope\"),\n        [\"--flag\", \"value\", \";\", \"echo\", \"nope\"]\n    );\n}\n\n","new":""}

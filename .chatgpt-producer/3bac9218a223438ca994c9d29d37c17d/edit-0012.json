@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ai_studio.rs","old":"self.native_agent_runtime = None;\nself.active_runtime_mode = None;\n","new":"self.native_agent_runtime = None;\nself.active_runtime_mode = None;\nself.active_external_provider = None;\nself.provider_failure_hint = None;\n"}
