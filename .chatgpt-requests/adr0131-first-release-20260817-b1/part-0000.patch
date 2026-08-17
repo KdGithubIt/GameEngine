@@ -1,0 +1,215 @@
+diff --git a/crates/editor/src/agent_host.rs b/crates/editor/src/agent_host.rs
+index 035bf2409c82c1924655e51c32e5bf4b497fb322..132b936f3d8c43af87eda103343469eee3fb61ca 100644
+--- a/crates/editor/src/agent_host.rs
++++ b/crates/editor/src/agent_host.rs
+@@ -565,6 +565,26 @@ pub(crate) struct CodeCheckpoint {
+     pub(crate) created_unix_ms: u64,
+ }
+ 
++#[derive(Debug, Clone, Serialize, Deserialize)]
++pub(crate) struct AssetAcquisitionRecord {
++    pub(crate) provider: String,
++    pub(crate) source: String,
++    pub(crate) license: Option<String>,
++    pub(crate) imported_paths: Vec<PathBuf>,
++    pub(crate) created_unix_ms: u64,
++}
++
++#[derive(Debug, Clone, Default, Serialize, Deserialize)]
++pub(crate) struct AgentRunAudit {
++    pub(crate) authoring_operations: u64,
++    pub(crate) code_changes: u64,
++    pub(crate) asset_acquisitions: Vec<AssetAcquisitionRecord>,
++    pub(crate) managed_runtime_inputs: u64,
++    pub(crate) raw_workspace_operations: u64,
++    pub(crate) custom_commands: u64,
++    pub(crate) permission_escalations: u64,
++}
++
+ #[derive(Debug, Clone, Serialize, Deserialize)]
+ pub(crate) struct AgentRun {
+     pub(crate) id: String,
+@@ -577,6 +597,8 @@ pub(crate) struct AgentRun {
+     pub(crate) validation_attempts: Vec<ManagedValidationAttempt>,
+     #[serde(default)]
+     pub(crate) code_checkpoints: Vec<CodeCheckpoint>,
++    #[serde(default)]
++    pub(crate) audit: AgentRunAudit,
+     pub(crate) started_unix_ms: u64,
+     pub(crate) finished_unix_ms: Option<u64>,
+ }
+@@ -754,6 +776,7 @@ impl AgentHost {
+             completion: CompletionReport::default(),
+             validation_attempts: Vec::new(),
+             code_checkpoints: Vec::new(),
++            audit: AgentRunAudit::default(),
+             started_unix_ms: unix_ms(),
+             finished_unix_ms: None,
+         };
+@@ -834,6 +857,10 @@ impl AgentHost {
+         let checkpoint_id = next_id("code-checkpoint");
+         let (session_id, _) = self.run_location(run_id)?;
+         let run = self.run_mut_in_session(&session_id, run_id)?;
++        run.audit.code_changes = run
++            .audit
++            .code_changes
++            .saturating_add(changes.len().try_into().unwrap_or(u64::MAX));
+         run.code_checkpoints.push(CodeCheckpoint {
+             id: checkpoint_id.clone(),
+             changes: changes
+@@ -889,6 +916,22 @@ impl AgentHost {
+         let action = action.into();
+         let (session_id, _) = self.run_location(run_id)?;
+         let run = self.run_mut_in_session(&session_id, run_id)?;
++        if success != Some(false) {
++            if tool.starts_with("authoring.")
++                || tool.starts_with("scene.")
++                || tool.starts_with("prefab.")
++                || tool.starts_with("vfx.")
++                || tool.starts_with("behavior_tree.")
++            {
++                run.audit.authoring_operations = run.audit.authoring_operations.saturating_add(1);
++            }
++            if tool == "workspace.raw" {
++                run.audit.raw_workspace_operations = run.audit.raw_workspace_operations.saturating_add(1);
++            }
++            if tool == "command.custom" {
++                run.audit.custom_commands = run.audit.custom_commands.saturating_add(1);
++            }
++        }
+         push_event_with_evidence(
+             run,
+             AgentEventKind::ToolAction,
+@@ -899,6 +942,63 @@ impl AgentHost {
+         self.persist_session(&session_id)
+     }
+ 
++    pub(crate) fn record_managed_runtime_input(
++        &mut self,
++        run_id: &str,
++        action: impl Into<String>,
++    ) -> Result<(), AgentHostError> {
++        let action = action.into();
++        let (session_id, _) = self.run_location(run_id)?;
++        let run = self.run_mut_in_session(&session_id, run_id)?;
++        run.audit.managed_runtime_inputs = run.audit.managed_runtime_inputs.saturating_add(1);
++        push_event_with_evidence(
++            run,
++            AgentEventKind::ToolAction,
++            format!("runtime.input: {action}"),
++            None,
++            Some(AgentEventEvidence::ToolAction {
++                tool: "runtime.input".to_owned(),
++                action,
++                success: Some(true),
++            }),
++        );
++        self.persist_session(&session_id)
++    }
++
++    pub(crate) fn record_asset_acquisition(
++        &mut self,
++        run_id: &str,
++        provider: impl Into<String>,
++        source: impl Into<String>,
++        license: Option<String>,
++        imported_paths: Vec<PathBuf>,
++    ) -> Result<(), AgentHostError> {
++        let provider = provider.into();
++        let source = sanitize_portable_text(source.into());
++        let license = license.map(sanitize_portable_text);
++        let (session_id, _) = self.run_location(run_id)?;
++        let run = self.run_mut_in_session(&session_id, run_id)?;
++        run.audit.asset_acquisitions.push(AssetAcquisitionRecord {
++            provider: provider.clone(),
++            source: source.clone(),
++            license,
++            imported_paths: imported_paths.clone(),
++            created_unix_ms: unix_ms(),
++        });
++        push_event_with_evidence(
++            run,
++            AgentEventKind::ToolAction,
++            format!("asset.acquire: {provider} imported {} asset(s)", imported_paths.len()),
++            None,
++            Some(AgentEventEvidence::ToolAction {
++                tool: "asset.acquire".to_owned(),
++                action: source,
++                success: Some(true),
++            }),
++        );
++        self.persist_session(&session_id)
++    }
++
+     pub(crate) fn record_completion_gate(
+         &mut self,
+         run_id: &str,
+@@ -952,7 +1052,9 @@ impl AgentHost {
+             let run = self.run_mut_in_session(&session_id, run_id)?;
+             run.completion.play_launch = if launched { CompletionStatus::Passed } else { CompletionStatus::Failed };
+             run.completion.interaction_scenarios = match interactions_passed {
+-                Some(true) => CompletionStatus::Passed,
++                Some(true) if run.proposal_snapshot.playtest_plan.is_empty() => CompletionStatus::NotApplicable,
++                Some(true) if run.audit.managed_runtime_inputs > 0 => CompletionStatus::Passed,
++                Some(true) => CompletionStatus::Pending,
+                 Some(false) => CompletionStatus::Failed,
+                 None if run.proposal_snapshot.playtest_plan.is_empty() => CompletionStatus::NotApplicable,
+                 None => CompletionStatus::Pending,
+@@ -1482,11 +1584,15 @@ impl AgentHost {
+         self.run(run_id)?;
+         let check = self.permissions.check(run_id, capability);
+         if check == PermissionCheck::RequiresApproval {
+-            self.record_event(
+-                run_id,
++            let (session_id, _) = self.run_location(run_id)?;
++            let run = self.run_mut_in_session(&session_id, run_id)?;
++            run.audit.permission_escalations = run.audit.permission_escalations.saturating_add(1);
++            push_event(
++                run,
+                 AgentEventKind::PermissionRequested,
+                 format!("Permission requested: {}.", capability.label()),
+-            )?;
++            );
++            self.persist_session(&session_id)?;
+         }
+         Ok(check)
+     }
+@@ -1902,6 +2008,18 @@ fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), AgentHo
+     Ok(())
+ }
+ 
++fn sanitize_portable_text(mut text: String) -> String {
++    if let Some(query) = text.find('?') {
++        text.truncate(query);
++        text.push_str("?[redacted]");
++    }
++    if text.chars().count() > MAX_PROVIDER_EVENT_CHARS {
++        text = text.chars().take(MAX_PROVIDER_EVENT_CHARS).collect();
++        text.push_str("… [truncated]");
++    }
++    text
++}
++
+ fn unix_ms() -> u64 {
+     SystemTime::now()
+         .duration_since(UNIX_EPOCH)
+@@ -2025,6 +2143,19 @@ impl CodeWorkspace {
+         &self.workspace_root
+     }
+ 
++    pub(crate) fn read_text(&self, relative: &Path) -> Result<Option<String>, AgentHostError> {
++        validate_code_relative_path(relative)?;
++        read_optional_utf8(&self.workspace_root.join(relative), relative)
++    }
++
++    pub(crate) fn write_text(&mut self, relative: &Path, text: &str) -> Result<(), AgentHostError> {
++        validate_code_relative_path(relative)?;
++        if !is_managed_code_file(relative) {
++            return Err(AgentHostError::InvalidRelativePath(relative.to_path_buf()));
++        }
++        write_text_atomic(&self.workspace_root.join(relative), text)
++    }
++
+     pub(crate) fn collect_changes(&self) -> Result<Vec<CodeChange>, AgentHostError> {
+         let mut paths = self.baseline.keys().cloned().collect::<BTreeSet<_>>();
+         collect_workspace_code_paths(&self.workspace_root, &mut paths)?;
