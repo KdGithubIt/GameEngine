@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/physics/src/navigation.rs",
+  "old": "        match astar_polygons(profile, start_ref, end_ref) {",
+  "new": "        match astar_polygons(profile, start_ref, end_ref, filter) {"
+}
