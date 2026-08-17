@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/agent_host.rs",
+  "old": "    fn new(title: String) -> Self {\n        Self {\n            schema_version: SESSION_SCHEMA_VERSION,\n            id: next_id(\"session\"),\n            title,\n            messages: Vec::new(),\n            proposal: AgentProposal::default(),\n            runs: Vec::new(),\n            shared_with_project: false,\n        }\n    }",
+  "new": "    fn new(title: String) -> Self {\n        let proposal = AgentProposal::default();\n        Self {\n            schema_version: SESSION_SCHEMA_VERSION,\n            id: next_id(\"session\"),\n            title,\n            messages: Vec::new(),\n            proposal: proposal.clone(),\n            proposal_history: vec![proposal],\n            runs: Vec::new(),\n            shared_with_project: false,\n        }\n    }"
+}
