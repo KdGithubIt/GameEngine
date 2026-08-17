@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ui/assets/model_import.rs","old":"    pub(in crate::ui) fn handle_asset_import_result(&mut self, result: AssetImportResult) {\n","new":"    pub(in crate::ui) fn handle_asset_import_result(&mut self, mut result: AssetImportResult) {\n"}
