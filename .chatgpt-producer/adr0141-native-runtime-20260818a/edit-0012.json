@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "        self.poll_native_question(context);\n        self.poll_external_process(context);",
+  "new": "        self.poll_native_question(context);\n        self.poll_native_mcp(context);\n        self.poll_native_agent_runtime(context);\n        self.poll_external_process(context);"
+}
