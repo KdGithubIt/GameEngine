@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ui/audio_authoring.rs",
+  "old": "        self.bottom_panel_open = false;\n        self.preferences",
+  "new": "        self.bottom_panel_open = false;\n        self.inspector_scroll_request = inspector_scroll_offset;\n        self.preferences"
+}
