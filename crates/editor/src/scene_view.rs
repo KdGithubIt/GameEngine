@@ -1491,6 +1491,7 @@ impl SceneView {
                         }
                     }
                 }
+                draw_navigation_authoring_gizmos(dl, render_scene);
                 if let Some(sel_id) = selected_entity
                     && let Some(info) = self.entity_pick_info.iter().find(|e| &e.id == sel_id) {
                         dl.aabb(info.center, info.half, Vec3::new(1.0, 1.0, 0.0));
@@ -2897,6 +2898,50 @@ fn lod_distances(scene: &AuthoringScene, entity: &EntityId) -> Vec<f32> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+fn draw_navigation_authoring_gizmos(lines: &mut DebugLines, scene: &AuthoringScene) {
+    let link_type = ComponentTypeId::new(engine::navigation_bake::NAVIGATION_LINK_COMPONENT);
+    let modifier_type = ComponentTypeId::new(engine::navigation_bake::NAVIGATION_MODIFIER_COMPONENT);
+    let link_color = Vec3::new(1.0, 0.65, 0.15);
+    let modifier_color = Vec3::new(0.75, 0.35, 1.0);
+
+    for (_, entity) in scene.entities() {
+        if let Some(Value::Object(fields)) = entity.components.get(&link_type) {
+            let start = Vec3::new(
+                obj_f64(fields, "start_x") as f32,
+                obj_f64(fields, "start_y") as f32,
+                obj_f64(fields, "start_z") as f32,
+            );
+            let end = Vec3::new(
+                obj_f64(fields, "end_x") as f32,
+                obj_f64(fields, "end_y") as f32,
+                obj_f64(fields, "end_z") as f32,
+            );
+            lines.line(start, end, link_color);
+            for point in [start, end] {
+                let marker = 0.18;
+                lines.line(point - Vec3::X * marker, point + Vec3::X * marker, link_color);
+                lines.line(point - Vec3::Y * marker, point + Vec3::Y * marker, link_color);
+                lines.line(point - Vec3::Z * marker, point + Vec3::Z * marker, link_color);
+            }
+        }
+
+        if let Some(Value::Object(fields)) = entity.components.get(&modifier_type) {
+            let center = Vec3::new(
+                obj_f64(fields, "center_x") as f32,
+                obj_f64(fields, "center_y") as f32,
+                obj_f64(fields, "center_z") as f32,
+            );
+            let half = Vec3::new(
+                obj_f64(fields, "half_extents_x") as f32,
+                obj_f64(fields, "half_extents_y") as f32,
+                obj_f64(fields, "half_extents_z") as f32,
+            )
+            .max(Vec3::ZERO);
+            lines.aabb(center, half, modifier_color);
+        }
+    }
 }
 
 fn draw_distance_ring(lines: &mut DebugLines, center: Vec3, radius: f32) {
