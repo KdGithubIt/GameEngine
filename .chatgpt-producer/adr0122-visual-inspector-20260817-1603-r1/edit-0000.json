@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ui/inspector/layout.rs",
+  "old": "    let width = (ui.available_width() * 0.34).clamp(88.0, 132.0);",
+  "new": "    let width = (ui.available_width() * 0.34).clamp(112.0, 132.0);"
+}
