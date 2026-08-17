@@ -1,0 +1,16 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0151-headless-mcp-20260817-2334-c3",
+  "target_branch": "chatgpt/gameengine-adr0151-headless-mcp",
+  "expected_head_sha": "b4ea5dd8a60497f7ac71e886842adde86e1a3087",
+  "baseline_main_sha": "b4ea5dd8a60497f7ac71e886842adde86e1a3087",
+  "patch_sha256": "5501c0cf1e6d2b4877f065269b8645af9f0a5b356d9b4801f69076c143031360",
+  "patch_bytes": 97277,
+  "patch_parts": [
+    "part-0000.patch",
+    "part-0001.patch"
+  ],
+  "commit_message": "Implement ADR 0151 headless MCP writer ownership",
+  "pr_title": "Implement ADR 0151 headless MCP writer ownership",
+  "pr_body": "Implements ADR 0151 on the current main baseline. Adds a GUI-free headless MCP host over the existing engine-mcp inventory, extends the existing OS-backed per-project lease to explicit Editor/headless writer ownership, preserves read-only saved-file coexistence, persists writer mutations through canonical serializers, and updates accepted architecture/spec documentation. Root workspace membership and Cargo.lock change, so Windows Validation must run in full mode. Visual Validation is not required because this change has no visible Editor/Launcher presentation changes."
+}
