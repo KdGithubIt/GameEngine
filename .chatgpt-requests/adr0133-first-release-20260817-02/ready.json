@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0133-first-release-20260817-02",
+  "target_branch": "chatgpt/gameengine-adr0133-first-release",
+  "expected_head_sha": "f0f8d6436235b706dd86d8a7a7d5630a75a1dce4",
+  "baseline_main_sha": "f0f8d6436235b706dd86d8a7a7d5630a75a1dce4",
+  "patch_sha256": "d9c80871cab93b79d5be142f0793c4336993eacbfde8d1cea07d645228c14712",
+  "patch_bytes": 59007,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Complete ADR 0133 Remote AI Studio first release",
+  "pr_title": "GameEngine: complete ADR 0133 Remote AI Studio first release",
+  "pr_body": "## Summary\n\n- add a loopback-only HTTP/SSE Remote AI Studio gateway above the existing Agent Host\n- keep local and remote AI Studio on the same authoritative session/run/permission/completion state\n- add bounded idempotency, reconnect event cursors, sanitized remote DTOs, captured-frame retrieval, and a responsive web companion\n- cover retry, reconnect, stale proposal, security boundary, and frame ownership contracts with integration-oriented tests\n\n## Validation\n\nRun the repository Windows Validation planner and Editor Visual Validation. Remote browser desktop/mobile viewport evidence is also required before ADR 0133 is considered complete.\n\n<!-- gameengine-visual-validation: editor -->\n\n<!-- gameengine-chatgpt-dispatcher -->"
+}
