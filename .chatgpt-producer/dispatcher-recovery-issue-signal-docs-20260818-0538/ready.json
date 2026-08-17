@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "request_id": "dispatcher-recovery-issue-signal-docs-20260818-0538",
+  "target_branch": "chatgpt/gameengine-dispatcher-recovery-signal",
+  "expected_head_sha": "ad371c1287456bcaedc9a2bd37885b11a02890bf",
+  "baseline_main_sha": "2d6dc07734015929c05a42708f0d5289891c685b",
+  "edit_parts": [
+    "edit-0000.json"
+  ],
+  "commit_message": "Document connector dispatcher recovery signal",
+  "pr_title": "CI: allow connector-only dispatcher recovery signal",
+  "pr_body": "## Summary\n\n- keep the trusted post-push recovery workflow usable through workflow_dispatch\n- add an OWNER/MEMBER/COLLABORATOR-only transient Issue signal for connector-only ChatGPT sessions\n- keep recovery read-only for product contents and preserve exact request/commit verification\n- close a valid signal only after Draft PR and exact-head Windows Validation reconciliation succeeds\n- add regression assertions and document the signal contract\n\n## Trigger\n\nAfter PR #354 was merged, the current ChatGPT connector exposed Actions reads/re-runs but no workflow-dispatch action, and the execution environment had no gh CLI/network path. The existing recovery workflow therefore could not be started without a manual UI action.\n\n## Trust boundary\n\nThe Issue event is loaded from trusted main and accepts only an exact two-key JSON body, an exact title/request-commit match, and trusted GitHub author associations. The workflow still has contents: read rather than contents: write.\n\n## Validation\n\nAutomation regression and Windows full validation must pass before merge. Production recovery of ADR0126 v4 remains blocked until this infrastructure PR is merged."
+}
