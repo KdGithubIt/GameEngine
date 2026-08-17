@@ -1,1 +1,0 @@
-{"operation":"replace_text","path":"crates/project-lifecycle/src/lib.rs","old":"        && metadata.project_id == *project.project_id()\n        && metadata.canonical_project.as_path() == project.path()\n","new":"        && &metadata.project_id == project.project_id()\n        && metadata.canonical_project.as_path() == project.path()\n"}
