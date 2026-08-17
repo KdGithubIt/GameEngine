@@ -1,0 +1,51 @@
+diff --git a/crates/editor/src/ui/audio_authoring.rs b/crates/editor/src/ui/audio_authoring.rs
+index f5e85a82ab2d487e0fd832260c3b12451ac0586e..69e19e5b0e122e7833b604f8b9819e3ec62bee2e 100644
+--- a/crates/editor/src/ui/audio_authoring.rs
++++ b/crates/editor/src/ui/audio_authoring.rs
+@@ -389,7 +389,7 @@ fn draw_attenuation_preview(
+         if let Some(previous) = previous {
+             painter.line_segment(
+                 [previous, point],
+-                egui::Stroke::new(1.5, ui.visuals().text_color()),
++                egui::Stroke::new(1.5_f32, ui.visuals().text_color()),
+             );
+         }
+         previous = Some(point);
+diff --git a/crates/engine/src/audio.rs b/crates/engine/src/audio.rs
+index a9d76a7c669ba33207c7d8616be1a44d62047856..83f0d5f6b256784a592726e75e0174f5235fc916 100644
+--- a/crates/engine/src/audio.rs
++++ b/crates/engine/src/audio.rs
+@@ -252,6 +252,8 @@ impl GameAudioCommandQueue {
+ }
+ 
+ /// Resolves and applies queued project-Rust audio requests.
++// ECS system injection intentionally keeps these independently borrow-tracked resources explicit.
++#[allow(clippy::too_many_arguments)]
+ pub(crate) fn game_audio_effect_system(
+     mut queue: ResMut<GameAudioCommandQueue>,
+     mut transforms: Query<&GlobalTransform>,
+@@ -441,6 +443,7 @@ mod tests {
+         let mut queue = GameAudioCommandQueue::default();
+         queue.push_preflighted(GameAudioCommand::StopBackgroundMusic);
+         app.insert_resource(queue);
++        app.insert_resource(SpatialAudioRuntime::default());
+         app.add_system(game_audio_effect_system);
+ 
+         app.update().expect("headless audio system must run");
+diff --git a/crates/engine/src/scene_bridge/tests.rs b/crates/engine/src/scene_bridge/tests.rs
+index 94bf5eabe5ee9da0505bc484a4a90efbd9222dc1..256afce65e630dbced6c003bfc0b0c947b1938ea 100644
+--- a/crates/engine/src/scene_bridge/tests.rs
++++ b/crates/engine/src/scene_bridge/tests.rs
+@@ -2156,9 +2156,11 @@ fn authorable_audio_components_decode_once_and_execute_headless_state() {
+                     "spatial_blend": 1.0,
+                     "min_distance": 1.0,
+                     "max_distance": 12.0,
++                    "rolloff": "linear",
++                    "looping": false,
+                     "autoplay": true
+                 },
+-                (AUDIO_LISTENER_COMPONENT): {"enabled": true},
++                (AUDIO_LISTENER_COMPONENT): {"enabled": true, "priority": 0},
+                 (MUSIC_CONTROLLER_COMPONENT): {
+                     "clip": {"$type": "asset_ref", "id": audio_asset.as_str()},
+                     "volume": 0.6,
