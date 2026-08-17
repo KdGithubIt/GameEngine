@@ -1,0 +1,131 @@
+diff --git a/crates/editor/src/agent_host.rs b/crates/editor/src/agent_host.rs
+index fcbd967601b36735340258cba5d65b4f373086aa..9994e71ce7d77e0a5d04b65e17306fa58aec3092 100644
+--- a/crates/editor/src/agent_host.rs
++++ b/crates/editor/src/agent_host.rs
+@@ -180,9 +180,10 @@ pub(crate) enum AgentConfinementLayer {
+ }
+ 
+ #[allow(dead_code)]
+-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+ #[serde(rename_all = "snake_case")]
+ pub(crate) enum AgentConfinementGuarantee {
++    #[default]
+     Unavailable,
+     Enforced,
+ }
+@@ -219,6 +220,8 @@ pub(crate) struct AgentConfinementProfile {
+     pub(crate) filesystem_guarantee: AgentConfinementGuarantee,
+     pub(crate) network_guarantee: AgentConfinementGuarantee,
+     pub(crate) process_tree_guarantee: AgentConfinementGuarantee,
++    #[serde(default)]
++    pub(crate) credential_secrecy_guarantee: AgentConfinementGuarantee,
+     pub(crate) requested_network_policy: AgentConfinementNetworkPolicy,
+ }
+ 
+@@ -230,6 +233,7 @@ impl AgentConfinementProfile {
+             filesystem_guarantee: AgentConfinementGuarantee::Unavailable,
+             network_guarantee: AgentConfinementGuarantee::Unavailable,
+             process_tree_guarantee: AgentConfinementGuarantee::Unavailable,
++            credential_secrecy_guarantee: AgentConfinementGuarantee::Unavailable,
+             requested_network_policy: network_policy,
+         }
+     }
+@@ -241,6 +245,7 @@ impl AgentConfinementProfile {
+             filesystem_guarantee: AgentConfinementGuarantee::Unavailable,
+             network_guarantee: AgentConfinementGuarantee::Unavailable,
+             process_tree_guarantee: AgentConfinementGuarantee::Unavailable,
++            credential_secrecy_guarantee: AgentConfinementGuarantee::Unavailable,
+             requested_network_policy: network_policy,
+         }
+     }
+@@ -257,6 +262,7 @@ impl AgentConfinementProfile {
+         ) && self.filesystem_guarantee == AgentConfinementGuarantee::Enforced
+             && self.network_guarantee == AgentConfinementGuarantee::Enforced
+             && self.process_tree_guarantee == AgentConfinementGuarantee::Enforced
++            && self.credential_secrecy_guarantee == AgentConfinementGuarantee::Enforced
+     }
+ 
+     pub(crate) fn summary(&self) -> String {
+@@ -268,11 +274,12 @@ impl AgentConfinementProfile {
+             AgentConfinementLayer::Unavailable => "Confinement unavailable",
+         };
+         format!(
+-            "{layer} ({mechanism}); filesystem: {filesystem}, network: {network}, process tree: {process_tree}, requested network: {requested_network}",
++            "{layer} ({mechanism}); filesystem: {filesystem}, network: {network}, process tree: {process_tree}, credential secrecy: {credentials}, requested network: {requested_network}",
+             mechanism = self.mechanism,
+             filesystem = self.filesystem_guarantee.label(),
+             network = self.network_guarantee.label(),
+             process_tree = self.process_tree_guarantee.label(),
++            credentials = self.credential_secrecy_guarantee.label(),
+             requested_network = self.requested_network_policy.label(),
+         )
+     }
+@@ -2883,6 +2890,14 @@ pub(crate) struct AgentProcessLaunchOutcome {
+     pub(crate) profile: AgentConfinementProfile,
+ }
+ 
++/// Provider/platform-owned process creation boundary for real confinement.
++///
++/// A provider that reports `credential_secrecy_guarantee: Enforced` must keep
++/// provider credentials and MCP authorization material out of the sandboxed
++/// child process, including inherited parent environment. It may use a
++/// provider-native broker, helper, or equivalent out-of-process credential
++/// channel. The generic application-policy-only launcher intentionally does
++/// not claim that guarantee.
+ pub(crate) trait AgentProcessConfinementProvider {
+     fn spawn(
+         &self,
+@@ -3133,12 +3148,36 @@ mod tests {
+             profile.filesystem_guarantee,
+             AgentConfinementGuarantee::Unavailable
+         );
++        assert_eq!(
++            profile.credential_secrecy_guarantee,
++            AgentConfinementGuarantee::Unavailable
++        );
+         assert!(!profile.satisfies(
+             AgentConfinementRequirement::RequireProviderOrOsConfinement
+         ));
+         assert!(profile.summary().starts_with("Application policy only"));
+     }
+ 
++    #[test]
++    fn strong_confinement_requires_credential_secrecy() {
++        let mut profile = AgentConfinementProfile {
++            layer: AgentConfinementLayer::ProviderSandbox,
++            mechanism: "test_provider_sandbox".to_owned(),
++            filesystem_guarantee: AgentConfinementGuarantee::Enforced,
++            network_guarantee: AgentConfinementGuarantee::Enforced,
++            process_tree_guarantee: AgentConfinementGuarantee::Enforced,
++            credential_secrecy_guarantee: AgentConfinementGuarantee::Unavailable,
++            requested_network_policy: AgentConfinementNetworkPolicy::LoopbackOnly,
++        };
++        assert!(!profile.satisfies(
++            AgentConfinementRequirement::RequireProviderOrOsConfinement
++        ));
++        profile.credential_secrecy_guarantee = AgentConfinementGuarantee::Enforced;
++        assert!(profile.satisfies(
++            AgentConfinementRequirement::RequireProviderOrOsConfinement
++        ));
++    }
++
+     #[test]
+     fn required_confinement_fails_closed_before_process_spawn() {
+         let workspace = temp_path("required-confinement");
+diff --git a/docs/adr/0153-agent-process-confinement-and-os-provider-sandbox-integration.md b/docs/adr/0153-agent-process-confinement-and-os-provider-sandbox-integration.md
+index 260f8279f4fabfc4de434b938a99fbebaa380622..fc3f4ed5c471afa9e7777dab9fc023a52f804b1b 100644
+--- a/docs/adr/0153-agent-process-confinement-and-os-provider-sandbox-integration.md
++++ b/docs/adr/0153-agent-process-confinement-and-os-provider-sandbox-integration.md
+@@ -44,9 +44,9 @@ This ADR can be implemented in parallel with ADR 0141-0149 and ADR 0151. First-c
+ 
+ The first-release Agent Host now defines a provider-neutral confinement request and profile at the existing external-process launch boundary. The generic process runtime reports **Application policy only** and never claims provider/OS sandboxing. A user may instead require provider/OS confinement; the generic runtime then fails closed before process spawn rather than silently downgrading.
+ 
+-The transient launch request carries only the approved session code-workspace root, the loopback MCP endpoint, the selected requirement, and a direct-network policy projection derived from the existing `NetworkAccess` capability. It is not serialized. `ExternalAssetAcquisition` remains a governed GameEngine/MCP capability and therefore does not silently widen ambient child-process network access. The persisted run/audit record contains only the non-secret confinement profile and its truthful guarantee levels. MCP authorization material remains process-environment-only.
++The transient launch request carries only the approved session code-workspace root, the loopback MCP endpoint, the selected requirement, and a direct-network policy projection derived from the existing `NetworkAccess` capability. It is not serialized. `ExternalAssetAcquisition` remains a governed GameEngine/MCP capability and therefore does not silently widen ambient child-process network access. The persisted run/audit record contains only the non-secret confinement profile and its truthful guarantee levels. The generic application-policy-only launcher retains the existing MCP token delivery for compatibility and therefore explicitly reports credential secrecy as unavailable; it can never satisfy the strict confinement requirement.
+ 
+-The launch boundary exposes a confinement-provider seam so first-class adapters or platform integrations can own the real process creation mechanism. A profile satisfies the strict requirement only when it reports provider, OS, container, or VM confinement with enforced filesystem, network, and process-tree guarantees. Unsupported generic launches report unavailable rather than simulated confinement.
++The launch boundary exposes a confinement-provider seam so first-class adapters or platform integrations can own the real process creation mechanism. A profile satisfies the strict requirement only when it reports provider, OS, container, or VM confinement with enforced filesystem, network, process-tree, **and credential-secrecy** guarantees. A provider reporting credential secrecy as enforced must keep provider credentials, MCP authorization material, and inherited credential-bearing parent environment out of the sandboxed child, using a provider-native broker/helper or equivalent protected channel when credentials are required. Unsupported generic launches report unavailable rather than simulated confinement.
+ 
+ AI Studio persists the user's external-process confinement requirement as local application preferences and displays the actual run profile separately from GameEngine application permissions. This applies consistently to the embedded and detached ADR0147 presentations. The generic path also rejects non-loopback MCP endpoints and a launch working directory that differs from the approved code workspace.
+ 
