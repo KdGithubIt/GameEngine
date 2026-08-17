@@ -1111,7 +1111,8 @@ fn collect_animation_debug_snapshot_matching(
                 resolved_motion_variant: binding.map(|binding| binding.resolved_variant),
                 recent_events: recent_events
                     .iter()
-                    .filter_map(|(key, event)| (*key == (entity.id(), entity.generation())).then(|| event.clone()))
+                    .filter(|(key, _)| **key == (entity.id(), entity.generation()))
+                    .map(|(_, event)| event.clone())
                     .collect(),
                 runtime_error: debug_source
                     .is_none()

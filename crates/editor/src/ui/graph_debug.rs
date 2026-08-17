@@ -32,7 +32,7 @@ struct GraphDebugTargetKey {
 
 #[derive(Debug, Clone)]
 enum GraphDebugObservation {
-    Animation(RuntimeAnimationDebugSnapshot),
+    Animation(Box<RuntimeAnimationDebugSnapshot>),
     Behavior,
 }
 
@@ -315,7 +315,7 @@ fn collect_graph_debug_targets(runtime: &mut RuntimePlayState) -> Vec<GraphDebug
                 },
                 entity_name: row.name.clone(),
                 authoring_entity: Some(snapshot.authoring_entity.clone()),
-                observation: GraphDebugObservation::Animation(snapshot),
+                observation: GraphDebugObservation::Animation(Box::new(snapshot)),
             });
         }
         if let Some(snapshot) = runtime.behavior_tree_debug_snapshot(key) {
