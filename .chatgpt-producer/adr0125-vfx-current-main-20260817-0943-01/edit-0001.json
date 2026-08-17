@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/render-runtime/src/vfx.rs",
+  "old": "        Self {\n            instance: VfxInstance::new(effect, seed_override),\n            playing: autoplay,\n            autoplay,\n            looping,\n            restart_policy,\n            time_scale,\n            parameter_overrides,\n        }\n    }",
+  "new": "        Self {\n            instance: VfxInstance::new(effect, seed_override),\n            playback_state: if autoplay {\n                VfxPlaybackState::Playing\n            } else {\n                VfxPlaybackState::Stopped\n            },\n            autoplay,\n            looping,\n            restart_policy,\n            time_scale,\n            parameter_overrides,\n        }\n    }"
+}
