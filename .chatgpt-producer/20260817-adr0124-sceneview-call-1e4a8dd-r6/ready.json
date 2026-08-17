@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "request_id": "20260817-adr0124-sceneview-call-1e4a8dd-r6",
+  "target_branch": "chatgpt/gameengine-adr0124-production-navigation-v16",
+  "expected_head_sha": "1e4a8dd66929ef400148e6b5d29351991759e76b",
+  "baseline_main_sha": "e1df22ca311274ac7645a226f214c9d4e941756c",
+  "edit_parts": [
+    "edit-0000.json"
+  ],
+  "commit_message": "Fix ADR 0124 SceneView call compatibility",
+  "pr_title": "Complete ADR 0124 production navigation first release",
+  "pr_body": "Complete ADR 0124 on current main. This follow-up completes the production Navigation runtime/editor workflow, dynamic traversal updates, currentness gates, Scene View path visualization, the Navigation visual-validation scenario, and the SceneView call-site compatibility fix required by affected Windows validation.\n\nVisual validation target: open the dedicated Navigation window in the Editor and capture it at the exact PR head.\n\n<!-- gameengine-visual-validation: editor -->\n<!-- gameengine-visual-authoring-tool: Navigation -->"
+}
