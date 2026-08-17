@@ -1,0 +1,309 @@
+diff --git a/crates/authoring/src/lib.rs b/crates/authoring/src/lib.rs
+index 1c26a0a613263490cca0aa5440222f47bac7070f..8baa51e7dc033f01be71ad893794b2571fcf2c8f 100644
+--- a/crates/authoring/src/lib.rs
++++ b/crates/authoring/src/lib.rs
+@@ -175,11 +175,13 @@ pub use scene_authoring::{
+     SceneAuthoringValidation,
+ };
+ pub use timeline::{
+-    compile_timeline, load_timeline, save_timeline, timeline_track_registry, validate_timeline,
+-    CompiledTimelinePayload, TimelineBinding, TimelineClip, TimelineClipPayload, TimelineCompilation,
+-    TimelineDiagnostic, TimelineDiagnosticSeverity, TimelineDisplayRate, TimelineDocument,
+-    TimelineDocumentError, TimelineMarker, TimelinePropertyValue, TimelineTrack,
+-    TimelineTrackDescriptor, TimelineTrackKind, TIMELINE_FILE_SUFFIX, TIMELINE_SCHEMA_VERSION,
++    compile_timeline, load_timeline, sample_timeline_property, save_timeline,
++    timeline_property_registry, timeline_track_registry, validate_timeline, CompiledTimelinePayload,
++    TimelineBinding, TimelineClip, TimelineClipPayload, TimelineCompilation, TimelineDiagnostic,
++    TimelineDiagnosticSeverity, TimelineDisplayRate, TimelineDocument, TimelineDocumentError,
++    TimelineMarker, TimelinePropertyDescriptor, TimelinePropertyKey, TimelinePropertyValue,
++    TimelinePropertyValueKind, TimelineTrack, TimelineTrackDescriptor, TimelineTrackKind,
++    TIMELINE_FILE_SUFFIX, TIMELINE_PROPERTY_REGISTRY, TIMELINE_SCHEMA_VERSION,
+     TIMELINE_TRACK_REGISTRY,
+ };
+ pub use timeline_authoring::{
+diff --git a/crates/authoring/src/timeline.rs b/crates/authoring/src/timeline.rs
+index 0b61def14a5b993b92c89acdb844ee47cb903c33..4e86c8359cf8902055df9ade93e516e3eadbf21c 100644
+--- a/crates/authoring/src/timeline.rs
++++ b/crates/authoring/src/timeline.rs
+@@ -133,6 +133,90 @@ fn timeline_property_descriptor(type_id: &str) -> Option<&'static TimelineProper
+         .find(|descriptor| descriptor.type_id == type_id)
+ }
+ 
++/// One clip-local key in an explicitly registered Timeline property curve.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++pub struct TimelinePropertyKey {
++    /// Tick relative to the containing clip start.
++    pub tick: TimelineTick,
++    /// Typed key value.
++    pub value: TimelinePropertyValue,
++}
++
++/// Samples a validated Timeline property curve at a clip-local tick.
++///
++/// Values before the first key and after the last key are clamped to the nearest
++/// authored key. Numeric/vector values interpolate linearly and quaternions use
++/// normalized shortest-path linear interpolation. Boolean values step.
++pub fn sample_timeline_property(
++    keys: &[TimelinePropertyKey],
++    tick: TimelineTick,
++) -> Option<TimelinePropertyValue> {
++    let first = keys.first()?;
++    if tick <= first.tick {
++        return Some(first.value.clone());
++    }
++    for pair in keys.windows(2) {
++        let left = &pair[0];
++        let right = &pair[1];
++        if tick > right.tick {
++            continue;
++        }
++        let span = right.tick.get().saturating_sub(left.tick.get());
++        if span <= 0 {
++            return None;
++        }
++        let offset = tick.get().saturating_sub(left.tick.get());
++        let alpha = offset as f64 / span as f64;
++        return interpolate_timeline_property(&left.value, &right.value, alpha);
++    }
++    keys.last().map(|key| key.value.clone())
++}
++
++fn interpolate_timeline_property(
++    left: &TimelinePropertyValue,
++    right: &TimelinePropertyValue,
++    alpha: f64,
++) -> Option<TimelinePropertyValue> {
++    let alpha = alpha.clamp(0.0, 1.0);
++    match (left, right) {
++        (TimelinePropertyValue::Bool(a), TimelinePropertyValue::Bool(b)) => {
++            Some(TimelinePropertyValue::Bool(if alpha < 1.0 { *a } else { *b }))
++        }
++        (TimelinePropertyValue::Number(a), TimelinePropertyValue::Number(b)) => {
++            Some(TimelinePropertyValue::Number(a + (b - a) * alpha))
++        }
++        (TimelinePropertyValue::Vec3(a), TimelinePropertyValue::Vec3(b)) => {
++            Some(TimelinePropertyValue::Vec3(std::array::from_fn(|index| {
++                a[index] + (b[index] - a[index]) * alpha
++            })))
++        }
++        (TimelinePropertyValue::Quat(a), TimelinePropertyValue::Quat(b)) => {
++            let dot = a
++                .iter()
++                .zip(b.iter())
++                .map(|(a, b)| a * b)
++                .sum::<f64>();
++            let rhs = if dot < 0.0 {
++                b.map(|component| -component)
++            } else {
++                *b
++            };
++            let mixed = std::array::from_fn(|index| {
++                a[index] + (rhs[index] - a[index]) * alpha
++            });
++            let norm_squared = mixed.iter().map(|component| component * component).sum::<f64>();
++            if !norm_squared.is_finite() || norm_squared <= f64::EPSILON {
++                return None;
++            }
++            let inverse_norm = norm_squared.sqrt().recip();
++            Some(TimelinePropertyValue::Quat(
++                mixed.map(|component| component * inverse_norm),
++            ))
++        }
++        _ => None,
++    }
++}
++
+ /// First-release typed track family.
+ #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+ #[serde(rename_all = "snake_case")]
+@@ -201,17 +285,17 @@ pub const fn timeline_track_registry() -> &'static [TimelineTrackDescriptor] {
+ pub enum TimelineClipPayload {
+     /// Animation Set motion slot sampled at local clip time.
+     Animation {
+-        /// Stable motion-slot identifier resolved through the target controller's Animation Set.
++        /// Stable Animation Set asset owning the selected motion slot.
++        animation_set: AssetId,
++        /// Stable motion-slot identifier resolved inside `animation_set`.
+         motion_slot: MotionSlotId,
+     },
+-    /// Entity property interpolation.
++    /// Entity property curve.
+     TransformProperty {
+         /// Stable property ID from [`TIMELINE_PROPERTY_REGISTRY`].
+         property: String,
+-        /// Property value at the start of the clip.
+-        from: TimelinePropertyValue,
+-        /// Property value at the end of the clip.
+-        to: TimelinePropertyValue,
++        /// Ordered clip-local curve keys.
++        keys: Vec<TimelinePropertyKey>,
+     },
+     /// Runtime-only active-camera override.
+     CameraCut,
+@@ -510,7 +594,7 @@ pub fn validate_timeline(document: &TimelineDocument) -> Vec<TimelineDiagnostic>
+             }
+ 
+             match &clip.payload {
+-                TimelineClipPayload::TransformProperty { property, from, to } => {
++                TimelineClipPayload::TransformProperty { property, keys } => {
+                     let Some(descriptor) = timeline_property_descriptor(property) else {
+                         out.push(error_diag(
+                             "timeline.property.unsupported",
+@@ -519,22 +603,47 @@ pub fn validate_timeline(document: &TimelineDocument) -> Vec<TimelineDiagnostic>
+                         ));
+                         continue;
+                     };
+-                    if from.kind() != descriptor.value_kind || to.kind() != descriptor.value_kind {
++                    if keys.is_empty() {
+                         out.push(error_diag(
+-                            "timeline.property.type_mismatch",
++                            "timeline.property.keys_empty",
+                             clip.id.as_str(),
+-                            format!(
+-                                "property `{}` requires {:?} endpoints",
+-                                descriptor.type_id, descriptor.value_kind
+-                            ),
++                            "property curves require at least one key",
+                         ));
+                     }
+-                    if !from.is_valid_numeric_value() || !to.is_valid_numeric_value() {
+-                        out.push(error_diag(
+-                            "timeline.property.non_finite",
+-                            clip.id.as_str(),
+-                            "property endpoints must be finite and quaternions must be non-zero",
+-                        ));
++                    let mut previous_tick = None;
++                    for key in keys {
++                        if key.tick < TimelineTick::ZERO || key.tick > clip.duration {
++                            out.push(error_diag(
++                                "timeline.property.key_range",
++                                clip.id.as_str(),
++                                "property key ticks must be clip-local and inside the clip duration",
++                            ));
++                        }
++                        if previous_tick.is_some_and(|previous| key.tick <= previous) {
++                            out.push(error_diag(
++                                "timeline.property.key_order",
++                                clip.id.as_str(),
++                                "property key ticks must be strictly increasing",
++                            ));
++                        }
++                        previous_tick = Some(key.tick);
++                        if key.value.kind() != descriptor.value_kind {
++                            out.push(error_diag(
++                                "timeline.property.type_mismatch",
++                                clip.id.as_str(),
++                                format!(
++                                    "property `{}` requires {:?} keys",
++                                    descriptor.type_id, descriptor.value_kind
++                                ),
++                            ));
++                        }
++                        if !key.value.is_valid_numeric_value() {
++                            out.push(error_diag(
++                                "timeline.property.non_finite",
++                                clip.id.as_str(),
++                                "property keys must be finite and quaternions must be non-zero",
++                            ));
++                        }
+                     }
+                 }
+                 TimelineClipPayload::Event { name, payload } => {
+@@ -666,17 +775,23 @@ mod tests {
+     }
+ 
+     #[test]
+-    fn animation_payload_persists_a_motion_slot_instead_of_an_importer_asset() {
++    fn animation_payload_persists_animation_set_and_motion_slot_identity() {
++        let animation_set = AssetId::generate();
+         let motion_slot = MotionSlotId::generate();
+         let payload = TimelineClipPayload::Animation {
++            animation_set: animation_set.clone(),
+             motion_slot: motion_slot.clone(),
+         };
+         let json = serde_json::to_string(&payload).unwrap();
+         let loaded: TimelineClipPayload = serde_json::from_str(&json).unwrap();
+         assert_eq!(
+             loaded,
+-            TimelineClipPayload::Animation { motion_slot }
++            TimelineClipPayload::Animation {
++                animation_set,
++                motion_slot
++            }
+         );
++        assert!(json.contains("animation_set"));
+         assert!(json.contains("motion_slot"));
+     }
+ 
+@@ -711,8 +826,10 @@ mod tests {
+             }),
+             clips: vec![clip(TimelineClipPayload::TransformProperty {
+                 property: "engine.private.arbitrary_field".into(),
+-                from: TimelinePropertyValue::Number(0.0),
+-                to: TimelinePropertyValue::Number(1.0),
++                keys: vec![TimelinePropertyKey {
++                    tick: TimelineTick::ZERO,
++                    value: TimelinePropertyValue::Number(0.0),
++                }],
+             })],
+         });
+         let diagnostics = validate_timeline(&doc);
+@@ -721,6 +838,58 @@ mod tests {
+             .any(|diagnostic| diagnostic.code == "timeline.property.unsupported"));
+     }
+ 
++    #[test]
++    fn property_curve_samples_multiple_clip_local_keys() {
++        let keys = vec![
++            TimelinePropertyKey {
++                tick: TimelineTick::ZERO,
++                value: TimelinePropertyValue::Vec3([0.0, 2.0, 4.0]),
++            },
++            TimelinePropertyKey {
++                tick: TimelineTick::new(10),
++                value: TimelinePropertyValue::Vec3([10.0, 4.0, 8.0]),
++            },
++        ];
++        assert_eq!(
++            sample_timeline_property(&keys, TimelineTick::new(5)),
++            Some(TimelinePropertyValue::Vec3([5.0, 3.0, 6.0]))
++        );
++        assert_eq!(
++            sample_timeline_property(&keys, TimelineTick::new(20)),
++            Some(TimelinePropertyValue::Vec3([10.0, 4.0, 8.0]))
++        );
++    }
++
++    #[test]
++    fn property_curve_rejects_non_increasing_keys() {
++        let mut doc = TimelineDocument::new("property", TimelineTick::new(100));
++        doc.tracks.push(TimelineTrack {
++            id: TimelineTrackId::generate(),
++            name: "property".into(),
++            kind: TimelineTrackKind::TransformProperty,
++            enabled: true,
++            binding: Some(TimelineBinding::Entity {
++                entity: EntityId::generate(),
++            }),
++            clips: vec![clip(TimelineClipPayload::TransformProperty {
++                property: "engine.transform.translation".into(),
++                keys: vec![
++                    TimelinePropertyKey {
++                        tick: TimelineTick::new(5),
++                        value: TimelinePropertyValue::Vec3([0.0, 0.0, 0.0]),
++                    },
++                    TimelinePropertyKey {
++                        tick: TimelineTick::new(5),
++                        value: TimelinePropertyValue::Vec3([1.0, 1.0, 1.0]),
++                    },
++                ],
++            })],
++        });
++        assert!(validate_timeline(&doc)
++            .iter()
++            .any(|diagnostic| diagnostic.code == "timeline.property.key_order"));
++    }
++
+     #[test]
+     fn event_payloads_are_bounded() {
+         let mut doc = TimelineDocument::new("event", TimelineTick::new(100));
