@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0126-schema-first-release-v10-92afd670",
+  "target_branch": "chatgpt/gameengine-adr0126-first-release-v10",
+  "expected_head_sha": "92afd67023c45e5dcf6b892e845cb6e942d27b06",
+  "baseline_main_sha": "86544a6c8d9bb770633b1ae4eb22fac26278f50c",
+  "patch_sha256": "2431412ff1da2e62d75973082b5bbe35ec4f3cd9acedde520c1ac0e578f6493b",
+  "patch_bytes": 26532,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Correct ADR0126 first-release Timeline schema",
+  "pr_title": "GameEngine: complete ADR0126 Timeline and Sequencer",
+  "pr_body": "## Summary\n\nContinues ADR0126 first-release completion on the current-main task branch. This request tightens the Timeline persistence/track schema before production runtime composition: Animation uses stable Animation Set + MotionSlotId identity, first-release property targets are explicitly registered and type-checked, event/marker payloads are bounded, Prefab is removed from the first-release track families, and Audio binding semantics distinguish spatial from non-spatial playback.\n\nThe PR remains Draft. Production runtime composition, Project Rust integration, dedicated Sequencer UI, Windows Validation and Visual Validation continue on this branch."
+}
