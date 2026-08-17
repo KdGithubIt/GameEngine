@@ -513,6 +513,7 @@ impl AnimationPreviewWindow {
                     GizmoMode::Translate,
                     GizmoSpace::Global,
                     None,
+                    None,
                     render_state,
                 );
             });
