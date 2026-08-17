@@ -1,7 +1,7 @@
 # ChatGPT GitHub Automation
 
 Status: Accepted
-Version: 2.1.0
+Version: 2.2.0
 Canonical location: `docs/CHATGPT_AUTOMATION.md`
 
 ## Purpose
@@ -9,196 +9,147 @@ Canonical location: `docs/CHATGPT_AUTOMATION.md`
 This document defines the repository-native path used by ChatGPT to apply and
 validate GameEngine changes without Codex and without the OpenAI API.
 
-For a ChatGPT session that has the GitHub connector but no repository command
-execution environment, the normal path is:
+When ChatGPT has the GitHub connector but no repository shell, the normal
+product-change path is:
 
 ```text
 ChatGPT + GitHub connector
-  -> exact chatgpt/gameengine-* target branch
-  -> chatgpt-producer-stage-<request-id> from current main
-  -> connector writes small structured edit-NNNN.json payloads
-  -> final .chatgpt-producer/<request-id>/ready.json commit
-  -> connector opens a transient producer-signal Issue
-  -> trusted default-branch producer (issues: opened)
-  -> apply edit plan to an exact target checkout
-  -> request_protocol.py build
-  -> chatgpt-dispatch-stage-<request-id>
-  -> trusted transport publisher + pre-publish preflight
+  -> target chatgpt/gameengine-* branch identity
+  -> data-only chatgpt-producer-stage-<request-id>
+  -> manifest.json + immutable UTF-8/LF source-state blobs
+  -> final ready.json commit
+  -> repository issue carrying branch + exact ready commit
+  -> read-only producer signal loaded from main
+  -> trusted producer loaded from main
+  -> exact target checkout on GitHub Actions runner
+  -> materialize/stage intended product source state
+  -> .github/chatgpt/request_protocol.py build
+  -> strict exact-target preflight + real remote target/main recheck
+  -> schema-v2 request bytes
+  -> immutable chatgpt-dispatch-stage-<request-id>
+  -> read-only stage signal
+  -> trusted transport publisher
   -> chatgpt-dispatch
   -> trusted dispatcher
-  -> target branch commit/push
+  -> target branch
   -> Draft pull request
   -> GameEngine Windows Validation
-  -> ChatGPT reads validation result/logs
-  -> optional corrected request
+  -> optional Visual Validation when the product change requires it
 ```
 
-A producer that already has a real Git checkout and command execution MAY run
-`request_protocol.py build` directly and publish its exact output to a
-`chatgpt-dispatch-stage-*` branch. Both paths converge before the trusted
-transport publisher and obey the same Dispatcher request and validation
-contracts.
+A producer that already owns a real exact checkout and can execute the builder
+may continue to use the direct builder entry point. Both producer paths converge
+at `chatgpt-dispatch-stage-<request-id>` and use the same publisher, Dispatcher,
+request schema, and validation contracts.
 
-The legacy private-repository bridge, local GameEngine GitHub Worker requirement,
-auto-merge workflow, and `GameEngine-ChatGPT-Apply` fallback are not part of the
-normal public-repository path.
+The connector path MUST NOT fall back to hand-authored unified diffs, manually
+maintained hunk headers, direct product commits to the task branch, or direct
+writes to `chatgpt-dispatch`.
 
 ## Trust boundary
 
-Write-capable automation MUST be loaded from trusted `main`. Producer-controlled
-branches are data inputs and MUST NOT supply write-capable workflow definitions.
+Write-capable automation MUST be loaded from the trusted default branch.
+Producer-controlled branches are data only. They are never trusted executable
+control and MUST NOT contain workflow or script changes as part of a product
+request.
 
-The GitHub connector writes only structured edit-plan data to a dedicated
-`chatgpt-producer-stage-<request-id>` branch. It MUST NOT directly modify the
-target product branch, create unified patch text, calculate hunk coordinates,
-write Dispatcher request parts, or advance `chatgpt-dispatch`.
+The normal connector producer signal is a GitHub issue. The issue-triggered
+`gameengine-chatgpt-producer-signal.yml` is loaded from `main` and has only
+`contents: read` and `issues: read`. A successful signal is consumed through
+`workflow_run` by `gameengine-chatgpt-trusted-producer.yml`, which is also loaded
+from `main` and owns the write permissions required to publish an immutable
+Dispatcher staging branch.
 
-The producer branch may add only:
+The trusted producer never executes code from the producer branch. It reads and
+validates only the producer manifest and source-state blobs, checks that the
+producer branch still points at the signaled full ready commit, materializes the
+declared final product files in an exact target worktree, stages exactly those
+paths, and invokes the trusted `request_protocol.py build` from `main`.
 
-```text
-.chatgpt-producer/<request-id>/edit-NNNN.json
-```
+The trusted producer publishes the builder output without rewriting it. It does
+not generate or repair unified-diff hunk headers itself. It does not update
+`chatgpt-dispatch`. After publication it explicitly invokes the read-only stage
+signal because pushes made with the trusted producer's `GITHUB_TOKEN` do not
+start ordinary push-triggered workflows.
 
-followed by one final commit that newly adds exactly:
-
-```text
-.chatgpt-producer/<request-id>/ready.json
-```
-
-The connector then opens a transient GitHub Issue whose title and body identify
-the immutable producer branch and full ready commit. The `issues` workflow is
-loaded from the default branch. The write-capable trusted producer therefore
-comes from `main`, not from the producer-controlled branch. The job is gated to
-Issue titles beginning with `GameEngine ChatGPT Producer: ` and trusted author
-associations `OWNER`, `MEMBER`, or `COLLABORATOR`.
-
-The trusted producer re-fetches the producer branch, target branch, and `main`;
-validates exact branch identity, immutable ready commit, linear request history,
-current baseline, edit-plan file list, path safety, and edit operation schemas;
-then applies the operations to a detached checkout whose HEAD is exactly
-`expected_head_sha`.
-
-Only after those operations are staged does trusted automation invoke
-`.github/chatgpt/request_protocol.py build`. That existing builder creates the
-unified diff mechanically from Git, performs strict patch/path/mode preflight,
-rechecks remote target and `main`, splits immutable transport parts on newline
-boundaries, and emits schema-v2 hash/byte-count metadata.
-
-The trusted producer publishes only the exact builder output to a fresh
-`chatgpt-dispatch-stage-<request-id>` branch. A workflow's own `GITHUB_TOKEN`
-push does not start ordinary push-triggered workflows, so it explicitly starts
-the trusted transport publisher from `main` with the exact stage branch and full
-ready commit SHA.
-
-The transport publisher repeats trusted pre-publish validation before mutating
-`chatgpt-dispatch`, globally serializes publication, and uses an exact lease. It
-then explicitly starts the trusted Dispatcher from `main`. The Dispatcher again
-validates request bytes, baseline, paths, and target HEAD before applying the
-product patch.
-
-Normal product requests MUST NOT modify `.github/**` or
-`.chatgpt-requests/**`. Connector edit operations are validated by the same
-public product-path allow-list and additionally reject absolute paths, backslash
-paths, dot components, and `..` traversal.
+The trusted transport publisher remains the normal single writer to
+`chatgpt-dispatch`. The Dispatcher remains the only automation component that
+applies a validated product patch to a `chatgpt/gameengine-*` task branch and
+creates or updates the Draft PR.
 
 ## Branches
 
 ### `chatgpt-producer-stage-<request-id>`
 
-Connector-only immutable edit-plan branch. It MUST be created from the exact
-`baseline_main_sha` declared in the producer envelope. Before ready, every commit
-must be linear and may only add contiguous edit payload files under the one
-request directory. The final commit MUST add only that request's `ready.json`.
+Connector producer input branch. It MUST be created from the declared current
+`baseline_main_sha`. Product files are not edited on this branch. Commits before
+the final ready commit may only add immutable files below:
 
-After the ready commit is published, the branch is immutable. If it moves before
-or during trusted production, processing fails. Corrections use a new request ID
-and a new producer branch.
+```text
+.chatgpt-producer/<request-id>/
+```
+
+The final commit MUST newly add only:
+
+```text
+.chatgpt-producer/<request-id>/ready.json
+```
+
+After the ready commit is signaled, the branch is immutable. Any movement causes
+trusted production to reject the request. Corrections use a new request ID and a
+new branch.
 
 ### `chatgpt-dispatch-stage-<request-id>`
 
-Immutable per-request transport staging branch. It starts from the declared
-current `main` baseline and contains one or more builder-generated patch-part
-addition commits followed by one final Dispatcher `ready.json` addition.
-
-Before ready, commits may add only:
+Immutable per-request transport staging branch. It is created from the declared
+current `main` baseline. Pre-ready commits add only:
 
 ```text
 .chatgpt-requests/<request-id>/part-NNNN.patch
 ```
 
-The final commit adds only:
+The final commit newly adds only:
 
 ```text
 .chatgpt-requests/<request-id>/ready.json
 ```
 
-After ready, the branch is immutable. Corrections use a new request ID and stage
-branch.
+The trusted producer copies the exact mechanical builder output into this branch.
+Direct builder producers may do the same after running the builder themselves.
+After ready, the branch is immutable.
 
 ### `chatgpt-dispatch`
 
 Long-lived shared transport branch containing immutable request records under
 `.chatgpt-requests/<request-id>/`. The trusted transport publisher is the normal
-single writer. Producers MUST NOT update this ref directly.
+single writer. Producers MUST NOT commit to or update this ref directly.
 
 ### `chatgpt/gameengine-*`
 
-All Dispatcher target work branches MUST start with `chatgpt/gameengine-`.
-Every request records the exact current target HEAD in `expected_head_sha`.
+All product target branches MUST use this namespace. A request records the exact
+full target HEAD in `expected_head_sha`. The Dispatcher refuses a stale target.
 
-## Connector edit plan
+Automation/trust-boundary changes under `.github/**` do not use the product
+Dispatcher path. They use a dedicated `chatgpt/gameengine-*` infrastructure
+branch and Draft PR.
 
-Each edit payload file contains exactly one JSON object. Payload names are
-contiguous `edit-0000.json`, `edit-0001.json`, ... and are applied in that order.
-One payload is at most 256,000 bytes; total edit payload is at most 4 MiB.
+## Connector producer input format
 
-### Exact text replacement
+Producer schema version 1 carries changed **source state**, not patch bytes.
+The request directory contains:
 
-```json
-{
-  "operation": "replace_text",
-  "path": "crates/example/src/lib.rs",
-  "old": "exact existing text",
-  "new": "replacement text"
-}
+```text
+.chatgpt-producer/<request-id>/manifest.json
+.chatgpt-producer/<request-id>/files/NNNN.source   # add/update entries only
+.chatgpt-producer/<request-id>/ready.json          # final commit only
 ```
 
-`old` MUST be non-empty and MUST occur exactly once in the current operation
-state of the exact target checkout. Zero or multiple matches reject the request.
-This is the normal way to update part of a large existing source file through a
-text-only connector without replacing the complete file through Contents API.
+`files/NNNN.source` is derived from the zero-based manifest entry index. The
+producer does not supply arbitrary transport file names.
 
-### Create UTF-8 text file
+### `manifest.json`
 
-```json
-{
-  "operation": "create_text",
-  "path": "docs/example.md",
-  "content": "new file contents\n"
-}
-```
-
-The path MUST not already exist.
-
-### Delete file
-
-```json
-{
-  "operation": "delete_file",
-  "path": "docs/obsolete.md",
-  "expected_blob_sha": "0123456789abcdef0123456789abcdef01234567"
-}
-```
-
-The file MUST exist and its current Git blob SHA at that point in the ordered
-edit plan MUST equal `expected_blob_sha`.
-
-The connector producer path is intentionally UTF-8 text oriented. A task that
-requires unsupported binary mutation does not silently weaken this contract.
-
-## Connector producer envelope
-
-Producer-envelope schema version 1 contains no patch bytes:
+The manifest has exactly these top-level fields:
 
 ```json
 {
@@ -207,37 +158,96 @@ Producer-envelope schema version 1 contains no patch bytes:
   "target_branch": "chatgpt/gameengine-renderer-aa",
   "expected_head_sha": "0123456789abcdef0123456789abcdef01234567",
   "baseline_main_sha": "89abcdef0123456789abcdef0123456789abcdef",
-  "edit_parts": ["edit-0000.json"],
+  "source_format": "utf8-lf",
   "commit_message": "Add shared renderer anti-aliasing",
   "pr_title": "GameEngine: add shared renderer anti-aliasing",
-  "pr_body": "## Summary\n\nAdds the shared renderer anti-aliasing path."
+  "pr_body": "## Summary\n\nAdds the shared renderer anti-aliasing path.",
+  "files": [
+    {
+      "path": "crates/example/src/lib.rs",
+      "operation": "update",
+      "base_mode": "100644",
+      "mode": "100644",
+      "source_sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "source_bytes": 1234
+    }
+  ]
 }
 ```
 
-The envelope lives at:
+The manifest file entries MUST be sorted by `path`. Duplicate paths,
+Unicode/case-fold collisions, and file/directory prefix collisions are rejected.
+The trusted producer also rejects absolute paths, path traversal, backslashes,
+control characters, Windows-unsafe names, and paths outside the existing public
+GameEngine product allow-list. `.github/**` and `.chatgpt-requests/**` are
+therefore never valid product entries.
 
-```text
-.chatgpt-producer/<request-id>/ready.json
+Supported operations are:
+
+- `add`: `base_mode` is `null`, `mode` is `100644` or `100755`, and source hash
+  and byte length describe the final file bytes;
+- `update`: `base_mode` binds the exact target file mode, `mode` declares the
+  final normal-file mode, and source hash and byte length describe final bytes;
+- `delete`: `base_mode` binds the exact target file mode, `mode` is `null`,
+  `source_sha256` is `null`, and `source_bytes` is `0`.
+
+The target commit SHA already binds the previous file contents. The producer does
+not need to restate an old-content hash.
+
+### Source-state byte contract
+
+Producer schema v1 accepts source blobs only as strict UTF-8 text using LF line
+endings. NUL bytes and CR bytes are rejected. This makes connector-created text
+state deterministic across GitHub API and Windows/Linux runners.
+
+Binary add/update is intentionally not representable in producer schema v1.
+Binary file deletion is permitted when the exact target contains a normal file
+with the declared base mode. A future binary source schema requires a separate
+protocol revision rather than an implicit encoding exception.
+
+Limits are:
+
+- at most 256 changed file entries;
+- at most 1 MiB per source-state blob;
+- at most 8 MiB total source-state bytes;
+- at most 256 KiB for `manifest.json`;
+- normal modes only (`100644` or `100755`).
+
+The downstream protocol-v2 patch remains limited to 4 MiB and 64 transport
+parts, so producer input acceptance does not weaken Dispatcher transport limits.
+
+### `ready.json`
+
+The final producer commit adds exactly:
+
+```json
+{
+  "schema_version": 1,
+  "request_id": "renderer-aa-20260817-01",
+  "manifest_sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "manifest_bytes": 2048
+}
 ```
 
-`request_id` MUST match branch and directory. `edit_parts` MUST exactly list the
-contiguous edit files. `expected_head_sha` and `baseline_main_sha` are full
-40-character SHAs. Current target must equal `expected_head_sha`, current `main`
-must equal `baseline_main_sha`, and the baseline must be an ancestor of target.
+This binds the exact manifest bytes. Every add/update source blob is separately
+bound by the manifest's `source_sha256` and `source_bytes`. The trusted producer
+requires the final request directory to contain exactly the manifest, exactly
+the source blobs implied by non-delete entries, and `ready.json`. Missing and
+extra files are rejected.
 
-The producer envelope is not a Dispatcher request. The trusted producer applies
-its edit plan and then uses the normal mechanical builder to create the
-Dispatcher schema-v2 request.
+All producer data files MUST be normal non-executable blobs. Symlinks and
+submodules cannot be introduced through producer input.
 
-## Connector producer signal
+## Connector signal format
 
-After producer ready, the connector opens an Issue with the exact title:
+After the immutable producer ready commit is pushed, ChatGPT creates an issue
+with title:
 
 ```text
-GameEngine ChatGPT Producer: <request-id>
+GameEngine ChatGPT Producer <request-id> <full-producer-ready-commit-sha>
 ```
 
-and body:
+and an exact JSON body:
 
 ```json
 {
@@ -248,112 +258,91 @@ and body:
 }
 ```
 
-No additional body keys are permitted. The workflow validates repository,
-default-branch execution, trusted author association, exact title, signal value,
-request/branch identity, and full producer commit SHA.
+Only repository owners, members, or collaborators may create an accepted signal.
+The read-only signal validates the branch name, full SHA, title/body agreement,
+and current remote producer head. Its immutable workflow-run title binds the
+issue number, request ID, and producer commit.
 
-The Issue is only a signal; it does not authorize paths or product content. On
-successful stage publication the trusted producer closes the signal Issue. On
-processing failure it leaves the Issue open with a diagnostic pointer so ChatGPT
-can inspect the workflow before creating a new immutable request.
+The write-capable trusted producer re-reads the issue, requires its title and
+body still to match the successful signal, and again checks the remote producer
+head before reading any producer data. Issue or branch mutation after signal is
+therefore rejected rather than silently changing the authorized input.
 
-## Connector-only lifecycle
+`workflow_dispatch` exists only as a trusted recovery entry point and still
+accepts only an immutable producer branch plus full ready commit. It does not
+execute producer-supplied scripts or workflows.
 
-For a normal implementation when ChatGPT has only the GitHub connector:
+## Trusted producer responsibilities
 
-1. Read current `main`, target branch, root `AGENTS.md`, relevant specs/ADRs,
-   code style, development workflow, and this protocol.
-2. Create or select one `chatgpt/gameengine-*` target branch. Normal main-based
-   work starts from current `main`.
-3. Capture exact target HEAD and current `main` as `expected_head_sha` and
-   `baseline_main_sha`.
-4. Create a unique `chatgpt-producer-stage-<request-id>` from that exact current
-   `main` baseline.
-5. Read exact target file content needed to form precise edit anchors. Create
-   only small structured edit payloads on the producer branch; do not rewrite a
-   huge existing source through Contents API just to transport a change.
-6. Add all contiguous edit payload files before ready.
-7. Re-read target and `main`. If either differs from captured SHAs, abandon this
-   unpublished producer request and rebuild from current state with a new ID.
-8. Add exactly `.chatgpt-producer/<request-id>/ready.json` in a separate final
-   commit and no other file in that commit.
-9. Re-read producer branch and capture full ready commit SHA. Never modify the
-   branch after this point.
-10. Open the transient producer-signal Issue with exact title/body above.
-11. Trusted producer validates signal authority, producer immutability/history,
-    target/main state, edit payloads, and product paths.
-12. It applies ordered edits to an exact target checkout and stages resulting
-    product state.
-13. `request_protocol.py build` mechanically creates/preflights schema-v2 request
-    bytes and rechecks remote target/main.
-14. Immediately before releasing Dispatcher ready, trusted production again
-    checks producer branch, target branch, and `main`. Any movement aborts the
-    unpublished stage request.
-15. Trusted producer publishes exact builder output to a fresh
-    `chatgpt-dispatch-stage-<request-id>` and explicitly starts trusted publisher
-    from `main`.
-16. Publisher, Dispatcher, Draft PR, Windows Validation, and optional repair
-    continue through the existing trusted path.
+For each accepted connector producer request, the trusted producer:
 
-The connector path MUST NOT fall back to hand-authored unified diff text.
-Failures are diagnosed at their responsible layer. Corrections use a new
-immutable producer request unless trusted automation itself requires a separate
-reviewed infrastructure PR.
+1. runs from the current trusted `main` workflow definition;
+2. resolves the successful read-only signal or explicit recovery input;
+3. requires producer branch `chatgpt-producer-stage-<request-id>` and a full
+   40-character producer ready commit;
+4. rechecks the producer remote branch still equals that commit;
+5. reads exact `ready.json` and verifies the manifest byte count and SHA-256;
+6. strictly validates manifest schema, paths, operations, modes, limits,
+   duplicate/case collisions, and deterministic ordering;
+7. verifies the request directory has no missing or extra files and validates
+   every source byte count, SHA-256, UTF-8 encoding, and LF-only line endings;
+8. requires producer commit history after `baseline_main_sha` to be linear,
+   addition-only input data, with the final commit changing only ready.json;
+9. requires current remote `main` still equal `baseline_main_sha`;
+10. requires current remote target still equal `expected_head_sha` and requires
+    the main baseline to be an ancestor of that target;
+11. creates a detached exact-target worktree and verifies add/update/delete
+    semantics and target base modes before touching each declared path;
+12. materializes the declared final source bytes and stages exactly the manifest
+    path set, with no unstaged or untracked product state;
+13. calls `.github/chatgpt/request_protocol.py build` with remote recheck enabled;
+14. lets the builder generate the unified diff, strict preflight it, calculate
+    patch hash/bytes, split parts, and emit schema-v2 ready.json;
+15. rechecks producer branch, target, and `main` after build and immediately
+    before stage publication;
+16. copies builder bytes without transformation into a fresh
+    `chatgpt-dispatch-stage-<request-id>`;
+17. creates patch-part commit(s) followed by a separate ready-only final commit;
+18. runs trusted `preflight-stage` over that exact local stage ready commit;
+19. publishes the new stage branch with an exact non-existence lease and verifies
+    its remote head; and
+20. explicitly starts the read-only stage signal from `main` with the exact stage
+    branch and full ready commit.
+
+The trusted producer MUST NOT commit to the product target branch and MUST NOT
+write `chatgpt-dispatch`.
 
 ## Mechanical request builder
 
-Every new normal Dispatcher request ultimately uses:
-
-```text
-.github/chatgpt/request_protocol.py build
-```
-
-from an exact checkout of target HEAD. Hand-authored unified diffs and manually
-maintained hunk headers are not a normal producer path.
+New normal Dispatcher requests MUST be produced with
+`.github/chatgpt/request_protocol.py build` from an exact checkout of the target
+HEAD. Hand-authored unified diffs are not a normal producer path.
 
 The builder:
 
-1. requires checkout `HEAD` to equal `expected_head_sha`;
-2. requires `baseline_main_sha` to be an ancestor of target;
-3. rejects unstaged tracked changes and untracked files;
-4. obtains patch mechanically from staged Git state and exact target tree;
+1. requires checkout `HEAD` to equal full `expected_head_sha`;
+2. requires full `baseline_main_sha` to be an ancestor of that target;
+3. requires staged intended changes and rejects unstaged tracked or untracked
+   files;
+4. generates the patch mechanically with Git from the staged index;
 5. runs `git apply --check --whitespace=error-all` in a detached exact-target
    worktree;
-6. applies only to a temporary index, runs `git diff --cached --check`, enforces
-   public path allow-list, and rejects symlink/submodule modes;
-7. re-reads remote target and `main` before emitting ready unless running the
-   explicit regression-test-only bypass;
-8. splits only at newline boundaries;
-9. computes exact `patch_sha256` and `patch_bytes`; and
-10. emits schema-v2 `ready.json` plus contiguous `part-NNNN.patch` files.
+6. applies only to a temporary index and runs `git diff --cached --check`;
+7. enforces allowed product paths and rejects symlink/submodule modes;
+8. re-reads the real remote target and `main` immediately before output;
+9. splits only at newline boundaries;
+10. computes exact `patch_sha256` and `patch_bytes`; and
+11. emits schema-v2 `ready.json` plus contiguous `part-NNNN.patch` files.
 
-Builder output is immutable. It MUST NOT be retyped, reformatted, line-ending
-converted, manually re-split, or synthetically reconstructed. A ChatGPT session
-that cannot execute the builder directly MUST use connector-only trusted
-production rather than requiring a local Worker process or hand-authoring a
-patch.
+The hidden remote-recheck bypass is regression-test-only. Production trusted
+producer invocations never use it.
 
-## Direct builder lifecycle
+Builder output bytes are immutable. They MUST NOT be retyped, reformatted,
+line-ending converted, manually re-split, or reconstructed by ChatGPT.
 
-A producer with a trusted real checkout may instead:
+## Dispatcher `ready.json` schema v2
 
-1. Read current target and `main`; capture exact full SHAs.
-2. Prepare intended change in a disposable exact-target checkout and stage only
-   intended files.
-3. Run the mechanical request builder.
-4. Create unique `chatgpt-dispatch-stage-<request-id>` from current `main`.
-5. Publish exact builder-emitted parts without transformation.
-6. Re-read target and `main`; if either moved, abandon unpublished request,
-   rebuild from current state, and use a new ID.
-7. Add exact builder-emitted `ready.json` in its own final commit.
-8. Continue through publisher, Dispatcher, Draft PR, and validation.
-
-A stale request is never force-applied. SHA fields are never replaced without
-regenerating the corresponding product patch.
-
-## Dispatcher `ready.json`
-
-Schema version 2 is required for new normal requests:
+New normal requests use:
 
 ```json
 {
@@ -371,156 +360,116 @@ Schema version 2 is required for new normal requests:
 }
 ```
 
-Schema version 1 remains accepted only for already-staged or legacy-compatible
-requests during migration. New producer work MUST use schema 2.
+Schema 1 remains accepted only for already-staged migration-compatible requests.
+New producer work MUST generate schema 2.
 
-All schemas require matching request ID, safe target, full target SHA, bounded
-one-line commit message/title, PR body at most 8,000 characters, exact patch-part
-list, and no legacy auto-merge authorization marker. Schema v2 additionally
-requires current-main baseline identity/ancestry and exact reconstructed patch
-SHA-256/byte count.
+Schema-v2 guarantees include full target and main SHAs, target ancestry from the
+main baseline, exact reconstructed patch SHA-256 and byte count, and refusal when
+current remote target or current remote `main` no longer matches the declared
+state.
 
 ## Patch parts
 
-Patch transport is byte-preserving concatenation. Dispatcher concatenates parts
-in declared order without separators.
+Patch transport is byte-preserving concatenation:
 
-Constraints:
-
-- contiguous `part-0000.patch`, `part-0001.patch`, ...;
+- names are contiguous `part-0000.patch`, `part-0001.patch`, ...;
 - 1 to 64 parts;
-- each 1 to 60,000 bytes;
-- reconstructed patch at most 4 MiB;
-- request directory contains only declared parts plus `ready.json`;
-- normal non-executable blobs, not symlinks.
+- each part is 1 to 60,000 bytes;
+- reconstructed patch is at most 4 MiB;
+- the request directory contains only declared parts plus `ready.json`;
+- all request transport blobs are normal non-executable files.
 
-Published bytes MUST be identical to builder-preflighted bytes.
+The bytes published to stage MUST be identical to builder output.
+
+## Read-only stage signal
+
+`gameengine-chatgpt-stage-signal.yml` remains read-only. It accepts either:
+
+- the normal push event for externally-published immutable stage branches; or
+- trusted `workflow_dispatch` carrying `stage_branch` and full `request_commit`,
+  used when the trusted producer's `GITHUB_TOKEN` push cannot trigger another
+  push workflow.
+
+Both forms validate the same remote stage head, branch/request-ID relationship,
+full ready SHA, ready-only final commit, normal mode, and ready JSON identity.
+The workflow-run display title binds the exact stage branch and ready commit for
+the downstream publisher.
 
 ## Transport publisher safety checks
 
-Before advancing `chatgpt-dispatch`, trusted publisher:
+Before advancing `chatgpt-dispatch`, the trusted publisher:
 
-1. accepts successful immutable stage signal or explicit trusted recovery
-   dispatch with stage branch and full ready commit;
-2. requires stage HEAD still equal exact ready commit;
-3. requires linear history based on `main`;
-4. allows pre-ready commits to add only patch parts and final commit only ready;
-5. validates names, modes, counts, sizes, schema, request ID;
-6. loads controls from current `main`;
-7. re-reads target/current `main` and validates v2 baseline ancestry;
-8. verifies reconstructed hash and byte count;
-9. runs strict exact-target applicability, `git diff --cached --check`, path
-   allow-list, symlink/submodule checks;
-10. rejects differing request-ID reuse and treats identical content idempotently;
-11. enters global publisher concurrency before selecting latest transport HEAD;
-12. cherry-picks validated immutable request;
-13. re-reads remote transport before push and uses exact lease; and
-14. explicitly starts trusted Dispatcher from `main` with published full ready
-    commit SHA.
+1. accepts a successful read-only stage signal or explicit recovery dispatch;
+2. derives or receives an immutable stage branch and full ready commit;
+3. requires the remote stage branch still equal that exact commit;
+4. requires linear staged history based on `main`;
+5. allows pre-ready commits to add only request patch parts and the final commit
+   to add only `ready.json`;
+6. validates names, modes, counts, sizes, request ID, and schema;
+7. loads request controls from current trusted `main`;
+8. runs `request_protocol.py preflight-stage`, including real remote target/main
+   rechecks, schema-v2 hash/byte validation, baseline ancestry, strict
+   exact-target applicability, `git diff --cached --check`, allowed paths, and
+   symlink/submodule rejection;
+9. treats an identical previously-published request ID idempotently but rejects
+   different content under the same ID;
+10. enters global publisher concurrency before selecting the latest transport
+    head;
+11. re-reads remote `chatgpt-dispatch` immediately before push; and
+12. pushes with exact `--force-with-lease` against the observed transport head.
 
-Publisher concurrency uses `cancel-in-progress: false` and `queue: max`.
-Canceled/queued publication is replayed with same immutable stage branch and full
-ready commit. Producers never bypass transport serialization.
+Publisher concurrency is:
+
+```yaml
+cancel-in-progress: false
+queue: max
+```
+
+The publisher then explicitly starts the trusted Dispatcher from `main` with the
+published full ready commit SHA.
 
 ## Dispatcher safety checks
 
-Trusted Dispatcher:
+The trusted Dispatcher:
 
-1. requires selected full request commit reachable from `chatgpt-dispatch`;
-2. verifies final commit added only declared ready;
-3. validates schema, part names, modes, counts, sizes;
-4. accepts schema 1 only for migration compatibility and schema 2 for normal
-   current requests;
-5. requires current target HEAD equal `expected_head_sha`;
-6. reconstructs patch and revalidates v2 hash, bytes, baseline, current `main`,
-   ancestry;
-7. runs `git apply --check --whitespace=error-all`;
-8. applies to local index only;
-9. rejects `.github/**`, `.chatgpt-requests/**`, and every path outside public
-   allow-list, including old rename paths with rename detection disabled;
-10. rejects modes `120000` and `160000`;
-11. runs `git diff --cached --check`;
-12. re-reads target HEAD immediately before commit/push; and
-13. pushes with exact lease for `expected_head_sha`.
+1. resolves a full published request commit reachable from `chatgpt-dispatch`;
+2. verifies the final commit added only the declared `ready.json`;
+3. validates request schema and contiguous part names, modes, counts, and sizes;
+4. checks out the declared target and requires exact `expected_head_sha`;
+5. reconstructs schema-v2 bytes and revalidates hash, byte count, baseline,
+   current `main`, and ancestry;
+6. runs `git apply --check --whitespace=error-all`;
+7. applies to the local index only;
+8. rejects `.github/**`, `.chatgpt-requests/**`, and all paths outside the public
+   GameEngine allow-list;
+9. rejects symlink and submodule modes;
+10. runs `git diff --cached --check`;
+11. re-reads target HEAD immediately before product commit/push; and
+12. pushes with exact lease for `expected_head_sha`.
 
 Dispatcher concurrency also uses `cancel-in-progress: false` and `queue: max`.
 No stale request is force-applied.
 
-## Failure diagnosis before retry
-
-Choose recovery by failing layer:
-
-- Producer-signal Issue rejected: verify exact title/JSON, trusted author
-  association, matching branch/request ID, full producer commit.
-- Producer edit payload rejected: fix operation schema, exact text anchor, safe
-  path, expected delete blob, or contiguous payload list in a new request.
-- Producer branch moved after ready: never rewrite it; use a new request ID.
-- Stale target/main: rebuild from current state; never replace only SHA fields.
-- Builder rejected staged product state: fix actual edit intent; never hand-edit
-  generated diff.
-- Corrupt/misaligned patch: discard unpublished artifact and regenerate from
-  exact target; never repair hunk headers manually.
-- Publisher rejected stage: verify immutable stage shape, ready commit, part
-  sequence/sizes/schema, and exact builder bytes.
-- Hash/byte mismatch: abandon unpublished request and rebuild with new ID.
-- Transport moved outside serialization: identify external writer; never
-  force-update from producer.
-- Publisher canceled before publication: replay from `main` with same immutable
-  stage branch/full ready commit.
-- Dispatcher canceled after transport publication: replay same published full
-  request commit; do not republish.
-- Dispatcher path rejection: do not weaken product allow-list. Trusted automation
-  changes require separate infrastructure branch/Draft PR.
-- Windows Validation failure: read summary mode/scope, job logs, diagnostics, and
-  external-service state before deciding code changes.
-- GitHub/runner/network/dependency external failure: do not create speculative
-  product changes to compensate.
-
-Confirmed reusable automation failures belong in
-`docs/CHATGPT_AUTOMATION_INCIDENTS.md`; it supplements but does not override this
-protocol.
-
-## Automation regression suite
-
-`.github/workflows/gameengine-chatgpt-automation-regression.yml` discovers
-`test_*_protocol.py` whenever automation/protocol paths change. Coverage includes
-existing INC-001 through INC-007 protections plus connector edit-plan generation,
-create/delete behavior, trust-boundary/traversal rejection, exact-match guards,
-immutable producer-head checks, and default-branch Issue-signal handoff.
-
-A deterministic durable automation fix SHOULD gain a regression when practical.
-
 ## Pull request rules
 
-After successful product push, Dispatcher creates/reuses one open PR whose head
-is target branch.
+The Dispatcher creates or reuses at most one open PR for the target branch:
 
-- base MUST be `main`;
-- PR MUST remain Draft;
-- existing non-Draft PRs are converted back to Draft;
-- PR body carries `<!-- gameengine-chatgpt-dispatcher -->`;
-- legacy auto-merge authorization forbidden;
-- Dispatcher never merges or enables auto-merge.
+- base is `main`;
+- PR remains Draft;
+- no auto-merge authorization is accepted;
+- Dispatcher never merges;
+- the PR body carries `<!-- gameengine-chatgpt-dispatcher -->`.
 
 ## Windows Validation
 
-Dispatcher explicitly starts `gameengine-windows-validation.yml` from `main`
-with target branch, PR number, exact pushed HEAD, and request ID. Validation
-resolves remote target and requires exact supplied SHA before checkout.
+The Dispatcher starts `gameengine-windows-validation.yml` from `main` with the
+product branch, PR number, exact pushed HEAD, and request ID. The validation
+workflow re-resolves and checks that exact branch head before execution.
 
 Modes are `affected`, `full`, and `docs`.
 
-### `affected`
-
-Safely classifiable crate changes use Cargo metadata to select changed workspace
-packages. Formatting plus selected-package Clippy, tests, and documentation run.
-Success means selected affected scope passed, not whole workspace.
-
-### `full`
-
-Mandatory for nightly, workspace manifest/lock/toolchain, validation/build/
-automation infrastructure, unknown/deleted package paths, and unclassifiable
-changes. Runs:
+`full` is required for workspace-wide or automation/validation infrastructure
+changes and runs:
 
 ```text
 cargo fmt --all --check
@@ -530,50 +479,98 @@ cargo test --workspace
 cargo doc --workspace --no-deps
 ```
 
-### `docs`
+`affected` validates only planner-selected affected package scope. `docs` may
+skip Rust compilation for recognized documentation-only changes. The
+machine-readable validation summary is authoritative for mode and scope.
 
-Recognized docs-only PR/merge/main fast paths may skip Rust compilation. Nightly
-still supplies full-workspace coverage.
+Visual Validation is additional evidence for Editor/Launcher changes whose
+layout or visible rendering is part of correctness. It is not required for
+logic-only, documentation-only, or automation-only changes.
 
-Machine-readable aggregate summary and workflow conclusion are authoritative for
-mode and scope.
+## Failure diagnosis before retry
 
-## ChatGPT repair loop
+Choose recovery by failing layer:
 
-After dispatch:
+- Producer signal failure: correct the issue signal or create a new immutable
+  producer request; do not add a write-capable workflow to a producer branch.
+- Producer manifest/source rejection: correct malformed, missing, extra,
+  duplicate, hashed, encoded, mode, or path data with a new request ID.
+- Producer branch mutation after signal: reject it and create a new immutable
+  producer branch; never re-point the old request ID.
+- Trusted producer stale target/main: rebuild source-state input against current
+  target/current `main`; never update only SHA fields.
+- Builder whitespace/applicability failure: correct final source state; never
+  repair hunk headers manually.
+- Stage signal/publisher rejection: inspect immutable stage shape and exact
+  builder bytes; do not bypass the read-only signal or publisher.
+- Publisher canceled before transport publication: replay using the same
+  immutable stage branch and full ready commit.
+- Dispatcher canceled after transport publication: replay the Dispatcher using
+  the published full request commit; do not republish the request.
+- Transport moved outside serialized publisher: identify the external writer;
+  producers do not direct-fast-forward the shared transport ref.
+- GitHub, runner, network, or dependency-service failure: do not create product
+  code changes to hide an infrastructure failure.
 
-1. Read validation `summary.json`, mode, scope.
-2. If all required gates succeed, stop and leave PR Draft.
-3. On failure inspect relevant logs/diagnostics.
-4. Separate code defects from external failures.
-5. Re-read target HEAD, current `main`, affected files.
-6. Create correction with direct builder or a new immutable connector edit plan.
-7. Repeat trusted production/publication, Dispatcher, validation.
+Confirmed reusable failures belong in
+`docs/CHATGPT_AUTOMATION_INCIDENTS.md`. Do not create an incident from an
+unconfirmed hypothesis.
 
-Normal automated repair is limited to five rounds. If same essential failure
-repeats twice, reassess root-cause hypothesis before retrying.
+## Automation regression suite
+
+`.github/workflows/gameengine-chatgpt-automation-regression.yml` runs whenever
+ChatGPT automation or its canonical documentation changes. It executes:
+
+- `.github/chatgpt/test_request_protocol.py`, covering confirmed Dispatcher and
+  publisher incidents plus schema-v2 builder protections; and
+- `.github/chatgpt/test_producer_protocol.py`, covering normal source-state
+  request generation, add/update/delete, stale target/main, post-signal branch
+  mutation, path traversal, trust-boundary paths, duplicate/case collisions,
+  malformed manifests, hash mismatches, missing/extra source data, whitespace,
+  request-ID binding, ready-only commit expectations, UTF-8/LF source policy,
+  real builder remote-recheck races, read-only signal trust, stage-signal
+  identity, and publisher single-writer/exact-lease contracts.
+
+When an automation incident produces a deterministic durable fix, add a focused
+regression when practical.
+
+## Repair loop
+
+After a product request reaches validation:
+
+1. Read the validation summary, selected mode, and scope.
+2. If required gates succeed, leave the PR Draft for human merge decision.
+3. On failure, inspect the relevant automation layer, job diagnostics, and
+   external-service state.
+4. Separate product defects from transport, runner, network, or dependency
+   failures.
+5. Re-read current target HEAD and current `main` before generating any fix.
+6. Use a new request ID and immutable producer/stage branch for corrected product
+   state.
+7. Repeat trusted production, publication, Dispatcher, and validation.
+
+Normal automated repair is limited to five rounds. If the same essential
+failure repeats twice, reassess the root-cause hypothesis before another retry.
 
 ## Incident learning
 
-After confirmed failure and validated recovery:
+After a reusable automation failure is understood and its resolution is actually
+validated:
 
-1. Search `docs/CHATGPT_AUTOMATION_INCIDENTS.md` by symptom/layer/cause.
-2. Update existing root-cause entry when applicable.
-3. Add new incident only for materially different confirmed cause.
-4. Record symptom, layer, evidence, cause, successful resolution, prevention,
-   and durable request/PR/run/commit references.
-5. Separate fact from inference.
-6. Never record secrets, credentials, private machine paths, large raw logs.
-7. Add deterministic executable regression when practical.
-8. Update this protocol when lesson applies to all future requests.
+1. search `docs/CHATGPT_AUTOMATION_INCIDENTS.md` for the same layer/root cause;
+2. update an existing incident when it already covers the failure;
+3. create a new incident only for a materially different confirmed root cause;
+4. record evidence, root cause, verified resolution, prevention, next action,
+   and durable request/PR/run/commit references;
+5. separate confirmed fact from inference; and
+6. update this protocol when the lesson applies to all future requests.
 
-Trusted automation defects under `.github/**` are repaired only through a
-separate `chatgpt/gameengine-*` automation-infrastructure branch and Draft PR,
-never through Dispatcher product path.
+Do not record secrets, credentials, private machine paths, or large raw logs.
 
 ## Fallback
 
-No write-capable bypass is installed. If connector producer, trusted producer,
-publisher, Dispatcher, or validation is unavailable, diagnose and repair trusted
-path instead of bypassing staging, exact-head checks, single-writer transport,
-Draft PR, or validation guarantees.
+No write-capable bypass is installed. If producer signaling, trusted production,
+stage signaling, publisher, Dispatcher, or validation is unavailable, diagnose
+and repair the trusted path in a separate infrastructure Draft PR. Do not bypass
+exact-head checks, builder generation, immutable staging, single-writer
+transport, Draft PR, or validation guarantees.

@@ -1,0 +1,92 @@
+name: GameEngine ChatGPT Producer Signal
+
+run-name: >-
+  ChatGPT producer signal issue-${{ github.event.issue.number }} ${{ github.event.issue.title }}
+
+on:
+  issues:
+    types:
+      - opened
+
+permissions:
+  contents: read
+  issues: read
+
+concurrency:
+  group: gameengine-chatgpt-producer-signal-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  signal:
+    name: Validate connector producer signal
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Check out trusted default-branch controls
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: main
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Validate immutable producer signal
+        shell: bash
+        env:
+          EXPECTED_REPOSITORY: KdGithubIt/GameEngine
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
+          ISSUE_ASSOCIATION: ${{ github.event.issue.author_association }}
+        run: |
+          set -euo pipefail
+
+          fail() {
+            echo "::error::$1"
+            exit 1
+          }
+
+          [[ "$GITHUB_REPOSITORY" == "$EXPECTED_REPOSITORY" ]] ||
+            fail "This workflow is restricted to $EXPECTED_REPOSITORY."
+          [[ "$GITHUB_REF_NAME" == "main" ]] ||
+            fail "The producer signal must run from the trusted default branch."
+          case "$ISSUE_ASSOCIATION" in
+            OWNER|MEMBER|COLLABORATOR) ;;
+            *) fail "Producer signals must be opened by a repository owner/member/collaborator." ;;
+          esac
+
+          signal_file="$RUNNER_TEMP/chatgpt-producer-signal.json"
+          printf '%s' "$ISSUE_BODY" > "$signal_file"
+          jq -e 'type == "object" and
+            .signal == "gameengine-chatgpt-producer-v1" and
+            (.request_id | type == "string") and
+            (.producer_branch | type == "string") and
+            (.producer_commit | type == "string") and
+            (keys | sort == ["producer_branch", "producer_commit", "request_id", "signal"])' \
+            "$signal_file" >/dev/null ||
+            fail "Issue body must be the exact GameEngine ChatGPT producer signal JSON object."
+
+          request_id="$(jq -r '.request_id' "$signal_file")"
+          producer_branch="$(jq -r '.producer_branch' "$signal_file")"
+          producer_commit="$(jq -r '.producer_commit' "$signal_file")"
+
+          [[ "$request_id" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]] ||
+            fail "request_id contains invalid characters."
+          [[ "$producer_branch" == "chatgpt-producer-stage-$request_id" ]] ||
+            fail "producer_branch must be chatgpt-producer-stage-<request-id>."
+          [[ "$producer_commit" =~ ^[0-9a-fA-F]{40}$ ]] ||
+            fail "producer_commit must be a full commit SHA."
+          [[ "$ISSUE_TITLE" == "GameEngine ChatGPT Producer $request_id $producer_commit" ]] ||
+            fail "Issue title must bind the request ID and exact producer commit."
+
+          remote_head="$(git ls-remote origin "refs/heads/$producer_branch" | awk '{print $1}')"
+          [[ "$remote_head" == "$producer_commit" ]] ||
+            fail "Producer branch does not point at the signaled immutable commit."
+
+          {
+            echo "### ChatGPT connector producer signal accepted"
+            echo
+            echo "- Request: \`$request_id\`"
+            echo "- Producer branch: \`$producer_branch\`"
+            echo "- Producer ready commit: \`$producer_commit\`"
+            echo "- Repository mutation permissions: none"
+          } >> "$GITHUB_STEP_SUMMARY"
