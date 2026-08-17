@@ -1684,6 +1684,38 @@ impl AgentHost {
         Ok((artifact_id, path))
     }
 
+    pub(crate) fn captured_frame_artifact(
+        &self,
+        run_id: &str,
+        artifact_id: &str,
+    ) -> Result<(Vec<u8>, u32, u32), AgentHostError> {
+        let run = self.run(run_id)?;
+        let (width, height) = run
+            .events
+            .iter()
+            .find_map(|event| match event.evidence.as_ref() {
+                Some(AgentEventEvidence::CapturedFrame {
+                    artifact_id: event_artifact_id,
+                    width,
+                    height,
+                }) if event_artifact_id == artifact_id => Some((*width, *height)),
+                _ => None,
+            })
+            .ok_or_else(|| {
+                AgentHostError::Io(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "captured frame artifact does not belong to the requested run",
+                ))
+            })?;
+        let path = self
+            .storage_root
+            .join("artifacts")
+            .join(run_id)
+            .join(format!("{artifact_id}.png"));
+        let bytes = fs::read(path)?;
+        Ok((bytes, width, height))
+    }
+
     fn session_mut(&mut self, id: &str) -> Result<&mut AgentSession, AgentHostError> {
         self.sessions
             .get_mut(id)
