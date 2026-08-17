@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ai_studio.rs","old":"pub struct AiStudioPanel {\n    project_root: PathBuf,\n    connection: AiStudioConnection,","new":"pub struct AiStudioPanel {\n    project_root: PathBuf,\n    project_id: String,\n    connection: AiStudioConnection,"}
