@@ -889,6 +889,8 @@ Prefab は schema version 1 の `*.prefab.json` です。定義内 Entity ID は
 
 Nested Prefab の dependency cycle は Package で拒否されます。Instance root の `editor.prefab_instance` marker は editor-only で、runtime bridge は無視します。
 
+marker の `source` はプロジェクトルート相対パス（例: `assets/prefabs/hero.prefab.json`）で保存されます（ADR 0134）。Scene を別マシンや別チェックアウトへ移動しても壊れません。ADR 0134 より前に作られた Scene は絶対パスを持つことがあります。読み込みは互換維持されますが、そのマシンでしか解決できません。Inspector が該当 Instance に注意を表示するので、Revert（または再 Instantiate）して保存すると相対パスへ移行します。
+
 ## 18. 配布パッケージの作成
 
 ### 18.1 Player を先に Build する

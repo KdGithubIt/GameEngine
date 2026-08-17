@@ -218,11 +218,19 @@ impl EditorApp {
         if let Some(edit) = output.gizmo_edit {
             self.apply_scene_gizmo_edit(edit);
         }
-        if let (Some(source), Some(position)) = (
+        if let (Some(source), Some(position), Some(project_root)) = (
             self.prefab_placement_source.clone(),
             output.placement_position,
+            self.project_root
+                .as_ref()
+                .map(|project| project.path().to_path_buf()),
         ) {
-            match crate::prefab_workflow::instantiate_prefab(&mut self.session, &source, None) {
+            match crate::prefab_workflow::instantiate_prefab(
+                &mut self.session,
+                &project_root,
+                &source,
+                None,
+            ) {
                 Ok(root) => {
                     let _ = self
                         .session

@@ -151,8 +151,9 @@ pub use material_asset::{
 pub use persist::{replace_file_contents, PersistError, PersistOperation};
 pub use prefab::{PrefabAsset, PrefabError, PrefabInstantiation, PREFAB_SCHEMA_VERSION};
 pub use prefab_authoring::{
-    PrefabAuthoringError, PrefabAuthoringService, PrefabInstantiationMutation,
-    PrefabInstantiationRequest, PREFAB_INSTANCE_COMPONENT,
+    prefab_instance_marker, prefab_instance_source, PrefabAuthoringError, PrefabAuthoringService,
+    PrefabInstanceSource, PrefabInstantiationMutation, PrefabInstantiationRequest,
+    PrefabSourceError, PrefabSourcePath, PREFAB_INSTANCE_COMPONENT, PREFAB_INSTANCE_SOURCE_FIELD,
 };
 pub use project::{ProjectConfig, ProjectError, ProjectRoot, PROJECT_SCHEMA_VERSION};
 pub use project_settings::{
