@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ui/mcp.rs",
+  "old": "    fn structured(error: StructuredAuthoringError) -> Self {\n        let code = error.code().to_owned();\n        Self::new(code, error.to_string())\n    }\n\n    fn no_scene() -> Self {",
+  "new": "    fn structured(error: StructuredAuthoringError) -> Self {\n        let code = error.code().to_owned();\n        Self::new(code, error.to_string())\n    }\n\n    fn typed(error: TypedDocumentAuthoringError) -> Self {\n        let code = error.code().to_owned();\n        Self::new(code, error.to_string())\n    }\n\n    fn no_typed_document(domain: &str) -> Self {\n        Self::new(\n            \"editor.no_typed_document\",\n            format!(\"no active {domain} document is open in the Editor\"),\n        )\n    }\n\n    fn no_scene() -> Self {"
+}
