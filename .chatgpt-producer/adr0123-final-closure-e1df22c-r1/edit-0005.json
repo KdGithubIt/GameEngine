@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ui/behavior_debug.rs",
+  "old": "        if let Some(session) = self.graph_session.as_ref() {\n            show_graph_debug_canvas(ui, session, &mut self.canvas, &presentation.overlay);\n        } else {\n",
+  "new": "        if let Some(session) = self.graph_session.as_ref() {\n            show_graph_debug_canvas(\n                ui,\n                session,\n                &mut self.canvas,\n                &presentation.overlay,\n                &mut self.selected_node,\n            );\n        } else {\n"
+}
