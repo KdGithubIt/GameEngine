@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ui/chrome.rs",
+  "old": "            let result = egui::ScrollArea::vertical()\n                .auto_shrink([false, false])\n                .show(&mut viewport_ui, |ui| {\n                    let viewport_width = ui.available_width();\n                    ui.set_width(viewport_width);\n                    add_contents(ui)\n                })\n                .inner;",
+  "new": "            let mut scroll_area = egui::ScrollArea::vertical().auto_shrink([false, false]);\n            if let Some(offset) = vertical_scroll_offset {\n                scroll_area = scroll_area.vertical_scroll_offset(offset);\n            }\n            let result = scroll_area\n                .show(&mut viewport_ui, |ui| {\n                    let viewport_width = ui.available_width();\n                    ui.set_width(viewport_width);\n                    add_contents(ui)\n                })\n                .inner;"
+}
