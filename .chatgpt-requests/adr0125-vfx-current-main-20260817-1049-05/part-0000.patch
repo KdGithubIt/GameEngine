@@ -1,0 +1,19 @@
+diff --git a/crates/editor/src/vfx_builder_completion.rs b/crates/editor/src/vfx_builder_completion.rs
+index 92e3386c2d5e549135e20fabdd6cc00fbba24f0c..d52955fd8ecb3415d7d382393a0644eb12869326 100644
+--- a/crates/editor/src/vfx_builder_completion.rs
++++ b/crates/editor/src/vfx_builder_completion.rs
+@@ -62,14 +62,6 @@ impl Default for VfxPreviewState {
+ }
+ 
+ impl VfxPreviewState {
+-    fn open_effect(&mut self, effect: &VfxEffect) {
+-        self.preview_seed = effect.seed;
+-        self.current_time = 0.0;
+-        self.player = None;
+-        self.last_effect = None;
+-        self.status = Some("Compiling preview...".to_owned());
+-    }
+-
+     fn sync_effect(&mut self, effect: &VfxEffect, compilation: Option<&VfxCompilation>) {
+         if self.last_effect.as_ref() == Some(effect) {
+             return;
