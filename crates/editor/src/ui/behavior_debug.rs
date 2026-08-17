@@ -379,7 +379,7 @@ impl EditorApp {
                 .show(&context, |ui| {
                     ui.horizontal_top(|ui| {
                         ui.vertical(|ui| {
-                            ui.set_width(350.0);
+                            ui.set_width(260.0);
                             ui.set_min_height(600.0);
                             if let Some(session) = self.behavior_debug.graph_session.as_ref() {
                                 show_graph_node_palette_visual_fixture(ui, session);
@@ -387,13 +387,13 @@ impl EditorApp {
                         });
                         ui.separator();
                         ui.vertical(|ui| {
-                            ui.set_width(470.0);
+                            ui.set_width(520.0);
                             ui.set_min_height(600.0);
                             self.behavior_debug.show_graph(ui, &presentation);
                         });
                         ui.separator();
                         ui.vertical(|ui| {
-                            ui.set_width(210.0);
+                            ui.set_width(250.0);
                             ui.set_min_height(600.0);
                             show_behavior_debug_details(ui, &presentation);
                         });
@@ -432,9 +432,10 @@ fn show_behavior_debug_details(ui: &mut egui::Ui, presentation: &BehaviorTreeDeb
         ui.label(format!("Entity generation {generation}"));
     }
     ui.monospace(presentation.graph.as_str());
+    ui.label(format!("Tree generation {}", presentation.tree_generation));
     ui.label(format!(
-        "Tree gen {}  |  Execution gen {}",
-        presentation.tree_generation, presentation.execution_generation
+        "Execution generation {}",
+        presentation.execution_generation
     ));
     ui.separator();
     ui.strong(format!(
@@ -445,7 +446,8 @@ fn show_behavior_debug_details(ui: &mut egui::Ui, presentation: &BehaviorTreeDeb
             .unwrap_or("Not ticked")
     ));
     if let Some(reason) = presentation.last_reset_reason {
-        ui.label(format!("Last abort/reset: {}", reset_reason_label(reason)));
+        ui.label("Last abort/reset");
+        ui.monospace(reset_reason_label(reason));
     }
     if let Some(error) = &presentation.error {
         ui.colored_label(egui::Color32::from_rgb(235, 104, 104), error);

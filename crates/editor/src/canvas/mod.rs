@@ -624,7 +624,7 @@ pub(crate) fn show_graph_node_palette_visual_fixture(
         columns[1].add(
             egui::TextEdit::singleline(&mut search_query)
                 .hint_text("Search nodes...")
-                .desired_width(150.0),
+                .desired_width(110.0),
         );
         columns[1].small("Matches shared schema labels, categories, type IDs, and tags.");
         for kind in session
