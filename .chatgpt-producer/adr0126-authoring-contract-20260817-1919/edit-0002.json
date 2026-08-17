@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/authoring/src/timeline_authoring.rs","old":"        let mut service = TimelineAuthoringService::new(doc);\n        let mut service = service.take().unwrap();","new":"        let mut service = TimelineAuthoringService::new(doc).unwrap();"}
