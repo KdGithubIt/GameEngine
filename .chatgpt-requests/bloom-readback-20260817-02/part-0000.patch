@@ -1,0 +1,13 @@
+diff --git a/crates/render-runtime/tests/bloom_spread.rs b/crates/render-runtime/tests/bloom_spread.rs
+index c7303bee66b62115ab5957e46412d96d4e78ca7b..ecf3091c2b7634b56b92cf47f8e3fc88aa8ab00c 100644
+--- a/crates/render-runtime/tests/bloom_spread.rs
++++ b/crates/render-runtime/tests/bloom_spread.rs
+@@ -172,7 +172,7 @@ fn bloom_spreads_bright_source_into_neighboring_pixels_when_a_gpu_adapter_is_ava
+     let bloom = BloomSettings {
+         enabled: false,
+         threshold: 0.5,
+-        intensity: 4.0,
++        intensity: 64.0,
+         radius: 8.0,
+     };
+     let without_bloom = PostProcessSettings {
