@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/authoring/src/project_settings.rs","old":"            start_scene: None,\n            system_settings: SystemSettings::default(),\n        }","new":"            start_scene: None,\n            system_settings: SystemSettings::default(),\n            native_2d: crate::native_2d::Project2dSettings::default(),\n        }"}

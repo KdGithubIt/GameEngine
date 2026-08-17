@@ -1,0 +1,1 @@
+{"operation":"create_text","path":"crates/authoring/src/native_2d.rs","content":"//! Native 2D project authoring contracts (ADR 0127).\n//!\n//! Persisted project defaults and stable sorting identity live here. Runtime\n//! solver state and backend handles are deliberately excluded.\n\n// CHATGPT_NATIVE2D_AUTHORING_BODY\n"}
