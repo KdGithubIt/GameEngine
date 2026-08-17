@@ -1,0 +1,16 @@
+diff --git a/crates/editor/src/ui/tests.rs b/crates/editor/src/ui/tests.rs
+index dc55caeea2108b56611750bcbc94c6ef46934b16..29f4cfa24b9128282fa16aea54b946fafe8b8a44 100644
+--- a/crates/editor/src/ui/tests.rs
++++ b/crates/editor/src/ui/tests.rs
+@@ -2361,7 +2361,10 @@ fn continuous_material_edits_require_explicit_save_before_disk_write() {
+         ..original.clone()
+     };
+     app.material_editor
+-        .open_material(relative_path.clone(), changed.clone());
++        .open_material(relative_path.clone(), original.clone());
++    *app.material_editor
++        .active_material_mut()
++        .expect("active material working copy") = changed.clone();
+     let context = egui::Context::default();
+ 
+     app.queue_active_material_save(&context);
