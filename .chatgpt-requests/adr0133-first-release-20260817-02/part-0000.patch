@@ -1,0 +1,1170 @@
+diff --git a/crates/editor/src/agent_host.rs b/crates/editor/src/agent_host.rs
+index 3051e94b0a2884eba3f8cbfceb1816c33885af39..102f30ddb44fbe7c788ef99d28c46ca29aa54fb7 100644
+--- a/crates/editor/src/agent_host.rs
++++ b/crates/editor/src/agent_host.rs
+@@ -1684,6 +1684,26 @@ impl AgentHost {
+         Ok((artifact_id, path))
+     }
+ 
++    pub(crate) fn captured_frame_artifact_path(
++        &self,
++        run_id: &str,
++        artifact_id: &str,
++    ) -> Result<PathBuf, AgentHostError> {
++        self.run(run_id)?;
++        let is_safe = !artifact_id.is_empty()
++            && artifact_id
++                .chars()
++                .all(|character| character.is_ascii_alphanumeric() || character == '-' || character == '_');
++        if !is_safe {
++            return Err(AgentHostError::RunNotFound(run_id.to_owned()));
++        }
++        Ok(self
++            .storage_root
++            .join("artifacts")
++            .join(run_id)
++            .join(format!("{artifact_id}.png")))
++    }
++
+     fn session_mut(&mut self, id: &str) -> Result<&mut AgentSession, AgentHostError> {
+         self.sessions
+             .get_mut(id)
+diff --git a/crates/editor/src/ai_studio.rs b/crates/editor/src/ai_studio.rs
+index 9c200731aee1ead0dab10d2b240e34c36e19881f..e08e4b5794005d9bad7b940c32224e87743e5f0f 100644
+--- a/crates/editor/src/ai_studio.rs
++++ b/crates/editor/src/ai_studio.rs
+@@ -13,6 +13,10 @@ use crate::native_agent::{
+     LocalModelConfig, ModelCapabilityProfile, NativeAnswer, NativeQuestionTask, QuestionMessage,
+     QuestionRole, DEFAULT_LOCAL_MODEL_ENDPOINT,
+ };
++use crate::remote_ai_studio::{
++    active_run_snapshot, event_batch, host_error as remote_host_error, load_frame, session_snapshot,
++    RemoteAiStudioGateway, RemoteCommand, RemoteGatewayRequest, RemoteResponse,
++};
+ use eframe::egui;
+ use engine::{InputCommand, KeyCode, MouseButton};
+ use engine_authoring::ProjectRoot;
+@@ -20,6 +24,7 @@ use serde::Deserialize;
+ use std::collections::VecDeque;
+ use std::ffi::{OsStr, OsString};
+ use std::path::PathBuf;
++use std::sync::mpsc::Receiver;
+ 
+ const PROVIDER_EVENT_PREFIX: &str = "GAMEENGINE_AGENT_EVENT ";
+ const MAX_AUTONOMOUS_SOURCE_REPAIRS: usize = 2;
+@@ -172,6 +177,7 @@ struct PendingPermission {
+ /// through a reviewable isolated workspace. Project-shared history is explicit.
+ pub struct AiStudioPanel {
+     project_root: PathBuf,
++    project_id: String,
+     connection: AiStudioConnection,
+     host: AgentHost,
+     selected_session: String,
+@@ -183,6 +189,8 @@ pub struct AiStudioPanel {
+     native_question_session: Option<String>,
+     provider_program: String,
+     provider_args: String,
++    remote_gateway: RemoteAiStudioGateway,
++    remote_requests: Receiver<RemoteGatewayRequest>,
+     open: bool,
+     active_run_id: Option<String>,
+     process: Option<ExternalAgentProcess>,
+@@ -208,11 +216,12 @@ pub struct AiStudioPanel {
+ impl AiStudioPanel {
+     /// Opens the project-scoped AI Studio state for an Editor project.
+     pub fn new(project: &ProjectRoot, connection: AiStudioConnection) -> Result<Self, String> {
++        let project_id = project.project_id().as_str().to_owned();
+         let data_root = dirs::data_local_dir()
+             .unwrap_or_else(std::env::temp_dir)
+             .join("GameEngine")
+             .join("ai")
+-            .join(project_storage_key(project.project_id().as_str(), project.path()));
++            .join(project_storage_key(&project_id, project.path()));
+         let mut host = AgentHost::open(project.path().to_path_buf(), data_root)
+             .map_err(|error| error.to_string())?;
+         let selected_session = match host.session_ids().into_iter().next_back() {
+@@ -227,8 +236,11 @@ impl AiStudioPanel {
+             .proposal
+             .clone();
+         let active_run_id = host.active_writer_run_id().map(str::to_owned);
++        let (remote_gateway, remote_requests) = RemoteAiStudioGateway::start()
++            .map_err(|error| format!("could not start Remote AI Studio loopback gateway: {error}"))?;
+         Ok(Self {
+             project_root: project.path().to_path_buf(),
++            project_id,
+             connection,
+             host,
+             selected_session,
+@@ -240,6 +252,8 @@ impl AiStudioPanel {
+             native_question_session: None,
+             provider_program: String::new(),
+             provider_args: String::new(),
++            remote_gateway,
++            remote_requests,
+             open: true,
+             active_run_id,
+             process: None,
+@@ -385,6 +399,7 @@ impl AiStudioPanel {
+ 
+     /// Draws the AI Studio window and advances any active external agent process.
+     pub fn show(&mut self, context: &egui::Context) {
++        self.poll_remote_gateway();
+         self.poll_native_question(context);
+         self.poll_external_process(context);
+         self.poll_managed_validation(context);
+@@ -406,6 +421,227 @@ impl AiStudioPanel {
+         self.open = open;
+     }
+ 
++    fn poll_remote_gateway(&mut self) {
++        while let Ok(request) = self.remote_requests.try_recv() {
++            let response = self.handle_remote_command(request.command);
++            request.respond(response);
++        }
++    }
++
++    fn handle_remote_command(&mut self, command: RemoteCommand) -> RemoteResponse {
++        match command {
++            RemoteCommand::SessionSnapshot { session_id } => {
++                let pending = self
++                    .pending_permission
++                    .as_ref()
++                    .map(|pending| (pending.run_id.as_str(), pending.capability));
++                match session_snapshot(
++                    &self.project_id,
++                    &self.host,
++                    session_id.as_deref(),
++                    pending,
++                    &self.project_root,
++                ) {
++                    Ok(snapshot) => RemoteResponse::json(200, snapshot),
++                    Err(error) => remote_host_error(&error),
++                }
++            }
++            RemoteCommand::ActiveRunSnapshot => {
++                RemoteResponse::json(200, active_run_snapshot(&self.host, &self.project_root))
++            }
++            RemoteCommand::ConversationMessage { session_id, text } => {
++                if text.trim().is_empty() {
++                    return RemoteResponse::error(
++                        400,
++                        "bad_request",
++                        "conversation message must not be empty",
++                        false,
++                    );
++                }
++                if let Err(error) = self.host.append_message(
++                    &session_id,
++                    ConversationRole::User,
++                    text.trim().to_owned(),
++                ) {
++                    return remote_host_error(&error);
++                }
++                self.selected_session = session_id.clone();
++                if let Ok(session) = self.host.session(&session_id) {
++                    self.proposal_draft = session.proposal.clone();
++                }
++                self.start_native_question();
++                RemoteResponse::json(200, serde_json::json!({"ok":true}))
++            }
++            RemoteCommand::Go {
++                session_id,
++                proposal_version,
++            } => {
++                let provider = self.provider_program.trim().to_owned();
++                if provider.is_empty() {
++                    return RemoteResponse::error(
++                        409,
++                        "provider_unavailable",
++                        "configure the AI Studio agent provider on the host before Go",
++                        false,
++                    );
++                }
++                let run_id = match self.host.start_run_authorized(
++                    &session_id,
++                    proposal_version,
++                    provider,
++                ) {
++                    Ok(run_id) => run_id,
++                    Err(error) => return remote_host_error(&error),
++                };
++                self.selected_session = session_id;
++                self.active_run_id = Some(run_id.clone());
++                self.pending_runtime_action = None;
++                self.managed_input_plan.clear();
++                self.managed_input_recipe.clear();
++                self.managed_candidate_input_recipe.clear();
++                self.managed_playtest_requested = false;
++                self.managed_capture_requested = false;
++                self.managed_repair_requested = false;
++                self.managed_runtime_repairs = 0;
++                self.managed_runtime_observation = None;
++                self.managed_evaluation_requested = false;
++                self.managed_playtest_started_at = None;
++                self.last_captured_frame = None;
++                self.request_permission(
++                    run_id.clone(),
++                    AgentCapability::ExternalAgentProcess,
++                    PendingPermissionAction::LaunchExternalAgent,
++                );
++                RemoteResponse::json(200, serde_json::json!({"run_id":run_id}))
++            }
++            RemoteCommand::Stop { run_id } => {
++                if self.host.active_writer_run_id() != Some(run_id.as_str()) {
++                    return RemoteResponse::error(
++                        409,
++                        "run_not_active",
++                        "Stop applies only to the exact active run",
++                        false,
++                    );
++                }
++                if self.active_run_id.as_deref() == Some(run_id.as_str()) {
++                    if let Some(process) = self.process.as_mut() {
++                        if let Err(error) = process.cancel() {
++                            self.status = Some(format!("Could not stop agent process: {error}"));
++                        }
++                    }
++                    self.process = None;
++                    self.process_purpose = None;
++                }
++                match self.host.cancel_run(&run_id) {
++                    Ok(()) => RemoteResponse::json(200, serde_json::json!({"run_id":run_id,"state":"cancelled"})),
++                    Err(error) => remote_host_error(&error),
++                }
++            }
++            RemoteCommand::AwaitingUserResponse {
++                session_id,
++                run_id,
++                text,
++            } => {
++                let session_has_run = self.host.session(&session_id).is_ok_and(|session| {
++                    session.runs.iter().any(|run| run.id == run_id)
++                });
++                if !session_has_run {
++                    return RemoteResponse::error(
++                        404,
++                        "run_not_found",
++                        "AI Studio run was not found in this session",
++                        false,
++                    );
++                }
++                if !self
++                    .host
++                    .run(&run_id)
++                    .is_ok_and(|run| run.state == AgentRunState::AwaitingUser)
++                {
++                    return RemoteResponse::error(
++                        409,
++                        "not_awaiting_user",
++                        "the run is not waiting for a user response",
++                        false,
++                    );
++                }
++                if text.trim().is_empty() {
++                    return RemoteResponse::error(
++                        400,
++                        "bad_request",
++                        "AwaitingUser response must not be empty",
++                        false,
++                    );
++                }
++                if let Err(error) = self.host.append_message(
++                    &session_id,
++                    ConversationRole::User,
++                    text.trim().to_owned(),
++                ) {
++                    return remote_host_error(&error);
++                }
++                match self.host.transition_run(
++                    &run_id,
++                    AgentRunState::Executing,
++                    "Remote user response received; resuming the governed run.",
++                ) {
++                    Ok(()) => RemoteResponse::json(200, serde_json::json!({"run_id":run_id,"resumed":true})),
++                    Err(error) => remote_host_error(&error),
++                }
++            }
++            RemoteCommand::PermissionResponse {
++                run_id,
++                capability,
++                scope,
++            } => {
++                let Some(pending) = self.pending_permission.as_ref() else {
++                    return RemoteResponse::error(
++                        409,
++                        "permission_not_pending",
++                        "there is no pending permission decision",
++                        false,
++                    );
++                };
++                if pending.run_id != run_id || pending.capability != capability {
++                    return RemoteResponse::error(
++                        409,
++                        "permission_mismatch",
++                        "permission response does not match the current pending request",
++                        false,
++                    );
++                }
++                let action = pending.action;
++                self.resolve_pending_permission(&run_id, capability, action, scope);
++                RemoteResponse::json(200, serde_json::json!({"run_id":run_id,"resolved":true}))
++            }
++            RemoteCommand::Events { run_id, after } => {
++                match event_batch(&self.host, &run_id, after, &self.project_root) {
++                    Ok(events) => RemoteResponse::json(200, events),
++                    Err(error) => remote_host_error(&error),
++                }
++            }
++            RemoteCommand::CapturedFrame {
++                project_id,
++                session_id,
++                run_id,
++                artifact_id,
++            } => {
++                if project_id != self.project_id {
++                    return RemoteResponse::error(
++                        404,
++                        "project_not_found",
++                        "captured frame does not belong to this project host",
++                        false,
++                    );
++                }
++                match load_frame(&self.host, &session_id, &run_id, &artifact_id) {
++                    Ok(bytes) => RemoteResponse::png(bytes),
++                    Err(error) => remote_host_error(&error),
++                }
++            }
++        }
++    }
++
+     fn show_contents(&mut self, ui: &mut egui::Ui) {
+         ui.horizontal_wrapped(|ui| {
+             ui.strong("Conversation-first project agent");
+@@ -415,6 +651,10 @@ impl AiStudioPanel {
+         ui.small(
+             "External agent processes are application-level integrations, not an OS sandbox. Code is prepared in an isolated managed workspace and must be reviewed before apply.",
+         );
++        ui.small(format!(
++            "Remote companion: {} · loopback only; expose it only through a trusted private reverse proxy.",
++            self.remote_gateway.url()
++        ));
+         ui.separator();
+ 
+         self.show_session_header(ui);
+diff --git a/crates/editor/src/lib.rs b/crates/editor/src/lib.rs
+index d353f399da0551f456b588c3ab62290c376cd181..383e3fc04c4e9710ce41a669df75b6cbc520bbae 100644
+--- a/crates/editor/src/lib.rs
++++ b/crates/editor/src/lib.rs
+@@ -9,6 +9,7 @@
+ 
+ mod agent_host;
+ mod native_agent;
++mod remote_ai_studio;
+ pub mod ai_studio;
+ pub mod anim_ux;
+ mod animation_set_editor;
+diff --git a/crates/editor/src/remote_ai_studio.rs b/crates/editor/src/remote_ai_studio.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..f6b4020b8047f8ce6e8f4e15ab2172053376bcf1
+--- /dev/null
++++ b/crates/editor/src/remote_ai_studio.rs
+@@ -0,0 +1,799 @@
++//! Loopback-only Remote AI Studio application gateway.
++//!
++//! The gateway is a transport frontend over the existing [`AgentHost`]. It owns
++//! HTTP framing, idempotency, reconnect cursors, sanitization, and the responsive
++//! web companion. All mutations are dispatched back to the Editor thread so the
++//! local AI Studio and remote companion use the same authoritative host.
++
++use crate::agent_host::{
++    AgentCapability, AgentEvent, AgentEventEvidence, AgentEventKind, AgentHost, AgentHostError,
++    AgentRunState, AgentSession, ApprovalScope,
++};
++use serde::Deserialize;
++use serde_json::{json, Value};
++use std::collections::{BTreeMap, VecDeque};
++use std::fs;
++use std::io::{self, Read, Write};
++use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
++use std::path::Path;
++use std::sync::atomic::{AtomicBool, Ordering};
++use std::sync::{mpsc, Arc, Mutex};
++use std::thread::{self, JoinHandle};
++use std::time::{Duration, Instant};
++
++const MAX_REQUEST_BYTES: usize = 64 * 1024;
++const IO_TIMEOUT: Duration = Duration::from_secs(5);
++const HOST_TIMEOUT: Duration = Duration::from_secs(30);
++const IDEMPOTENCY_TTL: Duration = Duration::from_secs(10 * 60);
++const MAX_IDEMPOTENCY_ENTRIES: usize = 512;
++
++/// One application operation sent from the loopback gateway to AI Studio.
++pub(crate) enum RemoteCommand {
++    SessionSnapshot { session_id: Option<String> },
++    ActiveRunSnapshot,
++    ConversationMessage { session_id: String, text: String },
++    Go { session_id: String, proposal_version: u64 },
++    Stop { run_id: String },
++    AwaitingUserResponse { session_id: String, run_id: String, text: String },
++    PermissionResponse {
++        run_id: String,
++        capability: AgentCapability,
++        scope: ApprovalScope,
++    },
++    Events { run_id: String, after: u64 },
++    CapturedFrame {
++        project_id: String,
++        session_id: String,
++        run_id: String,
++        artifact_id: String,
++    },
++}
++
++/// One request waiting for the authoritative Editor-owned host.
++pub(crate) struct RemoteGatewayRequest {
++    pub(crate) command: RemoteCommand,
++    response: mpsc::SyncSender<RemoteResponse>,
++}
++
++impl RemoteGatewayRequest {
++    pub(crate) fn respond(self, response: RemoteResponse) {
++        let _ = self.response.send(response);
++    }
++}
++
++/// Sanitized HTTP response returned by the application operation layer.
++#[derive(Clone)]
++pub(crate) struct RemoteResponse {
++    status: u16,
++    content_type: &'static str,
++    body: Vec<u8>,
++}
++
++impl RemoteResponse {
++    pub(crate) fn json(status: u16, value: Value) -> Self {
++        Self {
++            status,
++            content_type: "application/json; charset=utf-8",
++            body: serde_json::to_vec(&value).unwrap_or_else(|_| b"{}".to_vec()),
++        }
++    }
++
++    pub(crate) fn error(status: u16, category: &str, message: &str, retryable: bool) -> Self {
++        Self::json(
++            status,
++            json!({"error":{"category":category,"message":message,"retryable":retryable}}),
++        )
++    }
++
++    pub(crate) fn png(bytes: Vec<u8>) -> Self {
++        Self { status: 200, content_type: "image/png", body: bytes }
++    }
++}
++
++/// Running loopback-only HTTP gateway for one Editor project.
++pub(crate) struct RemoteAiStudioGateway {
++    local_addr: SocketAddr,
++    shutdown: Arc<AtomicBool>,
++    worker: Option<JoinHandle<()>>,
++}
++
++impl RemoteAiStudioGateway {
++    pub(crate) fn start() -> Result<(Self, mpsc::Receiver<RemoteGatewayRequest>), io::Error> {
++        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
++        listener.set_nonblocking(true)?;
++        let local_addr = listener.local_addr()?;
++        let shutdown = Arc::new(AtomicBool::new(false));
++        let worker_shutdown = Arc::clone(&shutdown);
++        let ledger = Arc::new(Mutex::new(IdempotencyLedger::default()));
++        let (sender, receiver) = mpsc::channel();
++        let worker = thread::Builder::new()
++            .name("gameengine-remote-ai-studio".into())
++            .spawn(move || serve_loop(listener, sender, ledger, worker_shutdown))?;
++        Ok((Self { local_addr, shutdown, worker: Some(worker) }, receiver))
++    }
++
++    pub(crate) fn url(&self) -> String {
++        format!("http://{}/", self.local_addr)
++    }
++
++    #[cfg(test)]
++    fn local_addr(&self) -> SocketAddr {
++        self.local_addr
++    }
++}
++
++impl Drop for RemoteAiStudioGateway {
++    fn drop(&mut self) {
++        self.shutdown.store(true, Ordering::Release);
++        let _ = TcpStream::connect_timeout(&self.local_addr, Duration::from_millis(100));
++        if let Some(worker) = self.worker.take() {
++            let _ = worker.join();
++        }
++    }
++}
++
++#[derive(Clone)]
++struct IdempotencyEntry {
++    fingerprint: String,
++    response: RemoteResponse,
++    created: Instant,
++}
++
++#[derive(Default)]
++struct IdempotencyLedger {
++    entries: BTreeMap<String, IdempotencyEntry>,
++    order: VecDeque<String>,
++}
++
++impl IdempotencyLedger {
++    fn replay(&mut self, request_id: &str, fingerprint: &str) -> Option<RemoteResponse> {
++        self.prune();
++        self.entries.get(request_id).map(|entry| {
++            if entry.fingerprint == fingerprint {
++                entry.response.clone()
++            } else {
++                RemoteResponse::error(
++                    409,
++                    "idempotency_conflict",
++                    "request identity was already used for a different mutation",
++                    false,
++                )
++            }
++        })
++    }
++
++    fn remember(&mut self, request_id: String, fingerprint: String, response: RemoteResponse) {
++        self.prune();
++        self.entries.insert(
++            request_id.clone(),
++            IdempotencyEntry { fingerprint, response, created: Instant::now() },
++        );
++        self.order.push_back(request_id);
++        while self.order.len() > MAX_IDEMPOTENCY_ENTRIES {
++            if let Some(oldest) = self.order.pop_front() {
++                self.entries.remove(&oldest);
++            }
++        }
++    }
++
++    fn prune(&mut self) {
++        let now = Instant::now();
++        while self.order.front().is_some_and(|id| {
++            self.entries
++                .get(id)
++                .is_none_or(|entry| now.duration_since(entry.created) >= IDEMPOTENCY_TTL)
++        }) {
++            if let Some(id) = self.order.pop_front() {
++                self.entries.remove(&id);
++            }
++        }
++    }
++}
++
++fn serve_loop(
++    listener: TcpListener,
++    sender: mpsc::Sender<RemoteGatewayRequest>,
++    ledger: Arc<Mutex<IdempotencyLedger>>,
++    shutdown: Arc<AtomicBool>,
++) {
++    while !shutdown.load(Ordering::Acquire) {
++        match listener.accept() {
++            Ok((stream, peer)) => {
++                if shutdown.load(Ordering::Acquire) {
++                    break;
++                }
++                if !peer.ip().is_loopback() {
++                    continue;
++                }
++                let sender = sender.clone();
++                let ledger = Arc::clone(&ledger);
++                let _ = thread::Builder::new()
++                    .name("gameengine-remote-ai-studio-request".into())
++                    .spawn(move || {
++                        let _ = handle_connection(stream, &sender, &ledger);
++                    });
++            }
++            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
++                thread::sleep(Duration::from_millis(10));
++            }
++            Err(_) => break,
++        }
++    }
++}
++
++fn handle_connection(
++    mut stream: TcpStream,
++    sender: &mpsc::Sender<RemoteGatewayRequest>,
++    ledger: &Arc<Mutex<IdempotencyLedger>>,
++) -> io::Result<()> {
++    stream.set_read_timeout(Some(IO_TIMEOUT))?;
++    stream.set_write_timeout(Some(IO_TIMEOUT))?;
++    let request = match read_request(&mut stream) {
++        Ok(request) => request,
++        Err(ReadError::TooLarge) => return write_response(&mut stream, RemoteResponse::error(413, "request_too_large", "request is too large", false)),
++        Err(ReadError::BadRequest) => return write_response(&mut stream, RemoteResponse::error(400, "bad_request", "request could not be parsed", false)),
++        Err(ReadError::Io(error)) => return Err(error),
++    };
++    let response = route_request(request, sender, ledger);
++    write_response(&mut stream, response)
++}
++
++struct HttpRequest {
++    method: String,
++    path: String,
++    body: Vec<u8>,
++}
++
++enum ReadError {
++    TooLarge,
++    BadRequest,
++    Io(io::Error),
++}
++
++fn read_request(stream: &mut TcpStream) -> Result<HttpRequest, ReadError> {
++    let mut bytes = Vec::new();
++    let mut chunk = [0_u8; 4096];
++    let header_end;
++    loop {
++        let read = stream.read(&mut chunk).map_err(ReadError::Io)?;
++        if read == 0 {
++            return Err(ReadError::BadRequest);
++        }
++        bytes.extend_from_slice(&chunk[..read]);
++        if bytes.len() > MAX_REQUEST_BYTES {
++            return Err(ReadError::TooLarge);
++        }
++        if let Some(index) = find_bytes(&bytes, b"\r\n\r\n") {
++            header_end = index + 4;
++            break;
++        }
++    }
++    let header = std::str::from_utf8(&bytes[..header_end]).map_err(|_| ReadError::BadRequest)?;
++    let mut lines = header.split("\r\n");
++    let mut request_line = lines.next().ok_or(ReadError::BadRequest)?.split_whitespace();
++    let method = request_line.next().ok_or(ReadError::BadRequest)?.to_owned();
++    let path = request_line.next().ok_or(ReadError::BadRequest)?.to_owned();
++    let mut content_length = 0_usize;
++    for line in lines {
++        let Some((name, value)) = line.split_once(':') else { continue; };
++        if name.eq_ignore_ascii_case("content-length") {
++            content_length = value.trim().parse().map_err(|_| ReadError::BadRequest)?;
++        }
++    }
++    if header_end + content_length > MAX_REQUEST_BYTES {
++        return Err(ReadError::TooLarge);
++    }
++    while bytes.len() < header_end + content_length {
++        let read = stream.read(&mut chunk).map_err(ReadError::Io)?;
++        if read == 0 {
++            return Err(ReadError::BadRequest);
++        }
++        bytes.extend_from_slice(&chunk[..read]);
++        if bytes.len() > MAX_REQUEST_BYTES {
++            return Err(ReadError::TooLarge);
++        }
++    }
++    Ok(HttpRequest {
++        method,
++        path,
++        body: bytes[header_end..header_end + content_length].to_vec(),
++    })
++}
++
++fn route_request(
++    request: HttpRequest,
++    sender: &mpsc::Sender<RemoteGatewayRequest>,
++    ledger: &Arc<Mutex<IdempotencyLedger>>,
++) -> RemoteResponse {
++    let (path, query) = request.path.split_once('?').map_or((request.path.as_str(), ""), |parts| parts);
++    match (request.method.as_str(), path) {
++        ("GET", "/") => RemoteResponse { status: 200, content_type: "text/html; charset=utf-8", body: COMPANION_HTML.as_bytes().to_vec() },
++        ("GET", "/api/session") => dispatch(sender, RemoteCommand::SessionSnapshot { session_id: query_value(query, "session_id") }),
++        ("GET", "/api/run") => dispatch(sender, RemoteCommand::ActiveRunSnapshot),
++        ("GET", "/api/events") => {
++            let Some(run_id) = query_value(query, "run_id") else {
++                return RemoteResponse::error(400, "bad_request", "run_id is required", false);
++            };
++            let after = query_value(query, "after").and_then(|value| value.parse().ok()).unwrap_or(0);
++            let response = dispatch(sender, RemoteCommand::Events { run_id, after });
++            if response.status != 200 {
++                return response;
++            }
++            let payload = String::from_utf8_lossy(&response.body);
++            RemoteResponse { status: 200, content_type: "text/event-stream; charset=utf-8", body: format!("event: agent-events\ndata: {payload}\n\n").into_bytes() }
++        }
++        ("GET", "/api/frame") => {
++            let fields = ["project_id", "session_id", "run_id", "artifact_id"];
++            let values = fields.map(|name| query_value(query, name));
++            let [Some(project_id), Some(session_id), Some(run_id), Some(artifact_id)] = values else {
++                return RemoteResponse::error(400, "bad_request", "frame identity is incomplete", false);
++            };
++            dispatch(sender, RemoteCommand::CapturedFrame { project_id, session_id, run_id, artifact_id })
++        }
++        ("POST", "/api/conversation") => parse_json::<ConversationRequest>(&request.body)
++            .map(|body| dispatch(sender, RemoteCommand::ConversationMessage { session_id: body.session_id, text: body.text }))
++            .unwrap_or_else(bad_json),
++        ("POST", "/api/go") => mutation::<GoRequest>(&request, ledger, |body| {
++            dispatch(sender, RemoteCommand::Go { session_id: body.session_id, proposal_version: body.proposal_version })
++        }),
++        ("POST", "/api/stop") => mutation::<StopRequest>(&request, ledger, |body| {
++            dispatch(sender, RemoteCommand::Stop { run_id: body.run_id })
++        }),
++        ("POST", "/api/awaiting-user") => mutation::<AwaitingRequest>(&request, ledger, |body| {
++            dispatch(sender, RemoteCommand::AwaitingUserResponse { session_id: body.session_id, run_id: body.run_id, text: body.text })
++        }),
++        ("POST", "/api/permission") => mutation::<PermissionRequest>(&request, ledger, |body| {
++            let capability = match serde_json::from_value::<AgentCapability>(Value::String(body.capability)) {
++                Ok(capability) => capability,
++                Err(_) => return RemoteResponse::error(400, "bad_request", "unknown permission capability", false),
++            };
++            let scope = match body.scope.as_str() {
++                "once" => ApprovalScope::Once,
++                "run" => ApprovalScope::Run,
++                "project" => ApprovalScope::Project,
++                "deny" => ApprovalScope::Deny,
++                _ => return RemoteResponse::error(400, "bad_request", "unknown permission scope", false),
++            };
++            dispatch(sender, RemoteCommand::PermissionResponse { run_id: body.run_id, capability, scope })
++        }),
++        _ => RemoteResponse::error(404, "not_found", "application operation does not exist", false),
++    }
++}
++
++trait HasRequestId {
++    fn request_id(&self) -> &str;
++}
++
++fn mutation<T: for<'de> Deserialize<'de> + HasRequestId>(
++    request: &HttpRequest,
++    ledger: &Arc<Mutex<IdempotencyLedger>>,
++    execute: impl FnOnce(T) -> RemoteResponse,
++) -> RemoteResponse {
++    let body = match parse_json::<T>(&request.body) {
++        Ok(body) => body,
++        Err(error) => return bad_json(error),
++    };
++    let request_id = body.request_id().to_owned();
++    if !valid_request_id(&request_id) {
++        return RemoteResponse::error(400, "bad_request", "request_id must be 8-128 safe ASCII characters", false);
++    }
++    let fingerprint = format!("{}:{}", request.path, String::from_utf8_lossy(&request.body));
++    if let Ok(mut locked) = ledger.lock()
++        && let Some(response) = locked.replay(&request_id, &fingerprint)
++    {
++        return response;
++    }
++    let response = execute(body);
++    if let Ok(mut locked) = ledger.lock() {
++        locked.remember(request_id, fingerprint, response.clone());
++    }
++    response
++}
++
++fn dispatch(sender: &mpsc::Sender<RemoteGatewayRequest>, command: RemoteCommand) -> RemoteResponse {
++    let (response_sender, response_receiver) = mpsc::sync_channel(1);
++    if sender.send(RemoteGatewayRequest { command, response: response_sender }).is_err() {
++        return RemoteResponse::error(503, "host_unavailable", "AI Studio host is unavailable", true);
++    }
++    response_receiver.recv_timeout(HOST_TIMEOUT).unwrap_or_else(|_| {
++        RemoteResponse::error(503, "host_busy", "AI Studio host did not answer in time", true)
++    })
++}
++
++#[derive(Deserialize)]
++struct ConversationRequest { session_id: String, text: String }
++#[derive(Deserialize)]
++struct GoRequest { request_id: String, session_id: String, proposal_version: u64 }
++impl HasRequestId for GoRequest { fn request_id(&self) -> &str { &self.request_id } }
++#[derive(Deserialize)]
++struct StopRequest { request_id: String, run_id: String }
++impl HasRequestId for StopRequest { fn request_id(&self) -> &str { &self.request_id } }
++#[derive(Deserialize)]
++struct AwaitingRequest { request_id: String, session_id: String, run_id: String, text: String }
++impl HasRequestId for AwaitingRequest { fn request_id(&self) -> &str { &self.request_id } }
++#[derive(Deserialize)]
++struct PermissionRequest { request_id: String, run_id: String, capability: String, scope: String }
++impl HasRequestId for PermissionRequest { fn request_id(&self) -> &str { &self.request_id } }
++
++pub(crate) fn session_snapshot(
++    project_id: &str,
++    host: &AgentHost,
++    session_id: Option<&str>,
++    pending_permission: Option<(&str, AgentCapability)>,
++    project_root: &Path,
++) -> Result<Value, AgentHostError> {
++    let selected = match session_id {
++        Some(id) => host.session(id)?,
++        None => host
++            .session_ids()
++            .last()
++            .map(String::as_str)
++            .map(|id| host.session(id))
++            .transpose()?
++            .ok_or_else(|| AgentHostError::SessionNotFound("remote snapshot".to_owned()))?,
++    };
++    let active_run = host.active_writer_run_id().and_then(|id| host.run(id).ok());
++    Ok(json!({
++        "project_id": project_id,
++        "session": sanitize_session(selected, project_root),
++        "active_run": active_run.map(|run| sanitize_run(run, project_root)),
++        "pending_permission": pending_permission.map(|(run_id, capability)| json!({
++            "run_id": run_id,
++            "capability": serde_json::to_value(capability).unwrap_or(Value::Null),
++            "label": capability.label(),
++            "scopes": ["once", "run", "project", "deny"]
++        })),
++        "awaiting_user": active_run.filter(|run| run.state == AgentRunState::AwaitingUser).map(|run| json!({
++            "run_id": run.id,
++            "message": "The agent is waiting for a user response. Review the latest event for context."
++        }))
++    }))
++}
++
++pub(crate) fn active_run_snapshot(host: &AgentHost, project_root: &Path) -> Value {
++    host.active_writer_run_id()
++        .and_then(|id| host.run(id).ok())
++        .map(|run| sanitize_run(run, project_root))
++        .unwrap_or(Value::Null)
++}
++
++pub(crate) fn event_batch(host: &AgentHost, run_id: &str, after: u64, project_root: &Path) -> Result<Value, AgentHostError> {
++    let run = host.run(run_id)?;
++    let oldest = run.events.first().map_or(0, |event| event.sequence);
++    let latest = run.events.last().map_or(0, |event| event.sequence);
++    let stale = after != 0 && oldest != 0 && after.saturating_add(1) < oldest;
++    let events = run.events.iter().filter(|event| stale || event.sequence > after)
++        .map(|event| sanitize_event(event, project_root)).collect::<Vec<_>>();
++    Ok(json!({"run_id":run_id,"after":after,"oldest_cursor":oldest,"latest_cursor":latest,"stale_cursor":stale,"events":events}))
++}
++
++pub(crate) fn load_frame(
++    host: &AgentHost,
++    session_id: &str,
++    run_id: &str,
++    artifact_id: &str,
++) -> Result<Vec<u8>, AgentHostError> {
++    let session = host.session(session_id)?;
++    let run = session.runs.iter().find(|run| run.id == run_id)
++        .ok_or_else(|| AgentHostError::RunNotFound(run_id.to_owned()))?;
++    let belongs = run.events.iter().any(|event| matches!(
++        &event.evidence,
++        Some(AgentEventEvidence::CapturedFrame { artifact_id: id, .. }) if id == artifact_id
++    ));
++    if !belongs {
++        return Err(AgentHostError::RunNotFound(run_id.to_owned()));
++    }
++    fs::read(host.captured_frame_artifact_path(run_id, artifact_id)?).map_err(Into::into)
++}
++
++pub(crate) fn host_error(error: &AgentHostError) -> RemoteResponse {
++    match error {
++        AgentHostError::SessionNotFound(_) => RemoteResponse::error(404, "session_not_found", "AI Studio session was not found", false),
++        AgentHostError::RunNotFound(_) => RemoteResponse::error(404, "run_not_found", "AI Studio run was not found", false),
++        AgentHostError::ActiveWriterRun(_) => RemoteResponse::error(409, "run_active", "another AI Studio writer run is already active", true),
++        AgentHostError::StaleProposalVersion { .. } => RemoteResponse::error(409, "stale_proposal", "the authorized proposal version is stale", false),
++        AgentHostError::InvalidTransition { .. } => RemoteResponse::error(409, "invalid_run_state", "the run is not in a state that accepts this action", false),
++        AgentHostError::CompletionPending => RemoteResponse::error(409, "completion_pending", "required completion evidence is still unresolved", false),
++        _ => RemoteResponse::error(500, "host_error", "AI Studio could not complete the operation; see host diagnostics", false),
++    }
++}
++
++fn sanitize_session(session: &AgentSession, project_root: &Path) -> Value {
++    json!({
++        "id": session.id,
++        "title": sanitize_text(&session.title, project_root),
++        "messages": session.messages.iter().map(|message| json!({
++            "role": message.role,
++            "text": sanitize_text(&message.text, project_root),
++            "created_unix_ms": message.created_unix_ms
++        })).collect::<Vec<_>>(),
++        "proposal": sanitize_serialized(&session.proposal, project_root),
++        "proposal_history": sanitize_serialized(&session.proposal_history, project_root),
++        "shared_with_project": session.shared_with_project
++    })
++}
++
++fn sanitize_run(run: &crate::agent_host::AgentRun, project_root: &Path) -> Value {
++    let frames = run.events.iter().filter_map(|event| match &event.evidence {
++        Some(AgentEventEvidence::CapturedFrame { artifact_id, width, height }) => Some(json!({
++            "artifact_id": artifact_id,
++            "width": width,
++            "height": height,
++            "event_cursor": event.sequence
++        })),
++        _ => None,
++    }).collect::<Vec<_>>();
++    json!({
++        "id": run.id,
++        "proposal": sanitize_serialized(&run.proposal_snapshot, project_root),
++        "state": run.state,
++        "completion": sanitize_serialized(&run.completion, project_root),
++        "validation_attempts": sanitize_serialized(&run.validation_attempts, project_root),
++        "audit": sanitize_serialized(&run.audit, project_root),
++        "started_unix_ms": run.started_unix_ms,
++        "finished_unix_ms": run.finished_unix_ms,
++        "oldest_event_cursor": run.events.first().map_or(0, |event| event.sequence),
++        "latest_event_cursor": run.events.last().map_or(0, |event| event.sequence),
++        "frames": frames,
++        "events": run.events.iter().rev().take(80).rev().map(|event| sanitize_event(event, project_root)).collect::<Vec<_>>()
++    })
++}
++
++fn sanitize_event(event: &AgentEvent, project_root: &Path) -> Value {
++    let evidence = match &event.evidence {
++        Some(AgentEventEvidence::Progress { step, detail }) => json!({"evidence":"progress","step":sanitize_text(step, project_root),"detail":sanitize_text(detail, project_root)}),
++        Some(AgentEventEvidence::ToolAction { tool, success, .. }) => json!({"evidence":"tool_action","tool":tool,"success":success}),
++        Some(AgentEventEvidence::Playtest { launched, interactions_passed }) => json!({"evidence":"playtest","launched":launched,"interactions_passed":interactions_passed}),
++        Some(AgentEventEvidence::CapturedFrame { artifact_id, width, height }) => json!({"evidence":"captured_frame","artifact_id":artifact_id,"width":width,"height":height}),
++        Some(AgentEventEvidence::CompletionGate { gate, status }) => json!({"evidence":"completion_gate","gate":gate,"status":status}),
++        None => Value::Null,
++    };
++    let message = if event.kind == AgentEventKind::ProviderOutput {
++        "Provider diagnostic output is available only on the host.".to_owned()
++    } else {
++        sanitize_text(&event.message, project_root)
++    };
++    json!({"cursor":event.sequence,"created_unix_ms":event.created_unix_ms,"kind":event.kind,"message":message,"validation":event.validation,"evidence":evidence})
++}
++
++fn sanitize_serialized<T: serde::Serialize>(value: &T, project_root: &Path) -> Value {
++    sanitize_json(serde_json::to_value(value).unwrap_or(Value::Null), project_root)
++}
++
++fn sanitize_json(value: Value, project_root: &Path) -> Value {
++    match value {
++        Value::String(text) => Value::String(sanitize_text(&text, project_root)),
++        Value::Array(values) => Value::Array(values.into_iter().map(|value| sanitize_json(value, project_root)).collect()),
++        Value::Object(values) => Value::Object(values.into_iter().map(|(key, value)| (key, sanitize_json(value, project_root))).collect()),
++        other => other,
++    }
++}
++
++fn sanitize_text(text: &str, project_root: &Path) -> String {
++    let lower = text.to_ascii_lowercase();
++    if ["gameengine_mcp_auth_token", "authorization: bearer", "openai_api_key", "anthropic_api_key", "tailscale_auth", "gameengine_mcp_endpoint"]
++        .iter().any(|marker| lower.contains(marker))
++    {
++        return "[sensitive host detail omitted]".to_owned();
++    }
++    let mut sanitized = text.to_owned();
++    let path = project_root.display().to_string();
++    if !path.is_empty() {
++        sanitized = sanitized.replace(&path, "[project]");
++        sanitized = sanitized.replace(&path.replace('\\', "/"), "[project]");
++    }
++    sanitized
++}
++
++fn parse_json<T: for<'de> Deserialize<'de>>(body: &[u8]) -> Result<T, serde_json::Error> {
++    serde_json::from_slice(body)
++}
++
++fn bad_json(_: serde_json::Error) -> RemoteResponse {
++    RemoteResponse::error(400, "bad_request", "request JSON is invalid", false)
++}
++
++fn valid_request_id(id: &str) -> bool {
++    (8..=128).contains(&id.len())
++        && id.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':'))
++}
++
++fn query_value(query: &str, name: &str) -> Option<String> {
++    query.split('&').find_map(|pair| {
++        let (key, value) = pair.split_once('=')?;
++        (key == name).then(|| percent_decode(value))
++    })
++}
++
++fn percent_decode(value: &str) -> String {
++    let bytes = value.as_bytes();
++    let mut decoded = Vec::with_capacity(bytes.len());
++    let mut index = 0;
++    while index < bytes.len() {
++        if bytes[index] == b'%' && index + 2 < bytes.len()
++            && let (Some(high), Some(low)) = (hex(bytes[index + 1]), hex(bytes[index + 2]))
++        {
++            decoded.push(high * 16 + low);
++            index += 3;
++        } else if bytes[index] == b'+' {
++            decoded.push(b' ');
++            index += 1;
++        } else {
++            decoded.push(bytes[index]);
++            index += 1;
++        }
++    }
++    String::from_utf8_lossy(&decoded).into_owned()
++}
++
++fn hex(value: u8) -> Option<u8> {
++    match value {
++        b'0'..=b'9' => Some(value - b'0'),
++        b'a'..=b'f' => Some(value - b'a' + 10),
++        b'A'..=b'F' => Some(value - b'A' + 10),
++        _ => None,
++    }
++}
++
++fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
++    haystack.windows(needle.len()).position(|window| window == needle)
++}
++
++fn write_response(stream: &mut TcpStream, response: RemoteResponse) -> io::Result<()> {
++    let reason = match response.status { 200 => "OK", 400 => "Bad Request", 404 => "Not Found", 409 => "Conflict", 413 => "Payload Too Large", 503 => "Service Unavailable", _ => "Internal Server Error" };
++    write!(stream, "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nContent-Security-Policy: default-src 'self'; img-src 'self' blob:; script-src 'unsafe-inline' 'self'; style-src 'unsafe-inline' 'self'\r\nConnection: close\r\n\r\n", response.status, reason, response.content_type, response.body.len())?;
++    stream.write_all(&response.body)
++}
++
++const COMPANION_HTML: &str = r#"<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>Remote AI Studio</title><style>
++:root{font-family:system-ui,-apple-system,sans-serif;color-scheme:dark;background:#11151b;color:#edf2f7}*{box-sizing:border-box}body{margin:0}main{max-width:1120px;margin:auto;padding:20px;display:grid;gap:14px}.card{background:#1a2029;border:1px solid #34404d;border-radius:12px;padding:14px;min-width:0}.grid{display:grid;grid-template-columns:1.15fr .85fr;gap:14px}h1,h2,h3{margin:.2em 0 .6em}p,li,pre{overflow-wrap:anywhere}.messages,.events{max-height:360px;overflow:auto}.row{display:flex;gap:8px;flex-wrap:wrap}.grow{flex:1;min-width:180px}button,input,textarea{font:inherit;border-radius:8px;border:1px solid #566476;background:#11151b;color:inherit;padding:10px}button{min-height:44px;cursor:pointer}.primary{background:#2f6fed}.danger{background:#8f3340}.muted{color:#aeb8c4}.status{font-weight:700}.frame{max-width:100%;height:auto;border-radius:8px}.criterion{padding:5px 0}.pill{display:inline-block;padding:3px 8px;border:1px solid #566476;border-radius:999px;margin:2px}pre{white-space:pre-wrap;margin:0}@media(max-width:720px){main{padding:10px}.grid{grid-template-columns:1fr}.card{padding:12px}.row>*{flex:1 1 140px}button{width:100%}h1{font-size:1.35rem}}
++</style></head><body><main><header class="card"><h1>Remote AI Studio</h1><div id="connection" class="muted">Connecting to the authoritative project Agent Host…</div></header><div class="grid"><section class="card"><h2>Conversation</h2><div id="messages" class="messages"></div><textarea id="message" rows="3" style="width:100%" placeholder="Continue the same AI Studio conversation"></textarea><button class="primary" onclick="sendMessage()">Send</button></section><section class="card"><h2>Proposal</h2><div id="proposal"></div><h3>Acceptance criteria</h3><div id="criteria"></div><div class="row"><button class="primary" onclick="go()">Go exact proposal</button><button class="danger" onclick="stopRun()">Stop</button></div></section></div><div class="grid"><section class="card"><h2>Pending decision</h2><div id="decision" class="muted">None</div></section><section class="card"><h2>Run / completion</h2><div id="run"></div><div id="completion"></div></section></div><section class="card"><h2>Validation / playtest / repair progress</h2><div id="events" class="events"></div></section><section class="card"><h2>Captured frame / visual evaluation</h2><div id="frame"></div></section></main><script>
++let snapshot=null,cursor=0;const id=()=>crypto.randomUUID();const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));async function api(path,opt){const r=await fetch(path,opt);if(!r.ok)throw await r.json();return r.headers.get('content-type')?.includes('json')?r.json():r}async function refresh(){try{snapshot=await api('/api/session');render();document.getElementById('connection').textContent='Connected · '+snapshot.project_id;const run=snapshot.active_run;if(run){const es=new EventSource('/api/events?run_id='+encodeURIComponent(run.id)+'&after='+cursor);es.addEventListener('agent-events',e=>{const b=JSON.parse(e.data);cursor=b.latest_cursor||cursor;if(b.stale_cursor)cursor=b.oldest_cursor?b.oldest_cursor-1:0;es.close();refresh()});es.onerror=()=>es.close()}}catch(e){document.getElementById('connection').textContent='Disconnected · retrying'}setTimeout(refresh,1500)}function render(){const s=snapshot.session,r=snapshot.active_run;document.getElementById('messages').innerHTML=s.messages.map(m=>`<p><b>${esc(m.role)}</b> ${esc(m.text)}</p>`).join('');document.getElementById('proposal').innerHTML=`<div class="pill">v${s.proposal.version}</div><p>${esc(s.proposal.goal)}</p>`;document.getElementById('criteria').innerHTML=s.proposal.acceptance_criteria.map(x=>`<div class="criterion">• ${esc(x)}</div>`).join('')||'<span class="muted">None</span>';document.getElementById('run').innerHTML=r?`<span class="status">${esc(r.state)}</span> · run ${esc(r.id)}`:'<span class="muted">No active run</span>';document.getElementById('completion').innerHTML=r?Object.entries(r.completion).map(([k,v])=>`<div>${esc(k)}: <b>${esc(v)}</b></div>`).join(''):'';document.getElementById('events').innerHTML=r?r.events.map(e=>`<p><code>#${e.cursor}</code> <b>${esc(e.kind)}</b> ${esc(e.message)}</p>`).join(''):'';const p=snapshot.pending_permission,a=snapshot.awaiting_user;if(p)document.getElementById('decision').innerHTML=`<b>Permission</b><p>${esc(p.label)}</p><div class="row">${p.scopes.map(x=>`<button onclick="permission('${x}')">${esc(x)}</button>`).join('')}</div>`;else if(a)document.getElementById('decision').innerHTML=`<b>AwaitingUser</b><p>${esc(a.message)}</p><textarea id="answer" rows="2" style="width:100%"></textarea><button onclick="answer()">Respond</button>`;else document.getElementById('decision').textContent='None';const f=r?.frames?.at(-1);document.getElementById('frame').innerHTML=f?`<img class="frame" alt="Captured run frame" src="/api/frame?project_id=${encodeURIComponent(snapshot.project_id)}&session_id=${encodeURIComponent(s.id)}&run_id=${encodeURIComponent(r.id)}&artifact_id=${encodeURIComponent(f.artifact_id)}"><p>visual_evaluation: <b>${esc(r.completion.visual_evaluation)}</b></p>`:'<span class="muted">No captured frame yet</span>'}async function post(path,body){return api(path,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)})}async function sendMessage(){const e=document.getElementById('message');if(e.value.trim())await post('/api/conversation',{session_id:snapshot.session.id,text:e.value.trim()});e.value='';refresh()}async function go(){await post('/api/go',{request_id:id(),session_id:snapshot.session.id,proposal_version:snapshot.session.proposal.version});refresh()}async function stopRun(){if(snapshot.active_run)await post('/api/stop',{request_id:id(),run_id:snapshot.active_run.id});refresh()}async function permission(scope){const p=snapshot.pending_permission;await post('/api/permission',{request_id:id(),run_id:p.run_id,capability:p.capability,scope});refresh()}async function answer(){const a=snapshot.awaiting_user,e=document.getElementById('answer');await post('/api/awaiting-user',{request_id:id(),session_id:snapshot.session.id,run_id:a.run_id,text:e.value});refresh()}refresh();
++</script></body></html>"#;
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use crate::agent_host::{AgentEventKind, ConversationRole};
++    use std::path::PathBuf;
++    use std::time::{SystemTime, UNIX_EPOCH};
++
++    fn temp(name: &str) -> PathBuf {
++        let n = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
++        std::env::temp_dir().join(format!("gameengine-remote-{name}-{n}"))
++    }
++
++    fn host(name: &str) -> (AgentHost, PathBuf, PathBuf) {
++        let project = temp(&format!("{name}-project"));
++        let storage = temp(&format!("{name}-storage"));
++        fs::create_dir_all(&project).expect("project");
++        (AgentHost::open(project.clone(), storage.clone()).expect("host"), project, storage)
++    }
++
++    #[test]
++    fn gateway_binds_loopback_only() {
++        let (gateway, _requests) = RemoteAiStudioGateway::start().expect("gateway");
++        assert!(gateway.local_addr().ip().is_loopback());
++    }
++
++    #[test]
++    fn idempotent_go_runs_once_and_conflicting_retry_is_rejected() {
++        let mut ledger = IdempotencyLedger::default();
++        let response = RemoteResponse::json(200, json!({"run_id":"run-1"}));
++        ledger.remember("request-1".to_owned(), "go:v2".to_owned(), response.clone());
++        assert_eq!(ledger.replay("request-1", "go:v2").expect("replay").body, response.body);
++        assert_eq!(ledger.replay("request-1", "go:v3").expect("conflict").status, 409);
++        assert_eq!(ledger.entries.len(), 1);
++    }
++
++    #[test]
++    fn duplicate_permission_and_awaiting_responses_are_replayed_once() {
++        let mut ledger = IdempotencyLedger::default();
++        for (id, fingerprint) in [("permission-1", "permission:run"), ("awaiting-1", "awaiting:answer")] {
++            ledger.remember(id.to_owned(), fingerprint.to_owned(), RemoteResponse::json(200, json!({"ok":true})));
++            assert_eq!(ledger.replay(id, fingerprint).expect("replay").status, 200);
++            assert_eq!(ledger.entries.len(), if id == "permission-1" { 1 } else { 2 });
++        }
++    }
++
++    #[test]
++    fn stale_proposal_go_uses_authoritative_host_contract() {
++        let (mut host, project, storage) = host("stale");
++        let session = host.create_session("session").expect("session");
++        let mut first = host.session(&session).expect("session").proposal.clone();
++        first.goal = "first".to_owned();
++        let stale = host.update_proposal(&session, first).expect("first");
++        let mut second = host.session(&session).expect("session").proposal.clone();
++        second.goal = "second".to_owned();
++        host.update_proposal(&session, second).expect("second");
++        assert!(matches!(host.start_run_authorized(&session, stale, "provider"), Err(AgentHostError::StaleProposalVersion { .. })));
++        let _ = fs::remove_dir_all(project); let _ = fs::remove_dir_all(storage);
++    }
++
++    #[test]
++    fn reconnect_snapshot_keeps_active_run_and_pending_decisions() {
++        let (mut host, project, storage) = host("reconnect");
++        let session = host.create_session("session").expect("session");
++        let version = host.session(&session).expect("session").proposal.version;
++        let run = host.start_run_authorized(&session, version, "provider").expect("run");
++        host.transition_run(&run, AgentRunState::AwaitingUser, "Need a choice").expect("awaiting");
++        let snapshot = session_snapshot("project-test", &host, Some(&session), Some((&run, AgentCapability::NetworkAccess)), &project).expect("snapshot");
++        assert_eq!(snapshot["active_run"]["id"], run);
++        assert_eq!(snapshot["awaiting_user"]["run_id"], run);
++        assert_eq!(snapshot["pending_permission"]["run_id"], run);
++        assert_eq!(host.run(&run).expect("run").state, AgentRunState::AwaitingUser);
++        let _ = fs::remove_dir_all(project); let _ = fs::remove_dir_all(storage);
++    }
++
++    #[test]
++    fn event_cursor_resumes_order_and_recovers_when_retention_is_stale() {
++        let (mut host, project, storage) = host("events");
++        let session = host.create_session("session").expect("session");
++        let version = host.session(&session).expect("session").proposal.version;
++        let run = host.start_run_authorized(&session, version, "provider").expect("run");
++        for index in 0..530 { host.record_event(&run, AgentEventKind::SemanticProgress, format!("event {index}")).expect("event"); }
++        let state = host.run(&run).expect("run");
++        let oldest = state.events.first().expect("oldest").sequence;
++        let middle = oldest + 10;
++        let resumed = event_batch(&host, &run, middle, &project).expect("resume");
++        assert_eq!(resumed["events"][0]["cursor"].as_u64(), Some(middle + 1));
++        assert_eq!(resumed["stale_cursor"], false);
++        let stale = event_batch(&host, &run, 1, &project).expect("stale");
++        assert_eq!(stale["stale_cursor"], true);
++        assert_eq!(stale["events"][0]["cursor"].as_u64(), Some(oldest));
++        let _ = fs::remove_dir_all(project); let _ = fs::remove_dir_all(storage);
++    }
++
++    #[test]
++    fn disconnect_has_no_run_cancellation_side_effect() {
++        let (mut host, project, storage) = host("disconnect");
++        let session = host.create_session("session").expect("session");
++        let version = host.session(&session).expect("session").proposal.version;
++        let run = host.start_run_authorized(&session, version, "provider").expect("run");
++        let _ = event_batch(&host, &run, 0, &project).expect("events");
++        assert_eq!(host.run(&run).expect("run").state, AgentRunState::Inspecting);
++        let _ = fs::remove_dir_all(project); let _ = fs::remove_dir_all(storage);
++    }
++
++    #[test]
++    fn remote_snapshot_omits_credentials_private_paths_and_provider_output() {
++        let (mut host, project, storage) = host("sanitize");
++        let session = host.create_session("session").expect("session");
++        host.append_message(&session, ConversationRole::User, format!("path {} GAMEENGINE_MCP_AUTH_TOKEN=secret", project.display())).expect("message");
++        let version = host.session(&session).expect("session").proposal.version;
++        let run = host.start_run_authorized(&session, version, "C:\\private\\provider.exe").expect("run");
++        host.record_event(&run, AgentEventKind::ProviderOutput, "Bearer secret environment=bad").expect("event");
++        let snapshot = session_snapshot("project-test", &host, Some(&session), None, &project).expect("snapshot").to_string();
++        assert!(!snapshot.contains("secret"));
++        assert!(!snapshot.contains("GAMEENGINE_MCP_AUTH_TOKEN"));
++        assert!(!snapshot.contains("provider.exe"));
++        assert!(!snapshot.contains(&project.display().to_string()));
++        let _ = fs::remove_dir_all(project); let _ = fs::remove_dir_all(storage);
++    }
++
++    #[test]
++    fn captured_frame_is_bound_to_session_and_run() {
++        let (mut host, project, storage) = host("frame");
++        let session = host.create_session("session").expect("session");
++        let other = host.create_session("other").expect("session");
++        let version = host.session(&session).expect("session").proposal.version;
++        let run = host.start_run_authorized(&session, version, "provider").expect("run");
++        let (artifact, _) = host.store_captured_frame_artifact(&run, 1, 1, b"png").expect("artifact");
++        assert_eq!(load_frame(&host, &session, &run, &artifact).expect("frame"), b"png");
++        assert!(load_frame(&host, &other, &run, &artifact).is_err());
++        let _ = fs::remove_dir_all(project); let _ = fs::remove_dir_all(storage);
++    }
++
++    #[test]
++    fn forbidden_generic_remote_routes_are_absent_and_companion_is_responsive() {
++        for path in ["/api/shell", "/api/filesystem", "/api/git", "/api/mcp", "/api/process"] {
++            let (sender, _receiver) = mpsc::channel();
++            let ledger = Arc::new(Mutex::new(IdempotencyLedger::default()));
++            let response = route_request(HttpRequest { method: "POST".to_owned(), path: path.to_owned(), body: Vec::new() }, &sender, &ledger);
++            assert_eq!(response.status, 404);
++        }
++        for required in ["Conversation", "Acceptance criteria", "Go exact proposal", "Stop", "AwaitingUser", "Permission", "Validation / playtest / repair progress", "Captured frame / visual evaluation", "@media(max-width:720px)"] {
++            assert!(COMPANION_HTML.contains(required), "missing {required}");
++        }
++    }
++}
