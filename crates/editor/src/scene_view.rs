@@ -1033,6 +1033,7 @@ impl SceneView {
         gizmo_mode: GizmoMode,
         gizmo_space: GizmoSpace,
         open_ui_document: Option<(&AssetId, &UiDocument)>,
+        navigation_test_path: Option<&[Vec3]>,
         render_state: &egui_wgpu::RenderState,
     ) -> SceneViewOutput {
         if !self.show_ui_overlay {
@@ -1515,6 +1516,25 @@ impl SceneView {
                             }
                         }
                     }
+                if let Some(path) = navigation_test_path {
+                    for segment in path.windows(2) {
+                        dl.line(segment[0], segment[1], Vec3::new(0.2, 1.0, 0.85));
+                    }
+                    for point in path {
+                        let point = *point;
+                        let marker = 0.12;
+                        dl.line(
+                            point - Vec3::X * marker,
+                            point + Vec3::X * marker,
+                            Vec3::new(1.0, 0.95, 0.2),
+                        );
+                        dl.line(
+                            point - Vec3::Z * marker,
+                            point + Vec3::Z * marker,
+                            Vec3::new(1.0, 0.95, 0.2),
+                        );
+                    }
+                }
                 if let Some(debug) = &particle_debug {
                     if let Some((min, max)) = debug.bounds {
                         dl.aabb(
