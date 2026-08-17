@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/lib.rs","old":"pub mod material_editor;\n#[path = \"navmesh_shared.rs\"]","new":"pub mod material_editor;\n/// Dedicated Native 2D Scene/Tile/Sprite authoring presentation (ADR 0127).\npub mod native_2d_editor;\n#[path = \"navmesh_shared.rs\"]"}
