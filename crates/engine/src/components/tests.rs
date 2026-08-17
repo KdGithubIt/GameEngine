@@ -208,6 +208,8 @@ fn registry_iterates_in_registration_order() {
             NAVIGATION_LINK_COMPONENT,
             NAVIGATION_MODIFIER_COMPONENT,
             VFX_PLAYER_COMPONENT,
+            CAMERA_2D_COMPONENT,
+            SPRITE_RENDERER_2D_COMPONENT,
         ]
     );
 }
