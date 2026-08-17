@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "fn split_direct_args(text: &str) -> Vec<String> {\n    text.split_whitespace().map(ToOwned::to_owned).collect()\n}\n\nfn change_summary(change: &CodeChange) -> &'static str {",
+  "new": "fn redact_sensitive_provider_output(text: &str, mcp_token: &str) -> String {\n    let mut redacted = if mcp_token.is_empty() {\n        text.to_owned()\n    } else {\n        text.replace(mcp_token, \"[REDACTED]\")\n    };\n    for marker in [\n        \"GAMEENGINE_MCP_AUTH_TOKEN=\",\n        \"Authorization: Bearer \",\n        \"authorization: bearer \",\n        \"api_key=\",\n        \"API_KEY=\",\n        \"token=\",\n        \"TOKEN=\",\n    ] {\n        if let Some(index) = redacted.find(marker) {\n            let value_start = index + marker.len();\n            let value_end = redacted[value_start..]\n                .find(char::is_whitespace)\n                .map_or(redacted.len(), |offset| value_start + offset);\n            redacted.replace_range(value_start..value_end, \"[REDACTED]\");\n        }\n    }\n    redacted\n}\n\nfn split_direct_args(text: &str) -> Vec<String> {\n    text.split_whitespace().map(ToOwned::to_owned).collect()\n}\n\nfn change_summary(change: &CodeChange) -> &'static str {"
+}
