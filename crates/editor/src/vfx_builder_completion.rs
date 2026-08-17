@@ -1085,13 +1085,12 @@ mod tests {
         assert!(emitter.modules.iter().all(|module| module.phase == module.operation.required_phase()));
         effect.emitters.push(emitter);
 
+        let compilation = VfxAuthoringService::new().compile(&effect);
         let mut preview = VfxPreviewState::default();
-        preview.open_effect(&effect);
         preview.current_time = 0.75;
-        preview.recompile(&effect, true);
+        preview.apply_compilation(&effect, &compilation, true);
 
-        let compiled = VfxAuthoringService::new()
-            .compile(&effect)
+        let compiled = compilation
             .compiled_effect
             .expect("valid effect compiles");
         let mut expected = VfxPlayer::new(
