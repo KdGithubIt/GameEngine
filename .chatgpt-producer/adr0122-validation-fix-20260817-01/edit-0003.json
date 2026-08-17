@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ui/audio_authoring.rs","old":"                egui::Stroke::new(1.5, ui.visuals().text_color()),","new":"                egui::Stroke::new(1.5_f32, ui.visuals().text_color()),"}
