@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "request_id": "20260817-adr0124-editor-path-75e1961-r4",
+  "target_branch": "chatgpt/gameengine-adr0124-production-navigation-v13",
+  "expected_head_sha": "75e19610fa4d48bf61e968ce198137d2c574a2d9",
+  "baseline_main_sha": "6bb36e3789f49ec13f16ef1b447be1cdc3be3d5c",
+  "edit_parts": [
+    "edit-0000.json",
+    "edit-0001.json",
+    "edit-0002.json",
+    "edit-0003.json",
+    "edit-0004.json",
+    "edit-0005.json",
+    "edit-0006.json",
+    "edit-0007.json"
+  ],
+  "commit_message": "Complete ADR 0124 Editor navigation workflow",
+  "pr_title": "Complete ADR 0124 production navigation first release",
+  "pr_body": "Complete ADR 0124 on current main. This follow-up adds the dedicated production Navigation window with bake/currentness status, editable agent profiles, Bake/Rebuild/Cancel controls, path testing, and Scene View path visualization while preserving the existing engine-owned NavMesh overlay and backend-neutral public contracts.\n\n<!-- gameengine-visual-validation: editor -->"
+}
