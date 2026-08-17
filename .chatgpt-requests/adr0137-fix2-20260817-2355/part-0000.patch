@@ -1,0 +1,13 @@
+diff --git a/crates/engine/src/scene_bridge/spawn.rs b/crates/engine/src/scene_bridge/spawn.rs
+index ba128f0eea2de7973a97b6f06383ac1a9026b2a6..cecdb37693a26ce6bcf67645333a52a2a72b0dc3 100644
+--- a/crates/engine/src/scene_bridge/spawn.rs
++++ b/crates/engine/src/scene_bridge/spawn.rs
+@@ -1008,7 +1008,7 @@ pub(crate) fn spawn_animation_controller_component(
+         let set_label = context
+             .manifest
+             .get(&animation_set_asset)
+-            .filter_map(|entry| entry.name.as_deref())
++            .and_then(|entry| entry.name.as_deref())
+             .filter(|name| !name.trim().is_empty())
+             .unwrap_or_else(|| animation_set_asset.as_str());
+         let mut related_targets = vec![
