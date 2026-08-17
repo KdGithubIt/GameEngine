@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ui/audio_authoring.rs",
+  "old": "    #[cfg(feature = \"visual-validation\")]\n    pub fn prepare_spatial_audio_visual_validation(&mut self) {\n        let registry = engine::components::builtin_registry();",
+  "new": "    #[cfg(feature = \"visual-validation\")]\n    pub fn prepare_spatial_audio_visual_validation(&mut self) {\n        self.prepare_spatial_audio_visual_validation_with_scroll(None);\n    }\n\n    #[cfg(feature = \"visual-validation\")]\n    pub fn prepare_spatial_audio_details_visual_validation(&mut self) {\n        self.prepare_spatial_audio_visual_validation_with_scroll(Some(300.0));\n    }\n\n    #[cfg(feature = \"visual-validation\")]\n    fn prepare_spatial_audio_visual_validation_with_scroll(\n        &mut self,\n        inspector_scroll_offset: Option<f32>,\n    ) {\n        let registry = engine::components::builtin_registry();"
+}
