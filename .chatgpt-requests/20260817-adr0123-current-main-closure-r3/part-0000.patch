@@ -1,0 +1,65 @@
+diff --git a/crates/editor/src/canvas/mod.rs b/crates/editor/src/canvas/mod.rs
+index 6b2925dafc7019abb4d2384656e22b0c4b4f0fa6..36bdb95065fa549faabbb2b0a8d4f647af5b2ced 100644
+--- a/crates/editor/src/canvas/mod.rs
++++ b/crates/editor/src/canvas/mod.rs
+@@ -624,7 +624,7 @@ pub(crate) fn show_graph_node_palette_visual_fixture(
+         columns[1].add(
+             egui::TextEdit::singleline(&mut search_query)
+                 .hint_text("Search nodes...")
+-                .desired_width(150.0),
++                .desired_width(110.0),
+         );
+         columns[1].small("Matches shared schema labels, categories, type IDs, and tags.");
+         for kind in session
+diff --git a/crates/editor/src/ui/behavior_debug.rs b/crates/editor/src/ui/behavior_debug.rs
+index 51414ea78ada8e4c30928cad4bca2a9782b41ad6..fae9605c073fb5797d846dbecde00a82f7f00d52 100644
+--- a/crates/editor/src/ui/behavior_debug.rs
++++ b/crates/editor/src/ui/behavior_debug.rs
+@@ -379,7 +379,7 @@ impl EditorApp {
+                 .show(&context, |ui| {
+                     ui.horizontal_top(|ui| {
+                         ui.vertical(|ui| {
+-                            ui.set_width(350.0);
++                            ui.set_width(260.0);
+                             ui.set_min_height(600.0);
+                             if let Some(session) = self.behavior_debug.graph_session.as_ref() {
+                                 show_graph_node_palette_visual_fixture(ui, session);
+@@ -387,13 +387,13 @@ impl EditorApp {
+                         });
+                         ui.separator();
+                         ui.vertical(|ui| {
+-                            ui.set_width(470.0);
++                            ui.set_width(520.0);
+                             ui.set_min_height(600.0);
+                             self.behavior_debug.show_graph(ui, &presentation);
+                         });
+                         ui.separator();
+                         ui.vertical(|ui| {
+-                            ui.set_width(210.0);
++                            ui.set_width(250.0);
+                             ui.set_min_height(600.0);
+                             show_behavior_debug_details(ui, &presentation);
+                         });
+@@ -432,9 +432,10 @@ fn show_behavior_debug_details(ui: &mut egui::Ui, presentation: &BehaviorTreeDeb
+         ui.label(format!("Entity generation {generation}"));
+     }
+     ui.monospace(presentation.graph.as_str());
++    ui.label(format!("Tree generation {}", presentation.tree_generation));
+     ui.label(format!(
+-        "Tree gen {}  |  Execution gen {}",
+-        presentation.tree_generation, presentation.execution_generation
++        "Execution generation {}",
++        presentation.execution_generation
+     ));
+     ui.separator();
+     ui.strong(format!(
+@@ -445,7 +446,8 @@ fn show_behavior_debug_details(ui: &mut egui::Ui, presentation: &BehaviorTreeDeb
+             .unwrap_or("Not ticked")
+     ));
+     if let Some(reason) = presentation.last_reset_reason {
+-        ui.label(format!("Last abort/reset: {}", reset_reason_label(reason)));
++        ui.label("Last abort/reset");
++        ui.monospace(reset_reason_label(reason));
+     }
+     if let Some(error) = &presentation.error {
+         ui.colored_label(egui::Color32::from_rgb(235, 104, 104), error);
