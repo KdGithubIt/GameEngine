@@ -1,0 +1,16 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0126-current-main-replay-20260817-2308",
+  "target_branch": "chatgpt/gameengine-adr0126-first-release-v3",
+  "expected_head_sha": "73ecdb99da92052d74595dd26e2872d7956fecf8",
+  "baseline_main_sha": "73ecdb99da92052d74595dd26e2872d7956fecf8",
+  "patch_sha256": "74ed62492091fde9b482f48f35a64fbab6ee9f55639ab8ae8dcd569d9a8cb9ea",
+  "patch_bytes": 108754,
+  "patch_parts": [
+    "part-0000.patch",
+    "part-0001.patch"
+  ],
+  "commit_message": "Replay validated ADR0126 Timeline foundation on current main",
+  "pr_title": "GameEngine: complete ADR 0126 Timeline first release",
+  "pr_body": "## Summary\n\nReplays the validated ADR0126 Timeline core, shared authoring contracts, CLI/MCP capability adapters, and transient Game View camera override onto the latest current main after unrelated Editor/AI Studio work merged. The structured edits were re-evaluated against current main through the canonical producer/Dispatcher path.\n\nThis fresh task branch supersedes Draft PR #285 after the replay and schema correction are both validated. Keep this PR Draft and unmerged while the remaining ADR0126 first-release runtime, Project Rust, packaged-player, Sequencer, and visual-validation requirements are completed."
+}
