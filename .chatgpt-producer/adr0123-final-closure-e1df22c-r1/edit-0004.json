@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ui/behavior_debug.rs",
+  "old": "    message: Option<String>,\n    canvas: GraphCanvasState,\n    #[cfg(feature = \"visual-validation\")]\n",
+  "new": "    message: Option<String>,\n    canvas: GraphCanvasState,\n    selected_node: Option<NodeId>,\n    #[cfg(feature = \"visual-validation\")]\n"
+}
