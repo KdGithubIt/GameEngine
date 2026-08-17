@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/lib.rs","old":"pub mod preferences;\npub mod problems;\n","new":"pub mod preferences;\nmod preview_residency;\npub mod problems;\n"}
