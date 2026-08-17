@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/agent_host.rs",
+  "old": "            let session: AgentSession = match serde_json::from_slice(&bytes) {\n                Ok(session) => session,\n                Err(_) => continue,\n            };\n            if session.schema_version == SESSION_SCHEMA_VERSION {\n                sessions.insert(session.id.clone(), session);\n            }",
+  "new": "            let mut session: AgentSession = match serde_json::from_slice(&bytes) {\n                Ok(session) => session,\n                Err(_) => continue,\n            };\n            if session.schema_version == SESSION_SCHEMA_VERSION {\n                if session.proposal_history.is_empty() {\n                    session.proposal_history.push(session.proposal.clone());\n                }\n                sessions.insert(session.id.clone(), session);\n            }"
+}
