@@ -1330,7 +1330,7 @@ const AUDIO_EMITTER_FIELDS: &[FieldDef] = &[
     ),
     number(
         "spatial_blend",
-        "Spatial Blend (2D ↔ 3D)",
+        "Spatial Blend",
         "Blend from centered 2D (0.0) to positional 3D (1.0).",
         1.0,
         UNIT_INTERVAL,
