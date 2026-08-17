@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "bloom-readback-20260817-03",
+  "target_branch": "chatgpt/gameengine-bloom-readback-c9e468f",
+  "expected_head_sha": "e36972084f0f744b65844062c660344131b7e38c",
+  "baseline_main_sha": "c9e468f4cb80a300a9e6741739c2b86b0c96d998",
+  "patch_sha256": "6521714679e8f6ac6955b9985c54c7eef3120a76f8c1c7a9557f5e3388228a1f",
+  "patch_bytes": 566,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Isolate Bloom spread regression from threshold selection",
+  "pr_title": "Renderer: verify Bloom affects final pixels on current main",
+  "pr_body": "## Summary\n\nKeeps the Bloom GPU readback regression coverage test-only and isolates the spatial-spread assertion from Bloom threshold-selection behavior. Production renderer behavior is unchanged.\n\nTwo exact-head Windows validations showed the final-pixel toggle test passing while the 4x4 localized source produced zero outside-footprint Bloom delta even when composite intensity was raised from 4 to 64. The Bloom shader applies thresholding during prefilter, before reconstruction and final composite intensity. This correction sets the spread test threshold to 0 so the test measures spatial reconstruction rather than whether the tiny source survives thresholded prefilter averaging.\n\nVisual Validation is N/A.\n\n## Validation\n\nRun exact-head affected Windows Validation for `engine-render-runtime` and use only the result for this PR head."
+}
