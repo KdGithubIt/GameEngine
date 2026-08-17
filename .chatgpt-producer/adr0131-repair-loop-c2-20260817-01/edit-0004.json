@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ai_studio.rs","old":"                self.managed_capture_requested = false;\n                self.managed_playtest_started_at = None;\n","new":"                self.managed_capture_requested = false;\n                self.managed_repair_requested = false;\n                self.managed_playtest_started_at = None;\n"}
