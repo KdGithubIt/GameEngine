@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/native_agent.rs",
+  "old": "fn generate_local(\n    config: &LocalModelConfig,\n    prompt: &str,\n    interrupted: &AtomicBool,\n    active_stream: &Mutex<Option<TcpStream>>,\n) -> Result<GenerateResponse, NativeAgentError> {\n    let endpoint = LocalHttpEndpoint::parse(&config.endpoint)?;\n    let body = serde_json::to_vec(&GenerateRequest {\n        model: config.model.trim(),\n        prompt,\n        stream: false,\n    })?;",
+  "new": "fn generate_local(\n    config: &LocalModelConfig,\n    prompt: &str,\n    images: &[Vec<u8>],\n    interrupted: &AtomicBool,\n    active_stream: &Mutex<Option<TcpStream>>,\n) -> Result<GenerateResponse, NativeAgentError> {\n    let endpoint = LocalHttpEndpoint::parse(&config.endpoint)?;\n    let encoded_images = (!images.is_empty()).then(|| {\n        images\n            .iter()\n            .map(|image| encode_base64(image))\n            .collect::<Vec<_>>()\n    });\n    let body = serde_json::to_vec(&GenerateRequest {\n        model: config.model.trim(),\n        prompt,\n        stream: false,\n        images: encoded_images,\n    })?;"
+}
