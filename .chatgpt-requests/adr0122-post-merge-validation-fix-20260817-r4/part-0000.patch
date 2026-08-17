@@ -1,0 +1,12 @@
+diff --git a/crates/editor/src/ui/chrome.rs b/crates/editor/src/ui/chrome.rs
+index b40af9e6735c08b7f52d2467beb987dc05c7a2fa..9360b2f3ae7c8e61dacac146d747e67de3758857 100644
+--- a/crates/editor/src/ui/chrome.rs
++++ b/crates/editor/src/ui/chrome.rs
+@@ -2082,6 +2082,7 @@ pub(super) fn show_primary_left_dock_panel<R>(
+ /// A manually bounded child now provides the stronger mirror guard: its desired
+ /// size never contributes to the panel response. Dock-local truncation also
+ /// keeps narrow horizontal controls on one line.
++#[cfg(test)]
+ pub(super) fn show_inspector_panel<R>(
+     ui: &mut egui::Ui,
+     max_width: f32,
