@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ui/animation_preview.rs",
+  "old": "                    GizmoMode::Translate,\n                    GizmoSpace::Global,\n                    None,\n                    render_state,",
+  "new": "                    GizmoMode::Translate,\n                    GizmoSpace::Global,\n                    None,\n                    None,\n                    render_state,"
+}
