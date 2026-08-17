@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/animation/src/lib.rs","old":"/// Pure pose sampling and blending.\npub mod pose_graph;","new":"/// Pure pose sampling and blending.\npub mod pose_graph;\n/// Deterministic per-entity Sprite Animation playback (ADR 0127).\npub mod sprite_2d;"}
