@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ui/mod.rs","old":"    pub fn new(session: EditorSession) -> Self {\n        Self {\n","new":"    pub fn new(session: EditorSession) -> Self {\n        let preview_residency = ProjectAssetResidency::default();\n        Self {\n"}
