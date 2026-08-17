@@ -375,27 +375,26 @@ impl EditorApp {
                 .collapsible(false)
                 .resizable(false)
                 .fixed_pos(egui::pos2(8.0, 60.0))
-                .fixed_size(egui::vec2(1080.0, 660.0))
+                .fixed_size(egui::vec2(1080.0, 690.0))
                 .show(&context, |ui| {
-                    ui.horizontal_top(|ui| {
-                        ui.vertical(|ui| {
-                            ui.set_width(260.0);
-                            ui.set_min_height(600.0);
-                            if let Some(session) = self.behavior_debug.graph_session.as_ref() {
-                                show_graph_node_palette_visual_fixture(ui, session);
-                            }
-                        });
+                    ui.vertical(|ui| {
+                        ui.set_width(1040.0);
+                        if let Some(session) = self.behavior_debug.graph_session.as_ref() {
+                            show_graph_node_palette_visual_fixture(ui, session);
+                        }
                         ui.separator();
-                        ui.vertical(|ui| {
-                            ui.set_width(520.0);
-                            ui.set_min_height(600.0);
-                            self.behavior_debug.show_graph(ui, &presentation);
-                        });
-                        ui.separator();
-                        ui.vertical(|ui| {
-                            ui.set_width(250.0);
-                            ui.set_min_height(600.0);
-                            show_behavior_debug_details(ui, &presentation);
+                        ui.horizontal_top(|ui| {
+                            ui.vertical(|ui| {
+                                ui.set_width(730.0);
+                                ui.set_min_height(410.0);
+                                self.behavior_debug.show_graph(ui, &presentation);
+                            });
+                            ui.separator();
+                            ui.vertical(|ui| {
+                                ui.set_width(290.0);
+                                ui.set_min_height(410.0);
+                                show_behavior_debug_details(ui, &presentation);
+                            });
                         });
                     });
                 });
