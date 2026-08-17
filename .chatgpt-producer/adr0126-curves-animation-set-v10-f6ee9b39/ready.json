@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0126-curves-animation-set-v10-f6ee9b39",
+  "target_branch": "chatgpt/gameengine-adr0126-first-release-v10",
+  "expected_head_sha": "f6ee9b39cffbed19ae614631c1996c21b0560042",
+  "baseline_main_sha": "86544a6c8d9bb770633b1ae4eb22fac26278f50c",
+  "edit_parts": [
+    "edit-0000.json", "edit-0001.json", "edit-0002.json", "edit-0003.json",
+    "edit-0004.json", "edit-0005.json", "edit-0006.json"
+  ],
+  "commit_message": "Complete ADR0126 curve and Animation Set schema",
+  "pr_title": "GameEngine: complete ADR0126 Timeline and Sequencer",
+  "pr_body": "## Summary\n\nContinues ADR0126 first-release completion on the current Draft PR. Timeline Animation clips now persist both the stable Animation Set asset and MotionSlotId instead of depending on whichever set happens to be assigned later. Transform/Property clips now persist ordered clip-local curve keys and share one deterministic typed sampler suitable for runtime and Sequencer preview. Validation rejects empty, out-of-range, non-increasing, type-mismatched and non-finite curves.\n\nThe PR remains Draft while production runtime composition, Project Rust integration, Sequencer authoring/preview, Windows Validation and Visual Validation continue."
+}
