@@ -1,0 +1,261 @@
+diff --git a/crates/editor/src/ai_studio.rs b/crates/editor/src/ai_studio.rs
+index 22f3a90cfbf5013443eeefd425d95837089d17a0..e0eb02821ad45665e041a5029244e3690df75977 100644
+--- a/crates/editor/src/ai_studio.rs
++++ b/crates/editor/src/ai_studio.rs
+@@ -7,7 +7,7 @@
+ use crate::agent_host::{
+     project_storage_key, AgentCapability, AgentEventKind, AgentHost, AgentProposal, AgentRunState,
+     ApprovalScope, CodeChange, CodeWorkspace, CompletionStatus, ConversationRole,
+-    ExternalAgentProcess, PermissionCheck, ProcessStream,
++    ExternalAgentProcess, ManagedValidationAttemptStatus, PermissionCheck, ProcessStream,
+ };
+ use crate::native_agent::{
+     LocalModelConfig, ModelCapabilityProfile, NativeAnswer, NativeQuestionTask, QuestionMessage,
+@@ -22,6 +22,14 @@ use std::ffi::{OsStr, OsString};
+ use std::path::PathBuf;
+ 
+ const PROVIDER_EVENT_PREFIX: &str = "GAMEENGINE_AGENT_EVENT ";
++const MAX_AUTONOMOUS_SOURCE_REPAIRS: usize = 2;
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++enum SourceRepairDecision {
++    Wait,
++    Retry(usize),
++    Exhausted,
++}
+ 
+ #[derive(Debug, Deserialize)]
+ #[serde(tag = "type", rename_all = "snake_case")]
+@@ -162,6 +170,7 @@ pub struct AiStudioPanel {
+     managed_input_plan: VecDeque<InputCommand>,
+     managed_playtest_requested: bool,
+     managed_capture_requested: bool,
++    managed_repair_requested: bool,
+     managed_playtest_started_at: Option<std::time::Instant>,
+     last_captured_frame: Option<(egui::TextureHandle, String, u32, u32)>,
+     status: Option<String>,
+@@ -212,6 +221,7 @@ impl AiStudioPanel {
+             managed_input_plan: VecDeque::new(),
+             managed_playtest_requested: false,
+             managed_capture_requested: false,
++            managed_repair_requested: false,
+             managed_playtest_started_at: None,
+             last_captured_frame: None,
+             status: None,
+@@ -313,6 +323,7 @@ impl AiStudioPanel {
+         self.poll_native_question(context);
+         self.poll_external_process(context);
+         self.poll_managed_validation(context);
++        self.request_managed_source_repair_if_ready();
+         self.request_managed_playtest_if_ready();
+         self.request_next_managed_runtime_input_if_ready();
+         self.poll_managed_playtest_timeout();
+@@ -827,6 +838,7 @@ impl AiStudioPanel {
+                 self.managed_input_plan.clear();
+                 self.managed_playtest_requested = false;
+                 self.managed_capture_requested = false;
++                self.managed_repair_requested = false;
+                 self.managed_playtest_started_at = None;
+                 self.last_captured_frame = None;
+                 self.request_permission(
+@@ -949,7 +961,10 @@ impl AiStudioPanel {
+                 return;
+             }
+         };
+-        let environment = vec![
++        let repair_context = self.host.run(run_id).ok().and_then(|run| {
++            (run.state == AgentRunState::Repairing).then(|| managed_source_repair_context(run))
++        });
++        let mut environment = vec![
+             (
+                 OsString::from("GAMEENGINE_MCP_ENDPOINT"),
+                 OsString::from(&self.connection.endpoint),
+@@ -979,6 +994,12 @@ impl AiStudioPanel {
+                 ),
+             ),
+         ];
++        if let Some(repair_context) = repair_context {
++            environment.push((
++                OsString::from("GAMEENGINE_AGENT_REPAIR_CONTEXT"),
++                OsString::from(repair_context),
++            ));
++        }
+         let args = split_direct_args(&self.provider_args);
+         match ExternalAgentProcess::spawn(
+             OsStr::new(self.provider_program.trim()),
+@@ -1065,6 +1086,64 @@ impl AiStudioPanel {
+         }
+     }
+ 
++    fn request_managed_source_repair_if_ready(&mut self) {
++        if self.managed_repair_requested
++            || self.process.is_some()
++            || self.pending_permission.is_some()
++        {
++            return;
++        }
++        let Some(run_id) = self.active_run_id.clone() else {
++            return;
++        };
++        let decision = match self.host.run(&run_id) {
++            Ok(run) => source_repair_decision(
++                run.state,
++                run.completion.source_validation,
++                run.validation_attempts
++                    .iter()
++                    .filter(|attempt| attempt.status == ManagedValidationAttemptStatus::Failed)
++                    .count(),
++            ),
++            Err(error) => {
++                self.status = Some(error.to_string());
++                return;
++            }
++        };
++        match decision {
++            SourceRepairDecision::Wait => {}
++            SourceRepairDecision::Retry(repair_number) => {
++                self.managed_repair_requested = true;
++                if let Err(error) = self.host.record_semantic_progress(
++                    &run_id,
++                    "managed_source_repair",
++                    format!(
++                        "Starting autonomous source repair {repair_number}/{MAX_AUTONOMOUS_SOURCE_REPAIRS} from the latest managed validation failure."
++                    ),
++                ) {
++                    self.status = Some(error.to_string());
++                }
++                self.request_permission(
++                    run_id,
++                    AgentCapability::ExternalAgentProcess,
++                    PendingPermissionAction::LaunchExternalAgent,
++                );
++            }
++            SourceRepairDecision::Exhausted => {
++                self.managed_repair_requested = true;
++                let message = format!(
++                    "Autonomous source repair budget exhausted after {MAX_AUTONOMOUS_SOURCE_REPAIRS} repair attempt(s); source validation remains failed."
++                );
++                let _ = self.host.record_semantic_progress(
++                    &run_id,
++                    "managed_source_repair_exhausted",
++                    message.clone(),
++                );
++                self.status = Some(message);
++            }
++        }
++    }
++
+     fn request_managed_playtest_if_ready(&mut self) {
+         if self.managed_playtest_requested || self.pending_runtime_action.is_some() {
+             return;
+@@ -1147,6 +1226,7 @@ impl AiStudioPanel {
+         }
+         let has_code_changes = !changes.is_empty();
+         self.pending_code_changes = changes;
++        self.managed_repair_requested = false;
+         if let Err(error) = self
+             .host
+             .begin_managed_validation(run_id, has_code_changes)
+@@ -1225,6 +1305,53 @@ impl AiStudioPanel {
+     }
+ }
+ 
++fn source_repair_decision(
++    state: AgentRunState,
++    source_validation: CompletionStatus,
++    failed_attempts: usize,
++) -> SourceRepairDecision {
++    if state != AgentRunState::Repairing
++        || source_validation != CompletionStatus::Failed
++        || failed_attempts == 0
++    {
++        return SourceRepairDecision::Wait;
++    }
++    if failed_attempts > MAX_AUTONOMOUS_SOURCE_REPAIRS {
++        SourceRepairDecision::Exhausted
++    } else {
++        SourceRepairDecision::Retry(failed_attempts)
++    }
++}
++
++fn managed_source_repair_context(run: &crate::agent_host::AgentRun) -> String {
++    let Some(attempt) = run
++        .validation_attempts
++        .iter()
++        .rev()
++        .find(|attempt| attempt.status == ManagedValidationAttemptStatus::Failed)
++    else {
++        return "Managed source validation failed without a recorded failed attempt. Re-inspect the existing workspace and repair only the source-validation failure without expanding proposal scope.".to_owned();
++    };
++    let failures = attempt
++        .gate_results
++        .iter()
++        .filter_map(|result| {
++            result.failure.as_ref().map(|failure| {
++                format!("{:?}: {}", result.gate, failure.message)
++            })
++        })
++        .collect::<Vec<_>>();
++    let detail = if failures.is_empty() {
++        "no gate-specific failure message was recorded".to_owned()
++    } else {
++        failures.join(" | ")
++    };
++    format!(
++        "Managed validation attempt {} failed: {detail}. Repair the existing isolated workspace in place, preserve successful work, do not expand the immutable proposal scope, and return normally so GameEngine can run managed validation again.",
++        attempt.id
++    )
++}
++
+ fn provider_key_code(key: &str) -> Result<KeyCode, String> {
+     let normalized = key.trim().to_ascii_lowercase();
+     let key = match normalized.as_str() {
+@@ -1483,4 +1610,48 @@ mod tests {
+         };
+         assert_eq!(change_summary(&change), "delete (apply blocked)");
+     }
++
++    #[test]
++    fn autonomous_source_repair_is_bounded_and_source_failure_only() {
++        assert_eq!(
++            source_repair_decision(
++                AgentRunState::Repairing,
++                CompletionStatus::Failed,
++                1,
++            ),
++            SourceRepairDecision::Retry(1)
++        );
++        assert_eq!(
++            source_repair_decision(
++                AgentRunState::Repairing,
++                CompletionStatus::Failed,
++                2,
++            ),
++            SourceRepairDecision::Retry(2)
++        );
++        assert_eq!(
++            source_repair_decision(
++                AgentRunState::Repairing,
++                CompletionStatus::Failed,
++                3,
++            ),
++            SourceRepairDecision::Exhausted
++        );
++        assert_eq!(
++            source_repair_decision(
++                AgentRunState::Repairing,
++                CompletionStatus::Pending,
++                1,
++            ),
++            SourceRepairDecision::Wait
++        );
++        assert_eq!(
++            source_repair_decision(
++                AgentRunState::Evaluating,
++                CompletionStatus::Failed,
++                1,
++            ),
++            SourceRepairDecision::Wait
++        );
++    }
+ }
