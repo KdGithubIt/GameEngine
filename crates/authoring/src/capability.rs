@@ -168,6 +168,12 @@ pub enum AuthoringDomain {
     Vfx,
     /// Behavior Tree graph domain operations.
     BehaviorTree,
+    /// Material asset documents.
+    Material,
+    /// Project Settings document.
+    ProjectSettings,
+    /// Animation Set asset documents.
+    AnimationSet,
 }
 
 /// Authoring document a capability reads or mutates.
@@ -195,6 +201,12 @@ pub enum AuthoringDocumentKind {
     UiDocument,
     /// A VFX effect document.
     VfxEffect,
+    /// A Material asset document.
+    MaterialAsset,
+    /// The project-wide Project Settings document.
+    ProjectSettings,
+    /// An Animation Set asset document.
+    AnimationSet,
 }
 
 /// Semantic shape of one capability.
@@ -722,6 +734,22 @@ fn ui_documents() -> Vec<AuthoringDocumentKind> {
     vec![AuthoringDocumentKind::UiDocument]
 }
 
+fn typed_document_replace_schema(document_type: &str) -> AuthoringSchemaRef {
+    AuthoringSchemaRef::typed_json(
+        document_type,
+        json!({
+            "type": "object",
+            "required": ["expected_revision", "expected_generation", "replacement"],
+            "properties": {
+                "expected_revision": {"type": "integer", "minimum": 0},
+                "expected_generation": {"type": "integer", "minimum": 0},
+                "replacement": {"type": "object", "title": document_type}
+            },
+            "additionalProperties": false
+        }),
+    )
+}
+
 fn builtin_capabilities() -> Vec<AuthoringCapability> {
     let mut capabilities = vec![
         query(
@@ -887,6 +915,18 @@ fn builtin_capabilities() -> Vec<AuthoringCapability> {
             AuthoringSchemaRef::of_type("UiAuthoringMutation"),
             "Apply one atomic declarative UI command batch.",
         ),
+        query("material.inspect", AuthoringDomain::Material, vec![AuthoringDocumentKind::MaterialAsset], AuthoringSchemaRef::of_type("TypedDocumentAuthoringSnapshot<MaterialAsset>"), "Inspect the active Material through the shared typed-document boundary."),
+        validation("material.validate", AuthoringDomain::Material, vec![AuthoringDocumentKind::MaterialAsset], AuthoringSchemaRef::of_type("TypedDocumentAuthoringValidation"), "Validate the active Material through the shared typed-document boundary."),
+        with_input(preview("material.preview", AuthoringDomain::Material, vec![AuthoringDocumentKind::MaterialAsset], "MaterialAsset", AuthoringSchemaRef::of_type("TypedDocumentAuthoringMutation<MaterialAsset>"), "Preview one atomic Material replacement."), typed_document_replace_schema("MaterialAsset")),
+        with_input(commit("material.apply", AuthoringDomain::Material, vec![AuthoringDocumentKind::MaterialAsset], "MaterialAsset", AuthoringSchemaRef::of_type("TypedDocumentAuthoringMutation<MaterialAsset>"), "Apply one atomic Material replacement."), typed_document_replace_schema("MaterialAsset")),
+        query("project_settings.inspect", AuthoringDomain::ProjectSettings, vec![AuthoringDocumentKind::ProjectSettings], AuthoringSchemaRef::of_type("TypedDocumentAuthoringSnapshot<ProjectSettings>"), "Inspect Project Settings through the shared typed-document boundary."),
+        validation("project_settings.validate", AuthoringDomain::ProjectSettings, vec![AuthoringDocumentKind::ProjectSettings], AuthoringSchemaRef::of_type("TypedDocumentAuthoringValidation"), "Validate Project Settings through the shared typed-document boundary."),
+        with_input(preview("project_settings.preview", AuthoringDomain::ProjectSettings, vec![AuthoringDocumentKind::ProjectSettings], "ProjectSettings", AuthoringSchemaRef::of_type("TypedDocumentAuthoringMutation<ProjectSettings>"), "Preview one atomic Project Settings replacement."), typed_document_replace_schema("ProjectSettings")),
+        with_input(commit("project_settings.apply", AuthoringDomain::ProjectSettings, vec![AuthoringDocumentKind::ProjectSettings], "ProjectSettings", AuthoringSchemaRef::of_type("TypedDocumentAuthoringMutation<ProjectSettings>"), "Apply one atomic Project Settings replacement."), typed_document_replace_schema("ProjectSettings")),
+        query("animation_set.inspect", AuthoringDomain::AnimationSet, vec![AuthoringDocumentKind::AnimationSet], AuthoringSchemaRef::of_type("TypedDocumentAuthoringSnapshot<AnimationSet>"), "Inspect the active Animation Set through the shared typed-document boundary."),
+        validation("animation_set.validate", AuthoringDomain::AnimationSet, vec![AuthoringDocumentKind::AnimationSet], AuthoringSchemaRef::of_type("TypedDocumentAuthoringValidation"), "Validate the active Animation Set through the shared typed-document boundary."),
+        with_input(preview("animation_set.preview", AuthoringDomain::AnimationSet, vec![AuthoringDocumentKind::AnimationSet], "AnimationSet", AuthoringSchemaRef::of_type("TypedDocumentAuthoringMutation<AnimationSet>"), "Preview one atomic Animation Set replacement."), typed_document_replace_schema("AnimationSet")),
+        with_input(commit("animation_set.apply", AuthoringDomain::AnimationSet, vec![AuthoringDocumentKind::AnimationSet], "AnimationSet", AuthoringSchemaRef::of_type("TypedDocumentAuthoringMutation<AnimationSet>"), "Apply one atomic Animation Set replacement."), typed_document_replace_schema("AnimationSet")),
     ];
     capabilities.extend(specialized_capabilities());
     capabilities

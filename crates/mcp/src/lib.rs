@@ -36,7 +36,7 @@ pub use capability::{
 };
 pub use generic_authoring::{
     GenericAuthoringMcpError, GenericAuthoringMcpTools, GraphMutationInput,
-    GraphViewMutationInput, UiMutationInput,
+    GraphViewMutationInput, TypedDocumentMutationInput, UiMutationInput,
 };
 pub use prefab::{PrefabCreateInput, PrefabInstantiateInput, PrefabMcpTools};
 pub use scene::{

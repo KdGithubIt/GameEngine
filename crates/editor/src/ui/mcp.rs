@@ -3,15 +3,17 @@
 use super::EditorApp;
 use crate::session::StructuredAuthoringError;
 use engine_authoring::{
-    AuthoringPermission, AuthoringPermissions, AuthoringSession, ComponentSchemaRegistry,
+    AnimationSet, AuthoringPermission, AuthoringPermissions, AuthoringSession, ComponentSchemaRegistry,
+    MaterialAsset, ProjectSettings, TypedDocumentAuthoringError,
 };
 use engine_mcp::{
     AssetInspectInput, AssetMcpTools, AssetSearchInput, AuthoringCapabilityMcpTools, AuthoringVerb,
     BehaviorTreeApplyInput, BehaviorTreeGraphInput, BehaviorTreeMcpTools, CapabilityDescribeInput,
     CapabilityInvokeInput, EntityFindInput, EntityInspectInput, GraphMutationInput,
     GraphViewMutationInput, McpToolError, PrefabCreateInput, PrefabInstantiateInput, PrefabMcpTools,
-    SceneMcpTools, SceneMutationInput, UiMutationInput, VfxEffectInput, VfxMcpTools,
-    VfxMutationInput, VfxTemplateInput, AUTHORING_APPLY_TOOL, AUTHORING_CAPABILITIES_TOOL,
+    SceneMcpTools, SceneMutationInput, TypedDocumentMutationInput, UiMutationInput, VfxEffectInput,
+    VfxMcpTools, VfxMutationInput, VfxTemplateInput, AUTHORING_APPLY_TOOL,
+    AUTHORING_CAPABILITIES_TOOL,
     AUTHORING_DESCRIBE_TOOL, AUTHORING_INSPECT_TOOL, AUTHORING_PREVIEW_TOOL,
     AUTHORING_VALIDATE_TOOL,
 };
@@ -57,6 +59,18 @@ impl EditorMcpCallFailure {
     fn structured(error: StructuredAuthoringError) -> Self {
         let code = error.code().to_owned();
         Self::new(code, error.to_string())
+    }
+
+    fn typed(error: TypedDocumentAuthoringError) -> Self {
+        let code = error.code().to_owned();
+        Self::new(code, error.to_string())
+    }
+
+    fn no_typed_document(domain: &str) -> Self {
+        Self::new(
+            "editor.no_typed_document",
+            format!("no active {domain} document is open in the Editor"),
+        )
     }
 
     fn no_scene() -> Self {
@@ -322,6 +336,74 @@ impl EditorApp {
                     input.expected_generation,
                     input.commands,
                 )?)
+            }
+            "material.inspect" => {
+                require_empty_arguments(arguments)?;
+                let output = self.material_editor.structured_inspect(&permissions)
+                    .map_err(EditorMcpCallFailure::typed)?
+                    .ok_or_else(|| EditorMcpCallFailure::no_typed_document("Material"))?;
+                to_value(output)
+            }
+            "material.validate" => {
+                require_empty_arguments(arguments)?;
+                let output = self.material_editor.structured_validate(&permissions)
+                    .map_err(EditorMcpCallFailure::typed)?
+                    .ok_or_else(|| EditorMcpCallFailure::no_typed_document("Material"))?;
+                to_value(output)
+            }
+            "material.preview" => {
+                let input: TypedDocumentMutationInput<MaterialAsset> = decode(arguments)?;
+                let output = self.material_editor.structured_preview(&permissions, input.expected_revision, input.expected_generation, input.replacement)
+                    .map_err(EditorMcpCallFailure::typed)?
+                    .ok_or_else(|| EditorMcpCallFailure::no_typed_document("Material"))?;
+                to_value(output)
+            }
+            "material.apply" => {
+                let input: TypedDocumentMutationInput<MaterialAsset> = decode(arguments)?;
+                let output = self.material_editor.structured_apply(&permissions, input.expected_revision, input.expected_generation, input.replacement)
+                    .map_err(EditorMcpCallFailure::typed)?
+                    .ok_or_else(|| EditorMcpCallFailure::no_typed_document("Material"))?;
+                to_value(output)
+            }
+            "project_settings.inspect" => {
+                require_empty_arguments(arguments)?;
+                let panel = self.project_settings_panel.as_ref().ok_or_else(|| EditorMcpCallFailure::no_typed_document("Project Settings"))?;
+                to_value(panel.structured_inspect(&permissions).map_err(EditorMcpCallFailure::typed)?)
+            }
+            "project_settings.validate" => {
+                require_empty_arguments(arguments)?;
+                let panel = self.project_settings_panel.as_ref().ok_or_else(|| EditorMcpCallFailure::no_typed_document("Project Settings"))?;
+                to_value(panel.structured_validate(&permissions).map_err(EditorMcpCallFailure::typed)?)
+            }
+            "project_settings.preview" => {
+                let input: TypedDocumentMutationInput<ProjectSettings> = decode(arguments)?;
+                let panel = self.project_settings_panel.as_ref().ok_or_else(|| EditorMcpCallFailure::no_typed_document("Project Settings"))?;
+                to_value(panel.structured_preview(&permissions, input.expected_revision, input.expected_generation, input.replacement).map_err(EditorMcpCallFailure::typed)?)
+            }
+            "project_settings.apply" => {
+                let input: TypedDocumentMutationInput<ProjectSettings> = decode(arguments)?;
+                let panel = self.project_settings_panel.as_mut().ok_or_else(|| EditorMcpCallFailure::no_typed_document("Project Settings"))?;
+                to_value(panel.structured_apply(&permissions, input.expected_revision, input.expected_generation, input.replacement).map_err(EditorMcpCallFailure::typed)?)
+            }
+            "animation_set.inspect" => {
+                require_empty_arguments(arguments)?;
+                let editor = self.animation_set_editor.as_ref().ok_or_else(|| EditorMcpCallFailure::no_typed_document("Animation Set"))?;
+                to_value(editor.structured_inspect(&permissions).map_err(EditorMcpCallFailure::typed)?)
+            }
+            "animation_set.validate" => {
+                require_empty_arguments(arguments)?;
+                let editor = self.animation_set_editor.as_ref().ok_or_else(|| EditorMcpCallFailure::no_typed_document("Animation Set"))?;
+                to_value(editor.structured_validate(&permissions).map_err(EditorMcpCallFailure::typed)?)
+            }
+            "animation_set.preview" => {
+                let input: TypedDocumentMutationInput<AnimationSet> = decode(arguments)?;
+                let editor = self.animation_set_editor.as_ref().ok_or_else(|| EditorMcpCallFailure::no_typed_document("Animation Set"))?;
+                to_value(editor.structured_preview(&permissions, input.expected_revision, input.expected_generation, input.replacement).map_err(EditorMcpCallFailure::typed)?)
+            }
+            "animation_set.apply" => {
+                let input: TypedDocumentMutationInput<AnimationSet> = decode(arguments)?;
+                let editor = self.animation_set_editor.as_mut().ok_or_else(|| EditorMcpCallFailure::no_typed_document("Animation Set"))?;
+                to_value(editor.structured_apply(&permissions, input.expected_revision, input.expected_generation, input.replacement).map_err(EditorMcpCallFailure::typed)?)
             }
             "vfx.schemas" => {
                 require_empty_arguments(arguments)?;

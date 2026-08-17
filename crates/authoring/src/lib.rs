@@ -67,6 +67,7 @@ pub mod scene_authoring;
 pub mod schema;
 pub mod test_fixtures;
 pub mod transaction;
+pub mod typed_document_authoring;
 pub mod ui;
 pub mod ui_contract;
 pub mod ui_contract_runtime;
@@ -167,6 +168,11 @@ pub use scene_authoring::{
 };
 pub use schema::{ComponentSchema, ComponentSchemaRegistry, FieldSchema, FieldType};
 pub use transaction::{AuthoringSession, Transaction, TransactionError};
+pub use typed_document_authoring::{
+    TypedAuthoringDocument, TypedDocumentAuthoringError, TypedDocumentAuthoringMutation,
+    TypedDocumentAuthoringService, TypedDocumentAuthoringSnapshot, TypedDocumentAuthoringState,
+    TypedDocumentAuthoringValidation, TypedDocumentChange,
+};
 pub use ui::authoring_service::{
     UiAuthoringError, UiAuthoringMutation, UiAuthoringService, UiAuthoringSession,
     UiAuthoringSnapshot, UiAuthoringValidation,

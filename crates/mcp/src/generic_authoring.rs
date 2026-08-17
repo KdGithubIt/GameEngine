@@ -51,6 +51,20 @@ pub struct UiMutationInput {
     pub commands: Vec<UiDocumentCommand>,
 }
 
+/// Whole-document replacement request shared by persisted typed-document tools.
+///
+/// The active Editor supplies the authoritative document and revision state;
+/// this DTO carries only the adapter-neutral semantic intent.
+#[derive(Debug, Deserialize)]
+pub struct TypedDocumentMutationInput<T> {
+    /// Authoritative document revision observed by the caller.
+    pub expected_revision: u64,
+    /// Authoritative in-memory generation observed by the caller.
+    pub expected_generation: u64,
+    /// Complete typed replacement evaluated by the shared authoring service.
+    pub replacement: T,
+}
+
 /// Failure returned by generic structured authoring MCP handlers.
 #[derive(Debug)]
 pub enum GenericAuthoringMcpError {
@@ -143,6 +157,9 @@ impl GenericAuthoringMcpTools {
                 AuthoringDomain::Graph,
                 AuthoringDomain::GraphView,
                 AuthoringDomain::Ui,
+                AuthoringDomain::Material,
+                AuthoringDomain::ProjectSettings,
+                AuthoringDomain::AnimationSet,
             ],
         )
     }
