@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ui/mod.rs","old":"use crate::audio_authoring::{AudioAuditionState, AudioInspectorAction};\n","new":"mod audio_authoring;\nuse audio_authoring::{AudioAuditionState, AudioInspectorAction};\n"}
