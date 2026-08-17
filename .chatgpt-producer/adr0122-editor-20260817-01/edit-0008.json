@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ui/inspector/entity_panel.rs","old":"    pub(in crate::ui) fn show_entity_inspector(&mut self, ui: &mut egui::Ui) {\n        ui.heading(\"Entity Inspector\");","new":"    pub(in crate::ui) fn show_entity_inspector(&mut self, ui: &mut egui::Ui) {\n        self.audio_audition.poll();\n        ui.heading(\"Entity Inspector\");"}
