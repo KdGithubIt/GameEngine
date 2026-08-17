@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ui/audio_authoring.rs",
+  "old": "        let Some(listener) = registry.get(&listener_type).map(|definition| definition.schema.default_value()) else { return; };\n        let Value::Object(fields) = &mut emitter else { return; };\n",
+  "new": "        let Some(listener) = registry.get(&listener_type).map(|definition| definition.schema.default_value()) else { return; };\n        // Keep the task-specific visual capture focused on the audio Inspector rather than\n        // spending the runner's constrained desktop height on the utility dock or Transform.\n        self.bottom_panel_open = false;\n        self.preferences\n            .component_card_open\n            .insert(transform_type.as_str().to_owned(), false);\n        self.preferences\n            .component_card_open\n            .insert(emitter_type.as_str().to_owned(), true);\n        self.preferences\n            .component_card_open\n            .insert(listener_type.as_str().to_owned(), true);\n        let Value::Object(fields) = &mut emitter else { return; };\n"
+}
