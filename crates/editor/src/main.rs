@@ -151,25 +151,35 @@ impl EditorShell {
         };
 
         if self.visual_ai_studio_detached_capture {
-            if self.ai_studio.detached_visual_validation_capture_finished() {
-                self.visual_capture_path = None;
-                context.send_viewport_cmd(eframe::egui::ViewportCommand::Close);
+            let requested_at = *self
+                .visual_capture_requested_at
+                .get_or_insert_with(Instant::now);
+            if self.ai_studio.detached_visual_validation_capture_ready() {
+                match capture_ai_studio_native_window(&path) {
+                    Ok(()) => {
+                        self.visual_capture_path = None;
+                        context.send_viewport_cmd(eframe::egui::ViewportCommand::Close);
+                    }
+                    Err(error) => {
+                        let _ = std::fs::remove_file(&path);
+                        eprintln!(
+                            "[editor.ai_studio_visual_validation_capture_failed] {error}"
+                        );
+                        self.visual_capture_path = None;
+                        context.send_viewport_cmd(eframe::egui::ViewportCommand::Close);
+                    }
+                }
                 return;
             }
-            match self.visual_capture_requested_at {
-                None => {
-                    self.visual_capture_requested_at = Some(Instant::now());
-                    context.request_repaint();
-                }
-                Some(requested_at) if requested_at.elapsed() >= Duration::from_secs(5) => {
-                    let _ = std::fs::remove_file(&path);
-                    eprintln!(
-                        "[editor.ai_studio_visual_validation_capture_failed] detached screenshot event was not returned"
-                    );
-                    self.visual_capture_path = None;
-                    context.send_viewport_cmd(eframe::egui::ViewportCommand::Close);
-                }
-                Some(_) => context.request_repaint(),
+            if requested_at.elapsed() >= Duration::from_secs(5) {
+                let _ = std::fs::remove_file(&path);
+                eprintln!(
+                    "[editor.ai_studio_visual_validation_capture_failed] detached native window did not reach capture-ready state"
+                );
+                self.visual_capture_path = None;
+                context.send_viewport_cmd(eframe::egui::ViewportCommand::Close);
+            } else {
+                context.request_repaint();
             }
             return;
         }
@@ -386,6 +396,150 @@ fn visual_validation_touches_ai_studio() -> bool {
         .ok()
         .filter(|output| output.status.success())
         .is_some_and(|output| !output.stdout.is_empty())
+}
+
+#[cfg(all(feature = "visual-validation", target_os = "windows"))]
+fn capture_ai_studio_native_window(path: &Path) -> Result<(), String> {
+    const SCRIPT: &str = r#"
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.Drawing
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+
+public static class GameEngineNativeWindowCapture
+{
+    public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct RECT
+    {
+        public int Left;
+        public int Top;
+        public int Right;
+        public int Bottom;
+    }
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool EnumWindows(EnumWindowsProc callback, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int maxCount);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool IsWindowVisible(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
+}
+'@
+
+$targetPid = [uint32]$env:GAMEENGINE_VISUAL_CAPTURE_PID
+$targetTitle = $env:GAMEENGINE_VISUAL_CAPTURE_TITLE
+$outputPath = $env:GAMEENGINE_VISUAL_CAPTURE_PATH
+$windowHandle = [IntPtr]::Zero
+
+for ($attempt = 0; $attempt -lt 40 -and $windowHandle -eq [IntPtr]::Zero; $attempt++) {
+    $script:gameEngineWindowHandle = [IntPtr]::Zero
+    $callback = [GameEngineNativeWindowCapture+EnumWindowsProc] {
+        param([IntPtr]$hWnd, [IntPtr]$lParam)
+
+        if (-not [GameEngineNativeWindowCapture]::IsWindowVisible($hWnd)) {
+            return $true
+        }
+
+        [uint32]$candidatePid = 0
+        [void][GameEngineNativeWindowCapture]::GetWindowThreadProcessId($hWnd, [ref]$candidatePid)
+        if ($candidatePid -ne $targetPid) {
+            return $true
+        }
+
+        $title = [System.Text.StringBuilder]::new(512)
+        [void][GameEngineNativeWindowCapture]::GetWindowText($hWnd, $title, $title.Capacity)
+        if ($title.ToString() -eq $targetTitle) {
+            $script:gameEngineWindowHandle = $hWnd
+            return $false
+        }
+
+        return $true
+    }
+
+    [void][GameEngineNativeWindowCapture]::EnumWindows($callback, [IntPtr]::Zero)
+    $windowHandle = $script:gameEngineWindowHandle
+    if ($windowHandle -eq [IntPtr]::Zero) {
+        Start-Sleep -Milliseconds 50
+    }
+}
+
+if ($windowHandle -eq [IntPtr]::Zero) {
+    throw "AI Studio native window was not found for process $targetPid."
+}
+
+$rect = New-Object -TypeName 'GameEngineNativeWindowCapture+RECT'
+if (-not [GameEngineNativeWindowCapture]::GetWindowRect($windowHandle, [ref]$rect)) {
+    throw 'GetWindowRect failed for the AI Studio native window.'
+}
+
+$width = $rect.Right - $rect.Left
+$height = $rect.Bottom - $rect.Top
+if ($width -le 0 -or $height -le 0) {
+    throw "AI Studio native window has invalid bounds ${width}x${height}."
+}
+
+$bitmap = [System.Drawing.Bitmap]::new($width, $height)
+$graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+try {
+    $size = [System.Drawing.Size]::new($width, $height)
+    $graphics.CopyFromScreen($rect.Left, $rect.Top, 0, 0, $size)
+    $bitmap.Save($outputPath, [System.Drawing.Imaging.ImageFormat]::Png)
+}
+finally {
+    $graphics.Dispose()
+    $bitmap.Dispose()
+}
+"#;
+
+    let output = std::process::Command::new("powershell.exe")
+        .args([
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            SCRIPT,
+        ])
+        .env("GAMEENGINE_VISUAL_CAPTURE_PID", std::process::id().to_string())
+        .env("GAMEENGINE_VISUAL_CAPTURE_TITLE", "AI Studio")
+        .env("GAMEENGINE_VISUAL_CAPTURE_PATH", path.as_os_str())
+        .output()
+        .map_err(|error| format!("failed to start native-window capture: {error}"))?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        Err(if stderr.is_empty() {
+            format!(
+                "native-window capture exited with status {}",
+                output.status
+            )
+        } else {
+            format!("native-window capture failed: {stderr}")
+        })
+    }
+}
+
+#[cfg(all(feature = "visual-validation", not(target_os = "windows")))]
+fn capture_ai_studio_native_window(_path: &Path) -> Result<(), String> {
+    Err("detached AI Studio visual capture requires Windows".to_owned())
 }
 
 #[cfg(feature = "visual-validation")]

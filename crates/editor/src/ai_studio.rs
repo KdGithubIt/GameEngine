@@ -353,11 +353,7 @@ pub struct AiStudioPanel {
     provider_args: String,
     presentation: AiStudioPresentationState,
     #[cfg(feature = "visual-validation")]
-    detached_visual_capture_path: Option<PathBuf>,
-    #[cfg(feature = "visual-validation")]
-    detached_visual_capture_requested: bool,
-    #[cfg(feature = "visual-validation")]
-    detached_visual_capture_finished: bool,
+    detached_visual_frames: u8,
     active_run_id: Option<String>,
     process: Option<ExternalAgentProcess>,
     process_purpose: Option<ExternalAgentPurpose>,
@@ -434,12 +430,7 @@ impl AiStudioPanel {
             provider_args: String::new(),
             presentation: AiStudioPresentationState::default(),
             #[cfg(feature = "visual-validation")]
-            detached_visual_capture_path: std::env::var_os("GAMEENGINE_SCREENSHOT_TO")
-                .map(PathBuf::from),
-            #[cfg(feature = "visual-validation")]
-            detached_visual_capture_requested: false,
-            #[cfg(feature = "visual-validation")]
-            detached_visual_capture_finished: false,
+            detached_visual_frames: 0,
             active_run_id,
             process: None,
             process_purpose: None,
@@ -473,9 +464,9 @@ impl AiStudioPanel {
     }
 
     #[cfg(feature = "visual-validation")]
-    /// Returns whether the detached validation viewport finished its screenshot attempt.
-    pub fn detached_visual_validation_capture_finished(&self) -> bool {
-        self.detached_visual_capture_finished
+    /// Returns whether the detached native viewport has completed two rendered frames.
+    pub fn detached_visual_validation_capture_ready(&self) -> bool {
+        self.detached_visual_frames >= 2
     }
 
     /// Takes one authorized managed runtime action for the Editor shell to execute.
@@ -739,60 +730,19 @@ impl AiStudioPanel {
                 });
                 ui.separator();
                 self.show_contents(ui);
-                #[cfg(feature = "visual-validation")]
-                self.handle_detached_visual_validation_capture(ui);
             },
         );
+
+        #[cfg(feature = "visual-validation")]
+        {
+            self.detached_visual_frames = self.detached_visual_frames.saturating_add(1);
+        }
 
         if reattach_requested {
             self.presentation.reattach();
         } else if close_requested {
             self.presentation.close();
         }
-    }
-
-    #[cfg(feature = "visual-validation")]
-    fn handle_detached_visual_validation_capture(&mut self, ui: &mut egui::Ui) {
-        if self.detached_visual_capture_finished {
-            return;
-        }
-        let Some(path) = self.detached_visual_capture_path.clone() else {
-            return;
-        };
-        let detached_viewport_id =
-            egui::ViewportId::from_hash_of("gameengine_ai_studio_detached");
-        let viewport_ids = ui
-            .ctx()
-            .input(|input| input.raw.viewports.keys().copied().collect::<Vec<_>>());
-        let screenshot = viewport_ids.into_iter().find_map(|input_viewport_id| {
-            ui.ctx().input_for(input_viewport_id, |input| {
-                input.events.iter().find_map(|event| match event {
-                    egui::Event::Screenshot {
-                        viewport_id,
-                        image,
-                        ..
-                    } if *viewport_id == detached_viewport_id => Some(image.clone()),
-                    _ => None,
-                })
-            })
-        });
-        if let Some(image) = screenshot {
-            if let Err(error) = write_detached_visual_validation_png(&path, image.as_ref()) {
-                let _ = std::fs::remove_file(&path);
-                eprintln!("[editor.ai_studio_visual_validation_capture_failed] {error}");
-            }
-            self.detached_visual_capture_path = None;
-            self.detached_visual_capture_finished = true;
-            return;
-        }
-        if !self.detached_visual_capture_requested {
-            self.detached_visual_capture_requested = true;
-            ui.ctx().send_viewport_cmd_to(
-                detached_viewport_id,
-                egui::ViewportCommand::Screenshot(egui::UserData::default()),
-            );
-        }
-        ui.ctx().request_repaint();
     }
 
     fn ensure_remote_gateway(&mut self, context: &egui::Context) {
@@ -2639,28 +2589,6 @@ fn edit_lines(ui: &mut egui::Ui, label: &str, values: &mut Vec<String>) {
             .map(ToOwned::to_owned)
             .collect();
     }
-}
-
-#[cfg(feature = "visual-validation")]
-fn write_detached_visual_validation_png(
-    path: &std::path::Path,
-    image: &egui::ColorImage,
-) -> Result<(), String> {
-    let [width, height] = image.size;
-    let file = std::fs::File::create(path).map_err(|error| error.to_string())?;
-    let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), width as u32, height as u32);
-    encoder.set_color(png::ColorType::Rgba);
-    encoder.set_depth(png::BitDepth::Eight);
-    let mut writer = encoder.write_header().map_err(|error| error.to_string())?;
-    let rgba = image
-        .pixels
-        .iter()
-        .flat_map(|pixel| pixel.to_array())
-        .collect::<Vec<_>>();
-    writer
-        .write_image_data(&rgba)
-        .map_err(|error| error.to_string())?;
-    writer.finish().map_err(|error| error.to_string())
 }
 
 fn encode_agent_frame_png(capture: &crate::FrameCapture) -> Result<Vec<u8>, png::EncodingError> {
