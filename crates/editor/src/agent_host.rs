@@ -1022,6 +1022,38 @@ impl AgentHost {
         self.persist_session(&session_id)
     }
 
+    pub(crate) fn record_frame_capture_failure(
+        &mut self,
+        run_id: &str,
+        message: impl Into<String>,
+    ) -> Result<(), AgentHostError> {
+        let message = message.into();
+        let (session_id, state) = self.run_location(run_id)?;
+        {
+            let run = self.run_mut_in_session(&session_id, run_id)?;
+            run.completion.frame_capture = CompletionStatus::Failed;
+            push_event_with_evidence(
+                run,
+                AgentEventKind::Failure,
+                message.clone(),
+                None,
+                Some(AgentEventEvidence::CompletionGate {
+                    gate: "frame_capture".to_owned(),
+                    status: CompletionStatus::Failed,
+                }),
+            );
+        }
+        self.persist_session(&session_id)?;
+        if matches!(state, AgentRunState::Playtesting | AgentRunState::Evaluating) {
+            self.transition_run(
+                run_id,
+                AgentRunState::Repairing,
+                "Managed frame capture failed; repair is required.",
+            )?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn record_playtest_result(
         &mut self,
         run_id: &str,

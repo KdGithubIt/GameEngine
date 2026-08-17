@@ -350,17 +350,35 @@ impl AiStudioPanel {
                     }
                     Err(error) => {
                         self.managed_capture_requested = false;
-                        self.status = Some(format!("Managed frame capture could not be stored: {error}"));
+                        let message = format!("Managed frame capture could not be stored: {error}");
+                        if let Err(host_error) = self
+                            .host
+                            .record_frame_capture_failure(&run_id, message.clone())
+                        {
+                            self.status = Some(host_error.to_string());
+                        } else {
+                            self.status = Some(message);
+                        }
                     }
                 }
             }
             AiStudioRuntimeResult::Failed(message) => {
-                if self.managed_playtest_started_at.is_none() {
-                    let _ = self.host.record_playtest_result(&run_id, false, Some(false), message.clone());
+                let result = if self.managed_playtest_started_at.is_none() {
+                    self.host
+                        .record_playtest_result(&run_id, false, Some(false), message.clone())
+                } else if self.managed_capture_requested {
+                    self.managed_capture_requested = false;
+                    self.host
+                        .record_frame_capture_failure(&run_id, message.clone())
                 } else {
-                    let _ = self.host.record_event(&run_id, AgentEventKind::Failure, message.clone());
+                    self.host
+                        .record_playtest_result(&run_id, true, Some(false), message.clone())
+                };
+                if let Err(error) = result {
+                    self.status = Some(error.to_string());
+                } else {
+                    self.status = Some(message);
                 }
-                self.status = Some(message);
             }
         }
     }
@@ -1134,10 +1152,10 @@ impl AiStudioPanel {
                     self.fail_run(run_id, format!("Could not launch external agent: {error}"));
                 }
                 ExternalAgentPurpose::RuntimeEvaluation => {
-                    self.managed_evaluation_requested = false;
-                    let message = format!("Could not launch runtime evaluator: {error}");
-                    let _ = self.host.record_event(run_id, AgentEventKind::Failure, message.clone());
-                    self.status = Some(message);
+                    self.record_runtime_evaluation_failure(
+                        run_id,
+                        format!("Could not launch runtime evaluator: {error}"),
+                    );
                 }
             },
         }
@@ -1209,9 +1227,7 @@ impl AiStudioPanel {
                     match purpose {
                         ExternalAgentPurpose::BuildOrRepair => self.fail_run(&run_id, message),
                         ExternalAgentPurpose::RuntimeEvaluation => {
-                            self.managed_evaluation_requested = false;
-                            let _ = self.host.record_event(&run_id, AgentEventKind::Failure, message.clone());
-                            self.status = Some(message);
+                            self.record_runtime_evaluation_failure(&run_id, message);
                         }
                     }
                 }
@@ -1226,9 +1242,7 @@ impl AiStudioPanel {
                 match purpose {
                     ExternalAgentPurpose::BuildOrRepair => self.fail_run(&run_id, message),
                     ExternalAgentPurpose::RuntimeEvaluation => {
-                        self.managed_evaluation_requested = false;
-                        let _ = self.host.record_event(&run_id, AgentEventKind::Failure, message.clone());
-                        self.status = Some(message);
+                        self.record_runtime_evaluation_failure(&run_id, message);
                     }
                 }
             }
@@ -1351,6 +1365,7 @@ impl AiStudioPanel {
                 run.state,
                 run.completion.source_validation,
                 run.completion.play_launch,
+                run.completion.frame_capture,
                 run.completion.visual_evaluation,
                 run.completion.interaction_scenarios,
                 self.managed_runtime_repairs,
@@ -1468,6 +1483,23 @@ impl AiStudioPanel {
         }
     }
 
+    fn record_runtime_evaluation_failure(&mut self, run_id: &str, message: String) {
+        self.managed_evaluation_requested = false;
+        if let Err(error) = self.host.record_completion_gate(
+            run_id,
+            "visual_evaluation",
+            CompletionStatus::Failed,
+            message.clone(),
+        ) {
+            self.status = Some(error.to_string());
+        } else {
+            self.status = Some(message);
+        }
+        if self.managed_playtest_started_at.is_some() && self.pending_runtime_action.is_none() {
+            self.pending_runtime_action = Some(AiStudioRuntimeAction::StopPlaytest);
+        }
+    }
+
     fn finish_runtime_evaluation(&mut self, run_id: &str, exit_code: Option<i32>) {
         self.managed_evaluation_requested = false;
         let visual_status = self
@@ -1487,24 +1519,12 @@ impl AiStudioPanel {
                 ));
             }
             CompletionStatus::Pending | CompletionStatus::NotApplicable => {
-                let message = format!(
-                    "Runtime evaluator finished with {exit_code:?} without resolving visual_evaluation from the host-captured frame; runtime repair is required."
+                self.record_runtime_evaluation_failure(
+                    run_id,
+                    format!(
+                        "Runtime evaluator finished with {exit_code:?} without resolving visual_evaluation from the host-captured frame; runtime repair is required."
+                    ),
                 );
-                let _ = self
-                    .host
-                    .record_event(run_id, AgentEventKind::Failure, message.clone());
-                if self
-                    .host
-                    .run(run_id)
-                    .is_ok_and(|run| run.state == AgentRunState::Evaluating)
-                {
-                    let _ = self.host.transition_run(
-                        run_id,
-                        AgentRunState::Repairing,
-                        "Runtime evaluator did not resolve visual evidence; repair is required.",
-                    );
-                }
-                self.status = Some(message);
             }
         }
         if self.managed_playtest_started_at.is_some() && self.pending_runtime_action.is_none() {
@@ -1640,11 +1660,13 @@ fn runtime_repair_decision(
     state: AgentRunState,
     source_validation: CompletionStatus,
     play_launch: CompletionStatus,
+    frame_capture: CompletionStatus,
     visual_evaluation: CompletionStatus,
     interaction_scenarios: CompletionStatus,
     repair_attempts: usize,
 ) -> RuntimeRepairDecision {
     let runtime_failed = play_launch == CompletionStatus::Failed
+        || frame_capture == CompletionStatus::Failed
         || visual_evaluation == CompletionStatus::Failed
         || interaction_scenarios == CompletionStatus::Failed;
     if state != AgentRunState::Repairing
@@ -1679,8 +1701,9 @@ fn managed_repair_context(
         })
         .unwrap_or_default();
     format!(
-        "Managed runtime evidence failed (play_launch={:?}, visual_evaluation={:?}, interaction_scenarios={:?}). Repair the existing isolated workspace in place without expanding the immutable proposal scope. Preserve or replace the provider-planned runtime interaction recipe as appropriate; GameEngine will rerun managed source validation, start a fresh Editor Play session, replay the resulting interaction recipe, capture a fresh frame, and evaluate again.{observation}",
+        "Managed runtime evidence failed (play_launch={:?}, frame_capture={:?}, visual_evaluation={:?}, interaction_scenarios={:?}). Repair the existing isolated workspace in place without expanding the immutable proposal scope. Preserve or replace the provider-planned runtime interaction recipe as appropriate; GameEngine will rerun managed source validation, start a fresh Editor Play session, replay the resulting interaction recipe, capture a fresh frame, and evaluate again.{observation}",
         run.completion.play_launch,
+        run.completion.frame_capture,
         run.completion.visual_evaluation,
         run.completion.interaction_scenarios,
     )
@@ -2015,6 +2038,34 @@ mod tests {
                 1,
             ),
             SourceRepairDecision::Wait
+        );
+    }
+
+    #[test]
+    fn autonomous_runtime_repair_includes_frame_capture_failure() {
+        assert_eq!(
+            runtime_repair_decision(
+                AgentRunState::Repairing,
+                CompletionStatus::Passed,
+                CompletionStatus::Passed,
+                CompletionStatus::Failed,
+                CompletionStatus::Pending,
+                CompletionStatus::Pending,
+                0,
+            ),
+            RuntimeRepairDecision::Retry(1)
+        );
+        assert_eq!(
+            runtime_repair_decision(
+                AgentRunState::Repairing,
+                CompletionStatus::Passed,
+                CompletionStatus::Passed,
+                CompletionStatus::Failed,
+                CompletionStatus::Pending,
+                CompletionStatus::Pending,
+                MAX_AUTONOMOUS_RUNTIME_REPAIRS,
+            ),
+            RuntimeRepairDecision::Exhausted
         );
     }
 }
