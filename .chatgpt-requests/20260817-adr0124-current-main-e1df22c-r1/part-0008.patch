@@ -1,0 +1,548 @@
++            return Err(NavigationQueryFailure::StartOutside);
++        }
++        Ok((nearest, reference))
++    }
++
++    /// Runs a typed corridor/path query for one stable agent profile.
++    pub fn query_path(&self, profile_id: &str, start: Vec3, end: Vec3) -> NavigationPathResult {
++        let Some(profile) = self.nav_mesh.profile(profile_id) else {
++            return NavigationPathResult::Failure(NavigationQueryFailure::MissingProfile(
++                profile_id.to_owned(),
++            ));
++        };
++        if profile.tiles.is_empty() {
++            return NavigationPathResult::Failure(NavigationQueryFailure::MissingNavigationData);
++        }
++        let Some((start_ref, start_point)) = nearest_polygon_in_profile(profile, start) else {
++            return NavigationPathResult::Failure(NavigationQueryFailure::MissingNavigationData);
++        };
++        if start.distance(start_point) > DEFAULT_NEAREST_DISTANCE {
++            return NavigationPathResult::Failure(NavigationQueryFailure::StartOutside);
++        }
++        let Some((end_ref, end_point)) = nearest_polygon_in_profile(profile, end) else {
++            return NavigationPathResult::Failure(NavigationQueryFailure::EndOutside);
++        };
++        let end_is_near = end.distance(end_point) <= DEFAULT_NEAREST_DISTANCE;
++        match astar_polygons(profile, start_ref, end_ref) {
++            Some(search) => {
++                let path = materialize_path(profile, start_point, end_point, search);
++                if end_is_near {
++                    NavigationPathResult::Complete(path)
++                } else {
++                    NavigationPathResult::Partial(path)
++                }
++            }
++            None => NavigationPathResult::Failure(NavigationQueryFailure::NoPath),
++        }
++    }
++}
++
++fn nearest_polygon_in_profile(
++    profile: &NavigationProfileMesh,
++    point: Vec3,
++) -> Option<(NavigationPolygonRef, Vec3)> {
++    let mut best: Option<(NavigationPolygonRef, Vec3, f32)> = None;
++    for tile in &profile.tiles {
++        for (polygon_index, polygon) in tile.polygons.iter().enumerate() {
++            let points = polygon
++                .vertices
++                .iter()
++                .map(|index| Vec3::from_array(tile.vertices[*index as usize]))
++                .collect::<Vec<_>>();
++            if points.len() != 3 {
++                continue;
++            }
++            let nearest = closest_point_on_triangle(point, points[0], points[1], points[2]);
++            let distance = point.distance_squared(nearest);
++            if best
++                .as_ref()
++                .is_none_or(|(_, _, best_distance)| distance < *best_distance)
++            {
++                best = Some((
++                    NavigationPolygonRef {
++                        tile: tile.id,
++                        polygon: polygon_index as u32,
++                    },
++                    nearest,
++                    distance,
++                ));
++            }
++        }
++    }
++    best.map(|(reference, nearest, _)| (reference, nearest))
++}
++
++fn closest_point_on_triangle(point: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Vec3 {
++    let ab = b - a;
++    let ac = c - a;
++    let ap = point - a;
++    let d1 = ab.dot(ap);
++    let d2 = ac.dot(ap);
++    if d1 <= 0.0 && d2 <= 0.0 {
++        return a;
++    }
++    let bp = point - b;
++    let d3 = ab.dot(bp);
++    let d4 = ac.dot(bp);
++    if d3 >= 0.0 && d4 <= d3 {
++        return b;
++    }
++    let vc = d1 * d4 - d3 * d2;
++    if vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0 {
++        return a + ab * (d1 / (d1 - d3));
++    }
++    let cp = point - c;
++    let d5 = ab.dot(cp);
++    let d6 = ac.dot(cp);
++    if d6 >= 0.0 && d5 <= d6 {
++        return c;
++    }
++    let vb = d5 * d2 - d1 * d6;
++    if vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0 {
++        return a + ac * (d2 / (d2 - d6));
++    }
++    let va = d3 * d6 - d5 * d4;
++    if va <= 0.0 && (d4 - d3) >= 0.0 && (d5 - d6) >= 0.0 {
++        let bc = c - b;
++        return b + bc * ((d4 - d3) / ((d4 - d3) + (d5 - d6)));
++    }
++    let denominator = (va + vb + vc).recip();
++    let v = vb * denominator;
++    let w = vc * denominator;
++    a + ab * v + ac * w
++}
++
++#[derive(Debug, Clone)]
++struct SearchResult {
++    corridor: Vec<NavigationPolygonRef>,
++    edges: Vec<SearchEdge>,
++    total_cost: f32,
++}
++
++#[derive(Debug, Clone)]
++enum SearchEdge {
++    Portal(NavigationPortal),
++    Link(NavigationLink, bool),
++}
++
++#[derive(Debug, Clone, Copy)]
++struct OpenEntry {
++    estimated_total: f32,
++    cost: f32,
++    node: NavigationPolygonRef,
++}
++
++impl PartialEq for OpenEntry {
++    fn eq(&self, other: &Self) -> bool {
++        self.estimated_total.to_bits() == other.estimated_total.to_bits()
++            && self.cost.to_bits() == other.cost.to_bits()
++            && self.node == other.node
++    }
++}
++
++impl Eq for OpenEntry {}
++
++impl Ord for OpenEntry {
++    fn cmp(&self, other: &Self) -> Ordering {
++        other
++            .estimated_total
++            .total_cmp(&self.estimated_total)
++            .then_with(|| other.cost.total_cmp(&self.cost))
++            .then_with(|| other.node.cmp(&self.node))
++    }
++}
++
++impl PartialOrd for OpenEntry {
++    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
++        Some(self.cmp(other))
++    }
++}
++
++fn astar_polygons(
++    profile: &NavigationProfileMesh,
++    start: NavigationPolygonRef,
++    end: NavigationPolygonRef,
++) -> Option<SearchResult> {
++    let index = polygon_index(&profile.tiles);
++    let centers = polygon_centers(profile, &index);
++    let mut open = BinaryHeap::new();
++    let mut costs = HashMap::new();
++    let mut previous: HashMap<NavigationPolygonRef, (NavigationPolygonRef, SearchEdge)> =
++        HashMap::new();
++    costs.insert(start, 0.0_f32);
++    open.push(OpenEntry {
++        estimated_total: 0.0,
++        cost: 0.0,
++        node: start,
++    });
++
++    while let Some(entry) = open.pop() {
++        if entry.node == end {
++            let mut corridor = vec![end];
++            let mut edges = Vec::new();
++            let mut current = end;
++            while let Some((parent, edge)) = previous.get(&current).cloned() {
++                corridor.push(parent);
++                edges.push(edge);
++                current = parent;
++            }
++            corridor.reverse();
++            edges.reverse();
++            return Some(SearchResult {
++                corridor,
++                edges,
++                total_cost: entry.cost,
++            });
++        }
++        if costs
++            .get(&entry.node)
++            .is_some_and(|best| entry.cost > *best + 1e-5)
++        {
++            continue;
++        }
++        let (tile_index, polygon_index) = *index.get(&entry.node)?;
++        let polygon = &profile.tiles[tile_index].polygons[polygon_index];
++        let from_center = *centers.get(&entry.node)?;
++        for portal in &polygon.portals {
++            let to_center = *centers.get(&portal.to)?;
++            let (_, destination_polygon_index) = *index.get(&portal.to)?;
++            let destination_tile_index = index.get(&portal.to)?.0;
++            let destination_polygon =
++                &profile.tiles[destination_tile_index].polygons[destination_polygon_index];
++            let step = from_center.distance(to_center)
++                * profile.profile.area_cost(destination_polygon.area)
++                * destination_polygon.cost_multiplier;
++            relax(
++                portal.to,
++                entry.node,
++                SearchEdge::Portal(portal.clone()),
++                entry.cost + step,
++                &mut costs,
++                &mut previous,
++                &mut open,
++            );
++        }
++        for link in &profile.links {
++            if link.from == entry.node {
++                relax(
++                    link.to,
++                    entry.node,
++                    SearchEdge::Link(link.clone(), false),
++                    entry.cost
++                        + link.cost
++                        + profile.profile.area_cost(link.area)
++                            * Vec3::from_array(link.start).distance(Vec3::from_array(link.end)),
++                    &mut costs,
++                    &mut previous,
++                    &mut open,
++                );
++            }
++            if link.bidirectional && link.to == entry.node {
++                relax(
++                    link.from,
++                    entry.node,
++                    SearchEdge::Link(link.clone(), true),
++                    entry.cost
++                        + link.cost
++                        + profile.profile.area_cost(link.area)
++                            * Vec3::from_array(link.start).distance(Vec3::from_array(link.end)),
++                    &mut costs,
++                    &mut previous,
++                    &mut open,
++                );
++            }
++        }
++    }
++    None
++}
++
++fn relax(
++    next: NavigationPolygonRef,
++    current: NavigationPolygonRef,
++    edge: SearchEdge,
++    new_cost: f32,
++    costs: &mut HashMap<NavigationPolygonRef, f32>,
++    previous: &mut HashMap<NavigationPolygonRef, (NavigationPolygonRef, SearchEdge)>,
++    open: &mut BinaryHeap<OpenEntry>,
++) {
++    if new_cost + 1e-5 >= costs.get(&next).copied().unwrap_or(f32::INFINITY) {
++        return;
++    }
++    costs.insert(next, new_cost);
++    previous.insert(next, (current, edge));
++    open.push(OpenEntry {
++        estimated_total: new_cost,
++        cost: new_cost,
++        node: next,
++    });
++}
++
++fn polygon_centers(
++    profile: &NavigationProfileMesh,
++    index: &HashMap<NavigationPolygonRef, (usize, usize)>,
++) -> HashMap<NavigationPolygonRef, Vec3> {
++    index
++        .iter()
++        .map(|(reference, (tile_index, polygon_index))| {
++            let tile = &profile.tiles[*tile_index];
++            let polygon = &tile.polygons[*polygon_index];
++            let center = polygon
++                .vertices
++                .iter()
++                .map(|vertex| Vec3::from_array(tile.vertices[*vertex as usize]))
++                .sum::<Vec3>()
++                / polygon.vertices.len() as f32;
++            (*reference, center)
++        })
++        .collect()
++}
++
++fn materialize_path(
++    _profile: &NavigationProfileMesh,
++    start: Vec3,
++    end: Vec3,
++    search: SearchResult,
++) -> NavigationPath {
++    let mut waypoints = vec![start];
++    let mut links = Vec::new();
++    let mut portal_run = Vec::new();
++    for edge in &search.edges {
++        match edge {
++            SearchEdge::Portal(portal) => portal_run.push(portal.clone()),
++            SearchEdge::Link(link, reversed) => {
++                append_funnel_run(&mut waypoints, &portal_run, None);
++                portal_run.clear();
++                let (from, to) = if *reversed {
++                    (Vec3::from_array(link.end), Vec3::from_array(link.start))
++                } else {
++                    (Vec3::from_array(link.start), Vec3::from_array(link.end))
++                };
++                push_distinct(&mut waypoints, from);
++                push_distinct(&mut waypoints, to);
++                links.push(link.id.clone());
++            }
++        }
++    }
++    append_funnel_run(&mut waypoints, &portal_run, Some(end));
++    push_distinct(&mut waypoints, end);
++    NavigationPath {
++        waypoints,
++        corridor: search.corridor,
++        links,
++        total_cost: search.total_cost,
++    }
++}
++
++fn append_funnel_run(
++    path: &mut Vec<Vec3>,
++    portals: &[NavigationPortal],
++    destination: Option<Vec3>,
++) {
++    let Some(mut apex) = path.last().copied() else {
++        return;
++    };
++    if portals.is_empty() {
++        if let Some(destination) = destination {
++            push_distinct(path, destination);
++        }
++        return;
++    }
++    let mut left = Vec3::from_array(portals[0].left);
++    let mut right = Vec3::from_array(portals[0].right);
++    let mut left_index = 0usize;
++    let mut right_index = 0usize;
++    let mut index = 1usize;
++    while index <= portals.len() {
++        let (next_left, next_right) = if let Some(portal) = portals.get(index) {
++            (
++                Vec3::from_array(portal.left),
++                Vec3::from_array(portal.right),
++            )
++        } else {
++            let target = destination.unwrap_or_else(|| {
++                let last = &portals[portals.len() - 1];
++                (Vec3::from_array(last.left) + Vec3::from_array(last.right)) * 0.5
++            });
++            (target, target)
++        };
++
++        if tri_area_xz(apex, right, next_right) <= 0.0 {
++            if apex == right || tri_area_xz(apex, left, next_right) > 0.0 {
++                right = next_right;
++                right_index = index;
++            } else {
++                push_distinct(path, left);
++                apex = left;
++                index = left_index + 1;
++                left = apex;
++                right = apex;
++                left_index = index;
++                right_index = index;
++                continue;
++            }
++        }
++        if tri_area_xz(apex, left, next_left) >= 0.0 {
++            if apex == left || tri_area_xz(apex, right, next_left) < 0.0 {
++                left = next_left;
++                left_index = index;
++            } else {
++                push_distinct(path, right);
++                apex = right;
++                index = right_index + 1;
++                left = apex;
++                right = apex;
++                left_index = index;
++                right_index = index;
++                continue;
++            }
++        }
++        index += 1;
++    }
++}
++
++fn tri_area_xz(a: Vec3, b: Vec3, c: Vec3) -> f32 {
++    cross_2d(
++        Vec2::new(b.x - a.x, b.z - a.z),
++        Vec2::new(c.x - a.x, c.z - a.z),
++    )
++}
++
++fn cross_2d(a: Vec2, b: Vec2) -> f32 {
++    a.x * b.y - a.y * b.x
++}
++
++fn push_distinct(path: &mut Vec<Vec3>, point: Vec3) {
++    if path.last().is_none_or(|last| last.distance_squared(point) > 1e-8) {
++        path.push(point);
++    }
++}
++
++/// Scene-owned reference to the baked navigation artifact used at runtime.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct NavMeshSurface {
++    /// Resolved project asset path retained for Play inspection and diagnostics.
++    pub source: PathBuf,
++}
++
++/// Production navigation state for one [`NavMeshAgent`].
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum NavMeshAgentStatus {
++    /// The agent has no target and no path.
++    Idle,
++    /// A target exists but the runtime has no baked navigation resource.
++    MissingNavMesh,
++    /// No usable route could be produced for the current target.
++    NoPath,
++    /// The agent is following a complete route.
++    Moving,
++    /// The agent reached the target's stopping distance.
++    Arrived,
++}
++
++/// Moves an entity along paths from the production [`NavMeshQuery`].
++pub struct NavMeshAgent {
++    /// World-space destination.
++    pub target: Option<Vec3>,
++    /// Stable profile ID selecting one baked tile set.
++    pub profile_id: NavigationProfileId,
++    /// Movement speed in world units per second.
++    pub speed: f32,
++    /// Distance to the final waypoint at which the agent stops.
++    pub stopping_distance: f32,
++    /// Seconds between path refreshes while a target remains active.
++    pub repath_interval: f32,
++    /// Radius used for lightweight local agent separation.
++    pub avoidance_radius: f32,
++    /// Latest runtime navigation state.
++    pub status: NavMeshAgentStatus,
++    current_path: Vec<Vec3>,
++    path_index: usize,
++    computed_target: Option<Vec3>,
++    repath_remaining: f32,
++}
++
++impl NavMeshAgent {
++    /// Creates an agent using [`DEFAULT_NAVIGATION_PROFILE`].
++    pub fn new(speed: f32) -> Self {
++        Self {
++            target: None,
++            profile_id: NavigationProfileId::default(),
++            speed,
++            stopping_distance: 0.1,
++            repath_interval: 0.5,
++            avoidance_radius: 0.4,
++            status: NavMeshAgentStatus::Idle,
++            current_path: Vec::new(),
++            path_index: 0,
++            computed_target: None,
++            repath_remaining: 0.0,
++        }
++    }
++
++    /// Returns the current steering waypoints.
++    pub fn path(&self) -> &[Vec3] {
++        &self.current_path
++    }
++
++    /// Returns `true` when no steering path remains.
++    pub fn is_idle(&self) -> bool {
++        self.current_path.is_empty()
++    }
++
++    /// Replaces the destination and forces a path refresh on the next fixed step.
++    pub fn set_target(&mut self, target: Option<Vec3>) {
++        self.target = target;
++        self.repath_remaining = 0.0;
++        if target.is_none() {
++            self.current_path.clear();
++            self.path_index = 0;
++            self.status = NavMeshAgentStatus::Idle;
++        }
++    }
++}
++
++impl Default for NavMeshAgent {
++    fn default() -> Self {
++        Self::new(3.5)
++    }
++}
++
++/// Advances every production [`NavMeshAgent`] in the fixed schedule.
++pub fn nav_mesh_agent_system(
++    nav_mesh: Option<Res<NavMeshQuery>>,
++    fixed_time: Res<FixedTime>,
++    mut agents: Query<(&mut NavMeshAgent, &mut Transform)>,
++) {
++    let dt = fixed_time.fixed_delta;
++    let Some(nav_mesh) = nav_mesh else {
++        for (_, (agent, _)) in agents.iter_mut() {
++            agent.status = if agent.target.is_some() {
++                NavMeshAgentStatus::MissingNavMesh
++            } else {
++                NavMeshAgentStatus::Idle
++            };
++        }
++        return;
++    };
++
++    for (_, (agent, transform)) in agents.iter_mut() {
++        agent.repath_remaining = (agent.repath_remaining - dt).max(0.0);
++        let target_changed = agent.target != agent.computed_target;
++        if target_changed || (agent.target.is_some() && agent.repath_remaining <= 0.0) {
++            agent.computed_target = agent.target;
++            agent.repath_remaining = agent.repath_interval.max(0.0);
++            agent.current_path.clear();
++            agent.path_index = 0;
++            if let Some(target) = agent.target {
++                match nav_mesh.query_path(agent.profile_id.as_str(), transform.translation, target) {
++                    NavigationPathResult::Complete(path) => {
++                        agent.current_path = path.waypoints;
++                        agent.status = NavMeshAgentStatus::Moving;
++                    }
++                    NavigationPathResult::Partial(_)
++                    | NavigationPathResult::Failure(NavigationQueryFailure::MissingProfile(_))
++                    | NavigationPathResult::Failure(NavigationQueryFailure::StartOutside)
++                    | NavigationPathResult::Failure(NavigationQueryFailure::EndOutside)
++                    | NavigationPathResult::Failure(NavigationQueryFailure::NoPath) => {
++                        agent.status = NavMeshAgentStatus::NoPath;
++                    }

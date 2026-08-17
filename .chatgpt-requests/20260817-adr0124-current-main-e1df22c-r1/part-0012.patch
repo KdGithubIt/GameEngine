@@ -1,0 +1,47 @@
++                let (second, second_a, second_b) = shared[second_index];
++                if first == second {
++                    continue;
++                }
++                let (first_low, first_high) = canonical_edge(*key, first_a, first_b);
++                let (second_low, second_high) = canonical_edge(*key, second_a, second_b);
++                let climb = (first_low.y - second_low.y)
++                    .abs()
++                    .max((first_high.y - second_high.y).abs());
++                let portal_width = Vec2::new(
++                    first_high.x - first_low.x,
++                    first_high.z - first_low.z,
++                )
++                .length();
++                if climb > profile.max_climb + 1e-4
++                    || portal_width + 1e-4 < profile.radius * 2.0
++                {
++                    continue;
++                }
+                 let Some(first_center) = centers.get(&first).copied() else {
+                     continue;
+                 };
+                 let Some(second_center) = centers.get(&second).copied() else {
+                     continue;
+                 };
+-                let (first_left, first_right) = orient_portal(a, b, first_center, second_center);
+-                let (second_left, second_right) = orient_portal(a, b, second_center, first_center);
++                let (first_left, first_right) =
++                    orient_portal(first_a, first_b, first_center, second_center);
++                let (second_left, second_right) =
++                    orient_portal(second_a, second_b, second_center, first_center);
+                 if let Some((tile_index, polygon_index)) = index.get(&first).copied() {
+                     tiles[tile_index].polygons[polygon_index]
+                         .portals
+@@ -817,6 +844,7 @@ fn build_adjacency(tiles: &mut [NavigationTile]) {
+     for tile in tiles {
+         for polygon in &mut tile.polygons {
+             polygon.portals.sort_by_key(|portal| portal.to);
++            polygon.portals.dedup_by_key(|portal| portal.to);
+         }
+     }
+ }
+@@ -950,15 +978,26 @@ impl NavMeshQuery {
+         let Some((end_ref, end_point)) = nearest_polygon_in_profile(profile, end) else {
+             return NavigationPathResult::Failure(NavigationQueryFailure::EndOutside);
+         };
+-        let end_is_near = end.distance(end_point) <= DEFAULT_NEAREST_DISTANCE;
