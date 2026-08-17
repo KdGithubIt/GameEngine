@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/project_settings_panel.rs",
+  "old": "use engine_authoring::{\n    AuthoringPermission, AuthoringPermissions, TypedDocumentAuthoringError,\n    TypedDocumentAuthoringMutation, TypedDocumentAuthoringService, TypedDocumentAuthoringSnapshot,\n    TypedDocumentAuthoringState, TypedDocumentAuthoringValidation,\n};\n\n// ---------------------------------------------------------------------------\n// Panel state\n// ---------------------------------------------------------------------------\n",
+  "new": "use engine_authoring::{\n    AuthoringPermission, AuthoringPermissions, TypedDocumentAuthoringError,\n    TypedDocumentAuthoringMutation, TypedDocumentAuthoringService, TypedDocumentAuthoringSnapshot,\n    TypedDocumentAuthoringState, TypedDocumentAuthoringValidation,\n};\n\nconst UNDO_LIMIT: usize = 100;\n\n// ---------------------------------------------------------------------------\n// Panel state\n// ---------------------------------------------------------------------------\n"
+}
