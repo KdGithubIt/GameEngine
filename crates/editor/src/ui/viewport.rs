@@ -219,6 +219,9 @@ impl EditorApp {
         if let Some(edit) = output.gizmo_edit {
             self.apply_scene_gizmo_edit(edit);
         }
+        if let Some(edit) = output.audio_distance_edit {
+            self.apply_audio_distance_gizmo_edit(edit);
+        }
         if let (Some(source), Some(position), Some(project_root)) = (
             self.prefab_placement_source.clone(),
             output.placement_position,
@@ -662,6 +665,27 @@ impl EditorApp {
                     .is_ok_and(|candidate| candidate == path)
             })
             .map(|(asset, _)| asset.clone())
+    }
+
+    fn apply_audio_distance_gizmo_edit(&mut self, edit: AudioDistanceGizmoEdit) {
+        let Some(entity) = self.selected_entity.clone() else { return; };
+        let component_type = ComponentTypeId::new(engine::scene_bridge::AUDIO_EMITTER_COMPONENT);
+        let Some(Value::Object(mut fields)) = self
+            .session
+            .scene_entity(&entity)
+            .and_then(|item| item.components.get(&component_type).cloned())
+        else { return; };
+        fields.insert(
+            edit.field.field_name().to_owned(),
+            Value::F64(f64::from(edit.distance)),
+        );
+        let result = self.session.set_scene_component_value(
+            entity,
+            component_type,
+            Value::Object(fields),
+        );
+        self.apply_ui_result(result);
+        self.refresh_scene_problems();
     }
 
     fn apply_scene_gizmo_edit(&mut self, edit: GizmoEdit) {

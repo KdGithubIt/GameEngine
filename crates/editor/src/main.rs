@@ -74,6 +74,8 @@ impl EditorShell {
             let requested = requested.to_string_lossy();
             if requested == "Navigation" {
                 app.prepare_navigation_visual_validation();
+            } else if requested == "Spatial Audio" {
+                app.prepare_spatial_audio_visual_validation();
             } else {
                 let tool = AuthoringTool::ALL
                     .into_iter()

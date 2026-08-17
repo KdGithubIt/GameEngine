@@ -153,6 +153,46 @@ pub enum GameHitboxShape {
     },
 }
 
+/// Distance attenuation curve exposed to project Rust spatial-audio requests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GameAudioRolloffMode {
+    /// Linear attenuation from minimum to maximum distance.
+    Linear,
+    /// Inverse-distance attenuation normalized to the authored distance range.
+    Inverse,
+}
+
+/// Typed spatial-audio policy copied into a deferred project Rust command.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct GameSpatialAudioOptions {
+    /// Per-voice gain from 0.0 to 1.0.
+    pub volume: f32,
+    /// Blend from centered 2D (0.0) to positional 3D (1.0).
+    pub spatial_blend: f32,
+    /// Distance where positional attenuation begins.
+    pub min_distance: f32,
+    /// Distance where positional attenuation reaches silence.
+    pub max_distance: f32,
+    /// Distance attenuation curve.
+    pub rolloff: GameAudioRolloffMode,
+    /// Whether the managed voice repeats until its source disappears.
+    pub looping: bool,
+}
+
+impl Default for GameSpatialAudioOptions {
+    fn default() -> Self {
+        Self {
+            volume: 1.0,
+            spatial_blend: 1.0,
+            min_distance: 1.0,
+            max_distance: 20.0,
+            rolloff: GameAudioRolloffMode::Linear,
+            looping: false,
+        }
+    }
+}
+
 /// Behavior Tree leaf result supplied by project Rust gameplay.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -965,6 +1005,44 @@ impl GameCommand {
     /// Queues a one-shot sound effect by stable authoring asset ID.
     pub fn play_sound_effect(asset_id: impl Into<String>) -> Self {
         audio_asset_command("play_se", asset_id.into(), None)
+    }
+
+    /// Queues a spatial sound effect attached to a generation-checked runtime entity.
+    pub fn play_spatial_sound_effect(
+        target: GameEntityHandle,
+        asset_id: impl Into<String>,
+        options: GameSpatialAudioOptions,
+    ) -> Self {
+        let mut command = audio_asset_command("play_spatial_se", asset_id.into(), None);
+        command.target = Some(target);
+        let Value::Object(payload) = &mut command.payload else {
+            unreachable!("audio asset command always has an object payload");
+        };
+        payload.insert("volume".to_owned(), Value::F64(f64::from(options.volume)));
+        payload.insert(
+            "spatial_blend".to_owned(),
+            Value::F64(f64::from(options.spatial_blend)),
+        );
+        payload.insert(
+            "min_distance".to_owned(),
+            Value::F64(f64::from(options.min_distance)),
+        );
+        payload.insert(
+            "max_distance".to_owned(),
+            Value::F64(f64::from(options.max_distance)),
+        );
+        payload.insert(
+            "rolloff".to_owned(),
+            Value::String(
+                match options.rolloff {
+                    GameAudioRolloffMode::Linear => "linear",
+                    GameAudioRolloffMode::Inverse => "inverse",
+                }
+                .to_owned(),
+            ),
+        );
+        payload.insert("looping".to_owned(), Value::Bool(options.looping));
+        command
     }
 
     /// Replaces the active background music by stable authoring asset ID.

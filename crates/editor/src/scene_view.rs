@@ -441,8 +441,10 @@ pub struct SceneViewOutput {
     pub picked_entity: Option<EntityId>,
     /// Front-most declarative UI node clicked in UI selection mode.
     pub picked_ui_node: Option<SceneUiNodeSelection>,
-    /// One completed gizmo edit. A complete pointer drag becomes one undo step.
+    /// One completed transform gizmo edit. A complete pointer drag becomes one undo step.
     pub gizmo_edit: Option<GizmoEdit>,
+    /// One completed AudioEmitter distance-handle edit.
+    pub audio_distance_edit: Option<AudioDistanceGizmoEdit>,
     /// World-space intersection of a primary click with the authoring Z=0 plane.
     pub placement_position: Option<[f64; 3]>,
     /// Entities inside a completed marquee (box-select) drag.
@@ -586,6 +588,34 @@ pub struct GizmoEdit {
     pub axis_direction: [f32; 3],
 }
 
+/// AudioEmitter distance field manipulated by a Scene View handle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AudioDistanceField {
+    /// Distance where positional attenuation begins.
+    Min,
+    /// Distance where positional attenuation reaches its floor.
+    Max,
+}
+
+impl AudioDistanceField {
+    /// Serialized AudioEmitter field name updated by the authoring command.
+    pub(crate) const fn field_name(self) -> &'static str {
+        match self {
+            Self::Min => "min_distance",
+            Self::Max => "max_distance",
+        }
+    }
+}
+
+/// One completed Scene View edit of an AudioEmitter distance handle.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AudioDistanceGizmoEdit {
+    /// Authored distance field changed by the drag.
+    pub field: AudioDistanceField,
+    /// Final non-negative distance in world units.
+    pub distance: f32,
+}
+
 /// One transient component value rendered by the Scene View before commit.
 ///
 /// Inspector drags use this value to update the preview world every frame
@@ -612,6 +642,18 @@ struct GizmoDragState {
     effective_delta: f32,
     origin_center: Vec3,
     base_transform: Value,
+}
+
+struct AudioDistanceDragState {
+    entity: EntityId,
+    field: AudioDistanceField,
+    direction: Vec3,
+    base_distance: f32,
+    min_distance: f32,
+    max_distance: f32,
+    accumulated_delta: f32,
+    effective_distance: f32,
+    center: Vec3,
 }
 
 struct EntityPickInfo {
@@ -699,6 +741,8 @@ pub struct SceneView {
     ui_texture_renderer: Option<SceneUiTextureRenderer>,
     entity_pick_info: Vec<EntityPickInfo>,
     gizmo_drag: Option<GizmoDragState>,
+    /// Active transient drag of one AudioEmitter distance handle.
+    audio_distance_drag: Option<AudioDistanceDragState>,
     /// Screen position where a marquee (box-select) drag started.
     box_select_start: Option<egui::Pos2>,
     /// Logical viewport rect and physical render-target size of the most recent
@@ -866,6 +910,7 @@ impl SceneView {
             ui_texture_renderer: None,
             entity_pick_info: Vec::new(),
             gizmo_drag: None,
+            audio_distance_drag: None,
             box_select_start: None,
             last_view: None,
             show_sky: true,
@@ -896,6 +941,46 @@ impl SceneView {
     /// Restores the Scene View camera independently from authored cameras.
     pub fn reset_camera(&mut self) {
         self.camera.reset();
+    }
+
+    /// Resolves the current authoring world-space pose for one AudioEmitter.
+    pub(crate) fn authoring_audio_emitter_pose(
+        scene: &AuthoringScene,
+        entity: &EntityId,
+    ) -> Option<engine::audio::AudioEmitterPose> {
+        scene.entity(entity)?;
+        let tx_type = ComponentTypeId::new(engine::scene_bridge::TRANSFORM_COMPONENT);
+        let mut memo = std::collections::BTreeMap::new();
+        let world = resolve_world_matrix(entity, scene, &tx_type, &mut memo, 0);
+        Some(engine::audio::AudioEmitterPose {
+            position: world.transform_point3(Vec3::ZERO).to_array(),
+        })
+    }
+
+    /// Resolves the current authoring world-space pose for one AudioListener.
+    pub(crate) fn authoring_audio_listener_pose(
+        scene: &AuthoringScene,
+        entity: &EntityId,
+    ) -> Option<engine::audio::AudioListenerPose> {
+        scene.entity(entity)?;
+        let tx_type = ComponentTypeId::new(engine::scene_bridge::TRANSFORM_COMPONENT);
+        let mut memo = std::collections::BTreeMap::new();
+        let world = resolve_world_matrix(entity, scene, &tx_type, &mut memo, 0);
+        let right = world.x_axis.truncate().normalize_or_zero();
+        Some(engine::audio::AudioListenerPose {
+            position: world.transform_point3(Vec3::ZERO).to_array(),
+            right: if right == Vec3::ZERO { Vec3::X } else { right }.to_array(),
+        })
+    }
+
+    /// Returns the transient Scene View camera pose used only by explicit audition.
+    pub(crate) fn editor_audio_listener_pose(&self) -> engine::audio::AudioListenerPose {
+        let transform = self.camera.to_transform();
+        let right = (transform.rotation * Vec3::X).normalize_or_zero();
+        engine::audio::AudioListenerPose {
+            position: transform.translation.to_array(),
+            right: if right == Vec3::ZERO { Vec3::X } else { right }.to_array(),
+        }
     }
 
     /// Synchronizes the Scene View highlight with UI Builder selection.
@@ -1065,6 +1150,7 @@ impl SceneView {
                 picked_entity: None,
                 picked_ui_node: None,
                 gizmo_edit: None,
+                audio_distance_edit: None,
                 placement_position: None,
                 box_selected: None,
             };
@@ -1127,40 +1213,91 @@ impl SceneView {
             &self.entity_pick_info,
         );
 
-        // Detect a drag on any transform handle. The mode is captured at drag
-        // start so changing a shortcut cannot reinterpret an active gesture.
+        // Audio distance handles share the Scene View pointer gesture with the
+        // transform gizmo. Audio handles win only when their visible tip is hit.
         if response.drag_started() {
             let primary_down = ui.input(|i| i.pointer.button_down(egui::PointerButton::Primary));
             if primary_down {
-                let base_transform = selected_entity.and_then(|entity| {
-                    interaction_scene
-                        .entity(entity)
-                        .and_then(|item| item.components.get(&transform_component_type()))
-                        .cloned()
-                });
-                if let (Some(pos), Some(center), Some(base_transform)) = (
+                self.audio_distance_drag = None;
+                self.gizmo_drag = None;
+                if let (Some(pos), Some(entity), Some(center), Some((min_distance, max_distance))) = (
                     response.interact_pointer_pos(),
+                    selected_entity,
                     selected_center,
-                    base_transform,
+                    selected_entity.and_then(|entity| audio_emitter_distances(interaction_scene, entity)),
                 ) {
-                    let len = gizmo_axis_length(center, vp, rect);
-                    self.gizmo_drag =
-                        hit_test_gizmo_axis(pos, center, vp, rect, gizmo_mode, len, &axis_dirs)
-                            .map(|axis| GizmoDragState {
-                                axis,
-                                axis_dir: axis_direction_of(&axis_dirs, axis),
-                                mode: gizmo_mode,
-                                accumulated_delta: 0.0,
-                                effective_delta: 0.0,
-                                origin_center: center,
-                                base_transform,
-                            });
+                    let direction = audio_distance_handle_direction(&self.camera);
+                    if let Some(field) = hit_test_audio_distance_handle(
+                        pos, center, min_distance, max_distance, direction, vp, rect,
+                    ) {
+                        let base_distance = match field {
+                            AudioDistanceField::Min => min_distance,
+                            AudioDistanceField::Max => max_distance,
+                        };
+                        self.audio_distance_drag = Some(AudioDistanceDragState {
+                            entity: (*entity).clone(),
+                            field,
+                            direction,
+                            base_distance,
+                            min_distance,
+                            max_distance,
+                            accumulated_delta: 0.0,
+                            effective_distance: base_distance,
+                            center,
+                        });
+                    }
+                }
+
+                if self.audio_distance_drag.is_none() {
+                    let base_transform = selected_entity.and_then(|entity| {
+                        interaction_scene
+                            .entity(entity)
+                            .and_then(|item| item.components.get(&transform_component_type()))
+                            .cloned()
+                    });
+                    if let (Some(pos), Some(center), Some(base_transform)) = (
+                        response.interact_pointer_pos(),
+                        selected_center,
+                        base_transform,
+                    ) {
+                        let len = gizmo_axis_length(center, vp, rect);
+                        self.gizmo_drag =
+                            hit_test_gizmo_axis(pos, center, vp, rect, gizmo_mode, len, &axis_dirs)
+                                .map(|axis| GizmoDragState {
+                                    axis,
+                                    axis_dir: axis_direction_of(&axis_dirs, axis),
+                                    mode: gizmo_mode,
+                                    accumulated_delta: 0.0,
+                                    effective_delta: 0.0,
+                                    origin_center: center,
+                                    base_transform,
+                                });
+                    }
                 }
             }
         }
 
         // Accumulate per-frame pointer movement. Committing only at pointer-up
         // produces one authoring transaction and therefore one undo item.
+        let mut audio_distance_edit = None;
+        if let Some(drag) = &mut self.audio_distance_drag
+            && response.dragged_by(egui::PointerButton::Primary)
+        {
+            let screen_delta = response.ctx.input(|input| input.pointer.delta());
+            let delta = screen_delta_to_world(
+                screen_delta, drag.direction, drag.center, vp, rect,
+            );
+            if delta.is_finite() {
+                drag.accumulated_delta += delta;
+            }
+            drag.effective_distance = clamp_audio_distance(
+                drag.field,
+                drag.base_distance + drag.accumulated_delta,
+                drag.min_distance,
+                drag.max_distance,
+            );
+        }
+
         let mut gizmo_edit = None;
         if let Some(drag) = &mut self.gizmo_drag
             && response.dragged_by(egui::PointerButton::Primary) {
@@ -1208,6 +1345,15 @@ impl SceneView {
 
         let primary_down =
             ui.input(|input| input.pointer.button_down(egui::PointerButton::Primary));
+        if !primary_down
+            && let Some(drag) = self.audio_distance_drag.take()
+            && (drag.effective_distance - drag.base_distance).abs() > f32::EPSILON
+        {
+            audio_distance_edit = Some(AudioDistanceGizmoEdit {
+                field: drag.field,
+                distance: drag.effective_distance,
+            });
+        }
         let mut completed_gizmo_preview = None;
         if !primary_down
             && let Some(drag) = self.gizmo_drag.take()
@@ -1228,6 +1374,7 @@ impl SceneView {
         let mut box_selected = None;
         if response.drag_started_by(egui::PointerButton::Primary)
             && self.gizmo_drag.is_none()
+            && self.audio_distance_drag.is_none()
             && !self.ui_selection_enabled
         {
             self.box_select_start = response.interact_pointer_pos();
@@ -1490,6 +1637,9 @@ impl SceneView {
                             draw_camera_frustum(dl, info, render_scene);
                         }
                     }
+                    if has_audio_listener(render_scene, &info.id) {
+                        draw_audio_listener_orientation(dl, info);
+                    }
                 }
                 if let Some(sel_id) = selected_entity
                     && let Some(info) = self.entity_pick_info.iter().find(|e| &e.id == sel_id) {
@@ -1514,6 +1664,18 @@ impl SceneView {
                             for distance in lod_distances(render_scene, sel_id) {
                                 draw_distance_ring(dl, info.center, distance);
                             }
+                        }
+                        if let Some((min_distance, max_distance)) = audio_emitter_display_distances(
+                            render_scene,
+                            sel_id,
+                            self.audio_distance_drag.as_ref(),
+                        ) {
+                            draw_audio_distance_shell(
+                                dl, info.center, min_distance, Vec3::new(0.15, 0.85, 1.0),
+                            );
+                            draw_audio_distance_shell(
+                                dl, info.center, max_distance, Vec3::new(0.2, 0.45, 1.0),
+                            );
                         }
                     }
                 if let Some(path) = navigation_test_path {
@@ -1635,6 +1797,24 @@ impl SceneView {
             // represents the game screen is laid out inside this frame.
             if game_frame != rect {
                 draw_game_frame_guide(&ui.painter().with_clip_rect(rect), rect, game_frame);
+            }
+
+            if let Some(sel_id) = selected_entity
+                && let Some(info) = self.entity_pick_info.iter().find(|info| &info.id == sel_id)
+                && let Some(distances) = audio_emitter_display_distances(
+                    render_scene,
+                    sel_id,
+                    self.audio_distance_drag.as_ref(),
+                )
+            {
+                draw_audio_distance_handles(
+                    &ui.painter().with_clip_rect(rect),
+                    info.center,
+                    audio_distance_handle_direction(&self.camera),
+                    distances,
+                    (vp, rect),
+                    self.audio_distance_drag.as_ref().map(|drag| drag.field),
+                );
             }
 
             if self.show_ui_overlay {
@@ -1777,6 +1957,7 @@ impl SceneView {
             picked_entity,
             picked_ui_node,
             gizmo_edit,
+            audio_distance_edit,
             placement_position,
             box_selected,
         }
@@ -2912,6 +3093,127 @@ fn draw_distance_ring(lines: &mut DebugLines, center: Vec3, radius: f32) {
     }
 }
 
+fn audio_emitter_distances(scene: &AuthoringScene, entity: &EntityId) -> Option<(f32, f32)> {
+    let component = ComponentTypeId::new(engine::scene_bridge::AUDIO_EMITTER_COMPONENT);
+    let Value::Object(fields) = scene.entity(entity)?.components.get(&component)? else {
+        return None;
+    };
+    let min_distance = obj_f64_or(fields, "min_distance", 1.0) as f32;
+    let max_distance = obj_f64_or(fields, "max_distance", 20.0) as f32;
+    (min_distance.is_finite() && max_distance.is_finite())
+        .then_some((min_distance.max(0.0), max_distance.max(min_distance).max(0.0)))
+}
+
+fn audio_emitter_display_distances(
+    scene: &AuthoringScene,
+    entity: &EntityId,
+    drag: Option<&AudioDistanceDragState>,
+) -> Option<(f32, f32)> {
+    let (mut min_distance, mut max_distance) = audio_emitter_distances(scene, entity)?;
+    if let Some(drag) = drag.filter(|drag| &drag.entity == entity) {
+        match drag.field {
+            AudioDistanceField::Min => min_distance = drag.effective_distance,
+            AudioDistanceField::Max => max_distance = drag.effective_distance,
+        }
+    }
+    Some((min_distance, max_distance))
+}
+
+fn has_audio_listener(scene: &AuthoringScene, entity: &EntityId) -> bool {
+    scene.entity(entity).is_some_and(|item| {
+        item.components.contains_key(&ComponentTypeId::new(
+            engine::scene_bridge::AUDIO_LISTENER_COMPONENT,
+        ))
+    })
+}
+
+fn audio_distance_handle_direction(camera: &EditorViewCamera) -> Vec3 {
+    let right = (camera.to_transform().rotation * Vec3::X).normalize_or_zero();
+    if right == Vec3::ZERO { Vec3::X } else { right }
+}
+
+fn clamp_audio_distance(
+    field: AudioDistanceField,
+    candidate: f32,
+    min_distance: f32,
+    max_distance: f32,
+) -> f32 {
+    let candidate = if candidate.is_finite() { candidate.max(0.0) } else { 0.0 };
+    match field {
+        AudioDistanceField::Min => candidate.min(max_distance.max(0.0)),
+        AudioDistanceField::Max => candidate.max(min_distance.max(0.0)),
+    }
+}
+
+fn hit_test_audio_distance_handle(
+    pointer: egui::Pos2,
+    center: Vec3,
+    min_distance: f32,
+    max_distance: f32,
+    direction: Vec3,
+    vp: Mat4,
+    rect: egui::Rect,
+) -> Option<AudioDistanceField> {
+    const HANDLE_RADIUS: f32 = 12.0;
+    [(AudioDistanceField::Min, min_distance), (AudioDistanceField::Max, max_distance)]
+        .into_iter()
+        .map(|(field, distance)| {
+            let tip = world_to_screen(center + direction * distance, vp, rect);
+            ((pointer - tip).length(), field)
+        })
+        .filter(|(distance, _)| *distance <= HANDLE_RADIUS)
+        .min_by(|(left, _), (right, _)| left.total_cmp(right))
+        .map(|(_, field)| field)
+}
+
+fn draw_audio_distance_shell(lines: &mut DebugLines, center: Vec3, radius: f32, color: Vec3) {
+    if !radius.is_finite() || radius <= 0.0 {
+        return;
+    }
+    draw_rotation_ring(lines, center, [1.0, 0.0, 0.0], color, radius);
+    draw_rotation_ring(lines, center, [0.0, 1.0, 0.0], color, radius);
+    draw_rotation_ring(lines, center, [0.0, 0.0, 1.0], color, radius);
+}
+
+fn draw_audio_listener_orientation(lines: &mut DebugLines, info: &EntityPickInfo) {
+    let right = info.world.x_axis.truncate().normalize_or_zero();
+    let forward = -info.world.z_axis.truncate().normalize_or_zero();
+    let right = if right == Vec3::ZERO { Vec3::X } else { right };
+    let forward = if forward == Vec3::ZERO { Vec3::NEG_Z } else { forward };
+    let color = Vec3::new(0.35, 0.9, 1.0);
+    lines.line(info.center - right * 0.55, info.center + right * 0.55, color);
+    let tip = info.center + forward * 0.9;
+    lines.line(info.center, tip, color);
+    draw_arrow_tip(lines, tip, forward, 0.18, color);
+}
+
+fn draw_audio_distance_handles(
+    painter: &egui::Painter,
+    center: Vec3,
+    direction: Vec3,
+    distances: (f32, f32),
+    view: (Mat4, egui::Rect),
+    active: Option<AudioDistanceField>,
+) {
+    let (min_distance, max_distance) = distances;
+    let (vp, rect) = view;
+    for (field, distance, label, color) in [
+        (AudioDistanceField::Min, min_distance, "min", egui::Color32::from_rgb(90, 220, 255)),
+        (AudioDistanceField::Max, max_distance, "max", egui::Color32::from_rgb(70, 145, 255)),
+    ] {
+        let tip = world_to_screen(center + direction * distance, vp, rect);
+        let radius = if active == Some(field) { 7.0 } else { 5.0 };
+        painter.circle_filled(tip, radius, color);
+        painter.text(
+            tip + egui::vec2(8.0, -8.0),
+            egui::Align2::LEFT_BOTTOM,
+            format!("{label} {distance:.2} m"),
+            egui::FontId::monospace(11.0),
+            color,
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Debug line helpers
 // ---------------------------------------------------------------------------
@@ -3434,6 +3736,13 @@ mod tests {
         camera.reset();
         assert_eq!(camera.target, Vec3::ZERO);
         assert_eq!(camera.distance, 10.0);
+    }
+
+    #[test]
+    fn audio_distance_gizmo_preserves_an_ordered_non_negative_range() {
+        assert_eq!(clamp_audio_distance(AudioDistanceField::Min, 12.0, 1.0, 10.0), 10.0);
+        assert_eq!(clamp_audio_distance(AudioDistanceField::Min, -2.0, 1.0, 10.0), 0.0);
+        assert_eq!(clamp_audio_distance(AudioDistanceField::Max, 0.25, 1.0, 10.0), 1.0);
     }
 
     #[test]
