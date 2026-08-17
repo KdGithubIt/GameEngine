@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/project_settings_panel.rs",
+  "old": "use engine_authoring::project_settings::{\n    AxisBinding, InputAction, KeyAxisBinding, Layer, ProjectSettings,\n};",
+  "new": "use engine_authoring::project_settings::{\n    AxisBinding, InputAction, KeyAxisBinding, Layer, ProjectSettings,\n};\nuse engine_authoring::{\n    AuthoringPermission, AuthoringPermissions, TypedDocumentAuthoringError,\n    TypedDocumentAuthoringMutation, TypedDocumentAuthoringService, TypedDocumentAuthoringSnapshot,\n    TypedDocumentAuthoringState, TypedDocumentAuthoringValidation,\n};"
+}
