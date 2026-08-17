@@ -1,0 +1,461 @@
+diff --git a/crates/engine/src/game_commands.rs b/crates/engine/src/game_commands.rs
+index bdd17f928d90d60b7ef993774949c244f565984f..a520b0382140def5ec479c4c67fd63635bc36194 100644
+--- a/crates/engine/src/game_commands.rs
++++ b/crates/engine/src/game_commands.rs
+@@ -26,6 +26,7 @@ use crate::save::{
+ use crate::scene_manager::SceneManager;
+ use crate::transform::Transform;
+ use crate::ui_document::{UiBindingValue, UiBindings, UiDocumentRef, UiDocumentVisibility};
++use crate::vfx::VfxPlayer;
+ use engine_authoring::{AssetId, ComponentTypeId, StableId, Value};
+ use engine_ecs::{Entity, SystemId, World};
+ use glam::{Quat, Vec3};
+@@ -67,6 +68,10 @@ pub(crate) enum PreparedGameCommand {
+     },
+     LockOn(LockOnOperation),
+     Animation(animation::PreparedAnimationCommand),
++    Vfx {
++        entity: Entity,
++        operation: VfxPlaybackOperation,
++    },
+     SetUiBinding {
+         name: String,
+         value: UiBindingValue,
+@@ -147,6 +152,13 @@ pub(crate) enum LockOnOperation {
+     Release,
+ }
+ 
++pub(crate) enum VfxPlaybackOperation {
++    Start,
++    Pause,
++    Stop,
++    Restart,
++}
++
+ /// Validates every command payload and target without mutating the world.
+ pub(crate) fn prepare_game_commands(
+     world: &World,
+@@ -285,6 +297,26 @@ pub(crate) fn prepare_game_commands(
+                     &command.payload,
+                 )?));
+             }
++            GameCommandFamily::Vfx => {
++                let (target, entity) = targeted_entity(world, command, index, &despawned)?;
++                if world.get_component::<VfxPlayer>(entity).is_none() {
++                    return Err(GameCommandError::MissingVfxPlayer { index, target });
++                }
++                let fields = object(&command.payload, index, "VFX payload")?;
++                let operation = match string_field(fields, "operation", index)? {
++                    "start" => VfxPlaybackOperation::Start,
++                    "pause" => VfxPlaybackOperation::Pause,
++                    "stop" => VfxPlaybackOperation::Stop,
++                    "restart" => VfxPlaybackOperation::Restart,
++                    other => {
++                        return Err(GameCommandError::InvalidPayload {
++                            index,
++                            message: format!("unknown VFX operation `{other}`"),
++                        })
++                    }
++                };
++                prepared.push(PreparedGameCommand::Vfx { entity, operation });
++            }
+             GameCommandFamily::Ui => prepared.push(parse_ui_command(
+                 world,
+                 command,
+@@ -422,6 +454,17 @@ pub(crate) fn apply_prepared_game_commands(world: &mut World, commands: Vec<Prep
+                 }
+             }
+             PreparedGameCommand::Animation(command) => animation::apply(world, command),
++            PreparedGameCommand::Vfx { entity, operation } => {
++                let player = world
++                    .get_component_mut::<VfxPlayer>(entity)
++                    .expect("preflighted VFX player must remain live during exclusive apply");
++                match operation {
++                    VfxPlaybackOperation::Start => player.play(),
++                    VfxPlaybackOperation::Pause => player.pause(),
++                    VfxPlaybackOperation::Stop => player.stop(),
++                    VfxPlaybackOperation::Restart => player.restart(),
++                }
++            }
+             PreparedGameCommand::SetUiBinding { name, value } => {
+                 world
+                     .get_resource_mut::<UiBindings>()
+@@ -1601,6 +1644,13 @@ pub enum GameCommandError {
+         /// Rejected target.
+         target: GameEntityHandle,
+     },
++    /// A VFX command targeted an entity without a runtime VFX player.
++    MissingVfxPlayer {
++        /// Zero-based command index.
++        index: usize,
++        /// Rejected target.
++        target: GameEntityHandle,
++    },
+     /// A graph-parameter command targeted an entity without a graph player.
+     MissingAnimationGraph {
+         /// Zero-based command index.
+@@ -1820,6 +1870,11 @@ impl fmt::Display for GameCommandError {
+                 "game command {index} targets entity {} generation {} without Animator",
+                 target.id, target.generation
+             ),
++            Self::MissingVfxPlayer { index, target } => write!(
++                formatter,
++                "game command {index} targets entity {} generation {} without VfxPlayer",
++                target.id, target.generation
++            ),
+             Self::MissingAnimationGraph { index, target } => write!(
+                 formatter,
+                 "game command {index} targets entity {} generation {} without AnimGraphPlayer",
+diff --git a/crates/engine/src/game_host/core.rs b/crates/engine/src/game_host/core.rs
+index ffc07b476ca01dc9190257c8d6196c16b7509937..f88439dda63405d1761abe42efbdc82c04ee33c4 100644
+--- a/crates/engine/src/game_host/core.rs
++++ b/crates/engine/src/game_host/core.rs
+@@ -31,6 +31,7 @@ use crate::script_api::RuntimeEntityIdentity;
+ use crate::time::{FixedTime, Time};
+ use crate::transform::{GlobalTransform, Transform};
+ use crate::ui_document::{UiBindingValue, UiBindings, UiEventFrame};
++use crate::vfx::{VfxPlaybackState, VfxPlayer, VfxRuntimeBackend};
+ use engine_authoring::Value;
+ use engine_ecs::{Entity, SystemId, SystemIdError, World};
+ use serde_json::Error as JsonError;
+@@ -1039,6 +1040,30 @@ fn copy_engine_view(world: &World, entity: Entity, view: EngineViewKind) -> Opti
+                 ("fading".to_owned(), Value::Bool(animator.is_fading())),
+             ]))
+         }
++        EngineViewKind::VfxState => {
++            let player = world.get_component::<VfxPlayer>(entity)?;
++            let instance = player.instance();
++            let stats = instance.stats();
++            let backend = match stats.backend {
++                VfxRuntimeBackend::CpuReference => "cpu_reference",
++            };
++            let state = match player.playback_state() {
++                VfxPlaybackState::Stopped => "stopped",
++                VfxPlaybackState::Playing => "playing",
++                VfxPlaybackState::Paused => "paused",
++            };
++            Value::Object(BTreeMap::from([
++                ("state".to_owned(), Value::String(state.to_owned())),
++                ("playing".to_owned(), Value::Bool(player.is_playing())),
++                ("complete".to_owned(), Value::Bool(instance.is_complete())),
++                ("elapsed_seconds".to_owned(), Value::F64(f64::from(instance.elapsed_seconds()))),
++                ("live_particles".to_owned(), Value::String(stats.live_particles.to_string())),
++                ("spawned_particles".to_owned(), Value::String(stats.spawned_particles.to_string())),
++                ("dropped_particles".to_owned(), Value::String(stats.dropped_particles.to_string())),
++                ("backend".to_owned(), Value::String(backend.to_owned())),
++                ("seed_override".to_owned(), instance.seed_override().map_or(Value::Null, |seed| Value::I64(i64::from(seed)))),
++            ]))
++        }
+         EngineViewKind::LockOnState => {
+             let lock = world.get_resource::<TargetLock>()?;
+             let current = lock.current();
+diff --git a/crates/render-runtime/src/vfx.rs b/crates/render-runtime/src/vfx.rs
+index a3f04bad1e908470e93a4443fa35c04dab0740fb..e7cb90da8fbdfb64c3b98017d7a7d796d24dee86 100644
+--- a/crates/render-runtime/src/vfx.rs
++++ b/crates/render-runtime/src/vfx.rs
+@@ -421,11 +421,23 @@ pub enum VfxRestartPolicy {
+     OnComplete,
+ }
+ 
++/// Observable playback state for a scene VFX player.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
++pub enum VfxPlaybackState {
++    /// Playback is stopped. An explicit stop resets deterministic state to zero.
++    #[default]
++    Stopped,
++    /// Playback advances on each runtime VFX update.
++    Playing,
++    /// Playback retains its current simulation state without advancing.
++    Paused,
++}
++
+ /// Transient scene runtime component that plays one compiled VFX effect.
+ #[derive(Debug, Clone)]
+ pub struct VfxPlayer {
+     instance: VfxInstance,
+-    playing: bool,
++    playback_state: VfxPlaybackState,
+     /// Starts playback when the runtime component is created.
+     pub autoplay: bool,
+     /// Restarts immediately after a finite effect completes.
+@@ -451,7 +463,11 @@ impl VfxPlayer {
+     ) -> Self {
+         Self {
+             instance: VfxInstance::new(effect, seed_override),
+-            playing: autoplay,
++            playback_state: if autoplay {
++                VfxPlaybackState::Playing
++            } else {
++                VfxPlaybackState::Stopped
++            },
+             autoplay,
+             looping,
+             restart_policy,
+@@ -472,7 +488,12 @@ impl VfxPlayer {
+ 
+     /// Whether simulation currently advances.
+     pub fn is_playing(&self) -> bool {
+-        self.playing
++        self.playback_state == VfxPlaybackState::Playing
++    }
++
++    /// Current start/stop/pause state exposed to gameplay views and tooling.
++    pub fn playback_state(&self) -> VfxPlaybackState {
++        self.playback_state
+     }
+ 
+     /// Extracts backend-neutral presentation records for every live Render output.
+@@ -506,23 +527,31 @@ impl VfxPlayer {
+ 
+     /// Resumes playback without resetting transient state.
+     pub fn play(&mut self) {
+-        self.playing = true;
++        self.playback_state = VfxPlaybackState::Playing;
+     }
+ 
+     /// Pauses playback without discarding transient state.
+     pub fn pause(&mut self) {
+-        self.playing = false;
++        if self.playback_state == VfxPlaybackState::Playing {
++            self.playback_state = VfxPlaybackState::Paused;
++        }
++    }
++
++    /// Stops playback and resets deterministic simulation to time zero.
++    pub fn stop(&mut self) {
++        self.instance.restart();
++        self.playback_state = VfxPlaybackState::Stopped;
+     }
+ 
+     /// Restarts deterministic state and resumes playback.
+     pub fn restart(&mut self) {
+         self.instance.restart();
+-        self.playing = true;
++        self.playback_state = VfxPlaybackState::Playing;
+     }
+ 
+     /// Advances playback and applies the configured completion policy.
+     pub fn step(&mut self, dt: f32, origin: Vec3) {
+-        if !self.playing {
++        if !self.is_playing() {
+             return;
+         }
+         self.instance.step(dt * self.time_scale, origin);
+@@ -530,7 +559,7 @@ impl VfxPlayer {
+             if self.looping || self.restart_policy == VfxRestartPolicy::OnComplete {
+                 self.instance.restart();
+             } else {
+-                self.playing = false;
++                self.playback_state = VfxPlaybackState::Stopped;
+             }
+         }
+     }
+@@ -1068,12 +1097,20 @@ mod tests {
+             BTreeMap::new(),
+         );
+         assert!(!player.is_playing());
++        assert_eq!(player.playback_state(), VfxPlaybackState::Stopped);
+         player.play();
+         player.step(0.05, Vec3::ZERO);
+         assert!(player.is_playing());
+         player.pause();
+         assert!(!player.is_playing());
++        assert_eq!(player.playback_state(), VfxPlaybackState::Paused);
+         player.restart();
+         assert!(player.is_playing());
++        assert_eq!(player.playback_state(), VfxPlaybackState::Playing);
++        player.step(0.05, Vec3::ZERO);
++        assert!(player.instance().elapsed_seconds() > 0.0);
++        player.stop();
++        assert_eq!(player.playback_state(), VfxPlaybackState::Stopped);
++        assert_eq!(player.instance().elapsed_seconds(), 0.0);
+     }
+ }
+diff --git a/crates/scripting/src/game_api.rs b/crates/scripting/src/game_api.rs
+index 7552853a0c748a4ae51100828b02b53e1b95d379..287af48f4f5e1f8858a5147d7ec43d5ed32281cc 100644
+--- a/crates/scripting/src/game_api.rs
++++ b/crates/scripting/src/game_api.rs
+@@ -967,6 +967,78 @@ impl EngineView for AnimationStateView {
+     }
+ }
+ 
++/// Playback state reported by a copied VFX player state.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum VfxPlaybackView {
++    /// Playback is stopped.
++    Stopped,
++    /// Playback advances simulation.
++    Playing,
++    /// Playback retains transient particles without advancing.
++    Paused,
++}
++
++/// Runtime backend reported by a copied VFX player state.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum VfxBackendView {
++    /// Deterministic CPU reference backend.
++    CpuReference,
++}
++
++/// VFX player state copied for one entity.
++#[derive(Debug, Clone, Copy, PartialEq)]
++pub struct VfxStateView {
++    /// Current start/stop/pause state.
++    pub state: VfxPlaybackView,
++    /// Whether the player currently advances simulation.
++    pub playing: bool,
++    /// Whether no live particles or future emission remain.
++    pub complete: bool,
++    /// Current deterministic simulation time in seconds.
++    pub elapsed_seconds: f32,
++    /// Current live-particle count.
++    pub live_particles: u64,
++    /// Particles accepted since the last restart.
++    pub spawned_particles: u64,
++    /// Particles refused by budgets or per-step caps since the last restart.
++    pub dropped_particles: u64,
++    /// Runtime backend executing the effect.
++    pub backend: VfxBackendView,
++    /// Optional deterministic instance seed override.
++    pub seed_override: Option<u32>,
++}
++
++impl EngineView for VfxStateView {
++    const KIND: EngineViewKind = EngineViewKind::VfxState;
++    fn decode(value: &Value) -> Result<Self, String> {
++        let fields = object(value)?;
++        let backend = match string_field(fields, "backend")? {
++            "cpu_reference" => VfxBackendView::CpuReference,
++            value => return Err(format!("unknown VFX backend `{value}`")),
++        };
++        let state = match string_field(fields, "state")? {
++            "stopped" => VfxPlaybackView::Stopped,
++            "playing" => VfxPlaybackView::Playing,
++            "paused" => VfxPlaybackView::Paused,
++            value => return Err(format!("unknown VFX playback state `{value}`")),
++        };
++        let seed_override = optional_unsigned(field(fields, "seed_override")?)?
++            .map(|value| value.try_into().map_err(|_| "VFX seed override is outside u32".to_owned()))
++            .transpose()?;
++        Ok(Self {
++            state,
++            playing: bool_field(fields, "playing")?,
++            complete: bool_field(fields, "complete")?,
++            elapsed_seconds: number_field(fields, "elapsed_seconds")? as f32,
++            live_particles: unsigned_field(fields, "live_particles")?,
++            spawned_particles: unsigned_field(fields, "spawned_particles")?,
++            dropped_particles: unsigned_field(fields, "dropped_particles")?,
++            backend,
++            seed_override,
++        })
++    }
++}
++
+ /// Current lock-on selection copied for each queried entity.
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+ pub struct LockOnStateView {
+@@ -1806,6 +1878,22 @@ impl Commands {
+     pub fn stop_animation(&mut self, target: GameEntityHandle) {
+         self.push(GameCommand::stop_animation(target));
+     }
++    /// Starts or resumes scene VFX playback.
++    pub fn start_vfx(&mut self, target: GameEntityHandle) {
++        self.push(GameCommand::start_vfx(target));
++    }
++    /// Pauses scene VFX playback without discarding transient state.
++    pub fn pause_vfx(&mut self, target: GameEntityHandle) {
++        self.push(GameCommand::pause_vfx(target));
++    }
++    /// Stops scene VFX playback and resets deterministic state.
++    pub fn stop_vfx(&mut self, target: GameEntityHandle) {
++        self.push(GameCommand::stop_vfx(target));
++    }
++    /// Restarts scene VFX from deterministic time zero and resumes playback.
++    pub fn restart_vfx(&mut self, target: GameEntityHandle) {
++        self.push(GameCommand::restart_vfx(target));
++    }
+     /// Creates a command-owned hitbox.
+     #[allow(clippy::too_many_arguments)]
+     pub fn create_hitbox(
+@@ -1998,6 +2086,7 @@ impl GameSystemParam for Commands {
+             GameCommandFamily::Despawn,
+             GameCommandFamily::Component,
+             GameCommandFamily::Animation,
++            GameCommandFamily::Vfx,
+             GameCommandFamily::Hitbox,
+             GameCommandFamily::Audio,
+             GameCommandFamily::LockOn,
+@@ -2110,6 +2199,13 @@ fn optional_string(value: &Value) -> Result<Option<&str>, String> {
+         string(value).map(Some)
+     }
+ }
++fn optional_unsigned(value: &Value) -> Result<Option<u64>, String> {
++    if matches!(value, Value::Null) {
++        Ok(None)
++    } else {
++        unsigned(value).map(Some)
++    }
++}
+ fn vec3(value: &Value) -> Result<Vec3, String> {
+     let values = array(value)?;
+     if values.len() != 3 {
+diff --git a/crates/scripting/src/game_io.rs b/crates/scripting/src/game_io.rs
+index 564a0952ba32127e1a9fa21bf51fc11114e75bbd..fc456cb40b5b1ee94731267c92c73edcc2725ed8 100644
+--- a/crates/scripting/src/game_io.rs
++++ b/crates/scripting/src/game_io.rs
+@@ -53,6 +53,8 @@ pub enum EngineViewKind {
+     CharacterState,
+     /// Current animator clip, playback position, and transition state.
+     AnimationState,
++    /// Current VFX playback state, simulation time, budget counters, and backend.
++    VfxState,
+     /// Current lock-on target and selection state.
+     LockOnState,
+     /// Attack-hitbox owner, team, damage, activation, and enabled state.
+@@ -109,6 +111,8 @@ pub enum GameCommandFamily {
+     Component,
+     /// Animation clip and Animation Graph control.
+     Animation,
++    /// Scene VFX playback control.
++    Vfx,
+     /// Attack hitbox creation, activation, and removal.
+     Hitbox,
+     /// Sound effect, music, and mixer control.
+@@ -791,6 +795,26 @@ impl GameCommand {
+         )
+     }
+ 
++    /// Starts or resumes a scene VFX player without resetting transient state.
++    pub fn start_vfx(target: GameEntityHandle) -> Self {
++        simple_target_command(GameCommandFamily::Vfx, "start", target)
++    }
++
++    /// Pauses a scene VFX player without discarding transient state.
++    pub fn pause_vfx(target: GameEntityHandle) -> Self {
++        simple_target_command(GameCommandFamily::Vfx, "pause", target)
++    }
++
++    /// Stops a VFX player and resets deterministic simulation to time zero.
++    pub fn stop_vfx(target: GameEntityHandle) -> Self {
++        simple_target_command(GameCommandFamily::Vfx, "stop", target)
++    }
++
++    /// Restarts a scene VFX player from deterministic time zero and resumes it.
++    pub fn restart_vfx(target: GameEntityHandle) -> Self {
++        simple_target_command(GameCommandFamily::Vfx, "restart", target)
++    }
++
+     /// Creates an initially enabled trigger hitbox on an empty carrier entity.
+     #[allow(clippy::too_many_arguments)]
+     pub fn create_hitbox(
+@@ -1645,6 +1669,10 @@ mod tests {
+                 GameCommand::play_animation(target, true),
+                 GameCommand::crossfade_animation(target, 42, 0.2, false),
+                 GameCommand::stop_animation(target),
++                GameCommand::start_vfx(target),
++                GameCommand::pause_vfx(target),
++                GameCommand::stop_vfx(target),
++                GameCommand::restart_vfx(target),
+                 GameCommand::create_hitbox(
+                     target,
+                     target,
