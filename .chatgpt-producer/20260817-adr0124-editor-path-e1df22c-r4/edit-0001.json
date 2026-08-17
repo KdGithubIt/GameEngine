@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ui/mod.rs",
+  "old": "    /// Background production navigation bake and cancellation channel.\n    navigation_bake: NavigationBakeManager,\n    /// Latest successfully loaded project game-module generation.",
+  "new": "    /// Background production navigation bake and cancellation channel.\n    navigation_bake: NavigationBakeManager,\n    /// Dedicated production navigation bake, profile, status, and path-test UI.\n    navigation_workspace: NavigationWorkspaceUi,\n    /// Latest successfully loaded project game-module generation."
+}
