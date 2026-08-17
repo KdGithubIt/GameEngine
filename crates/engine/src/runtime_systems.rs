@@ -22,6 +22,9 @@ use crate::lock_on::lock_on_system;
 use crate::secondary_motion::{
     secondary_motion_presentation_system, secondary_motion_system, SecondaryMotionWorlds,
 };
+use crate::native_2d::{
+    physics_2d_fixed_system, Gravity2d, Physics2dDiagnostics, PhysicsRuntime2d,
+};
 use crate::navmesh::{nav_mesh_agent_system, nav_mesh_debug_draw_system};
 use crate::physics::velocity_system;
 use crate::player::{player_character_motor_system, player_controller_system};
@@ -78,6 +81,15 @@ pub fn register_runtime_systems(app: &mut App) -> Result<(), SystemRegistrationE
     }
     if app.world().get_resource::<SpatialAudioRuntime>().is_none() {
         app.insert_resource(SpatialAudioRuntime::default());
+    }
+    if app.world().get_resource::<Gravity2d>().is_none() {
+        app.insert_resource(Gravity2d::default());
+    }
+    if app.world().get_resource::<PhysicsRuntime2d>().is_none() {
+        app.insert_resource(PhysicsRuntime2d::default());
+    }
+    if app.world().get_resource::<Physics2dDiagnostics>().is_none() {
+        app.insert_resource(Physics2dDiagnostics::default());
     }
     app.try_add_system_with_descriptor(
         engine_system(
@@ -247,6 +259,16 @@ pub fn register_runtime_systems(app: &mut App) -> Result<(), SystemRegistrationE
     )?;
     app.try_add_fixed_system_with_descriptor(
         engine_system(
+            "engine.physics_2d",
+            "Physics 2D",
+            "Advances the dedicated Native 2D world and writes root dynamic poses through Transform.",
+        )
+        .try_after("engine.velocity_integration")
+        .expect("built-in system IDs are valid"),
+        physics_2d_fixed_system,
+    )?;
+    app.try_add_fixed_system_with_descriptor(
+        engine_system(
             "engine.navigation_agent",
             "Navigation Agent",
             "Advances navigation agents along host-computed paths.",
@@ -282,6 +304,8 @@ pub fn register_runtime_systems(app: &mut App) -> Result<(), SystemRegistrationE
         .try_after("engine.animation")
         .expect("built-in system IDs are valid")
         .try_after("engine.velocity_integration")
+        .expect("built-in system IDs are valid")
+        .try_after("engine.physics_2d")
         .expect("built-in system IDs are valid")
         .try_after("engine.navigation_agent")
         .expect("built-in system IDs are valid")

@@ -57,6 +57,8 @@ pub mod graph_view;
 pub mod id;
 pub mod load;
 pub mod material_asset;
+/// Native 2D project settings and stable sorting-layer contracts (ADR 0127).
+pub mod native_2d;
 pub mod persist;
 pub mod prefab;
 pub mod prefab_authoring;
@@ -148,6 +150,10 @@ pub use material_asset::{
     LinearRgba, MaterialAlphaMode, MaterialAsset, MaterialAssetError, MaterialCullMode,
     MaterialOutline, MaterialShadingModel, MaterialSphereBlendMode,
     MaterialSphereCoordinateSource, ToonLitProperties, MATERIAL_SCHEMA_VERSION,
+};
+pub use native_2d::{
+    PixelPreviewPolicy, Project2dSettings, SortingLayer, SortingLayerId, SortingLayerIdError,
+    SpriteFiltering,
 };
 pub use persist::{replace_file_contents, PersistError, PersistOperation};
 pub use prefab::{PrefabAsset, PrefabError, PrefabInstantiation, PREFAB_SCHEMA_VERSION};
