@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/vfx_builder_completion.rs","old":"        effect: &VfxEffect,\n        selected_emitter: Option<&VfxEmitterId>,\n    ) {","new":"        effect: &VfxEffect,\n        selected_emitter: Option<&VfxEmitterId>,\n        compilation: Option<&VfxCompilation>,\n    ) {"}
