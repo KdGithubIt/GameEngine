@@ -1,0 +1,390 @@
+diff --git a/crates/editor/src/canvas/mod.rs b/crates/editor/src/canvas/mod.rs
+index ff37917583a37fe21f0f42cb80ee69d08777fd6d..0b3e3688b157a568c1e1ccd1e2c64c65a4935ca5 100644
+--- a/crates/editor/src/canvas/mod.rs
++++ b/crates/editor/src/canvas/mod.rs
+@@ -602,6 +602,45 @@ pub fn show_graph_canvas(
+     actions
+ }
+ 
++#[cfg(feature = "visual-validation")]
++pub(crate) fn show_graph_node_palette_visual_fixture(
++    ui: &mut egui::Ui,
++    session: &EditorSession,
++) {
++    ui.heading("Behavior Tree Add Node");
++    ui.small("Schema-driven node palette");
++    ui.separator();
++
++    let mut search_query = "decorator".to_owned();
++    ui.columns(2, |columns| {
++        columns[0].strong("Schema catalog");
++        let catalog = session
++            .available_graph_node_kinds()
++            .into_iter()
++            .filter(|kind| kind.category().starts_with("Behavior Tree"))
++            .map(|kind| kind.label().to_owned())
++            .collect::<Vec<_>>()
++            .join("  •  ");
++        columns[0].label(catalog);
++
++        columns[1].strong("Search preview");
++        columns[1].add(
++            egui::TextEdit::singleline(&mut search_query)
++                .hint_text("Search nodes...")
++                .desired_width(180.0),
++        );
++        columns[1].small("Shared schema labels/categories/type IDs/tags");
++        let matches = session
++            .available_graph_node_kinds()
++            .into_iter()
++            .filter(|kind| kind.matches_search(&search_query))
++            .map(|kind| kind.label().to_owned())
++            .collect::<Vec<_>>()
++            .join("  •  ");
++        columns[1].label(matches);
++    });
++}
++
+ /// Draws a read-only graph canvas with transient runtime debug presentation.
+ ///
+ /// Unlike [`show_graph_canvas`], this surface never emits authoring actions and
+@@ -612,6 +651,7 @@ pub(crate) fn show_graph_debug_canvas(
+     session: &EditorSession,
+     state: &mut GraphCanvasState,
+     overlay: &GraphDebugOverlay,
++    selected_node: &mut Option<NodeId>,
+ ) {
+     let desired_size = ui.available_size();
+     let (canvas_rect, canvas_response) = ui.allocate_exact_size(desired_size, Sense::click());
+@@ -663,12 +703,16 @@ pub(crate) fn show_graph_debug_canvas(
+             hover.push('\n');
+             hover.push_str(detail);
+         }
+-        ui.interact(
+-            rect,
+-            ui.make_persistent_id(("graph_debug_node", node_id.as_str())),
+-            Sense::hover(),
+-        )
+-        .on_hover_text(hover);
++        let response = ui
++            .interact(
++                rect,
++                ui.make_persistent_id(("graph_debug_node", node_id.as_str())),
++                Sense::click(),
++            )
++            .on_hover_text(hover);
++        if response.clicked() {
++            *selected_node = Some(node_id.clone());
++        }
+         draw_node(
+             &painter,
+             canvas_view,
+@@ -677,7 +721,7 @@ pub(crate) fn show_graph_debug_canvas(
+                 node_id,
+                 title: compact_canvas_text(&node_title(node)),
+                 subtitle: node_subtitle(session, node),
+-                selected: false,
++                selected: selected_node.as_ref() == Some(node_id),
+                 pinned: false,
+                 show_id: true,
+             },
+diff --git a/crates/editor/src/ui/behavior_debug.rs b/crates/editor/src/ui/behavior_debug.rs
+index 8998c231f977d4168db65dbcca4975bd463c1e58..acfa91cde79309db32a1e87b0c9492b4da8be08a 100644
+--- a/crates/editor/src/ui/behavior_debug.rs
++++ b/crates/editor/src/ui/behavior_debug.rs
+@@ -5,6 +5,8 @@ use crate::canvas::{
+     show_graph_debug_canvas, GraphCanvasState, GraphDebugBadge, GraphDebugNodePresentation,
+     GraphDebugOverlay,
+ };
++#[cfg(feature = "visual-validation")]
++use crate::canvas::show_graph_node_palette_visual_fixture;
+ use engine::behavior_tree::{
+     BehaviorExecutionSnapshot, BehaviorExecutionTransitionKind, BehaviorResetReason, BehaviorStatus,
+ };
+@@ -47,6 +49,7 @@ pub(super) struct BehaviorTreeDebugState {
+     invalidated: bool,
+     message: Option<String>,
+     canvas: GraphCanvasState,
++    selected_node: Option<NodeId>,
+     #[cfg(feature = "visual-validation")]
+     fixture_snapshot: Option<BehaviorExecutionSnapshot>,
+ }
+@@ -133,7 +136,13 @@ impl BehaviorTreeDebugState {
+ 
+     fn show_graph(&mut self, ui: &mut egui::Ui, presentation: &BehaviorTreeDebugPresentation) {
+         if let Some(session) = self.graph_session.as_ref() {
+-            show_graph_debug_canvas(ui, session, &mut self.canvas, &presentation.overlay);
++            show_graph_debug_canvas(
++                ui,
++                session,
++                &mut self.canvas,
++                &presentation.overlay,
++                &mut self.selected_node,
++            );
+         } else {
+             ui.vertical_centered(|ui| {
+                 ui.add_space(48.0);
+@@ -187,6 +196,15 @@ impl BehaviorTreeDebugState {
+                 reason: Some(BehaviorResetReason::Interrupted),
+             });
+         }
++        if let Some(node) = nodes.get(4) {
++            recent_transitions.push(engine::behavior_tree::BehaviorExecutionTransition {
++                generation: 4,
++                node: Some(node.clone()),
++                behavior_id: Some("enemy.fallback_failed".into()),
++                kind: BehaviorExecutionTransitionKind::Failure,
++                reason: None,
++            });
++        }
+         let snapshot = BehaviorExecutionSnapshot {
+             tree_source: session.graph().id.clone(),
+             tree_generation: 2,
+@@ -204,6 +222,7 @@ impl BehaviorTreeDebugState {
+         self.clear();
+         self.visible = true;
+         self.graph_session = Some(session);
++        self.selected_node = nodes.get(2).cloned();
+         self.fixture_snapshot = Some(snapshot);
+         self.canvas.request_frame_all();
+         true
+@@ -355,13 +374,54 @@ impl EditorApp {
+                 .sync(key, self.project_root.as_ref(), &snapshot);
+         }
+         let presentation = BehaviorTreeDebugPresentation::from_snapshot(runtime_entity, &snapshot);
++        let selected_node = self.behavior_debug.selected_node.clone();
++
++        #[cfg(feature = "visual-validation")]
++        if is_fixture {
++            let context = ui.ctx().clone();
++            egui::Window::new("Behavior Tree Visual Validation")
++                .id(egui::Id::new("behavior_tree_visual_validation_workspace"))
++                .collapsible(false)
++                .resizable(false)
++                .fixed_pos(egui::pos2(8.0, 60.0))
++                .fixed_size(egui::vec2(1080.0, 690.0))
++                .show(&context, |ui| {
++                    ui.vertical(|ui| {
++                        ui.set_width(1040.0);
++                        if let Some(session) = self.behavior_debug.graph_session.as_ref() {
++                            show_graph_node_palette_visual_fixture(ui, session);
++                        }
++                        ui.separator();
++                        ui.horizontal_top(|ui| {
++                            ui.vertical(|ui| {
++                                ui.set_width(730.0);
++                                ui.set_min_height(410.0);
++                                self.behavior_debug.show_graph(ui, &presentation);
++                            });
++                            ui.separator();
++                            ui.vertical(|ui| {
++                                ui.set_width(290.0);
++                                ui.set_min_height(410.0);
++                                show_behavior_debug_details(
++                                    ui,
++                                    &presentation,
++                                    selected_node.as_ref(),
++                                );
++                            });
++                        });
++                    });
++                });
++            return;
++        }
+ 
+         egui::Panel::right("behavior_tree_debug_details")
+             .resizable(true)
+             .default_size(280.0)
+             .min_size(220.0)
+             .max_size(420.0)
+-            .show_inside(ui, |ui| show_behavior_debug_details(ui, &presentation));
++            .show_inside(ui, |ui| {
++                show_behavior_debug_details(ui, &presentation, selected_node.as_ref())
++            });
+         self.behavior_debug.show_graph(ui, &presentation);
+     }
+ 
+@@ -379,17 +439,21 @@ impl EditorApp {
+     }
+ }
+ 
+-fn show_behavior_debug_details(ui: &mut egui::Ui, presentation: &BehaviorTreeDebugPresentation) {
++fn show_behavior_debug_details(
++    ui: &mut egui::Ui,
++    presentation: &BehaviorTreeDebugPresentation,
++    selected_node: Option<&NodeId>,
++) {
+     ui.heading("Behavior Tree Debug");
+     if let Some((id, generation)) = presentation.runtime_entity {
+-        ui.label(format!(
+-            "Runner entity {id}  |  Entity generation {generation}"
+-        ));
++        ui.label(format!("Runner entity {id}"));
++        ui.label(format!("Entity generation {generation}"));
+     }
+     ui.monospace(presentation.graph.as_str());
++    ui.label(format!("Tree generation {}", presentation.tree_generation));
+     ui.label(format!(
+-        "Tree gen {}  |  Execution gen {}",
+-        presentation.tree_generation, presentation.execution_generation
++        "Execution generation {}",
++        presentation.execution_generation
+     ));
+     ui.separator();
+     ui.strong(format!(
+@@ -400,12 +464,45 @@ fn show_behavior_debug_details(ui: &mut egui::Ui, presentation: &BehaviorTreeDeb
+             .unwrap_or("Not ticked")
+     ));
+     if let Some(reason) = presentation.last_reset_reason {
+-        ui.label(format!("Last abort/reset: {}", reset_reason_label(reason)));
++        ui.label("Last abort/reset");
++        ui.monospace(reset_reason_label(reason));
+     }
+     if let Some(error) = &presentation.error {
+         ui.colored_label(egui::Color32::from_rgb(235, 104, 104), error);
+     }
+ 
++    ui.separator();
++    ui.strong("Selected node runtime");
++    match selected_node {
++        Some(node) => {
++            ui.monospace(node.as_str());
++            match presentation.overlay.nodes.get(node) {
++                Some(runtime) => {
++                    let state = runtime
++                        .badge
++                        .map(debug_badge_label)
++                        .unwrap_or(if runtime.active { "Active" } else { "Idle" });
++                    ui.label(format!("State: {state}"));
++                    if let Some(elapsed_seconds) = runtime.elapsed_seconds {
++                        ui.label(format!("Elapsed: {elapsed_seconds:.3}s"));
++                    }
++                    if let Some(detail) = &runtime.detail {
++                        ui.small(detail);
++                    } else {
++                        ui.small("No recent lifecycle transition for this node.");
++                    }
++                }
++                None => {
++                    ui.label("State: Idle");
++                    ui.small("No current or recent runtime activity for this node.");
++                }
++            }
++        }
++        None => {
++            ui.small("Select a graph node to inspect its runtime state.");
++        }
++    }
++
+     ui.separator();
+     ui.strong("Recent lifecycle");
+     if presentation.recent_transitions.is_empty() {
+@@ -441,6 +538,17 @@ fn show_behavior_debug_details(ui: &mut egui::Ui, presentation: &BehaviorTreeDeb
+     ui.small("Live overlay is transient; it never edits the Graph document or GraphView.");
+ }
+ 
++fn debug_badge_label(badge: GraphDebugBadge) -> &'static str {
++    match badge {
++        GraphDebugBadge::Running => "Running",
++        GraphDebugBadge::Success => "Success",
++        GraphDebugBadge::Failure => "Failure",
++        GraphDebugBadge::Entered => "Entered",
++        GraphDebugBadge::Aborted => "Aborted",
++        GraphDebugBadge::Reset => "Reset",
++    }
++}
++
+ fn format_transition(transition: &engine::behavior_tree::BehaviorExecutionTransition) -> String {
+     let mut label = match transition.kind {
+         BehaviorExecutionTransitionKind::Enter => "ENTER".to_owned(),
+@@ -575,6 +683,38 @@ mod tests {
+         );
+     }
+ 
++    #[test]
++    fn selected_node_runtime_detail_uses_snapshot_without_authoring_selection() {
++        let session = EditorSession::behavior_tree_example().expect("reference tree");
++        let node = session.graph().nodes.keys().next().unwrap().clone();
++        let authoring_selection = session.selected_node().cloned();
++        let snapshot = BehaviorExecutionSnapshot {
++            tree_source: session.graph().id.clone(),
++            tree_generation: 2,
++            execution_generation: 6,
++            status: Some(BehaviorStatus::Running),
++            active_path: vec![engine::behavior_tree::BehaviorActiveNodeSnapshot {
++                node: node.clone(),
++                elapsed_seconds: 2.5,
++            }],
++            running_node: Some(node.clone()),
++            last_terminal_node: None,
++            last_terminal_status: None,
++            last_reset_reason: None,
++            recent_transitions: Vec::new(),
++            blackboard: BTreeMap::new(),
++            error: None,
++        };
++
++        let presentation = BehaviorTreeDebugPresentation::from_snapshot(Some((8, 3)), &snapshot);
++        let detail = &presentation.overlay.nodes[&node];
++
++        assert!(detail.active);
++        assert_eq!(detail.badge, Some(GraphDebugBadge::Running));
++        assert_eq!(detail.elapsed_seconds, Some(2.5));
++        assert_eq!(session.selected_node(), authoring_selection.as_ref());
++    }
++
+     #[test]
+     fn old_execution_generation_lifecycle_is_not_presented_as_current() {
+         let session = EditorSession::behavior_tree_example().expect("reference tree");
+@@ -617,6 +757,7 @@ mod tests {
+             graph_session: Some(EditorSession::empty_behavior_tree()),
+             invalidated: true,
+             message: Some("stale".into()),
++            selected_node: Some(NodeId::generate()),
+             ..BehaviorTreeDebugState::default()
+         };
+ 
+@@ -627,6 +768,31 @@ mod tests {
+         assert!(state.graph_session.is_none());
+         assert!(!state.invalidated);
+         assert!(state.message.is_none());
++        assert!(state.selected_node.is_none());
++    }
++
++    #[test]
++    fn play_stop_clear_drops_all_behavior_debug_state() {
++        let mut state = BehaviorTreeDebugState {
++            visible: true,
++            source_key: Some(BehaviorDebugSourceKey {
++                runtime_entity: (4, 9),
++                graph: GraphId::generate(),
++                tree_generation: 3,
++            }),
++            graph_session: Some(EditorSession::empty_behavior_tree()),
++            selected_node: Some(NodeId::generate()),
++            message: Some("active".into()),
++            ..BehaviorTreeDebugState::default()
++        };
++
++        state.clear();
++
++        assert!(!state.visible);
++        assert!(state.source_key.is_none());
++        assert!(state.graph_session.is_none());
++        assert!(state.selected_node.is_none());
++        assert!(state.message.is_none());
+     }
+ 
+     #[test]
+diff --git a/docs/adr/0123-stateful-behavior-tree-execution-and-debugging.md b/docs/adr/0123-stateful-behavior-tree-execution-and-debugging.md
+index 9c3e4edaf27a3c56a2bcfde8c0cc16effe7b77e0..1a065c028eb0fc9917bedd7af8cf7dd69963638c 100644
+--- a/docs/adr/0123-stateful-behavior-tree-execution-and-debugging.md
++++ b/docs/adr/0123-stateful-behavior-tree-execution-and-debugging.md
+@@ -1,6 +1,6 @@
+ # ADR 0123: Stateful Behavior Tree Execution and Debugging
+ 
+-Status: Proposed
++Status: Accepted
+ Date: 2026-08-16
+ Builds on: ADR 0013, ADR 0014, ADR 0057, ADR 0113, ADR 0121
+ 
