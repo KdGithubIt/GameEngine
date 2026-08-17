@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0122-first-release-20260817-16",
+  "target_branch": "chatgpt/gameengine-adr0122-spatial-audio-complete-v4",
+  "expected_head_sha": "2109204b493072e10bd04e8a571f03cb487120fe",
+  "baseline_main_sha": "2109204b493072e10bd04e8a571f03cb487120fe",
+  "edit_parts": ["edit-0000.json","edit-0001.json","edit-0002.json","edit-0003.json","edit-0004.json","edit-0005.json","edit-0006.json","edit-0007.json","edit-0008.json","edit-0009.json","edit-0010.json","edit-0011.json","edit-0012.json","edit-0013.json","edit-0014.json","edit-0015.json","edit-0016.json","edit-0017.json","edit-0018.json","edit-0019.json","edit-0020.json","edit-0021.json","edit-0022.json","edit-0023.json","edit-0024.json","edit-0025.json","edit-0026.json","edit-0027.json","edit-0028.json","edit-0029.json","edit-0030.json","edit-0031.json","edit-0032.json","edit-0033.json","edit-0034.json","edit-0035.json","edit-0036.json","edit-0037.json","edit-0038.json","edit-0039.json","edit-0040.json","edit-0041.json","edit-0042.json","edit-0043.json","edit-0044.json","edit-0045.json","edit-0046.json","edit-0047.json","edit-0048.json","edit-0049.json","edit-0050.json","edit-0051.json","edit-0052.json","edit-0053.json","edit-0054.json","edit-0055.json","edit-0056.json","edit-0057.json","edit-0058.json","edit-0059.json","edit-0060.json","edit-0061.json","edit-0062.json","edit-0063.json"],
+  "commit_message": "Add ADR 0122 spatial audio first-release core",
+  "pr_title": "GameEngine: complete ADR 0122 spatial audio first release",
+  "pr_body": "## Summary\n\nCompletes ADR 0122 first-release spatial audio on current main. Reuses the existing engine-owned spatial evaluator and managed voice backend, adds deterministic listener priority and ECS synchronization, generation-checked Project Rust spatial playback, Audio Emitter/Listener authoring, Scene View spatial gizmos, transient Play/Stop/Restart audition, and audition/runtime parity tests. Existing 2D PlaySoundEffect remains compatible and backend voice identity stays process-local.\n\n## Validation\n\nRun affected Windows Validation for engine, engine-editor, engine-platform, and engine-scripting, plus task-specific Editor Visual Validation for the Spatial Audio Inspector and Scene View.\n\n<!-- gameengine-visual-validation: editor -->\n<!-- gameengine-visual-authoring-tool: Spatial Audio -->"
+}
