@@ -841,8 +841,18 @@ impl AiStudioPanel {
     }
 
     fn launch_external_agent(&mut self, run_id: &str) {
-        let workspace_root = self.host.workspace_root(run_id);
-        let workspace = match CodeWorkspace::create(&self.project_root, workspace_root) {
+        let (workspace_root, baseline_path) = match self.host.workspace_paths(run_id) {
+            Ok(paths) => paths,
+            Err(error) => {
+                self.fail_run(run_id, format!("Could not resolve code workspace: {error}"));
+                return;
+            }
+        };
+        let workspace = match CodeWorkspace::open_or_create(
+            &self.project_root,
+            workspace_root,
+            baseline_path,
+        ) {
             Ok(workspace) => workspace,
             Err(error) => {
                 self.fail_run(run_id, format!("Could not prepare code workspace: {error}"));
@@ -1038,11 +1048,7 @@ impl AiStudioPanel {
             },
             None => Vec::new(),
         };
-        if let Err(error) = self.host.record_event(
-            run_id,
-            AgentEventKind::CodeChangesDetected,
-            format!("Detected {} managed code file change(s).", changes.len()),
-        ) {
+        if let Err(error) = self.host.record_code_checkpoint(run_id, &changes) {
             self.status = Some(error.to_string());
         }
         let has_code_changes = !changes.is_empty();

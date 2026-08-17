@@ -544,6 +544,20 @@ impl CompletionReport {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct CodeCheckpointChange {
+    pub(crate) relative_path: PathBuf,
+    pub(crate) before: Option<String>,
+    pub(crate) after: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct CodeCheckpoint {
+    pub(crate) id: String,
+    pub(crate) changes: Vec<CodeCheckpointChange>,
+    pub(crate) created_unix_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct AgentRun {
     pub(crate) id: String,
     pub(crate) proposal_snapshot: AgentProposal,
@@ -553,6 +567,8 @@ pub(crate) struct AgentRun {
     pub(crate) completion: CompletionReport,
     #[serde(default)]
     pub(crate) validation_attempts: Vec<ManagedValidationAttempt>,
+    #[serde(default)]
+    pub(crate) code_checkpoints: Vec<CodeCheckpoint>,
     pub(crate) started_unix_ms: u64,
     pub(crate) finished_unix_ms: Option<u64>,
 }
@@ -704,6 +720,7 @@ impl AgentHost {
             events: Vec::new(),
             completion: CompletionReport::default(),
             validation_attempts: Vec::new(),
+            code_checkpoints: Vec::new(),
             started_unix_ms: unix_ms(),
             finished_unix_ms: None,
         };
@@ -774,6 +791,38 @@ impl AgentHost {
             .ok_or_else(|| AgentHostError::RunNotFound(run_id.to_owned()))?;
         push_event(run, kind, message.into());
         self.persist_session(&session_id)
+    }
+
+    pub(crate) fn record_code_checkpoint(
+        &mut self,
+        run_id: &str,
+        changes: &[CodeChange],
+    ) -> Result<String, AgentHostError> {
+        let checkpoint_id = next_id("code-checkpoint");
+        let (session_id, _) = self.run_location(run_id)?;
+        let run = self.run_mut_in_session(&session_id, run_id)?;
+        run.code_checkpoints.push(CodeCheckpoint {
+            id: checkpoint_id.clone(),
+            changes: changes
+                .iter()
+                .map(|change| CodeCheckpointChange {
+                    relative_path: change.relative_path.clone(),
+                    before: change.before.clone(),
+                    after: change.after.clone(),
+                })
+                .collect(),
+            created_unix_ms: unix_ms(),
+        });
+        push_event(
+            run,
+            AgentEventKind::CodeChangesDetected,
+            format!(
+                "Recorded code checkpoint {checkpoint_id} with {} changed file(s).",
+                changes.len()
+            ),
+        );
+        self.persist_session(&session_id)?;
+        Ok(checkpoint_id)
     }
 
     pub(crate) fn record_semantic_progress(
@@ -1139,7 +1188,7 @@ impl AgentHost {
             .get(gate_index)
             .ok_or_else(|| AgentHostError::RunNotFound(run_id.to_owned()))?
             .gate;
-        let game_dir = self.workspace_root(run_id).join("game");
+        let game_dir = self.workspace_paths(run_id)?.0.join("game");
         if !game_dir.join("Cargo.toml").is_file() {
             self.fail_managed_validation(
                 run_id,
@@ -1452,8 +1501,17 @@ impl AgentHost {
         Ok(path)
     }
 
-    pub(crate) fn workspace_root(&self, run_id: &str) -> PathBuf {
-        self.storage_root.join("workspaces").join(run_id)
+    pub(crate) fn workspace_paths(
+        &self,
+        run_id: &str,
+    ) -> Result<(PathBuf, PathBuf), AgentHostError> {
+        let (session_id, _) = self.run_location(run_id)?;
+        Ok((
+            self.storage_root.join("workspaces").join(&session_id),
+            self.storage_root
+                .join("workspace-baselines")
+                .join(format!("{session_id}.json")),
+        ))
     }
 
     pub(crate) fn store_captured_frame_artifact(
@@ -1842,9 +1900,16 @@ pub(crate) struct CodeChange {
     pub(crate) after: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PersistedCodeWorkspaceBaseline {
+    schema_version: u32,
+    files: BTreeMap<PathBuf, Option<String>>,
+}
+
 pub(crate) struct CodeWorkspace {
     project_root: PathBuf,
     workspace_root: PathBuf,
+    baseline_path: Option<PathBuf>,
     baseline: BTreeMap<PathBuf, Option<String>>,
 }
 
@@ -1853,9 +1918,40 @@ impl CodeWorkspace {
         project_root: &Path,
         workspace_root: PathBuf,
     ) -> Result<Self, AgentHostError> {
+        Self::initialize(project_root, workspace_root, None)
+    }
+
+    pub(crate) fn open_or_create(
+        project_root: &Path,
+        workspace_root: PathBuf,
+        baseline_path: PathBuf,
+    ) -> Result<Self, AgentHostError> {
+        if workspace_root.is_dir() && baseline_path.is_file() {
+            let persisted: PersistedCodeWorkspaceBaseline =
+                serde_json::from_slice(&fs::read(&baseline_path)?)?;
+            if persisted.schema_version == 1 {
+                return Ok(Self {
+                    project_root: project_root.to_path_buf(),
+                    workspace_root,
+                    baseline_path: Some(baseline_path),
+                    baseline: persisted.files,
+                });
+            }
+        }
         if workspace_root.exists() {
             fs::remove_dir_all(&workspace_root)?;
         }
+        if baseline_path.exists() {
+            fs::remove_file(&baseline_path)?;
+        }
+        Self::initialize(project_root, workspace_root, Some(baseline_path))
+    }
+
+    fn initialize(
+        project_root: &Path,
+        workspace_root: PathBuf,
+        baseline_path: Option<PathBuf>,
+    ) -> Result<Self, AgentHostError> {
         fs::create_dir_all(&workspace_root)?;
         let mut baseline = BTreeMap::new();
         for relative in [
@@ -1868,11 +1964,27 @@ impl CodeWorkspace {
                 copy_code_tree(project_root, &workspace_root, relative, &mut baseline)?;
             }
         }
-        Ok(Self {
+        let workspace = Self {
             project_root: project_root.to_path_buf(),
             workspace_root,
+            baseline_path,
             baseline,
-        })
+        };
+        workspace.persist_baseline()?;
+        Ok(workspace)
+    }
+
+    fn persist_baseline(&self) -> Result<(), AgentHostError> {
+        let Some(path) = &self.baseline_path else {
+            return Ok(());
+        };
+        write_json_atomic(
+            path,
+            &PersistedCodeWorkspaceBaseline {
+                schema_version: 1,
+                files: self.baseline.clone(),
+            },
+        )
     }
 
     pub(crate) fn root(&self) -> &Path {
@@ -1926,6 +2038,7 @@ impl CodeWorkspace {
             self.baseline
                 .insert(change.relative_path.clone(), Some(after.to_owned()));
         }
+        self.persist_baseline()?;
         Ok(())
     }
 }
@@ -2241,6 +2354,58 @@ mod tests {
         host.start_run(&second, "test").expect("second run");
         let _ = fs::remove_dir_all(project);
         let _ = fs::remove_dir_all(storage);
+    }
+
+    #[test]
+    fn session_runs_share_one_code_workspace_identity() {
+        let project = temp_path("session-workspace-project");
+        let storage = temp_path("session-workspace-storage");
+        fs::create_dir_all(&project).expect("test project directory");
+        let mut host = AgentHost::open(project.clone(), storage.clone()).expect("host");
+        let session = host.create_session("Workspace").expect("session");
+        let first = host.start_run(&session, "test").expect("first run");
+        let first_paths = host.workspace_paths(&first).expect("first workspace");
+        host.cancel_run(&first).expect("cancel first");
+        let second = host.start_run(&session, "test").expect("second run");
+        let second_paths = host.workspace_paths(&second).expect("second workspace");
+        assert_eq!(first_paths, second_paths);
+        let _ = fs::remove_dir_all(project);
+        let _ = fs::remove_dir_all(storage);
+    }
+
+    #[test]
+    fn reopened_session_workspace_preserves_stale_apply_baseline() {
+        let project = temp_path("reopen-workspace-project");
+        let workspace = temp_path("reopen-workspace");
+        let baseline = temp_path("reopen-workspace-baseline.json");
+        fs::create_dir_all(project.join("game/src")).expect("project tree");
+        fs::write(project.join("game/src/lib.rs"), "pub fn value() -> u32 { 1 }\n")
+            .expect("base file");
+        {
+            let code = CodeWorkspace::open_or_create(
+                &project,
+                workspace.clone(),
+                baseline.clone(),
+            )
+            .expect("workspace");
+            fs::write(
+                code.root().join("game/src/lib.rs"),
+                "pub fn value() -> u32 { 2 }\n",
+            )
+            .expect("workspace edit");
+        }
+        fs::write(project.join("game/src/lib.rs"), "pub fn value() -> u32 { 3 }\n")
+            .expect("human edit");
+        let mut reopened = CodeWorkspace::open_or_create(&project, workspace.clone(), baseline.clone())
+            .expect("reopened workspace");
+        let changes = reopened.collect_changes().expect("changes");
+        assert!(matches!(
+            reopened.apply_changes(&changes),
+            Err(AgentHostError::StaleCodeFile(_))
+        ));
+        let _ = fs::remove_dir_all(project);
+        let _ = fs::remove_dir_all(workspace);
+        let _ = fs::remove_file(baseline);
     }
 
     #[test]
