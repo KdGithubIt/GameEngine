@@ -298,7 +298,7 @@ impl Default for CharacterController2d {
         Self {
             half_extents: Vec2::new(0.45, 0.9),
             skin: 0.02,
-            slope_limit_radians: 0.7853982,
+            slope_limit_radians: std::f32::consts::FRAC_PI_4,
             ground_snap: 0.1,
             drop_through_seconds: 0.0,
             grounded: false,

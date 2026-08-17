@@ -484,6 +484,7 @@ mod tests {
             }],
             start_scene: Some("scenes/main.scene.json".into()),
             system_settings: SystemSettings::default(),
+            native_2d: crate::native_2d::Project2dSettings::default(),
         };
 
         let json = serde_json::to_string_pretty(&settings).expect("must serialize");
