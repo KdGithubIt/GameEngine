@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0136-r3-core-20260817-01",
+  "target_branch": "chatgpt/gameengine-adr0136-preview-streaming-r3",
+  "expected_head_sha": "b4ea5dd8a60497f7ac71e886842adde86e1a3087",
+  "baseline_main_sha": "b4ea5dd8a60497f7ac71e886842adde86e1a3087",
+  "patch_sha256": "41431f280cef19f2a3c31b90f4652ba5426dba898818dd85533694eb30d42c14",
+  "patch_bytes": 49965,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Implement ADR 0136 project preview CPU residency",
+  "pr_title": "Implement ADR 0136 preview asset residency and asynchronous streaming",
+  "pr_body": "Implements ADR 0136 on current main: project-scoped preview CPU residency shared by Scene View and Animation Preview, bounded priority/aging materialization workers, in-flight dedupe, generation-aware atomic publish, reuse of successful background import results, last-good/placeholder cold behavior, shared GPU mesh residency ownership, and ADR0135 aggressive GPU reclaim integration without discarding CPU materialization. Follow-up commits on this same Draft PR complete device-scoped texture residency, bounded GPU upload and asynchronous PreviewRenderer warm-up."
+}
