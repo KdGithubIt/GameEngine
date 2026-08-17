@@ -1,0 +1,1153 @@
+diff --git a/crates/editor/src/ai_studio.rs b/crates/editor/src/ai_studio.rs
+index ff64613eab0c42e30d0989007057b797d4c5cb61..2b6c982053e2f109f11d759be3aaf2d6f3530e8d 100644
+--- a/crates/editor/src/ai_studio.rs
++++ b/crates/editor/src/ai_studio.rs
+@@ -10,6 +10,7 @@ use crate::agent_host::{
+     ConversationRole, ExternalAgentProcess, ManagedValidationAttemptStatus, PermissionCheck,
+     ProcessStream, ResumeDisposition,
+ };
++use crate::live_observation::{LiveObservationError, LiveObservationManager};
+ use crate::native_agent::{
+     LocalModelConfig, ModelCapabilityProfile, NativeAnswer, NativeQuestionTask, QuestionMessage,
+     QuestionRole, DEFAULT_LOCAL_MODEL_ENDPOINT,
+@@ -293,6 +294,7 @@ pub struct AiStudioPanel {
+     host: AgentHost,
+     remote_server: Option<RemoteAiStudioServer>,
+     remote_requests: Option<std::sync::mpsc::Receiver<RemoteAiStudioRequest>>,
++    live_observation: LiveObservationManager,
+     selected_session: String,
+     proposal_draft: AgentProposal,
+     message_draft: String,
+@@ -363,6 +365,7 @@ impl AiStudioPanel {
+             host,
+             remote_server: None,
+             remote_requests: None,
++            live_observation: LiveObservationManager::default(),
+             selected_session,
+             proposal_draft,
+             message_draft: String::new(),
+@@ -423,6 +426,51 @@ impl AiStudioPanel {
+         self.managed_playtest_requested && self.managed_playtest_started_at.is_none()
+     }
+ 
++    /// Takes one rate-bounded live-observation capture request for the Editor shell.
++    pub fn take_live_observation_capture_request(&mut self) -> bool {
++        for run_id in self.live_observation.run_ids() {
++            let keep = self.host.run(&run_id).is_ok_and(|run| {
++                !matches!(
++                    run.state,
++                    AgentRunState::Completed | AgentRunState::Failed | AgentRunState::Cancelled
++                )
++            });
++            if !keep {
++                self.live_observation.remove_run(&run_id);
++            }
++        }
++        if !self.live_observation.begin_capture() {
++            return false;
++        }
++        self.resolved_workload = InferenceWorkload::RuntimeObservation;
++        self.resource_plan = resolve_resource_plan(
++            InferenceWorkload::RuntimeObservation,
++            self.quality_preference,
++            MemoryPressure::Unknown,
++            Default::default(),
++        );
++        true
++    }
++
++    /// Reports one renderer-owned Game View readback to the transient live-media path.
++    pub fn report_live_observation_capture(
++        &mut self,
++        result: Result<crate::FrameCapture, String>,
++        readback: std::time::Duration,
++    ) {
++        match result {
++            Ok(capture) => {
++                if let Err(error) = self.live_observation.report_capture(&capture, readback) {
++                    self.status = Some(error.to_string());
++                }
++            }
++            Err(error) => {
++                self.live_observation.report_capture_failure();
++                self.status = Some(format!("Live Game View observation is unavailable: {error}"));
++            }
++        }
++    }
++
+     /// Records the result of an Editor-owned managed runtime action.
+     pub fn report_runtime_result(&mut self, context: &egui::Context, result: AiStudioRuntimeResult) {
+         match &result {
+@@ -758,6 +806,76 @@ impl AiStudioPanel {
+                 Ok(bytes) => RemoteAiStudioResponse::png(bytes),
+                 Err(error) => RemoteAiStudioResponse::error(404, "frame_not_found", error, false),
+             },
++            RemoteOperation::StartLiveObservation { run_id, max_fps, .. } => {
++                let run = match self.host.run(&run_id) {
++                    Ok(run) => run,
++                    Err(error) => {
++                        return RemoteAiStudioResponse::error(
++                            404,
++                            "run_not_found",
++                            error.to_string(),
++                            false,
++                        );
++                    }
++                };
++                if matches!(
++                    run.state,
++                    AgentRunState::Completed | AgentRunState::Failed | AgentRunState::Cancelled
++                ) || self.active_run_id.as_deref() != Some(run_id.as_str())
++                {
++                    return RemoteAiStudioResponse::error(
++                        409,
++                        "live_observation_stale_run",
++                        "Live observation can be started only for the current non-terminal AgentRun.",
++                        false,
++                    );
++                }
++                match self.live_observation.start(&run_id, max_fps) {
++                    Ok(started) => RemoteAiStudioResponse::json(serde_json::json!({
++                        "media_session_id": started.media_session_id,
++                        "media_token": started.media_token,
++                        "run_id": started.run_id,
++                        "source": "game_view",
++                        "codec": "png",
++                        "max_fps": started.max_fps,
++                        "max_dimensions": [1280, 720],
++                        "retention": "latest_frame_only",
++                    })),
++                    Err(error) => live_observation_error_response(error),
++                }
++            }
++            RemoteOperation::LiveObservationStatus {
++                media_session_id,
++                media_token,
++            } => match self
++                .live_observation
++                .status_json(&media_session_id, &media_token)
++            {
++                Ok(status) => RemoteAiStudioResponse::json(status),
++                Err(error) => live_observation_error_response(error),
++            },
++            RemoteOperation::LiveObservationFrame {
++                media_session_id,
++                media_token,
++                sequence,
++            } => match self
++                .live_observation
++                .frame_bytes(&media_session_id, &media_token, sequence)
++            {
++                Ok(bytes) => RemoteAiStudioResponse::png(bytes),
++                Err(error) => live_observation_error_response(error),
++            },
++            RemoteOperation::StopLiveObservation {
++                media_session_id,
++                media_token,
++                ..
++            } => match self.live_observation.stop(&media_session_id, &media_token) {
++                Ok(()) => RemoteAiStudioResponse::json(serde_json::json!({
++                    "stopped": true,
++                    "media_session_id": media_session_id,
++                })),
++                Err(error) => live_observation_error_response(error),
++            },
+         }
+     }
+ 
+@@ -2192,6 +2310,49 @@ impl AiStudioPanel {
+     }
+ }
+ 
++fn live_observation_error_response(error: LiveObservationError) -> RemoteAiStudioResponse {
++    match error {
++        LiveObservationError::InvalidFps => RemoteAiStudioResponse::error(
++            400,
++            "live_observation_invalid_fps",
++            error.to_string(),
++            false,
++        ),
++        LiveObservationError::TooManySessions => RemoteAiStudioResponse::error(
++            409,
++            "live_observation_capacity",
++            error.to_string(),
++            true,
++        ),
++        LiveObservationError::NotFound => RemoteAiStudioResponse::error(
++            404,
++            "live_observation_not_found",
++            error.to_string(),
++            false,
++        ),
++        LiveObservationError::Unauthorized => RemoteAiStudioResponse::error(
++            401,
++            "live_observation_unauthorized",
++            error.to_string(),
++            false,
++        ),
++        LiveObservationError::Random(_) => RemoteAiStudioResponse::error(
++            500,
++            "live_observation_session_failed",
++            error.to_string(),
++            true,
++        ),
++        LiveObservationError::InvalidFrame(_) | LiveObservationError::Encode(_) => {
++            RemoteAiStudioResponse::error(
++                503,
++                "live_observation_frame_failed",
++                error.to_string(),
++                true,
++            )
++        }
++    }
++}
++
+ fn source_repair_decision(
+     state: AgentRunState,
+     source_validation: CompletionStatus,
+diff --git a/crates/editor/src/lib.rs b/crates/editor/src/lib.rs
+index abccdd29deda065cbbf88e96c8fd749b54d5032f..a1635d84782a2e78b19fe8f00358c187c1a81713 100644
+--- a/crates/editor/src/lib.rs
++++ b/crates/editor/src/lib.rs
+@@ -8,6 +8,7 @@
+ #![warn(rustdoc::broken_intra_doc_links)]
+ 
+ mod agent_host;
++mod live_observation;
+ mod native_agent;
+ mod remote_ai_studio;
+ mod resource_arbitration;
+diff --git a/crates/editor/src/live_observation.rs b/crates/editor/src/live_observation.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..76c295f70a155c4c2a6538a6f107f699e1d7f8c2
+--- /dev/null
++++ b/crates/editor/src/live_observation.rs
+@@ -0,0 +1,605 @@
++//! Bounded engine-native live observation sessions for Remote AI Studio.
++//!
++//! This module owns transient media-session state and encoding above the
++//! renderer-owned `FrameCapture` boundary. Live samples are never persisted as
++//! Agent Host captured-frame evidence and never carry authoring authority.
++
++use crate::FrameCapture;
++use serde_json::{json, Value};
++use std::collections::BTreeMap;
++use std::fmt;
++use std::sync::Arc;
++use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
++
++pub(crate) const DEFAULT_LIVE_OBSERVATION_FPS: u8 = 4;
++pub(crate) const MAX_LIVE_OBSERVATION_FPS: u8 = 8;
++const MAX_LIVE_SESSIONS: usize = 4;
++const MAX_OUTPUT_WIDTH: u32 = 1280;
++const MAX_OUTPUT_HEIGHT: u32 = 720;
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub(crate) enum LiveObservationSource {
++    GameView,
++}
++
++impl LiveObservationSource {
++    const fn as_str(self) -> &'static str {
++        match self {
++            Self::GameView => "game_view",
++        }
++    }
++}
++
++#[derive(Debug)]
++pub(crate) enum LiveObservationError {
++    InvalidFps,
++    TooManySessions,
++    NotFound,
++    Unauthorized,
++    Random(String),
++    InvalidFrame(String),
++    Encode(String),
++}
++
++impl fmt::Display for LiveObservationError {
++    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
++        match self {
++            Self::InvalidFps => write!(
++                formatter,
++                "live observation max_fps must be between 1 and {MAX_LIVE_OBSERVATION_FPS}"
++            ),
++            Self::TooManySessions => formatter.write_str("too many live observation sessions are active"),
++            Self::NotFound => formatter.write_str("live observation media session or frame was not found"),
++            Self::Unauthorized => formatter.write_str("live observation media authentication failed"),
++            Self::Random(error) => write!(formatter, "could not create live observation credential: {error}"),
++            Self::InvalidFrame(error) => write!(formatter, "live observation frame is invalid: {error}"),
++            Self::Encode(error) => write!(formatter, "live observation frame encoding failed: {error}"),
++        }
++    }
++}
++
++impl std::error::Error for LiveObservationError {}
++
++#[derive(Debug, Clone)]
++pub(crate) struct LiveObservationStarted {
++    pub(crate) media_session_id: String,
++    pub(crate) media_token: String,
++    pub(crate) run_id: String,
++    pub(crate) max_fps: u8,
++}
++
++#[derive(Debug)]
++struct EncodedFrame {
++    width: u32,
++    height: u32,
++    bytes: Vec<u8>,
++}
++
++trait LiveMediaEncoder {
++    fn codec(&self) -> &'static str;
++    fn encode(&self, capture: &FrameCapture) -> Result<EncodedFrame, LiveObservationError>;
++}
++
++struct PngLiveMediaEncoder;
++
++impl LiveMediaEncoder for PngLiveMediaEncoder {
++    fn codec(&self) -> &'static str {
++        "png"
++    }
++
++    fn encode(&self, capture: &FrameCapture) -> Result<EncodedFrame, LiveObservationError> {
++        let (width, height, rgba8) = bounded_rgba8(capture)?;
++        let mut bytes = Vec::new();
++        {
++            let mut encoder = png::Encoder::new(&mut bytes, width, height);
++            encoder.set_color(png::ColorType::Rgba);
++            encoder.set_depth(png::BitDepth::Eight);
++            let mut writer = encoder
++                .write_header()
++                .map_err(|error| LiveObservationError::Encode(error.to_string()))?;
++            writer
++                .write_image_data(&rgba8)
++                .map_err(|error| LiveObservationError::Encode(error.to_string()))?;
++        }
++        Ok(EncodedFrame {
++            width,
++            height,
++            bytes,
++        })
++    }
++}
++
++#[derive(Debug)]
++struct LiveObservationSample {
++    sequence: u64,
++    width: u32,
++    height: u32,
++    produced_unix_ms: u64,
++    readback_micros: u64,
++    encode_micros: u64,
++    end_to_end_micros: u64,
++    bytes: Arc<Vec<u8>>,
++}
++
++#[derive(Debug)]
++struct LiveObservationSession {
++    id: String,
++    run_id: String,
++    media_token: String,
++    source: LiveObservationSource,
++    max_fps: u8,
++    created_unix_ms: u64,
++    last_capture_attempt: Option<Instant>,
++    latest: Option<Arc<LiveObservationSample>>,
++    last_error: Option<&'static str>,
++    capture_count: u64,
++    total_readback_micros: u64,
++    total_encode_micros: u64,
++    total_end_to_end_micros: u64,
++    max_readback_micros: u64,
++}
++
++impl LiveObservationSession {
++    fn capture_interval(&self) -> Duration {
++        Duration::from_micros(1_000_000 / u64::from(self.max_fps))
++    }
++
++    fn capture_due(&self, now: Instant) -> bool {
++        self.last_capture_attempt
++            .is_none_or(|last| now.duration_since(last) >= self.capture_interval())
++    }
++
++    fn status_json(&self, codec: &str) -> Value {
++        let latest = self.latest.as_ref();
++        let average = |total: u64| {
++            (self.capture_count > 0).then(|| total / self.capture_count)
++        };
++        json!({
++            "media_session_id": self.id,
++            "run_id": self.run_id,
++            "source": self.source.as_str(),
++            "codec": codec,
++            "max_fps": self.max_fps,
++            "created_unix_ms": self.created_unix_ms,
++            "latest_sequence": latest.map(|sample| sample.sequence),
++            "latest_width": latest.map(|sample| sample.width),
++            "latest_height": latest.map(|sample| sample.height),
++            "latest_produced_unix_ms": latest.map(|sample| sample.produced_unix_ms),
++            "latest_bytes": latest.map(|sample| sample.bytes.len()),
++            "capture_count": self.capture_count,
++            "latest_readback_micros": latest.map(|sample| sample.readback_micros),
++            "latest_encode_micros": latest.map(|sample| sample.encode_micros),
++            "latest_end_to_end_micros": latest.map(|sample| sample.end_to_end_micros),
++            "average_readback_micros": average(self.total_readback_micros),
++            "average_encode_micros": average(self.total_encode_micros),
++            "average_end_to_end_micros": average(self.total_end_to_end_micros),
++            "max_readback_micros": (self.capture_count > 0).then_some(self.max_readback_micros),
++            "last_error": self.last_error,
++        })
++    }
++}
++
++#[derive(Default)]
++pub(crate) struct LiveObservationManager {
++    sessions: BTreeMap<String, LiveObservationSession>,
++    pending_session_ids: Vec<String>,
++    pending_started_at: Option<Instant>,
++    next_sequence: u64,
++}
++
++impl LiveObservationManager {
++    pub(crate) fn start(
++        &mut self,
++        run_id: &str,
++        max_fps: u8,
++    ) -> Result<LiveObservationStarted, LiveObservationError> {
++        if max_fps == 0 || max_fps > MAX_LIVE_OBSERVATION_FPS {
++            return Err(LiveObservationError::InvalidFps);
++        }
++        self.remove_run(run_id);
++        if self.sessions.len() >= MAX_LIVE_SESSIONS {
++            return Err(LiveObservationError::TooManySessions);
++        }
++        let id = random_hex("media", 16)?;
++        let media_token = random_hex("media-token", 32)?;
++        let session = LiveObservationSession {
++            id: id.clone(),
++            run_id: run_id.to_owned(),
++            media_token: media_token.clone(),
++            source: LiveObservationSource::GameView,
++            max_fps,
++            created_unix_ms: unix_ms(),
++            last_capture_attempt: None,
++            latest: None,
++            last_error: None,
++            capture_count: 0,
++            total_readback_micros: 0,
++            total_encode_micros: 0,
++            total_end_to_end_micros: 0,
++            max_readback_micros: 0,
++        };
++        self.sessions.insert(id.clone(), session);
++        Ok(LiveObservationStarted {
++            media_session_id: id,
++            media_token,
++            run_id: run_id.to_owned(),
++            max_fps,
++        })
++    }
++
++    pub(crate) fn stop(
++        &mut self,
++        media_session_id: &str,
++        media_token: &str,
++    ) -> Result<(), LiveObservationError> {
++        self.authenticate(media_session_id, media_token)?;
++        self.sessions.remove(media_session_id);
++        self.pending_session_ids
++            .retain(|id| id != media_session_id);
++        Ok(())
++    }
++
++    pub(crate) fn remove_run(&mut self, run_id: &str) {
++        let removed = self
++            .sessions
++            .iter()
++            .filter(|(_, session)| session.run_id == run_id)
++            .map(|(id, _)| id.clone())
++            .collect::<Vec<_>>();
++        for id in removed {
++            self.sessions.remove(&id);
++            self.pending_session_ids.retain(|pending| pending != &id);
++        }
++    }
++
++    pub(crate) fn run_ids(&self) -> Vec<String> {
++        self.sessions
++            .values()
++            .map(|session| session.run_id.clone())
++            .collect()
++    }
++
++    pub(crate) fn status_json(
++        &self,
++        media_session_id: &str,
++        media_token: &str,
++    ) -> Result<Value, LiveObservationError> {
++        let session = self.authenticate(media_session_id, media_token)?;
++        Ok(session.status_json(PngLiveMediaEncoder.codec()))
++    }
++
++    pub(crate) fn frame_bytes(
++        &self,
++        media_session_id: &str,
++        media_token: &str,
++        sequence: u64,
++    ) -> Result<Vec<u8>, LiveObservationError> {
++        let session = self.authenticate(media_session_id, media_token)?;
++        let sample = session.latest.as_ref().ok_or(LiveObservationError::NotFound)?;
++        if sample.sequence != sequence {
++            return Err(LiveObservationError::NotFound);
++        }
++        Ok(sample.bytes.as_ref().clone())
++    }
++
++    pub(crate) fn begin_capture(&mut self) -> bool {
++        if !self.pending_session_ids.is_empty() {
++            return false;
++        }
++        let now = Instant::now();
++        self.pending_session_ids = self
++            .sessions
++            .iter_mut()
++            .filter_map(|(id, session)| {
++                if session.capture_due(now) {
++                    session.last_capture_attempt = Some(now);
++                    Some(id.clone())
++                } else {
++                    None
++                }
++            })
++            .collect();
++        if self.pending_session_ids.is_empty() {
++            return false;
++        }
++        self.pending_started_at = Some(now);
++        true
++    }
++
++    pub(crate) fn report_capture(
++        &mut self,
++        capture: &FrameCapture,
++        readback: Duration,
++    ) -> Result<(), LiveObservationError> {
++        if self.pending_session_ids.is_empty() {
++            return Ok(());
++        }
++        let encode_started = Instant::now();
++        let encoded = match PngLiveMediaEncoder.encode(capture) {
++            Ok(encoded) => encoded,
++            Err(error) => {
++                self.finish_failure();
++                return Err(error);
++            }
++        };
++        let encode = encode_started.elapsed();
++        let end_to_end = self
++            .pending_started_at
++            .map_or(readback + encode, |started| started.elapsed());
++        self.next_sequence = self.next_sequence.saturating_add(1).max(1);
++        let sample = Arc::new(LiveObservationSample {
++            sequence: self.next_sequence,
++            width: encoded.width,
++            height: encoded.height,
++            produced_unix_ms: unix_ms(),
++            readback_micros: duration_micros(readback),
++            encode_micros: duration_micros(encode),
++            end_to_end_micros: duration_micros(end_to_end),
++            bytes: Arc::new(encoded.bytes),
++        });
++        for id in std::mem::take(&mut self.pending_session_ids) {
++            let Some(session) = self.sessions.get_mut(&id) else {
++                continue;
++            };
++            session.capture_count = session.capture_count.saturating_add(1);
++            session.total_readback_micros = session
++                .total_readback_micros
++                .saturating_add(sample.readback_micros);
++            session.total_encode_micros = session
++                .total_encode_micros
++                .saturating_add(sample.encode_micros);
++            session.total_end_to_end_micros = session
++                .total_end_to_end_micros
++                .saturating_add(sample.end_to_end_micros);
++            session.max_readback_micros = session.max_readback_micros.max(sample.readback_micros);
++            session.latest = Some(Arc::clone(&sample));
++            session.last_error = None;
++        }
++        self.pending_started_at = None;
++        Ok(())
++    }
++
++    pub(crate) fn report_capture_failure(&mut self) {
++        self.finish_failure();
++    }
++
++    fn finish_failure(&mut self) {
++        for id in std::mem::take(&mut self.pending_session_ids) {
++            if let Some(session) = self.sessions.get_mut(&id) {
++                session.last_error = Some("Game View capture is temporarily unavailable; retry is allowed.");
++            }
++        }
++        self.pending_started_at = None;
++    }
++
++    fn authenticate(
++        &self,
++        media_session_id: &str,
++        media_token: &str,
++    ) -> Result<&LiveObservationSession, LiveObservationError> {
++        let session = self
++            .sessions
++            .get(media_session_id)
++            .ok_or(LiveObservationError::NotFound)?;
++        if media_token.is_empty() || session.media_token != media_token {
++            return Err(LiveObservationError::Unauthorized);
++        }
++        Ok(session)
++    }
++}
++
++fn bounded_rgba8(capture: &FrameCapture) -> Result<(u32, u32, Vec<u8>), LiveObservationError> {
++    if capture.width == 0 || capture.height == 0 {
++        return Err(LiveObservationError::InvalidFrame(
++            "dimensions must be non-zero".to_owned(),
++        ));
++    }
++    let expected_len = u64::from(capture.width)
++        .checked_mul(u64::from(capture.height))
++        .and_then(|pixels| pixels.checked_mul(4))
++        .and_then(|bytes| usize::try_from(bytes).ok())
++        .ok_or_else(|| LiveObservationError::InvalidFrame("pixel dimensions overflow".to_owned()))?;
++    if capture.rgba8.len() != expected_len {
++        return Err(LiveObservationError::InvalidFrame(
++            "RGBA8 byte count does not match dimensions".to_owned(),
++        ));
++    }
++    if capture.width <= MAX_OUTPUT_WIDTH && capture.height <= MAX_OUTPUT_HEIGHT {
++        return Ok((capture.width, capture.height, capture.rgba8.clone()));
++    }
++
++    let (width, height) = if u64::from(capture.width) * u64::from(MAX_OUTPUT_HEIGHT)
++        >= u64::from(capture.height) * u64::from(MAX_OUTPUT_WIDTH)
++    {
++        let height = (u64::from(capture.height) * u64::from(MAX_OUTPUT_WIDTH)
++            / u64::from(capture.width))
++        .max(1) as u32;
++        (MAX_OUTPUT_WIDTH, height)
++    } else {
++        let width = (u64::from(capture.width) * u64::from(MAX_OUTPUT_HEIGHT)
++            / u64::from(capture.height))
++        .max(1) as u32;
++        (width, MAX_OUTPUT_HEIGHT)
++    };
++    let output_len = u64::from(width)
++        .checked_mul(u64::from(height))
++        .and_then(|pixels| pixels.checked_mul(4))
++        .and_then(|bytes| usize::try_from(bytes).ok())
++        .ok_or_else(|| LiveObservationError::InvalidFrame("bounded dimensions overflow".to_owned()))?;
++    let mut rgba8 = vec![0_u8; output_len];
++    for y in 0..height {
++        let source_y = u64::from(y) * u64::from(capture.height) / u64::from(height);
++        for x in 0..width {
++            let source_x = u64::from(x) * u64::from(capture.width) / u64::from(width);
++            let source_index = usize::try_from(
++                (source_y * u64::from(capture.width) + source_x) * 4,
++            )
++            .map_err(|_| LiveObservationError::InvalidFrame("source index overflow".to_owned()))?;
++            let output_index = usize::try_from((u64::from(y) * u64::from(width) + u64::from(x)) * 4)
++                .map_err(|_| LiveObservationError::InvalidFrame("output index overflow".to_owned()))?;
++            rgba8[output_index..output_index + 4]
++                .copy_from_slice(&capture.rgba8[source_index..source_index + 4]);
++        }
++    }
++    Ok((width, height, rgba8))
++}
++
++fn random_hex(prefix: &str, byte_count: usize) -> Result<String, LiveObservationError> {
++    let mut bytes = vec![0_u8; byte_count];
++    getrandom::fill(&mut bytes)
++        .map_err(|error| LiveObservationError::Random(error.to_string()))?;
++    let mut value = String::with_capacity(prefix.len() + 1 + byte_count * 2);
++    value.push_str(prefix);
++    value.push('-');
++    for byte in bytes {
++        use std::fmt::Write as _;
++        write!(&mut value, "{byte:02x}")
++            .expect("writing hexadecimal text into String cannot fail");
++    }
++    Ok(value)
++}
++
++fn duration_micros(duration: Duration) -> u64 {
++    u64::try_from(duration.as_micros()).unwrap_or(u64::MAX)
++}
++
++fn unix_ms() -> u64 {
++    SystemTime::now()
++        .duration_since(UNIX_EPOCH)
++        .ok()
++        .and_then(|duration| u64::try_from(duration.as_millis()).ok())
++        .unwrap_or(0)
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    fn frame(width: u32, height: u32) -> FrameCapture {
++        FrameCapture {
++            width,
++            height,
++            rgba8: vec![127; width as usize * height as usize * 4],
++        }
++    }
++
++    #[test]
++    fn session_requires_media_specific_authentication_and_restart_rotates_it() {
++        let mut manager = LiveObservationManager::default();
++        let first = manager.start("run-a", 4).expect("first session");
++        assert!(manager
++            .status_json(&first.media_session_id, "wrong")
++            .is_err());
++        let second = manager.start("run-a", 4).expect("replacement session");
++        assert_ne!(first.media_session_id, second.media_session_id);
++        assert_ne!(first.media_token, second.media_token);
++        assert!(manager
++            .status_json(&first.media_session_id, &first.media_token)
++            .is_err());
++    }
++
++    #[test]
++    fn live_capture_is_rate_bounded_and_keeps_only_latest_sequence() {
++        let mut manager = LiveObservationManager::default();
++        let session = manager.start("run-a", 4).expect("session");
++        assert!(manager.begin_capture());
++        manager
++            .report_capture(&frame(2, 2), Duration::from_micros(50))
++            .expect("capture");
++        assert!(!manager.begin_capture());
++        let status = manager
++            .status_json(&session.media_session_id, &session.media_token)
++            .expect("status");
++        let sequence = status["latest_sequence"].as_u64().expect("sequence");
++        let bytes = manager
++            .frame_bytes(&session.media_session_id, &session.media_token, sequence)
++            .expect("frame");
++        assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n");
++        assert!(status["latest_readback_micros"].as_u64().is_some());
++        assert!(status["latest_encode_micros"].as_u64().is_some());
++        assert!(status["latest_end_to_end_micros"].as_u64().is_some());
++    }
++
++    #[test]
++    fn live_encoder_downscales_without_upscaling() {
++        let small = PngLiveMediaEncoder.encode(&frame(4, 2)).expect("small");
++        assert_eq!((small.width, small.height), (4, 2));
++        let large = PngLiveMediaEncoder
++            .encode(&frame(2560, 1440))
++            .expect("large");
++        assert_eq!((large.width, large.height), (1280, 720));
++    }
++
++    #[test]
++    fn transient_samples_do_not_create_agent_host_evidence_or_cancel_run() {
++        use crate::agent_host::{AgentEventKind, AgentHost, AgentRunState};
++        use std::fs;
++
++        let suffix = SystemTime::now()
++            .duration_since(UNIX_EPOCH)
++            .unwrap_or_default()
++            .as_nanos();
++        let project = std::env::temp_dir().join(format!(
++            "gameengine-live-observation-project-{}-{suffix}",
++            std::process::id()
++        ));
++        let storage = std::env::temp_dir().join(format!(
++            "gameengine-live-observation-storage-{}-{suffix}",
++            std::process::id()
++        ));
++        fs::create_dir_all(&project).expect("project");
++        let mut host = AgentHost::open(project.clone(), storage.clone()).expect("host");
++        let session_id = host.create_session("Live observation").expect("session");
++        let version = host
++            .session(&session_id)
++            .expect("session")
++            .proposal
++            .version;
++        let run_id = host
++            .start_run_authorized(&session_id, version, "test")
++            .expect("run");
++        let captured_before = host
++            .run(&run_id)
++            .expect("run")
++            .events
++            .iter()
++            .filter(|event| event.kind == AgentEventKind::CapturedFrame)
++            .count();
++
++        let mut manager = LiveObservationManager::default();
++        let _session = manager.start(&run_id, 4).expect("media session");
++        assert!(manager.begin_capture());
++        manager
++            .report_capture(&frame(2, 2), Duration::from_micros(10))
++            .expect("live sample");
++        drop(manager);
++
++        let run = host.run(&run_id).expect("run after media disconnect");
++        assert_eq!(
++            run.events
++                .iter()
++                .filter(|event| event.kind == AgentEventKind::CapturedFrame)
++                .count(),
++            captured_before
++        );
++        assert!(!matches!(
++            run.state,
++            AgentRunState::Completed | AgentRunState::Failed | AgentRunState::Cancelled
++        ));
++        let _ = fs::remove_dir_all(project);
++        let _ = fs::remove_dir_all(storage);
++    }
++
++    #[test]
++    fn invalid_frame_rate_is_rejected() {
++        let mut manager = LiveObservationManager::default();
++        assert!(matches!(
++            manager.start("run", 0),
++            Err(LiveObservationError::InvalidFps)
++        ));
++        assert!(matches!(
++            manager.start("run", MAX_LIVE_OBSERVATION_FPS + 1),
++            Err(LiveObservationError::InvalidFps)
++        ));
++    }
++}
+diff --git a/crates/editor/src/main.rs b/crates/editor/src/main.rs
+index 5742fe24c73d0ab1cf0f3b1729fd577eed231be0..af0cffe996267aaaf867a133d3f15c6dcdbc3063 100644
+--- a/crates/editor/src/main.rs
++++ b/crates/editor/src/main.rs
+@@ -283,6 +283,14 @@ impl eframe::App for EditorShell {
+             let result = self.app.handle_ai_studio_runtime_action(action, frame.wgpu_render_state());
+             self.ai_studio.report_runtime_result(context, result);
+         }
++        if self.ai_studio.take_live_observation_capture_request() {
++            let readback_started = std::time::Instant::now();
++            let result = self
++                .app
++                .capture_ai_studio_live_observation(frame.wgpu_render_state());
++            self.ai_studio
++                .report_live_observation_capture(result, readback_started.elapsed());
++        }
+         eframe::App::logic(&mut self.app, context, frame);
+         if self.ai_studio.waiting_for_playtest_start() && self.app.ai_studio_playtest_running() {
+             self.ai_studio.report_runtime_result(
+diff --git a/crates/editor/src/remote_ai_studio.rs b/crates/editor/src/remote_ai_studio.rs
+index 514e25d33efef33aded98f87e80cc21cc583c503..2c048ad7b2eb8bba281f6a6f6661c37ca9caa68e 100644
+--- a/crates/editor/src/remote_ai_studio.rs
++++ b/crates/editor/src/remote_ai_studio.rs
+@@ -8,6 +8,7 @@ use crate::agent_host::{
+     AgentCapability, AgentEvent, AgentEventEvidence, AgentEventKind, AgentHost, AgentRun,
+     AgentRunState, AgentSession,
+ };
++use crate::live_observation::DEFAULT_LIVE_OBSERVATION_FPS;
+ use eframe::egui;
+ use serde::Deserialize;
+ use serde_json::{json, Value};
+@@ -74,6 +75,25 @@ pub(crate) enum RemoteOperation {
+         run_id: String,
+         artifact_id: String,
+     },
++    StartLiveObservation {
++        run_id: String,
++        request_id: String,
++        max_fps: u8,
++    },
++    LiveObservationStatus {
++        media_session_id: String,
++        media_token: String,
++    },
++    LiveObservationFrame {
++        media_session_id: String,
++        media_token: String,
++        sequence: u64,
++    },
++    StopLiveObservation {
++        media_session_id: String,
++        media_token: String,
++        request_id: String,
++    },
+ }
+ 
+ impl RemoteOperation {
+@@ -112,9 +132,25 @@ impl RemoteOperation {
+                 request_id,
+                 format!("permission:{run_id}:{capability:?}:{scope:?}"),
+             )),
+-            Self::Sessions | Self::Snapshot { .. } | Self::Events { .. } | Self::Frame { .. } => {
+-                None
+-            }
++            Self::StartLiveObservation {
++                run_id,
++                request_id,
++                max_fps,
++            } => Some((request_id, format!("live_start:{run_id}:{max_fps}"))),
++            Self::StopLiveObservation {
++                media_session_id,
++                media_token,
++                request_id,
++            } => Some((
++                request_id,
++                format!("live_stop:{media_session_id}:{media_token}"),
++            )),
++            Self::Sessions
++            | Self::Snapshot { .. }
++            | Self::Events { .. }
++            | Self::Frame { .. }
++            | Self::LiveObservationStatus { .. }
++            | Self::LiveObservationFrame { .. } => None
+         }
+     }
+ }
+@@ -500,6 +536,17 @@ struct PermissionBody {
+     scope: RemotePermissionScope,
+ }
+ 
++#[derive(Deserialize)]
++struct StartLiveObservationBody {
++    request_id: String,
++    #[serde(default = "default_live_observation_fps")]
++    max_fps: u8,
++}
++
++fn default_live_observation_fps() -> u8 {
++    DEFAULT_LIVE_OBSERVATION_FPS
++}
++
+ fn route_request(request: &HttpRequest) -> Result<RemoteOperation, RemoteAiStudioResponse> {
+     let path = request.path.split('?').next().unwrap_or(request.path.as_str());
+     let parts = path
+@@ -583,6 +630,57 @@ fn route_request(request: &HttpRequest) -> Result<RemoteOperation, RemoteAiStudi
+                 artifact_id: (*artifact_id).to_owned(),
+             })
+         }
++        ("POST", ["api", "runs", run_id, "live"]) => {
++            let body: StartLiveObservationBody = parse_json_body(request)?;
++            validate_request_id(&body.request_id)?;
++            Ok(RemoteOperation::StartLiveObservation {
++                run_id: (*run_id).to_owned(),
++                request_id: body.request_id,
++                max_fps: body.max_fps,
++            })
++        }
++        ("GET", ["api", "live", media_session_id]) => {
++            Ok(RemoteOperation::LiveObservationStatus {
++                media_session_id: (*media_session_id).to_owned(),
++                media_token: request
++                    .headers
++                    .get("x-gameengine-media-token")
++                    .cloned()
++                    .unwrap_or_default(),
++            })
++        }
++        ("GET", ["api", "live", media_session_id, "frames", sequence]) => {
++            let sequence = sequence.parse::<u64>().map_err(|_| {
++                RemoteAiStudioResponse::error(
++                    400,
++                    "invalid_sequence",
++                    "Live observation frame sequence must be an unsigned integer.",
++                    false,
++                )
++            })?;
++            Ok(RemoteOperation::LiveObservationFrame {
++                media_session_id: (*media_session_id).to_owned(),
++                media_token: request
++                    .headers
++                    .get("x-gameengine-media-token")
++                    .cloned()
++                    .unwrap_or_default(),
++                sequence,
++            })
++        }
++        ("POST", ["api", "live", media_session_id, "stop"]) => {
++            let body: RequestIdBody = parse_json_body(request)?;
++            validate_request_id(&body.request_id)?;
++            Ok(RemoteOperation::StopLiveObservation {
++                media_session_id: (*media_session_id).to_owned(),
++                media_token: request
++                    .headers
++                    .get("x-gameengine-media-token")
++                    .cloned()
++                    .unwrap_or_default(),
++                request_id: body.request_id,
++            })
++        }
+         _ => Err(RemoteAiStudioResponse::error(
+             404,
+             "not_found",
+@@ -968,10 +1066,11 @@ const COMPANION_HTML: &str = r#"<!doctype html>
+ <section class="card"><div class="row"><h2 class="grow">Proposal</h2><span id="proposalVersion" class="pill"></span></div><div id="proposal" class="proposal-grid"></div><div class="row"><button id="go" class="primary">Go</button><button id="stop" class="danger">Stop</button></div></section>
+ <section id="decisionCard" class="card" hidden><h2>Decision required</h2><div id="decision"></div></section>
+ <section class="card"><div class="row"><h2 class="grow">Run progress</h2><span id="runState" class="pill">idle</span></div><div id="events" class="events"></div><h3>Completion</h3><div id="completion" class="completion"></div></section>
++<section class="card"><div class="row"><h2 class="grow">Live Game View</h2><span id="liveState" class="pill">stopped</span></div><div class="row"><label for="liveFps">Max FPS</label><select id="liveFps"><option>2</option><option selected>4</option><option>8</option></select><button id="liveStart" class="primary">Start live view</button><button id="liveStop" disabled>Stop live view</button></div><div id="liveMeta" class="muted">Game View only · authenticated transient PNG samples · latest frame retained only.</div><img id="liveFrame" class="frame" hidden alt="Live Game View observation"></section>
+ <section class="card"><h2>Captured frame</h2><div id="frameMeta" class="muted">No captured frame.</div><img id="frame" class="frame" hidden alt="Captured managed Play frame"></section>
+ </main>
+ <script>
+-const token=new URLSearchParams(location.hash.slice(1)).get('access_token')||''; history.replaceState(null,'',location.pathname); const h={'Authorization':'Bearer '+token}; let sessionId=null,snapshot=null,cursor=0,frameUrl=null;
++const token=new URLSearchParams(location.hash.slice(1)).get('access_token')||''; history.replaceState(null,'',location.pathname); const h={'Authorization':'Bearer '+token}; let sessionId=null,snapshot=null,cursor=0,frameUrl=null,live=null,liveUrl=null,liveTimer=null;
+ const $=id=>document.getElementById(id); const rid=()=>crypto.randomUUID();
+ async function api(path,opt={}){const r=await fetch(path,{...opt,headers:{...h,...(opt.headers||{})}}); if(!r.ok){let e;try{e=await r.json()}catch{e={error:{message:'Request failed'}}}throw new Error(e.error?.message||'Request failed')}return r}
+ function text(v){return String(v??'')}
+@@ -981,14 +1080,18 @@ async function loadSessions(){const data=await (await api('/api/sessions')).json
+ function renderSnapshot(s){snapshot=s; const m=$('messages');m.innerHTML=(s.session.messages||[]).map(x=>`<div class="msg"><b>${escapeHtml(x.role)}</b><div>${escapeHtml(x.text)}</div></div>`).join('')||'<div class="muted">No messages yet.</div>'; $('proposalVersion').textContent='v'+s.session.proposal.version; const p=s.session.proposal; $('proposal').innerHTML=`<div><b>Goal</b><div>${escapeHtml(p.goal)}</div></div><div><b>Acceptance criteria</b>${list(p.acceptance_criteria)}</div><div><b>Requirements</b>${list(p.requirements)}</div><div><b>Validation</b>${list(p.validation_plan)}</div><div><b>Playtest</b>${list(p.playtest_plan)}</div>`; const run=s.active_run; $('runState').textContent=run?.state||'idle'; $('stop').disabled=!run; const c=$('completion'); c.innerHTML=run?Object.entries(run.completion||{}).map(([k,v])=>`<div><b>${escapeHtml(k.replaceAll('_',' '))}</b><div>${escapeHtml(v)}</div></div>`).join(''):'<div class="muted">No active run.</div>'; renderDecision(s,run); renderFrame(run)}
+ function renderDecision(s,run){const card=$('decisionCard'),d=$('decision'); if(s.pending_permission){const p=s.pending_permission;card.hidden=false;d.innerHTML=`<p>${escapeHtml(p.label)}</p><div class="row">${['once','run','project','deny'].map(scope=>`<button data-scope="${scope}">${scope}</button>`).join('')}</div>`;d.querySelectorAll('button').forEach(b=>b.onclick=()=>permission(p.run_id,p.capability,b.dataset.scope));return} if(s.awaiting_user&&run){card.hidden=false;d.innerHTML='<textarea id="awaitText" placeholder="Response to the agent"></textarea><div class="row"><button id="awaitSend">Respond</button></div>';$('awaitSend').onclick=()=>awaiting(run.id,$('awaitText').value);return} card.hidden=true;d.innerHTML=''}
+ async function renderFrame(run){if(frameUrl){URL.revokeObjectURL(frameUrl);frameUrl=null} const img=$('frame'),meta=$('frameMeta'); const f=run?.frames?.at(-1); if(!f){img.hidden=true;meta.textContent='No captured frame.';return} meta.textContent=`${f.artifact_id} · ${f.width}×${f.height} · run ${run.id}`; try{const r=await api(`/api/runs/${encodeURIComponent(run.id)}/frames/${encodeURIComponent(f.artifact_id)}`);frameUrl=URL.createObjectURL(await r.blob());img.src=frameUrl;img.hidden=false}catch(e){img.hidden=true;showError(e)}}
+-async function refresh(){if(!sessionId)return; try{const s=await (await api('/api/sessions/'+encodeURIComponent(sessionId))).json();renderSnapshot(s);const run=s.active_run;if(run){const raw=await (await api(`/api/runs/${encodeURIComponent(run.id)}/events?after=${cursor}`)).text();const line=raw.split('\n').find(x=>x.startsWith('data: '));if(line){const batch=JSON.parse(line.slice(6));if(batch.stale_cursor){cursor=0}else{for(const e of batch.events)cursor=Math.max(cursor,e.sequence);$('events').innerHTML=batch.events.map(e=>`<div class="event"><span class="pill">#${e.sequence} ${escapeHtml(e.kind)}</span><div>${escapeHtml(e.message)}</div></div>`).join('')||$('events').innerHTML}}}}catch(e){showError(e)}}
++async function refresh(){if(!sessionId)return; try{const s=await (await api('/api/sessions/'+encodeURIComponent(sessionId))).json();renderSnapshot(s);const run=s.active_run;if(live&&live.run_id!==run?.id)resetLiveView();if(run){const raw=await (await api(`/api/runs/${encodeURIComponent(run.id)}/events?after=${cursor}`)).text();const line=raw.split('\n').find(x=>x.startsWith('data: '));if(line){const batch=JSON.parse(line.slice(6));if(batch.stale_cursor){cursor=0}else{for(const e of batch.events)cursor=Math.max(cursor,e.sequence);$('events').innerHTML=batch.events.map(e=>`<div class="event"><span class="pill">#${e.sequence} ${escapeHtml(e.kind)}</span><div>${escapeHtml(e.message)}</div></div>`).join('')||$('events').innerHTML}}}}catch(e){showError(e)}}
+ async function send(){const v=$('message').value.trim();if(!v)return;await api(`/api/sessions/${encodeURIComponent(sessionId)}/messages`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({request_id:rid(),text:v})});$('message').value='';await refresh()}
+ async function go(){if(!snapshot)return;await api(`/api/sessions/${encodeURIComponent(sessionId)}/go`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({request_id:rid(),proposal_version:snapshot.session.proposal.version})});cursor=0;await refresh()}
+ async function stop(){const run=snapshot?.active_run;if(!run)return;await api(`/api/runs/${encodeURIComponent(run.id)}/stop`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({request_id:rid()})});await refresh()}
+ async function permission(run,capability,scope){await api(`/api/runs/${encodeURIComponent(run)}/permissions`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({request_id:rid(),capability,scope})});await refresh()}
+ async function awaiting(run,textValue){const v=textValue.trim();if(!v)return;await api(`/api/runs/${encodeURIComponent(run)}/awaiting-user`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({request_id:rid(),text:v})});await refresh()}
++function resetLiveView(){if(liveTimer){clearTimeout(liveTimer);liveTimer=null}if(liveUrl){URL.revokeObjectURL(liveUrl);liveUrl=null}live=null;$('liveState').textContent='stopped';$('liveStart').disabled=false;$('liveStop').disabled=true;$('liveFrame').hidden=true;$('liveMeta').textContent='Game View only · authenticated transient PNG samples · latest frame retained only.'}
++async function startLive(){const run=snapshot?.active_run;if(!run)throw new Error('Start an AgentRun before live observation.');if(live)await stopLive();const max_fps=Number($('liveFps').value);const data=await (await api(`/api/runs/${encodeURIComponent(run.id)}/live`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({request_id:rid(),max_fps})})).json();live={...data,sequence:0};$('liveState').textContent='live';$('liveStart').disabled=true;$('liveStop').disabled=false;pollLive()}
++async function pollLive(){if(!live)return;const current=live;const mediaHeaders={'X-GameEngine-Media-Token':current.media_token};try{const status=await (await api(`/api/live/${encodeURIComponent(current.media_session_id)}`,{headers:mediaHeaders})).json();if(live!==current)return;$('liveState').textContent=status.last_error?'retrying':'live';$('liveMeta').textContent=`${status.source} · ${status.latest_width??'waiting'}×${status.latest_height??'waiting'} · ${status.max_fps} fps cap · samples ${status.capture_count} · readback ${status.latest_readback_micros??'—'} µs · encode ${status.latest_encode_micros??'—'} µs · E2E ${status.latest_end_to_end_micros??'—'} µs`;if(status.latest_sequence!=null&&status.latest_sequence!==current.sequence){const response=await api(`/api/live/${encodeURIComponent(current.media_session_id)}/frames/${status.latest_sequence}`,{headers:mediaHeaders});if(live!==current)return;if(liveUrl)URL.revokeObjectURL(liveUrl);liveUrl=URL.createObjectURL(await response.blob());$('liveFrame').src=liveUrl;$('liveFrame').hidden=false;current.sequence=status.latest_sequence}}catch(e){if(live===current){$('liveState').textContent='retrying';$('liveMeta').textContent=e.message||text(e)}}finally{if(live===current)liveTimer=setTimeout(pollLive,Math.max(125,Math.floor(1000/current.max_fps)))}}
++async function stopLive(){if(!live){resetLiveView();return}const current=live;if(liveTimer){clearTimeout(liveTimer);liveTimer=null}try{await api(`/api/live/${encodeURIComponent(current.media_session_id)}/stop`,{method:'POST',headers:{'Content-Type':'application/json','X-GameEngine-Media-Token':current.media_token},body:JSON.stringify({request_id:rid()})})}finally{resetLiveView()}}
+ function showError(e){$('error').textContent=e.message||text(e)}
+-$('send').onclick=()=>send().catch(showError);$('go').onclick=()=>go().catch(showError);$('stop').onclick=()=>stop().catch(showError);(async()=>{try{await loadSessions();await refresh();setInterval(refresh,1200)}catch(e){showError(e)}})();
++$('send').onclick=()=>send().catch(showError);$('go').onclick=()=>go().catch(showError);$('stop').onclick=()=>stop().catch(showError);$('liveStart').onclick=()=>startLive().catch(showError);$('liveStop').onclick=()=>stopLive().catch(showError);(async()=>{try{await loadSessions();await refresh();setInterval(refresh,1200)}catch(e){showError(e)}})();
+ </script></body></html>"#;
+ 
+ #[cfg(test)]
+@@ -1189,7 +1292,15 @@ mod tests {
+ 
+     #[test]
+     fn unsafe_generic_remote_endpoints_do_not_exist() {
+-        for path in ["/api/shell", "/api/filesystem", "/api/git", "/api/mcp", "/api/process"] {
++        for path in [
++            "/api/shell",
++            "/api/filesystem",
++            "/api/git",
++            "/api/mcp",
++            "/api/process",
++            "/api/desktop",
++            "/api/desktop-capture",
++        ] {
+             let request = HttpRequest {
+                 method: "POST".into(),
+                 path: path.into(),
+@@ -1220,6 +1331,40 @@ mod tests {
+         let _ = fs::remove_dir_all(storage);
+     }
+ 
++    #[test]
++    fn live_media_routes_keep_source_and_media_auth_explicit() {
++        let start = HttpRequest {
++            method: "POST".into(),
++            path: "/api/runs/run_1/live".into(),
++            headers: BTreeMap::from([("content-type".into(), "application/json".into())]),
++            body: br#"{"request_id":"live-1","max_fps":8}"#.to_vec(),
++        };
++        assert!(matches!(
++            route_request(&start).expect("start route"),
++            RemoteOperation::StartLiveObservation { run_id, max_fps: 8, .. } if run_id == "run_1"
++        ));
++
++        let frame = HttpRequest {
++            method: "GET".into(),
++            path: "/api/live/media_1/frames/7".into(),
++            headers: BTreeMap::from([(
++                "x-gameengine-media-token".into(),
++                "media-secret".into(),
++            )]),
++            body: Vec::new(),
++        };
++        assert!(matches!(
++            route_request(&frame).expect("frame route"),
++            RemoteOperation::LiveObservationFrame {
++                media_session_id,
++                media_token,
++                sequence: 7,
++            } if media_session_id == "media_1" && media_token == "media-secret"
++        ));
++        assert!(COMPANION_HTML.contains("Live Game View"));
++        assert!(!COMPANION_HTML.contains("desktop capture"));
++    }
++
+     #[test]
+     fn gateway_binds_only_to_loopback() {
+         let (server, _requests) = RemoteAiStudioServer::start(egui::Context::default()).expect("server");
+diff --git a/crates/editor/src/ui/play.rs b/crates/editor/src/ui/play.rs
+index 163e20f2eb889864be4c4cbdc04b2e0c8fe0e7d0..5f6a247fc7d0d33907c6686a52b0f139fb414a89 100644
+--- a/crates/editor/src/ui/play.rs
++++ b/crates/editor/src/ui/play.rs
+@@ -849,6 +849,28 @@ impl EditorApp {
+         }
+     }
+ 
++    /// Captures the last rendered Game View for a bounded Remote AI Studio live-media session.
++    ///
++    /// This reuses the normal renderer-owned readback boundary and deliberately does not
++    /// persist Agent Host evidence. Runtime rendering receives priority over inference
++    /// presentation while the readback is active.
++    pub fn capture_ai_studio_live_observation(
++        &mut self,
++        render_state: Option<&egui_wgpu::RenderState>,
++    ) -> Result<crate::FrameCapture, String> {
++        self.inference_focused = false;
++        self.inference_restore_pending = false;
++        self.inference_restore_completed = false;
++        let render_state = render_state
++            .ok_or_else(|| "WGPU render state is unavailable for live Game View observation.".to_owned())?;
++        let runtime = self.runtime_state.as_ref().ok_or_else(|| {
++            "Live Game View observation requires an active Editor Play session.".to_owned()
++        })?;
++        runtime
++            .capture_game_view(render_state)
++            .map_err(|error| format!("Live Game View capture failed: {error}"))
++    }
++
+     /// Returns whether the normal Editor Play runtime is currently active for AI Studio.
+     pub fn ai_studio_playtest_running(&self) -> bool {
+         self.is_playing()
+diff --git a/docs/adr/0149-engine-native-live-observation-and-media-transport.md b/docs/adr/0149-engine-native-live-observation-and-media-transport.md
+index bf32ca6a363b368ffb35847a06c98153852c55ca..983f553ad64acb1491df55d5f6e41e6ec1929061 100644
+--- a/docs/adr/0149-engine-native-live-observation-and-media-transport.md
++++ b/docs/adr/0149-engine-native-live-observation-and-media-transport.md
+@@ -1,6 +1,6 @@
+ # ADR 0149: Engine-Native Live Observation and Media Transport
+ 
+-Status: Proposed
++Status: Accepted
+ Date: 2026-08-17
+ Builds on: ADR 0035, ADR 0131, ADR 0133
+ Relates to: ADR 0003, ADR 0135
+@@ -47,6 +47,23 @@ Media endpoints are private/authenticated by default and must not expose desktop
+ 
+ This ADR can be implemented in parallel with other Wave A ADRs. It does not depend on ADR 0148 remote lifecycle. Integration with a native mobile app remains optional under ADR 0133 and is not required for this ADR.
+ 
++## First implementation
++
++The first accepted implementation is deliberately narrower than a general video stack:
++
++- `Game View` is the only live source and is reported explicitly as `game_view`.
++- The existing renderer-owned `FrameCapture` readback remains the capture boundary.
++- A private encoder abstraction currently emits PNG samples, with no new codec or media dependency.
++- Samples are bounded to at most 1280x720 and 8 fps. The media manager keeps only the latest encoded sample per session.
++- Starting live observation is scoped to the current non-terminal `AgentRun`. A replacement start for the same run rotates the media-session identity and credential instead of accumulating stale sessions.
++- Remote control still requires the ADR 0133 bearer credential. Media status/frame/stop requests additionally require a per-media-session token that is never an MCP or provider credential.
++- Live sampling is transient. It never calls `AgentHost::store_captured_frame_artifact`, never creates `CapturedFrame` completion evidence, and therefore cannot satisfy or corrupt the ADR 0131 audit gate.
++- Every delivered sample records measured renderer readback time, encode time, end-to-end capture time, sample byte size, dimensions, sequence, and aggregate averages/maxima exposed through the authenticated media-session status endpoint.
++- A disconnected client does not cancel the `AgentRun`. Reload/reconnect creates a fresh authenticated media session for the same still-active run and invalidates the previous same-run session.
++- Desktop-wide capture, arbitrary Editor viewport capture, WebRTC, H.264/HEVC, public NAT traversal, and media-driven authoring/input remain outside this implementation.
++
++This shape preserves a replaceable encoder/transport boundary: a future low-latency codec can replace the PNG encoder without moving GPU ownership, Agent Host lifecycle, or authoring authority into the media layer.
++
+ ## Verification
+ 
+ Implementation must measure end-to-end latency, encoder/readback overhead, renderer impact, reconnect behavior, access control, source identity, captured-frame audit continuity, and correct behavior when the media client disconnects while an AgentRun continues.
