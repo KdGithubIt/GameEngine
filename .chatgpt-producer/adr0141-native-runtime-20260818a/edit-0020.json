@@ -1,0 +1,3 @@
+{
+  "operation":"replace_text","path":"crates/editor/src/ai_studio.rs","old":"                self.editing_interrupted = false;\n                return;\n            }\n            _ => {}","new":"                self.editing_interrupted = false;\n                if self.active_runtime_mode == Some(AgentRuntimeMode::Native)\n                    && let Some(run_id) = self.active_run_id.clone()\n                    && let Err(error) = self.start_native_agent_turn(&run_id, Some(\"Manual editing ended. Authoritative Editor state was re-inspected; stale assumptions were rejected by AgentHost before this turn.\".to_owned()), Vec::new())\n                { self.fail_run(&run_id, error); }\n                return;\n            }\n            _ => {}"
+}
