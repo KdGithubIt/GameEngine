@@ -14,6 +14,7 @@ use crate::native_agent::{
     LocalModelConfig, ModelCapabilityProfile, NativeAnswer, NativeQuestionTask, QuestionMessage,
     QuestionRole, DEFAULT_LOCAL_MODEL_ENDPOINT,
 };
+use crate::native_agent_runtime::{NativeAgentAction, NativeAgentRuntime, NativeMcpTask};
 use crate::resource_arbitration::{
     classify_workload, resolve_resource_plan, CapabilityAvailability, InferenceWorkload,
     MemoryPressure, PresentationPosture, QualityPreference, ReclaimLevel, ResourcePlan,
@@ -136,6 +137,12 @@ enum RuntimeRepairDecision {
 enum ExternalAgentPurpose {
     BuildOrRepair,
     RuntimeEvaluation,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AgentRuntimeMode {
+    External,
+    Native,
 }
 
 #[derive(Debug, Clone)]
@@ -308,6 +315,10 @@ pub struct AiStudioPanel {
     native_question: Option<NativeQuestionTask>,
     pending_native_question_start: Option<(LocalModelConfig, Vec<QuestionMessage>, String)>,
     native_question_session: Option<String>,
+    native_agent_runtime: Option<NativeAgentRuntime>,
+    native_mcp_task: Option<NativeMcpTask>,
+    pending_native_mcp_tool: Option<String>,
+    active_runtime_mode: Option<AgentRuntimeMode>,
     provider_program: String,
     provider_args: String,
     open: bool,
@@ -383,6 +394,10 @@ impl AiStudioPanel {
             native_question: None,
             pending_native_question_start: None,
             native_question_session: None,
+            native_agent_runtime: None,
+            native_mcp_task: None,
+            pending_native_mcp_tool: None,
+            active_runtime_mode: None,
             provider_program: String::new(),
             provider_args: String::new(),
             open: true,
@@ -492,6 +507,10 @@ impl AiStudioPanel {
                     self.status = Some("Authoritative Editor state re-inspected.".to_owned());
                 }
                 self.editing_interrupted = false;
+                if self.active_runtime_mode == Some(AgentRuntimeMode::Native)
+                    && let Some(run_id) = self.active_run_id.clone()
+                    && let Err(error) = self.start_native_agent_turn(&run_id, Some("Manual editing ended. Authoritative Editor state was re-inspected; stale assumptions were rejected by AgentHost before this turn.".to_owned()), Vec::new())
+                { self.fail_run(&run_id, error); }
                 return;
             }
             _ => {}
@@ -610,6 +629,8 @@ impl AiStudioPanel {
         self.ensure_remote_gateway(context);
         self.poll_remote_requests();
         self.poll_native_question(context);
+        self.poll_native_mcp(context);
+        self.poll_native_agent_runtime(context);
         self.poll_external_process(context);
         self.poll_managed_validation(context);
         self.request_managed_source_repair_if_ready();
@@ -915,7 +936,24 @@ impl AiStudioPanel {
                 ) {
                     Ok(()) => {
                         self.message_draft.clear();
-                        self.start_native_question();
+                        let awaiting_native = self.active_runtime_mode == Some(AgentRuntimeMode::Native)
+                            && self.active_run_id.as_ref().is_some_and(|run_id| {
+                                self.host.run(run_id).is_ok_and(|run| run.state == AgentRunState::AwaitingUser)
+                            });
+                        if awaiting_native {
+                            if let Some(run_id) = self.active_run_id.clone() {
+                                match self.host.transition_run(&run_id, AgentRunState::Executing, "User response received; native execution may continue.") {
+                                    Ok(()) => {
+                                        if let Err(error) = self.start_native_agent_turn(&run_id, Some("User answered the pending product question. Re-read current conversation and continue without expanding the immutable proposal.".to_owned()), Vec::new()) {
+                                            self.fail_run(&run_id, error);
+                                        }
+                                    }
+                                    Err(error) => self.status = Some(error.to_string()),
+                                }
+                            }
+                        } else {
+                            self.start_native_question();
+                        }
                     }
                     Err(error) => self.status = Some(error.to_string()),
                 }
@@ -1191,6 +1229,382 @@ impl AiStudioPanel {
             });
     }
 
+    fn native_runtime_busy(&self) -> bool {
+        self.native_agent_runtime
+            .as_ref()
+            .is_some_and(NativeAgentRuntime::is_busy)
+            || self.native_mcp_task.is_some()
+    }
+
+    fn prepare_native_workspace(&mut self, run_id: &str) -> Result<(), String> {
+        if self.code_workspace.is_some() {
+            return Ok(());
+        }
+        let (workspace_root, baseline_path) = self
+            .host
+            .workspace_paths(run_id)
+            .map_err(|error| error.to_string())?;
+        let workspace = CodeWorkspace::open_or_create(
+            &self.project_root,
+            workspace_root,
+            baseline_path,
+        )
+        .map_err(|error| error.to_string())?;
+        self.host
+            .record_event(
+                run_id,
+                AgentEventKind::CodeWorkspacePrepared,
+                "Prepared isolated managed code workspace for the native AgentRuntime.",
+            )
+            .map_err(|error| error.to_string())?;
+        self.code_workspace = Some(workspace);
+        Ok(())
+    }
+
+    fn start_native_agent_execution(&mut self, run_id: &str) -> Result<(), String> {
+        self.prepare_native_workspace(run_id)?;
+        if self.native_agent_runtime.is_none() {
+            let config = LocalModelConfig {
+                endpoint: self.local_model_endpoint.clone(),
+                model: self.local_model_name.clone(),
+            };
+            self.native_agent_runtime = Some(NativeAgentRuntime::local(config));
+        }
+        if self
+            .host
+            .run(run_id)
+            .is_ok_and(|run| run.state == AgentRunState::Inspecting)
+        {
+            self.host
+                .transition_run(
+                    run_id,
+                    AgentRunState::Executing,
+                    "Native AgentRuntime started from the immutable proposal snapshot.",
+                )
+                .map_err(|error| error.to_string())?;
+        }
+        self.start_native_agent_turn(run_id, None, Vec::new())
+    }
+
+    fn start_native_agent_turn(
+        &mut self,
+        run_id: &str,
+        context: Option<String>,
+        images: Vec<Vec<u8>>,
+    ) -> Result<(), String> {
+        let run = self.host.run(run_id).map_err(|error| error.to_string())?.clone();
+        let runtime = self
+            .native_agent_runtime
+            .as_mut()
+            .ok_or_else(|| "Native AgentRuntime is not initialized.".to_owned())?;
+        runtime
+            .start_turn(&run, context.as_deref(), images)
+            .map_err(|error| error.to_string())?;
+        self.status = Some(format!(
+            "{} is reasoning in {:?}; managed tools remain host-owned.",
+            runtime.backend_label(),
+            run.state
+        ));
+        Ok(())
+    }
+
+    fn record_native_result_and_continue(
+        &mut self,
+        run_id: &str,
+        tool: impl Into<String>,
+        success: bool,
+        result: impl Into<String>,
+    ) {
+        let result = result.into();
+        let record = self
+            .native_agent_runtime
+            .as_mut()
+            .ok_or_else(|| "Native AgentRuntime is not initialized.".to_owned())
+            .and_then(|runtime| {
+                runtime
+                    .record_tool_result(tool.into(), success, result.clone())
+                    .map_err(|error| error.to_string())
+            });
+        if let Err(error) = record {
+            self.fail_run(run_id, error);
+            return;
+        }
+        if let Err(error) = self.start_native_agent_turn(run_id, None, Vec::new()) {
+            self.fail_run(run_id, error);
+        }
+    }
+
+    fn poll_native_agent_runtime(&mut self, context: &egui::Context) {
+        let result = match self.native_agent_runtime.as_mut() {
+            Some(runtime) => match runtime.poll() {
+                Some(result) => result,
+                None if runtime.is_busy() => {
+                    context.request_repaint_after(std::time::Duration::from_millis(100));
+                    return;
+                }
+                None => return,
+            },
+            None => return,
+        };
+        let Some(run_id) = self.active_run_id.clone() else {
+            return;
+        };
+        let turn = match result {
+            Ok(turn) => turn,
+            Err(error) => {
+                self.fail_run(&run_id, error.to_string());
+                return;
+            }
+        };
+        if !turn.summary.trim().is_empty()
+            && let Err(error) = self.host.record_semantic_progress(
+                &run_id,
+                "native_reasoning",
+                turn.summary.clone(),
+            )
+        {
+            self.fail_run(&run_id, error.to_string());
+            return;
+        }
+        if let Err(error) = self
+            .host
+            .record_working_state_update(&run_id, turn.working_state.into())
+        {
+            self.fail_run(&run_id, error.to_string());
+            return;
+        }
+        let action_validation = self
+            .host
+            .run(&run_id)
+            .map_err(|error| error.to_string())
+            .and_then(|run| {
+                self.native_agent_runtime
+                    .as_ref()
+                    .ok_or_else(|| "Native AgentRuntime is not initialized.".to_owned())?
+                    .validate_action(run, &turn.action)
+                    .map_err(|error| error.to_string())
+            });
+        if let Err(error) = action_validation {
+            let _ = self.host.record_tool_action(
+                &run_id,
+                "native.policy",
+                error.clone(),
+                Some(false),
+            );
+            self.record_native_result_and_continue(&run_id, "native.policy", false, error);
+            return;
+        }
+        self.handle_native_action(&run_id, turn.action);
+    }
+
+    fn handle_native_action(&mut self, run_id: &str, action: NativeAgentAction) {
+        match action {
+            NativeAgentAction::McpCall { tool, arguments } => {
+                match NativeMcpTask::spawn(
+                    self.connection.endpoint.clone(),
+                    self.connection.authorization_token.clone(),
+                    tool.clone(),
+                    arguments,
+                ) {
+                    Ok(task) => {
+                        self.pending_native_mcp_tool = Some(tool.clone());
+                        self.native_mcp_task = Some(task);
+                        self.status = Some(format!(
+                            "Native AgentRuntime requested typed live Editor MCP tool `{tool}`."
+                        ));
+                    }
+                    Err(error) => {
+                        let _ = self.host.record_tool_action(
+                            run_id,
+                            tool.clone(),
+                            "MCP dispatch preparation",
+                            Some(false),
+                        );
+                        self.record_native_result_and_continue(run_id, tool, false, error);
+                    }
+                }
+            }
+            NativeAgentAction::CodeWrite { path, text } => {
+                let result = self
+                    .code_workspace
+                    .as_ref()
+                    .ok_or_else(|| "Managed code workspace is unavailable.".to_owned())
+                    .and_then(|workspace| {
+                        workspace
+                            .write_text(PathBuf::from(&path).as_path(), &text)
+                            .map_err(|error| error.to_string())
+                    });
+                let success = result.is_ok();
+                let message = result
+                    .map(|()| format!("Wrote `{path}` inside the isolated code workspace."))
+                    .unwrap_or_else(|error| error);
+                let _ = self.host.record_tool_action(
+                    run_id,
+                    "workspace.code_write",
+                    path.clone(),
+                    Some(success),
+                );
+                self.record_native_result_and_continue(
+                    run_id,
+                    format!("code_write:{path}"),
+                    success,
+                    message,
+                );
+            }
+            NativeAgentAction::RuntimeInput { input } => {
+                let result = serde_json::from_value::<ProviderRuntimeInput>(input)
+                    .map_err(|error| error.to_string())
+                    .and_then(|input| input.command());
+                match result {
+                    Ok(command) => {
+                        self.managed_candidate_input_recipe.push(command);
+                        let _ = self.host.record_semantic_progress(
+                            run_id,
+                            "runtime_input_plan",
+                            format!("Native runtime planned managed input {command:?}."),
+                        );
+                        self.record_native_result_and_continue(
+                            run_id,
+                            "runtime_input",
+                            true,
+                            "Input was added to the host-managed Play recipe.",
+                        );
+                    }
+                    Err(error) => self.record_native_result_and_continue(
+                        run_id,
+                        "runtime_input",
+                        false,
+                        error,
+                    ),
+                }
+            }
+            NativeAgentAction::CompletionGate {
+                gate,
+                status,
+                message,
+            } => {
+                let result = self
+                    .host
+                    .record_completion_gate(run_id, &gate, status, message)
+                    .map_err(|error| error.to_string());
+                if gate == "visual_evaluation" {
+                    match result {
+                        Ok(()) => {
+                            let interactions_passed = match status {
+                                CompletionStatus::Passed => Some(true),
+                                CompletionStatus::Failed => Some(false),
+                                CompletionStatus::Pending | CompletionStatus::NotApplicable => None,
+                            };
+                            if let Err(error) = self.host.record_playtest_result(run_id, true, interactions_passed, "Native visual evaluation completed against the host-captured managed Play frame.") {
+                                self.record_runtime_evaluation_failure(run_id, error.to_string());
+                            } else {
+                                self.finish_runtime_evaluation(run_id, Some(0));
+                            }
+                        }
+                        Err(error) => self.record_runtime_evaluation_failure(run_id, error),
+                    }
+                } else {
+                    let success = result.is_ok();
+                    let message = result
+                        .map(|()| format!("Host accepted completion gate `{gate}` as {status:?}."))
+                        .unwrap_or_else(|error| error);
+                    self.record_native_result_and_continue(
+                        run_id,
+                        format!("completion_gate:{gate}"),
+                        success,
+                        message,
+                    );
+                }
+            }
+            NativeAgentAction::Progress { step, detail } => {
+                let result = self
+                    .host
+                    .record_semantic_progress(run_id, step.clone(), detail)
+                    .map_err(|error| error.to_string());
+                let success = result.is_ok();
+                self.record_native_result_and_continue(
+                    run_id,
+                    format!("progress:{step}"),
+                    success,
+                    result.map(|()| "Progress recorded.".to_owned()).unwrap_or_else(|e| e),
+                );
+            }
+            NativeAgentAction::AwaitUser { question } => {
+                if let Err(error) = self.host.append_message(
+                    &self.selected_session,
+                    ConversationRole::Assistant,
+                    question.clone(),
+                ) {
+                    self.fail_run(run_id, error.to_string());
+                    return;
+                }
+                if let Err(error) = self.host.transition_run(
+                    run_id,
+                    AgentRunState::AwaitingUser,
+                    "Native AgentRuntime requires user input before continuing.",
+                ) {
+                    self.fail_run(run_id, error.to_string());
+                    return;
+                }
+                self.status = Some(question);
+            }
+            NativeAgentAction::ReadyForValidation => {
+                if let Some(runtime) = self.native_agent_runtime.as_mut() {
+                    let _ = runtime.record_tool_result(
+                        "ready_for_validation",
+                        true,
+                        "Control returned to AgentHost managed validation.",
+                    );
+                }
+                self.finish_provider_execution(run_id, None);
+            }
+        }
+    }
+
+    fn poll_native_mcp(&mut self, context: &egui::Context) {
+        let Some(task) = self.native_mcp_task.as_ref() else {
+            return;
+        };
+        let Some(result) = task.poll() else {
+            context.request_repaint_after(std::time::Duration::from_millis(50));
+            return;
+        };
+        self.native_mcp_task = None;
+        let Some(run_id) = self.active_run_id.clone() else {
+            self.pending_native_mcp_tool = None;
+            return;
+        };
+        let tool = self
+            .pending_native_mcp_tool
+            .take()
+            .unwrap_or_else(|| "mcp.unknown".to_owned());
+        match result {
+            Ok(value) => {
+                let _ = self.host.record_tool_action(
+                    &run_id,
+                    tool.clone(),
+                    "typed live Editor MCP call",
+                    Some(true),
+                );
+                self.record_native_result_and_continue(
+                    &run_id,
+                    tool,
+                    true,
+                    value.to_string(),
+                );
+            }
+            Err(error) => {
+                let _ = self.host.record_tool_action(
+                    &run_id,
+                    tool.clone(),
+                    "typed live Editor MCP call",
+                    Some(false),
+                );
+                self.record_native_result_and_continue(&run_id, tool, false, error);
+            }
+        }
+    }
+
     fn show_provider(&mut self, ui: &mut egui::Ui) {
         ui.heading("Run");
         ui.horizontal(|ui| {
@@ -1202,15 +1616,17 @@ impl AiStudioPanel {
             ui.text_edit_singleline(&mut self.provider_args);
         });
         ui.small(
-            "The write-capable Go path launches an external AgentRuntime directly without a shell and injects the immutable proposal plus ephemeral Editor MCP connection. The local question backend above is a separate ModelBackend; a native write-capable tool loop is not enabled by this slice.",
+            "Go uses the configured external AgentRuntime when present; otherwise the selected local model runs through the governed native AgentRuntime. Both share the immutable proposal, Agent Host permissions, live Editor MCP writer, managed code workspace, validation, Play/frame evidence, and completion contract.",
         );
         let mut stop_requested = false;
         let mut interrupt_requested = false;
         let mut resume_requested = false;
         ui.horizontal_wrapped(|ui| {
             let can_go = self.process.is_none()
+                && !self.native_runtime_busy()
                 && self.pending_permission.is_none()
-                && !self.provider_program.trim().is_empty();
+                && (!self.provider_program.trim().is_empty()
+                    || !self.local_model_name.trim().is_empty());
             if ui.add_enabled(can_go, egui::Button::new("Go")).clicked() {
                 self.begin_run();
             }
@@ -1262,6 +1678,10 @@ impl AiStudioPanel {
                 task.interrupt();
             }
             self.pending_native_question_start = None;
+            if let Some(runtime) = self.native_agent_runtime.as_mut() { runtime.interrupt(); }
+            if let Some(task) = self.native_mcp_task.as_ref() { task.interrupt(); }
+            self.native_mcp_task = None;
+            self.pending_native_mcp_tool = None;
             if let Some(process) = self.process.as_mut()
                 && let Err(error) = process.cancel()
             {
@@ -1274,11 +1694,15 @@ impl AiStudioPanel {
             {
                 self.status = Some(error.to_string());
             }
+            self.native_agent_runtime = None;
+            self.active_runtime_mode = None;
         }
         if interrupt_requested {
-            if let Some(task) = self.native_question.as_ref() {
-                task.interrupt();
-            }
+            if let Some(task) = self.native_question.as_ref() { task.interrupt(); }
+            if let Some(runtime) = self.native_agent_runtime.as_mut() { runtime.interrupt(); }
+            if let Some(task) = self.native_mcp_task.as_ref() { task.interrupt(); }
+            self.native_mcp_task = None;
+            self.pending_native_mcp_tool = None;
             self.pending_native_question_start = None;
             self.restore_for_editing = true;
             self.pending_runtime_action = Some(AiStudioRuntimeAction::RestoreEditorPresentation);
@@ -1448,15 +1872,22 @@ impl AiStudioPanel {
     }
 
     fn begin_run_authorized(&mut self, authorized_proposal_version: u64) -> Result<String, String> {
-        let provider = self.provider_program.trim().to_owned();
-        if provider.is_empty() {
-            return Err("Configure a compatible agent program locally before Go.".to_owned());
-        }
-        let run_id = self
-            .host
-            .start_run_authorized(&self.selected_session, authorized_proposal_version, provider)
-            .map_err(|error| error.to_string())?;
+        let external_provider = self.provider_program.trim().to_owned();
+        let (mode, provider_label) = if !external_provider.is_empty() {
+            (AgentRuntimeMode::External, external_provider)
+        } else if !self.local_model_name.trim().is_empty() {
+            (AgentRuntimeMode::Native, format!("native:{}", self.local_model_name.trim()))
+        } else {
+            return Err("Configure either a compatible external agent program or an installed local model before Go.".to_owned());
+        };
+        let run_id = self.host.start_run_authorized(&self.selected_session, authorized_proposal_version, provider_label).map_err(|error| error.to_string())?;
         self.active_run_id = Some(run_id.clone());
+        self.active_runtime_mode = Some(mode);
+        self.native_agent_runtime = None;
+        self.native_mcp_task = None;
+        self.pending_native_mcp_tool = None;
+        self.code_workspace = None;
+        self.pending_code_changes.clear();
         self.pending_runtime_action = None;
         self.managed_input_plan.clear();
         self.managed_input_recipe.clear();
@@ -1469,11 +1900,10 @@ impl AiStudioPanel {
         self.managed_evaluation_requested = false;
         self.managed_playtest_started_at = None;
         self.last_captured_frame = None;
-        self.request_permission(
-            run_id.clone(),
-            AgentCapability::ExternalAgentProcess,
-            PendingPermissionAction::LaunchExternalAgent,
-        );
+        match mode {
+            AgentRuntimeMode::External => self.request_permission(run_id.clone(), AgentCapability::ExternalAgentProcess, PendingPermissionAction::LaunchExternalAgent),
+            AgentRuntimeMode::Native => self.start_native_agent_execution(&run_id)?,
+        }
         Ok(run_id)
     }
 
@@ -1837,11 +2267,20 @@ impl AiStudioPanel {
             return;
         }
         self.managed_evaluation_requested = true;
-        self.request_permission(
-            run_id.to_owned(),
-            AgentCapability::ExternalAgentProcess,
-            PendingPermissionAction::LaunchRuntimeEvaluation,
-        );
+        if self.active_runtime_mode == Some(AgentRuntimeMode::Native) {
+            let Some(observation) = self.managed_runtime_observation.clone() else {
+                self.record_runtime_evaluation_failure(run_id, "Native runtime evaluation requires a host-captured frame artifact.".to_owned());
+                return;
+            };
+            let image = match fs::read(&observation.path) {
+                Ok(image) => image,
+                Err(error) => { self.record_runtime_evaluation_failure(run_id, format!("Could not read host-captured frame for native evaluation: {error}")); return; }
+            };
+            let context = format!("Evaluate the attached host-captured managed Play frame {} ({}x{}). Resolve visual_evaluation with host-reportable evidence; interaction success must be consistent with the observed frame and the immutable playtest plan.", observation.artifact_id, observation.width, observation.height);
+            if let Err(error) = self.start_native_agent_turn(run_id, Some(context), vec![image]) { self.record_runtime_evaluation_failure(run_id, error); }
+        } else {
+            self.request_permission(run_id.to_owned(), AgentCapability::ExternalAgentProcess, PendingPermissionAction::LaunchRuntimeEvaluation);
+        }
     }
 
     fn request_managed_source_repair_if_ready(&mut self) {
@@ -1881,11 +2320,12 @@ impl AiStudioPanel {
                 ) {
                     self.status = Some(error.to_string());
                 }
-                self.request_permission(
-                    run_id,
-                    AgentCapability::ExternalAgentProcess,
-                    PendingPermissionAction::LaunchExternalAgent,
-                );
+                if self.active_runtime_mode == Some(AgentRuntimeMode::Native) {
+                    let context = self.host.run(&run_id).map(managed_source_repair_context).unwrap_or_else(|error| format!("Re-inspect after validation failure: {error}"));
+                    if let Err(error) = self.start_native_agent_turn(&run_id, Some(context), Vec::new()) { self.fail_run(&run_id, error); }
+                } else {
+                    self.request_permission(run_id, AgentCapability::ExternalAgentProcess, PendingPermissionAction::LaunchExternalAgent);
+                }
             }
             SourceRepairDecision::Exhausted => {
                 self.managed_repair_requested = true;
@@ -1946,11 +2386,12 @@ impl AiStudioPanel {
                 ) {
                     self.status = Some(error.to_string());
                 }
-                self.request_permission(
-                    run_id,
-                    AgentCapability::ExternalAgentProcess,
-                    PendingPermissionAction::LaunchExternalAgent,
-                );
+                if self.active_runtime_mode == Some(AgentRuntimeMode::Native) {
+                    let context = self.host.run(&run_id).map(|run| managed_repair_context(run, self.managed_runtime_observation.as_ref())).unwrap_or_else(|error| format!("Re-inspect after runtime failure: {error}"));
+                    if let Err(error) = self.start_native_agent_turn(&run_id, Some(context), Vec::new()) { self.fail_run(&run_id, error); }
+                } else {
+                    self.request_permission(run_id, AgentCapability::ExternalAgentProcess, PendingPermissionAction::LaunchExternalAgent);
+                }
             }
             RuntimeRepairDecision::Exhausted => {
                 self.managed_repair_requested = true;
