@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0126-camera-override-20260817-2021",
+  "target_branch": "chatgpt/gameengine-adr0126-first-release",
+  "expected_head_sha": "3787738e2a39bb05cf18420b3ee7391c7fd2ddfd",
+  "baseline_main_sha": "d03ed9e573818eb0ca088f37953f611d6ed4d22e",
+  "patch_sha256": "1b40c36f7a1f4f5808a517286b390bd910846c0034633c2d00c2c28eee75aece",
+  "patch_bytes": 15952,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Add transient Game View camera override",
+  "pr_title": "GameEngine: complete ADR 0126 Timeline first release",
+  "pr_body": "## Summary\n\nContinues ADR 0126 first-release implementation by adding a runtime-only Game View camera-selection override shared by renderer, temporal history, LOD, camera-relative movement, and lock-on. Timeline composition will arbitrate stable camera-cut bindings into this neutral runtime resource without mutating persisted Camera3D enabled/priority fields.\n\nDraft PR remains intentionally unmerged pending full ADR 0126 completion and validation."
+}
