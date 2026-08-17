@@ -243,6 +243,16 @@ impl EditorApp {
     }
 
     #[cfg(feature = "visual-validation")]
+    pub fn prepare_spatial_audio_listener_visual_validation(&mut self) {
+        self.prepare_spatial_audio_visual_validation_with_scroll(None);
+        let emitter_type =
+            ComponentTypeId::new(engine::scene_bridge::AUDIO_EMITTER_COMPONENT);
+        self.preferences
+            .component_card_open
+            .insert(emitter_type.as_str().to_owned(), false);
+    }
+
+    #[cfg(feature = "visual-validation")]
     fn prepare_spatial_audio_visual_validation_with_scroll(
         &mut self,
         inspector_scroll_offset: Option<f32>,

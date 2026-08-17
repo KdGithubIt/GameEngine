@@ -78,6 +78,8 @@ impl EditorShell {
                 app.prepare_spatial_audio_visual_validation();
             } else if requested == "Spatial Audio Details" {
                 app.prepare_spatial_audio_details_visual_validation();
+            } else if requested == "Spatial Audio Listener" {
+                app.prepare_spatial_audio_listener_visual_validation();
             } else {
                 if requested == "VFX Builder" {
                     app.prepare_vfx_visual_validation();
