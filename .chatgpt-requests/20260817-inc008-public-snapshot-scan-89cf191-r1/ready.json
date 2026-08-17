@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "20260817-inc008-public-snapshot-scan-89cf191-r1",
+  "target_branch": "chatgpt/gameengine-automation-incident-008",
+  "expected_head_sha": "89cf19154b1664ef8de83d91cdbeeb2c4242a738",
+  "baseline_main_sha": "89cf19154b1664ef8de83d91cdbeeb2c4242a738",
+  "patch_sha256": "63deb078b17bc42dc05f433a4d15e60ac834525071e14375ae6e89e639dece65",
+  "patch_bytes": 3826,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Record public snapshot validation incident",
+  "pr_title": "GameEngine: record public snapshot validation incident",
+  "pr_body": "## Summary\n\nRecords INC-008 for the confirmed validation-planner false positive where a documentation placeholder was classified as a concrete private user path. The infrastructure fix was already merged separately in PR #137 and recovery was confirmed by ADR 0121 Windows Validation.\n\n## Scope\n\nDocumentation-only incident record. No product or trusted workflow changes."
+}
