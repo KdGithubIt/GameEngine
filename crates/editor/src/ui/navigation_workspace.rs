@@ -192,6 +192,8 @@ impl super::EditorApp {
             .project_root
             .clone()
             .ok_or_else(|| "open a project before preparing navigation visual validation".to_owned())?;
+        std::fs::create_dir_all(project.assets_root().join("navigation"))
+            .map_err(|error| error.to_string())?;
 
         let floor = self
             .session
