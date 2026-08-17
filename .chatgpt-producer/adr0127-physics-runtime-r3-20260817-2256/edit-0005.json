@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/authoring/src/lib.rs","old":"pub use persist::{replace_file_contents, PersistError, PersistOperation};\n","new":"pub use native_2d::{\n    PixelPreviewPolicy, Project2dSettings, SortingLayer, SortingLayerId, SortingLayerIdError,\n    SpriteFiltering,\n};\npub use persist::{replace_file_contents, PersistError, PersistOperation};\n"}
