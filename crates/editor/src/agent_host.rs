@@ -942,63 +942,6 @@ impl AgentHost {
         self.persist_session(&session_id)
     }
 
-    pub(crate) fn record_managed_runtime_input(
-        &mut self,
-        run_id: &str,
-        action: impl Into<String>,
-    ) -> Result<(), AgentHostError> {
-        let action = action.into();
-        let (session_id, _) = self.run_location(run_id)?;
-        let run = self.run_mut_in_session(&session_id, run_id)?;
-        run.audit.managed_runtime_inputs = run.audit.managed_runtime_inputs.saturating_add(1);
-        push_event_with_evidence(
-            run,
-            AgentEventKind::ToolAction,
-            format!("runtime.input: {action}"),
-            None,
-            Some(AgentEventEvidence::ToolAction {
-                tool: "runtime.input".to_owned(),
-                action,
-                success: Some(true),
-            }),
-        );
-        self.persist_session(&session_id)
-    }
-
-    pub(crate) fn record_asset_acquisition(
-        &mut self,
-        run_id: &str,
-        provider: impl Into<String>,
-        source: impl Into<String>,
-        license: Option<String>,
-        imported_paths: Vec<PathBuf>,
-    ) -> Result<(), AgentHostError> {
-        let provider = provider.into();
-        let source = sanitize_portable_text(source.into());
-        let license = license.map(sanitize_portable_text);
-        let (session_id, _) = self.run_location(run_id)?;
-        let run = self.run_mut_in_session(&session_id, run_id)?;
-        run.audit.asset_acquisitions.push(AssetAcquisitionRecord {
-            provider: provider.clone(),
-            source: source.clone(),
-            license,
-            imported_paths: imported_paths.clone(),
-            created_unix_ms: unix_ms(),
-        });
-        push_event_with_evidence(
-            run,
-            AgentEventKind::ToolAction,
-            format!("asset.acquire: {provider} imported {} asset(s)", imported_paths.len()),
-            None,
-            Some(AgentEventEvidence::ToolAction {
-                tool: "asset.acquire".to_owned(),
-                action: source,
-                success: Some(true),
-            }),
-        );
-        self.persist_session(&session_id)
-    }
-
     pub(crate) fn record_completion_gate(
         &mut self,
         run_id: &str,
@@ -2008,18 +1951,6 @@ fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), AgentHo
     Ok(())
 }
 
-fn sanitize_portable_text(mut text: String) -> String {
-    if let Some(query) = text.find('?') {
-        text.truncate(query);
-        text.push_str("?[redacted]");
-    }
-    if text.chars().count() > MAX_PROVIDER_EVENT_CHARS {
-        text = text.chars().take(MAX_PROVIDER_EVENT_CHARS).collect();
-        text.push_str("… [truncated]");
-    }
-    text
-}
-
 fn unix_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -2141,19 +2072,6 @@ impl CodeWorkspace {
 
     pub(crate) fn root(&self) -> &Path {
         &self.workspace_root
-    }
-
-    pub(crate) fn read_text(&self, relative: &Path) -> Result<Option<String>, AgentHostError> {
-        validate_code_relative_path(relative)?;
-        read_optional_utf8(&self.workspace_root.join(relative), relative)
-    }
-
-    pub(crate) fn write_text(&mut self, relative: &Path, text: &str) -> Result<(), AgentHostError> {
-        validate_code_relative_path(relative)?;
-        if !is_managed_code_file(relative) {
-            return Err(AgentHostError::InvalidRelativePath(relative.to_path_buf()));
-        }
-        write_text_atomic(&self.workspace_root.join(relative), text)
     }
 
     pub(crate) fn collect_changes(&self) -> Result<Vec<CodeChange>, AgentHostError> {
