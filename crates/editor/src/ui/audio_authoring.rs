@@ -176,7 +176,10 @@ pub(super) fn show_audio_component_extras(
         action
     } else if component_type.as_str() == engine::scene_bridge::AUDIO_LISTENER_COMPONENT {
         ui.separator();
-        ui.small("Scene View shows this listener's world-space orientation. Highest enabled priority wins; equal highest priorities use deterministic entity order.");
+        ui.scope(|ui| {
+            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
+            ui.small("Scene View shows this listener's world-space orientation. Highest enabled priority wins; equal highest priorities use deterministic entity order.");
+        });
         None
     } else {
         None
@@ -240,6 +243,16 @@ impl EditorApp {
     #[cfg(feature = "visual-validation")]
     pub fn prepare_spatial_audio_details_visual_validation(&mut self) {
         self.prepare_spatial_audio_visual_validation_with_scroll(Some(300.0));
+    }
+
+    #[cfg(feature = "visual-validation")]
+    pub fn prepare_spatial_audio_listener_visual_validation(&mut self) {
+        self.prepare_spatial_audio_visual_validation_with_scroll(None);
+        let emitter_type =
+            ComponentTypeId::new(engine::scene_bridge::AUDIO_EMITTER_COMPONENT);
+        self.preferences
+            .component_card_open
+            .insert(emitter_type.as_str().to_owned(), false);
     }
 
     #[cfg(feature = "visual-validation")]
