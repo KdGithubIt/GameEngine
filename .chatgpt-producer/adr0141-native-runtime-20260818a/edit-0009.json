@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "enum ExternalAgentPurpose {\n    BuildOrRepair,\n    RuntimeEvaluation,\n}\n\n#[derive(Debug, Clone)]\nstruct ManagedRuntimeObservation {",
+  "new": "enum ExternalAgentPurpose {\n    BuildOrRepair,\n    RuntimeEvaluation,\n}\n\n#[derive(Debug, Clone, Copy, PartialEq, Eq)]\nenum AgentRuntimeMode {\n    External,\n    Native,\n}\n\n#[derive(Debug, Clone)]\nstruct ManagedRuntimeObservation {"
+}
