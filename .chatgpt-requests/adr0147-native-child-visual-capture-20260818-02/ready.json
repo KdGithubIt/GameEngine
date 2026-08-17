@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0147-native-child-visual-capture-20260818-02",
+  "target_branch": "chatgpt/gameengine-adr0147-detached-ai-studio-v2",
+  "expected_head_sha": "7a92cfa64342b2b04d13df50dfad1fe1df7cc099",
+  "baseline_main_sha": "2d6dc07734015929c05a42708f0d5289891c685b",
+  "patch_sha256": "9d4af28a4d348ad3bbe35ee0672c819f800e70a26ab5649403d4b79e09b7ea87",
+  "patch_bytes": 13780,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Fix ADR0147 detached visual capture",
+  "pr_title": "GameEngine: implement ADR0147 detached AI Studio",
+  "pr_body": "## Summary\n\n- implement ADR0147 Tier 1 as a detachable native eframe viewport while retaining one project-scoped Agent Host\n- preserve session/run/permission/workspace/resource-arbitration state across detach, close, reopen, and reattach\n- capture the actual detached Windows child window for visual validation because eframe 0.34.3 does not execute Screenshot actions for immediate child viewports\n- mark ADR0147 Accepted\n\n<!-- gameengine-visual-validation: editor -->"
+}
