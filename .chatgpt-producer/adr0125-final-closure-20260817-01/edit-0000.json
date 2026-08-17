@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/vfx_builder_completion.rs",
+  "old": "        let mut preview = VfxPreviewState::default();\n        preview.current_time = 0.75;",
+  "new": "        let mut preview = VfxPreviewState {\n            current_time: 0.75,\n            ..Default::default()\n        };"
+}
