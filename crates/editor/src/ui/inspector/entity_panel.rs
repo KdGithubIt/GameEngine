@@ -278,17 +278,37 @@ impl EditorApp {
             self.apply_ui_result(result);
         }
 
-        if let Some(info) = self.session.scene().and_then(|scene| {
-            crate::prefab_workflow::inspect_prefab_instance(scene, &selected).ok()
-        }) {
+        // Prefab markers persist a project-relative source, so every workflow
+        // that opens or rewrites the referenced file needs the project root.
+        let project_root = self
+            .project_root
+            .as_ref()
+            .map(|project| project.path().to_path_buf());
+        let instance_info = match (self.session.scene(), project_root.as_deref()) {
+            (Some(scene), Some(root)) => {
+                crate::prefab_workflow::inspect_prefab_instance(scene, root, &selected).ok()
+            }
+            _ => None,
+        };
+        if let (Some(info), Some(project_root)) = (instance_info, project_root) {
             ui.separator();
             ui.heading("Prefab Instance");
             // A prefab path has no break opportunities, so the dock's wrap mode
             // would slice it mid-segment across several lines. Truncating keeps
             // the row readable and moves the complete path to the tooltip.
-            let source_text = info.source.display().to_string();
+            let source_text = info.source.to_string();
             ui.add(egui::Label::new(egui::RichText::new(&source_text).monospace()).truncate())
                 .on_hover_text(&source_text);
+            if !info.source.is_portable() {
+                // The marker still holds a pre-ADR-0134 absolute path. It keeps
+                // working on this machine, so this is a migration prompt rather
+                // than a broken reference.
+                ui.colored_label(
+                    egui::Color32::from_rgb(220, 170, 60),
+                    "This instance stores an absolute path from another machine. \
+                     Revert it to record a portable project-relative source.",
+                );
+            }
             if let Some(diagnostic) = info.diagnostic {
                 ui.colored_label(egui::Color32::RED, diagnostic);
             }
@@ -315,15 +335,15 @@ impl EditorApp {
                     .clicked();
             });
             if placement_mode {
-                self.prefab_placement_source = Some(info.source.clone());
+                self.prefab_placement_source = Some(info.resolved.clone());
             }
             if open_prefab
                 && let Some(project) = &self.project_root {
                     let relative = info
-                        .source
+                        .resolved
                         .strip_prefix(project.assets_root())
                         .map(Path::to_path_buf)
-                        .unwrap_or_else(|_| info.source.clone());
+                        .unwrap_or_else(|_| info.resolved.clone());
                     self.reveal_asset_in_browser(&relative);
                 }
             if apply {
@@ -334,7 +354,11 @@ impl EditorApp {
                         crate::session::EditorSessionError::NoSceneDocument,
                     ))
                     .and_then(|scene| {
-                        crate::prefab_workflow::apply_prefab_overrides(scene, &selected)
+                        crate::prefab_workflow::apply_prefab_overrides(
+                            scene,
+                            &project_root,
+                            &selected,
+                        )
                     });
                 if let Err(error) = result {
                     self.session
@@ -345,7 +369,11 @@ impl EditorApp {
                 }
             }
             if revert {
-                match crate::prefab_workflow::revert_prefab_instance(&mut self.session, &selected) {
+                match crate::prefab_workflow::revert_prefab_instance(
+                    &mut self.session,
+                    &project_root,
+                    &selected,
+                ) {
                     Ok(root) => self.select_single_entity(Some(root)),
                     Err(error) => {
                         self.session

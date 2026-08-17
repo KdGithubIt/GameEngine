@@ -9,7 +9,7 @@ use crate::asset::{AssetManifest, ImportSettings, ManifestEntry};
 use engine_authoring::{
     replace_file_contents, AssetId, AuthoringPermission, AuthoringPermissionError,
     AuthoringPermissions, AuthoringScene, EntityId, PersistError, PrefabAsset, PrefabError,
-    ProjectError, ProjectRoot,
+    PrefabSourceError, PrefabSourcePath, ProjectError, ProjectRoot,
 };
 use serde::Serialize;
 use std::fmt;
@@ -39,8 +39,13 @@ pub struct PrefabCreation {
 pub struct LoadedPrefab {
     /// Parsed prefab document.
     pub prefab: PrefabAsset,
-    /// Canonical resolved file path used for the persisted instance marker.
-    pub source: PathBuf,
+    /// Portable project-relative source for the persisted instance marker.
+    ///
+    /// This is what belongs in canonical Scene data; [`Self::path`] is the
+    /// machine-specific location and must not be serialized (ADR 0134).
+    pub source: PrefabSourcePath,
+    /// Canonical resolved file path that was opened.
+    pub path: PathBuf,
 }
 
 /// Failure from shared prefab asset operations.
@@ -60,6 +65,8 @@ pub enum PrefabAssetError {
     InvalidSuffix(String),
     /// Captured prefab structure is invalid.
     Prefab(PrefabError),
+    /// The resolved prefab file cannot be named as portable project data.
+    Source(PrefabSourceError),
     /// Prefab JSON serialization failed.
     PrefabJson(serde_json::Error),
     /// Asset manifest JSON serialization failed.
@@ -88,6 +95,7 @@ impl PrefabAssetError {
             Self::ScriptFolder(_) => "prefab.script_folder",
             Self::InvalidSuffix(_) => "prefab.invalid_path",
             Self::Prefab(_) => "prefab.invalid_selection",
+            Self::Source(source) => source.code(),
             Self::PrefabJson(_) => "prefab.serialization_failed",
             Self::ManifestJson(_) => "asset.manifest_serialization_failed",
             Self::Io { .. } => "prefab.read_failed",
@@ -115,6 +123,7 @@ impl fmt::Display for PrefabAssetError {
                 write!(formatter, "prefab path `{path}` must end with .prefab.json")
             }
             Self::Prefab(source) => write!(formatter, "prefab selection is invalid: {source}"),
+            Self::Source(source) => source.fmt(formatter),
             Self::PrefabJson(source) => write!(formatter, "failed to serialize prefab: {source}"),
             Self::ManifestJson(source) => {
                 write!(formatter, "failed to serialize asset manifest: {source}")
@@ -136,6 +145,7 @@ impl std::error::Error for PrefabAssetError {
             Self::Permission(source) => Some(source),
             Self::Project(source) => Some(source),
             Self::Prefab(source) => Some(source),
+            Self::Source(source) => Some(source),
             Self::PrefabJson(source) | Self::ManifestJson(source) => Some(source),
             Self::Io { source, .. } => Some(source),
             Self::PrefabPersist(source) | Self::ManifestPersist(source) => Some(source),
@@ -162,6 +172,12 @@ impl From<ProjectError> for PrefabAssetError {
 impl From<PrefabError> for PrefabAssetError {
     fn from(source: PrefabError) -> Self {
         Self::Prefab(source)
+    }
+}
+
+impl From<PrefabSourceError> for PrefabAssetError {
+    fn from(source: PrefabSourceError) -> Self {
+        Self::Source(source)
     }
 }
 
@@ -252,10 +268,15 @@ impl PrefabAssetService {
 
     /// Loads one author-owned prefab through the project asset boundary.
     ///
+    /// The returned [`LoadedPrefab::source`] is the portable project-relative
+    /// name used by the instance marker. The resolved filesystem path stays in
+    /// [`LoadedPrefab::path`] so it cannot reach canonical project data.
+    ///
     /// # Errors
     ///
     /// Returns [`PrefabAssetError`] for read permission denial, an unsafe or
-    /// missing source path, IO failure, or invalid prefab JSON/structure.
+    /// missing source path, a resolved file outside the project root, IO
+    /// failure, or invalid prefab JSON/structure.
     pub fn load(
         &self,
         project: &ProjectRoot,
@@ -265,13 +286,18 @@ impl PrefabAssetService {
         permissions.require(AuthoringPermission::Read)?;
         let normalized = normalize_relative_path(source_relative)?;
         require_prefab_suffix(&normalized)?;
-        let source = project.resolve_asset(&normalized)?;
-        let json = fs::read_to_string(&source).map_err(|error| PrefabAssetError::Io {
-            path: source.clone(),
+        let path = project.resolve_asset(&normalized)?;
+        let source = PrefabSourcePath::from_project_path(project.path(), &path)?;
+        let json = fs::read_to_string(&path).map_err(|error| PrefabAssetError::Io {
+            path: path.clone(),
             source: error,
         })?;
         let prefab = PrefabAsset::from_json(&json)?;
-        Ok(LoadedPrefab { prefab, source })
+        Ok(LoadedPrefab {
+            prefab,
+            source,
+            path,
+        })
     }
 }
 
@@ -515,6 +541,12 @@ mod tests {
             )
             .expect("prefab load");
         assert_eq!(loaded.prefab.entities.len(), 2);
+        assert_eq!(
+            loaded.source.as_str(),
+            "assets/prefabs/enemy.prefab.json",
+            "the instance marker source must be portable project data"
+        );
+        assert_eq!(loaded.source.resolve(project.path()), loaded.path);
 
         let denied = PrefabAssetService::new()
             .load(

@@ -91,8 +91,9 @@ the beginning:
   [0078](0078-format-independent-model-ir.md),
   [0081](0081-fbx-import-via-ufbx.md),
   [0094](0094-generic-data-assets.md),
-  [0101](0101-imported-material-extraction-and-remap.md), and
-  [0105](0105-model-level-material-and-texture-sub-asset-overrides.md).
+  [0101](0101-imported-material-extraction-and-remap.md),
+  [0105](0105-model-level-material-and-texture-sub-asset-overrides.md), and
+  [0134](0134-portable-prefab-instance-source.md).
 - **Rendering and materials:**
   [0055](0055-render-authoring-and-material-v2-contract.md),
   [0100](0100-generic-shading-models-and-outline-pass.md),
@@ -274,3 +275,4 @@ implementation contract.
 | [0131](0131-conversational-ai-studio-agent-runtime-and-governed-workspace.md) | Conversational AI Studio Agent Runtime and Governed Workspace |
 | [0132](0132-declarative-authoring-capability-registry-and-automatic-adapter-exposure.md) | Declarative Authoring Capability Registry and Automatic Adapter Exposure |
 | [0133](0133-remote-ai-studio-companion-access-and-private-network-boundary.md) | Remote AI Studio Companion Access and Private Network Boundary |
+| [0134](0134-portable-prefab-instance-source.md) | Portable Prefab Instance Source |

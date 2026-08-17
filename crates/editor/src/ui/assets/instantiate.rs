@@ -42,6 +42,7 @@ impl EditorApp {
         let source = project.assets_root().join(&entry.relative_path);
         match crate::prefab_workflow::instantiate_prefab(
             &mut self.session,
+            project.path(),
             &source,
             self.selected_entity.clone(),
         ) {
@@ -104,7 +105,12 @@ impl EditorApp {
                 ));
             return;
         }
-        match crate::prefab_workflow::instantiate_prefab(&mut self.session, &source, parent) {
+        match crate::prefab_workflow::instantiate_prefab(
+            &mut self.session,
+            project.path(),
+            &source,
+            parent,
+        ) {
             Ok(root) => {
                 // A model arrives as a whole subtree; folding it keeps the
                 // hierarchy reading as one placed object until the author
