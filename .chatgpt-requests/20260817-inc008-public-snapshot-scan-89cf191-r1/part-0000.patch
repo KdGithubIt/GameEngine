@@ -1,0 +1,78 @@
+diff --git a/docs/CHATGPT_AUTOMATION_INCIDENTS.md b/docs/CHATGPT_AUTOMATION_INCIDENTS.md
+index 376dd4ceec50550bd5190e9b1ae463e41b341c2c..17d961cb8a32d043f76cea7e2f065e26bf41eeeb 100644
+--- a/docs/CHATGPT_AUTOMATION_INCIDENTS.md
++++ b/docs/CHATGPT_AUTOMATION_INCIDENTS.md
+@@ -48,6 +48,7 @@ INC-004  Main advanced after task baseline and polluted validation  Validation
+ INC-005  Patch headers included checkout-directory prefix           Dispatcher         Resolved
+ INC-006  eframe screenshot helper incompatible with default wgpu    Visual validation  Resolved
+ INC-007  Missing-request probe misread unresolved revision text     Transport          Resolved
++INC-008  Documentation placeholder tripped public snapshot scan     Validation         Resolved
+ ```
+ 
+ ## INC-001: Markdown trailing whitespace rejected by patch preflight
+@@ -540,6 +541,65 @@ workflow once the transport defect is corrected.
+ - Confirmed recovery transport commit: `7b9f3b79fdbcc980c5d79b96a4100ae7e97d271c`
+ - Fresh successful ADR 0131 publisher runs: `31938262049`, `31938631848`, `31939039568`
+ 
++## INC-008: Documentation placeholder tripped public snapshot scan
++
++Status: Resolved
++Layer: Validation
++First confirmed: 2026-08-17
++Last confirmed: 2026-08-17
++
++### Symptom
++
++ADR 0121 Draft PR #122 reached Windows Validation but stopped in the validation
++planner before any Rust gate ran. The public snapshot security scan reported a
++high-confidence `private-user-path` finding in ADR 0134 documentation.
++
++### Evidence
++
++- Windows Validation run `31983199685` passed the planner's nested and standalone
++  layout cases, then failed in `Export-PublicSnapshot.ps1` before Rust validation.
++- The reported finding was in
++  `docs/adr/0134-portable-prefab-instance-source.md`; the matched text was a
++  documentation placeholder rather than a concrete private machine path.
++- Infrastructure PR #137 added placeholder handling while retaining a regression
++  case that rejects a concrete private Windows user path, and was merged before
++  main commit `89cf19154b1664ef8de83d91cdbeeb2c4242a738`.
++- Replacement ADR 0121 validations `31985480476` and `31985901970` both passed
++  `Test validation planner layouts`; run `31985901970` then completed the
++  affected documentation, lint, and tests gates successfully.
++
++### Root cause
++
++The public snapshot scanner's high-confidence private-user-path rule treated a
++documentation example containing an explicit placeholder as though it were a
++concrete local Windows user path. Because the security scan is part of the
++validation planner self-test, the false positive prevented unrelated product
++validation from reaching any Rust command.
++
++### Resolution
++
++Keep the security rule for concrete private paths, but distinguish documented
++placeholder forms from real user-specific values. PR #137 added that distinction
++and a regression test for a concrete private path. Re-running ADR 0121 from
++current main confirmed the planner and all selected affected gates now succeed.
++
++### Prevention / ChatGPT next action
++
++When validation planner self-tests fail in the public snapshot security scan,
++inspect the scanner finding before modifying product code or retrying the same
++request. A placeholder false positive belongs to the validation infrastructure;
++fix it on a separate automation branch, preserve tests for real private paths,
++and confirm recovery by rerunning the original product validation.
++
++### References
++
++- Blocked product PR: `#122`
++- Replacement product PR: `#145`
++- Failed validation run: `31983199685`
++- Infrastructure PR: `#137`
++- Recovery validation runs: `31985480476`, `31985901970`
++- Recovery product head: `bc2c697ae49232c0d75deed782ce94286d8ecc8f`
++
+ ## Entry template
+ 
+ Copy this section for a materially new root cause. Incident IDs are monotonic
