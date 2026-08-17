@@ -149,10 +149,199 @@ fn load_navigation_document_for_ui(
     Ok((document, path))
 }
 
+#[cfg(feature = "visual-validation")]
+fn visual_navigation_component_value(
+    type_id: &str,
+    overrides: impl IntoIterator<Item = (&'static str, engine_authoring::Value)>,
+) -> Result<engine_authoring::Value, String> {
+    let component_type = ComponentTypeId::new(type_id);
+    let registry = engine::builtin_registry();
+    let definition = registry
+        .get(&component_type)
+        .ok_or_else(|| format!("missing built-in component schema `{type_id}`"))?;
+    let mut value = definition.schema.default_value();
+    let engine_authoring::Value::Object(fields) = &mut value else {
+        return Err(format!("built-in component `{type_id}` is not object-valued"));
+    };
+    for (field, replacement) in overrides {
+        fields.insert(field.to_owned(), replacement);
+    }
+    Ok(value)
+}
+
 impl super::EditorApp {
     #[cfg(feature = "visual-validation")]
     pub fn prepare_navigation_visual_validation(&mut self) {
         self.open_navigation_window();
+        if let Err(error) = self.prepare_navigation_visual_validation_fixture() {
+            self.navigation_workspace.path_report =
+                format!("Visual validation fixture failed: {error}");
+            self.session
+                .push_diagnostic(engine_authoring::Diagnostic::error(
+                    "editor.navigation_visual_fixture_failed",
+                    error,
+                ));
+        }
+    }
+
+    #[cfg(feature = "visual-validation")]
+    fn prepare_navigation_visual_validation_fixture(&mut self) -> Result<(), String> {
+        use engine_authoring::Value;
+
+        let project = self
+            .project_root
+            .clone()
+            .ok_or_else(|| "open a project before preparing navigation visual validation".to_owned())?;
+        std::fs::create_dir_all(project.assets_root().join("navigation"))
+            .map_err(|error| error.to_string())?;
+
+        let floor = self
+            .session
+            .create_scene_entity("visual_nav_floor")
+            .map_err(|error| error.to_string())?;
+        self.session
+            .add_scene_component(
+                floor.clone(),
+                ComponentTypeId::new(engine::scene_bridge::COLLIDER_COMPONENT),
+                visual_navigation_component_value(
+                    engine::scene_bridge::COLLIDER_COMPONENT,
+                    [
+                        ("half_extent_x", Value::F64(4.0)),
+                        ("half_extent_y", Value::F64(0.25)),
+                        ("half_extent_z", Value::F64(4.0)),
+                    ],
+                )?,
+            )
+            .map_err(|error| error.to_string())?;
+        self.session
+            .add_scene_component(
+                floor.clone(),
+                ComponentTypeId::new(engine::scene_bridge::PHYSICS_BODY_COMPONENT),
+                visual_navigation_component_value(
+                    engine::scene_bridge::PHYSICS_BODY_COMPONENT,
+                    std::iter::empty(),
+                )?,
+            )
+            .map_err(|error| error.to_string())?;
+
+        let link = self
+            .session
+            .create_scene_entity("visual_nav_link")
+            .map_err(|error| error.to_string())?;
+        self.session
+            .add_scene_component(
+                link,
+                ComponentTypeId::new(engine::navigation_bake::NAVIGATION_LINK_COMPONENT),
+                visual_navigation_component_value(
+                    engine::navigation_bake::NAVIGATION_LINK_COMPONENT,
+                    [
+                        ("start_x", Value::F64(-2.5)),
+                        ("start_y", Value::F64(0.25)),
+                        ("start_z", Value::F64(-2.0)),
+                        ("end_x", Value::F64(2.5)),
+                        ("end_y", Value::F64(0.25)),
+                        ("end_z", Value::F64(-2.0)),
+                    ],
+                )?,
+            )
+            .map_err(|error| error.to_string())?;
+
+        let modifier = self
+            .session
+            .create_scene_entity("visual_nav_modifier")
+            .map_err(|error| error.to_string())?;
+        self.session
+            .add_scene_component(
+                modifier,
+                ComponentTypeId::new(engine::navigation_bake::NAVIGATION_MODIFIER_COMPONENT),
+                visual_navigation_component_value(
+                    engine::navigation_bake::NAVIGATION_MODIFIER_COMPONENT,
+                    [
+                        ("center_x", Value::F64(0.0)),
+                        ("center_y", Value::F64(0.25)),
+                        ("center_z", Value::F64(1.5)),
+                        ("half_extents_x", Value::F64(0.8)),
+                        ("half_extents_y", Value::F64(0.3)),
+                        ("half_extents_z", Value::F64(0.8)),
+                        ("mode", Value::String("area".to_owned())),
+                        ("area", Value::I64(0)),
+                        ("cost_multiplier", Value::F64(2.0)),
+                    ],
+                )?,
+            )
+            .map_err(|error| error.to_string())?;
+
+        let agent = self
+            .session
+            .create_scene_entity("visual_nav_agent")
+            .map_err(|error| error.to_string())?;
+        self.session
+            .add_scene_component(
+                agent,
+                ComponentTypeId::new(engine::scene_bridge::NAV_MESH_AGENT_COMPONENT),
+                visual_navigation_component_value(
+                    engine::scene_bridge::NAV_MESH_AGENT_COMPONENT,
+                    [
+                        ("has_target", Value::Bool(true)),
+                        ("target_x", Value::F64(3.0)),
+                        ("target_y", Value::F64(0.25)),
+                        ("target_z", Value::F64(3.0)),
+                    ],
+                )?,
+            )
+            .map_err(|error| error.to_string())?;
+
+        let scene = self
+            .session
+            .scene()
+            .cloned()
+            .ok_or_else(|| "navigation visual validation requires an open scene".to_owned())?;
+        let (mut document, document_path) =
+            load_navigation_document_for_ui(&project, self.session.current_document_path())?;
+        document.source_fingerprint = None;
+        let mut manifest = self.asset_manifest.clone();
+        let cancelled = AtomicBool::new(false);
+        let result = bake_scene_navmesh(
+            &scene,
+            &project,
+            &mut manifest,
+            &mut document,
+            &cancelled,
+        )
+        .map_err(|error| error.to_string())?;
+        let document_json = document
+            .to_canonical_json()
+            .map_err(|error| error.to_string())?;
+        if let Some(parent) = document_path.parent() {
+            std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+        }
+        replace_file_contents(&document_path, &document_json)
+            .map_err(|error| error.to_string())?;
+        self.asset_manifest = manifest;
+
+        let surface = self
+            .session
+            .create_scene_entity("visual_nav_surface")
+            .map_err(|error| error.to_string())?;
+        self.session
+            .add_scene_component(
+                surface,
+                ComponentTypeId::new(engine::scene_bridge::NAV_MESH_SURFACE_COMPONENT),
+                Value::Object(std::collections::BTreeMap::from([(
+                    "source".to_owned(),
+                    Value::AssetRef(result.asset_id),
+                )])),
+            )
+            .map_err(|error| error.to_string())?;
+
+        self.navigation_workspace.path_start = [-3.0, 0.25, -3.0];
+        self.navigation_workspace.path_end = [3.0, 0.25, 3.0];
+        self.reload_navigation_settings_for_ui();
+        self.run_navigation_path_test();
+        if let Some(scene) = self.session.scene() {
+            let _ = self.scene_view.focus_entity(scene, &floor);
+        }
+        Ok(())
     }
 
     pub(super) fn open_navigation_window(&mut self) {

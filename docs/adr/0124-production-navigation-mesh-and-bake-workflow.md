@@ -1,6 +1,6 @@
 # ADR 0124: Production Navigation Mesh and Bake Workflow
 
-Status: Proposed
+Status: Accepted
 Date: 2026-08-16
 Builds on: ADR 0039, ADR 0057, ADR 0104, ADR 0113, ADR 0114, ADR 0121
 
