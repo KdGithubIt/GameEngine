@@ -771,3 +771,63 @@ pub(super) fn dropped_asset_is_model_source(
         std::path::Path::new(&entry.path),
     )
 }
+
+#[cfg(test)]
+mod audio_distance_tests {
+    use super::*;
+    use engine_authoring::{AuthoringCommand, AuthoringScene, Transaction};
+
+    #[test]
+    fn audio_distance_gizmo_commits_through_the_scene_session() {
+        let mut scene = AuthoringScene::new();
+        let entity = EntityId::generate();
+        let component_type = ComponentTypeId::new(engine::scene_bridge::AUDIO_EMITTER_COMPONENT);
+        let mut transaction = Transaction::begin(&scene);
+        transaction.apply(AuthoringCommand::CreateEntity {
+            id: entity.clone(),
+            name: "emitter".to_owned(),
+            parent: None,
+        });
+        transaction.apply(AuthoringCommand::AddComponent {
+            entity: entity.clone(),
+            component_type: component_type.clone(),
+            value: Value::Object(std::collections::BTreeMap::from([
+                ("min_distance".to_owned(), Value::F64(1.0)),
+                ("max_distance".to_owned(), Value::F64(20.0)),
+            ])),
+        });
+        transaction
+            .commit(&mut scene)
+            .expect("audio emitter fixture must commit");
+
+        let directory = tempfile::tempdir().expect("temporary scene directory");
+        let path = directory.path().join("audio.scene.json");
+        std::fs::write(
+            &path,
+            scene.to_canonical_json().expect("scene fixture serializes"),
+        )
+        .expect("scene fixture writes");
+        let mut session = EditorSession::empty_behavior_tree();
+        session.open_scene(path).expect("scene fixture opens");
+        let mut app = EditorApp::new(session);
+        app.selected_entity = Some(entity.clone());
+        let revision = app.session.document_revision();
+
+        app.apply_audio_distance_gizmo_edit(AudioDistanceGizmoEdit {
+            field: crate::scene_view::AudioDistanceField::Max,
+            distance: 12.0,
+        });
+
+        let Value::Object(fields) = app
+            .session
+            .scene_entity(&entity)
+            .and_then(|item| item.components.get(&component_type))
+            .expect("audio emitter component remains present")
+        else {
+            panic!("audio emitter remains an object");
+        };
+        assert_eq!(fields.get("max_distance"), Some(&Value::F64(12.0)));
+        assert_ne!(app.session.document_revision(), revision);
+        assert!(app.session.is_dirty());
+    }
+}

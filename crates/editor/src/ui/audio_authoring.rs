@@ -361,4 +361,33 @@ mod tests {
         transaction.commit(&mut scene).expect("listener fixture must commit");
         assert_eq!(active_game_listener(&scene), Some(expected));
     }
+
+    #[test]
+    fn audition_controls_remain_transient() {
+        let directory = tempfile::tempdir().expect("temporary scene directory");
+        let path = directory.path().join("audio.scene.json");
+        let scene = AuthoringScene::new();
+        std::fs::write(
+            &path,
+            scene.to_canonical_json().expect("empty scene fixture serializes"),
+        )
+        .expect("empty scene fixture writes");
+        let mut session = EditorSession::empty_behavior_tree();
+        session.open_scene(path).expect("scene fixture opens");
+        let mut app = EditorApp::new(session);
+        let revision = app.session.document_revision();
+        let selected = EntityId::generate();
+
+        app.handle_audio_inspector_action(
+            &selected,
+            &Value::Null,
+            AudioInspectorAction::UseSceneViewListener,
+        );
+        app.handle_audio_inspector_action(&selected, &Value::Null, AudioInspectorAction::Stop);
+        app.handle_audio_inspector_action(&selected, &Value::Null, AudioInspectorAction::Restart);
+        app.audio_audition.reset_project();
+
+        assert_eq!(app.session.document_revision(), revision);
+        assert!(!app.session.is_dirty());
+    }
 }

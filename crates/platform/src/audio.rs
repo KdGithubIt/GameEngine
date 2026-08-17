@@ -504,7 +504,7 @@ impl AudioSystem {
             voice_id,
             respond_to,
         })?;
-        self.voice_gains.remove(&voice_id);
+        retire_managed_voice(&mut self.voice_gains, voice_id);
         Ok(())
     }
 
@@ -515,7 +515,7 @@ impl AudioSystem {
             Err(_) => Vec::new(),
         };
         for voice_id in &completed {
-            self.voice_gains.remove(voice_id);
+            retire_managed_voice(&mut self.voice_gains, *voice_id);
         }
         completed
     }
@@ -804,7 +804,7 @@ fn run_audio_thread(
                 voice_id,
                 respond_to,
             }) => {
-                if let Some(voice) = voices.remove(&voice_id) {
+                if let Some(voice) = retire_managed_voice(&mut voices, voice_id) {
                     voice.sink.stop();
                 }
                 let _ = respond_to.send(Ok(()));
@@ -879,6 +879,7 @@ struct ActiveVoice {
     looping: bool,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl ActiveVoice {
     fn is_naturally_complete(&self) -> bool {
         managed_voice_naturally_completes(self.looping, self.sink.empty())
@@ -887,6 +888,11 @@ impl ActiveVoice {
 
 fn managed_voice_naturally_completes(looping: bool, sink_empty: bool) -> bool {
     !looping && sink_empty
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn retire_managed_voice<T>(voices: &mut HashMap<AudioVoiceId, T>, voice_id: AudioVoiceId) -> Option<T> {
+    voices.remove(&voice_id)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1133,6 +1139,16 @@ mod tests {
         assert!(managed_voice_naturally_completes(false, true));
         assert!(!managed_voice_naturally_completes(true, false));
         assert!(!managed_voice_naturally_completes(true, true));
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn managed_voice_retirement_removes_backend_control_identity() {
+        let voice = AudioVoiceId(7);
+        let mut controls = HashMap::from([(voice, 42_u8)]);
+        assert_eq!(retire_managed_voice(&mut controls, voice), Some(42));
+        assert!(!controls.contains_key(&voice));
+        assert_eq!(retire_managed_voice(&mut controls, voice), None);
     }
 
     fn test_wav_bytes() -> Vec<u8> {
