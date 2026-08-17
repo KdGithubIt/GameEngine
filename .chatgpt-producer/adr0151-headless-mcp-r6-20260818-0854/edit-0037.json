@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/mcp-host/src/transport.rs","old":"        let initialize = r#\"{\\\"jsonrpc\\\":\\\"2.0\\\",\\\"id\\\":1,\\\"method\\\":\\\"initialize\\\",\\\"params\\\":{}}\"#;\n","new":"        let initialize = r#\"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}\"#;\n"}

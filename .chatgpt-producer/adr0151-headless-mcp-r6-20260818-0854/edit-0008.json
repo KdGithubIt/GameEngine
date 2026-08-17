@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/project-lifecycle/src/lib.rs","old":"const EDITOR_LOCK_FILE: &str = \"editor.lock\";\nconst EDITOR_OWNER_FILE: &str = \"editor-owner.json\";\n","new":"const EDITOR_LOCK_FILE: &str = \"editor.lock\";\nconst EDITOR_OWNER_FILE: &str = \"editor-owner.json\";\nconst HEADLESS_WRITER_OWNER_FILE: &str = \"headless-writer-owner.json\";\n"}

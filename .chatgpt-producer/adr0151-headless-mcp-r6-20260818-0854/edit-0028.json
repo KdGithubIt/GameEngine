@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/mcp-host/src/headless.rs","old":"\nimpl From<StructuredAuthoringError> for HeadlessMcpCallFailure {\n    fn from(error: StructuredAuthoringError) -> Self { Self::new(error.code(), error.to_string()) }\n}\n","new":"\n"}

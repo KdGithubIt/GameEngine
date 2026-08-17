@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/mcp-host/Cargo.toml","old":"edition = \"2021\"\n","new":"edition = \"2024\"\n"}
