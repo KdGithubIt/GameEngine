@@ -25,7 +25,6 @@ use crate::lock_on::LockOnTarget;
 use crate::mesh::Mesh;
 use crate::navigation_bake::{NAVIGATION_LINK_COMPONENT, NAVIGATION_MODIFIER_COMPONENT};
 use crate::navmesh::NavMeshAgent;
-use crate::native_2d::Camera2d;
 use crate::particles::ParticleEmitter;
 use crate::player::PlayerController;
 use crate::postprocess::{PostProcessSettings, ToneMapOperator};

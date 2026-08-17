@@ -91,8 +91,8 @@ pub(in crate::ui) fn asset_reference_browser_kind(
         | engine::AssetKind::Morph
         | engine::AssetKind::SecondaryMotionRig => BrowserKind::Mesh,
         engine::AssetKind::Material => BrowserKind::Material,
-        engine::AssetKind::Texture => BrowserKind::Texture,
-        engine::AssetKind::AnimationClip => BrowserKind::AnimationClip,
+        engine::AssetKind::Texture | engine::AssetKind::SpriteAtlas => BrowserKind::Texture,
+        engine::AssetKind::AnimationClip | engine::AssetKind::SpriteAnimation => BrowserKind::AnimationClip,
         engine::AssetKind::MotionSource => BrowserKind::MotionSource,
         engine::AssetKind::AnimationGraph | engine::AssetKind::BehaviorTree => BrowserKind::Graph,
         engine::AssetKind::VfxEffect => BrowserKind::Graph,
