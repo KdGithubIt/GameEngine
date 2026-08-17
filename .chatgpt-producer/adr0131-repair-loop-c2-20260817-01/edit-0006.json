@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ai_studio.rs","old":"        let environment = vec![\n","new":"        let repair_context = self.host.run(run_id).ok().and_then(|run| {\n            (run.state == AgentRunState::Repairing).then(|| managed_source_repair_context(run))\n        });\n        let mut environment = vec![\n"}
