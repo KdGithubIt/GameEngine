@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0122-spatial-blend-label-20260817-r3",
+  "target_branch": "chatgpt/gameengine-adr0122-spatial-audio-complete-v9",
+  "expected_head_sha": "fed02267d2e836a528590fb4d3de375683edadb2",
+  "baseline_main_sha": "901221eac2aa0c9eb66e8b17af896d8a19179f4b",
+  "edit_parts": [
+    "edit-0000.json"
+  ],
+  "commit_message": "Keep spatial blend Inspector label readable",
+  "pr_title": "Complete ADR 0122 spatial audio first release",
+  "pr_body": "## Summary\n\nCompletes ADR 0122 spatial audio first-release requirements and closes remaining lifecycle/test coverage. The visual-validation fixture does not fabricate an unresolved audio asset and focuses the constrained capture on the Audio Emitter/Listener Inspector while retaining Scene View spatial gizmos.\n\n## Validation\n\nFresh Windows affected validation and task-specific Spatial Audio Editor Visual Validation are required on the final head.\n\n<!-- gameengine-visual-validation: editor -->\n<!-- gameengine-visual-authoring-tool: Spatial Audio -->\n\n<!-- gameengine-chatgpt-dispatcher -->"
+}
