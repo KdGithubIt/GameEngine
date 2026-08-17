@@ -23,6 +23,7 @@ use crate::foot_ik::FootIk;
 use crate::light::{AmbientLight, DirectionalLight, PointLight, SpotLight};
 use crate::lock_on::LockOnTarget;
 use crate::mesh::Mesh;
+use crate::navigation_bake::{NAVIGATION_LINK_COMPONENT, NAVIGATION_MODIFIER_COMPONENT};
 use crate::navmesh::NavMeshAgent;
 use crate::particles::ParticleEmitter;
 use crate::player::PlayerController;
@@ -1100,6 +1101,7 @@ const HAS_NAV_TARGET: InspectorFieldCondition = InspectorFieldCondition::Bool {
 };
 
 const NAV_MESH_AGENT_FIELDS: &[FieldDef] = &[
+    text("profile_id", "Agent Profile", "Stable navigation profile ID selected from the bake document.", "default"),
     FieldDef::new(
         "speed",
         "Speed",
@@ -1150,6 +1152,60 @@ const NAV_MESH_SURFACE_FIELDS: &[FieldDef] = &[asset_ref(
     AssetKind::NavMesh,
     FieldDefaultSpec::Unassigned,
 )];
+
+const NAVIGATION_LINK_FIELDS: &[FieldDef] = &[
+    float("start_x", "Start X", "World-space link start X.", 0.0),
+    float("start_y", "Start Y", "World-space link start Y.", 0.0),
+    float("start_z", "Start Z", "World-space link start Z.", 0.0),
+    float("end_x", "End X", "World-space link destination X.", 0.0),
+    float("end_y", "End Y", "World-space link destination Y.", 0.0),
+    float("end_z", "End Z", "World-space link destination Z.", 0.0),
+    boolean(
+        "bidirectional",
+        "Bidirectional",
+        "Allow traversal in both directions.",
+        true,
+    ),
+    list(
+        "profiles",
+        "Profiles",
+        "Stable profile IDs allowed to use this link; empty means every profile.",
+        &STRING_KIND,
+    ),
+    integer(
+        "area",
+        "Area",
+        "Traversal area ID used for cost policy.",
+        0,
+        NumericRange::inclusive(0.0, u16::MAX as f64),
+    ),
+    number(
+        "cost",
+        "Additional Cost",
+        "Additional deterministic traversal cost.",
+        0.0,
+        NON_NEGATIVE,
+    ),
+    text(
+        "traversal_tag",
+        "Traversal Tag",
+        "Stable gameplay tag describing how this special traversal is performed.",
+        "link",
+    ),
+];
+
+const NAVIGATION_MODIFIER_FIELDS: &[FieldDef] = &[
+    float("center_x", "Center X", "World-space modifier center X.", 0.0),
+    float("center_y", "Center Y", "World-space modifier center Y.", 0.0),
+    float("center_z", "Center Z", "World-space modifier center Z.", 0.0),
+    number("half_extents_x", "Half Extent X", "Modifier half extent X.", 0.5, NON_NEGATIVE),
+    number("half_extents_y", "Half Extent Y", "Modifier half extent Y.", 0.5, NON_NEGATIVE),
+    number("half_extents_z", "Half Extent Z", "Modifier half extent Z.", 0.5, NON_NEGATIVE),
+    list("profiles", "Profiles", "Stable profile IDs affected by this modifier; empty means every profile.", &STRING_KIND),
+    enumeration("mode", "Mode", "Exclude navigation or replace its area/cost.", "exclude", &["exclude", "area"]),
+    integer("area", "Area", "Area ID used when mode is area.", 0, NumericRange::inclusive(0.0, u16::MAX as f64)),
+    number("cost_multiplier", "Cost Multiplier", "Positive traversal-cost multiplier used when mode is area.", 1.0, POSITIVE),
+];
 
 const RUNTIME_METADATA_FIELDS: &[FieldDef] = &[
     text(
@@ -1888,6 +1944,24 @@ pub(super) fn builtin_components() -> Vec<BuiltinComponent> {
             1,
             SPOT_LIGHT_FIELDS,
             spawn_spot_light_component,
+        ),
+        BuiltinComponent::new(
+            NAVIGATION_LINK_COMPONENT,
+            "Navigation Link",
+            "Authors an explicit off-mesh traversal consumed by the shared navigation bake service.",
+            "Navigation",
+            1,
+            NAVIGATION_LINK_FIELDS,
+            spawn_navigation_authoring_only_component,
+        ),
+        BuiltinComponent::new(
+            NAVIGATION_MODIFIER_COMPONENT,
+            "Navigation Modifier",
+            "Excludes or reclassifies navigation geometry during the shared bake.",
+            "Navigation",
+            1,
+            NAVIGATION_MODIFIER_FIELDS,
+            spawn_navigation_authoring_only_component,
         ),
         BuiltinComponent::new(
             VFX_PLAYER_COMPONENT,

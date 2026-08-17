@@ -58,6 +58,7 @@ mod game_tools;
 mod hierarchy;
 mod inspector;
 mod mcp;
+mod navigation_workspace;
 mod play;
 mod presentation;
 mod viewport;
@@ -94,6 +95,7 @@ use documents::*;
 use game_tools::*;
 use hierarchy::*;
 use inspector::*;
+use navigation_workspace::*;
 use play::*;
 use presentation::*;
 
@@ -275,6 +277,8 @@ pub struct EditorApp {
     game_build_problems: Vec<engine_authoring::Diagnostic>,
     /// Background Cargo process and completion channel for project Rust code.
     game_build: GameBuildManager,
+    /// Background production navigation bake and cancellation channel.
+    navigation_bake: NavigationBakeManager,
     /// Latest successfully loaded project game-module generation.
     game_module: Option<Arc<engine::game_module::GameModule>>,
     /// Starts Play automatically after a requested prerequisite build succeeds.
@@ -459,6 +463,7 @@ impl EditorApp {
             asset_import_problems: Vec::new(),
             game_build_problems: Vec::new(),
             game_build: GameBuildManager::default(),
+            navigation_bake: NavigationBakeManager::default(),
             game_module: None,
             play_after_game_build: false,
             game_build_requested_after_edit: false,
@@ -514,6 +519,7 @@ impl EditorApp {
         self.pending_material_saves.clear();
         self.material_texture_choices_cache = None;
         let _ = self.asset_import.cancel();
+        self.navigation_bake.clear();
         self.asset_import_problems.clear();
         self.game_build_problems.clear();
         self.scene_view_problem = None;
@@ -674,6 +680,12 @@ impl eframe::App for EditorApp {
         }
         if let Some(result) = self.game_build.poll() {
             self.handle_game_build_result(result);
+        }
+        if self.navigation_bake.is_running() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(50));
+        }
+        if let Some(completion) = self.navigation_bake.poll() {
+            self.handle_navigation_bake_completion(completion);
         }
         self.poll_coalesced_game_build(ctx);
         self.poll_project_filesystem(ctx);
