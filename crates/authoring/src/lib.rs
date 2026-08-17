@@ -168,6 +168,19 @@ pub use scene_authoring::{
     SceneAuthoringError, SceneAuthoringMutation, SceneAuthoringService, SceneAuthoringSnapshot,
     SceneAuthoringValidation,
 };
+pub use timeline::{
+    compile_timeline, load_timeline, save_timeline, timeline_track_registry, validate_timeline,
+    CompiledTimelinePayload, TimelineBinding, TimelineClip, TimelineClipPayload, TimelineCompilation,
+    TimelineDiagnostic, TimelineDiagnosticSeverity, TimelineDisplayRate, TimelineDocument,
+    TimelineDocumentError, TimelineMarker, TimelinePropertyValue, TimelineTrack,
+    TimelineTrackDescriptor, TimelineTrackKind, TIMELINE_FILE_SUFFIX, TIMELINE_SCHEMA_VERSION,
+    TIMELINE_TRACK_REGISTRY,
+};
+pub use timeline_authoring::{
+    TimelineAuthoringChange, TimelineAuthoringCommand, TimelineAuthoringError,
+    TimelineAuthoringMutation, TimelineAuthoringPreview, TimelineAuthoringService,
+    TimelineAuthoringSnapshot, TimelineAuthoringValidation, TimelineRevision,
+};
 pub use schema::{ComponentSchema, ComponentSchemaRegistry, FieldSchema, FieldType};
 pub use transaction::{AuthoringSession, Transaction, TransactionError};
 pub use typed_document_authoring::{

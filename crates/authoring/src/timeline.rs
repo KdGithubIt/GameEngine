@@ -280,7 +280,7 @@ pub enum TimelineDiagnosticSeverity {
     Error,
 }
 /// Compile/validation diagnostic.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct TimelineDiagnostic {
     /// Diagnostic severity.
     pub severity: TimelineDiagnosticSeverity,
