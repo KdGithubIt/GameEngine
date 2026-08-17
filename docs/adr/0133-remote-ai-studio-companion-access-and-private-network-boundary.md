@@ -79,6 +79,17 @@ permission broker, and audit history. The remote frontend MUST NOT implement
 provider-specific orchestration, authoring rules, code mutation, validation
 rules, or permission policy independently.
 
+ADR 0131 owns local AI Studio presentation, including an embedded panel, a
+detached native OS window/viewport, and any future loopback-only same-machine
+frontend protocol. ADR 0135 continues to own native-inference resource
+arbitration regardless of which frontend presents its state. This ADR begins
+where an AI Studio frontend is made reachable from another device or trust/
+network context. It therefore owns the private-network gateway, remote
+authentication, idempotent mutation requests, reconnect semantics, remote
+sanitization, and companion UX. Local detachment MUST NOT be implemented by
+creating a second Agent Host or by treating the remote gateway as a second
+writer.
+
 ### 2. The remote product surface is conversation and run control, not a remote Editor
 
 The initial Remote AI Studio surface MUST support the user actions and state

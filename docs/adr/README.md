@@ -280,3 +280,6 @@ implementation contract.
 | [0134](0134-portable-prefab-instance-source.md) | Portable Prefab Instance Source |
 | [0135](0135-native-agent-inference-scheduling-and-editor-gpu-resource-arbitration.md) | Native Agent Inference Scheduling and Editor GPU Resource Arbitration |
 | [0136](0136-editor-preview-asset-residency-and-asynchronous-streaming.md) | Editor Preview Asset Residency and Asynchronous Streaming |
+| [0137](0137-editor-diagnostic-ownership-progressive-disclosure-and-navigation.md) | Editor Diagnostic Ownership, Progressive Disclosure, and Navigation |
+| [0138](0138-play-mode-graph-debug-shell-and-domain-providers.md) | Play-Mode Graph Debug Shell and Domain Providers |
+| [0139](0139-editor-authoritative-working-copy-and-saved-copy-coherency.md) | Editor Authoritative Working Copy and Saved-Copy Coherency |

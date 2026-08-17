@@ -172,6 +172,13 @@ The authoring graph remains editable according to the normal Editor/Play policy;
 runtime debug highlighting is transient presentation state and is never written
 to the graph view document.
 
+ADR 0138 supersedes only the top-level presentation shape: Behavior Tree runtime
+debugging is a domain provider inside the shared Play-mode Graph Debug shell, not
+a permanently privileged `Behavior Tree` tab. The `BehaviorExecutionSnapshot`,
+source `NodeId` mapping, active-path semantics, blackboard data, and abort/reset
+meaning defined here remain Behavior Tree-owned and are not generalized into a
+universal graph runtime status type.
+
 A future pause/step/breakpoint debugger may build on the same snapshot and
 execution-generation boundary. It is not required for the first stateful
 implementation. The first UX must still make "why is this enemy stuck on this

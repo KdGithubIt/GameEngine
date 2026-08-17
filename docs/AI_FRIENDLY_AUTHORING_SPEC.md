@@ -676,6 +676,20 @@ Each graph domain owns:
 - Domain-specific diagnostics
 - Default layout policy
 
+### 9.3 Runtime Graph Debugging
+
+ADR 0138 keeps runtime Graph Debug presentation aligned with the same
+domain-neutral foundation without moving runtime semantics into `Graph`.
+Play-mode Graph Debug owns common source-graph resolution, Graph Canvas
+interaction, `NodeId`/`EdgeId` source mapping, target selection, framing,
+read-only highlights, and stale-source presentation. Each runtime graph domain
+supplies a provider backed by a GUI-free runtime observation snapshot.
+
+Behavior Tree Running/Success/Failure/Abort semantics and Animation Graph
+state/transition/parameter/motion-resolution semantics remain domain-owned.
+Debug snapshots, runtime target handles, active highlights, and debug history
+MUST NOT be serialized into Graph or GraphView documents.
+
 ## 10. Graph Layout System
 
 The graph layout system exists for human readability. It MUST preserve semantic
@@ -904,6 +918,18 @@ an optional one-based line. Editors SHOULD retain these diagnostics in the
 Problems surface and navigate to the source without allowing the relative path
 to escape its owning project source root.
 
+ADR 0137 defines Editor diagnostic presentation ownership. Problems is the
+authoritative detailed repair surface; Hierarchy and Inspector may show concise
+context indicators; Scene View directly owns long-form prose only for failures
+that prevent the preview itself; Console owns runtime/internal logging. One
+semantic issue SHOULD NOT be copied as the same long message across every
+surface.
+
+Multiple repair actions MAY be an Editor-only projection over stable
+`DiagnosticTarget` identities. Window names, tab routing, display labels, and
+callbacks MUST NOT become persisted diagnostic identity merely to support UI
+navigation.
+
 ## 15. Serialization
 
 The initial canonical authoring format SHOULD be JSON or RON. The chosen format
@@ -953,6 +979,28 @@ deterministic JSON serialization; persistence is owned by the document or
 service that writes the validated canonical result. Historical phase sequencing
 must not be used to reintroduce a compatibility migration path.
 
+### 15.3 Editor Working Copy and Explicit Save
+
+ADR 0139 defines one authoritative in-memory working copy per opened/edited
+document identity in an Editor project process. Accepted edits are visible to
+Inspector, validation, Problems, Scene View, preview, Editor Play snapshotting,
+and debug/source navigation immediately. A subsystem MUST NOT reread an older
+disk copy while a working copy exists merely because the document is dirty.
+
+Save remains explicit persistence. `Save`, `Ctrl+S`, or `Save All` writes the
+current canonical working copy atomically and advances its clean baseline; every
+edit is not autosaved to canonical project files. Undo/redo changes the same
+consumer-visible working copy. Temporarily invalid working copies are diagnosed
+or rejected by strict operations rather than silently replaced with the last
+saved valid copy.
+
+ADR 0136 preview asset residency is a separate derived-resource layer. Mutable
+authoring working copies are not mesh/texture/model caches, and resident preview
+resources are not authoring source of truth.
+
+Process-local working-copy revisions, dirty flags, and recovery metadata are
+application state and are not new persisted authoring IDs.
+
 ## 16. CLI, MCP, and Conversational Agent Adapters
 
 CLI and MCP are adapters over the command and query API. They MUST NOT implement
@@ -999,6 +1047,14 @@ structured proposal. Starting a run snapshots the exact proposal version; the
 resulting run has a resumable state and structured event timeline. Continuing
 the conversation MAY revise the live proposal without mutating an existing run
 snapshot.
+
+AI Studio presentation is not required to remain inside one Editor egui window.
+A detached native OS window/viewport uses the same Agent Host and authoritative
+Editor writer. A future same-machine process or loopback local-web frontend may
+use a versioned local host protocol without duplicating provider orchestration,
+project mutation, or ADR 0135 inference-resource arbitration. ADR 0133
+separately governs remote-device/private-network reachability, remote
+authentication, reconnect/idempotency, and companion UX.
 
 External coding-agent runtimes and native model backends are separate
 abstractions. An external `AgentRuntime` MAY own its own model/tool loop and

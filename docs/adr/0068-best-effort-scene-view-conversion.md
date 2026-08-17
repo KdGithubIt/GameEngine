@@ -32,15 +32,22 @@ The engine exposes a second conversion entry point for editing previews:
   (the plan cannot be built) and runtime ECS mutation errors (the world is no
   longer trustworthy).
 
-The editor Scene View preview uses the best-effort entry point and shows a
-yellow notice listing the skipped components instead of the red failure
-banner. Play mode, the player, and packaging continue to use the strict entry
-point.
+The editor Scene View preview uses the best-effort entry point. Play mode, the
+player, and packaging continue to use the strict entry point.
+
+ADR 0137 supersedes the original presentation rule that every skipped component
+is listed as persistent yellow Scene View prose. Best-effort skip semantics and
+internal `scene_bridge.component_skipped` evidence remain unchanged, but
+repairable component problems are presented through the domain-oriented Problems
+and navigation model from ADR 0137. Scene View directly owns long-form prose only
+when the preview itself cannot meaningfully be produced.
 
 ## Consequences
 
 - A newly added, not-yet-configured component no longer hides the scene; the
-  user sees the rest of the scene plus a notice naming the skipped component.
+  user sees the rest of the scene while ADR 0137 keeps the repairable problem
+  discoverable through Problems and contextual indicators rather than requiring
+  persistent Scene View prose.
 - A skipped component may leave partial per-component state (for example a
   cached asset handle) in the preview world. Originally the Scene View rebuilt
   its preview world every frame, so such state could not outlive one frame.
