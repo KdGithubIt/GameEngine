@@ -1,0 +1,13 @@
+diff --git a/crates/authoring/src/timeline.rs b/crates/authoring/src/timeline.rs
+index 97762b0f78a6e2e18ee326bb5632e0647e9d83be..3c0d8ec50c7658af3472481c7f1550b0150f4263 100644
+--- a/crates/authoring/src/timeline.rs
++++ b/crates/authoring/src/timeline.rs
+@@ -272,7 +272,7 @@ pub enum CompiledTimelinePayload {
+ }
+ 
+ /// Diagnostic severity.
+-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+ pub enum TimelineDiagnosticSeverity {
+     /// Non-fatal authoring limitation or advisory.
+     Warning,
