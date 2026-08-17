@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0133-authoritative-permission-20260817-04",
+  "target_branch": "chatgpt/gameengine-adr0133-remote-companion-20260817",
+  "expected_head_sha": "292d7c421e332c139878bb331a4b517a4491920f",
+  "baseline_main_sha": "b6d56a12a266e9f1a558fd530afd856dcccb4d74",
+  "edit_parts": [
+    "edit-0000.json",
+    "edit-0001.json",
+    "edit-0002.json",
+    "edit-0003.json",
+    "edit-0004.json",
+    "edit-0005.json",
+    "edit-0006.json",
+    "edit-0007.json",
+    "edit-0008.json",
+    "edit-0009.json",
+    "edit-0010.json",
+    "edit-0011.json",
+    "edit-0012.json",
+    "edit-0013.json"
+  ],
+  "commit_message": "Make ADR 0133 permission decisions Agent Host authoritative",
+  "pr_title": "GameEngine: implement ADR 0133 Remote AI Studio companion",
+  "pr_body": "## Summary\n\n- add the loopback-only Remote AI Studio HTTP/SSE companion gateway over the existing authoritative Agent Host\n- add client request idempotency, exact proposal-version Go, stale Stop/permission protection, snapshot + ordered event cursor recovery, safe captured-frame retrieval, and sanitized structured remote responses\n- make pending permission identity Agent Host authoritative so local AI Studio and remote companion observe the same decision state across browser reconnects\n- strengthen duplicate permission and AwaitingUser integration coverage against the actual Agent Host\n- add a responsive web companion for conversation, proposal acceptance criteria, Go/Stop, pending decisions, run/completion progress, and captured-frame review\n- preserve the existing loopback Editor MCP boundary and do not expose arbitrary shell, process, filesystem, Git, raw MCP, or native GPU/resource controls\n- fix HTTP parser status-code literals to preserve the declared u16 error contract\n\n## Validation\n\nRun permanent Windows Validation with the repository planner. Remote companion UI changes require visual validation including narrow/mobile layout review.\n\n<!-- gameengine-visual-validation: editor -->\n\n<!-- gameengine-chatgpt-dispatcher -->"
+}
