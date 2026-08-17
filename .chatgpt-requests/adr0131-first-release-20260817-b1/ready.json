@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0131-first-release-20260817-b1",
+  "target_branch": "chatgpt/gameengine-adr0131-first-release-v3",
+  "expected_head_sha": "97578df9e52bc5f623cc1fc2798e2d87054e0d41",
+  "baseline_main_sha": "d03ed9e573818eb0ca088f37953f611d6ed4d22e",
+  "patch_sha256": "0d22abb03404341fcf42b330b50a2f00a8dcbb06f2b7b4320cf72f499db0e10a",
+  "patch_bytes": 8787,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Strengthen ADR 0131 governed run audit boundaries",
+  "pr_title": "GameEngine: complete ADR 0131 first-release agent contracts",
+  "pr_body": "Adds durable ADR0131 run audit accounting, managed runtime-input evidence, asset acquisition provenance records, provider-independent interaction evidence enforcement, and bounded native code-workspace read/write primitives."
+}
