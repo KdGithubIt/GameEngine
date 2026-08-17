@@ -58,6 +58,15 @@ impl EditorShell {
                 mcp_server.authorization_token(),
             )
             .map_err(|error| error.to_string())?;
+        #[cfg(feature = "visual-validation")]
+        let mut ai_studio = AiStudioPanel::new(
+            &root,
+            AiStudioConnection::new(
+                mcp_server.endpoint().to_string(),
+                mcp_server.authorization_token().to_owned(),
+            ),
+        )?;
+        #[cfg(not(feature = "visual-validation"))]
         let ai_studio = AiStudioPanel::new(
             &root,
             AiStudioConnection::new(
@@ -72,7 +81,9 @@ impl EditorShell {
         #[cfg(feature = "visual-validation")]
         if let Some(requested) = std::env::var_os("GAMEENGINE_VISUAL_AUTHORING_TOOL") {
             let requested = requested.to_string_lossy();
-            if requested == "Navigation" {
+            if requested == "AI Studio" {
+                ai_studio.open();
+            } else if requested == "Navigation" {
                 app.prepare_navigation_visual_validation();
             } else if requested == "Spatial Audio" {
                 app.prepare_spatial_audio_visual_validation();
