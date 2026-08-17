@@ -29,6 +29,10 @@ pub(crate) enum AgentHostError {
     SessionNotFound(String),
     RunNotFound(String),
     ActiveWriterRun(String),
+    StaleProposalVersion {
+        expected: u64,
+        current: u64,
+    },
     InvalidTransition {
         from: AgentRunState,
         to: AgentRunState,
@@ -51,6 +55,10 @@ impl fmt::Display for AgentHostError {
             Self::ActiveWriterRun(id) => write!(
                 formatter,
                 "agent run `{id}` already owns the project writer slot"
+            ),
+            Self::StaleProposalVersion { expected, current } => write!(
+                formatter,
+                "proposal version {expected} was authorized, but current proposal version is {current}"
             ),
             Self::InvalidTransition { from, to } => {
                 write!(formatter, "agent run cannot transition from {from:?} to {to:?}")
@@ -580,18 +588,22 @@ pub(crate) struct AgentSession {
     pub(crate) title: String,
     pub(crate) messages: Vec<ConversationMessage>,
     pub(crate) proposal: AgentProposal,
+    #[serde(default)]
+    pub(crate) proposal_history: Vec<AgentProposal>,
     pub(crate) runs: Vec<AgentRun>,
     pub(crate) shared_with_project: bool,
 }
 
 impl AgentSession {
     fn new(title: String) -> Self {
+        let proposal = AgentProposal::default();
         Self {
             schema_version: SESSION_SCHEMA_VERSION,
             id: next_id("session"),
             title,
             messages: Vec::new(),
-            proposal: AgentProposal::default(),
+            proposal: proposal.clone(),
+            proposal_history: vec![proposal],
             runs: Vec::new(),
             shared_with_project: false,
         }
@@ -620,11 +632,14 @@ impl AgentHost {
                 continue;
             }
             let bytes = fs::read(&path)?;
-            let session: AgentSession = match serde_json::from_slice(&bytes) {
+            let mut session: AgentSession = match serde_json::from_slice(&bytes) {
                 Ok(session) => session,
                 Err(_) => continue,
             };
             if session.schema_version == SESSION_SCHEMA_VERSION {
+                if session.proposal_history.is_empty() {
+                    session.proposal_history.push(session.proposal.clone());
+                }
                 sessions.insert(session.id.clone(), session);
             }
         }
@@ -696,14 +711,26 @@ impl AgentHost {
         let session = self.session_mut(session_id)?;
         proposal.version = session.proposal.version.saturating_add(1);
         let version = proposal.version;
-        session.proposal = proposal;
+        session.proposal = proposal.clone();
+        session.proposal_history.push(proposal);
         self.persist_session(session_id)?;
         Ok(version)
     }
 
-    pub(crate) fn start_run(
+    #[cfg(test)]
+    fn start_run(
         &mut self,
         session_id: &str,
+        provider_label: impl Into<String>,
+    ) -> Result<String, AgentHostError> {
+        let version = self.session(session_id)?.proposal.version;
+        self.start_run_authorized(session_id, version, provider_label)
+    }
+
+    pub(crate) fn start_run_authorized(
+        &mut self,
+        session_id: &str,
+        authorized_proposal_version: u64,
         provider_label: impl Into<String>,
     ) -> Result<String, AgentHostError> {
         if let Some(active) = &self.active_writer_run {
@@ -712,6 +739,12 @@ impl AgentHost {
         let run_id = next_id("run");
         let provider_label = provider_label.into();
         let session = self.session_mut(session_id)?;
+        if session.proposal.version != authorized_proposal_version {
+            return Err(AgentHostError::StaleProposalVersion {
+                expected: authorized_proposal_version,
+                current: session.proposal.version,
+            });
+        }
         let mut run = AgentRun {
             id: run_id.clone(),
             proposal_snapshot: session.proposal.clone(),
@@ -2353,6 +2386,36 @@ mod tests {
         ));
         host.cancel_run(&run).expect("cancel run");
         host.start_run(&second, "test").expect("second run");
+        let _ = fs::remove_dir_all(project);
+        let _ = fs::remove_dir_all(storage);
+    }
+
+    #[test]
+    fn proposal_revisions_are_retained_and_stale_go_is_rejected() {
+        let project = temp_path("proposal-history-project");
+        let storage = temp_path("proposal-history-storage");
+        fs::create_dir_all(&project).expect("test project directory");
+        let mut host = AgentHost::open(project.clone(), storage.clone()).expect("host");
+        let session = host.create_session("Proposal").expect("session");
+        let mut proposal = host.session(&session).expect("session").proposal.clone();
+        proposal.goal = "first revision".to_owned();
+        let authorized = host.update_proposal(&session, proposal).expect("proposal");
+        let mut revised = host.session(&session).expect("session").proposal.clone();
+        revised.goal = "second revision".to_owned();
+        let current = host.update_proposal(&session, revised).expect("proposal");
+        let session_state = host.session(&session).expect("session");
+        assert_eq!(session_state.proposal_history.len(), 3);
+        assert_eq!(session_state.proposal_history[1].version, authorized);
+        assert_eq!(session_state.proposal_history[2].version, current);
+        assert!(matches!(
+            host.start_run_authorized(&session, authorized, "test"),
+            Err(AgentHostError::StaleProposalVersion { expected, current: actual })
+                if expected == authorized && actual == current
+        ));
+        let run = host
+            .start_run_authorized(&session, current, "test")
+            .expect("authorized run");
+        assert_eq!(host.run(&run).expect("run").proposal_snapshot.version, current);
         let _ = fs::remove_dir_all(project);
         let _ = fs::remove_dir_all(storage);
     }

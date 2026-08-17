@@ -742,15 +742,24 @@ impl AiStudioPanel {
     }
 
     fn begin_run(&mut self) {
-        if let Err(error) = self
+        let authorized_proposal_version = match self
             .host
             .update_proposal(&self.selected_session, self.proposal_draft.clone())
         {
-            self.status = Some(error.to_string());
-            return;
-        }
+            Ok(version) => {
+                self.proposal_draft.version = version;
+                version
+            }
+            Err(error) => {
+                self.status = Some(error.to_string());
+                return;
+            }
+        };
         let provider = self.provider_program.trim().to_owned();
-        match self.host.start_run(&self.selected_session, provider) {
+        match self
+            .host
+            .start_run_authorized(&self.selected_session, authorized_proposal_version, provider)
+        {
             Ok(run_id) => {
                 self.active_run_id = Some(run_id.clone());
                 self.pending_runtime_action = None;
