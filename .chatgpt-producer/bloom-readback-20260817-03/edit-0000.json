@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/render-runtime/tests/bloom_spread.rs","old":"        threshold: 0.5,\n","new":"        threshold: 0.0,\n"}
