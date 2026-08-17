@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0125-vfx-current-main-20260817-0943-03",
+  "target_branch": "chatgpt/gameengine-adr0125-vfx-current-main-r1",
+  "expected_head_sha": "6bb36e3789f49ec13f16ef1b447be1cdc3be3d5c",
+  "baseline_main_sha": "6bb36e3789f49ec13f16ef1b447be1cdc3be3d5c",
+  "edit_parts": [
+    "edit-0000.json",
+    "edit-0001.json",
+    "edit-0002.json",
+    "edit-0003.json",
+    "edit-0004.json",
+    "edit-0005.json",
+    "edit-0006.json",
+    "edit-0007.json",
+    "edit-0008.json",
+    "edit-0009.json",
+    "edit-0010.json",
+    "edit-0011.json",
+    "edit-0012.json",
+    "edit-0013.json",
+    "edit-0014.json",
+    "edit-0015.json",
+    "edit-0016.json",
+    "edit-0017.json",
+    "edit-0018.json",
+    "edit-0019.json",
+    "edit-0020.json"
+  ],
+  "commit_message": "Complete ADR 0125 VFX playback control",
+  "pr_title": "GameEngine: complete ADR 0125 VFX playback control",
+  "pr_body": "## Summary\n\nCompletes the remaining ADR 0125 first-release VfxPlayer lifecycle and Project Rust deferred-control gap on current main. The change preserves the existing versioned VFX document/compiler, deterministic CPU runtime, renderer integration, and Editor VFX Builder, while adding explicit stopped/playing/paused semantics, deferred start/pause/stop/restart commands, and copied backend-neutral VFX state queries.\n\n## Validation\n\nRun normal Windows affected validation plus the deterministic VFX Builder visual fixture.\n\n<!-- gameengine-visual-validation: editor -->\n<!-- gameengine-visual-authoring-tool: VFX Builder -->"
+}
