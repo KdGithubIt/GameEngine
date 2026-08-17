@@ -7,16 +7,16 @@ mod theme;
 mod visual_capture;
 
 use eframe::egui;
+use engine_launcher::LauncherPreferences;
+#[cfg(test)]
+use engine_launcher::MAX_RECENT_PROJECTS;
 use engine_project_lifecycle::{
     acquire_launcher, create_standard_project, editor_is_ready, editor_owner_metadata,
     inspect_project, launch_or_activate_editor, request_editor_close, EditorLaunchOutcome,
     LauncherRequest, LauncherSession, CURRENT_ENGINE_ASSOCIATION,
 };
-use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
-
-const MAX_RECENT_PROJECTS: usize = 10;
 
 /// Height of the branded header band.
 const HERO_HEIGHT: f32 = 132.0;
@@ -29,79 +29,6 @@ const ROW_PADDING: egui::Vec2 = egui::vec2(12.0, 9.0);
 /// Project identity and Editor ownership are owned by other processes, so the
 /// list would otherwise keep showing state from the moment the window opened.
 const RECENT_REFRESH_INTERVAL: Duration = Duration::from_millis(1500);
-
-#[derive(Debug, Default, Serialize, Deserialize)]
-struct LauncherPreferences {
-    recent_projects: Vec<PathBuf>,
-    #[serde(default)]
-    new_project_parent: Option<PathBuf>,
-}
-
-impl LauncherPreferences {
-    fn load() -> Self {
-        let Some(path) = preferences_path() else {
-            return Self::default();
-        };
-        let Ok(data) = std::fs::read(path) else {
-            return Self::default();
-        };
-        let Ok(mut preferences) = serde_json::from_slice::<Self>(&data) else {
-            return Self::default();
-        };
-        preferences.recent_projects.retain(|path| path.is_dir());
-        if preferences
-            .new_project_parent
-            .as_ref()
-            .is_some_and(|path| !path.is_dir())
-        {
-            preferences.new_project_parent = None;
-        }
-        preferences
-    }
-
-    fn save(&self) {
-        let Some(path) = preferences_path() else {
-            return;
-        };
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        if let Ok(text) = serde_json::to_string_pretty(self) {
-            let _ = std::fs::write(path, text);
-        }
-    }
-
-    fn remember_new_project_parent(&mut self, path: &Path) {
-        self.new_project_parent = Some(path.to_path_buf());
-        self.save();
-    }
-
-    /// Moves `path` to the front of the recent list without touching disk.
-    fn record_recent(&mut self, path: &Path) {
-        self.recent_projects.retain(|candidate| candidate != path);
-        self.recent_projects.insert(0, path.to_path_buf());
-        self.recent_projects.truncate(MAX_RECENT_PROJECTS);
-    }
-
-    /// Drops `path` from the recent list without touching disk.
-    fn forget_recent(&mut self, path: &Path) {
-        self.recent_projects.retain(|candidate| candidate != path);
-    }
-
-    fn push_recent(&mut self, path: &Path) {
-        self.record_recent(path);
-        self.save();
-    }
-
-    fn remove_recent(&mut self, path: &Path) {
-        self.forget_recent(path);
-        self.save();
-    }
-}
-
-fn preferences_path() -> Option<PathBuf> {
-    dirs::data_local_dir().map(|root| root.join("engine_launcher").join("preferences.json"))
-}
 
 /// How prominently a status line should read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

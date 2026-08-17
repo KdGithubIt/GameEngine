@@ -1,6 +1,6 @@
 # ADR 0148: Remote Host Lifecycle, Project Activation, and Narrow Startup Operations
 
-Status: Proposed
+Status: Accepted
 Date: 2026-08-17
 Builds on: ADR 0117, ADR 0133
 Relates to: ADR 0121, ADR 0131
