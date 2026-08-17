@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ui/behavior_debug.rs",
+  "old": "    #[test]\n    fn runner_tree_generation_change_rejects_stale_debug_observation() {\n",
+  "new": "    #[test]\n    fn play_stop_clear_drops_all_behavior_debug_state() {\n        let mut state = BehaviorTreeDebugState {\n            visible: true,\n            source_key: Some(BehaviorDebugSourceKey {\n                runtime_entity: (4, 9),\n                graph: GraphId::generate(),\n                tree_generation: 3,\n            }),\n            graph_session: Some(EditorSession::empty_behavior_tree()),\n            selected_node: Some(NodeId::generate()),\n            message: Some(\"active\".into()),\n            ..BehaviorTreeDebugState::default()\n        };\n\n        state.clear();\n\n        assert!(!state.visible);\n        assert!(state.source_key.is_none());\n        assert!(state.graph_session.is_none());\n        assert!(state.selected_node.is_none());\n        assert!(state.message.is_none());\n    }\n\n    #[test]\n    fn runner_tree_generation_change_rejects_stale_debug_observation() {\n"
+}
