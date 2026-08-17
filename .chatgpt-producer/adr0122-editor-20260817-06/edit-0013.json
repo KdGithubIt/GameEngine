@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ui/audio_authoring.rs","old":"    fn play(\n        &mut self,\n        asset_root: &Path,\n        asset_id: AssetId,\n","new":"    fn play(\n        &mut self,\n        entity: EntityId,\n        asset_root: &Path,\n        asset_id: AssetId,\n"}

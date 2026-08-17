@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/scene_view.rs","old":"                gizmo_edit: None,\n                placement_position: None,\n","new":"                gizmo_edit: None,\n                audio_distance_edit: None,\n                placement_position: None,\n"}

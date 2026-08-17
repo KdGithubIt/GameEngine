@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ui/audio_authoring.rs","old":"    voice: Option<engine::audio::AudioVoiceId>,\n    pub(super) listener_source: AuditionListenerSource,\n","new":"    voice: Option<engine::audio::AudioVoiceId>,\n    active_entity: Option<EntityId>,\n    pub(super) listener_source: AuditionListenerSource,\n"}
