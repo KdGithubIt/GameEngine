@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/native_agent.rs",
+  "old": "let backend = generate_local(config, &prompt, interrupted, active_stream)?;",
+  "new": "let backend = generate_local(config, &prompt, &[], interrupted, active_stream)?;"
+}
