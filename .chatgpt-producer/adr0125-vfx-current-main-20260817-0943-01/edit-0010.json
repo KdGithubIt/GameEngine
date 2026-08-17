@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/scripting/src/game_api.rs",
+  "old": "    /// Stops animation playback on the target entity.\n    pub fn stop_animation(&mut self, target: GameEntityHandle) {\n        self.push(GameCommand::stop_animation(target));\n    }",
+  "new": "    /// Stops animation playback on the target entity.\n    pub fn stop_animation(&mut self, target: GameEntityHandle) {\n        self.push(GameCommand::stop_animation(target));\n    }\n    /// Starts or resumes scene VFX playback.\n    pub fn start_vfx(&mut self, target: GameEntityHandle) {\n        self.push(GameCommand::start_vfx(target));\n    }\n    /// Pauses scene VFX playback without discarding transient state.\n    pub fn pause_vfx(&mut self, target: GameEntityHandle) {\n        self.push(GameCommand::pause_vfx(target));\n    }\n    /// Stops scene VFX playback and resets deterministic state.\n    pub fn stop_vfx(&mut self, target: GameEntityHandle) {\n        self.push(GameCommand::stop_vfx(target));\n    }\n    /// Restarts scene VFX from deterministic time zero and resumes playback.\n    pub fn restart_vfx(&mut self, target: GameEntityHandle) {\n        self.push(GameCommand::restart_vfx(target));\n    }"
+}
