@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/authoring_tools.rs","old":"    /// Typed multi-emitter VFX asset authoring.\n    VfxBuilder,\n}","new":"    /// Typed multi-emitter VFX asset authoring.\n    VfxBuilder,\n    /// Native 2D sprite, tile, camera, and collider authoring.\n    Native2d,\n}"}
