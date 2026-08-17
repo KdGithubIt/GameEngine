@@ -7,19 +7,51 @@
 use crate::agent_host::{
     project_storage_key, AgentCapability, AgentEventKind, AgentHost, AgentProposal, AgentRunState,
     ApprovalScope, CodeChange, CodeWorkspace, CompletionStatus, ConversationRole,
-    ExternalAgentProcess, PermissionCheck, ProcessStream,
+    ExternalAgentProcess, ManagedValidationAttemptStatus, PermissionCheck, ProcessStream,
 };
 use crate::native_agent::{
     LocalModelConfig, ModelCapabilityProfile, NativeAnswer, NativeQuestionTask, QuestionMessage,
     QuestionRole, DEFAULT_LOCAL_MODEL_ENDPOINT,
 };
 use eframe::egui;
+use engine::{InputCommand, KeyCode, MouseButton};
 use engine_authoring::ProjectRoot;
 use serde::Deserialize;
+use std::collections::VecDeque;
 use std::ffi::{OsStr, OsString};
 use std::path::PathBuf;
 
 const PROVIDER_EVENT_PREFIX: &str = "GAMEENGINE_AGENT_EVENT ";
+const MAX_AUTONOMOUS_SOURCE_REPAIRS: usize = 2;
+const MAX_AUTONOMOUS_RUNTIME_REPAIRS: usize = 2;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SourceRepairDecision {
+    Wait,
+    Retry(usize),
+    Exhausted,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RuntimeRepairDecision {
+    Wait,
+    Retry(usize),
+    Exhausted,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExternalAgentPurpose {
+    BuildOrRepair,
+    RuntimeEvaluation,
+}
+
+#[derive(Debug, Clone)]
+struct ManagedRuntimeObservation {
+    artifact_id: String,
+    path: PathBuf,
+    width: u32,
+    height: u32,
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -28,6 +60,44 @@ enum ProviderAgentEvent {
     ToolAction { tool: String, action: String, success: Option<bool> },
     CompletionGate { gate: String, status: CompletionStatus, message: String },
     PlaytestResult { launched: bool, interactions_passed: Option<bool>, message: String },
+    RuntimeInput { input: ProviderRuntimeInput },
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum ProviderRuntimeInput {
+    Key { key: String, pressed: bool },
+    MouseButton { button: String, pressed: bool },
+    MouseMove { x: f32, y: f32 },
+    MouseDelta { x: f64, y: f64 },
+    MouseScroll { amount: f32 },
+}
+
+impl ProviderRuntimeInput {
+    fn command(&self) -> Result<InputCommand, String> {
+        match self {
+            Self::Key { key, pressed } => Ok(InputCommand::Key {
+                key: provider_key_code(key)?,
+                pressed: *pressed,
+            }),
+            Self::MouseButton { button, pressed } => Ok(InputCommand::MouseButton {
+                button: provider_mouse_button(button)?,
+                pressed: *pressed,
+            }),
+            Self::MouseMove { x, y } if x.is_finite() && y.is_finite() => {
+                Ok(InputCommand::MouseMove { position: (*x, *y) })
+            }
+            Self::MouseDelta { x, y } if x.is_finite() && y.is_finite() => {
+                Ok(InputCommand::MouseDelta { delta: (*x, *y) })
+            }
+            Self::MouseScroll { amount } if amount.is_finite() => {
+                Ok(InputCommand::MouseScroll { amount: *amount })
+            }
+            Self::MouseMove { .. } | Self::MouseDelta { .. } | Self::MouseScroll { .. } => {
+                Err("runtime input numeric values must be finite".to_owned())
+            }
+        }
+    }
 }
 
 /// Ephemeral Editor-owned MCP connection injected into compatible agent runtimes.
@@ -51,10 +121,12 @@ impl AiStudioConnection {
 }
 
 /// Managed Editor-runtime operation requested by AI Studio after authorization.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum AiStudioRuntimeAction {
     /// Start the normal Editor Play path for the active project.
     StartPlaytest,
+    /// Queue one provider-planned command through the normal AI Agent virtual-input source.
+    SendInput(InputCommand),
     /// Capture the currently rendered Game View through the engine frame-capture path.
     CaptureFrame,
     /// Stop the managed Editor Play session.
@@ -67,6 +139,8 @@ pub enum AiStudioRuntimeResult {
     PlayStarted,
     /// Play start is waiting for an engine-managed game-code build.
     PlayStartPending,
+    /// One AI Agent input command was accepted by the normal runtime input queue.
+    RuntimeInputQueued(InputCommand),
     /// The managed Play session stopped.
     PlayStopped,
     /// A Game View frame was captured by the runtime renderer.
@@ -75,11 +149,13 @@ pub enum AiStudioRuntimeResult {
     Failed(String),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 enum PendingPermissionAction {
     LaunchExternalAgent,
+    LaunchRuntimeEvaluation,
     ApplyCodeChanges,
     LaunchPlaytest,
+    SendRuntimeInput(InputCommand),
     CaptureFrame,
 }
 
@@ -110,12 +186,20 @@ pub struct AiStudioPanel {
     open: bool,
     active_run_id: Option<String>,
     process: Option<ExternalAgentProcess>,
+    process_purpose: Option<ExternalAgentPurpose>,
     code_workspace: Option<CodeWorkspace>,
     pending_code_changes: Vec<CodeChange>,
     pending_permission: Option<PendingPermission>,
     pending_runtime_action: Option<AiStudioRuntimeAction>,
+    managed_input_plan: VecDeque<InputCommand>,
+    managed_input_recipe: Vec<InputCommand>,
+    managed_candidate_input_recipe: Vec<InputCommand>,
     managed_playtest_requested: bool,
     managed_capture_requested: bool,
+    managed_repair_requested: bool,
+    managed_runtime_repairs: usize,
+    managed_runtime_observation: Option<ManagedRuntimeObservation>,
+    managed_evaluation_requested: bool,
     managed_playtest_started_at: Option<std::time::Instant>,
     last_captured_frame: Option<(egui::TextureHandle, String, u32, u32)>,
     status: Option<String>,
@@ -159,12 +243,20 @@ impl AiStudioPanel {
             open: true,
             active_run_id,
             process: None,
+            process_purpose: None,
             code_workspace: None,
             pending_code_changes: Vec::new(),
             pending_permission: None,
             pending_runtime_action: None,
+            managed_input_plan: VecDeque::new(),
+            managed_input_recipe: Vec::new(),
+            managed_candidate_input_recipe: Vec::new(),
             managed_playtest_requested: false,
             managed_capture_requested: false,
+            managed_repair_requested: false,
+            managed_runtime_repairs: 0,
+            managed_runtime_observation: None,
+            managed_evaluation_requested: false,
             managed_playtest_started_at: None,
             last_captured_frame: None,
             status: None,
@@ -200,11 +292,29 @@ impl AiStudioPanel {
                         "Managed Editor Play launched successfully.",
                     ) {
                         self.status = Some(error.to_string());
+                    } else if self.managed_input_plan.is_empty() {
+                        self.request_managed_frame_capture_if_ready(&run_id);
                     }
                 }
             }
             AiStudioRuntimeResult::PlayStartPending => {
                 self.status = Some("Managed Play is waiting for the engine-managed game-code build.".to_owned());
+            }
+            AiStudioRuntimeResult::RuntimeInputQueued(command) => {
+                if let Err(error) = self
+                    .host
+                    .record_managed_runtime_input(&run_id, format!("{command:?}"))
+                {
+                    self.status = Some(error.to_string());
+                } else {
+                    self.status = Some(format!(
+                        "Queued managed AI Agent runtime input; {} planned command(s) remain.",
+                        self.managed_input_plan.len()
+                    ));
+                    if self.managed_input_plan.is_empty() {
+                        self.request_managed_frame_capture_if_ready(&run_id);
+                    }
+                }
             }
             AiStudioRuntimeResult::PlayStopped => {
                 self.managed_playtest_started_at = None;
@@ -217,7 +327,7 @@ impl AiStudioPanel {
                         &run_id, capture.width, capture.height, &png,
                     ).map_err(|error| error.to_string()))
                 {
-                    Ok((artifact_id, _path)) => {
+                    Ok((artifact_id, path)) => {
                         let image = egui::ColorImage::from_rgba_unmultiplied(
                             [capture.width as usize, capture.height as usize],
                             &capture.rgba8,
@@ -228,22 +338,47 @@ impl AiStudioPanel {
                             egui::TextureOptions::LINEAR,
                         );
                         self.last_captured_frame = Some((texture, artifact_id.clone(), capture.width, capture.height));
+                        self.managed_runtime_observation = Some(ManagedRuntimeObservation {
+                            artifact_id: artifact_id.clone(),
+                            path,
+                            width: capture.width,
+                            height: capture.height,
+                        });
                         self.managed_capture_requested = false;
-                        self.status = Some(format!("Captured managed Play frame {artifact_id}."));
+                        self.status = Some(format!("Captured managed Play frame {artifact_id}; scheduling provider evaluation."));
+                        self.request_managed_runtime_evaluation_if_ready(&run_id);
                     }
                     Err(error) => {
                         self.managed_capture_requested = false;
-                        self.status = Some(format!("Managed frame capture could not be stored: {error}"));
+                        let message = format!("Managed frame capture could not be stored: {error}");
+                        if let Err(host_error) = self
+                            .host
+                            .record_frame_capture_failure(&run_id, message.clone())
+                        {
+                            self.status = Some(host_error.to_string());
+                        } else {
+                            self.status = Some(message);
+                        }
                     }
                 }
             }
             AiStudioRuntimeResult::Failed(message) => {
-                if self.managed_playtest_started_at.is_none() {
-                    let _ = self.host.record_playtest_result(&run_id, false, Some(false), message.clone());
+                let result = if self.managed_playtest_started_at.is_none() {
+                    self.host
+                        .record_playtest_result(&run_id, false, Some(false), message.clone())
+                } else if self.managed_capture_requested {
+                    self.managed_capture_requested = false;
+                    self.host
+                        .record_frame_capture_failure(&run_id, message.clone())
                 } else {
-                    let _ = self.host.record_event(&run_id, AgentEventKind::Failure, message.clone());
+                    self.host
+                        .record_playtest_result(&run_id, true, Some(false), message.clone())
+                };
+                if let Err(error) = result {
+                    self.status = Some(error.to_string());
+                } else {
+                    self.status = Some(message);
                 }
-                self.status = Some(message);
             }
         }
     }
@@ -253,7 +388,10 @@ impl AiStudioPanel {
         self.poll_native_question(context);
         self.poll_external_process(context);
         self.poll_managed_validation(context);
+        self.request_managed_source_repair_if_ready();
+        self.request_managed_runtime_repair_if_ready();
         self.request_managed_playtest_if_ready();
+        self.request_next_managed_runtime_input_if_ready();
         self.poll_managed_playtest_timeout();
         let mut open = self.open;
         egui::Window::new("AI Studio")
@@ -600,6 +738,7 @@ impl AiStudioPanel {
                 self.status = Some(format!("Could not stop agent process: {error}"));
             }
             self.process = None;
+            self.process_purpose = None;
             if let Some(run_id) = run_id
                 && let Err(error) = self.host.cancel_run(&run_id)
             {
@@ -742,20 +881,36 @@ impl AiStudioPanel {
     }
 
     fn begin_run(&mut self) {
-        if let Err(error) = self
+        let authorized_proposal_version = match self
             .host
             .update_proposal(&self.selected_session, self.proposal_draft.clone())
         {
-            self.status = Some(error.to_string());
-            return;
-        }
+            Ok(version) => {
+                self.proposal_draft.version = version;
+                version
+            }
+            Err(error) => {
+                self.status = Some(error.to_string());
+                return;
+            }
+        };
         let provider = self.provider_program.trim().to_owned();
-        match self.host.start_run(&self.selected_session, provider) {
+        match self
+            .host
+            .start_run_authorized(&self.selected_session, authorized_proposal_version, provider)
+        {
             Ok(run_id) => {
                 self.active_run_id = Some(run_id.clone());
                 self.pending_runtime_action = None;
+                self.managed_input_plan.clear();
+                self.managed_input_recipe.clear();
+                self.managed_candidate_input_recipe.clear();
                 self.managed_playtest_requested = false;
                 self.managed_capture_requested = false;
+                self.managed_repair_requested = false;
+                self.managed_runtime_repairs = 0;
+                self.managed_runtime_observation = None;
+                self.managed_evaluation_requested = false;
                 self.managed_playtest_started_at = None;
                 self.last_captured_frame = None;
                 self.request_permission(
@@ -829,10 +984,18 @@ impl AiStudioPanel {
 
     fn execute_permission_action(&mut self, run_id: &str, action: PendingPermissionAction) {
         match action {
-            PendingPermissionAction::LaunchExternalAgent => self.launch_external_agent(run_id),
+            PendingPermissionAction::LaunchExternalAgent => {
+                self.launch_external_agent(run_id, ExternalAgentPurpose::BuildOrRepair)
+            }
+            PendingPermissionAction::LaunchRuntimeEvaluation => {
+                self.launch_external_agent(run_id, ExternalAgentPurpose::RuntimeEvaluation)
+            }
             PendingPermissionAction::ApplyCodeChanges => self.apply_code_changes(run_id),
             PendingPermissionAction::LaunchPlaytest => {
                 self.pending_runtime_action = Some(AiStudioRuntimeAction::StartPlaytest);
+            }
+            PendingPermissionAction::SendRuntimeInput(command) => {
+                self.pending_runtime_action = Some(AiStudioRuntimeAction::SendInput(command));
             }
             PendingPermissionAction::CaptureFrame => {
                 self.pending_runtime_action = Some(AiStudioRuntimeAction::CaptureFrame);
@@ -840,7 +1003,7 @@ impl AiStudioPanel {
         }
     }
 
-    fn launch_external_agent(&mut self, run_id: &str) {
+    fn launch_external_agent(&mut self, run_id: &str, purpose: ExternalAgentPurpose) {
         let (workspace_root, baseline_path) = match self.host.workspace_paths(run_id) {
             Ok(paths) => paths,
             Err(error) => {
@@ -875,7 +1038,31 @@ impl AiStudioPanel {
                 return;
             }
         };
-        let environment = vec![
+        if purpose == ExternalAgentPurpose::BuildOrRepair {
+            self.managed_candidate_input_recipe.clear();
+        }
+        let repair_context = (purpose == ExternalAgentPurpose::BuildOrRepair)
+            .then(|| {
+                self.host.run(run_id).ok().and_then(|run| {
+                    (run.state == AgentRunState::Repairing).then(|| {
+                        managed_repair_context(run, self.managed_runtime_observation.as_ref())
+                    })
+                })
+            })
+            .flatten();
+        let runtime_observation = if purpose == ExternalAgentPurpose::RuntimeEvaluation {
+            match self.managed_runtime_observation.clone() {
+                Some(observation) => Some(observation),
+                None => {
+                    self.managed_evaluation_requested = false;
+                    self.status = Some("Runtime evaluation requires a host-captured frame artifact.".to_owned());
+                    return;
+                }
+            }
+        } else {
+            None
+        };
+        let mut environment = vec![
             (
                 OsString::from("GAMEENGINE_MCP_ENDPOINT"),
                 OsString::from(&self.connection.endpoint),
@@ -901,10 +1088,29 @@ impl AiStudioPanel {
             (
                 OsString::from("GAMEENGINE_AGENT_EVENT_PROTOCOL"),
                 OsString::from(
-                    "Emit semantic events as one stdout line prefixed GAMEENGINE_AGENT_EVENT followed by JSON. Supported types: progress, tool_action, completion_gate, playtest_result. Never emit credentials or bearer tokens.",
+                    "Emit semantic events as one stdout line prefixed GAMEENGINE_AGENT_EVENT followed by JSON. Supported types: progress, tool_action, completion_gate, playtest_result, runtime_input. runtime_input is a provider-planned interaction and is executed later only through the authorized Editor Play virtual-input path. Never emit credentials or bearer tokens.",
                 ),
             ),
         ];
+        if let Some(repair_context) = repair_context {
+            environment.push((
+                OsString::from("GAMEENGINE_AGENT_REPAIR_CONTEXT"),
+                OsString::from(repair_context),
+            ));
+        }
+        if let Some(observation) = runtime_observation {
+            environment.push((
+                OsString::from("GAMEENGINE_AGENT_CAPTURE_PATH"),
+                observation.path.as_os_str().to_os_string(),
+            ));
+            environment.push((
+                OsString::from("GAMEENGINE_AGENT_RUNTIME_EVALUATION_CONTEXT"),
+                OsString::from(format!(
+                    "Evaluate host-captured managed Play frame {} ({}x{}). Inspect the image at GAMEENGINE_AGENT_CAPTURE_PATH. Do not mutate project or workspace state during this evaluation. Emit completion_gate with gate=visual_evaluation and status=passed or failed before any failing playtest_result, then emit playtest_result for the exercised interaction scenario when evidence supports it. A pass without this host-owned frame is rejected.",
+                    observation.artifact_id, observation.width, observation.height
+                )),
+            ));
+        }
         let args = split_direct_args(&self.provider_args);
         match ExternalAgentProcess::spawn(
             OsStr::new(self.provider_program.trim()),
@@ -915,18 +1121,43 @@ impl AiStudioPanel {
             Ok(process) => {
                 self.code_workspace = Some(workspace);
                 self.process = Some(process);
-                if let Err(error) = self.host.transition_run(
-                    run_id,
-                    AgentRunState::Executing,
-                    "External agent runtime started in the isolated code workspace.",
-                ) {
-                    self.status = Some(error.to_string());
+                self.process_purpose = Some(purpose);
+                match purpose {
+                    ExternalAgentPurpose::BuildOrRepair => {
+                        if let Err(error) = self.host.transition_run(
+                            run_id,
+                            AgentRunState::Executing,
+                            "External agent runtime started in the isolated code workspace.",
+                        ) {
+                            self.status = Some(error.to_string());
+                        } else {
+                            self.status = Some("External agent runtime started.".to_owned());
+                        }
+                    }
+                    ExternalAgentPurpose::RuntimeEvaluation => {
+                        if let Err(error) = self.host.record_semantic_progress(
+                            run_id,
+                            "runtime_evaluation",
+                            "External agent runtime started against the host-captured managed Play frame.",
+                        ) {
+                            self.status = Some(error.to_string());
+                        } else {
+                            self.status = Some("External agent runtime is evaluating the captured managed Play frame.".to_owned());
+                        }
+                    }
                 }
-                self.status = Some("External agent runtime started.".to_owned());
             }
-            Err(error) => {
-                self.fail_run(run_id, format!("Could not launch external agent: {error}"));
-            }
+            Err(error) => match purpose {
+                ExternalAgentPurpose::BuildOrRepair => {
+                    self.fail_run(run_id, format!("Could not launch external agent: {error}"));
+                }
+                ExternalAgentPurpose::RuntimeEvaluation => {
+                    self.record_runtime_evaluation_failure(
+                        run_id,
+                        format!("Could not launch runtime evaluator: {error}"),
+                    );
+                }
+            },
         }
     }
 
@@ -975,18 +1206,209 @@ impl AiStudioPanel {
             Ok(None) => context.request_repaint_after(std::time::Duration::from_millis(100)),
             Ok(Some(status)) => {
                 self.process = None;
+                let purpose = self
+                    .process_purpose
+                    .take()
+                    .unwrap_or(ExternalAgentPurpose::BuildOrRepair);
                 if status.success() {
-                    self.finish_provider_execution(&run_id, status.code());
+                    match purpose {
+                        ExternalAgentPurpose::BuildOrRepair => {
+                            self.finish_provider_execution(&run_id, status.code());
+                        }
+                        ExternalAgentPurpose::RuntimeEvaluation => {
+                            self.finish_runtime_evaluation(&run_id, status.code());
+                        }
+                    }
                 } else {
-                    self.fail_run(
-                        &run_id,
-                        format!("External agent exited unsuccessfully with {:?}.", status.code()),
+                    let message = format!(
+                        "External agent exited unsuccessfully with {:?}.",
+                        status.code()
                     );
+                    match purpose {
+                        ExternalAgentPurpose::BuildOrRepair => self.fail_run(&run_id, message),
+                        ExternalAgentPurpose::RuntimeEvaluation => {
+                            self.record_runtime_evaluation_failure(&run_id, message);
+                        }
+                    }
                 }
             }
             Err(error) => {
                 self.process = None;
-                self.fail_run(&run_id, format!("Could not poll external agent: {error}"));
+                let purpose = self
+                    .process_purpose
+                    .take()
+                    .unwrap_or(ExternalAgentPurpose::BuildOrRepair);
+                let message = format!("Could not poll external agent: {error}");
+                match purpose {
+                    ExternalAgentPurpose::BuildOrRepair => self.fail_run(&run_id, message),
+                    ExternalAgentPurpose::RuntimeEvaluation => {
+                        self.record_runtime_evaluation_failure(&run_id, message);
+                    }
+                }
+            }
+        }
+    }
+
+    fn request_managed_frame_capture_if_ready(&mut self, run_id: &str) {
+        if self.managed_capture_requested
+            || self.managed_evaluation_requested
+            || self.process.is_some()
+            || self.pending_permission.is_some()
+            || self.pending_runtime_action.is_some()
+            || self.managed_playtest_started_at.is_none()
+        {
+            return;
+        }
+        self.managed_capture_requested = true;
+        self.request_permission(
+            run_id.to_owned(),
+            AgentCapability::FrameCapture,
+            PendingPermissionAction::CaptureFrame,
+        );
+    }
+
+    fn request_managed_runtime_evaluation_if_ready(&mut self, run_id: &str) {
+        if self.managed_evaluation_requested
+            || self.process.is_some()
+            || self.pending_permission.is_some()
+            || self.managed_runtime_observation.is_none()
+        {
+            return;
+        }
+        if !self
+            .host
+            .run(run_id)
+            .is_ok_and(|run| run.state == AgentRunState::Evaluating)
+        {
+            return;
+        }
+        self.managed_evaluation_requested = true;
+        self.request_permission(
+            run_id.to_owned(),
+            AgentCapability::ExternalAgentProcess,
+            PendingPermissionAction::LaunchRuntimeEvaluation,
+        );
+    }
+
+    fn request_managed_source_repair_if_ready(&mut self) {
+        if self.managed_repair_requested
+            || self.process.is_some()
+            || self.pending_permission.is_some()
+        {
+            return;
+        }
+        let Some(run_id) = self.active_run_id.clone() else {
+            return;
+        };
+        let decision = match self.host.run(&run_id) {
+            Ok(run) => source_repair_decision(
+                run.state,
+                run.completion.source_validation,
+                run.validation_attempts
+                    .iter()
+                    .filter(|attempt| attempt.status == ManagedValidationAttemptStatus::Failed)
+                    .count(),
+            ),
+            Err(error) => {
+                self.status = Some(error.to_string());
+                return;
+            }
+        };
+        match decision {
+            SourceRepairDecision::Wait => {}
+            SourceRepairDecision::Retry(repair_number) => {
+                self.managed_repair_requested = true;
+                if let Err(error) = self.host.record_semantic_progress(
+                    &run_id,
+                    "managed_source_repair",
+                    format!(
+                        "Starting autonomous source repair {repair_number}/{MAX_AUTONOMOUS_SOURCE_REPAIRS} from the latest managed validation failure."
+                    ),
+                ) {
+                    self.status = Some(error.to_string());
+                }
+                self.request_permission(
+                    run_id,
+                    AgentCapability::ExternalAgentProcess,
+                    PendingPermissionAction::LaunchExternalAgent,
+                );
+            }
+            SourceRepairDecision::Exhausted => {
+                self.managed_repair_requested = true;
+                let message = format!(
+                    "Autonomous source repair budget exhausted after {MAX_AUTONOMOUS_SOURCE_REPAIRS} repair attempt(s); source validation remains failed."
+                );
+                let _ = self.host.record_semantic_progress(
+                    &run_id,
+                    "managed_source_repair_exhausted",
+                    message.clone(),
+                );
+                self.status = Some(message);
+            }
+        }
+    }
+
+    fn request_managed_runtime_repair_if_ready(&mut self) {
+        if self.managed_repair_requested
+            || self.process.is_some()
+            || self.pending_permission.is_some()
+            || self.pending_runtime_action.is_some()
+            || self.managed_playtest_started_at.is_some()
+        {
+            return;
+        }
+        let Some(run_id) = self.active_run_id.clone() else {
+            return;
+        };
+        let decision = match self.host.run(&run_id) {
+            Ok(run) => runtime_repair_decision(
+                run.state,
+                run.completion.source_validation,
+                run.completion.play_launch,
+                run.completion.frame_capture,
+                run.completion.visual_evaluation,
+                run.completion.interaction_scenarios,
+                self.managed_runtime_repairs,
+            ),
+            Err(error) => {
+                self.status = Some(error.to_string());
+                return;
+            }
+        };
+        match decision {
+            RuntimeRepairDecision::Wait => {}
+            RuntimeRepairDecision::Retry(repair_number) => {
+                self.managed_runtime_repairs = repair_number;
+                self.managed_repair_requested = true;
+                self.managed_playtest_requested = false;
+                self.managed_capture_requested = false;
+                self.managed_evaluation_requested = false;
+                if let Err(error) = self.host.record_semantic_progress(
+                    &run_id,
+                    "managed_runtime_repair",
+                    format!(
+                        "Starting autonomous runtime repair {repair_number}/{MAX_AUTONOMOUS_RUNTIME_REPAIRS} after managed Play or visual evaluation failure."
+                    ),
+                ) {
+                    self.status = Some(error.to_string());
+                }
+                self.request_permission(
+                    run_id,
+                    AgentCapability::ExternalAgentProcess,
+                    PendingPermissionAction::LaunchExternalAgent,
+                );
+            }
+            RuntimeRepairDecision::Exhausted => {
+                self.managed_repair_requested = true;
+                let message = format!(
+                    "Autonomous runtime repair budget exhausted after {MAX_AUTONOMOUS_RUNTIME_REPAIRS} repair attempt(s); managed Play or visual evaluation remains failed."
+                );
+                let _ = self.host.record_semantic_progress(
+                    &run_id,
+                    "managed_runtime_repair_exhausted",
+                    message.clone(),
+                );
+                self.status = Some(message);
             }
         }
     }
@@ -999,8 +1421,32 @@ impl AiStudioPanel {
         if !self.host.run(&run_id).is_ok_and(|run| run.state == AgentRunState::Playtesting) {
             return;
         }
+        self.managed_input_plan = self.managed_input_recipe.iter().cloned().collect();
+        self.managed_capture_requested = false;
+        self.managed_evaluation_requested = false;
+        self.managed_runtime_observation = None;
         self.managed_playtest_requested = true;
         self.request_permission(run_id, AgentCapability::RuntimeLaunch, PendingPermissionAction::LaunchPlaytest);
+    }
+
+    fn request_next_managed_runtime_input_if_ready(&mut self) {
+        if self.managed_playtest_started_at.is_none()
+            || self.pending_permission.is_some()
+            || self.pending_runtime_action.is_some()
+        {
+            return;
+        }
+        let Some(command) = self.managed_input_plan.pop_front() else {
+            return;
+        };
+        let Some(run_id) = self.active_run_id.clone() else {
+            return;
+        };
+        self.request_permission(
+            run_id,
+            AgentCapability::RuntimeInputControl,
+            PendingPermissionAction::SendRuntimeInput(command),
+        );
     }
 
     fn poll_managed_playtest_timeout(&mut self) {
@@ -1037,6 +1483,55 @@ impl AiStudioPanel {
         }
     }
 
+    fn record_runtime_evaluation_failure(&mut self, run_id: &str, message: String) {
+        self.managed_evaluation_requested = false;
+        if let Err(error) = self.host.record_completion_gate(
+            run_id,
+            "visual_evaluation",
+            CompletionStatus::Failed,
+            message.clone(),
+        ) {
+            self.status = Some(error.to_string());
+        } else {
+            self.status = Some(message);
+        }
+        if self.managed_playtest_started_at.is_some() && self.pending_runtime_action.is_none() {
+            self.pending_runtime_action = Some(AiStudioRuntimeAction::StopPlaytest);
+        }
+    }
+
+    fn finish_runtime_evaluation(&mut self, run_id: &str, exit_code: Option<i32>) {
+        self.managed_evaluation_requested = false;
+        let visual_status = self
+            .host
+            .run(run_id)
+            .map(|run| run.completion.visual_evaluation)
+            .unwrap_or(CompletionStatus::Pending);
+        match visual_status {
+            CompletionStatus::Passed => {
+                self.status = Some(format!(
+                    "Runtime evaluator finished with {exit_code:?}; host-captured visual evaluation passed."
+                ));
+            }
+            CompletionStatus::Failed => {
+                self.status = Some(format!(
+                    "Runtime evaluator finished with {exit_code:?}; visual evaluation failed and repair is required."
+                ));
+            }
+            CompletionStatus::Pending | CompletionStatus::NotApplicable => {
+                self.record_runtime_evaluation_failure(
+                    run_id,
+                    format!(
+                        "Runtime evaluator finished with {exit_code:?} without resolving visual_evaluation from the host-captured frame; runtime repair is required."
+                    ),
+                );
+            }
+        }
+        if self.managed_playtest_started_at.is_some() && self.pending_runtime_action.is_none() {
+            self.pending_runtime_action = Some(AiStudioRuntimeAction::StopPlaytest);
+        }
+    }
+
     fn finish_provider_execution(&mut self, run_id: &str, exit_code: Option<i32>) {
         let changes = match self.code_workspace.as_ref() {
             Some(workspace) => match workspace.collect_changes() {
@@ -1053,6 +1548,11 @@ impl AiStudioPanel {
         }
         let has_code_changes = !changes.is_empty();
         self.pending_code_changes = changes;
+        if !self.managed_candidate_input_recipe.is_empty() {
+            self.managed_input_recipe = std::mem::take(&mut self.managed_candidate_input_recipe);
+        }
+        self.managed_input_plan = self.managed_input_recipe.iter().cloned().collect();
+        self.managed_repair_requested = false;
         if let Err(error) = self
             .host
             .begin_managed_validation(run_id, has_code_changes)
@@ -1095,11 +1595,34 @@ impl AiStudioPanel {
             ProviderAgentEvent::CompletionGate { gate, status, message } => self.host.record_completion_gate(run_id, &gate, status, message).map_err(|error| error.to_string()),
             ProviderAgentEvent::PlaytestResult { launched, interactions_passed, message } => {
                 self.host.record_playtest_result(run_id, launched, interactions_passed, message).map_err(|error| error.to_string())?;
-                if launched && interactions_passed == Some(true) && !self.managed_capture_requested {
+                if launched
+                    && interactions_passed == Some(true)
+                    && self.managed_playtest_started_at.is_some()
+                    && self.host.run(run_id).is_ok_and(|run| run.audit.managed_runtime_inputs > 0)
+                    && !self.managed_capture_requested
+                {
                     self.managed_capture_requested = true;
                     self.request_permission(run_id.to_owned(), AgentCapability::FrameCapture, PendingPermissionAction::CaptureFrame);
                 }
                 Ok(())
+            }
+            ProviderAgentEvent::RuntimeInput { input } => {
+                if !self
+                    .host
+                    .run(run_id)
+                    .is_ok_and(|run| run.state == AgentRunState::Executing)
+                {
+                    return Err("runtime_input planning is accepted only during provider execution, before managed Play evaluation".to_owned());
+                }
+                let command = input.command()?;
+                self.managed_candidate_input_recipe.push(command);
+                self.host
+                    .record_semantic_progress(
+                        run_id,
+                        "runtime_input_plan",
+                        format!("Queued provider-planned runtime input {command:?} for managed Editor Play."),
+                    )
+                    .map_err(|error| error.to_string())
             }
         }
     }
@@ -1112,6 +1635,168 @@ impl AiStudioPanel {
             .host
             .transition_run(run_id, AgentRunState::Failed, message.clone());
         self.status = Some(message);
+    }
+}
+
+fn source_repair_decision(
+    state: AgentRunState,
+    source_validation: CompletionStatus,
+    failed_attempts: usize,
+) -> SourceRepairDecision {
+    if state != AgentRunState::Repairing
+        || source_validation != CompletionStatus::Failed
+        || failed_attempts == 0
+    {
+        return SourceRepairDecision::Wait;
+    }
+    if failed_attempts > MAX_AUTONOMOUS_SOURCE_REPAIRS {
+        SourceRepairDecision::Exhausted
+    } else {
+        SourceRepairDecision::Retry(failed_attempts)
+    }
+}
+
+fn runtime_repair_decision(
+    state: AgentRunState,
+    source_validation: CompletionStatus,
+    play_launch: CompletionStatus,
+    frame_capture: CompletionStatus,
+    visual_evaluation: CompletionStatus,
+    interaction_scenarios: CompletionStatus,
+    repair_attempts: usize,
+) -> RuntimeRepairDecision {
+    let runtime_failed = play_launch == CompletionStatus::Failed
+        || frame_capture == CompletionStatus::Failed
+        || visual_evaluation == CompletionStatus::Failed
+        || interaction_scenarios == CompletionStatus::Failed;
+    if state != AgentRunState::Repairing
+        || source_validation == CompletionStatus::Failed
+        || !runtime_failed
+    {
+        return RuntimeRepairDecision::Wait;
+    }
+    if repair_attempts >= MAX_AUTONOMOUS_RUNTIME_REPAIRS {
+        RuntimeRepairDecision::Exhausted
+    } else {
+        RuntimeRepairDecision::Retry(repair_attempts + 1)
+    }
+}
+
+fn managed_repair_context(
+    run: &crate::agent_host::AgentRun,
+    runtime_observation: Option<&ManagedRuntimeObservation>,
+) -> String {
+    if run.completion.source_validation == CompletionStatus::Failed {
+        return managed_source_repair_context(run);
+    }
+    let observation = runtime_observation
+        .map(|observation| {
+            format!(
+                " Last host-captured frame: {} ({}x{}) at {}.",
+                observation.artifact_id,
+                observation.width,
+                observation.height,
+                observation.path.display()
+            )
+        })
+        .unwrap_or_default();
+    format!(
+        "Managed runtime evidence failed (play_launch={:?}, frame_capture={:?}, visual_evaluation={:?}, interaction_scenarios={:?}). Repair the existing isolated workspace in place without expanding the immutable proposal scope. Preserve or replace the provider-planned runtime interaction recipe as appropriate; GameEngine will rerun managed source validation, start a fresh Editor Play session, replay the resulting interaction recipe, capture a fresh frame, and evaluate again.{observation}",
+        run.completion.play_launch,
+        run.completion.frame_capture,
+        run.completion.visual_evaluation,
+        run.completion.interaction_scenarios,
+    )
+}
+
+fn managed_source_repair_context(run: &crate::agent_host::AgentRun) -> String {
+    let Some(attempt) = run
+        .validation_attempts
+        .iter()
+        .rev()
+        .find(|attempt| attempt.status == ManagedValidationAttemptStatus::Failed)
+    else {
+        return "Managed source validation failed without a recorded failed attempt. Re-inspect the existing workspace and repair only the source-validation failure without expanding proposal scope.".to_owned();
+    };
+    let failures = attempt
+        .gate_results
+        .iter()
+        .filter_map(|result| {
+            result.failure.as_ref().map(|failure| {
+                format!("{:?}: {}", result.gate, failure.message)
+            })
+        })
+        .collect::<Vec<_>>();
+    let detail = if failures.is_empty() {
+        "no gate-specific failure message was recorded".to_owned()
+    } else {
+        failures.join(" | ")
+    };
+    format!(
+        "Managed validation attempt {} failed: {detail}. Repair the existing isolated workspace in place, preserve successful work, do not expand the immutable proposal scope, and return normally so GameEngine can run managed validation again.",
+        attempt.id
+    )
+}
+
+fn provider_key_code(key: &str) -> Result<KeyCode, String> {
+    let normalized = key.trim().to_ascii_lowercase();
+    let key = match normalized.as_str() {
+        "a" | "keya" => KeyCode::KeyA,
+        "b" | "keyb" => KeyCode::KeyB,
+        "c" | "keyc" => KeyCode::KeyC,
+        "d" | "keyd" => KeyCode::KeyD,
+        "e" | "keye" => KeyCode::KeyE,
+        "f" | "keyf" => KeyCode::KeyF,
+        "g" | "keyg" => KeyCode::KeyG,
+        "h" | "keyh" => KeyCode::KeyH,
+        "i" | "keyi" => KeyCode::KeyI,
+        "j" | "keyj" => KeyCode::KeyJ,
+        "k" | "keyk" => KeyCode::KeyK,
+        "l" | "keyl" => KeyCode::KeyL,
+        "m" | "keym" => KeyCode::KeyM,
+        "n" | "keyn" => KeyCode::KeyN,
+        "o" | "keyo" => KeyCode::KeyO,
+        "p" | "keyp" => KeyCode::KeyP,
+        "q" | "keyq" => KeyCode::KeyQ,
+        "r" | "keyr" => KeyCode::KeyR,
+        "s" | "keys" => KeyCode::KeyS,
+        "t" | "keyt" => KeyCode::KeyT,
+        "u" | "keyu" => KeyCode::KeyU,
+        "v" | "keyv" => KeyCode::KeyV,
+        "w" | "keyw" => KeyCode::KeyW,
+        "x" | "keyx" => KeyCode::KeyX,
+        "y" | "keyy" => KeyCode::KeyY,
+        "z" | "keyz" => KeyCode::KeyZ,
+        "0" | "digit0" => KeyCode::Digit0,
+        "1" | "digit1" => KeyCode::Digit1,
+        "2" | "digit2" => KeyCode::Digit2,
+        "3" | "digit3" => KeyCode::Digit3,
+        "4" | "digit4" => KeyCode::Digit4,
+        "5" | "digit5" => KeyCode::Digit5,
+        "6" | "digit6" => KeyCode::Digit6,
+        "7" | "digit7" => KeyCode::Digit7,
+        "8" | "digit8" => KeyCode::Digit8,
+        "9" | "digit9" => KeyCode::Digit9,
+        "arrowup" | "up" => KeyCode::ArrowUp,
+        "arrowdown" | "down" => KeyCode::ArrowDown,
+        "arrowleft" | "left" => KeyCode::ArrowLeft,
+        "arrowright" | "right" => KeyCode::ArrowRight,
+        "space" => KeyCode::Space,
+        "enter" => KeyCode::Enter,
+        "tab" => KeyCode::Tab,
+        "shiftleft" | "shift" => KeyCode::ShiftLeft,
+        "controlleft" | "control" | "ctrl" => KeyCode::ControlLeft,
+        _ => return Err(format!("unsupported managed runtime key `{key}`")),
+    };
+    Ok(key)
+}
+
+fn provider_mouse_button(button: &str) -> Result<MouseButton, String> {
+    match button.trim().to_ascii_lowercase().as_str() {
+        "left" | "primary" => Ok(MouseButton::Left),
+        "right" | "secondary" => Ok(MouseButton::Right),
+        "middle" => Ok(MouseButton::Middle),
+        _ => Err(format!("unsupported managed runtime mouse button `{button}`")),
     }
 }
 
@@ -1276,6 +1961,33 @@ mod tests {
     }
 
     #[test]
+    fn provider_runtime_input_maps_to_engine_input_command() {
+        let event: ProviderAgentEvent = serde_json::from_str(
+            r#"{"type":"runtime_input","input":{"kind":"key","key":"W","pressed":true}}"#,
+        )
+        .expect("runtime input event");
+        let ProviderAgentEvent::RuntimeInput { input } = event else {
+            panic!("runtime input event");
+        };
+        assert_eq!(
+            input.command().expect("command"),
+            InputCommand::Key {
+                key: KeyCode::KeyW,
+                pressed: true,
+            }
+        );
+    }
+
+    #[test]
+    fn provider_runtime_input_rejects_non_finite_numbers() {
+        let input = ProviderRuntimeInput::MouseMove {
+            x: f32::NAN,
+            y: 1.0,
+        };
+        assert!(input.command().is_err());
+    }
+
+    #[test]
     fn code_change_summary_keeps_deletion_blocked() {
         let change = CodeChange {
             relative_path: PathBuf::from("game/src/lib.rs"),
@@ -1283,5 +1995,77 @@ mod tests {
             after: None,
         };
         assert_eq!(change_summary(&change), "delete (apply blocked)");
+    }
+
+    #[test]
+    fn autonomous_source_repair_is_bounded_and_source_failure_only() {
+        assert_eq!(
+            source_repair_decision(
+                AgentRunState::Repairing,
+                CompletionStatus::Failed,
+                1,
+            ),
+            SourceRepairDecision::Retry(1)
+        );
+        assert_eq!(
+            source_repair_decision(
+                AgentRunState::Repairing,
+                CompletionStatus::Failed,
+                2,
+            ),
+            SourceRepairDecision::Retry(2)
+        );
+        assert_eq!(
+            source_repair_decision(
+                AgentRunState::Repairing,
+                CompletionStatus::Failed,
+                3,
+            ),
+            SourceRepairDecision::Exhausted
+        );
+        assert_eq!(
+            source_repair_decision(
+                AgentRunState::Repairing,
+                CompletionStatus::Pending,
+                1,
+            ),
+            SourceRepairDecision::Wait
+        );
+        assert_eq!(
+            source_repair_decision(
+                AgentRunState::Evaluating,
+                CompletionStatus::Failed,
+                1,
+            ),
+            SourceRepairDecision::Wait
+        );
+    }
+
+    #[test]
+    fn autonomous_runtime_repair_includes_frame_capture_failure() {
+        assert_eq!(
+            runtime_repair_decision(
+                AgentRunState::Repairing,
+                CompletionStatus::Passed,
+                CompletionStatus::Passed,
+                CompletionStatus::Failed,
+                CompletionStatus::Pending,
+                CompletionStatus::Pending,
+                0,
+            ),
+            RuntimeRepairDecision::Retry(1)
+        );
+        assert_eq!(
+            runtime_repair_decision(
+                AgentRunState::Repairing,
+                CompletionStatus::Passed,
+                CompletionStatus::Passed,
+                CompletionStatus::Failed,
+                CompletionStatus::Pending,
+                CompletionStatus::Pending,
+                MAX_AUTONOMOUS_RUNTIME_REPAIRS,
+            ),
+            RuntimeRepairDecision::Exhausted
+        );
     }
 }

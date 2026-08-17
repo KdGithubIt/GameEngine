@@ -29,6 +29,10 @@ pub(crate) enum AgentHostError {
     SessionNotFound(String),
     RunNotFound(String),
     ActiveWriterRun(String),
+    StaleProposalVersion {
+        expected: u64,
+        current: u64,
+    },
     InvalidTransition {
         from: AgentRunState,
         to: AgentRunState,
@@ -51,6 +55,10 @@ impl fmt::Display for AgentHostError {
             Self::ActiveWriterRun(id) => write!(
                 formatter,
                 "agent run `{id}` already owns the project writer slot"
+            ),
+            Self::StaleProposalVersion { expected, current } => write!(
+                formatter,
+                "proposal version {expected} was authorized, but current proposal version is {current}"
             ),
             Self::InvalidTransition { from, to } => {
                 write!(formatter, "agent run cannot transition from {from:?} to {to:?}")
@@ -558,6 +566,26 @@ pub(crate) struct CodeCheckpoint {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct AssetAcquisitionRecord {
+    pub(crate) provider: String,
+    pub(crate) source: String,
+    pub(crate) license: Option<String>,
+    pub(crate) imported_paths: Vec<PathBuf>,
+    pub(crate) created_unix_ms: u64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub(crate) struct AgentRunAudit {
+    pub(crate) authoring_operations: u64,
+    pub(crate) code_changes: u64,
+    pub(crate) asset_acquisitions: Vec<AssetAcquisitionRecord>,
+    pub(crate) managed_runtime_inputs: u64,
+    pub(crate) raw_workspace_operations: u64,
+    pub(crate) custom_commands: u64,
+    pub(crate) permission_escalations: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct AgentRun {
     pub(crate) id: String,
     pub(crate) proposal_snapshot: AgentProposal,
@@ -569,6 +597,8 @@ pub(crate) struct AgentRun {
     pub(crate) validation_attempts: Vec<ManagedValidationAttempt>,
     #[serde(default)]
     pub(crate) code_checkpoints: Vec<CodeCheckpoint>,
+    #[serde(default)]
+    pub(crate) audit: AgentRunAudit,
     pub(crate) started_unix_ms: u64,
     pub(crate) finished_unix_ms: Option<u64>,
 }
@@ -580,18 +610,22 @@ pub(crate) struct AgentSession {
     pub(crate) title: String,
     pub(crate) messages: Vec<ConversationMessage>,
     pub(crate) proposal: AgentProposal,
+    #[serde(default)]
+    pub(crate) proposal_history: Vec<AgentProposal>,
     pub(crate) runs: Vec<AgentRun>,
     pub(crate) shared_with_project: bool,
 }
 
 impl AgentSession {
     fn new(title: String) -> Self {
+        let proposal = AgentProposal::default();
         Self {
             schema_version: SESSION_SCHEMA_VERSION,
             id: next_id("session"),
             title,
             messages: Vec::new(),
-            proposal: AgentProposal::default(),
+            proposal: proposal.clone(),
+            proposal_history: vec![proposal],
             runs: Vec::new(),
             shared_with_project: false,
         }
@@ -620,11 +654,14 @@ impl AgentHost {
                 continue;
             }
             let bytes = fs::read(&path)?;
-            let session: AgentSession = match serde_json::from_slice(&bytes) {
+            let mut session: AgentSession = match serde_json::from_slice(&bytes) {
                 Ok(session) => session,
                 Err(_) => continue,
             };
             if session.schema_version == SESSION_SCHEMA_VERSION {
+                if session.proposal_history.is_empty() {
+                    session.proposal_history.push(session.proposal.clone());
+                }
                 sessions.insert(session.id.clone(), session);
             }
         }
@@ -696,14 +733,26 @@ impl AgentHost {
         let session = self.session_mut(session_id)?;
         proposal.version = session.proposal.version.saturating_add(1);
         let version = proposal.version;
-        session.proposal = proposal;
+        session.proposal = proposal.clone();
+        session.proposal_history.push(proposal);
         self.persist_session(session_id)?;
         Ok(version)
     }
 
-    pub(crate) fn start_run(
+    #[cfg(test)]
+    fn start_run(
         &mut self,
         session_id: &str,
+        provider_label: impl Into<String>,
+    ) -> Result<String, AgentHostError> {
+        let version = self.session(session_id)?.proposal.version;
+        self.start_run_authorized(session_id, version, provider_label)
+    }
+
+    pub(crate) fn start_run_authorized(
+        &mut self,
+        session_id: &str,
+        authorized_proposal_version: u64,
         provider_label: impl Into<String>,
     ) -> Result<String, AgentHostError> {
         if let Some(active) = &self.active_writer_run {
@@ -712,6 +761,12 @@ impl AgentHost {
         let run_id = next_id("run");
         let provider_label = provider_label.into();
         let session = self.session_mut(session_id)?;
+        if session.proposal.version != authorized_proposal_version {
+            return Err(AgentHostError::StaleProposalVersion {
+                expected: authorized_proposal_version,
+                current: session.proposal.version,
+            });
+        }
         let mut run = AgentRun {
             id: run_id.clone(),
             proposal_snapshot: session.proposal.clone(),
@@ -721,6 +776,7 @@ impl AgentHost {
             completion: CompletionReport::default(),
             validation_attempts: Vec::new(),
             code_checkpoints: Vec::new(),
+            audit: AgentRunAudit::default(),
             started_unix_ms: unix_ms(),
             finished_unix_ms: None,
         };
@@ -801,6 +857,10 @@ impl AgentHost {
         let checkpoint_id = next_id("code-checkpoint");
         let (session_id, _) = self.run_location(run_id)?;
         let run = self.run_mut_in_session(&session_id, run_id)?;
+        run.audit.code_changes = run
+            .audit
+            .code_changes
+            .saturating_add(changes.len().try_into().unwrap_or(u64::MAX));
         run.code_checkpoints.push(CodeCheckpoint {
             id: checkpoint_id.clone(),
             changes: changes
@@ -856,6 +916,22 @@ impl AgentHost {
         let action = action.into();
         let (session_id, _) = self.run_location(run_id)?;
         let run = self.run_mut_in_session(&session_id, run_id)?;
+        if success != Some(false) {
+            if tool.starts_with("authoring.")
+                || tool.starts_with("scene.")
+                || tool.starts_with("prefab.")
+                || tool.starts_with("vfx.")
+                || tool.starts_with("behavior_tree.")
+            {
+                run.audit.authoring_operations = run.audit.authoring_operations.saturating_add(1);
+            }
+            if tool == "workspace.raw" {
+                run.audit.raw_workspace_operations = run.audit.raw_workspace_operations.saturating_add(1);
+            }
+            if tool == "command.custom" {
+                run.audit.custom_commands = run.audit.custom_commands.saturating_add(1);
+            }
+        }
         push_event_with_evidence(
             run,
             AgentEventKind::ToolAction,
@@ -874,6 +950,22 @@ impl AgentHost {
         message: impl Into<String>,
     ) -> Result<(), AgentHostError> {
         let (session_id, state) = self.run_location(run_id)?;
+        if gate == "visual_evaluation" {
+            if state != AgentRunState::Evaluating {
+                return Err(AgentHostError::Io(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "visual_evaluation is reportable only while evaluating a host-captured frame",
+                )));
+            }
+            if status == CompletionStatus::Passed
+                && self.run(run_id)?.completion.frame_capture != CompletionStatus::Passed
+            {
+                return Err(AgentHostError::Io(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "visual_evaluation cannot pass without host-owned frame-capture evidence",
+                )));
+            }
+        }
         {
             let run = self.run_mut_in_session(&session_id, run_id)?;
             match gate {
@@ -907,6 +999,61 @@ impl AgentHost {
         Ok(())
     }
 
+    pub(crate) fn record_managed_runtime_input(
+        &mut self,
+        run_id: &str,
+        command: impl Into<String>,
+    ) -> Result<(), AgentHostError> {
+        let command = command.into();
+        let (session_id, _) = self.run_location(run_id)?;
+        let run = self.run_mut_in_session(&session_id, run_id)?;
+        run.audit.managed_runtime_inputs = run.audit.managed_runtime_inputs.saturating_add(1);
+        push_event_with_evidence(
+            run,
+            AgentEventKind::ToolAction,
+            format!("Managed runtime input queued through the AI Agent virtual-input source: {command}."),
+            None,
+            Some(AgentEventEvidence::ToolAction {
+                tool: "runtime.input".to_owned(),
+                action: command,
+                success: Some(true),
+            }),
+        );
+        self.persist_session(&session_id)
+    }
+
+    pub(crate) fn record_frame_capture_failure(
+        &mut self,
+        run_id: &str,
+        message: impl Into<String>,
+    ) -> Result<(), AgentHostError> {
+        let message = message.into();
+        let (session_id, state) = self.run_location(run_id)?;
+        {
+            let run = self.run_mut_in_session(&session_id, run_id)?;
+            run.completion.frame_capture = CompletionStatus::Failed;
+            push_event_with_evidence(
+                run,
+                AgentEventKind::Failure,
+                message.clone(),
+                None,
+                Some(AgentEventEvidence::CompletionGate {
+                    gate: "frame_capture".to_owned(),
+                    status: CompletionStatus::Failed,
+                }),
+            );
+        }
+        self.persist_session(&session_id)?;
+        if matches!(state, AgentRunState::Playtesting | AgentRunState::Evaluating) {
+            self.transition_run(
+                run_id,
+                AgentRunState::Repairing,
+                "Managed frame capture failed; repair is required.",
+            )?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn record_playtest_result(
         &mut self,
         run_id: &str,
@@ -919,7 +1066,9 @@ impl AgentHost {
             let run = self.run_mut_in_session(&session_id, run_id)?;
             run.completion.play_launch = if launched { CompletionStatus::Passed } else { CompletionStatus::Failed };
             run.completion.interaction_scenarios = match interactions_passed {
-                Some(true) => CompletionStatus::Passed,
+                Some(true) if run.proposal_snapshot.playtest_plan.is_empty() => CompletionStatus::NotApplicable,
+                Some(true) if run.audit.managed_runtime_inputs > 0 => CompletionStatus::Passed,
+                Some(true) => CompletionStatus::Pending,
                 Some(false) => CompletionStatus::Failed,
                 None if run.proposal_snapshot.playtest_plan.is_empty() => CompletionStatus::NotApplicable,
                 None => CompletionStatus::Pending,
@@ -1449,11 +1598,15 @@ impl AgentHost {
         self.run(run_id)?;
         let check = self.permissions.check(run_id, capability);
         if check == PermissionCheck::RequiresApproval {
-            self.record_event(
-                run_id,
+            let (session_id, _) = self.run_location(run_id)?;
+            let run = self.run_mut_in_session(&session_id, run_id)?;
+            run.audit.permission_escalations = run.audit.permission_escalations.saturating_add(1);
+            push_event(
+                run,
                 AgentEventKind::PermissionRequested,
                 format!("Permission requested: {}.", capability.label()),
-            )?;
+            );
+            self.persist_session(&session_id)?;
         }
         Ok(check)
     }
@@ -2358,6 +2511,36 @@ mod tests {
     }
 
     #[test]
+    fn proposal_revisions_are_retained_and_stale_go_is_rejected() {
+        let project = temp_path("proposal-history-project");
+        let storage = temp_path("proposal-history-storage");
+        fs::create_dir_all(&project).expect("test project directory");
+        let mut host = AgentHost::open(project.clone(), storage.clone()).expect("host");
+        let session = host.create_session("Proposal").expect("session");
+        let mut proposal = host.session(&session).expect("session").proposal.clone();
+        proposal.goal = "first revision".to_owned();
+        let authorized = host.update_proposal(&session, proposal).expect("proposal");
+        let mut revised = host.session(&session).expect("session").proposal.clone();
+        revised.goal = "second revision".to_owned();
+        let current = host.update_proposal(&session, revised).expect("proposal");
+        let session_state = host.session(&session).expect("session");
+        assert_eq!(session_state.proposal_history.len(), 3);
+        assert_eq!(session_state.proposal_history[1].version, authorized);
+        assert_eq!(session_state.proposal_history[2].version, current);
+        assert!(matches!(
+            host.start_run_authorized(&session, authorized, "test"),
+            Err(AgentHostError::StaleProposalVersion { expected, current: actual })
+                if expected == authorized && actual == current
+        ));
+        let run = host
+            .start_run_authorized(&session, current, "test")
+            .expect("authorized run");
+        assert_eq!(host.run(&run).expect("run").proposal_snapshot.version, current);
+        let _ = fs::remove_dir_all(project);
+        let _ = fs::remove_dir_all(storage);
+    }
+
+    #[test]
     fn session_runs_share_one_code_workspace_identity() {
         let project = temp_path("session-workspace-project");
         let storage = temp_path("session-workspace-storage");
@@ -2469,6 +2652,45 @@ mod tests {
     }
 
     #[test]
+    fn managed_runtime_input_is_engine_owned_completion_evidence() {
+        let project = temp_path("runtime-input-project");
+        let storage = temp_path("runtime-input-storage");
+        fs::create_dir_all(&project).expect("test project directory");
+        let mut host = AgentHost::open(project.clone(), storage.clone()).expect("host");
+        let session = host.create_session("Runtime input").expect("session");
+        let mut proposal = host.session(&session).expect("session").proposal.clone();
+        proposal.playtest_plan = vec!["press W once".to_owned()];
+        host.update_proposal(&session, proposal).expect("proposal");
+        let run = host.start_run(&session, "test").expect("run");
+
+        host.record_playtest_result(&run, true, Some(true), "provider claim")
+            .expect("provider claim");
+        assert_eq!(
+            host.run(&run).expect("run").completion.interaction_scenarios,
+            CompletionStatus::Pending
+        );
+
+        host.record_managed_runtime_input(&run, "key_w pressed")
+            .expect("runtime input evidence");
+        host.record_playtest_result(&run, true, Some(true), "re-evaluated after managed input")
+            .expect("managed result");
+
+        let run_state = host.run(&run).expect("run");
+        assert_eq!(run_state.audit.managed_runtime_inputs, 1);
+        assert_eq!(
+            run_state.completion.interaction_scenarios,
+            CompletionStatus::Passed
+        );
+        assert!(run_state.events.iter().any(|event| matches!(
+            &event.evidence,
+            Some(AgentEventEvidence::ToolAction { tool, success: Some(true), .. })
+                if tool == "runtime.input"
+        )));
+        let _ = fs::remove_dir_all(project);
+        let _ = fs::remove_dir_all(storage);
+    }
+
+    #[test]
     fn managed_frame_artifact_sets_structured_completion_evidence() {
         let project = temp_path("frame-project");
         let storage = temp_path("frame-storage");
@@ -2488,6 +2710,51 @@ mod tests {
             &event.evidence,
             Some(AgentEventEvidence::CapturedFrame { artifact_id: id, width: 2, height: 2 }) if id == &artifact_id
         )));
+        let _ = fs::remove_dir_all(project);
+        let _ = fs::remove_dir_all(storage);
+    }
+
+    #[test]
+    fn visual_evaluation_pass_requires_host_captured_frame_in_evaluating_state() {
+        let project = temp_path("visual-evaluation-project");
+        let storage = temp_path("visual-evaluation-storage");
+        fs::create_dir_all(&project).expect("test project directory");
+        let mut host = AgentHost::open(project.clone(), storage.clone()).expect("host");
+        let session = host.create_session("Visual evaluation").expect("session");
+        let run = host.start_run(&session, "test").expect("run");
+        host.transition_run(&run, AgentRunState::Executing, "execute")
+            .expect("executing");
+
+        assert!(host
+            .record_completion_gate(
+                &run,
+                "visual_evaluation",
+                CompletionStatus::Passed,
+                "provider preclaim",
+            )
+            .is_err());
+        assert_eq!(
+            host.run(&run).expect("run").completion.visual_evaluation,
+            CompletionStatus::Pending
+        );
+
+        host.transition_run(&run, AgentRunState::Validating, "validate")
+            .expect("validating");
+        host.transition_run(&run, AgentRunState::Playtesting, "playtest")
+            .expect("playtesting");
+        host.store_captured_frame_artifact(&run, 2, 2, b"png")
+            .expect("artifact");
+        host.record_completion_gate(
+            &run,
+            "visual_evaluation",
+            CompletionStatus::Passed,
+            "evaluated host frame",
+        )
+        .expect("visual evaluation");
+        assert_eq!(
+            host.run(&run).expect("run").completion.visual_evaluation,
+            CompletionStatus::Passed
+        );
         let _ = fs::remove_dir_all(project);
         let _ = fs::remove_dir_all(storage);
     }
