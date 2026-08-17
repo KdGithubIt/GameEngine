@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ui/mod.rs",
+  "old": "            show_inspector_panel(ui, inspector_maximum_width, inspector_scroll_request, |ui| {",
+  "new": "            show_inspector_panel_at_offset(\n                ui,\n                inspector_maximum_width,\n                inspector_scroll_request,\n                |ui| {"
+}
