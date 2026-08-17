@@ -85,15 +85,17 @@ the beginning:
 - **Project and Editor lifecycle:**
   [0023](0023-project-root-ownership.md),
   [0103](0103-play-mode-editor-viewport.md),
-  [0104](0104-editor-edit-responsiveness.md), and
-  [0117](0117-project-first-launcher-and-editor-application-lifecycle.md).
+  [0104](0104-editor-edit-responsiveness.md),
+  [0117](0117-project-first-launcher-and-editor-application-lifecycle.md), and
+  [0136](0136-editor-preview-asset-residency-and-asynchronous-streaming.md).
 - **Assets and import:** [0021](0021-asset-reference-model-and-manifest.md),
   [0078](0078-format-independent-model-ir.md),
   [0081](0081-fbx-import-via-ufbx.md),
   [0094](0094-generic-data-assets.md),
   [0101](0101-imported-material-extraction-and-remap.md),
-  [0105](0105-model-level-material-and-texture-sub-asset-overrides.md), and
-  [0134](0134-portable-prefab-instance-source.md).
+  [0105](0105-model-level-material-and-texture-sub-asset-overrides.md),
+  [0134](0134-portable-prefab-instance-source.md), and
+  [0136](0136-editor-preview-asset-residency-and-asynchronous-streaming.md).
 - **Rendering and materials:**
   [0055](0055-render-authoring-and-material-v2-contract.md),
   [0100](0100-generic-shading-models-and-outline-pass.md),
@@ -276,3 +278,5 @@ implementation contract.
 | [0132](0132-declarative-authoring-capability-registry-and-automatic-adapter-exposure.md) | Declarative Authoring Capability Registry and Automatic Adapter Exposure |
 | [0133](0133-remote-ai-studio-companion-access-and-private-network-boundary.md) | Remote AI Studio Companion Access and Private Network Boundary |
 | [0134](0134-portable-prefab-instance-source.md) | Portable Prefab Instance Source |
+| [0135](0135-native-agent-inference-scheduling-and-editor-gpu-resource-arbitration.md) | Native Agent Inference Scheduling and Editor GPU Resource Arbitration |
+| [0136](0136-editor-preview-asset-residency-and-asynchronous-streaming.md) | Editor Preview Asset Residency and Asynchronous Streaming |
