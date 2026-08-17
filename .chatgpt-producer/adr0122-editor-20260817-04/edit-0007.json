@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ui/mod.rs","old":"        self.flush_all_pending_material_saves();\n        self.scene_view.clear_project_caches();","new":"        self.flush_all_pending_material_saves();\n        self.audio_audition.reset_project();\n        self.scene_view.clear_project_caches();"}
