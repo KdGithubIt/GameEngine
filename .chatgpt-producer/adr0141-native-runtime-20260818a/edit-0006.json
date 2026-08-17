@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/agent_host.rs",
+  "old": "    pub(crate) fn root(&self) -> &Path {\n        &self.workspace_root\n    }\n\n    pub(crate) fn collect_changes(&self) -> Result<Vec<CodeChange>, AgentHostError> {",
+  "new": "    pub(crate) fn root(&self) -> &Path {\n        &self.workspace_root\n    }\n\n    /// Writes one UTF-8 file inside the isolated managed code workspace.\n    ///\n    /// This never writes the live project. The normal collect/review/apply path\n    /// remains responsible for stale checks before canonical source mutation.\n    pub(crate) fn write_text(&self, relative: &Path, text: &str) -> Result<(), AgentHostError> {\n        validate_code_relative_path(relative)?;\n        if !is_managed_code_file(relative) {\n            return Err(AgentHostError::InvalidRelativePath(relative.to_path_buf()));\n        }\n        write_text_atomic(&self.workspace_root.join(relative), text)\n    }\n\n    pub(crate) fn collect_changes(&self) -> Result<Vec<CodeChange>, AgentHostError> {"
+}
