@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/engine/src/components.rs","old":"use engine_authoring::id::{AssetId, ComponentTypeId, EntityId};","new":"use crate::scene_bridge::AUDIO_LISTENER_COMPONENT;\nuse engine_authoring::id::{AssetId, ComponentTypeId, EntityId};"}

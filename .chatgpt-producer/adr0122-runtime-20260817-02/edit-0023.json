@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/scripting/src/game_api.rs","old":"    GameQueryAccess, GameQueryRow, GameResourceAccess, GameResourcePatch, GameSystemAccess,\n};","new":"    GameQueryAccess, GameQueryRow, GameResourceAccess, GameResourcePatch, GameSpatialAudioOptions,\n    GameSystemAccess,\n};"}
