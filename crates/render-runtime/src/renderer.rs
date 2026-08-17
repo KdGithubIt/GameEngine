@@ -3,7 +3,9 @@
 use std::fmt;
 
 use crate::bloom::BloomPass;
-use crate::camera::{select_active_game_camera, Camera3D};
+use crate::camera::{
+    select_active_game_camera_with_override, Camera3D, GameCameraSelectionOverride,
+};
 use crate::temporal::{TemporalCameraSample, TemporalCameraSource, TemporalHistory};
 use crate::transform::Transform;
 
@@ -175,16 +177,21 @@ impl WorldRenderer {
     fn active_temporal_camera(
         world: &mut engine_ecs::World,
     ) -> Option<TemporalCameraSample> {
+        let override_target = world
+            .get_resource::<GameCameraSelectionOverride>()
+            .and_then(GameCameraSelectionOverride::target);
         let query = engine_ecs::Query::<(&Camera3D, &Transform)>::new(world);
-        select_active_game_camera(query.iter()).map(|(entity, (camera, transform))| {
-            TemporalCameraSample::new(
-                TemporalCameraSource::WorldEntity {
-                    id: entity.id(),
-                    generation: entity.generation(),
-                },
-                camera.view_projection_matrix(transform),
-            )
-        })
+        select_active_game_camera_with_override(query.iter(), override_target).map(
+            |(entity, (camera, transform))| {
+                TemporalCameraSample::new(
+                    TemporalCameraSource::WorldEntity {
+                        id: entity.id(),
+                        generation: entity.generation(),
+                    },
+                    camera.view_projection_matrix(transform),
+                )
+            },
+        )
     }
 }
 

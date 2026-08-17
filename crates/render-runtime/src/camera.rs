@@ -65,6 +65,34 @@ impl Default for Camera3D {
     }
 }
 
+/// Transient runtime-only override for Game View camera selection.
+///
+/// Authoring never serializes this resource. Composition layers such as Timeline
+/// may point it at one live camera without rewriting [`Camera3D::enabled`] or
+/// [`Camera3D::priority`]. A missing target falls back to normal priority
+/// selection so stale runtime identities cannot black out the Game View.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct GameCameraSelectionOverride {
+    target: Option<engine_ecs::Entity>,
+}
+
+impl GameCameraSelectionOverride {
+    /// Returns the currently requested runtime camera entity.
+    pub fn target(&self) -> Option<engine_ecs::Entity> {
+        self.target
+    }
+
+    /// Replaces the transient camera target.
+    pub fn set_target(&mut self, target: engine_ecs::Entity) {
+        self.target = Some(target);
+    }
+
+    /// Removes the transient override and restores normal camera selection.
+    pub fn clear(&mut self) {
+        self.target = None;
+    }
+}
+
 /// Builds the total ordering used by every Game View camera consumer.
 ///
 /// This is public only as a cross-crate runtime adapter contract; application
@@ -80,6 +108,37 @@ pub fn camera_selection_key(
         .then_some((Reverse(camera.priority), entity_id, entity_generation))
 }
 
+/// Selects a transient override when it is live, otherwise the normal Game View camera.
+///
+/// The override intentionally bypasses [`Camera3D::enabled`] and priority: a
+/// Timeline-owned standby camera can therefore become active without changing
+/// persisted camera fields. If the requested entity is absent from `cameras`,
+/// normal enabled-camera ordering is used.
+#[doc(hidden)]
+pub fn select_active_game_camera_with_override<'camera, T>(
+    cameras: impl Iterator<Item = (engine_ecs::Entity, (&'camera Camera3D, T))>,
+    override_target: Option<engine_ecs::Entity>,
+) -> Option<(engine_ecs::Entity, (&'camera Camera3D, T))> {
+    let mut fallback = None;
+    for candidate in cameras {
+        let entity = candidate.0;
+        if override_target == Some(entity) {
+            return Some(candidate);
+        }
+        let camera = candidate.1.0;
+        let Some(key) = camera_selection_key(entity.id(), entity.generation(), camera) else {
+            continue;
+        };
+        let replace = fallback
+            .as_ref()
+            .is_none_or(|(best_key, _)| key < *best_key);
+        if replace {
+            fallback = Some((key, candidate));
+        }
+    }
+    fallback.map(|(_, candidate)| candidate)
+}
+
 /// Selects the enabled Game View camera with the highest priority.
 ///
 /// The payload is generic so rendering, movement, LOD, and lock-on can attach
@@ -89,15 +148,7 @@ pub fn camera_selection_key(
 pub fn select_active_game_camera<'camera, T>(
     cameras: impl Iterator<Item = (engine_ecs::Entity, (&'camera Camera3D, T))>,
 ) -> Option<(engine_ecs::Entity, (&'camera Camera3D, T))> {
-    cameras
-        .filter_map(|candidate| {
-            let entity = candidate.0;
-            let camera = candidate.1.0;
-            camera_selection_key(entity.id(), entity.generation(), camera)
-                .map(|key| (key, candidate))
-        })
-        .min_by_key(|(key, _)| *key)
-        .map(|(_, candidate)| candidate)
+    select_active_game_camera_with_override(cameras, None)
 }
 
 /// Stores the current viewport dimensions.
@@ -147,4 +198,55 @@ pub fn default_camera_transform() -> Transform {
         glam::Vec3::ZERO,
         glam::Vec3::Y,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn transient_override_can_select_a_disabled_standby_camera() {
+        let normal_entity = engine_ecs::Entity::from_raw(1, 0);
+        let standby_entity = engine_ecs::Entity::from_raw(2, 0);
+        let normal = Camera3D {
+            priority: 50,
+            ..Camera3D::default()
+        };
+        let standby = Camera3D {
+            enabled: false,
+            ..Camera3D::default()
+        };
+
+        let selected = select_active_game_camera_with_override(
+            [
+                (normal_entity, (&normal, ())),
+                (standby_entity, (&standby, ())),
+            ]
+            .into_iter(),
+            Some(standby_entity),
+        );
+
+        assert_eq!(selected.map(|(entity, _)| entity), Some(standby_entity));
+        assert!(!standby.enabled);
+        assert_eq!(standby.priority, 0);
+    }
+
+    #[test]
+    fn missing_override_target_falls_back_to_normal_priority_order() {
+        let low_entity = engine_ecs::Entity::from_raw(1, 0);
+        let high_entity = engine_ecs::Entity::from_raw(2, 0);
+        let missing = engine_ecs::Entity::from_raw(99, 0);
+        let low = Camera3D::default();
+        let high = Camera3D {
+            priority: 10,
+            ..Camera3D::default()
+        };
+
+        let selected = select_active_game_camera_with_override(
+            [(low_entity, (&low, ())), (high_entity, (&high, ()))].into_iter(),
+            Some(missing),
+        );
+
+        assert_eq!(selected.map(|(entity, _)| entity), Some(high_entity));
+    }
 }
