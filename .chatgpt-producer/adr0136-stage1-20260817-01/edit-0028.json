@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/asset_import.rs","old":"                Ok(imported) => imported,\n","new":"                Ok(imported) => Arc::new(imported),\n"}
