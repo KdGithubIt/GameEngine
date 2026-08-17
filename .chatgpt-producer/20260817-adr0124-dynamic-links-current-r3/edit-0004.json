@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/physics/src/navigation.rs",
+  "old": "        for link in &profile.links {\n            if link.from == entry.node {",
+  "new": "        for link in &profile.links {\n            if !filter.allows_link(link) {\n                continue;\n            }\n            if link.from == entry.node {"
+}

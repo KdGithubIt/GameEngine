@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/physics/src/navigation.rs",
+  "old": "fn astar_polygons(\n    profile: &NavigationProfileMesh,\n    start: NavigationPolygonRef,\n    end: NavigationPolygonRef,\n) -> Option<SearchOutcome> {",
+  "new": "fn astar_polygons(\n    profile: &NavigationProfileMesh,\n    start: NavigationPolygonRef,\n    end: NavigationPolygonRef,\n    filter: &NavigationQueryFilter,\n) -> Option<SearchOutcome> {"
+}
