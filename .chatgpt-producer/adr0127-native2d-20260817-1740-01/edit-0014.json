@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/engine/src/lib.rs","old":"/// Production tiled polygon navigation and runtime query facade.\npub mod navmesh;","new":"/// Production tiled polygon navigation and runtime query facade.\npub mod navmesh;\n/// Native 2D gameplay/authoring facade across existing domain owners (ADR 0127).\npub mod native_2d;"}
