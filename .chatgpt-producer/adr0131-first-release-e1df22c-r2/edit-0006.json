@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/agent_host.rs",
+  "old": "    pub(crate) fn workspace_root(&self, run_id: &str) -> PathBuf {\n        self.storage_root.join(\"workspaces\").join(run_id)\n    }\n\n    fn session_mut(&mut self, id: &str) -> Result<&mut AgentSession, AgentHostError> {",
+  "new": "    pub(crate) fn workspace_root(&self, run_id: &str) -> PathBuf {\n        self.storage_root.join(\"workspaces\").join(run_id)\n    }\n\n    pub(crate) fn store_captured_frame_artifact(\n        &mut self,\n        run_id: &str,\n        width: u32,\n        height: u32,\n        png_bytes: &[u8],\n    ) -> Result<(String, PathBuf), AgentHostError> {\n        self.run(run_id)?;\n        let artifact_id = next_id(\"frame\");\n        let directory = self.storage_root.join(\"artifacts\").join(run_id);\n        fs::create_dir_all(&directory)?;\n        let path = directory.join(format!(\"{artifact_id}.png\"));\n        fs::write(&path, png_bytes)?;\n        self.record_captured_frame(run_id, artifact_id.clone(), width, height)?;\n        Ok((artifact_id, path))\n    }\n\n    fn session_mut(&mut self, id: &str) -> Result<&mut AgentSession, AgentHostError> {"
+}
