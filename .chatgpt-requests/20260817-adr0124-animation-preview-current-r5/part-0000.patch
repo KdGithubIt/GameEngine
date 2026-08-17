@@ -1,0 +1,12 @@
+diff --git a/crates/editor/src/ui/animation_preview.rs b/crates/editor/src/ui/animation_preview.rs
+index 41dfbab0c2cc54f97c70419aeaf55790e9428996..6e88638d03b0e473cb726f9274a432fedc919196 100644
+--- a/crates/editor/src/ui/animation_preview.rs
++++ b/crates/editor/src/ui/animation_preview.rs
+@@ -513,6 +513,7 @@ impl AnimationPreviewWindow {
+                     GizmoMode::Translate,
+                     GizmoSpace::Global,
+                     None,
++                    None,
+                     render_state,
+                 );
+             });
