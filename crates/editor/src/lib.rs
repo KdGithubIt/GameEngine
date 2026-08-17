@@ -12,6 +12,7 @@
 #[allow(dead_code)]
 mod agent_asset_acquisition;
 mod agent_host;
+mod hosted_model_backend;
 mod live_observation;
 mod native_agent;
 mod native_agent_runtime;
