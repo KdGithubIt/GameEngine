@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/agent_host.rs",
+  "old": "    pub(crate) events: Vec<AgentEvent>,\n    pub(crate) completion: CompletionReport,\n    /// Provider-independent semantic working set retained independently of model residency.",
+  "new": "    pub(crate) events: Vec<AgentEvent>,\n    pub(crate) completion: CompletionReport,\n    #[serde(default, skip_serializing_if = \"Option::is_none\")]\n    pub(crate) confinement_profile: Option<AgentConfinementProfile>,\n    /// Provider-independent semantic working set retained independently of model residency."
+}
