@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0141-native-runtime-20260818a",
+  "target_branch": "chatgpt/gameengine-adr0141-native-agent-runtime",
+  "expected_head_sha": "2d6dc07734015929c05a42708f0d5289891c685b",
+  "baseline_main_sha": "2d6dc07734015929c05a42708f0d5289891c685b",
+  "patch_sha256": "eff6b97961c764c0bed47ed8ac84f7438b6967833ca7eb5b373c039689fb45d7",
+  "patch_bytes": 54698,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Implement ADR0141",
+  "pr_title": "GameEngine: implement ADR0141",
+  "pr_body": "## Summary\n\nImplements ADR0141."
+}
