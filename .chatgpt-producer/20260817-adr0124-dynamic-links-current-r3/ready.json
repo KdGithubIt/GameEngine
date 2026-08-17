@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "request_id": "20260817-adr0124-dynamic-links-current-r3",
+  "target_branch": "chatgpt/gameengine-adr0124-production-navigation-v16",
+  "expected_head_sha": "632c80980e7389fb0f94a750b3d6ff3fc75bdbc6",
+  "baseline_main_sha": "e1df22ca311274ac7645a226f214c9d4e941756c",
+  "edit_parts": [
+    "edit-0000.json",
+    "edit-0001.json",
+    "edit-0002.json",
+    "edit-0003.json",
+    "edit-0004.json",
+    "edit-0005.json"
+  ],
+  "commit_message": "Add ADR 0124 dynamic navigation traversal",
+  "pr_title": "Complete ADR 0124 production navigation first release",
+  "pr_body": "Complete ADR 0124 production navigation on current main by adding runtime traversal-link state, deterministic dynamic-obstacle handling, and the remaining first-release query/runtime synchronization behavior without changing the public stable contracts.\n\n<!-- gameengine-visual-validation: editor -->"
+}
