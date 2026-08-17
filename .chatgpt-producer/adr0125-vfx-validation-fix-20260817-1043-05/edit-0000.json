@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/vfx_builder_completion.rs","old":"impl VfxPreviewState {\n    fn open_effect(&mut self, effect: &VfxEffect) {","new":"impl VfxPreviewState {\n    #[cfg(feature = \"visual-validation\")]\n    fn open_effect(&mut self, effect: &VfxEffect) {"}
