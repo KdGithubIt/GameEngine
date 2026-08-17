@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0125-vfx-visual-fix-20260817-1055-07",
+  "target_branch": "chatgpt/gameengine-adr0125-vfx-current-main-r2",
+  "expected_head_sha": "a5691810fc5025618b816c7c6a6f72ac4a6d583b",
+  "baseline_main_sha": "89cf19154b1664ef8de83d91cdbeeb2c4242a738",
+  "patch_sha256": "0537242020b73176934700cee820c3b1ed5cfe01cb5e6123a28d9ba686ce7215",
+  "patch_bytes": 857,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Fix ADR0125 VFX visual validation fixture",
+  "pr_title": "GameEngine: complete ADR 0125 VFX first release",
+  "pr_body": "## Summary\n\nCompletes ADR 0125 VFX first-release requirements on current main, including explicit runtime playback state, deferred Project Rust VFX controls and copied state views, responsive background VFX compilation/file I/O in the Editor Builder, and validation fixtures aligned with the asynchronous compilation boundary.\n\n## Validation\n\nRun normal Windows affected validation plus the deterministic VFX Builder visual fixture.\n\n<!-- gameengine-visual-validation: editor -->\n<!-- gameengine-visual-authoring-tool: VFX Builder -->\n"
+}
