@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "20260817-adr0121-first-release-closure-r4",
+  "target_branch": "chatgpt/gameengine-adr0121-first-release-closure-v2",
+  "expected_head_sha": "9e4ff04637839fea2b02522a826a1d720773ff96",
+  "baseline_main_sha": "1ba35c18b5d2851ea00d42f145afd3c33360beb2",
+  "patch_sha256": "c28767cd309d55c92e8f6da8c92175d81ca483a35c54937578506e80eafc4d22",
+  "patch_bytes": 2554,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Test Material adapter parity at typed semantics",
+  "pr_title": "GameEngine: close ADR 0121 first-release parity gaps",
+  "pr_body": "## Summary\n\nRe-audits ADR 0121 on current main and closes the remaining first-release semantic parity gaps. Material and Project Settings live Editor mutations create undoable history through the existing shared typed-document service. Regression coverage compares direct Editor semantics, registry-driven generic MCP, domain MCP tools, and CLI for Material, Project Settings, and Animation Set.\n\nFollow-up validation fixes use Path-based Material undo helpers and compare Material CLI diffs at the typed MaterialAsset semantic boundary rather than JSON lexical float formatting. CLI, MCP, and Editor continue to use the same TypedDocumentAuthoringService; persisted schema and public response shape are unchanged.\n\n## Compatibility\n\nNo persisted schema, Stable ID, capability ID, public tool name, ProjectRoot confinement rule, or MCP lifecycle contract changes. MCP remains Editor-attached and is not a competing file writer.\n\n## Validation\n\nRun Windows Validation in affected mode for engine-editor. Visual Validation is not required because no UI layout or appearance is changed."
+}
