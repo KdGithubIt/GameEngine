@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/project-lifecycle/src/lib.rs","old":"/// Ephemeral descriptive metadata for a non-Editor project writer.\n","new":"/// Ephemeral descriptive metadata for the authoritative project writer.\n"}
