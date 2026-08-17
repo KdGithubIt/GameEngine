@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0139-wc-r2-core-20260817-2352",
+  "target_branch": "chatgpt/gameengine-adr0139-working-copy-r2",
+  "expected_head_sha": "b4ea5dd8a60497f7ac71e886842adde86e1a3087",
+  "baseline_main_sha": "b4ea5dd8a60497f7ac71e886842adde86e1a3087",
+  "edit_parts": [
+    "edit-0000.json", "edit-0001.json", "edit-0002.json", "edit-0003.json", "edit-0004.json", "edit-0005.json", "edit-0006.json", "edit-0007.json", "edit-0008.json", "edit-0009.json",
+    "edit-0010.json", "edit-0011.json", "edit-0012.json", "edit-0013.json", "edit-0014.json", "edit-0015.json", "edit-0016.json", "edit-0017.json", "edit-0018.json", "edit-0019.json",
+    "edit-0020.json", "edit-0021.json", "edit-0022.json", "edit-0023.json", "edit-0024.json", "edit-0025.json", "edit-0026.json", "edit-0027.json", "edit-0028.json", "edit-0029.json",
+    "edit-0030.json", "edit-0031.json", "edit-0032.json", "edit-0033.json", "edit-0034.json", "edit-0035.json", "edit-0036.json", "edit-0037.json", "edit-0038.json", "edit-0039.json",
+    "edit-0040.json", "edit-0041.json", "edit-0042.json", "edit-0043.json", "edit-0044.json", "edit-0045.json", "edit-0046.json", "edit-0047.json", "edit-0048.json", "edit-0049.json",
+    "edit-0050.json", "edit-0051.json", "edit-0052.json", "edit-0053.json", "edit-0054.json", "edit-0055.json", "edit-0056.json", "edit-0057.json", "edit-0058.json", "edit-0059.json",
+    "edit-0060.json", "edit-0061.json"
+  ],
+  "commit_message": "Implement ADR 0139 working-copy authority core on current main",
+  "pr_title": "Implement ADR 0139 authoritative working copies",
+  "pr_body": "Implements ADR 0139 authoritative Editor working-copy and saved-copy coherency on current main, preserving ADR 0138 Animation Graph debug provenance.\n\n- keeps existing workspace and specialized editor sessions as the single mutable owners\n- supplies immutable working-copy snapshots to Problems validation and Play\n- removes Material canonical autosave and makes persistence explicit through Save/Save All\n- makes Animation Set consume an open Animation Graph working copy\n- preserves ADR 0138 semantic GraphId/EdgeId observation metadata while compiling unsaved graph snapshots\n\nA follow-up request on the same task branch completes Scene View snapshot consumption and external-file conflict UI before final validation."
+}
