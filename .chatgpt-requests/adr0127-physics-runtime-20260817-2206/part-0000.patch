@@ -1,0 +1,1653 @@
+diff --git a/crates/authoring/src/lib.rs b/crates/authoring/src/lib.rs
+index 003802af7b6478e487c7c26d07690a972c151820..5933fcdab9eb64657f883ded0bcaa7919d80f161 100644
+--- a/crates/authoring/src/lib.rs
++++ b/crates/authoring/src/lib.rs
+@@ -57,6 +57,8 @@ pub mod graph_view;
+ pub mod id;
+ pub mod load;
+ pub mod material_asset;
++/// Native 2D project settings and stable sorting-layer contracts (ADR 0127).
++pub mod native_2d;
+ pub mod persist;
+ pub mod prefab;
+ pub mod prefab_authoring;
+@@ -149,6 +151,10 @@ pub use material_asset::{
+     MaterialOutline, MaterialShadingModel, MaterialSphereBlendMode,
+     MaterialSphereCoordinateSource, ToonLitProperties, MATERIAL_SCHEMA_VERSION,
+ };
++pub use native_2d::{
++    PixelPreviewPolicy, Project2dSettings, SortingLayer, SortingLayerId, SortingLayerIdError,
++    SpriteFiltering,
++};
+ pub use persist::{replace_file_contents, PersistError, PersistOperation};
+ pub use prefab::{PrefabAsset, PrefabError, PrefabInstantiation, PREFAB_SCHEMA_VERSION};
+ pub use prefab_authoring::{
+diff --git a/crates/authoring/src/native_2d.rs b/crates/authoring/src/native_2d.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..a0648fd9d4172bfb1dee8f01d727bc7d4d876fc2
+--- /dev/null
++++ b/crates/authoring/src/native_2d.rs
+@@ -0,0 +1,199 @@
++//! Native 2D project authoring contracts (ADR 0127).
++//!
++//! Persisted project defaults and stable sorting identity live here. Runtime
++//! solver state and backend handles are deliberately excluded.
++
++use serde::{Deserialize, Serialize};
++use std::collections::BTreeSet;
++use std::fmt;
++
++/// Stable persisted identifier for one logical 2D sorting layer.
++#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
++#[serde(transparent)]
++pub struct SortingLayerId(String);
++
++impl SortingLayerId {
++    /// Generates a new stable sorting-layer identifier.
++    pub fn generate() -> Self {
++        Self(format!("sorting_layer_{}", ulid::Ulid::new()))
++    }
++
++    /// Parses and validates a persisted sorting-layer identifier.
++    pub fn parse(value: impl Into<String>) -> Result<Self, SortingLayerIdError> {
++        let value = value.into();
++        let Some(suffix) = value.strip_prefix("sorting_layer_") else {
++            return Err(SortingLayerIdError::WrongPrefix(value));
++        };
++        if ulid::Ulid::from_string(suffix).is_err() {
++            return Err(SortingLayerIdError::InvalidUlid(value));
++        }
++        Ok(Self(value))
++    }
++
++    /// Returns the persisted opaque identifier.
++    pub fn as_str(&self) -> &str {
++        &self.0
++    }
++}
++
++/// Sorting-layer identifier validation failure.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub enum SortingLayerIdError {
++    /// The value does not use the `sorting_layer_` prefix.
++    WrongPrefix(String),
++    /// The suffix after `sorting_layer_` is not a valid ULID.
++    InvalidUlid(String),
++}
++
++impl fmt::Display for SortingLayerIdError {
++    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
++        match self {
++            Self::WrongPrefix(value) => write!(
++                formatter,
++                "sorting layer ID `{value}` must start with `sorting_layer_`"
++            ),
++            Self::InvalidUlid(value) => write!(
++                formatter,
++                "sorting layer ID `{value}` has an invalid ULID suffix"
++            ),
++        }
++    }
++}
++
++impl std::error::Error for SortingLayerIdError {}
++
++/// Default texture filtering used by Native 2D assets.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case")]
++pub enum SpriteFiltering {
++    /// Preserve hard texel boundaries for pixel-art assets.
++    Nearest,
++    /// Interpolate neighboring texels.
++    Linear,
++}
++
++/// Project default for pixel-aware 2D preview and Camera2D behavior.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case")]
++pub enum PixelPreviewPolicy {
++    /// Do not request pixel-grid alignment behavior.
++    Off,
++    /// Show pixel-alignment guidance without forcing a projection policy.
++    Advisory,
++    /// Request the deterministic pixel-perfect camera policy.
++    PixelPerfect,
++}
++
++/// One stable logical 2D draw layer.
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++pub struct SortingLayer {
++    /// Stable identity persisted by authored content.
++    pub id: SortingLayerId,
++    /// Human-readable display name; renaming does not alter [`Self::id`].
++    pub name: String,
++}
++
++/// Typed project-wide Native 2D defaults.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++pub struct Project2dSettings {
++    /// Default source pixels represented by one world unit.
++    pub default_pixels_per_unit: f32,
++    /// Default texture filtering policy.
++    pub default_filtering: SpriteFiltering,
++    /// Fixed-step gravity in the world XY gameplay plane.
++    ///
++    /// Authoring retains `f64` values so JSON clients do not silently narrow
++    /// decimal values before the runtime boundary.
++    pub gravity: [f64; 2],
++    /// Default pixel-aware preview policy.
++    pub pixel_preview: PixelPreviewPolicy,
++    /// Ordered logical draw layers addressed by stable identifiers.
++    pub sorting_layers: Vec<SortingLayer>,
++}
++
++impl Default for Project2dSettings {
++    fn default() -> Self {
++        Self {
++            default_pixels_per_unit: 100.0,
++            default_filtering: SpriteFiltering::Nearest,
++            gravity: [0.0, -9.81],
++            pixel_preview: PixelPreviewPolicy::Advisory,
++            sorting_layers: vec![SortingLayer {
++                id: SortingLayerId("sorting_layer_00000000000000000000000000".to_owned()),
++                name: "Default".to_owned(),
++            }],
++        }
++    }
++}
++
++impl Project2dSettings {
++    /// Validates project-level 2D invariants shared by every authoring client.
++    pub fn validate(&self) -> Vec<String> {
++        let mut errors = Vec::new();
++        if !self.default_pixels_per_unit.is_finite() || self.default_pixels_per_unit <= 0.0 {
++            errors.push(
++                "native_2d.default_pixels_per_unit must be finite and positive".to_owned(),
++            );
++        }
++        if self.gravity.iter().any(|value| {
++            !value.is_finite() || value.abs() > f64::from(f32::MAX)
++        }) {
++            errors.push("native_2d.gravity must fit finite f32 runtime values".to_owned());
++        }
++        if self.sorting_layers.is_empty() {
++            errors.push("native_2d.sorting_layers must contain at least one layer".to_owned());
++        }
++        let mut ids = BTreeSet::new();
++        let mut names = BTreeSet::new();
++        for layer in &self.sorting_layers {
++            if layer.name.trim().is_empty() {
++                errors.push(format!(
++                    "sorting layer `{}` has an empty name",
++                    layer.id.as_str()
++                ));
++            }
++            if !ids.insert(layer.id.as_str()) {
++                errors.push(format!(
++                    "duplicate sorting layer ID `{}`",
++                    layer.id.as_str()
++                ));
++            }
++            if !names.insert(layer.name.as_str()) {
++                errors.push(format!("duplicate sorting layer name `{}`", layer.name));
++            }
++        }
++        errors
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn default_2d_settings_have_downward_gravity_and_stable_default_layer() {
++        let settings = Project2dSettings::default();
++        assert_eq!(settings.gravity, [0.0, -9.81]);
++        assert_eq!(settings.sorting_layers.len(), 1);
++        assert!(settings.sorting_layers[0]
++            .id
++            .as_str()
++            .starts_with("sorting_layer_"));
++        assert!(settings.validate().is_empty());
++    }
++
++    #[test]
++    fn sorting_layer_id_rejects_wrong_domain() {
++        assert!(matches!(
++            SortingLayerId::parse("sprite_01ARZ3NDEKTSV4RRFFQ69G5FAV"),
++            Err(SortingLayerIdError::WrongPrefix(_))
++        ));
++    }
++
++    #[test]
++    fn validation_rejects_non_finite_gravity() {
++        let mut settings = Project2dSettings::default();
++        settings.gravity[1] = f64::NAN;
++        assert!(!settings.validate().is_empty());
++    }
++}
+diff --git a/crates/authoring/src/project_settings.rs b/crates/authoring/src/project_settings.rs
+index c7f14521be8522f6431756f5c1ca6e9737558912..d41606db77e3b5aa5b7f7745f8337c092ff6cfa6 100644
+--- a/crates/authoring/src/project_settings.rs
++++ b/crates/authoring/src/project_settings.rs
+@@ -106,6 +106,9 @@ pub struct ProjectSettings {
+     /// Project-wide preferred ECS system order and enabled state.
+     #[serde(default, skip_serializing_if = "SystemSettings::is_default")]
+     pub system_settings: SystemSettings,
++    /// Native 2D defaults and stable sorting-layer identities (ADR 0127).
++    #[serde(default)]
++    pub native_2d: crate::native_2d::Project2dSettings,
+ }
+ 
+ impl Default for ProjectSettings {
+@@ -120,6 +123,7 @@ impl Default for ProjectSettings {
+             input_actions: default_input_actions(),
+             start_scene: None,
+             system_settings: SystemSettings::default(),
++            native_2d: crate::native_2d::Project2dSettings::default(),
+         }
+     }
+ }
+@@ -303,6 +307,11 @@ pub enum ProjectSettingsError {
+         /// The out-of-range index value.
+         index: u32,
+     },
++    /// The Native 2D project settings violate a persisted invariant.
++    InvalidNative2dSettings {
++        /// First actionable validation message.
++        message: String,
++    },
+     /// An I/O error occurred.
+     Io(std::io::Error),
+ }
+@@ -324,6 +333,9 @@ impl fmt::Display for ProjectSettingsError {
+             Self::InvalidLayerIndex { index } => {
+                 write!(f, "layer index {index} exceeds the maximum of 31")
+             }
++            Self::InvalidNative2dSettings { message } => {
++                write!(f, "invalid Native 2D project settings: {message}")
++            }
+             Self::Io(e) => write!(f, "project settings I/O error: {e}"),
+         }
+     }
+@@ -336,7 +348,8 @@ impl std::error::Error for ProjectSettingsError {
+             Self::Io(e) => Some(e),
+             Self::UnsupportedVersion { .. }
+             | Self::UnsupportedSystemSettingsVersion { .. }
+-            | Self::InvalidLayerIndex { .. } => None,
++            | Self::InvalidLayerIndex { .. }
++            | Self::InvalidNative2dSettings { .. } => None,
+         }
+     }
+ }
+@@ -382,6 +395,9 @@ impl ProjectSettings {
+                 found: settings.system_settings.schema_version,
+             });
+         }
++        if let Some(message) = settings.native_2d.validate().into_iter().next() {
++            return Err(ProjectSettingsError::InvalidNative2dSettings { message });
++        }
+         Ok(settings)
+     }
+ 
+@@ -480,6 +496,7 @@ mod tests {
+             }],
+             start_scene: Some("scenes/main.scene.json".into()),
+             system_settings: SystemSettings::default(),
++            native_2d: crate::native_2d::Project2dSettings::default(),
+         };
+ 
+         let json = serde_json::to_string_pretty(&settings).expect("must serialize");
+diff --git a/crates/editor/src/runtime.rs b/crates/editor/src/runtime.rs
+index 7fa1ed2ba26b1282eedee80b1b9f11c24955548b..19e660ea27a1ee631d20c0b60f4aa937caac6d45 100644
+--- a/crates/editor/src/runtime.rs
++++ b/crates/editor/src/runtime.rs
+@@ -264,6 +264,7 @@ impl RuntimePlayState {
+             },
+             None => ProjectSettings::default(),
+         };
++        engine::native_2d::apply_project_2d_settings(&mut app, &project_settings.native_2d);
+         let (input_actions, input_diagnostics) =
+             engine::InputActionMap::from_project_settings(&project_settings);
+         app.insert_resource(input_actions);
+diff --git a/crates/engine/src/bin/player.rs b/crates/engine/src/bin/player.rs
+index 0aa528b3943c0140a4fa21409baa4c276f471024..d1799c38086a09dc48035cc154d93a9d30a038dc 100644
+--- a/crates/engine/src/bin/player.rs
++++ b/crates/engine/src/bin/player.rs
+@@ -56,6 +56,7 @@ mod desktop {
+             .map_err(|error| format!("cannot load start scene `{start_scene}`: {error}"))?;
+ 
+         let mut app = engine::App::new().with_title(title);
++        engine::native_2d::apply_project_2d_settings(&mut app, &settings.native_2d);
+         let (input_actions, input_diagnostics) =
+             engine::InputActionMap::from_project_settings(&settings);
+         app.insert_resource(input_actions);
+diff --git a/crates/engine/src/components/builtins.rs b/crates/engine/src/components/builtins.rs
+index c32c3e82b3e4dfa4cb1ad1070730a813568c00ce..ec286a518391a69623a79342f1f5ec67b049209a 100644
+--- a/crates/engine/src/components/builtins.rs
++++ b/crates/engine/src/components/builtins.rs
+@@ -943,6 +943,193 @@ const COLLIDER_FIELDS: &[FieldDef] = &[
+     .with_control(InspectorFieldControl::LayerMask),
+ ];
+ 
++const COLLIDER_2D_SHAPE_BOX: InspectorFieldCondition = InspectorFieldCondition::String {
++    field: "shape",
++    equals: "box",
++};
++
++const COLLIDER_2D_SHAPE_CAPSULE: InspectorFieldCondition = InspectorFieldCondition::String {
++    field: "shape",
++    equals: "capsule",
++};
++
++const COLLIDER_2D_SHAPE_ROUND: InspectorFieldCondition = InspectorFieldCondition::StringAny {
++    field: "shape",
++    values: &["circle", "capsule"],
++};
++
++const COLLIDER_2D_SHAPE_POLYGON: InspectorFieldCondition = InspectorFieldCondition::String {
++    field: "shape",
++    equals: "polygon",
++};
++
++const COLLIDER_2D_FIELDS: &[FieldDef] = &[
++    enumeration(
++        "shape",
++        "Shape",
++        "Native 2D collider geometry.",
++        "box",
++        &["box", "circle", "capsule", "polygon"],
++    ),
++    number(
++        "half_extent_x",
++        "Half Extent X",
++        "Positive local half-width for a box.",
++        0.5,
++        POSITIVE,
++    )
++    .when(COLLIDER_2D_SHAPE_BOX),
++    number(
++        "half_extent_y",
++        "Half Extent Y",
++        "Positive local half-height for a box.",
++        0.5,
++        POSITIVE,
++    )
++    .when(COLLIDER_2D_SHAPE_BOX),
++    number(
++        "radius",
++        "Radius",
++        "Positive radius for a circle or capsule.",
++        0.5,
++        POSITIVE,
++    )
++    .when(COLLIDER_2D_SHAPE_ROUND),
++    number(
++        "half_height",
++        "Half Height",
++        "Half length of the capsule center segment.",
++        0.5,
++        POSITIVE,
++    )
++    .when(COLLIDER_2D_SHAPE_CAPSULE),
++    list(
++        "points",
++        "Polygon Points",
++        "Ordered polygon points as objects with finite x/y fields.",
++        &OBJECT_KIND,
++    )
++    .when(COLLIDER_2D_SHAPE_POLYGON),
++    boolean(
++        "sensor",
++        "Sensor",
++        "Report overlap transitions without solid response.",
++        false,
++    ),
++    number(
++        "friction",
++        "Friction",
++        "Non-negative tangential friction coefficient.",
++        0.5,
++        NON_NEGATIVE,
++    ),
++    number(
++        "restitution",
++        "Restitution",
++        "Normal bounce coefficient.",
++        0.0,
++        UNIT_INTERVAL,
++    ),
++    FieldDef::new(
++        "membership",
++        "Membership",
++        "2D collision layer membership bitmask.",
++        FieldKind::I64,
++        FieldDefaultSpec::I64(1),
++    )
++    .with_control(InspectorFieldControl::LayerMask),
++    FieldDef::new(
++        "mask",
++        "Mask",
++        "2D collision layer interaction bitmask.",
++        FieldKind::I64,
++        FieldDefaultSpec::I64(u32::MAX as i64),
++    )
++    .with_control(InspectorFieldControl::LayerMask),
++    boolean(
++        "one_way",
++        "One Way",
++        "Use the shared one-way platform policy.",
++        false,
++    ),
++];
++
++const RIGID_BODY_2D_FIELDS: &[FieldDef] = &[
++    enumeration(
++        "mode",
++        "Mode",
++        "Native 2D body ownership mode.",
++        "fixed",
++        &["fixed", "dynamic", "kinematic"],
++    ),
++    float("velocity_x", "Velocity X", "Initial X velocity.", 0.0),
++    float("velocity_y", "Velocity Y", "Initial Y velocity.", 0.0),
++    float(
++        "angular_velocity",
++        "Angular Velocity",
++        "Initial Z angular velocity in radians per second.",
++        0.0,
++    ),
++    float(
++        "gravity_scale",
++        "Gravity Scale",
++        "Multiplier applied to project Native 2D gravity.",
++        1.0,
++    ),
++    boolean(
++        "continuous",
++        "Continuous Collision",
++        "Enable bounded continuous-collision substepping for this body.",
++        false,
++    ),
++];
++
++const CHARACTER_CONTROLLER_2D_FIELDS: &[FieldDef] = &[
++    number(
++        "half_extent_x",
++        "Half Extent X",
++        "Controller half-width.",
++        0.45,
++        POSITIVE,
++    ),
++    number(
++        "half_extent_y",
++        "Half Extent Y",
++        "Controller half-height.",
++        0.9,
++        POSITIVE,
++    ),
++    number(
++        "skin",
++        "Skin",
++        "Collision margin removed from overlap tests.",
++        0.02,
++        NON_NEGATIVE,
++    ),
++    number(
++        "slope_limit_degrees",
++        "Slope Limit",
++        "Maximum walkable surface angle in degrees.",
++        45.0,
++        NumericRange::inclusive(0.0, 89.0),
++    ),
++    number(
++        "ground_snap",
++        "Ground Snap",
++        "Maximum downward ground retention distance.",
++        0.1,
++        NON_NEGATIVE,
++    ),
++    FieldDef::new(
++        "collision_mask",
++        "Collision Mask",
++        "2D collision memberships considered by controller movement.",
++        FieldKind::I64,
++        FieldDefaultSpec::I64(u32::MAX as i64),
++    )
++    .with_control(InspectorFieldControl::LayerMask),
++];
++
+ const PHYSICS_BODY_FIELDS: &[FieldDef] = &[enumeration(
+     "kind",
+     "Kind",
+@@ -1812,6 +1999,33 @@ pub(super) fn builtin_components() -> Vec<BuiltinComponent> {
+             COLLIDER_FIELDS,
+             spawn_collider_component,
+         ),
++        BuiltinComponent::new(
++            COLLIDER_2D_COMPONENT,
++            "Collider 2D",
++            "Native XY-plane collider for the dedicated 2D physics world.",
++            "Physics",
++            1,
++            COLLIDER_2D_FIELDS,
++            spawn_collider_2d_component,
++        ),
++        BuiltinComponent::new(
++            RIGID_BODY_2D_COMPONENT,
++            "Rigid Body 2D",
++            "Native fixed, dynamic, or kinematic body in the dedicated 2D physics world.",
++            "Physics",
++            1,
++            RIGID_BODY_2D_FIELDS,
++            spawn_rigid_body_2d_component,
++        ),
++        BuiltinComponent::new(
++            CHARACTER_CONTROLLER_2D_COMPONENT,
++            "Character Controller 2D",
++            "Platformer-oriented kinematic controller using the shared Native 2D query policy.",
++            "Physics",
++            1,
++            CHARACTER_CONTROLLER_2D_FIELDS,
++            spawn_character_controller_2d_component,
++        ),
+         BuiltinComponent::new(
+             PHYSICS_BODY_COMPONENT,
+             "Physics Body",
+diff --git a/crates/engine/src/lib.rs b/crates/engine/src/lib.rs
+index 325ca5573326b582fe0091b2142c81666cb6c267..c72c2e5b0ad5495edfa010ff858800ac0dff1107 100644
+--- a/crates/engine/src/lib.rs
++++ b/crates/engine/src/lib.rs
+@@ -102,6 +102,8 @@ pub mod lod;
+ pub mod material;
+ /// CPU and GPU mesh types.
+ pub mod mesh;
++/// Cross-domain Native 2D physics composition and public facade (ADR 0127).
++pub mod native_2d;
+ /// Engine-native secondary-motion facade (ADR 0112).
+ pub mod secondary_motion;
+ /// Format-independent asset builder consuming [`model_ir`] (ADR 0078):
+diff --git a/crates/engine/src/native_2d.rs b/crates/engine/src/native_2d.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..944e1c721f225a74369b1c691bce914ea7a67cb6
+--- /dev/null
++++ b/crates/engine/src/native_2d.rs
+@@ -0,0 +1,169 @@
++//! Cross-domain Native 2D physics composition (ADR 0127).
++
++pub use engine_physics::native_2d::*;
++
++use crate::transform::{GlobalTransform, Parent, Transform};
++use engine_authoring::Project2dSettings;
++use engine_ecs::{Entity, Query, Res, ResMut};
++use glam::{Quat, Vec2};
++use std::collections::BTreeSet;
++
++/// One structured reason an authored Transform could not participate in 2D physics.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum Physics2dDiagnosticKind {
++    /// The effective world transform cannot be represented by the planar contract.
++    InvalidPlanarPose(PlanarPoseError),
++    /// Dynamic writeback through a parent hierarchy is not silently approximated.
++    ParentedDynamicBody,
++}
++
++/// Runtime diagnostic for one Native 2D physics entity.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub struct Physics2dDiagnostic {
++    /// Runtime entity carrying the invalid physics state.
++    pub entity: Entity,
++    /// Structured diagnostic classification.
++    pub kind: Physics2dDiagnosticKind,
++}
++
++/// Latest fixed-step Native 2D diagnostics.
++#[derive(Debug, Default)]
++pub struct Physics2dDiagnostics {
++    entries: Vec<Physics2dDiagnostic>,
++}
++
++impl Physics2dDiagnostics {
++    /// Iterates diagnostics emitted by the most recent fixed step.
++    pub fn iter(&self) -> impl Iterator<Item = &Physics2dDiagnostic> {
++        self.entries.iter()
++    }
++}
++
++/// Dedicated 2D solver state and latest transition events.
++#[derive(Debug, Default)]
++pub struct PhysicsRuntime2d {
++    world: PhysicsWorld2d,
++    events: Vec<ContactEvent2d>,
++}
++
++impl PhysicsRuntime2d {
++    /// Returns the dedicated 2D world for read-only gameplay queries.
++    pub fn world(&self) -> &PhysicsWorld2d {
++        &self.world
++    }
++
++    /// Returns transition events emitted by the latest fixed step.
++    pub fn events(&self) -> &[ContactEvent2d] {
++        &self.events
++    }
++}
++
++/// Applies persisted project 2D settings to one runtime host.
++///
++/// Editor Play and the packaged Player call this same function after loading
++/// [`Project2dSettings`], preventing host-specific gravity interpretation.
++pub fn apply_project_2d_settings(app: &mut crate::App, settings: &Project2dSettings) {
++    app.insert_resource(Gravity2d(Vec2::new(
++        settings.gravity[0] as f32,
++        settings.gravity[1] as f32,
++    )));
++}
++
++fn runtime_key(entity: Entity) -> u64 {
++    (u64::from(entity.generation()) << 32) | u64::from(entity.id())
++}
++
++type Physics2dQuery<'a> = (
++    &'a mut Transform,
++    &'a GlobalTransform,
++    Option<&'a Parent>,
++    Option<&'a mut RigidBody2d>,
++    &'a Collider2d,
++);
++
++/// Synchronizes ECS components into the dedicated 2D world, steps it, and
++/// writes root dynamic poses back through the existing Transform authority.
++pub fn physics_2d_fixed_system(
++    gravity: Res<Gravity2d>,
++    fixed_time: Res<crate::time::FixedTime>,
++    mut runtime: ResMut<PhysicsRuntime2d>,
++    mut diagnostics: ResMut<Physics2dDiagnostics>,
++    mut query: Query<Physics2dQuery<'_>>,
++) {
++    diagnostics.entries.clear();
++    let mut active = BTreeSet::new();
++
++    for (entity, (transform, global, parent, body, collider)) in query.iter_mut() {
++        let key = runtime_key(entity);
++        let authored_body = body
++            .as_deref()
++            .copied()
++            .unwrap_or_else(RigidBody2d::default);
++        if authored_body.mode == RigidBodyMode2d::Dynamic && parent.is_some() {
++            diagnostics.entries.push(Physics2dDiagnostic {
++                entity,
++                kind: Physics2dDiagnosticKind::ParentedDynamicBody,
++            });
++            continue;
++        }
++        let matrix = if parent.is_some() {
++            global.matrix()
++        } else {
++            transform.to_matrix()
++        };
++        let pose = match project_planar_transform(matrix) {
++            Ok(pose) => pose,
++            Err(error) => {
++                diagnostics.entries.push(Physics2dDiagnostic {
++                    entity,
++                    kind: Physics2dDiagnosticKind::InvalidPlanarPose(error),
++                });
++                continue;
++            }
++        };
++        runtime.world.upsert(BodyEntry2d {
++            entity: key,
++            pose,
++            body: authored_body,
++            collider: collider.clone(),
++        });
++        active.insert(key);
++    }
++
++    runtime.world.retain_entities(&active);
++    runtime.events = runtime.world.step(fixed_time.fixed_delta, gravity.0);
++
++    for (entity, (transform, _, parent, body, _)) in query.iter_mut() {
++        let Some(body) = body else {
++            continue;
++        };
++        if body.mode != RigidBodyMode2d::Dynamic || parent.is_some() {
++            continue;
++        }
++        let Some(resolved) = runtime.world.body(runtime_key(entity)) else {
++            continue;
++        };
++        transform.translation.x = resolved.pose.translation.x;
++        transform.translation.y = resolved.pose.translation.y;
++        transform.rotation = Quat::from_rotation_z(resolved.pose.rotation);
++        body.velocity = resolved.body.velocity;
++        body.angular_velocity = resolved.body.angular_velocity;
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn project_settings_apply_same_typed_gravity_resource() {
++        let mut app = crate::App::new();
++        let mut settings = Project2dSettings::default();
++        settings.gravity = [2.5, -7.0];
++        apply_project_2d_settings(&mut app, &settings);
++        assert_eq!(
++            app.world().get_resource::<Gravity2d>().unwrap().0,
++            Vec2::new(2.5, -7.0)
++        );
++    }
++}
+diff --git a/crates/engine/src/runtime_systems.rs b/crates/engine/src/runtime_systems.rs
+index 1ac48f6d21f01ed69d699fb847672866d7dbe09d..ac3440bd42792fd978979b8a337c581f6d86805d 100644
+--- a/crates/engine/src/runtime_systems.rs
++++ b/crates/engine/src/runtime_systems.rs
+@@ -22,6 +22,9 @@ use crate::lock_on::lock_on_system;
+ use crate::secondary_motion::{
+     secondary_motion_presentation_system, secondary_motion_system, SecondaryMotionWorlds,
+ };
++use crate::native_2d::{
++    physics_2d_fixed_system, Gravity2d, Physics2dDiagnostics, PhysicsRuntime2d,
++};
+ use crate::navmesh::{nav_mesh_agent_system, nav_mesh_debug_draw_system};
+ use crate::physics::velocity_system;
+ use crate::player::{player_character_motor_system, player_controller_system};
+@@ -79,6 +82,15 @@ pub fn register_runtime_systems(app: &mut App) -> Result<(), SystemRegistrationE
+     if app.world().get_resource::<SpatialAudioRuntime>().is_none() {
+         app.insert_resource(SpatialAudioRuntime::default());
+     }
++    if app.world().get_resource::<Gravity2d>().is_none() {
++        app.insert_resource(Gravity2d::default());
++    }
++    if app.world().get_resource::<PhysicsRuntime2d>().is_none() {
++        app.insert_resource(PhysicsRuntime2d::default());
++    }
++    if app.world().get_resource::<Physics2dDiagnostics>().is_none() {
++        app.insert_resource(Physics2dDiagnostics::default());
++    }
+     app.try_add_system_with_descriptor(
+         engine_system(
+             "engine.combat_debug",
+@@ -245,6 +257,16 @@ pub fn register_runtime_systems(app: &mut App) -> Result<(), SystemRegistrationE
+         ),
+         velocity_system,
+     )?;
++    app.try_add_fixed_system_with_descriptor(
++        engine_system(
++            "engine.physics_2d",
++            "Physics 2D",
++            "Advances the dedicated Native 2D world and writes root dynamic poses through Transform.",
++        )
++        .try_after("engine.velocity_integration")
++        .expect("built-in system IDs are valid"),
++        physics_2d_fixed_system,
++    )?;
+     app.try_add_fixed_system_with_descriptor(
+         engine_system(
+             "engine.navigation_agent",
+@@ -283,6 +305,8 @@ pub fn register_runtime_systems(app: &mut App) -> Result<(), SystemRegistrationE
+         .expect("built-in system IDs are valid")
+         .try_after("engine.velocity_integration")
+         .expect("built-in system IDs are valid")
++        .try_after("engine.physics_2d")
++        .expect("built-in system IDs are valid")
+         .try_after("engine.navigation_agent")
+         .expect("built-in system IDs are valid")
+         .try_after("engine.character_controller")
+diff --git a/crates/engine/src/scene_bridge.rs b/crates/engine/src/scene_bridge.rs
+index 8f2a557a51503aa99ed1c34b76d3a87f2144c7bc..17741f5c9125453c70beea236e169b121e8a2823 100644
+--- a/crates/engine/src/scene_bridge.rs
++++ b/crates/engine/src/scene_bridge.rs
+@@ -145,6 +145,15 @@ pub const UI_DOCUMENT_COMPONENT: &str = "engine.ui_document";
+ /// (Phase 57).
+ pub const COLLIDER_COMPONENT: &str = "engine.collider";
+ 
++/// Native 2D collider component stored in authored scenes (ADR 0127).
++pub const COLLIDER_2D_COMPONENT: &str = "engine.collider_2d";
++
++/// Native 2D rigid-body component stored in authored scenes (ADR 0127).
++pub const RIGID_BODY_2D_COMPONENT: &str = "engine.rigid_body_2d";
++
++/// Native 2D platformer controller component stored in authored scenes (ADR 0127).
++pub const CHARACTER_CONTROLLER_2D_COMPONENT: &str = "engine.character_controller_2d";
++
+ /// The `"engine.physics_body"` component type string recognised by the
+ /// bridge (Phase 57).
+ pub const PHYSICS_BODY_COMPONENT: &str = "engine.physics_body";
+diff --git a/crates/engine/src/scene_bridge/spawn.rs b/crates/engine/src/scene_bridge/spawn.rs
+index f2e6af7b5a298a5b91c07c49e0fadeaea1b401aa..f2e913b1a8fd5cba0ed69ec8a70c4be5ee67bbf4 100644
+--- a/crates/engine/src/scene_bridge/spawn.rs
++++ b/crates/engine/src/scene_bridge/spawn.rs
+@@ -3253,6 +3253,143 @@ pub(crate) fn spawn_collider_component(
+     Ok(())
+ }
+ 
++const COLLIDER_2D_EXPECTED: &str =
++    "a Native 2D collider object with valid shape, material, filtering, and one-way fields";
++
++fn native_2d_numeric(value: &Value) -> Option<f32> {
++    let number = match value {
++        Value::F64(value) => *value as f32,
++        Value::I64(value) => *value as f32,
++        Value::U64(value) => *value as f32,
++        _ => return None,
++    };
++    number.is_finite().then_some(number)
++}
++
++pub(crate) fn spawn_collider_2d_component(
++    entity: Entity,
++    value: &Value,
++    context: &mut SpawnContext<'_>,
++) -> Result<(), ComponentSpawnError> {
++    let component_type = ComponentTypeId::new(COLLIDER_2D_COMPONENT);
++    let fields = ComponentFields::new(
++        context.authoring_entity,
++        &component_type,
++        value,
++        COLLIDER_2D_EXPECTED,
++    )?;
++    let shape = match fields.string("shape")? {
++        "box" => crate::native_2d::ColliderShape2d::Box {
++            half_extents: [fields.f32("half_extent_x")?, fields.f32("half_extent_y")?],
++        },
++        "circle" => crate::native_2d::ColliderShape2d::Circle {
++            radius: fields.f32("radius")?,
++        },
++        "capsule" => crate::native_2d::ColliderShape2d::Capsule {
++            half_height: fields.f32("half_height")?,
++            radius: fields.f32("radius")?,
++        },
++        "polygon" => {
++            let Some(Value::Array(authored_points)) = fields.get("points") else {
++                return Err(fields.invalid(COLLIDER_2D_EXPECTED).into());
++            };
++            if authored_points.len() < 3 {
++                return Err(fields.invalid(COLLIDER_2D_EXPECTED).into());
++            }
++            let mut points = Vec::with_capacity(authored_points.len());
++            for point in authored_points {
++                let Value::Object(point) = point else {
++                    return Err(fields.invalid(COLLIDER_2D_EXPECTED).into());
++                };
++                let Some(x) = point.get("x").and_then(native_2d_numeric) else {
++                    return Err(fields.invalid(COLLIDER_2D_EXPECTED).into());
++                };
++                let Some(y) = point.get("y").and_then(native_2d_numeric) else {
++                    return Err(fields.invalid(COLLIDER_2D_EXPECTED).into());
++                };
++                points.push([x, y]);
++            }
++            crate::native_2d::ColliderShape2d::Polygon { points }
++        }
++        _ => return Err(fields.invalid(COLLIDER_2D_EXPECTED).into()),
++    };
++    let memberships = u32::try_from(fields.i64("membership")?)
++        .map_err(|_| fields.invalid(COLLIDER_2D_EXPECTED))?;
++    let mask = u32::try_from(fields.i64("mask")?)
++        .map_err(|_| fields.invalid(COLLIDER_2D_EXPECTED))?;
++    context.world.add_component(
++        entity,
++        crate::native_2d::Collider2d {
++            shape,
++            sensor: fields.bool("sensor")?,
++            friction: fields.f32("friction")?,
++            restitution: fields.f32("restitution")?,
++            filter: crate::native_2d::CollisionFilter2d { memberships, mask },
++            one_way: fields.bool("one_way")?,
++        },
++    )?;
++    Ok(())
++}
++
++pub(crate) fn spawn_rigid_body_2d_component(
++    entity: Entity,
++    value: &Value,
++    context: &mut SpawnContext<'_>,
++) -> Result<(), ComponentSpawnError> {
++    let component_type = ComponentTypeId::new(RIGID_BODY_2D_COMPONENT);
++    const EXPECTED: &str = "a Native 2D rigid body with fixed, dynamic, or kinematic mode and finite motion fields";
++    let fields = ComponentFields::new(context.authoring_entity, &component_type, value, EXPECTED)?;
++    let mode = match fields.string("mode")? {
++        "fixed" => crate::native_2d::RigidBodyMode2d::Fixed,
++        "dynamic" => crate::native_2d::RigidBodyMode2d::Dynamic,
++        "kinematic" => crate::native_2d::RigidBodyMode2d::Kinematic,
++        _ => return Err(fields.invalid(EXPECTED).into()),
++    };
++    context.world.add_component(
++        entity,
++        crate::native_2d::RigidBody2d {
++            mode,
++            velocity: [fields.f32("velocity_x")?, fields.f32("velocity_y")?],
++            angular_velocity: fields.f32("angular_velocity")?,
++            gravity_scale: fields.f32("gravity_scale")?,
++            continuous: fields.bool("continuous")?,
++        },
++    )?;
++    Ok(())
++}
++
++pub(crate) fn spawn_character_controller_2d_component(
++    entity: Entity,
++    value: &Value,
++    context: &mut SpawnContext<'_>,
++) -> Result<(), ComponentSpawnError> {
++    let component_type = ComponentTypeId::new(CHARACTER_CONTROLLER_2D_COMPONENT);
++    const EXPECTED: &str = "a Native 2D character controller with positive extents and valid movement settings";
++    let fields = ComponentFields::new(context.authoring_entity, &component_type, value, EXPECTED)?;
++    let collision_mask = u32::try_from(fields.i64("collision_mask")?)
++        .map_err(|_| fields.invalid(EXPECTED))?;
++    let half_extents = glam::Vec2::new(
++        fields.f32("half_extent_x")?,
++        fields.f32("half_extent_y")?,
++    );
++    let skin = fields.f32("skin")?;
++    if skin >= half_extents.min_element() {
++        return Err(fields.invalid("a Native 2D character controller whose skin is smaller than both half extents").into());
++    }
++    context.world.add_component(
++        entity,
++        crate::native_2d::CharacterController2d {
++            half_extents,
++            skin,
++            slope_limit_radians: fields.f32("slope_limit_degrees")?.to_radians(),
++            ground_snap: fields.f32("ground_snap")?,
++            collision_mask,
++            ..crate::native_2d::CharacterController2d::default()
++        },
++    )?;
++    Ok(())
++}
++
+ const PHYSICS_BODY_EXPECTED: &str =
+     "an object with a kind field of \"static\", \"kinematic\", or \"dynamic\"";
+ 
+diff --git a/crates/engine/src/scene_bridge/tests.rs b/crates/engine/src/scene_bridge/tests.rs
+index 1d27d9af480e55c812f82b1df1cba94f40c1b96d..95900b6a8740d50d9a97d7acebaef699a018e302 100644
+--- a/crates/engine/src/scene_bridge/tests.rs
++++ b/crates/engine/src/scene_bridge/tests.rs
+@@ -80,6 +80,89 @@ fn make_scene_with_player_and_npc() -> (AuthoringScene, EntityId, EntityId) {
+     (scene, player_id, npc_id)
+ }
+ 
++#[test]
++fn native_2d_physics_components_bridge_to_runtime_contracts() {
++    let mut scene = AuthoringScene::new();
++    let id = EntityId::generate();
++    let collider = Value::Object(std::collections::BTreeMap::from([
++        ("shape".into(), Value::String("box".into())),
++        ("half_extent_x".into(), Value::F64(0.4)),
++        ("half_extent_y".into(), Value::F64(0.8)),
++        ("radius".into(), Value::F64(0.5)),
++        ("half_height".into(), Value::F64(0.5)),
++        ("points".into(), Value::Array(Vec::new())),
++        ("sensor".into(), Value::Bool(false)),
++        ("friction".into(), Value::F64(0.6)),
++        ("restitution".into(), Value::F64(0.1)),
++        ("membership".into(), Value::I64(1)),
++        ("mask".into(), Value::I64(u32::MAX as i64)),
++        ("one_way".into(), Value::Bool(false)),
++    ]));
++    let rigid_body = Value::Object(std::collections::BTreeMap::from([
++        ("mode".into(), Value::String("dynamic".into())),
++        ("velocity_x".into(), Value::F64(1.0)),
++        ("velocity_y".into(), Value::F64(-2.0)),
++        ("angular_velocity".into(), Value::F64(0.25)),
++        ("gravity_scale".into(), Value::F64(1.0)),
++        ("continuous".into(), Value::Bool(true)),
++    ]));
++    let controller = Value::Object(std::collections::BTreeMap::from([
++        ("half_extent_x".into(), Value::F64(0.4)),
++        ("half_extent_y".into(), Value::F64(0.8)),
++        ("skin".into(), Value::F64(0.02)),
++        ("slope_limit_degrees".into(), Value::F64(45.0)),
++        ("ground_snap".into(), Value::F64(0.1)),
++        ("collision_mask".into(), Value::I64(u32::MAX as i64)),
++    ]));
++
++    let mut tx = Transaction::begin(&scene);
++    tx.apply(AuthoringCommand::CreateEntity {
++        id: id.clone(),
++        name: "physics_2d".into(),
++        parent: None,
++    });
++    tx.apply(AuthoringCommand::AddComponent {
++        entity: id.clone(),
++        component_type: ComponentTypeId::new(COLLIDER_2D_COMPONENT),
++        value: collider,
++    });
++    tx.apply(AuthoringCommand::AddComponent {
++        entity: id.clone(),
++        component_type: ComponentTypeId::new(RIGID_BODY_2D_COMPONENT),
++        value: rigid_body,
++    });
++    tx.apply(AuthoringCommand::AddComponent {
++        entity: id.clone(),
++        component_type: ComponentTypeId::new(CHARACTER_CONTROLLER_2D_COMPONENT),
++        value: controller,
++    });
++    tx.commit(&mut scene).expect("2D physics setup must commit");
++
++    let mut world = World::new();
++    let bridge = spawn_from_authoring_scene(&mut world, &scene).expect("2D physics scene must bridge");
++    let entity = bridge.get(&id).expect("2D physics entity must spawn");
++
++    let collider = world
++        .get_component::<crate::native_2d::Collider2d>(entity)
++        .expect("Collider2D must bridge");
++    assert!(matches!(
++        collider.shape,
++        crate::native_2d::ColliderShape2d::Box { half_extents }
++            if half_extents == [0.4, 0.8]
++    ));
++    let body = world
++        .get_component::<crate::native_2d::RigidBody2d>(entity)
++        .expect("RigidBody2D must bridge");
++    assert_eq!(body.mode, crate::native_2d::RigidBodyMode2d::Dynamic);
++    assert_eq!(body.velocity, [1.0, -2.0]);
++    assert!(body.continuous);
++    let controller = world
++        .get_component::<crate::native_2d::CharacterController2d>(entity)
++        .expect("CharacterController2D must bridge");
++    assert_eq!(controller.half_extents, glam::Vec2::new(0.4, 0.8));
++    assert!((controller.slope_limit_radians - 45.0_f32.to_radians()).abs() < f32::EPSILON);
++}
++
+ #[test]
+ fn bridge_spawns_one_entity_per_authoring_entity() {
+     let mut scene = AuthoringScene::new();
+diff --git a/crates/physics/src/lib.rs b/crates/physics/src/lib.rs
+index d8264b7bc5836f33987d77c7c932cd7a118b6d42..ed2f31eae373ae0095c570f75ca54bb684c30107 100644
+--- a/crates/physics/src/lib.rs
++++ b/crates/physics/src/lib.rs
+@@ -28,6 +28,8 @@ pub mod navigation;
+ pub mod navigation_bake;
+ /// Legacy grid navigation retained for focused compatibility tests and layered utilities.
+ pub mod navmesh;
++/// Engine-owned Native 2D physics contracts and deterministic reference solver (ADR 0127).
++pub mod native_2d;
+ /// Rapier-backed gameplay rigid-body integration.
+ #[cfg(feature = "solver")]
+ pub mod physics;
+diff --git a/crates/physics/src/native_2d.rs b/crates/physics/src/native_2d.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..c3b6a0212a449a638f8b80b2e479c9841132c037
+--- /dev/null
++++ b/crates/physics/src/native_2d.rs
+@@ -0,0 +1,1063 @@
++//! Engine-owned Native 2D physics contracts and deterministic reference solver (ADR 0127).
++//!
++//! The 2D world is explicit and independent from the existing Rapier 3D world.
++
++use glam::{Mat4, Vec2, Vec3};
++use serde::{Deserialize, Serialize};
++use std::collections::{BTreeMap, BTreeSet};
++
++/// 2D rigid-body simulation mode.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case")]
++pub enum RigidBodyMode2d {
++    /// Body never moves under simulation.
++    Fixed,
++    /// Body is integrated by the dedicated 2D world.
++    Dynamic,
++    /// Body pose is driven explicitly by gameplay code.
++    Kinematic,
++}
++
++/// 2D collision filtering.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
++pub struct CollisionFilter2d {
++    /// Layer bits this collider belongs to.
++    pub memberships: u32,
++    /// Layer bits this collider may interact with.
++    pub mask: u32,
++}
++
++impl Default for CollisionFilter2d {
++    fn default() -> Self {
++        Self {
++            memberships: 1,
++            mask: u32::MAX,
++        }
++    }
++}
++
++impl CollisionFilter2d {
++    /// Returns whether both filters mutually permit contact.
++    pub fn permits(self, other: Self) -> bool {
++        self.memberships & other.mask != 0 && other.memberships & self.mask != 0
++    }
++}
++
++/// Supported first-release collider geometry.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++#[serde(tag = "kind", rename_all = "snake_case")]
++pub enum ColliderShape2d {
++    /// Axis-aligned box in the body's local 2D plane.
++    Box {
++        /// Positive local X/Y half extents.
++        half_extents: [f32; 2],
++    },
++    /// Circle centered on the body origin.
++    Circle {
++        /// Positive local radius.
++        radius: f32,
++    },
++    /// Y-oriented capsule centered on the body origin.
++    Capsule {
++        /// Half length of the capsule's center segment.
++        half_height: f32,
++        /// Positive capsule radius.
++        radius: f32,
++    },
++    /// Simple polygon in local XY coordinates.
++    Polygon {
++        /// Ordered finite polygon vertices.
++        points: Vec<[f32; 2]>,
++    },
++}
++
++/// Global gravitational acceleration for the dedicated Native 2D world.
++#[derive(Debug, Clone, Copy, PartialEq)]
++pub struct Gravity2d(pub Vec2);
++
++impl Default for Gravity2d {
++    fn default() -> Self {
++        Self(Vec2::new(0.0, -9.81))
++    }
++}
++
++/// Persistable rigid-body contract.
++#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
++pub struct RigidBody2d {
++    /// Simulation ownership mode.
++    pub mode: RigidBodyMode2d,
++    /// Linear velocity in world XY units per second.
++    pub velocity: [f32; 2],
++    /// Z-axis angular velocity in radians per second.
++    pub angular_velocity: f32,
++    /// Multiplier applied to project 2D gravity.
++    pub gravity_scale: f32,
++    /// Whether continuous-collision substepping is enabled.
++    pub continuous: bool,
++}
++
++impl Default for RigidBody2d {
++    fn default() -> Self {
++        Self {
++            mode: RigidBodyMode2d::Fixed,
++            velocity: [0.0, 0.0],
++            angular_velocity: 0.0,
++            gravity_scale: 1.0,
++            continuous: false,
++        }
++    }
++}
++
++/// Persistable collider contract.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++pub struct Collider2d {
++    /// Backend-neutral collision geometry.
++    pub shape: ColliderShape2d,
++    /// Whether contacts are reported without solid blocking.
++    pub sensor: bool,
++    /// Tangential friction coefficient.
++    pub friction: f32,
++    /// Normal restitution coefficient.
++    pub restitution: f32,
++    /// Layer membership and interaction mask.
++    pub filter: CollisionFilter2d,
++    /// Whether the shared one-way platform policy applies.
++    pub one_way: bool,
++}
++
++impl Default for Collider2d {
++    fn default() -> Self {
++        Self {
++            shape: ColliderShape2d::Box {
++                half_extents: [0.5, 0.5],
++            },
++            sensor: false,
++            friction: 0.5,
++            restitution: 0.0,
++            filter: CollisionFilter2d::default(),
++            one_way: false,
++        }
++    }
++}
++
++/// Backend-neutral joint contract.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++#[serde(tag = "kind", rename_all = "snake_case")]
++pub enum Joint2d {
++    /// Preserves the current relative pose to another body.
++    Fixed {
++        /// Stable runtime entity key of the connected body.
++        other: u64,
++    },
++    /// Maintains a target center-to-center distance.
++    Distance {
++        /// Stable runtime entity key of the connected body.
++        other: u64,
++        /// Target distance in world units.
++        distance: f32,
++    },
++    /// Keeps two local anchors coincident while allowing rotation.
++    Revolute {
++        /// Stable runtime entity key of the connected body.
++        other: u64,
++        /// Local XY anchor on this body.
++        anchor: [f32; 2],
++    },
++    /// Constrains relative translation to one axis and bounded travel.
++    Prismatic {
++        /// Stable runtime entity key of the connected body.
++        other: u64,
++        /// Local normalized translation axis.
++        axis: [f32; 2],
++        /// Minimum and maximum allowed travel.
++        limits: [f32; 2],
++    },
++}
++
++/// Resolved planar pose used by the 2D world.
++#[derive(Debug, Clone, Copy, PartialEq)]
++pub struct PlanarPose2d {
++    /// World XY translation.
++    pub translation: Vec2,
++    /// World Z rotation in radians.
++    pub rotation: f32,
++    /// World XY scale.
++    pub scale: Vec2,
++}
++
++/// Structured transform projection diagnostic.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum PlanarPoseError {
++    /// Transform contains a non-finite component.
++    NonFinite,
++    /// Rotation tilts the local Z axis out of the gameplay plane.
++    NonPlanarRotation,
++    /// Scale cannot be represented by the 2D physics contract.
++    UnsupportedScale,
++}
++
++/// Projects the normal Transform world matrix into XY plus Z rotation.
++pub fn project_planar_transform(matrix: Mat4) -> Result<PlanarPose2d, PlanarPoseError> {
++    if !matrix.is_finite() {
++        return Err(PlanarPoseError::NonFinite);
++    }
++    let (scale, rotation, translation) = matrix.to_scale_rotation_translation();
++    if !scale.is_finite()
++        || scale.x.abs() < f32::EPSILON
++        || scale.y.abs() < f32::EPSILON
++        || (scale.z.abs() - 1.0).abs() > 1.0e-3
++    {
++        return Err(PlanarPoseError::UnsupportedScale);
++    }
++    let z = rotation * Vec3::Z;
++    if z.dot(Vec3::Z).abs() < 0.999 {
++        return Err(PlanarPoseError::NonPlanarRotation);
++    }
++    let (_, _, angle) = rotation.to_euler(glam::EulerRot::XYZ);
++    Ok(PlanarPose2d {
++        translation: translation.truncate(),
++        rotation: angle,
++        scale: scale.truncate(),
++    })
++}
++
++/// One entity in the dedicated 2D world.
++#[derive(Debug, Clone)]
++pub struct BodyEntry2d {
++    /// Stable runtime entity key.
++    pub entity: u64,
++    /// Current resolved planar pose.
++    pub pose: PlanarPose2d,
++    /// Rigid-body simulation state.
++    pub body: RigidBody2d,
++    /// Collider used for contacts and queries.
++    pub collider: Collider2d,
++}
++
++/// Contact/trigger transition phase.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum ContactPhase2d {
++    /// Pair became overlapping this fixed step.
++    Enter,
++    /// Pair remained overlapping from the prior fixed step.
++    Stay,
++    /// Pair stopped overlapping this fixed step.
++    Exit,
++}
++
++/// Fixed-step 2D contact event.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub struct ContactEvent2d {
++    /// Lower deterministic entity key.
++    pub a: u64,
++    /// Higher deterministic entity key.
++    pub b: u64,
++    /// Whether either participating collider is a sensor.
++    pub sensor: bool,
++    /// Transition phase for this pair.
++    pub phase: ContactPhase2d,
++}
++
++/// Ray or shape query result.
++#[derive(Debug, Clone, Copy, PartialEq)]
++pub struct QueryHit2d {
++    /// Stable runtime entity key that was hit.
++    pub entity: u64,
++    /// World XY hit point.
++    pub point: Vec2,
++    /// World XY outward surface normal.
++    pub normal: Vec2,
++    /// Distance from query origin to the hit.
++    pub distance: f32,
++}
++
++#[derive(Debug, Clone)]
++struct JointConstraint2d {
++    joint: Joint2d,
++    fixed_offset: Vec2,
++}
++
++/// Dedicated deterministic 2D world. No 3D solver state is accepted or consulted.
++#[derive(Debug, Default)]
++pub struct PhysicsWorld2d {
++    bodies: BTreeMap<u64, BodyEntry2d>,
++    joints: BTreeMap<u64, Vec<JointConstraint2d>>,
++    previous: BTreeMap<(u64, u64), bool>,
++}
++
++impl PhysicsWorld2d {
++    /// Inserts a new body or replaces the body with the same stable runtime key.
++    pub fn upsert(&mut self, entry: BodyEntry2d) {
++        self.bodies.insert(entry.entity, entry);
++    }
++
++    /// Removes a body and retained state involving it.
++    pub fn remove(&mut self, entity: u64) {
++        self.bodies.remove(&entity);
++        self.joints.remove(&entity);
++        self.joints.values_mut().for_each(|constraints| {
++            constraints.retain(|constraint| joint_other(&constraint.joint) != entity);
++        });
++        self.previous
++            .retain(|(a, b), _| *a != entity && *b != entity);
++    }
++
++    /// Removes every body whose stable key is absent from `active`.
++    pub fn retain_entities(&mut self, active: &BTreeSet<u64>) {
++        let stale: Vec<_> = self
++            .bodies
++            .keys()
++            .copied()
++            .filter(|entity| !active.contains(entity))
++            .collect();
++        for entity in stale {
++            self.remove(entity);
++        }
++    }
++
++    /// Returns the current body entry for a stable runtime key.
++    pub fn body(&self, entity: u64) -> Option<&BodyEntry2d> {
++        self.bodies.get(&entity)
++    }
++
++    /// Returns mutable access to one body entry.
++    pub fn body_mut(&mut self, entity: u64) -> Option<&mut BodyEntry2d> {
++        self.bodies.get_mut(&entity)
++    }
++
++    /// Replaces one body's joint declarations and captures required rest state.
++    pub fn set_joints(&mut self, entity: u64, joints: Vec<Joint2d>) {
++        let Some(origin) = self.bodies.get(&entity).map(|entry| entry.pose.translation) else {
++            self.joints.remove(&entity);
++            return;
++        };
++        let constraints = joints
++            .into_iter()
++            .filter_map(|joint| {
++                let other = joint_other(&joint);
++                self.bodies.get(&other).map(|entry| JointConstraint2d {
++                    fixed_offset: origin - entry.pose.translation,
++                    joint,
++                })
++            })
++            .collect();
++        self.joints.insert(entity, constraints);
++    }
++
++    /// Returns current contact partners for one body in deterministic key order.
++    pub fn contacts_for(&self, entity: u64) -> Vec<u64> {
++        self.previous
++            .keys()
++            .filter_map(|(a, b)| {
++                if *a == entity {
++                    Some(*b)
++                } else if *b == entity {
++                    Some(*a)
++                } else {
++                    None
++                }
++            })
++            .collect()
++    }
++
++    /// Advances dynamics and emits stable enter/stay/exit transitions.
++    pub fn step(&mut self, dt: f32, gravity: Vec2) -> Vec<ContactEvent2d> {
++        if !dt.is_finite() || dt <= 0.0 || !gravity.is_finite() {
++            return Vec::new();
++        }
++        let substeps = self.required_substeps(dt);
++        let sub_dt = dt / substeps as f32;
++        let mut contacts = BTreeMap::new();
++        for _ in 0..substeps {
++            self.integrate(sub_dt, gravity);
++            self.solve_joints();
++            self.solve_contacts(sub_dt, &mut contacts);
++        }
++        self.transition_events(contacts)
++    }
++
++    fn required_substeps(&self, dt: f32) -> u32 {
++        let mut count = 1_u32;
++        for entry in self.bodies.values() {
++            if entry.body.mode != RigidBodyMode2d::Dynamic || !entry.body.continuous {
++                continue;
++            }
++            let speed = Vec2::from(entry.body.velocity).length();
++            let extent = collider_half_extents(entry).min_element().max(0.01);
++            let desired = ((speed * dt) / extent).ceil() as u32;
++            count = count.max(desired.clamp(1, 16));
++        }
++        count
++    }
++
++    fn integrate(&mut self, dt: f32, gravity: Vec2) {
++        for entry in self.bodies.values_mut() {
++            if entry.body.mode != RigidBodyMode2d::Dynamic {
++                continue;
++            }
++            let mut velocity = Vec2::from(entry.body.velocity);
++            velocity += gravity * entry.body.gravity_scale * dt;
++            entry.pose.translation += velocity * dt;
++            entry.pose.rotation += entry.body.angular_velocity * dt;
++            entry.body.velocity = velocity.to_array();
++        }
++    }
++
++    fn solve_joints(&mut self) {
++        let constraints: Vec<_> = self
++            .joints
++            .iter()
++            .flat_map(|(entity, joints)| {
++                joints
++                    .iter()
++                    .cloned()
++                    .map(|joint| (*entity, joint))
++                    .collect::<Vec<_>>()
++            })
++            .collect();
++        for (entity, constraint) in constraints {
++            let other = joint_other(&constraint.joint);
++            let Some(a) = self.bodies.get(&entity).cloned() else {
++                continue;
++            };
++            let Some(b) = self.bodies.get(&other).cloned() else {
++                continue;
++            };
++            let delta = a.pose.translation - b.pose.translation;
++            let correction = match &constraint.joint {
++                Joint2d::Fixed { .. } => delta - constraint.fixed_offset,
++                Joint2d::Distance { distance, .. } => {
++                    let target = distance.max(0.0);
++                    if delta.length_squared() <= f32::EPSILON {
++                        Vec2::new(-target, 0.0)
++                    } else {
++                        delta.normalize() * (delta.length() - target)
++                    }
++                }
++                Joint2d::Revolute { anchor, .. } => {
++                    let local_anchor = rotate(Vec2::from(*anchor) * a.pose.scale, a.pose.rotation);
++                    delta + local_anchor - constraint.fixed_offset
++                }
++                Joint2d::Prismatic { axis, limits, .. } => {
++                    let axis = rotate(Vec2::from(*axis), a.pose.rotation).normalize_or_zero();
++                    if axis == Vec2::ZERO {
++                        continue;
++                    }
++                    let perpendicular = delta - axis * delta.dot(axis);
++                    let travel = delta.dot(axis);
++                    let min = limits[0].min(limits[1]);
++                    let max = limits[0].max(limits[1]);
++                    perpendicular + axis * (travel - travel.clamp(min, max))
++                }
++            };
++            apply_pair_correction(&mut self.bodies, entity, other, correction);
++        }
++    }
++
++    fn solve_contacts(&mut self, dt: f32, contacts: &mut BTreeMap<(u64, u64), bool>) {
++        let ids: Vec<_> = self.bodies.keys().copied().collect();
++        for (index, &a_id) in ids.iter().enumerate() {
++            for &b_id in &ids[index + 1..] {
++                let a = self.bodies[&a_id].clone();
++                let b = self.bodies[&b_id].clone();
++                if !a.collider.filter.permits(b.collider.filter) {
++                    continue;
++                }
++                let Some((normal, penetration)) = contact_manifold(&a, &b) else {
++                    continue;
++                };
++                let pair = (a_id.min(b_id), a_id.max(b_id));
++                let sensor = a.collider.sensor || b.collider.sensor;
++                contacts.insert(pair, sensor);
++                if sensor || !should_resolve_contact(&a, &b, dt) {
++                    continue;
++                }
++                resolve_solid_contact(&mut self.bodies, a_id, b_id, normal, penetration);
++            }
++        }
++    }
++
++    fn transition_events(
++        &mut self,
++        current: BTreeMap<(u64, u64), bool>,
++    ) -> Vec<ContactEvent2d> {
++        let mut events = Vec::new();
++        for (&(a, b), &sensor) in &current {
++            events.push(ContactEvent2d {
++                a,
++                b,
++                sensor,
++                phase: if self.previous.contains_key(&(a, b)) {
++                    ContactPhase2d::Stay
++                } else {
++                    ContactPhase2d::Enter
++                },
++            });
++        }
++        for (&(a, b), &sensor) in &self.previous {
++            if !current.contains_key(&(a, b)) {
++                events.push(ContactEvent2d {
++                    a,
++                    b,
++                    sensor,
++                    phase: ContactPhase2d::Exit,
++                });
++            }
++        }
++        self.previous = current;
++        events
++    }
++
++    /// Returns the nearest deterministic ray hit accepted by `mask`.
++    pub fn ray_cast(
++        &self,
++        origin: Vec2,
++        direction: Vec2,
++        max_distance: f32,
++        mask: u32,
++    ) -> Option<QueryHit2d> {
++        self.cast_box(origin, Vec2::ZERO, direction, max_distance, mask)
++    }
++
++    /// Sweeps an axis-aligned box and returns the nearest deterministic hit.
++    pub fn cast_box(
++        &self,
++        origin: Vec2,
++        half_extents: Vec2,
++        direction: Vec2,
++        max_distance: f32,
++        mask: u32,
++    ) -> Option<QueryHit2d> {
++        let direction = direction.normalize_or_zero();
++        if direction == Vec2::ZERO || max_distance < 0.0 || !max_distance.is_finite() {
++            return None;
++        }
++        let mut hits = Vec::new();
++        for entry in self.bodies.values() {
++            if entry.collider.filter.memberships & mask == 0 {
++                continue;
++            }
++            let (min, max) = bounds(entry);
++            let expanded_min = min - half_extents.abs();
++            let expanded_max = max + half_extents.abs();
++            if let Some(distance) =
++                ray_aabb(origin, direction, expanded_min, expanded_max, max_distance)
++            {
++                let point = origin + direction * distance;
++                let center = (expanded_min + expanded_max) * 0.5;
++                let local = point - center;
++                let normal = if local.x.abs() > local.y.abs() {
++                    Vec2::new(local.x.signum(), 0.0)
++                } else {
++                    Vec2::new(0.0, local.y.signum())
++                };
++                hits.push(QueryHit2d {
++                    entity: entry.entity,
++                    point,
++                    normal,
++                    distance,
++                });
++            }
++        }
++        hits.sort_by(|left, right| {
++            left.distance
++                .total_cmp(&right.distance)
++                .then(left.entity.cmp(&right.entity))
++        });
++        hits.into_iter().next()
++    }
++
++    /// Returns every collider overlapping an axis-aligned query box.
++    pub fn overlap_box(&self, center: Vec2, half_extents: Vec2, mask: u32) -> Vec<u64> {

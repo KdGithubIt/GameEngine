@@ -1,0 +1,492 @@
++        let query_min = center - half_extents.abs();
++        let query_max = center + half_extents.abs();
++        self.bodies
++            .values()
++            .filter(|entry| entry.collider.filter.memberships & mask != 0)
++            .filter_map(|entry| {
++                let (min, max) = bounds(entry);
++                aabb_overlap(query_min, query_max, min, max).then_some(entry.entity)
++            })
++            .collect()
++    }
++}
++
++fn joint_other(joint: &Joint2d) -> u64 {
++    match joint {
++        Joint2d::Fixed { other }
++        | Joint2d::Distance { other, .. }
++        | Joint2d::Revolute { other, .. }
++        | Joint2d::Prismatic { other, .. } => *other,
++    }
++}
++
++fn rotate(value: Vec2, angle: f32) -> Vec2 {
++    let (sin, cos) = angle.sin_cos();
++    Vec2::new(value.x * cos - value.y * sin, value.x * sin + value.y * cos)
++}
++
++fn collider_half_extents(entry: &BodyEntry2d) -> Vec2 {
++    let local = match &entry.collider.shape {
++        ColliderShape2d::Box { half_extents } => Vec2::from(*half_extents),
++        ColliderShape2d::Circle { radius } => Vec2::splat(*radius),
++        ColliderShape2d::Capsule {
++            half_height,
++            radius,
++        } => Vec2::new(*radius, *half_height + *radius),
++        ColliderShape2d::Polygon { points } => points
++            .iter()
++            .map(|point| Vec2::from(*point))
++            .fold(Vec2::ZERO, |extent, point| extent.max(point.abs())),
++    };
++    let scaled = local * entry.pose.scale.abs();
++    let (sin, cos) = entry.pose.rotation.sin_cos();
++    Vec2::new(
++        cos.abs() * scaled.x + sin.abs() * scaled.y,
++        sin.abs() * scaled.x + cos.abs() * scaled.y,
++    )
++}
++
++fn bounds(entry: &BodyEntry2d) -> (Vec2, Vec2) {
++    let half = collider_half_extents(entry);
++    (entry.pose.translation - half, entry.pose.translation + half)
++}
++
++fn aabb_overlap(a_min: Vec2, a_max: Vec2, b_min: Vec2, b_max: Vec2) -> bool {
++    a_min.x <= b_max.x
++        && a_max.x >= b_min.x
++        && a_min.y <= b_max.y
++        && a_max.y >= b_min.y
++}
++
++fn contact_manifold(a: &BodyEntry2d, b: &BodyEntry2d) -> Option<(Vec2, f32)> {
++    let (a_min, a_max) = bounds(a);
++    let (b_min, b_max) = bounds(b);
++    if !aabb_overlap(a_min, a_max, b_min, b_max) {
++        return None;
++    }
++    let overlap_x = (a_max.x.min(b_max.x) - a_min.x.max(b_min.x)).max(0.0);
++    let overlap_y = (a_max.y.min(b_max.y) - a_min.y.max(b_min.y)).max(0.0);
++    let delta = b.pose.translation - a.pose.translation;
++    if overlap_x < overlap_y {
++        let direction = if delta.x >= 0.0 { 1.0 } else { -1.0 };
++        Some((Vec2::new(direction, 0.0), overlap_x))
++    } else {
++        let direction = if delta.y >= 0.0 { 1.0 } else { -1.0 };
++        Some((Vec2::new(0.0, direction), overlap_y))
++    }
++}
++
++fn should_resolve_contact(a: &BodyEntry2d, b: &BodyEntry2d, dt: f32) -> bool {
++    if !a.collider.one_way && !b.collider.one_way {
++        return true;
++    }
++    if a.collider.one_way && b.collider.one_way {
++        return false;
++    }
++    let (platform, mover) = if a.collider.one_way { (a, b) } else { (b, a) };
++    if mover.body.mode != RigidBodyMode2d::Dynamic {
++        return false;
++    }
++    let velocity = Vec2::from(mover.body.velocity);
++    if velocity.y > 0.0 {
++        return false;
++    }
++    let (_, platform_max) = bounds(platform);
++    let mover_half = collider_half_extents(mover);
++    let previous_center = mover.pose.translation - velocity * dt;
++    previous_center.y - mover_half.y >= platform_max.y - 1.0e-3
++}
++
++fn inverse_mass(entry: &BodyEntry2d) -> f32 {
++    if entry.body.mode == RigidBodyMode2d::Dynamic {
++        1.0
++    } else {
++        0.0
++    }
++}
++
++fn apply_pair_correction(
++    bodies: &mut BTreeMap<u64, BodyEntry2d>,
++    a_id: u64,
++    b_id: u64,
++    correction: Vec2,
++) {
++    let Some(a) = bodies.get(&a_id).cloned() else {
++        return;
++    };
++    let Some(b) = bodies.get(&b_id).cloned() else {
++        return;
++    };
++    let a_inverse = inverse_mass(&a);
++    let b_inverse = inverse_mass(&b);
++    let total = a_inverse + b_inverse;
++    if total <= f32::EPSILON {
++        return;
++    }
++    if a_inverse > 0.0 {
++        if let Some(entry) = bodies.get_mut(&a_id) {
++            entry.pose.translation -= correction * (a_inverse / total);
++        }
++    }
++    if b_inverse > 0.0 {
++        if let Some(entry) = bodies.get_mut(&b_id) {
++            entry.pose.translation += correction * (b_inverse / total);
++        }
++    }
++}
++
++fn resolve_solid_contact(
++    bodies: &mut BTreeMap<u64, BodyEntry2d>,
++    a_id: u64,
++    b_id: u64,
++    normal: Vec2,
++    penetration: f32,
++) {
++    let Some(a) = bodies.get(&a_id).cloned() else {
++        return;
++    };
++    let Some(b) = bodies.get(&b_id).cloned() else {
++        return;
++    };
++    let a_inverse = inverse_mass(&a);
++    let b_inverse = inverse_mass(&b);
++    let inverse_sum = a_inverse + b_inverse;
++    if inverse_sum <= f32::EPSILON {
++        return;
++    }
++
++    let correction = normal * penetration.max(0.0);
++    if a_inverse > 0.0 {
++        if let Some(entry) = bodies.get_mut(&a_id) {
++            entry.pose.translation -= correction * (a_inverse / inverse_sum);
++        }
++    }
++    if b_inverse > 0.0 {
++        if let Some(entry) = bodies.get_mut(&b_id) {
++            entry.pose.translation += correction * (b_inverse / inverse_sum);
++        }
++    }
++
++    let a_velocity = Vec2::from(a.body.velocity);
++    let b_velocity = Vec2::from(b.body.velocity);
++    let relative = b_velocity - a_velocity;
++    let normal_speed = relative.dot(normal);
++    if normal_speed >= 0.0 {
++        return;
++    }
++    let restitution = a.collider.restitution.min(b.collider.restitution).clamp(0.0, 1.0);
++    let normal_impulse = -(1.0 + restitution) * normal_speed / inverse_sum;
++    let mut a_result = a_velocity - normal * normal_impulse * a_inverse;
++    let mut b_result = b_velocity + normal * normal_impulse * b_inverse;
++
++    let tangent = Vec2::new(-normal.y, normal.x);
++    let tangent_speed = (b_result - a_result).dot(tangent);
++    let friction = (a.collider.friction.max(0.0) * b.collider.friction.max(0.0)).sqrt();
++    let tangent_impulse = (-tangent_speed / inverse_sum)
++        .clamp(-normal_impulse * friction, normal_impulse * friction);
++    a_result -= tangent * tangent_impulse * a_inverse;
++    b_result += tangent * tangent_impulse * b_inverse;
++
++    if a_inverse > 0.0 {
++        if let Some(entry) = bodies.get_mut(&a_id) {
++            entry.body.velocity = a_result.to_array();
++        }
++    }
++    if b_inverse > 0.0 {
++        if let Some(entry) = bodies.get_mut(&b_id) {
++            entry.body.velocity = b_result.to_array();
++        }
++    }
++}
++
++fn ray_aabb(
++    origin: Vec2,
++    direction: Vec2,
++    min: Vec2,
++    max: Vec2,
++    max_distance: f32,
++) -> Option<f32> {
++    let mut enter = 0.0_f32;
++    let mut exit = max_distance;
++    for axis in 0..2 {
++        let origin_axis = origin[axis];
++        let direction_axis = direction[axis];
++        if direction_axis.abs() <= 1.0e-8 {
++            if origin_axis < min[axis] || origin_axis > max[axis] {
++                return None;
++            }
++            continue;
++        }
++        let inverse = 1.0 / direction_axis;
++        let mut near = (min[axis] - origin_axis) * inverse;
++        let mut far = (max[axis] - origin_axis) * inverse;
++        if near > far {
++            std::mem::swap(&mut near, &mut far);
++        }
++        enter = enter.max(near);
++        exit = exit.min(far);
++        if enter > exit {
++            return None;
++        }
++    }
++    (exit >= 0.0 && enter <= max_distance).then_some(enter.max(0.0))
++}
++
++/// First-release kinematic platformer controller state and configuration.
++#[derive(Debug, Clone, Copy, PartialEq)]
++pub struct CharacterController2d {
++    /// Axis-aligned controller half extents.
++    pub half_extents: Vec2,
++    /// Collision margin removed from overlap tests.
++    pub skin: f32,
++    /// Maximum walkable surface angle in radians.
++    pub slope_limit_radians: f32,
++    /// Maximum downward distance used to retain ground contact.
++    pub ground_snap: f32,
++    /// Collision membership mask queried by this controller.
++    pub collision_mask: u32,
++    /// Remaining time during which one-way platforms are ignored.
++    pub drop_through_seconds: f32,
++    /// Whether the latest move ended on walkable ground.
++    pub grounded: bool,
++    /// Latest resolved ground normal.
++    pub ground_normal: Vec2,
++    /// Whether the latest move was blocked horizontally.
++    pub hit_wall: bool,
++    /// Whether the latest move was blocked upward.
++    pub hit_ceiling: bool,
++}
++
++impl Default for CharacterController2d {
++    fn default() -> Self {
++        Self {
++            half_extents: Vec2::new(0.45, 0.9),
++            skin: 0.02,
++            slope_limit_radians: std::f32::consts::FRAC_PI_4,
++            ground_snap: 0.1,
++            collision_mask: u32::MAX,
++            drop_through_seconds: 0.0,
++            grounded: false,
++            ground_normal: Vec2::Y,
++            hit_wall: false,
++            hit_ceiling: false,
++        }
++    }
++}
++
++impl CharacterController2d {
++    /// Moves deterministically against fixed/kinematic colliders.
++    ///
++    /// `ignore_entity` is the controller's own collider key when that collider
++    /// is also present in `world`.
++    pub fn move_fixed(
++        &mut self,
++        world: &PhysicsWorld2d,
++        start: Vec2,
++        delta: Vec2,
++        dt: f32,
++        ignore_entity: Option<u64>,
++    ) -> Vec2 {
++        self.drop_through_seconds = (self.drop_through_seconds - dt.max(0.0)).max(0.0);
++        self.grounded = false;
++        self.ground_normal = Vec2::Y;
++        self.hit_wall = false;
++        self.hit_ceiling = false;
++        let half_extents = (self.half_extents - Vec2::splat(self.skin.max(0.0)))
++            .max(Vec2::splat(0.001));
++        let mut position = start;
++
++        let target_x = position + Vec2::new(delta.x, 0.0);
++        if controller_blockers(
++            world,
++            target_x,
++            half_extents,
++            self.collision_mask,
++            ignore_entity,
++            self.drop_through_seconds,
++            start,
++            delta,
++        )
++        .is_empty()
++        {
++            position.x = target_x.x;
++        } else {
++            self.hit_wall = true;
++        }
++
++        let target_y = position + Vec2::new(0.0, delta.y);
++        let vertical_hits = controller_blockers(
++            world,
++            target_y,
++            half_extents,
++            self.collision_mask,
++            ignore_entity,
++            self.drop_through_seconds,
++            start,
++            delta,
++        );
++        if vertical_hits.is_empty() {
++            position.y = target_y.y;
++        } else if delta.y < 0.0 {
++            self.grounded = true;
++        } else if delta.y > 0.0 {
++            self.hit_ceiling = true;
++        }
++
++        if !self.grounded && delta.y <= 0.0 && self.ground_snap > 0.0 {
++            let snap = position - Vec2::new(0.0, self.ground_snap);
++            if !controller_blockers(
++                world,
++                snap,
++                half_extents,
++                self.collision_mask,
++                ignore_entity,
++                self.drop_through_seconds,
++                position,
++                Vec2::new(0.0, -self.ground_snap),
++            )
++            .is_empty()
++            {
++                self.grounded = true;
++            }
++        }
++        position
++    }
++
++    /// Temporarily ignores one-way platforms so the controller can drop through them.
++    pub fn request_drop_through(&mut self, seconds: f32) {
++        self.drop_through_seconds = seconds.max(0.0);
++        self.grounded = false;
++    }
++}
++
++fn controller_blockers(
++    world: &PhysicsWorld2d,
++    center: Vec2,
++    half_extents: Vec2,
++    mask: u32,
++    ignore_entity: Option<u64>,
++    drop_through_seconds: f32,
++    start: Vec2,
++    delta: Vec2,
++) -> Vec<u64> {
++    let query_min = center - half_extents;
++    let query_max = center + half_extents;
++    world
++        .bodies
++        .values()
++        .filter(|entry| Some(entry.entity) != ignore_entity)
++        .filter(|entry| !entry.collider.sensor)
++        .filter(|entry| entry.collider.filter.memberships & mask != 0)
++        .filter(|entry| {
++            let (min, max) = bounds(entry);
++            aabb_overlap(query_min, query_max, min, max)
++        })
++        .filter(|entry| {
++            if !entry.collider.one_way {
++                return true;
++            }
++            if drop_through_seconds > 0.0 || delta.y > 0.0 {
++                return false;
++            }
++            let (_, platform_max) = bounds(entry);
++            start.y - half_extents.y >= platform_max.y - 1.0e-3
++        })
++        .map(|entry| entry.entity)
++        .collect()
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    fn box_body(entity: u64, mode: RigidBodyMode2d, center: Vec2) -> BodyEntry2d {
++        BodyEntry2d {
++            entity,
++            pose: PlanarPose2d {
++                translation: center,
++                rotation: 0.0,
++                scale: Vec2::ONE,
++            },
++            body: RigidBody2d {
++                mode,
++                ..RigidBody2d::default()
++            },
++            collider: Collider2d::default(),
++        }
++    }
++
++    #[test]
++    fn non_planar_transform_is_rejected() {
++        assert_eq!(
++            project_planar_transform(Mat4::from_rotation_x(0.2)),
++            Err(PlanarPoseError::NonPlanarRotation)
++        );
++    }
++
++    #[test]
++    fn dynamic_body_falls_without_touching_any_3d_state() {
++        let mut world = PhysicsWorld2d::default();
++        world.upsert(box_body(1, RigidBodyMode2d::Dynamic, Vec2::new(0.0, 5.0)));
++        let before = world.body(1).unwrap().pose.translation.y;
++        world.step(1.0 / 60.0, Gravity2d::default().0);
++        assert!(world.body(1).unwrap().pose.translation.y < before);
++    }
++
++    #[test]
++    fn solid_contact_separates_dynamic_body_from_fixed_floor() {
++        let mut world = PhysicsWorld2d::default();
++        world.upsert(box_body(1, RigidBodyMode2d::Fixed, Vec2::ZERO));
++        let mut falling = box_body(2, RigidBodyMode2d::Dynamic, Vec2::new(0.0, 0.75));
++        falling.body.velocity = [0.0, -1.0];
++        world.upsert(falling);
++        let events = world.step(1.0 / 60.0, Vec2::ZERO);
++        assert!(events.iter().any(|event| event.phase == ContactPhase2d::Enter));
++        assert!(world.body(2).unwrap().pose.translation.y >= 0.99);
++    }
++
++    #[test]
++    fn sensor_exit_preserves_sensor_classification() {
++        let mut world = PhysicsWorld2d::default();
++        let mut sensor = box_body(1, RigidBodyMode2d::Fixed, Vec2::ZERO);
++        sensor.collider.sensor = true;
++        world.upsert(sensor);
++        world.upsert(box_body(2, RigidBodyMode2d::Fixed, Vec2::ZERO));
++        let enter = world.step(1.0 / 60.0, Vec2::ZERO);
++        assert!(enter.iter().any(|event| event.sensor));
++        world.body_mut(2).unwrap().pose.translation = Vec2::new(5.0, 0.0);
++        let exit = world.step(1.0 / 60.0, Vec2::ZERO);
++        assert!(exit.iter().any(|event| {
++            event.phase == ContactPhase2d::Exit && event.sensor
++        }));
++    }
++
++    #[test]
++    fn ray_query_is_nearest_then_entity_deterministic() {
++        let mut world = PhysicsWorld2d::default();
++        world.upsert(box_body(2, RigidBodyMode2d::Fixed, Vec2::new(3.0, 0.0)));
++        world.upsert(box_body(1, RigidBodyMode2d::Fixed, Vec2::new(3.0, 0.0)));
++        let hit = world
++            .ray_cast(Vec2::ZERO, Vec2::X, 10.0, u32::MAX)
++            .expect("ray must hit");
++        assert_eq!(hit.entity, 1);
++    }
++
++    #[test]
++    fn drop_through_ignores_one_way_platform() {
++        let mut world = PhysicsWorld2d::default();
++        let mut platform = box_body(1, RigidBodyMode2d::Fixed, Vec2::ZERO);
++        platform.collider.one_way = true;
++        world.upsert(platform);
++        let mut controller = CharacterController2d::default();
++        controller.request_drop_through(0.2);
++        let position = controller.move_fixed(
++            &world,
++            Vec2::new(0.0, 1.5),
++            Vec2::new(0.0, -1.0),
++            1.0 / 60.0,
++            None,
++        );
++        assert!(position.y < 1.0);
++    }
++}
