@@ -6,6 +6,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $temp = Join-Path ([System.IO.Path]::GetTempPath()) ("gameengine-public-snapshot-" + [guid]::NewGuid().ToString("N"))
+$privatePathTemp = Join-Path ([System.IO.Path]::GetTempPath()) ("gameengine-public-snapshot-private-path-" + [guid]::NewGuid().ToString("N"))
 
 function Assert-Exists {
     param([string]$Relative)
@@ -32,6 +33,7 @@ try {
         "README.md",
         "crates",
         "docs/CHATGPT_AUTOMATION.md",
+        "docs/adr/0134-portable-prefab-instance-source.md",
         "scripts/ci/New-ValidationPlan.ps1",
         ".github/workflows/gameengine-chatgpt-dispatch-trigger.yml",
         ".github/workflows/gameengine-chatgpt-dispatcher.yml",
@@ -70,7 +72,32 @@ try {
         throw "Unexpected public workflow set: $($workflowNames -join ', ')"
     }
 
-    Write-Host "[PASS] Public snapshot allow-list, asset audit, and workflow set are valid."
+    $adr0134 = Get-Content -Raw -LiteralPath (Join-Path $temp "docs/adr/0134-portable-prefab-instance-source.md") -Encoding utf8
+    $placeholderPath = '\\?\C:' + '\Users\...' + '\assets\prefabs\hero.prefab.json'
+    if (-not $adr0134.Contains($placeholderPath)) {
+        throw "ADR 0134 no longer contains the private-user-path placeholder regression fixture."
+    }
+
+    $privatePathFixture = Join-Path $temp "docs/private-path-regression.md"
+    $realPrivatePath = 'C:' + '\Users\alice\GameEngine\secrets.txt'
+    "# Private path regression fixture`n`n$realPrivatePath`n" |
+        Set-Content -LiteralPath $privatePathFixture -Encoding utf8
+
+    $privatePathRejected = $false
+    try {
+        & $Exporter -SourceRoot $temp -DestinationRoot $privatePathTemp
+    } catch {
+        if ($_.Exception.Message -notmatch "private-user-path") {
+            throw
+        }
+        $privatePathRejected = $true
+    }
+    if (-not $privatePathRejected) {
+        throw "Expected a real Windows user-profile path to fail the public snapshot security scan."
+    }
+
+    Write-Host "[PASS] Public snapshot allow-list, asset audit, workflow set, and private-path scan are valid."
 } finally {
+    Remove-Item -Recurse -Force $privatePathTemp -ErrorAction SilentlyContinue
     Remove-Item -Recurse -Force $temp -ErrorAction SilentlyContinue
 }
