@@ -1,0 +1,27 @@
+diff --git a/crates/editor/src/ui/inspector/asset_reference.rs b/crates/editor/src/ui/inspector/asset_reference.rs
+index 8464b6abedfbce65956f4a05c532cf1c9b5b9c25..cd8133ea7ee4ae35b1c86627548fce7a14e58f9e 100644
+--- a/crates/editor/src/ui/inspector/asset_reference.rs
++++ b/crates/editor/src/ui/inspector/asset_reference.rs
+@@ -91,8 +91,8 @@ pub(in crate::ui) fn asset_reference_browser_kind(
+         | engine::AssetKind::Morph
+         | engine::AssetKind::SecondaryMotionRig => BrowserKind::Mesh,
+         engine::AssetKind::Material => BrowserKind::Material,
+-        engine::AssetKind::Texture => BrowserKind::Texture,
+-        engine::AssetKind::AnimationClip => BrowserKind::AnimationClip,
++        engine::AssetKind::Texture | engine::AssetKind::SpriteAtlas => BrowserKind::Texture,
++        engine::AssetKind::AnimationClip | engine::AssetKind::SpriteAnimation => BrowserKind::AnimationClip,
+         engine::AssetKind::MotionSource => BrowserKind::MotionSource,
+         engine::AssetKind::AnimationGraph | engine::AssetKind::BehaviorTree => BrowserKind::Graph,
+         engine::AssetKind::VfxEffect => BrowserKind::Graph,
+diff --git a/crates/engine/src/components/builtins.rs b/crates/engine/src/components/builtins.rs
+index 148bedb3342d90daeb493c1d22bb3e26cf56294f..46fda649abf41e7a2a8e24017863b176a680ef99 100644
+--- a/crates/engine/src/components/builtins.rs
++++ b/crates/engine/src/components/builtins.rs
+@@ -25,7 +25,6 @@ use crate::lock_on::LockOnTarget;
+ use crate::mesh::Mesh;
+ use crate::navigation_bake::{NAVIGATION_LINK_COMPONENT, NAVIGATION_MODIFIER_COMPONENT};
+ use crate::navmesh::NavMeshAgent;
+-use crate::native_2d::Camera2d;
+ use crate::particles::ParticleEmitter;
+ use crate::player::PlayerController;
+ use crate::postprocess::{PostProcessSettings, ToneMapOperator};
