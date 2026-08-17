@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0131-runtime-input-c1-20260817-01",
+  "target_branch": "chatgpt/gameengine-adr0131-first-release-v3",
+  "expected_head_sha": "f9acb5fa09fa6528a19405eff130758480d8c2ca",
+  "baseline_main_sha": "d03ed9e573818eb0ca088f37953f611d6ed4d22e",
+  "patch_sha256": "d6d5982c1ea3192aaf8b0ce8e759ab894cce4778c9897e7ebe57509e10e95e96",
+  "patch_bytes": 18850,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Wire managed AI runtime input evidence",
+  "pr_title": "GameEngine: complete ADR 0131 first-release agent contracts",
+  "pr_body": "## Summary\n\nContinues ADR 0131 first-release completion by routing provider-planned runtime interactions through the existing Editor Play virtual-input boundary with RuntimeInputControl permission and host-owned audit evidence.\n\nProvider-declared interaction success remains unable to satisfy the completion gate until managed runtime input evidence exists."
+}
