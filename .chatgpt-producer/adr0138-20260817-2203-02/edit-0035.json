@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ui/behavior_debug.rs","old":"            self.editor_mode = EditorMode::Playing;\n            self.selected_runtime_entity = None;","new":"            self.editor_mode = EditorMode::Playing;\n            self.graph_debug.visible = true;\n            self.selected_runtime_entity = None;"}

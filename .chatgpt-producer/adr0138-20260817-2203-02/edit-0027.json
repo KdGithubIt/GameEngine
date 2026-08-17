@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ui/mod.rs","old":"mod game_tools;\nmod hierarchy;","new":"mod game_tools;\nmod graph_debug;\nmod hierarchy;"}

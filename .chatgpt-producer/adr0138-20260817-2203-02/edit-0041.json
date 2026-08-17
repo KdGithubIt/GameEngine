@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ui/behavior_debug.rs","old":"            overlay: GraphDebugOverlay { nodes },","new":"            overlay: GraphDebugOverlay {\n                nodes,\n                ..GraphDebugOverlay::default()\n            },"}
