@@ -1,17 +1,102 @@
 //! Non-blocking Editor workflow for the shared production navigation bake service.
 
-use crate::navmesh_bake::{
+use crate::workspace::WorkspaceTabId;
+use engine::navigation_bake::{
     bake_scene_navmesh, NavMeshBakeDocument, NavMeshBakeError, NavMeshBakeResult,
     NavigationBakeServiceError,
 };
-use crate::workspace::WorkspaceTabId;
 use engine::AssetManifest;
-use engine_authoring::{replace_file_contents, AuthoringScene, ProjectRoot};
-use std::path::PathBuf;
+use engine_authoring::{
+    replace_file_contents, AuthoringScene, ComponentTypeId, ProjectRoot,
+};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::Arc;
 use std::thread;
+
+fn scene_uses_navigation(scene: &AuthoringScene) -> bool {
+    let surface = ComponentTypeId::new(engine::scene_bridge::NAV_MESH_SURFACE_COMPONENT);
+    let agent = ComponentTypeId::new(engine::scene_bridge::NAV_MESH_AGENT_COMPONENT);
+    scene.entities().any(|(_, entity)| {
+        entity.components.contains_key(&surface) || entity.components.contains_key(&agent)
+    })
+}
+
+pub(super) fn navigation_bake_document_path(
+    project: &ProjectRoot,
+    scene_path: Option<&Path>,
+) -> Option<PathBuf> {
+    let scene_stem = scene_path?
+        .file_stem()?
+        .to_string_lossy()
+        .trim_end_matches(".scene")
+        .to_owned();
+    (!scene_stem.is_empty()).then(|| {
+        project
+            .assets_root()
+            .join("navigation")
+            .join(format!("{scene_stem}.navmesh.bake.json"))
+    })
+}
+
+pub(super) fn require_current_navigation_artifact(
+    scene: &AuthoringScene,
+    project: &ProjectRoot,
+    manifest: &AssetManifest,
+    scene_path: Option<&Path>,
+) -> Result<(), String> {
+    if !scene_uses_navigation(scene) {
+        return Ok(());
+    }
+    let document_path = navigation_bake_document_path(project, scene_path)
+        .ok_or_else(|| "save the scene before baking navigation".to_owned())?;
+    let document_json = std::fs::read_to_string(&document_path).map_err(|error| {
+        format!(
+            "navigation bake metadata is missing at {}: {error}; bake NavMesh before Play or packaging",
+            document_path.display()
+        )
+    })?;
+    let document = NavMeshBakeDocument::from_json(&document_json).map_err(|error| {
+        format!(
+            "navigation bake metadata at {} is invalid or from an unsupported format: {error}",
+            document_path.display()
+        )
+    })?;
+    let asset_path = project.assets_root().join(&document.output_asset);
+    let nav_mesh = engine::navmesh::load_navmesh(&asset_path).map_err(|error| {
+        format!(
+            "navigation runtime asset is missing or invalid at {}: {error}",
+            asset_path.display()
+        )
+    })?;
+    let current = engine::navigation_bake::is_scene_navmesh_current(
+        scene, project, manifest, &document, &nav_mesh,
+    )
+    .map_err(|error| format!("could not validate navigation bake currentness: {error}"))?;
+    if current {
+        Ok(())
+    } else {
+        Err("navigation bake is stale; rebuild NavMesh before Play or packaging".to_owned())
+    }
+}
+
+pub(super) fn navigation_artifact_diagnostics(
+    scene: &AuthoringScene,
+    project: &ProjectRoot,
+    manifest: &AssetManifest,
+    scene_path: Option<&Path>,
+) -> Vec<engine_authoring::Diagnostic> {
+    require_current_navigation_artifact(scene, project, manifest, scene_path)
+        .err()
+        .map(|message| {
+            vec![engine_authoring::Diagnostic::warning(
+                "editor.navigation_bake_not_current",
+                message,
+            )]
+        })
+        .unwrap_or_default()
+}
 
 pub(super) enum NavigationBakeCompletion {
     Succeeded {

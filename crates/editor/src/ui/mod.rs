@@ -991,17 +991,24 @@ impl EditorApp {
         };
         let scene = scene.clone();
         let manifest = self.asset_manifest.clone();
-        let asset_root = project.assets_root();
+        let project = project.clone();
+        let scene_path = self.session.current_document_path().map(Path::to_path_buf);
         let generation = self.scene_validation_generation;
         let (sender, receiver) = std::sync::mpsc::channel();
         match std::thread::Builder::new()
             .name("scene-filesystem-validation".to_owned())
             .spawn(move || {
-                let diagnostics = engine::validate_builtin_component_asset_files(
+                let mut diagnostics = engine::validate_builtin_component_asset_files(
                     &scene,
                     &manifest,
-                    &asset_root,
+                    &project.assets_root(),
                 );
+                diagnostics.extend(navigation_artifact_diagnostics(
+                    &scene,
+                    &project,
+                    &manifest,
+                    scene_path.as_deref(),
+                ));
                 let _ = sender.send(diagnostics);
             })
         {
