@@ -1,0 +1,1484 @@
+diff --git a/crates/editor/src/agent_asset_acquisition.rs b/crates/editor/src/agent_asset_acquisition.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..c731b9c512cf333d1e4c49120d988f371fd9e4ce
+--- /dev/null
++++ b/crates/editor/src/agent_asset_acquisition.rs
+@@ -0,0 +1,1254 @@
++//! Governed external and generated asset acquisition for AI Studio.
++//!
++//! Providers return bounded in-memory artifacts into an Editor-owned staging
++//! area. Only the existing asset-management import path may copy those bytes
++//! into a project or update `asset_manifest.json`.
++
++use crate::agent_host::{
++    AgentCapability, AgentHost, AgentHostError, AssetAcquisitionRecord, PermissionCheck,
++};
++use crate::asset_management::{import_external_asset_files, AssetManagementError};
++use engine::AssetManifest;
++use engine_authoring::ProjectRoot;
++use std::collections::BTreeSet;
++use std::fmt;
++use std::fs;
++use std::io;
++use std::path::{Component, Path, PathBuf};
++use std::sync::atomic::{AtomicBool, Ordering};
++use std::sync::Arc;
++use std::time::{SystemTime, UNIX_EPOCH};
++
++const MAX_PROVIDER_ARTIFACTS: usize = 32;
++const MAX_PROVIDER_ARTIFACT_BYTES: usize = 32 * 1024 * 1024;
++const MAX_ACQUISITION_BYTES: usize = 64 * 1024 * 1024;
++const MAX_PROVIDER_SEARCH_RESULTS: usize = 64;
++const MAX_METADATA_CHARS: usize = 2_048;
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub(crate) enum GeneratedAssetKind {
++    Image,
++    Audio,
++    Model,
++    Other,
++}
++
++impl GeneratedAssetKind {
++    fn label(self) -> &'static str {
++        match self {
++            Self::Image => "image",
++            Self::Audio => "audio",
++            Self::Model => "model",
++            Self::Other => "other",
++        }
++    }
++}
++
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub(crate) struct AssetSearchRequest {
++    pub(crate) query: String,
++    pub(crate) limit: usize,
++}
++
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub(crate) struct AssetSearchResult {
++    pub(crate) provider_asset_id: String,
++    pub(crate) title: String,
++    pub(crate) source_reference: Option<String>,
++    pub(crate) license: Option<String>,
++}
++
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub(crate) enum AssetProviderOperation {
++    Acquire {
++        provider_asset_id: String,
++    },
++    Generate {
++        kind: GeneratedAssetKind,
++        prompt: String,
++    },
++}
++
++impl AssetProviderOperation {
++    fn label(&self) -> &'static str {
++        match self {
++            Self::Acquire { .. } => "acquire",
++            Self::Generate { .. } => "generate",
++        }
++    }
++}
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
++pub(crate) struct AssetProviderRequirements {
++    pub(crate) requires_network: bool,
++    pub(crate) requires_explicit_user_decision: bool,
++}
++
++#[derive(Debug, Clone, PartialEq, Eq, Default)]
++pub(crate) struct AssetProviderProvenance {
++    pub(crate) provider_asset_id: Option<String>,
++    pub(crate) source_reference: Option<String>,
++    pub(crate) generation_request_id: Option<String>,
++    pub(crate) license: Option<String>,
++    pub(crate) source_version: Option<String>,
++}
++
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub(crate) struct AssetProviderArtifact {
++    pub(crate) file_name: String,
++    pub(crate) bytes: Vec<u8>,
++}
++
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub(crate) struct AssetProviderOutput {
++    pub(crate) artifacts: Vec<AssetProviderArtifact>,
++    pub(crate) provenance: AssetProviderProvenance,
++}
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub(crate) enum ProviderFailureKind {
++    Unavailable,
++    AuthenticationRequired,
++    RateLimited,
++    Rejected,
++    Unsupported,
++    Failed,
++}
++
++impl ProviderFailureKind {
++    fn label(self) -> &'static str {
++        match self {
++            Self::Unavailable => "provider_unavailable",
++            Self::AuthenticationRequired => "provider_authentication_required",
++            Self::RateLimited => "provider_rate_limited",
++            Self::Rejected => "provider_rejected",
++            Self::Unsupported => "provider_operation_unsupported",
++            Self::Failed => "provider_failed",
++        }
++    }
++}
++
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub(crate) struct ProviderFailure {
++    pub(crate) kind: ProviderFailureKind,
++    pub(crate) detail: String,
++}
++
++impl ProviderFailure {
++    fn unsupported(operation: &str) -> Self {
++        Self {
++            kind: ProviderFailureKind::Unsupported,
++            detail: format!("provider does not support {operation}"),
++        }
++    }
++}
++
++#[derive(Clone, Default)]
++pub(crate) struct AssetAcquisitionCancellation {
++    cancelled: Arc<AtomicBool>,
++}
++
++impl fmt::Debug for AssetAcquisitionCancellation {
++    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
++        formatter
++            .debug_struct("AssetAcquisitionCancellation")
++            .field("cancelled", &self.is_cancelled())
++            .finish()
++    }
++}
++
++impl AssetAcquisitionCancellation {
++    pub(crate) fn cancel(&self) {
++        self.cancelled.store(true, Ordering::Release);
++    }
++
++    pub(crate) fn is_cancelled(&self) -> bool {
++        self.cancelled.load(Ordering::Acquire)
++    }
++}
++
++pub(crate) struct AssetProviderContext<'a> {
++    credential: Option<&'a str>,
++    cancellation: &'a AssetAcquisitionCancellation,
++}
++
++impl fmt::Debug for AssetProviderContext<'_> {
++    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
++        formatter
++            .debug_struct("AssetProviderContext")
++            .field("credential", &self.credential.map(|_| "[redacted]"))
++            .field("cancellation", &self.cancellation)
++            .finish()
++    }
++}
++
++impl<'a> AssetProviderContext<'a> {
++    pub(crate) fn new(
++        credential: Option<&'a str>,
++        cancellation: &'a AssetAcquisitionCancellation,
++    ) -> Self {
++        Self {
++            credential,
++            cancellation,
++        }
++    }
++
++    pub(crate) fn credential(&self) -> Option<&str> {
++        self.credential
++    }
++
++    pub(crate) fn cancellation(&self) -> &AssetAcquisitionCancellation {
++        self.cancellation
++    }
++}
++
++pub(crate) trait AgentAssetProvider {
++    fn provider_id(&self) -> &str;
++
++    fn search_requirements(&self) -> AssetProviderRequirements {
++        AssetProviderRequirements::default()
++    }
++
++    fn operation_requirements(
++        &self,
++        _operation: &AssetProviderOperation,
++    ) -> AssetProviderRequirements {
++        AssetProviderRequirements::default()
++    }
++
++    fn search(
++        &mut self,
++        _request: &AssetSearchRequest,
++        _context: &AssetProviderContext<'_>,
++    ) -> Result<Vec<AssetSearchResult>, ProviderFailure> {
++        Err(ProviderFailure::unsupported("search"))
++    }
++
++    fn acquire(
++        &mut self,
++        _provider_asset_id: &str,
++        _context: &AssetProviderContext<'_>,
++    ) -> Result<AssetProviderOutput, ProviderFailure> {
++        Err(ProviderFailure::unsupported("acquisition"))
++    }
++
++    fn generate(
++        &mut self,
++        _kind: GeneratedAssetKind,
++        _prompt: &str,
++        _context: &AssetProviderContext<'_>,
++    ) -> Result<AssetProviderOutput, ProviderFailure> {
++        Err(ProviderFailure::unsupported("generation"))
++    }
++}
++
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub(crate) struct AssetAcquisitionRequest {
++    pub(crate) request_id: String,
++    pub(crate) operation: AssetProviderOperation,
++    pub(crate) destination_folder: PathBuf,
++    pub(crate) explicit_user_decision: bool,
++}
++
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub(crate) struct AcquiredAsset {
++    pub(crate) asset_id: String,
++    pub(crate) path: PathBuf,
++}
++
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub(crate) struct AssetAcquisitionResult {
++    pub(crate) assets: Vec<AcquiredAsset>,
++    pub(crate) reused: bool,
++}
++
++#[derive(Debug)]
++pub(crate) enum AssetAcquisitionError {
++    Host(AgentHostError),
++    PermissionRequired(AgentCapability),
++    PermissionDenied(AgentCapability),
++    ExplicitUserDecisionRequired,
++    InvalidRequest(&'static str),
++    IdempotencyConflict,
++    Cancelled,
++    Provider(ProviderFailureKind),
++    ArtifactRejected(&'static str),
++    ImportRejected,
++    Import(AssetManagementError),
++    StagingIo(io::Error),
++}
++
++impl AssetAcquisitionError {
++    pub(crate) fn category(&self) -> &'static str {
++        match self {
++            Self::Host(_) => "host_failed",
++            Self::PermissionRequired(_) => "permission_required",
++            Self::PermissionDenied(_) => "permission_denied",
++            Self::ExplicitUserDecisionRequired => "explicit_user_decision_required",
++            Self::InvalidRequest(_) => "invalid_request",
++            Self::IdempotencyConflict => "idempotency_conflict",
++            Self::Cancelled => "cancelled",
++            Self::Provider(kind) => kind.label(),
++            Self::ArtifactRejected(_) => "artifact_rejected",
++            Self::ImportRejected => "import_rejected",
++            Self::Import(_) => "import_failed",
++            Self::StagingIo(_) => "staging_failed",
++        }
++    }
++}
++
++impl fmt::Display for AssetAcquisitionError {
++    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
++        match self {
++            Self::Host(error) => write!(formatter, "agent host failed: {error}"),
++            Self::PermissionRequired(capability) => {
++                write!(formatter, "permission required: {}", capability.label())
++            }
++            Self::PermissionDenied(capability) => {
++                write!(formatter, "permission denied: {}", capability.label())
++            }
++            Self::ExplicitUserDecisionRequired => formatter.write_str(
++                "the provider operation requires an additional explicit user decision",
++            ),
++            Self::InvalidRequest(reason) => {
++                write!(formatter, "invalid acquisition request: {reason}")
++            }
++            Self::IdempotencyConflict => formatter.write_str(
++                "the acquisition request identity was already used for different work",
++            ),
++            Self::Cancelled => formatter.write_str("asset acquisition was cancelled"),
++            Self::Provider(kind) => write!(formatter, "asset provider failed as {}", kind.label()),
++            Self::ArtifactRejected(reason) => {
++                write!(formatter, "provider artifact was rejected: {reason}")
++            }
++            Self::ImportRejected => formatter.write_str(
++                "provider artifacts did not produce a registered project asset",
++            ),
++            Self::Import(error) => write!(formatter, "asset import failed: {error}"),
++            Self::StagingIo(error) => write!(formatter, "asset staging failed: {error}"),
++        }
++    }
++}
++
++impl std::error::Error for AssetAcquisitionError {
++    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
++        match self {
++            Self::Host(error) => Some(error),
++            Self::Import(error) => Some(error),
++            Self::StagingIo(error) => Some(error),
++            _ => None,
++        }
++    }
++}
++
++impl From<AgentHostError> for AssetAcquisitionError {
++    fn from(value: AgentHostError) -> Self {
++        Self::Host(value)
++    }
++}
++
++impl From<AssetManagementError> for AssetAcquisitionError {
++    fn from(value: AssetManagementError) -> Self {
++        Self::Import(value)
++    }
++}
++
++pub(crate) struct AgentAssetAcquisitionService;
++
++impl AgentAssetAcquisitionService {
++    pub(crate) fn search(
++        host: &mut AgentHost,
++        run_id: &str,
++        provider: &mut dyn AgentAssetProvider,
++        request: &AssetSearchRequest,
++        context: &AssetProviderContext<'_>,
++    ) -> Result<Vec<AssetSearchResult>, AssetAcquisitionError> {
++        if context.cancellation().is_cancelled() {
++            return Err(AssetAcquisitionError::Cancelled);
++        }
++        let requirements = provider.search_requirements();
++        require_permissions(host, run_id, requirements.requires_network)?;
++        let results = provider.search(request, context).map_err(|failure| {
++            AssetAcquisitionError::Provider(failure.kind)
++        })?;
++        if context.cancellation().is_cancelled() {
++            return Err(AssetAcquisitionError::Cancelled);
++        }
++        let limit = request.limit.min(MAX_PROVIDER_SEARCH_RESULTS);
++        let sanitized = results
++            .into_iter()
++            .take(limit)
++            .map(|result| AssetSearchResult {
++                provider_asset_id: sanitize_metadata(&result.provider_asset_id),
++                title: sanitize_metadata(&result.title),
++                source_reference: result
++                    .source_reference
++                    .as_deref()
++                    .map(sanitize_source_reference),
++                license: result.license.as_deref().map(sanitize_metadata),
++            })
++            .collect::<Vec<_>>();
++        host.record_tool_action(
++            run_id,
++            "asset.search",
++            format!("Managed provider search returned {} result(s).", sanitized.len()),
++            Some(true),
++        )?;
++        Ok(sanitized)
++    }
++
++    pub(crate) fn execute(
++        host: &mut AgentHost,
++        run_id: &str,
++        project: &ProjectRoot,
++        manifest: &mut AssetManifest,
++        provider: &mut dyn AgentAssetProvider,
++        request: &AssetAcquisitionRequest,
++        context: &AssetProviderContext<'_>,
++    ) -> Result<AssetAcquisitionResult, AssetAcquisitionError> {
++        validate_request_id(&request.request_id)?;
++        let fingerprint = request_fingerprint(provider.provider_id(), request);
++        if let Some(existing) = host
++            .run(run_id)?
++            .audit
++            .asset_acquisitions
++            .iter()
++            .find(|record| record.request_id == request.request_id)
++        {
++            if existing.request_fingerprint != fingerprint {
++                return Err(AssetAcquisitionError::IdempotencyConflict);
++            }
++            return Ok(result_from_record(existing, true));
++        }
++        if context.cancellation().is_cancelled() {
++            record_failure(host, run_id, &request.request_id, "cancelled")?;
++            return Err(AssetAcquisitionError::Cancelled);
++        }
++        let requirements = provider.operation_requirements(&request.operation);
++        if requirements.requires_explicit_user_decision && !request.explicit_user_decision {
++            return Err(AssetAcquisitionError::ExplicitUserDecisionRequired);
++        }
++        require_permissions(host, run_id, requirements.requires_network)?;
++
++        let output = match &request.operation {
++            AssetProviderOperation::Acquire { provider_asset_id } => {
++                provider.acquire(provider_asset_id, context)
++            }
++            AssetProviderOperation::Generate { kind, prompt } => {
++                provider.generate(*kind, prompt, context)
++            }
++        };
++        let output = match output {
++            Ok(output) => output,
++            Err(failure) => {
++                record_failure(host, run_id, &request.request_id, failure.kind.label())?;
++                return Err(AssetAcquisitionError::Provider(failure.kind));
++            }
++        };
++        if context.cancellation().is_cancelled() {
++            record_failure(host, run_id, &request.request_id, "cancelled")?;
++            return Err(AssetAcquisitionError::Cancelled);
++        }
++        validate_output(&output)?;
++
++        let staging_root = host.asset_acquisition_staging_root(run_id)?;
++        let staging = staging_root.join(format!("request-{fingerprint}"));
++        if staging.exists() {
++            fs::remove_dir_all(&staging).map_err(AssetAcquisitionError::StagingIo)?;
++        }
++        fs::create_dir_all(&staging).map_err(AssetAcquisitionError::StagingIo)?;
++        let staged_paths = match stage_artifacts(&staging, &output.artifacts) {
++            Ok(paths) => paths,
++            Err(error) => {
++                let _ = fs::remove_dir_all(&staging);
++                return Err(error);
++            }
++        };
++        if context.cancellation().is_cancelled() {
++            let _ = fs::remove_dir_all(&staging);
++            record_failure(host, run_id, &request.request_id, "cancelled")?;
++            return Err(AssetAcquisitionError::Cancelled);
++        }
++
++        let import = import_external_asset_files(
++            project,
++            manifest,
++            &staged_paths,
++            &request.destination_folder,
++        );
++        let cleanup = fs::remove_dir_all(&staging);
++        let report = match import {
++            Ok(report) => report,
++            Err(error) => {
++                record_failure(host, run_id, &request.request_id, "import_failed")?;
++                return Err(AssetAcquisitionError::Import(error));
++            }
++        };
++        if report.registered.is_empty() || !report.failures.is_empty() {
++            record_failure(host, run_id, &request.request_id, "import_rejected")?;
++            return Err(AssetAcquisitionError::ImportRejected);
++        }
++
++        let provider_id = sanitize_metadata(provider.provider_id());
++        let provenance = sanitize_provenance(output.provenance);
++        let assets = report
++            .registered
++            .iter()
++            .map(|imported| AcquiredAsset {
++                asset_id: imported.asset_id.as_str().to_owned(),
++                path: imported.destination.clone(),
++            })
++            .collect::<Vec<_>>();
++        let record = AssetAcquisitionRecord {
++            request_id: request.request_id.clone(),
++            request_fingerprint: fingerprint,
++            operation: request.operation.label().to_owned(),
++            provider: provider_id,
++            provider_asset_id: provenance.provider_asset_id,
++            generation_request_id: provenance.generation_request_id,
++            source: provenance.source_reference.unwrap_or_default(),
++            source_version: provenance.source_version,
++            license: provenance.license,
++            imported_asset_ids: assets.iter().map(|asset| asset.asset_id.clone()).collect(),
++            imported_paths: assets.iter().map(|asset| asset.path.clone()).collect(),
++            created_unix_ms: unix_ms(),
++        };
++        host.record_asset_acquisition(run_id, record)?;
++        if cleanup.is_err() {
++            host.record_tool_action(
++                run_id,
++                "asset.acquire",
++                "Managed acquisition completed, but local staging cleanup failed.",
++                Some(false),
++            )?;
++        }
++        Ok(AssetAcquisitionResult {
++            assets,
++            reused: false,
++        })
++    }
++}
++
++fn require_permissions(
++    host: &mut AgentHost,
++    run_id: &str,
++    requires_network: bool,
++) -> Result<(), AssetAcquisitionError> {
++    require_permission(host, run_id, AgentCapability::ExternalAssetAcquisition)?;
++    if requires_network {
++        require_permission(host, run_id, AgentCapability::NetworkAccess)?;
++    }
++    Ok(())
++}
++
++fn require_permission(
++    host: &mut AgentHost,
++    run_id: &str,
++    capability: AgentCapability,
++) -> Result<(), AssetAcquisitionError> {
++    match host.check_permission(run_id, capability)? {
++        PermissionCheck::Granted => Ok(()),
++        PermissionCheck::RequiresApproval => {
++            Err(AssetAcquisitionError::PermissionRequired(capability))
++        }
++        PermissionCheck::Denied => Err(AssetAcquisitionError::PermissionDenied(capability)),
++    }
++}
++
++fn validate_request_id(request_id: &str) -> Result<(), AssetAcquisitionError> {
++    if request_id.is_empty()
++        || request_id.len() > 128
++        || !request_id
++            .bytes()
++            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
++    {
++        return Err(AssetAcquisitionError::InvalidRequest(
++            "request_id must use 1-128 ASCII letters, digits, '.', '-', or '_'",
++        ));
++    }
++    Ok(())
++}
++
++fn validate_output(output: &AssetProviderOutput) -> Result<(), AssetAcquisitionError> {
++    if output.artifacts.is_empty() {
++        return Err(AssetAcquisitionError::ArtifactRejected(
++            "provider returned no artifacts",
++        ));
++    }
++    if output.artifacts.len() > MAX_PROVIDER_ARTIFACTS {
++        return Err(AssetAcquisitionError::ArtifactRejected(
++            "provider returned too many artifacts",
++        ));
++    }
++    let mut total = 0usize;
++    let mut names = BTreeSet::new();
++    for artifact in &output.artifacts {
++        validate_artifact_file_name(&artifact.file_name)?;
++        if artifact.bytes.is_empty() || artifact.bytes.len() > MAX_PROVIDER_ARTIFACT_BYTES {
++            return Err(AssetAcquisitionError::ArtifactRejected(
++                "provider artifact size is outside the supported bounds",
++            ));
++        }
++        total = total
++            .checked_add(artifact.bytes.len())
++            .ok_or(AssetAcquisitionError::ArtifactRejected(
++                "provider artifact size overflowed the acquisition bound",
++            ))?;
++        if total > MAX_ACQUISITION_BYTES {
++            return Err(AssetAcquisitionError::ArtifactRejected(
++                "provider artifacts exceeded the total acquisition size limit",
++            ));
++        }
++        if !names.insert(artifact.file_name.to_ascii_lowercase()) {
++            return Err(AssetAcquisitionError::ArtifactRejected(
++                "provider returned duplicate artifact filenames",
++            ));
++        }
++    }
++    Ok(())
++}
++
++fn validate_artifact_file_name(file_name: &str) -> Result<(), AssetAcquisitionError> {
++    if file_name.is_empty()
++        || file_name.contains('/')
++        || file_name.contains('\\')
++        || file_name.contains(':')
++        || file_name == "."
++        || file_name == ".."
++        || Path::new(file_name).components().any(|component| {
++            !matches!(component, Component::Normal(_))
++        })
++    {
++        return Err(AssetAcquisitionError::ArtifactRejected(
++            "artifact filename must be one normal path component",
++        ));
++    }
++    Ok(())
++}
++
++fn stage_artifacts(
++    staging: &Path,
++    artifacts: &[AssetProviderArtifact],
++) -> Result<Vec<PathBuf>, AssetAcquisitionError> {
++    artifacts
++        .iter()
++        .map(|artifact| {
++            let path = staging.join(&artifact.file_name);
++            fs::write(&path, &artifact.bytes).map_err(AssetAcquisitionError::StagingIo)?;
++            Ok(path)
++        })
++        .collect()
++}
++
++fn sanitize_provenance(provenance: AssetProviderProvenance) -> AssetProviderProvenance {
++    AssetProviderProvenance {
++        provider_asset_id: provenance.provider_asset_id.as_deref().map(sanitize_metadata),
++        source_reference: provenance
++            .source_reference
++            .as_deref()
++            .map(sanitize_source_reference),
++        generation_request_id: provenance
++            .generation_request_id
++            .as_deref()
++            .map(sanitize_metadata),
++        license: provenance.license.as_deref().map(sanitize_metadata),
++        source_version: provenance.source_version.as_deref().map(sanitize_metadata),
++    }
++}
++
++fn sanitize_source_reference(value: &str) -> String {
++    if looks_like_absolute_path(value) {
++        return "[local source]".to_owned();
++    }
++    let without_query = value.split_once('?').map_or(value, |(prefix, _)| prefix);
++    let without_fragment = without_query
++        .split_once('#')
++        .map_or(without_query, |(prefix, _)| prefix);
++    sanitize_metadata(without_fragment)
++}
++
++fn looks_like_absolute_path(value: &str) -> bool {
++    value.starts_with('/')
++        || value.starts_with("\\\\")
++        || value.as_bytes().get(1) == Some(&b':')
++            && value
++                .as_bytes()
++                .get(2)
++                .is_some_and(|byte| matches!(byte, b'\\' | b'/'))
++}
++
++fn sanitize_metadata(value: &str) -> String {
++    let lowered = value.to_ascii_lowercase();
++    if lowered.contains("authorization: bearer")
++        || lowered.contains("api_key=")
++        || lowered.contains("apikey=")
++        || lowered.contains("access_token=")
++        || lowered.contains("secret=")
++        || lowered.contains("gameengine_mcp_auth_token")
++    {
++        return "[redacted]".to_owned();
++    }
++    let trimmed = value.trim();
++    if trimmed.chars().count() <= MAX_METADATA_CHARS {
++        return trimmed.to_owned();
++    }
++    let mut truncated = trimmed.chars().take(MAX_METADATA_CHARS).collect::<String>();
++    truncated.push('…');
++    truncated
++}
++
++fn request_fingerprint(provider_id: &str, request: &AssetAcquisitionRequest) -> String {
++    let mut hash = 0xcbf29ce484222325u64;
++    fn append(hash: &mut u64, bytes: &[u8]) {
++        for byte in bytes {
++            *hash ^= u64::from(*byte);
++            *hash = hash.wrapping_mul(0x100000001b3);
++        }
++        *hash ^= 0xff;
++        *hash = hash.wrapping_mul(0x100000001b3);
++    }
++    append(&mut hash, provider_id.as_bytes());
++    append(
++        &mut hash,
++        request.destination_folder.to_string_lossy().as_bytes(),
++    );
++    match &request.operation {
++        AssetProviderOperation::Acquire { provider_asset_id } => {
++            append(&mut hash, b"acquire");
++            append(&mut hash, provider_asset_id.as_bytes());
++        }
++        AssetProviderOperation::Generate { kind, prompt } => {
++            append(&mut hash, b"generate");
++            append(&mut hash, kind.label().as_bytes());
++            append(&mut hash, prompt.as_bytes());
++        }
++    }
++    format!("fnv1a64-{hash:016x}")
++}
++
++fn result_from_record(record: &AssetAcquisitionRecord, reused: bool) -> AssetAcquisitionResult {
++    let assets = record
++        .imported_paths
++        .iter()
++        .enumerate()
++        .map(|(index, path)| AcquiredAsset {
++            asset_id: record
++                .imported_asset_ids
++                .get(index)
++                .cloned()
++                .unwrap_or_default(),
++            path: path.clone(),
++        })
++        .collect();
++    AssetAcquisitionResult { assets, reused }
++}
++
++fn record_failure(
++    host: &mut AgentHost,
++    run_id: &str,
++    request_id: &str,
++    category: &str,
++) -> Result<(), AgentHostError> {
++    host.record_tool_action(
++        run_id,
++        "asset.acquire",
++        format!(
++            "Managed acquisition request `{}` finished without an imported asset: {}.",
++            sanitize_metadata(request_id),
++            sanitize_metadata(category)
++        ),
++        Some(false),
++    )
++}
++
++fn unix_ms() -> u64 {
++    SystemTime::now()
++        .duration_since(UNIX_EPOCH)
++        .map_or(0, |duration| {
++            u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
++        })
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use crate::agent_host::ApprovalScope;
++    use engine_authoring::ProjectConfig;
++
++    struct MockProvider {
++        calls: usize,
++        requires_network: bool,
++        requires_explicit_user_decision: bool,
++        failure: Option<ProviderFailure>,
++        source_reference: String,
++        saw_credential: bool,
++    }
++
++    impl Default for MockProvider {
++        fn default() -> Self {
++            Self {
++                calls: 0,
++                requires_network: true,
++                requires_explicit_user_decision: false,
++                failure: None,
++                source_reference:
++                    "https://catalog.test/assets/asset-42?access_token=temporary-secret".to_owned(),
++                saw_credential: false,
++            }
++        }
++    }
++
++    impl AgentAssetProvider for MockProvider {
++        fn provider_id(&self) -> &str {
++            "mock-provider"
++        }
++
++        fn search_requirements(&self) -> AssetProviderRequirements {
++            AssetProviderRequirements {
++                requires_network: self.requires_network,
++                requires_explicit_user_decision: false,
++            }
++        }
++
++        fn operation_requirements(
++            &self,
++            _operation: &AssetProviderOperation,
++        ) -> AssetProviderRequirements {
++            AssetProviderRequirements {
++                requires_network: self.requires_network,
++                requires_explicit_user_decision: self.requires_explicit_user_decision,
++            }
++        }
++
++        fn search(
++            &mut self,
++            _request: &AssetSearchRequest,
++            context: &AssetProviderContext<'_>,
++        ) -> Result<Vec<AssetSearchResult>, ProviderFailure> {
++            self.calls += 1;
++            self.saw_credential = context.credential().is_some();
++            Ok(vec![AssetSearchResult {
++                provider_asset_id: "asset-42".to_owned(),
++                title: "Example".to_owned(),
++                source_reference: Some(self.source_reference.clone()),
++                license: Some("CC0".to_owned()),
++            }])
++        }
++
++        fn acquire(
++            &mut self,
++            provider_asset_id: &str,
++            context: &AssetProviderContext<'_>,
++        ) -> Result<AssetProviderOutput, ProviderFailure> {
++            self.calls += 1;
++            self.saw_credential = context.credential().is_some();
++            if let Some(failure) = self.failure.clone() {
++                return Err(failure);
++            }
++            Ok(AssetProviderOutput {
++                artifacts: vec![AssetProviderArtifact {
++                    file_name: "generated.png".to_owned(),
++                    bytes: vec![1, 2, 3, 4],
++                }],
++                provenance: AssetProviderProvenance {
++                    provider_asset_id: Some(provider_asset_id.to_owned()),
++                    source_reference: Some(self.source_reference.clone()),
++                    generation_request_id: None,
++                    license: Some("CC0".to_owned()),
++                    source_version: Some("v1".to_owned()),
++                },
++            })
++        }
++
++        fn generate(
++            &mut self,
++            kind: GeneratedAssetKind,
++            _prompt: &str,
++            context: &AssetProviderContext<'_>,
++        ) -> Result<AssetProviderOutput, ProviderFailure> {
++            self.calls += 1;
++            self.saw_credential = context.credential().is_some();
++            Ok(AssetProviderOutput {
++                artifacts: vec![AssetProviderArtifact {
++                    file_name: match kind {
++                        GeneratedAssetKind::Audio => "generated.wav",
++                        _ => "generated.png",
++                    }
++                    .to_owned(),
++                    bytes: vec![5, 6, 7, 8],
++                }],
++                provenance: AssetProviderProvenance {
++                    generation_request_id: Some("generation-17".to_owned()),
++                    license: Some("provider-generated".to_owned()),
++                    ..AssetProviderProvenance::default()
++                },
++            })
++        }
++    }
++
++    fn setup(
++        name: &str,
++    ) -> (
++        tempfile::TempDir,
++        tempfile::TempDir,
++        ProjectRoot,
++        AssetManifest,
++        AgentHost,
++        String,
++    ) {
++        let project_dir = tempfile::Builder::new()
++            .prefix(&format!("adr0146-{name}-project-"))
++            .tempdir()
++            .expect("project tempdir");
++        let storage_dir = tempfile::Builder::new()
++            .prefix(&format!("adr0146-{name}-storage-"))
++            .tempdir()
++            .expect("storage tempdir");
++        let project = ProjectRoot::create(
++            project_dir.path(),
++            ProjectConfig {
++                name: "ADR 0146 Test".to_owned(),
++                schema_version: 2,
++            },
++        )
++        .expect("project");
++        let manifest = AssetManifest::default();
++        let mut host = AgentHost::open(
++            project.path().to_path_buf(),
++            storage_dir.path().to_path_buf(),
++        )
++        .expect("host");
++        let session = host.create_session("Asset acquisition").expect("session");
++        let proposal_version = host.session(&session).expect("session").proposal.version;
++        let run = host
++            .start_run_authorized(&session, proposal_version, "test")
++            .expect("run");
++        (project_dir, storage_dir, project, manifest, host, run)
++    }
++
++    fn grant_acquisition(host: &mut AgentHost, run: &str, network: bool) {
++        host.resolve_permission(
++            run,
++            AgentCapability::ExternalAssetAcquisition,
++            ApprovalScope::Run,
++        )
++        .expect("asset permission");
++        if network {
++            host.resolve_permission(run, AgentCapability::NetworkAccess, ApprovalScope::Run)
++                .expect("network permission");
++        }
++    }
++
++    fn acquire_request(request_id: &str) -> AssetAcquisitionRequest {
++        AssetAcquisitionRequest {
++            request_id: request_id.to_owned(),
++            operation: AssetProviderOperation::Acquire {
++                provider_asset_id: "asset-42".to_owned(),
++            },
++            destination_folder: PathBuf::from("textures"),
++            explicit_user_decision: true,
++        }
++    }
++
++    #[test]
++    fn network_provider_requires_asset_and_network_permissions_before_execution() {
++        let (_project_dir, _storage_dir, project, mut manifest, mut host, run) =
++            setup("permissions");
++        let cancellation = AssetAcquisitionCancellation::default();
++        let context = AssetProviderContext::new(None, &cancellation);
++        let request = acquire_request("permission-check");
++        let mut provider = MockProvider::default();
++        assert!(matches!(
++            AgentAssetAcquisitionService::execute(
++                &mut host,
++                &run,
++                &project,
++                &mut manifest,
++                &mut provider,
++                &request,
++                &context,
++            ),
++            Err(AssetAcquisitionError::PermissionRequired(
++                AgentCapability::ExternalAssetAcquisition
++            ))
++        ));
++        assert_eq!(provider.calls, 0);
++        host.resolve_permission(
++            &run,
++            AgentCapability::ExternalAssetAcquisition,
++            ApprovalScope::Run,
++        )
++        .expect("asset permission");
++        assert!(matches!(
++            AgentAssetAcquisitionService::execute(
++                &mut host,
++                &run,
++                &project,
++                &mut manifest,
++                &mut provider,
++                &request,
++                &context,
++            ),
++            Err(AssetAcquisitionError::PermissionRequired(
++                AgentCapability::NetworkAccess
++            ))
++        ));
++        assert_eq!(provider.calls, 0);
++        host.resolve_permission(
++            &run,
++            AgentCapability::NetworkAccess,
++            ApprovalScope::Run,
++        )
++        .expect("network permission");
++        AgentAssetAcquisitionService::execute(
++            &mut host,
++            &run,
++            &project,
++            &mut manifest,
++            &mut provider,
++            &request,
++            &context,
++        )
++        .expect("acquisition");
++        assert_eq!(provider.calls, 1);
++    }
++
++    #[test]
++    fn managed_acquisition_reuses_import_pipeline_and_persists_safe_provenance() {
++        let (_project_dir, storage_dir, project, mut manifest, mut host, run) = setup("import");
++        grant_acquisition(&mut host, &run, true);
++        let cancellation = AssetAcquisitionCancellation::default();
++        let context = AssetProviderContext::new(Some("credential-secret"), &cancellation);
++        let request = acquire_request("import-one");
++        let mut provider = MockProvider::default();
++        let result = AgentAssetAcquisitionService::execute(
++            &mut host,
++            &run,
++            &project,
++            &mut manifest,
++            &mut provider,
++            &request,
++            &context,
++        )
++        .expect("acquisition");
++        assert!(!result.reused);
++        assert_eq!(result.assets.len(), 1);
++        assert!(project.assets_root().join(&result.assets[0].path).is_file());
++        assert!(manifest.iter().any(|(id, entry)| {
++            id.as_str() == result.assets[0].asset_id
++                && entry.path == "textures/generated.png"
++        }));
++        assert!(provider.saw_credential);
++        let session_file = fs::read_to_string(
++            storage_dir
++                .path()
++                .join("sessions")
++                .join(format!("{}.json", host.session_ids()[0])),
++        )
++        .expect("session file");
++        assert!(!session_file.contains("credential-secret"));
++        assert!(!session_file.contains("temporary-secret"));
++        assert!(session_file.contains("https://catalog.test/assets/asset-42"));
++        let staging_root = host
++            .asset_acquisition_staging_root(&run)
++            .expect("staging root");
++        assert!(
++            !staging_root.exists()
++                || fs::read_dir(&staging_root)
++                    .expect("staging directory")
++                    .next()
++                    .is_none()
++        );
++    }
++
++    #[test]
++    fn completed_request_is_idempotent_and_conflicting_retry_is_rejected() {
++        let (_project_dir, _storage_dir, project, mut manifest, mut host, run) =
++            setup("idempotent");
++        grant_acquisition(&mut host, &run, true);
++        let cancellation = AssetAcquisitionCancellation::default();
++        let context = AssetProviderContext::new(None, &cancellation);
++        let request = acquire_request("same-request");
++        let mut provider = MockProvider::default();
++        let first = AgentAssetAcquisitionService::execute(
++            &mut host,
++            &run,
++            &project,
++            &mut manifest,
++            &mut provider,
++            &request,
++            &context,
++        )
++        .expect("first");
++        let second = AgentAssetAcquisitionService::execute(
++            &mut host,
++            &run,
++            &project,
++            &mut manifest,
++            &mut provider,
++            &request,
++            &context,
++        )
++        .expect("retry");
++        assert!(!first.reused);
++        assert!(second.reused);
++        assert_eq!(first.assets, second.assets);
++        assert_eq!(provider.calls, 1);
++        let mut conflicting = request.clone();
++        conflicting.destination_folder = PathBuf::from("audio");
++        assert!(matches!(
++            AgentAssetAcquisitionService::execute(
++                &mut host,
++                &run,
++                &project,
++                &mut manifest,
++                &mut provider,
++                &conflicting,
++                &context,
++            ),
++            Err(AssetAcquisitionError::IdempotencyConflict)
++        ));
++        assert_eq!(provider.calls, 1);
++    }
++
++    #[test]
++    fn cancelled_or_invalid_artifacts_never_enter_project() {
++        let (_project_dir, _storage_dir, project, mut manifest, mut host, run) = setup("cancel");
++        grant_acquisition(&mut host, &run, true);
++        let cancellation = AssetAcquisitionCancellation::default();
++        cancellation.cancel();
++        let context = AssetProviderContext::new(None, &cancellation);
++        let request = acquire_request("cancelled-request");
++        let mut provider = MockProvider::default();
++        assert!(matches!(
++            AgentAssetAcquisitionService::execute(
++                &mut host,
++                &run,
++                &project,
++                &mut manifest,
++                &mut provider,
++                &request,
++                &context,
++            ),
++            Err(AssetAcquisitionError::Cancelled)
++        ));
++        assert_eq!(provider.calls, 0);
++        assert_eq!(manifest.iter().count(), 0);
++
++        let cancellation = AssetAcquisitionCancellation::default();
++        let context = AssetProviderContext::new(None, &cancellation);
++        struct InvalidNameProvider;
++        impl AgentAssetProvider for InvalidNameProvider {
++            fn provider_id(&self) -> &str {
++                "invalid-name"
++            }
++            fn acquire(
++                &mut self,
++                _provider_asset_id: &str,
++                _context: &AssetProviderContext<'_>,
++            ) -> Result<AssetProviderOutput, ProviderFailure> {
++                Ok(AssetProviderOutput {
++                    artifacts: vec![AssetProviderArtifact {
++                        file_name: "../escape.png".to_owned(),
++                        bytes: vec![1],
++                    }],
++                    provenance: AssetProviderProvenance::default(),
++                })
++            }
++        }
++        let mut invalid = InvalidNameProvider;
++        assert!(matches!(
++            AgentAssetAcquisitionService::execute(
++                &mut host,
++                &run,
++                &project,
++                &mut manifest,
++                &mut invalid,
++                &acquire_request("invalid-artifact"),
++                &context,
++            ),
++            Err(AssetAcquisitionError::ArtifactRejected(_))
++        ));
++        assert_eq!(manifest.iter().count(), 0);
++    }
++
++    #[test]
++    fn provider_failures_are_structured_without_persisting_raw_detail() {
++        let (_project_dir, storage_dir, project, mut manifest, mut host, run) = setup("failure");
++        grant_acquisition(&mut host, &run, true);
++        let cancellation = AssetAcquisitionCancellation::default();
++        let context = AssetProviderContext::new(None, &cancellation);
++        let mut provider = MockProvider {
++            failure: Some(ProviderFailure {
++                kind: ProviderFailureKind::AuthenticationRequired,
++                detail: "api_key=provider-secret".to_owned(),
++            }),
++            ..MockProvider::default()
++        };
++        let error = AgentAssetAcquisitionService::execute(
++            &mut host,
++            &run,
++            &project,
++            &mut manifest,
++            &mut provider,
++            &acquire_request("provider-failure"),
++            &context,
++        )
++        .expect_err("provider failure");
++        assert_eq!(error.category(), "provider_authentication_required");
++        let persisted = fs::read_to_string(
++            storage_dir
++                .path()
++                .join("sessions")
++                .join(format!("{}.json", host.session_ids()[0])),
++        )
++        .expect("session file");
++        assert!(!persisted.contains("provider-secret"));
++        assert!(!persisted.contains("api_key="));
++    }
++
++    #[test]
++    fn search_and_generation_use_typed_provider_operations() {
++        let (_project_dir, _storage_dir, project, mut manifest, mut host, run) = setup("typed");
++        grant_acquisition(&mut host, &run, true);
++        let cancellation = AssetAcquisitionCancellation::default();
++        let context = AssetProviderContext::new(Some("search-secret"), &cancellation);
++        let mut provider = MockProvider::default();
++        let results = AgentAssetAcquisitionService::search(
++            &mut host,
++            &run,
++            &mut provider,
++            &AssetSearchRequest {
++                query: "tree".to_owned(),
++                limit: 10,
++            },
++            &context,
++        )
++        .expect("search");
++        assert_eq!(results.len(), 1);
++        assert_eq!(
++            results[0].source_reference.as_deref(),
++            Some("https://catalog.test/assets/asset-42")
++        );
++        let generated = AgentAssetAcquisitionService::execute(
++            &mut host,
++            &run,
++            &project,
++            &mut manifest,
++            &mut provider,
++            &AssetAcquisitionRequest {
++                request_id: "generate-one".to_owned(),
++                operation: AssetProviderOperation::Generate {
++                    kind: GeneratedAssetKind::Image,
++                    prompt: "a tree icon".to_owned(),
++                },
++                destination_folder: PathBuf::from("textures"),
++                explicit_user_decision: true,
++            },
++            &context,
++        )
++        .expect("generation");
++        assert_eq!(generated.assets.len(), 1);
++        assert_eq!(provider.calls, 2);
++    }
++}
+diff --git a/crates/editor/src/agent_host.rs b/crates/editor/src/agent_host.rs
+index 937daa62df546f90b3ee191f50dfd202f3d0d92e..736dc8fc6e16785989938036f121ad493d0e846f 100644
+--- a/crates/editor/src/agent_host.rs
++++ b/crates/editor/src/agent_host.rs
+@@ -658,9 +658,23 @@ pub(crate) struct CodeCheckpoint {
+ 
+ #[derive(Debug, Clone, Serialize, Deserialize)]
+ pub(crate) struct AssetAcquisitionRecord {
++    #[serde(default)]
++    pub(crate) request_id: String,
++    #[serde(default)]
++    pub(crate) request_fingerprint: String,
++    #[serde(default)]
++    pub(crate) operation: String,
+     pub(crate) provider: String,
++    #[serde(default)]
++    pub(crate) provider_asset_id: Option<String>,
++    #[serde(default)]
++    pub(crate) generation_request_id: Option<String>,
+     pub(crate) source: String,
++    #[serde(default)]
++    pub(crate) source_version: Option<String>,
+     pub(crate) license: Option<String>,
++    #[serde(default)]
++    pub(crate) imported_asset_ids: Vec<String>,
+     pub(crate) imported_paths: Vec<PathBuf>,
+     pub(crate) created_unix_ms: u64,
+ }
+@@ -1167,6 +1181,42 @@ impl AgentHost {
+         self.persist_session(&session_id)
+     }
+ 
++    pub(crate) fn asset_acquisition_staging_root(
++        &self,
++        run_id: &str,
++    ) -> Result<PathBuf, AgentHostError> {
++        self.run(run_id)?;
++        Ok(self.storage_root.join("asset-acquisition").join(run_id))
++    }
++
++    pub(crate) fn record_asset_acquisition(
++        &mut self,
++        run_id: &str,
++        record: AssetAcquisitionRecord,
++    ) -> Result<(), AgentHostError> {
++        let request_id = record.request_id.clone();
++        let imported_count = record.imported_paths.len();
++        let (session_id, _) = self.run_location(run_id)?;
++        let run = self.run_mut_in_session(&session_id, run_id)?;
++        run.audit.asset_acquisitions.push(record);
++        let tool = "asset.acquire".to_owned();
++        let action = format!(
++            "Managed acquisition request `{request_id}` imported {imported_count} asset(s)."
++        );
++        push_event_with_evidence(
++            run,
++            AgentEventKind::ToolAction,
++            format!("{tool}: {action}"),
++            None,
++            Some(AgentEventEvidence::ToolAction {
++                tool,
++                action,
++                success: Some(true),
++            }),
++        );
++        self.persist_session(&session_id)
++    }
++
+     pub(crate) fn record_completion_gate(
+         &mut self,
+         run_id: &str,
+diff --git a/crates/editor/src/lib.rs b/crates/editor/src/lib.rs
+index cb2d10fb44a7438f8532ac48f0e1c271dfd8d25a..cba0ed4b59cb8cd14d3947d9c90523add3e0b6d3 100644
+--- a/crates/editor/src/lib.rs
++++ b/crates/editor/src/lib.rs
+@@ -7,6 +7,10 @@
+ #![warn(missing_docs)]
+ #![warn(rustdoc::broken_intra_doc_links)]
+ 
++// ADR 0146 defines the provider-neutral managed asset boundary before concrete
++// provider integrations are enabled by AI Studio.
++#[allow(dead_code)]
++mod agent_asset_acquisition;
+ mod agent_host;
+ mod live_observation;
+ mod native_agent;
+diff --git a/crates/editor/src/remote_ai_studio.rs b/crates/editor/src/remote_ai_studio.rs
+index 2c048ad7b2eb8bba281f6a6f6661c37ca9caa68e..4fdbfea07b494fcd1c1bc6d0a22395eab616545b 100644
+--- a/crates/editor/src/remote_ai_studio.rs
++++ b/crates/editor/src/remote_ai_studio.rs
+@@ -950,12 +950,82 @@ fn run_json(run: &AgentRun) -> Value {
+         "finished_unix_ms": run.finished_unix_ms,
+         "completion": run.completion.clone(),
+         "validation_attempts": run.validation_attempts.clone(),
+-        "audit": run.audit.clone(),
++        "audit": safe_audit(run),
+         "frames": frames,
+         "last_event_sequence": run.events.last().map_or(0, |event| event.sequence),
+     })
+ }
+ 
++fn safe_audit(run: &AgentRun) -> Value {
++    json!({
++        "authoring_operations": run.audit.authoring_operations,
++        "code_changes": run.audit.code_changes,
++        "asset_acquisitions": run
++            .audit
++            .asset_acquisitions
++            .iter()
++            .map(|record| {
++                json!({
++                    "request_id": sanitize_text(&record.request_id),
++                    "operation": sanitize_text(&record.operation),
++                    "provider": sanitize_text(&record.provider),
++                    "provider_asset_id": record
++                        .provider_asset_id
++                        .as_deref()
++                        .map(sanitize_text),
++                    "generation_request_id": record
++                        .generation_request_id
++                        .as_deref()
++                        .map(sanitize_text),
++                    "source": sanitize_source_reference(&record.source),
++                    "source_version": record.source_version.as_deref().map(sanitize_text),
++                    "license": record.license.as_deref().map(sanitize_text),
++                    "imported_asset_ids": sanitize_strings(&record.imported_asset_ids),
++                    "imported_paths": record
++                        .imported_paths
++                        .iter()
++                        .filter_map(|path| safe_relative_path(path))
++                        .collect::<Vec<_>>(),
++                    "created_unix_ms": record.created_unix_ms,
++                })
++            })
++            .collect::<Vec<_>>(),
++        "managed_runtime_inputs": run.audit.managed_runtime_inputs,
++        "raw_workspace_operations": run.audit.raw_workspace_operations,
++        "custom_commands": run.audit.custom_commands,
++        "permission_escalations": run.audit.permission_escalations,
++    })
++}
++
++fn sanitize_source_reference(source: &str) -> String {
++    let without_query = source.split_once('?').map_or(source, |(prefix, _)| prefix);
++    let without_fragment = without_query
++        .split_once('#')
++        .map_or(without_query, |(prefix, _)| prefix);
++    sanitize_text(without_fragment)
++}
++
++fn safe_relative_path(path: &std::path::Path) -> Option<String> {
++    let raw = path.to_string_lossy();
++    let windows_absolute = raw.starts_with("\\")
++        || raw.as_bytes().get(1) == Some(&b':')
++            && raw
++                .as_bytes()
++                .get(2)
++                .is_some_and(|byte| matches!(byte, b'\\' | b'/'));
++    if windows_absolute {
++        return None;
++    }
++    let mut parts = Vec::new();
++    for component in path.components() {
++        let std::path::Component::Normal(part) = component else {
++            return None;
++        };
++        parts.push(part.to_str()?);
++    }
++    (!parts.is_empty()).then(|| parts.join("/"))
++}
++
+ fn event_json(event: &AgentEvent) -> Value {
+     let message = if matches!(event.kind, AgentEventKind::ProviderOutput) {
+         "Provider output is intentionally hidden from Remote AI Studio.".to_owned()
+@@ -1290,6 +1360,49 @@ mod tests {
+         let _ = fs::remove_dir_all(storage);
+     }
+ 
++    #[test]
++    fn asset_acquisition_audit_exposes_only_sanitized_remote_provenance() {
++        let (mut host, project, storage) = test_host("asset-audit-sanitize");
++        let session = host.create_session("Remote").expect("session");
++        let version = host.session(&session).expect("session").proposal.version;
++        let run = host
++            .start_run_authorized(&session, version, "test")
++            .expect("run");
++        host.record_asset_acquisition(
++            &run,
++            crate::agent_host::AssetAcquisitionRecord {
++                request_id: "request-1".into(),
++                request_fingerprint: "internal-fingerprint".into(),
++                operation: "acquire".into(),
++                provider: "catalog".into(),
++                provider_asset_id: Some("asset-42".into()),
++                generation_request_id: None,
++                source: "https://catalog.test/assets/42?access_token=secret-value".into(),
++                source_version: Some("v1".into()),
++                license: Some("CC0".into()),
++                imported_asset_ids: vec!["asset_01TEST".into()],
++                imported_paths: vec![
++                    std::path::PathBuf::from("textures/generated.png"),
++                    std::path::PathBuf::from(r"C:\Users\private\leak.png"),
++                ],
++                created_unix_ms: 1,
++            },
++        )
++        .expect("asset audit");
++        let snapshot = snapshot_json(&host, "project-a", &session, None)
++            .expect("snapshot")
++            .to_string();
++        assert!(snapshot.contains("https://catalog.test/assets/42"));
++        assert!(snapshot.contains("textures/generated.png"));
++        assert!(snapshot.contains("asset_01TEST"));
++        assert!(!snapshot.contains("secret-value"));
++        assert!(!snapshot.contains("access_token"));
++        assert!(!snapshot.contains("internal-fingerprint"));
++        assert!(!snapshot.contains(r"C:\Users\private"));
++        let _ = fs::remove_dir_all(project);
++        let _ = fs::remove_dir_all(storage);
++    }
++
+     #[test]
+     fn unsafe_generic_remote_endpoints_do_not_exist() {
+         for path in [
