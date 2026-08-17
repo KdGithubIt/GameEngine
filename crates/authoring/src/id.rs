@@ -265,10 +265,26 @@ define_id!(
     "motion"
 );
 
-define_id!(/// Stable Timeline document identifier. TimelineId, "timeline");
-define_id!(/// Stable Timeline track identifier. TimelineTrackId, "track");
-define_id!(/// Stable Timeline clip identifier. TimelineClipId, "clip");
-define_id!(/// Stable Timeline marker identifier. TimelineMarkerId, "marker");
+define_id!(
+    /// Stable Timeline document identifier.
+    TimelineId,
+    "timeline"
+);
+define_id!(
+    /// Stable Timeline track identifier.
+    TimelineTrackId,
+    "track"
+);
+define_id!(
+    /// Stable Timeline clip identifier.
+    TimelineClipId,
+    "clip"
+);
+define_id!(
+    /// Stable Timeline marker identifier.
+    TimelineMarkerId,
+    "marker"
+);
 
 // ---------------------------------------------------------------------------
 // Deterministic sub-asset ID derivation (ADR 0032)
