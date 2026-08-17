@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/authoring/src/timeline_authoring.rs","old":"            kind: TimelineTrackKind::Event,\n            enabled: true,\n            binding: None,","new":"            kind: TimelineTrackKind::Event,\n            enabled: true,\n            priority: 0,\n            binding: None,"}
