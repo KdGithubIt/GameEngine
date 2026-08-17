@@ -776,6 +776,7 @@ impl EditorApp {
                             .release_for_inference(render_state, false);
                     }
                     AiStudioReclaimLevel::Aggressive => {
+                        self.preview_residency.release_gpu();
                         self.scene_view.release_recreatable_resources(render_state);
                         self.animation_preview
                             .release_for_inference(render_state, true);

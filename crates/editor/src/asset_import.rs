@@ -56,7 +56,6 @@ pub struct ClipContactSummary {
 }
 
 /// Completed background model source (glTF/GLB or FBX) catalog operation.
-#[derive(Debug)]
 pub struct AssetImportResult {
     /// Project root captured when the job started.
     pub project_path: PathBuf,
@@ -70,6 +69,10 @@ pub struct AssetImportResult {
     pub source_stamp: Option<engine::SourceStamp>,
     /// Absolute external buffer/image dependency paths.
     pub source_dependencies: Vec<PathBuf>,
+    /// Immutable model result retained for project preview residency.
+    pub(crate) conversion_ready_model: Option<Arc<engine::GltfImportResult>>,
+    /// CPU-decoded textures retained from the same successful source generation.
+    pub(crate) conversion_ready_textures: Vec<(AssetId, Arc<engine::DecodedTexture>)>,
     /// Stable catalog produced by the latest successful parse.
     pub sub_assets: Vec<ImportedSubAsset>,
     /// Bone-catalog ledger for every skeleton this import bound to (ADR 0077),
@@ -277,7 +280,7 @@ impl AssetImportManager {
                 &existing_skeletons,
                 &contact_bones,
             ) {
-                Ok(imported) => imported,
+                Ok(imported) => Arc::new(imported),
                 Err(error) => {
                     send_failed(
                         &sender,
@@ -351,6 +354,21 @@ impl AssetImportManager {
             sub_assets.extend(humanoid_imported_sub_assets(&humanoid_catalog));
             let skeleton_records = imported.skeleton_records.clone();
             let animation_contacts = resolve_animation_contacts(&imported);
+            let conversion_ready_textures = imported
+                .textures
+                .iter()
+                .map(|texture| {
+                    (
+                        texture.id.clone(),
+                        Arc::new(engine::DecodedTexture {
+                            label: format!("{} / {}", source_path.display(), texture.name),
+                            width: texture.width,
+                            height: texture.height,
+                            rgba8: texture.rgba8.clone(),
+                        }),
+                    )
+                })
+                .collect();
             let _ = sender.send(WorkerMessage::Complete(Box::new(AssetImportResult {
                 project_path,
                 source_id,
@@ -358,13 +376,15 @@ impl AssetImportManager {
                 source_fingerprint: Some(fingerprint),
                 source_stamp: Some(source_stamp),
                 source_dependencies: dependencies,
+                conversion_ready_model: Some(Arc::clone(&imported)),
+                conversion_ready_textures,
                 sub_assets,
                 skeleton_records,
                 humanoid_profiles: humanoid_catalog.profiles,
                 animation_contacts,
                 prefab,
                 diagnostics: {
-                    let mut diagnostics = imported.diagnostics;
+                    let mut diagnostics = imported.diagnostics.clone();
                     diagnostics.append(&mut humanoid_catalog.diagnostics);
                     diagnostics
                 },
@@ -694,6 +714,8 @@ impl AssetImportManager {
                 source_fingerprint: Some(fingerprint),
                 source_stamp: Some(source_stamp),
                 source_dependencies,
+                conversion_ready_model: None,
+                conversion_ready_textures: Vec::new(),
                 sub_assets,
                 skeleton_records,
                 humanoid_profiles: Vec::new(),
@@ -729,6 +751,8 @@ impl AssetImportManager {
                             source_fingerprint: None,
                             source_stamp: None,
                             source_dependencies: Vec::new(),
+                            conversion_ready_model: None,
+                            conversion_ready_textures: Vec::new(),
                             sub_assets: Vec::new(),
                             skeleton_records: Vec::new(),
                             humanoid_profiles: Vec::new(),
@@ -884,6 +908,8 @@ fn send_cancelled(
         source_fingerprint: None,
         source_stamp: None,
         source_dependencies: Vec::new(),
+        conversion_ready_model: None,
+        conversion_ready_textures: Vec::new(),
         sub_assets: Vec::new(),
         skeleton_records: Vec::new(),
         humanoid_profiles: Vec::new(),
@@ -909,6 +935,8 @@ fn send_failed(
         source_fingerprint: None,
         source_stamp: None,
         source_dependencies: Vec::new(),
+        conversion_ready_model: None,
+        conversion_ready_textures: Vec::new(),
         sub_assets: Vec::new(),
         skeleton_records: Vec::new(),
         humanoid_profiles: Vec::new(),

@@ -2,6 +2,7 @@
 //! (ADR 0071).
 
 use super::*;
+use std::hash::Hasher;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::SystemTime;
@@ -28,9 +29,37 @@ struct CachedGltfSource {
     /// Path the cached parse was produced from; a manifest entry that moved
     /// to a different file must not reuse the old parse.
     path: PathBuf,
+    /// Import inputs that affect model construction without changing source bytes.
+    settings_fingerprint: u64,
     /// Stamp of the source file plus every external sidecar at parse time.
     stamps: Vec<(PathBuf, Option<FileStamp>)>,
     imported: Arc<crate::model_import::GltfImportResult>,
+}
+
+fn import_settings_fingerprint(
+    existing_skeletons: &[crate::asset::SkeletonRecord],
+    contact_bone_names: &[String],
+) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    hasher.write_u64(existing_skeletons.len() as u64);
+    for record in existing_skeletons {
+        hasher.write_u64(record.id.len() as u64);
+        hasher.write(record.id.as_bytes());
+        hasher.write_u64(record.identity);
+        hasher.write_u32(record.next_bone_id);
+        hasher.write_u64(record.bones.len() as u64);
+        for bone in &record.bones {
+            hasher.write_u32(bone.bone_id);
+            hasher.write_u64(bone.name.len() as u64);
+            hasher.write(bone.name.as_bytes());
+        }
+    }
+    hasher.write_u64(contact_bone_names.len() as u64);
+    for name in contact_bone_names {
+        hasher.write_u64(name.len() as u64);
+        hasher.write(name.as_bytes());
+    }
+    hasher.finish()
 }
 
 struct CachedGltfTexture {
@@ -99,14 +128,19 @@ impl SharedGltfImportCache {
     /// A stale entry (path changed, file edited, or sidecar edited) is
     /// removed together with every texture decoded from it, so a later
     /// lookup cannot serve pixels from an outdated document.
-    pub(super) fn lookup_source(
+    #[doc(hidden)]
+    pub fn lookup_source(
         &self,
         source_id: &AssetId,
         source_path: &Path,
+        existing_skeletons: &[crate::asset::SkeletonRecord],
+        contact_bone_names: &[String],
     ) -> Option<Arc<crate::model_import::GltfImportResult>> {
         let mut inner = self.lock();
         let cached = inner.sources.get(source_id)?;
         let valid = cached.path == source_path
+            && cached.settings_fingerprint
+                == import_settings_fingerprint(existing_skeletons, contact_bone_names)
             && cached
                 .stamps
                 .iter()
@@ -127,14 +161,38 @@ impl SharedGltfImportCache {
         &self,
         source_id: &AssetId,
         source_path: &Path,
+        existing_skeletons: &[crate::asset::SkeletonRecord],
+        contact_bone_names: &[String],
         imported: &Arc<crate::model_import::GltfImportResult>,
     ) {
-        let mut stamped_paths = vec![source_path.to_path_buf()];
-        // Sidecar discovery re-reads the document once at store time; later
-        // validations only `stat` the recorded paths.
-        stamped_paths.extend(
-            crate::model_import::model_source_dependencies(source_path).unwrap_or_default(),
+        let dependencies =
+            crate::model_import::model_source_dependencies(source_path).unwrap_or_default();
+        self.publish_prepared_source(
+            source_id,
+            source_path,
+            &dependencies,
+            existing_skeletons,
+            contact_bone_names,
+            Arc::clone(imported),
+            Vec::new(),
         );
+    }
+
+    /// Atomically publishes one completed model generation and decoded textures.
+    #[doc(hidden)]
+    #[allow(clippy::too_many_arguments)]
+    pub fn publish_prepared_source(
+        &self,
+        source_id: &AssetId,
+        source_path: &Path,
+        dependencies: &[PathBuf],
+        existing_skeletons: &[crate::asset::SkeletonRecord],
+        contact_bone_names: &[String],
+        imported: Arc<crate::model_import::GltfImportResult>,
+        textures: Vec<(AssetId, Arc<DecodedTexture>)>,
+    ) {
+        let mut stamped_paths = vec![source_path.to_path_buf()];
+        stamped_paths.extend(dependencies.iter().cloned());
         let stamps = stamped_paths
             .into_iter()
             .map(|path| {
@@ -142,14 +200,40 @@ impl SharedGltfImportCache {
                 (path, stamp)
             })
             .collect();
-        self.lock().sources.insert(
+        let document = Arc::as_ptr(&imported) as usize;
+        let mut inner = self.lock();
+        if let Some(previous) = inner.sources.remove(source_id) {
+            let previous_document = Arc::as_ptr(&previous.imported) as usize;
+            inner
+                .textures
+                .retain(|_, texture| texture.document != previous_document);
+        }
+        inner.sources.insert(
             source_id.clone(),
             CachedGltfSource {
                 path: source_path.to_path_buf(),
+                settings_fingerprint: import_settings_fingerprint(
+                    existing_skeletons,
+                    contact_bone_names,
+                ),
                 stamps,
-                imported: Arc::clone(imported),
+                imported,
             },
         );
+        for (texture_id, texture) in textures {
+            inner.textures.insert(
+                texture_id,
+                CachedGltfTexture { document, texture },
+            );
+        }
+    }
+
+    /// Drops every reusable parse/decode generation owned by this cache.
+    #[doc(hidden)]
+    pub fn clear(&self) {
+        let mut inner = self.lock();
+        inner.sources.clear();
+        inner.textures.clear();
     }
 
     /// Returns the cached decode for `texture_id` when it was produced from

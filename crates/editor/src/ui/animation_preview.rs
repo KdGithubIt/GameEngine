@@ -42,34 +42,27 @@ pub(super) struct AnimationPreviewWindow {
 
 impl Default for AnimationPreviewWindow {
     fn default() -> Self {
-        let mut view = SceneView::new();
+        Self::with_residency(ProjectAssetResidency::default())
+    }
+}
+
+impl AnimationPreviewWindow {
+    pub(super) fn with_residency(residency: ProjectAssetResidency) -> Self {
+        let mut view = SceneView::with_residency(residency);
         view.show_ui_overlay = false;
         view.show_lod_debug = false;
         view.particle_preview_enabled = false;
         view.show_particle_debug = false;
         view.animation_preview_enabled = true;
         Self {
-            open: false,
-            scene: None,
-            preview_scene: None,
-            scene_revision: 0,
-            target: None,
-            view,
-            tab: AnimationPreviewTab::Graph,
-            clip: String::new(),
-            from_clip: String::new(),
-            to_clip: String::new(),
-            trigger_seconds: 0.5,
-            fade_duration: 0.2,
-            repeat_transition: true,
-            transition_cycle_seconds: 3.0,
-            parameters: std::collections::BTreeMap::new(),
-            playing: true,
+            open: false, scene: None, preview_scene: None, scene_revision: 0, target: None, view,
+            tab: AnimationPreviewTab::Graph, clip: String::new(), from_clip: String::new(),
+            to_clip: String::new(), trigger_seconds: 0.5, fade_duration: 0.2,
+            repeat_transition: true, transition_cycle_seconds: 3.0,
+            parameters: std::collections::BTreeMap::new(), playing: true,
         }
     }
-}
 
-impl AnimationPreviewWindow {
     pub(super) fn release_for_inference(
         &mut self,
         render_state: &egui_wgpu::RenderState,

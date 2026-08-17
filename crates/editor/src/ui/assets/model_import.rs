@@ -689,7 +689,7 @@ impl EditorApp {
             ));
     }
 
-    pub(in crate::ui) fn handle_asset_import_result(&mut self, result: AssetImportResult) {
+    pub(in crate::ui) fn handle_asset_import_result(&mut self, mut result: AssetImportResult) {
         let Some(project) = self.project_root.clone() else {
             return;
         };
@@ -821,6 +821,24 @@ impl EditorApp {
             return;
         }
         self.asset_manifest = manifest;
+
+        // Publish only after the manifest accepted this exact import generation.
+        if let Some(imported) = result.conversion_ready_model.take() {
+            let contact_bones = self
+                .asset_manifest
+                .get(&result.source_id)
+                .map(|entry| entry.import_settings.contact_bones.clone())
+                .unwrap_or_default();
+            self.preview_residency.publish_import_result(
+                &result.source_id,
+                &result.source_path,
+                &result.source_dependencies,
+                &result.skeleton_records,
+                &contact_bones,
+                imported,
+                std::mem::take(&mut result.conversion_ready_textures),
+            );
+        }
 
         // AP-5: rebuild this source's bind report and contact interval
         // summary from the fresh import result, in memory only.

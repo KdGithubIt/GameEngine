@@ -443,12 +443,18 @@ pub(super) fn import_gltf_cached(
         return Ok(Arc::clone(imported));
     }
     if let Some(shared) = &asset_state.shared_gltf_cache
-        && let Some(imported) = shared.lookup_source(source_id, source_path) {
-            asset_state
-                .gltf_imports
-                .insert(source_id.clone(), Arc::clone(&imported));
-            return Ok(imported);
-        }
+        && let Some(imported) = shared.lookup_source(
+            source_id,
+            source_path,
+            existing_skeletons,
+            contact_bone_names,
+        )
+    {
+        asset_state
+            .gltf_imports
+            .insert(source_id.clone(), Arc::clone(&imported));
+        return Ok(imported);
+    }
     let imported = Arc::new(crate::model_import::import_model_path_with_contact_bones(
         source_id,
         source_path,
@@ -456,7 +462,13 @@ pub(super) fn import_gltf_cached(
         contact_bone_names,
     )?);
     if let Some(shared) = &asset_state.shared_gltf_cache {
-        shared.store_source(source_id, source_path, &imported);
+        shared.store_source(
+            source_id,
+            source_path,
+            existing_skeletons,
+            contact_bone_names,
+            &imported,
+        );
     }
     asset_state
         .gltf_imports
