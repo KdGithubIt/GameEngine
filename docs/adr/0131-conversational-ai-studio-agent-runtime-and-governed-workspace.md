@@ -172,6 +172,37 @@ into `engine-authoring`, runtime ECS crates, or `engine-mcp`.
 The Editor AI Studio is a frontend over the agent host. It MUST NOT duplicate
 provider-specific orchestration or authoring business rules in GUI code.
 
+#### Local AI Studio presentation is detachable and frontend-neutral
+
+The embedded Editor panel is one presentation of AI Studio, not the ownership
+boundary for sessions or runs. The first local presentation extension MUST allow
+AI Studio to be detached into a separate native OS window/viewport while
+continuing to use the same project Agent Host, `AgentSession`, `AgentRun`,
+permission broker, provider registry, code workspace, audit history, and
+authoring boundary.
+
+Detaching, closing, reopening, or reattaching that window MUST NOT create a
+second Agent Host, a second project writer, or provider-specific orchestration in
+the window. An active run belongs to the host and does not terminate merely
+because one local presentation window closes.
+
+ADR 0135 resource arbitration remains an Agent Host/application-layer concern. A
+detached frontend may present quality/resource posture and interrupt/resume
+controls, but MUST NOT independently own model residency, renderer reclaim, or
+GPU scheduling policy.
+
+A later same-machine separate-process or local-web frontend MAY connect through a
+versioned authenticated local frontend protocol above the same Agent Host. Such a
+frontend is still a client: it MUST NOT gain direct provider orchestration, raw
+project-file authoring authority, or its own mutable copy of the Editor project.
+Structured project mutation continues through the authoritative Editor/MCP
+boundary from ADR 0121.
+
+ADR 0133 owns remote/private-network reachability, reconnect/idempotency,
+remote-client security, and the mobile companion surface. A detached native
+window, or a loopback-only same-machine frontend that is not exposed remotely,
+is governed by this ADR and is not by itself Remote AI Studio.
+
 ### 5. External agent runtimes and model backends are distinct abstractions
 
 GameEngine distinguishes an **agent runtime** from a **model backend**.
