@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/canvas/mod.rs","old":"                .hint_text(\"Search nodes...\")\n                .desired_width(150.0),\n","new":"                .hint_text(\"Search nodes...\")\n                .desired_width(110.0),\n"}
