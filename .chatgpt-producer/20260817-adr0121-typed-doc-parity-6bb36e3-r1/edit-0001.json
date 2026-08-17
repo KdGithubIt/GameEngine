@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/authoring/src/typed_document_authoring.rs",
+  "old": "use crate::{\n    AnimationSet, AuthoringPermission, AuthoringPermissionError, AuthoringPermissions, Diagnostic,\n    MaterialAsset, ProjectSettings, ANIMATION_SET_SCHEMA_VERSION, PROJECT_SETTINGS_SCHEMA_VERSION,\n    SYSTEM_SETTINGS_SCHEMA_VERSION,\n};",
+  "new": "use crate::project_settings::SYSTEM_SETTINGS_SCHEMA_VERSION;\nuse crate::{\n    AnimationSet, AuthoringPermission, AuthoringPermissionError, AuthoringPermissions, Diagnostic,\n    MaterialAsset, ProjectSettings, ANIMATION_SET_SCHEMA_VERSION, PROJECT_SETTINGS_SCHEMA_VERSION,\n};"
+}
