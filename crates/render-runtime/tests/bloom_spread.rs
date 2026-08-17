@@ -172,7 +172,7 @@ fn bloom_spreads_bright_source_into_neighboring_pixels_when_a_gpu_adapter_is_ava
     let bloom = BloomSettings {
         enabled: false,
         threshold: 0.5,
-        intensity: 4.0,
+        intensity: 64.0,
         radius: 8.0,
     };
     let without_bloom = PostProcessSettings {
