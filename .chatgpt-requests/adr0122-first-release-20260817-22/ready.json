@@ -1,0 +1,16 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0122-first-release-20260817-22",
+  "target_branch": "chatgpt/gameengine-adr0122-spatial-audio-complete-v7",
+  "expected_head_sha": "c9e468f4cb80a300a9e6741739c2b86b0c96d998",
+  "baseline_main_sha": "c9e468f4cb80a300a9e6741739c2b86b0c96d998",
+  "patch_sha256": "afe19f5ced3c128f937612b26388471eb6d40d04f8b8470ede44f59b0bb9988c",
+  "patch_bytes": 92267,
+  "patch_parts": [
+    "part-0000.patch",
+    "part-0001.patch"
+  ],
+  "commit_message": "Add ADR 0122 spatial audio first-release core",
+  "pr_title": "GameEngine: complete ADR 0122 spatial audio first release",
+  "pr_body": "## Summary\n\nCompletes ADR 0122 first-release spatial audio on current main. Reuses the existing engine-owned spatial evaluator and managed voice backend, adds deterministic listener priority and ECS synchronization, generation-checked Project Rust spatial playback, Audio Emitter/Listener authoring, Scene View spatial gizmos, transient Play/Stop/Restart audition, and audition/runtime parity tests. Existing 2D PlaySoundEffect remains compatible and backend voice identity stays process-local.\n\n## Validation\n\nRun affected Windows Validation for engine, engine-editor, engine-platform, and engine-scripting, plus task-specific Editor Visual Validation for the Spatial Audio Inspector and Scene View.\n\n<!-- gameengine-visual-validation: editor -->\n<!-- gameengine-visual-authoring-tool: Spatial Audio -->"
+}
