@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ui/assets/material_window.rs","old":"        self.flush_pending_material_saves(context);\n        self.flush_material_scene_preview_refresh(context);","new":"        self.flush_material_scene_preview_refresh(context);"}

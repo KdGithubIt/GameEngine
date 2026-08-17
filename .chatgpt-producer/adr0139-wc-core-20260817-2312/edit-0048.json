@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/engine/src/components/validation.rs","old":"    let full_path = asset_root.join(relative_path);\n    if !full_path.is_file() {","new":"    let full_path = asset_root.join(relative_path);\n    let has_working_copy = overlay.is_some_and(|overlay| overlay.get(&full_path).is_some());\n    if !has_working_copy && !full_path.is_file() {"}

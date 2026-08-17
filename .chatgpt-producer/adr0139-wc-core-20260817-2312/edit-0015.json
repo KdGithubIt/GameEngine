@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/lib.rs","old":"mod view_resolution;\nmod workspace;","new":"mod view_resolution;\nmod working_copy;\nmod workspace;"}
