@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/authoring_tools.rs","old":"            Self::VfxBuilder => \"VFX Builder\",\n        }","new":"            Self::VfxBuilder => \"VFX Builder\",\n            Self::Native2d => \"Native 2D\",\n        }"}
