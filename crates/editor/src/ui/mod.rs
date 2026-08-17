@@ -710,6 +710,13 @@ impl eframe::App for EditorApp {
         self.poll_project_filesystem(ctx);
         self.poll_scene_filesystem_validation(ctx);
         self.reconcile_sub_asset_display_names();
+        let authoring_overlay = capture_authoring_overlay(
+            &self.session,
+            self.animation_set_editor.as_ref(),
+            &self.material_editor,
+            self.project_root.as_ref(),
+        );
+        self.scene_view.set_authoring_overlay(authoring_overlay);
         #[cfg(not(target_arch = "wasm32"))]
         if self.runtime_state.is_some() {
             if !self.gamepad_initialization_attempted {

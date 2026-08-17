@@ -15,6 +15,7 @@ impl EditorApp {
         self.refresh_material_texture_preview(context);
         let mut open = self.show_material_editor;
         let mut changed = false;
+        let mut save_requested = false;
         let mut reimport_preview = false;
         egui::Window::new("Material Editor")
             .open(&mut open)
@@ -26,6 +27,14 @@ impl EditorApp {
                         ui,
                         texture_choices.as_slice(),
                     );
+                let material_dirty = self
+                    .material_editor
+                    .active
+                    .as_ref()
+                    .is_some_and(|path| self.material_editor.is_dirty(path));
+                save_requested = ui
+                    .add_enabled(material_dirty, egui::Button::new("Save Material"))
+                    .clicked();
                 ui.separator();
                 ui.heading("Preview");
                 if let Some(material) = self.material_editor.active_material() {
@@ -39,6 +48,15 @@ impl EditorApp {
         self.show_material_editor = open;
         if changed {
             self.queue_active_material_save(context);
+        }
+        if save_requested
+            && let Some(path) = self.material_editor.active.clone()
+            && let Err(error) = self.save_material_document(&path)
+        {
+            self.session.push_diagnostic(engine_authoring::Diagnostic::error(
+                "editor.material_save_failed",
+                format!("failed to save {}: {error}", path.display()),
+            ));
         }
         if !self.show_material_editor {
             self.flush_material_scene_preview_refresh(context);
