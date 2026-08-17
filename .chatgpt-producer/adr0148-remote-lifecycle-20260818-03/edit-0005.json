@@ -1,0 +1,1 @@
+{"operation":"create_text","path":"crates/launcher/src/lib.rs","content":"//! Launcher application services shared by the GUI and narrow lifecycle host.\n\n#![warn(missing_docs)]\n#![warn(rustdoc::broken_intra_doc_links)]\n\nmod preferences;\n\npub mod remote_lifecycle;\n\npub use preferences::{LauncherPreferences, MAX_RECENT_PROJECTS};\n"}
