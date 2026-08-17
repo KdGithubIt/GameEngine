@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "            .start_run(&self.selected_session, authorized_proposal_version, provider)",
+  "new": "            .start_run_authorized(&self.selected_session, authorized_proposal_version, provider)"
+}
