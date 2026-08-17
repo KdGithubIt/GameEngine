@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "bloom-readback-20260817-01",
+  "target_branch": "chatgpt/gameengine-bloom-readback-c9e468f",
+  "expected_head_sha": "c9e468f4cb80a300a9e6741739c2b86b0c96d998",
+  "baseline_main_sha": "c9e468f4cb80a300a9e6741739c2b86b0c96d998",
+  "patch_sha256": "9efc1b6c07065cd467706b68b50be65d262bd0fa68f51e8e0d518482a90c411b",
+  "patch_bytes": 15105,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Add Bloom GPU readback regression tests",
+  "pr_title": "Renderer: verify Bloom affects final pixels on current main",
+  "pr_body": "## Summary\n\nRebases the Bloom GPU readback regression coverage from Draft PR #86 onto current main without changing production renderer behavior.\n\n- verifies enabled Bloom changes final tone-mapped pixels\n- verifies disabling Bloom restores the baseline\n- verifies a localized HDR source spreads Bloom energy outside its source footprint\n- returns early only when no GPU adapter is available\n\nThis is a test-only replacement for #86. Visual Validation is N/A.\n\n## Validation\n\nRun exact-head affected Windows Validation for `engine-render-runtime` and use only the result for this PR head."
+}
