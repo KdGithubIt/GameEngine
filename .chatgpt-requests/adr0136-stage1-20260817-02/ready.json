@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0136-stage1-20260817-02",
+  "target_branch": "chatgpt/gameengine-adr0136-preview-streaming",
+  "expected_head_sha": "b6d56a12a266e9f1a558fd530afd856dcccb4d74",
+  "baseline_main_sha": "b6d56a12a266e9f1a558fd530afd856dcccb4d74",
+  "patch_sha256": "7613b83f155b122375484d35de60dd805db5f6a98fc65a4ed84f4da814acee76",
+  "patch_bytes": 49406,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Implement ADR 0136 preview asset residency",
+  "pr_title": "Implement ADR 0136 preview asset residency and streaming",
+  "pr_body": "Implements the first ADR 0136 residency/streaming slice: project-scoped preview CPU residency shared by Scene View and Animation Preview, background model materialization with in-flight dedupe and generation checks, exact background-import result publication, stale-generation rejection, and shared preview GPU mesh residency. This request preserves runtime synchronous conversion contracts and persisted Stable IDs/schema. Follow-up commits on the same branch complete device-scoped renderer warm-up, texture residency, upload budgeting/priorities, and final ADR verification."
+}
