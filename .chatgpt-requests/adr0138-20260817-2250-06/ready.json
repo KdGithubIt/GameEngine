@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0138-20260817-2250-06",
+  "target_branch": "chatgpt/gameengine-adr0138-graph-debug-r2",
+  "expected_head_sha": "73ecdb99da92052d74595dd26e2872d7956fecf8",
+  "baseline_main_sha": "73ecdb99da92052d74595dd26e2872d7956fecf8",
+  "patch_sha256": "96a1d169a9572ff1079014e1bc6fbf2f33e0539557b4d57d80e9f955a5feb114",
+  "patch_bytes": 55978,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Implement and fix ADR 0138 unified Graph Debug",
+  "pr_title": "GameEngine: implement ADR 0138 unified Graph Debug",
+  "pr_body": "## Summary\n\n- reapply ADR 0138 unified Graph Debug on current main, preserving integrated ADR0135 changes\n- provide target-aware Behavior Tree and Animation Graph runtime debugging from actual Play evidence\n- preserve stable source mappings, resolved Animation Set motion evidence, working-copy precedence, stale suppression, and read-only Graph Canvas overlays\n- fix working-copy ownership by round-tripping Graph and GraphView through their existing serialization contracts instead of assuming Clone\n\n## Validation\n\nRun affected Windows Validation and required Editor visual validation."
+}
