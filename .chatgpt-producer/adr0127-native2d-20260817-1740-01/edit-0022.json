@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/authoring_windows.rs","old":"    vfx_open: bool,\n    ability: ability::EmbeddedWindow,","new":"    vfx_open: bool,\n    native_2d_open: bool,\n    native_2d: Native2dEditorState,\n    ability: ability::EmbeddedWindow,"}
