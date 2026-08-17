@@ -1,0 +1,1336 @@
+diff --git a/crates/authoring/src/capability.rs b/crates/authoring/src/capability.rs
+index bc24a5127ec5ff80dfb9a4f4a30465d234a4192f..c2a1460b7e244d1c53cbdac81ce8ffdc6168b475 100644
+--- a/crates/authoring/src/capability.rs
++++ b/crates/authoring/src/capability.rs
+@@ -168,6 +168,12 @@ pub enum AuthoringDomain {
+     Vfx,
+     /// Behavior Tree graph domain operations.
+     BehaviorTree,
++    /// Material asset documents.
++    Material,
++    /// Project Settings document.
++    ProjectSettings,
++    /// Animation Set asset documents.
++    AnimationSet,
+ }
+ 
+ /// Authoring document a capability reads or mutates.
+@@ -195,6 +201,12 @@ pub enum AuthoringDocumentKind {
+     UiDocument,
+     /// A VFX effect document.
+     VfxEffect,
++    /// A Material asset document.
++    MaterialAsset,
++    /// The project-wide Project Settings document.
++    ProjectSettings,
++    /// An Animation Set asset document.
++    AnimationSet,
+ }
+ 
+ /// Semantic shape of one capability.
+@@ -722,6 +734,22 @@ fn ui_documents() -> Vec<AuthoringDocumentKind> {
+     vec![AuthoringDocumentKind::UiDocument]
+ }
+ 
++fn typed_document_replace_schema(document_type: &str) -> AuthoringSchemaRef {
++    AuthoringSchemaRef::typed_json(
++        document_type,
++        json!({
++            "type": "object",
++            "required": ["expected_revision", "expected_generation", "replacement"],
++            "properties": {
++                "expected_revision": {"type": "integer", "minimum": 0},
++                "expected_generation": {"type": "integer", "minimum": 0},
++                "replacement": {"type": "object", "title": document_type}
++            },
++            "additionalProperties": false
++        }),
++    )
++}
++
+ fn builtin_capabilities() -> Vec<AuthoringCapability> {
+     let mut capabilities = vec![
+         query(
+@@ -887,6 +915,18 @@ fn builtin_capabilities() -> Vec<AuthoringCapability> {
+             AuthoringSchemaRef::of_type("UiAuthoringMutation"),
+             "Apply one atomic declarative UI command batch.",
+         ),
++        query("material.inspect", AuthoringDomain::Material, vec![AuthoringDocumentKind::MaterialAsset], AuthoringSchemaRef::of_type("TypedDocumentAuthoringSnapshot<MaterialAsset>"), "Inspect the active Material through the shared typed-document boundary."),
++        validation("material.validate", AuthoringDomain::Material, vec![AuthoringDocumentKind::MaterialAsset], AuthoringSchemaRef::of_type("TypedDocumentAuthoringValidation"), "Validate the active Material through the shared typed-document boundary."),
++        with_input(preview("material.preview", AuthoringDomain::Material, vec![AuthoringDocumentKind::MaterialAsset], "MaterialAsset", AuthoringSchemaRef::of_type("TypedDocumentAuthoringMutation<MaterialAsset>"), "Preview one atomic Material replacement."), typed_document_replace_schema("MaterialAsset")),
++        with_input(commit("material.apply", AuthoringDomain::Material, vec![AuthoringDocumentKind::MaterialAsset], "MaterialAsset", AuthoringSchemaRef::of_type("TypedDocumentAuthoringMutation<MaterialAsset>"), "Apply one atomic Material replacement."), typed_document_replace_schema("MaterialAsset")),
++        query("project_settings.inspect", AuthoringDomain::ProjectSettings, vec![AuthoringDocumentKind::ProjectSettings], AuthoringSchemaRef::of_type("TypedDocumentAuthoringSnapshot<ProjectSettings>"), "Inspect Project Settings through the shared typed-document boundary."),
++        validation("project_settings.validate", AuthoringDomain::ProjectSettings, vec![AuthoringDocumentKind::ProjectSettings], AuthoringSchemaRef::of_type("TypedDocumentAuthoringValidation"), "Validate Project Settings through the shared typed-document boundary."),
++        with_input(preview("project_settings.preview", AuthoringDomain::ProjectSettings, vec![AuthoringDocumentKind::ProjectSettings], "ProjectSettings", AuthoringSchemaRef::of_type("TypedDocumentAuthoringMutation<ProjectSettings>"), "Preview one atomic Project Settings replacement."), typed_document_replace_schema("ProjectSettings")),
++        with_input(commit("project_settings.apply", AuthoringDomain::ProjectSettings, vec![AuthoringDocumentKind::ProjectSettings], "ProjectSettings", AuthoringSchemaRef::of_type("TypedDocumentAuthoringMutation<ProjectSettings>"), "Apply one atomic Project Settings replacement."), typed_document_replace_schema("ProjectSettings")),
++        query("animation_set.inspect", AuthoringDomain::AnimationSet, vec![AuthoringDocumentKind::AnimationSet], AuthoringSchemaRef::of_type("TypedDocumentAuthoringSnapshot<AnimationSet>"), "Inspect the active Animation Set through the shared typed-document boundary."),
++        validation("animation_set.validate", AuthoringDomain::AnimationSet, vec![AuthoringDocumentKind::AnimationSet], AuthoringSchemaRef::of_type("TypedDocumentAuthoringValidation"), "Validate the active Animation Set through the shared typed-document boundary."),
++        with_input(preview("animation_set.preview", AuthoringDomain::AnimationSet, vec![AuthoringDocumentKind::AnimationSet], "AnimationSet", AuthoringSchemaRef::of_type("TypedDocumentAuthoringMutation<AnimationSet>"), "Preview one atomic Animation Set replacement."), typed_document_replace_schema("AnimationSet")),
++        with_input(commit("animation_set.apply", AuthoringDomain::AnimationSet, vec![AuthoringDocumentKind::AnimationSet], "AnimationSet", AuthoringSchemaRef::of_type("TypedDocumentAuthoringMutation<AnimationSet>"), "Apply one atomic Animation Set replacement."), typed_document_replace_schema("AnimationSet")),
+     ];
+     capabilities.extend(specialized_capabilities());
+     capabilities
+diff --git a/crates/authoring/src/lib.rs b/crates/authoring/src/lib.rs
+index 5d10f1938b433f705fa0d85a6b8a8dace3170a96..003802af7b6478e487c7c26d07690a972c151820 100644
+--- a/crates/authoring/src/lib.rs
++++ b/crates/authoring/src/lib.rs
+@@ -67,6 +67,7 @@ pub mod scene_authoring;
+ pub mod schema;
+ pub mod test_fixtures;
+ pub mod transaction;
++pub mod typed_document_authoring;
+ pub mod ui;
+ pub mod ui_contract;
+ pub mod ui_contract_runtime;
+@@ -167,6 +168,11 @@ pub use scene_authoring::{
+ };
+ pub use schema::{ComponentSchema, ComponentSchemaRegistry, FieldSchema, FieldType};
+ pub use transaction::{AuthoringSession, Transaction, TransactionError};
++pub use typed_document_authoring::{
++    TypedAuthoringDocument, TypedDocumentAuthoringError, TypedDocumentAuthoringMutation,
++    TypedDocumentAuthoringService, TypedDocumentAuthoringSnapshot, TypedDocumentAuthoringState,
++    TypedDocumentAuthoringValidation, TypedDocumentChange,
++};
+ pub use ui::authoring_service::{
+     UiAuthoringError, UiAuthoringMutation, UiAuthoringService, UiAuthoringSession,
+     UiAuthoringSnapshot, UiAuthoringValidation,
+diff --git a/crates/authoring/src/typed_document_authoring.rs b/crates/authoring/src/typed_document_authoring.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..ad7aa69d6f6ca31b7a47668e0f06a73532ccd8fb
+--- /dev/null
++++ b/crates/authoring/src/typed_document_authoring.rs
+@@ -0,0 +1,487 @@
++//! Shared transactional authoring for persisted typed documents (ADR 0121).
++//!
++//! Material, Project Settings, and Animation Set editors use this boundary so
++//! GUI, CLI, and MCP share permission checks, validation, stale-base handling,
++//! deterministic preview diffs, and atomic replacement semantics. Persistence
++//! remains an adapter concern and persisted document schemas are unchanged.
++
++use crate::project_settings::SYSTEM_SETTINGS_SCHEMA_VERSION;
++use crate::{
++    AnimationSet, AuthoringPermission, AuthoringPermissionError, AuthoringPermissions, Diagnostic,
++    MaterialAsset, ProjectSettings, ANIMATION_SET_SCHEMA_VERSION, PROJECT_SETTINGS_SCHEMA_VERSION,
++};
++use serde::Serialize;
++use std::fmt;
++use std::sync::atomic::{AtomicU64, Ordering};
++
++/// Typed document contract consumed by the shared transactional service.
++pub trait TypedAuthoringDocument: Clone + PartialEq + Serialize {
++    /// Stable diagnostic code used when document-level validation fails.
++    const INVALID_CODE: &'static str;
++
++    /// Validates the persisted semantic contract without performing I/O.
++    fn validate_authoring(&self) -> Result<(), String>;
++}
++
++impl TypedAuthoringDocument for MaterialAsset {
++    const INVALID_CODE: &'static str = "material.invalid";
++
++    fn validate_authoring(&self) -> Result<(), String> {
++        self.validate().map_err(|error| error.to_string())
++    }
++}
++
++impl TypedAuthoringDocument for ProjectSettings {
++    const INVALID_CODE: &'static str = "project_settings.invalid";
++
++    fn validate_authoring(&self) -> Result<(), String> {
++        if self.schema_version != PROJECT_SETTINGS_SCHEMA_VERSION {
++            return Err(format!(
++                "project settings schema version {} is not supported (expected {})",
++                self.schema_version, PROJECT_SETTINGS_SCHEMA_VERSION
++            ));
++        }
++        if self.system_settings.schema_version != SYSTEM_SETTINGS_SCHEMA_VERSION {
++            return Err(format!(
++                "system settings schema version {} is not supported (expected {})",
++                self.system_settings.schema_version, SYSTEM_SETTINGS_SCHEMA_VERSION
++            ));
++        }
++        if let Some(layer) = self.layers.iter().find(|layer| layer.index > 31) {
++            return Err(format!(
++                "layer index {} exceeds the maximum of 31",
++                layer.index
++            ));
++        }
++        Ok(())
++    }
++}
++
++impl TypedAuthoringDocument for AnimationSet {
++    const INVALID_CODE: &'static str = "animation_set.invalid";
++
++    fn validate_authoring(&self) -> Result<(), String> {
++        if self.schema_version != ANIMATION_SET_SCHEMA_VERSION {
++            return Err(format!(
++                "animation set schema version {} is not supported (expected {})",
++                self.schema_version, ANIMATION_SET_SCHEMA_VERSION
++            ));
++        }
++        self.validate().map_err(|error| error.to_string())
++    }
++}
++
++/// Live revision metadata owned by the adapter that owns a typed document.
++///
++/// Reopening a document constructs a fresh generation. Successful semantic
++/// replacements advance only the revision, matching the Scene/UI stale-base
++/// contract without persisting editor-local counters.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub struct TypedDocumentAuthoringState {
++    generation: u64,
++    revision: u64,
++}
++
++impl TypedDocumentAuthoringState {
++    /// Starts authoring metadata for one newly opened document.
++    pub fn new() -> Self {
++        static NEXT_GENERATION: AtomicU64 = AtomicU64::new(1);
++        Self {
++            generation: NEXT_GENERATION.fetch_add(1, Ordering::Relaxed),
++            revision: 0,
++        }
++    }
++
++    /// Current logical revision.
++    pub fn revision(&self) -> u64 {
++        self.revision
++    }
++
++    /// Current in-memory generation.
++    pub fn generation(&self) -> u64 {
++        self.generation
++    }
++
++    fn advance(&mut self) {
++        self.revision = self.revision.saturating_add(1);
++    }
++}
++
++impl Default for TypedDocumentAuthoringState {
++    fn default() -> Self {
++        Self::new()
++    }
++}
++
++/// Immutable typed-document state returned by inspect.
++#[derive(Debug, Clone, PartialEq, Serialize)]
++pub struct TypedDocumentAuthoringSnapshot<T> {
++    /// Logical content revision.
++    pub revision: u64,
++    /// In-memory generation that changes when the document is reopened.
++    pub generation: u64,
++    /// Complete committed typed document.
++    pub document: T,
++}
++
++/// Structured typed-document validation result.
++#[derive(Debug, Clone, PartialEq, Serialize)]
++pub struct TypedDocumentAuthoringValidation {
++    /// Logical revision that was validated.
++    pub revision: u64,
++    /// In-memory generation that was validated.
++    pub generation: u64,
++    /// Whether validation produced no blocking diagnostic.
++    pub success: bool,
++    /// Shared semantic diagnostics.
++    pub diagnostics: Vec<Diagnostic>,
++}
++
++/// Deterministic whole-document semantic replacement.
++#[derive(Debug, Clone, PartialEq, Serialize)]
++pub struct TypedDocumentChange<T> {
++    /// Committed value before the replacement.
++    pub before: T,
++    /// Proposed or committed value after the replacement.
++    pub after: T,
++}
++
++/// Result of previewing or applying one typed-document replacement.
++#[derive(Debug, Clone, PartialEq, Serialize)]
++pub struct TypedDocumentAuthoringMutation<T> {
++    /// Whether the replacement passed shared validation.
++    pub success: bool,
++    /// Caller-observed base revision.
++    pub base_revision: u64,
++    /// Caller-observed base generation.
++    pub base_generation: u64,
++    /// Current revision after the operation.
++    pub revision: u64,
++    /// Current generation after the operation.
++    pub generation: u64,
++    /// Shared semantic diagnostics.
++    pub diagnostics: Vec<Diagnostic>,
++    /// Empty for a no-op or rejected replacement, otherwise one replacement.
++    pub diff: Vec<TypedDocumentChange<T>>,
++}
++
++/// Shared typed-document authoring failure.
++#[derive(Debug)]
++pub enum TypedDocumentAuthoringError {
++    /// The host did not grant the required authoring permission.
++    Permission(AuthoringPermissionError),
++    /// The caller's revision/generation pair no longer names live state.
++    Stale {
++        /// Caller-observed revision.
++        expected_revision: u64,
++        /// Caller-observed generation.
++        expected_generation: u64,
++        /// Current revision.
++        actual_revision: u64,
++        /// Current generation.
++        actual_generation: u64,
++    },
++}
++
++impl TypedDocumentAuthoringError {
++    /// Stable diagnostic-style code exposed by structured adapters.
++    pub fn code(&self) -> &'static str {
++        match self {
++            Self::Permission(error) => error.code(),
++            Self::Stale { .. } => "authoring.stale_revision",
++        }
++    }
++}
++
++impl fmt::Display for TypedDocumentAuthoringError {
++    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
++        match self {
++            Self::Permission(error) => error.fmt(formatter),
++            Self::Stale {
++                expected_revision,
++                expected_generation,
++                actual_revision,
++                actual_generation,
++            } => write!(
++                formatter,
++                "stale typed-document base: expected revision {expected_revision} generation {expected_generation}, current revision {actual_revision} generation {actual_generation}"
++            ),
++        }
++    }
++}
++
++impl std::error::Error for TypedDocumentAuthoringError {
++    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
++        match self {
++            Self::Permission(error) => Some(error),
++            Self::Stale { .. } => None,
++        }
++    }
++}
++
++impl From<AuthoringPermissionError> for TypedDocumentAuthoringError {
++    fn from(value: AuthoringPermissionError) -> Self {
++        Self::Permission(value)
++    }
++}
++
++/// GUI-free transactional service shared by typed-document adapters.
++#[derive(Debug, Default, Clone, Copy)]
++pub struct TypedDocumentAuthoringService;
++
++impl TypedDocumentAuthoringService {
++    /// Creates the stateless service.
++    pub fn new() -> Self {
++        Self
++    }
++
++    /// Inspects one live typed document.
++    pub fn inspect<T: TypedAuthoringDocument>(
++        &self,
++        document: &T,
++        state: &TypedDocumentAuthoringState,
++        permissions: &AuthoringPermissions,
++    ) -> Result<TypedDocumentAuthoringSnapshot<T>, TypedDocumentAuthoringError> {
++        permissions.require(AuthoringPermission::Read)?;
++        Ok(TypedDocumentAuthoringSnapshot {
++            revision: state.revision,
++            generation: state.generation,
++            document: document.clone(),
++        })
++    }
++
++    /// Validates one live typed document without mutation.
++    pub fn validate<T: TypedAuthoringDocument>(
++        &self,
++        document: &T,
++        state: &TypedDocumentAuthoringState,
++        permissions: &AuthoringPermissions,
++    ) -> Result<TypedDocumentAuthoringValidation, TypedDocumentAuthoringError> {
++        permissions.require(AuthoringPermission::Read)?;
++        let diagnostics = validation_diagnostics(document);
++        Ok(TypedDocumentAuthoringValidation {
++            revision: state.revision,
++            generation: state.generation,
++            success: diagnostics.is_empty(),
++            diagnostics,
++        })
++    }
++
++    /// Previews an atomic whole-document replacement without changing live state.
++    pub fn preview<T: TypedAuthoringDocument>(
++        &self,
++        document: &T,
++        state: &TypedDocumentAuthoringState,
++        permissions: &AuthoringPermissions,
++        expected_revision: u64,
++        expected_generation: u64,
++        replacement: T,
++    ) -> Result<TypedDocumentAuthoringMutation<T>, TypedDocumentAuthoringError> {
++        permissions.require(AuthoringPermission::Preview)?;
++        ensure_current(state, expected_revision, expected_generation)?;
++        Ok(evaluate(document, state, expected_revision, expected_generation, replacement, false))
++    }
++
++    /// Applies one validated whole-document replacement atomically.
++    pub fn apply<T: TypedAuthoringDocument>(
++        &self,
++        document: &mut T,
++        state: &mut TypedDocumentAuthoringState,
++        permissions: &AuthoringPermissions,
++        expected_revision: u64,
++        expected_generation: u64,
++        replacement: T,
++    ) -> Result<TypedDocumentAuthoringMutation<T>, TypedDocumentAuthoringError> {
++        permissions.require(AuthoringPermission::ProjectDataWrite)?;
++        ensure_current(state, expected_revision, expected_generation)?;
++        let diagnostics = validation_diagnostics(&replacement);
++        if !diagnostics.is_empty() {
++            return Ok(TypedDocumentAuthoringMutation {
++                success: false,
++                base_revision: expected_revision,
++                base_generation: expected_generation,
++                revision: state.revision,
++                generation: state.generation,
++                diagnostics,
++                diff: Vec::new(),
++            });
++        }
++        let diff = replacement_diff(document, &replacement);
++        if !diff.is_empty() {
++            *document = replacement;
++            state.advance();
++        }
++        Ok(TypedDocumentAuthoringMutation {
++            success: true,
++            base_revision: expected_revision,
++            base_generation: expected_generation,
++            revision: state.revision,
++            generation: state.generation,
++            diagnostics,
++            diff,
++        })
++    }
++}
++
++fn evaluate<T: TypedAuthoringDocument>(
++    document: &T,
++    state: &TypedDocumentAuthoringState,
++    expected_revision: u64,
++    expected_generation: u64,
++    replacement: T,
++    committed: bool,
++) -> TypedDocumentAuthoringMutation<T> {
++    let diagnostics = validation_diagnostics(&replacement);
++    if !diagnostics.is_empty() {
++        return TypedDocumentAuthoringMutation {
++            success: false,
++            base_revision: expected_revision,
++            base_generation: expected_generation,
++            revision: state.revision,
++            generation: state.generation,
++            diagnostics,
++            diff: Vec::new(),
++        };
++    }
++    let diff = replacement_diff(document, &replacement);
++    TypedDocumentAuthoringMutation {
++        success: true,
++        base_revision: expected_revision,
++        base_generation: expected_generation,
++        revision: if committed && !diff.is_empty() {
++            state.revision.saturating_add(1)
++        } else {
++            state.revision
++        },
++        generation: state.generation,
++        diagnostics,
++        diff,
++    }
++}
++
++fn replacement_diff<T: TypedAuthoringDocument>(before: &T, after: &T) -> Vec<TypedDocumentChange<T>> {
++    if before == after {
++        Vec::new()
++    } else {
++        vec![TypedDocumentChange {
++            before: before.clone(),
++            after: after.clone(),
++        }]
++    }
++}
++
++fn validation_diagnostics<T: TypedAuthoringDocument>(document: &T) -> Vec<Diagnostic> {
++    document
++        .validate_authoring()
++        .err()
++        .map(|message| Diagnostic::error(T::INVALID_CODE, message))
++        .into_iter()
++        .collect()
++}
++
++fn ensure_current(
++    state: &TypedDocumentAuthoringState,
++    expected_revision: u64,
++    expected_generation: u64,
++) -> Result<(), TypedDocumentAuthoringError> {
++    if state.revision == expected_revision && state.generation == expected_generation {
++        return Ok(());
++    }
++    Err(TypedDocumentAuthoringError::Stale {
++        expected_revision,
++        expected_generation,
++        actual_revision: state.revision,
++        actual_generation: state.generation,
++    })
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    fn writable() -> AuthoringPermissions {
++        AuthoringPermissions::read_only()
++            .with(AuthoringPermission::Preview)
++            .with(AuthoringPermission::ProjectDataWrite)
++    }
++
++    #[test]
++    fn material_preview_is_non_destructive_and_apply_advances_revision() {
++        let service = TypedDocumentAuthoringService::new();
++        let mut document = MaterialAsset::default();
++        let mut state = TypedDocumentAuthoringState::new();
++        let base = service.inspect(&document, &state, &writable()).expect("inspect");
++        let mut replacement = document.clone();
++        replacement.roughness = 0.25;
++        let preview = service
++            .preview(
++                &document,
++                &state,
++                &writable(),
++                base.revision,
++                base.generation,
++                replacement.clone(),
++            )
++            .expect("preview");
++        assert!(preview.success);
++        assert_eq!(preview.diff.len(), 1);
++        assert_ne!(document, replacement);
++        let applied = service
++            .apply(
++                &mut document,
++                &mut state,
++                &writable(),
++                base.revision,
++                base.generation,
++                replacement.clone(),
++            )
++            .expect("apply");
++        assert!(applied.success);
++        assert_eq!(document, replacement);
++        assert_eq!(applied.revision, base.revision + 1);
++    }
++
++    #[test]
++    fn stale_and_invalid_replacements_never_mutate() {
++        let service = TypedDocumentAuthoringService::new();
++        let mut document = MaterialAsset::default();
++        let original = document.clone();
++        let mut state = TypedDocumentAuthoringState::new();
++        let stale_generation = state.generation();
++        let stale = service.apply(
++            &mut document,
++            &mut state,
++            &writable(),
++            99,
++            stale_generation,
++            original.clone(),
++        );
++        assert!(matches!(stale, Err(TypedDocumentAuthoringError::Stale { .. })));
++        let mut invalid = original.clone();
++        invalid.roughness = f32::NAN;
++        let revision = state.revision();
++        let generation = state.generation();
++        let result = service
++            .apply(
++                &mut document,
++                &mut state,
++                &writable(),
++                revision,
++                generation,
++                invalid,
++            )
++            .expect("validation result");
++        assert!(!result.success);
++        assert_eq!(document, original);
++    }
++
++    #[test]
++    fn all_first_release_typed_documents_share_validation_boundary() {
++        let service = TypedDocumentAuthoringService::new();
++        let permissions = AuthoringPermissions::read_only();
++        let state = TypedDocumentAuthoringState::new();
++        assert!(service.validate(&MaterialAsset::default(), &state, &permissions).unwrap().success);
++        assert!(service.validate(&ProjectSettings::default(), &state, &permissions).unwrap().success);
++        assert!(service.validate(&AnimationSet::empty(), &state, &permissions).unwrap().success);
++    }
++}
+diff --git a/crates/cli/src/lib.rs b/crates/cli/src/lib.rs
+index c24532d287354624ab76eecd2bc5c77b320ac606..394007c57d35ce97ade6290be8985f805ac58f76 100644
+--- a/crates/cli/src/lib.rs
++++ b/crates/cli/src/lib.rs
+@@ -8,6 +8,7 @@ mod capability_cli;
+ mod generic_cli;
+ mod prefab_cli;
+ mod scene_cli;
++mod typed_document_cli;
+ mod vfx_cli;
+ 
+ use engine_authoring::{
+@@ -72,6 +73,9 @@ where
+     if let Some(result) = scene_cli::dispatch(&args) {
+         return result;
+     }
++    if let Some(result) = typed_document_cli::dispatch(&args) {
++        return result;
++    }
+     if let Some(result) = vfx_cli::dispatch(&args) {
+         return result;
+     }
+@@ -618,7 +622,7 @@ fn ai_agent_capture_frame(inbox_path: &str) -> Result<CliRunResult, CliError> {
+ }
+ 
+ fn help_text() -> &'static str {
+-    "Usage:\n  engine-cli authoring capabilities\n  engine-cli authoring describe <capability-id>\n  engine-cli authoring inspect|validate|preview|apply <capability-id> [capability arguments]\n  engine-cli project describe <project-root>\n  engine-cli asset search <project-root> [query]\n  engine-cli asset inspect <project-root> <asset-id>\n  engine-cli prefab create <project-root> <scene-relative-path> <root-entity-id> <destination-relative-path>\n  engine-cli prefab preview <project-root> <scene-relative-path> <source-relative-path> [parent-entity-id]\n  engine-cli prefab instantiate <project-root> <scene-relative-path> <source-relative-path> [parent-entity-id]\n  engine-cli scene inspect <project-root> <scene-relative-path>\n  engine-cli scene validate <project-root> <scene-relative-path>\n  engine-cli scene preview <project-root> <scene-relative-path> <commands.json>\n  engine-cli scene apply <project-root> <scene-relative-path> <commands.json>\n  engine-cli entity find <project-root> <scene-relative-path> [query]\n  engine-cli entity inspect <project-root> <scene-relative-path> <entity-id>\n  engine-cli component schemas\n  engine-cli graph inspect <graph.json>\n  engine-cli graph validate <graph.json>\n  engine-cli graph preview <graph.json> <commands.json>\n  engine-cli graph apply <graph.json> <commands.json>\n  engine-cli graph layout inspect <graph.json> <graph.view.json>\n  engine-cli graph layout validate <graph.json> <graph.view.json>\n  engine-cli graph layout preview <graph.json> <graph.view.json> <commands.json>\n  engine-cli graph layout apply <graph.json> <graph.view.json> <commands.json>\n  engine-cli ui inspect <ui.json>\n  engine-cli ui validate <ui.json>\n  engine-cli ui preview <ui.json> <commands.json>\n  engine-cli ui apply <ui.json> <commands.json>\n  engine-cli vfx schemas\n  engine-cli vfx inspect <effect.vfx.json>\n  engine-cli vfx validate <effect.vfx.json>\n  engine-cli vfx preview <effect.vfx.json> <commands.json>\n  engine-cli vfx apply <effect.vfx.json> <commands.json>\n  engine-cli vfx create <template> <effect.vfx.json>\n  engine-cli behavior-tree schemas\n  engine-cli behavior-tree example\n  engine-cli behavior-tree validate <graph.json>\n  engine-cli behavior-tree compile <graph.json>\n  engine-cli behavior-tree layout <graph.json>\n  engine-cli behavior-tree nodes <graph.json>\n  engine-cli behavior-tree edges <graph.json>\n  engine-cli behavior-tree preview <graph.json> <commands.json>\n  engine-cli behavior-tree apply <graph.json> <commands.json>\n  engine-cli ai-agent describe-tools\n  engine-cli ai-agent validate-input <json>\n  engine-cli ai-agent inject-input <inbox_path> <json>\n  engine-cli ai-agent capture-frame <inbox_path>"
++    "Usage:\n  engine-cli authoring capabilities\n  engine-cli authoring describe <capability-id>\n  engine-cli authoring inspect|validate|preview|apply <capability-id> [capability arguments]\n  engine-cli project describe <project-root>\n  engine-cli asset search <project-root> [query]\n  engine-cli asset inspect <project-root> <asset-id>\n  engine-cli prefab create <project-root> <scene-relative-path> <root-entity-id> <destination-relative-path>\n  engine-cli prefab preview <project-root> <scene-relative-path> <source-relative-path> [parent-entity-id]\n  engine-cli prefab instantiate <project-root> <scene-relative-path> <source-relative-path> [parent-entity-id]\n  engine-cli scene inspect <project-root> <scene-relative-path>\n  engine-cli scene validate <project-root> <scene-relative-path>\n  engine-cli scene preview <project-root> <scene-relative-path> <commands.json>\n  engine-cli scene apply <project-root> <scene-relative-path> <commands.json>\n  engine-cli entity find <project-root> <scene-relative-path> [query]\n  engine-cli entity inspect <project-root> <scene-relative-path> <entity-id>\n  engine-cli component schemas\n  engine-cli graph inspect <graph.json>\n  engine-cli graph validate <graph.json>\n  engine-cli graph preview <graph.json> <commands.json>\n  engine-cli graph apply <graph.json> <commands.json>\n  engine-cli graph layout inspect <graph.json> <graph.view.json>\n  engine-cli graph layout validate <graph.json> <graph.view.json>\n  engine-cli graph layout preview <graph.json> <graph.view.json> <commands.json>\n  engine-cli graph layout apply <graph.json> <graph.view.json> <commands.json>\n  engine-cli ui inspect <ui.json>\n  engine-cli ui validate <ui.json>\n  engine-cli ui preview <ui.json> <commands.json>\n  engine-cli ui apply <ui.json> <commands.json>\n  engine-cli material inspect <project-root> <asset-relative-path>\n  engine-cli material validate <project-root> <asset-relative-path>\n  engine-cli material preview <project-root> <asset-relative-path> <replacement.json>\n  engine-cli material apply <project-root> <asset-relative-path> <replacement.json>\n  engine-cli project_settings inspect <project-root>\n  engine-cli project_settings validate <project-root>\n  engine-cli project_settings preview <project-root> <replacement.json>\n  engine-cli project_settings apply <project-root> <replacement.json>\n  engine-cli animation_set inspect <project-root> <asset-relative-path>\n  engine-cli animation_set validate <project-root> <asset-relative-path>\n  engine-cli animation_set preview <project-root> <asset-relative-path> <replacement.json>\n  engine-cli animation_set apply <project-root> <asset-relative-path> <replacement.json>\n  engine-cli vfx schemas\n  engine-cli vfx inspect <effect.vfx.json>\n  engine-cli vfx validate <effect.vfx.json>\n  engine-cli vfx preview <effect.vfx.json> <commands.json>\n  engine-cli vfx apply <effect.vfx.json> <commands.json>\n  engine-cli vfx create <template> <effect.vfx.json>\n  engine-cli behavior-tree schemas\n  engine-cli behavior-tree example\n  engine-cli behavior-tree validate <graph.json>\n  engine-cli behavior-tree compile <graph.json>\n  engine-cli behavior-tree layout <graph.json>\n  engine-cli behavior-tree nodes <graph.json>\n  engine-cli behavior-tree edges <graph.json>\n  engine-cli behavior-tree preview <graph.json> <commands.json>\n  engine-cli behavior-tree apply <graph.json> <commands.json>\n  engine-cli ai-agent describe-tools\n  engine-cli ai-agent validate-input <json>\n  engine-cli ai-agent inject-input <inbox_path> <json>\n  engine-cli ai-agent capture-frame <inbox_path>"
+ }
+ 
+ #[cfg(test)]
+diff --git a/crates/cli/src/typed_document_cli.rs b/crates/cli/src/typed_document_cli.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..efa16034040bd2fd60e504248cb85ff5bff74683
+--- /dev/null
++++ b/crates/cli/src/typed_document_cli.rs
+@@ -0,0 +1,289 @@
++//! Thin file-oriented CLI adapter for ADR 0121 typed-document authoring.
++
++use super::{to_json, CliError, CliRunResult};
++use engine_authoring::{
++    replace_file_contents, AnimationSet, AuthoringPermission, AuthoringPermissions, Diagnostic,
++    MaterialAsset, ProjectRoot, ProjectSettings, TypedAuthoringDocument,
++    TypedDocumentAuthoringError, TypedDocumentAuthoringService, TypedDocumentAuthoringState,
++};
++use serde::de::DeserializeOwned;
++use std::fs;
++use std::path::{Path, PathBuf};
++
++pub(super) fn dispatch(args: &[String]) -> Option<Result<CliRunResult, CliError>> {
++    match args {
++        [domain, command, project, relative]
++            if domain == "material" && command == "inspect" =>
++        {
++            Some(material_inspect(Path::new(project), relative))
++        }
++        [domain, command, project, relative]
++            if domain == "material" && command == "validate" =>
++        {
++            Some(material_validate(Path::new(project), relative))
++        }
++        [domain, command, project, relative, replacement]
++            if domain == "material" && (command == "preview" || command == "apply") =>
++        {
++            Some(material_mutate(
++                Path::new(project),
++                relative,
++                Path::new(replacement),
++                command == "apply",
++            ))
++        }
++        [domain, command, project]
++            if domain == "project_settings" && command == "inspect" =>
++        {
++            Some(project_settings_inspect(Path::new(project)))
++        }
++        [domain, command, project]
++            if domain == "project_settings" && command == "validate" =>
++        {
++            Some(project_settings_validate(Path::new(project)))
++        }
++        [domain, command, project, replacement]
++            if domain == "project_settings"
++                && (command == "preview" || command == "apply") =>
++        {
++            Some(project_settings_mutate(
++                Path::new(project),
++                Path::new(replacement),
++                command == "apply",
++            ))
++        }
++        [domain, command, project, relative]
++            if domain == "animation_set" && command == "inspect" =>
++        {
++            Some(animation_set_inspect(Path::new(project), relative))
++        }
++        [domain, command, project, relative]
++            if domain == "animation_set" && command == "validate" =>
++        {
++            Some(animation_set_validate(Path::new(project), relative))
++        }
++        [domain, command, project, relative, replacement]
++            if domain == "animation_set"
++                && (command == "preview" || command == "apply") =>
++        {
++            Some(animation_set_mutate(
++                Path::new(project),
++                relative,
++                Path::new(replacement),
++                command == "apply",
++            ))
++        }
++        _ if args.first().is_some_and(|value| {
++            value == "material" || value == "project_settings" || value == "animation_set"
++        }) => Some(Err(CliError::UnknownCommand {
++            args: args.join(" "),
++        })),
++        _ => None,
++    }
++}
++
++fn material_inspect(project: &Path, relative: &str) -> Result<CliRunResult, CliError> {
++    let (_, document) = load_material(project, relative)?;
++    inspect(document)
++}
++
++fn material_validate(project: &Path, relative: &str) -> Result<CliRunResult, CliError> {
++    let (_, document) = load_material(project, relative)?;
++    validate(document)
++}
++
++fn material_mutate(
++    project: &Path,
++    relative: &str,
++    replacement_path: &Path,
++    persist: bool,
++) -> Result<CliRunResult, CliError> {
++    let (path, document) = load_material(project, relative)?;
++    let replacement: MaterialAsset = load_json(replacement_path)?;
++    mutate(document, replacement, persist, |document| {
++        let json = document.to_json().map_err(CliError::Json)?;
++        replace_file_contents(&path, &json).map_err(|source| CliError::Persist { source })
++    })
++}
++
++fn project_settings_inspect(project: &Path) -> Result<CliRunResult, CliError> {
++    let (_, document) = load_project_settings(project)?;
++    inspect(document)
++}
++
++fn project_settings_validate(project: &Path) -> Result<CliRunResult, CliError> {
++    let (_, document) = load_project_settings(project)?;
++    validate(document)
++}
++
++fn project_settings_mutate(
++    project: &Path,
++    replacement_path: &Path,
++    persist: bool,
++) -> Result<CliRunResult, CliError> {
++    let (root, document) = load_project_settings(project)?;
++    let replacement: ProjectSettings = load_json(replacement_path)?;
++    mutate(document, replacement, persist, |document| {
++        document.save(root.path()).map_err(|error| authoring_message(
++            "project_settings.save_failed",
++            error.to_string(),
++        ))
++    })
++}
++
++fn animation_set_inspect(project: &Path, relative: &str) -> Result<CliRunResult, CliError> {
++    let (_, document) = load_animation_set(project, relative)?;
++    inspect(document)
++}
++
++fn animation_set_validate(project: &Path, relative: &str) -> Result<CliRunResult, CliError> {
++    let (_, document) = load_animation_set(project, relative)?;
++    validate(document)
++}
++
++fn animation_set_mutate(
++    project: &Path,
++    relative: &str,
++    replacement_path: &Path,
++    persist: bool,
++) -> Result<CliRunResult, CliError> {
++    let (path, document) = load_animation_set(project, relative)?;
++    let replacement: AnimationSet = load_json(replacement_path)?;
++    mutate(document, replacement, persist, |document| {
++        let json = document
++            .to_canonical_json()
++            .map_err(|error| authoring_message("animation_set.invalid", error.to_string()))?;
++        replace_file_contents(&path, &json).map_err(|source| CliError::Persist { source })
++    })
++}
++
++fn inspect<T: TypedAuthoringDocument>(document: T) -> Result<CliRunResult, CliError> {
++    let state = TypedDocumentAuthoringState::new();
++    let output = TypedDocumentAuthoringService::new()
++        .inspect(&document, &state, &read_permissions())
++        .map_err(authoring_error)?;
++    Ok(CliRunResult::success(to_json(&output)?))
++}
++
++fn validate<T: TypedAuthoringDocument>(document: T) -> Result<CliRunResult, CliError> {
++    let state = TypedDocumentAuthoringState::new();
++    let output = TypedDocumentAuthoringService::new()
++        .validate(&document, &state, &read_permissions())
++        .map_err(authoring_error)?;
++    Ok(CliRunResult::diagnostics(to_json(&output)?, !output.success))
++}
++
++fn mutate<T, F>(
++    mut document: T,
++    replacement: T,
++    persist: bool,
++    persist_document: F,
++) -> Result<CliRunResult, CliError>
++where
++    T: TypedAuthoringDocument,
++    F: FnOnce(&T) -> Result<(), CliError>,
++{
++    let service = TypedDocumentAuthoringService::new();
++    let permissions = writable_permissions();
++    let mut state = TypedDocumentAuthoringState::new();
++    let base = service
++        .inspect(&document, &state, &permissions)
++        .map_err(authoring_error)?;
++    let output = if persist {
++        service.apply(
++            &mut document,
++            &mut state,
++            &permissions,
++            base.revision,
++            base.generation,
++            replacement,
++        )
++    } else {
++        service.preview(
++            &document,
++            &state,
++            &permissions,
++            base.revision,
++            base.generation,
++            replacement,
++        )
++    }
++    .map_err(authoring_error)?;
++    if persist && output.success && !output.diff.is_empty() {
++        persist_document(&document)?;
++    }
++    Ok(CliRunResult::diagnostics(to_json(&output)?, !output.success))
++}
++
++fn load_material(project: &Path, relative: &str) -> Result<(PathBuf, MaterialAsset), CliError> {
++    let root = open_project(project)?;
++    let path = root
++        .resolve_asset(relative)
++        .map_err(|error| authoring_message("project.invalid_asset_path", error.to_string()))?;
++    let json = read_text(&path)?;
++    let document = MaterialAsset::from_json(&json)
++        .map_err(|error| authoring_message("material.invalid", error.to_string()))?;
++    Ok((path, document))
++}
++
++fn load_animation_set(
++    project: &Path,
++    relative: &str,
++) -> Result<(PathBuf, AnimationSet), CliError> {
++    let root = open_project(project)?;
++    let path = root
++        .resolve_asset(relative)
++        .map_err(|error| authoring_message("project.invalid_asset_path", error.to_string()))?;
++    let json = read_text(&path)?;
++    let document = AnimationSet::from_json(&json)
++        .map_err(|error| authoring_message("animation_set.invalid", error.to_string()))?;
++    Ok((path, document))
++}
++
++fn load_project_settings(project: &Path) -> Result<(ProjectRoot, ProjectSettings), CliError> {
++    let root = open_project(project)?;
++    let document = ProjectSettings::load(root.path()).map_err(|error| {
++        authoring_message("project_settings.load_failed", error.to_string())
++    })?;
++    Ok((root, document))
++}
++
++fn open_project(path: &Path) -> Result<ProjectRoot, CliError> {
++    ProjectRoot::open(path)
++        .map_err(|error| authoring_message("project.open_failed", error.to_string()))
++}
++
++fn read_text(path: &Path) -> Result<String, CliError> {
++    fs::read_to_string(path).map_err(|source| CliError::Io {
++        path: path.to_path_buf(),
++        source,
++    })
++}
++
++fn load_json<T: DeserializeOwned>(path: &Path) -> Result<T, CliError> {
++    let json = read_text(path)?;
++    serde_json::from_str(&json).map_err(|source| CliError::InvalidJson {
++        path: path.to_path_buf(),
++        source,
++    })
++}
++
++fn authoring_error(error: TypedDocumentAuthoringError) -> CliError {
++    authoring_message(error.code(), error.to_string())
++}
++
++fn authoring_message(code: &str, message: String) -> CliError {
++    CliError::Authoring {
++        diagnostics: vec![Diagnostic::error(code, message)],
++    }
++}
++
++fn read_permissions() -> AuthoringPermissions {
++    AuthoringPermissions::read_only()
++}
++
++fn writable_permissions() -> AuthoringPermissions {
++    AuthoringPermissions::read_only()
++        .with(AuthoringPermission::Preview)
++        .with(AuthoringPermission::ProjectDataWrite)
++}
+diff --git a/crates/editor/src/animation_set_editor.rs b/crates/editor/src/animation_set_editor.rs
+index 29fb0312056e4b558933021f34321ae2b6caa3a2..26f6bfe3b6e9e3677f6e07aa7313b4187e3ab9c8 100644
+--- a/crates/editor/src/animation_set_editor.rs
++++ b/crates/editor/src/animation_set_editor.rs
+@@ -1,8 +1,10 @@
+ //! Toolkit-independent Animation Set editor state and undoable mutations.
+ 
+ use engine_authoring::{
+-    replace_file_contents, AnimationBinding, AnimationSet, AnimationSetEvent, AssetId, MotionSlot,
+-    MotionSlotId, MotionSourceRef,
++    replace_file_contents, AnimationBinding, AnimationSet, AnimationSetEvent, AssetId,
++    AuthoringPermissions, MotionSlot, MotionSlotId, MotionSourceRef, TypedDocumentAuthoringError,
++    TypedDocumentAuthoringMutation, TypedDocumentAuthoringService, TypedDocumentAuthoringSnapshot,
++    TypedDocumentAuthoringState, TypedDocumentAuthoringValidation,
+ };
+ use std::collections::BTreeSet;
+ use std::path::PathBuf;
+@@ -20,6 +22,7 @@ pub struct AnimationSetEditorState {
+     clean_document: AnimationSet,
+     undo: Vec<AnimationSet>,
+     redo: Vec<AnimationSet>,
++    authoring: TypedDocumentAuthoringState,
+ }
+ 
+ impl AnimationSetEditorState {
+@@ -32,6 +35,7 @@ impl AnimationSetEditorState {
+             document,
+             undo: Vec::new(),
+             redo: Vec::new(),
++            authoring: TypedDocumentAuthoringState::new(),
+         }
+     }
+ 
+@@ -50,6 +54,32 @@ impl AnimationSetEditorState {
+         !self.redo.is_empty()
+     }
+ 
++    /// Inspects the Animation Set through the shared typed-document service.
++    pub fn structured_inspect(&self, permissions: &AuthoringPermissions) -> Result<TypedDocumentAuthoringSnapshot<AnimationSet>, TypedDocumentAuthoringError> {
++        TypedDocumentAuthoringService::new().inspect(&self.document, &self.authoring, permissions)
++    }
++
++    /// Validates the Animation Set through the shared typed-document service.
++    pub fn structured_validate(&self, permissions: &AuthoringPermissions) -> Result<TypedDocumentAuthoringValidation, TypedDocumentAuthoringError> {
++        TypedDocumentAuthoringService::new().validate(&self.document, &self.authoring, permissions)
++    }
++
++    /// Previews a complete Animation Set replacement without mutation.
++    pub fn structured_preview(&self, permissions: &AuthoringPermissions, expected_revision: u64, expected_generation: u64, replacement: AnimationSet) -> Result<TypedDocumentAuthoringMutation<AnimationSet>, TypedDocumentAuthoringError> {
++        TypedDocumentAuthoringService::new().preview(&self.document, &self.authoring, permissions, expected_revision, expected_generation, replacement)
++    }
++
++    /// Applies a complete Animation Set replacement as one undoable edit.
++    pub fn structured_apply(&mut self, permissions: &AuthoringPermissions, expected_revision: u64, expected_generation: u64, replacement: AnimationSet) -> Result<TypedDocumentAuthoringMutation<AnimationSet>, TypedDocumentAuthoringError> {
++        let before = self.document.clone();
++        let mutation = TypedDocumentAuthoringService::new().apply(&mut self.document, &mut self.authoring, permissions, expected_revision, expected_generation, replacement)?;
++        if mutation.success && !mutation.diff.is_empty() {
++            self.push_undo_snapshot(before);
++            self.redo.clear();
++        }
++        Ok(mutation)
++    }
++
+     /// Restores the previous document snapshot.
+     pub fn undo(&mut self) -> bool {
+         let Some(previous) = self.undo.pop() else {
+@@ -341,10 +371,14 @@ impl AnimationSetEditorState {
+     }
+ 
+     fn push_undo_without_clearing_redo(&mut self) {
++        self.push_undo_snapshot(self.document.clone());
++    }
++
++    fn push_undo_snapshot(&mut self, snapshot: AnimationSet) {
+         if self.undo.len() >= UNDO_LIMIT {
+             self.undo.remove(0);
+         }
+-        self.undo.push(self.document.clone());
++        self.undo.push(snapshot);
+     }
+ }
+ 
+diff --git a/crates/editor/src/material_editor.rs b/crates/editor/src/material_editor.rs
+index 34158eab9cef3e8b8ec0de497be4e7d358d2771c..1d579bfe82fb550a989e28230ee888fad1c12a7e 100644
+--- a/crates/editor/src/material_editor.rs
++++ b/crates/editor/src/material_editor.rs
+@@ -7,7 +7,12 @@
+ use engine_authoring::material_asset::{
+     LinearRgba, MaterialAlphaMode, MaterialAsset, MaterialCullMode, MaterialShadingModel,
+ };
+-use engine_authoring::AssetId;
++use engine_authoring::{
++    AssetId, AuthoringPermission, AuthoringPermissions, TypedDocumentAuthoringError,
++    TypedDocumentAuthoringMutation,
++    TypedDocumentAuthoringService, TypedDocumentAuthoringSnapshot, TypedDocumentAuthoringState,
++    TypedDocumentAuthoringValidation,
++};
+ use std::collections::BTreeMap;
+ use std::path::PathBuf;
+ 
+@@ -24,6 +29,7 @@ pub struct MaterialEditorPanel {
+     pub materials: BTreeMap<PathBuf, MaterialAsset>,
+     /// The relative path of the currently selected / active material.
+     pub active: Option<PathBuf>,
++    authoring: BTreeMap<PathBuf, TypedDocumentAuthoringState>,
+ }
+ 
+ impl MaterialEditorPanel {
+@@ -35,6 +41,8 @@ impl MaterialEditorPanel {
+     /// Inserts or replaces a material in the panel and sets it as active.
+     pub fn open_material(&mut self, rel_path: PathBuf, material: MaterialAsset) {
+         self.active = Some(rel_path.clone());
++        self.authoring
++            .insert(rel_path.clone(), TypedDocumentAuthoringState::new());
+         self.materials.insert(rel_path, material);
+     }
+ 
+@@ -51,8 +59,104 @@ impl MaterialEditorPanel {
+             None
+         }
+     }
++
++    /// Inspects the active Material through the shared typed-document service.
++    pub fn structured_inspect(
++        &self,
++        permissions: &AuthoringPermissions,
++    ) -> Result<Option<TypedDocumentAuthoringSnapshot<MaterialAsset>>, TypedDocumentAuthoringError> {
++        let Some(key) = self.active.as_ref() else {
++            return Ok(None);
++        };
++        let Some(document) = self.materials.get(key) else {
++            return Ok(None);
++        };
++        let Some(state) = self.authoring.get(key) else {
++            return Ok(None);
++        };
++        TypedDocumentAuthoringService::new()
++            .inspect(document, state, permissions)
++            .map(Some)
++    }
++
++    /// Validates the active Material through the shared typed-document service.
++    pub fn structured_validate(
++        &self,
++        permissions: &AuthoringPermissions,
++    ) -> Result<Option<TypedDocumentAuthoringValidation>, TypedDocumentAuthoringError> {
++        let Some(key) = self.active.as_ref() else {
++            return Ok(None);
++        };
++        let Some(document) = self.materials.get(key) else {
++            return Ok(None);
++        };
++        let Some(state) = self.authoring.get(key) else {
++            return Ok(None);
++        };
++        TypedDocumentAuthoringService::new()
++            .validate(document, state, permissions)
++            .map(Some)
++    }
++
++    /// Previews replacing the active Material without mutation.
++    pub fn structured_preview(
++        &self,
++        permissions: &AuthoringPermissions,
++        expected_revision: u64,
++        expected_generation: u64,
++        replacement: MaterialAsset,
++    ) -> Result<Option<TypedDocumentAuthoringMutation<MaterialAsset>>, TypedDocumentAuthoringError> {
++        let Some(key) = self.active.as_ref() else {
++            return Ok(None);
++        };
++        let Some(document) = self.materials.get(key) else {
++            return Ok(None);
++        };
++        let Some(state) = self.authoring.get(key) else {
++            return Ok(None);
++        };
++        TypedDocumentAuthoringService::new()
++            .preview(
++                document,
++                state,
++                permissions,
++                expected_revision,
++                expected_generation,
++                replacement,
++            )
++            .map(Some)
++    }
++
++    /// Applies one atomic replacement to the active Material.
++    pub fn structured_apply(
++        &mut self,
++        permissions: &AuthoringPermissions,
++        expected_revision: u64,
++        expected_generation: u64,
++        replacement: MaterialAsset,
++    ) -> Result<Option<TypedDocumentAuthoringMutation<MaterialAsset>>, TypedDocumentAuthoringError> {
++        let Some(key) = self.active.clone() else {
++            return Ok(None);
++        };
++        let (Some(document), Some(state)) =
++            (self.materials.get_mut(&key), self.authoring.get_mut(&key))
++        else {
++            return Ok(None);
++        };
++        TypedDocumentAuthoringService::new()
++            .apply(
++                document,
++                state,
++                permissions,
++                expected_revision,
++                expected_generation,
++                replacement,
++            )
++            .map(Some)
++    }
+ }
+ 
++
+ // ---------------------------------------------------------------------------
+ // egui rendering
+ // ---------------------------------------------------------------------------
+@@ -67,6 +171,7 @@ pub fn show_material_editor_panel(
+ ) -> bool {
+     let mut changed = false;
+ 
++    let before = panel.active_material().cloned();
+     let Some(mat) = panel.active_material_mut() else {
+         ui.label("No material selected.");
+         return false;
+@@ -247,7 +352,30 @@ pub fn show_material_editor_panel(
+         ui.colored_label(eframe::egui::Color32::RED, error.to_string());
+     }
+ 
+-    changed
++    if changed {
++        let replacement = mat.clone();
++        if let Some(before) = before {
++            *mat = before;
++        }
++        let permissions = AuthoringPermissions::read_only()
++            .with(AuthoringPermission::Preview)
++            .with(AuthoringPermission::ProjectDataWrite);
++        if let Ok(Some(base)) = panel.structured_inspect(&permissions) {
++            return panel
++                .structured_apply(
++                    &permissions,
++                    base.revision,
++                    base.generation,
++                    replacement,
++                )
++                .ok()
++                .flatten()
++                .is_some_and(|mutation| mutation.success && !mutation.diff.is_empty());
++        }
++        return false;
++    }
++
++    false
+ }
+ 
+ fn texture_picker(
+diff --git a/crates/editor/src/project_settings_panel.rs b/crates/editor/src/project_settings_panel.rs
+index ce9094620b1f7cc39160bac3f1bc424ce5f180cb..11daa159e2cddced3e2c1fbc4b02cc54277c0fe9 100644
+--- a/crates/editor/src/project_settings_panel.rs
++++ b/crates/editor/src/project_settings_panel.rs
+@@ -10,6 +10,11 @@ use engine::postprocess::ToneMapOperator;
+ use engine_authoring::project_settings::{
+     AxisBinding, InputAction, KeyAxisBinding, Layer, ProjectSettings,
+ };
++use engine_authoring::{
++    AuthoringPermission, AuthoringPermissions, TypedDocumentAuthoringError,
++    TypedDocumentAuthoringMutation, TypedDocumentAuthoringService, TypedDocumentAuthoringSnapshot,
++    TypedDocumentAuthoringState, TypedDocumentAuthoringValidation,
++};
+ 
+ // ---------------------------------------------------------------------------
+ // Panel state
+@@ -28,6 +33,7 @@ pub struct ProjectSettingsPanel {
+     pub post_process: PostProcessSettings,
+     /// `true` when the panel contains unsaved changes.
+     pub is_dirty: bool,
++    authoring: TypedDocumentAuthoringState,
+ }
+ 
+ impl ProjectSettingsPanel {
+@@ -37,6 +43,7 @@ impl ProjectSettingsPanel {
+             settings,
+             post_process: PostProcessSettings::default(),
+             is_dirty: false,
++            authoring: TypedDocumentAuthoringState::new(),
+         }
+     }
+ 
+@@ -46,6 +53,30 @@ impl ProjectSettingsPanel {
+         self.settings.clone()
+     }
+ 
++    /// Inspects Project Settings through the shared typed-document service.
++    pub fn structured_inspect(&self, permissions: &AuthoringPermissions) -> Result<TypedDocumentAuthoringSnapshot<ProjectSettings>, TypedDocumentAuthoringError> {
++        TypedDocumentAuthoringService::new().inspect(&self.settings, &self.authoring, permissions)
++    }
++
++    /// Validates Project Settings through the shared typed-document service.
++    pub fn structured_validate(&self, permissions: &AuthoringPermissions) -> Result<TypedDocumentAuthoringValidation, TypedDocumentAuthoringError> {
++        TypedDocumentAuthoringService::new().validate(&self.settings, &self.authoring, permissions)
++    }
++
++    /// Previews one complete Project Settings replacement.
++    pub fn structured_preview(&self, permissions: &AuthoringPermissions, expected_revision: u64, expected_generation: u64, replacement: ProjectSettings) -> Result<TypedDocumentAuthoringMutation<ProjectSettings>, TypedDocumentAuthoringError> {
++        TypedDocumentAuthoringService::new().preview(&self.settings, &self.authoring, permissions, expected_revision, expected_generation, replacement)
++    }
++
++    /// Applies one complete Project Settings replacement atomically.
++    pub fn structured_apply(&mut self, permissions: &AuthoringPermissions, expected_revision: u64, expected_generation: u64, replacement: ProjectSettings) -> Result<TypedDocumentAuthoringMutation<ProjectSettings>, TypedDocumentAuthoringError> {
++        let mutation = TypedDocumentAuthoringService::new().apply(&mut self.settings, &mut self.authoring, permissions, expected_revision, expected_generation, replacement)?;
++        if mutation.success && !mutation.diff.is_empty() {
++            self.is_dirty = true;
++        }
++        Ok(mutation)
++    }
++
+     // ── Tags ──────────────────────────────────────────────────────────────
+ 
+     /// Appends `tag` to the tag list unless it is already present.
+@@ -209,6 +240,7 @@ pub fn show_project_settings_panel(
+     ui: &mut eframe::egui::Ui,
+ ) -> bool {
+     let before_dirty = panel.is_dirty;
++    let settings_before = panel.settings.clone();
+     let mut changed = false;
+ 
+     ui.heading("Project Settings");
+@@ -548,6 +580,23 @@ pub fn show_project_settings_panel(
+         }
+     });
+ 
++    if panel.settings != settings_before {
++        let replacement = panel.settings.clone();
++        panel.settings = settings_before;
++        panel.is_dirty = before_dirty;
++        let permissions = AuthoringPermissions::read_only()
++            .with(AuthoringPermission::Preview)
++            .with(AuthoringPermission::ProjectDataWrite);
++        if let Ok(base) = panel.structured_inspect(&permissions) {
++            let _ = panel.structured_apply(
++                &permissions,
++                base.revision,
++                base.generation,
++                replacement,
++            );
++        }
++    }
++
+     changed || panel.is_dirty != before_dirty
+ }
+ 
+diff --git a/crates/editor/src/ui/mcp.rs b/crates/editor/src/ui/mcp.rs
+index 1444cb4548ba6b008ee87ad24600efce09083bdd..73c2fd93e7a2b0302564e38fdcc6a6c92664f897 100644
+--- a/crates/editor/src/ui/mcp.rs
++++ b/crates/editor/src/ui/mcp.rs
+@@ -3,15 +3,17 @@
+ use super::EditorApp;
+ use crate::session::StructuredAuthoringError;
+ use engine_authoring::{
+-    AuthoringPermission, AuthoringPermissions, AuthoringSession, ComponentSchemaRegistry,
++    AnimationSet, AuthoringPermission, AuthoringPermissions, AuthoringSession, ComponentSchemaRegistry,
++    MaterialAsset, ProjectSettings, TypedDocumentAuthoringError,
+ };
+ use engine_mcp::{
+     AssetInspectInput, AssetMcpTools, AssetSearchInput, AuthoringCapabilityMcpTools, AuthoringVerb,
+     BehaviorTreeApplyInput, BehaviorTreeGraphInput, BehaviorTreeMcpTools, CapabilityDescribeInput,
+     CapabilityInvokeInput, EntityFindInput, EntityInspectInput, GraphMutationInput,
+     GraphViewMutationInput, McpToolError, PrefabCreateInput, PrefabInstantiateInput, PrefabMcpTools,
+-    SceneMcpTools, SceneMutationInput, UiMutationInput, VfxEffectInput, VfxMcpTools,
+-    VfxMutationInput, VfxTemplateInput, AUTHORING_APPLY_TOOL, AUTHORING_CAPABILITIES_TOOL,
++    SceneMcpTools, SceneMutationInput, TypedDocumentMutationInput, UiMutationInput, VfxEffectInput,
++    VfxMcpTools, VfxMutationInput, VfxTemplateInput, AUTHORING_APPLY_TOOL,
++    AUTHORING_CAPABILITIES_TOOL,
+     AUTHORING_DESCRIBE_TOOL, AUTHORING_INSPECT_TOOL, AUTHORING_PREVIEW_TOOL,
+     AUTHORING_VALIDATE_TOOL,
+ };
+@@ -59,6 +61,18 @@ impl EditorMcpCallFailure {
+         Self::new(code, error.to_string())
+     }
+ 
++    fn typed(error: TypedDocumentAuthoringError) -> Self {
++        let code = error.code().to_owned();
++        Self::new(code, error.to_string())
++    }
++
++    fn no_typed_document(domain: &str) -> Self {
++        Self::new(
++            "editor.no_typed_document",
++            format!("no active {domain} document is open in the Editor"),
++        )
++    }
++
+     fn no_scene() -> Self {
+         Self::new(
+             "editor.no_scene_document",
+@@ -323,6 +337,74 @@ impl EditorApp {
+                     input.commands,
+                 )?)
+             }
++            "material.inspect" => {
++                require_empty_arguments(arguments)?;
++                let output = self.material_editor.structured_inspect(&permissions)
++                    .map_err(EditorMcpCallFailure::typed)?
++                    .ok_or_else(|| EditorMcpCallFailure::no_typed_document("Material"))?;
++                to_value(output)
++            }
++            "material.validate" => {
++                require_empty_arguments(arguments)?;
++                let output = self.material_editor.structured_validate(&permissions)
++                    .map_err(EditorMcpCallFailure::typed)?
++                    .ok_or_else(|| EditorMcpCallFailure::no_typed_document("Material"))?;
++                to_value(output)
++            }
++            "material.preview" => {
++                let input: TypedDocumentMutationInput<MaterialAsset> = decode(arguments)?;
