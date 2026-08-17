@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ui/play.rs",
+  "old": "    pub(super) fn start_play(&mut self) {\n        let has_game_project = self\n            .project_root\n            .as_ref()\n            .is_some_and(|project| project.game_dir().join(\"Cargo.toml\").is_file());",
+  "new": "    pub(super) fn start_play(&mut self) {\n        let navigation_gate = match (self.session.scene(), self.project_root.as_ref()) {\n            (Some(scene), Some(project)) => require_current_navigation_artifact(\n                scene,\n                project,\n                &self.asset_manifest,\n                self.session.current_document_path(),\n            ),\n            _ => Ok(()),\n        };\n        if let Err(error) = navigation_gate {\n            self.session\n                .push_diagnostic(engine_authoring::Diagnostic::error(\n                    \"editor.play_navigation_not_current\",\n                    error,\n                ));\n            return;\n        }\n        let has_game_project = self\n            .project_root\n            .as_ref()\n            .is_some_and(|project| project.game_dir().join(\"Cargo.toml\").is_file());"
+}
