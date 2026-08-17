@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ui/mod.rs","old":"use crate::scene_view::{\n    GizmoEdit, GizmoMode, GizmoSpace, SceneComponentPreview, SceneUiNodeSelection, SceneView,\n};\n","new":"use crate::scene_view::{\n    AudioDistanceGizmoEdit, GizmoEdit, GizmoMode, GizmoSpace, SceneComponentPreview,\n    SceneUiNodeSelection, SceneView,\n};\n"}
