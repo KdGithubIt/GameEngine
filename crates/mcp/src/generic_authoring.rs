@@ -332,7 +332,7 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn descriptors_cover_generic_graph_layout_and_ui_surfaces() {
+    fn descriptors_cover_generic_graph_ui_and_typed_document_surfaces() {
         let names = GenericAuthoringMcpTools::new()
             .tool_descriptors()
             .into_iter()
@@ -342,7 +342,10 @@ mod tests {
         assert!(names.contains(&"graph.inspect".to_owned()));
         assert!(names.contains(&"graph.layout.apply".to_owned()));
         assert!(names.contains(&"ui.apply".to_owned()));
-        assert_eq!(names.len(), 12);
+        assert!(names.contains(&"material.inspect".to_owned()));
+        assert!(names.contains(&"project_settings.apply".to_owned()));
+        assert!(names.contains(&"animation_set.validate".to_owned()));
+        assert_eq!(names.len(), 24);
     }
 
     #[test]
