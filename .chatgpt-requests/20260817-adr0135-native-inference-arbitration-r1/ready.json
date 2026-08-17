@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "20260817-adr0135-native-inference-arbitration-r1",
+  "target_branch": "chatgpt/gameengine-adr0135-native-inference-arbitration",
+  "expected_head_sha": "1ba35c18b5d2851ea00d42f145afd3c33360beb2",
+  "baseline_main_sha": "1ba35c18b5d2851ea00d42f145afd3c33360beb2",
+  "patch_sha256": "58185f785db3996c01666f7b6dcdc3c9d45d480808a1b0265f3131b65fcd8932",
+  "patch_bytes": 34307,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Add ADR 0135 native inference arbitration",
+  "pr_title": "GameEngine: add ADR 0135 native inference arbitration",
+  "pr_body": "## Summary\n\n- add ADR 0135 for native local-model inference scheduling and Editor GPU resource arbitration\n- define Auto/Fast/Balanced/Deep quality intent without model-family or fixed-VRAM lock-in\n- define InferenceFocused suspension, staged VRAM reclaim, Deep-only aggressive reclaim, and capability-driven model residency\n- preserve ADR 0131 single-model baseline while allowing later benchmark-proven model routing\n- keep Stop as cancellation and add a separate resumable Interrupt-for-Editing flow with mandatory re-inspection before Resume\n- set RTX 4070 Ti 12 GB as reference benchmark hardware, not a product minimum\n\n## Validation\n\nDocumentation-only change; permanent Windows Validation should classify this PR as docs mode. Visual Validation is not applicable."
+}
