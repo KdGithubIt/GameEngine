@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/render-runtime/src/vfx.rs",
+  "old": "pub enum VfxRestartPolicy {\n    /// Restarts only when gameplay or tooling explicitly requests it.\n    Manual,\n    /// Restarts automatically when the finite effect completes.\n    OnComplete,\n}\n\n/// Transient scene runtime component that plays one compiled VFX effect.\n#[derive(Debug, Clone)]\npub struct VfxPlayer {\n    instance: VfxInstance,\n    playing: bool,",
+  "new": "pub enum VfxRestartPolicy {\n    /// Restarts only when gameplay or tooling explicitly requests it.\n    Manual,\n    /// Restarts automatically when the finite effect completes.\n    OnComplete,\n}\n\n/// Observable playback state for a scene VFX player.\n#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]\npub enum VfxPlaybackState {\n    /// Playback is stopped. An explicit stop resets deterministic state to zero.\n    #[default]\n    Stopped,\n    /// Playback advances on each runtime VFX update.\n    Playing,\n    /// Playback retains its current simulation state without advancing.\n    Paused,\n}\n\n/// Transient scene runtime component that plays one compiled VFX effect.\n#[derive(Debug, Clone)]\npub struct VfxPlayer {\n    instance: VfxInstance,\n    playback_state: VfxPlaybackState,"
+}
