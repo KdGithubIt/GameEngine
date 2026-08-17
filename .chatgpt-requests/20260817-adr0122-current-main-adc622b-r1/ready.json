@@ -1,0 +1,16 @@
+{
+  "schema_version": 2,
+  "request_id": "20260817-adr0122-current-main-adc622b-r1",
+  "target_branch": "chatgpt/gameengine-adr0122-spatial-audio-complete-v6",
+  "expected_head_sha": "adc622bb0080aebc25945744dbdb478a60f75cf4",
+  "baseline_main_sha": "adc622bb0080aebc25945744dbdb478a60f75cf4",
+  "patch_sha256": "afe19f5ced3c128f937612b26388471eb6d40d04f8b8470ede44f59b0bb9988c",
+  "patch_bytes": 92267,
+  "patch_parts": [
+    "part-0000.patch",
+    "part-0001.patch"
+  ],
+  "commit_message": "Complete ADR 0122 spatial audio first release",
+  "pr_title": "Complete ADR 0122 spatial audio first release",
+  "pr_body": "## Summary\n\nCompletes ADR 0122 spatial audio first-release requirements on current main, including managed spatial voice lifecycle, ECS/runtime synchronization, Project Rust deferred controls, Editor audio Inspector/audition, and Scene View spatial gizmos.\n\n## Validation\n\nRun Windows affected validation and Editor Visual Validation before merge."
+}
