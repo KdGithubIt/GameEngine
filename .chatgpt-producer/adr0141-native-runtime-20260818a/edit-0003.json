@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/native_agent.rs",
+  "old": "    stream: bool,\n}\n\n#[derive(Debug, Deserialize)]\nstruct GenerateResponse {",
+  "new": "    stream: bool,\n    #[serde(skip_serializing_if = \"Option::is_none\")]\n    images: Option<Vec<String>>,\n}\n\n#[derive(Debug, Deserialize)]\nstruct GenerateResponse {"
+}
