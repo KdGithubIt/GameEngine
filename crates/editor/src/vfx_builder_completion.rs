@@ -62,14 +62,6 @@ impl Default for VfxPreviewState {
 }
 
 impl VfxPreviewState {
-    fn open_effect(&mut self, effect: &VfxEffect) {
-        self.preview_seed = effect.seed;
-        self.current_time = 0.0;
-        self.player = None;
-        self.last_effect = None;
-        self.status = Some("Compiling preview...".to_owned());
-    }
-
     fn sync_effect(&mut self, effect: &VfxEffect, compilation: Option<&VfxCompilation>) {
         if self.last_effect.as_ref() == Some(effect) {
             return;
