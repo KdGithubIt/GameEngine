@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/render-runtime/tests/bloom_spread.rs","old":"        intensity: 4.0,\n","new":"        intensity: 64.0,\n"}
