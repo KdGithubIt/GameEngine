@@ -1330,8 +1330,8 @@ const AUDIO_EMITTER_FIELDS: &[FieldDef] = &[
     ),
     number(
         "spatial_blend",
-        "Spatial Blend",
-        "Blend from 2D (0.0) to positional (1.0); applied by the ER-9 mixer.",
+        "Spatial Blend (2D ↔ 3D)",
+        "Blend from centered 2D (0.0) to positional 3D (1.0).",
         1.0,
         UNIT_INTERVAL,
     ),
@@ -1340,14 +1340,27 @@ const AUDIO_EMITTER_FIELDS: &[FieldDef] = &[
         "Min Distance",
         "Distance where positional attenuation begins.",
         1.0,
-        POSITIVE,
+        NON_NEGATIVE,
     ),
     number(
         "max_distance",
         "Max Distance",
-        "Distance where positional attenuation reaches its floor.",
+        "Distance where positional attenuation reaches silence.",
         20.0,
-        POSITIVE,
+        NON_NEGATIVE,
+    ),
+    enumeration(
+        "rolloff",
+        "Rolloff",
+        "Distance attenuation curve used by the shared spatial mixer.",
+        "linear",
+        &["linear", "inverse"],
+    ),
+    boolean(
+        "looping",
+        "Loop",
+        "Repeat the managed voice until the emitter is stopped or despawned.",
+        false,
     ),
     boolean(
         "autoplay",
@@ -1357,12 +1370,21 @@ const AUDIO_EMITTER_FIELDS: &[FieldDef] = &[
     ),
 ];
 
-const AUDIO_LISTENER_FIELDS: &[FieldDef] = &[boolean(
-    "enabled",
-    "Enabled",
-    "Whether this listener participates in positional mixing.",
-    true,
-)];
+const AUDIO_LISTENER_FIELDS: &[FieldDef] = &[
+    boolean(
+        "enabled",
+        "Enabled",
+        "Whether this listener participates in positional mixing.",
+        true,
+    ),
+    FieldDef::new(
+        "priority",
+        "Priority",
+        "Higher enabled listener priorities win; ties use deterministic entity order.",
+        FieldKind::I64,
+        FieldDefaultSpec::I64(0),
+    ),
+];
 
 const MUSIC_CONTROLLER_FIELDS: &[FieldDef] = &[
     asset_ref(
@@ -1886,7 +1908,7 @@ pub(super) fn builtin_components() -> Vec<BuiltinComponent> {
             "Audio Emitter",
             "Plays a registered sound from this entity's position.",
             "Audio",
-            1,
+            2,
             AUDIO_EMITTER_FIELDS,
             spawn_audio_emitter_component,
         ),
@@ -1895,7 +1917,7 @@ pub(super) fn builtin_components() -> Vec<BuiltinComponent> {
             "Audio Listener",
             "Marks this entity as a positional-audio listener.",
             "Audio",
-            1,
+            2,
             AUDIO_LISTENER_FIELDS,
             spawn_audio_listener_component,
         )

@@ -476,6 +476,7 @@ impl EditorApp {
                     upsert_property_value(&mut edited_value, &pending.path, pending.value.clone());
                 }
             let mut edit = None;
+            let mut audio_action = None;
             let game_display_name = self
                 .game_module
                 .as_ref()
@@ -518,6 +519,12 @@ impl EditorApp {
                             },
                             &mut edited_value,
                             &mut animation_asset_action,
+                        );
+                        audio_action = show_audio_component_extras(
+                            ui,
+                            component_type,
+                            &edited_value,
+                            &self.audio_audition,
                         );
                         if component_type.as_str()
                             == engine::scene_bridge::SKINNED_MODEL_COMPONENT
@@ -640,6 +647,9 @@ impl EditorApp {
                     }
                 }
             });
+            if let Some(action) = audio_action {
+                self.handle_audio_inspector_action(&selected, &edited_value, action);
+            }
             if let Some(edit) = edit {
                 self.apply_component_edit(selected.clone(), component_type.clone(), value, edit);
             }
