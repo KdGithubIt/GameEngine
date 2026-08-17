@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/agent_host.rs",
+  "old": "        if check == PermissionCheck::RequiresApproval {\n            self.record_event(\n                run_id,\n                AgentEventKind::PermissionRequested,\n                format!(\"Permission requested: {}.\", capability.label()),\n            )?;\n        }",
+  "new": "        if check == PermissionCheck::RequiresApproval {\n            let (session_id, _) = self.run_location(run_id)?;\n            let run = self.run_mut_in_session(&session_id, run_id)?;\n            run.audit.permission_escalations = run.audit.permission_escalations.saturating_add(1);\n            push_event(\n                run,\n                AgentEventKind::PermissionRequested,\n                format!(\"Permission requested: {}.\", capability.label()),\n            );\n            self.persist_session(&session_id)?;\n        }"
+}
