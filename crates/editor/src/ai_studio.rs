@@ -14,8 +14,10 @@ use crate::native_agent::{
     QuestionRole, DEFAULT_LOCAL_MODEL_ENDPOINT,
 };
 use eframe::egui;
+use engine::{InputCommand, KeyCode, MouseButton};
 use engine_authoring::ProjectRoot;
 use serde::Deserialize;
+use std::collections::VecDeque;
 use std::ffi::{OsStr, OsString};
 use std::path::PathBuf;
 
@@ -28,6 +30,44 @@ enum ProviderAgentEvent {
     ToolAction { tool: String, action: String, success: Option<bool> },
     CompletionGate { gate: String, status: CompletionStatus, message: String },
     PlaytestResult { launched: bool, interactions_passed: Option<bool>, message: String },
+    RuntimeInput { input: ProviderRuntimeInput },
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum ProviderRuntimeInput {
+    Key { key: String, pressed: bool },
+    MouseButton { button: String, pressed: bool },
+    MouseMove { x: f32, y: f32 },
+    MouseDelta { x: f64, y: f64 },
+    MouseScroll { amount: f32 },
+}
+
+impl ProviderRuntimeInput {
+    fn command(&self) -> Result<InputCommand, String> {
+        match self {
+            Self::Key { key, pressed } => Ok(InputCommand::Key {
+                key: provider_key_code(key)?,
+                pressed: *pressed,
+            }),
+            Self::MouseButton { button, pressed } => Ok(InputCommand::MouseButton {
+                button: provider_mouse_button(button)?,
+                pressed: *pressed,
+            }),
+            Self::MouseMove { x, y } if x.is_finite() && y.is_finite() => {
+                Ok(InputCommand::MouseMove { position: (*x, *y) })
+            }
+            Self::MouseDelta { x, y } if x.is_finite() && y.is_finite() => {
+                Ok(InputCommand::MouseDelta { delta: (*x, *y) })
+            }
+            Self::MouseScroll { amount } if amount.is_finite() => {
+                Ok(InputCommand::MouseScroll { amount: *amount })
+            }
+            Self::MouseMove { .. } | Self::MouseDelta { .. } | Self::MouseScroll { .. } => {
+                Err("runtime input numeric values must be finite".to_owned())
+            }
+        }
+    }
 }
 
 /// Ephemeral Editor-owned MCP connection injected into compatible agent runtimes.
@@ -51,10 +91,12 @@ impl AiStudioConnection {
 }
 
 /// Managed Editor-runtime operation requested by AI Studio after authorization.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum AiStudioRuntimeAction {
     /// Start the normal Editor Play path for the active project.
     StartPlaytest,
+    /// Queue one provider-planned command through the normal AI Agent virtual-input source.
+    SendInput(InputCommand),
     /// Capture the currently rendered Game View through the engine frame-capture path.
     CaptureFrame,
     /// Stop the managed Editor Play session.
@@ -67,6 +109,8 @@ pub enum AiStudioRuntimeResult {
     PlayStarted,
     /// Play start is waiting for an engine-managed game-code build.
     PlayStartPending,
+    /// One AI Agent input command was accepted by the normal runtime input queue.
+    RuntimeInputQueued(InputCommand),
     /// The managed Play session stopped.
     PlayStopped,
     /// A Game View frame was captured by the runtime renderer.
@@ -75,11 +119,12 @@ pub enum AiStudioRuntimeResult {
     Failed(String),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 enum PendingPermissionAction {
     LaunchExternalAgent,
     ApplyCodeChanges,
     LaunchPlaytest,
+    SendRuntimeInput(InputCommand),
     CaptureFrame,
 }
 
@@ -114,6 +159,7 @@ pub struct AiStudioPanel {
     pending_code_changes: Vec<CodeChange>,
     pending_permission: Option<PendingPermission>,
     pending_runtime_action: Option<AiStudioRuntimeAction>,
+    managed_input_plan: VecDeque<InputCommand>,
     managed_playtest_requested: bool,
     managed_capture_requested: bool,
     managed_playtest_started_at: Option<std::time::Instant>,
@@ -163,6 +209,7 @@ impl AiStudioPanel {
             pending_code_changes: Vec::new(),
             pending_permission: None,
             pending_runtime_action: None,
+            managed_input_plan: VecDeque::new(),
             managed_playtest_requested: false,
             managed_capture_requested: false,
             managed_playtest_started_at: None,
@@ -205,6 +252,19 @@ impl AiStudioPanel {
             }
             AiStudioRuntimeResult::PlayStartPending => {
                 self.status = Some("Managed Play is waiting for the engine-managed game-code build.".to_owned());
+            }
+            AiStudioRuntimeResult::RuntimeInputQueued(command) => {
+                if let Err(error) = self
+                    .host
+                    .record_managed_runtime_input(&run_id, format!("{command:?}"))
+                {
+                    self.status = Some(error.to_string());
+                } else {
+                    self.status = Some(format!(
+                        "Queued managed AI Agent runtime input; {} planned command(s) remain.",
+                        self.managed_input_plan.len()
+                    ));
+                }
             }
             AiStudioRuntimeResult::PlayStopped => {
                 self.managed_playtest_started_at = None;
@@ -254,6 +314,7 @@ impl AiStudioPanel {
         self.poll_external_process(context);
         self.poll_managed_validation(context);
         self.request_managed_playtest_if_ready();
+        self.request_next_managed_runtime_input_if_ready();
         self.poll_managed_playtest_timeout();
         let mut open = self.open;
         egui::Window::new("AI Studio")
@@ -763,6 +824,7 @@ impl AiStudioPanel {
             Ok(run_id) => {
                 self.active_run_id = Some(run_id.clone());
                 self.pending_runtime_action = None;
+                self.managed_input_plan.clear();
                 self.managed_playtest_requested = false;
                 self.managed_capture_requested = false;
                 self.managed_playtest_started_at = None;
@@ -843,6 +905,9 @@ impl AiStudioPanel {
             PendingPermissionAction::LaunchPlaytest => {
                 self.pending_runtime_action = Some(AiStudioRuntimeAction::StartPlaytest);
             }
+            PendingPermissionAction::SendRuntimeInput(command) => {
+                self.pending_runtime_action = Some(AiStudioRuntimeAction::SendInput(command));
+            }
             PendingPermissionAction::CaptureFrame => {
                 self.pending_runtime_action = Some(AiStudioRuntimeAction::CaptureFrame);
             }
@@ -910,7 +975,7 @@ impl AiStudioPanel {
             (
                 OsString::from("GAMEENGINE_AGENT_EVENT_PROTOCOL"),
                 OsString::from(
-                    "Emit semantic events as one stdout line prefixed GAMEENGINE_AGENT_EVENT followed by JSON. Supported types: progress, tool_action, completion_gate, playtest_result. Never emit credentials or bearer tokens.",
+                    "Emit semantic events as one stdout line prefixed GAMEENGINE_AGENT_EVENT followed by JSON. Supported types: progress, tool_action, completion_gate, playtest_result, runtime_input. runtime_input is a provider-planned interaction and is executed later only through the authorized Editor Play virtual-input path. Never emit credentials or bearer tokens.",
                 ),
             ),
         ];
@@ -1012,6 +1077,26 @@ impl AiStudioPanel {
         self.request_permission(run_id, AgentCapability::RuntimeLaunch, PendingPermissionAction::LaunchPlaytest);
     }
 
+    fn request_next_managed_runtime_input_if_ready(&mut self) {
+        if self.managed_playtest_started_at.is_none()
+            || self.pending_permission.is_some()
+            || self.pending_runtime_action.is_some()
+        {
+            return;
+        }
+        let Some(command) = self.managed_input_plan.pop_front() else {
+            return;
+        };
+        let Some(run_id) = self.active_run_id.clone() else {
+            return;
+        };
+        self.request_permission(
+            run_id,
+            AgentCapability::RuntimeInputControl,
+            PendingPermissionAction::SendRuntimeInput(command),
+        );
+    }
+
     fn poll_managed_playtest_timeout(&mut self) {
         let Some(started_at) = self.managed_playtest_started_at else { return; };
         if started_at.elapsed() < std::time::Duration::from_secs(120) {
@@ -1104,11 +1189,27 @@ impl AiStudioPanel {
             ProviderAgentEvent::CompletionGate { gate, status, message } => self.host.record_completion_gate(run_id, &gate, status, message).map_err(|error| error.to_string()),
             ProviderAgentEvent::PlaytestResult { launched, interactions_passed, message } => {
                 self.host.record_playtest_result(run_id, launched, interactions_passed, message).map_err(|error| error.to_string())?;
-                if launched && interactions_passed == Some(true) && !self.managed_capture_requested {
+                if launched
+                    && interactions_passed == Some(true)
+                    && self.managed_playtest_started_at.is_some()
+                    && self.host.run(run_id).is_ok_and(|run| run.audit.managed_runtime_inputs > 0)
+                    && !self.managed_capture_requested
+                {
                     self.managed_capture_requested = true;
                     self.request_permission(run_id.to_owned(), AgentCapability::FrameCapture, PendingPermissionAction::CaptureFrame);
                 }
                 Ok(())
+            }
+            ProviderAgentEvent::RuntimeInput { input } => {
+                let command = input.command()?;
+                self.managed_input_plan.push_back(command);
+                self.host
+                    .record_semantic_progress(
+                        run_id,
+                        "runtime_input_plan",
+                        format!("Queued provider-planned runtime input {command:?} for managed Editor Play."),
+                    )
+                    .map_err(|error| error.to_string())
             }
         }
     }
@@ -1121,6 +1222,68 @@ impl AiStudioPanel {
             .host
             .transition_run(run_id, AgentRunState::Failed, message.clone());
         self.status = Some(message);
+    }
+}
+
+fn provider_key_code(key: &str) -> Result<KeyCode, String> {
+    let normalized = key.trim().to_ascii_lowercase();
+    let key = match normalized.as_str() {
+        "a" | "keya" => KeyCode::KeyA,
+        "b" | "keyb" => KeyCode::KeyB,
+        "c" | "keyc" => KeyCode::KeyC,
+        "d" | "keyd" => KeyCode::KeyD,
+        "e" | "keye" => KeyCode::KeyE,
+        "f" | "keyf" => KeyCode::KeyF,
+        "g" | "keyg" => KeyCode::KeyG,
+        "h" | "keyh" => KeyCode::KeyH,
+        "i" | "keyi" => KeyCode::KeyI,
+        "j" | "keyj" => KeyCode::KeyJ,
+        "k" | "keyk" => KeyCode::KeyK,
+        "l" | "keyl" => KeyCode::KeyL,
+        "m" | "keym" => KeyCode::KeyM,
+        "n" | "keyn" => KeyCode::KeyN,
+        "o" | "keyo" => KeyCode::KeyO,
+        "p" | "keyp" => KeyCode::KeyP,
+        "q" | "keyq" => KeyCode::KeyQ,
+        "r" | "keyr" => KeyCode::KeyR,
+        "s" | "keys" => KeyCode::KeyS,
+        "t" | "keyt" => KeyCode::KeyT,
+        "u" | "keyu" => KeyCode::KeyU,
+        "v" | "keyv" => KeyCode::KeyV,
+        "w" | "keyw" => KeyCode::KeyW,
+        "x" | "keyx" => KeyCode::KeyX,
+        "y" | "keyy" => KeyCode::KeyY,
+        "z" | "keyz" => KeyCode::KeyZ,
+        "0" | "digit0" => KeyCode::Digit0,
+        "1" | "digit1" => KeyCode::Digit1,
+        "2" | "digit2" => KeyCode::Digit2,
+        "3" | "digit3" => KeyCode::Digit3,
+        "4" | "digit4" => KeyCode::Digit4,
+        "5" | "digit5" => KeyCode::Digit5,
+        "6" | "digit6" => KeyCode::Digit6,
+        "7" | "digit7" => KeyCode::Digit7,
+        "8" | "digit8" => KeyCode::Digit8,
+        "9" | "digit9" => KeyCode::Digit9,
+        "arrowup" | "up" => KeyCode::ArrowUp,
+        "arrowdown" | "down" => KeyCode::ArrowDown,
+        "arrowleft" | "left" => KeyCode::ArrowLeft,
+        "arrowright" | "right" => KeyCode::ArrowRight,
+        "space" => KeyCode::Space,
+        "enter" => KeyCode::Enter,
+        "tab" => KeyCode::Tab,
+        "shiftleft" | "shift" => KeyCode::ShiftLeft,
+        "controlleft" | "control" | "ctrl" => KeyCode::ControlLeft,
+        _ => return Err(format!("unsupported managed runtime key `{key}`")),
+    };
+    Ok(key)
+}
+
+fn provider_mouse_button(button: &str) -> Result<MouseButton, String> {
+    match button.trim().to_ascii_lowercase().as_str() {
+        "left" | "primary" => Ok(MouseButton::Left),
+        "right" | "secondary" => Ok(MouseButton::Right),
+        "middle" => Ok(MouseButton::Middle),
+        _ => Err(format!("unsupported managed runtime mouse button `{button}`")),
     }
 }
 
@@ -1282,6 +1445,33 @@ mod tests {
             event,
             ProviderAgentEvent::Progress { step, detail } if step == "inspect" && detail == "scene"
         ));
+    }
+
+    #[test]
+    fn provider_runtime_input_maps_to_engine_input_command() {
+        let event: ProviderAgentEvent = serde_json::from_str(
+            r#"{"type":"runtime_input","input":{"kind":"key","key":"W","pressed":true}}"#,
+        )
+        .expect("runtime input event");
+        let ProviderAgentEvent::RuntimeInput { input } = event else {
+            panic!("runtime input event");
+        };
+        assert_eq!(
+            input.command().expect("command"),
+            InputCommand::Key {
+                key: KeyCode::KeyW,
+                pressed: true,
+            }
+        );
+    }
+
+    #[test]
+    fn provider_runtime_input_rejects_non_finite_numbers() {
+        let input = ProviderRuntimeInput::MouseMove {
+            x: f32::NAN,
+            y: 1.0,
+        };
+        assert!(input.command().is_err());
     }
 
     #[test]

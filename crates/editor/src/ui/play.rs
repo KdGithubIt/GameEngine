@@ -743,6 +743,15 @@ impl EditorApp {
                     AiStudioRuntimeResult::Failed("Editor Play could not start; inspect the current Editor diagnostics.".to_owned())
                 }
             }
+            AiStudioRuntimeAction::SendInput(command) => {
+                let Some(runtime) = self.runtime_state.as_mut() else {
+                    return AiStudioRuntimeResult::Failed(
+                        "Managed runtime input requires an active Editor Play session.".to_owned(),
+                    );
+                };
+                runtime.queue_input(InputSource::AiAgent, command);
+                AiStudioRuntimeResult::RuntimeInputQueued(command)
+            }
             AiStudioRuntimeAction::CaptureFrame => {
                 let Some(render_state) = render_state else {
                     return AiStudioRuntimeResult::Failed("WGPU render state is unavailable for managed frame capture.".to_owned());

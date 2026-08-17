@@ -983,6 +983,29 @@ impl AgentHost {
         Ok(())
     }
 
+    pub(crate) fn record_managed_runtime_input(
+        &mut self,
+        run_id: &str,
+        command: impl Into<String>,
+    ) -> Result<(), AgentHostError> {
+        let command = command.into();
+        let (session_id, _) = self.run_location(run_id)?;
+        let run = self.run_mut_in_session(&session_id, run_id)?;
+        run.audit.managed_runtime_inputs = run.audit.managed_runtime_inputs.saturating_add(1);
+        push_event_with_evidence(
+            run,
+            AgentEventKind::ToolAction,
+            format!("Managed runtime input queued through the AI Agent virtual-input source: {command}."),
+            None,
+            Some(AgentEventEvidence::ToolAction {
+                tool: "runtime.input".to_owned(),
+                action: command,
+                success: Some(true),
+            }),
+        );
+        self.persist_session(&session_id)
+    }
+
     pub(crate) fn record_playtest_result(
         &mut self,
         run_id: &str,
@@ -2576,6 +2599,45 @@ mod tests {
         assert_eq!(events.len(), MAX_PERSISTED_EVENTS_PER_RUN);
         assert!(events.windows(2).all(|pair| pair[0].sequence < pair[1].sequence));
         assert!(events.first().expect("first").sequence > 1);
+        let _ = fs::remove_dir_all(project);
+        let _ = fs::remove_dir_all(storage);
+    }
+
+    #[test]
+    fn managed_runtime_input_is_engine_owned_completion_evidence() {
+        let project = temp_path("runtime-input-project");
+        let storage = temp_path("runtime-input-storage");
+        fs::create_dir_all(&project).expect("test project directory");
+        let mut host = AgentHost::open(project.clone(), storage.clone()).expect("host");
+        let session = host.create_session("Runtime input").expect("session");
+        let mut proposal = host.session(&session).expect("session").proposal.clone();
+        proposal.playtest_plan = vec!["press W once".to_owned()];
+        host.update_proposal(&session, proposal).expect("proposal");
+        let run = host.start_run(&session, "test").expect("run");
+
+        host.record_playtest_result(&run, true, Some(true), "provider claim")
+            .expect("provider claim");
+        assert_eq!(
+            host.run(&run).expect("run").completion.interaction_scenarios,
+            CompletionStatus::Pending
+        );
+
+        host.record_managed_runtime_input(&run, "key_w pressed")
+            .expect("runtime input evidence");
+        host.record_playtest_result(&run, true, Some(true), "re-evaluated after managed input")
+            .expect("managed result");
+
+        let run_state = host.run(&run).expect("run");
+        assert_eq!(run_state.audit.managed_runtime_inputs, 1);
+        assert_eq!(
+            run_state.completion.interaction_scenarios,
+            CompletionStatus::Passed
+        );
+        assert!(run_state.events.iter().any(|event| matches!(
+            &event.evidence,
+            Some(AgentEventEvidence::ToolAction { tool, success: Some(true), .. })
+                if tool == "runtime.input"
+        )));
         let _ = fs::remove_dir_all(project);
         let _ = fs::remove_dir_all(storage);
     }
