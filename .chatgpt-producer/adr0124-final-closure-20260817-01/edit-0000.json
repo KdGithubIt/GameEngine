@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "docs/adr/0124-production-navigation-mesh-and-bake-workflow.md",
+  "old": "Status: Proposed",
+  "new": "Status: Accepted"
+}
