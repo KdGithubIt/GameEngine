@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/project_settings_panel.rs",
+  "old": "    /// `true` when the panel contains unsaved changes.\n    pub is_dirty: bool,\n    authoring: TypedDocumentAuthoringState,\n}\n\nimpl ProjectSettingsPanel {\n    /// Creates a panel backed by the given `settings`.\n    pub fn new(settings: ProjectSettings) -> Self {\n        Self {\n            settings,\n            post_process: PostProcessSettings::default(),\n            is_dirty: false,\n            authoring: TypedDocumentAuthoringState::new(),\n        }\n    }",
+  "new": "    /// `true` when the panel contains unsaved changes.\n    pub is_dirty: bool,\n    authoring: TypedDocumentAuthoringState,\n    undo: Vec<ProjectSettings>,\n    redo: Vec<ProjectSettings>,\n}\n\nimpl ProjectSettingsPanel {\n    /// Creates a panel backed by the given `settings`.\n    pub fn new(settings: ProjectSettings) -> Self {\n        Self {\n            settings,\n            post_process: PostProcessSettings::default(),\n            is_dirty: false,\n            authoring: TypedDocumentAuthoringState::new(),\n            undo: Vec::new(),\n            redo: Vec::new(),\n        }\n    }"
+}
