@@ -1,0 +1,21 @@
+diff --git a/crates/editor/src/vfx_builder_completion.rs b/crates/editor/src/vfx_builder_completion.rs
+index d52955fd8ecb3415d7d382393a0644eb12869326..ff3efb8438cdee3b7817c83855f014779d70ff9a 100644
+--- a/crates/editor/src/vfx_builder_completion.rs
++++ b/crates/editor/src/vfx_builder_completion.rs
+@@ -1085,13 +1085,12 @@ mod tests {
+         assert!(emitter.modules.iter().all(|module| module.phase == module.operation.required_phase()));
+         effect.emitters.push(emitter);
+ 
++        let compilation = VfxAuthoringService::new().compile(&effect);
+         let mut preview = VfxPreviewState::default();
+-        preview.open_effect(&effect);
+         preview.current_time = 0.75;
+-        preview.recompile(&effect, true);
++        preview.apply_compilation(&effect, &compilation, true);
+ 
+-        let compiled = VfxAuthoringService::new()
+-            .compile(&effect)
++        let compiled = compilation
+             .compiled_effect
+             .expect("valid effect compiles");
+         let mut expected = VfxPlayer::new(
