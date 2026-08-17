@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0139-wc-r2-test-fixture-fix-20260818-0057-r1",
+  "target_branch": "chatgpt/gameengine-adr0139-working-copy-r2",
+  "expected_head_sha": "8fb78cbe7e58dec69a461d8baf14255dccc5bcd5",
+  "baseline_main_sha": "b4ea5dd8a60497f7ac71e886842adde86e1a3087",
+  "patch_sha256": "198444a950c8dabc8084867b2ec68892945a5ebbef3958dcb6527edc69121fb9",
+  "patch_bytes": 751,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Fix ADR 0139 explicit-save test fixture",
+  "pr_title": "Implement ADR 0139 authoritative working copies",
+  "pr_body": "Implements ADR 0139 authoritative Editor working-copy and saved-copy coherency on current main while preserving ADR 0138 Animation Graph debug provenance.\n\n- keeps existing workspace and specialized editor sessions as the single mutable owners\n- supplies immutable working-copy snapshots to Problems validation, Scene View, and Play\n- removes Material canonical autosave and makes persistence explicit through Save/Save All\n- makes Animation Set consume an open Animation Graph working copy\n- detects external saved-copy changes, automatically reloads only clean specialized editors, and requires explicit discard for dirty conflicts\n- fixes the explicit Material Save test fixture to create a real dirty working copy before asserting disk remains unchanged\n\n<!-- gameengine-visual-validation: editor -->"
+}
