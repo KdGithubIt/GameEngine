@@ -3,7 +3,6 @@ use engine_authoring::{
     replace_file_contents, AssetId, ComponentTypeId, Value, VfxAuthoringService, VfxTemplate,
 };
 use std::collections::BTreeMap;
-use std::path::PathBuf;
 
 impl EditorApp {
     pub fn prepare_vfx_visual_validation(&mut self) {
@@ -22,7 +21,7 @@ impl EditorApp {
         let json = service
             .effect_to_canonical_json(&effect)
             .map_err(|error| error.to_string())?;
-        let relative_path = PathBuf::from("vfx/visual_validation_smoke.vfx.json");
+        let relative_path = "vfx/visual_validation_smoke.vfx.json".to_owned();
         let asset_path = project.assets_root().join(&relative_path);
         if let Some(parent) = asset_path.parent() {
             std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
