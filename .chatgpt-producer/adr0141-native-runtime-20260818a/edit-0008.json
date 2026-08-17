@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "    QuestionRole, DEFAULT_LOCAL_MODEL_ENDPOINT,\n};\nuse crate::resource_arbitration::{",
+  "new": "    QuestionRole, DEFAULT_LOCAL_MODEL_ENDPOINT,\n};\nuse crate::native_agent_runtime::{NativeAgentAction, NativeAgentRuntime, NativeMcpTask};\nuse crate::resource_arbitration::{"
+}
