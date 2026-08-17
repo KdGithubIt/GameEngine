@@ -5,25 +5,56 @@ use engine_authoring::{SpriteAnimationDocument, SpriteRef};
 /// Independent per-entity runtime playback state for an immutable Sprite Animation asset.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SpriteAnimationState2d {
+    /// Whether this playback instance currently advances.
     pub playing: bool,
+    /// Current frame index in the immutable clip.
     pub frame_index: usize,
+    /// Integer ticks already consumed inside the current frame.
     pub tick_in_frame: u32,
+    /// Non-negative per-instance playback speed multiplier.
     pub speed: f32,
     fractional_ticks: f64,
 }
 
 impl Default for SpriteAnimationState2d {
-    fn default() -> Self { Self { playing: true, frame_index: 0, tick_in_frame: 0, speed: 1.0, fractional_ticks: 0.0 } }
+    fn default() -> Self {
+        Self {
+            playing: true,
+            frame_index: 0,
+            tick_in_frame: 0,
+            speed: 1.0,
+            fractional_ticks: 0.0,
+        }
+    }
 }
 
 /// Frame event emitted by exact integer-tick progression.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SpriteFrameEvent2d { pub frame_index: usize, pub name: String }
+pub struct SpriteFrameEvent2d {
+    /// Frame index entered when the event was emitted.
+    pub frame_index: usize,
+    /// Authored event name.
+    pub name: String,
+}
 
 impl SpriteAnimationState2d {
-    pub fn play(&mut self) { self.playing = true; }
-    pub fn pause(&mut self) { self.playing = false; }
-    pub fn stop(&mut self) { self.playing = false; self.frame_index = 0; self.tick_in_frame = 0; self.fractional_ticks = 0.0; }
+    /// Resumes deterministic playback from the current frame and tick.
+    pub fn play(&mut self) {
+        self.playing = true;
+    }
+
+    /// Pauses playback without changing the current frame or tick.
+    pub fn pause(&mut self) {
+        self.playing = false;
+    }
+
+    /// Stops playback and rewinds to the beginning of the clip.
+    pub fn stop(&mut self) {
+        self.playing = false;
+        self.frame_index = 0;
+        self.tick_in_frame = 0;
+        self.fractional_ticks = 0.0;
+    }
     /// Advances from elapsed seconds by converting to the clip's exact integer tick domain.
     pub fn advance(&mut self, clip: &SpriteAnimationDocument, seconds: f64, looping_override: Option<bool>) -> Vec<SpriteFrameEvent2d> {
         if !self.playing || clip.frames.is_empty() || clip.ticks_per_second == 0 || seconds <= 0.0 || !seconds.is_finite() { return Vec::new(); }
@@ -44,7 +75,13 @@ impl SpriteAnimationState2d {
         }
         events
     }
-    pub fn current_sprite<'a>(&self, clip: &'a SpriteAnimationDocument) -> Option<&'a SpriteRef> { clip.frames.get(self.frame_index).map(|frame| &frame.sprite) }
+    /// Returns the sprite referenced by the current playback frame.
+    pub fn current_sprite<'a>(
+        &self,
+        clip: &'a SpriteAnimationDocument,
+    ) -> Option<&'a SpriteRef> {
+        clip.frames.get(self.frame_index).map(|frame| &frame.sprite)
+    }
 }
 
 #[cfg(test)] mod tests { use super::*; use engine_authoring::{AssetId, SpriteAnimationFrame, SpriteId};

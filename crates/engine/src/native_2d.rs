@@ -8,9 +8,50 @@ pub use engine_render_runtime::native_2d::{cull_tile_chunks, select_active_camer
 
 /// Performance counters recorded by the proving scenario and Editor diagnostics.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
-pub struct Native2dPerformanceStats { pub sprite_count:u32, pub sprite_batches:u32, pub visible_tile_chunks:u32, pub rebuilt_tile_chunks:u32, pub tile_edit_millis:f32, pub physics_step_millis:f32 }
+pub struct Native2dPerformanceStats {
+    /// Number of visible sprite instances in the measured frame.
+    pub sprite_count: u32,
+    /// Number of contiguous sprite batches submitted in the measured frame.
+    pub sprite_batches: u32,
+    /// Number of Tile Map chunks visible to the active Camera2D.
+    pub visible_tile_chunks: u32,
+    /// Number of Tile Map chunks rebuilt by the measured authoring gesture.
+    pub rebuilt_tile_chunks: u32,
+    /// End-to-end Tile Map gesture latency in milliseconds.
+    pub tile_edit_millis: f32,
+    /// Dedicated 2D fixed-step simulation time in milliseconds.
+    pub physics_step_millis: f32,
+}
 
 /// First-release acceptance budget used by the proving project.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Native2dAcceptanceBudget { pub max_sprite_batches:u32, pub max_rebuilt_chunks_per_stroke:u32, pub max_tile_edit_millis:f32, pub max_physics_step_millis:f32 }
-impl Native2dAcceptanceBudget { pub fn validate(self,stats:Native2dPerformanceStats)->Vec<&'static str>{let mut out=Vec::new();if stats.sprite_batches>self.max_sprite_batches{out.push("sprite batch budget exceeded");}if stats.rebuilt_tile_chunks>self.max_rebuilt_chunks_per_stroke{out.push("tile chunk rebuild budget exceeded");}if stats.tile_edit_millis>self.max_tile_edit_millis{out.push("tile edit latency budget exceeded");}if stats.physics_step_millis>self.max_physics_step_millis{out.push("2D physics step budget exceeded");}out}}
+pub struct Native2dAcceptanceBudget {
+    /// Maximum accepted sprite batches for the proving frame.
+    pub max_sprite_batches: u32,
+    /// Maximum chunks allowed to rebuild for one bounded tile stroke.
+    pub max_rebuilt_chunks_per_stroke: u32,
+    /// Maximum accepted Tile Map edit latency in milliseconds.
+    pub max_tile_edit_millis: f32,
+    /// Maximum accepted 2D physics step time in milliseconds.
+    pub max_physics_step_millis: f32,
+}
+
+impl Native2dAcceptanceBudget {
+    /// Returns every acceptance-budget violation represented by `stats`.
+    pub fn validate(self, stats: Native2dPerformanceStats) -> Vec<&'static str> {
+        let mut out = Vec::new();
+        if stats.sprite_batches > self.max_sprite_batches {
+            out.push("sprite batch budget exceeded");
+        }
+        if stats.rebuilt_tile_chunks > self.max_rebuilt_chunks_per_stroke {
+            out.push("tile chunk rebuild budget exceeded");
+        }
+        if stats.tile_edit_millis > self.max_tile_edit_millis {
+            out.push("tile edit latency budget exceeded");
+        }
+        if stats.physics_step_millis > self.max_physics_step_millis {
+            out.push("2D physics step budget exceeded");
+        }
+        out
+    }
+}

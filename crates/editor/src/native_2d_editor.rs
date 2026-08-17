@@ -4,10 +4,52 @@ use eframe::egui;
 
 /// Transient 2D Scene View/tool state. Persisted edits are delegated to authoring services.
 #[derive(Debug, Clone)]
-pub struct Native2dEditorState { pub show_pixel_grid:bool, pub show_sorting:bool, pub show_colliders:bool, pub show_chunks:bool, pub zoom:f32, pub selected_tool:TileTool2d }
-impl Default for Native2dEditorState { fn default()->Self{Self{show_pixel_grid:true,show_sorting:true,show_colliders:true,show_chunks:true,zoom:1.0,selected_tool:TileTool2d::Paint}} }
+pub struct Native2dEditorState {
+    /// Whether the 2D pixel/grid overlay is visible.
+    pub show_pixel_grid: bool,
+    /// Whether logical sorting information is visible.
+    pub show_sorting: bool,
+    /// Whether 2D collider gizmos are visible.
+    pub show_colliders: bool,
+    /// Whether sparse Tile Map chunk boundaries are visible.
+    pub show_chunks: bool,
+    /// Transient editor-only view zoom.
+    pub zoom: f32,
+    /// Active Tile Map authoring tool.
+    pub selected_tool: TileTool2d,
+}
+
+impl Default for Native2dEditorState {
+    fn default() -> Self {
+        Self {
+            show_pixel_grid: true,
+            show_sorting: true,
+            show_colliders: true,
+            show_chunks: true,
+            zoom: 1.0,
+            selected_tool: TileTool2d::Paint,
+        }
+    }
+}
+
 /// Tile editing gesture exposed by the dedicated workspace.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)] pub enum TileTool2d { Paint, Erase, Rectangle, Line, Fill, Eyedropper, SelectStamp }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TileTool2d {
+    /// Paint the selected tile into touched cells.
+    Paint,
+    /// Clear touched cells.
+    Erase,
+    /// Paint a rectangular region.
+    Rectangle,
+    /// Paint a rasterized line.
+    Line,
+    /// Flood-fill a contiguous region.
+    Fill,
+    /// Pick the tile under the pointer.
+    Eyedropper,
+    /// Select a region and stamp it elsewhere.
+    SelectStamp,
+}
 
 impl Native2dEditorState {
     /// Draws a visual-validation fixture containing Scene View, Game View, Sprite, Tile Map, collider, pivot, and Camera2D cues.

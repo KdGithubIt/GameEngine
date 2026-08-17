@@ -5,20 +5,37 @@ use glam::{Mat4, Vec2, Vec3};
 
 /// Orthographic viewport-fit policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ViewportFit2d { Fit, Fill, Stretch }
+pub enum ViewportFit2d {
+    /// Preserve the complete reference frame and allow unused viewport space.
+    Fit,
+    /// Fill the viewport and crop reference-frame overflow.
+    Fill,
+    /// Stretch reference dimensions to the viewport shape.
+    Stretch,
+}
 
 /// Runtime Camera2D contract. It uses the normal Transform for pose.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Camera2d {
+    /// Whether this camera participates in Game View arbitration.
     pub enabled: bool,
+    /// Selection priority shared with other game-camera kinds.
     pub priority: i32,
+    /// Vertical orthographic world span before zoom.
     pub orthographic_height: f32,
+    /// Positive projection zoom multiplier.
     pub zoom: f32,
+    /// Near clipping plane in camera space.
     pub near: f32,
+    /// Far clipping plane in camera space.
     pub far: f32,
+    /// Whether projection follows deterministic reference-pixel scaling.
     pub pixel_perfect: bool,
+    /// Reference texture pixels represented by one world unit.
     pub reference_pixels_per_unit: f32,
+    /// Reference pixel-perfect resolution `[width, height]`.
     pub reference_resolution: [u32; 2],
+    /// Viewport fitting policy.
     pub fit: ViewportFit2d,
 }
 
@@ -28,7 +45,14 @@ impl Default for Camera2d {
 
 /// Why a Camera2D pose cannot be represented by the XY convention.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Camera2dDiagnostic { NonFinitePose, NonPlanarTilt, InvalidProjection }
+pub enum Camera2dDiagnostic {
+    /// Camera transform contains non-finite values.
+    NonFinitePose,
+    /// Camera rotation tilts away from the XY gameplay plane.
+    NonPlanarTilt,
+    /// Projection settings cannot form a finite orthographic matrix.
+    InvalidProjection,
+}
 
 impl Camera2d {
     /// Builds a deterministic orthographic projection without changing authored transforms.
@@ -56,11 +80,39 @@ pub fn validate_camera_pose(forward: Vec3, up: Vec3) -> Result<(), Camera2dDiagn
 
 /// Common camera-arbitration input shared by Camera2D and Camera3D adapters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ActiveCameraCandidate { pub entity_key: u64, pub enabled: bool, pub priority: i32, pub kind: CameraKind }
+pub struct ActiveCameraCandidate {
+    /// Stable deterministic runtime entity key.
+    pub entity_key: u64,
+    /// Whether the camera may drive the Game View.
+    pub enabled: bool,
+    /// Shared camera-selection priority; higher values win.
+    pub priority: i32,
+    /// Projection family owned by the candidate.
+    pub kind: CameraKind,
+}
+
+/// Projection family participating in shared Game View arbitration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CameraKind { TwoD, ThreeD }
+pub enum CameraKind {
+    /// Native orthographic Camera2D.
+    TwoD,
+    /// Existing perspective Camera3D.
+    ThreeD,
+}
+
+/// Deterministic result of shared Game View camera arbitration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ActiveCameraSelection { None, Selected(ActiveCameraCandidate), Ambiguous { priority: i32 } }
+pub enum ActiveCameraSelection {
+    /// No enabled camera exists.
+    None,
+    /// Exactly one highest-priority camera was selected.
+    Selected(ActiveCameraCandidate),
+    /// More than one enabled camera shares the highest priority.
+    Ambiguous {
+        /// Highest priority shared by the ambiguous candidates.
+        priority: i32,
+    },
+}
 
 /// Selects one camera by shared enabled/priority intent; highest-priority ties are diagnosed.
 pub fn select_active_camera(candidates: impl IntoIterator<Item = ActiveCameraCandidate>) -> ActiveCameraSelection {
@@ -73,14 +125,52 @@ pub fn select_active_camera(candidates: impl IntoIterator<Item = ActiveCameraCan
 /// Extracted SpriteRenderer2D instance. `entity_key` is the deterministic equal-order tie-break.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SpriteInstance2d {
-    pub entity_key: u64, pub sprite: SpriteRef, pub sorting_layer: SortingLayerId, pub layer_rank: u32, pub order_in_layer: i32,
-    pub texture_page: u32, pub material_key: u64, pub sampler_key: u64, pub position: Vec2, pub size: Vec2, pub pivot: Vec2,
-    pub tint: [f32; 4], pub flip_x: bool, pub flip_y: bool, pub visible: bool,
+    /// Stable deterministic runtime entity key.
+    pub entity_key: u64,
+    /// Stable logical sprite reference.
+    pub sprite: SpriteRef,
+    /// Stable logical sorting layer.
+    pub sorting_layer: SortingLayerId,
+    /// Resolved project ordering rank for the sorting layer.
+    pub layer_rank: u32,
+    /// Signed authored order within the logical layer.
+    pub order_in_layer: i32,
+    /// Runtime texture page selected by asset compilation.
+    pub texture_page: u32,
+    /// Runtime material batching key.
+    pub material_key: u64,
+    /// Runtime sampler batching key.
+    pub sampler_key: u64,
+    /// World XY sprite origin.
+    pub position: Vec2,
+    /// World XY sprite size.
+    pub size: Vec2,
+    /// Normalized pivot used to place the quad around the origin.
+    pub pivot: Vec2,
+    /// Linear RGBA tint multiplier.
+    pub tint: [f32; 4],
+    /// Whether texture coordinates are mirrored horizontally.
+    pub flip_x: bool,
+    /// Whether texture coordinates are mirrored vertically.
+    pub flip_y: bool,
+    /// Whether this instance contributes a draw.
+    pub visible: bool,
 }
 
 /// One deterministic contiguous sprite batch.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SpriteBatch2d { pub texture_page: u32, pub material_key: u64, pub sampler_key: u64, pub first: usize, pub count: usize }
+pub struct SpriteBatch2d {
+    /// Runtime texture page shared by every instance in the batch.
+    pub texture_page: u32,
+    /// Runtime material key shared by every instance in the batch.
+    pub material_key: u64,
+    /// Runtime sampler key shared by every instance in the batch.
+    pub sampler_key: u64,
+    /// First sorted instance index included in the batch.
+    pub first: usize,
+    /// Number of contiguous sorted instances included in the batch.
+    pub count: usize,
+}
 
 /// Sorts instances by authored logical order and derives compatible contiguous batches.
 pub fn sort_and_batch_sprites(instances: &mut [SpriteInstance2d]) -> Vec<SpriteBatch2d> {
@@ -96,8 +186,22 @@ pub fn sort_and_batch_sprites(instances: &mut [SpriteInstance2d]) -> Vec<SpriteB
 
 /// Camera-visible XY rectangle.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct ViewRect2d { pub min: Vec2, pub max: Vec2 }
-impl ViewRect2d { pub fn intersects(self, min: Vec2, max: Vec2) -> bool { self.min.x <= max.x && self.max.x >= min.x && self.min.y <= max.y && self.max.y >= min.y } }
+pub struct ViewRect2d {
+    /// Inclusive minimum world XY corner.
+    pub min: Vec2,
+    /// Inclusive maximum world XY corner.
+    pub max: Vec2,
+}
+
+impl ViewRect2d {
+    /// Returns whether an XY bounds pair intersects this visible rectangle.
+    pub fn intersects(self, min: Vec2, max: Vec2) -> bool {
+        self.min.x <= max.x
+            && self.max.x >= min.x
+            && self.min.y <= max.y
+            && self.max.y >= min.y
+    }
+}
 
 /// Returns visible Tile Map chunks only; unrelated chunks remain untouched.
 pub fn cull_tile_chunks(chunks: impl IntoIterator<Item = (TileChunkCoord, Vec2, Vec2)>, view: ViewRect2d) -> Vec<TileChunkCoord> {
