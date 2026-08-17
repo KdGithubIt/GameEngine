@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "        } else {\n            None\n        };\n        let mut environment = vec![",
+  "new": "        } else {\n            None\n        };\n        let network_policy = match self.host.run(run_id) {\n            Ok(run)\n                if run\n                    .proposal_snapshot\n                    .requested_capabilities\n                    .contains(&AgentCapability::NetworkAccess) =>\n            {\n                AgentConfinementNetworkPolicy::ManagedNetworkAccess\n            }\n            Ok(_) => AgentConfinementNetworkPolicy::LoopbackOnly,\n            Err(error) => {\n                self.fail_run(\n                    run_id,\n                    format!(\"Could not resolve confinement policy from run capabilities: {error}\"),\n                );\n                return;\n            }\n        };\n        let confinement_request = AgentConfinementRequest::new(\n            self.confinement_requirement,\n            workspace.root().to_path_buf(),\n            self.connection.endpoint.clone(),\n            network_policy,\n        );\n        let mut environment = vec!["
+}

@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "use crate::agent_host::{\n    project_storage_key, AgentCapability, AgentEventKind, AgentHost, AgentProposal, AgentRunState,\n    ApprovalScope, AuthoritativeStateSnapshot, CodeChange, CodeWorkspace, CompletionStatus,\n    ConversationRole, ExternalAgentProcess, ManagedValidationAttemptStatus, PermissionCheck,\n    ProcessStream, ResumeDisposition,\n};",
+  "new": "use crate::agent_host::{\n    project_storage_key, AgentCapability, AgentConfinementNetworkPolicy, AgentConfinementRequest,\n    AgentConfinementRequirement, AgentEventKind, AgentHost, AgentProposal, AgentRunState,\n    ApprovalScope, AuthoritativeStateSnapshot, CodeChange, CodeWorkspace, CompletionStatus,\n    ConversationRole, ExternalAgentProcess, ManagedValidationAttemptStatus, PermissionCheck,\n    ProcessStream, ResumeDisposition,\n};"
+}

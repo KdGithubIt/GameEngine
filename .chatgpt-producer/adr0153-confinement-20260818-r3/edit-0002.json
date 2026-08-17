@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/agent_host.rs",
+  "old": "            events: Vec::new(),\n            completion: CompletionReport::default(),\n            working_state: AgentWorkingState::from_proposal(&session.proposal),",
+  "new": "            events: Vec::new(),\n            completion: CompletionReport::default(),\n            confinement_profile: None,\n            working_state: AgentWorkingState::from_proposal(&session.proposal),"
+}
