@@ -1,0 +1,16 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0135-20260817-r3",
+  "target_branch": "chatgpt/gameengine-adr0135-resource-arbitration",
+  "expected_head_sha": "b6d56a12a266e9f1a558fd530afd856dcccb4d74",
+  "baseline_main_sha": "b6d56a12a266e9f1a558fd530afd856dcccb4d74",
+  "patch_sha256": "ad5e623bec52651e27133619c424ac68e80f39b4e5f0a873c34fbcbe86b28142",
+  "patch_bytes": 78199,
+  "patch_parts": [
+    "part-0000.patch",
+    "part-0001.patch"
+  ],
+  "commit_message": "Implement ADR0135 native inference resource arbitration",
+  "pr_title": "GameEngine: implement ADR0135 native inference resource arbitration",
+  "pr_body": "## Summary\n\nImplements ADR0135 first-release native inference scheduling and Editor GPU resource arbitration on top of the existing ADR0131 Agent Host contract. Adds provider-independent workload/quality/resource planning, explicit backend resource capabilities, conservative telemetry, InferenceFocused presentation reclaim/restore, native inference interruption, persistent editing interruption/resume state with authoritative reinspection, renderer priority for Play/capture, and benchmark evidence plumbing.\n\n## Safety\n\nPreserves Stop as cancellation, keeps MCP/authoring authority unchanged, does not expose provider-specific raw GPU knobs, and does not move agent lifecycle into engine-renderer."
+}
