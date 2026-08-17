@@ -1,0 +1,240 @@
+name: GameEngine ChatGPT Dispatcher Post-Push Recovery
+
+run-name: >-
+  ChatGPT dispatcher post-push recovery ${{ github.event.inputs.request_commit }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      request_commit:
+        description: Published chatgpt-dispatch ready commit SHA whose product commit was already pushed
+        required: true
+        type: string
+
+permissions:
+  actions: write
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: gameengine-chatgpt-dispatcher
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  reconcile:
+    name: Verify pushed request and resume review
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out trusted recovery implementation
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: main
+          fetch-depth: 1
+          path: trusted
+          persist-credentials: false
+
+      - name: Check out request transport branch as data
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: chatgpt-dispatch
+          fetch-depth: 0
+          path: request-source
+          persist-credentials: false
+
+      - name: Inspect published recovery request
+        id: request
+        shell: bash
+        env:
+          EXPECTED_REPOSITORY: KdGithubIt/GameEngine
+          REQUEST_COMMIT: ${{ github.event.inputs.request_commit }}
+        run: |
+          set -euo pipefail
+
+          [[ "$GITHUB_REPOSITORY" == "$EXPECTED_REPOSITORY" ]] || {
+            echo "::error::This workflow is restricted to $EXPECTED_REPOSITORY."
+            exit 1
+          }
+          [[ "$GITHUB_REF_NAME" == "main" ]] || {
+            echo "::error::Post-push recovery must run from trusted main."
+            exit 1
+          }
+          [[ "$REQUEST_COMMIT" =~ ^[0-9a-fA-F]{40}$ ]] || {
+            echo "::error::request_commit must be a full SHA."
+            exit 1
+          }
+
+          result="$RUNNER_TEMP/dispatcher-recovery-inspect.json"
+          python3 "$GITHUB_WORKSPACE/trusted/.github/chatgpt/dispatcher_recovery.py" inspect \
+            --request-repo "$GITHUB_WORKSPACE/request-source" \
+            --request-commit "$REQUEST_COMMIT" > "$result"
+
+          {
+            echo "request_commit=$(jq -r '.request_commit' "$result")"
+            echo "request_id=$(jq -r '.request_id' "$result")"
+            echo "ready_path=$(jq -r '.ready_path' "$result")"
+            echo "target_branch=$(jq -r '.target_branch' "$result")"
+            echo "expected_head_sha=$(jq -r '.expected_head_sha' "$result")"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Check out already-pushed target branch read-only
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ steps.request.outputs.target_branch }}
+          fetch-depth: 0
+          path: target
+          persist-credentials: false
+
+      - name: Verify exact already-applied product commit
+        id: verify
+        shell: bash
+        env:
+          REQUEST_COMMIT: ${{ steps.request.outputs.request_commit }}
+        run: |
+          set -euo pipefail
+          result="$RUNNER_TEMP/dispatcher-recovery-verify.json"
+          python3 "$GITHUB_WORKSPACE/trusted/.github/chatgpt/dispatcher_recovery.py" verify-applied \
+            --request-repo "$GITHUB_WORKSPACE/request-source" \
+            --request-commit "$REQUEST_COMMIT" \
+            --target-repo "$GITHUB_WORKSPACE/target" > "$result"
+          echo "already_applied_head_sha=$(jq -r '.already_applied_head_sha' "$result")" >> "$GITHUB_OUTPUT"
+
+      - name: Ensure Draft PR and dispatch exact-head Windows Validation
+        id: reconcile
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUEST_COMMIT: ${{ steps.request.outputs.request_commit }}
+          REQUEST_ID: ${{ steps.request.outputs.request_id }}
+          READY_PATH: ${{ steps.request.outputs.ready_path }}
+          TARGET_BRANCH: ${{ steps.request.outputs.target_branch }}
+          PUSHED_HEAD_SHA: ${{ steps.verify.outputs.already_applied_head_sha }}
+        run: |
+          set -euo pipefail
+
+          api_retry() {
+            local output_file="$1"
+            shift
+            local error_file="$RUNNER_TEMP/gh-api-error.txt"
+            for attempt in 1 2 3 4 5; do
+              if gh api "$@" > "$output_file" 2> "$error_file"; then
+                return 0
+              fi
+              if [[ "$attempt" -lt 5 ]] && grep -Eqi 'HTTP 5[0-9][0-9]|timed out|connection reset|service unavailable' "$error_file"; then
+                sleep $((attempt * 2))
+                continue
+              fi
+              cat "$error_file" >&2
+              return 1
+            done
+          }
+
+          command_retry() {
+            local error_file="$RUNNER_TEMP/gh-command-error.txt"
+            for attempt in 1 2 3 4 5; do
+              if "$@" 2> "$error_file"; then
+                return 0
+              fi
+              if [[ "$attempt" -lt 5 ]] && grep -Eqi 'HTTP 5[0-9][0-9]|timed out|connection reset|service unavailable' "$error_file"; then
+                sleep $((attempt * 2))
+                continue
+              fi
+              cat "$error_file" >&2
+              return 1
+            done
+          }
+
+          manifest="$RUNNER_TEMP/chatgpt-ready.json"
+          git -C "$GITHUB_WORKSPACE/request-source" show "$REQUEST_COMMIT:$READY_PATH" > "$manifest"
+          pr_title="$(jq -r '.pr_title' "$manifest")"
+          pr_body_file="$RUNNER_TEMP/chatgpt-pr-body.md"
+          jq -r '.pr_body' "$manifest" > "$pr_body_file"
+          printf '\n\n<!-- gameengine-chatgpt-dispatcher -->\n' >> "$pr_body_file"
+
+          owner="${GITHUB_REPOSITORY%%/*}"
+          pr_list="$RUNNER_TEMP/open-prs.json"
+          api_retry "$pr_list" --method GET "repos/$GITHUB_REPOSITORY/pulls" \
+            -f state=open -f base=main -f head="$owner:$TARGET_BRANCH" -F per_page=2
+          pr_count="$(jq 'length' "$pr_list")"
+          [[ "$pr_count" -le 1 ]] || {
+            echo "::error::More than one open PR targets this recovery branch."
+            exit 1
+          }
+
+          if [[ "$pr_count" -eq 0 ]]; then
+            create_payload="$RUNNER_TEMP/create-pr.json"
+            jq -n \
+              --arg title "$pr_title" \
+              --arg head "$TARGET_BRANCH" \
+              --arg body "$(cat "$pr_body_file")" \
+              '{title:$title, head:$head, base:"main", body:$body, draft:true}' > "$create_payload"
+            pr_json="$RUNNER_TEMP/created-pr.json"
+            api_retry "$pr_json" --method POST "repos/$GITHUB_REPOSITORY/pulls" --input "$create_payload"
+          else
+            pr_json="$RUNNER_TEMP/existing-pr.json"
+            cp "$pr_list" "$RUNNER_TEMP/existing-pr-list.json"
+            jq '.[0]' "$RUNNER_TEMP/existing-pr-list.json" > "$pr_json"
+            [[ "$(jq -r '.base.ref' "$pr_json")" == "main" ]] || {
+              echo "::error::Existing PR does not target main."
+              exit 1
+            }
+            [[ "$(jq -r '.head.ref' "$pr_json")" == "$TARGET_BRANCH" ]] || {
+              echo "::error::Existing PR head branch changed during recovery."
+              exit 1
+            }
+            [[ "$(jq -r '.head.sha' "$pr_json")" == "$PUSHED_HEAD_SHA" ]] || {
+              echo "::error::Existing PR head does not match the verified pushed commit."
+              exit 1
+            }
+
+            pr_number="$(jq -r '.number' "$pr_json")"
+            update_payload="$RUNNER_TEMP/update-pr.json"
+            jq -n \
+              --arg title "$pr_title" \
+              --arg body "$(cat "$pr_body_file")" \
+              '{title:$title, body:$body}' > "$update_payload"
+            updated_pr="$RUNNER_TEMP/updated-pr.json"
+            api_retry "$updated_pr" --method PATCH "repos/$GITHUB_REPOSITORY/pulls/$pr_number" --input "$update_payload"
+            mv "$updated_pr" "$pr_json"
+
+            if [[ "$(jq -r '.draft' "$pr_json")" != "true" ]]; then
+              command_retry gh pr ready "$pr_number" --repo "$GITHUB_REPOSITORY" --undo
+              api_retry "$pr_json" --method GET "repos/$GITHUB_REPOSITORY/pulls/$pr_number"
+            fi
+          fi
+
+          pr_number="$(jq -r '.number' "$pr_json")"
+          pr_url="$(jq -r '.html_url' "$pr_json")"
+          [[ "$(jq -r '.draft' "$pr_json")" == "true" ]] || {
+            echo "::error::Recovered PR is not Draft."
+            exit 1
+          }
+          [[ "$(jq -r '.base.ref' "$pr_json")" == "main" ]] || {
+            echo "::error::Recovered PR does not target main."
+            exit 1
+          }
+          [[ "$(jq -r '.head.sha' "$pr_json")" == "$PUSHED_HEAD_SHA" ]] || {
+            echo "::error::Recovered PR does not point at the verified product commit."
+            exit 1
+          }
+
+          command_retry gh workflow run gameengine-windows-validation.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref main \
+            -f target_branch="$TARGET_BRANCH" \
+            -f pr_number="$pr_number" \
+            -f expected_head_sha="$PUSHED_HEAD_SHA" \
+            -f request_id="$REQUEST_ID"
+
+          {
+            echo "### GameEngine post-push recovery reconciled"
+            echo
+            echo "- Branch: \`$TARGET_BRANCH\`"
+            echo "- Verified commit: \`$PUSHED_HEAD_SHA\`"
+            echo "- Pull request: [#$pr_number]($pr_url)"
+            echo "- Draft: true"
+            echo "- Product branch writes: none"
+            echo "- Windows Validation: dispatched for exact verified HEAD"
+          } >> "$GITHUB_STEP_SUMMARY"
