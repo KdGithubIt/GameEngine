@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/agent_host.rs",
+  "old": "        let run = self.run_mut_in_session(&session_id, run_id)?;\n        run.code_checkpoints.push(CodeCheckpoint {",
+  "new": "        let run = self.run_mut_in_session(&session_id, run_id)?;\n        run.audit.code_changes = run\n            .audit\n            .code_changes\n            .saturating_add(changes.len().try_into().unwrap_or(u64::MAX));\n        run.code_checkpoints.push(CodeCheckpoint {"
+}
