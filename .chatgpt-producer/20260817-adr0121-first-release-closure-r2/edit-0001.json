@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/material_editor.rs",
+  "old": "    /// The relative path of the currently selected / active material.\n    pub active: Option<PathBuf>,\n    authoring: BTreeMap<PathBuf, TypedDocumentAuthoringState>,\n}",
+  "new": "    /// The relative path of the currently selected / active material.\n    pub active: Option<PathBuf>,\n    authoring: BTreeMap<PathBuf, TypedDocumentAuthoringState>,\n    undo: BTreeMap<PathBuf, Vec<MaterialAsset>>,\n    redo: BTreeMap<PathBuf, Vec<MaterialAsset>>,\n}"
+}
