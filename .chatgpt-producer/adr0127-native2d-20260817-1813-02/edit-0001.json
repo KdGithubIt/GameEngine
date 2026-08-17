@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/authoring/src/lib.rs","old":"pub mod native_2d;\n","new":"pub mod native_2d;\n/// GUI-free Native 2D mutations shared by Editor, CLI, and MCP.\npub mod native_2d_services;\n"}
