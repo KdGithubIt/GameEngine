@@ -174,6 +174,8 @@ pub enum AuthoringDomain {
     ProjectSettings,
     /// Animation Set asset documents.
     AnimationSet,
+    /// Timeline sequence documents and live Sequencer sessions.
+    Timeline,
 }
 
 /// Authoring document a capability reads or mutates.
@@ -207,6 +209,8 @@ pub enum AuthoringDocumentKind {
     ProjectSettings,
     /// An Animation Set asset document.
     AnimationSet,
+    /// A Timeline sequence document.
+    Timeline,
 }
 
 /// Semantic shape of one capability.
@@ -734,6 +738,10 @@ fn ui_documents() -> Vec<AuthoringDocumentKind> {
     vec![AuthoringDocumentKind::UiDocument]
 }
 
+fn timeline_documents() -> Vec<AuthoringDocumentKind> {
+    vec![AuthoringDocumentKind::Timeline]
+}
+
 fn typed_document_replace_schema(document_type: &str) -> AuthoringSchemaRef {
     AuthoringSchemaRef::typed_json(
         document_type,
@@ -914,6 +922,36 @@ fn builtin_capabilities() -> Vec<AuthoringCapability> {
             "UiDocumentCommand",
             AuthoringSchemaRef::of_type("UiAuthoringMutation"),
             "Apply one atomic declarative UI command batch.",
+        ),
+        query(
+            "timeline.inspect",
+            AuthoringDomain::Timeline,
+            timeline_documents(),
+            AuthoringSchemaRef::of_type("TimelineAuthoringSnapshot"),
+            "Inspect the live committed Timeline with revision and generation tokens.",
+        ),
+        validation(
+            "timeline.validate",
+            AuthoringDomain::Timeline,
+            timeline_documents(),
+            AuthoringSchemaRef::of_type("TimelineAuthoringValidation"),
+            "Validate the live committed Timeline without mutation.",
+        ),
+        preview(
+            "timeline.preview",
+            AuthoringDomain::Timeline,
+            timeline_documents(),
+            "TimelineAuthoringCommand",
+            AuthoringSchemaRef::of_type("TimelineAuthoringMutation"),
+            "Preview one atomic Timeline command batch against an exact revision/generation base.",
+        ),
+        commit(
+            "timeline.apply",
+            AuthoringDomain::Timeline,
+            timeline_documents(),
+            "TimelineAuthoringCommand",
+            AuthoringSchemaRef::of_type("TimelineAuthoringMutation"),
+            "Apply one atomic Timeline command batch through the shared authoring transaction boundary.",
         ),
         query("material.inspect", AuthoringDomain::Material, vec![AuthoringDocumentKind::MaterialAsset], AuthoringSchemaRef::of_type("TypedDocumentAuthoringSnapshot<MaterialAsset>"), "Inspect the active Material through the shared typed-document boundary."),
         validation("material.validate", AuthoringDomain::Material, vec![AuthoringDocumentKind::MaterialAsset], AuthoringSchemaRef::of_type("TypedDocumentAuthoringValidation"), "Validate the active Material through the shared typed-document boundary."),

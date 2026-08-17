@@ -8,11 +8,13 @@
 //! frame the locked target and should be registered immediately after
 //! [`lock_on_system`] in the frame schedule.
 
-use engine_ecs::{Entity, Query, ResMut};
+use engine_ecs::{Entity, Query, Res, ResMut};
 use glam::Vec3;
 use hashbrown::HashMap;
 
-use crate::camera::{select_active_game_camera, Camera3D, LockOnCamera};
+use crate::camera::{
+    select_active_game_camera_with_override, Camera3D, GameCameraSelectionOverride, LockOnCamera,
+};
 use crate::collision::{
     segment_blocked_by_static, static_obstacle_aabbs, Collider, PhysicsBody, TriggerVolume,
 };
@@ -56,6 +58,7 @@ use engine_gameplay::lock_on::LockRequest;
 /// configuration there is no `source` position or selection policy to use.
 pub fn lock_on_system(
     mut lock: ResMut<TargetLock>,
+    camera_override: Option<Res<GameCameraSelectionOverride>>,
     cameras: Query<(&Camera3D, Option<&LockOnCamera>)>,
     lock_targets: Query<&LockOnTarget>,
     transforms: Query<&GlobalTransform>,
@@ -68,7 +71,12 @@ pub fn lock_on_system(
 ) {
     let request = lock.pending.take();
 
-    let Some((_, (_, Some(camera)))) = select_active_game_camera(cameras.iter()) else {
+    let override_target = camera_override
+        .as_deref()
+        .and_then(GameCameraSelectionOverride::target);
+    let Some((_, (_, Some(camera)))) =
+        select_active_game_camera_with_override(cameras.iter(), override_target)
+    else {
         log::debug!(
             "lock_on_system: active camera has no LockOnCamera; lock-on request ignored"
         );

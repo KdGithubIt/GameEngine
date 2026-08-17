@@ -1,7 +1,9 @@
 //! Level-of-detail (LOD) component and selection system (Phase 47).
 
 use crate::asset::Handle;
-use crate::camera::{select_active_game_camera, Camera3D};
+use crate::camera::{
+    select_active_game_camera_with_override, Camera3D, GameCameraSelectionOverride,
+};
 use crate::mesh::Mesh;
 use crate::transform::GlobalTransform;
 use engine_ecs::Query;
@@ -49,12 +51,17 @@ pub struct InstanceStats {
 /// existing [`Handle<Mesh>`] alongside the [`LodGroup`]; groups with no
 /// levels are skipped.
 pub fn lod_selection_system(
+    camera_override: Option<engine_ecs::Res<GameCameraSelectionOverride>>,
     cameras: Query<(&Camera3D, &GlobalTransform)>,
     mut groups: Query<(&LodGroup, &GlobalTransform, &mut Handle<Mesh>)>,
 ) {
-    let camera_pos: glam::Vec3 = select_active_game_camera(cameras.iter())
-        .map(|(_, (_, tf))| tf.matrix().col(3).truncate())
-        .unwrap_or(glam::Vec3::ZERO);
+    let override_target = camera_override
+        .as_deref()
+        .and_then(GameCameraSelectionOverride::target);
+    let camera_pos: glam::Vec3 =
+        select_active_game_camera_with_override(cameras.iter(), override_target)
+            .map(|(_, (_, tf))| tf.matrix().col(3).truncate())
+            .unwrap_or(glam::Vec3::ZERO);
 
     for (_, (lod, tf, handle)) in groups.iter_mut() {
         let Some(lowest_detail) = lod.levels.last() else {
