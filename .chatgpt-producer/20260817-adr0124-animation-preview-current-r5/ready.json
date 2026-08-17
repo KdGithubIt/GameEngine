@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "request_id": "20260817-adr0124-animation-preview-current-r5",
+  "target_branch": "chatgpt/gameengine-adr0124-production-navigation-v14",
+  "expected_head_sha": "3c96bd0095e7a9aacb87f431199b90e3019ada86",
+  "baseline_main_sha": "89cf19154b1664ef8de83d91cdbeeb2c4242a738",
+  "edit_parts": [
+    "edit-0000.json"
+  ],
+  "commit_message": "Fix ADR 0124 SceneView call compatibility",
+  "pr_title": "Complete ADR 0124 production navigation first release",
+  "pr_body": "Complete ADR 0124 on current main. This follow-up fixes the remaining Animation Preview SceneView call after adding navigation path overlay input.\n\n<!-- gameengine-visual-validation: editor -->"
+}
