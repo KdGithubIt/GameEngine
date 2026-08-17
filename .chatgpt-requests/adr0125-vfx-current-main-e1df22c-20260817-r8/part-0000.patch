@@ -1,0 +1,1010 @@
+diff --git a/crates/editor/src/authoring_windows.rs b/crates/editor/src/authoring_windows.rs
+index e730256a7a333b84f672415ba0199951955cd654..c18ab17f0727fb4739bd33867c5287c6809e4fe8 100644
+--- a/crates/editor/src/authoring_windows.rs
++++ b/crates/editor/src/authoring_windows.rs
+@@ -59,7 +59,9 @@ impl AuthoringWindows {
+                 .default_width(1_180.0)
+                 .default_height(780.0)
+                 .resizable(true)
+-                .show(context, |ui| vfx.show(ui, project));
++                .show(context, |ui| {
++                    egui::ScrollArea::vertical().show(ui, |ui| vfx.show(ui, project));
++                });
+         }
+     }
+ }
+diff --git a/crates/editor/src/vfx_builder.rs b/crates/editor/src/vfx_builder.rs
+index 1527ca6cd813c1fa270e4c6a377daa125158a485..5b485eb4ae99a8a6e1d5e76b2b9061579873bbaf 100644
+--- a/crates/editor/src/vfx_builder.rs
++++ b/crates/editor/src/vfx_builder.rs
+@@ -3,14 +3,16 @@
+ //! The window translates gestures into [`VfxCommand`] values and applies them
+ //! through [`VfxAuthoringService`]. It never edits raw JSON as business logic.
+ 
++#[path = "vfx_builder_background.rs"]
++mod background;
+ #[path = "vfx_builder_completion.rs"]
+ mod completion;
+ 
+ use eframe::egui;
+ use engine_authoring::{
+-    replace_file_contents, ProjectRoot, VfxAuthoringService, VfxCommand, VfxCurve, VfxEmitter,
+-    VfxEmitterId, VfxEffect, VfxGradient, VfxModule, VfxModuleOperation, VfxPhase,
+-    VfxScalarValue, VfxShape, VfxVectorValue,
++    ProjectRoot, VfxAuthoringService, VfxCommand, VfxCurve, VfxEmitter, VfxEmitterId, VfxEffect,
++    VfxGradient, VfxModule, VfxModuleOperation, VfxPhase, VfxScalarValue, VfxShape,
++    VfxVectorValue,
+ };
+ use std::path::{Path, PathBuf};
+ 
+@@ -29,11 +31,14 @@ pub(crate) struct VfxBuilderState {
+     undo_stack: Vec<Vec<VfxCommand>>,
+     redo_stack: Vec<Vec<VfxCommand>>,
+     status: Option<String>,
++    background: background::VfxBackgroundTasks,
+ }
+ 
+ impl VfxBuilderState {
+     /// Draws the VFX Builder for the current project.
+     pub(crate) fn show(&mut self, ui: &mut egui::Ui, project: &ProjectRoot) {
++        self.poll_background();
++        let io_busy = self.background.io_busy();
+         let mut pending_command = None;
+         let mut request_open = false;
+         let mut request_save = false;
+@@ -41,9 +46,11 @@ impl VfxBuilderState {
+         let mut request_redo = false;
+ 
+         ui.horizontal(|ui| {
+-            request_open = ui.button("Open VFX...").clicked();
++            request_open = ui
++                .add_enabled(!io_busy, egui::Button::new("Open VFX..."))
++                .clicked();
+             request_save = ui
+-                .add_enabled(self.effect.is_some(), egui::Button::new("Save"))
++                .add_enabled(self.effect.is_some() && !io_busy, egui::Button::new("Save"))
+                 .clicked();
+             ui.separator();
+             request_undo = ui
+@@ -59,10 +66,10 @@ impl VfxBuilderState {
+         });
+ 
+         if request_open {
+-            self.open_with_picker(project);
++            self.open_with_picker(project, ui.ctx());
+         }
+         if request_save {
+-            self.save();
++            self.save(ui.ctx());
+         }
+         if request_undo {
+             self.undo();
+@@ -85,7 +92,7 @@ impl VfxBuilderState {
+         };
+ 
+         self.normalize_selection(&effect);
+-        let compilation = VfxAuthoringService::new().compile(&effect);
++        let compilation = self.background.compilation_for(&effect, ui.ctx());
+ 
+         ui.separator();
+         ui.horizontal_wrapped(|ui| {
+@@ -93,8 +100,8 @@ impl VfxBuilderState {
+             ui.label(format!("Seed {}", effect.seed));
+             ui.label(format!("Effect cap {}", effect.max_particles));
+             let estimated = compilation
+-                .compiled_effect
+                 .as_ref()
++                .and_then(|compilation| compilation.compiled_effect.as_ref())
+                 .map(|compiled| {
+                     compiled
+                         .emitters
+@@ -307,13 +314,15 @@ impl VfxBuilderState {
+             self.show_completion_properties(&mut columns[1], &effect);
+         });
+ 
+-        self.show_completion_preview(ui, &effect);
++        self.show_completion_preview(ui, &effect, compilation.as_ref());
+ 
+         if let Some(command) = pending_command {
+             self.apply_user_commands(vec![command]);
+         }
+ 
+-        if !compilation.diagnostics.is_empty() {
++        if let Some(compilation) = compilation
++            && !compilation.diagnostics.is_empty()
++        {
+             ui.separator();
+             ui.collapsing("Diagnostics", |ui| {
+                 for diagnostic in compilation.diagnostics {
+@@ -324,7 +333,7 @@ impl VfxBuilderState {
+         self.show_status(ui);
+     }
+ 
+-    fn open_with_picker(&mut self, project: &ProjectRoot) {
++    fn open_with_picker(&mut self, project: &ProjectRoot, ctx: &egui::Context) {
+         let Some(path) = rfd::FileDialog::new()
+             .set_directory(project.assets_root())
+             .add_filter("VFX effect", &["json"])
+@@ -336,32 +345,11 @@ impl VfxBuilderState {
+             self.status = Some("VFX Builder only opens project-local *.vfx.json assets.".to_owned());
+             return;
+         }
+-        let json = match std::fs::read_to_string(&path) {
+-            Ok(json) => json,
+-            Err(error) => {
+-                self.status = Some(format!("Open failed: {error}"));
+-                return;
+-            }
+-        };
+-        match VfxAuthoringService::new().effect_from_json(&json) {
+-            Ok(effect) => {
+-                self.effect = Some(effect);
+-                self.path = Some(path);
+-                self.undo_stack.clear();
+-                self.redo_stack.clear();
+-                self.status = Some("Opened VFX effect.".to_owned());
+-                self.selected_emitter = None;
+-                if let Some(effect) = self.effect.clone() {
+-                    self.normalize_selection(&effect);
+-                }
+-            }
+-            Err(error) => {
+-                self.status = Some(format!("Open failed: {error}"));
+-            }
+-        }
++        self.background.open(path, ctx);
++        self.status = Some("Opening VFX effect...".to_owned());
+     }
+ 
+-    fn save(&mut self) {
++    fn save(&mut self, ctx: &egui::Context) {
+         let (Some(effect), Some(path)) = (self.effect.as_ref(), self.path.as_ref()) else {
+             return;
+         };
+@@ -372,12 +360,45 @@ impl VfxBuilderState {
+                 return;
+             }
+         };
+-        match replace_file_contents(path, &json) {
+-            Ok(()) => self.status = Some("Saved VFX effect.".to_owned()),
+-            Err(error) => self.status = Some(format!("Save failed: {error}")),
++        self.background.save(path.clone(), json, ctx);
++        self.status = Some("Saving VFX effect...".to_owned());
++    }
++
++    fn poll_background(&mut self) {
++        let Some(completion) = self.background.take_io_completion() else {
++            return;
++        };
++        match completion {
++            background::VfxIoCompletion::Open { path, result } => match result {
++                Ok(effect) => self.install_effect(path, effect, "Opened VFX effect."),
++                Err(error) => self.status = Some(format!("Open failed: {error}")),
++            },
++            background::VfxIoCompletion::Save { result } => match result {
++                Ok(()) => self.status = Some("Saved VFX effect.".to_owned()),
++                Err(error) => self.status = Some(format!("Save failed: {error}")),
++            },
++            background::VfxIoCompletion::Create {
++                path,
++                effect,
++                result,
++            } => match result {
++                Ok(()) => self.install_effect(path, effect, "Created VFX asset from shared template."),
++                Err(error) => self.status = Some(format!("Template save failed: {error}")),
++            },
+         }
+     }
+ 
++    fn install_effect(&mut self, path: PathBuf, effect: VfxEffect, message: &str) {
++        self.effect = Some(effect.clone());
++        self.path = Some(path);
++        self.selected_emitter = None;
++        self.undo_stack.clear();
++        self.redo_stack.clear();
++        self.completion = completion::VfxCompletionState::default();
++        self.normalize_selection(&effect);
++        self.status = Some(message.to_owned());
++    }
++
+     fn apply_user_commands(&mut self, commands: Vec<VfxCommand>) {
+         let Some(effect) = self.effect.as_ref() else {
+             return;
+diff --git a/crates/editor/src/vfx_builder_background.rs b/crates/editor/src/vfx_builder_background.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..446b7fceebc50be452e37ad33e5c91f59dfa23a8
+--- /dev/null
++++ b/crates/editor/src/vfx_builder_background.rs
+@@ -0,0 +1,130 @@
++//! Background work used by the modeless VFX Builder.
++
++use eframe::egui;
++use engine_authoring::{
++    replace_file_contents, VfxAuthoringService, VfxCompilation, VfxEffect,
++};
++use std::path::PathBuf;
++use std::sync::mpsc::{self, Receiver, TryRecvError};
++
++struct VfxCompileJob {
++    effect: VfxEffect,
++    receiver: Receiver<VfxCompilation>,
++}
++
++pub(super) enum VfxIoCompletion {
++    Open { path: PathBuf, result: Result<VfxEffect, String> },
++    Save { result: Result<(), String> },
++    Create { path: PathBuf, effect: VfxEffect, result: Result<(), String> },
++}
++
++#[derive(Default)]
++pub(super) struct VfxBackgroundTasks {
++    compiled_effect: Option<VfxEffect>,
++    compilation: Option<VfxCompilation>,
++    compile_job: Option<VfxCompileJob>,
++    io_job: Option<Receiver<VfxIoCompletion>>,
++}
++
++impl VfxBackgroundTasks {
++    pub(super) fn compilation_for(
++        &mut self,
++        effect: &VfxEffect,
++        ctx: &egui::Context,
++    ) -> Option<VfxCompilation> {
++        self.poll_compile(effect);
++        if self.compile_job.is_none() && self.compiled_effect.as_ref() != Some(effect) {
++            let requested = effect.clone();
++            let worker_effect = requested.clone();
++            let repaint = ctx.clone();
++            let (sender, receiver) = mpsc::channel();
++            std::thread::spawn(move || {
++                let compilation = VfxAuthoringService::new().compile(&worker_effect);
++                let _ = sender.send(compilation);
++                repaint.request_repaint();
++            });
++            self.compile_job = Some(VfxCompileJob { effect: requested, receiver });
++        }
++        if self.compiled_effect.as_ref() == Some(effect) {
++            self.compilation.clone()
++        } else {
++            None
++        }
++    }
++
++    fn poll_compile(&mut self, current_effect: &VfxEffect) {
++        let Some(job) = self.compile_job.as_ref() else { return; };
++        match job.receiver.try_recv() {
++            Ok(compilation) => {
++                let compiled_effect = job.effect.clone();
++                self.compile_job = None;
++                if &compiled_effect == current_effect {
++                    self.compiled_effect = Some(compiled_effect);
++                    self.compilation = Some(compilation);
++                }
++            }
++            Err(TryRecvError::Empty) => {}
++            Err(TryRecvError::Disconnected) => self.compile_job = None,
++        }
++    }
++
++    pub(super) fn io_busy(&self) -> bool { self.io_job.is_some() }
++
++    pub(super) fn open(&mut self, path: PathBuf, ctx: &egui::Context) {
++        if self.io_busy() { return; }
++        let repaint = ctx.clone();
++        let (sender, receiver) = mpsc::channel();
++        std::thread::spawn(move || {
++            let result = std::fs::read_to_string(&path)
++                .map_err(|error| error.to_string())
++                .and_then(|json| VfxAuthoringService::new().effect_from_json(&json).map_err(|error| error.to_string()));
++            let _ = sender.send(VfxIoCompletion::Open { path, result });
++            repaint.request_repaint();
++        });
++        self.io_job = Some(receiver);
++    }
++
++    pub(super) fn save(&mut self, path: PathBuf, json: String, ctx: &egui::Context) {
++        if self.io_busy() { return; }
++        let repaint = ctx.clone();
++        let (sender, receiver) = mpsc::channel();
++        std::thread::spawn(move || {
++            let result = replace_file_contents(&path, &json).map_err(|error| error.to_string());
++            let _ = sender.send(VfxIoCompletion::Save { result });
++            repaint.request_repaint();
++        });
++        self.io_job = Some(receiver);
++    }
++
++    pub(super) fn create(
++        &mut self,
++        path: PathBuf,
++        effect: VfxEffect,
++        json: String,
++        ctx: &egui::Context,
++    ) {
++        if self.io_busy() { return; }
++        let repaint = ctx.clone();
++        let (sender, receiver) = mpsc::channel();
++        std::thread::spawn(move || {
++            let result = replace_file_contents(&path, &json).map_err(|error| error.to_string());
++            let _ = sender.send(VfxIoCompletion::Create { path, effect, result });
++            repaint.request_repaint();
++        });
++        self.io_job = Some(receiver);
++    }
++
++    pub(super) fn take_io_completion(&mut self) -> Option<VfxIoCompletion> {
++        let receiver = self.io_job.as_ref()?;
++        match receiver.try_recv() {
++            Ok(completion) => { self.io_job = None; Some(completion) }
++            Err(TryRecvError::Empty) => None,
++            Err(TryRecvError::Disconnected) => {
++                self.io_job = None;
++                Some(VfxIoCompletion::Save {
++                    result: Err("VFX background I/O worker disconnected.".to_owned()),
++                })
++            }
++        }
++    }
++}
+diff --git a/crates/editor/src/vfx_builder_completion.rs b/crates/editor/src/vfx_builder_completion.rs
+index 96d649c7aac40812440269da9b2e395537d5481a..5126e962de57c33a9e9005bf3e5635df839a5ee9 100644
+--- a/crates/editor/src/vfx_builder_completion.rs
++++ b/crates/editor/src/vfx_builder_completion.rs
+@@ -1,11 +1,11 @@
+ //! Completion surface for ADR 0125 VFX authoring and deterministic preview.
+ 
+-use super::replace_file_contents;
+ use eframe::egui;
+ use engine::glam::Vec3;
+ use engine::vfx::{VfxPlayer, VfxRestartPolicy, VFX_PREVIEW_STEP_SECONDS};
+ use engine_authoring::{
+-    AssetId, StableId, VfxAuthoringService, VfxCommand, VfxCurve, VfxCurveInterpolation,
++    AssetId, StableId, VfxAuthoringService, VfxCommand, VfxCompilation, VfxCurve,
++    VfxCurveInterpolation,
+     ProjectRoot, VfxCurveKey, VfxCurveKeyId, VfxEffect, VfxEmitterId, VfxGradient, VfxGradientKey,
+     VfxGradientKeyId, VfxModule, VfxModuleId, VfxModuleOperation, VfxRandomChannel,
+     VfxScalarValue, VfxShape, VfxTemplate, VfxTextureSheet, VfxVectorValue,
+@@ -62,14 +62,7 @@ impl Default for VfxPreviewState {
+ }
+ 
+ impl VfxPreviewState {
+-    fn open_effect(&mut self, effect: &VfxEffect) {
+-        self.preview_seed = effect.seed;
+-        self.current_time = 0.0;
+-        self.recompile(effect, false);
+-        self.last_effect = Some(effect.clone());
+-    }
+-
+-    fn sync_effect(&mut self, effect: &VfxEffect) {
++    fn sync_effect(&mut self, effect: &VfxEffect, compilation: Option<&VfxCompilation>) {
+         if self.last_effect.as_ref() == Some(effect) {
+             return;
+         }
+@@ -81,25 +74,33 @@ impl VfxPreviewState {
+                     .zip(&effect.emitters)
+                     .all(|(left, right)| left.id == right.id)
+         });
+-        if !same_document {
++        if self.last_effect.is_some() && !same_document {
+             self.preview_seed = effect.seed;
+             self.current_time = 0.0;
+         }
+-        self.recompile(effect, same_document);
+-        self.last_effect = Some(effect.clone());
++        let Some(compilation) = compilation else {
++            self.status = Some("Compiling preview...".to_owned());
++            return;
++        };
++        self.apply_compilation(effect, compilation, same_document || self.last_effect.is_none());
+     }
+ 
+-    fn recompile(&mut self, effect: &VfxEffect, preserve_time: bool) {
++    fn apply_compilation(
++        &mut self,
++        effect: &VfxEffect,
++        compilation: &VfxCompilation,
++        preserve_time: bool,
++    ) {
+         let target_time = if preserve_time { self.current_time } else { 0.0 };
+         let was_playing = preserve_time
+             && self
+                 .player
+                 .as_ref()
+                 .is_some_and(VfxPlayer::is_playing);
+-        let compilation = VfxAuthoringService::new().compile(effect);
+-        let Some(compiled) = compilation.compiled_effect else {
++        let Some(compiled) = compilation.compiled_effect.clone() else {
+             self.player = None;
+             self.status = Some("Preview unavailable until blocking VFX diagnostics are fixed.".into());
++            self.last_effect = Some(effect.clone());
+             return;
+         };
+         let mut player = VfxPlayer::new(
+@@ -116,6 +117,7 @@ impl VfxPreviewState {
+             .seek_preview(target_time, Vec3::ZERO);
+         self.current_time = player.instance().elapsed_seconds();
+         self.player = Some(player);
++        self.last_effect = Some(effect.clone());
+         self.status = None;
+     }
+ 
+@@ -135,9 +137,14 @@ impl VfxPreviewState {
+         ui: &mut egui::Ui,
+         effect: &VfxEffect,
+         selected_emitter: Option<&VfxEmitterId>,
++        compilation: Option<&VfxCompilation>,
+     ) {
+         ui.separator();
+-        ui.heading("Preview");
++        let preview_heading = ui.heading("Preview");
++        #[cfg(feature = "visual-validation")]
++        preview_heading.scroll_to_me(Some(egui::Align::TOP));
++        #[cfg(not(feature = "visual-validation"))]
++        let _ = preview_heading;
+ 
+         let mut seek_requested = false;
+         let mut seed_changed = false;
+@@ -198,7 +205,11 @@ impl VfxPreviewState {
+         });
+ 
+         if seed_changed {
+-            self.recompile(effect, true);
++            if let Some(compilation) = compilation {
++                self.apply_compilation(effect, compilation, true);
++            } else {
++                self.status = Some("Compiling preview...".to_owned());
++            }
+         } else if seek_requested
+             && let Some(player) = self.player.as_mut()
+         {
+@@ -320,7 +331,7 @@ impl super::VfxBuilderState {
+             }
+         });
+         if let Some(template) = requested {
+-            self.create_from_template(project, template);
++            self.create_from_template(project, template, ui.ctx());
+         }
+     }
+ 
+@@ -368,14 +379,24 @@ impl super::VfxBuilderState {
+         }
+     }
+ 
+-    pub(super) fn show_completion_preview(&mut self, ui: &mut egui::Ui, effect: &VfxEffect) {
+-        self.completion.preview.sync_effect(effect);
++    pub(super) fn show_completion_preview(
++        &mut self,
++        ui: &mut egui::Ui,
++        effect: &VfxEffect,
++        compilation: Option<&VfxCompilation>,
++    ) {
++        self.completion.preview.sync_effect(effect, compilation);
+         self.completion
+             .preview
+-            .show(ui, effect, self.selected_emitter.as_ref());
++            .show(ui, effect, self.selected_emitter.as_ref(), compilation);
+     }
+ 
+-    fn create_from_template(&mut self, project: &ProjectRoot, template: VfxTemplate) {
++    fn create_from_template(
++        &mut self,
++        project: &ProjectRoot,
++        template: VfxTemplate,
++        ctx: &egui::Context,
++    ) {
+         let Some(path) = rfd::FileDialog::new()
+             .set_directory(project.assets_root())
+             .set_file_name("effect.vfx.json")
+@@ -400,19 +421,8 @@ impl super::VfxBuilderState {
+                 return;
+             }
+         };
+-        if let Err(error) = replace_file_contents(&path, &json) {
+-            self.status = Some(format!("Template save failed: {error}"));
+-            return;
+-        }
+-        self.effect = Some(effect.clone());
+-        self.path = Some(path);
+-        self.selected_emitter = None;
+-        self.undo_stack.clear();
+-        self.redo_stack.clear();
+-        self.completion = VfxCompletionState::default();
+-        self.completion.preview.open_effect(&effect);
+-        self.normalize_selection(&effect);
+-        self.status = Some("Created VFX asset from shared template.".to_owned());
++        self.background.create(path, effect, json, ctx);
++        self.status = Some("Saving VFX template...".to_owned());
+     }
+ 
+     #[cfg(feature = "visual-validation")]
+@@ -434,7 +444,11 @@ impl super::VfxBuilderState {
+         }) {
+             self.completion.select_module(module);
+         }
+-        self.completion.preview.open_effect(&effect);
++        let compilation = service.compile(&effect);
++        self.completion.preview.preview_seed = effect.seed;
++        self.completion
++            .preview
++            .apply_compilation(&effect, &compilation, false);
+         self.completion.preview.seek_to(1.25);
+         self.status = Some("Visual validation fixture: Smoke template at 1.25 s.".to_owned());
+     }
+@@ -1079,13 +1093,12 @@ mod tests {
+         assert!(emitter.modules.iter().all(|module| module.phase == module.operation.required_phase()));
+         effect.emitters.push(emitter);
+ 
++        let compilation = VfxAuthoringService::new().compile(&effect);
+         let mut preview = VfxPreviewState::default();
+-        preview.open_effect(&effect);
+         preview.current_time = 0.75;
+-        preview.recompile(&effect, true);
++        preview.apply_compilation(&effect, &compilation, true);
+ 
+-        let compiled = VfxAuthoringService::new()
+-            .compile(&effect)
++        let compiled = compilation
+             .compiled_effect
+             .expect("valid effect compiles");
+         let mut expected = VfxPlayer::new(
+diff --git a/crates/engine/src/game_commands.rs b/crates/engine/src/game_commands.rs
+index bdd17f928d90d60b7ef993774949c244f565984f..a520b0382140def5ec479c4c67fd63635bc36194 100644
+--- a/crates/engine/src/game_commands.rs
++++ b/crates/engine/src/game_commands.rs
+@@ -26,6 +26,7 @@ use crate::save::{
+ use crate::scene_manager::SceneManager;
+ use crate::transform::Transform;
+ use crate::ui_document::{UiBindingValue, UiBindings, UiDocumentRef, UiDocumentVisibility};
++use crate::vfx::VfxPlayer;
+ use engine_authoring::{AssetId, ComponentTypeId, StableId, Value};
+ use engine_ecs::{Entity, SystemId, World};
+ use glam::{Quat, Vec3};
+@@ -67,6 +68,10 @@ pub(crate) enum PreparedGameCommand {
+     },
+     LockOn(LockOnOperation),
+     Animation(animation::PreparedAnimationCommand),
++    Vfx {
++        entity: Entity,
++        operation: VfxPlaybackOperation,
++    },
+     SetUiBinding {
+         name: String,
+         value: UiBindingValue,
+@@ -147,6 +152,13 @@ pub(crate) enum LockOnOperation {
+     Release,
+ }
+ 
++pub(crate) enum VfxPlaybackOperation {
++    Start,
++    Pause,
++    Stop,
++    Restart,
++}
++
+ /// Validates every command payload and target without mutating the world.
+ pub(crate) fn prepare_game_commands(
+     world: &World,
+@@ -285,6 +297,26 @@ pub(crate) fn prepare_game_commands(
+                     &command.payload,
+                 )?));
+             }
++            GameCommandFamily::Vfx => {
++                let (target, entity) = targeted_entity(world, command, index, &despawned)?;
++                if world.get_component::<VfxPlayer>(entity).is_none() {
++                    return Err(GameCommandError::MissingVfxPlayer { index, target });
++                }
++                let fields = object(&command.payload, index, "VFX payload")?;
++                let operation = match string_field(fields, "operation", index)? {
++                    "start" => VfxPlaybackOperation::Start,
++                    "pause" => VfxPlaybackOperation::Pause,
++                    "stop" => VfxPlaybackOperation::Stop,
++                    "restart" => VfxPlaybackOperation::Restart,
++                    other => {
++                        return Err(GameCommandError::InvalidPayload {
++                            index,
++                            message: format!("unknown VFX operation `{other}`"),
++                        })
++                    }
++                };
++                prepared.push(PreparedGameCommand::Vfx { entity, operation });
++            }
+             GameCommandFamily::Ui => prepared.push(parse_ui_command(
+                 world,
+                 command,
+@@ -422,6 +454,17 @@ pub(crate) fn apply_prepared_game_commands(world: &mut World, commands: Vec<Prep
+                 }
+             }
+             PreparedGameCommand::Animation(command) => animation::apply(world, command),
++            PreparedGameCommand::Vfx { entity, operation } => {
++                let player = world
++                    .get_component_mut::<VfxPlayer>(entity)
++                    .expect("preflighted VFX player must remain live during exclusive apply");
++                match operation {
++                    VfxPlaybackOperation::Start => player.play(),
++                    VfxPlaybackOperation::Pause => player.pause(),
++                    VfxPlaybackOperation::Stop => player.stop(),
++                    VfxPlaybackOperation::Restart => player.restart(),
++                }
++            }
+             PreparedGameCommand::SetUiBinding { name, value } => {
+                 world
+                     .get_resource_mut::<UiBindings>()
+@@ -1601,6 +1644,13 @@ pub enum GameCommandError {
+         /// Rejected target.
+         target: GameEntityHandle,
+     },
++    /// A VFX command targeted an entity without a runtime VFX player.
++    MissingVfxPlayer {
++        /// Zero-based command index.
++        index: usize,
++        /// Rejected target.
++        target: GameEntityHandle,
++    },
+     /// A graph-parameter command targeted an entity without a graph player.
+     MissingAnimationGraph {
+         /// Zero-based command index.
+@@ -1820,6 +1870,11 @@ impl fmt::Display for GameCommandError {
+                 "game command {index} targets entity {} generation {} without Animator",
+                 target.id, target.generation
+             ),
++            Self::MissingVfxPlayer { index, target } => write!(
++                formatter,
++                "game command {index} targets entity {} generation {} without VfxPlayer",
++                target.id, target.generation
++            ),
+             Self::MissingAnimationGraph { index, target } => write!(
+                 formatter,
+                 "game command {index} targets entity {} generation {} without AnimGraphPlayer",
+diff --git a/crates/engine/src/game_host/core.rs b/crates/engine/src/game_host/core.rs
+index ffc07b476ca01dc9190257c8d6196c16b7509937..f88439dda63405d1761abe42efbdc82c04ee33c4 100644
+--- a/crates/engine/src/game_host/core.rs
++++ b/crates/engine/src/game_host/core.rs
+@@ -31,6 +31,7 @@ use crate::script_api::RuntimeEntityIdentity;
+ use crate::time::{FixedTime, Time};
+ use crate::transform::{GlobalTransform, Transform};
+ use crate::ui_document::{UiBindingValue, UiBindings, UiEventFrame};
++use crate::vfx::{VfxPlaybackState, VfxPlayer, VfxRuntimeBackend};
+ use engine_authoring::Value;
+ use engine_ecs::{Entity, SystemId, SystemIdError, World};
+ use serde_json::Error as JsonError;
+@@ -1039,6 +1040,30 @@ fn copy_engine_view(world: &World, entity: Entity, view: EngineViewKind) -> Opti
+                 ("fading".to_owned(), Value::Bool(animator.is_fading())),
+             ]))
+         }
++        EngineViewKind::VfxState => {
++            let player = world.get_component::<VfxPlayer>(entity)?;
++            let instance = player.instance();
++            let stats = instance.stats();
++            let backend = match stats.backend {
++                VfxRuntimeBackend::CpuReference => "cpu_reference",
++            };
++            let state = match player.playback_state() {
++                VfxPlaybackState::Stopped => "stopped",
++                VfxPlaybackState::Playing => "playing",
++                VfxPlaybackState::Paused => "paused",
++            };
++            Value::Object(BTreeMap::from([
++                ("state".to_owned(), Value::String(state.to_owned())),
++                ("playing".to_owned(), Value::Bool(player.is_playing())),
++                ("complete".to_owned(), Value::Bool(instance.is_complete())),
++                ("elapsed_seconds".to_owned(), Value::F64(f64::from(instance.elapsed_seconds()))),
++                ("live_particles".to_owned(), Value::String(stats.live_particles.to_string())),
++                ("spawned_particles".to_owned(), Value::String(stats.spawned_particles.to_string())),
++                ("dropped_particles".to_owned(), Value::String(stats.dropped_particles.to_string())),
++                ("backend".to_owned(), Value::String(backend.to_owned())),
++                ("seed_override".to_owned(), instance.seed_override().map_or(Value::Null, |seed| Value::I64(i64::from(seed)))),
++            ]))
++        }
+         EngineViewKind::LockOnState => {
+             let lock = world.get_resource::<TargetLock>()?;
+             let current = lock.current();
+diff --git a/crates/render-runtime/src/vfx.rs b/crates/render-runtime/src/vfx.rs
+index a3f04bad1e908470e93a4443fa35c04dab0740fb..e7cb90da8fbdfb64c3b98017d7a7d796d24dee86 100644
+--- a/crates/render-runtime/src/vfx.rs
++++ b/crates/render-runtime/src/vfx.rs
+@@ -421,11 +421,23 @@ pub enum VfxRestartPolicy {
+     OnComplete,
+ }
+ 
++/// Observable playback state for a scene VFX player.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
++pub enum VfxPlaybackState {
++    /// Playback is stopped. An explicit stop resets deterministic state to zero.
++    #[default]
++    Stopped,
++    /// Playback advances on each runtime VFX update.
++    Playing,
++    /// Playback retains its current simulation state without advancing.
++    Paused,
++}
++
+ /// Transient scene runtime component that plays one compiled VFX effect.
+ #[derive(Debug, Clone)]
+ pub struct VfxPlayer {
+     instance: VfxInstance,
+-    playing: bool,
++    playback_state: VfxPlaybackState,
+     /// Starts playback when the runtime component is created.
+     pub autoplay: bool,
+     /// Restarts immediately after a finite effect completes.
+@@ -451,7 +463,11 @@ impl VfxPlayer {
+     ) -> Self {
+         Self {
+             instance: VfxInstance::new(effect, seed_override),
+-            playing: autoplay,
++            playback_state: if autoplay {
++                VfxPlaybackState::Playing
++            } else {
++                VfxPlaybackState::Stopped
++            },
+             autoplay,
+             looping,
+             restart_policy,
+@@ -472,7 +488,12 @@ impl VfxPlayer {
+ 
+     /// Whether simulation currently advances.
+     pub fn is_playing(&self) -> bool {
+-        self.playing
++        self.playback_state == VfxPlaybackState::Playing
++    }
++
++    /// Current start/stop/pause state exposed to gameplay views and tooling.
++    pub fn playback_state(&self) -> VfxPlaybackState {
++        self.playback_state
+     }
+ 
+     /// Extracts backend-neutral presentation records for every live Render output.
+@@ -506,23 +527,31 @@ impl VfxPlayer {
+ 
+     /// Resumes playback without resetting transient state.
+     pub fn play(&mut self) {
+-        self.playing = true;
++        self.playback_state = VfxPlaybackState::Playing;
+     }
+ 
+     /// Pauses playback without discarding transient state.
+     pub fn pause(&mut self) {
+-        self.playing = false;
++        if self.playback_state == VfxPlaybackState::Playing {
++            self.playback_state = VfxPlaybackState::Paused;
++        }
++    }
++
++    /// Stops playback and resets deterministic simulation to time zero.
++    pub fn stop(&mut self) {
++        self.instance.restart();
++        self.playback_state = VfxPlaybackState::Stopped;
+     }
+ 
+     /// Restarts deterministic state and resumes playback.
+     pub fn restart(&mut self) {
+         self.instance.restart();
+-        self.playing = true;
++        self.playback_state = VfxPlaybackState::Playing;
+     }
+ 
+     /// Advances playback and applies the configured completion policy.
+     pub fn step(&mut self, dt: f32, origin: Vec3) {
+-        if !self.playing {
++        if !self.is_playing() {
+             return;
+         }
+         self.instance.step(dt * self.time_scale, origin);
+@@ -530,7 +559,7 @@ impl VfxPlayer {
+             if self.looping || self.restart_policy == VfxRestartPolicy::OnComplete {
+                 self.instance.restart();
+             } else {
+-                self.playing = false;
++                self.playback_state = VfxPlaybackState::Stopped;
+             }
+         }
+     }
+@@ -1068,12 +1097,20 @@ mod tests {
+             BTreeMap::new(),
+         );
+         assert!(!player.is_playing());
++        assert_eq!(player.playback_state(), VfxPlaybackState::Stopped);
+         player.play();
+         player.step(0.05, Vec3::ZERO);
+         assert!(player.is_playing());
+         player.pause();
+         assert!(!player.is_playing());
++        assert_eq!(player.playback_state(), VfxPlaybackState::Paused);
+         player.restart();
+         assert!(player.is_playing());
++        assert_eq!(player.playback_state(), VfxPlaybackState::Playing);
++        player.step(0.05, Vec3::ZERO);
++        assert!(player.instance().elapsed_seconds() > 0.0);
++        player.stop();
++        assert_eq!(player.playback_state(), VfxPlaybackState::Stopped);
++        assert_eq!(player.instance().elapsed_seconds(), 0.0);
+     }
+ }
+diff --git a/crates/scripting/src/game_api.rs b/crates/scripting/src/game_api.rs
+index 7552853a0c748a4ae51100828b02b53e1b95d379..287af48f4f5e1f8858a5147d7ec43d5ed32281cc 100644
+--- a/crates/scripting/src/game_api.rs
++++ b/crates/scripting/src/game_api.rs
+@@ -967,6 +967,78 @@ impl EngineView for AnimationStateView {
+     }
+ }
+ 
++/// Playback state reported by a copied VFX player state.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum VfxPlaybackView {
++    /// Playback is stopped.
++    Stopped,
++    /// Playback advances simulation.
++    Playing,
++    /// Playback retains transient particles without advancing.
++    Paused,
++}
++
++/// Runtime backend reported by a copied VFX player state.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum VfxBackendView {
++    /// Deterministic CPU reference backend.
++    CpuReference,
++}
++
++/// VFX player state copied for one entity.
++#[derive(Debug, Clone, Copy, PartialEq)]
++pub struct VfxStateView {
++    /// Current start/stop/pause state.
++    pub state: VfxPlaybackView,
++    /// Whether the player currently advances simulation.
++    pub playing: bool,
++    /// Whether no live particles or future emission remain.
++    pub complete: bool,
++    /// Current deterministic simulation time in seconds.
++    pub elapsed_seconds: f32,
++    /// Current live-particle count.
++    pub live_particles: u64,
++    /// Particles accepted since the last restart.
++    pub spawned_particles: u64,
++    /// Particles refused by budgets or per-step caps since the last restart.
++    pub dropped_particles: u64,
++    /// Runtime backend executing the effect.
++    pub backend: VfxBackendView,
++    /// Optional deterministic instance seed override.
++    pub seed_override: Option<u32>,
++}
++
++impl EngineView for VfxStateView {
++    const KIND: EngineViewKind = EngineViewKind::VfxState;
++    fn decode(value: &Value) -> Result<Self, String> {
++        let fields = object(value)?;
++        let backend = match string_field(fields, "backend")? {
++            "cpu_reference" => VfxBackendView::CpuReference,
++            value => return Err(format!("unknown VFX backend `{value}`")),
++        };
++        let state = match string_field(fields, "state")? {
++            "stopped" => VfxPlaybackView::Stopped,
++            "playing" => VfxPlaybackView::Playing,
++            "paused" => VfxPlaybackView::Paused,
++            value => return Err(format!("unknown VFX playback state `{value}`")),
++        };
++        let seed_override = optional_unsigned(field(fields, "seed_override")?)?
++            .map(|value| value.try_into().map_err(|_| "VFX seed override is outside u32".to_owned()))
++            .transpose()?;
++        Ok(Self {
++            state,
++            playing: bool_field(fields, "playing")?,
++            complete: bool_field(fields, "complete")?,
++            elapsed_seconds: number_field(fields, "elapsed_seconds")? as f32,
++            live_particles: unsigned_field(fields, "live_particles")?,
++            spawned_particles: unsigned_field(fields, "spawned_particles")?,
++            dropped_particles: unsigned_field(fields, "dropped_particles")?,
++            backend,
++            seed_override,
++        })
++    }
++}
++
+ /// Current lock-on selection copied for each queried entity.
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+ pub struct LockOnStateView {
+@@ -1806,6 +1878,22 @@ impl Commands {
+     pub fn stop_animation(&mut self, target: GameEntityHandle) {
+         self.push(GameCommand::stop_animation(target));
+     }
++    /// Starts or resumes scene VFX playback.
++    pub fn start_vfx(&mut self, target: GameEntityHandle) {
++        self.push(GameCommand::start_vfx(target));
++    }
++    /// Pauses scene VFX playback without discarding transient state.
++    pub fn pause_vfx(&mut self, target: GameEntityHandle) {
++        self.push(GameCommand::pause_vfx(target));
++    }
++    /// Stops scene VFX playback and resets deterministic state.
++    pub fn stop_vfx(&mut self, target: GameEntityHandle) {
++        self.push(GameCommand::stop_vfx(target));
++    }
++    /// Restarts scene VFX from deterministic time zero and resumes playback.
++    pub fn restart_vfx(&mut self, target: GameEntityHandle) {
++        self.push(GameCommand::restart_vfx(target));
++    }
+     /// Creates a command-owned hitbox.
+     #[allow(clippy::too_many_arguments)]
+     pub fn create_hitbox(
+@@ -1998,6 +2086,7 @@ impl GameSystemParam for Commands {
+             GameCommandFamily::Despawn,
+             GameCommandFamily::Component,
+             GameCommandFamily::Animation,
++            GameCommandFamily::Vfx,
+             GameCommandFamily::Hitbox,
+             GameCommandFamily::Audio,
+             GameCommandFamily::LockOn,
+@@ -2110,6 +2199,13 @@ fn optional_string(value: &Value) -> Result<Option<&str>, String> {
+         string(value).map(Some)
+     }
+ }
++fn optional_unsigned(value: &Value) -> Result<Option<u64>, String> {
++    if matches!(value, Value::Null) {
++        Ok(None)
++    } else {
++        unsigned(value).map(Some)
++    }
++}
+ fn vec3(value: &Value) -> Result<Vec3, String> {
+     let values = array(value)?;
+     if values.len() != 3 {
+diff --git a/crates/scripting/src/game_io.rs b/crates/scripting/src/game_io.rs
+index 564a0952ba32127e1a9fa21bf51fc11114e75bbd..fc456cb40b5b1ee94731267c92c73edcc2725ed8 100644
+--- a/crates/scripting/src/game_io.rs
++++ b/crates/scripting/src/game_io.rs
+@@ -53,6 +53,8 @@ pub enum EngineViewKind {
+     CharacterState,
+     /// Current animator clip, playback position, and transition state.
+     AnimationState,
++    /// Current VFX playback state, simulation time, budget counters, and backend.
++    VfxState,
+     /// Current lock-on target and selection state.
+     LockOnState,
+     /// Attack-hitbox owner, team, damage, activation, and enabled state.
+@@ -109,6 +111,8 @@ pub enum GameCommandFamily {
+     Component,
+     /// Animation clip and Animation Graph control.
+     Animation,
++    /// Scene VFX playback control.
++    Vfx,
+     /// Attack hitbox creation, activation, and removal.
+     Hitbox,
+     /// Sound effect, music, and mixer control.
+@@ -791,6 +795,26 @@ impl GameCommand {
+         )
+     }
+ 
++    /// Starts or resumes a scene VFX player without resetting transient state.
++    pub fn start_vfx(target: GameEntityHandle) -> Self {
++        simple_target_command(GameCommandFamily::Vfx, "start", target)
++    }
++
++    /// Pauses a scene VFX player without discarding transient state.
++    pub fn pause_vfx(target: GameEntityHandle) -> Self {
++        simple_target_command(GameCommandFamily::Vfx, "pause", target)
++    }
++
++    /// Stops a VFX player and resets deterministic simulation to time zero.
++    pub fn stop_vfx(target: GameEntityHandle) -> Self {
++        simple_target_command(GameCommandFamily::Vfx, "stop", target)
++    }
++
++    /// Restarts a scene VFX player from deterministic time zero and resumes it.
++    pub fn restart_vfx(target: GameEntityHandle) -> Self {
++        simple_target_command(GameCommandFamily::Vfx, "restart", target)
++    }
++
+     /// Creates an initially enabled trigger hitbox on an empty carrier entity.
+     #[allow(clippy::too_many_arguments)]
+     pub fn create_hitbox(
+@@ -1645,6 +1669,10 @@ mod tests {
+                 GameCommand::play_animation(target, true),
+                 GameCommand::crossfade_animation(target, 42, 0.2, false),
+                 GameCommand::stop_animation(target),
++                GameCommand::start_vfx(target),
++                GameCommand::pause_vfx(target),
++                GameCommand::stop_vfx(target),
++                GameCommand::restart_vfx(target),
+                 GameCommand::create_hitbox(
+                     target,
+                     target,
