@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ui/mcp.rs",
+  "old": "    fn cli_json(args: Vec<String>) -> Value {\n        let result = engine_cli::run_cli_with_status(args).expect(\"CLI invocation\");\n        assert_eq!(result.exit_code, 0, \"{}\", result.output);\n        serde_json::from_str(&result.output).expect(\"CLI output JSON\")\n    }\n",
+  "new": "    fn cli_json(args: Vec<String>) -> Value {\n        let result = engine_cli::run_cli_with_status(args).expect(\"CLI invocation\");\n        assert_eq!(result.exit_code, 0, \"{}\", result.output);\n        serde_json::from_str(&result.output).expect(\"CLI output JSON\")\n    }\n\n    fn material_diff_documents(value: &Value) -> Vec<(MaterialAsset, MaterialAsset)> {\n        value\n            .as_array()\n            .expect(\"material diff array\")\n            .iter()\n            .map(|change| {\n                let before = serde_json::from_value(change[\"before\"].clone())\n                    .expect(\"material diff before\");\n                let after = serde_json::from_value(change[\"after\"].clone())\n                    .expect(\"material diff after\");\n                (before, after)\n            })\n            .collect()\n    }\n"
+}
