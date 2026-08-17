@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0122-visual-inspector-compile-fix-20260817-r2",
+  "target_branch": "chatgpt/gameengine-adr0122-spatial-audio-complete-v9",
+  "expected_head_sha": "f4c924f5be28235b5cb0e8a14ddcb5afd52283f0",
+  "baseline_main_sha": "901221eac2aa0c9eb66e8b17af896d8a19179f4b",
+  "patch_sha256": "9e01e00d2a699903bb10380bda2d28ede6edd2ef42f75aef62ebc2030fef9493",
+  "patch_bytes": 1761,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Preserve Inspector panel helper compatibility",
+  "pr_title": "Complete ADR 0122 spatial audio first release",
+  "pr_body": "## Summary\n\nCompletes ADR 0122 spatial audio first-release requirements and closes remaining lifecycle/test coverage. The visual-validation fixture does not fabricate an unresolved audio asset and focuses the constrained capture on the Audio Emitter/Listener Inspector while retaining Scene View spatial gizmos.\n\n## Validation\n\nFresh Windows affected validation and task-specific Spatial Audio Editor Visual Validation are required on the final head.\n\n<!-- gameengine-visual-validation: editor -->\n<!-- gameengine-visual-authoring-tool: Spatial Audio -->\n\n<!-- gameengine-chatgpt-dispatcher -->"
+}
