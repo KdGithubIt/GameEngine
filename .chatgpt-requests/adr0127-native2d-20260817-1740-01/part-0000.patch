@@ -1,0 +1,897 @@
+diff --git a/crates/animation/src/lib.rs b/crates/animation/src/lib.rs
+index c7a5cf1bd55030280a1cb096677b9e8ab0d60886..387c02d09b52e6fab33125215b233dc62a6fc5b7 100644
+--- a/crates/animation/src/lib.rs
++++ b/crates/animation/src/lib.rs
+@@ -25,6 +25,8 @@ pub mod humanoid_motion;
+ pub mod morph;
+ /// Pure pose sampling and blending.
+ pub mod pose_graph;
++/// Deterministic per-entity Sprite Animation playback (ADR 0127).
++pub mod sprite_2d;
+ /// Skeleton retargeting and baked-clip cache integration.
+ pub mod retarget;
+ /// Cross-crate acceptance fixtures, compiled only for tests or opt-in test consumers.
+diff --git a/crates/animation/src/sprite_2d.rs b/crates/animation/src/sprite_2d.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..b367c0bbe678fbb05a5211e8c57cc9146e3edced
+--- /dev/null
++++ b/crates/animation/src/sprite_2d.rs
+@@ -0,0 +1,53 @@
++//! Deterministic Sprite Animation playback (ADR 0127).
++
++use engine_authoring::{SpriteAnimationDocument, SpriteRef};
++
++/// Independent per-entity runtime playback state for an immutable Sprite Animation asset.
++#[derive(Debug, Clone, PartialEq)]
++pub struct SpriteAnimationState2d {
++    pub playing: bool,
++    pub frame_index: usize,
++    pub tick_in_frame: u32,
++    pub speed: f32,
++    fractional_ticks: f64,
++}
++
++impl Default for SpriteAnimationState2d {
++    fn default() -> Self { Self { playing: true, frame_index: 0, tick_in_frame: 0, speed: 1.0, fractional_ticks: 0.0 } }
++}
++
++/// Frame event emitted by exact integer-tick progression.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct SpriteFrameEvent2d { pub frame_index: usize, pub name: String }
++
++impl SpriteAnimationState2d {
++    pub fn play(&mut self) { self.playing = true; }
++    pub fn pause(&mut self) { self.playing = false; }
++    pub fn stop(&mut self) { self.playing = false; self.frame_index = 0; self.tick_in_frame = 0; self.fractional_ticks = 0.0; }
++    /// Advances from elapsed seconds by converting to the clip's exact integer tick domain.
++    pub fn advance(&mut self, clip: &SpriteAnimationDocument, seconds: f64, looping_override: Option<bool>) -> Vec<SpriteFrameEvent2d> {
++        if !self.playing || clip.frames.is_empty() || clip.ticks_per_second == 0 || seconds <= 0.0 || !seconds.is_finite() { return Vec::new(); }
++        let scaled = seconds * f64::from(clip.ticks_per_second) * f64::from(self.speed.max(0.0));
++        self.fractional_ticks += scaled;
++        let whole = self.fractional_ticks.floor() as u64;
++        self.fractional_ticks -= whole as f64;
++        let looping = looping_override.unwrap_or(clip.looping);
++        let mut events = Vec::new();
++        for _ in 0..whole {
++            let duration = clip.frames[self.frame_index].duration_ticks.max(1);
++            self.tick_in_frame += 1;
++            if self.tick_in_frame >= duration {
++                self.tick_in_frame = 0;
++                if self.frame_index + 1 < clip.frames.len() { self.frame_index += 1; } else if looping { self.frame_index = 0; } else { self.frame_index = clip.frames.len() - 1; self.playing = false; break; }
++                if let Some(name) = &clip.frames[self.frame_index].event { events.push(SpriteFrameEvent2d { frame_index: self.frame_index, name: name.clone() }); }
++            }
++        }
++        events
++    }
++    pub fn current_sprite<'a>(&self, clip: &'a SpriteAnimationDocument) -> Option<&'a SpriteRef> { clip.frames.get(self.frame_index).map(|frame| &frame.sprite) }
++}
++
++#[cfg(test)] mod tests { use super::*; use engine_authoring::{AssetId, SpriteAnimationFrame, SpriteId};
++    fn clip() -> SpriteAnimationDocument { let atlas=AssetId::generate(); SpriteAnimationDocument { schema_version:1,ticks_per_second:60,looping:true,frames:vec![SpriteAnimationFrame{sprite:SpriteRef{atlas:atlas.clone(),sprite:SpriteId::generate()},duration_ticks:2,event:None},SpriteAnimationFrame{sprite:SpriteRef{atlas,sprite:SpriteId::generate()},duration_ticks:2,event:Some("step".into())}] } }
++    #[test] fn shared_clip_has_independent_state(){let clip=clip();let mut a=SpriteAnimationState2d::default();let b=SpriteAnimationState2d::default();a.advance(&clip,2.0/60.0,None);assert_eq!(a.frame_index,1);assert_eq!(b.frame_index,0);}
++}
+diff --git a/crates/assets/src/lib.rs b/crates/assets/src/lib.rs
+index 38f69b21f0b585ba9dac7480ab484bdc451e6c2d..7038dc02d4176c039ef3cd6c143a2bafe9a188ee 100644
+--- a/crates/assets/src/lib.rs
++++ b/crates/assets/src/lib.rs
+@@ -13,5 +13,7 @@ pub mod data_asset;
+ pub mod derived_cache;
+ /// Format-independent model intermediate representation.
+ pub mod model_ir;
++/// Backend-neutral compiled sprite/tile data shared by render and physics (ADR 0127).
++pub mod native_2d;
+ /// Shared prefab creation and loading within a project asset boundary.
+ pub mod prefab;
+diff --git a/crates/assets/src/native_2d.rs b/crates/assets/src/native_2d.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..4b5cfb55f81c56acb199e2efa61e7d4bc6f96ef9
+--- /dev/null
++++ b/crates/assets/src/native_2d.rs
+@@ -0,0 +1,31 @@
++//! Backend-neutral compiled sprite and tile data (ADR 0127).
++
++use engine_authoring::{SpriteAtlasDocument, SpriteId, SpriteRef, TileChunkCoord, TileId, TileMapDocument, TileSetDocument};
++use std::collections::BTreeMap;
++
++/// Resolved sprite region independent of GPU page packing.
++#[derive(Debug, Clone, PartialEq)]
++pub struct CompiledSpriteRegion { pub id: SpriteId, pub source_texture: crate::asset::RuntimeAssetId, pub rect:[u32;4], pub pivot:[f32;2], pub pixels_per_unit:f32 }
++/// Runtime sprite atlas keyed by stable logical identity.
++#[derive(Debug, Clone, Default)] pub struct CompiledSpriteAtlas { pub regions:BTreeMap<SpriteId, CompiledSpriteRegion> }
++impl CompiledSpriteAtlas { pub fn region(&self, id:&SpriteId)->Option<&CompiledSpriteRegion>{self.regions.get(id)} }
++
++/// Backend-neutral tile definition resolved to stable SpriteRef and collision metadata.
++#[derive(Debug, Clone, PartialEq)] pub struct CompiledTile { pub id:TileId, pub sprite:SpriteRef, pub one_way:bool }
++/// One compiled sparse Tile Map chunk.
++#[derive(Debug, Clone, PartialEq)] pub struct CompiledTileChunk { pub layer_index:usize, pub coord:TileChunkCoord, pub cells:Vec<(i32,i32,TileId)> }
++/// Compiled map retaining chunk granularity for independent render/physics consumers.
++#[derive(Debug, Clone, PartialEq)] pub struct CompiledTileMap { pub chunk_size:u16, pub chunks:Vec<CompiledTileChunk> }
++impl CompiledTileMap { pub fn chunk(&self, layer:usize, coord:TileChunkCoord)->Option<&CompiledTileChunk>{self.chunks.iter().find(|c|c.layer_index==layer&&c.coord==coord)} }
++
++/// Compiles sparse authored chunks without deriving identity from ordering.
++pub fn compile_tile_map(document:&TileMapDocument)->CompiledTileMap {
++    let mut chunks=Vec::new();
++    for (layer_index,layer) in document.layers.iter().enumerate(){for chunk in &layer.chunks{let mut cells=Vec::new();for(key,tile)in &chunk.cells{if let Some((x,y))=key.split_once(',').and_then(|(x,y)|Some((x.parse::<i32>().ok()?,y.parse::<i32>().ok()?))){cells.push((x,y,tile.clone()));}}cells.sort_by_key(|(x,y,t)|(*y,*x,t.as_str().to_owned()));chunks.push(CompiledTileChunk{layer_index,coord:chunk.coord,cells});}}
++    chunks.sort_by_key(|c|(c.layer_index,c.coord.y,c.coord.x)); CompiledTileMap{chunk_size:document.chunk_size,chunks}
++}
++
++/// Validates that referenced stable identities resolve before runtime conversion.
++pub fn validate_2d_asset_references(atlas:&SpriteAtlasDocument, tiles:&TileSetDocument)->Vec<String>{let mut errors=atlas.validate();for tile in &tiles.tiles{if atlas.region(&tile.sprite.sprite).is_none(){errors.push(format!("tile {} references missing sprite {}",tile.id.as_str(),tile.sprite.sprite.as_str()));}}errors}
++
++#[cfg(test)]mod tests{use super::*;#[test]fn empty_map_compiles_without_phantom_chunks(){let map=TileMapDocument{schema_version:1,tile_set:engine_authoring::AssetId::generate(),chunk_size:32,layers:vec![]};assert!(compile_tile_map(&map).chunks.is_empty());}}
+diff --git a/crates/authoring/src/lib.rs b/crates/authoring/src/lib.rs
+index 003802af7b6478e487c7c26d07690a972c151820..cb23743b6df144feb8b5121b6187022d5266ead9 100644
+--- a/crates/authoring/src/lib.rs
++++ b/crates/authoring/src/lib.rs
+@@ -57,6 +57,8 @@ pub mod graph_view;
+ pub mod id;
+ pub mod load;
+ pub mod material_asset;
++/// Native 2D project, sprite, animation, and tile authoring contracts (ADR 0127).
++pub mod native_2d;
+ pub mod persist;
+ pub mod prefab;
+ pub mod prefab_authoring;
+@@ -149,6 +151,15 @@ pub use material_asset::{
+     MaterialOutline, MaterialShadingModel, MaterialSphereBlendMode,
+     MaterialSphereCoordinateSource, ToonLitProperties, MATERIAL_SCHEMA_VERSION,
+ };
++pub use native_2d::{
++    Native2dIdError, PhysicsMaterial2d, PixelPreviewPolicy, PixelRect, PixelsPerUnit,
++    Project2dSettings, SortingLayer, SortingLayerId, SpriteAnimationDocument,
++    SpriteAnimationFrame, SpriteAnimator2d, SpriteFiltering, SpriteId, SpriteRef,
++    SpriteRegion, SpriteRenderer2d, TileCell, TileChunk, TileChunkCoord, TileCollisionShape,
++    TileDefinition, TileId, TileLayerId, TileMapDocument, TileMapLayer, TileMapStroke,
++    TileSetDocument, SPRITE_ANIMATION_SCHEMA_VERSION, SPRITE_ATLAS_SCHEMA_VERSION,
++    TILE_MAP_SCHEMA_VERSION, TILE_SET_SCHEMA_VERSION,
++};
+ pub use persist::{replace_file_contents, PersistError, PersistOperation};
+ pub use prefab::{PrefabAsset, PrefabError, PrefabInstantiation, PREFAB_SCHEMA_VERSION};
+ pub use prefab_authoring::{
+diff --git a/crates/authoring/src/native_2d.rs b/crates/authoring/src/native_2d.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..b4b02b7e22d79524423491812223c1df3dc17242
+--- /dev/null
++++ b/crates/authoring/src/native_2d.rs
+@@ -0,0 +1,295 @@
++//! Native 2D authoring contracts (ADR 0127).
++//!
++//! Persisted 2D identity lives here; runtime/GPU handles are deliberately absent.
++
++use crate::id::AssetId;
++use serde::{Deserialize, Serialize};
++use std::collections::BTreeMap;
++
++/// Sprite atlas document schema version.
++pub const SPRITE_ATLAS_SCHEMA_VERSION: u32 = 1;
++/// Sprite animation document schema version.
++pub const SPRITE_ANIMATION_SCHEMA_VERSION: u32 = 1;
++/// Tile-set document schema version.
++pub const TILE_SET_SCHEMA_VERSION: u32 = 1;
++/// Tile-map document schema version.
++pub const TILE_MAP_SCHEMA_VERSION: u32 = 1;
++
++macro_rules! stable_2d_id {
++    ($name:ident, $prefix:literal) => {
++        #[doc = concat!("Stable persisted identifier with prefix `", $prefix, "_`.")]
++        #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
++        #[serde(transparent)]
++        pub struct $name(String);
++
++        impl $name {
++            /// Generates a stable opaque identifier.
++            pub fn generate() -> Self {
++                Self(format!(concat!($prefix, "_{}"), ulid::Ulid::new()))
++            }
++
++            /// Creates an identifier after validating its persisted prefix and ULID suffix.
++            pub fn parse(value: impl Into<String>) -> Result<Self, Native2dIdError> {
++                let value = value.into();
++                let Some(suffix) = value.strip_prefix(concat!($prefix, "_")) else {
++                    return Err(Native2dIdError::WrongPrefix(value));
++                };
++                if ulid::Ulid::from_string(suffix).is_err() {
++                    return Err(Native2dIdError::InvalidUlid(value));
++                }
++                Ok(Self(value))
++            }
++
++            /// Returns the opaque persisted string.
++            pub fn as_str(&self) -> &str { &self.0 }
++        }
++    };
++}
++
++/// Stable 2D identifier validation failure.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub enum Native2dIdError {
++    /// Prefix did not match the typed domain.
++    WrongPrefix(String),
++    /// Suffix was not a valid ULID.
++    InvalidUlid(String),
++}
++
++stable_2d_id!(SortingLayerId, "sorting_layer");
++stable_2d_id!(SpriteId, "sprite");
++stable_2d_id!(TileId, "tile");
++stable_2d_id!(TileLayerId, "tile_layer");
++
++/// Project-wide default texture filtering.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case")]
++pub enum SpriteFiltering { Nearest, Linear }
++
++/// Pixel-preview policy for 2D authoring and Camera2D.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case")]
++pub enum PixelPreviewPolicy { Off, Advisory, PixelPerfect }
++
++/// Stable named logical draw layer.
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++pub struct SortingLayer { pub id: SortingLayerId, pub name: String }
++
++/// Typed project 2D defaults.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++pub struct Project2dSettings {
++    pub default_pixels_per_unit: f32,
++    pub default_filtering: SpriteFiltering,
++    pub gravity: [f32; 2],
++    pub pixel_preview: PixelPreviewPolicy,
++    pub sorting_layers: Vec<SortingLayer>,
++}
++
++impl Default for Project2dSettings {
++    fn default() -> Self {
++        Self {
++            default_pixels_per_unit: 100.0,
++            default_filtering: SpriteFiltering::Nearest,
++            gravity: [0.0, -9.81],
++            pixel_preview: PixelPreviewPolicy::Advisory,
++            sorting_layers: vec![SortingLayer {
++                id: SortingLayerId::parse("sorting_layer_00000000000000000000000000").expect("constant id"),
++                name: "Default".into(),
++            }],
++        }
++    }
++}
++
++/// Integer source-texture pixel rectangle.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
++pub struct PixelRect { pub x: u32, pub y: u32, pub width: u32, pub height: u32 }
++
++/// Stable logical sprite reference.
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++pub struct SpriteRef { pub atlas: AssetId, pub sprite: SpriteId }
++
++/// Pixels-per-unit selection for one sprite region.
++#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case")]
++pub enum PixelsPerUnit { ProjectDefault, Override(f32) }
++
++/// One stable sprite region in an atlas source document.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++pub struct SpriteRegion {
++    pub id: SpriteId,
++    pub name: String,
++    pub source_texture: AssetId,
++    pub rect: PixelRect,
++    pub pivot: [f32; 2],
++    pub pixels_per_unit: PixelsPerUnit,
++    pub filtering: Option<SpriteFiltering>,
++    pub extrusion_pixels: u8,
++}
++
++/// Versioned Sprite Atlas authoring asset.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++pub struct SpriteAtlasDocument { pub schema_version: u32, pub regions: Vec<SpriteRegion> }
++
++impl SpriteAtlasDocument {
++    /// Finds a region by stable identity; rename/reorder cannot affect resolution.
++    pub fn region(&self, id: &SpriteId) -> Option<&SpriteRegion> { self.regions.iter().find(|r| &r.id == id) }
++    /// Validates first-release region invariants.
++    pub fn validate(&self) -> Vec<String> {
++        let mut errors = Vec::new();
++        if self.schema_version != SPRITE_ATLAS_SCHEMA_VERSION { errors.push("unsupported sprite atlas schema".into()); }
++        let mut ids = BTreeMap::new();
++        for region in &self.regions {
++            if region.rect.width == 0 || region.rect.height == 0 { errors.push(format!("sprite {} has an empty rect", region.id.as_str())); }
++            if !(0.0..=1.0).contains(&region.pivot[0]) || !(0.0..=1.0).contains(&region.pivot[1]) { errors.push(format!("sprite {} pivot is outside [0,1]", region.id.as_str())); }
++            if ids.insert(region.id.as_str(), ()).is_some() { errors.push(format!("duplicate SpriteId {}", region.id.as_str())); }
++        }
++        errors
++    }
++}
++
++/// Stable SpriteRenderer2D authoring data.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++pub struct SpriteRenderer2d {
++    pub sprite: SpriteRef,
++    pub tint: [f32; 4],
++    pub flip_x: bool,
++    pub flip_y: bool,
++    pub sorting_layer: SortingLayerId,
++    pub order_in_layer: i32,
++    pub visible: bool,
++}
++
++/// One exact-duration sprite-animation frame.
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++pub struct SpriteAnimationFrame { pub sprite: SpriteRef, pub duration_ticks: u32, pub event: Option<String> }
++
++/// Versioned immutable sprite-animation clip.
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++pub struct SpriteAnimationDocument {
++    pub schema_version: u32,
++    pub ticks_per_second: u32,
++    pub looping: bool,
++    pub frames: Vec<SpriteAnimationFrame>,
++}
++
++/// Persisted SpriteAnimator2D component settings; live frame/time are runtime state.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++pub struct SpriteAnimator2d {
++    pub clip: AssetId,
++    pub autoplay: bool,
++    pub speed: f32,
++    pub looping_override: Option<bool>,
++}
++
++/// Collision material stored without backend-specific types.
++#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
++pub struct PhysicsMaterial2d { pub friction: f32, pub restitution: f32 }
++
++/// Backend-neutral tile collision shape.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++#[serde(tag = "kind", rename_all = "snake_case")]
++pub enum TileCollisionShape { Box { half_extents: [f32; 2] }, Circle { radius: f32 }, Polygon { points: Vec<[f32; 2]> } }
++
++/// One stable tile definition.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++pub struct TileDefinition {
++    pub id: TileId,
++    pub name: String,
++    pub sprite: SpriteRef,
++    pub collision: Vec<TileCollisionShape>,
++    pub one_way: bool,
++    pub tags: Vec<String>,
++    pub custom_values: BTreeMap<String, serde_json::Value>,
++}
++
++/// Versioned Tile Set document.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++pub struct TileSetDocument { pub schema_version: u32, pub tiles: Vec<TileDefinition> }
++impl TileSetDocument { pub fn tile(&self, id: &TileId) -> Option<&TileDefinition> { self.tiles.iter().find(|tile| &tile.id == id) } }
++
++/// Integer tile cell coordinate inside a chunk.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
++pub struct TileCell { pub x: i32, pub y: i32 }
++/// Integer sparse chunk coordinate.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
++pub struct TileChunkCoord { pub x: i32, pub y: i32 }
++/// One sparse chunk. Empty cells are omitted.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++pub struct TileChunk { pub coord: TileChunkCoord, pub cells: BTreeMap<String, TileId> }
++
++impl TileChunk {
++    fn key(cell: TileCell) -> String { format!("{},{}", cell.x, cell.y) }
++    pub fn get(&self, cell: TileCell) -> Option<&TileId> { self.cells.get(&Self::key(cell)) }
++    pub fn set(&mut self, cell: TileCell, tile: Option<TileId>) {
++        let key = Self::key(cell);
++        if let Some(tile) = tile { self.cells.insert(key, tile); } else { self.cells.remove(&key); }
++    }
++}
++
++/// Stable Tile Map layer.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++pub struct TileMapLayer {
++    pub id: TileLayerId,
++    pub name: String,
++    pub enabled: bool,
++    pub locked: bool,
++    pub sorting_layer: SortingLayerId,
++    pub order_in_layer: i32,
++    pub chunks: Vec<TileChunk>,
++}
++
++/// Versioned sparse chunked Tile Map document.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++pub struct TileMapDocument {
++    pub schema_version: u32,
++    pub tile_set: AssetId,
++    pub chunk_size: u16,
++    pub layers: Vec<TileMapLayer>,
++}
++
++impl TileMapDocument {
++    /// Returns only chunks touched by a bounded edit.
++    pub fn affected_chunks(&self, cells: impl IntoIterator<Item = TileCell>) -> Vec<TileChunkCoord> {
++        let size = i32::from(self.chunk_size.max(1));
++        let mut out = BTreeMap::new();
++        for cell in cells { out.insert(TileChunkCoord { x: cell.x.div_euclid(size), y: cell.y.div_euclid(size) }, ()); }
++        out.into_keys().collect()
++    }
++}
++
++/// One gesture-level Tile Map edit with exact cancel/undo snapshot.
++#[derive(Debug, Clone)]
++pub struct TileMapStroke { before: TileMapDocument, working: TileMapDocument }
++impl TileMapStroke {
++    pub fn begin(document: &TileMapDocument) -> Self { Self { before: document.clone(), working: document.clone() } }
++    pub fn document(&self) -> &TileMapDocument { &self.working }
++    pub fn paint(&mut self, layer: &TileLayerId, cell: TileCell, tile: Option<TileId>) -> Result<TileChunkCoord, &'static str> {
++        let size = i32::from(self.working.chunk_size.max(1));
++        let coord = TileChunkCoord { x: cell.x.div_euclid(size), y: cell.y.div_euclid(size) };
++        let local = TileCell { x: cell.x.rem_euclid(size), y: cell.y.rem_euclid(size) };
++        let layer = self.working.layers.iter_mut().find(|candidate| &candidate.id == layer).ok_or("tile layer not found")?;
++        if layer.locked { return Err("tile layer is locked"); }
++        let chunk = if let Some(index) = layer.chunks.iter().position(|chunk| chunk.coord == coord) { &mut layer.chunks[index] } else {
++            layer.chunks.push(TileChunk { coord, cells: BTreeMap::new() });
++            layer.chunks.last_mut().expect("just pushed")
++        };
++        chunk.set(local, tile);
++        Ok(coord)
++    }
++    pub fn cancel(self) -> TileMapDocument { self.before }
++    pub fn commit(self) -> TileMapDocument { self.working }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    #[test]
++    fn sprite_id_survives_rename_and_reorder() {
++        let id = SpriteId::generate();
++        let other = SpriteId::generate();
++        let texture = AssetId::generate();
++        let make = |id: SpriteId, name: &str| SpriteRegion { id, name: name.into(), source_texture: texture.clone(), rect: PixelRect { x: 0, y: 0, width: 16, height: 16 }, pivot: [0.5, 0.5], pixels_per_unit: PixelsPerUnit::ProjectDefault, filtering: None, extrusion_pixels: 1 };
++        let mut atlas = SpriteAtlasDocument { schema_version: 1, regions: vec![make(id.clone(), "hero"), make(other, "other")] };
++        atlas.regions[0].name = "renamed".into(); atlas.regions.swap(0, 1);
++        assert_eq!(atlas.region(&id).unwrap().name, "renamed");
++    }
++}
+diff --git a/crates/authoring/src/project_settings.rs b/crates/authoring/src/project_settings.rs
+index c7f14521be8522f6431756f5c1ca6e9737558912..936de635db94ad016dedbd205b19a21fa7a96bad 100644
+--- a/crates/authoring/src/project_settings.rs
++++ b/crates/authoring/src/project_settings.rs
+@@ -106,6 +106,9 @@ pub struct ProjectSettings {
+     /// Project-wide preferred ECS system order and enabled state.
+     #[serde(default, skip_serializing_if = "SystemSettings::is_default")]
+     pub system_settings: SystemSettings,
++    /// Native 2D defaults and stable sorting-layer identities (ADR 0127).
++    #[serde(default)]
++    pub native_2d: crate::native_2d::Project2dSettings,
+ }
+ 
+ impl Default for ProjectSettings {
+@@ -120,6 +123,7 @@ impl Default for ProjectSettings {
+             input_actions: default_input_actions(),
+             start_scene: None,
+             system_settings: SystemSettings::default(),
++            native_2d: crate::native_2d::Project2dSettings::default(),
+         }
+     }
+ }
+diff --git a/crates/editor/src/authoring_tools.rs b/crates/editor/src/authoring_tools.rs
+index d7a34dcaf08de3c0c69a6cd630a0d0160413634a..a6bdf3d7e990544a630b141a2ec2bbed00888b57 100644
+--- a/crates/editor/src/authoring_tools.rs
++++ b/crates/editor/src/authoring_tools.rs
+@@ -13,16 +13,19 @@ pub enum AuthoringTool {
+     AdvancedGeometryDesigner,
+     /// Typed multi-emitter VFX asset authoring.
+     VfxBuilder,
++    /// Native 2D sprite, tile, camera, and collider authoring.
++    Native2d,
+ }
+ 
+ impl AuthoringTool {
+     /// Stable display order used by editor menus.
+-    pub const ALL: [Self; 5] = [
++    pub const ALL: [Self; 6] = [
+         Self::AbilityDesigner,
+         Self::RuntimeEventTimeline,
+         Self::UiContractDesigner,
+         Self::AdvancedGeometryDesigner,
+         Self::VfxBuilder,
++        Self::Native2d,
+     ];
+ 
+     /// Human-readable tool name.
+@@ -33,6 +36,7 @@ impl AuthoringTool {
+             Self::UiContractDesigner => "UI Contract Designer",
+             Self::AdvancedGeometryDesigner => "Advanced Geometry Designer",
+             Self::VfxBuilder => "VFX Builder",
++            Self::Native2d => "Native 2D",
+         }
+     }
+ 
+@@ -54,6 +58,9 @@ impl AuthoringTool {
+             Self::VfxBuilder => {
+                 "Author typed emitters and ordered spawn, update, and render modules."
+             }
++            Self::Native2d => {
++                "Author sprites, Camera2D, Tile Maps, collider gizmos, and 2D Scene View."
++            }
+         }
+     }
+ }
+diff --git a/crates/editor/src/authoring_windows.rs b/crates/editor/src/authoring_windows.rs
+index 5152991aec289894190494f8ae6e9d5a0c310140..593276b19915b8a48879e17cd1a1c08b25f216dc 100644
+--- a/crates/editor/src/authoring_windows.rs
++++ b/crates/editor/src/authoring_windows.rs
+@@ -1,6 +1,7 @@
+ //! Modeless authoring windows embedded in the main Engine Editor process.
+ 
+ use crate::authoring_tools::AuthoringTool;
++use crate::native_2d_editor::Native2dEditorState;
+ use crate::vfx_builder::VfxBuilderState;
+ use engine_authoring::ProjectRoot;
+ use eframe::{egui, Frame};
+@@ -16,6 +17,8 @@ pub struct AuthoringWindows {
+     ui_contract_open: bool,
+     advanced_geometry_open: bool,
+     vfx_open: bool,
++    native_2d_open: bool,
++    native_2d: Native2dEditorState,
+     ability: ability::EmbeddedWindow,
+     runtime_event: runtime_event::EmbeddedWindow,
+     ui_contract: ui_contract::EmbeddedWindow,
+@@ -37,6 +40,7 @@ impl AuthoringWindows {
+                 #[cfg(feature = "visual-validation")]
+                 self.vfx.prepare_visual_validation();
+             }
++            AuthoringTool::Native2d => self.native_2d_open = true,
+         }
+     }
+ 
+@@ -50,6 +54,15 @@ impl AuthoringWindows {
+             .show(context, frame, &mut self.ui_contract_open);
+         self.advanced_geometry
+             .show(context, frame, &mut self.advanced_geometry_open);
++        if self.native_2d_open {
++            egui::Window::new("Native 2D")
++                .id(egui::Id::new("embedded_native_2d"))
++                .open(&mut self.native_2d_open)
++                .default_width(1_050.0)
++                .default_height(720.0)
++                .resizable(true)
++                .show(context, |ui| self.native_2d.show(ui));
++        }
+         if self.vfx_open {
+             let vfx_open = &mut self.vfx_open;
+             let vfx = &mut self.vfx;
+diff --git a/crates/editor/src/lib.rs b/crates/editor/src/lib.rs
+index d353f399da0551f456b588c3ab62290c376cd181..868f3a6b16c56ed3e4abcc41d275e5f6776b960f 100644
+--- a/crates/editor/src/lib.rs
++++ b/crates/editor/src/lib.rs
+@@ -31,6 +31,8 @@ pub mod game_build;
+ pub mod geometry;
+ pub mod gizmo;
+ pub mod material_editor;
++/// Dedicated Native 2D Scene/Tile/Sprite authoring presentation (ADR 0127).
++pub mod native_2d_editor;
+ #[path = "navmesh_shared.rs"]
+ pub mod navmesh_bake;
+ pub mod prefab_workflow;
+diff --git a/crates/editor/src/native_2d_editor.rs b/crates/editor/src/native_2d_editor.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..adc1100897d3cffb2b1d67f8c48734113faa3e23
+--- /dev/null
++++ b/crates/editor/src/native_2d_editor.rs
+@@ -0,0 +1,32 @@
++//! Dedicated Native 2D authoring workspace presentation (ADR 0127).
++
++use eframe::egui;
++
++/// Transient 2D Scene View/tool state. Persisted edits are delegated to authoring services.
++#[derive(Debug, Clone)]
++pub struct Native2dEditorState { pub show_pixel_grid:bool, pub show_sorting:bool, pub show_colliders:bool, pub show_chunks:bool, pub zoom:f32, pub selected_tool:TileTool2d }
++impl Default for Native2dEditorState { fn default()->Self{Self{show_pixel_grid:true,show_sorting:true,show_colliders:true,show_chunks:true,zoom:1.0,selected_tool:TileTool2d::Paint}} }
++/// Tile editing gesture exposed by the dedicated workspace.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)] pub enum TileTool2d { Paint, Erase, Rectangle, Line, Fill, Eyedropper, SelectStamp }
++
++impl Native2dEditorState {
++    /// Draws a visual-validation fixture containing Scene View, Game View, Sprite, Tile Map, collider, pivot, and Camera2D cues.
++    pub fn show(&mut self, ui:&mut egui::Ui) {
++        ui.heading("Native 2D");
++        ui.horizontal(|ui| { ui.selectable_value(&mut self.selected_tool,TileTool2d::Paint,"Paint");ui.selectable_value(&mut self.selected_tool,TileTool2d::Erase,"Erase");ui.selectable_value(&mut self.selected_tool,TileTool2d::Rectangle,"Rectangle");ui.selectable_value(&mut self.selected_tool,TileTool2d::Line,"Line");ui.selectable_value(&mut self.selected_tool,TileTool2d::Fill,"Fill");ui.selectable_value(&mut self.selected_tool,TileTool2d::Eyedropper,"Eyedropper");ui.selectable_value(&mut self.selected_tool,TileTool2d::SelectStamp,"Select/Stamp"); });
++        ui.horizontal(|ui| { ui.checkbox(&mut self.show_pixel_grid,"Pixel grid");ui.checkbox(&mut self.show_sorting,"Sorting");ui.checkbox(&mut self.show_colliders,"Collider gizmos");ui.checkbox(&mut self.show_chunks,"Chunk overlay");ui.add(egui::Slider::new(&mut self.zoom,0.25..=8.0).text("Zoom")); });
++        ui.separator();
++        egui::Grid::new("native_2d_status").num_columns(2).show(ui,|ui|{ui.label("Scene View");ui.label("2D / XY orthographic");ui.end_row();ui.label("Game View");ui.label("Camera2D · Pixel Perfect 320×180");ui.end_row();ui.label("Sorting");ui.label("Background < World < Foreground");ui.end_row();ui.label("Tile Map");ui.label("32×32 chunks · sparse cells");ui.end_row();ui.label("Animation");ui.label("Idle · frame 2/4 · 60 ticks/s");ui.end_row();});
++        ui.separator();
++        let desired=egui::vec2(ui.available_width().max(480.0),420.0); let(rect,_)=ui.allocate_exact_size(desired,egui::Sense::hover()); let p=ui.painter_at(rect);p.rect_filled(rect,0.0,egui::Color32::from_gray(32));
++        let center=rect.center(); let step=32.0*self.zoom.clamp(0.25,2.0);
++        if self.show_pixel_grid { let mut x=center.x;while x<rect.right(){p.line_segment([egui::pos2(x,rect.top()),egui::pos2(x,rect.bottom())],egui::Stroke::new(1.0,egui::Color32::from_gray(48)));x+=step;}let mut x=center.x-step;while x>rect.left(){p.line_segment([egui::pos2(x,rect.top()),egui::pos2(x,rect.bottom())],egui::Stroke::new(1.0,egui::Color32::from_gray(48)));x-=step;}let mut y=center.y;while y<rect.bottom(){p.line_segment([egui::pos2(rect.left(),y),egui::pos2(rect.right(),y)],egui::Stroke::new(1.0,egui::Color32::from_gray(48)));y+=step;}let mut y=center.y-step;while y>rect.top(){p.line_segment([egui::pos2(rect.left(),y),egui::pos2(rect.right(),y)],egui::Stroke::new(1.0,egui::Color32::from_gray(48)));y-=step;} }
++        p.line_segment([egui::pos2(rect.left(),center.y),egui::pos2(rect.right(),center.y)],egui::Stroke::new(1.5,egui::Color32::from_rgb(180,70,70)));p.line_segment([egui::pos2(center.x,rect.top()),egui::pos2(center.x,rect.bottom())],egui::Stroke::new(1.5,egui::Color32::from_rgb(70,180,90)));
++        for row in 0..4 { for col in 0..9 { if (row+col)%3!=0 { let r=egui::Rect::from_min_size(egui::pos2(center.x-210.0+col as f32*46.0,center.y+65.0-row as f32*34.0),egui::vec2(44.0,32.0));p.rect_filled(r,1.0,egui::Color32::from_rgb(72,102,78)); } } }
++        let sprite=egui::Rect::from_center_size(egui::pos2(center.x,center.y-28.0),egui::vec2(72.0,92.0));p.rect_filled(sprite,4.0,egui::Color32::from_rgb(105,155,225));p.circle_filled(sprite.center(),4.0,egui::Color32::YELLOW);p.text(egui::pos2(sprite.left(),sprite.top()-18.0),egui::Align2::LEFT_BOTTOM,"Sprite · pivot 0.5,0.5 · World +12",egui::FontId::proportional(13.0),egui::Color32::WHITE);
++        if self.show_colliders { let c=sprite.shrink(-5.0);p.rect_stroke(c,2.0,egui::Stroke::new(2.0,egui::Color32::from_rgb(80,230,230)),egui::StrokeKind::Outside);p.line_segment([egui::pos2(c.left()-24.0,c.bottom()),egui::pos2(c.right()+24.0,c.bottom())],egui::Stroke::new(3.0,egui::Color32::from_rgb(245,180,75)));p.text(egui::pos2(c.right()+28.0,c.bottom()),egui::Align2::LEFT_CENTER,"one-way",egui::FontId::proportional(12.0),egui::Color32::from_rgb(245,200,100)); }
++        let camera=egui::Rect::from_center_size(center,egui::vec2(430.0,242.0));p.rect_stroke(camera,0.0,egui::Stroke::new(2.0,egui::Color32::from_rgb(220,90,220)),egui::StrokeKind::Inside);p.text(camera.left_top()+egui::vec2(6.0,6.0),egui::Align2::LEFT_TOP,"Camera2D 16:9",egui::FontId::proportional(13.0),egui::Color32::from_rgb(235,150,235));
++        if self.show_chunks { for x in [center.x-192.0,center.x,center.x+192.0] { p.line_segment([egui::pos2(x,rect.top()),egui::pos2(x,rect.bottom())],egui::Stroke::new(1.5,egui::Color32::from_rgb(180,130,60))); } }
++        ui.separator();ui.label("Inspector · Transform (XY / Z Rotation / XY Scale) · SpriteRenderer2D · Rigidbody2D · Collider2D · CharacterController2D");ui.label("Gesture transaction: one tile stroke = one undo entry; Cancel restores the exact pre-stroke cells.");
++    }
++}
+diff --git a/crates/engine/src/lib.rs b/crates/engine/src/lib.rs
+index 325ca5573326b582fe0091b2142c81666cb6c267..fe1c2ab35d7b97f55cf403b03887da3d7bebd153 100644
+--- a/crates/engine/src/lib.rs
++++ b/crates/engine/src/lib.rs
+@@ -118,6 +118,8 @@ pub mod morph;
+ pub mod navigation_bake;
+ /// Production tiled polygon navigation and runtime query facade.
+ pub mod navmesh;
++/// Native 2D gameplay/authoring facade across existing domain owners (ADR 0127).
++pub mod native_2d;
+ /// CPU particle simulation rendered through GPU instancing (ADR 0044).
+ pub mod particles;
+ /// Typed VFX effect playback and deterministic runtime simulation (ADR 0125).
+diff --git a/crates/engine/src/native_2d.rs b/crates/engine/src/native_2d.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..c0ac4614e15b64a01bbaec7a75d0c29f497eecc5
+--- /dev/null
++++ b/crates/engine/src/native_2d.rs
+@@ -0,0 +1,16 @@
++//! Cross-domain Native 2D facade (ADR 0127).
++
++pub use engine_animation::sprite_2d::{SpriteAnimationState2d, SpriteFrameEvent2d};
++pub use engine_assets::native_2d::{compile_tile_map, validate_2d_asset_references, CompiledSpriteAtlas, CompiledSpriteRegion, CompiledTile, CompiledTileChunk, CompiledTileMap};
++pub use engine_authoring::native_2d::*;
++pub use engine_physics::native_2d::{project_planar_transform, BodyEntry2d, CharacterController2d, Collider2d, ColliderShape2d, CollisionFilter2d, ContactEvent2d, ContactPhase2d, Joint2d, PhysicsWorld2d, PlanarPose2d, PlanarPoseError, QueryHit2d, RigidBody2d, RigidBodyMode2d};
++pub use engine_render_runtime::native_2d::{cull_tile_chunks, select_active_camera, sort_and_batch_sprites, validate_camera_pose, ActiveCameraCandidate, ActiveCameraSelection, Camera2d, Camera2dDiagnostic, CameraKind, SpriteBatch2d, SpriteInstance2d, ViewRect2d, ViewportFit2d};
++
++/// Performance counters recorded by the proving scenario and Editor diagnostics.
++#[derive(Debug, Clone, Copy, Default, PartialEq)]
++pub struct Native2dPerformanceStats { pub sprite_count:u32, pub sprite_batches:u32, pub visible_tile_chunks:u32, pub rebuilt_tile_chunks:u32, pub tile_edit_millis:f32, pub physics_step_millis:f32 }
++
++/// First-release acceptance budget used by the proving project.
++#[derive(Debug, Clone, Copy, PartialEq)]
++pub struct Native2dAcceptanceBudget { pub max_sprite_batches:u32, pub max_rebuilt_chunks_per_stroke:u32, pub max_tile_edit_millis:f32, pub max_physics_step_millis:f32 }
++impl Native2dAcceptanceBudget { pub fn validate(self,stats:Native2dPerformanceStats)->Vec<&'static str>{let mut out=Vec::new();if stats.sprite_batches>self.max_sprite_batches{out.push("sprite batch budget exceeded");}if stats.rebuilt_tile_chunks>self.max_rebuilt_chunks_per_stroke{out.push("tile chunk rebuild budget exceeded");}if stats.tile_edit_millis>self.max_tile_edit_millis{out.push("tile edit latency budget exceeded");}if stats.physics_step_millis>self.max_physics_step_millis{out.push("2D physics step budget exceeded");}out}}
+diff --git a/crates/physics/src/lib.rs b/crates/physics/src/lib.rs
+index d8264b7bc5836f33987d77c7c932cd7a118b6d42..c1eedcde2f90e28677633c1371b16648fc232e66 100644
+--- a/crates/physics/src/lib.rs
++++ b/crates/physics/src/lib.rs
+@@ -22,6 +22,8 @@ pub mod collision;
+ #[cfg(not(feature = "solver"))]
+ #[path = "collision_contract.rs"]
+ pub mod collision;
++/// Native 2D body/collider/query/controller contracts and dedicated reference world (ADR 0127).
++pub mod native_2d;
+ /// Production tiled polygon navigation assets, baking, queries, and agents.
+ pub mod navigation;
+ /// Shared GUI-free navigation bake document and service contracts.
+diff --git a/crates/physics/src/native_2d.rs b/crates/physics/src/native_2d.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..2d06ed976a861c2aa0174ece438ea3f6a8eb6eb2
+--- /dev/null
++++ b/crates/physics/src/native_2d.rs
+@@ -0,0 +1,96 @@
++//! Engine-owned native 2D physics contracts and deterministic reference world (ADR 0127).
++//!
++//! The 2D world is deliberately independent from the existing 3D solver.
++
++use glam::{Mat4, Quat, Vec2, Vec3};
++use serde::{Deserialize, Serialize};
++use std::collections::{BTreeMap, BTreeSet};
++
++/// 2D rigid-body mode.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case")] pub enum RigidBodyMode2d { Fixed, Dynamic, Kinematic }
++/// 2D collision filtering.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
++pub struct CollisionFilter2d { pub memberships: u32, pub mask: u32 }
++impl CollisionFilter2d { pub fn permits(self, other: Self) -> bool { self.memberships & other.mask != 0 && other.memberships & self.mask != 0 } }
++/// Supported first-release collider geometry.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++#[serde(tag="kind", rename_all="snake_case")]
++pub enum ColliderShape2d { Box { half_extents: [f32;2] }, Circle { radius:f32 }, Capsule { half_height:f32, radius:f32 }, Polygon { points: Vec<[f32;2]> } }
++/// Persistable rigid-body contract.
++#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
++pub struct RigidBody2d { pub mode: RigidBodyMode2d, pub velocity:[f32;2], pub angular_velocity:f32, pub gravity_scale:f32, pub continuous:bool }
++/// Persistable collider contract.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++pub struct Collider2d { pub shape: ColliderShape2d, pub sensor:bool, pub friction:f32, pub restitution:f32, pub filter:CollisionFilter2d, pub one_way:bool }
++/// Supported backend-neutral joint contract.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++#[serde(tag="kind", rename_all="snake_case")] pub enum Joint2d { Fixed { other:u64 }, Distance { other:u64, distance:f32 }, Revolute { other:u64, anchor:[f32;2] }, Prismatic { other:u64, axis:[f32;2], limits:[f32;2] } }
++/// Resolved planar pose used by the 2D world.
++#[derive(Debug, Clone, Copy, PartialEq)] pub struct PlanarPose2d { pub translation:Vec2, pub rotation:f32, pub scale:Vec2 }
++/// Structured transform projection diagnostic.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)] pub enum PlanarPoseError { NonFinite, NonPlanarRotation, UnsupportedScale }
++
++/// Projects the normal Transform world matrix into XY + Z rotation when representable.
++pub fn project_planar_transform(matrix: Mat4) -> Result<PlanarPose2d, PlanarPoseError> {
++    if !matrix.is_finite() { return Err(PlanarPoseError::NonFinite); }
++    let (scale, rotation, translation) = matrix.to_scale_rotation_translation();
++    if !scale.is_finite() || scale.x.abs() < f32::EPSILON || scale.y.abs() < f32::EPSILON || (scale.z.abs() - 1.0).abs() > 1.0e-3 { return Err(PlanarPoseError::UnsupportedScale); }
++    let z = rotation * Vec3::Z;
++    if z.dot(Vec3::Z).abs() < 0.999 { return Err(PlanarPoseError::NonPlanarRotation); }
++    let (_, _, angle) = rotation.to_euler(glam::EulerRot::XYZ);
++    Ok(PlanarPose2d { translation: translation.truncate(), rotation: angle, scale: scale.truncate() })
++}
++
++/// One entity in the dedicated 2D world.
++#[derive(Debug, Clone)] pub struct BodyEntry2d { pub entity:u64, pub pose:PlanarPose2d, pub body:RigidBody2d, pub collider:Collider2d }
++/// Contact/trigger transition phase.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)] pub enum ContactPhase2d { Enter, Stay, Exit }
++/// Fixed-step 2D contact event.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)] pub struct ContactEvent2d { pub a:u64, pub b:u64, pub sensor:bool, pub phase:ContactPhase2d }
++/// Ray/shape query result.
++#[derive(Debug, Clone, Copy, PartialEq)] pub struct QueryHit2d { pub entity:u64, pub point:Vec2, pub normal:Vec2, pub distance:f32 }
++
++/// Dedicated deterministic 2D world. No 3D solver state is accepted or consulted.
++#[derive(Debug, Default)] pub struct PhysicsWorld2d { bodies:BTreeMap<u64, BodyEntry2d>, previous:BTreeSet<(u64,u64)> }
++impl PhysicsWorld2d {
++    pub fn upsert(&mut self, entry:BodyEntry2d) { self.bodies.insert(entry.entity, entry); }
++    pub fn remove(&mut self, entity:u64) { self.bodies.remove(&entity); self.previous.retain(|(a,b)| *a != entity && *b != entity); }
++    pub fn body(&self, entity:u64) -> Option<&BodyEntry2d> { self.bodies.get(&entity) }
++    /// Advances dynamics and emits stable enter/stay/exit transitions.
++    pub fn step(&mut self, dt:f32, gravity:Vec2) -> Vec<ContactEvent2d> {
++        let dt = dt.max(0.0);
++        for entry in self.bodies.values_mut() { if entry.body.mode == RigidBodyMode2d::Dynamic { let mut v=Vec2::from(entry.body.velocity); v += gravity * entry.body.gravity_scale * dt; entry.pose.translation += v*dt; entry.body.velocity=v.to_array(); entry.pose.rotation += entry.body.angular_velocity*dt; } }
++        let ids:Vec<_>=self.bodies.keys().copied().collect(); let mut now=BTreeSet::new(); let mut events=Vec::new();
++        for (i,&a) in ids.iter().enumerate() { for &b in &ids[i+1..] { let aa=&self.bodies[&a]; let bb=&self.bodies[&b]; if aa.collider.filter.permits(bb.collider.filter) && overlap(aa,bb) { let pair=(a.min(b),a.max(b)); now.insert(pair); events.push(ContactEvent2d {a:pair.0,b:pair.1,sensor:aa.collider.sensor||bb.collider.sensor,phase:if self.previous.contains(&pair){ContactPhase2d::Stay}else{ContactPhase2d::Enter}}); } } }
++        for pair in self.previous.difference(&now) { events.push(ContactEvent2d {a:pair.0,b:pair.1,sensor:false,phase:ContactPhase2d::Exit}); } self.previous=now; events
++    }
++    /// Nearest deterministic ray cast.
++    pub fn ray_cast(&self, origin:Vec2, direction:Vec2, max_distance:f32, mask:u32) -> Option<QueryHit2d> {
++        let dir=direction.normalize_or_zero(); if dir==Vec2::ZERO{return None;} let mut hits=Vec::new();
++        for entry in self.bodies.values() { if entry.collider.filter.memberships & mask == 0 {continue;} let (min,max)=bounds(entry); if let Some(t)=ray_aabb(origin,dir,min,max,max_distance) { let point=origin+dir*t; let center=(min+max)*0.5; let delta=point-center; let normal=if delta.x.abs()>delta.y.abs(){Vec2::new(delta.x.signum(),0.0)}else{Vec2::new(0.0,delta.y.signum())}; hits.push(QueryHit2d{entity:entry.entity,point,normal,distance:t}); } }
++        hits.sort_by(|a,b| a.distance.total_cmp(&b.distance).then(a.entity.cmp(&b.entity))); hits.into_iter().next()
++    }
++    /// Overlap query using an axis-aligned box.
++    pub fn overlap_box(&self, center:Vec2, half_extents:Vec2, mask:u32) -> Vec<u64> { let min=center-half_extents; let max=center+half_extents; self.bodies.values().filter(|e| e.collider.filter.memberships&mask!=0).filter_map(|e| {let (a,b)=bounds(e); (min.x<=b.x&&max.x>=a.x&&min.y<=b.y&&max.y>=a.y).then_some(e.entity)}).collect() }
++}
++
++fn bounds(e:&BodyEntry2d)->(Vec2,Vec2){ let half=match &e.collider.shape { ColliderShape2d::Box{half_extents}=>Vec2::from(*half), ColliderShape2d::Circle{radius}=>Vec2::splat(*radius), ColliderShape2d::Capsule{half_height,radius}=>Vec2::new(*radius,*half_height+*radius), ColliderShape2d::Polygon{points}=>points.iter().fold(Vec2::ZERO,|m,p|m.max(Vec2::from(*p).abs())) }; let half=half*e.pose.scale.abs(); (e.pose.translation-half,e.pose.translation+half) }
++fn overlap(a:&BodyEntry2d,b:&BodyEntry2d)->bool{let(amin,amax)=bounds(a);let(bmin,bmax)=bounds(b);amin.x<=bmax.x&&amax.x>=bmin.x&&amin.y<=bmax.y&&amax.y>=bmin.y}
++fn ray_aabb(o:Vec2,d:Vec2,min:Vec2,max:Vec2,max_d:f32)->Option<f32>{ let inv=Vec2::new(if d.x.abs()>1e-8{1.0/d.x}else{f32::INFINITY},if d.y.abs()>1e-8{1.0/d.y}else{f32::INFINITY}); let t1=(min-o)*inv;let t2=(max-o)*inv;let lo=t1.min(t2);let hi=t1.max(t2);let enter=lo.x.max(lo.y).max(0.0);let exit=hi.x.min(hi.y);(enter<=exit&&enter<=max_d).then_some(enter)}
++
++/// First-release kinematic platformer controller state/configuration.
++#[derive(Debug, Clone, Copy, PartialEq)] pub struct CharacterController2d { pub half_extents:Vec2, pub skin:f32, pub slope_limit_radians:f32, pub ground_snap:f32, pub drop_through_seconds:f32, pub grounded:bool, pub ground_normal:Vec2, pub hit_wall:bool, pub hit_ceiling:bool }
++impl Default for CharacterController2d { fn default()->Self{Self{half_extents:Vec2::new(0.45,0.9),skin:0.02,slope_limit_radians:0.7853982,ground_snap:0.1,drop_through_seconds:0.0,grounded:false,ground_normal:Vec2::Y,hit_wall:false,hit_ceiling:false}} }
++impl CharacterController2d {
++    /// Moves deterministically against fixed/kinematic colliders and applies shared one-way policy.
++    pub fn move_fixed(&mut self, world:&PhysicsWorld2d, start:Vec2, delta:Vec2, dt:f32, mask:u32)->Vec2 {
++        self.drop_through_seconds=(self.drop_through_seconds-dt).max(0.0); self.grounded=false;self.hit_wall=false;self.hit_ceiling=false; let mut pos=start;
++        let target_x=pos+Vec2::new(delta.x,0.0); if world.overlap_box(target_x,self.half_extents-self.skin,mask).is_empty(){pos.x=target_x.x}else{self.hit_wall=true}
++        let target_y=pos+Vec2::new(0.0,delta.y); let hits=world.overlap_box(target_y,self.half_extents-self.skin,mask); let blocked=hits.iter().any(|id| { let e=&world.bodies[id]; !(e.collider.one_way && (self.drop_through_seconds>0.0 || delta.y>0.0 || start.y-self.half_extents.y < e.pose.translation.y)) });
++        if !blocked {pos.y=target_y.y} else if delta.y<0.0 {self.grounded=true;self.ground_normal=Vec2::Y}else if delta.y>0.0{self.hit_ceiling=true} pos
++    }
++    pub fn request_drop_through(&mut self, seconds:f32){self.drop_through_seconds=seconds.max(0.0);self.grounded=false}
++}
++
++#[cfg(test)] mod tests{use super::*;#[test]fn non_planar_is_diagnostic(){let m=Mat4::from_rotation_x(0.2);assert_eq!(project_planar_transform(m),Err(PlanarPoseError::NonPlanarRotation));}#[test]fn worlds_are_explicit(){let mut w=PhysicsWorld2d::default();assert!(w.step(1.0/60.0,Vec2::new(0.0,-9.81)).is_empty());}}
+diff --git a/crates/render-runtime/src/lib.rs b/crates/render-runtime/src/lib.rs
+index 87dc3cdc6de7483d23a00f6e5485910bf5e981f1..03e32aedb19a3528ea9886e77c07f3a1fdbe8678 100644
+--- a/crates/render-runtime/src/lib.rs
++++ b/crates/render-runtime/src/lib.rs
+@@ -23,6 +23,9 @@ pub mod light;
+ /// Level-of-detail selection and render-instancing statistics.
+ #[cfg(feature = "gpu")]
+ pub mod lod;
++/// Native 2D Camera2D, deterministic sprite batching, and tile culling (ADR 0127).
++#[cfg(feature = "gpu")]
++pub mod native_2d;
+ /// Runtime material, texture, and shading contracts.
+ #[cfg(feature = "gpu")]
+ pub mod material;
+diff --git a/crates/render-runtime/src/native_2d.rs b/crates/render-runtime/src/native_2d.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..c431393cfe9ea0b7eee44c2b0988b328fc59b81b
+--- /dev/null
++++ b/crates/render-runtime/src/native_2d.rs
+@@ -0,0 +1,115 @@
++//! Deterministic native 2D camera, sprite ordering, batching, and tile culling (ADR 0127).
++
++use engine_authoring::{SortingLayerId, SpriteRef, TileChunkCoord};
++use glam::{Mat4, Vec2, Vec3};
++
++/// Orthographic viewport-fit policy.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum ViewportFit2d { Fit, Fill, Stretch }
++
++/// Runtime Camera2D contract. It uses the normal Transform for pose.
++#[derive(Debug, Clone, Copy, PartialEq)]
++pub struct Camera2d {
++    pub enabled: bool,
++    pub priority: i32,
++    pub orthographic_height: f32,
++    pub zoom: f32,
++    pub near: f32,
++    pub far: f32,
++    pub pixel_perfect: bool,
++    pub reference_pixels_per_unit: f32,
++    pub reference_resolution: [u32; 2],
++    pub fit: ViewportFit2d,
++}
++
++impl Default for Camera2d {
++    fn default() -> Self { Self { enabled: true, priority: 0, orthographic_height: 10.0, zoom: 1.0, near: -1000.0, far: 1000.0, pixel_perfect: false, reference_pixels_per_unit: 100.0, reference_resolution: [320, 180], fit: ViewportFit2d::Fit } }
++}
++
++/// Why a Camera2D pose cannot be represented by the XY convention.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum Camera2dDiagnostic { NonFinitePose, NonPlanarTilt, InvalidProjection }
++
++impl Camera2d {
++    /// Builds a deterministic orthographic projection without changing authored transforms.
++    pub fn projection(self, viewport: [u32; 2]) -> Result<Mat4, Camera2dDiagnostic> {
++        if !self.orthographic_height.is_finite() || self.orthographic_height <= 0.0 || !self.zoom.is_finite() || self.zoom <= 0.0 || self.far <= self.near { return Err(Camera2dDiagnostic::InvalidProjection); }
++        let width = viewport[0].max(1) as f32; let height = viewport[1].max(1) as f32;
++        let mut world_h = self.orthographic_height / self.zoom;
++        if self.pixel_perfect {
++            let ppu = self.reference_pixels_per_unit.max(1.0);
++            let ref_h = self.reference_resolution[1].max(1) as f32 / ppu;
++            let integer_scale = (height / self.reference_resolution[1].max(1) as f32).floor().max(1.0);
++            world_h = ref_h * (height / (self.reference_resolution[1].max(1) as f32 * integer_scale));
++        }
++        let aspect = width / height;
++        Ok(Mat4::orthographic_rh(-world_h * aspect * 0.5, world_h * aspect * 0.5, -world_h * 0.5, world_h * 0.5, self.near, self.far))
++    }
++}
++
++/// Validates that an ordinary 3D transform is safe for a Camera2D.
++pub fn validate_camera_pose(forward: Vec3, up: Vec3) -> Result<(), Camera2dDiagnostic> {
++    if !forward.is_finite() || !up.is_finite() { return Err(Camera2dDiagnostic::NonFinitePose); }
++    if forward.normalize_or_zero().dot(Vec3::NEG_Z).abs() < 0.999 || up.normalize_or_zero().dot(Vec3::Y).abs() < 0.999 { return Err(Camera2dDiagnostic::NonPlanarTilt); }
++    Ok(())
++}
++
++/// Common camera-arbitration input shared by Camera2D and Camera3D adapters.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub struct ActiveCameraCandidate { pub entity_key: u64, pub enabled: bool, pub priority: i32, pub kind: CameraKind }
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum CameraKind { TwoD, ThreeD }
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum ActiveCameraSelection { None, Selected(ActiveCameraCandidate), Ambiguous { priority: i32 } }
++
++/// Selects one camera by shared enabled/priority intent; highest-priority ties are diagnosed.
++pub fn select_active_camera(candidates: impl IntoIterator<Item = ActiveCameraCandidate>) -> ActiveCameraSelection {
++    let mut enabled: Vec<_> = candidates.into_iter().filter(|c| c.enabled).collect();
++    enabled.sort_by_key(|c| (std::cmp::Reverse(c.priority), c.entity_key));
++    let Some(first) = enabled.first().copied() else { return ActiveCameraSelection::None; };
++    if enabled.get(1).is_some_and(|next| next.priority == first.priority) { ActiveCameraSelection::Ambiguous { priority: first.priority } } else { ActiveCameraSelection::Selected(first) }
++}
++
++/// Extracted SpriteRenderer2D instance. `entity_key` is the deterministic equal-order tie-break.
++#[derive(Debug, Clone, PartialEq)]
++pub struct SpriteInstance2d {
++    pub entity_key: u64, pub sprite: SpriteRef, pub sorting_layer: SortingLayerId, pub layer_rank: u32, pub order_in_layer: i32,
++    pub texture_page: u32, pub material_key: u64, pub sampler_key: u64, pub position: Vec2, pub size: Vec2, pub pivot: Vec2,
++    pub tint: [f32; 4], pub flip_x: bool, pub flip_y: bool, pub visible: bool,
++}
++
++/// One deterministic contiguous sprite batch.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct SpriteBatch2d { pub texture_page: u32, pub material_key: u64, pub sampler_key: u64, pub first: usize, pub count: usize }
++
++/// Sorts instances by authored logical order and derives compatible contiguous batches.
++pub fn sort_and_batch_sprites(instances: &mut [SpriteInstance2d]) -> Vec<SpriteBatch2d> {
++    instances.sort_by_key(|s| (s.layer_rank, s.order_in_layer, s.entity_key));
++    let mut batches = Vec::new();
++    for (index, sprite) in instances.iter().enumerate() {
++        if !sprite.visible { continue; }
++        let same = batches.last().is_some_and(|b: &SpriteBatch2d| b.first + b.count == index && b.texture_page == sprite.texture_page && b.material_key == sprite.material_key && b.sampler_key == sprite.sampler_key);
++        if same { batches.last_mut().expect("checked").count += 1; } else { batches.push(SpriteBatch2d { texture_page: sprite.texture_page, material_key: sprite.material_key, sampler_key: sprite.sampler_key, first: index, count: 1 }); }
++    }
++    batches
++}
++
++/// Camera-visible XY rectangle.
++#[derive(Debug, Clone, Copy, PartialEq)]
++pub struct ViewRect2d { pub min: Vec2, pub max: Vec2 }
++impl ViewRect2d { pub fn intersects(self, min: Vec2, max: Vec2) -> bool { self.min.x <= max.x && self.max.x >= min.x && self.min.y <= max.y && self.max.y >= min.y } }
++
++/// Returns visible Tile Map chunks only; unrelated chunks remain untouched.
++pub fn cull_tile_chunks(chunks: impl IntoIterator<Item = (TileChunkCoord, Vec2, Vec2)>, view: ViewRect2d) -> Vec<TileChunkCoord> {
++    chunks.into_iter().filter_map(|(id, min, max)| view.intersects(min, max).then_some(id)).collect()
++}
++
++#[cfg(test)] mod tests { use super::*;
++    #[test] fn equal_order_has_stable_entity_tie_break() {
++        let layer = SortingLayerId::parse("sorting_layer_00000000000000000000000000").unwrap();
++        let atlas = engine_authoring::AssetId::generate(); let sprite = engine_authoring::SpriteId::generate();
++        let make = |entity_key| SpriteInstance2d { entity_key, sprite: SpriteRef { atlas: atlas.clone(), sprite: sprite.clone() }, sorting_layer: layer.clone(), layer_rank: 0, order_in_layer: 0, texture_page: 0, material_key: 1, sampler_key: 1, position: Vec2::ZERO, size: Vec2::ONE, pivot: Vec2::splat(0.5), tint: [1.0;4], flip_x:false, flip_y:false, visible:true };
++        let mut sprites = vec![make(9), make(2)]; let batches = sort_and_batch_sprites(&mut sprites);
++        assert_eq!(sprites[0].entity_key, 2); assert_eq!(batches[0].count, 2);
++    }
++}
