@@ -53,6 +53,8 @@ pub enum EngineViewKind {
     CharacterState,
     /// Current animator clip, playback position, and transition state.
     AnimationState,
+    /// Current VFX playback state, simulation time, budget counters, and backend.
+    VfxState,
     /// Current lock-on target and selection state.
     LockOnState,
     /// Attack-hitbox owner, team, damage, activation, and enabled state.
@@ -109,6 +111,8 @@ pub enum GameCommandFamily {
     Component,
     /// Animation clip and Animation Graph control.
     Animation,
+    /// Scene VFX playback control.
+    Vfx,
     /// Attack hitbox creation, activation, and removal.
     Hitbox,
     /// Sound effect, music, and mixer control.
@@ -789,6 +793,26 @@ impl GameCommand {
             target,
             BTreeMap::from([("operation".to_owned(), Value::String("stop".to_owned()))]),
         )
+    }
+
+    /// Starts or resumes a scene VFX player without resetting transient state.
+    pub fn start_vfx(target: GameEntityHandle) -> Self {
+        simple_target_command(GameCommandFamily::Vfx, "start", target)
+    }
+
+    /// Pauses a scene VFX player without discarding transient state.
+    pub fn pause_vfx(target: GameEntityHandle) -> Self {
+        simple_target_command(GameCommandFamily::Vfx, "pause", target)
+    }
+
+    /// Stops a VFX player and resets deterministic simulation to time zero.
+    pub fn stop_vfx(target: GameEntityHandle) -> Self {
+        simple_target_command(GameCommandFamily::Vfx, "stop", target)
+    }
+
+    /// Restarts a scene VFX player from deterministic time zero and resumes it.
+    pub fn restart_vfx(target: GameEntityHandle) -> Self {
+        simple_target_command(GameCommandFamily::Vfx, "restart", target)
     }
 
     /// Creates an initially enabled trigger hitbox on an empty carrier entity.
@@ -1645,6 +1669,10 @@ mod tests {
                 GameCommand::play_animation(target, true),
                 GameCommand::crossfade_animation(target, 42, 0.2, false),
                 GameCommand::stop_animation(target),
+                GameCommand::start_vfx(target),
+                GameCommand::pause_vfx(target),
+                GameCommand::stop_vfx(target),
+                GameCommand::restart_vfx(target),
                 GameCommand::create_hitbox(
                     target,
                     target,

@@ -1,11 +1,11 @@
 //! Completion surface for ADR 0125 VFX authoring and deterministic preview.
 
-use super::replace_file_contents;
 use eframe::egui;
 use engine::glam::Vec3;
 use engine::vfx::{VfxPlayer, VfxRestartPolicy, VFX_PREVIEW_STEP_SECONDS};
 use engine_authoring::{
-    AssetId, StableId, VfxAuthoringService, VfxCommand, VfxCurve, VfxCurveInterpolation,
+    AssetId, StableId, VfxAuthoringService, VfxCommand, VfxCompilation, VfxCurve,
+    VfxCurveInterpolation,
     ProjectRoot, VfxCurveKey, VfxCurveKeyId, VfxEffect, VfxEmitterId, VfxGradient, VfxGradientKey,
     VfxGradientKeyId, VfxModule, VfxModuleId, VfxModuleOperation, VfxRandomChannel,
     VfxScalarValue, VfxShape, VfxTemplate, VfxTextureSheet, VfxVectorValue,
@@ -65,11 +65,12 @@ impl VfxPreviewState {
     fn open_effect(&mut self, effect: &VfxEffect) {
         self.preview_seed = effect.seed;
         self.current_time = 0.0;
-        self.recompile(effect, false);
-        self.last_effect = Some(effect.clone());
+        self.player = None;
+        self.last_effect = None;
+        self.status = Some("Compiling preview...".to_owned());
     }
 
-    fn sync_effect(&mut self, effect: &VfxEffect) {
+    fn sync_effect(&mut self, effect: &VfxEffect, compilation: Option<&VfxCompilation>) {
         if self.last_effect.as_ref() == Some(effect) {
             return;
         }
@@ -81,25 +82,33 @@ impl VfxPreviewState {
                     .zip(&effect.emitters)
                     .all(|(left, right)| left.id == right.id)
         });
-        if !same_document {
+        if self.last_effect.is_some() && !same_document {
             self.preview_seed = effect.seed;
             self.current_time = 0.0;
         }
-        self.recompile(effect, same_document);
-        self.last_effect = Some(effect.clone());
+        let Some(compilation) = compilation else {
+            self.status = Some("Compiling preview...".to_owned());
+            return;
+        };
+        self.apply_compilation(effect, compilation, same_document || self.last_effect.is_none());
     }
 
-    fn recompile(&mut self, effect: &VfxEffect, preserve_time: bool) {
+    fn apply_compilation(
+        &mut self,
+        effect: &VfxEffect,
+        compilation: &VfxCompilation,
+        preserve_time: bool,
+    ) {
         let target_time = if preserve_time { self.current_time } else { 0.0 };
         let was_playing = preserve_time
             && self
                 .player
                 .as_ref()
                 .is_some_and(VfxPlayer::is_playing);
-        let compilation = VfxAuthoringService::new().compile(effect);
-        let Some(compiled) = compilation.compiled_effect else {
+        let Some(compiled) = compilation.compiled_effect.clone() else {
             self.player = None;
             self.status = Some("Preview unavailable until blocking VFX diagnostics are fixed.".into());
+            self.last_effect = Some(effect.clone());
             return;
         };
         let mut player = VfxPlayer::new(
@@ -116,6 +125,7 @@ impl VfxPreviewState {
             .seek_preview(target_time, Vec3::ZERO);
         self.current_time = player.instance().elapsed_seconds();
         self.player = Some(player);
+        self.last_effect = Some(effect.clone());
         self.status = None;
     }
 
@@ -135,6 +145,7 @@ impl VfxPreviewState {
         ui: &mut egui::Ui,
         effect: &VfxEffect,
         selected_emitter: Option<&VfxEmitterId>,
+        compilation: Option<&VfxCompilation>,
     ) {
         ui.separator();
         ui.heading("Preview");
@@ -198,7 +209,11 @@ impl VfxPreviewState {
         });
 
         if seed_changed {
-            self.recompile(effect, true);
+            if let Some(compilation) = compilation {
+                self.apply_compilation(effect, compilation, true);
+            } else {
+                self.status = Some("Compiling preview...".to_owned());
+            }
         } else if seek_requested
             && let Some(player) = self.player.as_mut()
         {
@@ -320,7 +335,7 @@ impl super::VfxBuilderState {
             }
         });
         if let Some(template) = requested {
-            self.create_from_template(project, template);
+            self.create_from_template(project, template, ui.ctx());
         }
     }
 
@@ -368,14 +383,24 @@ impl super::VfxBuilderState {
         }
     }
 
-    pub(super) fn show_completion_preview(&mut self, ui: &mut egui::Ui, effect: &VfxEffect) {
-        self.completion.preview.sync_effect(effect);
+    pub(super) fn show_completion_preview(
+        &mut self,
+        ui: &mut egui::Ui,
+        effect: &VfxEffect,
+        compilation: Option<&VfxCompilation>,
+    ) {
+        self.completion.preview.sync_effect(effect, compilation);
         self.completion
             .preview
-            .show(ui, effect, self.selected_emitter.as_ref());
+            .show(ui, effect, self.selected_emitter.as_ref(), compilation);
     }
 
-    fn create_from_template(&mut self, project: &ProjectRoot, template: VfxTemplate) {
+    fn create_from_template(
+        &mut self,
+        project: &ProjectRoot,
+        template: VfxTemplate,
+        ctx: &egui::Context,
+    ) {
         let Some(path) = rfd::FileDialog::new()
             .set_directory(project.assets_root())
             .set_file_name("effect.vfx.json")
@@ -400,19 +425,8 @@ impl super::VfxBuilderState {
                 return;
             }
         };
-        if let Err(error) = replace_file_contents(&path, &json) {
-            self.status = Some(format!("Template save failed: {error}"));
-            return;
-        }
-        self.effect = Some(effect.clone());
-        self.path = Some(path);
-        self.selected_emitter = None;
-        self.undo_stack.clear();
-        self.redo_stack.clear();
-        self.completion = VfxCompletionState::default();
-        self.completion.preview.open_effect(&effect);
-        self.normalize_selection(&effect);
-        self.status = Some("Created VFX asset from shared template.".to_owned());
+        self.background.create(path, effect, json, ctx);
+        self.status = Some("Saving VFX template...".to_owned());
     }
 
     #[cfg(feature = "visual-validation")]
