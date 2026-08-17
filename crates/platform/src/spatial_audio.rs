@@ -286,8 +286,29 @@ mod tests {
     }
 
     #[test]
+    fn moving_listener_changes_pan_for_a_stationary_emitter() {
+        let mut settings = settings(AudioRolloffMode::Linear);
+        settings.min_distance = 10.0;
+        settings.max_distance = 20.0;
+        let emitter = AudioEmitterPose { position: [1.0, 0.0, 0.0] };
+        let from_left = spatial_stereo_gains(
+            AudioListenerPose { position: [0.0, 0.0, 0.0], right: [1.0, 0.0, 0.0] },
+            emitter,
+            settings,
+        );
+        let from_right = spatial_stereo_gains(
+            AudioListenerPose { position: [2.0, 0.0, 0.0], right: [1.0, 0.0, 0.0] },
+            emitter,
+            settings,
+        );
+        assert!(from_left.right > from_left.left);
+        assert!(from_right.left > from_right.right);
+    }
+
+    #[test]
     fn linear_and_inverse_rolloff_share_finite_endpoints() {
         for rolloff in [AudioRolloffMode::Linear, AudioRolloffMode::Inverse] {
+            assert_eq!(distance_attenuation(0.0, 1.0, 10.0, rolloff), 1.0);
             assert_eq!(distance_attenuation(1.0, 1.0, 10.0, rolloff), 1.0);
             assert_eq!(distance_attenuation(10.0, 1.0, 10.0, rolloff), 0.0);
             let middle = distance_attenuation(5.0, 1.0, 10.0, rolloff);
