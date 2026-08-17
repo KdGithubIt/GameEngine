@@ -1,0 +1,16 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0135-20260817-r4",
+  "target_branch": "chatgpt/gameengine-adr0135-resource-arbitration-r2",
+  "expected_head_sha": "6700b76cf4e7db84dbebc9a9ebb82432b44510d9",
+  "baseline_main_sha": "6700b76cf4e7db84dbebc9a9ebb82432b44510d9",
+  "patch_sha256": "3b077fd7a2174b9a4f852910ac72f5dc6f7c6248ef2ee068ec8981e8b20a2b4f",
+  "patch_bytes": 78482,
+  "patch_parts": [
+    "part-0000.patch",
+    "part-0001.patch"
+  ],
+  "commit_message": "Integrate ADR0135 with remote AI Studio",
+  "pr_title": "GameEngine: integrate ADR0135 native inference resource arbitration",
+  "pr_body": "## Summary\n\nIntegrates ADR0135 native inference scheduling and Editor GPU resource arbitration on current main after ADR0133 Remote AI Studio landed. Preserves the same authoritative Agent Host, remote idempotency, loopback MCP boundary, and Stop cancellation semantics while adding workload/quality/resource planning, InferenceFocused presentation reclaim/restore, backend capability reporting, native inference interruption, and resumable manual-edit control state.\n\n## Validation\n\nRun current affected Windows Validation and required Editor Visual Validation.\n\n<!-- gameengine-visual-validation: editor -->"
+}
