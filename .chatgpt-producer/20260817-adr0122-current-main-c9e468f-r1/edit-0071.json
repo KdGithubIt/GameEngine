@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/platform/src/audio.rs","old":"                if let Some(voice) = voices.remove(&voice_id) {","new":"                if let Some(voice) = retire_managed_voice(&mut voices, voice_id) {"}

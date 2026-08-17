@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/platform/src/audio.rs","old":"        self.voice_gains.remove(&voice_id);","new":"        retire_managed_voice(&mut self.voice_gains, voice_id);"}

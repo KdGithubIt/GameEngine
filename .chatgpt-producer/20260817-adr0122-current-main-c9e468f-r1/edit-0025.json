@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/engine/src/game_commands.rs","old":"use crate::audio::{GameAudioCommand, GameAudioCommandQueue, MAX_GAME_AUDIO_COMMANDS};","new":"use crate::audio::{\n    AudioRolloffMode, GameAudioCommand, GameAudioCommandQueue, GameSpatialAudioOptions,\n    MAX_GAME_AUDIO_COMMANDS,\n};"}
