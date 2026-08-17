@@ -1,0 +1,1010 @@
+diff --git a/docs/AI_FRIENDLY_AUTHORING_SPEC.md b/docs/AI_FRIENDLY_AUTHORING_SPEC.md
+index 38f55b41b99921e597893232419bba4262c03ae6..ae2d6f93a58e29fa38c2dd5b34f8f32fbcaad94c 100644
+--- a/docs/AI_FRIENDLY_AUTHORING_SPEC.md
++++ b/docs/AI_FRIENDLY_AUTHORING_SPEC.md
+@@ -676,6 +676,20 @@ Each graph domain owns:
+ - Domain-specific diagnostics
+ - Default layout policy
+ 
++### 9.3 Runtime Graph Debugging
++
++ADR 0138 keeps runtime Graph Debug presentation aligned with the same
++domain-neutral foundation without moving runtime semantics into `Graph`.
++Play-mode Graph Debug owns common source-graph resolution, Graph Canvas
++interaction, `NodeId`/`EdgeId` source mapping, target selection, framing,
++read-only highlights, and stale-source presentation. Each runtime graph domain
++supplies a provider backed by a GUI-free runtime observation snapshot.
++
++Behavior Tree Running/Success/Failure/Abort semantics and Animation Graph
++state/transition/parameter/motion-resolution semantics remain domain-owned.
++Debug snapshots, runtime target handles, active highlights, and debug history
++MUST NOT be serialized into Graph or GraphView documents.
++
+ ## 10. Graph Layout System
+ 
+ The graph layout system exists for human readability. It MUST preserve semantic
+@@ -904,6 +918,18 @@ an optional one-based line. Editors SHOULD retain these diagnostics in the
+ Problems surface and navigate to the source without allowing the relative path
+ to escape its owning project source root.
+ 
++ADR 0137 defines Editor diagnostic presentation ownership. Problems is the
++authoritative detailed repair surface; Hierarchy and Inspector may show concise
++context indicators; Scene View directly owns long-form prose only for failures
++that prevent the preview itself; Console owns runtime/internal logging. One
++semantic issue SHOULD NOT be copied as the same long message across every
++surface.
++
++Multiple repair actions MAY be an Editor-only projection over stable
++`DiagnosticTarget` identities. Window names, tab routing, display labels, and
++callbacks MUST NOT become persisted diagnostic identity merely to support UI
++navigation.
++
+ ## 15. Serialization
+ 
+ The initial canonical authoring format SHOULD be JSON or RON. The chosen format
+@@ -953,6 +979,28 @@ deterministic JSON serialization; persistence is owned by the document or
+ service that writes the validated canonical result. Historical phase sequencing
+ must not be used to reintroduce a compatibility migration path.
+ 
++### 15.3 Editor Working Copy and Explicit Save
++
++ADR 0139 defines one authoritative in-memory working copy per opened/edited
++document identity in an Editor project process. Accepted edits are visible to
++Inspector, validation, Problems, Scene View, preview, Editor Play snapshotting,
++and debug/source navigation immediately. A subsystem MUST NOT reread an older
++disk copy while a working copy exists merely because the document is dirty.
++
++Save remains explicit persistence. `Save`, `Ctrl+S`, or `Save All` writes the
++current canonical working copy atomically and advances its clean baseline; every
++edit is not autosaved to canonical project files. Undo/redo changes the same
++consumer-visible working copy. Temporarily invalid working copies are diagnosed
++or rejected by strict operations rather than silently replaced with the last
++saved valid copy.
++
++ADR 0136 preview asset residency is a separate derived-resource layer. Mutable
++authoring working copies are not mesh/texture/model caches, and resident preview
++resources are not authoring source of truth.
++
++Process-local working-copy revisions, dirty flags, and recovery metadata are
++application state and are not new persisted authoring IDs.
++
+ ## 16. CLI, MCP, and Conversational Agent Adapters
+ 
+ CLI and MCP are adapters over the command and query API. They MUST NOT implement
+@@ -1000,6 +1048,14 @@ resulting run has a resumable state and structured event timeline. Continuing
+ the conversation MAY revise the live proposal without mutating an existing run
+ snapshot.
+ 
++AI Studio presentation is not required to remain inside one Editor egui window.
++A detached native OS window/viewport uses the same Agent Host and authoritative
++Editor writer. A future same-machine process or loopback local-web frontend may
++use a versioned local host protocol without duplicating provider orchestration,
++project mutation, or ADR 0135 inference-resource arbitration. ADR 0133
++separately governs remote-device/private-network reachability, remote
++authentication, reconnect/idempotency, and companion UX.
++
+ External coding-agent runtimes and native model backends are separate
+ abstractions. An external `AgentRuntime` MAY own its own model/tool loop and
+ provider-managed authentication, while a native runtime uses a `ModelBackend`
+diff --git a/docs/adr/0068-best-effort-scene-view-conversion.md b/docs/adr/0068-best-effort-scene-view-conversion.md
+index 834057b61c910d9591a1a7f4ab17bae3b2d48c0a..b24184a7271d5979c4ee1063887589743b1ec469 100644
+--- a/docs/adr/0068-best-effort-scene-view-conversion.md
++++ b/docs/adr/0068-best-effort-scene-view-conversion.md
+@@ -32,15 +32,22 @@ The engine exposes a second conversion entry point for editing previews:
+   (the plan cannot be built) and runtime ECS mutation errors (the world is no
+   longer trustworthy).
+ 
+-The editor Scene View preview uses the best-effort entry point and shows a
+-yellow notice listing the skipped components instead of the red failure
+-banner. Play mode, the player, and packaging continue to use the strict entry
+-point.
++The editor Scene View preview uses the best-effort entry point. Play mode, the
++player, and packaging continue to use the strict entry point.
++
++ADR 0137 supersedes the original presentation rule that every skipped component
++is listed as persistent yellow Scene View prose. Best-effort skip semantics and
++internal `scene_bridge.component_skipped` evidence remain unchanged, but
++repairable component problems are presented through the domain-oriented Problems
++and navigation model from ADR 0137. Scene View directly owns long-form prose only
++when the preview itself cannot meaningfully be produced.
+ 
+ ## Consequences
+ 
+ - A newly added, not-yet-configured component no longer hides the scene; the
+-  user sees the rest of the scene plus a notice naming the skipped component.
++  user sees the rest of the scene while ADR 0137 keeps the repairable problem
++  discoverable through Problems and contextual indicators rather than requiring
++  persistent Scene View prose.
+ - A skipped component may leave partial per-component state (for example a
+   cached asset handle) in the preview world. Originally the Scene View rebuilt
+   its preview world every frame, so such state could not outlive one frame.
+diff --git a/docs/adr/0123-stateful-behavior-tree-execution-and-debugging.md b/docs/adr/0123-stateful-behavior-tree-execution-and-debugging.md
+index 1a065c028eb0fc9917bedd7af8cf7dd69963638c..d4f8bd1f8d7c08545e28859ffc94c3f54ea94f4b 100644
+--- a/docs/adr/0123-stateful-behavior-tree-execution-and-debugging.md
++++ b/docs/adr/0123-stateful-behavior-tree-execution-and-debugging.md
+@@ -172,6 +172,13 @@ The authoring graph remains editable according to the normal Editor/Play policy;
+ runtime debug highlighting is transient presentation state and is never written
+ to the graph view document.
+ 
++ADR 0138 supersedes only the top-level presentation shape: Behavior Tree runtime
++debugging is a domain provider inside the shared Play-mode Graph Debug shell, not
++a permanently privileged `Behavior Tree` tab. The `BehaviorExecutionSnapshot`,
++source `NodeId` mapping, active-path semantics, blackboard data, and abort/reset
++meaning defined here remain Behavior Tree-owned and are not generalized into a
++universal graph runtime status type.
++
+ A future pause/step/breakpoint debugger may build on the same snapshot and
+ execution-generation boundary. It is not required for the first stateful
+ implementation. The first UX must still make "why is this enemy stuck on this
+diff --git a/docs/adr/0131-conversational-ai-studio-agent-runtime-and-governed-workspace.md b/docs/adr/0131-conversational-ai-studio-agent-runtime-and-governed-workspace.md
+index 7247dd7b5ee0fa1685a3ba6740a2685c1c716a64..af5bc7f2bd4547b6f4648582273d6b16637a446c 100644
+--- a/docs/adr/0131-conversational-ai-studio-agent-runtime-and-governed-workspace.md
++++ b/docs/adr/0131-conversational-ai-studio-agent-runtime-and-governed-workspace.md
+@@ -172,6 +172,37 @@ into `engine-authoring`, runtime ECS crates, or `engine-mcp`.
+ The Editor AI Studio is a frontend over the agent host. It MUST NOT duplicate
+ provider-specific orchestration or authoring business rules in GUI code.
+ 
++#### Local AI Studio presentation is detachable and frontend-neutral
++
++The embedded Editor panel is one presentation of AI Studio, not the ownership
++boundary for sessions or runs. The first local presentation extension MUST allow
++AI Studio to be detached into a separate native OS window/viewport while
++continuing to use the same project Agent Host, `AgentSession`, `AgentRun`,
++permission broker, provider registry, code workspace, audit history, and
++authoring boundary.
++
++Detaching, closing, reopening, or reattaching that window MUST NOT create a
++second Agent Host, a second project writer, or provider-specific orchestration in
++the window. An active run belongs to the host and does not terminate merely
++because one local presentation window closes.
++
++ADR 0135 resource arbitration remains an Agent Host/application-layer concern. A
++detached frontend may present quality/resource posture and interrupt/resume
++controls, but MUST NOT independently own model residency, renderer reclaim, or
++GPU scheduling policy.
++
++A later same-machine separate-process or local-web frontend MAY connect through a
++versioned authenticated local frontend protocol above the same Agent Host. Such a
++frontend is still a client: it MUST NOT gain direct provider orchestration, raw
++project-file authoring authority, or its own mutable copy of the Editor project.
++Structured project mutation continues through the authoritative Editor/MCP
++boundary from ADR 0121.
++
++ADR 0133 owns remote/private-network reachability, reconnect/idempotency,
++remote-client security, and the mobile companion surface. A detached native
++window, or a loopback-only same-machine frontend that is not exposed remotely,
++is governed by this ADR and is not by itself Remote AI Studio.
++
+ ### 5. External agent runtimes and model backends are distinct abstractions
+ 
+ GameEngine distinguishes an **agent runtime** from a **model backend**.
+diff --git a/docs/adr/0133-remote-ai-studio-companion-access-and-private-network-boundary.md b/docs/adr/0133-remote-ai-studio-companion-access-and-private-network-boundary.md
+index 9a19e1dca52c88afd4342a960c7aea93681f74c7..fe61439410015b4e34dbeb5aebaedfe38108d84c 100644
+--- a/docs/adr/0133-remote-ai-studio-companion-access-and-private-network-boundary.md
++++ b/docs/adr/0133-remote-ai-studio-companion-access-and-private-network-boundary.md
+@@ -79,6 +79,17 @@ permission broker, and audit history. The remote frontend MUST NOT implement
+ provider-specific orchestration, authoring rules, code mutation, validation
+ rules, or permission policy independently.
+ 
++ADR 0131 owns local AI Studio presentation, including an embedded panel, a
++detached native OS window/viewport, and any future loopback-only same-machine
++frontend protocol. ADR 0135 continues to own native-inference resource
++arbitration regardless of which frontend presents its state. This ADR begins
++where an AI Studio frontend is made reachable from another device or trust/
++network context. It therefore owns the private-network gateway, remote
++authentication, idempotent mutation requests, reconnect semantics, remote
++sanitization, and companion UX. Local detachment MUST NOT be implemented by
++creating a second Agent Host or by treating the remote gateway as a second
++writer.
++
+ ### 2. The remote product surface is conversation and run control, not a remote Editor
+ 
+ The initial Remote AI Studio surface MUST support the user actions and state
+diff --git a/docs/adr/0137-editor-diagnostic-ownership-progressive-disclosure-and-navigation.md b/docs/adr/0137-editor-diagnostic-ownership-progressive-disclosure-and-navigation.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..51d2d5a0c8c6c468c8a1ea480b4c2d843710fb2d
+--- /dev/null
++++ b/docs/adr/0137-editor-diagnostic-ownership-progressive-disclosure-and-navigation.md
+@@ -0,0 +1,238 @@
++# ADR 0137: Editor Diagnostic Ownership, Progressive Disclosure, and Navigation
++
++Status: Accepted
++Date: 2026-08-17
++Amends: ADR 0068
++Relates to: ADR 0011, ADR 0058, ADR 0072, ADR 0084, ADR 0085, ADR 0116
++
++## Problem
++
++GameEngine already has structured authoring diagnostics, Problems, Console, Inspector and Hierarchy context, and Scene View preview diagnostics, but those surfaces do not yet share one presentation-ownership contract. As a result, implementation mechanisms can be exposed instead of repairable facts.
++
++The most visible example is Animation Controller conversion. A Graph/Animation Set binding mismatch can surface as `editor.scene_view.components_skipped` plus an abstract message such as `must be an Animation Set binding for every graph motion slot`. That does not identify the missing slot, the state requiring it, or the authored assets the user should open.
++
++ADR 0068 correctly keeps Scene View alive by skipping component conversion failures during best-effort preview. Its original requirement to list skipped components as persistent yellow Scene View prose is too broad for a primary authoring workspace. The conversion policy should remain, while repair guidance moves to structured diagnostics and navigation.
++
++## Decision
++
++### 1. Diagnostic facts and presentation are separate responsibilities
++
++The subsystem that knows a semantic rule owns the diagnostic fact: stable code, severity, concise human explanation, and the most specific stable authoring target it can identify. Editor surfaces own presentation, aggregation, progressive disclosure, and navigation.
++
++The Editor MUST NOT make a transport or conversion mechanism the primary user-facing problem when a domain-specific repairable cause is available. Internal facts such as "runtime conversion skipped" may remain in diagnostic logging and Console output. Problems should show the semantic cause.
++
++`engine-authoring::Diagnostic` remains GUI-free. UI callbacks, egui widget handles, window identities, and tab names are not serialized into the shared diagnostic DTO.
++
++### 2. Problems is the authoritative repair surface
++
++Problems is the formal aggregate for repairable diagnostics. A detailed Problems entry SHOULD answer:
++
++- which authored object is affected;
++- which invariant is violated;
++- the concrete missing, invalid, or conflicting value when known;
++- which related authored objects participate in the failure; and
++- which repair locations can be opened directly.
++
++The Editor MAY derive several navigation actions from one semantic diagnostic. The initial implementation should use an Editor-only navigation projection over stable authoring targets rather than persist presentation routes. Conceptually:
++
++```text
++EditorDiagnosticEntry
++  diagnostic: Diagnostic
++  navigation:
++    - Select entity
++    - Reveal component in Inspector
++    - Open asset
++    - Open graph and frame node
++```
++
++Each action resolves its target at activation time.
++
++### 3. Animation Controller binding diagnostics identify the exact broken binding
++
++Animation Graph + Animation Set binding diagnostics MUST make available enough structured information to identify at least:
++
++- the affected authoring Entity;
++- the `engine.animation_controller` component;
++- the Animation Graph asset and `GraphId`;
++- the Animation Set asset;
++- the missing Motion Slot display name;
++- the stable `MotionSlotId`; and
++- every Animation State that references that slot, using source `NodeId` where available.
++
++The primary Problems text should stay concise and repair-oriented, for example:
++
++```text
++Animation Set "HeroSet" is missing Motion Slot "Run" (motion_...)
++required by State "Run" in Graph "PlayerGraph".
++```
++
++Display names are explanatory only. Identity and navigation MUST use stable IDs, not the string `Run`.
++
++When resolvable, the entry SHOULD offer actions to:
++
++1. select the Entity;
++2. reveal `engine.animation_controller` in Inspector;
++3. open the Animation Graph and frame/select the requiring State or States; and
++4. open the Animation Set and focus the missing Motion Slot binding.
++
++If several States reference one missing slot, one semantic binding problem may expose all related States rather than emit indistinguishable long messages.
++
++### 4. Scene View owns long-form prose only for preview-fatal failures
++
++Scene View is a primary authoring workspace. It displays blocking prose directly only when Scene Preview itself cannot meaningfully exist, for example:
++
++- renderer or GPU initialization/fatal rendering failure;
++- camera/viewport creation failure that prevents a usable preview; or
++- scene-level conversion/runtime-world failure that makes the preview world untrustworthy as a whole.
++
++Ordinary component validation errors and ADR 0068 best-effort component skips do not place persistent long diagnostic paragraphs over Scene View. A compact status affordance may indicate that the preview is incomplete, but repairable detail belongs in Problems.
++
++The conversion layer may continue to record `scene_bridge.component_skipped` or equivalent internal evidence.
++
++### 5. Hierarchy, Inspector, Problems, Scene View, and Console use progressive disclosure
++
++| Surface | Responsibility |
++| --- | --- |
++| Scene View | Preview-fatal failures; compact non-fatal preview status only |
++| Hierarchy | Per-Entity warning/error indicator and severity summary |
++| Inspector | Concise selected Entity/Component summary and navigation to Problems |
++| Problems | Authoritative repairable diagnostic details and navigation |
++| Console | Runtime logs, internal diagnostics, debug traces, provider/process output |
++
++The same semantic issue MUST NOT be copied as the same long paragraph into every surface. Hierarchy and Inspector summarize; Problems expands; Console preserves runtime/internal evidence when useful.
++
++Removing Scene View prose must not make the issue invisible: contextual indicators and the Problems surface retain discoverability.
++
++### 6. Diagnostic navigation is a projection over stable targets
++
++The shared `DiagnosticTarget` variants for Entity, Component, Asset, Graph, Node, Edge, Port, Group, and source file remain the semantic navigation basis. Multiple repair actions may be represented by an Editor-only projection over those identities.
++
++The initial implementation MUST NOT persist window routing, tab names, selection indices, or display labels as diagnostic identity. If a target no longer exists because the document changed, navigation fails softly and the diagnostic is refreshed or marked stale; it MUST NOT select a different object merely because its display name matches.
++
++### 7. Conversion diagnostics are cause-oriented, not mechanism-oriented
++
++Best-effort preview conversion is an implementation policy, not a user workflow. When a component cannot be projected into the preview runtime:
++
++1. retain internal conversion evidence for engineering diagnosis;
++2. surface an existing domain validation diagnostic when it explains the cause;
++3. otherwise create a repair-oriented Problems diagnostic owned by the relevant authoring/bridge boundary; and
++4. avoid requiring the user to understand that a runtime component was "skipped" in order to repair authoring data.
++
++A fallback conversion diagnostic may explain that preview behavior is unavailable for that component, but it must identify the Entity, Component, and actionable conversion reason.
++
++## Scope / Non-goals
++
++This ADR defines diagnostic ownership, progressive disclosure, Animation Controller binding detail, and Editor navigation. It does not:
++
++- change ADR 0068 best-effort conversion semantics;
++- weaken strict Play/player/package validation;
++- implement Hierarchy indicators, Inspector summaries, Problems actions, or new diagnostic producers in this ADR-only change;
++- redesign Console logging;
++- change Animation Graph, Animation Set, or Animation Controller serialization;
++- define Graph runtime debugging, which is ADR 0138;
++- define Editor working-copy coherence, which is ADR 0139; or
++- address the Animation Set ComboBox popup-height issue.
++
++## UX model
++
++```text
++problem occurs
++  -> compact severity becomes visible in context
++  -> Problems contains one repair-oriented semantic entry
++  -> user opens the entry
++  -> direct actions navigate to Entity / Component / Graph State / Animation Set
++  -> edit updates the authoritative working copy
++  -> validation refresh removes or updates the entry
++```
++
++Scene View continues to show as much of the scene as it safely can throughout this flow.
++
++## Diagnostic ownership
++
++Domain validators own domain facts. Scene conversion owns conversion evidence. Runtime systems own runtime failures. Editor presentation owns deduplication, progressive disclosure, and navigation affordances. A presentation layer may combine evidence, but it MUST NOT silently invent a different semantic cause or severity.
++
++## Graph Debug architecture
++
++Graph Debug follows the same presentation rule through ADR 0138: it may show concise runtime context and source-local status, while repairable authoring detail remains in Problems. This ADR does not define Graph Debug providers.
++
++## Domain-specific debug provider contract
++
++Not defined here. Providers consume/produce diagnostics according to this ownership model but are specified by ADR 0138.
++
++## Animation Preview responsibility boundary
++
++Animation Preview may surface concise preview-local state, but authoring validation and binding failures use the same Problems/navigation contract. Preview-specific simulation state is not a separate diagnostic authority.
++
++## Working-copy / saved-copy model
++
++Diagnostic producers in one Editor process validate the authoritative working copy defined by ADR 0139. They MUST NOT suppress a current problem by silently validating an older saved file.
++
++## AI Studio presentation boundary
++
++AI Studio may link to the same stable diagnostic targets, but it does not become a second diagnostic or authoring authority. Local/detached AI Studio presentation remains governed by ADR 0131; remote presentation by ADR 0133.
++
++## Stable ID / serialization impact
++
++No canonical project serialization changes are introduced. Existing stable IDs remain authoritative. `MotionSlotId` is binding identity, `NodeId` identifies requiring Animation States, and Entity/Asset/Graph identities remain unchanged. Editor navigation metadata is transient application state.
++
++If a future implementation extends the shared `Diagnostic` DTO with related targets, that is an explicit public diagnostic-API change and still MUST NOT become Scene/Graph/Animation Set project serialization.
++
++## Public API / crate boundary impact
++
++`engine-authoring` remains GUI-free and owns shared semantic diagnostics and `DiagnosticTarget`. Domain validators remain in their existing authoring/runtime domain boundaries. The Editor may add an application-layer diagnostic presentation/navigation model that depends on authoring IDs and Editor workspace services. Runtime crates MUST NOT depend on Editor navigation types.
++
++Animation binding validation may expose additional structured evidence needed for Graph/Set/State navigation, but Animation Set or Graph semantics MUST NOT move into GUI code.
++
++## Migration / compatibility
++
++Existing diagnostic codes remain valid unless an implementation change explicitly replaces a mechanism-oriented code with a semantic code and updates current consumers/tests together. `editor.scene_view.components_skipped` may remain an internal/logging code; user-facing Problems entries do not preserve its mechanism-oriented text as a compatibility contract.
++
++Existing scenes, graphs, animation sets, and graph views require no migration. ADR 0068 is amended only in presentation; best-effort skipping remains Accepted.
++
++## Testing strategy
++
++Implementation must cover at least:
++
++- a missing Animation Set slot reports Entity, Graph, Set, `MotionSlotId`, and requiring State `NodeId`;
++- multiple States referencing one missing slot remain discoverable without name matching;
++- Problems actions resolve the intended Entity/Component/asset/graph node;
++- stale/deleted targets fail navigation safely;
++- best-effort conversion continues previewing valid components;
++- non-fatal component skips do not create persistent Scene View prose;
++- preview-fatal failures still create direct Scene View failure presentation;
++- Hierarchy/Inspector summaries agree with Problems severity; and
++- tests assert stable codes/targets rather than complete human message wording.
++
++## Visual Validation requirements
++
++This ADR-only documentation change requires no Visual Validation. When implemented, Scene View, Hierarchy, Inspector, and Problems presentation changes require Visual Validation. It must prove that a non-fatal Animation Controller problem does not cover Scene View with long prose, the affected Entity remains discoverable, Problems carries full repair detail, and navigation lands on the intended context.
++
++## Rollout / implementation phases
++
++1. Add the Editor diagnostic-presentation/navigation projection.
++2. Upgrade Animation Controller binding diagnostics and repair actions.
++3. Move non-fatal Scene View skip prose to Problems while retaining internal evidence.
++4. Add Hierarchy severity indicators and Inspector summaries.
++5. Audit other mechanism-oriented Editor diagnostics against the same ownership rules.
++
++## Rejected alternatives
++
++### Make every diagnostic message self-contained and very long
++
++Rejected. Long text cannot provide reliable navigation and duplicates poorly across surfaces.
++
++### Keep all Scene View conversion warnings as yellow overlay prose
++
++Rejected. It consumes the primary authoring workspace and exposes preview implementation details.
++
++### Put all diagnostics only in Problems
++
++Rejected. Problems owns detail, but contextual indicators are needed for discoverability.
++
++### Mirror the same full message everywhere
++
++Rejected. It creates noise and unclear ownership.
++
++### Store Editor navigation callbacks or tab names in `Diagnostic`
++
++Rejected. Shared diagnostics must remain GUI-free across Editor, CLI, MCP, tests, and future frontends.
+diff --git a/docs/adr/0138-play-mode-graph-debug-shell-and-domain-providers.md b/docs/adr/0138-play-mode-graph-debug-shell-and-domain-providers.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..e86b73f5eb8083f7032e62fb2164ab8de2a231e8
+--- /dev/null
++++ b/docs/adr/0138-play-mode-graph-debug-shell-and-domain-providers.md
+@@ -0,0 +1,315 @@
++# ADR 0138: Play-Mode Graph Debug Shell and Domain Providers
++
++Status: Accepted
++Date: 2026-08-17
++Amends: ADR 0123
++Relates to: ADR 0006, ADR 0011, ADR 0033, ADR 0082, ADR 0084, ADR 0085, ADR 0116, ADR 0136, ADR 0137, ADR 0139
++
++## Problem
++
++Play mode currently gives Behavior Tree a fixed top-level tab beside Game View and Scene View, even when no Behavior Tree runner exists. Animation Graph execution has no equivalent source-graph runtime view. Copying the Behavior Tree UI for every graph domain would create permanent per-domain tabs, duplicate Graph Canvas behavior, and make Behavior Tree semantics an accidental universal model.
++
++ADR 0006 deliberately separates domain-neutral graph identity/storage/presentation foundations from domain-specific semantics. The current Behavior Tree debugger already reuses shared Graph Canvas rendering while its live meanings—active path, Running, Success, Failure, aborts, blackboard—remain Behavior Tree concepts. Animation Graph needs different semantics: State, transition, fade progress, parameters, Motion Slot resolution, clip time, and events.
++
++Runtime source mapping must also remain honest when the Editor working copy differs from the source generation used by the running instance. Debug UI must detect staleness rather than silently read another copy from disk or overlay runtime state on the wrong source.
++
++## Decision
++
++### 1. Play mode exposes one domain-neutral Graph Debug entry
++
++The normal primary views are conceptually:
++
++```text
++Game View | Scene View | Graph Debug
++```
++
++`Graph Debug` is one shell for all runtime graph domains. Behavior Tree is no longer a permanently privileged top-level tab.
++
++The Graph Debug entry is hidden when the current runtime world contains no debuggable graph execution target. This is preferred over a permanently disabled tab because Graph Debug represents live runtime state, not a general authoring editor. If the selected target disappears while Graph Debug is already open, the shell may remain long enough to show a concise target-lost state and allow another selection; it MUST NOT present the last snapshot as live.
++
++### 2. The shell enumerates actual runtime graph execution targets
++
++Providers enumerate only graph instances that exist in the current Play runtime world. Example:
++
++```text
++Player
++  Animation Graph: PlayerGraph
++
++Enemy01
++  Behavior Tree: EnemyAI
++
++Enemy02
++  Behavior Tree: EnemyAI
++```
++
++A Graph asset merely existing in the project is not enough to appear. A target is listed only when a runtime instance/provider can observe execution for an Entity.
++
++Runtime ECS identity may participate in session-local lookup but MUST NOT be persisted into project data. Stable authoring Entity/Graph identity is used for source/navigation correlation.
++
++### 3. The Graph Debug shell owns graph-neutral interaction and presentation
++
++The shell owns cross-domain behavior:
++
++- runtime target list and selection;
++- source Graph identity resolution;
++- shared Graph Canvas presentation;
++- source `NodeId` and `EdgeId` selection;
++- Frame All and source-target framing;
++- generic active/highlight overlay primitives;
++- runtime Entity selection/navigation;
++- details-pane hosting;
++- stale-source detection and explanation;
++- read-only debug presentation; and
++- lifecycle when Play starts/stops or a target disappears.
++
++Graph Canvas remains shared. Graph Debug MUST NOT fork an Animation-only or Behavior-Tree-only canvas implementation.
++
++The shell does not own Behavior Tree or Animation runtime semantics.
++
++### 4. Runtime semantics are supplied by domain-specific debug providers
++
++Each runtime graph domain integrates through an Editor-side provider/adapter. Conceptually:
++
++```text
++GraphDebugProvider
++  domain identity + display label
++  enumerate live runtime targets
++  resolve source Graph identity
++  obtain domain runtime snapshot
++  map runtime source identity -> NodeId / EdgeId
++  produce common highlight/focus primitives where meaningful
++  provide domain-specific details/overlay presentation
++  report runtime/source generation and stale-source state
++```
++
++The exact Rust trait is implementation detail; the responsibility split is normative. Runtime domains expose GUI-free read-only observation DTOs. They do not depend on egui, Editor widgets, Graph Canvas, or window state.
++
++The common shell MUST NOT require every domain to encode semantics into one universal status enum. Shared primitives such as active node, active edge, severity marker, and focus-source-ID are allowed; domain-specific state remains domain-specific.
++
++### 5. Behavior Tree becomes the first provider, not the universal model
++
++The Behavior Tree provider consumes the real executor snapshot from ADR 0123 and exposes, as applicable:
++
++- active path;
++- current Running node;
++- Success/Failure and recent terminal transitions;
++- abort/reset reason;
++- per-node elapsed time;
++- blackboard values;
++- recent transitions; and
++- runtime/validation errors mapped to source nodes.
++
++Existing Behavior Tree runtime semantics and `NodeId` mapping remain valid. Only the top-level Editor presentation changes from a fixed dedicated Play tab to the Graph Debug shell.
++
++### 6. Animation Graph runtime debugging observes the actual controller
++
++Animation Preview remains an authoring tool. Graph Debug observes the actual Animation Controller running in Play.
++
++The Animation Graph provider must expose enough read-only runtime evidence to answer what animation an Entity is executing and why. The first complete contract includes, where meaningful:
++
++- runtime Entity;
++- Animation Graph asset and `GraphId`;
++- Animation Set asset;
++- current State `NodeId`;
++- previous and next State while transitioning;
++- transition source/destination and progress;
++- State elapsed time and clip/playback time;
++- Graph parameter names and current runtime values;
++- selected/resolved `MotionSlotId` and display name;
++- resolved motion variant;
++- resolved `MotionSource` / Animation Clip identity;
++- recent animation-event firing history;
++- active transition and the condition/reason that made it eligible/taken; and
++- runtime error or unresolved binding state.
++
++The Graph Canvas highlights current State and active transition using source IDs. The details pane exposes the resolution chain:
++
++```text
++State
++  -> MotionSlotId
++  -> Animation Set binding / selected variant
++  -> MotionSource
++  -> concrete clip
++```
++
++Transition-reason presentation is observational. It may expose evaluated conditions/parameters or another stable runtime reason descriptor; the Editor MUST NOT reimplement transition evaluation to explain the runtime.
++
++### 7. Animation Preview and Graph Debug have separate authority
++
++**Animation Preview** answers what the authored graph/clip would do under authoring preview controls. It may seek, override preview parameters, or exercise transitions without a running game.
++
++**Graph Debug** answers what the actual Play-mode controller is doing now. It is read-only observation of runtime state.
++
++The two may share source-resolution and Graph Canvas utilities, but MUST NOT share mutable simulation state or substitute one another's snapshot as authoritative. Preview rendering/resource residency follows ADR 0136; Graph Debug does not become a second preview renderer merely to inspect execution.
++
++### 8. Source resolution follows the authoritative working-copy contract
++
++ADR 0139 defines the current Editor working copy. Graph Debug uses that working copy for source canvas/navigation when available, with saved disk as fallback only when no working copy exists. Separately, each provider reports the source identity/generation used to create the running instance.
++
++The shell compares:
++
++```text
++runtime source identity/generation
++vs.
++current Editor working-copy identity/revision
++```
++
++If they differ, Graph Debug shows stale-source state. It MUST NOT silently reload disk to hide unsaved edits and MUST NOT claim that the newest working copy is what an older runtime instance executes. Source overlays are shown only when the stable mapping is still valid.
++
++### 9. Add Node presentation is semantic, not a redundant domain heading
++
++The shared node schema/catalog remains authoritative. This decision changes only palette presentation.
++
++For the current Animation Graph schema, whose useful choices are `Entry` and `State`, Add Node should present those choices directly. The string `Animation Graph` is not useful as a category heading when every listed node is already in that domain.
++
++As node types grow, categories should describe meaning, for example:
++
++- State;
++- Blend;
++- Control; and
++- Utility.
++
++A domain name may appear in cross-domain search/filter context, but a single-domain palette MUST NOT require a redundant domain heading. Behavior Tree keeps meaningful semantic categories such as composite, decorator, condition, and action.
++
++### 10. Graph Debug is read-only and never becomes a second runtime controller
++
++The shell/providers observe real runtime state. They do not own execution, transition decisions, Behavior Tree traversal, Animation Set resolution, or parameter mutation.
++
++Pause/step/breakpoint or explicit runtime-edit controls may be added later, but write-capable debugging requires an explicit runtime-control contract. Read-only observation is the baseline.
++
++## Scope / Non-goals
++
++This ADR covers Play-mode graph target discovery, the shared Graph Debug shell, domain providers, Behavior Tree integration, Animation Graph runtime debugging, stale-source handling, and Add Node category presentation.
++
++It does not replace authoring Graph editors, remove Animation Preview, force runtime semantics into the common Graph model, define Visual Script semantics, persist runtime debug state, implement breakpoints, or implement the described UI in this ADR-only change.
++
++## UX model
++
++```text
++enter Play
++  -> live graph targets are discovered
++  -> Graph Debug appears only when at least one target exists
++  -> choose Entity + graph domain
++  -> source Graph opens read-only in shared canvas
++  -> active source IDs are highlighted
++  -> domain details explain runtime-specific state
++  -> navigation may open the authored source for repair
++```
++
++When no target exists, Play keeps only relevant non-graph primary views.
++
++## Diagnostic ownership
++
++Runtime/provider failures follow ADR 0137. A provider may show concise runtime context or a source-local error, but repairable authoring detail remains in Problems. The shell does not duplicate full Problems prose.
++
++## Graph Debug architecture
++
++```text
++runtime domain
++  -> GUI-free execution snapshot + stable source mapping
++  -> Editor domain provider
++  -> common Graph Debug target model / highlight primitives
++  -> shared Graph Canvas + target selector + details host
++```
++
++Future graph domains integrate by adding a provider and runtime observation DTO, not another permanent Play tab or another graph canvas.
++
++## Domain-specific debug provider contract
++
++A provider defines:
++
++- stable runtime-debug domain key and display label;
++- live target enumeration;
++- runtime-instance to source-Graph resolution;
++- active/focusable `NodeId`/`EdgeId` values;
++- runtime snapshot/source-generation identity;
++- domain-specific details and optional overlay meaning; and
++- behavior when source or runtime state disappears.
++
++A provider MUST NOT mutate source Graphs as a side effect of observation, use display names as source identity, make runtime crates depend on Editor UI types, or copy domain runtime state into common Graph serialization.
++
++## Animation Preview responsibility boundary
++
++Animation Preview is authoring-time simulation; Graph Debug is Play-runtime observation. Preview uses ADR 0136's project/device preview residency where it renders assets. Graph Debug uses runtime snapshots and source graph presentation, not a duplicate preview world.
++
++## Working-copy / saved-copy model
++
++Graph Debug consumes ADR 0139's working-copy read contract. Disk is not an automatic freshness source. A runtime instance may legitimately be older than the current working copy; this is represented as stale-source state.
++
++## AI Studio presentation boundary
++
++No new AI Studio presentation authority is created. AI Studio may later consume explicit read-only runtime-debug capabilities, but the Graph Debug shell is not an authoring writer or Agent Host. Local/detached AI Studio remains ADR 0131/0135 territory; remote access remains ADR 0133.
++
++## Stable ID / serialization impact
++
++No Graph, GraphView, Scene, Animation Set, or Behavior Tree serialization changes are introduced. Existing `GraphId`, `NodeId`, `EdgeId`, `MotionSlotId`, Entity and Asset IDs remain mapping keys. Runtime target handles, execution generations, debug history, selection, highlights, stale flags, and details-pane state are transient.
++
++## Public API / crate boundary impact
++
++Runtime graph domains may need richer public read-only snapshot DTOs. Those DTOs belong with the runtime/domain ownership that computes semantics. The Editor owns provider registration and Graph Debug presentation. The authoring Graph foundation remains GUI/runtime-semantics neutral. Runtime crates MUST NOT depend on `editor`.
++
++If a common debug descriptor crate is later justified, it may contain GUI-free observation/source-mapping contracts but MUST NOT force Behavior Tree and Animation semantics into one type.
++
++## Migration / compatibility
++
++Existing Behavior Tree execution snapshots and source `NodeId` mappings remain valid; their UI moves into the provider shell. Existing Animation Preview remains. No project files migrate. Existing node-schema category metadata remains valid; only presentation of the redundant single-domain Animation Graph heading changes.
++
++## Testing strategy
++
++Implementation must cover at least:
++
++- Graph Debug hidden when no provider enumerates a live target;
++- mixed Animation/Behavior targets enumerate under correct Entities;
++- target disappearance cannot leave a stale snapshot labeled live;
++- common canvas selection/Frame All works for provider source graphs;
++- stable `NodeId`/`EdgeId` mappings drive highlights;
++- stale working-copy/runtime generations are detected;
++- Behavior Tree presentation matches executor snapshots;
++- Animation provider reports State, transition, parameters, slot, set, resolved motion/clip, event history, and error state from runtime evidence;
++- transition reasons are observed, not reevaluated in Editor code;
++- Graph Debug never mutates graph documents; and
++- Add Node omits the redundant Animation Graph category while preserving semantic grouping.
++
++## Visual Validation requirements
++
++This ADR-only documentation change requires no Visual Validation. Implementation of the Play header, Graph Debug shell, runtime overlays, target list, details pane, stale-source presentation, or Add Node palette requires Visual Validation for zero targets, Animation-only, Behavior-only, mixed targets, active transition progress, stale source, long names, and the current Entry/State-only palette.
++
++## Rollout / implementation phases
++
++1. Put the existing Behavior Tree integration behind a provider and introduce the Graph Debug shell.
++2. Add live-target discovery and zero-target tab hiding.
++3. Move Behavior Tree presentation into the provider without changing executor semantics.
++4. Extend Animation runtime observation DTOs and add the Animation provider.
++5. Add stale working-copy/runtime source detection through ADR 0139.
++6. Simplify Animation Graph Add Node presentation.
++7. Add future graph domains only through the provider contract.
++
++## Rejected alternatives
++
++### Add a permanent Animation Graph tab beside Behavior Tree
++
++Rejected. Every future graph domain would add another top-level tab and duplicate shared interaction.
++
++### Copy the Behavior Tree debugger and rename statuses
++
++Rejected. Running/Success/Failure/Abort are Behavior Tree semantics, not a universal graph runtime model.
++
++### Put every runtime semantic into one common GraphDebugStatus enum
++
++Rejected. It would make the domain-neutral layer depend on the union of all current/future graph semantics.
++
++### Always show a disabled Graph Debug tab
++
++Rejected for the baseline. Hiding the entry when there are no live targets keeps Play chrome relevant.
++
++### Read source graphs from disk on every debug refresh
++
++Rejected. It hides unsaved working copies and may overlay runtime state on a different source.
++
++### Use display names for runtime-to-source mapping
++
++Rejected. Names are editable/non-unique; stable IDs are the contract.
++
++### Merge Animation Preview and runtime Graph Debug
++
++Rejected. Preview simulates authoring choices; Graph Debug observes the actual running controller.
+diff --git a/docs/adr/0139-editor-authoritative-working-copy-and-saved-copy-coherency.md b/docs/adr/0139-editor-authoritative-working-copy-and-saved-copy-coherency.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..ad93c8f0b0740aab50394b68a2826f72669d1208
+--- /dev/null
++++ b/docs/adr/0139-editor-authoritative-working-copy-and-saved-copy-coherency.md
+@@ -0,0 +1,248 @@
++# ADR 0139: Editor Authoritative Working Copy and Saved-Copy Coherency
++
++Status: Accepted
++Date: 2026-08-17
++Builds on: ADR 0019, ADR 0022
++Relates to: ADR 0005, ADR 0008, ADR 0025, ADR 0068, ADR 0072, ADR 0085, ADR 0136, ADR 0137, ADR 0138
++
++## Problem
++
++GameEngine intentionally separates interactive editing from explicit disk persistence. That is correct: every slider movement or graph operation should not churn the Git working tree. The missing contract is in-process visibility. Several Editor subsystems can hold an edited in-memory document while another subsystem reloads the same asset from disk.
++
++This creates contradictory UX:
++
++```text
++Animation Set Editor shows every Motion Slot bound
++  -> its in-memory document is dirty
++  -> Scene View / validation / debug reloads the older disk copy
++  -> Animation Controller is reported invalid
++```
++
++The user sees one project, but the Editor behaves as if each panel owns a different truth. A specialized editor's Save button becomes an undocumented publication step instead of persistence.
++
++`DocumentWorkspace` already keeps in-memory sessions, revisions, dirty state, undo, save-all, and recovery for several document types. Animation Set and Material editors also keep in-memory documents and undo history. ADR 0019/0022 establish explicit save and authoring documents as source of truth, but do not yet define one cross-Editor read contract. ADR 0136 separately establishes project/device-scoped immutable preview asset residency; that cache must not be confused with mutable authoring working-copy ownership.
++
++## Decision
++
++### 1. The Editor has one authoritative working copy per opened/edited document identity
++
++Within one Editor project process, an opened or modified authoring document has one authoritative **working copy**. That is the state users see and the state other Editor authoring consumers must read.
++
++Conceptually the Editor exposes a project-scoped working-copy registry/read service:
++
++```text
++Document identity
++  -> current in-memory document snapshot
++  -> revision/generation
++  -> dirty/clean state
++  -> saved baseline identity
++  -> owning edit session
++```
++
++This is a semantic contract, not a requirement that every panel use one Rust struct. `DocumentWorkspace`, Animation Set Editor, Material Editor, and future specialized editors may retain domain-specific edit-session types, but they publish/read through one working-copy authority.
++
++There MUST NOT be two independently mutable working copies for the same document identity in one Editor process.
++
++### 2. Accepted edits are visible immediately to Editor consumers
++
++After an edit is accepted by the owning authoring/edit session:
++
++1. the authoritative working copy is updated;
++2. its revision/generation advances;
++3. dirty state is updated;
++4. Inspector, Scene View, validation, Problems, Graph Debug, preview, and other Editor-side consumers resolve that working copy; and
++5. disk remains unchanged until explicit persistence.
++
++A dedicated editor's Save button or `Ctrl+S` is therefore a persistence operation, not a publication operation. The user must not need to save an Animation Graph or Animation Set merely to make another Editor function observe the edit.
++
++### 3. Disk is fallback storage, not a competing live source of truth
++
++If no working copy exists for a document, an Editor consumer may load the canonical saved document from disk and register/snapshot it as appropriate.
++
++If a working copy exists, consumers MUST NOT silently reload disk simply because it is convenient. Doing so can resurrect stale data and create contradictory diagnostics.
++
++Packaged players, command-line/headless processes, and a fresh Editor startup naturally begin from saved project files. This ADR changes coherence inside one live Editor process; it does not make unsaved memory globally persistent.
++
++### 4. Save preserves the explicit persistence model
++
++GameEngine does not autosave canonical authoring files after every operation. `Save`, `Ctrl+S`, and `Save All` persist the current canonically writable working copy through the existing validated atomic serialization path, then advance its saved baseline/clean state.
++
++`Save All` must discover dirty documents across registered working-copy owners, including specialized asset editors. A panel-specific Save affordance may remain for ergonomics, but it is not required to publish edits inside the Editor.
++
++Disk persistence remains separate from edit acceptance, in-process visibility, undo/redo, validation, preview/runtime snapshot construction, and crash recovery.
++
++### 5. Undo and redo update the same working copy
++
++Undo/redo is not private panel history from the perspective of readers. When an owning edit session restores a previous/next document state, the authoritative working-copy revision changes and consumers observe that state. Existing domain-specific undo implementations may remain.
++
++### 6. Temporarily invalid working copies remain the current authoring state
++
++Interactive editing may pass through an invalid intermediate state where the domain permits it. A consumer MUST NOT hide that state by falling back to the last saved valid file.
++
++Instead:
++
++- validators report the current problem;
++- Scene View follows ADR 0068/0137 best-effort/presentation policy where applicable;
++- strict operations that require validity may refuse to start or commit;
++- previews may retain a documented last-good runtime result only when their preview contract explicitly allows it; and
++- the UI distinguishes current-working-copy invalidity from saved-copy state.
++
++### 7. Editor-initiated Play and preview snapshot from working copies
++
++When an Editor operation creates a runtime/preview world from authored project state, every document for which a working copy exists is resolved from that working copy at the operation's defined snapshot boundary.
++
++Strict Play may reject an invalid current working copy. It MUST NOT silently run the older saved Animation Set/Graph while the Editor displays a newer unsaved one.
++
++After Play starts, runtime domains may or may not hot-apply later edits according to existing domain policy. ADR 0138 Graph Debug compares the running source generation with the latest working-copy revision and presents staleness explicitly.
++
++### 8. Authoring working copy and preview asset residency are separate layers
++
++ADR 0136 owns immutable conversion-ready CPU asset generations, GPU residency, preview streaming, and cache lifetime. This ADR owns mutable authoring documents. A working-copy edit may invalidate or advance derived preview asset generations through the appropriate domain/import path, but the working-copy registry MUST NOT become a mesh/texture/model cache and preview residency MUST NOT become the mutable authoring source of truth.
++
++Animation Preview therefore reads current Graph/Animation Set authoring from the working-copy authority while obtaining renderable asset data through ADR 0136 residency.
++
++### 9. External file changes use explicit conflict handling
++
++A disk watcher or external tool may change a saved file while the Editor is open.
++
++- If no working copy exists, a future load reads the new saved file.
++- If the registered working copy is clean, the Editor may reload through the normal document-load path.
++- If the working copy is dirty, the Editor MUST NOT silently overwrite it or silently merge disk bytes. It reports a conflict and requires a defined reload, compare, merge, or keep-working-copy decision.
++
++Conflict handling uses document identity/revision and canonical parsed state, not timestamp-only assumptions.
++
++### 10. Crash recovery is separate from canonical autosave
++
++Crash recovery may journal or snapshot dirty working copies into user/private recovery storage. Recovery artifacts are not canonical project files and do not turn every edit into a Git-visible save. On restart, the Editor may offer recovery/reconciliation against the saved baseline.
++
++### 11. Document identity is semantic and revisions are process-local
++
++Working-copy lookup uses the existing stable document/asset/graph identity appropriate to the domain, plus canonical project-relative location where required by the document system. Process-local working-copy revision/generation values are observation and stale-write guards; they are not new project Stable IDs and are not serialized merely to support the registry.
++
++Renames/moves must update registration through existing asset/document identity rules so one logical document does not remain registered under old and new paths.
++
++## Scope / Non-goals
++
++This ADR defines in-process document visibility and persistence semantics. It does not autosave canonical files after each edit, replace domain authoring commands/undo stacks, require one monolithic editor class, define multi-process collaborative authoring, create a second AI writer, change project serialization formats, require every Play domain to hot-reload every edit, or implement the registry in this ADR-only change.
++
++## UX model
++
++```text
++edit
++  -> authoritative Editor working copy changes immediately
++  -> every Editor consumer sees that revision
++  -> document becomes dirty
++  -> undo/redo changes the same working copy
++  -> Save / Save All persists to disk
++  -> document becomes clean
++```
++
++Users reason about dirty/saved state, not which subsystem last reread disk.
++
++## Diagnostic ownership
++
++Working-copy validity diagnostics follow ADR 0137. A stale saved copy is never used simply to suppress current diagnostics. Save/persistence errors identify the document and persistence operation; domain validation errors remain domain-owned.
++
++## Graph Debug architecture
++
++Graph Debug uses this ADR as its source-resolution dependency. ADR 0138 owns shell/provider/runtime semantics. Here, `current source` means the authoritative working copy while `runtime source` is separately identified by the running instance generation.
++
++## Domain-specific debug provider contract
++
++Providers do not own document loading policy. They request source documents through the shared working-copy resolver and compare them with provider-owned runtime source identity. A provider MUST NOT bypass this contract by opening the asset path directly.
++
++## Animation Preview responsibility boundary
++
++Animation Preview reads the same current Animation Graph/Animation Set working copies as the rest of the Editor. Preview-specific playback controls remain transient. Preview render/resource residency follows ADR 0136. Saving is not required to refresh authoring preview.
++
++## Working-copy / saved-copy model
++
++```text
++canonical saved file
++       | load
++       v
++authoritative Editor working copy <-> domain edit session / undo
++       |
++       +--> Inspector / validation / Problems / Scene View / Preview
++       |
++       +--> Editor Play snapshot / Graph Debug source navigation
++       |
++       `--> explicit Save / Save All --> canonical saved file
++```
++
++No consumer-specific hidden disk copy participates while a working copy exists.
++
++## AI Studio presentation boundary
++
++AI Studio receives no bypass. Structured project mutation still uses the authoritative Editor writer from ADR 0121/0131. A detached or future external AI Studio frontend observes/mutates through Agent Host and existing authoring boundaries; it does not maintain an independently writable project working copy. ADR 0135 inference resource arbitration may suspend/reclaim presentation resources but MUST preserve dirty working-copy state.
++
++## Stable ID / serialization impact
++
++No canonical serialized schema changes are introduced. Existing Entity, Asset, Graph, Node, Motion Slot, material/document identities remain unchanged. Registry revisions, dirty bits, subscriptions, and recovery metadata are application state. Crash-recovery storage, if implemented, is explicitly non-canonical and versioned independently as needed.
++
++## Public API / crate boundary impact
++
++A shared Editor/application-layer working-copy read service or registry is expected. It may use authoring document identity/snapshot types but MUST NOT move Editor lifecycle into `engine-authoring`. Domain authoring services remain GUI-free. Runtime crates do not read the Editor registry directly; Editor composition resolves current authoring snapshots and passes/builds runtime inputs through existing boundaries.
++
++Specialized editors expose current documents through the shared application contract instead of making consumers import panel implementations or reread their files. ADR 0136 preview residency remains a separate resource service.
++
++## Migration / compatibility
++
++Saved project files and schemas do not migrate. Existing `DocumentWorkspace` sessions are a compatible implementation precedent. Specialized editors can adopt the shared registry incrementally as long as, once registered, there is only one mutable working copy per document identity. Explicit Save remains; the UX compatibility change is that accepted unsaved edits become visible to other Editor subsystems.
++
++## Testing strategy
++
++Implementation must cover at least:
++
++- an unsaved Animation Set edit is seen by validation and Scene View;
++- an unsaved Animation Graph edit is seen by Inspector/preview/source navigation;
++- disk remains unchanged until Save;
++- Save All includes dirty specialized-editor documents;
++- undo/redo updates consumer-visible snapshots;
++- temporarily invalid working copies are diagnosed rather than replaced by saved state;
++- strict Play rejects invalid current authoring rather than running stale disk;
++- Play snapshots unsaved valid Graph/Set changes at startup;
++- Graph Debug detects runtime-vs-working-copy staleness after later edits;
++- dirty working copy + external disk change produces conflict;
++- clean external refresh does not create duplicate owners; and
++- move/rename does not leave two registrations for one stable document.
++
++## Visual Validation requirements
++
++This ADR-only documentation change requires no Visual Validation. Registry/coherency implementation is largely logic. Visual Validation is required when implementation changes dirty indicators, Save/Save All UI, conflict dialogs, preview stale-state presentation, or other visible document-state affordances.
++
++## Rollout / implementation phases
++
++1. Define document identity and read-only working-copy registry contracts in the Editor application layer.
++2. Register existing `DocumentWorkspace` sessions without changing editing semantics.
++3. Integrate Animation Set and Animation Graph first because cross-document binding exposes the current bug class.
++4. Integrate Material and other specialized editors with separate in-memory documents.
++5. Route Scene View, validation, preview, Problems, and Graph Debug source reads through the registry.
++6. Route Editor Play snapshot construction through the same resolver.
++7. Add external-change conflict UX and, separately, crash recovery if desired.
++
++## Rejected alternatives
++
++### Autosave every edit to canonical project files
++
++Rejected. It creates Git churn, makes intermediate invalid state durable, and couples interactive latency to persistence.
++
++### Require each specialized editor Save before other panels update
++
++Rejected. Save is persistence, not publication inside one Editor process.
++
++### Let each subsystem reread disk whenever it needs a document
++
++Rejected. It creates contradictory views and incidental save-order behavior.
++
