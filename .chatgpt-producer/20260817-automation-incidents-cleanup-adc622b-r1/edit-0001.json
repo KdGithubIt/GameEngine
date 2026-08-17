@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "docs/CHATGPT_AUTOMATION_INCIDENTS.md",
+  "old": "- Replacement request `20260816-phase8-temporal-history-ce777a7-r2` regenerated\n  that hunk against the exact target EOF. Dispatcher run `31931372697` passed\n  reconstruction/application and produced commit\n  `b3421b3c454ca7ebde31a2a9585e441d91ea7802` in Draft PR #49.\n\n### Root cause",
+  "new": "- Replacement request `20260816-phase8-temporal-history-ce777a7-r2` regenerated\n  that hunk against the exact target EOF. Dispatcher run `31931372697` passed\n  reconstruction/application and produced commit\n  `b3421b3c454ca7ebde31a2a9585e441d91ea7802` in Draft PR #49.\n- The same target-alignment class recurred in ADR 0131 managed-validation\n  request `20260816-adr0131-managed-validation-0b2191a-r2`: Dispatcher run\n  `31944776376` rejected `crates/editor/src/agent_host.rs` while the request\n  targeted `0b2191a06a4ec7311937327c425c76fdea2a4956`. The failed patch used\n  synthetic-file hunk coordinates near lines 1, 19, and 60 instead of the exact\n  target locations near lines 356, 1398, and 2037.\n- Recovery request `20260816-adr0131-mv-fix-r3` regenerated the same correction\n  against the exact target coordinates. Dispatcher run `31944910663` passed and\n  produced commit `d047d7ab89d668b5324869b3aaf9a92329f15182` in Draft PR #88.\n\n### Root cause"
+}
