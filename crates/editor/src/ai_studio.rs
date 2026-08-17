@@ -10,6 +10,7 @@ use crate::agent_host::{
     ConversationRole, ExternalAgentProcess, ManagedValidationAttemptStatus, PermissionCheck,
     ProcessStream, ResumeDisposition,
 };
+use crate::live_observation::{LiveObservationError, LiveObservationManager};
 use crate::native_agent::{
     LocalModelConfig, ModelCapabilityProfile, NativeAnswer, NativeQuestionTask, QuestionMessage,
     QuestionRole, DEFAULT_LOCAL_MODEL_ENDPOINT,
@@ -300,6 +301,7 @@ pub struct AiStudioPanel {
     host: AgentHost,
     remote_server: Option<RemoteAiStudioServer>,
     remote_requests: Option<std::sync::mpsc::Receiver<RemoteAiStudioRequest>>,
+    live_observation: LiveObservationManager,
     selected_session: String,
     proposal_draft: AgentProposal,
     message_draft: String,
@@ -374,6 +376,7 @@ impl AiStudioPanel {
             host,
             remote_server: None,
             remote_requests: None,
+            live_observation: LiveObservationManager::default(),
             selected_session,
             proposal_draft,
             message_draft: String::new(),
@@ -436,6 +439,51 @@ impl AiStudioPanel {
     /// Returns whether AI Studio is waiting for the normal Editor Play path to become active.
     pub fn waiting_for_playtest_start(&self) -> bool {
         self.managed_playtest_requested && self.managed_playtest_started_at.is_none()
+    }
+
+    /// Takes one rate-bounded live-observation capture request for the Editor shell.
+    pub fn take_live_observation_capture_request(&mut self) -> bool {
+        for run_id in self.live_observation.run_ids() {
+            let keep = self.host.run(&run_id).is_ok_and(|run| {
+                !matches!(
+                    run.state,
+                    AgentRunState::Completed | AgentRunState::Failed | AgentRunState::Cancelled
+                )
+            });
+            if !keep {
+                self.live_observation.remove_run(&run_id);
+            }
+        }
+        if !self.live_observation.begin_capture() {
+            return false;
+        }
+        self.resolved_workload = InferenceWorkload::RuntimeObservation;
+        self.resource_plan = resolve_resource_plan(
+            InferenceWorkload::RuntimeObservation,
+            self.quality_preference,
+            MemoryPressure::Unknown,
+            Default::default(),
+        );
+        true
+    }
+
+    /// Reports one renderer-owned Game View readback to the transient live-media path.
+    pub fn report_live_observation_capture(
+        &mut self,
+        result: Result<crate::FrameCapture, String>,
+        readback: std::time::Duration,
+    ) {
+        match result {
+            Ok(capture) => {
+                if let Err(error) = self.live_observation.report_capture(&capture, readback) {
+                    self.status = Some(error.to_string());
+                }
+            }
+            Err(error) => {
+                self.live_observation.report_capture_failure();
+                self.status = Some(format!("Live Game View observation is unavailable: {error}"));
+            }
+        }
     }
 
     /// Records the result of an Editor-owned managed runtime action.
@@ -778,6 +826,76 @@ impl AiStudioPanel {
             RemoteOperation::Frame { run_id, artifact_id } => match frame_bytes(&self.host, &run_id, &artifact_id) {
                 Ok(bytes) => RemoteAiStudioResponse::png(bytes),
                 Err(error) => RemoteAiStudioResponse::error(404, "frame_not_found", error, false),
+            },
+            RemoteOperation::StartLiveObservation { run_id, max_fps, .. } => {
+                let run = match self.host.run(&run_id) {
+                    Ok(run) => run,
+                    Err(error) => {
+                        return RemoteAiStudioResponse::error(
+                            404,
+                            "run_not_found",
+                            error.to_string(),
+                            false,
+                        );
+                    }
+                };
+                if matches!(
+                    run.state,
+                    AgentRunState::Completed | AgentRunState::Failed | AgentRunState::Cancelled
+                ) || self.active_run_id.as_deref() != Some(run_id.as_str())
+                {
+                    return RemoteAiStudioResponse::error(
+                        409,
+                        "live_observation_stale_run",
+                        "Live observation can be started only for the current non-terminal AgentRun.",
+                        false,
+                    );
+                }
+                match self.live_observation.start(&run_id, max_fps) {
+                    Ok(started) => RemoteAiStudioResponse::json(serde_json::json!({
+                        "media_session_id": started.media_session_id,
+                        "media_token": started.media_token,
+                        "run_id": started.run_id,
+                        "source": "game_view",
+                        "codec": "png",
+                        "max_fps": started.max_fps,
+                        "max_dimensions": [1280, 720],
+                        "retention": "latest_frame_only",
+                    })),
+                    Err(error) => live_observation_error_response(error),
+                }
+            }
+            RemoteOperation::LiveObservationStatus {
+                media_session_id,
+                media_token,
+            } => match self
+                .live_observation
+                .status_json(&media_session_id, &media_token)
+            {
+                Ok(status) => RemoteAiStudioResponse::json(status),
+                Err(error) => live_observation_error_response(error),
+            },
+            RemoteOperation::LiveObservationFrame {
+                media_session_id,
+                media_token,
+                sequence,
+            } => match self
+                .live_observation
+                .frame_bytes(&media_session_id, &media_token, sequence)
+            {
+                Ok(bytes) => RemoteAiStudioResponse::png(bytes),
+                Err(error) => live_observation_error_response(error),
+            },
+            RemoteOperation::StopLiveObservation {
+                media_session_id,
+                media_token,
+                ..
+            } => match self.live_observation.stop(&media_session_id, &media_token) {
+                Ok(()) => RemoteAiStudioResponse::json(serde_json::json!({
+                    "stopped": true,
+                    "media_session_id": media_session_id,
+                })),
+                Err(error) => live_observation_error_response(error),
             },
         }
     }
@@ -2630,6 +2748,49 @@ impl AiStudioPanel {
             .host
             .transition_run(run_id, AgentRunState::Failed, message.clone());
         self.status = Some(message);
+    }
+}
+
+fn live_observation_error_response(error: LiveObservationError) -> RemoteAiStudioResponse {
+    match error {
+        LiveObservationError::InvalidFps => RemoteAiStudioResponse::error(
+            400,
+            "live_observation_invalid_fps",
+            error.to_string(),
+            false,
+        ),
+        LiveObservationError::TooManySessions => RemoteAiStudioResponse::error(
+            409,
+            "live_observation_capacity",
+            error.to_string(),
+            true,
+        ),
+        LiveObservationError::NotFound => RemoteAiStudioResponse::error(
+            404,
+            "live_observation_not_found",
+            error.to_string(),
+            false,
+        ),
+        LiveObservationError::Unauthorized => RemoteAiStudioResponse::error(
+            401,
+            "live_observation_unauthorized",
+            error.to_string(),
+            false,
+        ),
+        LiveObservationError::Random(_) => RemoteAiStudioResponse::error(
+            500,
+            "live_observation_session_failed",
+            error.to_string(),
+            true,
+        ),
+        LiveObservationError::InvalidFrame(_) | LiveObservationError::Encode(_) => {
+            RemoteAiStudioResponse::error(
+                503,
+                "live_observation_frame_failed",
+                error.to_string(),
+                true,
+            )
+        }
     }
 }
 

@@ -8,6 +8,7 @@
 #![warn(rustdoc::broken_intra_doc_links)]
 
 mod agent_host;
+mod live_observation;
 mod native_agent;
 mod native_agent_runtime;
 mod remote_ai_studio;
