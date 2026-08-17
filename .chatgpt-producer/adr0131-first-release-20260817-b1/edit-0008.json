@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/agent_host.rs",
+  "old": "fn unix_ms() -> u64 {",
+  "new": "fn sanitize_portable_text(mut text: String) -> String {\n    if let Some(query) = text.find('?') {\n        text.truncate(query);\n        text.push_str(\"?[redacted]\");\n    }\n    if text.chars().count() > MAX_PROVIDER_EVENT_CHARS {\n        text = text.chars().take(MAX_PROVIDER_EVENT_CHARS).collect();\n        text.push_str(\"… [truncated]\");\n    }\n    text\n}\n\nfn unix_ms() -> u64 {"
+}
