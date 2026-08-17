@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ui/mod.rs",
+  "old": "    /// Revision-keyed Inspector catalogs and imported skeleton choices.\n    inspector_cache: InspectorDerivedCache,\n    pending_game_package: Option<PendingGamePackage>,",
+  "new": "    /// Revision-keyed Inspector catalogs and imported skeleton choices.\n    inspector_cache: InspectorDerivedCache,\n    /// One-shot vertical Inspector scroll request consumed by the next UI frame.\n    inspector_scroll_request: Option<f32>,\n    pending_game_package: Option<PendingGamePackage>,"
+}
