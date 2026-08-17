@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0149-live-observation-20260818-01",
+  "target_branch": "chatgpt/gameengine-adr0149-live-observation",
+  "expected_head_sha": "8c868ea613f2033f0f2274c26921547c9cdb39af",
+  "baseline_main_sha": "8c868ea613f2033f0f2274c26921547c9cdb39af",
+  "patch_sha256": "552dbe2cb20c4c239b20940d753422f56cb40913d972e243c3ba1027be567fb3",
+  "patch_bytes": 55364,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Implement ADR0149 live observation transport",
+  "pr_title": "GameEngine: implement ADR0149 live observation transport",
+  "pr_body": "## Summary\n\nImplements ADR0149 Engine-native Live Observation and Media Transport on top of the existing Game View FrameCapture and Remote AI Studio boundaries.\n\n- adds bounded authenticated live Game View media sessions using a replaceable PNG encoder abstraction\n- caps delivery at 1280x720 and 8 fps while retaining only the latest transient sample\n- measures readback, encode, and end-to-end capture overhead per session\n- uses a media-session-specific credential in addition to Remote AI Studio authentication\n- keeps live samples separate from Agent Host captured-frame audit/completion evidence\n- preserves ADR0135 runtime-rendering priority and does not expose renderer/model controls remotely\n- adds responsive Remote AI Studio live-view controls without desktop-wide capture or a second input/authoring path\n\n## Validation\n\nWindows affected validation plus Editor Visual Validation are required.\n\n<!-- gameengine-visual-validation: editor -->"
+}
