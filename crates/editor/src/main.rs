@@ -257,7 +257,17 @@ impl eframe::App for EditorShell {
             context.send_viewport_cmd(eframe::egui::ViewportCommand::Close);
             return;
         }
+        if let Some(action) = self.ai_studio.take_runtime_action() {
+            let result = self.app.handle_ai_studio_runtime_action(action, frame.wgpu_render_state());
+            self.ai_studio.report_runtime_result(context, result);
+        }
         eframe::App::logic(&mut self.app, context, frame);
+        if self.ai_studio.waiting_for_playtest_start() && self.app.ai_studio_playtest_running() {
+            self.ai_studio.report_runtime_result(
+                context,
+                engine_editor::ai_studio::AiStudioRuntimeResult::PlayStarted,
+            );
+        }
         #[cfg(feature = "visual-validation")]
         self.handle_visual_validation_capture(context);
     }

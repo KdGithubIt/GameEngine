@@ -708,6 +708,48 @@ impl EditorApp {
         }
     }
 
+    /// Executes one AI Studio managed runtime action through the normal Editor Play path.
+    pub fn handle_ai_studio_runtime_action(
+        &mut self,
+        action: crate::ai_studio::AiStudioRuntimeAction,
+        render_state: Option<&egui_wgpu::RenderState>,
+    ) -> crate::ai_studio::AiStudioRuntimeResult {
+        use crate::ai_studio::{AiStudioRuntimeAction, AiStudioRuntimeResult};
+        match action {
+            AiStudioRuntimeAction::StartPlaytest => {
+                if !self.is_playing() { self.start_play(); }
+                if self.is_playing() {
+                    AiStudioRuntimeResult::PlayStarted
+                } else if self.play_after_game_build {
+                    AiStudioRuntimeResult::PlayStartPending
+                } else {
+                    AiStudioRuntimeResult::Failed("Editor Play could not start; inspect the current Editor diagnostics.".to_owned())
+                }
+            }
+            AiStudioRuntimeAction::CaptureFrame => {
+                let Some(render_state) = render_state else {
+                    return AiStudioRuntimeResult::Failed("WGPU render state is unavailable for managed frame capture.".to_owned());
+                };
+                let Some(runtime) = self.runtime_state.as_ref() else {
+                    return AiStudioRuntimeResult::Failed("Managed frame capture requires an active Editor Play session.".to_owned());
+                };
+                match runtime.capture_game_view(render_state) {
+                    Ok(capture) => AiStudioRuntimeResult::FrameCaptured(capture),
+                    Err(error) => AiStudioRuntimeResult::Failed(format!("Managed Game View capture failed: {error}")),
+                }
+            }
+            AiStudioRuntimeAction::StopPlaytest => {
+                self.stop_play(render_state);
+                AiStudioRuntimeResult::PlayStopped
+            }
+        }
+    }
+
+    /// Returns whether the normal Editor Play runtime is currently active for AI Studio.
+    pub fn ai_studio_playtest_running(&self) -> bool {
+        self.is_playing()
+    }
+
     pub(super) fn is_playing(&self) -> bool {
         self.editor_mode == EditorMode::Playing
     }
