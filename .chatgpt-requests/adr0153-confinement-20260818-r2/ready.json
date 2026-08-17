@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0153-confinement-20260818-r2",
+  "target_branch": "chatgpt/gameengine-adr0153-confinement-r2",
+  "expected_head_sha": "2d6dc07734015929c05a42708f0d5289891c685b",
+  "baseline_main_sha": "2d6dc07734015929c05a42708f0d5289891c685b",
+  "patch_sha256": "00255d252cd98a16707902aaf35a35de2f8d77b4769c2145437bde620d1ee759",
+  "patch_bytes": 35477,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Implement ADR 0153 agent process confinement contract",
+  "pr_title": "GameEngine: implement ADR 0153 agent process confinement",
+  "pr_body": "## Summary\n\n- add a truthful provider-neutral confinement request/profile contract at the existing Agent Host process boundary\n- keep the generic runtime explicitly application-policy-only and fail closed when provider/OS confinement is required\n- derive network scope from existing AgentCapability, preserve loopback MCP/workspace invariants, and persist only non-secret confinement audit data\n- expose the selected requirement and actual confinement status in AI Studio\n- add fail-closed, loopback, truthfulness, and persistence regression coverage and update ADR 0153 implementation status\n\n## Validation\n\nRun GameEngine Windows Validation and Editor Visual Validation because the security/confinement status UI changes."
+}
