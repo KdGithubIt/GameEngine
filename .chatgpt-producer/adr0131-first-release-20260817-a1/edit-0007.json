@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "    fn begin_run(&mut self) {\n        if let Err(error) = self\n            .host\n            .update_proposal(&self.selected_session, self.proposal_draft.clone())\n        {\n            self.status = Some(error.to_string());\n            return;\n        }\n        let provider = self.provider_program.trim().to_owned();\n        match self.host.start_run(&self.selected_session, provider) {",
+  "new": "    fn begin_run(&mut self) {\n        let authorized_proposal_version = match self\n            .host\n            .update_proposal(&self.selected_session, self.proposal_draft.clone())\n        {\n            Ok(version) => {\n                self.proposal_draft.version = version;\n                version\n            }\n            Err(error) => {\n                self.status = Some(error.to_string());\n                return;\n            }\n        };\n        let provider = self.provider_program.trim().to_owned();\n        match self\n            .host\n            .start_run(&self.selected_session, authorized_proposal_version, provider)\n        {"
+}
