@@ -1,0 +1,113 @@
+diff --git a/crates/physics/src/navigation.rs b/crates/physics/src/navigation.rs
+index aa5679fef3f01d2f15276a7ec3d5b22a3a6ad33f..63dbc83c0b846104b7ab07feda83e06126df321f 100644
+--- a/crates/physics/src/navigation.rs
++++ b/crates/physics/src/navigation.rs
+@@ -914,6 +914,44 @@ pub enum NavigationPathResult {
+     Failure(NavigationQueryFailure),
+ }
+ 
++/// Engine-owned query-time traversal overrides for dynamic links such as doors.
++///
++/// Stable link IDs and neutral traversal tags keep runtime state independent of
++/// any third-party polygon/reference representation.
++#[derive(Debug, Clone, Default, PartialEq, Eq)]
++pub struct NavigationQueryFilter {
++    disabled_link_ids: BTreeSet<String>,
++    disabled_traversal_tags: BTreeSet<String>,
++}
++
++impl NavigationQueryFilter {
++    /// Disables one authored off-mesh link by stable ID.
++    pub fn disable_link(&mut self, id: impl Into<String>) {
++        self.disabled_link_ids.insert(id.into());
++    }
++
++    /// Re-enables one previously disabled off-mesh link.
++    pub fn enable_link(&mut self, id: &str) {
++        self.disabled_link_ids.remove(id);
++    }
++
++    /// Disables all links carrying one neutral traversal tag, for example `door`.
++    pub fn disable_traversal_tag(&mut self, tag: impl Into<String>) {
++        self.disabled_traversal_tags.insert(tag.into());
++    }
++
++    /// Re-enables one previously disabled traversal tag.
++    pub fn enable_traversal_tag(&mut self, tag: &str) {
++        self.disabled_traversal_tags.remove(tag);
++    }
++
++    /// Returns whether a baked link is currently traversable.
++    pub fn allows_link(&self, link: &NavigationLink) -> bool {
++        !self.disabled_link_ids.contains(&link.id)
++            && !self.disabled_traversal_tags.contains(&link.traversal_tag)
++    }
++}
++
+ /// Runtime resource wrapping one loaded production navigation asset.
+ pub struct NavMeshQuery {
+     /// Underlying tiled production asset.
+@@ -961,6 +999,17 @@ impl NavMeshQuery {
+ 
+     /// Runs a typed corridor/path query for one stable agent profile.
+     pub fn query_path(&self, profile_id: &str, start: Vec3, end: Vec3) -> NavigationPathResult {
++        self.query_path_with_filter(profile_id, start, end, &NavigationQueryFilter::default())
++    }
++
++    /// Runs a typed path query while applying engine-owned dynamic traversal overrides.
++    pub fn query_path_with_filter(
++        &self,
++        profile_id: &str,
++        start: Vec3,
++        end: Vec3,
++        filter: &NavigationQueryFilter,
++    ) -> NavigationPathResult {
+         let Some(profile) = self.nav_mesh.profile(profile_id) else {
+             return NavigationPathResult::Failure(NavigationQueryFailure::MissingProfile(
+                 profile_id.to_owned(),
+@@ -981,7 +1030,7 @@ impl NavMeshQuery {
+         if end.distance(end_point) > DEFAULT_NEAREST_DISTANCE {
+             return NavigationPathResult::Failure(NavigationQueryFailure::EndOutside);
+         }
+-        match astar_polygons(profile, start_ref, end_ref) {
++        match astar_polygons(profile, start_ref, end_ref, filter) {
+             Some(SearchOutcome::Complete(search)) => NavigationPathResult::Complete(
+                 materialize_path(profile, start_point, end_point, search),
+             ),
+@@ -1199,6 +1248,7 @@ fn astar_polygons(
+     profile: &NavigationProfileMesh,
+     start: NavigationPolygonRef,
+     end: NavigationPolygonRef,
++    filter: &NavigationQueryFilter,
+ ) -> Option<SearchOutcome> {
+     let index = polygon_index(&profile.tiles);
+     let centers = polygon_centers(profile, &index);
+@@ -1250,6 +1300,9 @@ fn astar_polygons(
+             );
+         }
+         for link in &profile.links {
++            if !filter.allows_link(link) {
++                continue;
++            }
+             if link.from == entry.node {
+                 frontier.relax(
+                     link.to,
+@@ -2152,6 +2205,18 @@ mod tests {
+             Vec3::new(0.5, 3.0, 0.5),
+         );
+         assert!(matches!(forward, NavigationPathResult::Complete(_)));
++        let mut closed_door = NavigationQueryFilter::default();
++        closed_door.disable_traversal_tag("jump");
++        let filtered = query.query_path_with_filter(
++            DEFAULT_NAVIGATION_PROFILE,
++            Vec3::new(0.5, 0.0, 0.5),
++            Vec3::new(0.5, 3.0, 0.5),
++            &closed_door,
++        );
++        assert!(matches!(
++            filtered,
++            NavigationPathResult::Failure(NavigationQueryFailure::NoPath)
++        ));
+         let reverse = query.query_path(
+             DEFAULT_NAVIGATION_PROFILE,
+             Vec3::new(0.5, 3.0, 0.5),
