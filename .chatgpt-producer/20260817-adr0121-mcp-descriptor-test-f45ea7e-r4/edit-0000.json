@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/mcp/src/generic_authoring.rs",
+  "old": "    #[test]\n    fn descriptors_cover_generic_graph_layout_and_ui_surfaces() {\n        let names = GenericAuthoringMcpTools::new()\n            .tool_descriptors()\n            .into_iter()\n            .map(|descriptor| descriptor.name)\n            .collect::<Vec<_>>();\n\n        assert!(names.contains(&\"graph.inspect\".to_owned()));\n        assert!(names.contains(&\"graph.layout.apply\".to_owned()));\n        assert!(names.contains(&\"ui.apply\".to_owned()));\n        assert_eq!(names.len(), 12);\n    }",
+  "new": "    #[test]\n    fn descriptors_cover_generic_graph_ui_and_typed_document_surfaces() {\n        let names = GenericAuthoringMcpTools::new()\n            .tool_descriptors()\n            .into_iter()\n            .map(|descriptor| descriptor.name)\n            .collect::<Vec<_>>();\n\n        assert!(names.contains(&\"graph.inspect\".to_owned()));\n        assert!(names.contains(&\"graph.layout.apply\".to_owned()));\n        assert!(names.contains(&\"ui.apply\".to_owned()));\n        assert!(names.contains(&\"material.inspect\".to_owned()));\n        assert!(names.contains(&\"project_settings.apply\".to_owned()));\n        assert!(names.contains(&\"animation_set.validate\".to_owned()));\n        assert_eq!(names.len(), 24);\n    }"
+}
