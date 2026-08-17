@@ -1,0 +1,1 @@
+{"operation":"create_text","path":"crates/physics/src/native_2d.rs","content":"//! Engine-owned Native 2D physics contracts and deterministic reference solver (ADR 0127).\n//!\n//! The 2D world is explicit and independent from the existing Rapier 3D world.\n\n// CHATGPT_NATIVE2D_PHYSICS_BODY\n"}
