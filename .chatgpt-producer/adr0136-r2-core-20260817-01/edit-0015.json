@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/scene_view.rs","old":"#[derive(Debug, PartialEq, Eq)]\nstruct PreviewKey {\n    scene_revision: u64,\n    manifest_hash: u64,\n","new":"#[derive(Debug, Clone, PartialEq, Eq)]\nstruct PreviewKey {\n    scene_revision: u64,\n    manifest_hash: u64,\n    residency_revision: u64,\n"}
