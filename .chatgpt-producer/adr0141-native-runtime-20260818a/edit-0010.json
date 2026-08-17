@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "    native_question: Option<NativeQuestionTask>,\n    pending_native_question_start: Option<(LocalModelConfig, Vec<QuestionMessage>, String)>,\n    native_question_session: Option<String>,\n    provider_program: String,",
+  "new": "    native_question: Option<NativeQuestionTask>,\n    pending_native_question_start: Option<(LocalModelConfig, Vec<QuestionMessage>, String)>,\n    native_question_session: Option<String>,\n    native_agent_runtime: Option<NativeAgentRuntime>,\n    native_mcp_task: Option<NativeMcpTask>,\n    pending_native_mcp_tool: Option<String>,\n    active_runtime_mode: Option<AgentRuntimeMode>,\n    provider_program: String,"
+}
