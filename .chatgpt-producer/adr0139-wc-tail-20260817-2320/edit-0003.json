@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/scene_view.rs","old":"                    &self.gpu_mesh_cache,\n                    size,\n                    self.show_sky,\n                );","new":"                    &self.gpu_mesh_cache,\n                    &self.authoring_overlay,\n                    size,\n                    self.show_sky,\n                );"}

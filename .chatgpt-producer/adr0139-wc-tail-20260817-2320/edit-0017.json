@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ui/documents.rs","old":"            self.reload_external_document(tab_id, &path);","new":"            self.reload_external_document_owner(&owner, &path);"}

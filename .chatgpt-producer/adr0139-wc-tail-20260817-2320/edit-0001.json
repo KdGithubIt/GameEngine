@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/scene_view.rs","old":"            manifest_hash_cache: None,\n            preview: None,\n        }","new":"            manifest_hash_cache: None,\n            preview: None,\n            authoring_overlay: engine::authoring_overlay::AuthoringDocumentOverlay::new(),\n        }"}

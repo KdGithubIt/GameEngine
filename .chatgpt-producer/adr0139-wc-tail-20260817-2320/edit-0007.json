@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ui/assets/material_window.rs","old":"        let mut changed = false;\n        let mut reimport_preview = false;","new":"        let mut changed = false;\n        let mut save_requested = false;\n        let mut reimport_preview = false;"}
