@@ -1,0 +1,172 @@
++                match host.start_run_authorized(&session, version, "test") {
++                    Ok(run_id) => RemoteAiStudioResponse::json(json!({"run_id": run_id})),
++                    Err(error) => RemoteAiStudioResponse::error(409, "go_failed", error.to_string(), false),
++                }
++            });
++        }
++        assert_eq!(host.session(&session).expect("session").runs.len(), 1);
++        let _ = fs::remove_dir_all(project);
++        let _ = fs::remove_dir_all(storage);
++    }
++
++    #[test]
++    fn duplicate_permission_and_awaiting_user_responses_are_applied_once() {
++        let mut cache = MutationCache::default();
++        let permission_count = AtomicUsize::new(0);
++        let permission = RemoteOperation::Permission {
++            run_id: "run_1".into(),
++            request_id: "permission-one".into(),
++            capability: AgentCapability::FrameCapture,
++            scope: RemotePermissionScope::Once,
++        };
++        for _ in 0..2 {
++            let _ = cache.execute(&permission, || {
++                permission_count.fetch_add(1, AtomicOrdering::Relaxed);
++                RemoteAiStudioResponse::json(json!({"ok": true}))
++            });
++        }
++        let awaiting_count = AtomicUsize::new(0);
++        let awaiting = RemoteOperation::AwaitingUser {
++            run_id: "run_1".into(),
++            request_id: "await-one".into(),
++            text: "continue".into(),
++        };
++        for _ in 0..2 {
++            let _ = cache.execute(&awaiting, || {
++                awaiting_count.fetch_add(1, AtomicOrdering::Relaxed);
++                RemoteAiStudioResponse::json(json!({"ok": true}))
++            });
++        }
++        assert_eq!(permission_count.load(AtomicOrdering::Relaxed), 1);
++        assert_eq!(awaiting_count.load(AtomicOrdering::Relaxed), 1);
++    }
++
++    #[test]
++    fn stale_proposal_go_is_rejected_by_authoritative_host() {
++        let (mut host, project, storage) = test_host("stale-go");
++        let session = host.create_session("Remote").expect("session");
++        let old = host.session(&session).expect("session").proposal.version;
++        let proposal = host.session(&session).expect("session").proposal.clone();
++        host.update_proposal(&session, proposal).expect("proposal");
++        assert!(host.start_run_authorized(&session, old, "test").is_err());
++        assert!(host.session(&session).expect("session").runs.is_empty());
++        let _ = fs::remove_dir_all(project);
++        let _ = fs::remove_dir_all(storage);
++    }
++
++    #[test]
++    fn reconnect_snapshot_restores_run_and_pending_decision_view() {
++        let (mut host, project, storage) = test_host("reconnect");
++        let session = host.create_session("Remote").expect("session");
++        let version = host.session(&session).expect("session").proposal.version;
++        let run = host.start_run_authorized(&session, version, "test").expect("run");
++        host.transition_run(&run, AgentRunState::AwaitingUser, "Need input")
++            .expect("awaiting");
++        drop(host);
++        let reopened = AgentHost::open(project.clone(), storage.clone()).expect("reopened");
++        let snapshot = snapshot_json(&reopened, "project-a", &session, None).expect("snapshot");
++        assert_eq!(snapshot["active_run"]["id"], run);
++        assert_eq!(snapshot["awaiting_user"]["run_id"], run);
++        let _ = fs::remove_dir_all(project);
++        let _ = fs::remove_dir_all(storage);
++    }
++
++    #[test]
++    fn ordered_event_cursor_resumes_and_reports_stale_cursor() {
++        let (mut host, project, storage) = test_host("events");
++        let session = host.create_session("Remote").expect("session");
++        let version = host.session(&session).expect("session").proposal.version;
++        let run = host.start_run_authorized(&session, version, "test").expect("run");
++        for index in 0..520 {
++            host.record_event(&run, AgentEventKind::SemanticProgress, format!("event {index}"))
++                .expect("event");
++        }
++        let batch = events_json(&host, &run, 515).expect("batch");
++        let sequences = batch["events"]
++            .as_array()
++            .expect("events")
++            .iter()
++            .map(|event| event["sequence"].as_u64().expect("sequence"))
++            .collect::<Vec<_>>();
++        assert!(sequences.windows(2).all(|pair| pair[0] < pair[1]));
++        let stale = events_json(&host, &run, 1).expect("stale");
++        assert_eq!(stale["stale_cursor"], true);
++        assert_eq!(stale["snapshot_required"], true);
++        let _ = fs::remove_dir_all(project);
++        let _ = fs::remove_dir_all(storage);
++    }
++
++    #[test]
++    fn disconnect_does_not_cancel_active_run() {
++        let (mut host, project, storage) = test_host("disconnect");
++        let session = host.create_session("Remote").expect("session");
++        let version = host.session(&session).expect("session").proposal.version;
++        let run = host.start_run_authorized(&session, version, "test").expect("run");
++        drop(MutationCache::default());
++        assert!(!is_terminal(host.run(&run).expect("run").state));
++        let _ = fs::remove_dir_all(project);
++        let _ = fs::remove_dir_all(storage);
++    }
++
++    #[test]
++    fn mcp_credentials_and_provider_output_are_not_exposed() {
++        let (mut host, project, storage) = test_host("sanitize");
++        let session = host.create_session("Remote").expect("session");
++        let version = host.session(&session).expect("session").proposal.version;
++        let run = host.start_run_authorized(&session, version, "test").expect("run");
++        host.record_event(
++            &run,
++            AgentEventKind::ProviderOutput,
++            "GAMEENGINE_MCP_AUTH_TOKEN=super-secret C:\\Users\\private\\file",
++        )
++        .expect("provider output");
++        let events = events_json(&host, &run, 0).expect("events").to_string();
++        assert!(!events.contains("super-secret"));
++        assert!(!events.contains("C:\\\\Users"));
++        let snapshot = snapshot_json(&host, "project-a", &session, None)
++            .expect("snapshot")
++            .to_string();
++        assert!(!snapshot.contains("GAMEENGINE_MCP_AUTH_TOKEN"));
++        let _ = fs::remove_dir_all(project);
++        let _ = fs::remove_dir_all(storage);
++    }
++
++    #[test]
++    fn unsafe_generic_remote_endpoints_do_not_exist() {
++        for path in ["/api/shell", "/api/filesystem", "/api/git", "/api/mcp", "/api/process"] {
++            let request = HttpRequest {
++                method: "POST".into(),
++                path: path.into(),
++                headers: BTreeMap::from([("content-type".into(), "application/json".into())]),
++                body: b"{}".to_vec(),
++            };
++            assert!(route_request(&request).is_err(), "{path} must not be routed");
++        }
++    }
++
++    #[test]
++    fn captured_frame_is_scoped_to_project_session_and_run() {
++        let (mut host, project, storage) = test_host("frame");
++        let first_session = host.create_session("First").expect("session");
++        let version = host.session(&first_session).expect("session").proposal.version;
++        let first_run = host.start_run_authorized(&first_session, version, "test").expect("run");
++        host.transition_run(&first_run, AgentRunState::Executing, "execute").expect("execute");
++        host.transition_run(&first_run, AgentRunState::Validating, "validate").expect("validate");
++        host.transition_run(&first_run, AgentRunState::Playtesting, "playtest").expect("playtest");
++        let (artifact, _) = host.store_captured_frame_artifact(&first_run, 1, 1, b"png-one").expect("frame");
++        let snapshot = snapshot_json(&host, "project-a", &first_session, None).expect("snapshot");
++        assert_eq!(snapshot["project_id"], "project-a");
++        assert_eq!(snapshot["session"]["id"], first_session);
++        assert_eq!(snapshot["active_run"]["id"], first_run);
++        assert_eq!(frame_bytes(&host, &first_run, &artifact).expect("bytes"), b"png-one");
++        assert!(frame_bytes(&host, "run_wrong", &artifact).is_err());
++        let _ = fs::remove_dir_all(project);
++        let _ = fs::remove_dir_all(storage);
++    }
++
++    #[test]
++    fn gateway_binds_only_to_loopback() {
++        let (server, _requests) = RemoteAiStudioServer::start(egui::Context::default()).expect("server");
++        assert!(server.local_addr.ip().is_loopback());
++    }
++}
