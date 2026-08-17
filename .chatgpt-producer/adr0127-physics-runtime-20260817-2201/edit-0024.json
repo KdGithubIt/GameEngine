@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/engine/src/lib.rs","old":"/// Engine-native secondary-motion facade (ADR 0112).\npub mod secondary_motion;\n","new":"/// Cross-domain Native 2D physics composition and public facade (ADR 0127).\npub mod native_2d;\n/// Engine-native secondary-motion facade (ADR 0112).\npub mod secondary_motion;\n"}
