@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/agent_host.rs",
+  "old": "    #[serde(default)]\n    pub(crate) code_checkpoints: Vec<CodeCheckpoint>,\n    pub(crate) started_unix_ms: u64,",
+  "new": "    #[serde(default)]\n    pub(crate) code_checkpoints: Vec<CodeCheckpoint>,\n    #[serde(default)]\n    pub(crate) audit: AgentRunAudit,\n    pub(crate) started_unix_ms: u64,"
+}
