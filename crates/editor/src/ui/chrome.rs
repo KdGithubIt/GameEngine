@@ -2082,6 +2082,7 @@ pub(super) fn show_primary_left_dock_panel<R>(
 /// A manually bounded child now provides the stronger mirror guard: its desired
 /// size never contributes to the panel response. Dock-local truncation also
 /// keeps narrow horizontal controls on one line.
+#[cfg(test)]
 pub(super) fn show_inspector_panel<R>(
     ui: &mut egui::Ui,
     max_width: f32,
