@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/scene_view.rs",
+  "old": "        gizmo_space: GizmoSpace,\n        open_ui_document: Option<(&AssetId, &UiDocument)>,\n        render_state: &egui_wgpu::RenderState,",
+  "new": "        gizmo_space: GizmoSpace,\n        open_ui_document: Option<(&AssetId, &UiDocument)>,\n        navigation_test_path: Option<&[Vec3]>,\n        render_state: &egui_wgpu::RenderState,"
+}

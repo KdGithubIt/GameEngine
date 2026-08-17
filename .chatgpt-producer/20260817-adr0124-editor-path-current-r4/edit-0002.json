@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ui/mod.rs",
+  "old": "            game_build: GameBuildManager::default(),\n            navigation_bake: NavigationBakeManager::default(),\n            game_module: None,",
+  "new": "            game_build: GameBuildManager::default(),\n            navigation_bake: NavigationBakeManager::default(),\n            navigation_workspace: NavigationWorkspaceUi::default(),\n            game_module: None,"
+}

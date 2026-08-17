@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ui/mod.rs",
+  "old": "        self.show_project_settings_window(ui.ctx());\n        self.show_texture_preview_window(ui.ctx());",
+  "new": "        self.show_project_settings_window(ui.ctx());\n        self.show_navigation_window(ui.ctx());\n        self.show_texture_preview_window(ui.ctx());"
+}

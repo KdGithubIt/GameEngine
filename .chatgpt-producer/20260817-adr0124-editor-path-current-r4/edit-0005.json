@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ui/viewport.rs",
+  "old": "            self.gizmo_space,\n            open_ui_document,\n            render_state,",
+  "new": "            self.gizmo_space,\n            open_ui_document,\n            Some(self.navigation_workspace.path_waypoints.as_slice()),\n            render_state,"
+}

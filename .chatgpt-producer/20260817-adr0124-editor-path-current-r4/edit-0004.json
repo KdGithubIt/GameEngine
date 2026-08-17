@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ui/chrome.rs",
+  "old": "                if ui\n                    .add_enabled(\n                        self.session.scene().is_some()\n                            && !self.is_playing()\n                            && !self.navigation_bake.is_running(),\n                        egui::Button::new(\"Bake NavMesh\"),\n                    )\n                    .clicked()\n                {",
+  "new": "                if ui\n                    .add_enabled(\n                        self.session.scene().is_some() && !self.is_playing(),\n                        egui::Button::new(\"Navigation...\"),\n                    )\n                    .clicked()\n                {\n                    self.open_navigation_window();\n                    ui.close();\n                }\n                if ui\n                    .add_enabled(\n                        self.session.scene().is_some()\n                            && !self.is_playing()\n                            && !self.navigation_bake.is_running(),\n                        egui::Button::new(\"Bake NavMesh\"),\n                    )\n                    .clicked()\n                {"
+}
