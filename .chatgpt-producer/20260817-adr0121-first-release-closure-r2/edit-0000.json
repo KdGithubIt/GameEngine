@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/material_editor.rs",
+  "old": "use std::collections::BTreeMap;\nuse std::path::PathBuf;\n\n// ---------------------------------------------------------------------------\n// Data model\n// ---------------------------------------------------------------------------\n",
+  "new": "use std::collections::BTreeMap;\nuse std::path::{Path, PathBuf};\n\nconst UNDO_LIMIT: usize = 100;\n\n// ---------------------------------------------------------------------------\n// Data model\n// ---------------------------------------------------------------------------\n"
+}
