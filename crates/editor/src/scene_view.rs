@@ -1089,6 +1089,34 @@ impl SceneView {
         self.ui_texture_renderer = None;
     }
 
+    /// Releases only view-local transient presentation resources.
+    ///
+    /// Persistent preview state, imported data, meshes, textures, and pipelines
+    /// remain resident so normal inference focus does not defeat ADR 0072/0104.
+    pub(crate) fn release_transient_resources(
+        &mut self,
+        render_state: &egui_wgpu::RenderState,
+    ) {
+        self.release(render_state);
+        self.last_view = None;
+    }
+
+    /// Releases additional recreatable preview residency after transient reclaim.
+    ///
+    /// This never touches canonical authoring state or low-level GPU ownership.
+    /// The shared import cache remains CPU-side and reusable; GPU mesh residency
+    /// and the preview world are reconstructed lazily on the next rendered frame.
+    pub(crate) fn release_recreatable_resources(
+        &mut self,
+        render_state: &egui_wgpu::RenderState,
+    ) {
+        self.release_transient_resources(render_state);
+        self.preview = None;
+        self.renderer = None;
+        self.gpu_mesh_cache.clear();
+        self.manifest_hash_cache = None;
+    }
+
     /// Releases preview worlds and resident imports owned by the old project.
     pub fn clear_project_caches(&mut self) {
         self.preview = None;

@@ -725,15 +725,74 @@ impl EditorApp {
         }
     }
 
+    fn ai_studio_authoritative_state(&self) -> crate::ai_studio::AiStudioAuthoritativeState {
+        crate::ai_studio::AiStudioAuthoritativeState {
+            document_revision: self.session.document_revision(),
+            game_code_generation: self.game_code_generation,
+            document_path: self.session.current_document_path().map(Path::to_path_buf),
+            document_dirty: self.session.is_dirty(),
+        }
+    }
+
+    /// Returns a one-shot signal only after a normal Editor frame has drawn following restore.
+    pub fn take_ai_studio_restore_completed(&mut self) -> bool {
+        std::mem::take(&mut self.inference_restore_completed)
+    }
+
     /// Executes one AI Studio managed runtime action through the normal Editor Play path.
     pub fn handle_ai_studio_runtime_action(
         &mut self,
         action: crate::ai_studio::AiStudioRuntimeAction,
         render_state: Option<&egui_wgpu::RenderState>,
     ) -> crate::ai_studio::AiStudioRuntimeResult {
-        use crate::ai_studio::{AiStudioRuntimeAction, AiStudioRuntimeResult};
+        use crate::ai_studio::{AiStudioReclaimLevel, AiStudioRuntimeAction, AiStudioRuntimeResult};
         match action {
+            AiStudioRuntimeAction::EnterInferenceFocused { reclaim } => {
+                if self.is_playing() {
+                    return AiStudioRuntimeResult::Failed(
+                        "InferenceFocused cannot preempt active Play; runtime rendering keeps GPU priority."
+                            .to_owned(),
+                    );
+                }
+                let Some(render_state) = render_state else {
+                    return AiStudioRuntimeResult::Failed(
+                        "WGPU render state is unavailable for presentation resource reclaim."
+                            .to_owned(),
+                    );
+                };
+                match reclaim {
+                    AiStudioReclaimLevel::None => {}
+                    AiStudioReclaimLevel::Transient => {
+                        self.scene_view.release_transient_resources(render_state);
+                        self.animation_preview
+                            .release_for_inference(render_state, false);
+                    }
+                    AiStudioReclaimLevel::Aggressive => {
+                        self.scene_view.release_recreatable_resources(render_state);
+                        self.animation_preview
+                            .release_for_inference(render_state, true);
+                    }
+                }
+                self.inference_focused = true;
+                self.inference_restore_pending = false;
+                self.inference_restore_completed = false;
+                AiStudioRuntimeResult::InferenceFocusedEntered { reclaim }
+            }
+            AiStudioRuntimeAction::RestoreEditorPresentation => {
+                self.inference_focused = false;
+                self.inference_restore_pending = true;
+                self.inference_restore_completed = false;
+                AiStudioRuntimeResult::EditorRestorePending {
+                    state: self.ai_studio_authoritative_state(),
+                }
+            }
+            AiStudioRuntimeAction::InspectAuthoritativeState => {
+                AiStudioRuntimeResult::AuthoritativeState(self.ai_studio_authoritative_state())
+            }
             AiStudioRuntimeAction::StartPlaytest => {
+                self.inference_focused = false;
+                self.inference_restore_pending = false;
+                self.inference_restore_completed = false;
                 if !self.is_playing() { self.start_play(); }
                 if self.is_playing() {
                     AiStudioRuntimeResult::PlayStarted
@@ -753,6 +812,10 @@ impl EditorApp {
                 AiStudioRuntimeResult::RuntimeInputQueued(command)
             }
             AiStudioRuntimeAction::CaptureFrame => {
+                // Live frame capture always outranks inference presentation.
+                self.inference_focused = false;
+                self.inference_restore_pending = false;
+                self.inference_restore_completed = false;
                 let Some(render_state) = render_state else {
                     return AiStudioRuntimeResult::Failed("WGPU render state is unavailable for managed frame capture.".to_owned());
                 };

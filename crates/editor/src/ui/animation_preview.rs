@@ -70,6 +70,18 @@ impl Default for AnimationPreviewWindow {
 }
 
 impl AnimationPreviewWindow {
+    pub(super) fn release_for_inference(
+        &mut self,
+        render_state: &egui_wgpu::RenderState,
+        aggressive: bool,
+    ) {
+        if aggressive {
+            self.view.release_recreatable_resources(render_state);
+        } else {
+            self.view.release_transient_resources(render_state);
+        }
+    }
+
     /// Opens or refreshes the preview against an authoring scene snapshot.
     pub(super) fn open_for_scene(
         &mut self,

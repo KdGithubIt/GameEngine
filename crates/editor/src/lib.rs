@@ -10,6 +10,7 @@
 mod agent_host;
 mod native_agent;
 mod remote_ai_studio;
+mod resource_arbitration;
 pub mod ai_studio;
 pub mod anim_ux;
 mod animation_set_editor;
