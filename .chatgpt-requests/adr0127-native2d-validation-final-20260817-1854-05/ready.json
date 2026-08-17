@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0127-native2d-validation-final-20260817-1854-05",
+  "target_branch": "chatgpt/gameengine-adr0127-native-2d-completion",
+  "expected_head_sha": "faa986ce14c8d6205f0906f3ad077529160dccfb",
+  "baseline_main_sha": "d03ed9e573818eb0ca088f37953f611d6ed4d22e",
+  "patch_sha256": "f0bb71431aabd65964ef6fcf54f17475586959c0ac5a07aa309c12febe7a6695",
+  "patch_bytes": 1241,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Finish Native 2D validation repairs",
+  "pr_title": "GameEngine: complete ADR 0127 Native 2D architecture",
+  "pr_body": "Finishes the current Native 2D foundation validation repair by using the exact quarter-pi constant required by Clippy and updating the ProjectSettings round-trip fixture for the typed native_2d settings field."
+}
