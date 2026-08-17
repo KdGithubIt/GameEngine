@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/vfx_builder_completion.rs","old":"        if let Some(template) = requested {\n            self.create_from_template(project, template);\n        }","new":"        if let Some(template) = requested {\n            self.create_from_template(project, template, ui.ctx());\n        }"}

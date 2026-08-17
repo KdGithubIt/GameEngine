@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/vfx_builder_completion.rs","old":"    fn create_from_template(&mut self, project: &ProjectRoot, template: VfxTemplate) {","new":"    fn create_from_template(\n        &mut self,\n        project: &ProjectRoot,\n        template: VfxTemplate,\n        ctx: &egui::Context,\n    ) {"}

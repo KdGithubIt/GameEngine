@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/scripting/src/game_api.rs","old":"            GameCommandFamily::Component,\n            GameCommandFamily::Animation,\n            GameCommandFamily::Hitbox,","new":"            GameCommandFamily::Component,\n            GameCommandFamily::Animation,\n            GameCommandFamily::Vfx,\n            GameCommandFamily::Hitbox,"}

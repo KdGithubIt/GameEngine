@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/vfx_builder.rs","old":"    redo_stack: Vec<Vec<VfxCommand>>,\n    status: Option<String>,\n}","new":"    redo_stack: Vec<Vec<VfxCommand>>,\n    status: Option<String>,\n    background: background::VfxBackgroundTasks,\n}"}
