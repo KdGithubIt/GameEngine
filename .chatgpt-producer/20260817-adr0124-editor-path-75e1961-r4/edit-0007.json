@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/scene_view.rs",
+  "old": "                if let Some(debug) = &particle_debug {\n                    if let Some((min, max)) = debug.bounds {",
+  "new": "                if let Some(path) = navigation_test_path {\n                    for segment in path.windows(2) {\n                        dl.line(segment[0], segment[1], Vec3::new(0.2, 1.0, 0.85));\n                    }\n                    for point in path {\n                        let point = *point;\n                        let marker = 0.12;\n                        dl.line(\n                            point - Vec3::X * marker,\n                            point + Vec3::X * marker,\n                            Vec3::new(1.0, 0.95, 0.2),\n                        );\n                        dl.line(\n                            point - Vec3::Z * marker,\n                            point + Vec3::Z * marker,\n                            Vec3::new(1.0, 0.95, 0.2),\n                        );\n                    }\n                }\n                if let Some(debug) = &particle_debug {\n                    if let Some((min, max)) = debug.bounds {"
+}
