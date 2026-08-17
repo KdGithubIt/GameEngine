@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0135-20260817-r5",
+  "target_branch": "chatgpt/gameengine-adr0135-resource-arbitration-r2",
+  "expected_head_sha": "18f1969ac59866759652f5bc8f6ede22bf52a86a",
+  "baseline_main_sha": "6700b76cf4e7db84dbebc9a9ebb82432b44510d9",
+  "patch_sha256": "b7d38af7e76e40500c2aada544e37711b8ce49ab0f3c8caefbff690fd90a4d61",
+  "patch_bytes": 6303,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Fix ADR0135 lint validation findings",
+  "pr_title": "GameEngine: integrate ADR0135 native inference resource arbitration",
+  "pr_body": "## Summary\n\nFixes the ADR0135 affected-validation lint findings without changing the resource-arbitration contract or ADR0133 Remote AI Studio boundary. Uses narrow dead-code allowances only for intentional first-release capability/telemetry contracts, derives telemetry defaults, documents new public runtime DTO fields, and applies the Clippy-prescribed conditional simplification.\n\n## Validation\n\nRe-run affected Windows Validation and Editor Visual Validation on the corrected exact HEAD.\n\n<!-- gameengine-visual-validation: editor -->\n\n<!-- gameengine-chatgpt-dispatcher -->"
+}
