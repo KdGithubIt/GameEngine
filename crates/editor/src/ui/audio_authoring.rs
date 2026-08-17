@@ -176,7 +176,10 @@ pub(super) fn show_audio_component_extras(
         action
     } else if component_type.as_str() == engine::scene_bridge::AUDIO_LISTENER_COMPONENT {
         ui.separator();
-        ui.small("Scene View shows this listener's world-space orientation. Highest enabled priority wins; equal highest priorities use deterministic entity order.");
+        ui.scope(|ui| {
+            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
+            ui.small("Scene View shows this listener's world-space orientation. Highest enabled priority wins; equal highest priorities use deterministic entity order.");
+        });
         None
     } else {
         None
