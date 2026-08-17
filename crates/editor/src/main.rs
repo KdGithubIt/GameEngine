@@ -283,6 +283,14 @@ impl eframe::App for EditorShell {
             let result = self.app.handle_ai_studio_runtime_action(action, frame.wgpu_render_state());
             self.ai_studio.report_runtime_result(context, result);
         }
+        if self.ai_studio.take_live_observation_capture_request() {
+            let readback_started = std::time::Instant::now();
+            let result = self
+                .app
+                .capture_ai_studio_live_observation(frame.wgpu_render_state());
+            self.ai_studio
+                .report_live_observation_capture(result, readback_started.elapsed());
+        }
         eframe::App::logic(&mut self.app, context, frame);
         if self.ai_studio.waiting_for_playtest_start() && self.app.ai_studio_playtest_running() {
             self.ai_studio.report_runtime_result(

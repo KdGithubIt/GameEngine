@@ -849,6 +849,28 @@ impl EditorApp {
         }
     }
 
+    /// Captures the last rendered Game View for a bounded Remote AI Studio live-media session.
+    ///
+    /// This reuses the normal renderer-owned readback boundary and deliberately does not
+    /// persist Agent Host evidence. Runtime rendering receives priority over inference
+    /// presentation while the readback is active.
+    pub fn capture_ai_studio_live_observation(
+        &mut self,
+        render_state: Option<&egui_wgpu::RenderState>,
+    ) -> Result<crate::FrameCapture, String> {
+        self.inference_focused = false;
+        self.inference_restore_pending = false;
+        self.inference_restore_completed = false;
+        let render_state = render_state
+            .ok_or_else(|| "WGPU render state is unavailable for live Game View observation.".to_owned())?;
+        let runtime = self.runtime_state.as_ref().ok_or_else(|| {
+            "Live Game View observation requires an active Editor Play session.".to_owned()
+        })?;
+        runtime
+            .capture_game_view(render_state)
+            .map_err(|error| format!("Live Game View capture failed: {error}"))
+    }
+
     /// Returns whether the normal Editor Play runtime is currently active for AI Studio.
     pub fn ai_studio_playtest_running(&self) -> bool {
         self.is_playing()
