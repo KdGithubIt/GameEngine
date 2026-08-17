@@ -125,7 +125,64 @@ impl TimelineAuthoringService {
     fn check_revision(&self,actual:TimelineRevision)->Result<(),TimelineAuthoringError>{ if actual==self.revision{Ok(())}else{Err(TimelineAuthoringError::StaleRevision{expected:self.revision,actual})} }
 }
 
-fn apply_command(doc:&mut TimelineDocument,command:&TimelineAuthoringCommand)->Result<(),TimelineAuthoringError>{ match command { TimelineAuthoringCommand::AddTrack(track)=>doc.tracks.push(track.clone()), TimelineAuthoringCommand::RemoveTrack(id)=>{let before=doc.tracks.len();doc.tracks.retain(|v|&v.id!=id);if before==doc.tracks.len(){return Err(TimelineAuthoringError::MissingTarget(id.to_string()))}}, TimelineAuthoringCommand::SetBinding{track,binding}=>find_track_mut(doc,track)?.binding=binding.clone(), TimelineAuthoringCommand::SetTrackEnabled{track,enabled}=>find_track_mut(doc,track)?.enabled=*enabled, TimelineAuthoringCommand::AddClip{track,clip}=>find_track_mut(doc,track)?.clips.push(clip.clone()), TimelineAuthoringCommand::RemoveClip(id)=>{let mut found=false;for track in &mut doc.tracks{let before=track.clips.len();track.clips.retain(|v|&v.id!=id);found|=before!=track.clips.len();}if !found{return Err(TimelineAuthoringError::MissingTarget(id.to_string()))}}, TimelineAuthoringCommand::MoveClip{clip,start}=>find_clip_mut(doc,clip)?.start=*start, TimelineAuthoringCommand::ResizeClip{clip,duration}=>find_clip_mut(doc,clip)?.duration=*duration, TimelineAuthoringCommand::AddMarker(marker)=>doc.markers.push(marker.clone()), TimelineAuthoringCommand::RemoveMarker(id)=>{let before=doc.markers.len();doc.markers.retain(|m|&m.id!=id);if before==doc.markers.len(){return Err(TimelineAuthoringError::MissingTarget(id.to_string()))}}, TimelineAuthoringCommand::MoveMarker{marker,tick}=>{let item=doc.markers.iter_mut().find(|m|&m.id==marker).ok_or_else(||TimelineAuthoringError::MissingTarget(marker.to_string()))?;item.tick=*tick;} } Ok(()) }
+fn apply_command(
+    doc: &mut TimelineDocument,
+    command: &TimelineAuthoringCommand,
+) -> Result<(), TimelineAuthoringError> {
+    match command {
+        TimelineAuthoringCommand::AddTrack(track) => doc.tracks.push(track.clone()),
+        TimelineAuthoringCommand::RemoveTrack(id) => {
+            let before = doc.tracks.len();
+            doc.tracks.retain(|value| &value.id != id);
+            if before == doc.tracks.len() {
+                return Err(TimelineAuthoringError::MissingTarget(id.to_string()));
+            }
+        }
+        TimelineAuthoringCommand::SetBinding { track, binding } => {
+            find_track_mut(doc, track)?.binding = binding.clone();
+        }
+        TimelineAuthoringCommand::SetTrackEnabled { track, enabled } => {
+            find_track_mut(doc, track)?.enabled = *enabled;
+        }
+        TimelineAuthoringCommand::AddClip { track, clip } => {
+            find_track_mut(doc, track)?.clips.push(clip.clone());
+        }
+        TimelineAuthoringCommand::RemoveClip(id) => {
+            let mut found = false;
+            for track in &mut doc.tracks {
+                let before = track.clips.len();
+                track.clips.retain(|value| &value.id != id);
+                found |= before != track.clips.len();
+            }
+            if !found {
+                return Err(TimelineAuthoringError::MissingTarget(id.to_string()));
+            }
+        }
+        TimelineAuthoringCommand::MoveClip { clip, start } => {
+            find_clip_mut(doc, clip)?.start = *start;
+        }
+        TimelineAuthoringCommand::ResizeClip { clip, duration } => {
+            find_clip_mut(doc, clip)?.duration = *duration;
+        }
+        TimelineAuthoringCommand::AddMarker(marker) => doc.markers.push(marker.clone()),
+        TimelineAuthoringCommand::RemoveMarker(id) => {
+            let before = doc.markers.len();
+            doc.markers.retain(|marker| &marker.id != id);
+            if before == doc.markers.len() {
+                return Err(TimelineAuthoringError::MissingTarget(id.to_string()));
+            }
+        }
+        TimelineAuthoringCommand::MoveMarker { marker, tick } => {
+            let item = doc
+                .markers
+                .iter_mut()
+                .find(|item| &item.id == marker)
+                .ok_or_else(|| TimelineAuthoringError::MissingTarget(marker.to_string()))?;
+            item.tick = *tick;
+        }
+    }
+    Ok(())
+}
 fn find_track_mut<'a>(doc:&'a mut TimelineDocument,id:&TimelineTrackId)->Result<&'a mut TimelineTrack,TimelineAuthoringError>{doc.tracks.iter_mut().find(|v|&v.id==id).ok_or_else(||TimelineAuthoringError::MissingTarget(id.to_string()))}
 fn find_clip_mut<'a>(doc:&'a mut TimelineDocument,id:&TimelineClipId)->Result<&'a mut TimelineClip,TimelineAuthoringError>{for track in &mut doc.tracks{if let Some(index)=track.clips.iter().position(|v|&v.id==id){return Ok(&mut track.clips[index])}}Err(TimelineAuthoringError::MissingTarget(id.to_string()))}
 

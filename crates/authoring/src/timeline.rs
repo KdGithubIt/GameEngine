@@ -340,7 +340,22 @@ pub fn validate_timeline(document: &TimelineDocument) -> Vec<TimelineDiagnostic>
             if let TimelineClipPayload::Audio { volume, .. } = &clip.payload && (!volume.is_finite() || !(0.0..=1.0).contains(volume)) { out.push(error_diag("timeline.audio.volume", clip.id.as_str(), "audio volume must be finite in [0,1]")); }
         }
     }
-    for marker in &document.markers { if !ids.insert(marker.id.as_str().to_owned()) { out.push(error_diag("timeline.duplicate_id", marker.id.as_str(), "duplicate stable ID")); } if marker.tick < TimelineTick::ZERO || marker.tick > document.duration { out.push(error_diag("timeline.marker.range", marker.id.as_str(), "marker must lie inside the Timeline")); } }
+    for marker in &document.markers {
+        if !ids.insert(marker.id.as_str().to_owned()) {
+            out.push(error_diag(
+                "timeline.duplicate_id",
+                marker.id.as_str(),
+                "duplicate stable ID",
+            ));
+        }
+        if marker.tick < TimelineTick::ZERO || marker.tick > document.duration {
+            out.push(error_diag(
+                "timeline.marker.range",
+                marker.id.as_str(),
+                "marker must lie inside the Timeline",
+            ));
+        }
+    }
     out
 }
 fn error_diag(code: &'static str, target: &str, message: impl Into<String>) -> TimelineDiagnostic { TimelineDiagnostic { severity: TimelineDiagnosticSeverity::Error, code, target: target.to_owned(), message: message.into() } }
