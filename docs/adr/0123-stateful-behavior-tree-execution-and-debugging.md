@@ -1,6 +1,6 @@
 # ADR 0123: Stateful Behavior Tree Execution and Debugging
 
-Status: Proposed
+Status: Accepted
 Date: 2026-08-16
 Builds on: ADR 0013, ADR 0014, ADR 0057, ADR 0113, ADR 0121
 

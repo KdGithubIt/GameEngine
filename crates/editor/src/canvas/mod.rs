@@ -602,6 +602,45 @@ pub fn show_graph_canvas(
     actions
 }
 
+#[cfg(feature = "visual-validation")]
+pub(crate) fn show_graph_node_palette_visual_fixture(
+    ui: &mut egui::Ui,
+    session: &EditorSession,
+) {
+    ui.heading("Behavior Tree Add Node");
+    ui.small("Schema-driven node palette");
+    ui.separator();
+
+    let mut search_query = "decorator".to_owned();
+    ui.columns(2, |columns| {
+        columns[0].strong("Schema catalog");
+        let catalog = session
+            .available_graph_node_kinds()
+            .into_iter()
+            .filter(|kind| kind.category().starts_with("Behavior Tree"))
+            .map(|kind| kind.label().to_owned())
+            .collect::<Vec<_>>()
+            .join("  •  ");
+        columns[0].label(catalog);
+
+        columns[1].strong("Search preview");
+        columns[1].add(
+            egui::TextEdit::singleline(&mut search_query)
+                .hint_text("Search nodes...")
+                .desired_width(180.0),
+        );
+        columns[1].small("Shared schema labels/categories/type IDs/tags");
+        let matches = session
+            .available_graph_node_kinds()
+            .into_iter()
+            .filter(|kind| kind.matches_search(&search_query))
+            .map(|kind| kind.label().to_owned())
+            .collect::<Vec<_>>()
+            .join("  •  ");
+        columns[1].label(matches);
+    });
+}
+
 /// Draws a read-only graph canvas with transient runtime debug presentation.
 ///
 /// Unlike [`show_graph_canvas`], this surface never emits authoring actions and
@@ -612,6 +651,7 @@ pub(crate) fn show_graph_debug_canvas(
     session: &EditorSession,
     state: &mut GraphCanvasState,
     overlay: &GraphDebugOverlay,
+    selected_node: &mut Option<NodeId>,
 ) {
     let desired_size = ui.available_size();
     let (canvas_rect, canvas_response) = ui.allocate_exact_size(desired_size, Sense::click());
@@ -663,12 +703,16 @@ pub(crate) fn show_graph_debug_canvas(
             hover.push('\n');
             hover.push_str(detail);
         }
-        ui.interact(
-            rect,
-            ui.make_persistent_id(("graph_debug_node", node_id.as_str())),
-            Sense::hover(),
-        )
-        .on_hover_text(hover);
+        let response = ui
+            .interact(
+                rect,
+                ui.make_persistent_id(("graph_debug_node", node_id.as_str())),
+                Sense::click(),
+            )
+            .on_hover_text(hover);
+        if response.clicked() {
+            *selected_node = Some(node_id.clone());
+        }
         draw_node(
             &painter,
             canvas_view,
@@ -677,7 +721,7 @@ pub(crate) fn show_graph_debug_canvas(
                 node_id,
                 title: compact_canvas_text(&node_title(node)),
                 subtitle: node_subtitle(session, node),
-                selected: false,
+                selected: selected_node.as_ref() == Some(node_id),
                 pinned: false,
                 show_id: true,
             },
