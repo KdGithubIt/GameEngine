@@ -66,6 +66,8 @@ pub mod scene;
 pub mod scene_authoring;
 pub mod schema;
 pub mod test_fixtures;
+pub mod timeline;
+pub mod timeline_authoring;
 pub mod transaction;
 pub mod typed_document_authoring;
 pub mod ui;
