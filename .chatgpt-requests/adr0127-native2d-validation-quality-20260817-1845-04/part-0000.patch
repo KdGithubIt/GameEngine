@@ -1,0 +1,875 @@
+diff --git a/crates/animation/src/sprite_2d.rs b/crates/animation/src/sprite_2d.rs
+index b367c0bbe678fbb05a5211e8c57cc9146e3edced..89777d2d4506bf61b853dcfa92a137a28e58d166 100644
+--- a/crates/animation/src/sprite_2d.rs
++++ b/crates/animation/src/sprite_2d.rs
+@@ -5,25 +5,56 @@ use engine_authoring::{SpriteAnimationDocument, SpriteRef};
+ /// Independent per-entity runtime playback state for an immutable Sprite Animation asset.
+ #[derive(Debug, Clone, PartialEq)]
+ pub struct SpriteAnimationState2d {
++    /// Whether this playback instance currently advances.
+     pub playing: bool,
++    /// Current frame index in the immutable clip.
+     pub frame_index: usize,
++    /// Integer ticks already consumed inside the current frame.
+     pub tick_in_frame: u32,
++    /// Non-negative per-instance playback speed multiplier.
+     pub speed: f32,
+     fractional_ticks: f64,
+ }
+ 
+ impl Default for SpriteAnimationState2d {
+-    fn default() -> Self { Self { playing: true, frame_index: 0, tick_in_frame: 0, speed: 1.0, fractional_ticks: 0.0 } }
++    fn default() -> Self {
++        Self {
++            playing: true,
++            frame_index: 0,
++            tick_in_frame: 0,
++            speed: 1.0,
++            fractional_ticks: 0.0,
++        }
++    }
+ }
+ 
+ /// Frame event emitted by exact integer-tick progression.
+ #[derive(Debug, Clone, PartialEq, Eq)]
+-pub struct SpriteFrameEvent2d { pub frame_index: usize, pub name: String }
++pub struct SpriteFrameEvent2d {
++    /// Frame index entered when the event was emitted.
++    pub frame_index: usize,
++    /// Authored event name.
++    pub name: String,
++}
+ 
+ impl SpriteAnimationState2d {
+-    pub fn play(&mut self) { self.playing = true; }
+-    pub fn pause(&mut self) { self.playing = false; }
+-    pub fn stop(&mut self) { self.playing = false; self.frame_index = 0; self.tick_in_frame = 0; self.fractional_ticks = 0.0; }
++    /// Resumes deterministic playback from the current frame and tick.
++    pub fn play(&mut self) {
++        self.playing = true;
++    }
++
++    /// Pauses playback without changing the current frame or tick.
++    pub fn pause(&mut self) {
++        self.playing = false;
++    }
++
++    /// Stops playback and rewinds to the beginning of the clip.
++    pub fn stop(&mut self) {
++        self.playing = false;
++        self.frame_index = 0;
++        self.tick_in_frame = 0;
++        self.fractional_ticks = 0.0;
++    }
+     /// Advances from elapsed seconds by converting to the clip's exact integer tick domain.
+     pub fn advance(&mut self, clip: &SpriteAnimationDocument, seconds: f64, looping_override: Option<bool>) -> Vec<SpriteFrameEvent2d> {
+         if !self.playing || clip.frames.is_empty() || clip.ticks_per_second == 0 || seconds <= 0.0 || !seconds.is_finite() { return Vec::new(); }
+@@ -44,7 +75,13 @@ impl SpriteAnimationState2d {
+         }
+         events
+     }
+-    pub fn current_sprite<'a>(&self, clip: &'a SpriteAnimationDocument) -> Option<&'a SpriteRef> { clip.frames.get(self.frame_index).map(|frame| &frame.sprite) }
++    /// Returns the sprite referenced by the current playback frame.
++    pub fn current_sprite<'a>(
++        &self,
++        clip: &'a SpriteAnimationDocument,
++    ) -> Option<&'a SpriteRef> {
++        clip.frames.get(self.frame_index).map(|frame| &frame.sprite)
++    }
+ }
+ 
+ #[cfg(test)] mod tests { use super::*; use engine_authoring::{AssetId, SpriteAnimationFrame, SpriteId};
+diff --git a/crates/assets/src/native_2d.rs b/crates/assets/src/native_2d.rs
+index 4b5cfb55f81c56acb199e2efa61e7d4bc6f96ef9..643b5aa0f9602676959b0563c1d6e9f7db53eecd 100644
+--- a/crates/assets/src/native_2d.rs
++++ b/crates/assets/src/native_2d.rs
+@@ -1,31 +1,138 @@
+ //! Backend-neutral compiled sprite and tile data (ADR 0127).
+ 
+-use engine_authoring::{SpriteAtlasDocument, SpriteId, SpriteRef, TileChunkCoord, TileId, TileMapDocument, TileSetDocument};
++use engine_authoring::{
++    SpriteAtlasDocument, SpriteId, SpriteRef, TileChunkCoord, TileId, TileMapDocument,
++    TileSetDocument,
++};
+ use std::collections::BTreeMap;
+ 
+ /// Resolved sprite region independent of GPU page packing.
+ #[derive(Debug, Clone, PartialEq)]
+-pub struct CompiledSpriteRegion { pub id: SpriteId, pub source_texture: crate::asset::RuntimeAssetId, pub rect:[u32;4], pub pivot:[f32;2], pub pixels_per_unit:f32 }
++pub struct CompiledSpriteRegion {
++    /// Stable logical sprite identity.
++    pub id: SpriteId,
++    /// Runtime ID of the resolved source texture.
++    pub source_texture: crate::asset::RuntimeAssetId,
++    /// Source pixel rectangle `[x, y, width, height]`.
++    pub rect: [u32; 4],
++    /// Normalized pivot inside the region.
++    pub pivot: [f32; 2],
++    /// Resolved pixels-per-world-unit value.
++    pub pixels_per_unit: f32,
++}
++
+ /// Runtime sprite atlas keyed by stable logical identity.
+-#[derive(Debug, Clone, Default)] pub struct CompiledSpriteAtlas { pub regions:BTreeMap<SpriteId, CompiledSpriteRegion> }
+-impl CompiledSpriteAtlas { pub fn region(&self, id:&SpriteId)->Option<&CompiledSpriteRegion>{self.regions.get(id)} }
++#[derive(Debug, Clone, Default)]
++pub struct CompiledSpriteAtlas {
++    /// Resolved regions keyed by stable `SpriteId`.
++    pub regions: BTreeMap<SpriteId, CompiledSpriteRegion>,
++}
++
++impl CompiledSpriteAtlas {
++    /// Resolves one compiled sprite region by stable identity.
++    pub fn region(&self, id: &SpriteId) -> Option<&CompiledSpriteRegion> {
++        self.regions.get(id)
++    }
++}
+ 
+ /// Backend-neutral tile definition resolved to stable SpriteRef and collision metadata.
+-#[derive(Debug, Clone, PartialEq)] pub struct CompiledTile { pub id:TileId, pub sprite:SpriteRef, pub one_way:bool }
++#[derive(Debug, Clone, PartialEq)]
++pub struct CompiledTile {
++    /// Stable logical tile identity.
++    pub id: TileId,
++    /// Stable sprite reference used to render the tile.
++    pub sprite: SpriteRef,
++    /// Whether the shared one-way collision policy applies.
++    pub one_way: bool,
++}
++
+ /// One compiled sparse Tile Map chunk.
+-#[derive(Debug, Clone, PartialEq)] pub struct CompiledTileChunk { pub layer_index:usize, pub coord:TileChunkCoord, pub cells:Vec<(i32,i32,TileId)> }
++#[derive(Debug, Clone, PartialEq)]
++pub struct CompiledTileChunk {
++    /// Index of the authoring layer containing this chunk.
++    pub layer_index: usize,
++    /// Stable spatial chunk coordinate.
++    pub coord: TileChunkCoord,
++    /// Deterministically ordered local `(x, y, TileId)` cells.
++    pub cells: Vec<(i32, i32, TileId)>,
++}
++
+ /// Compiled map retaining chunk granularity for independent render/physics consumers.
+-#[derive(Debug, Clone, PartialEq)] pub struct CompiledTileMap { pub chunk_size:u16, pub chunks:Vec<CompiledTileChunk> }
+-impl CompiledTileMap { pub fn chunk(&self, layer:usize, coord:TileChunkCoord)->Option<&CompiledTileChunk>{self.chunks.iter().find(|c|c.layer_index==layer&&c.coord==coord)} }
++#[derive(Debug, Clone, PartialEq)]
++pub struct CompiledTileMap {
++    /// Width and height of each chunk in cells.
++    pub chunk_size: u16,
++    /// Deterministically ordered sparse chunks.
++    pub chunks: Vec<CompiledTileChunk>,
++}
++
++impl CompiledTileMap {
++    /// Returns one chunk by layer index and spatial coordinate.
++    pub fn chunk(&self, layer: usize, coord: TileChunkCoord) -> Option<&CompiledTileChunk> {
++        self.chunks
++            .iter()
++            .find(|chunk| chunk.layer_index == layer && chunk.coord == coord)
++    }
++}
+ 
+ /// Compiles sparse authored chunks without deriving identity from ordering.
+-pub fn compile_tile_map(document:&TileMapDocument)->CompiledTileMap {
+-    let mut chunks=Vec::new();
+-    for (layer_index,layer) in document.layers.iter().enumerate(){for chunk in &layer.chunks{let mut cells=Vec::new();for(key,tile)in &chunk.cells{if let Some((x,y))=key.split_once(',').and_then(|(x,y)|Some((x.parse::<i32>().ok()?,y.parse::<i32>().ok()?))){cells.push((x,y,tile.clone()));}}cells.sort_by_key(|(x,y,t)|(*y,*x,t.as_str().to_owned()));chunks.push(CompiledTileChunk{layer_index,coord:chunk.coord,cells});}}
+-    chunks.sort_by_key(|c|(c.layer_index,c.coord.y,c.coord.x)); CompiledTileMap{chunk_size:document.chunk_size,chunks}
++pub fn compile_tile_map(document: &TileMapDocument) -> CompiledTileMap {
++    let mut chunks = Vec::new();
++    for (layer_index, layer) in document.layers.iter().enumerate() {
++        for chunk in &layer.chunks {
++            let mut cells = Vec::new();
++            for (key, tile) in &chunk.cells {
++                if let Some((x, y)) = key.split_once(',').and_then(|(x, y)| {
++                    Some((x.parse::<i32>().ok()?, y.parse::<i32>().ok()?))
++                }) {
++                    cells.push((x, y, tile.clone()));
++                }
++            }
++            cells.sort_by_key(|(x, y, tile)| (*y, *x, tile.as_str().to_owned()));
++            chunks.push(CompiledTileChunk {
++                layer_index,
++                coord: chunk.coord,
++                cells,
++            });
++        }
++    }
++    chunks.sort_by_key(|chunk| (chunk.layer_index, chunk.coord.y, chunk.coord.x));
++    CompiledTileMap {
++        chunk_size: document.chunk_size,
++        chunks,
++    }
+ }
+ 
+ /// Validates that referenced stable identities resolve before runtime conversion.
+-pub fn validate_2d_asset_references(atlas:&SpriteAtlasDocument, tiles:&TileSetDocument)->Vec<String>{let mut errors=atlas.validate();for tile in &tiles.tiles{if atlas.region(&tile.sprite.sprite).is_none(){errors.push(format!("tile {} references missing sprite {}",tile.id.as_str(),tile.sprite.sprite.as_str()));}}errors}
++pub fn validate_2d_asset_references(
++    atlas: &SpriteAtlasDocument,
++    tiles: &TileSetDocument,
++) -> Vec<String> {
++    let mut errors = atlas.validate();
++    for tile in &tiles.tiles {
++        if atlas.region(&tile.sprite.sprite).is_none() {
++            errors.push(format!(
++                "tile {} references missing sprite {}",
++                tile.id.as_str(),
++                tile.sprite.sprite.as_str()
++            ));
++        }
++    }
++    errors
++}
+ 
+-#[cfg(test)]mod tests{use super::*;#[test]fn empty_map_compiles_without_phantom_chunks(){let map=TileMapDocument{schema_version:1,tile_set:engine_authoring::AssetId::generate(),chunk_size:32,layers:vec![]};assert!(compile_tile_map(&map).chunks.is_empty());}}
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn empty_map_compiles_without_phantom_chunks() {
++        let map = TileMapDocument {
++            schema_version: 1,
++            tile_set: engine_authoring::AssetId::generate(),
++            chunk_size: 32,
++            layers: vec![],
++        };
++        assert!(compile_tile_map(&map).chunks.is_empty());
++    }
++}
+diff --git a/crates/editor/src/native_2d_editor.rs b/crates/editor/src/native_2d_editor.rs
+index adc1100897d3cffb2b1d67f8c48734113faa3e23..913f21c7ab4f61271697e0dd790ec6d9f9c086e2 100644
+--- a/crates/editor/src/native_2d_editor.rs
++++ b/crates/editor/src/native_2d_editor.rs
+@@ -4,10 +4,52 @@ use eframe::egui;
+ 
+ /// Transient 2D Scene View/tool state. Persisted edits are delegated to authoring services.
+ #[derive(Debug, Clone)]
+-pub struct Native2dEditorState { pub show_pixel_grid:bool, pub show_sorting:bool, pub show_colliders:bool, pub show_chunks:bool, pub zoom:f32, pub selected_tool:TileTool2d }
+-impl Default for Native2dEditorState { fn default()->Self{Self{show_pixel_grid:true,show_sorting:true,show_colliders:true,show_chunks:true,zoom:1.0,selected_tool:TileTool2d::Paint}} }
++pub struct Native2dEditorState {
++    /// Whether the 2D pixel/grid overlay is visible.
++    pub show_pixel_grid: bool,
++    /// Whether logical sorting information is visible.
++    pub show_sorting: bool,
++    /// Whether 2D collider gizmos are visible.
++    pub show_colliders: bool,
++    /// Whether sparse Tile Map chunk boundaries are visible.
++    pub show_chunks: bool,
++    /// Transient editor-only view zoom.
++    pub zoom: f32,
++    /// Active Tile Map authoring tool.
++    pub selected_tool: TileTool2d,
++}
++
++impl Default for Native2dEditorState {
++    fn default() -> Self {
++        Self {
++            show_pixel_grid: true,
++            show_sorting: true,
++            show_colliders: true,
++            show_chunks: true,
++            zoom: 1.0,
++            selected_tool: TileTool2d::Paint,
++        }
++    }
++}
++
+ /// Tile editing gesture exposed by the dedicated workspace.
+-#[derive(Debug, Clone, Copy, PartialEq, Eq)] pub enum TileTool2d { Paint, Erase, Rectangle, Line, Fill, Eyedropper, SelectStamp }
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum TileTool2d {
++    /// Paint the selected tile into touched cells.
++    Paint,
++    /// Clear touched cells.
++    Erase,
++    /// Paint a rectangular region.
++    Rectangle,
++    /// Paint a rasterized line.
++    Line,
++    /// Flood-fill a contiguous region.
++    Fill,
++    /// Pick the tile under the pointer.
++    Eyedropper,
++    /// Select a region and stamp it elsewhere.
++    SelectStamp,
++}
+ 
+ impl Native2dEditorState {
+     /// Draws a visual-validation fixture containing Scene View, Game View, Sprite, Tile Map, collider, pivot, and Camera2D cues.
+diff --git a/crates/engine/src/native_2d.rs b/crates/engine/src/native_2d.rs
+index c0ac4614e15b64a01bbaec7a75d0c29f497eecc5..26967a147d483944c8da6de8c0138453fd0b8692 100644
+--- a/crates/engine/src/native_2d.rs
++++ b/crates/engine/src/native_2d.rs
+@@ -8,9 +8,50 @@ pub use engine_render_runtime::native_2d::{cull_tile_chunks, select_active_camer
+ 
+ /// Performance counters recorded by the proving scenario and Editor diagnostics.
+ #[derive(Debug, Clone, Copy, Default, PartialEq)]
+-pub struct Native2dPerformanceStats { pub sprite_count:u32, pub sprite_batches:u32, pub visible_tile_chunks:u32, pub rebuilt_tile_chunks:u32, pub tile_edit_millis:f32, pub physics_step_millis:f32 }
++pub struct Native2dPerformanceStats {
++    /// Number of visible sprite instances in the measured frame.
++    pub sprite_count: u32,
++    /// Number of contiguous sprite batches submitted in the measured frame.
++    pub sprite_batches: u32,
++    /// Number of Tile Map chunks visible to the active Camera2D.
++    pub visible_tile_chunks: u32,
++    /// Number of Tile Map chunks rebuilt by the measured authoring gesture.
++    pub rebuilt_tile_chunks: u32,
++    /// End-to-end Tile Map gesture latency in milliseconds.
++    pub tile_edit_millis: f32,
++    /// Dedicated 2D fixed-step simulation time in milliseconds.
++    pub physics_step_millis: f32,
++}
+ 
+ /// First-release acceptance budget used by the proving project.
+ #[derive(Debug, Clone, Copy, PartialEq)]
+-pub struct Native2dAcceptanceBudget { pub max_sprite_batches:u32, pub max_rebuilt_chunks_per_stroke:u32, pub max_tile_edit_millis:f32, pub max_physics_step_millis:f32 }
+-impl Native2dAcceptanceBudget { pub fn validate(self,stats:Native2dPerformanceStats)->Vec<&'static str>{let mut out=Vec::new();if stats.sprite_batches>self.max_sprite_batches{out.push("sprite batch budget exceeded");}if stats.rebuilt_tile_chunks>self.max_rebuilt_chunks_per_stroke{out.push("tile chunk rebuild budget exceeded");}if stats.tile_edit_millis>self.max_tile_edit_millis{out.push("tile edit latency budget exceeded");}if stats.physics_step_millis>self.max_physics_step_millis{out.push("2D physics step budget exceeded");}out}}
++pub struct Native2dAcceptanceBudget {
++    /// Maximum accepted sprite batches for the proving frame.
++    pub max_sprite_batches: u32,
++    /// Maximum chunks allowed to rebuild for one bounded tile stroke.
++    pub max_rebuilt_chunks_per_stroke: u32,
++    /// Maximum accepted Tile Map edit latency in milliseconds.
++    pub max_tile_edit_millis: f32,
++    /// Maximum accepted 2D physics step time in milliseconds.
++    pub max_physics_step_millis: f32,
++}
++
++impl Native2dAcceptanceBudget {
++    /// Returns every acceptance-budget violation represented by `stats`.
++    pub fn validate(self, stats: Native2dPerformanceStats) -> Vec<&'static str> {
++        let mut out = Vec::new();
++        if stats.sprite_batches > self.max_sprite_batches {
++            out.push("sprite batch budget exceeded");
++        }
++        if stats.rebuilt_tile_chunks > self.max_rebuilt_chunks_per_stroke {
++            out.push("tile chunk rebuild budget exceeded");
++        }
++        if stats.tile_edit_millis > self.max_tile_edit_millis {
++            out.push("tile edit latency budget exceeded");
++        }
++        if stats.physics_step_millis > self.max_physics_step_millis {
++            out.push("2D physics step budget exceeded");
++        }
++        out
++    }
++}
+diff --git a/crates/physics/src/native_2d.rs b/crates/physics/src/native_2d.rs
+index 2d06ed976a861c2aa0174ece438ea3f6a8eb6eb2..a77557366353a45746023aa4f21ca6bec67d7d14 100644
+--- a/crates/physics/src/native_2d.rs
++++ b/crates/physics/src/native_2d.rs
+@@ -2,34 +2,153 @@
+ //!
+ //! The 2D world is deliberately independent from the existing 3D solver.
+ 
+-use glam::{Mat4, Quat, Vec2, Vec3};
++use glam::{Mat4, Vec2, Vec3};
+ use serde::{Deserialize, Serialize};
+ use std::collections::{BTreeMap, BTreeSet};
+ 
+ /// 2D rigid-body mode.
+ #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+-#[serde(rename_all = "snake_case")] pub enum RigidBodyMode2d { Fixed, Dynamic, Kinematic }
++#[serde(rename_all = "snake_case")]
++pub enum RigidBodyMode2d {
++    /// Body never moves under simulation.
++    Fixed,
++    /// Body is integrated by the dedicated 2D world.
++    Dynamic,
++    /// Body pose is driven explicitly by gameplay code.
++    Kinematic,
++}
++
+ /// 2D collision filtering.
+ #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+-pub struct CollisionFilter2d { pub memberships: u32, pub mask: u32 }
+-impl CollisionFilter2d { pub fn permits(self, other: Self) -> bool { self.memberships & other.mask != 0 && other.memberships & self.mask != 0 } }
++pub struct CollisionFilter2d {
++    /// Layer bits this collider belongs to.
++    pub memberships: u32,
++    /// Layer bits this collider may interact with.
++    pub mask: u32,
++}
++
++impl CollisionFilter2d {
++    /// Returns whether both filters mutually permit contact.
++    pub fn permits(self, other: Self) -> bool {
++        self.memberships & other.mask != 0 && other.memberships & self.mask != 0
++    }
++}
++
+ /// Supported first-release collider geometry.
+ #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+-#[serde(tag="kind", rename_all="snake_case")]
+-pub enum ColliderShape2d { Box { half_extents: [f32;2] }, Circle { radius:f32 }, Capsule { half_height:f32, radius:f32 }, Polygon { points: Vec<[f32;2]> } }
++#[serde(tag = "kind", rename_all = "snake_case")]
++pub enum ColliderShape2d {
++    /// Axis-aligned box in the body's local 2D plane.
++    Box {
++        /// Positive local X/Y half extents.
++        half_extents: [f32; 2],
++    },
++    /// Circle centered on the body origin.
++    Circle {
++        /// Positive local radius.
++        radius: f32,
++    },
++    /// Y-oriented capsule centered on the body origin.
++    Capsule {
++        /// Half length of the capsule's center segment.
++        half_height: f32,
++        /// Positive capsule radius.
++        radius: f32,
++    },
++    /// Simple polygon in local XY coordinates.
++    Polygon {
++        /// Ordered finite polygon vertices.
++        points: Vec<[f32; 2]>,
++    },
++}
++
+ /// Persistable rigid-body contract.
+ #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+-pub struct RigidBody2d { pub mode: RigidBodyMode2d, pub velocity:[f32;2], pub angular_velocity:f32, pub gravity_scale:f32, pub continuous:bool }
++pub struct RigidBody2d {
++    /// Simulation ownership mode.
++    pub mode: RigidBodyMode2d,
++    /// Linear velocity in world XY units per second.
++    pub velocity: [f32; 2],
++    /// Z-axis angular velocity in radians per second.
++    pub angular_velocity: f32,
++    /// Multiplier applied to project 2D gravity.
++    pub gravity_scale: f32,
++    /// Whether continuous-collision intent is enabled.
++    pub continuous: bool,
++}
++
+ /// Persistable collider contract.
+ #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+-pub struct Collider2d { pub shape: ColliderShape2d, pub sensor:bool, pub friction:f32, pub restitution:f32, pub filter:CollisionFilter2d, pub one_way:bool }
++pub struct Collider2d {
++    /// Backend-neutral collision geometry.
++    pub shape: ColliderShape2d,
++    /// Whether contacts are reported without solid blocking.
++    pub sensor: bool,
++    /// Tangential friction coefficient.
++    pub friction: f32,
++    /// Normal restitution coefficient.
++    pub restitution: f32,
++    /// Layer membership and interaction mask.
++    pub filter: CollisionFilter2d,
++    /// Whether the shared one-way platform policy applies.
++    pub one_way: bool,
++}
++
+ /// Supported backend-neutral joint contract.
+ #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+-#[serde(tag="kind", rename_all="snake_case")] pub enum Joint2d { Fixed { other:u64 }, Distance { other:u64, distance:f32 }, Revolute { other:u64, anchor:[f32;2] }, Prismatic { other:u64, axis:[f32;2], limits:[f32;2] } }
++#[serde(tag = "kind", rename_all = "snake_case")]
++pub enum Joint2d {
++    /// Fully constrains this body relative to another.
++    Fixed {
++        /// Stable runtime entity key of the connected body.
++        other: u64,
++    },
++    /// Maintains a target distance to another body.
++    Distance {
++        /// Stable runtime entity key of the connected body.
++        other: u64,
++        /// Target center-to-center distance.
++        distance: f32,
++    },
++    /// Allows rotation around a local anchor.
++    Revolute {
++        /// Stable runtime entity key of the connected body.
++        other: u64,
++        /// Local XY anchor point.
++        anchor: [f32; 2],
++    },
++    /// Allows translation along one local axis.
++    Prismatic {
++        /// Stable runtime entity key of the connected body.
++        other: u64,
++        /// Local normalized translation axis.
++        axis: [f32; 2],
++        /// Minimum and maximum travel.
++        limits: [f32; 2],
++    },
++}
++
+ /// Resolved planar pose used by the 2D world.
+-#[derive(Debug, Clone, Copy, PartialEq)] pub struct PlanarPose2d { pub translation:Vec2, pub rotation:f32, pub scale:Vec2 }
++#[derive(Debug, Clone, Copy, PartialEq)]
++pub struct PlanarPose2d {
++    /// World XY translation.
++    pub translation: Vec2,
++    /// World Z rotation in radians.
++    pub rotation: f32,
++    /// World XY scale.
++    pub scale: Vec2,
++}
++
+ /// Structured transform projection diagnostic.
+-#[derive(Debug, Clone, Copy, PartialEq, Eq)] pub enum PlanarPoseError { NonFinite, NonPlanarRotation, UnsupportedScale }
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum PlanarPoseError {
++    /// Transform contains a non-finite component.
++    NonFinite,
++    /// Rotation tilts the local Z axis out of the gameplay plane.
++    NonPlanarRotation,
++    /// Scale cannot be represented by the 2D physics contract.
++    UnsupportedScale,
++}
+ 
+ /// Projects the normal Transform world matrix into XY + Z rotation when representable.
+ pub fn project_planar_transform(matrix: Mat4) -> Result<PlanarPose2d, PlanarPoseError> {
+@@ -43,20 +162,78 @@ pub fn project_planar_transform(matrix: Mat4) -> Result<PlanarPose2d, PlanarPose
+ }
+ 
+ /// One entity in the dedicated 2D world.
+-#[derive(Debug, Clone)] pub struct BodyEntry2d { pub entity:u64, pub pose:PlanarPose2d, pub body:RigidBody2d, pub collider:Collider2d }
++#[derive(Debug, Clone)]
++pub struct BodyEntry2d {
++    /// Stable runtime entity key.
++    pub entity: u64,
++    /// Current resolved planar pose.
++    pub pose: PlanarPose2d,
++    /// Rigid-body simulation state.
++    pub body: RigidBody2d,
++    /// Collider used for contacts and queries.
++    pub collider: Collider2d,
++}
++
+ /// Contact/trigger transition phase.
+-#[derive(Debug, Clone, Copy, PartialEq, Eq)] pub enum ContactPhase2d { Enter, Stay, Exit }
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum ContactPhase2d {
++    /// Pair became overlapping this fixed step.
++    Enter,
++    /// Pair remained overlapping from the prior fixed step.
++    Stay,
++    /// Pair stopped overlapping this fixed step.
++    Exit,
++}
++
+ /// Fixed-step 2D contact event.
+-#[derive(Debug, Clone, Copy, PartialEq, Eq)] pub struct ContactEvent2d { pub a:u64, pub b:u64, pub sensor:bool, pub phase:ContactPhase2d }
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub struct ContactEvent2d {
++    /// Lower deterministic entity key.
++    pub a: u64,
++    /// Higher deterministic entity key.
++    pub b: u64,
++    /// Whether either participating collider is a sensor.
++    pub sensor: bool,
++    /// Transition phase for this pair.
++    pub phase: ContactPhase2d,
++}
++
+ /// Ray/shape query result.
+-#[derive(Debug, Clone, Copy, PartialEq)] pub struct QueryHit2d { pub entity:u64, pub point:Vec2, pub normal:Vec2, pub distance:f32 }
++#[derive(Debug, Clone, Copy, PartialEq)]
++pub struct QueryHit2d {
++    /// Stable runtime entity key that was hit.
++    pub entity: u64,
++    /// World XY hit point.
++    pub point: Vec2,
++    /// World XY outward surface normal.
++    pub normal: Vec2,
++    /// Distance from query origin to the hit.
++    pub distance: f32,
++}
+ 
+ /// Dedicated deterministic 2D world. No 3D solver state is accepted or consulted.
+-#[derive(Debug, Default)] pub struct PhysicsWorld2d { bodies:BTreeMap<u64, BodyEntry2d>, previous:BTreeSet<(u64,u64)> }
++#[derive(Debug, Default)]
++pub struct PhysicsWorld2d {
++    bodies: BTreeMap<u64, BodyEntry2d>,
++    previous: BTreeSet<(u64, u64)>,
++}
++
+ impl PhysicsWorld2d {
+-    pub fn upsert(&mut self, entry:BodyEntry2d) { self.bodies.insert(entry.entity, entry); }
+-    pub fn remove(&mut self, entity:u64) { self.bodies.remove(&entity); self.previous.retain(|(a,b)| *a != entity && *b != entity); }
+-    pub fn body(&self, entity:u64) -> Option<&BodyEntry2d> { self.bodies.get(&entity) }
++    /// Inserts a new body or replaces the body with the same stable entity key.
++    pub fn upsert(&mut self, entry: BodyEntry2d) {
++        self.bodies.insert(entry.entity, entry);
++    }
++
++    /// Removes a body and any retained contact history involving it.
++    pub fn remove(&mut self, entity: u64) {
++        self.bodies.remove(&entity);
++        self.previous.retain(|(a, b)| *a != entity && *b != entity);
++    }
++
++    /// Returns the current body entry for a stable entity key.
++    pub fn body(&self, entity: u64) -> Option<&BodyEntry2d> {
++        self.bodies.get(&entity)
++    }
+     /// Advances dynamics and emits stable enter/stay/exit transitions.
+     pub fn step(&mut self, dt:f32, gravity:Vec2) -> Vec<ContactEvent2d> {
+         let dt = dt.max(0.0);
+@@ -75,13 +252,62 @@ impl PhysicsWorld2d {
+     pub fn overlap_box(&self, center:Vec2, half_extents:Vec2, mask:u32) -> Vec<u64> { let min=center-half_extents; let max=center+half_extents; self.bodies.values().filter(|e| e.collider.filter.memberships&mask!=0).filter_map(|e| {let (a,b)=bounds(e); (min.x<=b.x&&max.x>=a.x&&min.y<=b.y&&max.y>=a.y).then_some(e.entity)}).collect() }
+ }
+ 
+-fn bounds(e:&BodyEntry2d)->(Vec2,Vec2){ let half=match &e.collider.shape { ColliderShape2d::Box{half_extents}=>Vec2::from(*half), ColliderShape2d::Circle{radius}=>Vec2::splat(*radius), ColliderShape2d::Capsule{half_height,radius}=>Vec2::new(*radius,*half_height+*radius), ColliderShape2d::Polygon{points}=>points.iter().fold(Vec2::ZERO,|m,p|m.max(Vec2::from(*p).abs())) }; let half=half*e.pose.scale.abs(); (e.pose.translation-half,e.pose.translation+half) }
++fn bounds(e: &BodyEntry2d) -> (Vec2, Vec2) {
++    let half = match &e.collider.shape {
++        ColliderShape2d::Box { half_extents } => Vec2::from(*half_extents),
++        ColliderShape2d::Circle { radius } => Vec2::splat(*radius),
++        ColliderShape2d::Capsule {
++            half_height,
++            radius,
++        } => Vec2::new(*radius, *half_height + *radius),
++        ColliderShape2d::Polygon { points } => points
++            .iter()
++            .fold(Vec2::ZERO, |max, point| max.max(Vec2::from(*point).abs())),
++    };
++    let half = half * e.pose.scale.abs();
++    (e.pose.translation - half, e.pose.translation + half)
++}
+ fn overlap(a:&BodyEntry2d,b:&BodyEntry2d)->bool{let(amin,amax)=bounds(a);let(bmin,bmax)=bounds(b);amin.x<=bmax.x&&amax.x>=bmin.x&&amin.y<=bmax.y&&amax.y>=bmin.y}
+ fn ray_aabb(o:Vec2,d:Vec2,min:Vec2,max:Vec2,max_d:f32)->Option<f32>{ let inv=Vec2::new(if d.x.abs()>1e-8{1.0/d.x}else{f32::INFINITY},if d.y.abs()>1e-8{1.0/d.y}else{f32::INFINITY}); let t1=(min-o)*inv;let t2=(max-o)*inv;let lo=t1.min(t2);let hi=t1.max(t2);let enter=lo.x.max(lo.y).max(0.0);let exit=hi.x.min(hi.y);(enter<=exit&&enter<=max_d).then_some(enter)}
+ 
+ /// First-release kinematic platformer controller state/configuration.
+-#[derive(Debug, Clone, Copy, PartialEq)] pub struct CharacterController2d { pub half_extents:Vec2, pub skin:f32, pub slope_limit_radians:f32, pub ground_snap:f32, pub drop_through_seconds:f32, pub grounded:bool, pub ground_normal:Vec2, pub hit_wall:bool, pub hit_ceiling:bool }
+-impl Default for CharacterController2d { fn default()->Self{Self{half_extents:Vec2::new(0.45,0.9),skin:0.02,slope_limit_radians:0.7853982,ground_snap:0.1,drop_through_seconds:0.0,grounded:false,ground_normal:Vec2::Y,hit_wall:false,hit_ceiling:false}} }
++#[derive(Debug, Clone, Copy, PartialEq)]
++pub struct CharacterController2d {
++    /// Axis-aligned controller half extents.
++    pub half_extents: Vec2,
++    /// Collision margin removed from overlap tests.
++    pub skin: f32,
++    /// Maximum walkable surface angle in radians.
++    pub slope_limit_radians: f32,
++    /// Maximum downward distance used to retain ground contact.
++    pub ground_snap: f32,
++    /// Remaining time during which one-way platforms are ignored.
++    pub drop_through_seconds: f32,
++    /// Whether the latest move ended on walkable ground.
++    pub grounded: bool,
++    /// Latest resolved ground normal.
++    pub ground_normal: Vec2,
++    /// Whether the latest move was blocked horizontally.
++    pub hit_wall: bool,
++    /// Whether the latest move was blocked upward.
++    pub hit_ceiling: bool,
++}
++
++impl Default for CharacterController2d {
++    fn default() -> Self {
++        Self {
++            half_extents: Vec2::new(0.45, 0.9),
++            skin: 0.02,
++            slope_limit_radians: 0.7853982,
++            ground_snap: 0.1,
++            drop_through_seconds: 0.0,
++            grounded: false,
++            ground_normal: Vec2::Y,
++            hit_wall: false,
++            hit_ceiling: false,
++        }
++    }
++}
+ impl CharacterController2d {
+     /// Moves deterministically against fixed/kinematic colliders and applies shared one-way policy.
+     pub fn move_fixed(&mut self, world:&PhysicsWorld2d, start:Vec2, delta:Vec2, dt:f32, mask:u32)->Vec2 {
+@@ -90,7 +316,11 @@ impl CharacterController2d {
+         let target_y=pos+Vec2::new(0.0,delta.y); let hits=world.overlap_box(target_y,self.half_extents-self.skin,mask); let blocked=hits.iter().any(|id| { let e=&world.bodies[id]; !(e.collider.one_way && (self.drop_through_seconds>0.0 || delta.y>0.0 || start.y-self.half_extents.y < e.pose.translation.y)) });
+         if !blocked {pos.y=target_y.y} else if delta.y<0.0 {self.grounded=true;self.ground_normal=Vec2::Y}else if delta.y>0.0{self.hit_ceiling=true} pos
+     }
+-    pub fn request_drop_through(&mut self, seconds:f32){self.drop_through_seconds=seconds.max(0.0);self.grounded=false}
++    /// Temporarily ignores one-way platforms so the controller can drop through them.
++    pub fn request_drop_through(&mut self, seconds: f32) {
++        self.drop_through_seconds = seconds.max(0.0);
++        self.grounded = false;
++    }
+ }
+ 
+ #[cfg(test)] mod tests{use super::*;#[test]fn non_planar_is_diagnostic(){let m=Mat4::from_rotation_x(0.2);assert_eq!(project_planar_transform(m),Err(PlanarPoseError::NonPlanarRotation));}#[test]fn worlds_are_explicit(){let mut w=PhysicsWorld2d::default();assert!(w.step(1.0/60.0,Vec2::new(0.0,-9.81)).is_empty());}}
+diff --git a/crates/render-runtime/src/native_2d.rs b/crates/render-runtime/src/native_2d.rs
+index c431393cfe9ea0b7eee44c2b0988b328fc59b81b..44f782c56b84ba87104aee659fa46a4ac8869db0 100644
+--- a/crates/render-runtime/src/native_2d.rs
++++ b/crates/render-runtime/src/native_2d.rs
+@@ -5,20 +5,37 @@ use glam::{Mat4, Vec2, Vec3};
+ 
+ /// Orthographic viewport-fit policy.
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+-pub enum ViewportFit2d { Fit, Fill, Stretch }
++pub enum ViewportFit2d {
++    /// Preserve the complete reference frame and allow unused viewport space.
++    Fit,
++    /// Fill the viewport and crop reference-frame overflow.
++    Fill,
++    /// Stretch reference dimensions to the viewport shape.
++    Stretch,
++}
+ 
+ /// Runtime Camera2D contract. It uses the normal Transform for pose.
+ #[derive(Debug, Clone, Copy, PartialEq)]
+ pub struct Camera2d {
++    /// Whether this camera participates in Game View arbitration.
+     pub enabled: bool,
++    /// Selection priority shared with other game-camera kinds.
+     pub priority: i32,
++    /// Vertical orthographic world span before zoom.
+     pub orthographic_height: f32,
++    /// Positive projection zoom multiplier.
+     pub zoom: f32,
++    /// Near clipping plane in camera space.
+     pub near: f32,
++    /// Far clipping plane in camera space.
+     pub far: f32,
++    /// Whether projection follows deterministic reference-pixel scaling.
+     pub pixel_perfect: bool,
++    /// Reference texture pixels represented by one world unit.
+     pub reference_pixels_per_unit: f32,
++    /// Reference pixel-perfect resolution `[width, height]`.
+     pub reference_resolution: [u32; 2],
++    /// Viewport fitting policy.
+     pub fit: ViewportFit2d,
+ }
+ 
+@@ -28,7 +45,14 @@ impl Default for Camera2d {
+ 
+ /// Why a Camera2D pose cannot be represented by the XY convention.
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+-pub enum Camera2dDiagnostic { NonFinitePose, NonPlanarTilt, InvalidProjection }
++pub enum Camera2dDiagnostic {
++    /// Camera transform contains non-finite values.
++    NonFinitePose,
++    /// Camera rotation tilts away from the XY gameplay plane.
++    NonPlanarTilt,
++    /// Projection settings cannot form a finite orthographic matrix.
++    InvalidProjection,
++}
+ 
+ impl Camera2d {
+     /// Builds a deterministic orthographic projection without changing authored transforms.
+@@ -56,11 +80,39 @@ pub fn validate_camera_pose(forward: Vec3, up: Vec3) -> Result<(), Camera2dDiagn
+ 
+ /// Common camera-arbitration input shared by Camera2D and Camera3D adapters.
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+-pub struct ActiveCameraCandidate { pub entity_key: u64, pub enabled: bool, pub priority: i32, pub kind: CameraKind }
++pub struct ActiveCameraCandidate {
++    /// Stable deterministic runtime entity key.
++    pub entity_key: u64,
++    /// Whether the camera may drive the Game View.
++    pub enabled: bool,
++    /// Shared camera-selection priority; higher values win.
++    pub priority: i32,
++    /// Projection family owned by the candidate.
++    pub kind: CameraKind,
++}
++
++/// Projection family participating in shared Game View arbitration.
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+-pub enum CameraKind { TwoD, ThreeD }
++pub enum CameraKind {
++    /// Native orthographic Camera2D.
++    TwoD,
++    /// Existing perspective Camera3D.
++    ThreeD,
++}
++
++/// Deterministic result of shared Game View camera arbitration.
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+-pub enum ActiveCameraSelection { None, Selected(ActiveCameraCandidate), Ambiguous { priority: i32 } }
++pub enum ActiveCameraSelection {
++    /// No enabled camera exists.
++    None,
++    /// Exactly one highest-priority camera was selected.
++    Selected(ActiveCameraCandidate),
++    /// More than one enabled camera shares the highest priority.
++    Ambiguous {
++        /// Highest priority shared by the ambiguous candidates.
++        priority: i32,
++    },
++}
+ 
+ /// Selects one camera by shared enabled/priority intent; highest-priority ties are diagnosed.
+ pub fn select_active_camera(candidates: impl IntoIterator<Item = ActiveCameraCandidate>) -> ActiveCameraSelection {
+@@ -73,14 +125,52 @@ pub fn select_active_camera(candidates: impl IntoIterator<Item = ActiveCameraCan
+ /// Extracted SpriteRenderer2D instance. `entity_key` is the deterministic equal-order tie-break.
+ #[derive(Debug, Clone, PartialEq)]
+ pub struct SpriteInstance2d {
+-    pub entity_key: u64, pub sprite: SpriteRef, pub sorting_layer: SortingLayerId, pub layer_rank: u32, pub order_in_layer: i32,
+-    pub texture_page: u32, pub material_key: u64, pub sampler_key: u64, pub position: Vec2, pub size: Vec2, pub pivot: Vec2,
+-    pub tint: [f32; 4], pub flip_x: bool, pub flip_y: bool, pub visible: bool,
++    /// Stable deterministic runtime entity key.
++    pub entity_key: u64,
++    /// Stable logical sprite reference.
++    pub sprite: SpriteRef,
++    /// Stable logical sorting layer.
++    pub sorting_layer: SortingLayerId,
++    /// Resolved project ordering rank for the sorting layer.
++    pub layer_rank: u32,
++    /// Signed authored order within the logical layer.
++    pub order_in_layer: i32,
++    /// Runtime texture page selected by asset compilation.
++    pub texture_page: u32,
++    /// Runtime material batching key.
++    pub material_key: u64,
++    /// Runtime sampler batching key.
++    pub sampler_key: u64,
++    /// World XY sprite origin.
++    pub position: Vec2,
++    /// World XY sprite size.
++    pub size: Vec2,
++    /// Normalized pivot used to place the quad around the origin.
++    pub pivot: Vec2,
++    /// Linear RGBA tint multiplier.
++    pub tint: [f32; 4],
++    /// Whether texture coordinates are mirrored horizontally.
++    pub flip_x: bool,
++    /// Whether texture coordinates are mirrored vertically.
++    pub flip_y: bool,
++    /// Whether this instance contributes a draw.
++    pub visible: bool,
+ }
+ 
+ /// One deterministic contiguous sprite batch.
+ #[derive(Debug, Clone, PartialEq, Eq)]
+-pub struct SpriteBatch2d { pub texture_page: u32, pub material_key: u64, pub sampler_key: u64, pub first: usize, pub count: usize }
++pub struct SpriteBatch2d {
++    /// Runtime texture page shared by every instance in the batch.
++    pub texture_page: u32,
++    /// Runtime material key shared by every instance in the batch.
++    pub material_key: u64,
++    /// Runtime sampler key shared by every instance in the batch.
++    pub sampler_key: u64,
++    /// First sorted instance index included in the batch.
++    pub first: usize,
++    /// Number of contiguous sorted instances included in the batch.
++    pub count: usize,
++}
+ 
+ /// Sorts instances by authored logical order and derives compatible contiguous batches.
+ pub fn sort_and_batch_sprites(instances: &mut [SpriteInstance2d]) -> Vec<SpriteBatch2d> {
+@@ -96,8 +186,22 @@ pub fn sort_and_batch_sprites(instances: &mut [SpriteInstance2d]) -> Vec<SpriteB
+ 
+ /// Camera-visible XY rectangle.
+ #[derive(Debug, Clone, Copy, PartialEq)]
+-pub struct ViewRect2d { pub min: Vec2, pub max: Vec2 }
+-impl ViewRect2d { pub fn intersects(self, min: Vec2, max: Vec2) -> bool { self.min.x <= max.x && self.max.x >= min.x && self.min.y <= max.y && self.max.y >= min.y } }
++pub struct ViewRect2d {
++    /// Inclusive minimum world XY corner.
++    pub min: Vec2,
++    /// Inclusive maximum world XY corner.
++    pub max: Vec2,
++}
++
++impl ViewRect2d {
++    /// Returns whether an XY bounds pair intersects this visible rectangle.
++    pub fn intersects(self, min: Vec2, max: Vec2) -> bool {
++        self.min.x <= max.x
++            && self.max.x >= min.x
++            && self.min.y <= max.y
++            && self.max.y >= min.y
++    }
++}
+ 
+ /// Returns visible Tile Map chunks only; unrelated chunks remain untouched.
+ pub fn cull_tile_chunks(chunks: impl IntoIterator<Item = (TileChunkCoord, Vec2, Vec2)>, view: ViewRect2d) -> Vec<TileChunkCoord> {
