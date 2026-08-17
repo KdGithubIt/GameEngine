@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/agent_host.rs",
+  "old": "            run.completion.interaction_scenarios = match interactions_passed {\n                Some(true) => CompletionStatus::Passed,\n                Some(false) => CompletionStatus::Failed,\n                None if run.proposal_snapshot.playtest_plan.is_empty() => CompletionStatus::NotApplicable,\n                None => CompletionStatus::Pending,\n            };",
+  "new": "            run.completion.interaction_scenarios = match interactions_passed {\n                Some(true) if run.proposal_snapshot.playtest_plan.is_empty() => CompletionStatus::NotApplicable,\n                Some(true) if run.audit.managed_runtime_inputs > 0 => CompletionStatus::Passed,\n                Some(true) => CompletionStatus::Pending,\n                Some(false) => CompletionStatus::Failed,\n                None if run.proposal_snapshot.playtest_plan.is_empty() => CompletionStatus::NotApplicable,\n                None => CompletionStatus::Pending,\n            };"
+}
