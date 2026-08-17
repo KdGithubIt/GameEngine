@@ -1,0 +1,865 @@
+diff --git a/crates/editor/src/agent_host.rs b/crates/editor/src/agent_host.rs
+index 9e53c633231e44542b608c011078585e80153b51..f035737f1baee7b36be2e61cc4bf8aa75b96a3b4 100644
+--- a/crates/editor/src/agent_host.rs
++++ b/crates/editor/src/agent_host.rs
+@@ -21,6 +21,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
+ const SESSION_SCHEMA_VERSION: u32 = 1;
+ const POLICY_SCHEMA_VERSION: u32 = 1;
+ const MAX_PROVIDER_EVENT_CHARS: usize = 4_000;
++const MAX_PERSISTED_EVENTS_PER_RUN: usize = 512;
+ static ID_COUNTER: AtomicU64 = AtomicU64::new(0);
+ 
+ #[derive(Debug)]
+@@ -333,6 +334,9 @@ pub(crate) enum AgentEventKind {
+     StateChanged,
+     UserMessage,
+     AssistantMessage,
++    Proposal,
++    SemanticProgress,
++    ToolAction,
+     PermissionRequested,
+     PermissionResolved,
+     ProviderOutput,
+@@ -341,11 +345,22 @@ pub(crate) enum AgentEventKind {
+     CodeChangesApplied,
+     Validation,
+     Playtest,
++    CapturedFrame,
+     Cancellation,
+     Failure,
+     Completion,
+ }
+ 
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(tag = "evidence", rename_all = "snake_case")]
++pub(crate) enum AgentEventEvidence {
++    Progress { step: String, detail: String },
++    ToolAction { tool: String, action: String, success: Option<bool> },
++    Playtest { launched: bool, interactions_passed: Option<bool> },
++    CapturedFrame { artifact_id: String, width: u32, height: u32 },
++    CompletionGate { gate: String, status: CompletionStatus },
++}
++
+ #[derive(Debug, Clone, Serialize, Deserialize)]
+ pub(crate) struct AgentEvent {
+     pub(crate) sequence: u64,
+@@ -354,6 +369,8 @@ pub(crate) struct AgentEvent {
+     pub(crate) message: String,
+     #[serde(default, skip_serializing_if = "Option::is_none")]
+     pub(crate) validation: Option<ManagedValidationEvent>,
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub(crate) evidence: Option<AgentEventEvidence>,
+ }
+ 
+ #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+@@ -759,6 +776,157 @@ impl AgentHost {
+         self.persist_session(&session_id)
+     }
+ 
++    pub(crate) fn record_semantic_progress(
++        &mut self,
++        run_id: &str,
++        step: impl Into<String>,
++        detail: impl Into<String>,
++    ) -> Result<(), AgentHostError> {
++        let step = step.into();
++        let detail = detail.into();
++        let (session_id, _) = self.run_location(run_id)?;
++        let run = self.run_mut_in_session(&session_id, run_id)?;
++        push_event_with_evidence(
++            run,
++            AgentEventKind::SemanticProgress,
++            format!("{step}: {detail}"),
++            None,
++            Some(AgentEventEvidence::Progress { step, detail }),
++        );
++        self.persist_session(&session_id)
++    }
++
++    pub(crate) fn record_tool_action(
++        &mut self,
++        run_id: &str,
++        tool: impl Into<String>,
++        action: impl Into<String>,
++        success: Option<bool>,
++    ) -> Result<(), AgentHostError> {
++        let tool = tool.into();
++        let action = action.into();
++        let (session_id, _) = self.run_location(run_id)?;
++        let run = self.run_mut_in_session(&session_id, run_id)?;
++        push_event_with_evidence(
++            run,
++            AgentEventKind::ToolAction,
++            format!("{tool}: {action}"),
++            None,
++            Some(AgentEventEvidence::ToolAction { tool, action, success }),
++        );
++        self.persist_session(&session_id)
++    }
++
++    pub(crate) fn record_completion_gate(
++        &mut self,
++        run_id: &str,
++        gate: &str,
++        status: CompletionStatus,
++        message: impl Into<String>,
++    ) -> Result<(), AgentHostError> {
++        let (session_id, state) = self.run_location(run_id)?;
++        {
++            let run = self.run_mut_in_session(&session_id, run_id)?;
++            match gate {
++                "acceptance_criteria" => run.completion.acceptance_criteria = status,
++                "authoring_validation" => run.completion.authoring_validation = status,
++                "visual_evaluation" => run.completion.visual_evaluation = status,
++                _ => return Err(AgentHostError::Io(io::Error::new(
++                    io::ErrorKind::InvalidInput,
++                    format!("completion gate `{gate}` is not provider-reportable"),
++                ))),
++            }
++            push_event_with_evidence(
++                run,
++                AgentEventKind::SemanticProgress,
++                message.into(),
++                None,
++                Some(AgentEventEvidence::CompletionGate {
++                    gate: gate.to_owned(),
++                    status,
++                }),
++            );
++        }
++        self.persist_session(&session_id)?;
++        if status == CompletionStatus::Failed && state == AgentRunState::Evaluating {
++            self.transition_run(
++                run_id,
++                AgentRunState::Repairing,
++                format!("Completion gate `{gate}` failed; repair is required."),
++            )?;
++        }
++        Ok(())
++    }
++
++    pub(crate) fn record_playtest_result(
++        &mut self,
++        run_id: &str,
++        launched: bool,
++        interactions_passed: Option<bool>,
++        message: impl Into<String>,
++    ) -> Result<(), AgentHostError> {
++        let (session_id, state) = self.run_location(run_id)?;
++        {
++            let run = self.run_mut_in_session(&session_id, run_id)?;
++            run.completion.play_launch = if launched { CompletionStatus::Passed } else { CompletionStatus::Failed };
++            run.completion.interaction_scenarios = match interactions_passed {
++                Some(true) => CompletionStatus::Passed,
++                Some(false) => CompletionStatus::Failed,
++                None if run.proposal_snapshot.playtest_plan.is_empty() => CompletionStatus::NotApplicable,
++                None => CompletionStatus::Pending,
++            };
++            push_event_with_evidence(
++                run,
++                AgentEventKind::Playtest,
++                message.into(),
++                None,
++                Some(AgentEventEvidence::Playtest { launched, interactions_passed }),
++            );
++        }
++        self.persist_session(&session_id)?;
++        if (!launched || interactions_passed == Some(false))
++            && matches!(state, AgentRunState::Playtesting | AgentRunState::Evaluating)
++        {
++            self.transition_run(
++                run_id,
++                AgentRunState::Repairing,
++                "Managed playtest failed; repair is required.",
++            )?;
++        }
++        Ok(())
++    }
++
++    pub(crate) fn record_captured_frame(
++        &mut self,
++        run_id: &str,
++        artifact_id: impl Into<String>,
++        width: u32,
++        height: u32,
++    ) -> Result<(), AgentHostError> {
++        let artifact_id = artifact_id.into();
++        let (session_id, state) = self.run_location(run_id)?;
++        {
++            let run = self.run_mut_in_session(&session_id, run_id)?;
++            run.completion.frame_capture = CompletionStatus::Passed;
++            push_event_with_evidence(
++                run,
++                AgentEventKind::CapturedFrame,
++                format!("Captured managed Play frame {artifact_id} ({width}x{height})."),
++                None,
++                Some(AgentEventEvidence::CapturedFrame { artifact_id, width, height }),
++            );
++        }
++        self.persist_session(&session_id)?;
++        if state == AgentRunState::Playtesting {
++            self.transition_run(
++                run_id,
++                AgentRunState::Evaluating,
++                "Managed Play frame captured; visual evaluation remains required.",
++            )?;
++        }
++        Ok(())
++    }
++
+     pub(crate) fn cancel_run(&mut self, run_id: &str) -> Result<(), AgentHostError> {
+         if self
+             .active_validation
+@@ -1190,22 +1358,24 @@ impl AgentHost {
+     }
+ 
+     fn advance_after_validation(&mut self, run_id: &str) -> Result<(), AgentHostError> {
+-        let next = if self.run(run_id)?.proposal_snapshot.playtest_plan.is_empty() {
+-            AgentRunState::Evaluating
+-        } else {
+-            AgentRunState::Playtesting
+-        };
++        let playtest_required = !self.run(run_id)?.proposal_snapshot.playtest_plan.is_empty();
++        if !playtest_required {
++            let (session_id, _) = self.run_location(run_id)?;
++            let run = self.run_mut_in_session(&session_id, run_id)?;
++            run.completion.play_launch = CompletionStatus::NotApplicable;
++            run.completion.frame_capture = CompletionStatus::NotApplicable;
++            run.completion.visual_evaluation = CompletionStatus::NotApplicable;
++            run.completion.interaction_scenarios = CompletionStatus::NotApplicable;
++            self.persist_session(&session_id)?;
++        }
++        let next = if playtest_required { AgentRunState::Playtesting } else { AgentRunState::Evaluating };
+         self.transition_run(
+             run_id,
+             next,
+-            match next {
+-                AgentRunState::Playtesting => {
+-                    "Managed source validation passed; playtest evidence is still required."
+-                }
+-                AgentRunState::Evaluating => {
+-                    "Managed source validation passed; final evaluation remains required."
+-                }
+-                _ => unreachable!("post-validation state is fixed by the agent state machine"),
++            if playtest_required {
++                "Managed source validation passed; playtest evidence is still required."
++            } else {
++                "Managed source validation passed; no playtest was requested by this proposal."
+             },
+         )
+     }
+@@ -1286,6 +1456,23 @@ impl AgentHost {
+         self.storage_root.join("workspaces").join(run_id)
+     }
+ 
++    pub(crate) fn store_captured_frame_artifact(
++        &mut self,
++        run_id: &str,
++        width: u32,
++        height: u32,
++        png_bytes: &[u8],
++    ) -> Result<(String, PathBuf), AgentHostError> {
++        self.run(run_id)?;
++        let artifact_id = next_id("frame");
++        let directory = self.storage_root.join("artifacts").join(run_id);
++        fs::create_dir_all(&directory)?;
++        let path = directory.join(format!("{artifact_id}.png"));
++        fs::write(&path, png_bytes)?;
++        self.record_captured_frame(run_id, artifact_id.clone(), width, height)?;
++        Ok((artifact_id, path))
++    }
++
+     fn session_mut(&mut self, id: &str) -> Result<&mut AgentSession, AgentHostError> {
+         self.sessions
+             .get_mut(id)
+@@ -1362,14 +1549,29 @@ fn valid_transition(from: AgentRunState, to: AgentRunState) -> bool {
+ }
+ 
+ fn push_event(run: &mut AgentRun, kind: AgentEventKind, message: String) {
++    push_event_with_evidence(run, kind, message, None, None);
++}
++
++fn push_event_with_evidence(
++    run: &mut AgentRun,
++    kind: AgentEventKind,
++    message: String,
++    validation: Option<ManagedValidationEvent>,
++    evidence: Option<AgentEventEvidence>,
++) {
+     let sequence = run.events.last().map_or(1, |event| event.sequence + 1);
+     run.events.push(AgentEvent {
+         sequence,
+         created_unix_ms: unix_ms(),
+         kind,
+         message,
+-        validation: None,
++        validation,
++        evidence,
+     });
++    if run.events.len() > MAX_PERSISTED_EVENTS_PER_RUN {
++        let overflow = run.events.len() - MAX_PERSISTED_EVENTS_PER_RUN;
++        run.events.drain(..overflow);
++    }
+ }
+ 
+ fn push_validation_event(
+@@ -1377,14 +1579,13 @@ fn push_validation_event(
+     message: String,
+     validation: ManagedValidationEvent,
+ ) {
+-    let sequence = run.events.last().map_or(1, |event| event.sequence + 1);
+-    run.events.push(AgentEvent {
+-        sequence,
+-        created_unix_ms: unix_ms(),
+-        kind: AgentEventKind::Validation,
++    push_event_with_evidence(
++        run,
++        AgentEventKind::Validation,
+         message,
+-        validation: Some(validation),
+-    });
++        Some(validation),
++        None,
++    );
+ }
+ 
+ fn managed_validation_plan(
+@@ -1709,7 +1910,7 @@ impl CodeWorkspace {
+                 &self.project_root.join(&change.relative_path),
+                 &change.relative_path,
+             )?;
+-            if live != change.before {
++            if live != change.before && live != change.after {
+                 return Err(AgentHostError::StaleCodeFile(change.relative_path.clone()));
+             }
+         }
+@@ -1718,7 +1919,10 @@ impl CodeWorkspace {
+             let after = change.after.as_deref().ok_or_else(|| {
+                 AgentHostError::UnsupportedCodeDeletion(change.relative_path.clone())
+             })?;
+-            write_text_atomic(&destination, after)?;
++            let live = read_optional_utf8(&destination, &change.relative_path)?;
++            if live.as_deref() != Some(after) {
++                write_text_atomic(&destination, after)?;
++            }
+             self.baseline
+                 .insert(change.relative_path.clone(), Some(after.to_owned()));
+         }
+@@ -1873,7 +2077,7 @@ fn write_text_atomic(path: &Path, text: &str) -> Result<(), AgentHostError> {
+     Ok(())
+ }
+ 
+-#[derive(Debug)]
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+ pub(crate) enum ProcessStream {
+     Stdout,
+     Stderr,
+@@ -2063,6 +2267,65 @@ mod tests {
+         let _ = fs::remove_dir_all(workspace);
+     }
+ 
++    #[test]
++    fn code_apply_retry_is_idempotent_after_success() {
++        let project = temp_path("code-idempotent-project");
++        let workspace = temp_path("code-idempotent-workspace");
++        fs::create_dir_all(project.join("game/src")).expect("project tree");
++        fs::write(project.join("game/src/lib.rs"), "pub fn value() -> u32 { 1 }\n").expect("base file");
++        let mut code = CodeWorkspace::create(&project, workspace.clone()).expect("workspace");
++        fs::write(workspace.join("game/src/lib.rs"), "pub fn value() -> u32 { 2 }\n").expect("workspace edit");
++        let changes = code.collect_changes().expect("changes");
++        code.apply_changes(&changes).expect("first apply");
++        code.apply_changes(&changes).expect("idempotent retry");
++        assert_eq!(fs::read_to_string(project.join("game/src/lib.rs")).expect("live file"), "pub fn value() -> u32 { 2 }\n");
++        let _ = fs::remove_dir_all(project);
++        let _ = fs::remove_dir_all(workspace);
++    }
++
++    #[test]
++    fn event_history_is_bounded_and_sequence_remains_monotonic() {
++        let project = temp_path("event-bound-project");
++        let storage = temp_path("event-bound-storage");
++        fs::create_dir_all(&project).expect("test project directory");
++        let mut host = AgentHost::open(project.clone(), storage.clone()).expect("host");
++        let session = host.create_session("Events").expect("session");
++        let run = host.start_run(&session, "test").expect("run");
++        for index in 0..(MAX_PERSISTED_EVENTS_PER_RUN + 25) {
++            host.record_semantic_progress(&run, "step", format!("event {index}")).expect("event");
++        }
++        let events = &host.run(&run).expect("run").events;
++        assert_eq!(events.len(), MAX_PERSISTED_EVENTS_PER_RUN);
++        assert!(events.windows(2).all(|pair| pair[0].sequence < pair[1].sequence));
++        assert!(events.first().expect("first").sequence > 1);
++        let _ = fs::remove_dir_all(project);
++        let _ = fs::remove_dir_all(storage);
++    }
++
++    #[test]
++    fn managed_frame_artifact_sets_structured_completion_evidence() {
++        let project = temp_path("frame-project");
++        let storage = temp_path("frame-storage");
++        fs::create_dir_all(&project).expect("test project directory");
++        let mut host = AgentHost::open(project.clone(), storage.clone()).expect("host");
++        let session = host.create_session("Frame").expect("session");
++        let run = host.start_run(&session, "test").expect("run");
++        host.transition_run(&run, AgentRunState::Executing, "execute").expect("executing");
++        host.transition_run(&run, AgentRunState::Validating, "validate").expect("validating");
++        host.transition_run(&run, AgentRunState::Playtesting, "playtest").expect("playtesting");
++        let (artifact_id, path) = host.store_captured_frame_artifact(&run, 2, 2, b"png").expect("artifact");
++        assert!(path.is_file());
++        let run_state = host.run(&run).expect("run");
++        assert_eq!(run_state.completion.frame_capture, CompletionStatus::Passed);
++        assert_eq!(run_state.state, AgentRunState::Evaluating);
++        assert!(run_state.events.iter().any(|event| matches!(
++            &event.evidence,
++            Some(AgentEventEvidence::CapturedFrame { artifact_id: id, width: 2, height: 2 }) if id == &artifact_id
++        )));
++        let _ = fs::remove_dir_all(project);
++        let _ = fs::remove_dir_all(storage);
++    }
++
+     #[test]
+     fn managed_validation_plan_never_turns_unknown_text_into_a_command() {
+         let proposal = AgentProposal {
+diff --git a/crates/editor/src/ai_studio.rs b/crates/editor/src/ai_studio.rs
+index 121dbf2011ce09313633b9d3586592a44792fee3..ce5ed3e1470f34a884a7b824794af623a7df4c2d 100644
+--- a/crates/editor/src/ai_studio.rs
++++ b/crates/editor/src/ai_studio.rs
+@@ -15,9 +15,21 @@ use crate::native_agent::{
+ };
+ use eframe::egui;
+ use engine_authoring::ProjectRoot;
++use serde::Deserialize;
+ use std::ffi::{OsStr, OsString};
+ use std::path::PathBuf;
+ 
++const PROVIDER_EVENT_PREFIX: &str = "GAMEENGINE_AGENT_EVENT ";
++
++#[derive(Debug, Deserialize)]
++#[serde(tag = "type", rename_all = "snake_case")]
++enum ProviderAgentEvent {
++    Progress { step: String, detail: String },
++    ToolAction { tool: String, action: String, success: Option<bool> },
++    CompletionGate { gate: String, status: CompletionStatus, message: String },
++    PlaytestResult { launched: bool, interactions_passed: Option<bool>, message: String },
++}
++
+ /// Ephemeral Editor-owned MCP connection injected into compatible agent runtimes.
+ ///
+ /// The authorization token is intentionally private and is never serialized by
+@@ -38,10 +50,37 @@ impl AiStudioConnection {
+     }
+ }
+ 
++/// Managed Editor-runtime operation requested by AI Studio after authorization.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum AiStudioRuntimeAction {
++    /// Start the normal Editor Play path for the active project.
++    StartPlaytest,
++    /// Capture the currently rendered Game View through the engine frame-capture path.
++    CaptureFrame,
++    /// Stop the managed Editor Play session.
++    StopPlaytest,
++}
++
++/// Result of one managed Editor-runtime operation returned to AI Studio.
++pub enum AiStudioRuntimeResult {
++    /// Play is running and runtime observation is available.
++    PlayStarted,
++    /// Play start is waiting for an engine-managed game-code build.
++    PlayStartPending,
++    /// The managed Play session stopped.
++    PlayStopped,
++    /// A Game View frame was captured by the runtime renderer.
++    FrameCaptured(crate::FrameCapture),
++    /// The requested operation failed without bypassing the normal runtime path.
++    Failed(String),
++}
++
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+ enum PendingPermissionAction {
+     LaunchExternalAgent,
+     ApplyCodeChanges,
++    LaunchPlaytest,
++    CaptureFrame,
+ }
+ 
+ struct PendingPermission {
+@@ -74,6 +113,11 @@ pub struct AiStudioPanel {
+     code_workspace: Option<CodeWorkspace>,
+     pending_code_changes: Vec<CodeChange>,
+     pending_permission: Option<PendingPermission>,
++    pending_runtime_action: Option<AiStudioRuntimeAction>,
++    managed_playtest_requested: bool,
++    managed_capture_requested: bool,
++    managed_playtest_started_at: Option<std::time::Instant>,
++    last_captured_frame: Option<(egui::TextureHandle, String, u32, u32)>,
+     status: Option<String>,
+ }
+ 
+@@ -118,6 +162,11 @@ impl AiStudioPanel {
+             code_workspace: None,
+             pending_code_changes: Vec::new(),
+             pending_permission: None,
++            pending_runtime_action: None,
++            managed_playtest_requested: false,
++            managed_capture_requested: false,
++            managed_playtest_started_at: None,
++            last_captured_frame: None,
+             status: None,
+         })
+     }
+@@ -127,11 +176,85 @@ impl AiStudioPanel {
+         self.open = true;
+     }
+ 
++    /// Takes one authorized managed runtime action for the Editor shell to execute.
++    pub fn take_runtime_action(&mut self) -> Option<AiStudioRuntimeAction> {
++        self.pending_runtime_action.take()
++    }
++
++    /// Returns whether AI Studio is waiting for the normal Editor Play path to become active.
++    pub fn waiting_for_playtest_start(&self) -> bool {
++        self.managed_playtest_requested && self.managed_playtest_started_at.is_none()
++    }
++
++    /// Records the result of an Editor-owned managed runtime action.
++    pub fn report_runtime_result(&mut self, context: &egui::Context, result: AiStudioRuntimeResult) {
++        let Some(run_id) = self.active_run_id.clone() else { return; };
++        match result {
++            AiStudioRuntimeResult::PlayStarted => {
++                if self.managed_playtest_started_at.is_none() {
++                    self.managed_playtest_started_at = Some(std::time::Instant::now());
++                    if let Err(error) = self.host.record_playtest_result(
++                        &run_id,
++                        true,
++                        None,
++                        "Managed Editor Play launched successfully.",
++                    ) {
++                        self.status = Some(error.to_string());
++                    }
++                }
++            }
++            AiStudioRuntimeResult::PlayStartPending => {
++                self.status = Some("Managed Play is waiting for the engine-managed game-code build.".to_owned());
++            }
++            AiStudioRuntimeResult::PlayStopped => {
++                self.managed_playtest_started_at = None;
++                self.status = Some("Managed Play stopped.".to_owned());
++            }
++            AiStudioRuntimeResult::FrameCaptured(capture) => {
++                match encode_agent_frame_png(&capture)
++                    .map_err(|error| error.to_string())
++                    .and_then(|png| self.host.store_captured_frame_artifact(
++                        &run_id, capture.width, capture.height, &png,
++                    ).map_err(|error| error.to_string()))
++                {
++                    Ok((artifact_id, _path)) => {
++                        let image = egui::ColorImage::from_rgba_unmultiplied(
++                            [capture.width as usize, capture.height as usize],
++                            &capture.rgba8,
++                        );
++                        let texture = context.load_texture(
++                            format!("ai-studio-{artifact_id}"),
++                            image,
++                            egui::TextureOptions::LINEAR,
++                        );
++                        self.last_captured_frame = Some((texture, artifact_id.clone(), capture.width, capture.height));
++                        self.managed_capture_requested = false;
++                        self.status = Some(format!("Captured managed Play frame {artifact_id}."));
++                    }
++                    Err(error) => {
++                        self.managed_capture_requested = false;
++                        self.status = Some(format!("Managed frame capture could not be stored: {error}"));
++                    }
++                }
++            }
++            AiStudioRuntimeResult::Failed(message) => {
++                if self.managed_playtest_started_at.is_none() {
++                    let _ = self.host.record_playtest_result(&run_id, false, Some(false), message.clone());
++                } else {
++                    let _ = self.host.record_event(&run_id, AgentEventKind::Failure, message.clone());
++                }
++                self.status = Some(message);
++            }
++        }
++    }
++
+     /// Draws the AI Studio window and advances any active external agent process.
+     pub fn show(&mut self, context: &egui::Context) {
+         self.poll_native_question(context);
+         self.poll_external_process(context);
+         self.poll_managed_validation(context);
++        self.request_managed_playtest_if_ready();
++        self.poll_managed_playtest_timeout();
+         let mut open = self.open;
+         egui::Window::new("AI Studio")
+             .id(egui::Id::new("gameengine_ai_studio"))
+@@ -591,6 +714,25 @@ impl AiStudioPanel {
+         completion_row(ui, "Visual evaluation", report.visual_evaluation);
+         completion_row(ui, "Interaction scenarios", report.interaction_scenarios);
+         ui.small("Completion evidence is owned by the agent host and managed engine services.");
++        ui.horizontal(|ui| {
++            let can_capture = self.managed_playtest_started_at.is_some()
++                && !self.managed_capture_requested
++                && self.pending_permission.is_none()
++                && self.pending_runtime_action.is_none();
++            if ui.add_enabled(can_capture, egui::Button::new("Capture managed frame")).clicked() {
++                self.managed_capture_requested = true;
++                self.request_permission(run_id.to_owned(), AgentCapability::FrameCapture, PendingPermissionAction::CaptureFrame);
++            }
++            if ui.add_enabled(self.managed_playtest_started_at.is_some(), egui::Button::new("Stop managed Play")).clicked() {
++                self.pending_runtime_action = Some(AiStudioRuntimeAction::StopPlaytest);
++            }
++        });
++        if let Some((texture, artifact_id, width, height)) = &self.last_captured_frame {
++            ui.group(|ui| {
++                ui.strong(format!("Captured frame · {artifact_id} · {width}x{height}"));
++                ui.add(egui::Image::new(texture).fit_to_exact_size(egui::vec2(480.0, 270.0)).maintain_aspect_ratio(true));
++            });
++        }
+         if ui.button("Complete run").clicked() {
+             match self.host.complete_run(run_id) {
+                 Ok(()) => self.status = Some("Run completion contract satisfied.".to_owned()),
+@@ -611,6 +753,11 @@ impl AiStudioPanel {
+         match self.host.start_run(&self.selected_session, provider) {
+             Ok(run_id) => {
+                 self.active_run_id = Some(run_id.clone());
++                self.pending_runtime_action = None;
++                self.managed_playtest_requested = false;
++                self.managed_capture_requested = false;
++                self.managed_playtest_started_at = None;
++                self.last_captured_frame = None;
+                 self.request_permission(
+                     run_id,
+                     AgentCapability::ExternalAgentProcess,
+@@ -684,6 +831,12 @@ impl AiStudioPanel {
+         match action {
+             PendingPermissionAction::LaunchExternalAgent => self.launch_external_agent(run_id),
+             PendingPermissionAction::ApplyCodeChanges => self.apply_code_changes(run_id),
++            PendingPermissionAction::LaunchPlaytest => {
++                self.pending_runtime_action = Some(AiStudioRuntimeAction::StartPlaytest);
++            }
++            PendingPermissionAction::CaptureFrame => {
++                self.pending_runtime_action = Some(AiStudioRuntimeAction::CaptureFrame);
++            }
+         }
+     }
+ 
+@@ -735,6 +888,12 @@ impl AiStudioPanel {
+                     "Use the injected Editor MCP endpoint for persisted authoring changes. Use this isolated workspace only for project code and return code changes for review.",
+                 ),
+             ),
++            (
++                OsString::from("GAMEENGINE_AGENT_EVENT_PROTOCOL"),
++                OsString::from(
++                    "Emit semantic events as one stdout line prefixed GAMEENGINE_AGENT_EVENT followed by JSON. Supported types: progress, tool_action, completion_gate, playtest_result. Never emit credentials or bearer tokens.",
++                ),
++            ),
+         ];
+         let args = split_direct_args(&self.provider_args);
+         match ExternalAgentProcess::spawn(
+@@ -771,6 +930,21 @@ impl AiStudioPanel {
+             .map(ExternalAgentProcess::drain_output)
+             .unwrap_or_default();
+         for line in output {
++            if line.stream == ProcessStream::Stdout
++                && let Some(payload) = line.text.strip_prefix(PROVIDER_EVENT_PREFIX)
++            {
++                match serde_json::from_str::<ProviderAgentEvent>(payload) {
++                    Ok(event) => {
++                        if let Err(error) = self.record_provider_semantic_event(&run_id, event) {
++                            self.status = Some(error);
++                        }
++                        continue;
++                    }
++                    Err(error) => {
++                        self.status = Some(format!("Provider emitted an invalid semantic AgentEvent: {error}"));
++                    }
++                }
++            }
+             let stream = match line.stream {
+                 ProcessStream::Stdout => "stdout",
+                 ProcessStream::Stderr => "stderr",
+@@ -778,7 +952,7 @@ impl AiStudioPanel {
+             if let Err(error) = self.host.record_event(
+                 &run_id,
+                 AgentEventKind::ProviderOutput,
+-                format!("{stream}: {}", line.text),
++                format!("{stream} output received; raw provider text omitted from persisted history."),
+             ) {
+                 self.status = Some(error.to_string());
+             }
+@@ -807,6 +981,38 @@ impl AiStudioPanel {
+         }
+     }
+ 
++    fn request_managed_playtest_if_ready(&mut self) {
++        if self.managed_playtest_requested || self.pending_runtime_action.is_some() {
++            return;
++        }
++        let Some(run_id) = self.active_run_id.clone() else { return; };
++        if !self.host.run(&run_id).is_ok_and(|run| run.state == AgentRunState::Playtesting) {
++            return;
++        }
++        self.managed_playtest_requested = true;
++        self.request_permission(run_id, AgentCapability::RuntimeLaunch, PendingPermissionAction::LaunchPlaytest);
++    }
++
++    fn poll_managed_playtest_timeout(&mut self) {
++        let Some(started_at) = self.managed_playtest_started_at else { return; };
++        if started_at.elapsed() < std::time::Duration::from_secs(120) {
++            return;
++        }
++        let Some(run_id) = self.active_run_id.clone() else { return; };
++        let state = self.host.run(&run_id).map(|run| run.state).ok();
++        if matches!(state, Some(AgentRunState::Playtesting | AgentRunState::Evaluating)) {
++            let _ = self.host.record_playtest_result(
++                &run_id,
++                true,
++                Some(false),
++                "Managed playtest exceeded the 120 second first-release timeout before required evidence completed.",
++            );
++        }
++        self.pending_runtime_action = Some(AiStudioRuntimeAction::StopPlaytest);
++        self.managed_playtest_started_at = None;
++        self.status = Some("Managed Play stopped at the 120 second timeout.".to_owned());
++    }
++
+     fn poll_managed_validation(&mut self, context: &egui::Context) {
+         let Some(run_id) = self.active_run_id.clone() else {
+             return;
+@@ -876,6 +1082,22 @@ impl AiStudioPanel {
+         }
+     }
+ 
++    fn record_provider_semantic_event(&mut self, run_id: &str, event: ProviderAgentEvent) -> Result<(), String> {
++        match event {
++            ProviderAgentEvent::Progress { step, detail } => self.host.record_semantic_progress(run_id, step, detail).map_err(|error| error.to_string()),
++            ProviderAgentEvent::ToolAction { tool, action, success } => self.host.record_tool_action(run_id, tool, action, success).map_err(|error| error.to_string()),
++            ProviderAgentEvent::CompletionGate { gate, status, message } => self.host.record_completion_gate(run_id, &gate, status, message).map_err(|error| error.to_string()),
++            ProviderAgentEvent::PlaytestResult { launched, interactions_passed, message } => {
++                self.host.record_playtest_result(run_id, launched, interactions_passed, message).map_err(|error| error.to_string())?;
++                if launched && interactions_passed == Some(true) && !self.managed_capture_requested {
++                    self.managed_capture_requested = true;
++                    self.request_permission(run_id.to_owned(), AgentCapability::FrameCapture, PendingPermissionAction::CaptureFrame);
++                }
++                Ok(())
++            }
++        }
++    }
++
+     fn fail_run(&mut self, run_id: &str, message: String) {
+         let _ = self
+             .host
+@@ -983,6 +1205,18 @@ fn edit_lines(ui: &mut egui::Ui, label: &str, values: &mut Vec<String>) {
+     }
+ }
+ 
++fn encode_agent_frame_png(capture: &crate::FrameCapture) -> Result<Vec<u8>, png::EncodingError> {
++    let mut png_bytes = Vec::new();
++    {
++        let mut encoder = png::Encoder::new(&mut png_bytes, capture.width, capture.height);
++        encoder.set_color(png::ColorType::Rgba);
++        encoder.set_depth(png::BitDepth::Eight);
++        let mut writer = encoder.write_header()?;
++        writer.write_image_data(&capture.rgba8)?;
++    }
++    Ok(png_bytes)
++}
++
+ fn split_direct_args(text: &str) -> Vec<String> {
+     text.split_whitespace().map(ToOwned::to_owned).collect()
+ }
+@@ -1024,6 +1258,17 @@ mod tests {
+         );
+     }
+ 
++    #[test]
++    fn provider_semantic_progress_is_structured_json() {
++        let event: ProviderAgentEvent = serde_json::from_str(
++            r#"{"type":"progress","step":"inspect","detail":"scene"}"#,
++        ).expect("semantic event");
++        assert!(matches!(
++            event,
++            ProviderAgentEvent::Progress { step, detail } if step == "inspect" && detail == "scene"
++        ));
++    }
++
+     #[test]
+     fn code_change_summary_keeps_deletion_blocked() {
+         let change = CodeChange {
+diff --git a/crates/editor/src/main.rs b/crates/editor/src/main.rs
+index 752d60780e3f0a106d983e8167c77be2368d512f..a7f15de88f5aa4bf36e2ec76c521f087a8d75681 100644
+--- a/crates/editor/src/main.rs
++++ b/crates/editor/src/main.rs
+@@ -257,7 +257,17 @@ impl eframe::App for EditorShell {
+             context.send_viewport_cmd(eframe::egui::ViewportCommand::Close);
+             return;
+         }
++        if let Some(action) = self.ai_studio.take_runtime_action() {
++            let result = self.app.handle_ai_studio_runtime_action(action, frame.wgpu_render_state());
++            self.ai_studio.report_runtime_result(context, result);
++        }
+         eframe::App::logic(&mut self.app, context, frame);
++        if self.ai_studio.waiting_for_playtest_start() && self.app.ai_studio_playtest_running() {
++            self.ai_studio.report_runtime_result(
++                context,
++                engine_editor::ai_studio::AiStudioRuntimeResult::PlayStarted,
++            );
++        }
+         #[cfg(feature = "visual-validation")]
+         self.handle_visual_validation_capture(context);
+     }
+diff --git a/crates/editor/src/ui/play.rs b/crates/editor/src/ui/play.rs
+index cda8270bee7fb62160ecad2428276496b90e468a..29e48d55dbefb3f877f6938649817f8578dd4fa2 100644
+--- a/crates/editor/src/ui/play.rs
++++ b/crates/editor/src/ui/play.rs
+@@ -708,6 +708,48 @@ impl EditorApp {
+         }
+     }
+ 
++    /// Executes one AI Studio managed runtime action through the normal Editor Play path.
++    pub fn handle_ai_studio_runtime_action(
++        &mut self,
++        action: crate::ai_studio::AiStudioRuntimeAction,
++        render_state: Option<&egui_wgpu::RenderState>,
++    ) -> crate::ai_studio::AiStudioRuntimeResult {
++        use crate::ai_studio::{AiStudioRuntimeAction, AiStudioRuntimeResult};
++        match action {
++            AiStudioRuntimeAction::StartPlaytest => {
++                if !self.is_playing() { self.start_play(); }
++                if self.is_playing() {
++                    AiStudioRuntimeResult::PlayStarted
++                } else if self.play_after_game_build {
++                    AiStudioRuntimeResult::PlayStartPending
++                } else {
++                    AiStudioRuntimeResult::Failed("Editor Play could not start; inspect the current Editor diagnostics.".to_owned())
++                }
++            }
++            AiStudioRuntimeAction::CaptureFrame => {
++                let Some(render_state) = render_state else {
++                    return AiStudioRuntimeResult::Failed("WGPU render state is unavailable for managed frame capture.".to_owned());
++                };
++                let Some(runtime) = self.runtime_state.as_ref() else {
++                    return AiStudioRuntimeResult::Failed("Managed frame capture requires an active Editor Play session.".to_owned());
++                };
++                match runtime.capture_game_view(render_state) {
++                    Ok(capture) => AiStudioRuntimeResult::FrameCaptured(capture),
++                    Err(error) => AiStudioRuntimeResult::Failed(format!("Managed Game View capture failed: {error}")),
++                }
++            }
++            AiStudioRuntimeAction::StopPlaytest => {
++                self.stop_play(render_state);
++                AiStudioRuntimeResult::PlayStopped
++            }
++        }
++    }
++
++    /// Returns whether the normal Editor Play runtime is currently active for AI Studio.
++    pub fn ai_studio_playtest_running(&self) -> bool {
++        self.is_playing()
++    }
++
+     pub(super) fn is_playing(&self) -> bool {
+         self.editor_mode == EditorMode::Playing
+     }
