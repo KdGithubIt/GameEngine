@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0135-20260817-r4",
+  "target_branch": "chatgpt/gameengine-adr0135-resource-arbitration-r2",
+  "expected_head_sha": "6700b76cf4e7db84dbebc9a9ebb82432b44510d9",
+  "baseline_main_sha": "6700b76cf4e7db84dbebc9a9ebb82432b44510d9",
+  "edit_parts": [
+    "edit-0000.json", "edit-0001.json", "edit-0002.json", "edit-0003.json", "edit-0004.json", "edit-0005.json", "edit-0006.json", "edit-0007.json", "edit-0008.json", "edit-0009.json",
+    "edit-0010.json", "edit-0011.json", "edit-0012.json", "edit-0013.json", "edit-0014.json", "edit-0015.json", "edit-0016.json", "edit-0017.json", "edit-0018.json", "edit-0019.json",
+    "edit-0020.json", "edit-0021.json", "edit-0022.json", "edit-0023.json", "edit-0024.json", "edit-0025.json", "edit-0026.json", "edit-0027.json", "edit-0028.json", "edit-0029.json",
+    "edit-0030.json", "edit-0031.json", "edit-0032.json", "edit-0033.json", "edit-0034.json", "edit-0035.json", "edit-0036.json", "edit-0037.json", "edit-0038.json", "edit-0039.json",
+    "edit-0040.json", "edit-0041.json", "edit-0042.json", "edit-0043.json", "edit-0044.json", "edit-0045.json", "edit-0046.json", "edit-0047.json", "edit-0048.json", "edit-0049.json",
+    "edit-0050.json", "edit-0051.json", "edit-0052.json", "edit-0053.json", "edit-0054.json", "edit-0055.json", "edit-0056.json", "edit-0057.json", "edit-0058.json", "edit-0059.json",
+    "edit-0060.json", "edit-0061.json"
+  ],
+  "commit_message": "Integrate ADR0135 with remote AI Studio",
+  "pr_title": "GameEngine: integrate ADR0135 native inference resource arbitration",
+  "pr_body": "## Summary\n\nIntegrates ADR0135 native inference scheduling and Editor GPU resource arbitration on current main after ADR0133 Remote AI Studio landed. Preserves the same authoritative Agent Host, remote idempotency, loopback MCP boundary, and Stop cancellation semantics while adding workload/quality/resource planning, InferenceFocused presentation reclaim/restore, backend capability reporting, native inference interruption, and resumable manual-edit control state.\n\n## Validation\n\nRun current affected Windows Validation and required Editor Visual Validation.\n\n<!-- gameengine-visual-validation: editor -->"
+}
