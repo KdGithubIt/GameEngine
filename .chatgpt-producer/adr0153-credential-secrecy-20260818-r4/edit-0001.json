@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/agent_host.rs",
+  "old": "pub(crate) trait AgentProcessConfinementProvider {\n    fn spawn(\n        &self,\n        spec: &AgentProcessLaunchSpec,\n        request: &AgentConfinementRequest,\n    ) -> Result<AgentProcessLaunchOutcome, AgentProcessLaunchError>;\n}\n",
+  "new": "/// Provider/platform-owned process creation boundary for real confinement.\n///\n/// A provider that reports `credential_secrecy_guarantee: Enforced` must keep\n/// provider credentials and MCP authorization material out of the sandboxed\n/// child process, including inherited parent environment. It may use a\n/// provider-native broker, helper, or equivalent out-of-process credential\n/// channel. The generic application-policy-only launcher intentionally does\n/// not claim that guarantee.\npub(crate) trait AgentProcessConfinementProvider {\n    fn spawn(\n        &self,\n        spec: &AgentProcessLaunchSpec,\n        request: &AgentConfinementRequest,\n    ) -> Result<AgentProcessLaunchOutcome, AgentProcessLaunchError>;\n}\n"
+}
