@@ -1,7 +1,7 @@
 # ChatGPT GitHub Automation
 
-Status: Accepted  
-Version: 2.2.0  
+Status: Accepted
+Version: 2.2.0
 Canonical location: `docs/CHATGPT_AUTOMATION.md`
 
 ## Purpose
