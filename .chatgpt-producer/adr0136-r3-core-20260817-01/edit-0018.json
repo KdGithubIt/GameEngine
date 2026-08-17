@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/scene_view.rs","old":"        self.preview = None;\n        self.renderer = None;\n        self.gpu_mesh_cache.clear();\n        self.manifest_hash_cache = None;\n","new":"        self.preview = None;\n        self.renderer = None;\n        self.residency.release_gpu();\n        self.manifest_hash_cache = None;\n"}
