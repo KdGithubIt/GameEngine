@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/material_editor.rs",
+  "old": "use engine_authoring::AssetId;",
+  "new": "use engine_authoring::{\n    AssetId, AuthoringPermissions, TypedDocumentAuthoringError, TypedDocumentAuthoringMutation,\n    TypedDocumentAuthoringService, TypedDocumentAuthoringSnapshot, TypedDocumentAuthoringState,\n    TypedDocumentAuthoringValidation,\n};"
+}
