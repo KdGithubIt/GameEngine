@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "    CapabilityAvailability, InferenceWorkload, MemoryPressure, ModelResidencyRequest,\n    ModelResourceTelemetry, PresentationPosture, QualityPreference, ReclaimLevel, ResourcePlan,\n    TelemetryValue, WorkloadSignals,\n",
+  "new": "    CapabilityAvailability, InferenceWorkload, MemoryPressure, ModelResidencyRequest,\n    ModelResourceOperation, ModelResourceTelemetry, PresentationPosture, QualityPreference,\n    ReclaimLevel, ResourcePlan, TelemetryValue, WorkloadSignals,\n"
+}
