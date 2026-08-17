@@ -23,9 +23,17 @@ use std::path::PathBuf;
 
 const PROVIDER_EVENT_PREFIX: &str = "GAMEENGINE_AGENT_EVENT ";
 const MAX_AUTONOMOUS_SOURCE_REPAIRS: usize = 2;
+const MAX_AUTONOMOUS_RUNTIME_REPAIRS: usize = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SourceRepairDecision {
+    Wait,
+    Retry(usize),
+    Exhausted,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RuntimeRepairDecision {
     Wait,
     Retry(usize),
     Exhausted,
@@ -184,9 +192,12 @@ pub struct AiStudioPanel {
     pending_permission: Option<PendingPermission>,
     pending_runtime_action: Option<AiStudioRuntimeAction>,
     managed_input_plan: VecDeque<InputCommand>,
+    managed_input_recipe: Vec<InputCommand>,
+    managed_candidate_input_recipe: Vec<InputCommand>,
     managed_playtest_requested: bool,
     managed_capture_requested: bool,
     managed_repair_requested: bool,
+    managed_runtime_repairs: usize,
     managed_runtime_observation: Option<ManagedRuntimeObservation>,
     managed_evaluation_requested: bool,
     managed_playtest_started_at: Option<std::time::Instant>,
@@ -238,9 +249,12 @@ impl AiStudioPanel {
             pending_permission: None,
             pending_runtime_action: None,
             managed_input_plan: VecDeque::new(),
+            managed_input_recipe: Vec::new(),
+            managed_candidate_input_recipe: Vec::new(),
             managed_playtest_requested: false,
             managed_capture_requested: false,
             managed_repair_requested: false,
+            managed_runtime_repairs: 0,
             managed_runtime_observation: None,
             managed_evaluation_requested: false,
             managed_playtest_started_at: None,
@@ -357,6 +371,7 @@ impl AiStudioPanel {
         self.poll_external_process(context);
         self.poll_managed_validation(context);
         self.request_managed_source_repair_if_ready();
+        self.request_managed_runtime_repair_if_ready();
         self.request_managed_playtest_if_ready();
         self.request_next_managed_runtime_input_if_ready();
         self.poll_managed_playtest_timeout();
@@ -870,9 +885,12 @@ impl AiStudioPanel {
                 self.active_run_id = Some(run_id.clone());
                 self.pending_runtime_action = None;
                 self.managed_input_plan.clear();
+                self.managed_input_recipe.clear();
+                self.managed_candidate_input_recipe.clear();
                 self.managed_playtest_requested = false;
                 self.managed_capture_requested = false;
                 self.managed_repair_requested = false;
+                self.managed_runtime_repairs = 0;
                 self.managed_runtime_observation = None;
                 self.managed_evaluation_requested = false;
                 self.managed_playtest_started_at = None;
@@ -1002,11 +1020,15 @@ impl AiStudioPanel {
                 return;
             }
         };
+        if purpose == ExternalAgentPurpose::BuildOrRepair {
+            self.managed_candidate_input_recipe.clear();
+        }
         let repair_context = (purpose == ExternalAgentPurpose::BuildOrRepair)
             .then(|| {
                 self.host.run(run_id).ok().and_then(|run| {
-                    (run.state == AgentRunState::Repairing)
-                        .then(|| managed_source_repair_context(run))
+                    (run.state == AgentRunState::Repairing).then(|| {
+                        managed_repair_context(run, self.managed_runtime_observation.as_ref())
+                    })
                 })
             })
             .flatten();
@@ -1312,6 +1334,70 @@ impl AiStudioPanel {
         }
     }
 
+    fn request_managed_runtime_repair_if_ready(&mut self) {
+        if self.managed_repair_requested
+            || self.process.is_some()
+            || self.pending_permission.is_some()
+            || self.pending_runtime_action.is_some()
+            || self.managed_playtest_started_at.is_some()
+        {
+            return;
+        }
+        let Some(run_id) = self.active_run_id.clone() else {
+            return;
+        };
+        let decision = match self.host.run(&run_id) {
+            Ok(run) => runtime_repair_decision(
+                run.state,
+                run.completion.source_validation,
+                run.completion.play_launch,
+                run.completion.visual_evaluation,
+                run.completion.interaction_scenarios,
+                self.managed_runtime_repairs,
+            ),
+            Err(error) => {
+                self.status = Some(error.to_string());
+                return;
+            }
+        };
+        match decision {
+            RuntimeRepairDecision::Wait => {}
+            RuntimeRepairDecision::Retry(repair_number) => {
+                self.managed_runtime_repairs = repair_number;
+                self.managed_repair_requested = true;
+                self.managed_playtest_requested = false;
+                self.managed_capture_requested = false;
+                self.managed_evaluation_requested = false;
+                if let Err(error) = self.host.record_semantic_progress(
+                    &run_id,
+                    "managed_runtime_repair",
+                    format!(
+                        "Starting autonomous runtime repair {repair_number}/{MAX_AUTONOMOUS_RUNTIME_REPAIRS} after managed Play or visual evaluation failure."
+                    ),
+                ) {
+                    self.status = Some(error.to_string());
+                }
+                self.request_permission(
+                    run_id,
+                    AgentCapability::ExternalAgentProcess,
+                    PendingPermissionAction::LaunchExternalAgent,
+                );
+            }
+            RuntimeRepairDecision::Exhausted => {
+                self.managed_repair_requested = true;
+                let message = format!(
+                    "Autonomous runtime repair budget exhausted after {MAX_AUTONOMOUS_RUNTIME_REPAIRS} repair attempt(s); managed Play or visual evaluation remains failed."
+                );
+                let _ = self.host.record_semantic_progress(
+                    &run_id,
+                    "managed_runtime_repair_exhausted",
+                    message.clone(),
+                );
+                self.status = Some(message);
+            }
+        }
+    }
+
     fn request_managed_playtest_if_ready(&mut self) {
         if self.managed_playtest_requested || self.pending_runtime_action.is_some() {
             return;
@@ -1320,6 +1406,10 @@ impl AiStudioPanel {
         if !self.host.run(&run_id).is_ok_and(|run| run.state == AgentRunState::Playtesting) {
             return;
         }
+        self.managed_input_plan = self.managed_input_recipe.iter().cloned().collect();
+        self.managed_capture_requested = false;
+        self.managed_evaluation_requested = false;
+        self.managed_runtime_observation = None;
         self.managed_playtest_requested = true;
         self.request_permission(run_id, AgentCapability::RuntimeLaunch, PendingPermissionAction::LaunchPlaytest);
     }
@@ -1398,11 +1488,22 @@ impl AiStudioPanel {
             }
             CompletionStatus::Pending | CompletionStatus::NotApplicable => {
                 let message = format!(
-                    "Runtime evaluator finished with {exit_code:?} without resolving visual_evaluation from the host-captured frame."
+                    "Runtime evaluator finished with {exit_code:?} without resolving visual_evaluation from the host-captured frame; runtime repair is required."
                 );
                 let _ = self
                     .host
                     .record_event(run_id, AgentEventKind::Failure, message.clone());
+                if self
+                    .host
+                    .run(run_id)
+                    .is_ok_and(|run| run.state == AgentRunState::Evaluating)
+                {
+                    let _ = self.host.transition_run(
+                        run_id,
+                        AgentRunState::Repairing,
+                        "Runtime evaluator did not resolve visual evidence; repair is required.",
+                    );
+                }
                 self.status = Some(message);
             }
         }
@@ -1427,6 +1528,10 @@ impl AiStudioPanel {
         }
         let has_code_changes = !changes.is_empty();
         self.pending_code_changes = changes;
+        if !self.managed_candidate_input_recipe.is_empty() {
+            self.managed_input_recipe = std::mem::take(&mut self.managed_candidate_input_recipe);
+        }
+        self.managed_input_plan = self.managed_input_recipe.iter().cloned().collect();
         self.managed_repair_requested = false;
         if let Err(error) = self
             .host
@@ -1490,7 +1595,7 @@ impl AiStudioPanel {
                     return Err("runtime_input planning is accepted only during provider execution, before managed Play evaluation".to_owned());
                 }
                 let command = input.command()?;
-                self.managed_input_plan.push_back(command);
+                self.managed_candidate_input_recipe.push(command);
                 self.host
                     .record_semantic_progress(
                         run_id,
@@ -1529,6 +1634,56 @@ fn source_repair_decision(
     } else {
         SourceRepairDecision::Retry(failed_attempts)
     }
+}
+
+fn runtime_repair_decision(
+    state: AgentRunState,
+    source_validation: CompletionStatus,
+    play_launch: CompletionStatus,
+    visual_evaluation: CompletionStatus,
+    interaction_scenarios: CompletionStatus,
+    repair_attempts: usize,
+) -> RuntimeRepairDecision {
+    let runtime_failed = play_launch == CompletionStatus::Failed
+        || visual_evaluation == CompletionStatus::Failed
+        || interaction_scenarios == CompletionStatus::Failed;
+    if state != AgentRunState::Repairing
+        || source_validation == CompletionStatus::Failed
+        || !runtime_failed
+    {
+        return RuntimeRepairDecision::Wait;
+    }
+    if repair_attempts >= MAX_AUTONOMOUS_RUNTIME_REPAIRS {
+        RuntimeRepairDecision::Exhausted
+    } else {
+        RuntimeRepairDecision::Retry(repair_attempts + 1)
+    }
+}
+
+fn managed_repair_context(
+    run: &crate::agent_host::AgentRun,
+    runtime_observation: Option<&ManagedRuntimeObservation>,
+) -> String {
+    if run.completion.source_validation == CompletionStatus::Failed {
+        return managed_source_repair_context(run);
+    }
+    let observation = runtime_observation
+        .map(|observation| {
+            format!(
+                " Last host-captured frame: {} ({}x{}) at {}.",
+                observation.artifact_id,
+                observation.width,
+                observation.height,
+                observation.path.display()
+            )
+        })
+        .unwrap_or_default();
+    format!(
+        "Managed runtime evidence failed (play_launch={:?}, visual_evaluation={:?}, interaction_scenarios={:?}). Repair the existing isolated workspace in place without expanding the immutable proposal scope. Preserve or replace the provider-planned runtime interaction recipe as appropriate; GameEngine will rerun managed source validation, start a fresh Editor Play session, replay the resulting interaction recipe, capture a fresh frame, and evaluate again.{observation}",
+        run.completion.play_launch,
+        run.completion.visual_evaluation,
+        run.completion.interaction_scenarios,
+    )
 }
 
 fn managed_source_repair_context(run: &crate::agent_host::AgentRun) -> String {
