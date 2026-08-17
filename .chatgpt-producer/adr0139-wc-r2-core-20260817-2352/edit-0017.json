@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ui/mod.rs","old":"/// Latest unsaved value for one Material path during a continuous UI edit.\nstruct PendingMaterialSave {\n    material: engine_authoring::MaterialAsset,\n    deadline: std::time::Instant,\n}\n\n","new":""}
