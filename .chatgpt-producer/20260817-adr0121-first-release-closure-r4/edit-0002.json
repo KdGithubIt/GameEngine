@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ui/mcp.rs",
+  "old": "        assert_eq!(\n            cli_apply[\"diff\"],\n            serde_json::to_value(&direct_apply.diff).expect(\"CLI material apply diff\")\n        );\n",
+  "new": "        let direct_apply_documents: Vec<_> = direct_apply\n            .diff\n            .iter()\n            .map(|change| (change.before.clone(), change.after.clone()))\n            .collect();\n        assert_eq!(\n            material_diff_documents(&cli_apply[\"diff\"]),\n            direct_apply_documents\n        );\n"
+}
