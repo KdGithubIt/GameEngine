@@ -6,15 +6,18 @@
 //! not acquire mutation permissions or participate in the write-capable
 //! [`crate::agent_host::AgentRun`] state machine.
 
+use crate::resource_arbitration::ModelResourceCapabilities;
 use serde::{Deserialize, Serialize};
 use std::cmp::Reverse;
 use std::collections::BTreeSet;
 use std::fmt;
 use std::fs;
 use std::io::{self, Read, Write};
-use std::net::{IpAddr, TcpStream, ToSocketAddrs};
+use std::net::{IpAddr, Shutdown, TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 pub(crate) const DEFAULT_LOCAL_MODEL_ENDPOINT: &str = "http://127.0.0.1:11434";
@@ -39,6 +42,7 @@ pub(crate) enum NativeAgentError {
     InvalidHttpResponse(String),
     ResponseTooLarge,
     EmptyResponse,
+    Interrupted,
     WorkerDisconnected,
     Io(io::Error),
     Json(serde_json::Error),
@@ -66,6 +70,7 @@ impl fmt::Display for NativeAgentError {
                 "local model backend response exceeded the safety limit"
             ),
             Self::EmptyResponse => write!(formatter, "local model returned an empty answer"),
+            Self::Interrupted => write!(formatter, "native model inference was interrupted"),
             Self::WorkerDisconnected => {
                 write!(formatter, "native question worker disconnected unexpectedly")
             }
@@ -113,6 +118,7 @@ impl LocalModelConfig {
             image_input: None,
             reasoning: None,
             context_limit: None,
+            resource_capabilities: ModelResourceCapabilities::default(),
             benchmark_verified: false,
         }
     }
@@ -127,6 +133,12 @@ pub(crate) struct ModelCapabilityProfile {
     pub(crate) image_input: Option<bool>,
     pub(crate) reasoning: Option<bool>,
     pub(crate) context_limit: Option<u64>,
+    /// Resource controls verified for this backend adapter.
+    ///
+    /// The initial generic loopback adapter deliberately reports every
+    /// provider-specific control as unavailable until a governed implementation
+    /// exists; AI Studio must never imply support by guessing from the server.
+    pub(crate) resource_capabilities: ModelResourceCapabilities,
     pub(crate) benchmark_verified: bool,
 }
 
@@ -187,6 +199,14 @@ pub(crate) struct NativeMetrics {
     pub(crate) prompt_eval_tokens: Option<u64>,
     pub(crate) response_tokens: Option<u64>,
     pub(crate) backend_duration_ms: Option<u64>,
+    pub(crate) load_latency_ms: Option<u64>,
+    pub(crate) prompt_eval_duration_ms: Option<u64>,
+    pub(crate) generation_duration_ms: Option<u64>,
+    /// Generation throughput in milli-tokens per second when the backend
+    /// reports both generated token count and generation duration.
+    pub(crate) generation_tokens_per_second_milli: Option<u64>,
+    /// The non-streaming baseline cannot observe first-token time exactly.
+    pub(crate) ttft_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -198,6 +218,8 @@ pub(crate) struct NativeAnswer {
 
 pub(crate) struct NativeQuestionTask {
     result: Receiver<Result<NativeAnswer, NativeAgentError>>,
+    interrupted: Arc<AtomicBool>,
+    active_stream: Arc<Mutex<Option<TcpStream>>>,
 }
 
 impl NativeQuestionTask {
@@ -213,13 +235,42 @@ impl NativeQuestionTask {
         // the UI boundary instead of looking like a model timeout.
         LocalHttpEndpoint::parse(&config.endpoint)?;
         let (sender, result) = mpsc::channel();
+        let interrupted = Arc::new(AtomicBool::new(false));
+        let active_stream = Arc::new(Mutex::new(None));
+        let worker_interrupted = Arc::clone(&interrupted);
+        let worker_stream = Arc::clone(&active_stream);
         std::thread::Builder::new()
             .name("ai-native-question".to_owned())
             .spawn(move || {
-                let answer = answer_question(&config, &project_root, &conversation);
+                let answer = answer_question(
+                    &config,
+                    &project_root,
+                    &conversation,
+                    &worker_interrupted,
+                    &worker_stream,
+                );
                 let _ = sender.send(answer);
             })?;
-        Ok(Self { result })
+        Ok(Self {
+            result,
+            interrupted,
+            active_stream,
+        })
+    }
+
+    /// Interrupts active inference without terminating or cancelling an AgentRun.
+    ///
+    /// Closing the request socket is the safe boundary available to the
+    /// first-release loopback HTTP backend. The worker reports
+    /// [`NativeAgentError::Interrupted`] instead of fabricating a provider
+    /// success.
+    pub(crate) fn interrupt(&self) {
+        self.interrupted.store(true, Ordering::Release);
+        if let Ok(guard) = self.active_stream.lock()
+            && let Some(stream) = guard.as_ref()
+        {
+            let _ = stream.shutdown(Shutdown::Both);
+        }
     }
 
     pub(crate) fn poll(&self) -> Option<Result<NativeAnswer, NativeAgentError>> {
@@ -352,8 +403,13 @@ fn answer_question(
     config: &LocalModelConfig,
     project_root: &Path,
     conversation: &[QuestionMessage],
+    interrupted: &AtomicBool,
+    active_stream: &Mutex<Option<TcpStream>>,
 ) -> Result<NativeAnswer, NativeAgentError> {
     let started = Instant::now();
+    if interrupted.load(Ordering::Acquire) {
+        return Err(NativeAgentError::Interrupted);
+    }
     let query = conversation
         .iter()
         .rev()
@@ -363,7 +419,10 @@ fn answer_question(
     let engine_root = discover_engine_root();
     let evidence = retrieve_evidence(query, engine_root.as_deref(), project_root)?;
     let prompt = build_prompt(conversation, &evidence);
-    let backend = generate_local(config, &prompt)?;
+    if interrupted.load(Ordering::Acquire) {
+        return Err(NativeAgentError::Interrupted);
+    }
+    let backend = generate_local(config, &prompt, interrupted, active_stream)?;
     let text = backend.response.trim().to_owned();
     if text.is_empty() {
         return Err(NativeAgentError::EmptyResponse);
@@ -382,6 +441,16 @@ fn answer_question(
             prompt_eval_tokens: backend.prompt_eval_count,
             response_tokens: backend.eval_count,
             backend_duration_ms: backend.total_duration.map(|nanos| nanos / 1_000_000),
+            load_latency_ms: backend.load_duration.map(|nanos| nanos / 1_000_000),
+            prompt_eval_duration_ms: backend
+                .prompt_eval_duration
+                .map(|nanos| nanos / 1_000_000),
+            generation_duration_ms: backend.eval_duration.map(|nanos| nanos / 1_000_000),
+            generation_tokens_per_second_milli: generation_throughput_milli(
+                backend.eval_count,
+                backend.eval_duration,
+            ),
+            ttft_ms: None,
         },
         text,
         sources,
@@ -390,6 +459,19 @@ fn answer_question(
 
 fn duration_ms(duration: Duration) -> u64 {
     duration.as_millis().min(u128::from(u64::MAX)) as u64
+}
+
+fn generation_throughput_milli(tokens: Option<u64>, duration_nanos: Option<u64>) -> Option<u64> {
+    let (Some(tokens), Some(duration_nanos)) = (tokens, duration_nanos) else {
+        return None;
+    };
+    if duration_nanos == 0 {
+        return None;
+    }
+    let scaled = u128::from(tokens)
+        .saturating_mul(1_000_000_000_000)
+        / u128::from(duration_nanos);
+    Some(scaled.min(u128::from(u64::MAX)) as u64)
 }
 
 #[derive(Debug, Serialize)]
@@ -408,11 +490,19 @@ struct GenerateResponse {
     eval_count: Option<u64>,
     #[serde(default)]
     total_duration: Option<u64>,
+    #[serde(default)]
+    load_duration: Option<u64>,
+    #[serde(default)]
+    prompt_eval_duration: Option<u64>,
+    #[serde(default)]
+    eval_duration: Option<u64>,
 }
 
 fn generate_local(
     config: &LocalModelConfig,
     prompt: &str,
+    interrupted: &AtomicBool,
+    active_stream: &Mutex<Option<TcpStream>>,
 ) -> Result<GenerateResponse, NativeAgentError> {
     let endpoint = LocalHttpEndpoint::parse(&config.endpoint)?;
     let body = serde_json::to_vec(&GenerateRequest {
@@ -421,6 +511,12 @@ fn generate_local(
         stream: false,
     })?;
     let mut stream = endpoint.connect()?;
+    if interrupted.load(Ordering::Acquire) {
+        return Err(NativeAgentError::Interrupted);
+    }
+    if let Ok(mut guard) = active_stream.lock() {
+        *guard = stream.try_clone().ok();
+    }
     write!(
         stream,
         "POST /api/generate HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\nAccept: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
@@ -431,9 +527,16 @@ fn generate_local(
     stream.flush()?;
 
     let mut response = Vec::new();
-    stream
+    let read_result = stream
         .take(MAX_HTTP_RESPONSE_BYTES + 1)
-        .read_to_end(&mut response)?;
+        .read_to_end(&mut response);
+    if let Ok(mut guard) = active_stream.lock() {
+        *guard = None;
+    }
+    if interrupted.load(Ordering::Acquire) {
+        return Err(NativeAgentError::Interrupted);
+    }
+    read_result?;
     if response.len() as u64 > MAX_HTTP_RESPONSE_BYTES {
         return Err(NativeAgentError::ResponseTooLarge);
     }
