@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/agent_host.rs",
+  "old": "#[derive(Debug, Clone, Serialize, Deserialize)]\npub(crate) struct AgentRun {",
+  "new": "#[derive(Debug, Clone, Serialize, Deserialize)]\npub(crate) struct AssetAcquisitionRecord {\n    pub(crate) provider: String,\n    pub(crate) source: String,\n    pub(crate) license: Option<String>,\n    pub(crate) imported_paths: Vec<PathBuf>,\n    pub(crate) created_unix_ms: u64,\n}\n\n#[derive(Debug, Clone, Default, Serialize, Deserialize)]\npub(crate) struct AgentRunAudit {\n    pub(crate) authoring_operations: u64,\n    pub(crate) code_changes: u64,\n    pub(crate) asset_acquisitions: Vec<AssetAcquisitionRecord>,\n    pub(crate) managed_runtime_inputs: u64,\n    pub(crate) raw_workspace_operations: u64,\n    pub(crate) custom_commands: u64,\n    pub(crate) permission_escalations: u64,\n}\n\n#[derive(Debug, Clone, Serialize, Deserialize)]\npub(crate) struct AgentRun {"
+}
