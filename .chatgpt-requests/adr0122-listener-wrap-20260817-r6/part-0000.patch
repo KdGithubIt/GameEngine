@@ -1,0 +1,16 @@
+diff --git a/crates/editor/src/ui/audio_authoring.rs b/crates/editor/src/ui/audio_authoring.rs
+index 26cf39ec89e7c70de19e706267f05496453a49cd..a4184167410c283ebb377d6110105bd5eb653b5b 100644
+--- a/crates/editor/src/ui/audio_authoring.rs
++++ b/crates/editor/src/ui/audio_authoring.rs
+@@ -176,7 +176,10 @@ pub(super) fn show_audio_component_extras(
+         action
+     } else if component_type.as_str() == engine::scene_bridge::AUDIO_LISTENER_COMPONENT {
+         ui.separator();
+-        ui.small("Scene View shows this listener's world-space orientation. Highest enabled priority wins; equal highest priorities use deterministic entity order.");
++        ui.scope(|ui| {
++            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
++            ui.small("Scene View shows this listener's world-space orientation. Highest enabled priority wins; equal highest priorities use deterministic entity order.");
++        });
+         None
+     } else {
+         None
