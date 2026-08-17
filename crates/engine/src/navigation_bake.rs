@@ -1,0 +1,544 @@
+//! Scene-to-navigation adapter for the shared production bake service (ADR 0124).
+//!
+//! `engine-physics` owns the GUI-free bake document and deterministic service.
+//! This composition-layer adapter is responsible only for collecting runtime
+//! geometry from an authoring scene and registering the resulting asset in the
+//! project manifest.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
+use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
+
+use engine_authoring::{
+    replace_file_contents, AssetId, AuthoringCommand, AuthoringScene, ComponentTypeId,
+    ProjectRoot, Value,
+};
+use engine_ecs::Query;
+use glam::Vec3;
+
+use crate::asset::{Assets, Handle};
+use crate::collision::{Collider, PhysicsBody, TriggerVolume};
+use crate::mesh::Mesh;
+use crate::script_api::RuntimeEntityIdentity;
+use crate::transform::GlobalTransform;
+use crate::{AssetManifest, AssetServer, ManifestEntry};
+use engine_physics::navigation::{
+    NavigationBuildLink, NavigationModifier, NavigationModifierMode, NavigationProfileId,
+    NavigationTriangle,
+};
+
+pub use engine_physics::navigation_bake::{
+    NavMeshBakeDocument, NavMeshBakeSettings, NavigationBakeOutput, NavigationBakeService,
+    NavigationBakeServiceError, NavigationBakeStats, NavigationSource, NAVMESH_BAKE_SCHEMA_VERSION,
+};
+
+/// Stable authoring component used to emit one explicit off-mesh traversal.
+pub const NAVIGATION_LINK_COMPONENT: &str = "engine.nav_link";
+/// Stable authoring component used to exclude or reclassify navigation geometry.
+pub const NAVIGATION_MODIFIER_COMPONENT: &str = "engine.nav_modifier";
+
+/// Successful scene bake output and registered stable asset ID.
+pub struct NavMeshBakeResult {
+    /// Newly baked production runtime asset.
+    pub nav_mesh: crate::navmesh::NavMesh,
+    /// Stable manifest ID associated with the output path.
+    pub asset_id: AssetId,
+    /// Absolute output path.
+    pub output_path: PathBuf,
+    /// Production bake statistics.
+    pub stats: NavigationBakeStats,
+}
+
+/// Collects navigation-relevant scene data without mutating output files.
+///
+/// # Errors
+///
+/// Returns [`NavMeshBakeError`] when scene conversion or authored navigation
+/// component parsing fails.
+pub fn collect_navigation_source(
+    scene: &AuthoringScene,
+    project_root: &ProjectRoot,
+    manifest: &AssetManifest,
+) -> Result<NavigationSource, NavMeshBakeError> {
+    let normalized_scene = scene_without_navigation_derived_components(scene)?;
+    let mut world = engine_ecs::World::new();
+    world.insert_resource(AssetServer::with_assets_root(project_root.assets_root()));
+    world.insert_resource(manifest.clone());
+    crate::scene_bridge::spawn_from_authoring_scene(&mut world, &normalized_scene)
+        .map_err(|error| NavMeshBakeError::Scene(error.to_string()))?;
+    crate::transform_propagation_system(Query::new(&mut world));
+
+    let render_instances = if let Ok(query) = world.query::<(
+        &GlobalTransform,
+        &Handle<Mesh>,
+        Option<&PhysicsBody>,
+    )>() {
+        query
+            .iter()
+            .filter_map(|(entity, (transform, mesh, body))| {
+                (body.is_none() || body == Some(&PhysicsBody::Static))
+                    .then_some((entity, transform.matrix(), *mesh))
+            })
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+    let render_entities = render_instances
+        .iter()
+        .map(|(entity, _, _)| *entity)
+        .collect::<BTreeSet<_>>();
+    let mut triangles = Vec::new();
+    if let Some(meshes) = world.get_resource::<Assets<Mesh>>() {
+        for (_, matrix, handle) in &render_instances {
+            let Some(mesh) = meshes.get(handle) else {
+                continue;
+            };
+            if mesh.skinning.is_some() {
+                continue;
+            }
+            if let Some(indices) = &mesh.indices {
+                for indices in indices.chunks_exact(3) {
+                    let Some(a) = mesh.vertices.get(indices[0] as usize) else {
+                        continue;
+                    };
+                    let Some(b) = mesh.vertices.get(indices[1] as usize) else {
+                        continue;
+                    };
+                    let Some(c) = mesh.vertices.get(indices[2] as usize) else {
+                        continue;
+                    };
+                    triangles.push(world_triangle(*matrix, a.position, b.position, c.position));
+                }
+            } else {
+                for vertices in mesh.vertices.chunks_exact(3) {
+                    triangles.push(world_triangle(
+                        *matrix,
+                        vertices[0].position,
+                        vertices[1].position,
+                        vertices[2].position,
+                    ));
+                }
+            }
+        }
+    }
+
+    let mut generated_modifiers = Vec::new();
+    if let Ok(query) = world.query::<(
+        &RuntimeEntityIdentity,
+        &GlobalTransform,
+        &Collider,
+        Option<&PhysicsBody>,
+        Option<&TriggerVolume>,
+    )>() {
+        for (entity, (identity, transform, collider, body, trigger)) in query.iter() {
+            if body != Some(&PhysicsBody::Static) || trigger.is_some() {
+                continue;
+            }
+            let aabb = collider.world_aabb(transform);
+            let minimum = aabb.center - aabb.half_extents;
+            let maximum = aabb.center + aabb.half_extents;
+            if !render_entities.contains(&entity)
+                && matches!(collider, Collider::Aabb { .. })
+            {
+                let y = maximum.y;
+                let a = [minimum.x, y, minimum.z];
+                let b = [maximum.x, y, minimum.z];
+                let c = [maximum.x, y, maximum.z];
+                let d = [minimum.x, y, maximum.z];
+                triangles.push(NavigationTriangle { a, b, c, area: 0 });
+                triangles.push(NavigationTriangle {
+                    a,
+                    b: c,
+                    c: d,
+                    area: 0,
+                });
+            }
+            let exclusion_maximum_y = if matches!(collider, Collider::Aabb { .. }) {
+                (maximum.y - 0.01).max(minimum.y)
+            } else {
+                maximum.y
+            };
+            generated_modifiers.push(NavigationModifier {
+                id: format!("collider:{}", identity.authoring_id.as_str()),
+                minimum: [minimum.x, minimum.y, minimum.z],
+                maximum: [maximum.x, exclusion_maximum_y, maximum.z],
+                profiles: Vec::new(),
+                mode: NavigationModifierMode::Exclude,
+            });
+        }
+    }
+
+    let mut modifiers = collect_authored_modifiers(scene)?;
+    modifiers.extend(generated_modifiers);
+    let links = collect_authored_links(scene)?;
+    Ok(NavigationSource {
+        triangles,
+        modifiers,
+        links,
+    })
+}
+
+fn world_triangle(
+    matrix: glam::Mat4,
+    a: [f32; 3],
+    b: [f32; 3],
+    c: [f32; 3],
+) -> NavigationTriangle {
+    NavigationTriangle {
+        a: matrix.transform_point3(Vec3::from_array(a)).to_array(),
+        b: matrix.transform_point3(Vec3::from_array(b)).to_array(),
+        c: matrix.transform_point3(Vec3::from_array(c)).to_array(),
+        area: 0,
+    }
+}
+
+/// Prepares deterministic shared build input for one scene/document pair.
+///
+/// # Errors
+///
+/// Returns [`NavMeshBakeError`] for collection or shared-service validation failure.
+pub fn prepare_scene_navmesh(
+    scene: &AuthoringScene,
+    project_root: &ProjectRoot,
+    manifest: &AssetManifest,
+    document: &NavMeshBakeDocument,
+) -> Result<engine_physics::navigation::NavigationBuildInput, NavMeshBakeError> {
+    let source = collect_navigation_source(scene, project_root, manifest)?;
+    NavigationBakeService
+        .prepare(&source, document)
+        .map_err(NavMeshBakeError::Shared)
+}
+
+/// Returns whether navigation-relevant scene data/settings differ from the last bake.
+///
+/// # Errors
+///
+/// Returns [`NavMeshBakeError`] when collection or shared preparation fails.
+pub fn is_scene_navmesh_stale(
+    scene: &AuthoringScene,
+    project_root: &ProjectRoot,
+    manifest: &AssetManifest,
+    document: &NavMeshBakeDocument,
+) -> Result<bool, NavMeshBakeError> {
+    let source = collect_navigation_source(scene, project_root, manifest)?;
+    NavigationBakeService
+        .is_stale(&source, document)
+        .map_err(NavMeshBakeError::Shared)
+}
+
+/// Returns whether both the bake document and runtime asset match the current source.
+///
+/// This is the shared consumption gate used by Play and packaging. A generated
+/// artifact is current only when the normalized source/settings fingerprint matches
+/// both the last-successful bake marker and the serialized production NavMesh.
+///
+/// # Errors
+///
+/// Returns [`NavMeshBakeError`] when source collection or preparation fails.
+pub fn is_scene_navmesh_current(
+    scene: &AuthoringScene,
+    project_root: &ProjectRoot,
+    manifest: &AssetManifest,
+    document: &NavMeshBakeDocument,
+    nav_mesh: &crate::navmesh::NavMesh,
+) -> Result<bool, NavMeshBakeError> {
+    let input = prepare_scene_navmesh(scene, project_root, manifest, document)?;
+    Ok(document.source_fingerprint.as_deref() == Some(input.source_fingerprint.as_str())
+        && nav_mesh.source_fingerprint == input.source_fingerprint)
+}
+
+/// Bakes, safely replaces, registers, and fingerprints one scene NavMesh.
+///
+/// # Errors
+///
+/// Returns [`NavMeshBakeError`] for collection, cancellation, bake, project,
+/// asset replacement, or manifest persistence failure.
+pub fn bake_scene_navmesh(
+    scene: &AuthoringScene,
+    project_root: &ProjectRoot,
+    manifest: &mut AssetManifest,
+    document: &mut NavMeshBakeDocument,
+    cancelled: &AtomicBool,
+) -> Result<NavMeshBakeResult, NavMeshBakeError> {
+    let source = collect_navigation_source(scene, project_root, manifest)?;
+    let output_path = project_root
+        .resolve_asset_for_write(&document.output_asset)
+        .map_err(|error| NavMeshBakeError::Project(error.to_string()))?;
+    let output = NavigationBakeService
+        .bake_to_path(&source, document, &output_path, cancelled)
+        .map_err(NavMeshBakeError::Shared)?;
+
+    let asset_id = manifest
+        .iter()
+        .find(|(_, entry)| entry.path == document.output_asset)
+        .map(|(id, _)| id.clone())
+        .unwrap_or_else(AssetId::generate);
+    let mut next_manifest = manifest.clone();
+    next_manifest.insert(
+        asset_id.clone(),
+        ManifestEntry {
+            path: document.output_asset.clone(),
+            name: Some("Navigation Mesh".to_owned()),
+            import_settings: Default::default(),
+        },
+    );
+    let manifest_json = next_manifest
+        .to_canonical_json()
+        .map_err(NavMeshBakeError::Json)?;
+    replace_file_contents(
+        &project_root.path().join("asset_manifest.json"),
+        &manifest_json,
+    )
+    .map_err(|error| NavMeshBakeError::Persist(error.to_string()))?;
+    *manifest = next_manifest;
+    document.source_fingerprint = Some(output.source_fingerprint.clone());
+
+    Ok(NavMeshBakeResult {
+        nav_mesh: output.nav_mesh,
+        asset_id,
+        output_path,
+        stats: output.stats,
+    })
+}
+
+fn collect_authored_links(
+    scene: &AuthoringScene,
+) -> Result<Vec<NavigationBuildLink>, NavMeshBakeError> {
+    let component = ComponentTypeId::new(NAVIGATION_LINK_COMPONENT);
+    scene
+        .entities()
+        .filter_map(|(entity_id, entity)| {
+            entity.components.get(&component).map(|value| {
+                let fields = object_fields(value, NAVIGATION_LINK_COMPONENT)?;
+                let profiles = string_array_field(fields, "profiles")?
+                    .into_iter()
+                    .map(NavigationProfileId::new)
+                    .collect();
+                Ok(NavigationBuildLink {
+                    id: entity_id.as_str().to_owned(),
+                    start: vector_field(fields, "start")?.to_array(),
+                    end: vector_field(fields, "end")?.to_array(),
+                    bidirectional: bool_field(fields, "bidirectional")?,
+                    profiles,
+                    area: u16_field(fields, "area")?,
+                    cost: f32_field(fields, "cost")?,
+                    traversal_tag: string_field(fields, "traversal_tag")?.to_owned(),
+                })
+            })
+        })
+        .collect()
+}
+
+fn collect_authored_modifiers(
+    scene: &AuthoringScene,
+) -> Result<Vec<NavigationModifier>, NavMeshBakeError> {
+    let component = ComponentTypeId::new(NAVIGATION_MODIFIER_COMPONENT);
+    scene
+        .entities()
+        .filter_map(|(entity_id, entity)| {
+            entity.components.get(&component).map(|value| {
+                let fields = object_fields(value, NAVIGATION_MODIFIER_COMPONENT)?;
+                let center = vector_field(fields, "center")?;
+                let half = vector_field(fields, "half_extents")?;
+                if half.min_element() < 0.0 {
+                    return Err(NavMeshBakeError::Scene(
+                        "navigation modifier half extents must be non-negative".to_owned(),
+                    ));
+                }
+                let profiles = string_array_field(fields, "profiles")?
+                    .into_iter()
+                    .map(NavigationProfileId::new)
+                    .collect();
+                let mode = match string_field(fields, "mode")? {
+                    "exclude" => NavigationModifierMode::Exclude,
+                    "area" => NavigationModifierMode::Area {
+                        area: u16_field(fields, "area")?,
+                        cost_multiplier: f32_field(fields, "cost_multiplier")?,
+                    },
+                    other => {
+                        return Err(NavMeshBakeError::Scene(format!(
+                            "unsupported navigation modifier mode `{other}`"
+                        )))
+                    }
+                };
+                Ok(NavigationModifier {
+                    id: entity_id.as_str().to_owned(),
+                    minimum: (center - half).to_array(),
+                    maximum: (center + half).to_array(),
+                    profiles,
+                    mode,
+                })
+            })
+        })
+        .collect()
+}
+
+fn scene_without_navigation_derived_components(
+    scene: &AuthoringScene,
+) -> Result<AuthoringScene, NavMeshBakeError> {
+    let mut normalized = scene.clone();
+    let ignored = [
+        ComponentTypeId::new(crate::scene_bridge::NAV_MESH_SURFACE_COMPONENT),
+        ComponentTypeId::new(NAVIGATION_LINK_COMPONENT),
+        ComponentTypeId::new(NAVIGATION_MODIFIER_COMPONENT),
+    ];
+    let removals = normalized
+        .entities()
+        .flat_map(|(id, entity)| {
+            ignored
+                .iter()
+                .filter(move |component| entity.components.contains_key(*component))
+                .map(move |component| (id.clone(), component.clone()))
+        })
+        .collect::<Vec<_>>();
+    if removals.is_empty() {
+        return Ok(normalized);
+    }
+    let mut transaction = engine_authoring::Transaction::begin(&normalized);
+    for (entity, component_type) in removals {
+        transaction.apply(AuthoringCommand::RemoveComponent {
+            entity,
+            component_type,
+        });
+    }
+    transaction
+        .commit(&mut normalized)
+        .map_err(|error| NavMeshBakeError::Scene(error.to_string()))?;
+    Ok(normalized)
+}
+
+type ObjectFields<'a> = &'a BTreeMap<String, Value>;
+
+fn object_fields<'a>(
+    value: &'a Value,
+    component: &str,
+) -> Result<ObjectFields<'a>, NavMeshBakeError> {
+    match value {
+        Value::Object(fields) => Ok(fields),
+        _ => Err(NavMeshBakeError::Scene(format!(
+            "`{component}` must be an object"
+        ))),
+    }
+}
+
+fn vector_field(fields: ObjectFields<'_>, prefix: &str) -> Result<Vec3, NavMeshBakeError> {
+    Ok(Vec3::new(
+        f32_field(fields, &format!("{prefix}_x"))?,
+        f32_field(fields, &format!("{prefix}_y"))?,
+        f32_field(fields, &format!("{prefix}_z"))?,
+    ))
+}
+
+fn f32_field(fields: ObjectFields<'_>, key: &str) -> Result<f32, NavMeshBakeError> {
+    let value = match fields.get(key) {
+        Some(Value::F64(value)) => *value as f32,
+        Some(Value::I64(value)) => *value as f32,
+        Some(Value::U64(value)) => *value as f32,
+        _ => {
+            return Err(NavMeshBakeError::Scene(format!(
+                "navigation field `{key}` must be numeric"
+            )))
+        }
+    };
+    if value.is_finite() {
+        Ok(value)
+    } else {
+        Err(NavMeshBakeError::Scene(format!(
+            "navigation field `{key}` must be finite"
+        )))
+    }
+}
+
+fn u16_field(fields: ObjectFields<'_>, key: &str) -> Result<u16, NavMeshBakeError> {
+    match fields.get(key) {
+        Some(Value::I64(value)) => u16::try_from(*value).map_err(|_| {
+            NavMeshBakeError::Scene(format!("navigation field `{key}` must fit u16"))
+        }),
+        Some(Value::U64(value)) => u16::try_from(*value).map_err(|_| {
+            NavMeshBakeError::Scene(format!("navigation field `{key}` must fit u16"))
+        }),
+        _ => Err(NavMeshBakeError::Scene(format!(
+            "navigation field `{key}` must be an integer"
+        ))),
+    }
+}
+
+fn string_field<'a>(
+    fields: ObjectFields<'a>,
+    key: &str,
+) -> Result<&'a str, NavMeshBakeError> {
+    match fields.get(key) {
+        Some(Value::String(value)) if !value.trim().is_empty() => Ok(value),
+        _ => Err(NavMeshBakeError::Scene(format!(
+            "navigation field `{key}` must be a non-empty string"
+        ))),
+    }
+}
+
+fn bool_field(fields: ObjectFields<'_>, key: &str) -> Result<bool, NavMeshBakeError> {
+    match fields.get(key) {
+        Some(Value::Bool(value)) => Ok(*value),
+        _ => Err(NavMeshBakeError::Scene(format!(
+            "navigation field `{key}` must be boolean"
+        ))),
+    }
+}
+
+fn string_array_field(
+    fields: ObjectFields<'_>,
+    key: &str,
+) -> Result<Vec<String>, NavMeshBakeError> {
+    match fields.get(key) {
+        None => Ok(Vec::new()),
+        Some(Value::Array(values)) => values
+            .iter()
+            .map(|value| match value {
+                Value::String(value) if !value.trim().is_empty() => Ok(value.clone()),
+                _ => Err(NavMeshBakeError::Scene(format!(
+                    "navigation field `{key}` must contain only non-empty strings"
+                ))),
+            })
+            .collect(),
+        _ => Err(NavMeshBakeError::Scene(format!(
+            "navigation field `{key}` must be an array"
+        ))),
+    }
+}
+
+/// Error from scene collection, shared baking, project resolution, or registration.
+#[derive(Debug)]
+pub enum NavMeshBakeError {
+    /// JSON serialization failure while persisting the manifest.
+    Json(serde_json::Error),
+    /// Authoring scene conversion or navigation component parsing failed.
+    Scene(String),
+    /// Project path resolution failed.
+    Project(String),
+    /// Shared bake service failed.
+    Shared(NavigationBakeServiceError),
+    /// Project manifest persistence failed after the derived asset was written.
+    Persist(String),
+}
+
+impl fmt::Display for NavMeshBakeError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Json(error) => write!(formatter, "navigation manifest JSON error: {error}"),
+            Self::Scene(error) => write!(formatter, "navigation scene input failed: {error}"),
+            Self::Project(error) => write!(formatter, "navigation project path failed: {error}"),
+            Self::Shared(error) => write!(formatter, "{error}"),
+            Self::Persist(error) => write!(formatter, "navigation manifest persistence failed: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for NavMeshBakeError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Json(error) => Some(error),
+            Self::Shared(error) => Some(error),
+            Self::Scene(_) | Self::Project(_) | Self::Persist(_) => None,
+        }
+    }
+}
