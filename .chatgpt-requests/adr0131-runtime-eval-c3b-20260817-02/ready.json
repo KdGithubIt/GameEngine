@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0131-runtime-eval-c3b-20260817-02",
+  "target_branch": "chatgpt/gameengine-adr0131-first-release-v3",
+  "expected_head_sha": "5745f5c003a000e46b9d123bd10cd63bb2c8b192",
+  "baseline_main_sha": "d03ed9e573818eb0ca088f37953f611d6ed4d22e",
+  "patch_sha256": "a0fc218d1ee26db37431e216a8e47009d4cf9ef5eedb2fb5dfb3bdb642664d4e",
+  "patch_bytes": 22153,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Evaluate managed Play from host-captured frame",
+  "pr_title": "GameEngine: complete ADR 0131 first-release agent contracts",
+  "pr_body": "## Summary\n\nContinues ADR 0131 first-release completion by reconnecting the external AgentRuntime after managed Play input execution and host-owned frame capture. Runtime evaluation is a distinct read-oriented provider phase that receives the ephemeral captured-frame path, remains in Evaluating state, and reports visual/playtest evidence through existing semantic events.\n\nThe host now rejects provider visual-evaluation PASS claims outside Evaluating state or without host-owned frame-capture evidence. Runtime inputs are accepted only during the pre-Play provider execution phase."
+}
