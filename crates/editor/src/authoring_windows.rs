@@ -59,7 +59,9 @@ impl AuthoringWindows {
                 .default_width(1_180.0)
                 .default_height(780.0)
                 .resizable(true)
-                .show(context, |ui| vfx.show(ui, project));
+                .show(context, |ui| {
+                    egui::ScrollArea::vertical().show(ui, |ui| vfx.show(ui, project));
+                });
         }
     }
 }
