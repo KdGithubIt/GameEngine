@@ -314,10 +314,12 @@ impl eframe::App for EditorShell {
         #[cfg(not(feature = "visual-validation"))]
         self.ai_studio.show(&context);
         #[cfg(feature = "visual-validation")]
-        if !self.visual_behavior_debug_capture
-            && std::env::var_os("GAMEENGINE_VISUAL_AUTHORING_TOOL").is_none()
         {
-            self.ai_studio.show(&context);
+            let show_ai_studio = std::env::var("GAMEENGINE_VISUAL_AUTHORING_TOOL")
+                .map_or(true, |requested| requested == "AI Studio");
+            if !self.visual_behavior_debug_capture && show_ai_studio {
+                self.ai_studio.show(&context);
+            }
         }
     }
 
