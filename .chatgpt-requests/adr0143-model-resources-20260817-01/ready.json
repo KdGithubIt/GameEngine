@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0143-model-resources-20260817-01",
+  "target_branch": "chatgpt/gameengine-adr0143-model-resources",
+  "expected_head_sha": "b4ea5dd8a60497f7ac71e886842adde86e1a3087",
+  "baseline_main_sha": "b4ea5dd8a60497f7ac71e886842adde86e1a3087",
+  "patch_sha256": "43b80f42684bea661d5cff7b66fb16b11c78c5c4931304ad3e63105323786428",
+  "patch_bytes": 48481,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Implement ADR 0143 model resource controls",
+  "pr_title": "GameEngine: implement ADR 0143 model resource controls",
+  "pr_body": "## Summary\n\n- implement truthful provider-independent model resource operations and telemetry provenance\n- add Ollama-compatible `/api/ps` telemetry plus verified unload, reload, and CPU offload transitions\n- reclaim supported model residency before Interrupt-for-Editing restore and managed Play\n- expose measured model-resource posture in AI Studio without fabricating device-wide free VRAM\n- add deterministic adapter contract tests and accept ADR 0143\n\n## Validation\n\nUse normal Windows Validation. AI Studio resource posture presentation changed, so Visual Validation is required in addition to Rust validation.\n\n<!-- gameengine-chatgpt-dispatcher -->"
+}
