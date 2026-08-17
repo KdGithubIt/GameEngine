@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/authoring/src/timeline.rs","old":"#[derive(Debug, Clone, Copy, PartialEq, Eq)]\npub enum TimelineDiagnosticSeverity {","new":"#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]\npub enum TimelineDiagnosticSeverity {"}
