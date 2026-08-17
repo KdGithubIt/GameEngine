@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/agent_host.rs",
+  "old": "    ActiveWriterRun(String),\n    InvalidTransition {\n        from: AgentRunState,\n        to: AgentRunState,\n    },\n    CompletionPending,",
+  "new": "    ActiveWriterRun(String),\n    StaleProposalVersion {\n        expected: u64,\n        current: u64,\n    },\n    InvalidTransition {\n        from: AgentRunState,\n        to: AgentRunState,\n    },\n    CompletionPending,"
+}
