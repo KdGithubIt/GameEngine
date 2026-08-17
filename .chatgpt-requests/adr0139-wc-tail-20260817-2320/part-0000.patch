@@ -1,0 +1,346 @@
+diff --git a/crates/editor/src/animation_set_editor.rs b/crates/editor/src/animation_set_editor.rs
+index e3c4ec31c1e9daa250f82375a60aa8218731730a..18445b03403ad97d25b589a0352efefe0c019167 100644
+--- a/crates/editor/src/animation_set_editor.rs
++++ b/crates/editor/src/animation_set_editor.rs
+@@ -55,12 +55,17 @@ impl AnimationSetEditorState {
+         if self.is_dirty() {
+             return false;
+         }
++        self.reload_discarding_changes(document);
++        true
++    }
++
++    /// Replaces this Animation Set after the author explicitly chooses the disk version.
++    pub fn reload_discarding_changes(&mut self, document: AnimationSet) {
+         self.document = document.clone();
+         self.clean_document = document;
+         self.authoring = TypedDocumentAuthoringState::new();
+         self.undo.clear();
+         self.redo.clear();
+-        true
+     }
+ 
+     /// Returns whether an undo entry is available.
+diff --git a/crates/editor/src/material_editor.rs b/crates/editor/src/material_editor.rs
+index a743dad97d9ae65c3cdb298496cbd095a81a2529..14a6db0e61953829edbfa35430fcd026e91e56ea 100644
+--- a/crates/editor/src/material_editor.rs
++++ b/crates/editor/src/material_editor.rs
+@@ -77,7 +77,15 @@ impl MaterialEditorPanel {
+ 
+     /// Replaces a clean open material after an external disk change.
+     pub fn reload_clean(&mut self, path: &Path, material: MaterialAsset) -> bool {
+-        if self.is_dirty(path) || !self.materials.contains_key(path) {
++        if self.is_dirty(path) {
++            return false;
++        }
++        self.reload_discarding_changes(path, material)
++    }
++
++    /// Replaces one open material after the author explicitly chooses the disk version.
++    pub fn reload_discarding_changes(&mut self, path: &Path, material: MaterialAsset) -> bool {
++        if !self.materials.contains_key(path) {
+             return false;
+         }
+         self.materials.insert(path.to_path_buf(), material.clone());
+diff --git a/crates/editor/src/scene_view.rs b/crates/editor/src/scene_view.rs
+index 1f4ca60a617ab52237e2e2e921963ffe321db033..e105b25c994c51b65e70e9a8135424149c67a7a8 100644
+--- a/crates/editor/src/scene_view.rs
++++ b/crates/editor/src/scene_view.rs
+@@ -799,6 +799,8 @@ pub struct SceneView {
+     /// when [`PreviewKey`] changes; an idle frame reuses it wholesale, doing
+     /// no scene conversion, mesh copy, or GPU re-upload.
+     preview: Option<PreviewWorld>,
++    /// Immutable Editor working-copy snapshot consumed by the next preview conversion.
++    authoring_overlay: engine::authoring_overlay::AuthoringDocumentOverlay,
+ }
+ 
+ /// The persistent Scene View preview world and the inputs it was built from
+@@ -935,6 +937,7 @@ impl SceneView {
+             gpu_mesh_cache: engine::SharedGpuMeshCache::default(),
+             manifest_hash_cache: None,
+             preview: None,
++            authoring_overlay: engine::authoring_overlay::AuthoringDocumentOverlay::new(),
+         }
+     }
+ 
+@@ -1131,6 +1134,18 @@ impl SceneView {
+         self.preview = None;
+         self.manifest_hash_cache = None;
+     }
++
++    /// Publishes one immutable set of Editor working copies to Scene View.
++    pub(crate) fn set_authoring_overlay(
++        &mut self,
++        overlay: engine::authoring_overlay::AuthoringDocumentOverlay,
++    ) {
++        if self.authoring_overlay == overlay {
++            return;
++        }
++        self.authoring_overlay = overlay;
++        self.preview = None;
++    }
+     /// Draws the Scene View, renders the authoring scene, and returns interaction results.
+     #[allow(clippy::too_many_arguments)]
+     pub fn show(
+@@ -1530,6 +1545,7 @@ impl SceneView {
+                     game_module,
+                     &self.gltf_cache,
+                     &self.gpu_mesh_cache,
++                    &self.authoring_overlay,
+                     size,
+                     self.show_sky,
+                 );
+@@ -2305,6 +2321,7 @@ fn build_preview_app_with_sky(
+     game_module: Option<&Arc<engine::game_module::GameModule>>,
+     gltf_cache: &engine::scene_bridge::SharedGltfImportCache,
+     gpu_mesh_cache: &engine::SharedGpuMeshCache,
++    authoring_overlay: &engine::authoring_overlay::AuthoringDocumentOverlay,
+     size: [u32; 2],
+     sky_enabled: bool,
+ ) -> (
+@@ -2333,6 +2350,7 @@ fn build_preview_app_with_sky(
+     // Reusing parsed glTF sources and decoded images across rebuilds keeps
+     // large imports interactive (ADR 0071).
+     app.insert_resource(gltf_cache.clone());
++    app.insert_resource(authoring_overlay.clone());
+ 
+     app.insert_resource(engine::SkySettings {
+         enabled: sky_enabled,
+diff --git a/crates/editor/src/ui/assets/material_window.rs b/crates/editor/src/ui/assets/material_window.rs
+index 737dfc7fbc9be3f5f8b293ee49ffc7106a480fdd..cb4c2b7b6e19f988089b23e6c0e2215a515be231 100644
+--- a/crates/editor/src/ui/assets/material_window.rs
++++ b/crates/editor/src/ui/assets/material_window.rs
+@@ -15,6 +15,7 @@ impl EditorApp {
+         self.refresh_material_texture_preview(context);
+         let mut open = self.show_material_editor;
+         let mut changed = false;
++        let mut save_requested = false;
+         let mut reimport_preview = false;
+         egui::Window::new("Material Editor")
+             .open(&mut open)
+@@ -26,6 +27,14 @@ impl EditorApp {
+                         ui,
+                         texture_choices.as_slice(),
+                     );
++                let material_dirty = self
++                    .material_editor
++                    .active
++                    .as_ref()
++                    .is_some_and(|path| self.material_editor.is_dirty(path));
++                save_requested = ui
++                    .add_enabled(material_dirty, egui::Button::new("Save Material"))
++                    .clicked();
+                 ui.separator();
+                 ui.heading("Preview");
+                 if let Some(material) = self.material_editor.active_material() {
+@@ -40,6 +49,15 @@ impl EditorApp {
+         if changed {
+             self.queue_active_material_save(context);
+         }
++        if save_requested
++            && let Some(path) = self.material_editor.active.clone()
++            && let Err(error) = self.save_material_document(&path)
++        {
++            self.session.push_diagnostic(engine_authoring::Diagnostic::error(
++                "editor.material_save_failed",
++                format!("failed to save {}: {error}", path.display()),
++            ));
++        }
+         if !self.show_material_editor {
+             self.flush_material_scene_preview_refresh(context);
+         }
+diff --git a/crates/editor/src/ui/chrome.rs b/crates/editor/src/ui/chrome.rs
+index 9360b2f3ae7c8e61dacac146d747e67de3758857..d0a0ad9bb9b766e3dbc50ed11ff0ad4908a4cf05 100644
+--- a/crates/editor/src/ui/chrome.rs
++++ b/crates/editor/src/ui/chrome.rs
+@@ -217,6 +217,13 @@ impl EditorApp {
+                     self.save();
+                     ui.close();
+                 }
++                if ui
++                    .add_enabled(!self.is_playing(), egui::Button::new("Save All"))
++                    .clicked()
++                {
++                    self.save_all();
++                    ui.close();
++                }
+                 if ui
+                     .add_enabled(
+                         !self.is_playing(),
+diff --git a/crates/editor/src/ui/documents.rs b/crates/editor/src/ui/documents.rs
+index 7d3de93b84d733c7c75055fadda9a6008557188f..0e213f75757423f167c3a15445f0ef54c9c4d0c5 100644
+--- a/crates/editor/src/ui/documents.rs
++++ b/crates/editor/src/ui/documents.rs
+@@ -585,28 +585,52 @@ impl EditorApp {
+             }
+             FileSyncArea::Assets => {
+                 let absolute = project.path().join(&event.relative_path);
+-                let dirty_open_document = self
+-                    .session
+-                    .tab_for_path(&absolute)
+-                    .is_some_and(|tab_id| self.session.tab_is_dirty(tab_id));
+-                if let Some(tab_id) = self.session.tab_for_path(&absolute) {
+-                    if self.session.tab_is_dirty(tab_id) {
++                let material_relative = event
++                    .relative_path
++                    .strip_prefix(Path::new("assets"))
++                    .ok()
++                    .filter(|path| !path.as_os_str().is_empty())
++                    .map(Path::to_path_buf);
++                let animation_set_open = self
++                    .animation_set_editor
++                    .as_ref()
++                    .is_some_and(|state| state.absolute_path == absolute);
++                let material_open = material_relative.as_ref().is_some_and(|path| {
++                    self.material_editor.materials.contains_key(path)
++                });
++                let workspace_tab = self.session.tab_for_path(&absolute);
++                let dirty_open_document = workspace_tab
++                    .is_some_and(|tab_id| self.session.tab_is_dirty(tab_id))
++                    || (animation_set_open
++                        && self.animation_set_editor.as_ref().is_some_and(AnimationSetEditorState::is_dirty))
++                    || material_relative
++                        .as_ref()
++                        .is_some_and(|path| material_open && self.material_editor.is_dirty(path));
++
++                let owner = if animation_set_open {
++                    Some(ExternalDocumentOwner::AnimationSet)
++                } else if material_open {
++                    material_relative.clone().map(ExternalDocumentOwner::Material)
++                } else {
++                    workspace_tab.map(ExternalDocumentOwner::Workspace)
++                };
++                if let Some(owner) = owner {
++                    if dirty_open_document {
+                         self.external_document_conflict = Some(ExternalDocumentConflict {
+-                            tab_id,
+-                            path: absolute,
++                            owner,
++                            path: absolute.clone(),
+                             kind: event.kind,
+                         });
+                     } else if event.kind != FileSyncKind::Removed {
+-                        self.reload_external_document(tab_id, &absolute);
++                        self.reload_external_document_owner(&owner, &absolute);
+                     } else {
+-                        self.session
+-                            .push_diagnostic(engine_authoring::Diagnostic::warning(
+-                                "editor.file_sync.open_document_removed",
+-                                format!(
+-                                    "the open document was removed externally: {}",
+-                                    absolute.display()
+-                                ),
+-                            ));
++                        self.session.push_diagnostic(engine_authoring::Diagnostic::warning(
++                            "editor.file_sync.open_document_removed",
++                            format!(
++                                "the open document was removed externally: {}",
++                                absolute.display()
++                            ),
++                        ));
+                     }
+                 }
+                 self.asset_browser.refresh(&project.assets_root());
+@@ -864,12 +888,57 @@ impl EditorApp {
+         }
+     }
+ 
++    fn reload_external_document_owner(
++        &mut self,
++        owner: &ExternalDocumentOwner,
++        path: &Path,
++    ) {
++        let result = match owner {
++            ExternalDocumentOwner::Workspace(tab_id) => {
++                self.reload_external_document(*tab_id, path);
++                return;
++            }
++            ExternalDocumentOwner::AnimationSet => fs::read_to_string(path)
++                .map_err(|error| error.to_string())
++                .and_then(|json| engine_authoring::AnimationSet::from_json(&json).map_err(|error| error.to_string()))
++                .and_then(|document| {
++                    self.animation_set_editor
++                        .as_mut()
++                        .ok_or_else(|| "Animation Set editor is closed".to_owned())
++                        .map(|state| state.reload_discarding_changes(document))
++                }),
++            ExternalDocumentOwner::Material(relative) => fs::read_to_string(path)
++                .map_err(|error| error.to_string())
++                .and_then(|json| engine_authoring::MaterialAsset::from_json(&json).map_err(|error| error.to_string()))
++                .and_then(|material| {
++                    self.material_editor
++                        .reload_discarding_changes(relative, material)
++                        .then_some(())
++                        .ok_or_else(|| format!("material {} is no longer open", relative.display()))
++                }),
++        };
++        match result {
++            Ok(()) => {
++                self.scene_view.invalidate_asset_preview();
++                self.refresh_scene_problems();
++                self.session.push_diagnostic(engine_authoring::Diagnostic::info(
++                    "editor.file_sync.document_reloaded",
++                    format!("reloaded external change from {}", path.display()),
++                ));
++            }
++            Err(error) => self.session.push_diagnostic(engine_authoring::Diagnostic::error(
++                "editor.file_sync.reload_failed",
++                format!("could not reload {}: {error}", path.display()),
++            )),
++        }
++    }
++
+     pub(super) fn show_external_document_conflict(&mut self, context: &egui::Context) {
+         let Some(conflict) = self.external_document_conflict.as_ref() else {
+             return;
+         };
+         let path = conflict.path.clone();
+-        let tab_id = conflict.tab_id;
++        let owner = conflict.owner.clone();
+         let kind = conflict.kind;
+         let mut keep = false;
+         let mut reload = false;
+@@ -893,7 +962,7 @@ impl EditorApp {
+             self.external_document_conflict = None;
+         } else if reload {
+             self.external_document_conflict = None;
+-            self.reload_external_document(tab_id, &path);
++            self.reload_external_document_owner(&owner, &path);
+         }
+     }
+ 
+@@ -970,8 +1039,15 @@ enum UnsavedChangesChoice {
+     Cancel,
+ }
+ 
++#[derive(Clone)]
++enum ExternalDocumentOwner {
++    Workspace(WorkspaceTabId),
++    AnimationSet,
++    Material(PathBuf),
++}
++
+ pub(super) struct ExternalDocumentConflict {
+-    tab_id: WorkspaceTabId,
++    owner: ExternalDocumentOwner,
+     path: PathBuf,
+     kind: FileSyncKind,
+ }
+diff --git a/crates/editor/src/ui/mod.rs b/crates/editor/src/ui/mod.rs
+index f79ec84d6901cafe4c00194ed44e0c0111e111cc..137a1b520adbfc44ed2e51e7a4527e6bde1e5617 100644
+--- a/crates/editor/src/ui/mod.rs
++++ b/crates/editor/src/ui/mod.rs
+@@ -710,6 +710,13 @@ impl eframe::App for EditorApp {
+         self.poll_project_filesystem(ctx);
+         self.poll_scene_filesystem_validation(ctx);
+         self.reconcile_sub_asset_display_names();
++        let authoring_overlay = capture_authoring_overlay(
++            &self.session,
++            self.animation_set_editor.as_ref(),
++            &self.material_editor,
++            self.project_root.as_ref(),
++        );
++        self.scene_view.set_authoring_overlay(authoring_overlay);
+         #[cfg(not(target_arch = "wasm32"))]
+         if self.runtime_state.is_some() {
+             if !self.gamepad_initialization_attempted {
