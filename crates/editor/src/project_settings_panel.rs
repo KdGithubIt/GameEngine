@@ -10,6 +10,11 @@ use engine::postprocess::ToneMapOperator;
 use engine_authoring::project_settings::{
     AxisBinding, InputAction, KeyAxisBinding, Layer, ProjectSettings,
 };
+use engine_authoring::{
+    AuthoringPermission, AuthoringPermissions, TypedDocumentAuthoringError,
+    TypedDocumentAuthoringMutation, TypedDocumentAuthoringService, TypedDocumentAuthoringSnapshot,
+    TypedDocumentAuthoringState, TypedDocumentAuthoringValidation,
+};
 
 // ---------------------------------------------------------------------------
 // Panel state
@@ -28,6 +33,7 @@ pub struct ProjectSettingsPanel {
     pub post_process: PostProcessSettings,
     /// `true` when the panel contains unsaved changes.
     pub is_dirty: bool,
+    authoring: TypedDocumentAuthoringState,
 }
 
 impl ProjectSettingsPanel {
@@ -37,6 +43,7 @@ impl ProjectSettingsPanel {
             settings,
             post_process: PostProcessSettings::default(),
             is_dirty: false,
+            authoring: TypedDocumentAuthoringState::new(),
         }
     }
 
@@ -44,6 +51,30 @@ impl ProjectSettingsPanel {
     pub fn commit(&mut self) -> ProjectSettings {
         self.is_dirty = false;
         self.settings.clone()
+    }
+
+    /// Inspects Project Settings through the shared typed-document service.
+    pub fn structured_inspect(&self, permissions: &AuthoringPermissions) -> Result<TypedDocumentAuthoringSnapshot<ProjectSettings>, TypedDocumentAuthoringError> {
+        TypedDocumentAuthoringService::new().inspect(&self.settings, &self.authoring, permissions)
+    }
+
+    /// Validates Project Settings through the shared typed-document service.
+    pub fn structured_validate(&self, permissions: &AuthoringPermissions) -> Result<TypedDocumentAuthoringValidation, TypedDocumentAuthoringError> {
+        TypedDocumentAuthoringService::new().validate(&self.settings, &self.authoring, permissions)
+    }
+
+    /// Previews one complete Project Settings replacement.
+    pub fn structured_preview(&self, permissions: &AuthoringPermissions, expected_revision: u64, expected_generation: u64, replacement: ProjectSettings) -> Result<TypedDocumentAuthoringMutation<ProjectSettings>, TypedDocumentAuthoringError> {
+        TypedDocumentAuthoringService::new().preview(&self.settings, &self.authoring, permissions, expected_revision, expected_generation, replacement)
+    }
+
+    /// Applies one complete Project Settings replacement atomically.
+    pub fn structured_apply(&mut self, permissions: &AuthoringPermissions, expected_revision: u64, expected_generation: u64, replacement: ProjectSettings) -> Result<TypedDocumentAuthoringMutation<ProjectSettings>, TypedDocumentAuthoringError> {
+        let mutation = TypedDocumentAuthoringService::new().apply(&mut self.settings, &mut self.authoring, permissions, expected_revision, expected_generation, replacement)?;
+        if mutation.success && !mutation.diff.is_empty() {
+            self.is_dirty = true;
+        }
+        Ok(mutation)
     }
 
     // ── Tags ──────────────────────────────────────────────────────────────
@@ -209,6 +240,7 @@ pub fn show_project_settings_panel(
     ui: &mut eframe::egui::Ui,
 ) -> bool {
     let before_dirty = panel.is_dirty;
+    let settings_before = panel.settings.clone();
     let mut changed = false;
 
     ui.heading("Project Settings");
@@ -547,6 +579,23 @@ pub fn show_project_settings_panel(
             changed = true;
         }
     });
+
+    if panel.settings != settings_before {
+        let replacement = panel.settings.clone();
+        panel.settings = settings_before;
+        panel.is_dirty = before_dirty;
+        let permissions = AuthoringPermissions::read_only()
+            .with(AuthoringPermission::Preview)
+            .with(AuthoringPermission::ProjectDataWrite);
+        if let Ok(base) = panel.structured_inspect(&permissions) {
+            let _ = panel.structured_apply(
+                &permissions,
+                base.revision,
+                base.generation,
+                replacement,
+            );
+        }
+    }
 
     changed || panel.is_dirty != before_dirty
 }

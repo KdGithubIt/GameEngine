@@ -7,7 +7,12 @@
 use engine_authoring::material_asset::{
     LinearRgba, MaterialAlphaMode, MaterialAsset, MaterialCullMode, MaterialShadingModel,
 };
-use engine_authoring::AssetId;
+use engine_authoring::{
+    AssetId, AuthoringPermission, AuthoringPermissions, TypedDocumentAuthoringError,
+    TypedDocumentAuthoringMutation,
+    TypedDocumentAuthoringService, TypedDocumentAuthoringSnapshot, TypedDocumentAuthoringState,
+    TypedDocumentAuthoringValidation,
+};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
@@ -24,6 +29,7 @@ pub struct MaterialEditorPanel {
     pub materials: BTreeMap<PathBuf, MaterialAsset>,
     /// The relative path of the currently selected / active material.
     pub active: Option<PathBuf>,
+    authoring: BTreeMap<PathBuf, TypedDocumentAuthoringState>,
 }
 
 impl MaterialEditorPanel {
@@ -35,6 +41,8 @@ impl MaterialEditorPanel {
     /// Inserts or replaces a material in the panel and sets it as active.
     pub fn open_material(&mut self, rel_path: PathBuf, material: MaterialAsset) {
         self.active = Some(rel_path.clone());
+        self.authoring
+            .insert(rel_path.clone(), TypedDocumentAuthoringState::new());
         self.materials.insert(rel_path, material);
     }
 
@@ -51,7 +59,103 @@ impl MaterialEditorPanel {
             None
         }
     }
+
+    /// Inspects the active Material through the shared typed-document service.
+    pub fn structured_inspect(
+        &self,
+        permissions: &AuthoringPermissions,
+    ) -> Result<Option<TypedDocumentAuthoringSnapshot<MaterialAsset>>, TypedDocumentAuthoringError> {
+        let Some(key) = self.active.as_ref() else {
+            return Ok(None);
+        };
+        let Some(document) = self.materials.get(key) else {
+            return Ok(None);
+        };
+        let Some(state) = self.authoring.get(key) else {
+            return Ok(None);
+        };
+        TypedDocumentAuthoringService::new()
+            .inspect(document, state, permissions)
+            .map(Some)
+    }
+
+    /// Validates the active Material through the shared typed-document service.
+    pub fn structured_validate(
+        &self,
+        permissions: &AuthoringPermissions,
+    ) -> Result<Option<TypedDocumentAuthoringValidation>, TypedDocumentAuthoringError> {
+        let Some(key) = self.active.as_ref() else {
+            return Ok(None);
+        };
+        let Some(document) = self.materials.get(key) else {
+            return Ok(None);
+        };
+        let Some(state) = self.authoring.get(key) else {
+            return Ok(None);
+        };
+        TypedDocumentAuthoringService::new()
+            .validate(document, state, permissions)
+            .map(Some)
+    }
+
+    /// Previews replacing the active Material without mutation.
+    pub fn structured_preview(
+        &self,
+        permissions: &AuthoringPermissions,
+        expected_revision: u64,
+        expected_generation: u64,
+        replacement: MaterialAsset,
+    ) -> Result<Option<TypedDocumentAuthoringMutation<MaterialAsset>>, TypedDocumentAuthoringError> {
+        let Some(key) = self.active.as_ref() else {
+            return Ok(None);
+        };
+        let Some(document) = self.materials.get(key) else {
+            return Ok(None);
+        };
+        let Some(state) = self.authoring.get(key) else {
+            return Ok(None);
+        };
+        TypedDocumentAuthoringService::new()
+            .preview(
+                document,
+                state,
+                permissions,
+                expected_revision,
+                expected_generation,
+                replacement,
+            )
+            .map(Some)
+    }
+
+    /// Applies one atomic replacement to the active Material.
+    pub fn structured_apply(
+        &mut self,
+        permissions: &AuthoringPermissions,
+        expected_revision: u64,
+        expected_generation: u64,
+        replacement: MaterialAsset,
+    ) -> Result<Option<TypedDocumentAuthoringMutation<MaterialAsset>>, TypedDocumentAuthoringError> {
+        let Some(key) = self.active.clone() else {
+            return Ok(None);
+        };
+        let (Some(document), Some(state)) =
+            (self.materials.get_mut(&key), self.authoring.get_mut(&key))
+        else {
+            return Ok(None);
+        };
+        TypedDocumentAuthoringService::new()
+            .apply(
+                document,
+                state,
+                permissions,
+                expected_revision,
+                expected_generation,
+                replacement,
+            )
+            .map(Some)
+    }
 }
+
 
 // ---------------------------------------------------------------------------
 // egui rendering
@@ -67,6 +171,7 @@ pub fn show_material_editor_panel(
 ) -> bool {
     let mut changed = false;
 
+    let before = panel.active_material().cloned();
     let Some(mat) = panel.active_material_mut() else {
         ui.label("No material selected.");
         return false;
@@ -247,7 +352,30 @@ pub fn show_material_editor_panel(
         ui.colored_label(eframe::egui::Color32::RED, error.to_string());
     }
 
-    changed
+    if changed {
+        let replacement = mat.clone();
+        if let Some(before) = before {
+            *mat = before;
+        }
+        let permissions = AuthoringPermissions::read_only()
+            .with(AuthoringPermission::Preview)
+            .with(AuthoringPermission::ProjectDataWrite);
+        if let Ok(Some(base)) = panel.structured_inspect(&permissions) {
+            return panel
+                .structured_apply(
+                    &permissions,
+                    base.revision,
+                    base.generation,
+                    replacement,
+                )
+                .ok()
+                .flatten()
+                .is_some_and(|mutation| mutation.success && !mutation.diff.is_empty());
+        }
+        return false;
+    }
+
+    false
 }
 
 fn texture_picker(

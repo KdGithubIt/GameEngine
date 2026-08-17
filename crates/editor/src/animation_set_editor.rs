@@ -1,8 +1,11 @@
 //! Toolkit-independent Animation Set editor state and undoable mutations.
 
 use engine_authoring::{
-    replace_file_contents, AnimationBinding, AnimationSet, AnimationSetEvent, AssetId, MotionSlot,
-    MotionSlotId, MotionSourceRef,
+    replace_file_contents, AnimationBinding, AnimationSet, AnimationSetEvent, AssetId,
+    AuthoringPermission, AuthoringPermissions, MotionSlot, MotionSlotId, MotionSourceRef,
+    TypedDocumentAuthoringError,
+    TypedDocumentAuthoringMutation, TypedDocumentAuthoringService, TypedDocumentAuthoringSnapshot,
+    TypedDocumentAuthoringState, TypedDocumentAuthoringValidation,
 };
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -20,6 +23,7 @@ pub struct AnimationSetEditorState {
     clean_document: AnimationSet,
     undo: Vec<AnimationSet>,
     redo: Vec<AnimationSet>,
+    authoring: TypedDocumentAuthoringState,
 }
 
 impl AnimationSetEditorState {
@@ -32,6 +36,7 @@ impl AnimationSetEditorState {
             document,
             undo: Vec::new(),
             redo: Vec::new(),
+            authoring: TypedDocumentAuthoringState::new(),
         }
     }
 
@@ -50,24 +55,66 @@ impl AnimationSetEditorState {
         !self.redo.is_empty()
     }
 
-    /// Restores the previous document snapshot.
+    /// Inspects the Animation Set through the shared typed-document service.
+    pub fn structured_inspect(&self, permissions: &AuthoringPermissions) -> Result<TypedDocumentAuthoringSnapshot<AnimationSet>, TypedDocumentAuthoringError> {
+        TypedDocumentAuthoringService::new().inspect(&self.document, &self.authoring, permissions)
+    }
+
+    /// Validates the Animation Set through the shared typed-document service.
+    pub fn structured_validate(&self, permissions: &AuthoringPermissions) -> Result<TypedDocumentAuthoringValidation, TypedDocumentAuthoringError> {
+        TypedDocumentAuthoringService::new().validate(&self.document, &self.authoring, permissions)
+    }
+
+    /// Previews a complete Animation Set replacement without mutation.
+    pub fn structured_preview(&self, permissions: &AuthoringPermissions, expected_revision: u64, expected_generation: u64, replacement: AnimationSet) -> Result<TypedDocumentAuthoringMutation<AnimationSet>, TypedDocumentAuthoringError> {
+        TypedDocumentAuthoringService::new().preview(&self.document, &self.authoring, permissions, expected_revision, expected_generation, replacement)
+    }
+
+    /// Applies a complete Animation Set replacement as one undoable edit.
+    pub fn structured_apply(&mut self, permissions: &AuthoringPermissions, expected_revision: u64, expected_generation: u64, replacement: AnimationSet) -> Result<TypedDocumentAuthoringMutation<AnimationSet>, TypedDocumentAuthoringError> {
+        let before = self.document.clone();
+        let mutation = TypedDocumentAuthoringService::new().apply(&mut self.document, &mut self.authoring, permissions, expected_revision, expected_generation, replacement)?;
+        if mutation.success && !mutation.diff.is_empty() {
+            self.push_undo_snapshot(before);
+            self.redo.clear();
+        }
+        Ok(mutation)
+    }
+
+    /// Restores the previous document snapshot through the shared semantic boundary.
     pub fn undo(&mut self) -> bool {
         let Some(previous) = self.undo.pop() else {
             return false;
         };
-        self.redo.push(self.document.clone());
-        self.document = previous;
-        true
+        let current = self.document.clone();
+        match self.apply_editor_replacement(previous.clone()) {
+            Ok(true) => {
+                self.redo.push(current);
+                true
+            }
+            Ok(false) | Err(_) => {
+                self.undo.push(previous);
+                false
+            }
+        }
     }
 
-    /// Reapplies the next document snapshot.
+    /// Reapplies the next document snapshot through the shared semantic boundary.
     pub fn redo(&mut self) -> bool {
         let Some(next) = self.redo.pop() else {
             return false;
         };
-        self.push_undo_without_clearing_redo();
-        self.document = next;
-        true
+        let current = self.document.clone();
+        match self.apply_editor_replacement(next.clone()) {
+            Ok(true) => {
+                self.push_undo_snapshot(current);
+                true
+            }
+            Ok(false) | Err(_) => {
+                self.redo.push(next);
+                false
+            }
+        }
     }
 
     /// Returns bindings that are not part of `slots`.
@@ -90,27 +137,33 @@ impl AnimationSetEditorState {
     /// the document. The UI uses [`Self::stale_bindings`] to ask for
     /// confirmation before calling this with `remove_stale == true`.
     pub fn assign_graph(&mut self, graph: AssetId, slots: &[MotionSlot], remove_stale: bool) {
-        self.push_undo();
-        self.document.graph = Some(graph);
+        let mut replacement = self.document.clone();
+        replacement.graph = Some(graph);
         if remove_stale {
             let valid = slots
                 .iter()
                 .map(|slot| slot.id.clone())
                 .collect::<BTreeSet<_>>();
-            self.document
-                .bindings
-                .retain(|slot, _| valid.contains(slot));
+            replacement.bindings.retain(|slot, _| valid.contains(slot));
         }
-        self.sync_binding_names(slots);
+        for slot in slots {
+            if let Some(binding) = replacement.bindings.get_mut(&slot.id) {
+                binding.name = slot.display_name.clone();
+            }
+        }
+        self.commit_editor_replacement(replacement)
+            .expect("Animation Set graph assignment must preserve the shared document contract");
     }
 
     /// Clears only the graph reference or clears the graph and every binding.
     pub fn clear_graph(&mut self, clear_bindings: bool) {
-        self.push_undo();
-        self.document.graph = None;
+        let mut replacement = self.document.clone();
+        replacement.graph = None;
         if clear_bindings {
-            self.document.bindings.clear();
+            replacement.bindings.clear();
         }
+        self.commit_editor_replacement(replacement)
+            .expect("Animation Set graph clearing must preserve the shared document contract");
     }
 
     /// Assigns or clears one explicitly tagged motion source for a graph-owned slot.
@@ -122,22 +175,20 @@ impl AnimationSetEditorState {
         if self.document.graph.is_none() {
             return Err("assign an Animation Graph before editing bindings".to_owned());
         }
-        self.push_undo();
+        let mut replacement = self.document.clone();
         match motion {
             Some(motion) => {
-                let events = self
-                    .document
+                let events = replacement
                     .bindings
                     .get(&slot.id)
                     .map(|binding| binding.events.clone())
                     .unwrap_or_default();
-                let overlays = self
-                    .document
+                let overlays = replacement
                     .bindings
                     .get(&slot.id)
                     .map(|binding| binding.overlays.clone())
                     .unwrap_or_default();
-                self.document.bindings.insert(
+                replacement.bindings.insert(
                     slot.id.clone(),
                     AnimationBinding {
                         name: slot.display_name.clone(),
@@ -148,10 +199,10 @@ impl AnimationSetEditorState {
                 );
             }
             None => {
-                self.document.bindings.remove(&slot.id);
+                replacement.bindings.remove(&slot.id);
             }
         }
-        Ok(())
+        self.commit_editor_replacement(replacement).map(|_| ())
     }
 
     /// Appends one explicitly tagged supplemental motion source.
@@ -166,14 +217,14 @@ impl AnimationSetEditorState {
         if binding.clip == motion || binding.overlays.contains(&motion) {
             return Err("the selected clip is already present in this binding".to_owned());
         }
-        self.push_undo();
-        self.document
+        let mut replacement = self.document.clone();
+        replacement
             .bindings
             .get_mut(slot)
-            .expect("binding validated before recording undo")
+            .expect("binding validated before replacement")
             .overlays
             .push(motion);
-        Ok(())
+        self.commit_editor_replacement(replacement).map(|_| ())
     }
 
     /// Removes one supplemental clip by its current list index.
@@ -184,14 +235,14 @@ impl AnimationSetEditorState {
         if index >= binding.overlays.len() {
             return Err("overlay index is out of range".to_owned());
         }
-        self.push_undo();
-        self.document
+        let mut replacement = self.document.clone();
+        replacement
             .bindings
             .get_mut(slot)
-            .expect("binding validated before recording undo")
+            .expect("binding validated before replacement")
             .overlays
             .remove(index);
-        Ok(())
+        self.commit_editor_replacement(replacement).map(|_| ())
     }
 
     /// Moves one overlay by one position while retaining explicit priority.
@@ -210,16 +261,15 @@ impl AnimationSetEditorState {
         if index == new_index {
             return Ok(());
         }
-        self.push_undo();
-        let overlays = &mut self
-            .document
+        let mut replacement = self.document.clone();
+        let overlays = &mut replacement
             .bindings
             .get_mut(slot)
-            .expect("binding validated before recording undo")
+            .expect("binding validated before replacement")
             .overlays;
         let clip = overlays.remove(index);
         overlays.insert(new_index, clip);
-        Ok(())
+        self.commit_editor_replacement(replacement).map(|_| ())
     }
 
     /// Appends one timeline event to a bound slot (ADR 0116).
@@ -239,14 +289,14 @@ impl AnimationSetEditorState {
             .fold(0.0_f32, f32::max)
             + 0.1;
         let name = unused_event_name(&binding.events);
-        self.push_undo();
-        self.document
+        let mut replacement = self.document.clone();
+        replacement
             .bindings
             .get_mut(slot)
-            .expect("binding validated before recording undo")
+            .expect("binding validated before replacement")
             .events
             .push(AnimationSetEvent { time, name });
-        Ok(())
+        self.commit_editor_replacement(replacement).map(|_| ())
     }
 
     /// Removes one timeline event by its current list index.
@@ -257,14 +307,14 @@ impl AnimationSetEditorState {
         if index >= binding.events.len() {
             return Err("event index is out of range".to_owned());
         }
-        self.push_undo();
-        self.document
+        let mut replacement = self.document.clone();
+        replacement
             .bindings
             .get_mut(slot)
-            .expect("binding validated before recording undo")
+            .expect("binding validated before replacement")
             .events
             .remove(index);
-        Ok(())
+        self.commit_editor_replacement(replacement).map(|_| ())
     }
 
     /// Replaces one timeline event's time and name.
@@ -297,12 +347,11 @@ impl AnimationSetEditorState {
         if name.is_empty() {
             return Err("event name must not be blank".to_owned());
         }
-        self.push_undo();
-        let events = &mut self
-            .document
+        let mut replacement = self.document.clone();
+        let events = &mut replacement
             .bindings
             .get_mut(slot)
-            .expect("binding validated before recording undo")
+            .expect("binding validated before replacement")
             .events;
         events[index] = AnimationSetEvent {
             time,
@@ -313,7 +362,7 @@ impl AnimationSetEditorState {
                 .total_cmp(&right.time)
                 .then_with(|| left.name.cmp(&right.name))
         });
-        Ok(())
+        self.commit_editor_replacement(replacement).map(|_| ())
     }
 
     /// Writes canonical JSON atomically and advances the clean baseline.
@@ -327,24 +376,52 @@ impl AnimationSetEditorState {
         Ok(())
     }
 
-    fn sync_binding_names(&mut self, slots: &[MotionSlot]) {
-        for slot in slots {
-            if let Some(binding) = self.document.bindings.get_mut(&slot.id) {
-                binding.name = slot.display_name.clone();
-            }
+    fn apply_editor_replacement(&mut self, replacement: AnimationSet) -> Result<bool, String> {
+        let permissions = AuthoringPermissions::read_only()
+            .with(AuthoringPermission::ProjectDataWrite);
+        let revision = self.authoring.revision();
+        let generation = self.authoring.generation();
+        let mutation = TypedDocumentAuthoringService::new()
+            .apply(
+                &mut self.document,
+                &mut self.authoring,
+                &permissions,
+                revision,
+                generation,
+                replacement,
+            )
+            .map_err(|error| error.to_string())?;
+        if !mutation.success {
+            let message = mutation
+                .diagnostics
+                .iter()
+                .map(|diagnostic| format!("{}: {}", diagnostic.code, diagnostic.message))
+                .collect::<Vec<_>>()
+                .join("; ");
+            return Err(if message.is_empty() {
+                "Animation Set replacement was rejected".to_owned()
+            } else {
+                message
+            });
         }
+        Ok(!mutation.diff.is_empty())
     }
 
-    fn push_undo(&mut self) {
-        self.push_undo_without_clearing_redo();
-        self.redo.clear();
+    fn commit_editor_replacement(&mut self, replacement: AnimationSet) -> Result<bool, String> {
+        let before = self.document.clone();
+        let changed = self.apply_editor_replacement(replacement)?;
+        if changed {
+            self.push_undo_snapshot(before);
+            self.redo.clear();
+        }
+        Ok(changed)
     }
 
-    fn push_undo_without_clearing_redo(&mut self) {
+    fn push_undo_snapshot(&mut self, snapshot: AnimationSet) {
         if self.undo.len() >= UNDO_LIMIT {
             self.undo.remove(0);
         }
-        self.undo.push(self.document.clone());
+        self.undo.push(snapshot);
     }
 }
 
@@ -570,5 +647,44 @@ mod tests {
         let mut state = editor(AnimationSet::new(AssetId::generate()));
 
         assert!(state.add_event(&motion.id).is_err());
+    }
+
+    #[test]
+    fn gui_edits_and_undo_advance_the_shared_authoring_revision() {
+        let motion = slot("Idle");
+        let mut state = editor(AnimationSet::new(AssetId::generate()));
+        let read = AuthoringPermissions::read_only();
+        let baseline = state
+            .structured_inspect(&read)
+            .expect("initial inspect must succeed");
+
+        state
+            .set_binding_source(
+                &motion,
+                Some(MotionSourceRef::native(AssetId::generate())),
+            )
+            .expect("GUI binding edit must commit");
+        let edited = state
+            .structured_inspect(&read)
+            .expect("edited inspect must succeed");
+        assert_eq!(edited.generation, baseline.generation);
+        assert_eq!(edited.revision, baseline.revision + 1);
+
+        let write = AuthoringPermissions::read_only()
+            .with(AuthoringPermission::ProjectDataWrite);
+        let stale = state.structured_apply(
+            &write,
+            baseline.revision,
+            baseline.generation,
+            baseline.document.clone(),
+        );
+        assert!(matches!(stale, Err(TypedDocumentAuthoringError::Stale { .. })));
+
+        assert!(state.undo());
+        let undone = state
+            .structured_inspect(&read)
+            .expect("undo inspect must succeed");
+        assert_eq!(undone.document, baseline.document);
+        assert_eq!(undone.revision, edited.revision + 1);
     }
 }

@@ -51,6 +51,20 @@ pub struct UiMutationInput {
     pub commands: Vec<UiDocumentCommand>,
 }
 
+/// Whole-document replacement request shared by persisted typed-document tools.
+///
+/// The active Editor supplies the authoritative document and revision state;
+/// this DTO carries only the adapter-neutral semantic intent.
+#[derive(Debug, Deserialize)]
+pub struct TypedDocumentMutationInput<T> {
+    /// Authoritative document revision observed by the caller.
+    pub expected_revision: u64,
+    /// Authoritative in-memory generation observed by the caller.
+    pub expected_generation: u64,
+    /// Complete typed replacement evaluated by the shared authoring service.
+    pub replacement: T,
+}
+
 /// Failure returned by generic structured authoring MCP handlers.
 #[derive(Debug)]
 pub enum GenericAuthoringMcpError {
@@ -143,6 +157,9 @@ impl GenericAuthoringMcpTools {
                 AuthoringDomain::Graph,
                 AuthoringDomain::GraphView,
                 AuthoringDomain::Ui,
+                AuthoringDomain::Material,
+                AuthoringDomain::ProjectSettings,
+                AuthoringDomain::AnimationSet,
             ],
         )
     }
@@ -315,7 +332,7 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn descriptors_cover_generic_graph_layout_and_ui_surfaces() {
+    fn descriptors_cover_generic_graph_ui_and_typed_document_surfaces() {
         let names = GenericAuthoringMcpTools::new()
             .tool_descriptors()
             .into_iter()
@@ -325,7 +342,10 @@ mod tests {
         assert!(names.contains(&"graph.inspect".to_owned()));
         assert!(names.contains(&"graph.layout.apply".to_owned()));
         assert!(names.contains(&"ui.apply".to_owned()));
-        assert_eq!(names.len(), 12);
+        assert!(names.contains(&"material.inspect".to_owned()));
+        assert!(names.contains(&"project_settings.apply".to_owned()));
+        assert!(names.contains(&"animation_set.validate".to_owned()));
+        assert_eq!(names.len(), 24);
     }
 
     #[test]
