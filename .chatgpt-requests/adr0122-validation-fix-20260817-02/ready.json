@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0122-validation-fix-20260817-02",
+  "target_branch": "chatgpt/gameengine-adr0122-spatial-audio-complete-v3",
+  "expected_head_sha": "c6c8ecfbbcad0651d1f0bf6c059eced095f0f6ea",
+  "baseline_main_sha": "e1df22ca311274ac7645a226f214c9d4e941756c",
+  "patch_sha256": "8eb82ed402ae5d7d6b7174b7e714ca4f8a46938dfd594818c89de41cf8bd4a48",
+  "patch_bytes": 692,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Fix ADR 0122 editor lint",
+  "pr_title": "GameEngine: complete ADR 0122 spatial audio",
+  "pr_body": "## Summary\n\nCompletes ADR 0122 spatial audio across runtime and Editor authoring. Adds managed spatial voices, deterministic listener selection/validation, project-Rust spatial playback, AudioEmitter Inspector attenuation/audition controls, Scene View distance/listener gizmos, and focused verification. Editor audition remains transient and reuses the production spatial mixer/voice path.\n\nValidation follow-up aligns headless runtime fixtures with the registered spatial-audio resource, migrates the in-repository audio scene fixture to the current schema, and uses narrowly scoped documented lint exceptions where framework or rendering inputs are intentionally explicit.\n\n<!-- gameengine-visual-validation: editor -->\n<!-- gameengine-chatgpt-dispatcher -->"
+}
