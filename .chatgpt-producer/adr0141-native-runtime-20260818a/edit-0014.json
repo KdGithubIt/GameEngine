@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "        ui.small(\n            \"The write-capable Go path launches an external AgentRuntime directly without a shell and injects the immutable proposal plus ephemeral Editor MCP connection. The local question backend above is a separate ModelBackend; a native write-capable tool loop is not enabled by this slice.\",\n        );",
+  "new": "        ui.small(\n            \"Go uses the configured external AgentRuntime when present; otherwise the selected local model runs through the governed native AgentRuntime. Both share the immutable proposal, Agent Host permissions, live Editor MCP writer, managed code workspace, validation, Play/frame evidence, and completion contract.\",\n        );"
+}
