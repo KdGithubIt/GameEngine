@@ -290,7 +290,7 @@ implementation contract.
 | [0144](0144-hosted-and-enterprise-model-backends-and-credential-ownership.md) | **Proposed** — Hosted and Enterprise ModelBackends and Credential Ownership |
 | [0145](0145-first-class-external-agent-runtime-provider-adapters.md) | **Proposed** — First-Class External Agent Runtime Provider Adapters |
 | [0146](0146-governed-ai-asset-acquisition-and-generative-content-providers.md) | **Proposed** — Governed AI Asset Acquisition and Generative Content Providers |
-| [0147](0147-detached-local-ai-studio-frontend-and-versioned-host-protocol.md) | **Proposed** — Detached Local AI Studio Frontend and Versioned Host Protocol |
+| [0147](0147-detached-local-ai-studio-frontend-and-versioned-host-protocol.md) | Detached Local AI Studio Frontend and Versioned Host Protocol |
 | [0148](0148-remote-host-lifecycle-project-activation-and-narrow-startup-operations.md) | **Proposed** — Remote Host Lifecycle, Project Activation, and Narrow Startup Operations |
 | [0149](0149-engine-native-live-observation-and-media-transport.md) | **Proposed** — Engine-Native Live Observation and Media Transport |
 | [0150](0150-multi-model-routing-and-workload-specialization.md) | **Proposed** — Multi-Model Routing and Workload Specialization |
