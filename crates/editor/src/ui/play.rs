@@ -598,6 +598,23 @@ impl EditorApp {
     }
 
     pub(super) fn start_play(&mut self) {
+        let navigation_gate = match (self.session.scene(), self.project_root.as_ref()) {
+            (Some(scene), Some(project)) => require_current_navigation_artifact(
+                scene,
+                project,
+                &self.asset_manifest,
+                self.session.current_document_path(),
+            ),
+            _ => Ok(()),
+        };
+        if let Err(error) = navigation_gate {
+            self.session
+                .push_diagnostic(engine_authoring::Diagnostic::error(
+                    "editor.play_navigation_not_current",
+                    error,
+                ));
+            return;
+        }
         let has_game_project = self
             .project_root
             .as_ref()
@@ -738,6 +755,23 @@ impl EditorApp {
         let Some(pending) = self.pending_game_package.take() else {
             return;
         };
+        let navigation_gate = match (self.session.scene(), self.project_root.as_ref()) {
+            (Some(scene), Some(project)) => require_current_navigation_artifact(
+                scene,
+                project,
+                &self.asset_manifest,
+                self.session.current_document_path(),
+            ),
+            _ => Ok(()),
+        };
+        if let Err(error) = navigation_gate {
+            self.session
+                .push_diagnostic(engine_authoring::Diagnostic::error(
+                    "editor.package_navigation_not_current",
+                    error,
+                ));
+            return;
+        }
         let output_dir = pending.config.output_dir.clone();
         match package_project_with_game_module(
             &pending.config,
