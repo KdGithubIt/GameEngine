@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0148-remote-lifecycle-20260818-05",
+  "target_branch": "chatgpt/gameengine-adr0148-host-lifecycle",
+  "expected_head_sha": "86544a6c8d9bb770633b1ae4eb22fac26278f50c",
+  "baseline_main_sha": "86544a6c8d9bb770633b1ae4eb22fac26278f50c",
+  "patch_sha256": "e87314c58999f65c70f2321f678dcb2b7041488e822a525e668b89b2954ec407",
+  "patch_bytes": 44838,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Implement ADR 0148 remote lifecycle host",
+  "pr_title": "GameEngine: implement ADR 0148 remote lifecycle host",
+  "pr_body": "## Summary\n\n- add a standalone loopback-only remote lifecycle host above Launcher/project-lifecycle\n- restrict project actions to Launcher-known opaque project keys and reuse authoritative Editor leases\n- separate lifecycle startup permission from AgentRun authorization and sanitize remote errors\n- share Launcher recent-project state between GUI and lifecycle host and add regression coverage\n\n## Architecture\n\nImplements ADR 0148 without exposing arbitrary process, shell, environment, filesystem, MCP, or authoring mutation surfaces."
+}
