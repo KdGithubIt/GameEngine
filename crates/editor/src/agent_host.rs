@@ -658,9 +658,23 @@ pub(crate) struct CodeCheckpoint {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct AssetAcquisitionRecord {
+    #[serde(default)]
+    pub(crate) request_id: String,
+    #[serde(default)]
+    pub(crate) request_fingerprint: String,
+    #[serde(default)]
+    pub(crate) operation: String,
     pub(crate) provider: String,
+    #[serde(default)]
+    pub(crate) provider_asset_id: Option<String>,
+    #[serde(default)]
+    pub(crate) generation_request_id: Option<String>,
     pub(crate) source: String,
+    #[serde(default)]
+    pub(crate) source_version: Option<String>,
     pub(crate) license: Option<String>,
+    #[serde(default)]
+    pub(crate) imported_asset_ids: Vec<String>,
     pub(crate) imported_paths: Vec<PathBuf>,
     pub(crate) created_unix_ms: u64,
 }
@@ -1163,6 +1177,42 @@ impl AgentHost {
             format!("{tool}: {action}"),
             None,
             Some(AgentEventEvidence::ToolAction { tool, action, success }),
+        );
+        self.persist_session(&session_id)
+    }
+
+    pub(crate) fn asset_acquisition_staging_root(
+        &self,
+        run_id: &str,
+    ) -> Result<PathBuf, AgentHostError> {
+        self.run(run_id)?;
+        Ok(self.storage_root.join("asset-acquisition").join(run_id))
+    }
+
+    pub(crate) fn record_asset_acquisition(
+        &mut self,
+        run_id: &str,
+        record: AssetAcquisitionRecord,
+    ) -> Result<(), AgentHostError> {
+        let request_id = record.request_id.clone();
+        let imported_count = record.imported_paths.len();
+        let (session_id, _) = self.run_location(run_id)?;
+        let run = self.run_mut_in_session(&session_id, run_id)?;
+        run.audit.asset_acquisitions.push(record);
+        let tool = "asset.acquire".to_owned();
+        let action = format!(
+            "Managed acquisition request `{request_id}` imported {imported_count} asset(s)."
+        );
+        push_event_with_evidence(
+            run,
+            AgentEventKind::ToolAction,
+            format!("{tool}: {action}"),
+            None,
+            Some(AgentEventEvidence::ToolAction {
+                tool,
+                action,
+                success: Some(true),
+            }),
         );
         self.persist_session(&session_id)
     }

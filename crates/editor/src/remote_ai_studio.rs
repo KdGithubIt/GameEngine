@@ -950,10 +950,80 @@ fn run_json(run: &AgentRun) -> Value {
         "finished_unix_ms": run.finished_unix_ms,
         "completion": run.completion.clone(),
         "validation_attempts": run.validation_attempts.clone(),
-        "audit": run.audit.clone(),
+        "audit": safe_audit(run),
         "frames": frames,
         "last_event_sequence": run.events.last().map_or(0, |event| event.sequence),
     })
+}
+
+fn safe_audit(run: &AgentRun) -> Value {
+    json!({
+        "authoring_operations": run.audit.authoring_operations,
+        "code_changes": run.audit.code_changes,
+        "asset_acquisitions": run
+            .audit
+            .asset_acquisitions
+            .iter()
+            .map(|record| {
+                json!({
+                    "request_id": sanitize_text(&record.request_id),
+                    "operation": sanitize_text(&record.operation),
+                    "provider": sanitize_text(&record.provider),
+                    "provider_asset_id": record
+                        .provider_asset_id
+                        .as_deref()
+                        .map(sanitize_text),
+                    "generation_request_id": record
+                        .generation_request_id
+                        .as_deref()
+                        .map(sanitize_text),
+                    "source": sanitize_source_reference(&record.source),
+                    "source_version": record.source_version.as_deref().map(sanitize_text),
+                    "license": record.license.as_deref().map(sanitize_text),
+                    "imported_asset_ids": sanitize_strings(&record.imported_asset_ids),
+                    "imported_paths": record
+                        .imported_paths
+                        .iter()
+                        .filter_map(|path| safe_relative_path(path))
+                        .collect::<Vec<_>>(),
+                    "created_unix_ms": record.created_unix_ms,
+                })
+            })
+            .collect::<Vec<_>>(),
+        "managed_runtime_inputs": run.audit.managed_runtime_inputs,
+        "raw_workspace_operations": run.audit.raw_workspace_operations,
+        "custom_commands": run.audit.custom_commands,
+        "permission_escalations": run.audit.permission_escalations,
+    })
+}
+
+fn sanitize_source_reference(source: &str) -> String {
+    let without_query = source.split_once('?').map_or(source, |(prefix, _)| prefix);
+    let without_fragment = without_query
+        .split_once('#')
+        .map_or(without_query, |(prefix, _)| prefix);
+    sanitize_text(without_fragment)
+}
+
+fn safe_relative_path(path: &std::path::Path) -> Option<String> {
+    let raw = path.to_string_lossy();
+    let windows_absolute = raw.starts_with("\\")
+        || raw.as_bytes().get(1) == Some(&b':')
+            && raw
+                .as_bytes()
+                .get(2)
+                .is_some_and(|byte| matches!(byte, b'\\' | b'/'));
+    if windows_absolute {
+        return None;
+    }
+    let mut parts = Vec::new();
+    for component in path.components() {
+        let std::path::Component::Normal(part) = component else {
+            return None;
+        };
+        parts.push(part.to_str()?);
+    }
+    (!parts.is_empty()).then(|| parts.join("/"))
 }
 
 fn event_json(event: &AgentEvent) -> Value {
@@ -1286,6 +1356,49 @@ mod tests {
             .expect("snapshot")
             .to_string();
         assert!(!snapshot.contains("GAMEENGINE_MCP_AUTH_TOKEN"));
+        let _ = fs::remove_dir_all(project);
+        let _ = fs::remove_dir_all(storage);
+    }
+
+    #[test]
+    fn asset_acquisition_audit_exposes_only_sanitized_remote_provenance() {
+        let (mut host, project, storage) = test_host("asset-audit-sanitize");
+        let session = host.create_session("Remote").expect("session");
+        let version = host.session(&session).expect("session").proposal.version;
+        let run = host
+            .start_run_authorized(&session, version, "test")
+            .expect("run");
+        host.record_asset_acquisition(
+            &run,
+            crate::agent_host::AssetAcquisitionRecord {
+                request_id: "request-1".into(),
+                request_fingerprint: "internal-fingerprint".into(),
+                operation: "acquire".into(),
+                provider: "catalog".into(),
+                provider_asset_id: Some("asset-42".into()),
+                generation_request_id: None,
+                source: "https://catalog.test/assets/42?access_token=secret-value".into(),
+                source_version: Some("v1".into()),
+                license: Some("CC0".into()),
+                imported_asset_ids: vec!["asset_01TEST".into()],
+                imported_paths: vec![
+                    std::path::PathBuf::from("textures/generated.png"),
+                    std::path::PathBuf::from(r"C:\Users\private\leak.png"),
+                ],
+                created_unix_ms: 1,
+            },
+        )
+        .expect("asset audit");
+        let snapshot = snapshot_json(&host, "project-a", &session, None)
+            .expect("snapshot")
+            .to_string();
+        assert!(snapshot.contains("https://catalog.test/assets/42"));
+        assert!(snapshot.contains("textures/generated.png"));
+        assert!(snapshot.contains("asset_01TEST"));
+        assert!(!snapshot.contains("secret-value"));
+        assert!(!snapshot.contains("access_token"));
+        assert!(!snapshot.contains("internal-fingerprint"));
+        assert!(!snapshot.contains(r"C:\Users\private"));
         let _ = fs::remove_dir_all(project);
         let _ = fs::remove_dir_all(storage);
     }
