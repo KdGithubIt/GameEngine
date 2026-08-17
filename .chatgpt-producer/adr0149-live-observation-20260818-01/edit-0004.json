@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ai_studio.rs","old":"            remote_server: None,\n            remote_requests: None,\n            selected_session,","new":"            remote_server: None,\n            remote_requests: None,\n            live_observation: LiveObservationManager::default(),\n            selected_session,"}
