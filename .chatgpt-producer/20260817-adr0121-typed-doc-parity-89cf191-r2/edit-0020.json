@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/material_editor.rs",
+  "old": "    let Some(mat) = panel.active_material_mut() else {\n        ui.label(\"No material selected.\");\n        return false;\n    };",
+  "new": "    let before = panel.active_material().cloned();\n    let Some(mat) = panel.active_material_mut() else {\n        ui.label(\"No material selected.\");\n        return false;\n    };"
+}

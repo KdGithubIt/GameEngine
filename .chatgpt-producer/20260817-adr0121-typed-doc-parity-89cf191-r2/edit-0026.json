@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/project_settings_panel.rs",
+  "old": "    let before_dirty = panel.is_dirty;\n    let mut changed = false;",
+  "new": "    let before_dirty = panel.is_dirty;\n    let settings_before = panel.settings.clone();\n    let mut changed = false;"
+}

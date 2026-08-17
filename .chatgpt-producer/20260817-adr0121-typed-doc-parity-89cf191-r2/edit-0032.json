@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/animation_set_editor.rs",
+  "old": "    fn push_undo_without_clearing_redo(&mut self) {\n        if self.undo.len() >= UNDO_LIMIT {\n            self.undo.remove(0);\n        }\n        self.undo.push(self.document.clone());\n    }",
+  "new": "    fn push_undo_without_clearing_redo(&mut self) {\n        self.push_undo_snapshot(self.document.clone());\n    }\n\n    fn push_undo_snapshot(&mut self, snapshot: AnimationSet) {\n        if self.undo.len() >= UNDO_LIMIT {\n            self.undo.remove(0);\n        }\n        self.undo.push(snapshot);\n    }"
+}

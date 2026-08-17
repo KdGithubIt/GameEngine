@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/cli/src/lib.rs",
+  "old": "  engine-cli ui preview <ui.json> <commands.json>\\n  engine-cli ui apply <ui.json> <commands.json>\\n  engine-cli vfx schemas",
+  "new": "  engine-cli ui preview <ui.json> <commands.json>\\n  engine-cli ui apply <ui.json> <commands.json>\\n  engine-cli material inspect <project-root> <asset-relative-path>\\n  engine-cli material validate <project-root> <asset-relative-path>\\n  engine-cli material preview <project-root> <asset-relative-path> <replacement.json>\\n  engine-cli material apply <project-root> <asset-relative-path> <replacement.json>\\n  engine-cli project_settings inspect <project-root>\\n  engine-cli project_settings validate <project-root>\\n  engine-cli project_settings preview <project-root> <replacement.json>\\n  engine-cli project_settings apply <project-root> <replacement.json>\\n  engine-cli animation_set inspect <project-root> <asset-relative-path>\\n  engine-cli animation_set validate <project-root> <asset-relative-path>\\n  engine-cli animation_set preview <project-root> <asset-relative-path> <replacement.json>\\n  engine-cli animation_set apply <project-root> <asset-relative-path> <replacement.json>\\n  engine-cli vfx schemas"
+}

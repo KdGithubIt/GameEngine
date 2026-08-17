@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ui/mcp.rs",
+  "old": "    SceneMcpTools, SceneMutationInput, UiMutationInput, VfxEffectInput, VfxMcpTools,\n    VfxMutationInput, VfxTemplateInput, AUTHORING_APPLY_TOOL, AUTHORING_CAPABILITIES_TOOL,",
+  "new": "    SceneMcpTools, SceneMutationInput, TypedDocumentMutationInput, UiMutationInput, VfxEffectInput,\n    VfxMcpTools, VfxMutationInput, VfxTemplateInput, AUTHORING_APPLY_TOOL,\n    AUTHORING_CAPABILITIES_TOOL,"
+}

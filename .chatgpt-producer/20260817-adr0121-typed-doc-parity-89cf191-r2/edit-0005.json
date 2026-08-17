@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/authoring/src/capability.rs",
+  "old": "    /// A VFX effect document.\n    VfxEffect,\n}",
+  "new": "    /// A VFX effect document.\n    VfxEffect,\n    /// A Material asset document.\n    MaterialAsset,\n    /// The project-wide Project Settings document.\n    ProjectSettings,\n    /// An Animation Set asset document.\n    AnimationSet,\n}"
+}

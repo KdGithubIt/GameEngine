@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/authoring/src/lib.rs",
+  "old": "pub mod test_fixtures;\npub mod transaction;\npub mod ui;",
+  "new": "pub mod test_fixtures;\npub mod transaction;\npub mod typed_document_authoring;\npub mod ui;"
+}

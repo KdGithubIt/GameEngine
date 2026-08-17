@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/project_settings_panel.rs",
+  "old": "    changed || panel.is_dirty != before_dirty\n}",
+  "new": "    if panel.settings != settings_before {\n        let replacement = panel.settings.clone();\n        panel.settings = settings_before;\n        panel.is_dirty = before_dirty;\n        let permissions = AuthoringPermissions::read_only()\n            .with(AuthoringPermission::Preview)\n            .with(AuthoringPermission::ProjectDataWrite);\n        if let Ok(base) = panel.structured_inspect(&permissions) {\n            let _ = panel.structured_apply(\n                &permissions,\n                base.revision,\n                base.generation,\n                replacement,\n            );\n        }\n    }\n\n    changed || panel.is_dirty != before_dirty\n}"
+}

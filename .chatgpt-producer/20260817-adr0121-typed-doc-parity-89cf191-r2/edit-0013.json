@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/mcp/src/generic_authoring.rs",
+  "old": "            &[\n                AuthoringDomain::Graph,\n                AuthoringDomain::GraphView,\n                AuthoringDomain::Ui,\n            ],",
+  "new": "            &[\n                AuthoringDomain::Graph,\n                AuthoringDomain::GraphView,\n                AuthoringDomain::Ui,\n                AuthoringDomain::Material,\n                AuthoringDomain::ProjectSettings,\n                AuthoringDomain::AnimationSet,\n            ],"
+}

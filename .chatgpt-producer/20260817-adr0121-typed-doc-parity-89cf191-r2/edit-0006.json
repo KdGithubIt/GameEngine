@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/authoring/src/capability.rs",
+  "old": "fn ui_documents() -> Vec<AuthoringDocumentKind> {\n    vec![AuthoringDocumentKind::UiDocument]\n}\n\nfn builtin_capabilities() -> Vec<AuthoringCapability> {",
+  "new": "fn ui_documents() -> Vec<AuthoringDocumentKind> {\n    vec![AuthoringDocumentKind::UiDocument]\n}\n\nfn typed_document_replace_schema(document_type: &str) -> AuthoringSchemaRef {\n    AuthoringSchemaRef::typed_json(\n        document_type,\n        json!({\n            \"type\": \"object\",\n            \"required\": [\"expected_revision\", \"expected_generation\", \"replacement\"],\n            \"properties\": {\n                \"expected_revision\": {\"type\": \"integer\", \"minimum\": 0},\n                \"expected_generation\": {\"type\": \"integer\", \"minimum\": 0},\n                \"replacement\": {\"type\": \"object\", \"title\": document_type}\n            },\n            \"additionalProperties\": false\n        }),\n    )\n}\n\nfn builtin_capabilities() -> Vec<AuthoringCapability> {"
+}

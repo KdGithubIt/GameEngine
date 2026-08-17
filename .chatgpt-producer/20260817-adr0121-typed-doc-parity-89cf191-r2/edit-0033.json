@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ui/mcp.rs",
+  "old": "use engine_authoring::{\n    AuthoringPermission, AuthoringPermissions, AuthoringSession, ComponentSchemaRegistry,\n};",
+  "new": "use engine_authoring::{\n    AnimationSet, AuthoringPermission, AuthoringPermissions, AuthoringSession, ComponentSchemaRegistry,\n    MaterialAsset, ProjectSettings, TypedDocumentAuthoringError,\n};"
+}

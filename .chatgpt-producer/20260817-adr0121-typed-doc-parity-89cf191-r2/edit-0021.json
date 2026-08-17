@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/material_editor.rs",
+  "old": "    if let Err(error) = mat.validate() {\n        ui.colored_label(eframe::egui::Color32::RED, error.to_string());\n    }\n\n    changed\n}",
+  "new": "    if let Err(error) = mat.validate() {\n        ui.colored_label(eframe::egui::Color32::RED, error.to_string());\n    }\n\n    if changed {\n        let replacement = mat.clone();\n        if let Some(before) = before {\n            *mat = before;\n        }\n        let permissions = AuthoringPermissions::read_only()\n            .with(AuthoringPermission::Preview)\n            .with(AuthoringPermission::ProjectDataWrite);\n        if let Ok(Some(base)) = panel.structured_inspect(&permissions) {\n            return panel\n                .structured_apply(\n                    &permissions,\n                    base.revision,\n                    base.generation,\n                    replacement,\n                )\n                .ok()\n                .flatten()\n                .is_some_and(|mutation| mutation.success && !mutation.diff.is_empty());\n        }\n        return false;\n    }\n\n    false\n}"
+}

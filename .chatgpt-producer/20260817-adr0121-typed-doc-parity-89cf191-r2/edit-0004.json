@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/authoring/src/capability.rs",
+  "old": "    /// Behavior Tree graph domain operations.\n    BehaviorTree,\n}",
+  "new": "    /// Behavior Tree graph domain operations.\n    BehaviorTree,\n    /// Material asset documents.\n    Material,\n    /// Project Settings document.\n    ProjectSettings,\n    /// Animation Set asset documents.\n    AnimationSet,\n}"
+}
