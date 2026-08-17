@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ai_studio.rs","old":"use serde::Deserialize;\nuse std::collections::VecDeque;\nuse std::ffi::{OsStr, OsString};\nuse std::path::PathBuf;","new":"use serde::{Deserialize, Serialize};\nuse std::collections::VecDeque;\nuse std::ffi::{OsStr, OsString};\nuse std::fs;\nuse std::path::PathBuf;"}
