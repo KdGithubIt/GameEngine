@@ -1,0 +1,13 @@
+diff --git a/crates/editor/src/ui/navigation_workspace.rs b/crates/editor/src/ui/navigation_workspace.rs
+index c7af2bf7874b644f759d27f4fae4c80eec8b13b6..4462f0d2ad277c902de3080c4d14c8713ec6ad84 100644
+--- a/crates/editor/src/ui/navigation_workspace.rs
++++ b/crates/editor/src/ui/navigation_workspace.rs
+@@ -192,6 +192,8 @@ impl super::EditorApp {
+             .project_root
+             .clone()
+             .ok_or_else(|| "open a project before preparing navigation visual validation".to_owned())?;
++        std::fs::create_dir_all(project.assets_root().join("navigation"))
++            .map_err(|error| error.to_string())?;
+ 
+         let floor = self
+             .session
