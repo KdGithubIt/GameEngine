@@ -1,0 +1,103 @@
++                let output = self.material_editor.structured_preview(&permissions, input.expected_revision, input.expected_generation, input.replacement)
++                    .map_err(EditorMcpCallFailure::typed)?
++                    .ok_or_else(|| EditorMcpCallFailure::no_typed_document("Material"))?;
++                to_value(output)
++            }
++            "material.apply" => {
++                let input: TypedDocumentMutationInput<MaterialAsset> = decode(arguments)?;
++                let output = self.material_editor.structured_apply(&permissions, input.expected_revision, input.expected_generation, input.replacement)
++                    .map_err(EditorMcpCallFailure::typed)?
++                    .ok_or_else(|| EditorMcpCallFailure::no_typed_document("Material"))?;
++                to_value(output)
++            }
++            "project_settings.inspect" => {
++                require_empty_arguments(arguments)?;
++                let panel = self.project_settings_panel.as_ref().ok_or_else(|| EditorMcpCallFailure::no_typed_document("Project Settings"))?;
++                to_value(panel.structured_inspect(&permissions).map_err(EditorMcpCallFailure::typed)?)
++            }
++            "project_settings.validate" => {
++                require_empty_arguments(arguments)?;
++                let panel = self.project_settings_panel.as_ref().ok_or_else(|| EditorMcpCallFailure::no_typed_document("Project Settings"))?;
++                to_value(panel.structured_validate(&permissions).map_err(EditorMcpCallFailure::typed)?)
++            }
++            "project_settings.preview" => {
++                let input: TypedDocumentMutationInput<ProjectSettings> = decode(arguments)?;
++                let panel = self.project_settings_panel.as_ref().ok_or_else(|| EditorMcpCallFailure::no_typed_document("Project Settings"))?;
++                to_value(panel.structured_preview(&permissions, input.expected_revision, input.expected_generation, input.replacement).map_err(EditorMcpCallFailure::typed)?)
++            }
++            "project_settings.apply" => {
++                let input: TypedDocumentMutationInput<ProjectSettings> = decode(arguments)?;
++                let panel = self.project_settings_panel.as_mut().ok_or_else(|| EditorMcpCallFailure::no_typed_document("Project Settings"))?;
++                to_value(panel.structured_apply(&permissions, input.expected_revision, input.expected_generation, input.replacement).map_err(EditorMcpCallFailure::typed)?)
++            }
++            "animation_set.inspect" => {
++                require_empty_arguments(arguments)?;
++                let editor = self.animation_set_editor.as_ref().ok_or_else(|| EditorMcpCallFailure::no_typed_document("Animation Set"))?;
++                to_value(editor.structured_inspect(&permissions).map_err(EditorMcpCallFailure::typed)?)
++            }
++            "animation_set.validate" => {
++                require_empty_arguments(arguments)?;
++                let editor = self.animation_set_editor.as_ref().ok_or_else(|| EditorMcpCallFailure::no_typed_document("Animation Set"))?;
++                to_value(editor.structured_validate(&permissions).map_err(EditorMcpCallFailure::typed)?)
++            }
++            "animation_set.preview" => {
++                let input: TypedDocumentMutationInput<AnimationSet> = decode(arguments)?;
++                let editor = self.animation_set_editor.as_ref().ok_or_else(|| EditorMcpCallFailure::no_typed_document("Animation Set"))?;
++                to_value(editor.structured_preview(&permissions, input.expected_revision, input.expected_generation, input.replacement).map_err(EditorMcpCallFailure::typed)?)
++            }
++            "animation_set.apply" => {
++                let input: TypedDocumentMutationInput<AnimationSet> = decode(arguments)?;
++                let editor = self.animation_set_editor.as_mut().ok_or_else(|| EditorMcpCallFailure::no_typed_document("Animation Set"))?;
++                to_value(editor.structured_apply(&permissions, input.expected_revision, input.expected_generation, input.replacement).map_err(EditorMcpCallFailure::typed)?)
++            }
+             "vfx.schemas" => {
+                 require_empty_arguments(arguments)?;
+                 to_value(vfx_tools.schemas(&permissions)?)
+diff --git a/crates/mcp/src/generic_authoring.rs b/crates/mcp/src/generic_authoring.rs
+index b1d353da8a890946c4ab396323afd1dbef32c76c..58c5826a174a0bbe6b308e54a78ad854ee2459e4 100644
+--- a/crates/mcp/src/generic_authoring.rs
++++ b/crates/mcp/src/generic_authoring.rs
+@@ -51,6 +51,20 @@ pub struct UiMutationInput {
+     pub commands: Vec<UiDocumentCommand>,
+ }
+ 
++/// Whole-document replacement request shared by persisted typed-document tools.
++///
++/// The active Editor supplies the authoritative document and revision state;
++/// this DTO carries only the adapter-neutral semantic intent.
++#[derive(Debug, Deserialize)]
++pub struct TypedDocumentMutationInput<T> {
++    /// Authoritative document revision observed by the caller.
++    pub expected_revision: u64,
++    /// Authoritative in-memory generation observed by the caller.
++    pub expected_generation: u64,
++    /// Complete typed replacement evaluated by the shared authoring service.
++    pub replacement: T,
++}
++
+ /// Failure returned by generic structured authoring MCP handlers.
+ #[derive(Debug)]
+ pub enum GenericAuthoringMcpError {
+@@ -143,6 +157,9 @@ impl GenericAuthoringMcpTools {
+                 AuthoringDomain::Graph,
+                 AuthoringDomain::GraphView,
+                 AuthoringDomain::Ui,
++                AuthoringDomain::Material,
++                AuthoringDomain::ProjectSettings,
++                AuthoringDomain::AnimationSet,
+             ],
+         )
+     }
+diff --git a/crates/mcp/src/lib.rs b/crates/mcp/src/lib.rs
+index b942cc7e8d45997657fe5b5fdc871c0a610d20cb..3142338b0f6ec054842ade5804fd30097e5a7abc 100644
+--- a/crates/mcp/src/lib.rs
++++ b/crates/mcp/src/lib.rs
+@@ -36,7 +36,7 @@ pub use capability::{
+ };
+ pub use generic_authoring::{
+     GenericAuthoringMcpError, GenericAuthoringMcpTools, GraphMutationInput,
+-    GraphViewMutationInput, UiMutationInput,
++    GraphViewMutationInput, TypedDocumentMutationInput, UiMutationInput,
+ };
+ pub use prefab::{PrefabCreateInput, PrefabInstantiateInput, PrefabMcpTools};
+ pub use scene::{
