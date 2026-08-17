@@ -1,0 +1,1302 @@
+diff --git a/crates/editor/src/ai_studio.rs b/crates/editor/src/ai_studio.rs
+index ff64613eab0c42e30d0989007057b797d4c5cb61..8b84414986db8eae4f191920a7d9d1bac8188fab 100644
+--- a/crates/editor/src/ai_studio.rs
++++ b/crates/editor/src/ai_studio.rs
+@@ -11,13 +11,14 @@ use crate::agent_host::{
+     ProcessStream, ResumeDisposition,
+ };
+ use crate::native_agent::{
+-    LocalModelConfig, ModelCapabilityProfile, NativeAnswer, NativeQuestionTask, QuestionMessage,
+-    QuestionRole, DEFAULT_LOCAL_MODEL_ENDPOINT,
++    LocalModelConfig, ModelCapabilityProfile, ModelResourceTask, NativeAnswer, NativeQuestionTask,
++    QuestionMessage, QuestionRole, DEFAULT_LOCAL_MODEL_ENDPOINT,
+ };
+ use crate::resource_arbitration::{
+-    classify_workload, resolve_resource_plan, CapabilityAvailability, InferenceWorkload,
+-    MemoryPressure, PresentationPosture, QualityPreference, ReclaimLevel, ResourcePlan,
+-    WorkloadSignals,
++    classify_workload, resolve_resource_plan, resource_operation_for_residency_request,
++    CapabilityAvailability, InferenceWorkload, MemoryPressure, ModelResidencyRequest,
++    ModelResourceOperation, ModelResourceTelemetry, PresentationPosture, QualityPreference,
++    ReclaimLevel, ResourcePlan, TelemetryValue, WorkloadSignals,
+ };
+ use crate::remote_ai_studio::{
+     events_json, frame_bytes, sessions_json, snapshot_json, RemoteAiStudioRequest,
+@@ -138,6 +139,15 @@ enum ExternalAgentPurpose {
+     RuntimeEvaluation,
+ }
+ 
++enum ModelResourceContinuation {
++    RestoreForEditing,
++    LaunchManagedPlay { run_id: String },
++    ResumeAfterEditing {
++        run_id: Option<String>,
++        state: AiStudioAuthoritativeState,
++    },
++}
++
+ #[derive(Debug, Clone)]
+ struct ManagedRuntimeObservation {
+     artifact_id: String,
+@@ -302,6 +312,9 @@ pub struct AiStudioPanel {
+     local_model_name: String,
+     resolved_workload: InferenceWorkload,
+     resource_plan: ResourcePlan,
++    model_resource_task: Option<ModelResourceTask>,
++    model_resource_continuation: Option<ModelResourceContinuation>,
++    last_model_resource_telemetry: ModelResourceTelemetry,
+     editing_interrupted: bool,
+     restore_for_editing: bool,
+     interrupt_snapshot: Option<AiStudioAuthoritativeState>,
+@@ -377,6 +390,9 @@ impl AiStudioPanel {
+                 MemoryPressure::Unknown,
+                 Default::default(),
+             ),
++            model_resource_task: None,
++            model_resource_continuation: None,
++            last_model_resource_telemetry: ModelResourceTelemetry::default(),
+             editing_interrupted: false,
+             restore_for_editing: false,
+             interrupt_snapshot: None,
+@@ -472,26 +488,7 @@ impl AiStudioPanel {
+                 return;
+             }
+             AiStudioRuntimeResult::AuthoritativeState(state) => {
+-                if let Some(run_id) = self.active_run_id.clone() {
+-                    match self.host.resume_after_editing(&run_id, state.clone().into()) {
+-                        Ok(ResumeDisposition::ResumedUnchanged) => {
+-                            self.status = Some("Authoritative state is unchanged; the run may resume.".to_owned());
+-                        }
+-                        Ok(ResumeDisposition::ReinspectRequired) => {
+-                            self.status = Some("User edits changed authoritative state; the run returned to inspection.".to_owned());
+-                        }
+-                        Ok(ResumeDisposition::RepairRequired) => {
+-                            self.status = Some("User edits changed acceptance-relevant state; the run returned to repair.".to_owned());
+-                        }
+-                        Err(error) => {
+-                            self.status = Some(error.to_string());
+-                            return;
+-                        }
+-                    }
+-                } else {
+-                    self.status = Some("Authoritative Editor state re-inspected.".to_owned());
+-                }
+-                self.editing_interrupted = false;
++                self.begin_model_reload_after_authoritative_inspection(state.clone());
+                 return;
+             }
+             _ => {}
+@@ -610,6 +607,7 @@ impl AiStudioPanel {
+         self.ensure_remote_gateway(context);
+         self.poll_remote_requests();
+         self.poll_native_question(context);
++        self.poll_model_resource_task(context);
+         self.poll_external_process(context);
+         self.poll_managed_validation(context);
+         self.request_managed_source_repair_if_ready();
+@@ -984,11 +982,24 @@ impl AiStudioPanel {
+                 .capability_profile();
+                 ui.small(model_capability_summary(&profile));
+                 ui.small(format!(
+-                    "Resource controls: unload/reload {} · GPU residency {} · memory telemetry {}",
++                    "Resource controls: unload/reload {} · CPU offload {} · GPU residency telemetry {} · memory telemetry {}",
+                     capability_label(profile.resource_capabilities.unload_reload),
++                    capability_label(profile.resource_capabilities.cpu_gpu_offload),
+                     capability_label(profile.resource_capabilities.gpu_residency),
+                     capability_label(profile.resource_capabilities.backend_memory_telemetry),
+                 ));
++                ui.small(format!(
++                    "Observed model resources: resident {} · model size {} · GPU residency {} · context {}",
++                    telemetry_bool_label(&self.last_model_resource_telemetry.resident),
++                    telemetry_bytes_label(
++                        &self.last_model_resource_telemetry.representation_size_bytes
++                    ),
++                    telemetry_bytes_label(&self.last_model_resource_telemetry.gpu_residency_bytes),
++                    telemetry_count_label(
++                        &self.last_model_resource_telemetry.context_length_tokens,
++                        "tokens"
++                    ),
++                ));
+                 ui.small(format!(
+                     "Resource posture: {:?} · workload {:?} · reclaim {:?}",
+                     self.resource_plan.presentation,
+@@ -996,7 +1007,7 @@ impl AiStudioPanel {
+                     self.resource_plan.reclaim
+                 ));
+                 ui.small(
+-                    "The initial backend accepts loopback HTTP only. Unsupported controls remain unavailable; exact VRAM and TTFT are never fabricated.",
++                    "The initial backend accepts loopback HTTP only. Provider-reported model residency is shown with provenance; device-wide free VRAM and TTFT are never fabricated.",
+                 );
+             });
+     }
+@@ -1079,6 +1090,180 @@ impl AiStudioPanel {
+         }
+     }
+ 
++    fn begin_model_reload_after_authoritative_inspection(
++        &mut self,
++        state: AiStudioAuthoritativeState,
++    ) {
++        let continuation = ModelResourceContinuation::ResumeAfterEditing {
++            run_id: self.active_run_id.clone(),
++            state,
++        };
++        if self.model_resource_task.is_some() {
++            self.status = Some(
++                "Authoritative state was re-inspected, but model reload is waiting for the active resource transition to finish."
++                    .to_owned(),
++            );
++            return;
++        }
++        let config = LocalModelConfig {
++            endpoint: self.local_model_endpoint.clone(),
++            model: self.local_model_name.clone(),
++        };
++        let capabilities = config.capability_profile().resource_capabilities;
++        if config.model.trim().is_empty()
++            || capabilities.unload_reload != CapabilityAvailability::Available
++        {
++            self.finish_model_resource_continuation(continuation);
++            return;
++        }
++        match ModelResourceTask::spawn(config, ModelResourceOperation::Reload) {
++            Ok(task) => {
++                self.model_resource_task = Some(task);
++                self.model_resource_continuation = Some(continuation);
++                self.status = Some(
++                    "Authoritative state re-inspected; reacquiring model residency before Resume completes..."
++                        .to_owned(),
++                );
++            }
++            Err(error) => {
++                self.status = Some(format!(
++                    "Model reload could not start after authoritative-state re-inspection: {error}; continuing without claiming model residency was reacquired."
++                ));
++                self.finish_model_resource_continuation(continuation);
++            }
++        }
++    }
++
++    fn begin_model_residency_request(
++        &mut self,
++        request: ModelResidencyRequest,
++        continuation: ModelResourceContinuation,
++    ) {
++        if self.model_resource_task.is_some() {
++            self.status = Some(
++                "A model resource transition is already active; the new transition was not started."
++                    .to_owned(),
++            );
++            return;
++        }
++        let config = LocalModelConfig {
++            endpoint: self.local_model_endpoint.clone(),
++            model: self.local_model_name.clone(),
++        };
++        let capabilities = config.capability_profile().resource_capabilities;
++        let Some(operation) =
++            resource_operation_for_residency_request(request, capabilities)
++        else {
++            self.finish_model_resource_continuation(continuation);
++            return;
++        };
++        match ModelResourceTask::spawn(config, operation) {
++            Ok(task) => {
++                self.model_resource_task = Some(task);
++                self.model_resource_continuation = Some(continuation);
++                self.status = Some(format!(
++                    "Applying verified model resource transition {operation:?}..."
++                ));
++            }
++            Err(error) => {
++                self.status = Some(format!(
++                    "Model resource transition could not start: {error}; continuing without claiming residency changed."
++                ));
++                self.finish_model_resource_continuation(continuation);
++            }
++        }
++    }
++
++    fn poll_model_resource_task(&mut self, context: &egui::Context) {
++        let Some(task) = self.model_resource_task.as_ref() else {
++            return;
++        };
++        let Some(result) = task.poll() else {
++            context.request_repaint_after(std::time::Duration::from_millis(100));
++            return;
++        };
++        self.model_resource_task = None;
++        let continuation = self.model_resource_continuation.take();
++        match result {
++            Ok(transition) => {
++                self.last_model_resource_telemetry = transition.after.clone();
++                self.status = Some(format!(
++                    "Verified model resource transition {:?} in {} ms.",
++                    transition.operation,
++                    telemetry_u64_value(&transition.operation_latency_ms)
++                ));
++            }
++            Err(error) => {
++                self.status = Some(format!(
++                    "Model resource transition failed: {error}; continuing without claiming residency changed."
++                ));
++            }
++        }
++        if let Some(continuation) = continuation {
++            self.finish_model_resource_continuation(continuation);
++        }
++    }
++
++    fn finish_model_resource_continuation(&mut self, continuation: ModelResourceContinuation) {
++        match continuation {
++            ModelResourceContinuation::RestoreForEditing => {
++                self.pending_runtime_action = Some(AiStudioRuntimeAction::RestoreEditorPresentation);
++            }
++            ModelResourceContinuation::LaunchManagedPlay { run_id } => {
++                if self.active_run_id.as_deref() == Some(run_id.as_str())
++                    && self
++                        .host
++                        .run(&run_id)
++                        .is_ok_and(|run| run.state == AgentRunState::Playtesting)
++                {
++                    self.request_permission(
++                        run_id,
++                        AgentCapability::RuntimeLaunch,
++                        PendingPermissionAction::LaunchPlaytest,
++                    );
++                }
++            }
++            ModelResourceContinuation::ResumeAfterEditing { run_id, state } => {
++                let resource_status = self.status.take();
++                let resume_status = if let Some(run_id) = run_id {
++                    match self.host.resume_after_editing(&run_id, state.into()) {
++                        Ok(ResumeDisposition::ResumedUnchanged) => {
++                            "Authoritative state is unchanged; the run may resume.".to_owned()
++                        }
++                        Ok(ResumeDisposition::ReinspectRequired) => {
++                            "User edits changed authoritative state; the run returned to inspection."
++                                .to_owned()
++                        }
++                        Ok(ResumeDisposition::RepairRequired) => {
++                            "User edits changed acceptance-relevant state; the run returned to repair."
++                                .to_owned()
++                        }
++                        Err(error) => {
++                            self.status = Some(error.to_string());
++                            return;
++                        }
++                    }
++                } else {
++                    "Authoritative Editor state re-inspected.".to_owned()
++                };
++                self.editing_interrupted = false;
++                self.status = Some(match resource_status {
++                    Some(resource_status)
++                        if resource_status
++                            .starts_with("Verified model resource transition Reload")
++                            || resource_status.starts_with("Model resource transition failed:")
++                            || resource_status.starts_with(
++                                "Model reload could not start after authoritative-state re-inspection:",
++                            ) =>
++                    {
++                        format!("{resume_status} {resource_status}")
++                    }
++                    _ => resume_status,
++                });
++            }
++        }
++    }
++
+     fn save_preferences(&mut self) {
+         let preferences = AiStudioPreferences {
+             schema_version: AI_STUDIO_PREFERENCES_SCHEMA_VERSION,
+@@ -1116,6 +1301,7 @@ impl AiStudioPanel {
+         let restore_after_inference = self.resource_plan.presentation
+             == PresentationPosture::InferenceFocused
+             && !self.editing_interrupted
++            && !self.restore_for_editing
+             && self.pending_runtime_action.is_none();
+         let session_id = self
+             .native_question_session
+@@ -1123,6 +1309,7 @@ impl AiStudioPanel {
+             .unwrap_or_else(|| self.selected_session.clone());
+         match result {
+             Ok(answer) => {
++                self.last_model_resource_telemetry = answer.resource_telemetry.clone();
+                 let message = format_native_answer(&answer);
+                 match self.host.append_message(
+                     &session_id,
+@@ -1140,7 +1327,12 @@ impl AiStudioPanel {
+             }
+             Err(error) => self.status = Some(error.to_string()),
+         }
+-        if restore_after_inference {
++        if self.restore_for_editing {
++            self.begin_model_residency_request(
++                ModelResidencyRequest::ReleaseIfSupported,
++                ModelResourceContinuation::RestoreForEditing,
++            );
++        } else if restore_after_inference {
+             self.pending_runtime_action = Some(AiStudioRuntimeAction::RestoreEditorPresentation);
+         }
+     }
+@@ -1227,6 +1419,7 @@ impl AiStudioPanel {
+             }
+             let can_interrupt = !self.editing_interrupted
+                 && self.pending_runtime_action.is_none()
++                && self.model_resource_task.is_none()
+                 && (self.native_question.is_some()
+                     || self.resource_plan.presentation == PresentationPosture::InferenceFocused
+                     || self.active_run_id.as_ref().is_some_and(|run_id| {
+@@ -1262,6 +1455,8 @@ impl AiStudioPanel {
+                 task.interrupt();
+             }
+             self.pending_native_question_start = None;
++            self.model_resource_continuation = None;
++            self.restore_for_editing = false;
+             if let Some(process) = self.process.as_mut()
+                 && let Err(error) = process.cancel()
+             {
+@@ -1276,16 +1471,23 @@ impl AiStudioPanel {
+             }
+         }
+         if interrupt_requested {
++            let waiting_for_inference = self.native_question.is_some();
+             if let Some(task) = self.native_question.as_ref() {
+                 task.interrupt();
+             }
+             self.pending_native_question_start = None;
+             self.restore_for_editing = true;
+-            self.pending_runtime_action = Some(AiStudioRuntimeAction::RestoreEditorPresentation);
+-            self.status = Some(
+-                "Stopping inference at a safe backend boundary and restoring Editor presentation..."
+-                    .to_owned(),
+-            );
++            if waiting_for_inference {
++                self.status = Some(
++                    "Stopping inference at a safe backend boundary before releasing model residency..."
++                        .to_owned(),
++                );
++            } else {
++                self.begin_model_residency_request(
++                    ModelResidencyRequest::ReleaseIfSupported,
++                    ModelResourceContinuation::RestoreForEditing,
++                );
++            }
+         }
+         if resume_requested {
+             self.pending_runtime_action = Some(AiStudioRuntimeAction::InspectAuthoritativeState);
+@@ -1968,7 +2170,10 @@ impl AiStudioPanel {
+     }
+ 
+     fn request_managed_playtest_if_ready(&mut self) {
+-        if self.managed_playtest_requested || self.pending_runtime_action.is_some() {
++        if self.managed_playtest_requested
++            || self.pending_runtime_action.is_some()
++            || self.model_resource_task.is_some()
++        {
+             return;
+         }
+         let Some(run_id) = self.active_run_id.clone() else { return; };
+@@ -1980,7 +2185,23 @@ impl AiStudioPanel {
+         self.managed_evaluation_requested = false;
+         self.managed_runtime_observation = None;
+         self.managed_playtest_requested = true;
+-        self.request_permission(run_id, AgentCapability::RuntimeLaunch, PendingPermissionAction::LaunchPlaytest);
++
++        let profile = LocalModelConfig {
++            endpoint: self.local_model_endpoint.clone(),
++            model: self.local_model_name.clone(),
++        }
++        .capability_profile();
++        self.resolved_workload = InferenceWorkload::RuntimeObservation;
++        self.resource_plan = resolve_resource_plan(
++            InferenceWorkload::RuntimeObservation,
++            self.quality_preference,
++            MemoryPressure::Unknown,
++            profile.resource_capabilities,
++        );
++        self.begin_model_residency_request(
++            self.resource_plan.model_residency,
++            ModelResourceContinuation::LaunchManagedPlay { run_id },
++        );
+     }
+ 
+     fn request_next_managed_runtime_input_if_ready(&mut self) {
+@@ -2408,6 +2629,46 @@ fn capability_flag(value: Option<bool>) -> &'static str {
+     }
+ }
+ 
++fn telemetry_bool_label(value: &TelemetryValue<bool>) -> String {
++    match value {
++        TelemetryValue::Measured(true) => "yes (measured)".to_owned(),
++        TelemetryValue::Measured(false) => "no (measured)".to_owned(),
++        TelemetryValue::ConservativeEstimate(true) => "yes (estimate)".to_owned(),
++        TelemetryValue::ConservativeEstimate(false) => "no (estimate)".to_owned(),
++        TelemetryValue::Unavailable => "unavailable".to_owned(),
++    }
++}
++
++fn telemetry_bytes_label(value: &TelemetryValue<u64>) -> String {
++    match value {
++        TelemetryValue::Measured(bytes) => {
++            format!("{:.1} MiB (measured)", *bytes as f64 / (1024.0 * 1024.0))
++        }
++        TelemetryValue::ConservativeEstimate(bytes) => {
++            format!("{:.1} MiB (estimate)", *bytes as f64 / (1024.0 * 1024.0))
++        }
++        TelemetryValue::Unavailable => "unavailable".to_owned(),
++    }
++}
++
++fn telemetry_count_label(value: &TelemetryValue<u64>, unit: &str) -> String {
++    match value {
++        TelemetryValue::Measured(value) => format!("{value} {unit} (measured)"),
++        TelemetryValue::ConservativeEstimate(value) => {
++            format!("{value} {unit} (estimate)")
++        }
++        TelemetryValue::Unavailable => "unavailable".to_owned(),
++    }
++}
++
++fn telemetry_u64_value(value: &TelemetryValue<u64>) -> String {
++    match value {
++        TelemetryValue::Measured(value) => value.to_string(),
++        TelemetryValue::ConservativeEstimate(value) => format!("~{value}"),
++        TelemetryValue::Unavailable => "unavailable".to_owned(),
++    }
++}
++
+ fn format_native_answer(answer: &NativeAnswer) -> String {
+     let mut message = answer.text.trim().to_owned();
+     message.push_str("\n\nSources / provenance:\n");
+@@ -2447,6 +2708,14 @@ fn format_native_answer(answer: &NativeAnswer) -> String {
+         optional_metric(answer.metrics.generation_tokens_per_second_milli),
+         optional_metric(answer.metrics.ttft_ms),
+     ));
++    message.push_str("\nResource telemetry:\n");
++    message.push_str(&format!(
++        "- resident={} · model_size={} · gpu_residency={} · context={}",
++        telemetry_bool_label(&answer.resource_telemetry.resident),
++        telemetry_bytes_label(&answer.resource_telemetry.representation_size_bytes),
++        telemetry_bytes_label(&answer.resource_telemetry.gpu_residency_bytes),
++        telemetry_count_label(&answer.resource_telemetry.context_length_tokens, "tokens"),
++    ));
+     message
+ }
+ 
+diff --git a/crates/editor/src/main.rs b/crates/editor/src/main.rs
+index 5742fe24c73d0ab1cf0f3b1729fd577eed231be0..3d0ab97a7cfe9954bf14aaf90aa5b84d26b818a1 100644
+--- a/crates/editor/src/main.rs
++++ b/crates/editor/src/main.rs
+@@ -58,6 +58,15 @@ impl EditorShell {
+                 mcp_server.authorization_token(),
+             )
+             .map_err(|error| error.to_string())?;
++        #[cfg(feature = "visual-validation")]
++        let mut ai_studio = AiStudioPanel::new(
++            &root,
++            AiStudioConnection::new(
++                mcp_server.endpoint().to_string(),
++                mcp_server.authorization_token().to_owned(),
++            ),
++        )?;
++        #[cfg(not(feature = "visual-validation"))]
+         let ai_studio = AiStudioPanel::new(
+             &root,
+             AiStudioConnection::new(
+@@ -72,7 +81,9 @@ impl EditorShell {
+         #[cfg(feature = "visual-validation")]
+         if let Some(requested) = std::env::var_os("GAMEENGINE_VISUAL_AUTHORING_TOOL") {
+             let requested = requested.to_string_lossy();
+-            if requested == "Navigation" {
++            if requested == "AI Studio" {
++                ai_studio.open();
++            } else if requested == "Navigation" {
+                 app.prepare_navigation_visual_validation();
+             } else if requested == "Spatial Audio" {
+                 app.prepare_spatial_audio_visual_validation();
+@@ -303,10 +314,12 @@ impl eframe::App for EditorShell {
+         #[cfg(not(feature = "visual-validation"))]
+         self.ai_studio.show(&context);
+         #[cfg(feature = "visual-validation")]
+-        if !self.visual_behavior_debug_capture
+-            && std::env::var_os("GAMEENGINE_VISUAL_AUTHORING_TOOL").is_none()
+         {
+-            self.ai_studio.show(&context);
++            let show_ai_studio = std::env::var("GAMEENGINE_VISUAL_AUTHORING_TOOL")
++                .map_or(true, |requested| requested == "AI Studio");
++            if !self.visual_behavior_debug_capture && show_ai_studio {
++                self.ai_studio.show(&context);
++            }
+         }
+     }
+ 
+diff --git a/crates/editor/src/native_agent.rs b/crates/editor/src/native_agent.rs
+index a89d169853ed67b8d34d93ed6a2de0fbe397f2bd..545159f294b7d746f335da42a6a256aa88c1bebb 100644
+--- a/crates/editor/src/native_agent.rs
++++ b/crates/editor/src/native_agent.rs
+@@ -6,7 +6,11 @@
+ //! not acquire mutation permissions or participate in the write-capable
+ //! [`crate::agent_host::AgentRun`] state machine.
+ 
+-use crate::resource_arbitration::ModelResourceCapabilities;
++use crate::resource_arbitration::{
++    CapabilityAvailability, ModelResourceCapabilities, ModelResourceOperation,
++    ModelResourceTelemetry, ModelResourceTransition, TelemetryValue,
++};
++use serde::de::DeserializeOwned;
+ use serde::{Deserialize, Serialize};
+ use std::cmp::Reverse;
+ use std::collections::BTreeSet;
+@@ -44,6 +48,8 @@ pub(crate) enum NativeAgentError {
+     EmptyResponse,
+     Interrupted,
+     WorkerDisconnected,
++    ResourceTransitionUnconfirmed(String),
++    ResourceWorkerDisconnected,
+     Io(io::Error),
+     Json(serde_json::Error),
+ }
+@@ -74,6 +80,13 @@ impl fmt::Display for NativeAgentError {
+             Self::WorkerDisconnected => {
+                 write!(formatter, "native question worker disconnected unexpectedly")
+             }
++            Self::ResourceTransitionUnconfirmed(message) => write!(
++                formatter,
++                "local model resource transition was not confirmed: {message}"
++            ),
++            Self::ResourceWorkerDisconnected => {
++                write!(formatter, "native model resource worker disconnected unexpectedly")
++            }
+             Self::Io(error) => write!(formatter, "native agent I/O error: {error}"),
+             Self::Json(error) => write!(formatter, "native agent JSON error: {error}"),
+         }
+@@ -118,7 +131,16 @@ impl LocalModelConfig {
+             image_input: None,
+             reasoning: None,
+             context_limit: None,
+-            resource_capabilities: ModelResourceCapabilities::default(),
++            resource_capabilities: ModelResourceCapabilities {
++                representation_size: CapabilityAvailability::Available,
++                gpu_residency: CapabilityAvailability::Available,
++                cpu_gpu_offload: CapabilityAvailability::Available,
++                selectable_device: CapabilityAvailability::Unavailable,
++                kv_context_placement: CapabilityAvailability::Unavailable,
++                inference_cache_release: CapabilityAvailability::Unavailable,
++                unload_reload: CapabilityAvailability::Available,
++                backend_memory_telemetry: CapabilityAvailability::Available,
++            },
+             benchmark_verified: false,
+         }
+     }
+@@ -214,6 +236,166 @@ pub(crate) struct NativeAnswer {
+     pub(crate) text: String,
+     pub(crate) sources: Vec<RetrievedSource>,
+     pub(crate) metrics: NativeMetrics,
++    pub(crate) resource_telemetry: ModelResourceTelemetry,
++}
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++enum BackendResidencyRequest {
++    CpuOnly,
++    Release,
++    Reload,
++}
++
++trait ModelResourceBackend {
++    fn observe(&mut self, model: &str) -> Result<ModelResourceTelemetry, NativeAgentError>;
++
++    /// Applies one provider-specific residency request and returns provider-reported load latency.
++    fn apply_residency(
++        &mut self,
++        model: &str,
++        request: BackendResidencyRequest,
++    ) -> Result<Option<u64>, NativeAgentError>;
++}
++
++struct OllamaResourceBackend {
++    endpoint: LocalHttpEndpoint,
++}
++
++impl OllamaResourceBackend {
++    fn new(config: &LocalModelConfig) -> Result<Self, NativeAgentError> {
++        Ok(Self {
++            endpoint: LocalHttpEndpoint::parse(&config.endpoint)?,
++        })
++    }
++}
++
++impl ModelResourceBackend for OllamaResourceBackend {
++    fn observe(&mut self, model: &str) -> Result<ModelResourceTelemetry, NativeAgentError> {
++        observe_ollama_model(&self.endpoint, model)
++    }
++
++    fn apply_residency(
++        &mut self,
++        model: &str,
++        request: BackendResidencyRequest,
++    ) -> Result<Option<u64>, NativeAgentError> {
++        request_ollama_residency(&self.endpoint, model, request)
++    }
++}
++
++pub(crate) struct ModelResourceTask {
++    result: Receiver<Result<ModelResourceTransition, NativeAgentError>>,
++}
++
++impl ModelResourceTask {
++    pub(crate) fn spawn(
++        config: LocalModelConfig,
++        operation: ModelResourceOperation,
++    ) -> Result<Self, NativeAgentError> {
++        if config.model.trim().is_empty() {
++            return Err(NativeAgentError::EmptyModel);
++        }
++        LocalHttpEndpoint::parse(&config.endpoint)?;
++        let (sender, result) = mpsc::channel();
++        std::thread::Builder::new()
++            .name("ai-model-resource".to_owned())
++            .spawn(move || {
++                let transition = execute_model_resource_operation(&config, operation);
++                let _ = sender.send(transition);
++            })?;
++        Ok(Self { result })
++    }
++
++    pub(crate) fn poll(
++        &self,
++    ) -> Option<Result<ModelResourceTransition, NativeAgentError>> {
++        match self.result.try_recv() {
++            Ok(result) => Some(result),
++            Err(TryRecvError::Empty) => None,
++            Err(TryRecvError::Disconnected) => {
++                Some(Err(NativeAgentError::ResourceWorkerDisconnected))
++            }
++        }
++    }
++}
++
++fn execute_model_resource_operation(
++    config: &LocalModelConfig,
++    operation: ModelResourceOperation,
++) -> Result<ModelResourceTransition, NativeAgentError> {
++    let mut backend = OllamaResourceBackend::new(config)?;
++    execute_model_resource_operation_with_backend(config.model.trim(), operation, &mut backend)
++}
++
++fn execute_model_resource_operation_with_backend(
++    model: &str,
++    operation: ModelResourceOperation,
++    backend: &mut impl ModelResourceBackend,
++) -> Result<ModelResourceTransition, NativeAgentError> {
++    let before = backend.observe(model)?;
++    let started = Instant::now();
++    let backend_load_latency = match operation {
++        ModelResourceOperation::Observe => None,
++        ModelResourceOperation::Release
++            if before.resident == TelemetryValue::Measured(false) =>
++        {
++            None
++        }
++        ModelResourceOperation::ReduceGpuResidency
++            if before.resident == TelemetryValue::Measured(false) =>
++        {
++            None
++        }
++        ModelResourceOperation::Release => {
++            backend.apply_residency(model, BackendResidencyRequest::Release)?
++        }
++        ModelResourceOperation::Reload => {
++            backend.apply_residency(model, BackendResidencyRequest::Reload)?
++        }
++        ModelResourceOperation::ReduceGpuResidency => {
++            backend.apply_residency(model, BackendResidencyRequest::CpuOnly)?
++        }
++    };
++    let after = if operation == ModelResourceOperation::Observe {
++        before.clone()
++    } else {
++        backend.observe(model)?
++    };
++    if !resource_transition_confirmed(operation, &before, &after) {
++        return Err(NativeAgentError::ResourceTransitionUnconfirmed(format!(
++            "{operation:?} did not produce provider telemetry that proves the requested residency state"
++        )));
++    }
++    Ok(ModelResourceTransition {
++        operation,
++        before,
++        after,
++        operation_latency_ms: TelemetryValue::Measured(duration_ms(started.elapsed())),
++        backend_load_latency_ms: backend_load_latency
++            .map(TelemetryValue::Measured)
++            .unwrap_or(TelemetryValue::Unavailable),
++    })
++}
++
++fn resource_transition_confirmed(
++    operation: ModelResourceOperation,
++    before: &ModelResourceTelemetry,
++    after: &ModelResourceTelemetry,
++) -> bool {
++    match operation {
++        ModelResourceOperation::Observe => true,
++        ModelResourceOperation::Release => after.resident == TelemetryValue::Measured(false),
++        ModelResourceOperation::Reload => after.resident == TelemetryValue::Measured(true),
++        ModelResourceOperation::ReduceGpuResidency => {
++            after.resident == TelemetryValue::Measured(false)
++                || after.gpu_residency_bytes == TelemetryValue::Measured(0)
++                || matches!(
++                    (&before.gpu_residency_bytes, &after.gpu_residency_bytes),
++                    (TelemetryValue::Measured(before), TelemetryValue::Measured(after))
++                        if after < before
++                )
++        }
++    }
+ }
+ 
+ pub(crate) struct NativeQuestionTask {
+@@ -428,6 +610,9 @@ fn answer_question(
+         return Err(NativeAgentError::EmptyResponse);
+     }
+     let sources = distinct_sources(&evidence);
++    let resource_telemetry = LocalHttpEndpoint::parse(&config.endpoint)
++        .and_then(|endpoint| observe_ollama_model(&endpoint, config.model.trim()))
++        .unwrap_or_default();
+     Ok(NativeAnswer {
+         metrics: NativeMetrics {
+             harness_version: BASELINE_HARNESS_VERSION,
+@@ -454,6 +639,7 @@ fn answer_question(
+         },
+         text,
+         sources,
++        resource_telemetry,
+     })
+ }
+ 
+@@ -474,6 +660,138 @@ fn generation_throughput_milli(tokens: Option<u64>, duration_nanos: Option<u64>)
+     Some(scaled.min(u128::from(u64::MAX)) as u64)
+ }
+ 
++#[derive(Debug, Deserialize)]
++struct RunningModelsResponse {
++    #[serde(default)]
++    models: Vec<RunningModel>,
++}
++
++#[derive(Debug, Deserialize)]
++struct RunningModel {
++    #[serde(default)]
++    name: String,
++    #[serde(default)]
++    model: String,
++    #[serde(default)]
++    size: Option<u64>,
++    #[serde(default)]
++    size_vram: Option<u64>,
++    #[serde(default)]
++    context_length: Option<u64>,
++}
++
++#[derive(Debug, Serialize)]
++struct ResourceGenerateRequest<'a> {
++    model: &'a str,
++    stream: bool,
++    keep_alive: i64,
++    #[serde(skip_serializing_if = "Option::is_none")]
++    options: Option<ResourceGenerateOptions>,
++}
++
++#[derive(Debug, Serialize)]
++struct ResourceGenerateOptions {
++    num_gpu: i32,
++}
++
++fn observe_ollama_model(
++    endpoint: &LocalHttpEndpoint,
++    model: &str,
++) -> Result<ModelResourceTelemetry, NativeAgentError> {
++    let running: RunningModelsResponse = request_local_json(endpoint, "GET", "/api/ps", None)?;
++    let selected = model.trim();
++    let Some(model) = running
++        .models
++        .into_iter()
++        .find(|candidate| candidate.name == selected || candidate.model == selected)
++    else {
++        return Ok(ModelResourceTelemetry {
++            resident: TelemetryValue::Measured(false),
++            ..ModelResourceTelemetry::default()
++        });
++    };
++    Ok(ModelResourceTelemetry {
++        resident: TelemetryValue::Measured(true),
++        representation_size_bytes: measured_u64(model.size),
++        gpu_residency_bytes: measured_u64(model.size_vram),
++        context_length_tokens: measured_u64(model.context_length),
++    })
++}
++
++fn measured_u64(value: Option<u64>) -> TelemetryValue<u64> {
++    value
++        .map(TelemetryValue::Measured)
++        .unwrap_or(TelemetryValue::Unavailable)
++}
++
++fn request_ollama_residency(
++    endpoint: &LocalHttpEndpoint,
++    model: &str,
++    request: BackendResidencyRequest,
++) -> Result<Option<u64>, NativeAgentError> {
++    let (keep_alive, options) = match request {
++        BackendResidencyRequest::Release => (0, None),
++        BackendResidencyRequest::Reload => (-1, None),
++        BackendResidencyRequest::CpuOnly => (
++            -1,
++            Some(ResourceGenerateOptions { num_gpu: 0 }),
++        ),
++    };
++    let body = serde_json::to_vec(&ResourceGenerateRequest {
++        model,
++        stream: false,
++        keep_alive,
++        options,
++    })?;
++    let response: GenerateResponse =
++        request_local_json(endpoint, "POST", "/api/generate", Some(&body))?;
++    Ok(response.load_duration.map(|nanos| nanos / 1_000_000))
++}
++
++fn request_local_json<R: DeserializeOwned>(
++    endpoint: &LocalHttpEndpoint,
++    method: &str,
++    path: &str,
++    body: Option<&[u8]>,
++) -> Result<R, NativeAgentError> {
++    let mut stream = endpoint.connect()?;
++    match body {
++        Some(body) => {
++            write!(
++                stream,
++                "{method} {path} HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\nAccept: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
++                endpoint.host_header(),
++                body.len()
++            )?;
++            stream.write_all(body)?;
++        }
++        None => {
++            write!(
++                stream,
++                "{method} {path} HTTP/1.1\r\nHost: {}\r\nAccept: application/json\r\nConnection: close\r\n\r\n",
++                endpoint.host_header()
++            )?;
++        }
++    }
++    stream.flush()?;
++    let mut response = Vec::new();
++    stream
++        .take(MAX_HTTP_RESPONSE_BYTES + 1)
++        .read_to_end(&mut response)?;
++    if response.len() as u64 > MAX_HTTP_RESPONSE_BYTES {
++        return Err(NativeAgentError::ResponseTooLarge);
++    }
++    let parsed = parse_http_response(&response)?;
++    if parsed.status != 200 {
++        let message = String::from_utf8_lossy(&parsed.body);
++        return Err(NativeAgentError::HttpStatus(
++            parsed.status,
++            truncate_text(message.trim(), 500),
++        ));
++    }
++    serde_json::from_slice(&parsed.body).map_err(Into::into)
++}
++
+ #[derive(Debug, Serialize)]
+ struct GenerateRequest<'a> {
+     model: &'a str,
+@@ -1020,4 +1338,153 @@ mod tests {
+         assert!(prompt.contains("Do not claim to edit files"));
+         assert!(prompt.contains("not established by the current sources"));
+     }
++
++    struct FakeResourceBackend {
++        observations: std::collections::VecDeque<ModelResourceTelemetry>,
++        requests: Vec<BackendResidencyRequest>,
++        load_latency_ms: Option<u64>,
++    }
++
++    impl FakeResourceBackend {
++        fn new(observations: Vec<ModelResourceTelemetry>) -> Self {
++            Self {
++                observations: observations.into(),
++                requests: Vec::new(),
++                load_latency_ms: None,
++            }
++        }
++    }
++
++    impl ModelResourceBackend for FakeResourceBackend {
++        fn observe(&mut self, _model: &str) -> Result<ModelResourceTelemetry, NativeAgentError> {
++            self.observations.pop_front().ok_or_else(|| {
++                NativeAgentError::BackendUnavailable("fake observation exhausted".to_owned())
++            })
++        }
++
++        fn apply_residency(
++            &mut self,
++            _model: &str,
++            request: BackendResidencyRequest,
++        ) -> Result<Option<u64>, NativeAgentError> {
++            self.requests.push(request);
++            Ok(self.load_latency_ms)
++        }
++    }
++
++    fn resource_sample(resident: bool, gpu_bytes: Option<u64>) -> ModelResourceTelemetry {
++        ModelResourceTelemetry {
++            resident: TelemetryValue::Measured(resident),
++            gpu_residency_bytes: measured_u64(gpu_bytes),
++            ..ModelResourceTelemetry::default()
++        }
++    }
++
++    #[test]
++    fn ollama_capability_profile_is_truthful_about_first_release_controls() {
++        let profile = LocalModelConfig {
++            endpoint: DEFAULT_LOCAL_MODEL_ENDPOINT.to_owned(),
++            model: "model:tag".to_owned(),
++        }
++        .capability_profile();
++        assert_eq!(
++            profile.resource_capabilities.unload_reload,
++            CapabilityAvailability::Available
++        );
++        assert_eq!(
++            profile.resource_capabilities.cpu_gpu_offload,
++            CapabilityAvailability::Available
++        );
++        assert_eq!(
++            profile.resource_capabilities.selectable_device,
++            CapabilityAvailability::Unavailable
++        );
++        assert_eq!(
++            profile.resource_capabilities.kv_context_placement,
++            CapabilityAvailability::Unavailable
++        );
++        assert_eq!(
++            profile.resource_capabilities.inference_cache_release,
++            CapabilityAvailability::Unavailable
++        );
++    }
++
++    // These are deterministic adapter-contract tests. Reference-machine GPU
++    // measurements remain separate because no test may fabricate hardware state.
++    #[test]
++    fn unload_requires_observed_non_residency() {
++        let mut success = FakeResourceBackend::new(vec![
++            resource_sample(true, Some(1024)),
++            resource_sample(false, None),
++        ]);
++        let transition = execute_model_resource_operation_with_backend(
++            "model:tag",
++            ModelResourceOperation::Release,
++            &mut success,
++        )
++        .expect("verified unload");
++        assert_eq!(success.requests, [BackendResidencyRequest::Release]);
++        assert_eq!(transition.after.resident, TelemetryValue::Measured(false));
++
++        let mut unconfirmed = FakeResourceBackend::new(vec![
++            resource_sample(true, Some(1024)),
++            resource_sample(true, Some(1024)),
++        ]);
++        assert!(matches!(
++            execute_model_resource_operation_with_backend(
++                "model:tag",
++                ModelResourceOperation::Release,
++                &mut unconfirmed,
++            ),
++            Err(NativeAgentError::ResourceTransitionUnconfirmed(_))
++        ));
++    }
++
++    #[test]
++    fn cpu_offload_requires_observed_gpu_residency_reduction() {
++        let mut success = FakeResourceBackend::new(vec![
++            resource_sample(true, Some(1024)),
++            resource_sample(true, Some(128)),
++        ]);
++        execute_model_resource_operation_with_backend(
++            "model:tag",
++            ModelResourceOperation::ReduceGpuResidency,
++            &mut success,
++        )
++        .expect("verified offload");
++        assert_eq!(success.requests, [BackendResidencyRequest::CpuOnly]);
++
++        let mut unconfirmed = FakeResourceBackend::new(vec![
++            resource_sample(true, Some(1024)),
++            resource_sample(true, Some(1024)),
++        ]);
++        assert!(matches!(
++            execute_model_resource_operation_with_backend(
++                "model:tag",
++                ModelResourceOperation::ReduceGpuResidency,
++                &mut unconfirmed,
++            ),
++            Err(NativeAgentError::ResourceTransitionUnconfirmed(_))
++        ));
++    }
++
++    #[test]
++    fn reload_requires_residency_and_retains_backend_load_timing() {
++        let mut backend = FakeResourceBackend::new(vec![
++            resource_sample(false, None),
++            resource_sample(true, Some(2048)),
++        ]);
++        backend.load_latency_ms = Some(42);
++        let transition = execute_model_resource_operation_with_backend(
++            "model:tag",
++            ModelResourceOperation::Reload,
++            &mut backend,
++        )
++        .expect("verified reload");
++        assert_eq!(backend.requests, [BackendResidencyRequest::Reload]);
++        assert_eq!(
++            transition.backend_load_latency_ms,
++            TelemetryValue::Measured(42)
++        );
++    }
+ }
+diff --git a/crates/editor/src/resource_arbitration.rs b/crates/editor/src/resource_arbitration.rs
+index f5035d2df6579caa0225ead0a7c6a898d8e92033..4beec8a8a7bc17066ac0b24b98c9fa97a81d6a9f 100644
+--- a/crates/editor/src/resource_arbitration.rs
++++ b/crates/editor/src/resource_arbitration.rs
+@@ -113,6 +113,19 @@ impl Default for ModelResourceCapabilities {
+     }
+ }
+ 
++/// Resource operation exposed by a concrete `ModelBackend` adapter.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub(crate) enum ModelResourceOperation {
++    /// Read backend-owned residency telemetry without changing model state.
++    Observe,
++    /// Move as much model residency as the backend can verify away from the GPU.
++    ReduceGpuResidency,
++    /// Release the selected model from backend residency.
++    Release,
++    /// Reacquire the selected model after an explicit release.
++    Reload,
++}
++
+ /// Resource telemetry provenance. Unknown values remain explicitly unavailable.
+ // First-release benchmark telemetry contract; exact backend wiring is capability-dependent.
+ #[allow(dead_code)]
+@@ -128,6 +141,51 @@ pub(crate) enum TelemetryValue<T> {
+     Unavailable,
+ }
+ 
++/// Backend-owned model residency telemetry.
++///
++/// Device-wide free memory is intentionally absent: a backend model snapshot
++/// cannot truthfully synthesize that renderer/platform-owned measurement.
++#[derive(Debug, Clone, Default, PartialEq, Eq)]
++pub(crate) struct ModelResourceTelemetry {
++    pub(crate) resident: TelemetryValue<bool>,
++    pub(crate) representation_size_bytes: TelemetryValue<u64>,
++    pub(crate) gpu_residency_bytes: TelemetryValue<u64>,
++    pub(crate) context_length_tokens: TelemetryValue<u64>,
++}
++
++/// Verified result of one backend resource transition.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub(crate) struct ModelResourceTransition {
++    pub(crate) operation: ModelResourceOperation,
++    pub(crate) before: ModelResourceTelemetry,
++    pub(crate) after: ModelResourceTelemetry,
++    pub(crate) operation_latency_ms: TelemetryValue<u64>,
++    pub(crate) backend_load_latency_ms: TelemetryValue<u64>,
++}
++
++/// Maps provider-independent residency intent to an actually supported backend operation.
++pub(crate) fn resource_operation_for_residency_request(
++    request: ModelResidencyRequest,
++    capabilities: ModelResourceCapabilities,
++) -> Option<ModelResourceOperation> {
++    match request {
++        ModelResidencyRequest::Keep => None,
++        ModelResidencyRequest::ReduceIfSupported => {
++            (capabilities.cpu_gpu_offload == CapabilityAvailability::Available)
++                .then_some(ModelResourceOperation::ReduceGpuResidency)
++        }
++        ModelResidencyRequest::ReleaseIfSupported => {
++            if capabilities.unload_reload == CapabilityAvailability::Available {
++                Some(ModelResourceOperation::Release)
++            } else if capabilities.cpu_gpu_offload == CapabilityAvailability::Available {
++                Some(ModelResourceOperation::ReduceGpuResidency)
++            } else {
++                None
++            }
++        }
++    }
++}
++
+ /// Observed pressure used by the application-layer broker.
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+ pub(crate) enum MemoryPressure {
+@@ -214,6 +272,8 @@ pub(crate) fn resolve_resource_plan(
+             reclaim: ReclaimLevel::None,
+             model_residency: if capabilities.unload_reload == CapabilityAvailability::Available {
+                 ModelResidencyRequest::ReleaseIfSupported
++            } else if capabilities.cpu_gpu_offload == CapabilityAvailability::Available {
++                ModelResidencyRequest::ReduceIfSupported
+             } else {
+                 ModelResidencyRequest::Keep
+             },
+@@ -226,7 +286,7 @@ pub(crate) fn resolve_resource_plan(
+             reclaim: ReclaimLevel::None,
+             model_residency: if capabilities.unload_reload == CapabilityAvailability::Available {
+                 ModelResidencyRequest::ReleaseIfSupported
+-            } else if capabilities.gpu_residency == CapabilityAvailability::Available {
++            } else if capabilities.cpu_gpu_offload == CapabilityAvailability::Available {
+                 ModelResidencyRequest::ReduceIfSupported
+             } else {
+                 ModelResidencyRequest::Keep
+@@ -391,28 +451,89 @@ mod tests {
+     }
+ 
+     #[test]
+-    fn runtime_observation_prioritizes_renderer_and_only_requests_supported_release() {
++    fn runtime_observation_prioritizes_renderer_and_only_requests_supported_controls() {
+         let unsupported = resolve_resource_plan(
+             InferenceWorkload::RuntimeObservation,
+             QualityPreference::Deep,
+             MemoryPressure::Constrained,
+-            ModelResourceCapabilities::default(),
++            ModelResourceCapabilities {
++                gpu_residency: CapabilityAvailability::Available,
++                ..ModelResourceCapabilities::default()
++            },
+         );
+         assert_eq!(unsupported.priority, ResourcePriority::RuntimeRendering);
+         assert_eq!(unsupported.model_residency, ModelResidencyRequest::Keep);
++        assert_eq!(
++            resource_operation_for_residency_request(
++                unsupported.model_residency,
++                ModelResourceCapabilities::default(),
++            ),
++            None
++        );
+ 
++        let offload = ModelResourceCapabilities {
++            cpu_gpu_offload: CapabilityAvailability::Available,
++            ..ModelResourceCapabilities::default()
++        };
++        let offload_plan = resolve_resource_plan(
++            InferenceWorkload::RuntimeObservation,
++            QualityPreference::Deep,
++            MemoryPressure::Constrained,
++            offload,
++        );
++        assert_eq!(
++            offload_plan.model_residency,
++            ModelResidencyRequest::ReduceIfSupported
++        );
++        assert_eq!(
++            resource_operation_for_residency_request(offload_plan.model_residency, offload),
++            Some(ModelResourceOperation::ReduceGpuResidency)
++        );
++
++        let unload = ModelResourceCapabilities {
++            unload_reload: CapabilityAvailability::Available,
++            cpu_gpu_offload: CapabilityAvailability::Available,
++            ..ModelResourceCapabilities::default()
++        };
+         let supported = resolve_resource_plan(
+             InferenceWorkload::RuntimeObservation,
+             QualityPreference::Deep,
+             MemoryPressure::Constrained,
+-            ModelResourceCapabilities {
+-                unload_reload: CapabilityAvailability::Available,
+-                ..ModelResourceCapabilities::default()
+-            },
++            unload,
+         );
+         assert_eq!(
+             supported.model_residency,
+             ModelResidencyRequest::ReleaseIfSupported
+         );
++        assert_eq!(
++            resource_operation_for_residency_request(supported.model_residency, unload),
++            Some(ModelResourceOperation::Release)
++        );
++    }
++
++    #[test]
++    fn release_request_falls_back_to_verified_offload_not_telemetry_only() {
++        let telemetry_only = ModelResourceCapabilities {
++            gpu_residency: CapabilityAvailability::Available,
++            ..ModelResourceCapabilities::default()
++        };
++        assert_eq!(
++            resource_operation_for_residency_request(
++                ModelResidencyRequest::ReleaseIfSupported,
++                telemetry_only,
++            ),
++            None
++        );
++        let offload = ModelResourceCapabilities {
++            cpu_gpu_offload: CapabilityAvailability::Available,
++            ..ModelResourceCapabilities::default()
++        };
++        assert_eq!(
++            resource_operation_for_residency_request(
++                ModelResidencyRequest::ReleaseIfSupported,
++                offload,
++            ),
++            Some(ModelResourceOperation::ReduceGpuResidency)
++        );
+     }
+ }
+diff --git a/docs/adr/0143-native-model-backend-resource-controls-and-hardware-telemetry.md b/docs/adr/0143-native-model-backend-resource-controls-and-hardware-telemetry.md
+index 5f57f1c0f7c907dbe9a947af7a22e801b7db1a9e..78240849f62b1e618d991d1316c8e1cb784fef85 100644
+--- a/docs/adr/0143-native-model-backend-resource-controls-and-hardware-telemetry.md
++++ b/docs/adr/0143-native-model-backend-resource-controls-and-hardware-telemetry.md
+@@ -1,6 +1,6 @@
+ # ADR 0143: Native ModelBackend Resource Controls and Hardware Telemetry
+ 
+-Status: Proposed
++Status: Accepted
+ Date: 2026-08-17
+ Builds on: ADR 0131, ADR 0135
+ Relates to: ADR 0003, ADR 0072, ADR 0104, ADR 0136, ADR 0142
+@@ -47,6 +47,16 @@ Provider-specific HTTP/process APIs belong in the ModelBackend adapter/applicati
+ 
+ This ADR can be implemented in parallel with ADR 0141, ADR 0144-0149, ADR 0151, and ADR 0153. It does not require ADR 0142, but ADR 0142 should consume the resulting telemetry when available. ADR 0150 may later use resource capabilities as routing inputs.
+ 
++## First-release implementation
++
++The initial governed adapter is the existing loopback-only Ollama-compatible ModelBackend. It reads `/api/ps` for backend-reported model representation size, GPU residency, and context length. Values are recorded as measured only when the backend reports them; device-wide free VRAM remains unavailable rather than being inferred from model size.
++
++Model release and reload use the backend's `keep_alive` contract, and CPU-only residency requests use the backend's `num_gpu = 0` option. Each mutation is followed by a fresh `/api/ps` observation. Release completes only after the selected model is observed non-resident, reload only after it is observed resident, and GPU offload only after residency is absent, zero, or measurably lower than before. An acknowledgement without confirming telemetry is reported as an unconfirmed transition rather than success.
++
++AI Studio runs these resource transitions on an application-owned worker. Interrupt-for-Editing waits for the native inference worker to reach its safe interruption boundary, then releases supported model residency before requesting Editor presentation restore. Managed Play resolves a `RuntimeObservation` resource plan and releases or reduces supported model residency before requesting runtime launch. Transition failure never fabricates success and does not let local inference take priority over required Editor restoration or Play. Resume still re-inspects authoritative Editor state before any later inference can reacquire model resources.
++
++These controls and measurements are transient application state only. They do not mutate canonical authoring data, Stable IDs, serialization, runtime ECS state, or renderer ownership. Device selection, explicit KV placement, and inference-cache release remain unavailable in the first release.
++
+ ## Verification
+ 
+ Tests must cover unavailable capability honesty, successful and failed unload/offload requests, interruption releasing supported residency, Play priority reclaim, reload timing/telemetry, no canonical authoring changes during resource transitions, and safe renderer restoration after any approved reclaim path. Hardware-dependent tests must distinguish deterministic adapter contract tests from reference-machine measurement runs.
+diff --git a/docs/adr/README.md b/docs/adr/README.md
+index c6112a62f29399796506a16ceec07314feb4f5d9..56a83c3fd5e97922855305627db19e2c9bd2cc7c 100644
+--- a/docs/adr/README.md
++++ b/docs/adr/README.md
+@@ -286,7 +286,7 @@ implementation contract.
+ | [0140](0140-ai-capability-roadmap-and-parallel-delivery-order.md) | **Proposed** — AI Capability Roadmap and Parallel Delivery Order |
+ | [0141](0141-native-write-capable-agent-runtime-and-governed-tool-loop.md) | **Proposed** — Native Write-Capable Agent Runtime and Governed Tool Loop |
+ | [0142](0142-gameengine-agent-benchmark-and-curated-model-catalog.md) | **Proposed** — GameEngine Agent Benchmark and Curated Model Catalog |
+-| [0143](0143-native-model-backend-resource-controls-and-hardware-telemetry.md) | **Proposed** — Native ModelBackend Resource Controls and Hardware Telemetry |
++| [0143](0143-native-model-backend-resource-controls-and-hardware-telemetry.md) | Native ModelBackend Resource Controls and Hardware Telemetry |
+ | [0144](0144-hosted-and-enterprise-model-backends-and-credential-ownership.md) | **Proposed** — Hosted and Enterprise ModelBackends and Credential Ownership |
+ | [0145](0145-first-class-external-agent-runtime-provider-adapters.md) | **Proposed** — First-Class External Agent Runtime Provider Adapters |
+ | [0146](0146-governed-ai-asset-acquisition-and-generative-content-providers.md) | **Proposed** — Governed AI Asset Acquisition and Generative Content Providers |
