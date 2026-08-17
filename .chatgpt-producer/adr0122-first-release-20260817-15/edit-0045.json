@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/scene_view.rs","old":"            entity_pick_info: Vec::new(),\n            gizmo_drag: None,\n            box_select_start: None,","new":"            entity_pick_info: Vec::new(),\n            gizmo_drag: None,\n            audio_distance_drag: None,\n            box_select_start: None,"}
