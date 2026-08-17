@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/scene_view.rs","old":"            gizmo_drag: None,\n            box_select_start: None,\n","new":"            gizmo_drag: None,\n            audio_distance_drag: None,\n            box_select_start: None,\n"}
