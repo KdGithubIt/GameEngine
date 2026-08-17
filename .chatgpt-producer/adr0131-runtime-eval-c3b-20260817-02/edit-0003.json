@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ai_studio.rs","old":"    process: Option<ExternalAgentProcess>,\n    code_workspace: Option<CodeWorkspace>,\n","new":"    process: Option<ExternalAgentProcess>,\n    process_purpose: Option<ExternalAgentPurpose>,\n    code_workspace: Option<CodeWorkspace>,\n"}

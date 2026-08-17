@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ai_studio.rs","old":"    fn launch_external_agent(&mut self, run_id: &str) {\n","new":"    fn launch_external_agent(&mut self, run_id: &str, purpose: ExternalAgentPurpose) {\n"}
