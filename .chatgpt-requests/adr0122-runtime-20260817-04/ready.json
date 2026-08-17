@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0122-runtime-20260817-04",
+  "target_branch": "chatgpt/gameengine-adr0122-spatial-audio-complete-v3",
+  "expected_head_sha": "e1df22ca311274ac7645a226f214c9d4e941756c",
+  "baseline_main_sha": "e1df22ca311274ac7645a226f214c9d4e941756c",
+  "patch_sha256": "3e19807fc391af4d6a0874be196dac2a861f8b23e3a34d3cfa76828137aed766",
+  "patch_bytes": 40147,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Complete ADR 0122 spatial audio runtime integration",
+  "pr_title": "GameEngine: complete ADR 0122 spatial audio",
+  "pr_body": "## Summary\n\nApplies the ADR 0122 runtime foundation to current main without replacing the existing engine-owned spatial math or managed backend. Adds authored listener priority and emitter rolloff/loop policy, engine composition/ECS synchronization, listener diagnostics, and generation-checked deferred Project Rust spatial playback while preserving existing 2D PlaySoundEffect semantics.\n\nEditor inspector/gizmo/audition and final ADR Verification are completed by follow-up Dispatcher requests on this same Draft branch before acceptance.\n\n<!-- gameengine-chatgpt-dispatcher -->"
+}
