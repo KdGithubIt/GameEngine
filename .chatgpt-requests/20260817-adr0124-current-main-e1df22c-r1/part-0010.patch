@@ -1,0 +1,22 @@
+diff --git a/crates/physics/src/lib.rs b/crates/physics/src/lib.rs
+index 544d89b..79f0d8b 100644
+--- a/crates/physics/src/lib.rs
++++ b/crates/physics/src/lib.rs
+@@ -24,6 +24,8 @@ pub mod collision;
+ pub mod collision;
+ /// Production tiled polygon navigation assets, baking, queries, and agents.
+ pub mod navigation;
++/// Shared GUI-free navigation bake document and service contracts.
++pub mod navigation_bake;
+ /// Legacy grid navigation retained for focused compatibility tests and layered utilities.
+ pub mod navmesh;
+ /// Rapier-backed gameplay rigid-body integration.
+diff --git a/crates/physics/src/navigation.rs b/crates/physics/src/navigation.rs
+index 806a873..c8a9c29 100644
+--- a/crates/physics/src/navigation.rs
++++ b/crates/physics/src/navigation.rs
+@@ -654,7 +654,7 @@ fn bake_profile(
+             build_fingerprint: format!("{}:{}:{}", input.source_fingerprint, id.x, id.z),
+         });
+     }
+-    build_adjacency(&mut tiles);
