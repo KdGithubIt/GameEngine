@@ -1,0 +1,150 @@
+diff --git a/crates/editor/src/canvas/mod.rs b/crates/editor/src/canvas/mod.rs
+index ff37917583a37fe21f0f42cb80ee69d08777fd6d..ce44ddff779a8635a26bf5dc0af7e0bd4104c140 100644
+--- a/crates/editor/src/canvas/mod.rs
++++ b/crates/editor/src/canvas/mod.rs
+@@ -602,6 +602,45 @@ pub fn show_graph_canvas(
+     actions
+ }
+ 
++#[cfg(feature = "visual-validation")]
++pub(crate) fn show_graph_node_palette_visual_fixture(
++    ui: &mut egui::Ui,
++    session: &EditorSession,
++) {
++    ui.heading("Behavior Tree Add Node");
++    ui.small("Schema-driven node palette");
++    ui.separator();
++
++    let mut search_query = "decorator".to_owned();
++    ui.columns(2, |columns| {
++        columns[0].strong("Schema catalog");
++        let catalog = session
++            .available_graph_node_kinds()
++            .into_iter()
++            .filter(|kind| kind.category().starts_with("Behavior Tree"))
++            .map(|kind| kind.label().to_owned())
++            .collect::<Vec<_>>()
++            .join("  •  ");
++        columns[0].label(catalog);
++
++        columns[1].strong("Search preview");
++        columns[1].add(
++            egui::TextEdit::singleline(&mut search_query)
++                .hint_text("Search nodes...")
++                .desired_width(180.0),
++        );
++        columns[1].small("Shared schema labels/categories/type IDs/tags");
++        let matches = session
++            .available_graph_node_kinds()
++            .into_iter()
++            .filter(|kind| kind.matches_search(&search_query))
++            .map(|kind| kind.label().to_owned())
++            .collect::<Vec<_>>()
++            .join("  •  ");
++        columns[1].label(matches);
++    });
++}
++
+ /// Draws a read-only graph canvas with transient runtime debug presentation.
+ ///
+ /// Unlike [`show_graph_canvas`], this surface never emits authoring actions and
+diff --git a/crates/editor/src/ui/behavior_debug.rs b/crates/editor/src/ui/behavior_debug.rs
+index 8998c231f977d4168db65dbcca4975bd463c1e58..badb9d41056d1a0ec2706caf9e3b38ee29c07e0e 100644
+--- a/crates/editor/src/ui/behavior_debug.rs
++++ b/crates/editor/src/ui/behavior_debug.rs
+@@ -5,6 +5,8 @@ use crate::canvas::{
+     show_graph_debug_canvas, GraphCanvasState, GraphDebugBadge, GraphDebugNodePresentation,
+     GraphDebugOverlay,
+ };
++#[cfg(feature = "visual-validation")]
++use crate::canvas::show_graph_node_palette_visual_fixture;
+ use engine::behavior_tree::{
+     BehaviorExecutionSnapshot, BehaviorExecutionTransitionKind, BehaviorResetReason, BehaviorStatus,
+ };
+@@ -187,6 +189,15 @@ impl BehaviorTreeDebugState {
+                 reason: Some(BehaviorResetReason::Interrupted),
+             });
+         }
++        if let Some(node) = nodes.get(4) {
++            recent_transitions.push(engine::behavior_tree::BehaviorExecutionTransition {
++                generation: 4,
++                node: Some(node.clone()),
++                behavior_id: Some("enemy.fallback_failed".into()),
++                kind: BehaviorExecutionTransitionKind::Failure,
++                reason: None,
++            });
++        }
+         let snapshot = BehaviorExecutionSnapshot {
+             tree_source: session.graph().id.clone(),
+             tree_generation: 2,
+@@ -356,6 +367,40 @@ impl EditorApp {
+         }
+         let presentation = BehaviorTreeDebugPresentation::from_snapshot(runtime_entity, &snapshot);
+ 
++        #[cfg(feature = "visual-validation")]
++        if is_fixture {
++            let context = ui.ctx().clone();
++            egui::Window::new("Behavior Tree Visual Validation")
++                .id(egui::Id::new("behavior_tree_visual_validation_workspace"))
++                .collapsible(false)
++                .resizable(false)
++                .fixed_pos(egui::pos2(8.0, 60.0))
++                .fixed_size(egui::vec2(1080.0, 690.0))
++                .show(&context, |ui| {
++                    ui.vertical(|ui| {
++                        ui.set_width(1040.0);
++                        if let Some(session) = self.behavior_debug.graph_session.as_ref() {
++                            show_graph_node_palette_visual_fixture(ui, session);
++                        }
++                        ui.separator();
++                        ui.horizontal_top(|ui| {
++                            ui.vertical(|ui| {
++                                ui.set_width(730.0);
++                                ui.set_min_height(410.0);
++                                self.behavior_debug.show_graph(ui, &presentation);
++                            });
++                            ui.separator();
++                            ui.vertical(|ui| {
++                                ui.set_width(290.0);
++                                ui.set_min_height(410.0);
++                                show_behavior_debug_details(ui, &presentation);
++                            });
++                        });
++                    });
++                });
++            return;
++        }
++
+         egui::Panel::right("behavior_tree_debug_details")
+             .resizable(true)
+             .default_size(280.0)
+@@ -382,14 +427,14 @@ impl EditorApp {
+ fn show_behavior_debug_details(ui: &mut egui::Ui, presentation: &BehaviorTreeDebugPresentation) {
+     ui.heading("Behavior Tree Debug");
+     if let Some((id, generation)) = presentation.runtime_entity {
+-        ui.label(format!(
+-            "Runner entity {id}  |  Entity generation {generation}"
+-        ));
++        ui.label(format!("Runner entity {id}"));
++        ui.label(format!("Entity generation {generation}"));
+     }
+     ui.monospace(presentation.graph.as_str());
++    ui.label(format!("Tree generation {}", presentation.tree_generation));
+     ui.label(format!(
+-        "Tree gen {}  |  Execution gen {}",
+-        presentation.tree_generation, presentation.execution_generation
++        "Execution generation {}",
++        presentation.execution_generation
+     ));
+     ui.separator();
+     ui.strong(format!(
+@@ -400,7 +445,8 @@ fn show_behavior_debug_details(ui: &mut egui::Ui, presentation: &BehaviorTreeDeb
+             .unwrap_or("Not ticked")
+     ));
+     if let Some(reason) = presentation.last_reset_reason {
+-        ui.label(format!("Last abort/reset: {}", reset_reason_label(reason)));
++        ui.label("Last abort/reset");
++        ui.monospace(reset_reason_label(reason));
+     }
+     if let Some(error) = &presentation.error {
+         ui.colored_label(egui::Color32::from_rgb(235, 104, 104), error);
