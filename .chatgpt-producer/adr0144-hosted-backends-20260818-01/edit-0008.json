@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/native_agent.rs","old":"            context_limit: None,\n            resource_capabilities: ModelResourceCapabilities::default(),","new":"            context_limit: None,\n            streaming: Some(false),\n            usage: Some(true),\n            resource_capabilities: ModelResourceCapabilities::default(),"}
