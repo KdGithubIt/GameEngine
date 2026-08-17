@@ -33,6 +33,7 @@ use crate::session::{SceneAlignment, SceneAxis};
 use crate::systems_panel::{show_systems_panel, SystemsPanel};
 use crate::ui_builder::{show_ui_builder, show_ui_builder_inspector, UiBuilderState};
 use crate::view_aspect::ViewAspect;
+use crate::working_copy::{capture_authoring_overlay, graph_working_copy};
 use crate::workspace::{DocumentWorkspace, WorkspaceDocumentKind, WorkspaceTabId};
 use eframe::{egui, egui_wgpu};
 use engine::{InputCommand, InputSource, KeyCode};
@@ -75,12 +76,6 @@ const SCENE_FILESYSTEM_VALIDATION_DEBOUNCE: std::time::Duration =
 struct SceneFilesystemValidationJob {
     generation: u64,
     receiver: std::sync::mpsc::Receiver<Vec<engine_authoring::Diagnostic>>,
-}
-
-/// Latest unsaved value for one Material path during a continuous UI edit.
-struct PendingMaterialSave {
-    material: engine_authoring::MaterialAsset,
-    deadline: std::time::Instant,
 }
 
 /// Revision-keyed choices used by the Material Editor's texture pickers.
@@ -150,8 +145,6 @@ pub struct EditorApp {
     /// Quiet-period deadline that coalesces continuous Material controls into
     /// one Scene View rebuild after the drag pauses.
     material_scene_preview_deadline: Option<std::time::Instant>,
-    /// Coalesced Material file writes keyed by project-relative path.
-    pending_material_saves: std::collections::BTreeMap<PathBuf, PendingMaterialSave>,
     material_texture_choices_cache: Option<MaterialTextureChoicesCache>,
     /// Open Animation Set document edited through the dedicated typed window.
     animation_set_editor: Option<AnimationSetEditorState>,
@@ -423,7 +416,6 @@ impl EditorApp {
             material_editor: MaterialEditorPanel::new(),
             show_material_editor: false,
             material_scene_preview_deadline: None,
-            pending_material_saves: std::collections::BTreeMap::new(),
             material_texture_choices_cache: None,
             animation_set_editor: None,
             pending_animation_set_graph: None,
@@ -539,11 +531,9 @@ impl EditorApp {
     /// This stays private because ADR 0117 forbids rebinding one Editor
     /// process from one project to another after workspace construction.
     fn initialize_project_root(&mut self, root: ProjectRoot) {
-        self.flush_all_pending_material_saves();
         self.audio_audition.reset_project();
         self.scene_view.clear_project_caches();
         self.material_scene_preview_deadline = None;
-        self.pending_material_saves.clear();
         self.material_texture_choices_cache = None;
         let _ = self.asset_import.cancel();
         self.navigation_bake.clear();
@@ -1039,6 +1029,12 @@ impl EditorApp {
         };
         let scene = scene.clone();
         let manifest = self.asset_manifest.clone();
+        let authoring_overlay = capture_authoring_overlay(
+            &self.session,
+            self.animation_set_editor.as_ref(),
+            &self.material_editor,
+            self.project_root.as_ref(),
+        );
         let project = project.clone();
         let scene_path = self.session.current_document_path().map(Path::to_path_buf);
         let generation = self.scene_validation_generation;
@@ -1046,10 +1042,11 @@ impl EditorApp {
         match std::thread::Builder::new()
             .name("scene-filesystem-validation".to_owned())
             .spawn(move || {
-                let mut diagnostics = engine::validate_builtin_component_asset_files(
+                let mut diagnostics = engine::validate_builtin_component_asset_files_with_overlay(
                     &scene,
                     &manifest,
                     &project.assets_root(),
+                    &authoring_overlay,
                 );
                 diagnostics.extend(navigation_artifact_diagnostics(
                     &scene,

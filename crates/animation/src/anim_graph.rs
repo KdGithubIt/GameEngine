@@ -555,7 +555,19 @@ impl std::error::Error for AnimGraphLoadError {
 /// diagnostic when the asset cannot become a runnable state machine.
 pub fn load_animation_graph(path: &Path) -> Result<CompiledAnimGraph, AnimGraphLoadError> {
     let json = std::fs::read_to_string(path).map_err(AnimGraphLoadError::Io)?;
-    let graph: Graph = serde_json::from_str(&json).map_err(AnimGraphLoadError::Parse)?;
+    load_animation_graph_json(&json)
+}
+
+/// Compiles and validates one in-memory `anim.graph` JSON snapshot.
+///
+/// Editor hosts use this for unsaved working copies so runtime composition does
+/// not need a temporary file and cannot silently fall back to an older saved graph.
+///
+/// # Errors
+///
+/// Returns a JSON parse, graph compilation, or typed transition-condition diagnostic.
+pub fn load_animation_graph_json(json: &str) -> Result<CompiledAnimGraph, AnimGraphLoadError> {
+    let graph: Graph = serde_json::from_str(json).map_err(AnimGraphLoadError::Parse)?;
     let domain = AnimationGraphDomain::new();
     let compiled =
         compile_animation_graph(&domain, &graph).map_err(AnimGraphLoadError::Compile)?;

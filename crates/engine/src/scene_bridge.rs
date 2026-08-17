@@ -6,13 +6,14 @@
 //!
 //! [`AuthoringScene`]: engine_authoring::scene::AuthoringScene
 
-use crate::anim_graph::{load_animation_graph, AnimGraphPlayer};
+use crate::anim_graph::{load_animation_graph, load_animation_graph_json, AnimGraphPlayer};
 use crate::animation::{
     compose_animation_clips, AnimEvent, AnimationClip, Animator, RootMotionMode, RootMotionRequest,
 };
 use crate::asset::{
     AssetLoadError, AssetManifest, Assets, Handle, ImportedSubAssetKind, RuntimeAssetId,
 };
+use crate::authoring_overlay::AuthoringDocumentOverlay;
 use crate::audio::{AudioAsset, AudioEmitter, AudioListener, AudioRolloffMode, MusicController};
 use crate::behavior_tree::BehaviorTreeRunner;
 use crate::camera::{Camera3D, FollowCamera, LockOnCamera, OrbitCamera};
@@ -443,6 +444,11 @@ pub(crate) struct BridgeAssetState {
     /// Conversion-local runtime handles remain owned by this state; only the
     /// immutable serialized bake is shared through [`crate::DerivedCache`].
     pub(crate) derived_cache: Option<crate::DerivedCache>,
+    /// Immutable authoring working copies captured by the host for this conversion.
+    ///
+    /// The bridge never mutates this overlay and never knows about Editor session
+    /// types. When an entry exists, loaders must use it instead of rereading disk.
+    pub(crate) authoring_overlay: AuthoringDocumentOverlay,
     pub(crate) added_mesh_handles: Vec<Handle<Mesh>>,
     pub(crate) added_material_handles: Vec<Handle<Material>>,
     pub(crate) added_animation_clip_handles: Vec<Handle<AnimationClip>>,
@@ -768,6 +774,12 @@ fn apply_conversion_plan(
         // engine-native cached clip, so editor hosts can provide the project
         // cache without changing strict conversion or rollback ownership.
         derived_cache: world.get_resource::<crate::DerivedCache>().cloned(),
+        // Editor Play/preview inserts an immutable snapshot before conversion.
+        // Absence means this is a normal runtime/player conversion and disk remains the source.
+        authoring_overlay: world
+            .get_resource::<AuthoringDocumentOverlay>()
+            .cloned()
+            .unwrap_or_default(),
         ..BridgeAssetState::default()
     };
     let mut asset_diagnostics = Vec::new();

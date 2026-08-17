@@ -19,6 +19,8 @@ pub mod animation_parameters;
 pub mod app;
 /// Runtime asset storage and loading.
 pub mod asset;
+/// Immutable editor working-copy snapshots supplied at runtime composition boundaries.
+pub mod authoring_overlay;
 /// Runtime audio assets and playback control.
 pub mod audio;
 /// Runtime executor for compiled Behavior Tree artifacts.

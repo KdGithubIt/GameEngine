@@ -32,6 +32,7 @@ pub struct MaterialEditorPanel {
     /// The relative path of the currently selected / active material.
     pub active: Option<PathBuf>,
     authoring: BTreeMap<PathBuf, TypedDocumentAuthoringState>,
+    clean_materials: BTreeMap<PathBuf, MaterialAsset>,
     undo: BTreeMap<PathBuf, Vec<MaterialAsset>>,
     redo: BTreeMap<PathBuf, Vec<MaterialAsset>>,
 }
@@ -42,14 +43,54 @@ impl MaterialEditorPanel {
         Self::default()
     }
 
-    /// Inserts or replaces a material in the panel and sets it as active.
+    /// Opens one material and makes it active without creating a second mutable owner.
     pub fn open_material(&mut self, rel_path: PathBuf, material: MaterialAsset) {
         self.active = Some(rel_path.clone());
+        if self.materials.contains_key(&rel_path) {
+            return;
+        }
         self.authoring
             .insert(rel_path.clone(), TypedDocumentAuthoringState::new());
+        self.clean_materials.insert(rel_path.clone(), material.clone());
         self.undo.insert(rel_path.clone(), Vec::new());
         self.redo.insert(rel_path.clone(), Vec::new());
         self.materials.insert(rel_path, material);
+    }
+
+    /// Returns whether one open material differs from its last successfully saved value.
+    pub fn is_dirty(&self, path: &Path) -> bool {
+        self.materials.get(path).zip(self.clean_materials.get(path))
+            .is_some_and(|(current, clean)| current != clean)
+    }
+
+    /// Returns whether any open material has unsaved changes.
+    pub fn any_dirty(&self) -> bool {
+        self.materials.keys().any(|path| self.is_dirty(path))
+    }
+
+    /// Marks one material clean after its current value was persisted successfully.
+    pub fn mark_saved(&mut self, path: &Path) {
+        if let Some(current) = self.materials.get(path).cloned() {
+            self.clean_materials.insert(path.to_path_buf(), current);
+        }
+    }
+
+    /// Replaces a clean open material after an external disk change.
+    pub fn reload_clean(&mut self, path: &Path, material: MaterialAsset) -> bool {
+        if self.is_dirty(path) || !self.materials.contains_key(path) {
+            return false;
+        }
+        self.materials.insert(path.to_path_buf(), material.clone());
+        self.clean_materials.insert(path.to_path_buf(), material);
+        self.authoring.insert(path.to_path_buf(), TypedDocumentAuthoringState::new());
+        self.undo.insert(path.to_path_buf(), Vec::new());
+        self.redo.insert(path.to_path_buf(), Vec::new());
+        true
+    }
+
+    /// Returns revision/generation metadata for one open material.
+    pub fn revision_generation(&self, path: &Path) -> Option<(u64, u64)> {
+        self.authoring.get(path).map(|state| (state.revision(), state.generation()))
     }
 
     /// Returns the currently active material, if any.

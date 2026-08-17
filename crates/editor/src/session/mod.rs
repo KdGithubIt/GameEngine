@@ -257,6 +257,18 @@ impl EditorSession {
         &self.graph
     }
 
+    /// Serializes the current Graph working copy through its domain schema.
+    ///
+    /// Failure remains an authoritative invalid working copy; callers must not
+    /// interpret it as permission to reread an older saved file.
+    pub(crate) fn graph_working_copy_json(&self) -> Option<Result<String, String>> {
+        matches!(&self.current_document, CurrentDocument::Graph { .. }).then(|| {
+            self.graph
+                .to_canonical_json(self.domain.schema_registry())
+                .map_err(|error| error.to_string())
+        })
+    }
+
     /// Returns the optional presentation graph view.
     pub fn graph_view(&self) -> Option<&GraphView> {
         self.graph_view.as_ref()

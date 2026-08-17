@@ -130,7 +130,7 @@ impl RuntimePlayState {
         scene: &AuthoringScene,
         project: Option<&ProjectRoot>,
     ) -> Result<PlayStart, PlayError> {
-        Self::start_impl(scene, project, None, None)
+        Self::start_impl(scene, project, None, None, None)
     }
 
     /// Same as [`RuntimePlayState::start`], but also registers
@@ -146,7 +146,7 @@ impl RuntimePlayState {
         project: Option<&ProjectRoot>,
         initial_scene_path: &str,
     ) -> Result<PlayStart, PlayError> {
-        Self::start_impl(scene, project, Some(initial_scene_path), None)
+        Self::start_impl(scene, project, Some(initial_scene_path), None, None)
     }
 
     /// Convenience wrapper that derives the initial scene path from an
@@ -174,9 +174,23 @@ impl RuntimePlayState {
         document_path: Option<&Path>,
         game_module: Option<Arc<engine::game_module::GameModule>>,
     ) -> Result<PlayStart, PlayError> {
+        Self::start_from_document_with_game_module_and_overlay(
+            scene, project, document_path, game_module, None,
+        )
+    }
+
+    /// Starts Play from the same scene while supplying an immutable snapshot of
+    /// unsaved project documents that must override saved asset files.
+    pub fn start_from_document_with_game_module_and_overlay(
+        scene: &AuthoringScene,
+        project: Option<&ProjectRoot>,
+        document_path: Option<&Path>,
+        game_module: Option<Arc<engine::game_module::GameModule>>,
+        overlay: Option<engine::authoring_overlay::AuthoringDocumentOverlay>,
+    ) -> Result<PlayStart, PlayError> {
         match document_path.and_then(|path| relative_scene_path(project, path)) {
-            Some(relative) => Self::start_impl(scene, project, Some(&relative), game_module),
-            None => Self::start_impl(scene, project, None, game_module),
+            Some(relative) => Self::start_impl(scene, project, Some(&relative), game_module, overlay),
+            None => Self::start_impl(scene, project, None, game_module, overlay),
         }
     }
 
@@ -185,6 +199,7 @@ impl RuntimePlayState {
         project: Option<&ProjectRoot>,
         initial_scene_path: Option<&str>,
         game_module: Option<Arc<engine::game_module::GameModule>>,
+        authoring_overlay: Option<engine::authoring_overlay::AuthoringDocumentOverlay>,
     ) -> Result<PlayStart, PlayError> {
         let diagnostics = scene.validate();
         if diagnostics.iter().any(Diagnostic::is_blocking) {
@@ -229,6 +244,10 @@ impl RuntimePlayState {
             // Editor Play saves live under the project root, not the assets
             // root, so they are distinct from authoring content (ADR 0048 §3).
             app.insert_resource(engine::SaveStore::new(project.path().join("saves")));
+        }
+
+        if let Some(overlay) = authoring_overlay {
+            app.insert_resource(overlay);
         }
 
         let entity_map =
