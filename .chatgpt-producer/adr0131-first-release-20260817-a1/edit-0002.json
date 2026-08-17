@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/agent_host.rs",
+  "old": "    pub(crate) messages: Vec<ConversationMessage>,\n    pub(crate) proposal: AgentProposal,\n    pub(crate) runs: Vec<AgentRun>,",
+  "new": "    pub(crate) messages: Vec<ConversationMessage>,\n    pub(crate) proposal: AgentProposal,\n    #[serde(default)]\n    pub(crate) proposal_history: Vec<AgentProposal>,\n    pub(crate) runs: Vec<AgentRun>,"
+}
