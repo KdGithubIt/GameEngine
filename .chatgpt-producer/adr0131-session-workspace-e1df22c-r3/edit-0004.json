@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/agent_host.rs","old":"        let game_dir = self.workspace_root(run_id).join(\"game\");\n","new":"        let game_dir = self.workspace_paths(run_id)?.0.join(\"game\");\n"}
