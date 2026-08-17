@@ -1,0 +1,876 @@
+diff --git a/Cargo.toml b/Cargo.toml
+index f5a4c2dd6560362bb94a74d3db166c872c3c732e..209cb1295c8795a80b14efe8eb03199d35186619 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -12,6 +12,7 @@ members = [
+     "crates/import",
+     "crates/scripting",
+     "crates/scene",
++    "crates/timeline",
+     "crates/renderer",
+     "crates/engine",
+     "crates/authoring",
+diff --git a/crates/authoring/Cargo.toml b/crates/authoring/Cargo.toml
+index 724264c52abfe7ab9ad9445a1c8c81d78288ed4a..1ffb25b6b3cf23e4633e82ef620de19d139888f0 100644
+--- a/crates/authoring/Cargo.toml
++++ b/crates/authoring/Cargo.toml
+@@ -4,6 +4,7 @@ version = "0.1.0"
+ edition = "2024"
+ 
+ [dependencies]
++engine-timeline = { path = "../timeline", features = ["serde"] }
+ serde = { version = "1", features = ["derive"] }
+ serde_json = "1"
+ ulid = "1.1"
+diff --git a/crates/authoring/src/id.rs b/crates/authoring/src/id.rs
+index 152e9bf4b0742621dc958d2fc167f8cbe565d5ca..009e26699a72b74cd25aeee7c7ebb99ba7bb46e9 100644
+--- a/crates/authoring/src/id.rs
++++ b/crates/authoring/src/id.rs
+@@ -265,6 +265,11 @@ define_id!(
+     "motion"
+ );
+ 
++define_id!(/// Stable Timeline document identifier. TimelineId, "timeline");
++define_id!(/// Stable Timeline track identifier. TimelineTrackId, "track");
++define_id!(/// Stable Timeline clip identifier. TimelineClipId, "clip");
++define_id!(/// Stable Timeline marker identifier. TimelineMarkerId, "marker");
++
+ // ---------------------------------------------------------------------------
+ // Deterministic sub-asset ID derivation (ADR 0032)
+ // ---------------------------------------------------------------------------
+diff --git a/crates/authoring/src/lib.rs b/crates/authoring/src/lib.rs
+index 003802af7b6478e487c7c26d07690a972c151820..d8b4fb76c2068db0ff8ec0d06940e0d67d382dad 100644
+--- a/crates/authoring/src/lib.rs
++++ b/crates/authoring/src/lib.rs
+@@ -66,6 +66,8 @@ pub mod scene;
+ pub mod scene_authoring;
+ pub mod schema;
+ pub mod test_fixtures;
++pub mod timeline;
++pub mod timeline_authoring;
+ pub mod transaction;
+ pub mod typed_document_authoring;
+ pub mod ui;
+diff --git a/crates/authoring/src/timeline.rs b/crates/authoring/src/timeline.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..5dfaa9d7b37e579c3b073fd31b25a32c335290dc
+--- /dev/null
++++ b/crates/authoring/src/timeline.rs
+@@ -0,0 +1,242 @@
++//! Versioned Timeline document, validation, persistence, and deterministic compilation.
++
++use crate::id::{AssetId, EntityId, TimelineClipId, TimelineId, TimelineMarkerId, TimelineTrackId};
++use engine_timeline::{CompiledEntry, CompiledTimeline, SeekCapability, TimelineTick};
++use serde::{Deserialize, Serialize};
++use std::collections::BTreeSet;
++use std::fmt;
++use std::path::Path;
++
++/// Current `*.timeline.json` schema.
++pub const TIMELINE_SCHEMA_VERSION: u32 = 1;
++/// Timeline asset suffix.
++pub const TIMELINE_FILE_SUFFIX: &str = ".timeline.json";
++
++/// Display-only frame rate. Canonical storage remains 48 kHz ticks.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
++pub struct TimelineDisplayRate {
++    /// Frames numerator.
++    pub numerator: u32,
++    /// Frames denominator.
++    pub denominator: u32,
++}
++impl Default for TimelineDisplayRate { fn default() -> Self { Self { numerator: 60, denominator: 1 } } }
++
++/// Stable binding resolved by production runtime; display names are never fallbacks.
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(tag = "kind", rename_all = "snake_case")]
++pub enum TimelineBinding {
++    /// Stable scene entity.
++    Entity { /// Entity ID.
++        entity: EntityId },
++    /// Stable asset.
++    Asset { /// Asset ID.
++        asset: AssetId },
++}
++
++/// Property value supported by first-release Transform/Property clips.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
++pub enum TimelinePropertyValue {
++    /// Boolean.
++    Bool(bool),
++    /// Scalar number.
++    Number(f64),
++    /// Three-component vector.
++    Vec3([f64; 3]),
++    /// Quaternion xyzw.
++    Quat([f64; 4]),
++}
++
++/// First-release typed track family.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case")]
++pub enum TimelineTrackKind { Animation, TransformProperty, CameraCut, Event, Audio, Vfx, Prefab }
++impl TimelineTrackKind {
++    /// Explicit discontinuous-time contract.
++    pub const fn seek_capability(self) -> SeekCapability {
++        match self {
++            Self::Animation => SeekCapability::Seekable,
++            Self::TransformProperty | Self::CameraCut => SeekCapability::Stateless,
++            Self::Event => SeekCapability::Stateless,
++            Self::Audio => SeekCapability::NonSeekable,
++            Self::Vfx | Self::Prefab => SeekCapability::ReplayRequired,
++        }
++    }
++}
++
++/// Typed payload persisted in one clip.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++#[serde(tag = "kind", rename_all = "snake_case")]
++pub enum TimelineClipPayload {
++    /// Animation asset sampled at local clip time.
++    Animation { motion: AssetId },
++    /// Entity property interpolation.
++    TransformProperty { property: String, from: TimelinePropertyValue, to: TimelinePropertyValue },
++    /// Runtime-only active-camera override.
++    CameraCut,
++    /// Bounded gameplay event.
++    Event { name: String, payload: String },
++    /// Production audio clip request.
++    Audio { clip: AssetId, volume: f32, looping: bool },
++    /// Production VFX effect request.
++    Vfx { effect: AssetId, looping: bool },
++    /// Production prefab spawn request.
++    Prefab { prefab: AssetId },
++}
++impl TimelineClipPayload {
++    /// Family of this payload.
++    pub const fn kind(&self) -> TimelineTrackKind {
++        match self { Self::Animation { .. } => TimelineTrackKind::Animation, Self::TransformProperty { .. } => TimelineTrackKind::TransformProperty, Self::CameraCut => TimelineTrackKind::CameraCut, Self::Event { .. } => TimelineTrackKind::Event, Self::Audio { .. } => TimelineTrackKind::Audio, Self::Vfx { .. } => TimelineTrackKind::Vfx, Self::Prefab { .. } => TimelineTrackKind::Prefab }
++    }
++}
++
++/// Persisted clip.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++pub struct TimelineClip {
++    /// Stable clip ID.
++    pub id: TimelineClipId,
++    /// Display name.
++    pub name: String,
++    /// Inclusive start.
++    pub start: TimelineTick,
++    /// Positive duration.
++    pub duration: TimelineTick,
++    /// Source offset for seekable media.
++    pub source_offset: TimelineTick,
++    /// Typed payload.
++    pub payload: TimelineClipPayload,
++}
++impl TimelineClip { /// Exclusive end.
++    pub fn end(&self) -> TimelineTick { self.start.saturating_add(self.duration.get()) } }
++
++/// Persisted track.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++pub struct TimelineTrack {
++    /// Stable track ID.
++    pub id: TimelineTrackId,
++    /// Display name.
++    pub name: String,
++    /// Typed family.
++    pub kind: TimelineTrackKind,
++    /// Persisted enabled state; editor mute/solo/lock stay transient.
++    pub enabled: bool,
++    /// Stable production binding.
++    pub binding: Option<TimelineBinding>,
++    /// Persisted clips.
++    pub clips: Vec<TimelineClip>,
++}
++
++/// Persisted marker lane entry.
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++pub struct TimelineMarker {
++    /// Stable marker ID.
++    pub id: TimelineMarkerId,
++    /// Display name.
++    pub name: String,
++    /// Exact tick.
++    pub tick: TimelineTick,
++    /// Optional bounded Event-track event name.
++    pub event: Option<String>,
++}
++
++/// Versioned Timeline source of truth.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++pub struct TimelineDocument {
++    /// Schema marker.
++    pub schema_version: u32,
++    /// Stable Timeline ID.
++    pub id: TimelineId,
++    /// Display name.
++    pub name: String,
++    /// Inclusive final tick.
++    pub duration: TimelineTick,
++    /// Display frame rate only.
++    pub display_rate: TimelineDisplayRate,
++    /// Ordered track list.
++    pub tracks: Vec<TimelineTrack>,
++    /// Marker lane.
++    pub markers: Vec<TimelineMarker>,
++}
++impl TimelineDocument {
++    /// Creates a new empty document.
++    pub fn new(name: impl Into<String>, duration: TimelineTick) -> Self { Self { schema_version: TIMELINE_SCHEMA_VERSION, id: TimelineId::generate(), name: name.into(), duration, display_rate: TimelineDisplayRate::default(), tracks: Vec::new(), markers: Vec::new() } }
++    /// Validates and compiles an immutable schedule.
++    pub fn compile(&self) -> TimelineCompilation { compile_timeline(self) }
++}
++
++/// Runtime-neutral typed payload emitted by authoring compile.
++#[derive(Debug, Clone, PartialEq)]
++pub enum CompiledTimelinePayload {
++    /// One clip payload with stable binding and source metadata.
++    Clip { clip_id: TimelineClipId, track_id: TimelineTrackId, binding: Option<TimelineBinding>, duration: TimelineTick, source_offset: TimelineTick, payload: TimelineClipPayload },
++    /// Marker event.
++    Marker { marker_id: TimelineMarkerId, event: String },
++}
++
++/// Diagnostic severity.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum TimelineDiagnosticSeverity { Warning, Error }
++/// Compile/validation diagnostic.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct TimelineDiagnostic { pub severity: TimelineDiagnosticSeverity, pub code: &'static str, pub target: String, pub message: String }
++/// Compile result; schedule is absent when any error exists.
++#[derive(Debug, Clone)]
++pub struct TimelineCompilation { pub diagnostics: Vec<TimelineDiagnostic>, pub schedule: Option<CompiledTimeline<CompiledTimelinePayload>> }
++
++/// Validates and compiles deterministic track/clip/marker order.
++pub fn compile_timeline(document: &TimelineDocument) -> TimelineCompilation {
++    let mut diagnostics = validate_timeline(document);
++    if diagnostics.iter().any(|d| d.severity == TimelineDiagnosticSeverity::Error) { return TimelineCompilation { diagnostics, schedule: None }; }
++    let mut entries = Vec::new();
++    for (track_index, track) in document.tracks.iter().enumerate().filter(|(_, t)| t.enabled) {
++        let mut clips = track.clips.iter().collect::<Vec<_>>();
++        clips.sort_by(|a,b| (a.start, a.id.as_str()).cmp(&(b.start, b.id.as_str())));
++        for (item_index, clip) in clips.into_iter().enumerate() {
++            let payload = CompiledTimelinePayload::Clip { clip_id: clip.id.clone(), track_id: track.id.clone(), binding: track.binding.clone(), duration: clip.duration, source_offset: clip.source_offset, payload: clip.payload.clone() };
++            entries.push(CompiledEntry::interval(track_index as u32, item_index as u32, clip.start, clip.end(), track.kind.seek_capability(), payload));
++        }
++    }
++    let mut markers = document.markers.iter().filter(|m| m.event.is_some()).collect::<Vec<_>>();
++    markers.sort_by(|a,b| (a.tick, a.id.as_str()).cmp(&(b.tick, b.id.as_str())));
++    for (i, marker) in markers.into_iter().enumerate() {
++        entries.push(CompiledEntry::point(u32::MAX, i as u32, marker.tick, SeekCapability::Stateless, true, CompiledTimelinePayload::Marker { marker_id: marker.id.clone(), event: marker.event.clone().unwrap_or_default() }));
++    }
++    match CompiledTimeline::new(document.duration, entries) { Ok(schedule) => TimelineCompilation { diagnostics, schedule: Some(schedule) }, Err(error) => { diagnostics.push(error_diag("timeline.compile", document.id.as_str(), error.to_string())); TimelineCompilation { diagnostics, schedule: None } } }
++}
++
++/// Pure document validation.
++pub fn validate_timeline(document: &TimelineDocument) -> Vec<TimelineDiagnostic> {
++    let mut out = Vec::new();
++    if document.schema_version != TIMELINE_SCHEMA_VERSION { out.push(error_diag("timeline.schema_version", document.id.as_str(), format!("expected schema {}, got {}", TIMELINE_SCHEMA_VERSION, document.schema_version))); }
++    if document.duration < TimelineTick::ZERO { out.push(error_diag("timeline.duration", document.id.as_str(), "duration must be nonnegative")); }
++    if document.display_rate.numerator == 0 || document.display_rate.denominator == 0 { out.push(error_diag("timeline.display_rate", document.id.as_str(), "display rate must be nonzero")); }
++    let mut ids = BTreeSet::new();
++    for track in &document.tracks {
++        if !ids.insert(track.id.as_str().to_owned()) { out.push(error_diag("timeline.duplicate_id", track.id.as_str(), "duplicate stable ID")); }
++        let needs_entity = matches!(track.kind, TimelineTrackKind::Animation | TimelineTrackKind::TransformProperty | TimelineTrackKind::CameraCut | TimelineTrackKind::Audio | TimelineTrackKind::Vfx);
++        if needs_entity && !matches!(track.binding, Some(TimelineBinding::Entity { .. })) { out.push(error_diag("timeline.binding.required_entity", track.id.as_str(), "track requires a stable entity binding")); }
++        for clip in &track.clips {
++            if !ids.insert(clip.id.as_str().to_owned()) { out.push(error_diag("timeline.duplicate_id", clip.id.as_str(), "duplicate stable ID")); }
++            if clip.payload.kind() != track.kind { out.push(error_diag("timeline.clip.kind_mismatch", clip.id.as_str(), "clip payload does not match track family")); }
++            if clip.start < TimelineTick::ZERO || clip.duration <= TimelineTick::ZERO || clip.end() > document.duration { out.push(error_diag("timeline.clip.range", clip.id.as_str(), "clip range must be positive and inside the Timeline")); }
++            if clip.source_offset < TimelineTick::ZERO { out.push(error_diag("timeline.clip.source_offset", clip.id.as_str(), "source offset must be nonnegative")); }
++            if let TimelineClipPayload::Audio { volume, .. } = &clip.payload && (!volume.is_finite() || !(0.0..=1.0).contains(volume)) { out.push(error_diag("timeline.audio.volume", clip.id.as_str(), "audio volume must be finite in [0,1]")); }
++        }
++    }
++    for marker in &document.markers { if !ids.insert(marker.id.as_str().to_owned()) { out.push(error_diag("timeline.duplicate_id", marker.id.as_str(), "duplicate stable ID")); } if marker.tick < TimelineTick::ZERO || marker.tick > document.duration { out.push(error_diag("timeline.marker.range", marker.id.as_str(), "marker must lie inside the Timeline")); } }
++    out
++}
++fn error_diag(code: &'static str, target: &str, message: impl Into<String>) -> TimelineDiagnostic { TimelineDiagnostic { severity: TimelineDiagnosticSeverity::Error, code, target: target.to_owned(), message: message.into() } }
++
++/// Timeline persistence error.
++#[derive(Debug)]
++pub enum TimelineDocumentError { Io(std::io::Error), Json(serde_json::Error), WrongSuffix, Invalid(Vec<TimelineDiagnostic>) }
++impl fmt::Display for TimelineDocumentError { fn fmt(&self, f:&mut fmt::Formatter<'_>)->fmt::Result { match self { Self::Io(e)=>e.fmt(f), Self::Json(e)=>e.fmt(f), Self::WrongSuffix=>f.write_str("Timeline path must end in .timeline.json"), Self::Invalid(d)=>write!(f,"Timeline has {} validation diagnostics",d.len()) } } }
++impl std::error::Error for TimelineDocumentError {}
++/// Saves canonical pretty JSON after validation.
++pub fn save_timeline(path:&Path, document:&TimelineDocument)->Result<(),TimelineDocumentError>{ if !path.to_string_lossy().ends_with(TIMELINE_FILE_SUFFIX){return Err(TimelineDocumentError::WrongSuffix)} let diagnostics=validate_timeline(document); if diagnostics.iter().any(|d|d.severity==TimelineDiagnosticSeverity::Error){return Err(TimelineDocumentError::Invalid(diagnostics))} let mut text=serde_json::to_string_pretty(document).map_err(TimelineDocumentError::Json)?; text.push('\n'); crate::replace_file_contents(path,&text).map_err(|e|TimelineDocumentError::Io(std::io::Error::other(e.to_string()))) }
++/// Loads current-format-only Timeline JSON and validates it.
++pub fn load_timeline(path:&Path)->Result<TimelineDocument,TimelineDocumentError>{ if !path.to_string_lossy().ends_with(TIMELINE_FILE_SUFFIX){return Err(TimelineDocumentError::WrongSuffix)} let text=std::fs::read_to_string(path).map_err(TimelineDocumentError::Io)?; let document:TimelineDocument=serde_json::from_str(&text).map_err(TimelineDocumentError::Json)?; let diagnostics=validate_timeline(&document); if diagnostics.iter().any(|d|d.severity==TimelineDiagnosticSeverity::Error){Err(TimelineDocumentError::Invalid(diagnostics))}else{Ok(document)} }
++
++#[cfg(test)] mod tests { use super::*; #[test] fn stable_ids_survive_json_roundtrip(){ let doc=TimelineDocument::new("shot",TimelineTick::new(48_000)); let json=serde_json::to_string(&doc).unwrap(); let loaded:TimelineDocument=serde_json::from_str(&json).unwrap(); assert_eq!(doc.id,loaded.id); assert_eq!(doc.duration,loaded.duration); } #[test] fn mismatched_typed_clip_is_diagnostic(){ let mut doc=TimelineDocument::new("x",TimelineTick::new(100)); doc.tracks.push(TimelineTrack{id:TimelineTrackId::generate(),name:"x".into(),kind:TimelineTrackKind::Audio,enabled:true,binding:Some(TimelineBinding::Entity{entity:EntityId::generate()}),clips:vec![TimelineClip{id:TimelineClipId::generate(),name:"bad".into(),start:TimelineTick::ZERO,duration:TimelineTick::new(10),source_offset:TimelineTick::ZERO,payload:TimelineClipPayload::CameraCut}]}); assert!(doc.compile().schedule.is_none()); } }
+diff --git a/crates/authoring/src/timeline_authoring.rs b/crates/authoring/src/timeline_authoring.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..96fe82a83c1c6469d5d7426d0c3d97e5c28e9ad5
+--- /dev/null
++++ b/crates/authoring/src/timeline_authoring.rs
+@@ -0,0 +1,104 @@
++//! Shared transactional Timeline authoring service used by GUI/CLI/MCP adapters.
++
++use crate::id::{TimelineClipId, TimelineMarkerId, TimelineTrackId};
++use crate::timeline::{save_timeline, validate_timeline, TimelineBinding, TimelineClip, TimelineDiagnostic, TimelineDocument, TimelineMarker, TimelineTrack};
++use engine_timeline::TimelineTick;
++use std::fmt;
++use std::path::Path;
++
++/// Optimistic revision token.
++pub type TimelineRevision = u64;
++
++/// One typed Timeline mutation.
++#[derive(Debug, Clone)]
++pub enum TimelineAuthoringCommand {
++    /// Add a typed track.
++    AddTrack(TimelineTrack),
++    /// Remove a track.
++    RemoveTrack(TimelineTrackId),
++    /// Change a track stable binding.
++    SetBinding { /// Track.
++        track: TimelineTrackId, /// Binding.
++        binding: Option<TimelineBinding> },
++    /// Change persisted enabled state.
++    SetTrackEnabled { /// Track.
++        track: TimelineTrackId, /// Enabled.
++        enabled: bool },
++    /// Add a typed clip to a track.
++    AddClip { /// Track.
++        track: TimelineTrackId, /// Clip.
++        clip: TimelineClip },
++    /// Delete a clip.
++    RemoveClip(TimelineClipId),
++    /// Move a clip without changing duration.
++    MoveClip { /// Clip.
++        clip: TimelineClipId, /// New start.
++        start: TimelineTick },
++    /// Resize a clip.
++    ResizeClip { /// Clip.
++        clip: TimelineClipId, /// New duration.
++        duration: TimelineTick },
++    /// Add marker lane entry.
++    AddMarker(TimelineMarker),
++    /// Remove marker.
++    RemoveMarker(TimelineMarkerId),
++    /// Move marker.
++    MoveMarker { /// Marker.
++        marker: TimelineMarkerId, /// Tick.
++        tick: TimelineTick },
++}
++
++/// Preview result without committed mutation.
++#[derive(Debug, Clone)]
++pub struct TimelineAuthoringPreview {
++    /// Resulting candidate.
++    pub document: TimelineDocument,
++    /// Pure validation diagnostics.
++    pub diagnostics: Vec<TimelineDiagnostic>,
++}
++
++/// Authoring error.
++#[derive(Debug)]
++pub enum TimelineAuthoringError {
++    /// Caller edited an obsolete revision.
++    StaleRevision { /// Expected current revision.
++        expected: TimelineRevision, /// Supplied revision.
++        actual: TimelineRevision },
++    /// Target stable ID no longer exists.
++    MissingTarget(String),
++    /// Mutation made the document invalid.
++    Invalid(Vec<TimelineDiagnostic>),
++    /// Persistence failed.
++    Persist(String),
++}
++impl fmt::Display for TimelineAuthoringError { fn fmt(&self,f:&mut fmt::Formatter<'_>)->fmt::Result { match self { Self::StaleRevision{expected,actual}=>write!(f,"stale Timeline revision {actual}; current is {expected}"), Self::MissingTarget(id)=>write!(f,"Timeline target {id} is missing"), Self::Invalid(d)=>write!(f,"Timeline mutation has {} validation diagnostics",d.len()), Self::Persist(e)=>f.write_str(e) } } }
++impl std::error::Error for TimelineAuthoringError {}
++
++/// Shared stateful authoring service with stale-revision rejection and session undo/redo.
++#[derive(Debug, Clone)]
++pub struct TimelineAuthoringService { document: TimelineDocument, revision: TimelineRevision, undo: Vec<TimelineDocument>, redo: Vec<TimelineDocument> }
++impl TimelineAuthoringService {
++    /// Starts a session around a current-format document.
++    pub fn new(document: TimelineDocument) -> Result<Self, TimelineAuthoringError> { let diagnostics=validate_timeline(&document); if diagnostics.iter().any(|d|matches!(d.severity,crate::timeline::TimelineDiagnosticSeverity::Error)){return Err(TimelineAuthoringError::Invalid(diagnostics))} Ok(Self{document,revision:0,undo:Vec::new(),redo:Vec::new()}) }
++    /// Current immutable document.
++    pub const fn document(&self)->&TimelineDocument{&self.document}
++    /// Current optimistic revision.
++    pub const fn revision(&self)->TimelineRevision{self.revision}
++    /// Validates a command against a clone without mutation.
++    pub fn preview(&self, expected:TimelineRevision, command:&TimelineAuthoringCommand)->Result<TimelineAuthoringPreview,TimelineAuthoringError>{ self.check_revision(expected)?; let mut candidate=self.document.clone(); apply_command(&mut candidate,command)?; let diagnostics=validate_timeline(&candidate); Ok(TimelineAuthoringPreview{document:candidate,diagnostics}) }
++    /// Atomically applies one command after validation.
++    pub fn apply(&mut self, expected:TimelineRevision, command:TimelineAuthoringCommand)->Result<TimelineRevision,TimelineAuthoringError>{ let preview=self.preview(expected,&command)?; if preview.diagnostics.iter().any(|d|matches!(d.severity,crate::timeline::TimelineDiagnosticSeverity::Error)){return Err(TimelineAuthoringError::Invalid(preview.diagnostics))} self.undo.push(self.document.clone()); self.document=preview.document; self.redo.clear(); self.revision=self.revision.wrapping_add(1); Ok(self.revision) }
++    /// Undoes one committed transaction.
++    pub fn undo(&mut self)->bool{ let Some(previous)=self.undo.pop()else{return false}; self.redo.push(std::mem::replace(&mut self.document,previous)); self.revision=self.revision.wrapping_add(1); true }
++    /// Redoes one undone transaction.
++    pub fn redo(&mut self)->bool{ let Some(next)=self.redo.pop()else{return false}; self.undo.push(std::mem::replace(&mut self.document,next)); self.revision=self.revision.wrapping_add(1); true }
++    /// Persists the committed source of truth.
++    pub fn save(&self,path:&Path)->Result<(),TimelineAuthoringError>{ save_timeline(path,&self.document).map_err(|e|TimelineAuthoringError::Persist(e.to_string())) }
++    fn check_revision(&self,actual:TimelineRevision)->Result<(),TimelineAuthoringError>{ if actual==self.revision{Ok(())}else{Err(TimelineAuthoringError::StaleRevision{expected:self.revision,actual})} }
++}
++
++fn apply_command(doc:&mut TimelineDocument,command:&TimelineAuthoringCommand)->Result<(),TimelineAuthoringError>{ match command { TimelineAuthoringCommand::AddTrack(track)=>doc.tracks.push(track.clone()), TimelineAuthoringCommand::RemoveTrack(id)=>{let before=doc.tracks.len();doc.tracks.retain(|v|&v.id!=id);if before==doc.tracks.len(){return Err(TimelineAuthoringError::MissingTarget(id.to_string()))}}, TimelineAuthoringCommand::SetBinding{track,binding}=>find_track_mut(doc,track)?.binding=binding.clone(), TimelineAuthoringCommand::SetTrackEnabled{track,enabled}=>find_track_mut(doc,track)?.enabled=*enabled, TimelineAuthoringCommand::AddClip{track,clip}=>find_track_mut(doc,track)?.clips.push(clip.clone()), TimelineAuthoringCommand::RemoveClip(id)=>{let mut found=false;for track in &mut doc.tracks{let before=track.clips.len();track.clips.retain(|v|&v.id!=id);found|=before!=track.clips.len();}if !found{return Err(TimelineAuthoringError::MissingTarget(id.to_string()))}}, TimelineAuthoringCommand::MoveClip{clip,start}=>find_clip_mut(doc,clip)?.start=*start, TimelineAuthoringCommand::ResizeClip{clip,duration}=>find_clip_mut(doc,clip)?.duration=*duration, TimelineAuthoringCommand::AddMarker(marker)=>doc.markers.push(marker.clone()), TimelineAuthoringCommand::RemoveMarker(id)=>{let before=doc.markers.len();doc.markers.retain(|m|&m.id!=id);if before==doc.markers.len(){return Err(TimelineAuthoringError::MissingTarget(id.to_string()))}}, TimelineAuthoringCommand::MoveMarker{marker,tick}=>{let item=doc.markers.iter_mut().find(|m|&m.id==marker).ok_or_else(||TimelineAuthoringError::MissingTarget(marker.to_string()))?;item.tick=*tick;} } Ok(()) }
++fn find_track_mut<'a>(doc:&'a mut TimelineDocument,id:&TimelineTrackId)->Result<&'a mut TimelineTrack,TimelineAuthoringError>{doc.tracks.iter_mut().find(|v|&v.id==id).ok_or_else(||TimelineAuthoringError::MissingTarget(id.to_string()))}
++fn find_clip_mut<'a>(doc:&'a mut TimelineDocument,id:&TimelineClipId)->Result<&'a mut TimelineClip,TimelineAuthoringError>{for track in &mut doc.tracks{if let Some(index)=track.clips.iter().position(|v|&v.id==id){return Ok(&mut track.clips[index])}}Err(TimelineAuthoringError::MissingTarget(id.to_string()))}
++
++#[cfg(test)] mod tests { use super::*; use crate::timeline::*; #[test] fn stale_revision_rejected_and_undo_redo_work(){let doc=TimelineDocument::new("x",TimelineTick::new(100));let mut service=TimelineAuthoringService::new(doc).unwrap();let track=TimelineTrack{id:TimelineTrackId::generate(),name:"event".into(),kind:TimelineTrackKind::Event,enabled:true,binding:None,clips:Vec::new()};service.apply(0,TimelineAuthoringCommand::AddTrack(track)).unwrap();assert!(matches!(service.apply(0,TimelineAuthoringCommand::AddMarker(TimelineMarker{id:TimelineMarkerId::generate(),name:"m".into(),tick:TimelineTick::ZERO,event:None})),Err(TimelineAuthoringError::StaleRevision{..})));assert!(service.undo());assert!(service.document().tracks.is_empty());assert!(service.redo());assert_eq!(service.document().tracks.len(),1);} }
+diff --git a/crates/timeline/Cargo.toml b/crates/timeline/Cargo.toml
+new file mode 100644
+index 0000000000000000000000000000000000000000..296244905b73dc5e79638c493d6afe5041e0e9bc
+--- /dev/null
++++ b/crates/timeline/Cargo.toml
+@@ -0,0 +1,11 @@
++[package]
++name = "engine-timeline"
++version = "0.1.0"
++edition = "2024"
++
++[features]
++default = []
++serde = ["dep:serde"]
++
++[dependencies]
++serde = { version = "1", features = ["derive"], optional = true }
+diff --git a/crates/timeline/src/lib.rs b/crates/timeline/src/lib.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..443ab82c6868988c9617926f6efcf4fdf16014f7
+--- /dev/null
++++ b/crates/timeline/src/lib.rs
+@@ -0,0 +1,442 @@
++//! Dependency-neutral Timeline scheduling and playback contracts (ADR 0126).
++//!
++//! Canonical time is a signed 48 kHz integer tick. Compiled schedules are
++//! immutable/shareable and every player owns only transient playback state.
++
++#![warn(missing_docs)]
++#![warn(rustdoc::broken_intra_doc_links)]
++
++use std::fmt;
++use std::sync::Arc;
++
++/// Canonical Timeline clock rate.
++pub const TIMELINE_TICKS_PER_SECOND: i64 = 48_000;
++
++/// Exact persisted Timeline position.
++#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
++#[cfg_attr(feature = "serde", serde(transparent))]
++pub struct TimelineTick(i64);
++
++impl TimelineTick {
++    /// Tick zero.
++    pub const ZERO: Self = Self(0);
++    /// Creates an exact tick.
++    pub const fn new(value: i64) -> Self { Self(value) }
++    /// Returns the integer value.
++    pub const fn get(self) -> i64 { self.0 }
++    /// Converts to presentation seconds.
++    pub fn to_seconds_f64(self) -> f64 { self.0 as f64 / TIMELINE_TICKS_PER_SECOND as f64 }
++    /// Adds with saturation.
++    pub const fn saturating_add(self, delta: i64) -> Self { Self(self.0.saturating_add(delta)) }
++    /// Clamps this value.
++    pub fn clamp(self, minimum: Self, maximum: Self) -> Self { Self(self.0.clamp(minimum.0, maximum.0)) }
++}
++
++impl fmt::Display for TimelineTick {
++    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { self.0.fmt(f) }
++}
++
++/// Discontinuous-time reconstruction contract for a payload.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
++pub enum SeekCapability {
++    /// Pure sample of target tick.
++    Stateless,
++    /// Target runtime supports deterministic seek/sample.
++    Seekable,
++    /// Runtime must reconstruct by replay.
++    ReplayRequired,
++    /// No meaningful discontinuous sample exists.
++    NonSeekable,
++}
++
++/// Why a schedule is evaluated.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum EvaluationMode {
++    /// Forward/reverse production playback.
++    Playback,
++    /// Discontinuous seek/scrub.
++    Seek {
++        /// Explicit opt-in for gameplay/irreversible point events.
++        preview_events: bool,
++    },
++}
++
++/// One immutable interval or marker point.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum CompiledSpan {
++    /// Active half-open interval `[start,end)`.
++    Interval {
++        /// Inclusive start.
++        start: TimelineTick,
++        /// Exclusive end.
++        end: TimelineTick,
++    },
++    /// Exact point.
++    Point {
++        /// Marker tick.
++        tick: TimelineTick,
++    },
++}
++
++impl CompiledSpan {
++    /// First represented tick.
++    pub const fn start(self) -> TimelineTick {
++        match self { Self::Interval { start, .. } => start, Self::Point { tick } => tick }
++    }
++}
++
++/// One typed immutable compiled entry.
++#[derive(Debug, Clone)]
++pub struct CompiledEntry<P> {
++    track_order: u32,
++    item_order: u32,
++    span: CompiledSpan,
++    seek: SeekCapability,
++    point_side_effect: bool,
++    payload: P,
++}
++
++impl<P> CompiledEntry<P> {
++    /// Creates an interval entry.
++    pub fn interval(track_order: u32, item_order: u32, start: TimelineTick, end: TimelineTick, seek: SeekCapability, payload: P) -> Self {
++        Self { track_order, item_order, span: CompiledSpan::Interval { start, end }, seek, point_side_effect: false, payload }
++    }
++    /// Creates a point entry.
++    pub fn point(track_order: u32, item_order: u32, tick: TimelineTick, seek: SeekCapability, side_effect: bool, payload: P) -> Self {
++        Self { track_order, item_order, span: CompiledSpan::Point { tick }, seek, point_side_effect: side_effect, payload }
++    }
++    /// Deterministic track order.
++    pub const fn track_order(&self) -> u32 { self.track_order }
++    /// Deterministic item order.
++    pub const fn item_order(&self) -> u32 { self.item_order }
++    /// Compiled span.
++    pub const fn span(&self) -> CompiledSpan { self.span }
++    /// Seek contract.
++    pub const fn seek_capability(&self) -> SeekCapability { self.seek }
++    /// Typed payload.
++    pub const fn payload(&self) -> &P { &self.payload }
++    fn order_key(&self) -> (u32, TimelineTick, u32, u8) {
++        let kind = if matches!(self.span, CompiledSpan::Interval { .. }) { 0 } else { 1 };
++        (self.track_order, self.span.start(), self.item_order, kind)
++    }
++}
++
++/// Compile-time schedule validation error.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub enum CompiledTimelineError {
++    /// Negative duration.
++    NegativeDuration(TimelineTick),
++    /// Invalid interval.
++    InvalidInterval {
++        /// Start.
++        start: TimelineTick,
++        /// End.
++        end: TimelineTick,
++        /// Timeline duration.
++        duration: TimelineTick,
++    },
++    /// Invalid marker.
++    InvalidPoint {
++        /// Point tick.
++        tick: TimelineTick,
++        /// Timeline duration.
++        duration: TimelineTick,
++    },
++}
++
++impl fmt::Display for CompiledTimelineError {
++    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
++        match self {
++            Self::NegativeDuration(v) => write!(f, "negative timeline duration {v}"),
++            Self::InvalidInterval { start, end, duration } => write!(f, "invalid interval [{start},{end}) for duration {duration}"),
++            Self::InvalidPoint { tick, duration } => write!(f, "invalid point {tick} for duration {duration}"),
++        }
++    }
++}
++impl std::error::Error for CompiledTimelineError {}
++
++/// Immutable, deterministic schedule shared by players.
++#[derive(Debug, Clone)]
++pub struct CompiledTimeline<P> {
++    duration: TimelineTick,
++    entries: Arc<[CompiledEntry<P>]>,
++}
++
++impl<P> CompiledTimeline<P> {
++    /// Validates, sorts and freezes entries.
++    pub fn new(duration: TimelineTick, mut entries: Vec<CompiledEntry<P>>) -> Result<Self, CompiledTimelineError> {
++        if duration < TimelineTick::ZERO { return Err(CompiledTimelineError::NegativeDuration(duration)); }
++        for entry in &entries {
++            match entry.span {
++                CompiledSpan::Interval { start, end } if start < TimelineTick::ZERO || start >= end || end > duration => {
++                    return Err(CompiledTimelineError::InvalidInterval { start, end, duration });
++                }
++                CompiledSpan::Point { tick } if tick < TimelineTick::ZERO || tick > duration => {
++                    return Err(CompiledTimelineError::InvalidPoint { tick, duration });
++                }
++                _ => {}
++            }
++        }
++        entries.sort_by_key(CompiledEntry::order_key);
++        Ok(Self { duration, entries: entries.into() })
++    }
++    /// Inclusive final tick.
++    pub const fn duration(&self) -> TimelineTick { self.duration }
++    /// Frozen entries.
++    pub fn entries(&self) -> &[CompiledEntry<P>] { &self.entries }
++    /// Evaluates one deterministic transition.
++    pub fn evaluate(&self, request: &EvaluationRequest) -> Vec<EvaluationItem<'_, P>> {
++        let mut out = Vec::new();
++        for entry in self.entries.iter() {
++            match entry.span {
++                CompiledSpan::Interval { start, end } => {
++                    if request.current_tick >= start && request.current_tick < end {
++                        out.push(EvaluationItem { entry, local_tick: TimelineTick::new(request.current_tick.0 - start.0), decision: decision(entry.seek, request.mode, start) });
++                    }
++                }
++                CompiledSpan::Point { tick } => {
++                    let selected = match request.mode {
++                        EvaluationMode::Playback => request.current_tick >= request.previous_tick && tick > request.previous_tick && tick <= request.current_tick,
++                        EvaluationMode::Seek { preview_events } => tick == request.current_tick && (!entry.point_side_effect || preview_events),
++                    };
++                    if selected { out.push(EvaluationItem { entry, local_tick: TimelineTick::ZERO, decision: decision(entry.seek, request.mode, tick) }); }
++                }
++            }
++        }
++        out
++    }
++}
++
++fn decision(seek: SeekCapability, mode: EvaluationMode, origin: TimelineTick) -> EvaluationDecision {
++    if !matches!(mode, EvaluationMode::Seek { .. }) { return EvaluationDecision::Apply; }
++    match seek {
++        SeekCapability::Stateless | SeekCapability::Seekable => EvaluationDecision::Apply,
++        SeekCapability::ReplayRequired => EvaluationDecision::ReplayRequired { from_tick: origin },
++        SeekCapability::NonSeekable => EvaluationDecision::NonSeekable,
++    }
++}
++
++/// Required action for a selected entry.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum EvaluationDecision {
++    /// Apply/sample now.
++    Apply,
++    /// Reconstruct deterministically from this origin.
++    ReplayRequired {
++        /// Earliest deterministic origin.
++        from_tick: TimelineTick,
++    },
++    /// Suppress rather than fabricate a seek result.
++    NonSeekable,
++}
++
++/// One selected entry.
++#[derive(Debug, Clone, Copy)]
++pub struct EvaluationItem<'a, P> { entry: &'a CompiledEntry<P>, local_tick: TimelineTick, decision: EvaluationDecision }
++impl<'a, P> EvaluationItem<'a, P> {
++    /// Entry.
++    pub const fn entry(&self) -> &'a CompiledEntry<P> { self.entry }
++    /// Tick relative to clip start.
++    pub const fn local_tick(&self) -> TimelineTick { self.local_tick }
++    /// Seek action.
++    pub const fn decision(&self) -> EvaluationDecision { self.decision }
++}
++
++/// One exact transition produced by one player.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct EvaluationRequest {
++    /// Previous playhead.
++    pub previous_tick: TimelineTick,
++    /// Current playhead.
++    pub current_tick: TimelineTick,
++    /// Evaluation reason.
++    pub mode: EvaluationMode,
++    /// Monotonic player generation.
++    pub generation: u64,
++}
++
++/// Adapter boundary consumed by production domain owners.
++pub trait TimelineEvaluationAdapter<P> {
++    /// Error returned by the owner.
++    type Error;
++    /// Applies one selected item.
++    fn apply(&mut self, request: &EvaluationRequest, item: EvaluationItem<'_, P>) -> Result<(), Self::Error>;
++}
++
++/// Evaluates then applies in deterministic schedule order.
++pub fn evaluate_with_adapter<P, A: TimelineEvaluationAdapter<P>>(timeline: &CompiledTimeline<P>, request: &EvaluationRequest, adapter: &mut A) -> Result<(), A::Error> {
++    for item in timeline.evaluate(request) { adapter.apply(request, item)?; }
++    Ok(())
++}
++
++/// Runtime playback state.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum TimelinePlaybackState {
++    /// Stopped.
++    Stopped,
++    /// Advancing.
++    Playing,
++    /// Held.
++    Paused,
++}
++
++/// Deterministic rational playback rate.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub struct PlaybackRate { numerator: i32, denominator: u32 }
++impl PlaybackRate {
++    /// Normal 1x.
++    pub const ONE: Self = Self { numerator: 1, denominator: 1 };
++    /// Creates a bounded rational rate.
++    pub fn new(numerator: i32, denominator: u32) -> Result<Self, PlaybackRateError> {
++        if denominator == 0 || (numerator as i64).unsigned_abs() > denominator as u64 * 16 { return Err(PlaybackRateError); }
++        Ok(Self { numerator, denominator })
++    }
++    /// Numerator.
++    pub const fn numerator(self) -> i32 { self.numerator }
++    /// Denominator.
++    pub const fn denominator(self) -> u32 { self.denominator }
++}
++
++/// Invalid playback-rate request.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub struct PlaybackRateError;
++impl fmt::Display for PlaybackRateError { fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { f.write_str("playback rate must have nonzero denominator and magnitude <= 16x") } }
++impl std::error::Error for PlaybackRateError {}
++
++/// Optional half-open loop range.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub struct TimelineLoop {
++    /// Inclusive loop start.
++    pub start: TimelineTick,
++    /// Exclusive loop end.
++    pub end: TimelineTick,
++}
++
++/// Error for invalid player bounds.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub struct TimelineLoopError;
++impl fmt::Display for TimelineLoopError { fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { f.write_str("loop must be nonempty and within timeline duration") } }
++impl std::error::Error for TimelineLoopError {}
++
++/// Per-instance transient playback state.
++#[derive(Debug, Clone)]
++pub struct TimelinePlayer {
++    duration: TimelineTick,
++    tick: TimelineTick,
++    state: TimelinePlaybackState,
++    rate: PlaybackRate,
++    rate_remainder: i128,
++    loop_range: Option<TimelineLoop>,
++    generation: u64,
++}
++
++impl TimelinePlayer {
++    /// Creates stopped state for a compiled duration.
++    pub fn new(duration: TimelineTick) -> Self {
++        Self { duration: duration.clamp(TimelineTick::ZERO, TimelineTick::new(i64::MAX)), tick: TimelineTick::ZERO, state: TimelinePlaybackState::Stopped, rate: PlaybackRate::ONE, rate_remainder: 0, loop_range: None, generation: 0 }
++    }
++    /// State.
++    pub const fn state(&self) -> TimelinePlaybackState { self.state }
++    /// Current tick.
++    pub const fn tick(&self) -> TimelineTick { self.tick }
++    /// Generation.
++    pub const fn generation(&self) -> u64 { self.generation }
++    /// Playback rate.
++    pub const fn rate(&self) -> PlaybackRate { self.rate }
++    /// Loop range.
++    pub const fn loop_range(&self) -> Option<TimelineLoop> { self.loop_range }
++    /// Starts or resumes.
++    pub fn play(&mut self) { self.state = TimelinePlaybackState::Playing; }
++    /// Pauses without changing playhead.
++    pub fn pause(&mut self) { if self.state == TimelinePlaybackState::Playing { self.state = TimelinePlaybackState::Paused; } }
++    /// Stops, resets playhead and invalidates transient owner state.
++    pub fn stop(&mut self) { self.state = TimelinePlaybackState::Stopped; self.tick = TimelineTick::ZERO; self.rate_remainder = 0; self.generation = self.generation.wrapping_add(1); }
++    /// Restarts at zero and plays.
++    pub fn restart(&mut self) { self.stop(); self.play(); }
++    /// Sets deterministic playback rate.
++    pub fn set_rate(&mut self, rate: PlaybackRate) { self.rate = rate; self.rate_remainder = 0; }
++    /// Configures a loop range.
++    pub fn set_loop(&mut self, range: Option<TimelineLoop>) -> Result<(), TimelineLoopError> {
++        if let Some(r) = range && (r.start < TimelineTick::ZERO || r.start >= r.end || r.end > self.duration) { return Err(TimelineLoopError); }
++        self.loop_range = range; Ok(())
++    }
++    /// Seeks and returns the exact discontinuous evaluation request.
++    pub fn seek(&mut self, tick: TimelineTick, preview_events: bool) -> EvaluationRequest {
++        let previous = self.tick; self.tick = tick.clamp(TimelineTick::ZERO, self.duration); self.rate_remainder = 0; self.generation = self.generation.wrapping_add(1);
++        EvaluationRequest { previous_tick: previous, current_tick: self.tick, mode: EvaluationMode::Seek { preview_events }, generation: self.generation }
++    }
++    /// Advances by canonical host ticks. Loop crossings are split so point events
++    /// preserve `(previous,current]` ordering on both sides of the wrap.
++    pub fn advance_ticks(&mut self, host_ticks: i64) -> Vec<EvaluationRequest> {
++        if self.state != TimelinePlaybackState::Playing || host_ticks == 0 || self.rate.numerator == 0 { return Vec::new(); }
++        let scaled = host_ticks as i128 * self.rate.numerator as i128 + self.rate_remainder;
++        let denominator = self.rate.denominator as i128;
++        let delta128 = scaled / denominator; self.rate_remainder = scaled % denominator;
++        let delta = delta128.clamp(i64::MIN as i128, i64::MAX as i128) as i64;
++        if delta == 0 { return Vec::new(); }
++        if delta < 0 {
++            let previous = self.tick; self.tick = self.tick.saturating_add(delta).clamp(TimelineTick::ZERO, self.duration);
++            return vec![EvaluationRequest { previous_tick: previous, current_tick: self.tick, mode: EvaluationMode::Playback, generation: self.generation }];
++        }
++        if let Some(range) = self.loop_range { return self.advance_forward_looped(delta, range); }
++        let previous = self.tick; self.tick = self.tick.saturating_add(delta).clamp(TimelineTick::ZERO, self.duration);
++        if self.tick == self.duration { self.state = TimelinePlaybackState::Stopped; }
++        vec![EvaluationRequest { previous_tick: previous, current_tick: self.tick, mode: EvaluationMode::Playback, generation: self.generation }]
++    }
++    fn advance_forward_looped(&mut self, mut delta: i64, range: TimelineLoop) -> Vec<EvaluationRequest> {
++        let mut requests = Vec::new();
++        if self.tick < range.start || self.tick >= range.end { self.tick = range.start; self.generation = self.generation.wrapping_add(1); }
++        while delta > 0 {
++            let remaining = range.end.get() - self.tick.get();
++            if delta < remaining {
++                let previous = self.tick; self.tick = self.tick.saturating_add(delta); delta = 0;
++                requests.push(EvaluationRequest { previous_tick: previous, current_tick: self.tick, mode: EvaluationMode::Playback, generation: self.generation });
++            } else {
++                let previous = self.tick; self.tick = range.end; delta -= remaining;
++                requests.push(EvaluationRequest { previous_tick: previous, current_tick: range.end, mode: EvaluationMode::Playback, generation: self.generation });
++                self.tick = range.start; self.generation = self.generation.wrapping_add(1);
++                requests.push(EvaluationRequest { previous_tick: range.start, current_tick: range.start, mode: EvaluationMode::Seek { preview_events: false }, generation: self.generation });
++            }
++        }
++        requests
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    #[test]
++    fn canonical_rate_is_48khz() { assert_eq!(TIMELINE_TICKS_PER_SECOND, 48_000); }
++    #[test]
++    fn compile_order_is_deterministic() {
++        let t = CompiledTimeline::new(TimelineTick::new(100), vec![
++            CompiledEntry::point(1, 0, TimelineTick::new(5), SeekCapability::Stateless, false, "b"),
++            CompiledEntry::point(0, 1, TimelineTick::new(7), SeekCapability::Stateless, false, "a2"),
++            CompiledEntry::point(0, 0, TimelineTick::new(7), SeekCapability::Stateless, false, "a1"),
++        ]).unwrap();
++        assert_eq!(t.entries().iter().map(|e| *e.payload()).collect::<Vec<_>>(), vec!["a1", "a2", "b"]);
++    }
++    #[test]
++    fn forward_event_crossing_is_open_closed() {
++        let t = CompiledTimeline::new(TimelineTick::new(20), vec![CompiledEntry::point(0,0,TimelineTick::new(10),SeekCapability::Stateless,true,())]).unwrap();
++        assert_eq!(t.evaluate(&EvaluationRequest { previous_tick: TimelineTick::new(10), current_tick: TimelineTick::new(11), mode: EvaluationMode::Playback, generation: 0 }).len(), 0);
++        assert_eq!(t.evaluate(&EvaluationRequest { previous_tick: TimelineTick::new(9), current_tick: TimelineTick::new(10), mode: EvaluationMode::Playback, generation: 0 }).len(), 1);
++    }
++    #[test]
++    fn scrub_suppresses_side_effect_points_by_default() {
++        let t = CompiledTimeline::new(TimelineTick::new(20), vec![CompiledEntry::point(0,0,TimelineTick::new(10),SeekCapability::Stateless,true,())]).unwrap();
++        assert!(t.evaluate(&EvaluationRequest { previous_tick: TimelineTick::ZERO, current_tick: TimelineTick::new(10), mode: EvaluationMode::Seek { preview_events: false }, generation: 1 }).is_empty());
++    }
++    #[test]
++    fn players_are_independent() {
++        let mut a = TimelinePlayer::new(TimelineTick::new(100)); let mut b = a.clone(); a.play(); a.advance_ticks(7);
++        assert_eq!(a.tick(), TimelineTick::new(7)); assert_eq!(b.tick(), TimelineTick::ZERO); b.play(); b.advance_ticks(2); assert_eq!(b.tick(), TimelineTick::new(2));
++    }
++    #[test]
++    fn loop_splits_crossing_and_bumps_generation() {
++        let mut p = TimelinePlayer::new(TimelineTick::new(100)); p.set_loop(Some(TimelineLoop { start: TimelineTick::new(10), end: TimelineTick::new(20) })).unwrap(); p.seek(TimelineTick::new(18), false); p.play();
++        let g = p.generation(); let requests = p.advance_ticks(5); assert_eq!(p.tick(), TimelineTick::new(13)); assert!(requests.len() >= 3); assert!(p.generation() > g);
++    }
++}
