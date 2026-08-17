@@ -1,0 +1,79 @@
+# ADR 0141: Native Write-Capable Agent Runtime and Governed Tool Loop
+
+Status: Proposed
+Date: 2026-08-17
+Builds on: ADR 0121, ADR 0131, ADR 0132, ADR 0135
+Relates to: ADR 0035, ADR 0139
+
+## Context
+
+The current native AI path is deliberately read-oriented. `native_agent.rs` retrieves repository/project evidence and calls a user-selected loopback local model, but it does not acquire mutation permissions or participate in the write-capable `AgentRun` state machine. The existing external Agent Runtime path already proves the governed orchestration needed for proposal snapshots, permissions, code workspaces, managed validation, Play, frame capture, evaluation, repair, and completion.
+
+The missing capability is an engine-owned native model/tool loop that can perform the same governed work without creating a second authoring architecture.
+
+## Decision
+
+GameEngine adds a provider-independent `NativeAgentRuntime` implementation that participates in the existing Agent Host exactly as an Agent Runtime. It delegates inference to `ModelBackend` and delegates side effects to existing managed services.
+
+Conceptually:
+
+```text
+AgentHost
+  -> NativeAgentRuntime
+       -> ModelBackend
+       -> typed MCP authoring tools
+       -> AgentCodeWorkspace
+       -> managed validation
+       -> Play / AI Agent Bridge
+       -> frame evaluation
+```
+
+The native runtime MUST NOT write canonical Scene, Graph, Prefab, UI, Material, settings, Animation Set, or other authoring files directly. Structured project authoring continues through the authoritative Editor MCP boundary from ADR 0121/0132. Source mutation continues through the ADR 0131 code workspace.
+
+## Tool loop contract
+
+A native turn may inspect state, reason, request a managed tool, observe its structured result, and continue until it reaches a host-owned state transition. Tool availability is determined by AgentRun phase, proposal capabilities, provider capability profile, and permission policy.
+
+The model never owns completion truth. Host-owned validation, Play, frame, evaluation, and interaction gates remain authoritative. A model output claiming success cannot bypass an incomplete gate.
+
+The runtime MUST support structured tool-call failure as normal evidence. Invalid arguments, stale revisions, denied permissions, validator failures, import failures, and runtime failures are returned to the harness and may trigger re-inspection or repair.
+
+## Reasoning and execution boundary
+
+Deterministic operations execute without an unnecessary model turn once their inputs are fully specified. Model inference is reacquired when a new semantic decision is required. Strong reasoning SHOULD retain concrete implementation decisions in provider-independent `AgentWorkingState` so unloading or restarting a model does not lose the run's governed progress.
+
+## Permissions
+
+The native runtime uses the existing ADR 0131 broker. Asking a question remains read-oriented. Mutation requires an explicit proposal and Go snapshot. Network, asset acquisition, raw filesystem, arbitrary command execution, runtime control, and frame capture remain separately authorized capabilities.
+
+## Cancellation and interruption
+
+Stop retains cancellation semantics. ADR 0135 Interrupt-for-Editing may suspend active native inference, reduce model residency, restore Editor resources, and later resume after authoritative-state re-inspection. The native runtime MUST be restartable at a safe reasoning boundary when a backend cannot resume an in-flight generation.
+
+## Harness baseline
+
+The first write-capable native harness uses one selected model and one provider-independent policy. Model-family-specific agents are forbidden. Tunable retrieval, context compaction, tool exposure, validation cadence, repair budget, and reasoning mode are `HarnessPolicy` concerns and must remain measurable.
+
+## Dependencies and parallel work
+
+This ADR may be implemented in parallel with ADR 0143-0149, ADR 0151, and ADR 0153 because ADR 0131 already defines the required boundaries. It does not depend on ADR 0142 or ADR 0150. ADR 0142 needs this runtime for its complete write-capable benchmark corpus; ADR 0150 needs this runtime as its single-model baseline.
+
+## Verification
+
+Implementation must prove at least:
+
+- a local model can start an authorized `AgentRun` from an exact proposal snapshot;
+- typed MCP inspection/mutation uses the live Editor writer and rejects stale revision work;
+- source edits occur through the code workspace with reviewable checkpoints/diffs;
+- denied or elevated operations enter the existing permission flow;
+- managed validation results are host-owned evidence;
+- Play, frame capture, visual evaluation, and repair can be driven through the existing completion loop;
+- provider/model failure cannot fabricate completion;
+- Stop cancels while Interrupt-for-Editing remains resumable; and
+- project-shared history contains no model credentials or transient inference state.
+
+Editor-visible implementation requires Visual Validation for AI Studio progress, permission, interruption, and completion presentation.
+
+## Non-goals
+
+This ADR does not introduce multi-model routing, choose a recommended model family, implement hosted credentials, add a second project writer, or move Agent Host ownership into runtime crates.
