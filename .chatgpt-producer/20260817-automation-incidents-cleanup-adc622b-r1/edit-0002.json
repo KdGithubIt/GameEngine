@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "docs/CHATGPT_AUTOMATION_INCIDENTS.md",
+  "old": "- Recovery PR: `#49`\n- Recovery commit: `b3421b3c454ca7ebde31a2a9585e441d91ea7802`\n\n## INC-003",
+  "new": "- Recovery PR: `#49`\n- Recovery commit: `b3421b3c454ca7ebde31a2a9585e441d91ea7802`\n- ADR 0131 repeated failed request:\n  `20260816-adr0131-managed-validation-0b2191a-r2`\n- ADR 0131 repeated failed Dispatcher run: `31944776376`\n- ADR 0131 recovery request: `20260816-adr0131-mv-fix-r3`\n- ADR 0131 recovery Dispatcher run: `31944910663`\n- ADR 0131 recovery PR: `#88`\n- ADR 0131 recovery commit: `d047d7ab89d668b5324869b3aaf9a92329f15182`\n\n## INC-003"
+}
