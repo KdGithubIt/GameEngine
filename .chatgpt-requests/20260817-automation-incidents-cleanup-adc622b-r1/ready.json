@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "20260817-automation-incidents-cleanup-adc622b-r1",
+  "target_branch": "chatgpt/gameengine-automation-incidents-cleanup-adc622b",
+  "expected_head_sha": "adc622bb0080aebc25945744dbdb478a60f75cf4",
+  "baseline_main_sha": "adc622bb0080aebc25945744dbdb478a60f75cf4",
+  "patch_sha256": "13cb13dfc3d9e4032d893141713a604dcd84dcef4e56438f0f97844776ad130d",
+  "patch_bytes": 6097,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Document confirmed automation incident recoveries",
+  "pr_title": "GameEngine: consolidate automation incident records",
+  "pr_body": "## Summary\n\n- record the ADR 0131 managed-validation target-alignment recurrence under existing INC-002 without creating a duplicate incident ID\n- add INC-008 for the public snapshot documentation-placeholder false positive, its PR #137 infrastructure fix, and confirmed ADR 0121 recovery\n- consolidate the still-needed records from old Draft PRs #89 and #162 on current main\n\n## Validation\n\nDocumentation-only incident-log change. Confirm the final Windows Validation summary mode and scope; if mode is docs, do not report the Rust workspace five-command suite as executed."
+}
