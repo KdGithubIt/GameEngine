@@ -1,0 +1,59 @@
++        let nav_mesh = ProductionNavigationBaker
++            .bake(&input, &|| cancelled.load(Ordering::Relaxed))
++            .map_err(|error| match error {
++                RuntimeNavigationBakeError::Cancelled => NavigationBakeServiceError::Cancelled,
++                other => NavigationBakeServiceError::Bake(other.to_string()),
++            })?;
++        if cancelled.load(Ordering::Relaxed) {
++            return Err(NavigationBakeServiceError::Cancelled);
++        }
++        let stats = NavigationBakeStats {
++            profile_count: nav_mesh.profiles.len(),
++            tile_count: nav_mesh.profiles.iter().map(|profile| profile.tiles.len()).sum(),
++            polygon_count: nav_mesh
++                .profiles
++                .iter()
++                .flat_map(|profile| &profile.tiles)
++                .map(|tile| tile.polygons.len())
++                .sum(),
++            link_count: nav_mesh.profiles.iter().map(|profile| profile.links.len()).sum(),
++            elapsed: started.elapsed(),
++        };
++        Ok(NavigationBakeOutput {
++            nav_mesh,
++            source_fingerprint: input.source_fingerprint,
++            stats,
++        })
++    }
++
++    /// Bakes and safely replaces one derived navigation file only after success.
++    ///
++    /// The previous valid file is restored when replacement fails. Cancellation
++    /// before replacement never touches the destination.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`NavigationBakeServiceError`] for bake, serialization, or I/O failure.
++    pub fn bake_to_path(
++        &self,
++        source: &NavigationSource,
++        document: &NavMeshBakeDocument,
++        output_path: &Path,
++        cancelled: &AtomicBool,
++    ) -> Result<NavigationBakeOutput, NavigationBakeServiceError> {
++        let output = self.bake(source, document, cancelled)?;
++        if cancelled.load(Ordering::Relaxed) {
++            return Err(NavigationBakeServiceError::Cancelled);
++        }
++        let bytes = serde_json::to_vec_pretty(&output.nav_mesh)
++            .map_err(NavigationBakeServiceError::Json)?;
++        replace_preserving_previous(output_path, &bytes)?;
++        Ok(output)
++    }
++}
++
++fn triangle_sort_key(triangle: &NavigationTriangle) -> [u32; 10] {
++    [
++        triangle.a[0].to_bits(),
++        triangle.a[1].to_bits(),
++        triangle.a[2].to_bits(),

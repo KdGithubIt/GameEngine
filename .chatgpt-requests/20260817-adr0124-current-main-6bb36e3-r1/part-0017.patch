@@ -1,0 +1,39 @@
++            self.current_path_partial = false;
+             self.status = NavMeshAgentStatus::Idle;
+         }
+     }
+@@ -1461,17 +1573,28 @@ pub fn nav_mesh_agent_system(
+             agent.repath_remaining = agent.repath_interval.max(0.0);
+             agent.current_path.clear();
+             agent.path_index = 0;
++            agent.current_path_partial = false;
+             if let Some(target) = agent.target {
+                 match nav_mesh.query_path(agent.profile_id.as_str(), transform.translation, target) {
+                     NavigationPathResult::Complete(path) => {
+                         agent.current_path = path.waypoints;
+                         agent.status = NavMeshAgentStatus::Moving;
+                     }
+-                    NavigationPathResult::Partial(_)
+-                    | NavigationPathResult::Failure(NavigationQueryFailure::MissingProfile(_))
+-                    | NavigationPathResult::Failure(NavigationQueryFailure::StartOutside)
+-                    | NavigationPathResult::Failure(NavigationQueryFailure::EndOutside)
+-                    | NavigationPathResult::Failure(NavigationQueryFailure::NoPath) => {
++                    NavigationPathResult::Partial(path) => {
++                        agent.current_path = path.waypoints;
++                        agent.current_path_partial = true;
++                        agent.status = NavMeshAgentStatus::PartialPath;
++                    }
++                    NavigationPathResult::Failure(NavigationQueryFailure::MissingProfile(_)) => {
++                        agent.status = NavMeshAgentStatus::MissingProfile;
++                    }
++                    NavigationPathResult::Failure(NavigationQueryFailure::StartOutside) => {
++                        agent.status = NavMeshAgentStatus::StartOutside;
++                    }
++                    NavigationPathResult::Failure(NavigationQueryFailure::EndOutside) => {
++                        agent.status = NavMeshAgentStatus::EndOutside;
++                    }
++                    NavigationPathResult::Failure(NavigationQueryFailure::NoPath) => {
+                         agent.status = NavMeshAgentStatus::NoPath;
+                     }
+                     NavigationPathResult::Failure(NavigationQueryFailure::MissingNavigationData) => {
+@@ -1493,7 +1616,11 @@ pub fn nav_mesh_agent_system(

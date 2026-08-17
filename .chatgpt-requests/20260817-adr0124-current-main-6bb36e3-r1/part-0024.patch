@@ -1,0 +1,62 @@
++    /// Normalizes and fingerprints one engine-neutral navigation source.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`NavigationBakeServiceError`] for invalid settings or build input.
++    pub fn prepare(
++        &self,
++        source: &NavigationSource,
++        document: &NavMeshBakeDocument,
++    ) -> Result<NavigationBuildInput, NavigationBakeServiceError> {
++        document.validate()?;
++        let mut triangles = source.triangles.clone();
++        triangles.sort_by_key(triangle_sort_key);
++        let mut modifiers = source.modifiers.clone();
++        modifiers.sort_by(|left, right| left.id.cmp(&right.id));
++        let mut links = source.links.clone();
++        links.sort_by(|left, right| left.id.cmp(&right.id));
++        let mut input = NavigationBuildInput {
++            source_fingerprint: "pending".to_owned(),
++            triangles,
++            modifiers,
++            links,
++            profiles: document.settings.profiles.clone(),
++            tile_size: document.settings.tile_size,
++        };
++        input.source_fingerprint = build_input_fingerprint(&input)?;
++        input
++            .validate()
++            .map_err(|error| NavigationBakeServiceError::Bake(error.to_string()))?;
++        Ok(input)
++    }
++
++    /// Returns whether normalized source/settings differ from the last successful bake.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`NavigationBakeServiceError`] when source preparation fails.
++    pub fn is_stale(
++        &self,
++        source: &NavigationSource,
++        document: &NavMeshBakeDocument,
++    ) -> Result<bool, NavigationBakeServiceError> {
++        let input = self.prepare(source, document)?;
++        Ok(document.source_fingerprint.as_deref() != Some(input.source_fingerprint.as_str()))
++    }
++
++    /// Bakes one source without mutating files.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`NavigationBakeServiceError`] for invalid input or cancellation.
++    pub fn bake(
++        &self,
++        source: &NavigationSource,
++        document: &NavMeshBakeDocument,
++        cancelled: &AtomicBool,
++    ) -> Result<NavigationBakeOutput, NavigationBakeServiceError> {
++        let input = self.prepare(source, document)?;
++        if cancelled.load(Ordering::Relaxed) {
++            return Err(NavigationBakeServiceError::Cancelled);
++        }
++        let started = Instant::now();
