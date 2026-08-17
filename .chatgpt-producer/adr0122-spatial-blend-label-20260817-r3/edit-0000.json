@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/engine/src/components/builtins.rs",
+  "old": "        \"Spatial Blend (2D ↔ 3D)\",",
+  "new": "        \"Spatial Blend\","
+}
