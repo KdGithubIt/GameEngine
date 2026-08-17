@@ -1,0 +1,313 @@
+diff --git a/crates/editor/src/ui/audio_authoring.rs b/crates/editor/src/ui/audio_authoring.rs
+index 2befddbe7137496edc8b3f57bb1d72e987c58aa5..6eb7f8cb658139400c5f8707771ed9c6c9429501 100644
+--- a/crates/editor/src/ui/audio_authoring.rs
++++ b/crates/editor/src/ui/audio_authoring.rs
+@@ -149,10 +149,10 @@ pub(super) fn show_audio_component_extras(
+     if component_type.as_str() == engine::scene_bridge::AUDIO_EMITTER_COMPONENT {
+         ui.separator();
+         ui.strong("Attenuation Preview");
+-        if let Some(emitter) = parse_emitter(value) {
+-            draw_attenuation_preview(ui, emitter.settings);
++        if let Some(settings) = parse_spatial_settings(value) {
++            draw_attenuation_preview(ui, settings);
+         } else {
+-            ui.weak("Complete the emitter fields to preview attenuation.");
++            ui.weak("Complete the spatial fields to preview attenuation.");
+         }
+         ui.separator();
+         ui.strong("Audition");
+@@ -241,8 +241,21 @@ impl EditorApp {
+         let Some(transform) = registry.get(&transform_type).map(|definition| definition.schema.default_value()) else { return; };
+         let Some(mut emitter) = registry.get(&emitter_type).map(|definition| definition.schema.default_value()) else { return; };
+         let Some(listener) = registry.get(&listener_type).map(|definition| definition.schema.default_value()) else { return; };
++        // Keep the task-specific visual capture focused on the audio Inspector rather than
++        // spending the runner's constrained desktop height on the utility dock or Transform.
++        self.bottom_panel_open = false;
++        self.preferences
++            .component_card_open
++            .insert(transform_type.as_str().to_owned(), false);
++        self.preferences
++            .component_card_open
++            .insert(emitter_type.as_str().to_owned(), true);
++        self.preferences
++            .component_card_open
++            .insert(listener_type.as_str().to_owned(), true);
+         let Value::Object(fields) = &mut emitter else { return; };
+-        fields.insert("clip".to_owned(), Value::AssetRef(AssetId::generate()));
++        // The visual-validation fixture must not fabricate an unresolved asset reference.
++        // Attenuation/gizmos are spatial-only; audition remains visible but stopped until a real clip is selected.
+         fields.insert("spatial_blend".to_owned(), Value::F64(1.0));
+         fields.insert("min_distance".to_owned(), Value::F64(1.5));
+         fields.insert("max_distance".to_owned(), Value::F64(6.0));
+@@ -268,22 +281,27 @@ fn audition_spatial_gains(
+     engine::audio::spatial_voice_gains(listener, emitter, settings)
+ }
+ 
+-fn parse_emitter(value: &Value) -> Option<EmitterPreview> {
++fn parse_spatial_settings(value: &Value) -> Option<engine::audio::AudioVoiceSpatialSettings> {
+     let Value::Object(fields) = value else { return None; };
+-    let Value::AssetRef(clip) = fields.get("clip")? else { return None; };
+     let rolloff = match fields.get("rolloff") {
+         Some(Value::String(value)) if value == "inverse" => engine::audio::AudioRolloffMode::Inverse,
+         _ => engine::audio::AudioRolloffMode::Linear,
+     };
++    Some(engine::audio::AudioVoiceSpatialSettings {
++        volume: number(fields.get("volume"), 1.0),
++        spatial_blend: number(fields.get("spatial_blend"), 1.0),
++        min_distance: number(fields.get("min_distance"), 1.0),
++        max_distance: number(fields.get("max_distance"), 20.0),
++        rolloff,
++    })
++}
++
++fn parse_emitter(value: &Value) -> Option<EmitterPreview> {
++    let Value::Object(fields) = value else { return None; };
++    let Value::AssetRef(clip) = fields.get("clip")? else { return None; };
+     Some(EmitterPreview {
+         clip: clip.clone(),
+-        settings: engine::audio::AudioVoiceSpatialSettings {
+-            volume: number(fields.get("volume"), 1.0),
+-            spatial_blend: number(fields.get("spatial_blend"), 1.0),
+-            min_distance: number(fields.get("min_distance"), 1.0),
+-            max_distance: number(fields.get("max_distance"), 20.0),
+-            rolloff,
+-        },
++        settings: parse_spatial_settings(value)?,
+         looping: matches!(fields.get("looping"), Some(Value::Bool(true))),
+     })
+ }
+@@ -361,4 +379,33 @@ mod tests {
+         transaction.commit(&mut scene).expect("listener fixture must commit");
+         assert_eq!(active_game_listener(&scene), Some(expected));
+     }
++
++    #[test]
++    fn audition_controls_remain_transient() {
++        let directory = tempfile::tempdir().expect("temporary scene directory");
++        let path = directory.path().join("audio.scene.json");
++        let scene = AuthoringScene::new();
++        std::fs::write(
++            &path,
++            scene.to_canonical_json().expect("empty scene fixture serializes"),
++        )
++        .expect("empty scene fixture writes");
++        let mut session = EditorSession::empty_behavior_tree();
++        session.open_scene(path).expect("scene fixture opens");
++        let mut app = EditorApp::new(session);
++        let revision = app.session.document_revision();
++        let selected = EntityId::generate();
++
++        app.handle_audio_inspector_action(
++            &selected,
++            &Value::Null,
++            AudioInspectorAction::UseSceneViewListener,
++        );
++        app.handle_audio_inspector_action(&selected, &Value::Null, AudioInspectorAction::Stop);
++        app.handle_audio_inspector_action(&selected, &Value::Null, AudioInspectorAction::Restart);
++        app.audio_audition.reset_project();
++
++        assert_eq!(app.session.document_revision(), revision);
++        assert!(!app.session.is_dirty());
++    }
+ }
+diff --git a/crates/editor/src/ui/viewport.rs b/crates/editor/src/ui/viewport.rs
+index 2c8f142594db4972a3defa50399c561d30e12e93..38ff0adc793cfde526bbef55927d5460e0d2f4c4 100644
+--- a/crates/editor/src/ui/viewport.rs
++++ b/crates/editor/src/ui/viewport.rs
+@@ -771,3 +771,63 @@ pub(super) fn dropped_asset_is_model_source(
+         std::path::Path::new(&entry.path),
+     )
+ }
++
++#[cfg(test)]
++mod audio_distance_tests {
++    use super::*;
++    use engine_authoring::{AuthoringCommand, AuthoringScene, Transaction};
++
++    #[test]
++    fn audio_distance_gizmo_commits_through_the_scene_session() {
++        let mut scene = AuthoringScene::new();
++        let entity = EntityId::generate();
++        let component_type = ComponentTypeId::new(engine::scene_bridge::AUDIO_EMITTER_COMPONENT);
++        let mut transaction = Transaction::begin(&scene);
++        transaction.apply(AuthoringCommand::CreateEntity {
++            id: entity.clone(),
++            name: "emitter".to_owned(),
++            parent: None,
++        });
++        transaction.apply(AuthoringCommand::AddComponent {
++            entity: entity.clone(),
++            component_type: component_type.clone(),
++            value: Value::Object(std::collections::BTreeMap::from([
++                ("min_distance".to_owned(), Value::F64(1.0)),
++                ("max_distance".to_owned(), Value::F64(20.0)),
++            ])),
++        });
++        transaction
++            .commit(&mut scene)
++            .expect("audio emitter fixture must commit");
++
++        let directory = tempfile::tempdir().expect("temporary scene directory");
++        let path = directory.path().join("audio.scene.json");
++        std::fs::write(
++            &path,
++            scene.to_canonical_json().expect("scene fixture serializes"),
++        )
++        .expect("scene fixture writes");
++        let mut session = EditorSession::empty_behavior_tree();
++        session.open_scene(path).expect("scene fixture opens");
++        let mut app = EditorApp::new(session);
++        app.selected_entity = Some(entity.clone());
++        let revision = app.session.document_revision();
++
++        app.apply_audio_distance_gizmo_edit(AudioDistanceGizmoEdit {
++            field: crate::scene_view::AudioDistanceField::Max,
++            distance: 12.0,
++        });
++
++        let Value::Object(fields) = app
++            .session
++            .scene_entity(&entity)
++            .and_then(|item| item.components.get(&component_type))
++            .expect("audio emitter component remains present")
++        else {
++            panic!("audio emitter remains an object");
++        };
++        assert_eq!(fields.get("max_distance"), Some(&Value::F64(12.0)));
++        assert_ne!(app.session.document_revision(), revision);
++        assert!(app.session.is_dirty());
++    }
++}
+diff --git a/crates/engine/src/game_commands.rs b/crates/engine/src/game_commands.rs
+index 1cff76cf127968f00a1ff05edcbe33092ed4d3fe..bac0d86346855559e5c9c27ae6b320c397622404 100644
+--- a/crates/engine/src/game_commands.rs
++++ b/crates/engine/src/game_commands.rs
+@@ -2423,6 +2423,27 @@ mod tests {
+         );
+     }
+ 
++    #[test]
++    fn spatial_audio_rejects_stale_entity_generation_during_preflight() {
++        let mut world = World::new();
++        let entity = world.spawn_with(Transform::default()).unwrap();
++        world.insert_resource(GameAudioCommandQueue::default());
++        let stale = GameEntityHandle {
++            id: entity.id(),
++            generation: entity.generation().wrapping_add(1),
++        };
++        let command = GameCommand::play_spatial_sound_effect(
++            stale,
++            "audio.effect.test",
++            engine_scripting::game_io::GameSpatialAudioOptions::default(),
++        );
++
++        assert!(matches!(
++            prepare_game_commands(&world, &[command]),
++            Err(GameCommandError::StaleTarget { index: 0, target }) if target == stale
++        ));
++    }
++
+     #[test]
+     fn command_after_despawn_is_rejected_during_preflight() {
+         let mut world = World::new();
+diff --git a/crates/platform/src/audio.rs b/crates/platform/src/audio.rs
+index a341116de99a93553d58abf08b75f20a53af18b6..8816dd43bc3a336c93c12e9d9790418367ae2a08 100644
+--- a/crates/platform/src/audio.rs
++++ b/crates/platform/src/audio.rs
+@@ -504,7 +504,7 @@ impl AudioSystem {
+             voice_id,
+             respond_to,
+         })?;
+-        self.voice_gains.remove(&voice_id);
++        retire_managed_voice(&mut self.voice_gains, voice_id);
+         Ok(())
+     }
+ 
+@@ -515,7 +515,7 @@ impl AudioSystem {
+             Err(_) => Vec::new(),
+         };
+         for voice_id in &completed {
+-            self.voice_gains.remove(voice_id);
++            retire_managed_voice(&mut self.voice_gains, *voice_id);
+         }
+         completed
+     }
+@@ -804,7 +804,7 @@ fn run_audio_thread(
+                 voice_id,
+                 respond_to,
+             }) => {
+-                if let Some(voice) = voices.remove(&voice_id) {
++                if let Some(voice) = retire_managed_voice(&mut voices, voice_id) {
+                     voice.sink.stop();
+                 }
+                 let _ = respond_to.send(Ok(()));
+@@ -879,6 +879,7 @@ struct ActiveVoice {
+     looping: bool,
+ }
+ 
++#[cfg(not(target_arch = "wasm32"))]
+ impl ActiveVoice {
+     fn is_naturally_complete(&self) -> bool {
+         managed_voice_naturally_completes(self.looping, self.sink.empty())
+@@ -889,6 +890,11 @@ fn managed_voice_naturally_completes(looping: bool, sink_empty: bool) -> bool {
+     !looping && sink_empty
+ }
+ 
++#[cfg(not(target_arch = "wasm32"))]
++fn retire_managed_voice<T>(voices: &mut HashMap<AudioVoiceId, T>, voice_id: AudioVoiceId) -> Option<T> {
++    voices.remove(&voice_id)
++}
++
+ #[cfg(not(target_arch = "wasm32"))]
+ struct ActiveBgm {
+     sink: rodio::Sink,
+@@ -1135,6 +1141,16 @@ mod tests {
+         assert!(!managed_voice_naturally_completes(true, true));
+     }
+ 
++    #[cfg(not(target_arch = "wasm32"))]
++    #[test]
++    fn managed_voice_retirement_removes_backend_control_identity() {
++        let voice = AudioVoiceId(7);
++        let mut controls = HashMap::from([(voice, 42_u8)]);
++        assert_eq!(retire_managed_voice(&mut controls, voice), Some(42));
++        assert!(!controls.contains_key(&voice));
++        assert_eq!(retire_managed_voice(&mut controls, voice), None);
++    }
++
+     fn test_wav_bytes() -> Vec<u8> {
+         let mut bytes = Vec::new();
+         bytes.extend_from_slice(b"RIFF");
+diff --git a/crates/scripting/tests/spatial_audio.rs b/crates/scripting/tests/spatial_audio.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..96dcfb5ceefbbd581642d88066932704ad9976c2
+--- /dev/null
++++ b/crates/scripting/tests/spatial_audio.rs
+@@ -0,0 +1,27 @@
++use engine_authoring::Value;
++use engine_scripting::game_io::{
++    GameAudioRolloffMode, GameCommand, GameEntityHandle, GameSpatialAudioOptions,
++};
++
++#[test]
++fn spatial_sound_effect_request_preserves_deferred_target_and_policy() {
++    let target = GameEntityHandle { id: 17, generation: 4 };
++    let command = GameCommand::play_spatial_sound_effect(
++        target,
++        "audio.effect.test",
++        GameSpatialAudioOptions {
++            volume: 0.75,
++            spatial_blend: 0.8,
++            min_distance: 0.0,
++            max_distance: 12.0,
++            rolloff: GameAudioRolloffMode::Inverse,
++            looping: true,
++        },
++    );
++
++    assert_eq!(command.target, Some(target));
++    let Value::Object(fields) = command.payload else { panic!("audio payload must be an object"); };
++    assert_eq!(fields.get("operation"), Some(&Value::String("play_spatial_se".to_owned())));
++    assert_eq!(fields.get("rolloff"), Some(&Value::String("inverse".to_owned())));
++    assert_eq!(fields.get("looping"), Some(&Value::Bool(true)));
++}
