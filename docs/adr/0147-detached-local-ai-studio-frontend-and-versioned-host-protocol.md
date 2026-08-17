@@ -1,6 +1,6 @@
 # ADR 0147: Detached Local AI Studio Frontend and Versioned Host Protocol
 
-Status: Proposed
+Status: Accepted
 Date: 2026-08-17
 Builds on: ADR 0131
 Relates to: ADR 0117, ADR 0133, ADR 0135, ADR 0139
