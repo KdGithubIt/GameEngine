@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/resource_arbitration.rs","old":"    /// Reliable evidence indicates shared-GPU pressure.\n    Constrained,","new":"    /// Reliable evidence indicates shared-GPU pressure.\n    // Reserved for backends/renderers that can report reliable pressure in this release.\n    #[allow(dead_code)]\n    Constrained,"}

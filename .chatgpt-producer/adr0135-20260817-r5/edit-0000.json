@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/agent_host.rs","old":"#[derive(Debug, Clone, Default)]\npub(crate) struct AgentWorkingStateUpdate {","new":"// First-release semantic working-state update contract; provider wiring is intentionally optional.\n#[allow(dead_code)]\n#[derive(Debug, Clone, Default)]\npub(crate) struct AgentWorkingStateUpdate {"}

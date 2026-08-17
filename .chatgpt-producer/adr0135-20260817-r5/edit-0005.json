@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ai_studio.rs","old":"#[derive(Debug, Clone, PartialEq, Eq)]\npub struct AiStudioAuthoritativeState {","new":"/// Authoritative Editor identity captured across native-inference interruption boundaries.\n#[derive(Debug, Clone, PartialEq, Eq)]\npub struct AiStudioAuthoritativeState {"}
