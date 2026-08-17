@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/canvas/mod.rs",
+  "old": "pub(crate) fn show_graph_debug_canvas(\n    ui: &mut egui::Ui,\n    session: &EditorSession,\n    state: &mut GraphCanvasState,\n    overlay: &GraphDebugOverlay,\n) {\n",
+  "new": "pub(crate) fn show_graph_debug_canvas(\n    ui: &mut egui::Ui,\n    session: &EditorSession,\n    state: &mut GraphCanvasState,\n    overlay: &GraphDebugOverlay,\n    selected_node: &mut Option<NodeId>,\n) {\n"
+}
