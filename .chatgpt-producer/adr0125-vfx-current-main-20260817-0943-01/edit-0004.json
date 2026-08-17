@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/render-runtime/src/vfx.rs",
+  "old": "        assert!(!player.is_playing());\n        player.play();\n        player.step(0.05, Vec3::ZERO);\n        assert!(player.is_playing());\n        player.pause();\n        assert!(!player.is_playing());\n        player.restart();\n        assert!(player.is_playing());",
+  "new": "        assert!(!player.is_playing());\n        assert_eq!(player.playback_state(), VfxPlaybackState::Stopped);\n        player.play();\n        player.step(0.05, Vec3::ZERO);\n        assert!(player.is_playing());\n        player.pause();\n        assert!(!player.is_playing());\n        assert_eq!(player.playback_state(), VfxPlaybackState::Paused);\n        player.restart();\n        assert!(player.is_playing());\n        assert_eq!(player.playback_state(), VfxPlaybackState::Playing);\n        player.step(0.05, Vec3::ZERO);\n        assert!(player.instance().elapsed_seconds() > 0.0);\n        player.stop();\n        assert_eq!(player.playback_state(), VfxPlaybackState::Stopped);\n        assert_eq!(player.instance().elapsed_seconds(), 0.0);"
+}
