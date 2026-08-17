@@ -1,0 +1,58 @@
+diff --git a/crates/authoring/src/native_2d.rs b/crates/authoring/src/native_2d.rs
+index 7060c603bf59bc8622402997c6f7b53bd536ff95..c27c9ecd260e6f4313ac3967c07ee28eccc6eb78 100644
+--- a/crates/authoring/src/native_2d.rs
++++ b/crates/authoring/src/native_2d.rs
+@@ -99,7 +99,10 @@ pub struct Project2dSettings {
+     /// Default texture sampling policy for sprite regions without an override.
+     pub default_filtering: SpriteFiltering,
+     /// Fixed-step gravity vector in the world XY gameplay plane.
+-    pub gravity: [f32; 2],
++    ///
++    /// Persisted authoring values use `f64` so Editor, CLI, and MCP JSON round-trips
++    /// preserve the same decimal value. Runtime physics converts explicitly at its boundary.
++    pub gravity: [f64; 2],
+     /// Project-wide default policy for pixel-aware previews and cameras.
+     pub pixel_preview: PixelPreviewPolicy,
+     /// Ordered logical draw layers addressed by stable identity.
+diff --git a/crates/editor/src/authoring_tools.rs b/crates/editor/src/authoring_tools.rs
+index a6bdf3d7e990544a630b141a2ec2bbed00888b57..3aa438110e583d3c6b2dcb0033adb6ce33cc15dc 100644
+--- a/crates/editor/src/authoring_tools.rs
++++ b/crates/editor/src/authoring_tools.rs
+@@ -71,12 +71,13 @@ mod tests {
+ 
+     #[test]
+     fn catalog_order_and_labels_are_stable() {
+-        assert_eq!(AuthoringTool::ALL.len(), 5);
++        assert_eq!(AuthoringTool::ALL.len(), 6);
+         assert_eq!(AuthoringTool::ALL[0].label(), "Ability Designer");
+         assert_eq!(
+             AuthoringTool::ALL[3].label(),
+             "Advanced Geometry Designer"
+         );
+         assert_eq!(AuthoringTool::ALL[4].label(), "VFX Builder");
++        assert_eq!(AuthoringTool::ALL[5].label(), "Native 2D");
+     }
+ }
+diff --git a/crates/editor/src/native_2d_editor.rs b/crates/editor/src/native_2d_editor.rs
+index 913f21c7ab4f61271697e0dd790ec6d9f9c086e2..bb8551b75524c629dfe9f69d436b7bc622225ad2 100644
+--- a/crates/editor/src/native_2d_editor.rs
++++ b/crates/editor/src/native_2d_editor.rs
+@@ -62,13 +62,13 @@ impl Native2dEditorState {
+         ui.separator();
+         let desired=egui::vec2(ui.available_width().max(480.0),420.0); let(rect,_)=ui.allocate_exact_size(desired,egui::Sense::hover()); let p=ui.painter_at(rect);p.rect_filled(rect,0.0,egui::Color32::from_gray(32));
+         let center=rect.center(); let step=32.0*self.zoom.clamp(0.25,2.0);
+-        if self.show_pixel_grid { let mut x=center.x;while x<rect.right(){p.line_segment([egui::pos2(x,rect.top()),egui::pos2(x,rect.bottom())],egui::Stroke::new(1.0,egui::Color32::from_gray(48)));x+=step;}let mut x=center.x-step;while x>rect.left(){p.line_segment([egui::pos2(x,rect.top()),egui::pos2(x,rect.bottom())],egui::Stroke::new(1.0,egui::Color32::from_gray(48)));x-=step;}let mut y=center.y;while y<rect.bottom(){p.line_segment([egui::pos2(rect.left(),y),egui::pos2(rect.right(),y)],egui::Stroke::new(1.0,egui::Color32::from_gray(48)));y+=step;}let mut y=center.y-step;while y>rect.top(){p.line_segment([egui::pos2(rect.left(),y),egui::pos2(rect.right(),y)],egui::Stroke::new(1.0,egui::Color32::from_gray(48)));y-=step;} }
+-        p.line_segment([egui::pos2(rect.left(),center.y),egui::pos2(rect.right(),center.y)],egui::Stroke::new(1.5,egui::Color32::from_rgb(180,70,70)));p.line_segment([egui::pos2(center.x,rect.top()),egui::pos2(center.x,rect.bottom())],egui::Stroke::new(1.5,egui::Color32::from_rgb(70,180,90)));
++        if self.show_pixel_grid { let mut x=center.x;while x<rect.right(){p.line_segment([egui::pos2(x,rect.top()),egui::pos2(x,rect.bottom())],egui::Stroke::new(1.0_f32,egui::Color32::from_gray(48)));x+=step;}let mut x=center.x-step;while x>rect.left(){p.line_segment([egui::pos2(x,rect.top()),egui::pos2(x,rect.bottom())],egui::Stroke::new(1.0_f32,egui::Color32::from_gray(48)));x-=step;}let mut y=center.y;while y<rect.bottom(){p.line_segment([egui::pos2(rect.left(),y),egui::pos2(rect.right(),y)],egui::Stroke::new(1.0_f32,egui::Color32::from_gray(48)));y+=step;}let mut y=center.y-step;while y>rect.top(){p.line_segment([egui::pos2(rect.left(),y),egui::pos2(rect.right(),y)],egui::Stroke::new(1.0_f32,egui::Color32::from_gray(48)));y-=step;} }
++        p.line_segment([egui::pos2(rect.left(),center.y),egui::pos2(rect.right(),center.y)],egui::Stroke::new(1.5_f32,egui::Color32::from_rgb(180,70,70)));p.line_segment([egui::pos2(center.x,rect.top()),egui::pos2(center.x,rect.bottom())],egui::Stroke::new(1.5_f32,egui::Color32::from_rgb(70,180,90)));
+         for row in 0..4 { for col in 0..9 { if (row+col)%3!=0 { let r=egui::Rect::from_min_size(egui::pos2(center.x-210.0+col as f32*46.0,center.y+65.0-row as f32*34.0),egui::vec2(44.0,32.0));p.rect_filled(r,1.0,egui::Color32::from_rgb(72,102,78)); } } }
+         let sprite=egui::Rect::from_center_size(egui::pos2(center.x,center.y-28.0),egui::vec2(72.0,92.0));p.rect_filled(sprite,4.0,egui::Color32::from_rgb(105,155,225));p.circle_filled(sprite.center(),4.0,egui::Color32::YELLOW);p.text(egui::pos2(sprite.left(),sprite.top()-18.0),egui::Align2::LEFT_BOTTOM,"Sprite · pivot 0.5,0.5 · World +12",egui::FontId::proportional(13.0),egui::Color32::WHITE);
+-        if self.show_colliders { let c=sprite.shrink(-5.0);p.rect_stroke(c,2.0,egui::Stroke::new(2.0,egui::Color32::from_rgb(80,230,230)),egui::StrokeKind::Outside);p.line_segment([egui::pos2(c.left()-24.0,c.bottom()),egui::pos2(c.right()+24.0,c.bottom())],egui::Stroke::new(3.0,egui::Color32::from_rgb(245,180,75)));p.text(egui::pos2(c.right()+28.0,c.bottom()),egui::Align2::LEFT_CENTER,"one-way",egui::FontId::proportional(12.0),egui::Color32::from_rgb(245,200,100)); }
+-        let camera=egui::Rect::from_center_size(center,egui::vec2(430.0,242.0));p.rect_stroke(camera,0.0,egui::Stroke::new(2.0,egui::Color32::from_rgb(220,90,220)),egui::StrokeKind::Inside);p.text(camera.left_top()+egui::vec2(6.0,6.0),egui::Align2::LEFT_TOP,"Camera2D 16:9",egui::FontId::proportional(13.0),egui::Color32::from_rgb(235,150,235));
+-        if self.show_chunks { for x in [center.x-192.0,center.x,center.x+192.0] { p.line_segment([egui::pos2(x,rect.top()),egui::pos2(x,rect.bottom())],egui::Stroke::new(1.5,egui::Color32::from_rgb(180,130,60))); } }
++        if self.show_colliders { let c=sprite.shrink(-5.0);p.rect_stroke(c,2.0,egui::Stroke::new(2.0_f32,egui::Color32::from_rgb(80,230,230)),egui::StrokeKind::Outside);p.line_segment([egui::pos2(c.left()-24.0,c.bottom()),egui::pos2(c.right()+24.0,c.bottom())],egui::Stroke::new(3.0_f32,egui::Color32::from_rgb(245,180,75)));p.text(egui::pos2(c.right()+28.0,c.bottom()),egui::Align2::LEFT_CENTER,"one-way",egui::FontId::proportional(12.0),egui::Color32::from_rgb(245,200,100)); }
++        let camera=egui::Rect::from_center_size(center,egui::vec2(430.0,242.0));p.rect_stroke(camera,0.0,egui::Stroke::new(2.0_f32,egui::Color32::from_rgb(220,90,220)),egui::StrokeKind::Inside);p.text(camera.left_top()+egui::vec2(6.0,6.0),egui::Align2::LEFT_TOP,"Camera2D 16:9",egui::FontId::proportional(13.0),egui::Color32::from_rgb(235,150,235));
++        if self.show_chunks { for x in [center.x-192.0,center.x,center.x+192.0] { p.line_segment([egui::pos2(x,rect.top()),egui::pos2(x,rect.bottom())],egui::Stroke::new(1.5_f32,egui::Color32::from_rgb(180,130,60))); } }
+         ui.separator();ui.label("Inspector · Transform (XY / Z Rotation / XY Scale) · SpriteRenderer2D · Rigidbody2D · Collider2D · CharacterController2D");ui.label("Gesture transaction: one tile stroke = one undo entry; Cancel restores the exact pre-stroke cells.");
+     }
+ }
