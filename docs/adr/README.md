@@ -117,8 +117,9 @@ the beginning:
   [0035](0035-ai-agent-bridge-ipc.md),
   [0121](0121-ai-native-authoring-parity-and-project-scoped-mcp-lifecycle.md),
   [0131](0131-conversational-ai-studio-agent-runtime-and-governed-workspace.md),
-  [0132](0132-declarative-authoring-capability-registry-and-automatic-adapter-exposure.md), and
-  [0133](0133-remote-ai-studio-companion-access-and-private-network-boundary.md).
+  [0132](0132-declarative-authoring-capability-registry-and-automatic-adapter-exposure.md),
+  [0133](0133-remote-ai-studio-companion-access-and-private-network-boundary.md), and
+  [0151](0151-headless-write-capable-mcp-host-and-project-writer-ownership.md).
 
 ## Proposed Decisions
 
@@ -294,6 +295,6 @@ implementation contract.
 | [0148](0148-remote-host-lifecycle-project-activation-and-narrow-startup-operations.md) | **Proposed** — Remote Host Lifecycle, Project Activation, and Narrow Startup Operations |
 | [0149](0149-engine-native-live-observation-and-media-transport.md) | **Proposed** — Engine-Native Live Observation and Media Transport |
 | [0150](0150-multi-model-routing-and-workload-specialization.md) | **Proposed** — Multi-Model Routing and Workload Specialization |
-| [0151](0151-headless-write-capable-mcp-host-and-project-writer-ownership.md) | **Proposed** — Headless Write-Capable MCP Host and Project-Writer Ownership |
+| [0151](0151-headless-write-capable-mcp-host-and-project-writer-ownership.md) | Headless Write-Capable MCP Host and Project-Writer Ownership |
 | [0152](0152-multi-agent-writer-coordination-and-conflict-ownership.md) | **Proposed** — Multi-Agent Writer Coordination and Conflict Ownership |
 | [0153](0153-agent-process-confinement-and-os-provider-sandbox-integration.md) | **Proposed** — Agent Process Confinement and OS/Provider Sandbox Integration |

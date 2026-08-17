@@ -20,6 +20,7 @@ members = [
     "crates/editor",
     "crates/launcher",
     "crates/mcp",
+    "crates/mcp-host",
     "crates/game-component-macros",
     "crates/game-macros",
     "crates/game-system-macros",

@@ -2,8 +2,9 @@
 //!
 //! This crate sits above `engine-authoring`: it validates the engine
 //! association in `project.json`, creates complete project scaffolds, owns the
-//! authoritative per-location Editor lease, and carries only ephemeral
-//! Launcher/Editor process-control state outside the project working tree.
+//! authoritative per-location project-writer lease shared by Editor and headless
+//! authoring hosts, and carries only ephemeral process-control state outside the
+//! project working tree.
 
 #![warn(missing_docs)]
 #![warn(rustdoc::broken_intra_doc_links)]
@@ -25,6 +26,7 @@ pub const CURRENT_ENGINE_ASSOCIATION: &str = env!("CARGO_PKG_VERSION");
 
 const EDITOR_LOCK_FILE: &str = "editor.lock";
 const EDITOR_OWNER_FILE: &str = "editor-owner.json";
+const HEADLESS_WRITER_OWNER_FILE: &str = "headless-writer-owner.json";
 const EDITOR_READY_FILE: &str = "editor-ready.json";
 const EDITOR_MCP_FILE: &str = "editor-mcp.json";
 const EDITOR_ACTIVATE_FILE: &str = "activate.request";
@@ -50,6 +52,13 @@ pub enum LifecycleError {
     InvalidProjectName(String),
     /// The canonical project location already has an Editor process.
     EditorAlreadyOpen(PathBuf),
+    /// The canonical project location already has an authoritative writer.
+    ProjectWriterAlreadyOwned {
+        /// Canonical project location protected by the writer lease.
+        canonical_project: PathBuf,
+        /// Descriptive writer role when current metadata identifies it.
+        owner: Option<ProjectWriterRole>,
+    },
     /// A sibling desktop executable could not be located.
     ExecutableNotFound(PathBuf),
     /// One filesystem operation failed.
@@ -85,6 +94,21 @@ impl fmt::Display for LifecycleError {
             Self::EditorAlreadyOpen(path) => {
                 write!(f, "an Editor already owns {}", path.display())
             }
+            Self::ProjectWriterAlreadyOwned {
+                canonical_project,
+                owner,
+            } => match owner {
+                Some(owner) => write!(
+                    f,
+                    "project writer {owner:?} already owns {}",
+                    canonical_project.display()
+                ),
+                None => write!(
+                    f,
+                    "another project writer already owns {}",
+                    canonical_project.display()
+                ),
+            },
             Self::ExecutableNotFound(path) => {
                 write!(f, "desktop executable not found: {}", path.display())
             }
@@ -107,6 +131,7 @@ impl std::error::Error for LifecycleError {
             | Self::ProjectAlreadyExists(_)
             | Self::InvalidProjectName(_)
             | Self::EditorAlreadyOpen(_)
+            | Self::ProjectWriterAlreadyOwned { .. }
             | Self::ExecutableNotFound(_)
             | Self::Scaffold { .. } => None,
         }
@@ -134,6 +159,34 @@ pub struct EditorOwnerMetadata {
     pub project_id: ProjectId,
     /// Canonical location protected by the authoritative lease.
     pub canonical_project: PathBuf,
+    /// Unix timestamp in milliseconds when the lease was acquired.
+    pub acquired_unix_ms: u64,
+}
+
+/// Descriptive role for the process holding the authoritative project-writer lease.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectWriterRole {
+    /// Interactive Editor working-copy owner.
+    Editor,
+    /// GUI-free saved-project MCP writer.
+    HeadlessMcp,
+}
+
+/// Ephemeral descriptive metadata for the authoritative project writer.
+///
+/// The OS file lock remains the authority. This metadata is never sufficient to
+/// claim ownership by itself and is ignored once the lock is released.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProjectWriterOwnerMetadata {
+    /// Operating-system process identifier.
+    pub process_id: u32,
+    /// Stable project identity read from the current `project.json`.
+    pub project_id: ProjectId,
+    /// Canonical location protected by the authoritative lease.
+    pub canonical_project: PathBuf,
+    /// Role of the current writer process.
+    pub role: ProjectWriterRole,
     /// Unix timestamp in milliseconds when the lease was acquired.
     pub acquired_unix_ms: u64,
 }
@@ -282,6 +335,33 @@ impl Drop for EditorLease {
         );
         remove_owned_mcp_endpoint(
             &self.state_dir.join(EDITOR_MCP_FILE),
+            std::process::id(),
+        );
+    }
+}
+
+/// Authoritative GUI-free project-writer lease for the headless MCP host.
+///
+/// This lease uses the same physical OS lock as [`EditorLease`], preserving the
+/// existing lock location while extending ownership to another writer role.
+/// Metadata beside the lock is descriptive only.
+pub struct HeadlessProjectLease {
+    project: ProjectRoot,
+    _lock: File,
+    state_dir: PathBuf,
+}
+
+impl HeadlessProjectLease {
+    /// Returns the concrete project owned by this headless writer process.
+    pub fn project_root(&self) -> &ProjectRoot {
+        &self.project
+    }
+}
+
+impl Drop for HeadlessProjectLease {
+    fn drop(&mut self) {
+        remove_owned_writer_metadata(
+            &self.state_dir.join(HEADLESS_WRITER_OWNER_FILE),
             std::process::id(),
         );
     }
@@ -449,10 +529,20 @@ pub fn acquire_editor_project(path: &Path) -> Result<EditorLease, LifecycleError
     match lock.try_lock() {
         Ok(()) => {}
         Err(TryLockError::WouldBlock) => {
-            let _ = write_control_request(&state_dir.join(EDITOR_ACTIVATE_FILE));
-            return Err(LifecycleError::EditorAlreadyOpen(
-                project.path().to_path_buf(),
-            ));
+            match described_writer_role(&state_dir) {
+                Some(ProjectWriterRole::Editor) => {
+                    let _ = write_control_request(&state_dir.join(EDITOR_ACTIVATE_FILE));
+                    return Err(LifecycleError::EditorAlreadyOpen(
+                        project.path().to_path_buf(),
+                    ));
+                }
+                owner => {
+                    return Err(LifecycleError::ProjectWriterAlreadyOwned {
+                        canonical_project: project.path().to_path_buf(),
+                        owner,
+                    });
+                }
+            }
         }
         Err(TryLockError::Error(source)) => {
             return Err(LifecycleError::Io {
@@ -464,6 +554,7 @@ pub fn acquire_editor_project(path: &Path) -> Result<EditorLease, LifecycleError
 
     let _ = fs::remove_file(state_dir.join(EDITOR_READY_FILE));
     let _ = fs::remove_file(state_dir.join(EDITOR_MCP_FILE));
+    let _ = fs::remove_file(state_dir.join(HEADLESS_WRITER_OWNER_FILE));
     write_json(
         &state_dir.join(EDITOR_OWNER_FILE),
         &EditorOwnerMetadata {
@@ -480,6 +571,104 @@ pub fn acquire_editor_project(path: &Path) -> Result<EditorLease, LifecycleError
         last_activate: None,
         last_close: None,
     })
+}
+
+/// Acquires the authoritative project-writer lease for a GUI-free MCP host.
+///
+/// The physical lock is exactly the same lock used by [`acquire_editor_project`],
+/// so Editor and headless writer roles cannot both own one canonical location.
+/// Descriptive metadata is written only after the OS grants the lock.
+///
+/// # Errors
+///
+/// Returns project/compatibility failures, lock I/O errors, or
+/// [`LifecycleError::ProjectWriterAlreadyOwned`] when another writer is active.
+pub fn acquire_headless_project(path: &Path) -> Result<HeadlessProjectLease, LifecycleError> {
+    let project = inspect_project(path)?;
+    let state_dir = project_state_dir(&project);
+    fs::create_dir_all(&state_dir).map_err(|source| LifecycleError::Io {
+        path: state_dir.clone(),
+        source,
+    })?;
+    let lock_path = state_dir.join(EDITOR_LOCK_FILE);
+    let lock = open_lock_file(&lock_path)?;
+    match lock.try_lock() {
+        Ok(()) => {}
+        Err(TryLockError::WouldBlock) => {
+            return Err(LifecycleError::ProjectWriterAlreadyOwned {
+                canonical_project: project.path().to_path_buf(),
+                owner: described_writer_role(&state_dir),
+            });
+        }
+        Err(TryLockError::Error(source)) => {
+            return Err(LifecycleError::Io {
+                path: lock_path,
+                source,
+            });
+        }
+    }
+
+    let _ = fs::remove_file(state_dir.join(EDITOR_OWNER_FILE));
+    let _ = fs::remove_file(state_dir.join(EDITOR_READY_FILE));
+    let _ = fs::remove_file(state_dir.join(EDITOR_MCP_FILE));
+    let _ = fs::remove_file(state_dir.join(EDITOR_ACTIVATE_FILE));
+    let _ = fs::remove_file(state_dir.join(EDITOR_CLOSE_FILE));
+    write_json(
+        &state_dir.join(HEADLESS_WRITER_OWNER_FILE),
+        &ProjectWriterOwnerMetadata {
+            process_id: std::process::id(),
+            project_id: project.project_id().clone(),
+            canonical_project: project.path().to_path_buf(),
+            role: ProjectWriterRole::HeadlessMcp,
+            acquired_unix_ms: unix_millis(),
+        },
+    )?;
+    Ok(HeadlessProjectLease {
+        project,
+        _lock: lock,
+        state_dir,
+    })
+}
+
+/// Returns descriptive metadata for the active authoritative project writer.
+///
+/// Stale JSON alone never counts as ownership; the shared OS lock must currently
+/// be held. A corrupt or absent descriptive record yields `Ok(None)` rather than
+/// weakening or manufacturing writer authority.
+///
+/// # Errors
+///
+/// Returns an error if project inspection or lock probing fails.
+pub fn project_writer_owner_metadata(
+    path: &Path,
+) -> Result<Option<ProjectWriterOwnerMetadata>, LifecycleError> {
+    let project = inspect_project(path)?;
+    let state_dir = project_state_dir(&project);
+    if !editor_lock_is_held(&state_dir)? {
+        return Ok(None);
+    }
+    if let Ok(Some(metadata)) =
+        read_json_optional::<ProjectWriterOwnerMetadata>(&state_dir.join(HEADLESS_WRITER_OWNER_FILE))
+        && metadata.project_id == *project.project_id()
+        && metadata.canonical_project.as_path() == project.path()
+        && metadata.role == ProjectWriterRole::HeadlessMcp
+    {
+        return Ok(Some(metadata));
+    }
+    if let Ok(Some(metadata)) =
+        read_json_optional::<EditorOwnerMetadata>(&state_dir.join(EDITOR_OWNER_FILE))
+        && metadata.project_id == *project.project_id()
+        && metadata.canonical_project.as_path() == project.path()
+    {
+        return Ok(Some(ProjectWriterOwnerMetadata {
+            process_id: metadata.process_id,
+            project_id: metadata.project_id,
+            canonical_project: metadata.canonical_project,
+            role: ProjectWriterRole::Editor,
+            acquired_unix_ms: metadata.acquired_unix_ms,
+        }));
+    }
+    Ok(None)
 }
 
 /// Returns diagnostic metadata for the active Editor owner, when the location
@@ -568,11 +757,21 @@ pub fn launch_or_activate_editor(path: &Path) -> Result<EditorLaunch, LifecycleE
     let project = inspect_project(path)?;
     let state_dir = project_state_dir(&project);
     if editor_lock_is_held(&state_dir)? {
-        write_control_request(&state_dir.join(EDITOR_ACTIVATE_FILE))?;
-        return Ok(EditorLaunch {
-            outcome: EditorLaunchOutcome::Activated,
-            canonical_project: project.path().to_path_buf(),
-        });
+        match described_writer_role(&state_dir) {
+            Some(ProjectWriterRole::Editor) => {
+                write_control_request(&state_dir.join(EDITOR_ACTIVATE_FILE))?;
+                return Ok(EditorLaunch {
+                    outcome: EditorLaunchOutcome::Activated,
+                    canonical_project: project.path().to_path_buf(),
+                });
+            }
+            owner => {
+                return Err(LifecycleError::ProjectWriterAlreadyOwned {
+                    canonical_project: project.path().to_path_buf(),
+                    owner,
+                });
+            }
+        }
     }
 
     let editor = sibling_executable("engine-editor")?;
@@ -838,6 +1037,31 @@ fn read_json_optional<T: for<'de> Deserialize<'de>>(
     Ok(Some(serde_json::from_str(&text)?))
 }
 
+fn described_writer_role(state_dir: &Path) -> Option<ProjectWriterRole> {
+    if let Ok(Some(metadata)) = read_json_optional::<ProjectWriterOwnerMetadata>(
+        &state_dir.join(HEADLESS_WRITER_OWNER_FILE),
+    ) {
+        return Some(metadata.role);
+    }
+    if read_json_optional::<EditorOwnerMetadata>(&state_dir.join(EDITOR_OWNER_FILE))
+        .ok()
+        .flatten()
+        .is_some()
+    {
+        return Some(ProjectWriterRole::Editor);
+    }
+    None
+}
+
+fn remove_owned_writer_metadata(path: &Path, process_id: u32) {
+    let Ok(Some(metadata)) = read_json_optional::<ProjectWriterOwnerMetadata>(path) else {
+        return;
+    };
+    if metadata.process_id == process_id {
+        let _ = fs::remove_file(path);
+    }
+}
+
 fn remove_owned_metadata(path: &Path, process_id: u32) {
     let Ok(Some(metadata)) = read_json_optional::<EditorOwnerMetadata>(path) else {
         return;
@@ -910,6 +1134,78 @@ mod tests {
         assert!(matches!(second, Err(LifecycleError::EditorAlreadyOpen(_))));
         drop(first);
         acquire_editor_project(&final_path).expect("lease must be released on drop");
+    }
+
+    #[test]
+    fn editor_and_headless_writer_are_mutually_exclusive_and_handoff_cleanly() {
+        let parent = tempfile::tempdir().expect("temp directory must be created");
+        let final_path = parent.path().join("WriterOwnershipGame");
+        create_standard_project(&final_path, "WriterOwnershipGame")
+            .expect("scaffold must succeed");
+
+        let editor = acquire_editor_project(&final_path).expect("Editor writer must acquire");
+        let denied = acquire_headless_project(&final_path);
+        assert!(matches!(
+            denied,
+            Err(LifecycleError::ProjectWriterAlreadyOwned {
+                owner: Some(ProjectWriterRole::Editor),
+                ..
+            })
+        ));
+        let owner = project_writer_owner_metadata(&final_path)
+            .expect("writer metadata lookup")
+            .expect("Editor writer metadata");
+        assert_eq!(owner.role, ProjectWriterRole::Editor);
+
+        drop(editor);
+        let headless =
+            acquire_headless_project(&final_path).expect("headless writer must acquire after handoff");
+        let owner = project_writer_owner_metadata(&final_path)
+            .expect("writer metadata lookup")
+            .expect("headless writer metadata");
+        assert_eq!(owner.role, ProjectWriterRole::HeadlessMcp);
+        assert!(matches!(
+            acquire_editor_project(&final_path),
+            Err(LifecycleError::ProjectWriterAlreadyOwned {
+                owner: Some(ProjectWriterRole::HeadlessMcp),
+                ..
+            })
+        ));
+
+        drop(headless);
+        acquire_editor_project(&final_path).expect("Editor must reacquire after headless release");
+    }
+
+    #[test]
+    fn stale_headless_metadata_without_os_lock_never_claims_writer_authority() {
+        let parent = tempfile::tempdir().expect("temp directory must be created");
+        let final_path = parent.path().join("StaleWriterMetadataGame");
+        let project = create_standard_project(&final_path, "StaleWriterMetadataGame")
+            .expect("scaffold must succeed");
+        let state_dir = project_state_dir(&project);
+        fs::create_dir_all(&state_dir).expect("lifecycle state directory");
+        write_json(
+            &state_dir.join(HEADLESS_WRITER_OWNER_FILE),
+            &ProjectWriterOwnerMetadata {
+                process_id: u32::MAX,
+                project_id: project.project_id().clone(),
+                canonical_project: project.path().to_path_buf(),
+                role: ProjectWriterRole::HeadlessMcp,
+                acquired_unix_ms: 1,
+            },
+        )
+        .expect("stale metadata fixture");
+
+        assert!(
+            project_writer_owner_metadata(&final_path)
+                .expect("writer metadata lookup")
+                .is_none(),
+            "metadata without an active OS lock must not grant authority"
+        );
+        let editor = acquire_editor_project(&final_path)
+            .expect("stale metadata must not prevent Editor acquisition");
+        assert!(!state_dir.join(HEADLESS_WRITER_OWNER_FILE).exists());
+        drop(editor);
     }
 
     #[test]
