@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ai_studio.rs","old":"            native_question: None,\n            native_question_session: None,","new":"            native_question: None,\n            pending_native_question_start: None,\n            native_question_session: None,"}

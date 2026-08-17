@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/agent_host.rs","old":"    CapturedFrame,\n    Cancellation,\n    Failure,","new":"    CapturedFrame,\n    EditingInterrupted,\n    EditingResumed,\n    ResourcePolicy,\n    Cancellation,\n    Failure,"}

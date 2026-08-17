@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ai_studio.rs","old":"    editing_interrupted: bool,\n    interrupt_snapshot: Option<AiStudioAuthoritativeState>,","new":"    editing_interrupted: bool,\n    restore_for_editing: bool,\n    interrupt_snapshot: Option<AiStudioAuthoritativeState>,"}
