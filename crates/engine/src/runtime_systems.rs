@@ -5,7 +5,9 @@ use crate::animation::{
     animation_system, root_motion_motor_system, AnimationClip, AnimationEvents,
 };
 use crate::asset::Assets;
-use crate::audio::authored_audio_system;
+use crate::audio::{
+    authored_audio_system, spatial_audio_frame_system, spatial_audio_system, SpatialAudioRuntime,
+};
 use crate::behavior_tree::{behavior_tree_tick_system, BehaviorTreeBehaviorRegistry};
 use crate::camera::{follow_camera_system, lock_on_camera_system, orbit_camera_system};
 use crate::character_controller::character_controller_system;
@@ -74,6 +76,9 @@ pub fn register_runtime_systems(app: &mut App) -> Result<(), SystemRegistrationE
     {
         app.insert_resource(BehaviorTreeBehaviorRegistry::default());
     }
+    if app.world().get_resource::<SpatialAudioRuntime>().is_none() {
+        app.insert_resource(SpatialAudioRuntime::default());
+    }
     app.try_add_system_with_descriptor(
         engine_system(
             "engine.combat_debug",
@@ -97,6 +102,32 @@ pub fn register_runtime_systems(app: &mut App) -> Result<(), SystemRegistrationE
             "Ticks compiled behavior tree runners once per frame.",
         ),
         behavior_tree_tick_system,
+    )?;
+    app.try_add_system_with_descriptor(
+        engine_system(
+            "engine.spatial_audio_frame",
+            "Spatial Audio Frame",
+            "Copies active listener selection and world-space entity poses after transform propagation.",
+        )
+        .try_after("engine.transform_propagation")
+        .expect("built-in system IDs are valid")
+        .try_before("engine.spatial_audio")
+        .expect("built-in system IDs are valid"),
+        spatial_audio_frame_system,
+    )?;
+    app.try_add_system_with_descriptor(
+        engine_system(
+            "engine.spatial_audio",
+            "Spatial Audio",
+            "Synchronizes authored emitters to managed voices using the current spatial frame.",
+        )
+        .try_after("engine.spatial_audio_frame")
+        .expect("built-in system IDs are valid")
+        .try_before("engine.game_audio_effect")
+        .expect("built-in system IDs are valid")
+        .try_before("engine.authored_audio")
+        .expect("built-in system IDs are valid"),
+        spatial_audio_system,
     )?;
     app.try_add_system_with_descriptor(
         engine_system(
