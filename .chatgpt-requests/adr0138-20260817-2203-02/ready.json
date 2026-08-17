@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0138-20260817-2203-02",
+  "target_branch": "chatgpt/gameengine-adr0138-graph-debug",
+  "expected_head_sha": "6700b76cf4e7db84dbebc9a9ebb82432b44510d9",
+  "baseline_main_sha": "6700b76cf4e7db84dbebc9a9ebb82432b44510d9",
+  "patch_sha256": "c29d27acacb0805cc2e12d46202e9832c84c6409f98f27b241d66586fed92295",
+  "patch_bytes": 55234,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Implement ADR 0138 unified Graph Debug",
+  "pr_title": "GameEngine: implement ADR 0138 unified Graph Debug",
+  "pr_body": "## Summary\n\n- replace the fixed Play-mode Behavior Tree tab with a target-aware Graph Debug shell\n- preserve actual Behavior Tree runtime evidence and add actual Animation Controller graph/state/transition/motion-resolution evidence\n- prefer open graph working copies, suppress stale overlays, and keep Graph Debug read-only\n- highlight active Animation transitions on the shared Graph Canvas and simplify Animation Graph Add Node presentation\n\n## Validation\n\nRun the repository Windows Validation workflow and required visual validation for the changed Editor UI."
+}
