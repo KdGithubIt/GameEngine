@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/cli/src/lib.rs",
+  "old": "    if let Some(result) = scene_cli::dispatch(&args) {\n        return result;\n    }\n    if let Some(result) = vfx_cli::dispatch(&args) {",
+  "new": "    if let Some(result) = scene_cli::dispatch(&args) {\n        return result;\n    }\n    if let Some(result) = typed_document_cli::dispatch(&args) {\n        return result;\n    }\n    if let Some(result) = vfx_cli::dispatch(&args) {"
+}
