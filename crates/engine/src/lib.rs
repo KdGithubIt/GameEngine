@@ -118,6 +118,8 @@ pub mod morph;
 pub mod navigation_bake;
 /// Production tiled polygon navigation and runtime query facade.
 pub mod navmesh;
+/// Native 2D gameplay/authoring facade across existing domain owners (ADR 0127).
+pub mod native_2d;
 /// CPU particle simulation rendered through GPU instancing (ADR 0044).
 pub mod particles;
 /// Typed VFX effect playback and deterministic runtime simulation (ADR 0125).

@@ -25,6 +25,8 @@ pub mod humanoid_motion;
 pub mod morph;
 /// Pure pose sampling and blending.
 pub mod pose_graph;
+/// Deterministic per-entity Sprite Animation playback (ADR 0127).
+pub mod sprite_2d;
 /// Skeleton retargeting and baked-clip cache integration.
 pub mod retarget;
 /// Cross-crate acceptance fixtures, compiled only for tests or opt-in test consumers.

@@ -57,6 +57,8 @@ pub mod graph_view;
 pub mod id;
 pub mod load;
 pub mod material_asset;
+/// Native 2D project, sprite, animation, and tile authoring contracts (ADR 0127).
+pub mod native_2d;
 pub mod persist;
 pub mod prefab;
 pub mod prefab_authoring;
@@ -148,6 +150,15 @@ pub use material_asset::{
     LinearRgba, MaterialAlphaMode, MaterialAsset, MaterialAssetError, MaterialCullMode,
     MaterialOutline, MaterialShadingModel, MaterialSphereBlendMode,
     MaterialSphereCoordinateSource, ToonLitProperties, MATERIAL_SCHEMA_VERSION,
+};
+pub use native_2d::{
+    Native2dIdError, PhysicsMaterial2d, PixelPreviewPolicy, PixelRect, PixelsPerUnit,
+    Project2dSettings, SortingLayer, SortingLayerId, SpriteAnimationDocument,
+    SpriteAnimationFrame, SpriteAnimator2d, SpriteFiltering, SpriteId, SpriteRef,
+    SpriteRegion, SpriteRenderer2d, TileCell, TileChunk, TileChunkCoord, TileCollisionShape,
+    TileDefinition, TileId, TileLayerId, TileMapDocument, TileMapLayer, TileMapStroke,
+    TileSetDocument, SPRITE_ANIMATION_SCHEMA_VERSION, SPRITE_ATLAS_SCHEMA_VERSION,
+    TILE_MAP_SCHEMA_VERSION, TILE_SET_SCHEMA_VERSION,
 };
 pub use persist::{replace_file_contents, PersistError, PersistOperation};
 pub use prefab::{PrefabAsset, PrefabError, PrefabInstantiation, PREFAB_SCHEMA_VERSION};

@@ -1,6 +1,7 @@
 //! Modeless authoring windows embedded in the main Engine Editor process.
 
 use crate::authoring_tools::AuthoringTool;
+use crate::native_2d_editor::Native2dEditorState;
 use crate::vfx_builder::VfxBuilderState;
 use engine_authoring::ProjectRoot;
 use eframe::{egui, Frame};
@@ -16,6 +17,8 @@ pub struct AuthoringWindows {
     ui_contract_open: bool,
     advanced_geometry_open: bool,
     vfx_open: bool,
+    native_2d_open: bool,
+    native_2d: Native2dEditorState,
     ability: ability::EmbeddedWindow,
     runtime_event: runtime_event::EmbeddedWindow,
     ui_contract: ui_contract::EmbeddedWindow,
@@ -37,6 +40,7 @@ impl AuthoringWindows {
                 #[cfg(feature = "visual-validation")]
                 self.vfx.prepare_visual_validation();
             }
+            AuthoringTool::Native2d => self.native_2d_open = true,
         }
     }
 
@@ -50,6 +54,15 @@ impl AuthoringWindows {
             .show(context, frame, &mut self.ui_contract_open);
         self.advanced_geometry
             .show(context, frame, &mut self.advanced_geometry_open);
+        if self.native_2d_open {
+            egui::Window::new("Native 2D")
+                .id(egui::Id::new("embedded_native_2d"))
+                .open(&mut self.native_2d_open)
+                .default_width(1_050.0)
+                .default_height(720.0)
+                .resizable(true)
+                .show(context, |ui| self.native_2d.show(ui));
+        }
         if self.vfx_open {
             let vfx_open = &mut self.vfx_open;
             let vfx = &mut self.vfx;

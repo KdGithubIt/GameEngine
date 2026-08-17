@@ -22,6 +22,8 @@ pub mod collision;
 #[cfg(not(feature = "solver"))]
 #[path = "collision_contract.rs"]
 pub mod collision;
+/// Native 2D body/collider/query/controller contracts and dedicated reference world (ADR 0127).
+pub mod native_2d;
 /// Production tiled polygon navigation assets, baking, queries, and agents.
 pub mod navigation;
 /// Shared GUI-free navigation bake document and service contracts.

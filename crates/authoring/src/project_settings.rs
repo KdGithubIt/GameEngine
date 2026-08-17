@@ -106,6 +106,9 @@ pub struct ProjectSettings {
     /// Project-wide preferred ECS system order and enabled state.
     #[serde(default, skip_serializing_if = "SystemSettings::is_default")]
     pub system_settings: SystemSettings,
+    /// Native 2D defaults and stable sorting-layer identities (ADR 0127).
+    #[serde(default)]
+    pub native_2d: crate::native_2d::Project2dSettings,
 }
 
 impl Default for ProjectSettings {
@@ -120,6 +123,7 @@ impl Default for ProjectSettings {
             input_actions: default_input_actions(),
             start_scene: None,
             system_settings: SystemSettings::default(),
+            native_2d: crate::native_2d::Project2dSettings::default(),
         }
     }
 }

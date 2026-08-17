@@ -23,6 +23,9 @@ pub mod light;
 /// Level-of-detail selection and render-instancing statistics.
 #[cfg(feature = "gpu")]
 pub mod lod;
+/// Native 2D Camera2D, deterministic sprite batching, and tile culling (ADR 0127).
+#[cfg(feature = "gpu")]
+pub mod native_2d;
 /// Runtime material, texture, and shading contracts.
 #[cfg(feature = "gpu")]
 pub mod material;

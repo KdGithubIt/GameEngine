@@ -13,5 +13,7 @@ pub mod data_asset;
 pub mod derived_cache;
 /// Format-independent model intermediate representation.
 pub mod model_ir;
+/// Backend-neutral compiled sprite/tile data shared by render and physics (ADR 0127).
+pub mod native_2d;
 /// Shared prefab creation and loading within a project asset boundary.
 pub mod prefab;
