@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "20260817-adr0124-navigation-visual-277047a-r5",
+  "target_branch": "chatgpt/gameengine-adr0124-production-navigation-v16",
+  "expected_head_sha": "277047a6b78705a51082ff4f701e34c917f83398",
+  "baseline_main_sha": "e1df22ca311274ac7645a226f214c9d4e941756c",
+  "patch_sha256": "a3ab9851fdf91d7da96624a79adc027693a4f0a9d80718eef1487f0e622bd031",
+  "patch_bytes": 2826,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Enable ADR 0124 Navigation visual validation",
+  "pr_title": "Complete ADR 0124 production navigation first release",
+  "pr_body": "Complete ADR 0124 on current main. This follow-up adds the dedicated production Navigation window with bake/currentness status, editable agent profiles, Bake/Rebuild/Cancel controls, path testing, Scene View path visualization, and a visual-validation-only Navigation launch scenario while preserving the existing engine-owned NavMesh overlay and backend-neutral public contracts.\n\n<!-- gameengine-visual-validation: editor -->\n<!-- gameengine-visual-authoring-tool: Navigation -->"
+}
