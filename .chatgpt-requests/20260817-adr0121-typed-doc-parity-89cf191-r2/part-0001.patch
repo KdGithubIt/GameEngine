@@ -1,0 +1,412 @@
++        self.authoring
++            .insert(rel_path.clone(), TypedDocumentAuthoringState::new());
+         self.materials.insert(rel_path, material);
+     }
+ 
+@@ -51,8 +59,104 @@ impl MaterialEditorPanel {
+             None
+         }
+     }
++
++    /// Inspects the active Material through the shared typed-document service.
++    pub fn structured_inspect(
++        &self,
++        permissions: &AuthoringPermissions,
++    ) -> Result<Option<TypedDocumentAuthoringSnapshot<MaterialAsset>>, TypedDocumentAuthoringError> {
++        let Some(key) = self.active.as_ref() else {
++            return Ok(None);
++        };
++        let Some(document) = self.materials.get(key) else {
++            return Ok(None);
++        };
++        let Some(state) = self.authoring.get(key) else {
++            return Ok(None);
++        };
++        TypedDocumentAuthoringService::new()
++            .inspect(document, state, permissions)
++            .map(Some)
++    }
++
++    /// Validates the active Material through the shared typed-document service.
++    pub fn structured_validate(
++        &self,
++        permissions: &AuthoringPermissions,
++    ) -> Result<Option<TypedDocumentAuthoringValidation>, TypedDocumentAuthoringError> {
++        let Some(key) = self.active.as_ref() else {
++            return Ok(None);
++        };
++        let Some(document) = self.materials.get(key) else {
++            return Ok(None);
++        };
++        let Some(state) = self.authoring.get(key) else {
++            return Ok(None);
++        };
++        TypedDocumentAuthoringService::new()
++            .validate(document, state, permissions)
++            .map(Some)
++    }
++
++    /// Previews replacing the active Material without mutation.
++    pub fn structured_preview(
++        &self,
++        permissions: &AuthoringPermissions,
++        expected_revision: u64,
++        expected_generation: u64,
++        replacement: MaterialAsset,
++    ) -> Result<Option<TypedDocumentAuthoringMutation<MaterialAsset>>, TypedDocumentAuthoringError> {
++        let Some(key) = self.active.as_ref() else {
++            return Ok(None);
++        };
++        let Some(document) = self.materials.get(key) else {
++            return Ok(None);
++        };
++        let Some(state) = self.authoring.get(key) else {
++            return Ok(None);
++        };
++        TypedDocumentAuthoringService::new()
++            .preview(
++                document,
++                state,
++                permissions,
++                expected_revision,
++                expected_generation,
++                replacement,
++            )
++            .map(Some)
++    }
++
++    /// Applies one atomic replacement to the active Material.
++    pub fn structured_apply(
++        &mut self,
++        permissions: &AuthoringPermissions,
++        expected_revision: u64,
++        expected_generation: u64,
++        replacement: MaterialAsset,
++    ) -> Result<Option<TypedDocumentAuthoringMutation<MaterialAsset>>, TypedDocumentAuthoringError> {
++        let Some(key) = self.active.clone() else {
++            return Ok(None);
++        };
++        let (Some(document), Some(state)) =
++            (self.materials.get_mut(&key), self.authoring.get_mut(&key))
++        else {
++            return Ok(None);
++        };
++        TypedDocumentAuthoringService::new()
++            .apply(
++                document,
++                state,
++                permissions,
++                expected_revision,
++                expected_generation,
++                replacement,
++            )
++            .map(Some)
++    }
+ }
+ 
++
+ // ---------------------------------------------------------------------------
+ // egui rendering
+ // ---------------------------------------------------------------------------
+@@ -67,6 +171,7 @@ pub fn show_material_editor_panel(
+ ) -> bool {
+     let mut changed = false;
+ 
++    let before = panel.active_material().cloned();
+     let Some(mat) = panel.active_material_mut() else {
+         ui.label("No material selected.");
+         return false;
+@@ -247,7 +352,30 @@ pub fn show_material_editor_panel(
+         ui.colored_label(eframe::egui::Color32::RED, error.to_string());
+     }
+ 
+-    changed
++    if changed {
++        let replacement = mat.clone();
++        if let Some(before) = before {
++            *mat = before;
++        }
++        let permissions = AuthoringPermissions::read_only()
++            .with(AuthoringPermission::Preview)
++            .with(AuthoringPermission::ProjectDataWrite);
++        if let Ok(Some(base)) = panel.structured_inspect(&permissions) {
++            return panel
++                .structured_apply(
++                    &permissions,
++                    base.revision,
++                    base.generation,
++                    replacement,
++                )
++                .ok()
++                .flatten()
++                .is_some_and(|mutation| mutation.success && !mutation.diff.is_empty());
++        }
++        return false;
++    }
++
++    false
+ }
+ 
+ fn texture_picker(
+diff --git a/crates/editor/src/project_settings_panel.rs b/crates/editor/src/project_settings_panel.rs
+index ce9094620b1f7cc39160bac3f1bc424ce5f180cb..11daa159e2cddced3e2c1fbc4b02cc54277c0fe9 100644
+--- a/crates/editor/src/project_settings_panel.rs
++++ b/crates/editor/src/project_settings_panel.rs
+@@ -10,6 +10,11 @@ use engine::postprocess::ToneMapOperator;
+ use engine_authoring::project_settings::{
+     AxisBinding, InputAction, KeyAxisBinding, Layer, ProjectSettings,
+ };
++use engine_authoring::{
++    AuthoringPermission, AuthoringPermissions, TypedDocumentAuthoringError,
++    TypedDocumentAuthoringMutation, TypedDocumentAuthoringService, TypedDocumentAuthoringSnapshot,
++    TypedDocumentAuthoringState, TypedDocumentAuthoringValidation,
++};
+ 
+ // ---------------------------------------------------------------------------
+ // Panel state
+@@ -28,6 +33,7 @@ pub struct ProjectSettingsPanel {
+     pub post_process: PostProcessSettings,
+     /// `true` when the panel contains unsaved changes.
+     pub is_dirty: bool,
++    authoring: TypedDocumentAuthoringState,
+ }
+ 
+ impl ProjectSettingsPanel {
+@@ -37,6 +43,7 @@ impl ProjectSettingsPanel {
+             settings,
+             post_process: PostProcessSettings::default(),
+             is_dirty: false,
++            authoring: TypedDocumentAuthoringState::new(),
+         }
+     }
+ 
+@@ -46,6 +53,30 @@ impl ProjectSettingsPanel {
+         self.settings.clone()
+     }
+ 
++    /// Inspects Project Settings through the shared typed-document service.
++    pub fn structured_inspect(&self, permissions: &AuthoringPermissions) -> Result<TypedDocumentAuthoringSnapshot<ProjectSettings>, TypedDocumentAuthoringError> {
++        TypedDocumentAuthoringService::new().inspect(&self.settings, &self.authoring, permissions)
++    }
++
++    /// Validates Project Settings through the shared typed-document service.
++    pub fn structured_validate(&self, permissions: &AuthoringPermissions) -> Result<TypedDocumentAuthoringValidation, TypedDocumentAuthoringError> {
++        TypedDocumentAuthoringService::new().validate(&self.settings, &self.authoring, permissions)
++    }
++
++    /// Previews one complete Project Settings replacement.
++    pub fn structured_preview(&self, permissions: &AuthoringPermissions, expected_revision: u64, expected_generation: u64, replacement: ProjectSettings) -> Result<TypedDocumentAuthoringMutation<ProjectSettings>, TypedDocumentAuthoringError> {
++        TypedDocumentAuthoringService::new().preview(&self.settings, &self.authoring, permissions, expected_revision, expected_generation, replacement)
++    }
++
++    /// Applies one complete Project Settings replacement atomically.
++    pub fn structured_apply(&mut self, permissions: &AuthoringPermissions, expected_revision: u64, expected_generation: u64, replacement: ProjectSettings) -> Result<TypedDocumentAuthoringMutation<ProjectSettings>, TypedDocumentAuthoringError> {
++        let mutation = TypedDocumentAuthoringService::new().apply(&mut self.settings, &mut self.authoring, permissions, expected_revision, expected_generation, replacement)?;
++        if mutation.success && !mutation.diff.is_empty() {
++            self.is_dirty = true;
++        }
++        Ok(mutation)
++    }
++
+     // ── Tags ──────────────────────────────────────────────────────────────
+ 
+     /// Appends `tag` to the tag list unless it is already present.
+@@ -209,6 +240,7 @@ pub fn show_project_settings_panel(
+     ui: &mut eframe::egui::Ui,
+ ) -> bool {
+     let before_dirty = panel.is_dirty;
++    let settings_before = panel.settings.clone();
+     let mut changed = false;
+ 
+     ui.heading("Project Settings");
+@@ -548,6 +580,23 @@ pub fn show_project_settings_panel(
+         }
+     });
+ 
++    if panel.settings != settings_before {
++        let replacement = panel.settings.clone();
++        panel.settings = settings_before;
++        panel.is_dirty = before_dirty;
++        let permissions = AuthoringPermissions::read_only()
++            .with(AuthoringPermission::Preview)
++            .with(AuthoringPermission::ProjectDataWrite);
++        if let Ok(base) = panel.structured_inspect(&permissions) {
++            let _ = panel.structured_apply(
++                &permissions,
++                base.revision,
++                base.generation,
++                replacement,
++            );
++        }
++    }
++
+     changed || panel.is_dirty != before_dirty
+ }
+ 
+diff --git a/crates/editor/src/ui/mcp.rs b/crates/editor/src/ui/mcp.rs
+index 1444cb4548ba6b008ee87ad24600efce09083bdd..73c2fd93e7a2b0302564e38fdcc6a6c92664f897 100644
+--- a/crates/editor/src/ui/mcp.rs
++++ b/crates/editor/src/ui/mcp.rs
+@@ -3,15 +3,17 @@
+ use super::EditorApp;
+ use crate::session::StructuredAuthoringError;
+ use engine_authoring::{
+-    AuthoringPermission, AuthoringPermissions, AuthoringSession, ComponentSchemaRegistry,
++    AnimationSet, AuthoringPermission, AuthoringPermissions, AuthoringSession, ComponentSchemaRegistry,
++    MaterialAsset, ProjectSettings, TypedDocumentAuthoringError,
+ };
+ use engine_mcp::{
+     AssetInspectInput, AssetMcpTools, AssetSearchInput, AuthoringCapabilityMcpTools, AuthoringVerb,
+     BehaviorTreeApplyInput, BehaviorTreeGraphInput, BehaviorTreeMcpTools, CapabilityDescribeInput,
+     CapabilityInvokeInput, EntityFindInput, EntityInspectInput, GraphMutationInput,
+     GraphViewMutationInput, McpToolError, PrefabCreateInput, PrefabInstantiateInput, PrefabMcpTools,
+-    SceneMcpTools, SceneMutationInput, UiMutationInput, VfxEffectInput, VfxMcpTools,
+-    VfxMutationInput, VfxTemplateInput, AUTHORING_APPLY_TOOL, AUTHORING_CAPABILITIES_TOOL,
++    SceneMcpTools, SceneMutationInput, TypedDocumentMutationInput, UiMutationInput, VfxEffectInput,
++    VfxMcpTools, VfxMutationInput, VfxTemplateInput, AUTHORING_APPLY_TOOL,
++    AUTHORING_CAPABILITIES_TOOL,
+     AUTHORING_DESCRIBE_TOOL, AUTHORING_INSPECT_TOOL, AUTHORING_PREVIEW_TOOL,
+     AUTHORING_VALIDATE_TOOL,
+ };
+@@ -59,6 +61,18 @@ impl EditorMcpCallFailure {
+         Self::new(code, error.to_string())
+     }
+ 
++    fn typed(error: TypedDocumentAuthoringError) -> Self {
++        let code = error.code().to_owned();
++        Self::new(code, error.to_string())
++    }
++
++    fn no_typed_document(domain: &str) -> Self {
++        Self::new(
++            "editor.no_typed_document",
++            format!("no active {domain} document is open in the Editor"),
++        )
++    }
++
+     fn no_scene() -> Self {
+         Self::new(
+             "editor.no_scene_document",
+@@ -323,6 +337,74 @@ impl EditorApp {
+                     input.commands,
+                 )?)
+             }
++            "material.inspect" => {
++                require_empty_arguments(arguments)?;
++                let output = self.material_editor.structured_inspect(&permissions)
++                    .map_err(EditorMcpCallFailure::typed)?
++                    .ok_or_else(|| EditorMcpCallFailure::no_typed_document("Material"))?;
++                to_value(output)
++            }
++            "material.validate" => {
++                require_empty_arguments(arguments)?;
++                let output = self.material_editor.structured_validate(&permissions)
++                    .map_err(EditorMcpCallFailure::typed)?
++                    .ok_or_else(|| EditorMcpCallFailure::no_typed_document("Material"))?;
++                to_value(output)
++            }
++            "material.preview" => {
++                let input: TypedDocumentMutationInput<MaterialAsset> = decode(arguments)?;
++                let output = self.material_editor.structured_preview(&permissions, input.expected_revision, input.expected_generation, input.replacement)
++                    .map_err(EditorMcpCallFailure::typed)?
++                    .ok_or_else(|| EditorMcpCallFailure::no_typed_document("Material"))?;
++                to_value(output)
++            }
++            "material.apply" => {
++                let input: TypedDocumentMutationInput<MaterialAsset> = decode(arguments)?;
++                let output = self.material_editor.structured_apply(&permissions, input.expected_revision, input.expected_generation, input.replacement)
++                    .map_err(EditorMcpCallFailure::typed)?
++                    .ok_or_else(|| EditorMcpCallFailure::no_typed_document("Material"))?;
++                to_value(output)
++            }
++            "project_settings.inspect" => {
++                require_empty_arguments(arguments)?;
++                let panel = self.project_settings_panel.as_ref().ok_or_else(|| EditorMcpCallFailure::no_typed_document("Project Settings"))?;
++                to_value(panel.structured_inspect(&permissions).map_err(EditorMcpCallFailure::typed)?)
++            }
++            "project_settings.validate" => {
++                require_empty_arguments(arguments)?;
++                let panel = self.project_settings_panel.as_ref().ok_or_else(|| EditorMcpCallFailure::no_typed_document("Project Settings"))?;
++                to_value(panel.structured_validate(&permissions).map_err(EditorMcpCallFailure::typed)?)
++            }
++            "project_settings.preview" => {
++                let input: TypedDocumentMutationInput<ProjectSettings> = decode(arguments)?;
++                let panel = self.project_settings_panel.as_ref().ok_or_else(|| EditorMcpCallFailure::no_typed_document("Project Settings"))?;
++                to_value(panel.structured_preview(&permissions, input.expected_revision, input.expected_generation, input.replacement).map_err(EditorMcpCallFailure::typed)?)
++            }
++            "project_settings.apply" => {
++                let input: TypedDocumentMutationInput<ProjectSettings> = decode(arguments)?;
++                let panel = self.project_settings_panel.as_mut().ok_or_else(|| EditorMcpCallFailure::no_typed_document("Project Settings"))?;
++                to_value(panel.structured_apply(&permissions, input.expected_revision, input.expected_generation, input.replacement).map_err(EditorMcpCallFailure::typed)?)
++            }
++            "animation_set.inspect" => {
++                require_empty_arguments(arguments)?;
++                let editor = self.animation_set_editor.as_ref().ok_or_else(|| EditorMcpCallFailure::no_typed_document("Animation Set"))?;
++                to_value(editor.structured_inspect(&permissions).map_err(EditorMcpCallFailure::typed)?)
++            }
++            "animation_set.validate" => {
++                require_empty_arguments(arguments)?;
++                let editor = self.animation_set_editor.as_ref().ok_or_else(|| EditorMcpCallFailure::no_typed_document("Animation Set"))?;
++                to_value(editor.structured_validate(&permissions).map_err(EditorMcpCallFailure::typed)?)
++            }
++            "animation_set.preview" => {
++                let input: TypedDocumentMutationInput<AnimationSet> = decode(arguments)?;
++                let editor = self.animation_set_editor.as_ref().ok_or_else(|| EditorMcpCallFailure::no_typed_document("Animation Set"))?;
++                to_value(editor.structured_preview(&permissions, input.expected_revision, input.expected_generation, input.replacement).map_err(EditorMcpCallFailure::typed)?)
++            }
++            "animation_set.apply" => {
++                let input: TypedDocumentMutationInput<AnimationSet> = decode(arguments)?;
++                let editor = self.animation_set_editor.as_mut().ok_or_else(|| EditorMcpCallFailure::no_typed_document("Animation Set"))?;
++                to_value(editor.structured_apply(&permissions, input.expected_revision, input.expected_generation, input.replacement).map_err(EditorMcpCallFailure::typed)?)
++            }
+             "vfx.schemas" => {
+                 require_empty_arguments(arguments)?;
+                 to_value(vfx_tools.schemas(&permissions)?)
+diff --git a/crates/mcp/src/generic_authoring.rs b/crates/mcp/src/generic_authoring.rs
+index b1d353da8a890946c4ab396323afd1dbef32c76c..58c5826a174a0bbe6b308e54a78ad854ee2459e4 100644
+--- a/crates/mcp/src/generic_authoring.rs
++++ b/crates/mcp/src/generic_authoring.rs
+@@ -51,6 +51,20 @@ pub struct UiMutationInput {
+     pub commands: Vec<UiDocumentCommand>,
+ }
+ 
++/// Whole-document replacement request shared by persisted typed-document tools.
++///
++/// The active Editor supplies the authoritative document and revision state;
++/// this DTO carries only the adapter-neutral semantic intent.
++#[derive(Debug, Deserialize)]
++pub struct TypedDocumentMutationInput<T> {
++    /// Authoritative document revision observed by the caller.
++    pub expected_revision: u64,
++    /// Authoritative in-memory generation observed by the caller.
++    pub expected_generation: u64,
++    /// Complete typed replacement evaluated by the shared authoring service.
++    pub replacement: T,
++}
++
+ /// Failure returned by generic structured authoring MCP handlers.
+ #[derive(Debug)]
+ pub enum GenericAuthoringMcpError {
+@@ -143,6 +157,9 @@ impl GenericAuthoringMcpTools {
+                 AuthoringDomain::Graph,
+                 AuthoringDomain::GraphView,
+                 AuthoringDomain::Ui,
++                AuthoringDomain::Material,
++                AuthoringDomain::ProjectSettings,
++                AuthoringDomain::AnimationSet,
+             ],
+         )
+     }
+diff --git a/crates/mcp/src/lib.rs b/crates/mcp/src/lib.rs
+index b942cc7e8d45997657fe5b5fdc871c0a610d20cb..3142338b0f6ec054842ade5804fd30097e5a7abc 100644
+--- a/crates/mcp/src/lib.rs
++++ b/crates/mcp/src/lib.rs
+@@ -36,7 +36,7 @@ pub use capability::{
+ };
+ pub use generic_authoring::{
+     GenericAuthoringMcpError, GenericAuthoringMcpTools, GraphMutationInput,
+-    GraphViewMutationInput, UiMutationInput,
++    GraphViewMutationInput, TypedDocumentMutationInput, UiMutationInput,
+ };
+ pub use prefab::{PrefabCreateInput, PrefabInstantiateInput, PrefabMcpTools};
+ pub use scene::{
