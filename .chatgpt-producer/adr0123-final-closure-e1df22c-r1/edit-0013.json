@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "docs/adr/0123-stateful-behavior-tree-execution-and-debugging.md",
+  "old": "Status: Proposed\n",
+  "new": "Status: Accepted\n"
+}
