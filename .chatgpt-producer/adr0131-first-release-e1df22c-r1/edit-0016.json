@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "        match action {\n            PendingPermissionAction::LaunchExternalAgent => self.launch_external_agent(run_id),\n            PendingPermissionAction::ApplyCodeChanges => self.apply_code_changes(run_id),\n        }",
+  "new": "        match action {\n            PendingPermissionAction::LaunchExternalAgent => self.launch_external_agent(run_id),\n            PendingPermissionAction::ApplyCodeChanges => self.apply_code_changes(run_id),\n            PendingPermissionAction::LaunchPlaytest => {\n                self.pending_runtime_action = Some(AiStudioRuntimeAction::StartPlaytest);\n            }\n            PendingPermissionAction::CaptureFrame => {\n                self.pending_runtime_action = Some(AiStudioRuntimeAction::CaptureFrame);\n            }\n        }"
+}
