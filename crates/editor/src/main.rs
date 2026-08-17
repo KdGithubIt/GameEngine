@@ -37,6 +37,8 @@ struct EditorShell {
     visual_capture_requested_at: Option<Instant>,
     #[cfg(feature = "visual-validation")]
     visual_behavior_debug_capture: bool,
+    #[cfg(feature = "visual-validation")]
+    visual_ai_studio_detached_capture: bool,
 }
 
 impl EditorShell {
@@ -65,6 +67,15 @@ impl EditorShell {
                 mcp_server.authorization_token().to_owned(),
             ),
         )?;
+        #[cfg(feature = "visual-validation")]
+        let (ai_studio, visual_ai_studio_detached_capture) = {
+            let mut ai_studio = ai_studio;
+            let detached_capture = visual_validation_touches_ai_studio();
+            if detached_capture {
+                ai_studio.detach();
+            }
+            (ai_studio, detached_capture)
+        };
         #[cfg(feature = "visual-validation")]
         let mut authoring_windows = AuthoringWindows::default();
         #[cfg(not(feature = "visual-validation"))]
@@ -113,6 +124,8 @@ impl EditorShell {
             visual_capture_requested_at: None,
             #[cfg(feature = "visual-validation")]
             visual_behavior_debug_capture,
+            #[cfg(feature = "visual-validation")]
+            visual_ai_studio_detached_capture,
         })
     }
 
@@ -136,6 +149,30 @@ impl EditorShell {
         let Some(path) = self.visual_capture_path.clone() else {
             return;
         };
+
+        if self.visual_ai_studio_detached_capture {
+            if self.ai_studio.detached_visual_validation_capture_finished() {
+                self.visual_capture_path = None;
+                context.send_viewport_cmd(eframe::egui::ViewportCommand::Close);
+                return;
+            }
+            match self.visual_capture_requested_at {
+                None => {
+                    self.visual_capture_requested_at = Some(Instant::now());
+                    context.request_repaint();
+                }
+                Some(requested_at) if requested_at.elapsed() >= Duration::from_secs(5) => {
+                    let _ = std::fs::remove_file(&path);
+                    eprintln!(
+                        "[editor.ai_studio_visual_validation_capture_failed] detached screenshot event was not returned"
+                    );
+                    self.visual_capture_path = None;
+                    context.send_viewport_cmd(eframe::egui::ViewportCommand::Close);
+                }
+                Some(_) => context.request_repaint(),
+            }
+            return;
+        }
 
         let screenshot = context.input(|input| {
             input.events.iter().find_map(|event| match event {
@@ -326,6 +363,24 @@ fn visual_validation_touches_behavior_debug() -> bool {
             &base,
             "--",
             "crates/editor/src/ui/behavior_debug.rs",
+        ])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .is_some_and(|output| !output.stdout.is_empty())
+}
+
+#[cfg(feature = "visual-validation")]
+fn visual_validation_touches_ai_studio() -> bool {
+    let base_ref = std::env::var("GITHUB_BASE_REF").unwrap_or_else(|_| "main".into());
+    let base = format!("origin/{base_ref}...HEAD");
+    std::process::Command::new("git")
+        .args([
+            "diff",
+            "--name-only",
+            &base,
+            "--",
+            "crates/editor/src/ai_studio.rs",
         ])
         .output()
         .ok()

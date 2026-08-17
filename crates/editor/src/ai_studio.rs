@@ -281,6 +281,47 @@ struct PendingPermission {
     action: PendingPermissionAction,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AiStudioPresentationMode {
+    Embedded,
+    Detached,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct AiStudioPresentationState {
+    mode: AiStudioPresentationMode,
+    open: bool,
+}
+
+impl Default for AiStudioPresentationState {
+    fn default() -> Self {
+        Self {
+            mode: AiStudioPresentationMode::Embedded,
+            open: true,
+        }
+    }
+}
+
+impl AiStudioPresentationState {
+    fn open(&mut self) {
+        self.open = true;
+    }
+
+    fn close(&mut self) {
+        self.open = false;
+    }
+
+    fn detach(&mut self) {
+        self.mode = AiStudioPresentationMode::Detached;
+        self.open = true;
+    }
+
+    fn reattach(&mut self) {
+        self.mode = AiStudioPresentationMode::Embedded;
+        self.open = true;
+    }
+}
+
 /// Project-scoped conversation-first AI Studio window.
 ///
 /// The panel persists sessions outside canonical project data by default,
@@ -310,7 +351,13 @@ pub struct AiStudioPanel {
     native_question_session: Option<String>,
     provider_program: String,
     provider_args: String,
-    open: bool,
+    presentation: AiStudioPresentationState,
+    #[cfg(feature = "visual-validation")]
+    detached_visual_capture_path: Option<PathBuf>,
+    #[cfg(feature = "visual-validation")]
+    detached_visual_capture_requested: bool,
+    #[cfg(feature = "visual-validation")]
+    detached_visual_capture_finished: bool,
     active_run_id: Option<String>,
     process: Option<ExternalAgentProcess>,
     process_purpose: Option<ExternalAgentPurpose>,
@@ -385,7 +432,14 @@ impl AiStudioPanel {
             native_question_session: None,
             provider_program: String::new(),
             provider_args: String::new(),
-            open: true,
+            presentation: AiStudioPresentationState::default(),
+            #[cfg(feature = "visual-validation")]
+            detached_visual_capture_path: std::env::var_os("GAMEENGINE_SCREENSHOT_TO")
+                .map(PathBuf::from),
+            #[cfg(feature = "visual-validation")]
+            detached_visual_capture_requested: false,
+            #[cfg(feature = "visual-validation")]
+            detached_visual_capture_finished: false,
             active_run_id,
             process: None,
             process_purpose: None,
@@ -408,9 +462,20 @@ impl AiStudioPanel {
         })
     }
 
-    /// Makes the AI Studio window visible.
+    /// Makes the AI Studio presentation visible without changing its current placement.
     pub fn open(&mut self) {
-        self.open = true;
+        self.presentation.open();
+    }
+
+    /// Moves AI Studio into an independent native viewport while preserving the same host state.
+    pub fn detach(&mut self) {
+        self.presentation.detach();
+    }
+
+    #[cfg(feature = "visual-validation")]
+    /// Returns whether the detached validation viewport finished its screenshot attempt.
+    pub fn detached_visual_validation_capture_finished(&self) -> bool {
+        self.detached_visual_capture_finished
     }
 
     /// Takes one authorized managed runtime action for the Editor shell to execute.
@@ -605,7 +670,7 @@ impl AiStudioPanel {
         }
     }
 
-    /// Draws the AI Studio window and advances any active external agent process.
+    /// Draws the current AI Studio presentation and advances host-owned work.
     pub fn show(&mut self, context: &egui::Context) {
         self.ensure_remote_gateway(context);
         self.poll_remote_requests();
@@ -617,7 +682,19 @@ impl AiStudioPanel {
         self.request_managed_playtest_if_ready();
         self.request_next_managed_runtime_input_if_ready();
         self.poll_managed_playtest_timeout();
-        let mut open = self.open;
+
+        if !self.presentation.open {
+            return;
+        }
+        match self.presentation.mode {
+            AiStudioPresentationMode::Embedded => self.show_embedded(context),
+            AiStudioPresentationMode::Detached => self.show_detached(context),
+        }
+    }
+
+    fn show_embedded(&mut self, context: &egui::Context) {
+        let mut open = self.presentation.open;
+        let mut detach_requested = false;
         egui::Window::new("AI Studio")
             .id(egui::Id::new("gameengine_ai_studio"))
             .open(&mut open)
@@ -626,8 +703,84 @@ impl AiStudioPanel {
             .min_width(460.0)
             .min_height(520.0)
             .resizable(true)
-            .show(context, |ui| self.show_contents(ui));
-        self.open = open;
+            .show(context, |ui| {
+                ui.horizontal(|ui| {
+                    if ui.button("Detach").clicked() {
+                        detach_requested = true;
+                    }
+                    ui.small("Open AI Studio in its own OS window.");
+                });
+                ui.separator();
+                self.show_contents(ui);
+            });
+        self.presentation.open = open;
+        if detach_requested {
+            self.presentation.detach();
+        }
+    }
+
+    fn show_detached(&mut self, context: &egui::Context) {
+        let mut reattach_requested = false;
+        let mut close_requested = false;
+        context.show_viewport_immediate(
+            egui::ViewportId::from_hash_of("gameengine_ai_studio_detached"),
+            egui::ViewportBuilder::default()
+                .with_title("AI Studio")
+                .with_inner_size([600.0, 760.0])
+                .with_min_inner_size([460.0, 520.0])
+                .with_resizable(true),
+            |ui, _class| {
+                close_requested = ui.input(|input| input.viewport().close_requested());
+                ui.horizontal(|ui| {
+                    if ui.button("Reattach").clicked() {
+                        reattach_requested = true;
+                    }
+                    ui.small("Same project Agent Host · detached presentation");
+                });
+                ui.separator();
+                self.show_contents(ui);
+                #[cfg(feature = "visual-validation")]
+                self.handle_detached_visual_validation_capture(ui);
+            },
+        );
+
+        if reattach_requested {
+            self.presentation.reattach();
+        } else if close_requested {
+            self.presentation.close();
+        }
+    }
+
+    #[cfg(feature = "visual-validation")]
+    fn handle_detached_visual_validation_capture(&mut self, ui: &mut egui::Ui) {
+        if self.detached_visual_capture_finished {
+            return;
+        }
+        let Some(path) = self.detached_visual_capture_path.clone() else {
+            return;
+        };
+        let screenshot = ui.input(|input| {
+            input.events.iter().find_map(|event| match event {
+                egui::Event::Screenshot { image, .. } => Some(image.clone()),
+                _ => None,
+            })
+        });
+        if let Some(image) = screenshot {
+            if let Err(error) = write_detached_visual_validation_png(&path, image.as_ref()) {
+                let _ = std::fs::remove_file(&path);
+                eprintln!("[editor.ai_studio_visual_validation_capture_failed] {error}");
+            }
+            self.detached_visual_capture_path = None;
+            self.detached_visual_capture_finished = true;
+            return;
+        }
+        if !self.detached_visual_capture_requested {
+            self.detached_visual_capture_requested = true;
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Screenshot(
+                egui::UserData::default(),
+            ));
+        }
+        ui.ctx().request_repaint();
     }
 
     fn ensure_remote_gateway(&mut self, context: &egui::Context) {
@@ -2476,6 +2629,28 @@ fn edit_lines(ui: &mut egui::Ui, label: &str, values: &mut Vec<String>) {
     }
 }
 
+#[cfg(feature = "visual-validation")]
+fn write_detached_visual_validation_png(
+    path: &std::path::Path,
+    image: &egui::ColorImage,
+) -> Result<(), String> {
+    let [width, height] = image.size;
+    let file = std::fs::File::create(path).map_err(|error| error.to_string())?;
+    let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), width as u32, height as u32);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut writer = encoder.write_header().map_err(|error| error.to_string())?;
+    let rgba = image
+        .pixels
+        .iter()
+        .flat_map(|pixel| pixel.to_array())
+        .collect::<Vec<_>>();
+    writer
+        .write_image_data(&rgba)
+        .map_err(|error| error.to_string())?;
+    writer.finish().map_err(|error| error.to_string())
+}
+
 fn encode_agent_frame_png(capture: &crate::FrameCapture) -> Result<Vec<u8>, png::EncodingError> {
     let mut png_bytes = Vec::new();
     {
@@ -2647,5 +2822,18 @@ mod tests {
             ),
             RuntimeRepairDecision::Exhausted
         );
+    }
+
+    #[test]
+    fn detached_presentation_close_and_reopen_preserves_placement() {
+        let mut presentation = AiStudioPresentationState::default();
+        presentation.detach();
+        presentation.close();
+        presentation.open();
+        assert_eq!(presentation.mode, AiStudioPresentationMode::Detached);
+        assert!(presentation.open);
+        presentation.reattach();
+        assert_eq!(presentation.mode, AiStudioPresentationMode::Embedded);
+        assert!(presentation.open);
     }
 }
