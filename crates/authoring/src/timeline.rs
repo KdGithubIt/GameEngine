@@ -65,6 +65,40 @@ impl TimelineTrackKind {
     }
 }
 
+/// Shared registry metadata for one Timeline track family.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TimelineTrackDescriptor {
+    /// Stable type identifier consumed by authoring and adapter surfaces.
+    pub type_id: &'static str,
+    /// Typed persisted family.
+    pub kind: TimelineTrackKind,
+    /// Human-readable Editor label.
+    pub label: &'static str,
+    /// Discontinuous-time policy owned by this family.
+    pub seek_capability: SeekCapability,
+    /// Whether the first-release Sequencer exposes numeric curve editing.
+    pub supports_curves: bool,
+}
+
+/// Canonical first-release Timeline track registry.
+///
+/// Editor menus and external authoring adapters consume this table instead of
+/// maintaining independent hard-coded track-family lists.
+pub const TIMELINE_TRACK_REGISTRY: [TimelineTrackDescriptor; 7] = [
+    TimelineTrackDescriptor { type_id: "engine.timeline.animation", kind: TimelineTrackKind::Animation, label: "Animation", seek_capability: SeekCapability::Seekable, supports_curves: false },
+    TimelineTrackDescriptor { type_id: "engine.timeline.transform_property", kind: TimelineTrackKind::TransformProperty, label: "Transform / Property", seek_capability: SeekCapability::Stateless, supports_curves: true },
+    TimelineTrackDescriptor { type_id: "engine.timeline.camera_cut", kind: TimelineTrackKind::CameraCut, label: "Camera Cut", seek_capability: SeekCapability::Stateless, supports_curves: false },
+    TimelineTrackDescriptor { type_id: "engine.timeline.event", kind: TimelineTrackKind::Event, label: "Event", seek_capability: SeekCapability::Stateless, supports_curves: false },
+    TimelineTrackDescriptor { type_id: "engine.timeline.audio", kind: TimelineTrackKind::Audio, label: "Audio", seek_capability: SeekCapability::NonSeekable, supports_curves: false },
+    TimelineTrackDescriptor { type_id: "engine.timeline.vfx", kind: TimelineTrackKind::Vfx, label: "VFX", seek_capability: SeekCapability::ReplayRequired, supports_curves: false },
+    TimelineTrackDescriptor { type_id: "engine.timeline.prefab", kind: TimelineTrackKind::Prefab, label: "Prefab", seek_capability: SeekCapability::ReplayRequired, supports_curves: false },
+];
+
+/// Returns the canonical Timeline track registry.
+pub const fn timeline_track_registry() -> &'static [TimelineTrackDescriptor] {
+    &TIMELINE_TRACK_REGISTRY
+}
+
 /// Typed payload persisted in one clip.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -176,13 +210,32 @@ pub enum CompiledTimelinePayload {
 
 /// Diagnostic severity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TimelineDiagnosticSeverity { Warning, Error }
+pub enum TimelineDiagnosticSeverity {
+    /// Non-fatal authoring limitation or advisory.
+    Warning,
+    /// Error that prevents a valid compiled schedule.
+    Error,
+}
 /// Compile/validation diagnostic.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TimelineDiagnostic { pub severity: TimelineDiagnosticSeverity, pub code: &'static str, pub target: String, pub message: String }
+pub struct TimelineDiagnostic {
+    /// Diagnostic severity.
+    pub severity: TimelineDiagnosticSeverity,
+    /// Stable machine-readable diagnostic code.
+    pub code: &'static str,
+    /// Stable Timeline sub-object identity associated with the problem.
+    pub target: String,
+    /// Human-readable diagnostic message.
+    pub message: String,
+}
 /// Compile result; schedule is absent when any error exists.
 #[derive(Debug, Clone)]
-pub struct TimelineCompilation { pub diagnostics: Vec<TimelineDiagnostic>, pub schedule: Option<CompiledTimeline<CompiledTimelinePayload>> }
+pub struct TimelineCompilation {
+    /// Pure validation/compilation diagnostics.
+    pub diagnostics: Vec<TimelineDiagnostic>,
+    /// Immutable schedule when no error diagnostic was produced.
+    pub schedule: Option<CompiledTimeline<CompiledTimelinePayload>>,
+}
 
 /// Validates and compiles deterministic track/clip/marker order.
 pub fn compile_timeline(document: &TimelineDocument) -> TimelineCompilation {
@@ -231,7 +284,16 @@ fn error_diag(code: &'static str, target: &str, message: impl Into<String>) -> T
 
 /// Timeline persistence error.
 #[derive(Debug)]
-pub enum TimelineDocumentError { Io(std::io::Error), Json(serde_json::Error), WrongSuffix, Invalid(Vec<TimelineDiagnostic>) }
+pub enum TimelineDocumentError {
+    /// Filesystem operation failed.
+    Io(std::io::Error),
+    /// JSON serialization or deserialization failed.
+    Json(serde_json::Error),
+    /// Path did not use the canonical Timeline suffix.
+    WrongSuffix,
+    /// Document failed pure Timeline validation.
+    Invalid(Vec<TimelineDiagnostic>),
+}
 impl fmt::Display for TimelineDocumentError { fn fmt(&self, f:&mut fmt::Formatter<'_>)->fmt::Result { match self { Self::Io(e)=>e.fmt(f), Self::Json(e)=>e.fmt(f), Self::WrongSuffix=>f.write_str("Timeline path must end in .timeline.json"), Self::Invalid(d)=>write!(f,"Timeline has {} validation diagnostics",d.len()) } } }
 impl std::error::Error for TimelineDocumentError {}
 /// Saves canonical pretty JSON after validation.

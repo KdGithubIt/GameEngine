@@ -87,7 +87,35 @@ impl TimelineAuthoringService {
     /// Validates a command against a clone without mutation.
     pub fn preview(&self, expected:TimelineRevision, command:&TimelineAuthoringCommand)->Result<TimelineAuthoringPreview,TimelineAuthoringError>{ self.check_revision(expected)?; let mut candidate=self.document.clone(); apply_command(&mut candidate,command)?; let diagnostics=validate_timeline(&candidate); Ok(TimelineAuthoringPreview{document:candidate,diagnostics}) }
     /// Atomically applies one command after validation.
-    pub fn apply(&mut self, expected:TimelineRevision, command:TimelineAuthoringCommand)->Result<TimelineRevision,TimelineAuthoringError>{ let preview=self.preview(expected,&command)?; if preview.diagnostics.iter().any(|d|matches!(d.severity,crate::timeline::TimelineDiagnosticSeverity::Error)){return Err(TimelineAuthoringError::Invalid(preview.diagnostics))} self.undo.push(self.document.clone()); self.document=preview.document; self.redo.clear(); self.revision=self.revision.wrapping_add(1); Ok(self.revision) }
+    pub fn apply(&mut self, expected:TimelineRevision, command:TimelineAuthoringCommand)->Result<TimelineRevision,TimelineAuthoringError>{
+        self.apply_transaction(expected, std::iter::once(command))
+    }
+    /// Atomically applies a granular command transaction with one undo boundary.
+    ///
+    /// Every command is evaluated against the candidate produced by the prior
+    /// command. The committed document is replaced only after the complete
+    /// candidate validates, so GUI drag gestures, CLI batches, and external
+    /// authoring adapters share identical all-or-nothing semantics.
+    pub fn apply_transaction(
+        &mut self,
+        expected: TimelineRevision,
+        commands: impl IntoIterator<Item = TimelineAuthoringCommand>,
+    ) -> Result<TimelineRevision, TimelineAuthoringError> {
+        self.check_revision(expected)?;
+        let mut candidate = self.document.clone();
+        for command in commands {
+            apply_command(&mut candidate, &command)?;
+        }
+        let diagnostics = validate_timeline(&candidate);
+        if diagnostics.iter().any(|d| matches!(d.severity, crate::timeline::TimelineDiagnosticSeverity::Error)) {
+            return Err(TimelineAuthoringError::Invalid(diagnostics));
+        }
+        self.undo.push(self.document.clone());
+        self.document = candidate;
+        self.redo.clear();
+        self.revision = self.revision.wrapping_add(1);
+        Ok(self.revision)
+    }
     /// Undoes one committed transaction.
     pub fn undo(&mut self)->bool{ let Some(previous)=self.undo.pop()else{return false}; self.redo.push(std::mem::replace(&mut self.document,previous)); self.revision=self.revision.wrapping_add(1); true }
     /// Redoes one undone transaction.
