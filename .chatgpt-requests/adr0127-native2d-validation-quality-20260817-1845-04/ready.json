@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0127-native2d-validation-quality-20260817-1845-04",
+  "target_branch": "chatgpt/gameengine-adr0127-native-2d-completion",
+  "expected_head_sha": "e6583c35b9fc0a4bfd1f7ae00039e7136593d933",
+  "baseline_main_sha": "d03ed9e573818eb0ca088f37953f611d6ed4d22e",
+  "patch_sha256": "07b554bcd3ba64f7740aaf28b1d798b6b94a1153c4bbe7076a05c105f0e7d43a",
+  "patch_bytes": 39800,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Bring Native 2D public APIs to validation quality",
+  "pr_title": "GameEngine: complete ADR 0127 Native 2D architecture",
+  "pr_body": "Repairs the Native 2D foundation across domain crates by fixing the 2D physics compile defect and documenting the public authoring, assets, animation, physics, render-runtime, engine, and Editor contracts so the affected Windows validation gate can evaluate the implementation under the repository's normal warning policy."
+}
