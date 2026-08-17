@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ai_studio.rs","old":"            Ok(process) => {\n                self.code_workspace = Some(workspace);\n","new":"            Ok(process) => {\n                self.provider_failure_hint = None;\n                self.code_workspace = Some(workspace);\n"}
