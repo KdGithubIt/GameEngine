@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ui/mcp.rs",
+  "old": "    fn editor_app() -> (tempfile::TempDir, EditorApp) {\n        let parent = tempfile::tempdir().expect(\"temporary project parent\");\n        let path = parent.path().join(\"McpParityGame\");\n        let root = engine_project_lifecycle::create_standard_project(&path, \"McpParityGame\")\n            .expect(\"project scaffold\");\n        (parent, EditorApp::from_project(root))\n    }\n\n    #[test]\n    fn generic_graph_and_layout_adapters_produce_equivalent_results() {",
+  "new": "    fn editor_app() -> (tempfile::TempDir, EditorApp) {\n        let parent = tempfile::tempdir().expect(\"temporary project parent\");\n        let path = parent.path().join(\"McpParityGame\");\n        let root = engine_project_lifecycle::create_standard_project(&path, \"McpParityGame\")\n            .expect(\"project scaffold\");\n        (parent, EditorApp::from_project(root))\n    }\n\n    fn cli_json(args: Vec<String>) -> Value {\n        let result = engine_cli::run_cli_with_status(args).expect(\"CLI invocation\");\n        assert_eq!(result.exit_code, 0, \"{}\", result.output);\n        serde_json::from_str(&result.output).expect(\"CLI output JSON\")\n    }\n\n    #[test]\n    fn generic_graph_and_layout_adapters_produce_equivalent_results() {"
+}
