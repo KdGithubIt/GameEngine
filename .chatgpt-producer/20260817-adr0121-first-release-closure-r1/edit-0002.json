@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/material_editor.rs",
+  "old": "    pub fn open_material(&mut self, rel_path: PathBuf, material: MaterialAsset) {\n        self.active = Some(rel_path.clone());\n        self.authoring\n            .insert(rel_path.clone(), TypedDocumentAuthoringState::new());\n        self.materials.insert(rel_path, material);\n    }",
+  "new": "    pub fn open_material(&mut self, rel_path: PathBuf, material: MaterialAsset) {\n        self.active = Some(rel_path.clone());\n        self.authoring\n            .insert(rel_path.clone(), TypedDocumentAuthoringState::new());\n        self.undo.insert(rel_path.clone(), Vec::new());\n        self.redo.insert(rel_path.clone(), Vec::new());\n        self.materials.insert(rel_path, material);\n    }"
+}
