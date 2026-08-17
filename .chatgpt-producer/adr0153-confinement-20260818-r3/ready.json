@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0153-confinement-20260818-r3",
+  "target_branch": "chatgpt/gameengine-adr0153-confinement-r3",
+  "expected_head_sha": "86544a6c8d9bb770633b1ae4eb22fac26278f50c",
+  "baseline_main_sha": "86544a6c8d9bb770633b1ae4eb22fac26278f50c",
+  "edit_parts": [
+    "edit-0000.json",
+    "edit-0001.json",
+    "edit-0002.json",
+    "edit-0003.json",
+    "edit-0004.json",
+    "edit-0005.json",
+    "edit-0006.json",
+    "edit-0007.json",
+    "edit-0008.json",
+    "edit-0009.json",
+    "edit-0010.json",
+    "edit-0011.json",
+    "edit-0012.json",
+    "edit-0013.json",
+    "edit-0014.json",
+    "edit-0015.json"
+  ],
+  "commit_message": "Implement ADR 0153 agent process confinement contract",
+  "pr_title": "GameEngine: implement ADR 0153 agent process confinement",
+  "pr_body": "## Summary\n\n- integrate ADR 0153 on the current ADR0147/ADR0149 AI Studio and Agent Host baseline\n- add a truthful provider-neutral confinement request/profile contract at the existing external-process boundary\n- keep the generic external runtime explicitly application-policy-only and fail closed when provider/OS confinement is required\n- keep ExternalAssetAcquisition governed through GameEngine/MCP while only explicit NetworkAccess widens ambient child-process network policy\n- expose the external-process requirement and actual confinement status in both embedded and detached AI Studio presentations\n- add fail-closed, loopback, truthfulness, persistence, and cleanup coverage and accept ADR 0153\n\n## Validation\n\nRun GameEngine Windows Validation and Editor Visual Validation because the AI Studio security/confinement status UI changes.\n\n<!-- gameengine-visual-validation: auto -->"
+}
