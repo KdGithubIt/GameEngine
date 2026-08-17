@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ui/game_tools.rs",
+  "old": "    pub(super) fn package_open_project(&mut self) {\n        let Some(project_root) = self.project_root.clone() else {\n            return;\n        };\n        let settings = match ProjectSettings::load(project_root.path()) {",
+  "new": "    pub(super) fn package_open_project(&mut self) {\n        let Some(project_root) = self.project_root.clone() else {\n            return;\n        };\n        let navigation_gate = match self.session.scene() {\n            Some(scene) => require_current_navigation_artifact(\n                scene,\n                &project_root,\n                &self.asset_manifest,\n                self.session.current_document_path(),\n            ),\n            None => Ok(()),\n        };\n        if let Err(error) = navigation_gate {\n            self.session\n                .push_diagnostic(engine_authoring::Diagnostic::error(\n                    \"editor.package_navigation_not_current\",\n                    error,\n                ));\n            return;\n        }\n        let settings = match ProjectSettings::load(project_root.path()) {"
+}

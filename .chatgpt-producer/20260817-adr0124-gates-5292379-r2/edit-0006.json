@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ui/play.rs",
+  "old": "    pub(super) fn finish_pending_game_package(&mut self, game_module: Option<&Path>) {\n        let Some(pending) = self.pending_game_package.take() else {\n            return;\n        };\n        let output_dir = pending.config.output_dir.clone();",
+  "new": "    pub(super) fn finish_pending_game_package(&mut self, game_module: Option<&Path>) {\n        let Some(pending) = self.pending_game_package.take() else {\n            return;\n        };\n        let navigation_gate = match (self.session.scene(), self.project_root.as_ref()) {\n            (Some(scene), Some(project)) => require_current_navigation_artifact(\n                scene,\n                project,\n                &self.asset_manifest,\n                self.session.current_document_path(),\n            ),\n            _ => Ok(()),\n        };\n        if let Err(error) = navigation_gate {\n            self.session\n                .push_diagnostic(engine_authoring::Diagnostic::error(\n                    \"editor.package_navigation_not_current\",\n                    error,\n                ));\n            return;\n        }\n        let output_dir = pending.config.output_dir.clone();"
+}

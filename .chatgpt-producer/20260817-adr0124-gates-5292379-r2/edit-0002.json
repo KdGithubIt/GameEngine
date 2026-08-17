@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ui/game_tools.rs",
+  "old": ".and_then(|json| crate::navmesh_bake::NavMeshBakeDocument::from_json(&json).ok())",
+  "new": ".and_then(|json| engine::navigation_bake::NavMeshBakeDocument::from_json(&json).ok())"
+}

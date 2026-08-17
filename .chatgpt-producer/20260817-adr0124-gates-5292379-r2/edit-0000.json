@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ui/navigation_workspace.rs",
+  "old": "use crate::navmesh_bake::{\n    bake_scene_navmesh, NavMeshBakeDocument, NavMeshBakeError, NavMeshBakeResult,\n    NavigationBakeServiceError,\n};\nuse crate::workspace::WorkspaceTabId;\nuse engine::AssetManifest;\nuse engine_authoring::{replace_file_contents, AuthoringScene, ProjectRoot};\nuse std::path::PathBuf;",
+  "new": "use crate::workspace::WorkspaceTabId;\nuse engine::navigation_bake::{\n    bake_scene_navmesh, NavMeshBakeDocument, NavMeshBakeError, NavMeshBakeResult,\n    NavigationBakeServiceError,\n};\nuse engine::AssetManifest;\nuse engine_authoring::{\n    replace_file_contents, AuthoringScene, ComponentTypeId, ProjectRoot,\n};\nuse std::path::{Path, PathBuf};"
+}

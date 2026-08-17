@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ui/game_tools.rs",
+  "old": ".unwrap_or_else(|| crate::navmesh_bake::NavMeshBakeDocument {\n                output_asset: format!(\"navigation/{scene_stem}.navmesh.json\"),\n                ..crate::navmesh_bake::NavMeshBakeDocument::default()\n            });",
+  "new": ".unwrap_or_else(|| engine::navigation_bake::NavMeshBakeDocument {\n                output_asset: format!(\"navigation/{scene_stem}.navmesh.json\"),\n                ..engine::navigation_bake::NavMeshBakeDocument::default()\n            });"
+}
