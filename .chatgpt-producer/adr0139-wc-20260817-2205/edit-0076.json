@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ui/documents.rs","old":"        let path = conflict.path.clone();\n        let tab_id = conflict.tab_id;\n        let kind = conflict.kind;","new":"        let path = conflict.path.clone();\n        let owner = conflict.owner.clone();\n        let kind = conflict.kind;"}
