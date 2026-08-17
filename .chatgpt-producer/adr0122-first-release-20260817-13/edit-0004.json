@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/engine/src/app.rs","old":"use crate::audio::{game_audio_effect_system, AudioAsset, GameAudioCommandQueue};","new":"use crate::audio::{\n    game_audio_effect_system, AudioAsset, GameAudioCommandQueue, SpatialAudioRuntime,\n};"}
