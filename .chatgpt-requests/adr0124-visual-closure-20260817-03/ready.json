@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0124-visual-closure-20260817-03",
+  "target_branch": "chatgpt/gameengine-adr0124-final-closure-20260817",
+  "expected_head_sha": "e2ccabf51b420135e1dba70d84a5807e13d384f8",
+  "baseline_main_sha": "2109204b493072e10bd04e8a571f03cb487120fe",
+  "patch_sha256": "cf7bfcbda02e6a22858a223948ef578857d66da13b24e3d718af3f71c46f850d",
+  "patch_bytes": 677,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Fix ADR 0124 visual bake fixture directory",
+  "pr_title": "GameEngine: accept ADR 0124 after final closure audit",
+  "pr_body": "## Summary\n\nCompletes ADR 0124 visual closure by exercising the production bake/path workflow in the Visual Validation fixture and by rendering authored Navigation Link and Modifier gizmos in Scene View.\n\n<!-- gameengine-visual-validation: editor -->\n<!-- gameengine-visual-authoring-tool: Navigation -->\n<!-- gameengine-chatgpt-dispatcher -->"
+}
