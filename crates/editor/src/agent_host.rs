@@ -147,6 +147,180 @@ impl AgentCapability {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum AgentConfinementRequirement {
+    #[default]
+    AllowApplicationPolicyOnly,
+    RequireProviderOrOsConfinement,
+}
+
+impl AgentConfinementRequirement {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::AllowApplicationPolicyOnly => "Allow application policy only",
+            Self::RequireProviderOrOsConfinement => "Require provider/OS confinement",
+        }
+    }
+
+    pub(crate) fn requires_enforced_confinement(self) -> bool {
+        self == Self::RequireProviderOrOsConfinement
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum AgentConfinementLayer {
+    ApplicationPolicyOnly,
+    ProviderSandbox,
+    OperatingSystem,
+    ContainerOrVm,
+    Unavailable,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum AgentConfinementGuarantee {
+    Unavailable,
+    Enforced,
+}
+
+impl AgentConfinementGuarantee {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Unavailable => "unavailable",
+            Self::Enforced => "enforced",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum AgentConfinementNetworkPolicy {
+    LoopbackOnly,
+    ManagedNetworkAccess,
+}
+
+impl AgentConfinementNetworkPolicy {
+    fn label(self) -> &'static str {
+        match self {
+            Self::LoopbackOnly => "loopback only",
+            Self::ManagedNetworkAccess => "managed network access",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct AgentConfinementProfile {
+    pub(crate) layer: AgentConfinementLayer,
+    pub(crate) mechanism: String,
+    pub(crate) filesystem_guarantee: AgentConfinementGuarantee,
+    pub(crate) network_guarantee: AgentConfinementGuarantee,
+    pub(crate) process_tree_guarantee: AgentConfinementGuarantee,
+    pub(crate) requested_network_policy: AgentConfinementNetworkPolicy,
+}
+
+impl AgentConfinementProfile {
+    fn application_policy_only(network_policy: AgentConfinementNetworkPolicy) -> Self {
+        Self {
+            layer: AgentConfinementLayer::ApplicationPolicyOnly,
+            mechanism: "generic_process_runtime".to_owned(),
+            filesystem_guarantee: AgentConfinementGuarantee::Unavailable,
+            network_guarantee: AgentConfinementGuarantee::Unavailable,
+            process_tree_guarantee: AgentConfinementGuarantee::Unavailable,
+            requested_network_policy: network_policy,
+        }
+    }
+
+    fn unavailable(network_policy: AgentConfinementNetworkPolicy) -> Self {
+        Self {
+            layer: AgentConfinementLayer::Unavailable,
+            mechanism: "generic_process_runtime".to_owned(),
+            filesystem_guarantee: AgentConfinementGuarantee::Unavailable,
+            network_guarantee: AgentConfinementGuarantee::Unavailable,
+            process_tree_guarantee: AgentConfinementGuarantee::Unavailable,
+            requested_network_policy: network_policy,
+        }
+    }
+
+    fn satisfies(&self, requirement: AgentConfinementRequirement) -> bool {
+        if !requirement.requires_enforced_confinement() {
+            return true;
+        }
+        matches!(
+            self.layer,
+            AgentConfinementLayer::ProviderSandbox
+                | AgentConfinementLayer::OperatingSystem
+                | AgentConfinementLayer::ContainerOrVm
+        ) && self.filesystem_guarantee == AgentConfinementGuarantee::Enforced
+            && self.network_guarantee == AgentConfinementGuarantee::Enforced
+            && self.process_tree_guarantee == AgentConfinementGuarantee::Enforced
+    }
+
+    pub(crate) fn summary(&self) -> String {
+        let layer = match self.layer {
+            AgentConfinementLayer::ApplicationPolicyOnly => "Application policy only",
+            AgentConfinementLayer::ProviderSandbox => "Provider-enforced sandbox",
+            AgentConfinementLayer::OperatingSystem => "OS confinement",
+            AgentConfinementLayer::ContainerOrVm => "Container/VM confinement",
+            AgentConfinementLayer::Unavailable => "Confinement unavailable",
+        };
+        format!(
+            "{layer} ({mechanism}); filesystem: {filesystem}, network: {network}, process tree: {process_tree}, requested network: {requested_network}",
+            mechanism = self.mechanism,
+            filesystem = self.filesystem_guarantee.label(),
+            network = self.network_guarantee.label(),
+            process_tree = self.process_tree_guarantee.label(),
+            requested_network = self.requested_network_policy.label(),
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AgentConfinementRequest {
+    pub(crate) requirement: AgentConfinementRequirement,
+    pub(crate) workspace_root: PathBuf,
+    pub(crate) mcp_endpoint: String,
+    pub(crate) network_policy: AgentConfinementNetworkPolicy,
+}
+
+impl AgentConfinementRequest {
+    pub(crate) fn new(
+        requirement: AgentConfinementRequirement,
+        workspace_root: PathBuf,
+        mcp_endpoint: String,
+        network_policy: AgentConfinementNetworkPolicy,
+    ) -> Self {
+        Self {
+            requirement,
+            workspace_root,
+            mcp_endpoint,
+            network_policy,
+        }
+    }
+
+    fn validate_for_spec(
+        &self,
+        spec: &AgentProcessLaunchSpec,
+    ) -> Result<(), AgentProcessLaunchError> {
+        if spec.working_directory != self.workspace_root {
+            return Err(AgentProcessLaunchError::InvalidConfinementRequest(
+                "external agent working directory must be the approved session code workspace"
+                    .to_owned(),
+            ));
+        }
+        if !mcp_endpoint_is_loopback(&self.mcp_endpoint) {
+            return Err(AgentProcessLaunchError::InvalidConfinementRequest(
+                "external agent confinement requires the ephemeral MCP endpoint to remain loopback-only"
+                    .to_owned(),
+            ));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ApprovalScope {
     Once,
@@ -684,6 +858,8 @@ pub(crate) struct AgentRun {
     pub(crate) state: AgentRunState,
     pub(crate) events: Vec<AgentEvent>,
     pub(crate) completion: CompletionReport,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) confinement_profile: Option<AgentConfinementProfile>,
     /// Provider-independent semantic working set retained independently of model residency.
     #[serde(default)]
     pub(crate) working_state: AgentWorkingState,
@@ -868,6 +1044,7 @@ impl AgentHost {
             state: AgentRunState::Inspecting,
             events: Vec::new(),
             completion: CompletionReport::default(),
+            confinement_profile: None,
             working_state: AgentWorkingState::from_proposal(&session.proposal),
             validation_attempts: Vec::new(),
             code_checkpoints: Vec::new(),
@@ -1071,6 +1248,23 @@ impl AgentHost {
             .find(|run| run.id == run_id)
             .ok_or_else(|| AgentHostError::RunNotFound(run_id.to_owned()))?;
         push_event(run, kind, message.into());
+        self.persist_session(&session_id)
+    }
+
+    pub(crate) fn record_confinement_profile(
+        &mut self,
+        run_id: &str,
+        profile: AgentConfinementProfile,
+    ) -> Result<(), AgentHostError> {
+        let summary = profile.summary();
+        let (session_id, _) = self.run_location(run_id)?;
+        let run = self.run_mut_in_session(&session_id, run_id)?;
+        run.confinement_profile = Some(profile);
+        push_event(
+            run,
+            AgentEventKind::ResourcePolicy,
+            format!("External agent confinement: {summary}."),
+        );
         self.persist_session(&session_id)
     }
 
@@ -2628,10 +2822,136 @@ pub(crate) struct ProcessLine {
     pub(crate) text: String,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct AgentProcessLaunchSpec {
+    pub(crate) program: OsString,
+    pub(crate) args: Vec<OsString>,
+    pub(crate) working_directory: PathBuf,
+    pub(crate) environment: Vec<(OsString, OsString)>,
+}
+
+impl AgentProcessLaunchSpec {
+    pub(crate) fn new<I, S>(
+        program: &OsStr,
+        args: I,
+        working_directory: &Path,
+        environment: &[(OsString, OsString)],
+    ) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
+        Self {
+            program: program.to_os_string(),
+            args: args
+                .into_iter()
+                .map(|argument| argument.as_ref().to_os_string())
+                .collect(),
+            working_directory: working_directory.to_path_buf(),
+            environment: environment.to_vec(),
+        }
+    }
+
+    fn command(&self) -> Command {
+        let mut command = Command::new(&self.program);
+        command
+            .args(&self.args)
+            .current_dir(&self.working_directory)
+            .envs(self.environment.iter().cloned())
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        command
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct AgentProcessLaunchOutcome {
+    pub(crate) child: Child,
+    pub(crate) profile: AgentConfinementProfile,
+}
+
+pub(crate) trait AgentProcessConfinementProvider {
+    fn spawn(
+        &self,
+        spec: &AgentProcessLaunchSpec,
+        request: &AgentConfinementRequest,
+    ) -> Result<AgentProcessLaunchOutcome, AgentProcessLaunchError>;
+}
+
+#[derive(Debug)]
+pub(crate) enum AgentProcessLaunchError {
+    InvalidConfinementRequest(String),
+    RequiredConfinementUnavailable {
+        profile: AgentConfinementProfile,
+    },
+    Io(io::Error),
+}
+
+impl AgentProcessLaunchError {
+    pub(crate) fn confinement_profile(&self) -> Option<&AgentConfinementProfile> {
+        match self {
+            Self::RequiredConfinementUnavailable { profile } => Some(profile),
+            Self::InvalidConfinementRequest(_) | Self::Io(_) => None,
+        }
+    }
+}
+
+impl fmt::Display for AgentProcessLaunchError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidConfinementRequest(message) => write!(formatter, "{message}"),
+            Self::RequiredConfinementUnavailable { profile } => write!(
+                formatter,
+                "required provider/OS confinement is unavailable: {}",
+                profile.summary()
+            ),
+            Self::Io(error) => write!(formatter, "could not launch external agent process: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for AgentProcessLaunchError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Io(error) => Some(error),
+            Self::InvalidConfinementRequest(_)
+            | Self::RequiredConfinementUnavailable { .. } => None,
+        }
+    }
+}
+
+impl From<io::Error> for AgentProcessLaunchError {
+    fn from(value: io::Error) -> Self {
+        Self::Io(value)
+    }
+}
+
+struct ApplicationPolicyProcessConfinementProvider;
+
+impl AgentProcessConfinementProvider for ApplicationPolicyProcessConfinementProvider {
+    fn spawn(
+        &self,
+        spec: &AgentProcessLaunchSpec,
+        request: &AgentConfinementRequest,
+    ) -> Result<AgentProcessLaunchOutcome, AgentProcessLaunchError> {
+        if request.requirement.requires_enforced_confinement() {
+            return Err(AgentProcessLaunchError::RequiredConfinementUnavailable {
+                profile: AgentConfinementProfile::unavailable(request.network_policy),
+            });
+        }
+        Ok(AgentProcessLaunchOutcome {
+            child: spec.command().spawn()?,
+            profile: AgentConfinementProfile::application_policy_only(request.network_policy),
+        })
+    }
+}
+
 pub(crate) struct ExternalAgentProcess {
     child: Child,
     output: Receiver<ProcessLine>,
     exit_status: Option<ExitStatus>,
+    confinement_profile: AgentConfinementProfile,
 }
 
 impl ExternalAgentProcess {
@@ -2640,25 +2960,40 @@ impl ExternalAgentProcess {
         args: I,
         working_directory: &Path,
         environment: &[(OsString, OsString)],
-    ) -> io::Result<Self>
+        confinement: &AgentConfinementRequest,
+    ) -> Result<Self, AgentProcessLaunchError>
     where
         I: IntoIterator<Item = S>,
         S: AsRef<OsStr>,
     {
-        let mut child = Command::new(program)
-            .args(args)
-            .current_dir(working_directory)
-            .envs(environment.iter().cloned())
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()?;
+        let spec = AgentProcessLaunchSpec::new(program, args, working_directory, environment);
+        Self::spawn_with_confinement_provider(
+            spec,
+            confinement,
+            &ApplicationPolicyProcessConfinementProvider,
+        )
+    }
+
+    pub(crate) fn spawn_with_confinement_provider(
+        spec: AgentProcessLaunchSpec,
+        confinement: &AgentConfinementRequest,
+        provider: &dyn AgentProcessConfinementProvider,
+    ) -> Result<Self, AgentProcessLaunchError> {
+        confinement.validate_for_spec(&spec)?;
+        let mut outcome = provider.spawn(&spec, confinement)?;
+        if !outcome.profile.satisfies(confinement.requirement) {
+            let profile = outcome.profile.clone();
+            terminate_child(&mut outcome.child);
+            return Err(AgentProcessLaunchError::RequiredConfinementUnavailable { profile });
+        }
+
+        let mut child = outcome.child;
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
         let (sender, output) = mpsc::channel();
         if let Some(stdout) = stdout {
             let sender = sender.clone();
-            std::thread::Builder::new()
+            if let Err(error) = std::thread::Builder::new()
                 .name("ai-agent-stdout".to_owned())
                 .spawn(move || {
                     for line in BufReader::new(stdout).lines().map_while(Result::ok) {
@@ -2667,10 +3002,14 @@ impl ExternalAgentProcess {
                             text: truncate_provider_output(line),
                         });
                     }
-                })?;
+                })
+            {
+                terminate_child(&mut child);
+                return Err(error.into());
+            }
         }
-        if let Some(stderr) = stderr {
-            std::thread::Builder::new()
+        if let Some(stderr) = stderr
+            && let Err(error) = std::thread::Builder::new()
                 .name("ai-agent-stderr".to_owned())
                 .spawn(move || {
                     for line in BufReader::new(stderr).lines().map_while(Result::ok) {
@@ -2679,13 +3018,21 @@ impl ExternalAgentProcess {
                             text: truncate_provider_output(line),
                         });
                     }
-                })?;
+                })
+        {
+            terminate_child(&mut child);
+            return Err(error.into());
         }
         Ok(Self {
             child,
             output,
             exit_status: None,
+            confinement_profile: outcome.profile,
         })
+    }
+
+    pub(crate) fn confinement_profile(&self) -> &AgentConfinementProfile {
+        &self.confinement_profile
     }
 
     pub(crate) fn drain_output(&self) -> Vec<ProcessLine> {
@@ -2719,10 +3066,29 @@ impl ExternalAgentProcess {
 impl Drop for ExternalAgentProcess {
     fn drop(&mut self) {
         if self.exit_status.is_none() {
-            let _ = self.child.kill();
-            let _ = self.child.wait();
+            terminate_child(&mut self.child);
         }
     }
+}
+
+fn terminate_child(child: &mut Child) {
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+fn mcp_endpoint_is_loopback(endpoint: &str) -> bool {
+    let authority = endpoint
+        .split_once("://")
+        .map_or(endpoint, |(_, remainder)| remainder)
+        .split('/')
+        .next()
+        .unwrap_or_default();
+    authority == "127.0.0.1"
+        || authority.starts_with("127.0.0.1:")
+        || authority == "localhost"
+        || authority.starts_with("localhost:")
+        || authority == "[::1]"
+        || authority.starts_with("[::1]:")
 }
 
 fn truncate_provider_output(mut line: String) -> String {
@@ -2740,6 +3106,123 @@ mod tests {
 
     fn temp_path(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!("gameengine-agent-{name}-{}", next_id("test")))
+    }
+
+    #[test]
+    fn generic_confinement_profile_never_claims_a_sandbox() {
+        let profile = AgentConfinementProfile::application_policy_only(
+            AgentConfinementNetworkPolicy::LoopbackOnly,
+        );
+        assert_eq!(
+            profile.layer,
+            AgentConfinementLayer::ApplicationPolicyOnly
+        );
+        assert_eq!(
+            profile.filesystem_guarantee,
+            AgentConfinementGuarantee::Unavailable
+        );
+        assert!(!profile.satisfies(
+            AgentConfinementRequirement::RequireProviderOrOsConfinement
+        ));
+        assert!(profile.summary().starts_with("Application policy only"));
+    }
+
+    #[test]
+    fn required_confinement_fails_closed_before_process_spawn() {
+        let workspace = temp_path("required-confinement");
+        fs::create_dir_all(&workspace).expect("workspace");
+        let request = AgentConfinementRequest::new(
+            AgentConfinementRequirement::RequireProviderOrOsConfinement,
+            workspace.clone(),
+            "http://127.0.0.1:1/mcp".to_owned(),
+            AgentConfinementNetworkPolicy::LoopbackOnly,
+        );
+        let error = ExternalAgentProcess::spawn(
+            OsStr::new("gameengine-adr0153-missing-test-binary"),
+            std::iter::empty::<OsString>(),
+            &workspace,
+            &[],
+            &request,
+        )
+        .err()
+        .expect("required confinement must reject the generic launcher");
+        assert!(matches!(
+            error,
+            AgentProcessLaunchError::RequiredConfinementUnavailable { .. }
+        ));
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn confinement_audit_omits_ephemeral_request_material() {
+        let project = temp_path("confinement-audit-project");
+        let storage = temp_path("confinement-audit-storage");
+        let workspace = temp_path("secret-workspace-material");
+        fs::create_dir_all(&project).expect("project");
+        fs::create_dir_all(&workspace).expect("workspace");
+        let mut host = AgentHost::open(project.clone(), storage.clone()).expect("host");
+        let session = host.create_session("Confinement audit").expect("session");
+        let run = host.start_run(&session, "test").expect("run");
+        let request = AgentConfinementRequest::new(
+            AgentConfinementRequirement::RequireProviderOrOsConfinement,
+            workspace.clone(),
+            "http://127.0.0.1:1/mcp/SECRET_ENDPOINT_MATERIAL".to_owned(),
+            AgentConfinementNetworkPolicy::LoopbackOnly,
+        );
+        let error = ExternalAgentProcess::spawn(
+            OsStr::new("gameengine-adr0153-missing-test-binary"),
+            std::iter::empty::<OsString>(),
+            &workspace,
+            &[],
+            &request,
+        )
+        .err()
+        .expect("generic launcher must reject required confinement");
+        let profile = error
+            .confinement_profile()
+            .expect("unavailable profile")
+            .clone();
+        host.record_confinement_profile(&run, profile)
+            .expect("record profile");
+        let persisted = fs::read_to_string(
+            storage
+                .join("sessions")
+                .join(format!("{session}.json")),
+        )
+        .expect("persisted session");
+        assert!(persisted.contains("confinement_profile"));
+        assert!(persisted.contains("unavailable"));
+        assert!(!persisted.contains("SECRET_ENDPOINT_MATERIAL"));
+        assert!(!persisted.contains(&workspace.display().to_string()));
+        let _ = fs::remove_dir_all(project);
+        let _ = fs::remove_dir_all(storage);
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn confinement_request_rejects_non_loopback_mcp_before_spawn() {
+        let workspace = temp_path("non-loopback-mcp");
+        fs::create_dir_all(&workspace).expect("workspace");
+        let request = AgentConfinementRequest::new(
+            AgentConfinementRequirement::AllowApplicationPolicyOnly,
+            workspace.clone(),
+            "http://192.0.2.10:8080/mcp".to_owned(),
+            AgentConfinementNetworkPolicy::ManagedNetworkAccess,
+        );
+        let error = ExternalAgentProcess::spawn(
+            OsStr::new("gameengine-adr0153-missing-test-binary"),
+            std::iter::empty::<OsString>(),
+            &workspace,
+            &[],
+            &request,
+        )
+        .err()
+        .expect("non-loopback MCP must be rejected before process lookup");
+        assert!(matches!(
+            error,
+            AgentProcessLaunchError::InvalidConfinementRequest(_)
+        ));
+        let _ = fs::remove_dir_all(workspace);
     }
 
     #[test]
