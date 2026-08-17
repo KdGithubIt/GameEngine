@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ai_studio.rs","old":"            provider_program: String::new(),\n            provider_args: String::new(),\n            open: true,","new":"            provider_program: String::new(),\n            provider_args: String::new(),\n            remote_gateway,\n            remote_requests,\n            open: true,"}
