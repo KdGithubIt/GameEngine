@@ -3340,6 +3340,143 @@ pub(crate) fn spawn_collider_component(
     Ok(())
 }
 
+const COLLIDER_2D_EXPECTED: &str =
+    "a Native 2D collider object with valid shape, material, filtering, and one-way fields";
+
+fn native_2d_numeric(value: &Value) -> Option<f32> {
+    let number = match value {
+        Value::F64(value) => *value as f32,
+        Value::I64(value) => *value as f32,
+        Value::U64(value) => *value as f32,
+        _ => return None,
+    };
+    number.is_finite().then_some(number)
+}
+
+pub(crate) fn spawn_collider_2d_component(
+    entity: Entity,
+    value: &Value,
+    context: &mut SpawnContext<'_>,
+) -> Result<(), ComponentSpawnError> {
+    let component_type = ComponentTypeId::new(COLLIDER_2D_COMPONENT);
+    let fields = ComponentFields::new(
+        context.authoring_entity,
+        &component_type,
+        value,
+        COLLIDER_2D_EXPECTED,
+    )?;
+    let shape = match fields.string("shape")? {
+        "box" => crate::native_2d::ColliderShape2d::Box {
+            half_extents: [fields.f32("half_extent_x")?, fields.f32("half_extent_y")?],
+        },
+        "circle" => crate::native_2d::ColliderShape2d::Circle {
+            radius: fields.f32("radius")?,
+        },
+        "capsule" => crate::native_2d::ColliderShape2d::Capsule {
+            half_height: fields.f32("half_height")?,
+            radius: fields.f32("radius")?,
+        },
+        "polygon" => {
+            let Some(Value::Array(authored_points)) = fields.get("points") else {
+                return Err(fields.invalid(COLLIDER_2D_EXPECTED).into());
+            };
+            if authored_points.len() < 3 {
+                return Err(fields.invalid(COLLIDER_2D_EXPECTED).into());
+            }
+            let mut points = Vec::with_capacity(authored_points.len());
+            for point in authored_points {
+                let Value::Object(point) = point else {
+                    return Err(fields.invalid(COLLIDER_2D_EXPECTED).into());
+                };
+                let Some(x) = point.get("x").and_then(native_2d_numeric) else {
+                    return Err(fields.invalid(COLLIDER_2D_EXPECTED).into());
+                };
+                let Some(y) = point.get("y").and_then(native_2d_numeric) else {
+                    return Err(fields.invalid(COLLIDER_2D_EXPECTED).into());
+                };
+                points.push([x, y]);
+            }
+            crate::native_2d::ColliderShape2d::Polygon { points }
+        }
+        _ => return Err(fields.invalid(COLLIDER_2D_EXPECTED).into()),
+    };
+    let memberships = u32::try_from(fields.i64("membership")?)
+        .map_err(|_| fields.invalid(COLLIDER_2D_EXPECTED))?;
+    let mask = u32::try_from(fields.i64("mask")?)
+        .map_err(|_| fields.invalid(COLLIDER_2D_EXPECTED))?;
+    context.world.add_component(
+        entity,
+        crate::native_2d::Collider2d {
+            shape,
+            sensor: fields.bool("sensor")?,
+            friction: fields.f32("friction")?,
+            restitution: fields.f32("restitution")?,
+            filter: crate::native_2d::CollisionFilter2d { memberships, mask },
+            one_way: fields.bool("one_way")?,
+        },
+    )?;
+    Ok(())
+}
+
+pub(crate) fn spawn_rigid_body_2d_component(
+    entity: Entity,
+    value: &Value,
+    context: &mut SpawnContext<'_>,
+) -> Result<(), ComponentSpawnError> {
+    let component_type = ComponentTypeId::new(RIGID_BODY_2D_COMPONENT);
+    const EXPECTED: &str = "a Native 2D rigid body with fixed, dynamic, or kinematic mode and finite motion fields";
+    let fields = ComponentFields::new(context.authoring_entity, &component_type, value, EXPECTED)?;
+    let mode = match fields.string("mode")? {
+        "fixed" => crate::native_2d::RigidBodyMode2d::Fixed,
+        "dynamic" => crate::native_2d::RigidBodyMode2d::Dynamic,
+        "kinematic" => crate::native_2d::RigidBodyMode2d::Kinematic,
+        _ => return Err(fields.invalid(EXPECTED).into()),
+    };
+    context.world.add_component(
+        entity,
+        crate::native_2d::RigidBody2d {
+            mode,
+            velocity: [fields.f32("velocity_x")?, fields.f32("velocity_y")?],
+            angular_velocity: fields.f32("angular_velocity")?,
+            gravity_scale: fields.f32("gravity_scale")?,
+            continuous: fields.bool("continuous")?,
+        },
+    )?;
+    Ok(())
+}
+
+pub(crate) fn spawn_character_controller_2d_component(
+    entity: Entity,
+    value: &Value,
+    context: &mut SpawnContext<'_>,
+) -> Result<(), ComponentSpawnError> {
+    let component_type = ComponentTypeId::new(CHARACTER_CONTROLLER_2D_COMPONENT);
+    const EXPECTED: &str = "a Native 2D character controller with positive extents and valid movement settings";
+    let fields = ComponentFields::new(context.authoring_entity, &component_type, value, EXPECTED)?;
+    let collision_mask = u32::try_from(fields.i64("collision_mask")?)
+        .map_err(|_| fields.invalid(EXPECTED))?;
+    let half_extents = glam::Vec2::new(
+        fields.f32("half_extent_x")?,
+        fields.f32("half_extent_y")?,
+    );
+    let skin = fields.f32("skin")?;
+    if skin >= half_extents.min_element() {
+        return Err(fields.invalid("a Native 2D character controller whose skin is smaller than both half extents").into());
+    }
+    context.world.add_component(
+        entity,
+        crate::native_2d::CharacterController2d {
+            half_extents,
+            skin,
+            slope_limit_radians: fields.f32("slope_limit_degrees")?.to_radians(),
+            ground_snap: fields.f32("ground_snap")?,
+            collision_mask,
+            ..crate::native_2d::CharacterController2d::default()
+        },
+    )?;
+    Ok(())
+}
+
 const PHYSICS_BODY_EXPECTED: &str =
     "an object with a kind field of \"static\", \"kinematic\", or \"dynamic\"";
 

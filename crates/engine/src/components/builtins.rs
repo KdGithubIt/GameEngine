@@ -943,6 +943,193 @@ const COLLIDER_FIELDS: &[FieldDef] = &[
     .with_control(InspectorFieldControl::LayerMask),
 ];
 
+const COLLIDER_2D_SHAPE_BOX: InspectorFieldCondition = InspectorFieldCondition::String {
+    field: "shape",
+    equals: "box",
+};
+
+const COLLIDER_2D_SHAPE_CAPSULE: InspectorFieldCondition = InspectorFieldCondition::String {
+    field: "shape",
+    equals: "capsule",
+};
+
+const COLLIDER_2D_SHAPE_ROUND: InspectorFieldCondition = InspectorFieldCondition::StringAny {
+    field: "shape",
+    values: &["circle", "capsule"],
+};
+
+const COLLIDER_2D_SHAPE_POLYGON: InspectorFieldCondition = InspectorFieldCondition::String {
+    field: "shape",
+    equals: "polygon",
+};
+
+const COLLIDER_2D_FIELDS: &[FieldDef] = &[
+    enumeration(
+        "shape",
+        "Shape",
+        "Native 2D collider geometry.",
+        "box",
+        &["box", "circle", "capsule", "polygon"],
+    ),
+    number(
+        "half_extent_x",
+        "Half Extent X",
+        "Positive local half-width for a box.",
+        0.5,
+        POSITIVE,
+    )
+    .when(COLLIDER_2D_SHAPE_BOX),
+    number(
+        "half_extent_y",
+        "Half Extent Y",
+        "Positive local half-height for a box.",
+        0.5,
+        POSITIVE,
+    )
+    .when(COLLIDER_2D_SHAPE_BOX),
+    number(
+        "radius",
+        "Radius",
+        "Positive radius for a circle or capsule.",
+        0.5,
+        POSITIVE,
+    )
+    .when(COLLIDER_2D_SHAPE_ROUND),
+    number(
+        "half_height",
+        "Half Height",
+        "Half length of the capsule center segment.",
+        0.5,
+        POSITIVE,
+    )
+    .when(COLLIDER_2D_SHAPE_CAPSULE),
+    list(
+        "points",
+        "Polygon Points",
+        "Ordered polygon points as objects with finite x/y fields.",
+        &OBJECT_KIND,
+    )
+    .when(COLLIDER_2D_SHAPE_POLYGON),
+    boolean(
+        "sensor",
+        "Sensor",
+        "Report overlap transitions without solid response.",
+        false,
+    ),
+    number(
+        "friction",
+        "Friction",
+        "Non-negative tangential friction coefficient.",
+        0.5,
+        NON_NEGATIVE,
+    ),
+    number(
+        "restitution",
+        "Restitution",
+        "Normal bounce coefficient.",
+        0.0,
+        UNIT_INTERVAL,
+    ),
+    FieldDef::new(
+        "membership",
+        "Membership",
+        "2D collision layer membership bitmask.",
+        FieldKind::I64,
+        FieldDefaultSpec::I64(1),
+    )
+    .with_control(InspectorFieldControl::LayerMask),
+    FieldDef::new(
+        "mask",
+        "Mask",
+        "2D collision layer interaction bitmask.",
+        FieldKind::I64,
+        FieldDefaultSpec::I64(u32::MAX as i64),
+    )
+    .with_control(InspectorFieldControl::LayerMask),
+    boolean(
+        "one_way",
+        "One Way",
+        "Use the shared one-way platform policy.",
+        false,
+    ),
+];
+
+const RIGID_BODY_2D_FIELDS: &[FieldDef] = &[
+    enumeration(
+        "mode",
+        "Mode",
+        "Native 2D body ownership mode.",
+        "fixed",
+        &["fixed", "dynamic", "kinematic"],
+    ),
+    float("velocity_x", "Velocity X", "Initial X velocity.", 0.0),
+    float("velocity_y", "Velocity Y", "Initial Y velocity.", 0.0),
+    float(
+        "angular_velocity",
+        "Angular Velocity",
+        "Initial Z angular velocity in radians per second.",
+        0.0,
+    ),
+    float(
+        "gravity_scale",
+        "Gravity Scale",
+        "Multiplier applied to project Native 2D gravity.",
+        1.0,
+    ),
+    boolean(
+        "continuous",
+        "Continuous Collision",
+        "Enable bounded continuous-collision substepping for this body.",
+        false,
+    ),
+];
+
+const CHARACTER_CONTROLLER_2D_FIELDS: &[FieldDef] = &[
+    number(
+        "half_extent_x",
+        "Half Extent X",
+        "Controller half-width.",
+        0.45,
+        POSITIVE,
+    ),
+    number(
+        "half_extent_y",
+        "Half Extent Y",
+        "Controller half-height.",
+        0.9,
+        POSITIVE,
+    ),
+    number(
+        "skin",
+        "Skin",
+        "Collision margin removed from overlap tests.",
+        0.02,
+        NON_NEGATIVE,
+    ),
+    number(
+        "slope_limit_degrees",
+        "Slope Limit",
+        "Maximum walkable surface angle in degrees.",
+        45.0,
+        NumericRange::inclusive(0.0, 89.0),
+    ),
+    number(
+        "ground_snap",
+        "Ground Snap",
+        "Maximum downward ground retention distance.",
+        0.1,
+        NON_NEGATIVE,
+    ),
+    FieldDef::new(
+        "collision_mask",
+        "Collision Mask",
+        "2D collision memberships considered by controller movement.",
+        FieldKind::I64,
+        FieldDefaultSpec::I64(u32::MAX as i64),
+    )
+    .with_control(InspectorFieldControl::LayerMask),
+];
+
 const PHYSICS_BODY_FIELDS: &[FieldDef] = &[enumeration(
     "kind",
     "Kind",
@@ -1811,6 +1998,33 @@ pub(super) fn builtin_components() -> Vec<BuiltinComponent> {
             1,
             COLLIDER_FIELDS,
             spawn_collider_component,
+        ),
+        BuiltinComponent::new(
+            COLLIDER_2D_COMPONENT,
+            "Collider 2D",
+            "Native XY-plane collider for the dedicated 2D physics world.",
+            "Physics",
+            1,
+            COLLIDER_2D_FIELDS,
+            spawn_collider_2d_component,
+        ),
+        BuiltinComponent::new(
+            RIGID_BODY_2D_COMPONENT,
+            "Rigid Body 2D",
+            "Native fixed, dynamic, or kinematic body in the dedicated 2D physics world.",
+            "Physics",
+            1,
+            RIGID_BODY_2D_FIELDS,
+            spawn_rigid_body_2d_component,
+        ),
+        BuiltinComponent::new(
+            CHARACTER_CONTROLLER_2D_COMPONENT,
+            "Character Controller 2D",
+            "Platformer-oriented kinematic controller using the shared Native 2D query policy.",
+            "Physics",
+            1,
+            CHARACTER_CONTROLLER_2D_FIELDS,
+            spawn_character_controller_2d_component,
         ),
         BuiltinComponent::new(
             PHYSICS_BODY_COMPONENT,
