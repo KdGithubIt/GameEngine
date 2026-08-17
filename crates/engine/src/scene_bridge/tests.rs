@@ -109,6 +109,56 @@ fn bridge_spawns_one_entity_per_authoring_entity() {
     assert_eq!(world.entity_count(), 2);
 }
 
+#[test]
+fn native_2d_camera_and_sprite_components_bridge_into_runtime_ecs() {
+    let mut scene = AuthoringScene::new();
+    let id = EntityId::generate();
+    let atlas = AssetId::generate();
+    let sprite_id = SpriteId::generate();
+    let mut camera = std::collections::BTreeMap::new();
+    camera.insert("enabled".into(), Value::Bool(true));
+    camera.insert("priority".into(), Value::I64(7));
+    camera.insert("orthographic_height".into(), Value::F64(12.0));
+    camera.insert("zoom".into(), Value::F64(2.0));
+    camera.insert("near".into(), Value::F64(-100.0));
+    camera.insert("far".into(), Value::F64(100.0));
+    camera.insert("pixel_perfect".into(), Value::Bool(true));
+    camera.insert("reference_pixels_per_unit".into(), Value::F64(100.0));
+    camera.insert("reference_width".into(), Value::I64(320));
+    camera.insert("reference_height".into(), Value::I64(180));
+    camera.insert("fit".into(), Value::String("fit".into()));
+    let mut sprite = std::collections::BTreeMap::new();
+    sprite.insert("atlas".into(), Value::AssetRef(atlas.clone()));
+    sprite.insert("sprite_id".into(), Value::String(sprite_id.as_str().into()));
+    sprite.insert("tint_r".into(), Value::F64(1.0));
+    sprite.insert("tint_g".into(), Value::F64(0.5));
+    sprite.insert("tint_b".into(), Value::F64(0.25));
+    sprite.insert("tint_a".into(), Value::F64(1.0));
+    sprite.insert("flip_x".into(), Value::Bool(true));
+    sprite.insert("flip_y".into(), Value::Bool(false));
+    sprite.insert("sorting_layer".into(), Value::String("sorting_layer_00000000000000000000000000".into()));
+    sprite.insert("order_in_layer".into(), Value::I64(3));
+    sprite.insert("visible".into(), Value::Bool(true));
+
+    let mut tx = Transaction::begin(&scene);
+    tx.apply(AuthoringCommand::CreateEntity { id: id.clone(), name: "native_2d".into(), parent: None });
+    tx.apply(AuthoringCommand::AddComponent { entity: id.clone(), component_type: ComponentTypeId::new(CAMERA_2D_COMPONENT), value: Value::Object(camera) });
+    tx.apply(AuthoringCommand::AddComponent { entity: id.clone(), component_type: ComponentTypeId::new(SPRITE_RENDERER_2D_COMPONENT), value: Value::Object(sprite) });
+    tx.commit(&mut scene).expect("Native 2D setup must commit");
+
+    let mut world = World::new();
+    let bridge = spawn_from_authoring_scene(&mut world, &scene).expect("Native 2D scene must bridge");
+    let entity = bridge.get(&id).expect("runtime entity");
+    let runtime_camera = world.get_component::<Camera2d>(entity).expect("Camera2D runtime component");
+    assert_eq!(runtime_camera.priority, 7);
+    assert!(runtime_camera.pixel_perfect);
+    let runtime_sprite = world.get_component::<SpriteRenderer2d>(entity).expect("SpriteRenderer2D runtime component");
+    assert_eq!(runtime_sprite.sprite.atlas, atlas);
+    assert_eq!(runtime_sprite.sprite.sprite, sprite_id);
+    assert_eq!(runtime_sprite.order_in_layer, 3);
+    assert!(runtime_sprite.flip_x);
+}
+
 fn secondary_motion_rig(id: AssetId, name: &str) -> SecondaryMotionRigAsset {
     SecondaryMotionRigAsset {
         schema_version: crate::secondary_motion::SECONDARY_MOTION_RIG_SCHEMA_VERSION,

@@ -2462,6 +2462,91 @@ pub(crate) fn spawn_camera_component(
     Ok(())
 }
 
+pub(crate) fn spawn_camera_2d_component(
+    entity: Entity,
+    value: &Value,
+    context: &mut SpawnContext<'_>,
+) -> Result<(), ComponentSpawnError> {
+    let component_type = ComponentTypeId::new(CAMERA_2D_COMPONENT);
+    const EXPECTED: &str = "a Camera2D object with valid projection, reference resolution, and fit fields";
+    let fields = ComponentFields::new(context.authoring_entity, &component_type, value, EXPECTED)?;
+    let priority = i32::try_from(fields.i64("priority")?)
+        .map_err(|_| fields.invalid(EXPECTED))?;
+    let width = u32::try_from(fields.i64("reference_width")?)
+        .map_err(|_| fields.invalid(EXPECTED))?;
+    let height = u32::try_from(fields.i64("reference_height")?)
+        .map_err(|_| fields.invalid(EXPECTED))?;
+    let fit = match fields.string("fit")? {
+        "fit" => ViewportFit2d::Fit,
+        "fill" => ViewportFit2d::Fill,
+        "stretch" => ViewportFit2d::Stretch,
+        _ => return Err(fields.invalid(EXPECTED).into()),
+    };
+    let camera = Camera2d {
+        enabled: fields.bool("enabled")?,
+        priority,
+        orthographic_height: fields.f32("orthographic_height")?,
+        zoom: fields.f32("zoom")?,
+        near: fields.f32("near")?,
+        far: fields.f32("far")?,
+        pixel_perfect: fields.bool("pixel_perfect")?,
+        reference_pixels_per_unit: fields.f32("reference_pixels_per_unit")?,
+        reference_resolution: [width, height],
+        fit,
+    };
+    if width == 0 || height == 0 || camera.projection([width, height]).is_err() {
+        return Err(fields.invalid(EXPECTED).into());
+    }
+    context.world.add_component(entity, camera)?;
+    Ok(())
+}
+
+pub(crate) fn spawn_sprite_renderer_2d_component(
+    entity: Entity,
+    value: &Value,
+    context: &mut SpawnContext<'_>,
+) -> Result<(), ComponentSpawnError> {
+    let component_type = ComponentTypeId::new(SPRITE_RENDERER_2D_COMPONENT);
+    const EXPECTED: &str = "a SpriteRenderer2D object with a stable atlas/SpriteId, tint, sorting layer, order, and visibility";
+    let fields = ComponentFields::new(context.authoring_entity, &component_type, value, EXPECTED)?;
+    let Some(atlas) = fields.assignable_asset_ref("atlas")?.cloned() else {
+        context.asset_diagnostics.push(component_inactive_diagnostic(
+            context.authoring_entity,
+            &component_type,
+            "atlas",
+        ));
+        return Ok(());
+    };
+    let sprite = SpriteId::parse(fields.string("sprite_id")?.to_owned())
+        .map_err(|_| fields.invalid(EXPECTED))?;
+    let sorting_layer = SortingLayerId::parse(fields.string("sorting_layer")?.to_owned())
+        .map_err(|_| fields.invalid(EXPECTED))?;
+    let order_in_layer = i32::try_from(fields.i64("order_in_layer")?)
+        .map_err(|_| fields.invalid(EXPECTED))?;
+    let tint = [
+        fields.f32("tint_r")?,
+        fields.f32("tint_g")?,
+        fields.f32("tint_b")?,
+        fields.f32("tint_a")?,
+    ];
+    if tint[..3].iter().any(|value| *value < 0.0) || !(0.0..=1.0).contains(&tint[3]) {
+        return Err(fields.invalid(EXPECTED).into());
+    }
+    context.world.add_component(
+        entity,
+        SpriteRenderer2d {
+            sprite: SpriteRef { atlas, sprite },
+            tint,
+            flip_x: fields.bool("flip_x")?,
+            flip_y: fields.bool("flip_y")?,
+            sorting_layer,
+            order_in_layer,
+            visible: fields.bool("visible")?,
+        },
+    )?;
+    Ok(())
+}
+
 pub(crate) fn spawn_directional_light_component(
     entity: Entity,
     value: &Value,

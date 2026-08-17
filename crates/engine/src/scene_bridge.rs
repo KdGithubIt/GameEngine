@@ -30,6 +30,7 @@ use crate::material::{AlphaMode, CullMode, ShadingModel};
 use crate::material::{DecodedTexture, Material, MaterialSlots};
 use crate::mesh::Mesh;
 use crate::navmesh::NavMeshAgent;
+use crate::native_2d::{Camera2d, SortingLayerId, SpriteId, SpriteRef, SpriteRenderer2d, ViewportFit2d};
 use crate::player::{MovePlane, PlayerController, PlayerMarker};
 use crate::postprocess::{
     BloomSettings, ColorGradingSettings, PostProcessSettings, ToneMapOperator,
@@ -100,6 +101,12 @@ pub const LOD_GROUP_COMPONENT: &str = "engine.lod_group";
 
 /// The `"engine.camera"` component type string recognised by the bridge.
 pub const CAMERA_COMPONENT: &str = "engine.camera";
+
+/// The stable Native 2D orthographic camera component (ADR 0127).
+pub const CAMERA_2D_COMPONENT: &str = "engine.camera_2d";
+
+/// The stable Native 2D sprite renderer component (ADR 0127).
+pub const SPRITE_RENDERER_2D_COMPONENT: &str = "engine.sprite_renderer_2d";
 
 /// The `"engine.directional_light"` component type string recognised by the bridge.
 pub const DIRECTIONAL_LIGHT_COMPONENT: &str = "engine.directional_light";

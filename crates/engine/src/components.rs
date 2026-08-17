@@ -54,6 +54,10 @@ pub enum AssetKind {
     Prefab,
     /// A typed `*.vfx.json` visual-effect document (ADR 0125).
     VfxEffect,
+    /// A versioned `*.spriteatlas.json` Native 2D sprite-atlas document (ADR 0127).
+    SpriteAtlas,
+    /// A versioned `*.spriteanim.json` Native 2D sprite-animation document (ADR 0127).
+    SpriteAnimation,
     /// A glTF/GLB, FBX, or PMX source document used for mesh, skin, or
     /// animation import (ADR 0081 widened this from glTF/GLB-only, ADR 0097
     /// widened it again to PMX; the variant name is a pre-existing misnomer
@@ -112,6 +116,8 @@ pub fn asset_path_matches_kind(kind: AssetKind, path: &Path) -> bool {
         AssetKind::UiDocument => file_name.ends_with(".ui.json"),
         AssetKind::Prefab => file_name.ends_with(".prefab.json"),
         AssetKind::VfxEffect => file_name.ends_with(".vfx.json"),
+        AssetKind::SpriteAtlas => file_name.ends_with(".spriteatlas.json"),
+        AssetKind::SpriteAnimation => file_name.ends_with(".spriteanim.json"),
         AssetKind::GltfSource => extension_matches(extension, &["gltf", "glb", "fbx", "pmx"]),
         AssetKind::MotionSource => extension_matches(extension, &["vmd"]),
         // Skins, skeletons, morphs, and secondary-motion rigs are only ever
