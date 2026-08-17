@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0125-vfx-current-main-20260817-1049-05",
+  "target_branch": "chatgpt/gameengine-adr0125-vfx-current-main-r2",
+  "expected_head_sha": "9e96a664466b16a3435d999a43ae373618acbfb1",
+  "baseline_main_sha": "89cf19154b1664ef8de83d91cdbeeb2c4242a738",
+  "patch_sha256": "9189fd4fc9a8ad8b4761a25ab673c97768aea2c31182abe085c54c785262166a",
+  "patch_bytes": 815,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Remove obsolete VFX preview helper",
+  "pr_title": "GameEngine: complete ADR 0125 VFX first release",
+  "pr_body": "## Summary\n\nCompletes ADR 0125 first-release VFX lifecycle, Project Rust control, and responsive VFX Builder background compilation/I/O on current main. Removes an obsolete preview helper exposed by affected Clippy after the background compilation migration.\n\n## Validation\n\nRun affected Windows validation and the deterministic VFX Builder visual fixture. Visually verify VFX Builder emitter/module authoring, curve/gradient UI, preview controls, rendered preview, and Scene View integration.\n\n<!-- gameengine-visual-validation: editor -->\n<!-- gameengine-visual-authoring-tool: VFX Builder -->\n"
+}
