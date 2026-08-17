@@ -5,7 +5,8 @@
 //! workspace rules live in the GUI-free `agent_host` module.
 
 use crate::agent_host::{
-    project_storage_key, AgentCapability, AgentEventKind, AgentHost, AgentProposal, AgentRunState,
+    project_storage_key, AgentCapability, AgentConfinementNetworkPolicy, AgentConfinementRequest,
+    AgentConfinementRequirement, AgentEventKind, AgentHost, AgentProposal, AgentRunState,
     ApprovalScope, AuthoritativeStateSnapshot, CodeChange, CodeWorkspace, CompletionStatus,
     ConversationRole, ExternalAgentProcess, ManagedValidationAttemptStatus, PermissionCheck,
     ProcessStream, ResumeDisposition,
@@ -44,6 +45,8 @@ struct AiStudioPreferences {
     schema_version: u32,
     #[serde(default)]
     quality_preference: QualityPreference,
+    #[serde(default)]
+    confinement_requirement: AgentConfinementRequirement,
     #[serde(default = "default_local_model_endpoint")]
     local_model_endpoint: String,
     #[serde(default)]
@@ -55,6 +58,7 @@ impl Default for AiStudioPreferences {
         Self {
             schema_version: AI_STUDIO_PREFERENCES_SCHEMA_VERSION,
             quality_preference: QualityPreference::Auto,
+            confinement_requirement: AgentConfinementRequirement::default(),
             local_model_endpoint: DEFAULT_LOCAL_MODEL_ENDPOINT.to_owned(),
             local_model_name: String::new(),
         }
@@ -348,6 +352,7 @@ pub struct AiStudioPanel {
     message_draft: String,
     preferences_path: PathBuf,
     quality_preference: QualityPreference,
+    confinement_requirement: AgentConfinementRequirement,
     local_model_endpoint: String,
     local_model_name: String,
     resolved_workload: InferenceWorkload,
@@ -425,6 +430,7 @@ impl AiStudioPanel {
             message_draft: String::new(),
             preferences_path,
             quality_preference: preferences.quality_preference,
+            confinement_requirement: preferences.confinement_requirement,
             local_model_endpoint: preferences.local_model_endpoint,
             local_model_name: preferences.local_model_name,
             resolved_workload: InferenceWorkload::InteractiveReasoning,
@@ -1356,6 +1362,7 @@ impl AiStudioPanel {
         let preferences = AiStudioPreferences {
             schema_version: AI_STUDIO_PREFERENCES_SCHEMA_VERSION,
             quality_preference: self.quality_preference,
+            confinement_requirement: self.confinement_requirement,
             local_model_endpoint: self.local_model_endpoint.clone(),
             local_model_name: self.local_model_name.clone(),
         };
@@ -1850,6 +1857,49 @@ impl AiStudioPanel {
             ui.label("Arguments");
             ui.text_edit_singleline(&mut self.provider_args);
         });
+        let previous_confinement_requirement = self.confinement_requirement;
+        ui.horizontal(|ui| {
+            ui.label("External process confinement");
+            egui::ComboBox::from_id_salt("ai_studio_process_confinement")
+                .selected_text(self.confinement_requirement.label())
+                .show_ui(ui, |ui| {
+                    for requirement in [
+                        AgentConfinementRequirement::AllowApplicationPolicyOnly,
+                        AgentConfinementRequirement::RequireProviderOrOsConfinement,
+                    ] {
+                        ui.selectable_value(
+                            &mut self.confinement_requirement,
+                            requirement,
+                            requirement.label(),
+                        );
+                    }
+                });
+        });
+        if previous_confinement_requirement != self.confinement_requirement {
+            self.save_preferences();
+        }
+        let confinement_status = self
+            .active_run_id
+            .as_deref()
+            .and_then(|run_id| self.host.run(run_id).ok())
+            .and_then(|run| run.confinement_profile.as_ref())
+            .map(|profile| profile.summary())
+            .unwrap_or_else(|| {
+                "No external process confinement profile has been recorded. Generic external launches are application-policy-only; the native AgentRuntime is not an external child-process sandbox."
+                    .to_owned()
+            });
+        ui.group(|ui| {
+            ui.strong("Confinement status");
+            ui.label(confinement_status);
+            ui.small(
+                "GameEngine application permissions remain authoritative. External providers are not treated as sandboxed unless their launch path reports enforceable provider/OS confinement.",
+            );
+            if self.confinement_requirement.requires_enforced_confinement() {
+                ui.small(
+                    "Fail-closed policy: an external agent will not start through the generic process runtime unless a provider/OS confinement adapter can satisfy this requirement.",
+                );
+            }
+        });
         ui.small(
             "Go uses the configured external AgentRuntime when present; otherwise the selected local model runs through the governed native AgentRuntime. Both share the immutable proposal, Agent Host permissions, live Editor MCP writer, managed code workspace, validation, Play/frame evidence, and completion contract.",
         );
@@ -2281,6 +2331,30 @@ impl AiStudioPanel {
         } else {
             None
         };
+        let network_policy = match self.host.run(run_id) {
+            Ok(run)
+                if run
+                    .proposal_snapshot
+                    .requested_capabilities
+                    .contains(&AgentCapability::NetworkAccess) =>
+            {
+                AgentConfinementNetworkPolicy::ManagedNetworkAccess
+            }
+            Ok(_) => AgentConfinementNetworkPolicy::LoopbackOnly,
+            Err(error) => {
+                self.fail_run(
+                    run_id,
+                    format!("Could not resolve confinement policy from run capabilities: {error}"),
+                );
+                return;
+            }
+        };
+        let confinement_request = AgentConfinementRequest::new(
+            self.confinement_requirement,
+            workspace.root().to_path_buf(),
+            self.connection.endpoint.clone(),
+            network_policy,
+        );
         let mut environment = vec![
             (
                 OsString::from("GAMEENGINE_MCP_ENDPOINT"),
@@ -2336,8 +2410,21 @@ impl AiStudioPanel {
             &args,
             workspace.root(),
             &environment,
+            &confinement_request,
         ) {
-            Ok(process) => {
+            Ok(mut process) => {
+                let confinement_profile = process.confinement_profile().clone();
+                if let Err(error) = self
+                    .host
+                    .record_confinement_profile(run_id, confinement_profile.clone())
+                {
+                    let _ = process.cancel();
+                    self.fail_run(
+                        run_id,
+                        format!("Could not persist external agent confinement profile: {error}"),
+                    );
+                    return;
+                }
                 self.code_workspace = Some(workspace);
                 self.process = Some(process);
                 self.process_purpose = Some(purpose);
@@ -2350,7 +2437,10 @@ impl AiStudioPanel {
                         ) {
                             self.status = Some(error.to_string());
                         } else {
-                            self.status = Some("External agent runtime started.".to_owned());
+                            self.status = Some(format!(
+                                "External agent runtime started. {}",
+                                confinement_profile.summary()
+                            ));
                         }
                     }
                     ExternalAgentPurpose::RuntimeEvaluation => {
@@ -2361,22 +2451,35 @@ impl AiStudioPanel {
                         ) {
                             self.status = Some(error.to_string());
                         } else {
-                            self.status = Some("External agent runtime is evaluating the captured managed Play frame.".to_owned());
+                            self.status = Some(format!(
+                                "External agent runtime is evaluating the captured managed Play frame. {}",
+                                confinement_profile.summary()
+                            ));
                         }
                     }
                 }
             }
-            Err(error) => match purpose {
-                ExternalAgentPurpose::BuildOrRepair => {
-                    self.fail_run(run_id, format!("Could not launch external agent: {error}"));
+            Err(error) => {
+                if let Some(profile) = error.confinement_profile().cloned()
+                    && let Err(audit_error) =
+                        self.host.record_confinement_profile(run_id, profile)
+                {
+                    self.status = Some(format!(
+                        "Could not record rejected confinement profile: {audit_error}"
+                    ));
                 }
-                ExternalAgentPurpose::RuntimeEvaluation => {
-                    self.record_runtime_evaluation_failure(
-                        run_id,
-                        format!("Could not launch runtime evaluator: {error}"),
-                    );
+                match purpose {
+                    ExternalAgentPurpose::BuildOrRepair => {
+                        self.fail_run(run_id, format!("Could not launch external agent: {error}"));
+                    }
+                    ExternalAgentPurpose::RuntimeEvaluation => {
+                        self.record_runtime_evaluation_failure(
+                            run_id,
+                            format!("Could not launch runtime evaluator: {error}"),
+                        );
+                    }
                 }
-            },
+            }
         }
     }
 

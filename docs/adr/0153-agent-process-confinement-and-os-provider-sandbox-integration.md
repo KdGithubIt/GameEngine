@@ -1,6 +1,6 @@
 # ADR 0153: Agent Process Confinement and OS/Provider Sandbox Integration
 
-Status: Proposed
+Status: Accepted
 Date: 2026-08-17
 Builds on: ADR 0131
 Relates to: ADR 0145
@@ -39,6 +39,16 @@ When the platform can enforce them, sandbox network/filesystem scopes should der
 ## Dependencies and parallel work
 
 This ADR can be implemented in parallel with ADR 0141-0149 and ADR 0151. First-class adapters from ADR 0145 are a natural integration point but the confinement contract may be developed against the existing generic process runtime first.
+
+## Implementation
+
+The first-release Agent Host now defines a provider-neutral confinement request and profile at the existing external-process launch boundary. The generic process runtime reports **Application policy only** and never claims provider/OS sandboxing. A user may instead require provider/OS confinement; the generic runtime then fails closed before process spawn rather than silently downgrading.
+
+The transient launch request carries only the approved session code-workspace root, the loopback MCP endpoint, the selected requirement, and a direct-network policy projection derived from the existing `NetworkAccess` capability. It is not serialized. `ExternalAssetAcquisition` remains a governed GameEngine/MCP capability and therefore does not silently widen ambient child-process network access. The persisted run/audit record contains only the non-secret confinement profile and its truthful guarantee levels. MCP authorization material remains process-environment-only.
+
+The launch boundary exposes a confinement-provider seam so first-class adapters or platform integrations can own the real process creation mechanism. A profile satisfies the strict requirement only when it reports provider, OS, container, or VM confinement with enforced filesystem, network, and process-tree guarantees. Unsupported generic launches report unavailable rather than simulated confinement.
+
+AI Studio persists the user's external-process confinement requirement as local application preferences and displays the actual run profile separately from GameEngine application permissions. This applies consistently to the embedded and detached ADR0147 presentations. The generic path also rejects non-loopback MCP endpoints and a launch working directory that differs from the approved code workspace.
 
 ## Verification
 
