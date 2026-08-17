@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0138-20260817-2320-09",
+  "target_branch": "chatgpt/gameengine-adr0138-graph-debug-r2",
+  "expected_head_sha": "aa67d6091b7c957e3881a668d91def87ccd2d259",
+  "baseline_main_sha": "73ecdb99da92052d74595dd26e2872d7956fecf8",
+  "patch_sha256": "a9d8908cb8b426955a91a01df316d142ff5a6823819f728706bdade91ecab1e9",
+  "patch_bytes": 3157,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Preserve Animator-only debug snapshots",
+  "pr_title": "GameEngine: implement ADR 0138 unified Graph Debug",
+  "pr_body": "## Summary\n\n- implement ADR 0138 unified Graph Debug on current main while preserving integrated ADR0135 changes\n- keep Graph Debug bound to actual AnimGraphPlayer runtime evidence\n- preserve the existing Animator-only animation debug snapshot contract when no Animation Graph player is present\n- preserve stable graph identity/provenance, stale suppression, read-only overlays, and active transition highlighting\n\n## Validation\n\nRe-run affected Windows Validation and required Editor visual validation.\n\n<!-- gameengine-visual-validation: editor -->"
+}
