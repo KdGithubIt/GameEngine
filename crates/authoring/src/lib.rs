@@ -59,6 +59,8 @@ pub mod load;
 pub mod material_asset;
 /// Native 2D project, sprite, animation, and tile authoring contracts (ADR 0127).
 pub mod native_2d;
+/// GUI-free Native 2D mutations shared by Editor, CLI, and MCP.
+pub mod native_2d_services;
 pub mod persist;
 pub mod prefab;
 pub mod prefab_authoring;
