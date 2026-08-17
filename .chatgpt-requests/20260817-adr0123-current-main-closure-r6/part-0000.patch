@@ -1,0 +1,46 @@
+diff --git a/crates/editor/src/canvas/mod.rs b/crates/editor/src/canvas/mod.rs
+index 36bdb95065fa549faabbb2b0a8d4f647af5b2ced..1f427f0de8badd8f729d27a193d581c696c599e1 100644
+--- a/crates/editor/src/canvas/mod.rs
++++ b/crates/editor/src/canvas/mod.rs
+@@ -614,26 +614,30 @@ pub(crate) fn show_graph_node_palette_visual_fixture(
+     let mut search_query = "decorator".to_owned();
+     ui.columns(2, |columns| {
+         columns[0].strong("Schema catalog");
+-        for kind in session.available_graph_node_kinds() {
+-            if kind.category().starts_with("Behavior Tree") {
+-                columns[0].label(format!("{} — {}", kind.category(), kind.label()));
+-            }
+-        }
++        let catalog = session
++            .available_graph_node_kinds()
++            .into_iter()
++            .filter(|kind| kind.category().starts_with("Behavior Tree"))
++            .map(|kind| kind.label())
++            .collect::<Vec<_>>()
++            .join("  •  ");
++        columns[0].label(catalog);
+ 
+         columns[1].strong("Search preview");
+         columns[1].add(
+             egui::TextEdit::singleline(&mut search_query)
+                 .hint_text("Search nodes...")
+-                .desired_width(110.0),
++                .desired_width(180.0),
+         );
+-        columns[1].small("Matches shared schema labels, categories, type IDs, and tags.");
+-        for kind in session
++        columns[1].small("Shared schema labels/categories/type IDs/tags");
++        let matches = session
+             .available_graph_node_kinds()
+             .into_iter()
+             .filter(|kind| kind.matches_search(&search_query))
+-        {
+-            columns[1].label(kind.label());
+-        }
++            .map(|kind| kind.label())
++            .collect::<Vec<_>>()
++            .join("  •  ");
++        columns[1].label(matches);
+     });
+ }
+ 
