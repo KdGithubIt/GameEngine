@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "    #[test]\n    fn code_change_summary_keeps_deletion_blocked() {",
+  "new": "    #[test]\n    fn provider_semantic_progress_is_structured_json() {\n        let event: ProviderAgentEvent = serde_json::from_str(\n            r#\"{\"type\":\"progress\",\"step\":\"inspect\",\"detail\":\"scene\"}\"#,\n        ).expect(\"semantic event\");\n        assert!(matches!(\n            event,\n            ProviderAgentEvent::Progress { step, detail } if step == \"inspect\" && detail == \"scene\"\n        ));\n    }\n\n    #[test]\n    fn code_change_summary_keeps_deletion_blocked() {"
+}
