@@ -5,6 +5,8 @@ use crate::canvas::{
     show_graph_debug_canvas, GraphCanvasState, GraphDebugBadge, GraphDebugNodePresentation,
     GraphDebugOverlay,
 };
+#[cfg(feature = "visual-validation")]
+use crate::canvas::show_graph_node_palette_visual_fixture;
 use engine::behavior_tree::{
     BehaviorExecutionSnapshot, BehaviorExecutionTransitionKind, BehaviorResetReason, BehaviorStatus,
 };
@@ -187,6 +189,15 @@ impl BehaviorTreeDebugState {
                 reason: Some(BehaviorResetReason::Interrupted),
             });
         }
+        if let Some(node) = nodes.get(4) {
+            recent_transitions.push(engine::behavior_tree::BehaviorExecutionTransition {
+                generation: 4,
+                node: Some(node.clone()),
+                behavior_id: Some("enemy.fallback_failed".into()),
+                kind: BehaviorExecutionTransitionKind::Failure,
+                reason: None,
+            });
+        }
         let snapshot = BehaviorExecutionSnapshot {
             tree_source: session.graph().id.clone(),
             tree_generation: 2,
@@ -356,6 +367,41 @@ impl EditorApp {
         }
         let presentation = BehaviorTreeDebugPresentation::from_snapshot(runtime_entity, &snapshot);
 
+        #[cfg(feature = "visual-validation")]
+        if is_fixture {
+            let context = ui.ctx().clone();
+            egui::Window::new("Behavior Tree Visual Validation")
+                .id(egui::Id::new("behavior_tree_visual_validation_workspace"))
+                .collapsible(false)
+                .resizable(false)
+                .fixed_pos(egui::pos2(8.0, 60.0))
+                .fixed_size(egui::vec2(1080.0, 660.0))
+                .show(&context, |ui| {
+                    ui.horizontal_top(|ui| {
+                        ui.vertical(|ui| {
+                            ui.set_width(350.0);
+                            ui.set_min_height(600.0);
+                            if let Some(session) = self.behavior_debug.graph_session.as_ref() {
+                                show_graph_node_palette_visual_fixture(ui, session);
+                            }
+                        });
+                        ui.separator();
+                        ui.vertical(|ui| {
+                            ui.set_width(470.0);
+                            ui.set_min_height(600.0);
+                            self.behavior_debug.show_graph(ui, &presentation);
+                        });
+                        ui.separator();
+                        ui.vertical(|ui| {
+                            ui.set_width(210.0);
+                            ui.set_min_height(600.0);
+                            show_behavior_debug_details(ui, &presentation);
+                        });
+                    });
+                });
+            return;
+        }
+
         egui::Panel::right("behavior_tree_debug_details")
             .resizable(true)
             .default_size(280.0)
@@ -382,9 +428,8 @@ impl EditorApp {
 fn show_behavior_debug_details(ui: &mut egui::Ui, presentation: &BehaviorTreeDebugPresentation) {
     ui.heading("Behavior Tree Debug");
     if let Some((id, generation)) = presentation.runtime_entity {
-        ui.label(format!(
-            "Runner entity {id}  |  Entity generation {generation}"
-        ));
+        ui.label(format!("Runner entity {id}"));
+        ui.label(format!("Entity generation {generation}"));
     }
     ui.monospace(presentation.graph.as_str());
     ui.label(format!(

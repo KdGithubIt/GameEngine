@@ -602,6 +602,41 @@ pub fn show_graph_canvas(
     actions
 }
 
+#[cfg(feature = "visual-validation")]
+pub(crate) fn show_graph_node_palette_visual_fixture(
+    ui: &mut egui::Ui,
+    session: &EditorSession,
+) {
+    ui.heading("Behavior Tree Add Node");
+    ui.small("Schema-driven node palette");
+    ui.separator();
+
+    let mut search_query = "decorator".to_owned();
+    ui.columns(2, |columns| {
+        columns[0].strong("Schema catalog");
+        for kind in session.available_graph_node_kinds() {
+            if kind.category().starts_with("Behavior Tree") {
+                columns[0].label(format!("{} — {}", kind.category(), kind.label()));
+            }
+        }
+
+        columns[1].strong("Search preview");
+        columns[1].add(
+            egui::TextEdit::singleline(&mut search_query)
+                .hint_text("Search nodes...")
+                .desired_width(150.0),
+        );
+        columns[1].small("Matches shared schema labels, categories, type IDs, and tags.");
+        for kind in session
+            .available_graph_node_kinds()
+            .into_iter()
+            .filter(|kind| kind.matches_search(&search_query))
+        {
+            columns[1].label(kind.label());
+        }
+    });
+}
+
 /// Draws a read-only graph canvas with transient runtime debug presentation.
 ///
 /// Unlike [`show_graph_canvas`], this surface never emits authoring actions and
