@@ -278,11 +278,21 @@ pub(super) fn load_material_asset(
     let material_path = asset_root
         .unwrap_or_else(|| Path::new("."))
         .join(&entry.path);
-    let parsed = std::fs::read_to_string(&material_path)
-        .map_err(|error| error.to_string())
-        .and_then(|json| {
-            engine_authoring::MaterialAsset::from_json(&json).map_err(|error| error.to_string())
-        });
+    let parsed = if let Some(snapshot) = asset_state.authoring_overlay.get(&material_path) {
+        snapshot
+            .contents()
+            .map(str::to_owned)
+            .map_err(str::to_owned)
+            .and_then(|json| {
+                engine_authoring::MaterialAsset::from_json(&json).map_err(|error| error.to_string())
+            })
+    } else {
+        std::fs::read_to_string(&material_path)
+            .map_err(|error| error.to_string())
+            .and_then(|json| {
+                engine_authoring::MaterialAsset::from_json(&json).map_err(|error| error.to_string())
+            })
+    };
     let parsed = match parsed {
         Ok(parsed) => parsed,
         Err(error) => {

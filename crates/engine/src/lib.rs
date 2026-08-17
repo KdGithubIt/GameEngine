@@ -19,6 +19,8 @@ pub mod animation_parameters;
 pub mod app;
 /// Runtime asset storage and loading.
 pub mod asset;
+/// Immutable editor working-copy snapshots supplied at runtime composition boundaries.
+pub mod authoring_overlay;
 /// Runtime audio assets and playback control.
 pub mod audio;
 /// Runtime executor for compiled Behavior Tree artifacts.
@@ -250,6 +252,7 @@ pub use combat::{
 };
 pub use components::{
     asset_path_matches_kind, builtin_registry, validate_builtin_component_asset_files,
+    validate_builtin_component_asset_files_with_overlay,
     validate_builtin_component_asset_references, validate_builtin_component_assets,
     validate_builtin_component_values, AssetKind, ComponentDefinition, ComponentRegistry,
     ComponentSpawnError, FieldDef, InspectorFieldCondition, InspectorFieldControl, InspectorHint,

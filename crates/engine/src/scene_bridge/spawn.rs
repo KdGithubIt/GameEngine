@@ -919,7 +919,19 @@ pub(crate) fn spawn_animation_controller_component(
     };
     let graph_path = manifest_asset_path(&graph_asset, context)?;
     let (source_graph, compiled_graph) =
-        load_animation_graph_document(&graph_path).map_err(|source| SceneBridgeError::AssetLoad {
+        if let Some(snapshot) = context.asset_state.authoring_overlay.get(&graph_path) {
+            let json = snapshot.contents().map_err(|message| SceneBridgeError::AssetLoad {
+                asset: graph_asset.clone(),
+                source: AssetLoadError::InvalidAsset {
+                    path: graph_path.clone(),
+                    message: message.to_owned(),
+                },
+            })?;
+            load_animation_graph_document_json(json)
+        } else {
+            load_animation_graph_document(&graph_path)
+        }
+        .map_err(|source| SceneBridgeError::AssetLoad {
             asset: graph_asset.clone(),
             source: AssetLoadError::InvalidAsset {
                 path: graph_path,
@@ -1507,13 +1519,23 @@ fn resolve_animation_set(
             },
         })?
     };
-    let json = std::fs::read_to_string(&path).map_err(|source| SceneBridgeError::AssetLoad {
-        asset: animation_set_asset.clone(),
-        source: AssetLoadError::Io {
-            path: path.clone(),
-            source,
-        },
-    })?;
+    let json = if let Some(snapshot) = context.asset_state.authoring_overlay.get(&path) {
+        snapshot.contents().map(str::to_owned).map_err(|message| SceneBridgeError::AssetLoad {
+            asset: animation_set_asset.clone(),
+            source: AssetLoadError::InvalidAsset {
+                path: path.clone(),
+                message: message.to_owned(),
+            },
+        })?
+    } else {
+        std::fs::read_to_string(&path).map_err(|source| SceneBridgeError::AssetLoad {
+            asset: animation_set_asset.clone(),
+            source: AssetLoadError::Io {
+                path: path.clone(),
+                source,
+            },
+        })?
+    };
     let animation_set =
         AnimationSet::from_json(&json).map_err(|source| SceneBridgeError::AssetLoad {
             asset: animation_set_asset.clone(),

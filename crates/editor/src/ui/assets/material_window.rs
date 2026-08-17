@@ -7,7 +7,6 @@ use crate::ui::*;
 
 impl EditorApp {
     pub(in crate::ui) fn show_material_editor_window(&mut self, context: &egui::Context) {
-        self.flush_pending_material_saves(context);
         self.flush_material_scene_preview_refresh(context);
         if !self.show_material_editor {
             return;
@@ -42,7 +41,6 @@ impl EditorApp {
             self.queue_active_material_save(context);
         }
         if !self.show_material_editor {
-            self.flush_all_pending_material_saves();
             self.flush_material_scene_preview_refresh(context);
         }
         if reimport_preview {
@@ -82,55 +80,15 @@ impl EditorApp {
         choices
     }
 
-    /// Queues the latest active value and replaces any older value for the
-    /// same path while a slider or color picker is still moving.
+    /// Schedules only the Scene View refresh for the latest accepted Material edit.
+    ///
+    /// ADR 0139 deliberately keeps canonical persistence out of this debounce path:
+    /// the Material working copy remains authoritative until explicit Save/Save All.
     pub(in crate::ui) fn queue_active_material_save(&mut self, context: &egui::Context) {
-        let Some(relative_path) = self.material_editor.active.clone() else {
-            return;
-        };
-        let Some(material) = self.material_editor.active_material().cloned() else {
-            return;
-        };
-        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(120);
-        self.pending_material_saves.insert(
-            relative_path,
-            PendingMaterialSave { material, deadline },
-        );
+        self.material_scene_preview_deadline =
+            Some(std::time::Instant::now() + std::time::Duration::from_millis(120));
+        self.refresh_scene_problems();
         context.request_repaint_after(std::time::Duration::from_millis(120));
-    }
-
-    /// Writes each Material once after its continuous edit reaches a quiet
-    /// period, avoiding synchronous file replacement and fsync every frame.
-    pub(in crate::ui) fn flush_pending_material_saves(&mut self, context: &egui::Context) {
-        let now = std::time::Instant::now();
-        let due = self
-            .pending_material_saves
-            .iter()
-            .filter(|(_, pending)| pending.deadline <= now)
-            .map(|(path, _)| path.clone())
-            .collect::<Vec<_>>();
-        for path in due {
-            if let Some(pending) = self.pending_material_saves.remove(&path) {
-                self.persist_material(path, pending.material);
-            }
-        }
-        if let Some(next) = self
-            .pending_material_saves
-            .values()
-            .map(|pending| pending.deadline)
-            .min()
-        {
-            context.request_repaint_after(next.saturating_duration_since(now));
-        }
-    }
-
-    /// Persists every queued value before closing its editor or replacing the
-    /// project that owns its relative path.
-    pub(in crate::ui) fn flush_all_pending_material_saves(&mut self) {
-        let pending = std::mem::take(&mut self.pending_material_saves);
-        for (path, pending) in pending {
-            self.persist_material(path, pending.material);
-        }
     }
 
     /// Applies one deferred Scene View rebuild after continuous Material edits
@@ -219,49 +177,49 @@ impl EditorApp {
 
     #[cfg(test)]
     pub(in crate::ui) fn save_active_material(&mut self) {
-        let Some(relative_path) = self.material_editor.active.clone() else {
-            return;
-        };
-        let Some(material) = self.material_editor.active_material().cloned() else {
-            return;
-        };
-        self.persist_material(relative_path, material);
+        if let Some(relative_path) = self.material_editor.active.clone() {
+            let _ = self.save_material_document(&relative_path);
+        }
     }
 
-    /// Persists one captured Material value and schedules one preview rebuild.
-    fn persist_material(
-        &mut self,
-        relative_path: PathBuf,
-        material: engine_authoring::MaterialAsset,
-    ) {
-        let Some(project) = self.project_root.clone() else {
-            return;
-        };
+    /// Persists one Material working copy and advances its saved baseline only on success.
+    pub(in crate::ui) fn save_material_document(&mut self, relative_path: &Path) -> Result<(), String> {
+        let project = self
+            .project_root
+            .clone()
+            .ok_or_else(|| "no project is open".to_owned())?;
+        let material = self
+            .material_editor
+            .materials
+            .get(relative_path)
+            .cloned()
+            .ok_or_else(|| format!("material {} is not open", relative_path.display()))?;
+        material.validate().map_err(|error| error.to_string())?;
+        let json = material.to_json().map_err(|error| error.to_string())?;
         let relative = relative_path.to_string_lossy();
-        let result = material
-            .validate()
-            .map_err(|error| error.to_string())
-            .and_then(|()| material.to_json().map_err(|error| error.to_string()))
-            .and_then(|json| {
-                project
-                    .resolve_asset_for_write(&relative)
-                    .map_err(|error| error.to_string())
-                    .and_then(|path| {
-                        replace_file_contents(&path, &json).map_err(|error| error.to_string())
-                    })
-            });
-        match result {
-            Ok(()) => {
-                self.material_scene_preview_deadline = Some(std::time::Instant::now());
-                self.refresh_scene_problems();
-            }
-            Err(error) => self
-                .session
-                .push_diagnostic(engine_authoring::Diagnostic::error(
-                    "editor.material_save_failed",
-                    format!("failed to save {}: {error}", relative_path.display()),
-                )),
+        let path = project
+            .resolve_asset_for_write(&relative)
+            .map_err(|error| error.to_string())?;
+        replace_file_contents(&path, &json).map_err(|error| error.to_string())?;
+        self.material_editor.mark_saved(relative_path);
+        self.material_scene_preview_deadline = Some(std::time::Instant::now());
+        self.refresh_scene_problems();
+        Ok(())
+    }
+
+    /// Persists every dirty Material working copy.
+    pub(in crate::ui) fn save_all_material_documents(&mut self) -> Result<(), String> {
+        let dirty = self
+            .material_editor
+            .materials
+            .keys()
+            .filter(|path| self.material_editor.is_dirty(path))
+            .cloned()
+            .collect::<Vec<_>>();
+        for path in dirty {
+            self.save_material_document(&path)?;
         }
+        Ok(())
     }
 
 }

@@ -716,6 +716,15 @@ pub fn validate_builtin_component_assets(
     manifest: &AssetManifest,
     asset_root: Option<&Path>,
 ) -> Vec<Diagnostic> {
+    validate_builtin_component_assets_impl(scene, manifest, asset_root, None)
+}
+
+fn validate_builtin_component_assets_impl(
+    scene: &AuthoringScene,
+    manifest: &AssetManifest,
+    asset_root: Option<&Path>,
+    overlay: Option<&crate::authoring_overlay::AuthoringDocumentOverlay>,
+) -> Vec<Diagnostic> {
     let registry = builtin_registry();
     let mut diagnostics = Vec::new();
     for (entity_id, entity) in scene.entities() {
@@ -736,6 +745,7 @@ pub fn validate_builtin_component_assets(
                         asset_root,
                         &target,
                         &mut diagnostics,
+                        overlay,
                     );
                 }
             let (InspectorHint::Fields { fields: hints }, Value::Object(fields)) =
@@ -756,6 +766,7 @@ pub fn validate_builtin_component_assets(
                                         asset_root,
                                         &target,
                                         &mut diagnostics,
+                                        overlay,
                                     );
                                 }
                         }
@@ -773,6 +784,7 @@ pub fn validate_builtin_component_assets(
                                     asset_root,
                                     &target,
                                     &mut diagnostics,
+                                    overlay,
                                 );
                             }
                         }
@@ -792,6 +804,7 @@ pub fn validate_builtin_component_assets(
                     asset_root,
                     &target,
                     &mut diagnostics,
+                    overlay,
                 );
             }
             if component_type.as_str() == ANIMATION_CONTROLLER_COMPONENT {
@@ -801,6 +814,7 @@ pub fn validate_builtin_component_assets(
                     asset_root,
                     &target,
                     &mut diagnostics,
+                    overlay,
                 );
             }
         }
@@ -837,12 +851,38 @@ pub fn validate_builtin_component_asset_files(
     complete
 }
 
+/// Runs filesystem-backed validation while treating captured Editor working copies
+/// as authoritative over their saved project files.
+pub fn validate_builtin_component_asset_files_with_overlay(
+    scene: &AuthoringScene,
+    manifest: &AssetManifest,
+    asset_root: &Path,
+    overlay: &crate::authoring_overlay::AuthoringDocumentOverlay,
+) -> Vec<Diagnostic> {
+    let inline = validate_builtin_component_asset_references(scene, manifest);
+    let mut complete =
+        validate_builtin_component_assets_impl(scene, manifest, Some(asset_root), Some(overlay));
+    complete.retain(|diagnostic| !inline.contains(diagnostic));
+    complete
+}
+
+fn read_authoring_text(
+    path: &Path,
+    overlay: Option<&crate::authoring_overlay::AuthoringDocumentOverlay>,
+) -> Result<String, String> {
+    if let Some(snapshot) = overlay.and_then(|overlay| overlay.get(path)) {
+        return snapshot.contents().map(str::to_owned).map_err(str::to_owned);
+    }
+    std::fs::read_to_string(path).map_err(|error| error.to_string())
+}
+
 fn validate_animation_controller_bindings(
     fields: &BTreeMap<String, Value>,
     manifest: &AssetManifest,
     asset_root: Option<&Path>,
     target: &DiagnosticTarget,
     diagnostics: &mut Vec<Diagnostic>,
+    overlay: Option<&crate::authoring_overlay::AuthoringDocumentOverlay>,
 ) {
     let (
         Some(Value::AssetRef(graph_id)),
@@ -858,7 +898,7 @@ fn validate_animation_controller_bindings(
         return;
     };
     let animation_set_path = asset_root.join(&animation_set_entry.path);
-    let animation_set = std::fs::read_to_string(&animation_set_path)
+    let animation_set = read_authoring_text(&animation_set_path, overlay)
         .ok()
         .and_then(|json| engine_authoring::AnimationSet::from_json(&json).ok());
     let Some(animation_set) = animation_set else {
@@ -886,9 +926,15 @@ fn validate_animation_controller_bindings(
     }
 
     let graph_path = asset_root.join(&graph_entry.path);
-    let Ok(graph) = crate::anim_graph::load_animation_graph(&graph_path) else {
-        return;
+    let graph = if let Some(snapshot) = overlay.and_then(|overlay| overlay.get(&graph_path)) {
+        snapshot
+            .contents()
+            .map_err(str::to_owned)
+            .and_then(|json| crate::anim_graph::load_animation_graph_json(json).map_err(|error| error.to_string()))
+    } else {
+        crate::anim_graph::load_animation_graph(&graph_path).map_err(|error| error.to_string())
     };
+    let Ok(graph) = graph else { return; };
     for state in &graph.states {
         let Some(slot) = &state.motion_slot else {
             continue;
@@ -916,6 +962,7 @@ fn validate_component_asset(
     asset_root: Option<&Path>,
     target: &DiagnosticTarget,
     diagnostics: &mut Vec<Diagnostic>,
+    overlay: Option<&crate::authoring_overlay::AuthoringDocumentOverlay>,
 ) {
     if builtin_asset_matches_kind(asset, kind) {
         return;
@@ -974,7 +1021,8 @@ fn validate_component_asset(
         return;
     };
     let full_path = asset_root.join(relative_path);
-    if !full_path.is_file() {
+    let has_working_copy = overlay.is_some_and(|overlay| overlay.get(&full_path).is_some());
+    if !has_working_copy && !full_path.is_file() {
         diagnostics.push(
             Diagnostic::error(
                 "scene.asset_missing_file",
@@ -996,6 +1044,7 @@ fn validate_component_asset(
             asset_root,
             target,
             diagnostics,
+            overlay,
         );
         return;
     }
@@ -1007,6 +1056,7 @@ fn validate_component_asset(
             asset_root,
             target,
             diagnostics,
+            overlay,
         );
         return;
     }
@@ -1033,7 +1083,7 @@ fn validate_component_asset(
     let Some(expected_graph_kind) = expected_graph_kind(kind) else {
         return;
     };
-    let actual_kind = std::fs::read_to_string(&full_path)
+    let actual_kind = read_authoring_text(&full_path, overlay)
         .ok()
         .and_then(|json| serde_json::from_str::<serde_json::Value>(&json).ok())
         .and_then(|document| document.get("kind")?.as_str().map(str::to_owned));
@@ -1078,9 +1128,9 @@ fn validate_animation_set_dependencies(
     asset_root: &Path,
     target: &DiagnosticTarget,
     diagnostics: &mut Vec<Diagnostic>,
+    overlay: Option<&crate::authoring_overlay::AuthoringDocumentOverlay>,
 ) {
-    let animation_set = std::fs::read_to_string(animation_set_path)
-        .map_err(|error| error.to_string())
+    let animation_set = read_authoring_text(animation_set_path, overlay)
         .and_then(|json| {
             engine_authoring::AnimationSet::from_json(&json).map_err(|error| error.to_string())
         });
@@ -1110,6 +1160,7 @@ fn validate_animation_set_dependencies(
             Some(asset_root),
             target,
             diagnostics,
+            overlay,
         );
     }
     for binding in animation_set.bindings.values() {
@@ -1138,6 +1189,7 @@ fn validate_animation_set_dependencies(
                 Some(asset_root),
                 target,
                 diagnostics,
+                overlay,
             );
         }
     }
@@ -1378,9 +1430,9 @@ fn validate_material_dependencies(
     asset_root: &Path,
     target: &DiagnosticTarget,
     diagnostics: &mut Vec<Diagnostic>,
+    overlay: Option<&crate::authoring_overlay::AuthoringDocumentOverlay>,
 ) {
-    let material = std::fs::read_to_string(material_path)
-        .map_err(|error| error.to_string())
+    let material = read_authoring_text(material_path, overlay)
         .and_then(|json| {
             engine_authoring::MaterialAsset::from_json(&json).map_err(|error| error.to_string())
         });

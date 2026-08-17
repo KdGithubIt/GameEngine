@@ -86,6 +86,36 @@ impl EditorApp {
         }
     }
 
+    /// Returns whether any workspace or specialized editor owns unsaved authoring state.
+    fn any_authoring_dirty(&self) -> bool {
+        self.session.any_dirty()
+            || self.material_editor.any_dirty()
+            || self.animation_set_editor.as_ref().is_some_and(AnimationSetEditorState::is_dirty)
+    }
+
+    /// Persists every dirty working copy through its existing validated atomic adapter.
+    fn save_all_authoring_documents(&mut self) -> Result<(), String> {
+        self.session.save_all().map_err(|error| error.to_string())?;
+        if self.animation_set_editor.as_ref().is_some_and(AnimationSetEditorState::is_dirty) {
+            self.save_animation_set_document()?;
+        }
+        self.save_all_material_documents()?;
+        Ok(())
+    }
+
+    /// Saves every dirty document, including specialized editor working copies.
+    pub(super) fn save_all(&mut self) {
+        if self.save_blocked_while_playing() {
+            return;
+        }
+        if let Err(error) = self.save_all_authoring_documents() {
+            self.session.push_diagnostic(engine_authoring::Diagnostic::error(
+                "editor.save_all_failed",
+                format!("save all failed: {error}"),
+            ));
+        }
+    }
+
     pub(super) fn save_as(&mut self) {
         if self.save_blocked_while_playing() {
             return;
@@ -134,7 +164,7 @@ impl EditorApp {
                 ));
             return;
         }
-        if self.session.any_dirty() {
+        if self.any_authoring_dirty() {
             self.pending_unsaved_action = Some(PendingUnsavedAction::SwitchProject);
         } else {
             self.activate_launcher_for_project_switch();
@@ -359,13 +389,13 @@ impl EditorApp {
                 if let Some(pending) = self.pending_unsaved_action.take() {
                     match pending {
                         PendingUnsavedAction::SwitchProject => {
-                            if let Err(error) = self.session.save_all() {
+                            if let Err(error) = self.save_all_authoring_documents() {
                                 self.session
                                     .push_diagnostic(engine_authoring::Diagnostic::error(
                                         "editor.save_all_failed",
                                         format!("could not save every open document: {error}"),
                                     ));
-                                // A failed save leaves at least one tab dirty. Keep the
+                                // A failed save leaves at least one working copy dirty. Keep the
                                 // dialog open so project replacement cannot proceed.
                                 self.pending_unsaved_action =
                                     Some(PendingUnsavedAction::SwitchProject);

@@ -88,6 +88,21 @@ impl DocumentWorkspace {
         self.tabs.iter_mut().find(|tab| tab.id == id).map(|tab| &mut tab.session)
     }
 
+    /// Iterates every open session without transferring working-copy ownership.
+    pub(crate) fn sessions(&self) -> impl Iterator<Item = &EditorSession> {
+        self.tabs.iter().map(|tab| &tab.session)
+    }
+
+    /// Returns the one existing session that owns `path`, if the document is open.
+    pub(crate) fn session_for_path(&self, path: &Path) -> Option<&EditorSession> {
+        self.tabs.iter().find_map(|tab| {
+            tab.session
+                .current_document_path()
+                .is_some_and(|candidate| candidate == path)
+                .then_some(&tab.session)
+        })
+    }
+
     pub(crate) fn summaries(&self) -> Vec<WorkspaceTabSummary> {
         self.tabs
             .iter()

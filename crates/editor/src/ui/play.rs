@@ -648,12 +648,19 @@ impl EditorApp {
         // every still-present problem into the fresh Play log.
         self.mirrored_problem_keys.clear();
         self.refresh_scene_problems();
+        let authoring_overlay = capture_authoring_overlay(
+            &self.session,
+            self.animation_set_editor.as_ref(),
+            &self.material_editor,
+            self.project_root.as_ref(),
+        );
         let result = match self.session.scene() {
-            Some(scene) => RuntimePlayState::start_from_document_with_game_module(
+            Some(scene) => RuntimePlayState::start_from_document_with_game_module_and_overlay(
                 scene,
                 self.project_root.as_ref(),
                 self.session.current_document_path(),
                 self.game_module.as_ref().map(Arc::clone),
+                Some(authoring_overlay),
             ),
             None => Err(PlayError::NoScene),
         };
