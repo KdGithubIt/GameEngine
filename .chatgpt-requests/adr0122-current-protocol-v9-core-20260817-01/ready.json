@@ -1,0 +1,16 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0122-current-protocol-v9-core-20260817-01",
+  "target_branch": "chatgpt/gameengine-adr0122-spatial-audio-complete-v9",
+  "expected_head_sha": "901221eac2aa0c9eb66e8b17af896d8a19179f4b",
+  "baseline_main_sha": "901221eac2aa0c9eb66e8b17af896d8a19179f4b",
+  "patch_sha256": "afe19f5ced3c128f937612b26388471eb6d40d04f8b8470ede44f59b0bb9988c",
+  "patch_bytes": 92267,
+  "patch_parts": [
+    "part-0000.patch",
+    "part-0001.patch"
+  ],
+  "commit_message": "Complete ADR 0122 spatial audio core",
+  "pr_title": "Complete ADR 0122 spatial audio first release",
+  "pr_body": "## Summary\n\nCompletes ADR 0122 spatial audio first-release requirements on the current protocol baseline. Reuses the existing engine-owned spatial evaluator and managed voice backend, adds deterministic listener selection, ECS synchronization, Project Rust deferred spatial playback, Editor authoring, audition, and Scene View gizmos.\n\n## Validation\n\nRun Windows affected validation and task-specific Spatial Audio Editor Visual Validation.\n\n<!-- gameengine-visual-validation: editor -->\n<!-- gameengine-visual-authoring-tool: Spatial Audio -->"
+}
