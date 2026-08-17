@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0144-ai-studio-visual-20260818-03",
+  "target_branch": "chatgpt/gameengine-adr0144-hosted-backends",
+  "expected_head_sha": "e5d9abb465c32c5e85eaa966b7fd196f04751a30",
+  "baseline_main_sha": "8c868ea613f2033f0f2274c26921547c9cdb39af",
+  "patch_sha256": "3a62e21dbe6705a0d566241685716b58755b0d269794c5ed8887c29f7f6988e2",
+  "patch_bytes": 1155,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Add ADR 0144 AI Studio visual scenario",
+  "pr_title": "GameEngine: implement ADR 0144 hosted model backends",
+  "pr_body": "## Summary\n\nImplements ADR 0144 hosted and enterprise ModelBackend support behind the existing native AI Studio harness. Adds OS-protected machine-local credential ownership, explicit NetworkAccess approval, structured provider failure mapping, honest capability reporting, backend/remote-processing UI, sanitized Remote AI Studio posture, and preserves Agent Host completion ownership. Adds a validation-only deterministic AI Studio startup scenario so the changed backend and credential UI can be captured and reviewed.\n\n## Validation\n\nRequires Windows Validation and Editor Visual Validation because backend and credential selection UI changes.\n\n<!-- gameengine-visual-validation: editor -->\n<!-- gameengine-visual-authoring-tool: AI Studio -->"
+}
