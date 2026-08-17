@@ -1,0 +1,16 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0126-current-main-replay-v6-20260818-0802",
+  "target_branch": "chatgpt/gameengine-adr0126-first-release-v6",
+  "expected_head_sha": "8c868ea613f2033f0f2274c26921547c9cdb39af",
+  "baseline_main_sha": "8c868ea613f2033f0f2274c26921547c9cdb39af",
+  "patch_sha256": "74ed62492091fde9b482f48f35a64fbab6ee9f55639ab8ae8dcd569d9a8cb9ea",
+  "patch_bytes": 108754,
+  "patch_parts": [
+    "part-0000.patch",
+    "part-0001.patch"
+  ],
+  "commit_message": "Add ADR0126 Timeline foundation on current main",
+  "pr_title": "GameEngine: complete ADR0126 Timeline and Sequencer",
+  "pr_body": "## Summary\n\nReplays the already-reviewed ADR0126 Timeline foundation onto the current-main baseline after parallel ADR merges. The request remains a Draft PR and does not merge main.\n\nThis foundation provides the neutral Timeline clock/schedule/player, stable IDs and persistence, deterministic compile/evaluation, transactional authoring service, capability registry and CLI/MCP surfaces, and shared camera selection override groundwork. Subsequent requests on this same task branch add the schema correction, production runtime composition, Project Rust integration, and dedicated Sequencer Editor/visual validation required for first-release completion."
+}
