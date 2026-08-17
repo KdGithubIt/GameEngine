@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"Cargo.toml","old":"    \"crates/mcp\",\n    \"crates/game-component-macros\",\n","new":"    \"crates/mcp\",\n    \"crates/mcp-host\",\n    \"crates/game-component-macros\",\n"}
