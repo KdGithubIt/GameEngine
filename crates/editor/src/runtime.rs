@@ -264,6 +264,7 @@ impl RuntimePlayState {
             },
             None => ProjectSettings::default(),
         };
+        engine::native_2d::apply_project_2d_settings(&mut app, &project_settings.native_2d);
         let (input_actions, input_diagnostics) =
             engine::InputActionMap::from_project_settings(&project_settings);
         app.insert_resource(input_actions);

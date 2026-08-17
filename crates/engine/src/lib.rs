@@ -102,6 +102,8 @@ pub mod lod;
 pub mod material;
 /// CPU and GPU mesh types.
 pub mod mesh;
+/// Cross-domain Native 2D physics composition and public facade (ADR 0127).
+pub mod native_2d;
 /// Engine-native secondary-motion facade (ADR 0112).
 pub mod secondary_motion;
 /// Format-independent asset builder consuming [`model_ir`] (ADR 0078):

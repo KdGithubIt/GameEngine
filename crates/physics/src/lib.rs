@@ -28,6 +28,8 @@ pub mod navigation;
 pub mod navigation_bake;
 /// Legacy grid navigation retained for focused compatibility tests and layered utilities.
 pub mod navmesh;
+/// Engine-owned Native 2D physics contracts and deterministic reference solver (ADR 0127).
+pub mod native_2d;
 /// Rapier-backed gameplay rigid-body integration.
 #[cfg(feature = "solver")]
 pub mod physics;

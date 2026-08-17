@@ -81,6 +81,89 @@ fn make_scene_with_player_and_npc() -> (AuthoringScene, EntityId, EntityId) {
 }
 
 #[test]
+fn native_2d_physics_components_bridge_to_runtime_contracts() {
+    let mut scene = AuthoringScene::new();
+    let id = EntityId::generate();
+    let collider = Value::Object(std::collections::BTreeMap::from([
+        ("shape".into(), Value::String("box".into())),
+        ("half_extent_x".into(), Value::F64(0.4)),
+        ("half_extent_y".into(), Value::F64(0.8)),
+        ("radius".into(), Value::F64(0.5)),
+        ("half_height".into(), Value::F64(0.5)),
+        ("points".into(), Value::Array(Vec::new())),
+        ("sensor".into(), Value::Bool(false)),
+        ("friction".into(), Value::F64(0.6)),
+        ("restitution".into(), Value::F64(0.1)),
+        ("membership".into(), Value::I64(1)),
+        ("mask".into(), Value::I64(u32::MAX as i64)),
+        ("one_way".into(), Value::Bool(false)),
+    ]));
+    let rigid_body = Value::Object(std::collections::BTreeMap::from([
+        ("mode".into(), Value::String("dynamic".into())),
+        ("velocity_x".into(), Value::F64(1.0)),
+        ("velocity_y".into(), Value::F64(-2.0)),
+        ("angular_velocity".into(), Value::F64(0.25)),
+        ("gravity_scale".into(), Value::F64(1.0)),
+        ("continuous".into(), Value::Bool(true)),
+    ]));
+    let controller = Value::Object(std::collections::BTreeMap::from([
+        ("half_extent_x".into(), Value::F64(0.4)),
+        ("half_extent_y".into(), Value::F64(0.8)),
+        ("skin".into(), Value::F64(0.02)),
+        ("slope_limit_degrees".into(), Value::F64(45.0)),
+        ("ground_snap".into(), Value::F64(0.1)),
+        ("collision_mask".into(), Value::I64(u32::MAX as i64)),
+    ]));
+
+    let mut tx = Transaction::begin(&scene);
+    tx.apply(AuthoringCommand::CreateEntity {
+        id: id.clone(),
+        name: "physics_2d".into(),
+        parent: None,
+    });
+    tx.apply(AuthoringCommand::AddComponent {
+        entity: id.clone(),
+        component_type: ComponentTypeId::new(COLLIDER_2D_COMPONENT),
+        value: collider,
+    });
+    tx.apply(AuthoringCommand::AddComponent {
+        entity: id.clone(),
+        component_type: ComponentTypeId::new(RIGID_BODY_2D_COMPONENT),
+        value: rigid_body,
+    });
+    tx.apply(AuthoringCommand::AddComponent {
+        entity: id.clone(),
+        component_type: ComponentTypeId::new(CHARACTER_CONTROLLER_2D_COMPONENT),
+        value: controller,
+    });
+    tx.commit(&mut scene).expect("2D physics setup must commit");
+
+    let mut world = World::new();
+    let bridge = spawn_from_authoring_scene(&mut world, &scene).expect("2D physics scene must bridge");
+    let entity = bridge.get(&id).expect("2D physics entity must spawn");
+
+    let collider = world
+        .get_component::<crate::native_2d::Collider2d>(entity)
+        .expect("Collider2D must bridge");
+    assert!(matches!(
+        collider.shape,
+        crate::native_2d::ColliderShape2d::Box { half_extents }
+            if half_extents == [0.4, 0.8]
+    ));
+    let body = world
+        .get_component::<crate::native_2d::RigidBody2d>(entity)
+        .expect("RigidBody2D must bridge");
+    assert_eq!(body.mode, crate::native_2d::RigidBodyMode2d::Dynamic);
+    assert_eq!(body.velocity, [1.0, -2.0]);
+    assert!(body.continuous);
+    let controller = world
+        .get_component::<crate::native_2d::CharacterController2d>(entity)
+        .expect("CharacterController2D must bridge");
+    assert_eq!(controller.half_extents, glam::Vec2::new(0.4, 0.8));
+    assert!((controller.slope_limit_radians - 45.0_f32.to_radians()).abs() < f32::EPSILON);
+}
+
+#[test]
 fn bridge_spawns_one_entity_per_authoring_entity() {
     let mut scene = AuthoringScene::new();
     let id_a = EntityId::generate();

@@ -145,6 +145,15 @@ pub const UI_DOCUMENT_COMPONENT: &str = "engine.ui_document";
 /// (Phase 57).
 pub const COLLIDER_COMPONENT: &str = "engine.collider";
 
+/// Native 2D collider component stored in authored scenes (ADR 0127).
+pub const COLLIDER_2D_COMPONENT: &str = "engine.collider_2d";
+
+/// Native 2D rigid-body component stored in authored scenes (ADR 0127).
+pub const RIGID_BODY_2D_COMPONENT: &str = "engine.rigid_body_2d";
+
+/// Native 2D platformer controller component stored in authored scenes (ADR 0127).
+pub const CHARACTER_CONTROLLER_2D_COMPONENT: &str = "engine.character_controller_2d";
+
 /// The `"engine.physics_body"` component type string recognised by the
 /// bridge (Phase 57).
 pub const PHYSICS_BODY_COMPONENT: &str = "engine.physics_body";
