@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ai_studio.rs","old":"    pub fn show(&mut self, context: &egui::Context) {\n        self.poll_native_question(context);","new":"    pub fn show(&mut self, context: &egui::Context) {\n        self.poll_remote_gateway();\n        self.poll_native_question(context);"}
