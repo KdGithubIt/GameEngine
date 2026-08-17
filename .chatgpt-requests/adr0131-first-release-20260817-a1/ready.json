@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0131-first-release-20260817-a1",
+  "target_branch": "chatgpt/gameengine-adr0131-first-release-v3",
+  "expected_head_sha": "d03ed9e573818eb0ca088f37953f611d6ed4d22e",
+  "baseline_main_sha": "d03ed9e573818eb0ca088f37953f611d6ed4d22e",
+  "patch_sha256": "5757c6cdce1ad2be335de776c4cefb42139b6e6ccaf87c58f4f34a7666071bde",
+  "patch_bytes": 7526,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Enforce exact proposal-version Go authorization",
+  "pr_title": "GameEngine: complete ADR 0131 first-release agent contracts",
+  "pr_body": "## Summary\n\nCompletes ADR 0131 first-release gaps while preserving the existing Agent Host, MCP authoring authority, managed code workspace, and validation lifecycle.\n\nThis first request adds durable proposal revision history and requires Go to authorize one exact proposal version, rejecting stale authorization at the Agent Host boundary. Further scoped requests on the same branch complete the remaining audited first-release gaps before handoff."
+}
