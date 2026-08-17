@@ -1,0 +1,372 @@
+diff --git a/crates/animation/src/sprite_2d.rs b/crates/animation/src/sprite_2d.rs
+index 89777d2d4506bf61b853dcfa92a137a28e58d166..2dc42a35467d6d7ba92c86e865ad1dde41da6a89 100644
+--- a/crates/animation/src/sprite_2d.rs
++++ b/crates/animation/src/sprite_2d.rs
+@@ -1,6 +1,46 @@
+ //! Deterministic Sprite Animation playback (ADR 0127).
+ 
+-use engine_authoring::{SpriteAnimationDocument, SpriteRef};
++use engine_authoring::{AssetId, SpriteAnimationDocument, SpriteRef};
++use std::sync::Arc;
++
++/// Runtime SpriteAnimator2D component that shares immutable clip data while keeping per-entity playback state.
++#[derive(Debug, Clone)]
++pub struct SpriteAnimatorRuntime2d {
++    /// Stable authored Sprite Animation asset identity.
++    pub clip_asset: AssetId,
++    /// Shared immutable clip data resolved during scene conversion.
++    pub clip: Arc<SpriteAnimationDocument>,
++    /// Independent playback state owned by this entity.
++    pub state: SpriteAnimationState2d,
++    /// Optional per-instance looping override.
++    pub looping_override: Option<bool>,
++}
++
++impl SpriteAnimatorRuntime2d {
++    /// Creates one runtime animator from persisted playback settings.
++    pub fn new(
++        clip_asset: AssetId,
++        clip: Arc<SpriteAnimationDocument>,
++        autoplay: bool,
++        speed: f32,
++        looping_override: Option<bool>,
++    ) -> Self {
++        let mut state = SpriteAnimationState2d {
++            playing: autoplay,
++            speed: speed.max(0.0),
++            ..SpriteAnimationState2d::default()
++        };
++        if !autoplay {
++            state.pause();
++        }
++        Self {
++            clip_asset,
++            clip,
++            state,
++            looping_override,
++        }
++    }
++}
+ 
+ /// Independent per-entity runtime playback state for an immutable Sprite Animation asset.
+ #[derive(Debug, Clone, PartialEq)]
+diff --git a/crates/engine/src/app.rs b/crates/engine/src/app.rs
+index a9cf7000a3d5a96b39cf208bd2c330b5f8c42a46..cb21e22a0b0361ce6bd1eab45f7dff0e04bfd171 100644
+--- a/crates/engine/src/app.rs
++++ b/crates/engine/src/app.rs
+@@ -49,6 +49,7 @@ use crate::script_api::{
+ };
+ use crate::shadow::{presentation_resource_mirror_system, EnvironmentLighting, ShadowSettings};
+ use crate::morph::{material_morph_system, morph_blend_system};
++use crate::native_2d::{sprite_animation_2d_fixed_system, SpriteAnimationEvents2d};
+ use crate::skinning::joint_palette_system;
+ use crate::time::{FixedTime, Time};
+ use crate::transform::transform_propagation_system;
+@@ -121,6 +122,7 @@ impl App {
+         ecs.insert_resource(GpuMeshCache::default());
+         ecs.insert_resource(InstanceStats::default());
+         ecs.insert_resource(FixedTime::default());
++        ecs.insert_resource(SpriteAnimationEvents2d::default());
+         ecs.insert_resource(Gravity::default());
+         ecs.insert_resource(GameplayPhysicsWorld::default());
+         ecs.insert_resource(UiBindings::default());
+@@ -243,6 +245,14 @@ impl App {
+             ),
+             presentation_resource_mirror_system,
+         );
++        ecs.add_fixed_system_with_descriptor(
++            builtin_system(
++                "engine.sprite_animation_2d",
++                "Sprite Animation 2D",
++                "Advances SpriteAnimator2D playback and writes the current SpriteRef to SpriteRenderer2D.",
++            ),
++            sprite_animation_2d_fixed_system,
++        );
+         ecs.add_fixed_system_with_descriptor(
+             builtin_system(
+                 "engine.script_api_snapshot",
+diff --git a/crates/engine/src/components/builtins.rs b/crates/engine/src/components/builtins.rs
+index 46fda649abf41e7a2a8e24017863b176a680ef99..5aae027480660360fdfd895f71ae9b27ceb40b6b 100644
+--- a/crates/engine/src/components/builtins.rs
++++ b/crates/engine/src/components/builtins.rs
+@@ -263,6 +263,26 @@ const SPRITE_RENDERER_2D_FIELDS: &[FieldDef] = &[
+     boolean("visible", "Visible", "Whether this sprite contributes a runtime render instance.", true),
+ ];
+ 
++const SPRITE_ANIMATOR_2D_FIELDS: &[FieldDef] = &[
++    asset_ref(
++        "clip",
++        "Sprite Animation",
++        "Sprite Animation document evaluated independently for this entity.",
++        AssetKind::SpriteAnimation,
++        FieldDefaultSpec::Unassigned,
++    ),
++    boolean("autoplay", "Autoplay", "Start clip playback when the runtime entity becomes active.", true),
++    number("speed", "Speed", "Non-negative deterministic playback speed multiplier.", 1.0, NON_NEGATIVE),
++    FieldDef::new(
++        "looping_override",
++        "Looping Override",
++        "Optional per-entity looping override; unassigned uses the clip default.",
++        FieldKind::Bool,
++        FieldDefaultSpec::Unassigned,
++    )
++    .optional(),
++];
++
+ const DIRECTIONAL_LIGHT_FIELDS: &[FieldDef] = &[
+     FieldDef::new(
+         "direction_x",
+@@ -2041,5 +2061,14 @@ pub(super) fn builtin_components() -> Vec<BuiltinComponent> {
+             SPRITE_RENDERER_2D_FIELDS,
+             spawn_sprite_renderer_2d_component,
+         ),
++        BuiltinComponent::new(
++            SPRITE_ANIMATOR_2D_COMPONENT,
++            "Sprite Animator 2D",
++            "Evaluates a Sprite Animation clip in fixed time and drives SpriteRenderer2D.",
++            "Animation",
++            1,
++            SPRITE_ANIMATOR_2D_FIELDS,
++            spawn_sprite_animator_2d_component,
++        ),
+     ]
+ }
+diff --git a/crates/engine/src/components/tests.rs b/crates/engine/src/components/tests.rs
+index 24a2787a592a70ebcac2dba66444f831167ab1f8..a848df69b0426d23248f9f1baa22576bcae524b2 100644
+--- a/crates/engine/src/components/tests.rs
++++ b/crates/engine/src/components/tests.rs
+@@ -33,6 +33,15 @@ fn registry_returns_registered_definition() {
+     assert!(registry
+         .get(&ComponentTypeId::new(CAMERA_COMPONENT))
+         .is_some());
++    assert!(registry
++        .get(&ComponentTypeId::new(CAMERA_2D_COMPONENT))
++        .is_some());
++    assert!(registry
++        .get(&ComponentTypeId::new(SPRITE_RENDERER_2D_COMPONENT))
++        .is_some());
++    assert!(registry
++        .get(&ComponentTypeId::new(SPRITE_ANIMATOR_2D_COMPONENT))
++        .is_some());
+     assert!(registry
+         .get(&ComponentTypeId::new(DIRECTIONAL_LIGHT_COMPONENT))
+         .is_some());
+@@ -210,6 +219,7 @@ fn registry_iterates_in_registration_order() {
+             VFX_PLAYER_COMPONENT,
+             CAMERA_2D_COMPONENT,
+             SPRITE_RENDERER_2D_COMPONENT,
++            SPRITE_ANIMATOR_2D_COMPONENT,
+         ]
+     );
+ }
+diff --git a/crates/engine/src/native_2d.rs b/crates/engine/src/native_2d.rs
+index 26967a147d483944c8da6de8c0138453fd0b8692..208509282a968d17ccb2b64937f0eb1bbd9e9e7b 100644
+--- a/crates/engine/src/native_2d.rs
++++ b/crates/engine/src/native_2d.rs
+@@ -1,11 +1,69 @@
+ //! Cross-domain Native 2D facade (ADR 0127).
+ 
+-pub use engine_animation::sprite_2d::{SpriteAnimationState2d, SpriteFrameEvent2d};
++pub use engine_animation::sprite_2d::{
++    SpriteAnimationState2d, SpriteAnimatorRuntime2d, SpriteFrameEvent2d,
++};
+ pub use engine_assets::native_2d::{compile_tile_map, validate_2d_asset_references, CompiledSpriteAtlas, CompiledSpriteRegion, CompiledTile, CompiledTileChunk, CompiledTileMap};
+ pub use engine_authoring::native_2d::*;
+ pub use engine_physics::native_2d::{project_planar_transform, BodyEntry2d, CharacterController2d, Collider2d, ColliderShape2d, CollisionFilter2d, ContactEvent2d, ContactPhase2d, Joint2d, PhysicsWorld2d, PlanarPose2d, PlanarPoseError, QueryHit2d, RigidBody2d, RigidBodyMode2d};
+ pub use engine_render_runtime::native_2d::{cull_tile_chunks, select_active_camera, sort_and_batch_sprites, validate_camera_pose, ActiveCameraCandidate, ActiveCameraSelection, Camera2d, Camera2dDiagnostic, CameraKind, SpriteBatch2d, SpriteInstance2d, ViewRect2d, ViewportFit2d};
+ 
++use crate::time::FixedTime;
++use engine_authoring::AssetId;
++use engine_ecs::{Entity, Query, Res, ResMut};
++
++/// One frame event emitted by SpriteAnimator2D during the current fixed step.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct SpriteAnimationEvent2d {
++    /// Runtime entity whose animator entered the frame.
++    pub entity: Entity,
++    /// Stable Sprite Animation asset used by the animator.
++    pub clip: AssetId,
++    /// Frame index entered by deterministic playback.
++    pub frame_index: usize,
++    /// Authored frame-event name.
++    pub name: String,
++}
++
++/// Fixed-step Sprite Animation events visible to later gameplay systems in the same step.
++#[derive(Debug, Default)]
++pub struct SpriteAnimationEvents2d {
++    events: Vec<SpriteAnimationEvent2d>,
++}
++
++impl SpriteAnimationEvents2d {
++    /// Returns events emitted by the most recent SpriteAnimator2D fixed-step evaluation.
++    pub fn iter(&self) -> impl Iterator<Item = &SpriteAnimationEvent2d> {
++        self.events.iter()
++    }
++}
++
++/// Advances SpriteAnimator2D instances and writes only the current SpriteRef into SpriteRenderer2D.
++pub fn sprite_animation_2d_fixed_system(
++    fixed_time: Res<FixedTime>,
++    mut events: ResMut<SpriteAnimationEvents2d>,
++    mut query: Query<(&mut SpriteAnimatorRuntime2d, &mut SpriteRenderer2d)>,
++) {
++    events.events.clear();
++    let seconds = f64::from(fixed_time.fixed_delta.max(0.0));
++    for (entity, (animator, renderer)) in &mut query {
++        let clip = std::sync::Arc::clone(&animator.clip);
++        let looping_override = animator.looping_override;
++        let emitted = animator
++            .state
++            .advance(clip.as_ref(), seconds, looping_override);
++        if let Some(sprite) = animator.state.current_sprite(clip.as_ref()) {
++            renderer.sprite = sprite.clone();
++        }
++        events.events.extend(emitted.into_iter().map(|event| SpriteAnimationEvent2d {
++            entity,
++            clip: animator.clip_asset.clone(),
++            frame_index: event.frame_index,
++            name: event.name,
++        }));
++    }
++}
++
+ /// Performance counters recorded by the proving scenario and Editor diagnostics.
+ #[derive(Debug, Clone, Copy, Default, PartialEq)]
+ pub struct Native2dPerformanceStats {
+diff --git a/crates/engine/src/scene_bridge.rs b/crates/engine/src/scene_bridge.rs
+index f7ffe8108bbee8183a569ab6261811119e6d354c..1d0a6daa2e7cc4ecfea98a4d0fafbce1f5d46965 100644
+--- a/crates/engine/src/scene_bridge.rs
++++ b/crates/engine/src/scene_bridge.rs
+@@ -30,7 +30,10 @@ use crate::material::{AlphaMode, CullMode, ShadingModel};
+ use crate::material::{DecodedTexture, Material, MaterialSlots};
+ use crate::mesh::Mesh;
+ use crate::navmesh::NavMeshAgent;
+-use crate::native_2d::{Camera2d, SortingLayerId, SpriteId, SpriteRef, SpriteRenderer2d, ViewportFit2d};
++use crate::native_2d::{
++    Camera2d, SortingLayerId, SpriteAnimationDocument, SpriteAnimatorRuntime2d, SpriteId,
++    SpriteRef, SpriteRenderer2d, ViewportFit2d,
++};
+ use crate::player::{MovePlane, PlayerController, PlayerMarker};
+ use crate::postprocess::{
+     BloomSettings, ColorGradingSettings, PostProcessSettings, ToneMapOperator,
+@@ -108,6 +111,9 @@ pub const CAMERA_2D_COMPONENT: &str = "engine.camera_2d";
+ /// The stable Native 2D sprite renderer component (ADR 0127).
+ pub const SPRITE_RENDERER_2D_COMPONENT: &str = "engine.sprite_renderer_2d";
+ 
++/// The stable Native 2D sprite-animation playback component (ADR 0127).
++pub const SPRITE_ANIMATOR_2D_COMPONENT: &str = "engine.sprite_animator_2d";
++
+ /// The `"engine.directional_light"` component type string recognised by the bridge.
+ pub const DIRECTIONAL_LIGHT_COMPONENT: &str = "engine.directional_light";
+ 
+@@ -415,6 +421,8 @@ pub(crate) struct BridgeAssetState {
+     pub(crate) mesh_handles: HashMap<AssetId, Handle<Mesh>>,
+     pub(crate) material_handles: HashMap<AssetId, Handle<Material>>,
+     pub(crate) animation_clip_handles: HashMap<AssetId, BTreeMap<String, Handle<AnimationClip>>>,
++    /// Immutable Sprite Animation documents shared by every animator resolved during this conversion.
++    pub(crate) sprite_animation_documents: HashMap<AssetId, Arc<SpriteAnimationDocument>>,
+     /// Source asset ID -> the `(sub-asset ID, runtime clip key)` pairs that
+     /// source contributed, recorded when its clips were first loaded.
+     ///
+diff --git a/crates/engine/src/scene_bridge/spawn.rs b/crates/engine/src/scene_bridge/spawn.rs
+index d4452aac9112aa681c1fe004ada91ad56b8db0f0..6afc753052552d28526e827330ae424cb9a5f86e 100644
+--- a/crates/engine/src/scene_bridge/spawn.rs
++++ b/crates/engine/src/scene_bridge/spawn.rs
+@@ -2547,6 +2547,96 @@ pub(crate) fn spawn_sprite_renderer_2d_component(
+     Ok(())
+ }
+ 
++fn resolve_sprite_animation_document(
++    asset: &AssetId,
++    context: &mut SpawnContext<'_>,
++) -> Result<Arc<SpriteAnimationDocument>, SceneBridgeError> {
++    if let Some(document) = context.asset_state.sprite_animation_documents.get(asset) {
++        return Ok(Arc::clone(document));
++    }
++    let path = manifest_asset_path(asset, context)?;
++    if !crate::components::asset_path_matches_kind(crate::components::AssetKind::SpriteAnimation, &path) {
++        return Err(SceneBridgeError::AssetLoad {
++            asset: asset.clone(),
++            source: AssetLoadError::InvalidAsset {
++                path,
++                message: "SpriteAnimator2D clip must reference a *.spriteanim.json asset".to_owned(),
++            },
++        });
++    }
++    let json = std::fs::read_to_string(&path).map_err(|source| SceneBridgeError::AssetLoad {
++        asset: asset.clone(),
++        source: AssetLoadError::Io {
++            path: path.clone(),
++            source,
++        },
++    })?;
++    let document = serde_json::from_str::<SpriteAnimationDocument>(&json).map_err(|source| {
++        SceneBridgeError::AssetLoad {
++            asset: asset.clone(),
++            source: AssetLoadError::InvalidAsset {
++                path: path.clone(),
++                message: source.to_string(),
++            },
++        }
++    })?;
++    let validation = document.validate();
++    if !validation.is_empty() {
++        return Err(SceneBridgeError::AssetLoad {
++            asset: asset.clone(),
++            source: AssetLoadError::InvalidAsset {
++                path,
++                message: validation.join("; "),
++            },
++        });
++    }
++    let document = Arc::new(document);
++    context
++        .asset_state
++        .sprite_animation_documents
++        .insert(asset.clone(), Arc::clone(&document));
++    Ok(document)
++}
++
++pub(crate) fn spawn_sprite_animator_2d_component(
++    entity: Entity,
++    value: &Value,
++    context: &mut SpawnContext<'_>,
++) -> Result<(), ComponentSpawnError> {
++    let component_type = ComponentTypeId::new(SPRITE_ANIMATOR_2D_COMPONENT);
++    const EXPECTED: &str = "a SpriteAnimator2D object with clip, autoplay, speed, and optional looping_override fields";
++    let fields = ComponentFields::new(context.authoring_entity, &component_type, value, EXPECTED)?;
++    let Some(clip_asset) = fields.assignable_asset_ref("clip")?.cloned() else {
++        context.asset_diagnostics.push(component_inactive_diagnostic(
++            context.authoring_entity,
++            &component_type,
++            "clip",
++        ));
++        return Ok(());
++    };
++    let speed = fields.f32("speed")?;
++    if !speed.is_finite() || speed < 0.0 {
++        return Err(fields.invalid(EXPECTED).into());
++    }
++    let looping_override = match fields.get("looping_override") {
++        None | Some(Value::Null) => None,
++        Some(Value::Bool(value)) => Some(*value),
++        _ => return Err(fields.invalid(EXPECTED).into()),
++    };
++    let clip = resolve_sprite_animation_document(&clip_asset, context)?;
++    context.world.add_component(
++        entity,
++        SpriteAnimatorRuntime2d::new(
++            clip_asset,
++            clip,
++            fields.bool("autoplay")?,
++            speed,
++            looping_override,
++        ),
++    )?;
++    Ok(())
++}
++
+ pub(crate) fn spawn_directional_light_component(
+     entity: Entity,
+     value: &Value,
