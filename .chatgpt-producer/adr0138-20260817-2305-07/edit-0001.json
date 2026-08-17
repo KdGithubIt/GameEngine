@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ui/graph_debug.rs","old":"enum GraphDebugObservation {\n    Animation(RuntimeAnimationDebugSnapshot),\n    Behavior,\n}","new":"enum GraphDebugObservation {\n    Animation(Box<RuntimeAnimationDebugSnapshot>),\n    Behavior,\n}"}
