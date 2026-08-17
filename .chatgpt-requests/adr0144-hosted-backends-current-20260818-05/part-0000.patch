@@ -1,0 +1,1312 @@
+diff --git a/crates/editor/src/agent_host.rs b/crates/editor/src/agent_host.rs
+index 736dc8fc6e16785989938036f121ad493d0e846f..6ba344d8a9a686c012b6b21fd4d195f73af91c6b 100644
+--- a/crates/editor/src/agent_host.rs
++++ b/crates/editor/src/agent_host.rs
+@@ -802,6 +802,33 @@ impl AgentHost {
+             .ok_or_else(|| AgentHostError::SessionNotFound(id.to_owned()))
+     }
+ 
++    pub(crate) fn check_session_permission(
++        &mut self,
++        session_id: &str,
++        capability: AgentCapability,
++    ) -> Result<PermissionCheck, AgentHostError> {
++        self.session(session_id)?;
++        Ok(self
++            .permissions
++            .check(&format!("question:{session_id}"), capability))
++    }
++
++    pub(crate) fn resolve_session_permission(
++        &mut self,
++        session_id: &str,
++        capability: AgentCapability,
++        scope: ApprovalScope,
++    ) -> Result<(), AgentHostError> {
++        self.session(session_id)?;
++        let subject = format!("question:{session_id}");
++        self.permissions.resolve(&subject, capability, scope);
++        if scope == ApprovalScope::Project {
++            self.permissions
++                .save(&self.storage_root.join("permissions.json"))?;
++        }
++        Ok(())
++    }
++
+     pub(crate) fn create_session(&mut self, title: impl Into<String>) -> Result<String, AgentHostError> {
+         let session = AgentSession::new(title.into());
+         let id = session.id.clone();
+diff --git a/crates/editor/src/ai_studio.rs b/crates/editor/src/ai_studio.rs
+index d290129f5f3a67a5a5082af7109a3149ea310ae1..dadc64b97b4c88ed8f27e055480a55fccfdc7ff1 100644
+--- a/crates/editor/src/ai_studio.rs
++++ b/crates/editor/src/ai_studio.rs
+@@ -10,10 +10,12 @@ use crate::agent_host::{
+     ConversationRole, ExternalAgentProcess, ManagedValidationAttemptStatus, PermissionCheck,
+     ProcessStream, ResumeDisposition,
+ };
++use crate::hosted_model_backend;
++use crate::hosted_model_backend::{HostedAuthMode, HostedModelConfig};
+ use crate::live_observation::{LiveObservationError, LiveObservationManager};
+ use crate::native_agent::{
+-    LocalModelConfig, ModelCapabilityProfile, NativeAnswer, NativeQuestionTask, QuestionMessage,
+-    QuestionRole, DEFAULT_LOCAL_MODEL_ENDPOINT,
++    LocalModelConfig, ModelCapabilityProfile, NativeAnswer, NativeModelConfig, NativeQuestionTask,
++    QuestionMessage, QuestionRole, DEFAULT_LOCAL_MODEL_ENDPOINT,
+ };
+ use crate::native_agent_runtime::{NativeAgentAction, NativeAgentRuntime, NativeMcpTask};
+ use crate::resource_arbitration::{
+@@ -37,17 +39,32 @@ use std::path::PathBuf;
+ const PROVIDER_EVENT_PREFIX: &str = "GAMEENGINE_AGENT_EVENT ";
+ const MAX_AUTONOMOUS_SOURCE_REPAIRS: usize = 2;
+ const MAX_AUTONOMOUS_RUNTIME_REPAIRS: usize = 2;
+-const AI_STUDIO_PREFERENCES_SCHEMA_VERSION: u32 = 1;
++const AI_STUDIO_PREFERENCES_SCHEMA_VERSION: u32 = 2;
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
++#[serde(rename_all = "snake_case")]
++enum ModelBackendPreference {
++    #[default]
++    Local,
++    HostedApi,
++    Enterprise,
++}
+ 
+ #[derive(Debug, Clone, Serialize, Deserialize)]
+ struct AiStudioPreferences {
+     schema_version: u32,
+     #[serde(default)]
+     quality_preference: QualityPreference,
++    #[serde(default)]
++    model_backend: ModelBackendPreference,
+     #[serde(default = "default_local_model_endpoint")]
+     local_model_endpoint: String,
+     #[serde(default)]
+     local_model_name: String,
++    #[serde(default)]
++    hosted_model_endpoint: String,
++    #[serde(default)]
++    hosted_model_name: String,
+ }
+ 
+ impl Default for AiStudioPreferences {
+@@ -55,8 +72,11 @@ impl Default for AiStudioPreferences {
+         Self {
+             schema_version: AI_STUDIO_PREFERENCES_SCHEMA_VERSION,
+             quality_preference: QualityPreference::Auto,
++            model_backend: ModelBackendPreference::Local,
+             local_model_endpoint: DEFAULT_LOCAL_MODEL_ENDPOINT.to_owned(),
+             local_model_name: String::new(),
++            hosted_model_endpoint: String::new(),
++            hosted_model_name: String::new(),
+         }
+     }
+ }
+@@ -276,6 +296,7 @@ pub enum AiStudioRuntimeResult {
+ #[derive(Debug, Clone, Copy, PartialEq)]
+ enum PendingPermissionAction {
+     LaunchExternalAgent,
++    StartNativeAgent,
+     LaunchRuntimeEvaluation,
+     ApplyCodeChanges,
+     LaunchPlaytest,
+@@ -289,6 +310,12 @@ struct PendingPermission {
+     action: PendingPermissionAction,
+ }
+ 
++struct PendingQuestionPermission {
++    session_id: String,
++    config: NativeModelConfig,
++    conversation: Vec<QuestionMessage>,
++}
++
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+ enum AiStudioPresentationMode {
+     Embedded,
+@@ -348,15 +375,21 @@ pub struct AiStudioPanel {
+     message_draft: String,
+     preferences_path: PathBuf,
+     quality_preference: QualityPreference,
++    model_backend: ModelBackendPreference,
+     local_model_endpoint: String,
+     local_model_name: String,
++    hosted_model_endpoint: String,
++    hosted_model_name: String,
++    hosted_secret_path: PathBuf,
++    hosted_secret_draft: String,
+     resolved_workload: InferenceWorkload,
+     resource_plan: ResourcePlan,
+     editing_interrupted: bool,
+     restore_for_editing: bool,
+     interrupt_snapshot: Option<AiStudioAuthoritativeState>,
+     native_question: Option<NativeQuestionTask>,
+-    pending_native_question_start: Option<(LocalModelConfig, Vec<QuestionMessage>, String)>,
++    pending_native_question_start: Option<(NativeModelConfig, Vec<QuestionMessage>, String)>,
++    pending_question_permission: Option<PendingQuestionPermission>,
+     native_question_session: Option<String>,
+     native_agent_runtime: Option<NativeAgentRuntime>,
+     native_mcp_task: Option<NativeMcpTask>,
+@@ -397,6 +430,7 @@ impl AiStudioPanel {
+             .join("ai")
+             .join(project_storage_key(project.project_id().as_str(), project.path()));
+         let preferences_path = data_root.join("preferences.json");
++        let hosted_secret_path = data_root.join("secrets").join("hosted-api-key.dpapi");
+         let preferences = load_ai_studio_preferences(&preferences_path);
+         let mut host = AgentHost::open(project.path().to_path_buf(), data_root)
+             .map_err(|error| error.to_string())?;
+@@ -425,8 +459,13 @@ impl AiStudioPanel {
+             message_draft: String::new(),
+             preferences_path,
+             quality_preference: preferences.quality_preference,
++            model_backend: preferences.model_backend,
+             local_model_endpoint: preferences.local_model_endpoint,
+             local_model_name: preferences.local_model_name,
++            hosted_model_endpoint: preferences.hosted_model_endpoint,
++            hosted_model_name: preferences.hosted_model_name,
++            hosted_secret_path,
++            hosted_secret_draft: String::new(),
+             resolved_workload: InferenceWorkload::InteractiveReasoning,
+             resource_plan: resolve_resource_plan(
+                 InferenceWorkload::InteractiveReasoning,
+@@ -439,6 +478,7 @@ impl AiStudioPanel {
+             interrupt_snapshot: None,
+             native_question: None,
+             pending_native_question_start: None,
++            pending_question_permission: None,
+             native_question_session: None,
+             native_agent_runtime: None,
+             native_mcp_task: None,
+@@ -481,6 +521,15 @@ impl AiStudioPanel {
+         self.presentation.detach();
+     }
+ 
++    #[cfg(feature = "visual-validation")]
++    /// Selects a deterministic hosted-backend state for screenshot validation.
++    pub fn prepare_hosted_backend_visual_validation(&mut self) {
++        self.model_backend = ModelBackendPreference::HostedApi;
++        self.hosted_model_endpoint = "https://provider.example/v1/chat/completions".to_owned();
++        self.hosted_model_name = "example-hosted-model".to_owned();
++        self.hosted_secret_draft.clear();
++    }
++
+     #[cfg(feature = "visual-validation")]
+     /// Returns whether the detached native viewport has completed two rendered frames.
+     pub fn detached_visual_validation_capture_ready(&self) -> bool {
+@@ -853,7 +902,28 @@ impl AiStudioPanel {
+                     (permission.run_id.as_str(), permission.capability)
+                 });
+                 match snapshot_json(&self.host, &self.project_id, &session_id, pending) {
+-                    Ok(snapshot) => RemoteAiStudioResponse::json(snapshot),
++                    Ok(mut snapshot) => {
++                        if let Some(object) = snapshot.as_object_mut() {
++                            let posture = match self.model_backend {
++                                ModelBackendPreference::Local => serde_json::json!({
++                                    "kind": "local",
++                                    "remote_processing": false
++                                }),
++                                ModelBackendPreference::HostedApi => serde_json::json!({
++                                    "kind": "hosted_api",
++                                    "remote_processing": true,
++                                    "credential": "configured_or_missing"
++                                }),
++                                ModelBackendPreference::Enterprise => serde_json::json!({
++                                    "kind": "enterprise",
++                                    "remote_processing": true,
++                                    "credential": "organization_managed"
++                                }),
++                            };
++                            object.insert("processing_posture".to_owned(), posture);
++                        }
++                        RemoteAiStudioResponse::json(snapshot)
++                    }
+                     Err(error) => RemoteAiStudioResponse::error(404, "session_not_found", error, false),
+                 }
+             }
+@@ -1161,7 +1231,9 @@ impl AiStudioPanel {
+                 .hint_text("Ask a question, add a constraint, or continue the same conversation…"),
+         );
+         ui.horizontal(|ui| {
+-            let can_send = !self.message_draft.trim().is_empty() && self.native_question.is_none();
++            let can_send = !self.message_draft.trim().is_empty()
++                && self.native_question.is_none()
++                && self.pending_question_permission.is_none();
+             if ui.add_enabled(can_send, egui::Button::new("Send")).clicked() {
+                 let text = self.message_draft.trim().to_owned();
+                 match self.host.append_message(
+@@ -1196,8 +1268,8 @@ impl AiStudioPanel {
+             if self.native_question.is_some() {
+                 ui.spinner();
+                 ui.small("Reading current GameEngine/project evidence…");
+-            } else if self.local_model_name.trim().is_empty() {
+-                ui.small("Set an installed local model to receive read-only answers.");
++            } else if self.selected_native_model_config().is_err() {
++                ui.small("Configure the selected model backend to receive read-only answers.");
+             } else {
+                 ui.small("Questions use the read-only native harness; Go remains explicit for writes.");
+             }
+@@ -1205,56 +1277,171 @@ impl AiStudioPanel {
+     }
+ 
+     fn show_local_model_settings(&mut self, ui: &mut egui::Ui) {
+-        egui::CollapsingHeader::new("Local model · read-only questions")
++        egui::CollapsingHeader::new("Model backend · questions and native runs")
+             .default_open(true)
+             .show(ui, |ui| {
++                ui.horizontal_wrapped(|ui| {
++                    ui.label("Backend");
++                    let previous = self.model_backend;
++                    egui::ComboBox::from_id_salt("ai_studio_model_backend")
++                        .selected_text(match self.model_backend {
++                            ModelBackendPreference::Local => "Local",
++                            ModelBackendPreference::HostedApi => "Hosted API",
++                            ModelBackendPreference::Enterprise => "Enterprise",
++                        })
++                        .show_ui(ui, |ui| {
++                            ui.selectable_value(
++                                &mut self.model_backend,
++                                ModelBackendPreference::Local,
++                                "Local",
++                            );
++                            ui.selectable_value(
++                                &mut self.model_backend,
++                                ModelBackendPreference::HostedApi,
++                                "Hosted API",
++                            );
++                            ui.selectable_value(
++                                &mut self.model_backend,
++                                ModelBackendPreference::Enterprise,
++                                "Enterprise",
++                            );
++                        });
++                    if self.model_backend != previous {
++                        self.save_preferences();
++                    }
++                });
++                ui.small(match self.model_backend {
++                    ModelBackendPreference::Local => "Processing posture: local machine only.",
++                    ModelBackendPreference::HostedApi => "Processing posture: selected task context is sent to the configured remote HTTPS provider only after Network access approval.",
++                    ModelBackendPreference::Enterprise => "Processing posture: selected task context is sent to the configured enterprise HTTPS endpoint only after Network access approval.",
++                });
+                 ui.horizontal_wrapped(|ui| {
+                     ui.label("Quality");
+                     let previous = self.quality_preference;
+                     for quality in QualityPreference::ALL {
+-                        ui.selectable_value(
+-                            &mut self.quality_preference,
+-                            quality,
+-                            quality.label(),
+-                        );
++                        ui.selectable_value(&mut self.quality_preference, quality, quality.label());
+                     }
+                     if self.quality_preference != previous {
+                         self.save_preferences();
+                     }
+                 });
+                 ui.small(
+-                    "Quality is a machine-local latency/reasoning preference. It never exposes GPU layers, quantization, token budgets, or VRAM reservations.",
++                    "Quality is a machine-local latency/reasoning preference. Remote GPU controls are never projected as local residency controls.",
+                 );
+-                ui.horizontal(|ui| {
+-                    ui.label("Endpoint");
+-                    if ui
+-                        .add(
+-                            egui::TextEdit::singleline(&mut self.local_model_endpoint)
+-                                .desired_width(250.0),
+-                        )
+-                        .changed()
+-                    {
+-                        self.save_preferences();
++                match self.model_backend {
++                    ModelBackendPreference::Local => {
++                        ui.horizontal(|ui| {
++                            ui.label("Endpoint");
++                            if ui
++                                .add(egui::TextEdit::singleline(&mut self.local_model_endpoint).desired_width(300.0))
++                                .changed()
++                            {
++                                self.save_preferences();
++                            }
++                        });
++                        ui.horizontal(|ui| {
++                            ui.label("Installed model");
++                            if ui
++                                .add(
++                                    egui::TextEdit::singleline(&mut self.local_model_name)
++                                        .desired_width(260.0)
++                                        .hint_text("model:tag"),
++                                )
++                                .changed()
++                            {
++                                self.save_preferences();
++                            }
++                        });
+                     }
+-                });
+-                ui.horizontal(|ui| {
+-                    ui.label("Installed model");
+-                    if ui
+-                        .add(
+-                            egui::TextEdit::singleline(&mut self.local_model_name)
+-                                .desired_width(250.0)
+-                                .hint_text("model:tag"),
+-                        )
+-                        .changed()
+-                    {
+-                        self.save_preferences();
++                    ModelBackendPreference::HostedApi | ModelBackendPreference::Enterprise => {
++                        ui.horizontal(|ui| {
++                            ui.label("HTTPS chat endpoint");
++                            if ui
++                                .add(
++                                    egui::TextEdit::singleline(&mut self.hosted_model_endpoint)
++                                        .desired_width(320.0)
++                                        .hint_text("https://…/v1/chat/completions"),
++                                )
++                                .changed()
++                            {
++                                self.save_preferences();
++                            }
++                        });
++                        ui.horizontal(|ui| {
++                            ui.label("Model");
++                            if ui
++                                .add(egui::TextEdit::singleline(&mut self.hosted_model_name).desired_width(260.0))
++                                .changed()
++                            {
++                                self.save_preferences();
++                            }
++                        });
++                        if self.model_backend == ModelBackendPreference::HostedApi {
++                            ui.horizontal(|ui| {
++                                ui.label("API credential");
++                                ui.add(
++                                    egui::TextEdit::singleline(&mut self.hosted_secret_draft)
++                                        .password(true)
++                                        .desired_width(220.0)
++                                        .hint_text("stored with Windows DPAPI"),
++                                );
++                                if ui.button("Store securely").clicked() {
++                                    match hosted_model_backend::store_api_key(
++                                        &self.hosted_secret_path,
++                                        &self.hosted_secret_draft,
++                                    ) {
++                                        Ok(()) => {
++                                            self.hosted_secret_draft.clear();
++                                            self.status = Some(
++                                                "Hosted API credential stored in the machine-local OS-protected secret store.".to_owned(),
++                                            );
++                                        }
++                                        Err(error) => self.status = Some(error.to_string()),
++                                    }
++                                }
++                                if ui.button("Remove").clicked() {
++                                    match hosted_model_backend::remove_api_key(&self.hosted_secret_path) {
++                                        Ok(()) => {
++                                            self.status = Some("Hosted API credential removed.".to_owned())
++                                        }
++                                        Err(error) => self.status = Some(error.to_string()),
++                                    }
++                                }
++                            });
++                            ui.small(if hosted_model_backend::credential_is_configured(
++                                &self.hosted_secret_path,
++                            ) {
++                                "Credential status: configured. Secret value is never serialized or exposed to Remote AI Studio."
++                            } else {
++                                "Credential status: not configured."
++                            });
++                        } else {
++                            ui.small(
++                                "Enterprise authentication uses the organization-managed Windows identity/session; GameEngine stores no API key.",
++                            );
++                        }
+                     }
+-                });
+-                let profile = LocalModelConfig {
+-                    endpoint: self.local_model_endpoint.clone(),
+-                    model: self.local_model_name.clone(),
+                 }
+-                .capability_profile();
++                let profile = match self.model_backend {
++                    ModelBackendPreference::Local => NativeModelConfig::Local(LocalModelConfig {
++                        endpoint: self.local_model_endpoint.clone(),
++                        model: self.local_model_name.clone(),
++                    })
++                    .capability_profile(),
++                    ModelBackendPreference::HostedApi | ModelBackendPreference::Enterprise => {
++                        NativeModelConfig::Hosted(HostedModelConfig {
++                            endpoint: self.hosted_model_endpoint.clone(),
++                            model: self.hosted_model_name.clone(),
++                            auth_mode: if self.model_backend == ModelBackendPreference::HostedApi {
++                                HostedAuthMode::ApiKey
++                            } else {
++                                HostedAuthMode::EnterpriseManaged
++                            },
++                            encrypted_secret_path: self.hosted_secret_path.clone(),
++                        })
++                        .capability_profile()
++                    }
++                };
+                 ui.small(model_capability_summary(&profile));
+                 ui.small(format!(
+                     "Resource controls: unload/reload {} · GPU residency {} · memory telemetry {}",
+@@ -1268,16 +1455,54 @@ impl AiStudioPanel {
+                     self.resolved_workload,
+                     self.resource_plan.reclaim
+                 ));
+-                ui.small(
+-                    "The initial backend accepts loopback HTTP only. Unsupported controls remain unavailable; exact VRAM and TTFT are never fabricated.",
+-                );
+             });
+     }
+ 
+-    fn start_native_question(&mut self) {
+-        if self.local_model_name.trim().is_empty() {
+-            return;
++    fn selected_native_model_config(&self) -> Result<NativeModelConfig, String> {
++        match self.model_backend {
++            ModelBackendPreference::Local => {
++                if self.local_model_name.trim().is_empty() {
++                    return Err("Set an installed local model before starting inference.".to_owned());
++                }
++                Ok(NativeModelConfig::Local(LocalModelConfig {
++                    endpoint: self.local_model_endpoint.clone(),
++                    model: self.local_model_name.clone(),
++                }))
++            }
++            ModelBackendPreference::HostedApi | ModelBackendPreference::Enterprise => {
++                if !self.hosted_model_endpoint.trim().starts_with("https://") {
++                    return Err("Hosted and enterprise model endpoints must use HTTPS.".to_owned());
++                }
++                if self.hosted_model_name.trim().is_empty() {
++                    return Err("Set a hosted model before starting inference.".to_owned());
++                }
++                if self.model_backend == ModelBackendPreference::HostedApi
++                    && !hosted_model_backend::credential_is_configured(&self.hosted_secret_path)
++                {
++                    return Err("Store a hosted API credential before starting hosted inference.".to_owned());
++                }
++                Ok(NativeModelConfig::Hosted(HostedModelConfig {
++                    endpoint: self.hosted_model_endpoint.clone(),
++                    model: self.hosted_model_name.clone(),
++                    auth_mode: if self.model_backend == ModelBackendPreference::HostedApi {
++                        HostedAuthMode::ApiKey
++                    } else {
++                        HostedAuthMode::EnterpriseManaged
++                    },
++                    encrypted_secret_path: self.hosted_secret_path.clone(),
++                }))
++            }
+         }
++    }
++
++    fn start_native_question(&mut self) {
++        let config = match self.selected_native_model_config() {
++            Ok(config) => config,
++            Err(error) => {
++                self.status = Some(error);
++                return;
++            }
++        };
+         let session_id = self.selected_session.clone();
+         let conversation = match self.host.session(&session_id) {
+             Ok(session) => session
+@@ -1297,10 +1522,68 @@ impl AiStudioPanel {
+                 return;
+             }
+         };
+-        let config = LocalModelConfig {
+-            endpoint: self.local_model_endpoint.clone(),
+-            model: self.local_model_name.clone(),
++        if config.requires_network() {
++            match self
++                .host
++                .check_session_permission(&session_id, AgentCapability::NetworkAccess)
++            {
++                Ok(PermissionCheck::Granted) => {
++                    self.start_native_question_authorized(config, conversation, session_id)
++                }
++                Ok(PermissionCheck::RequiresApproval) => {
++                    self.pending_question_permission = Some(PendingQuestionPermission {
++                        session_id,
++                        config,
++                        conversation,
++                    });
++                    self.status = Some("Hosted inference requires Network access approval.".to_owned());
++                }
++                Ok(PermissionCheck::Denied) => {
++                    self.status = Some("Permission denied: Network access.".to_owned());
++                }
++                Err(error) => self.status = Some(error.to_string()),
++            }
++        } else {
++            self.start_native_question_authorized(config, conversation, session_id);
++        }
++    }
++
++    fn resolve_pending_question_permission(&mut self, scope: ApprovalScope) {
++        let Some(pending) = self.pending_question_permission.take() else {
++            return;
+         };
++        if let Err(error) = self.host.resolve_session_permission(
++            &pending.session_id,
++            AgentCapability::NetworkAccess,
++            scope,
++        ) {
++            self.status = Some(error.to_string());
++            return;
++        }
++        if scope == ApprovalScope::Deny {
++            self.status = Some("Denied Network access for hosted inference.".to_owned());
++            return;
++        }
++        match self
++            .host
++            .check_session_permission(&pending.session_id, AgentCapability::NetworkAccess)
++        {
++            Ok(PermissionCheck::Granted) => self.start_native_question_authorized(
++                pending.config,
++                pending.conversation,
++                pending.session_id,
++            ),
++            Ok(_) => self.status = Some("Network access was not granted.".to_owned()),
++            Err(error) => self.status = Some(error.to_string()),
++        }
++    }
++
++    fn start_native_question_authorized(
++        &mut self,
++        config: NativeModelConfig,
++        conversation: Vec<QuestionMessage>,
++        session_id: String,
++    ) {
+         let profile = config.capability_profile();
+         let has_non_trivial_work = !self.proposal_draft.planned_code_changes.is_empty()
+             || !self.proposal_draft.planned_project_changes.is_empty()
+@@ -1335,7 +1618,7 @@ impl AiStudioPanel {
+ 
+     fn spawn_native_question(
+         &mut self,
+-        config: LocalModelConfig,
++        config: NativeModelConfig,
+         conversation: Vec<QuestionMessage>,
+         session_id: String,
+     ) {
+@@ -1356,8 +1639,11 @@ impl AiStudioPanel {
+         let preferences = AiStudioPreferences {
+             schema_version: AI_STUDIO_PREFERENCES_SCHEMA_VERSION,
+             quality_preference: self.quality_preference,
++            model_backend: self.model_backend,
+             local_model_endpoint: self.local_model_endpoint.clone(),
+             local_model_name: self.local_model_name.clone(),
++            hosted_model_endpoint: self.hosted_model_endpoint.clone(),
++            hosted_model_name: self.hosted_model_name.clone(),
+         };
+         match serde_json::to_vec_pretty(&preferences) {
+             Ok(bytes) => {
+@@ -1404,8 +1690,8 @@ impl AiStudioPanel {
+                 ) {
+                     Ok(()) => {
+                         self.status = Some(format!(
+-                            "Local model answered with {} retrieved evidence source(s) in {} ms.",
+-                            answer.sources.len(), answer.metrics.elapsed_ms
++                            "Model backend {} answered with {} retrieved evidence source(s) in {} ms.",
++                            answer.metrics.backend_id, answer.sources.len(), answer.metrics.elapsed_ms
+                         ));
+                     }
+                     Err(error) => self.status = Some(error.to_string()),
+@@ -1499,11 +1785,7 @@ impl AiStudioPanel {
+     fn start_native_agent_execution(&mut self, run_id: &str) -> Result<(), String> {
+         self.prepare_native_workspace(run_id)?;
+         if self.native_agent_runtime.is_none() {
+-            let config = LocalModelConfig {
+-                endpoint: self.local_model_endpoint.clone(),
+-                model: self.local_model_name.clone(),
+-            };
+-            self.native_agent_runtime = Some(NativeAgentRuntime::local(config));
++            return Err("Native AgentRuntime has no frozen ModelBackend configuration.".to_owned());
+         }
+         if self
+             .host
+@@ -1851,7 +2133,7 @@ impl AiStudioPanel {
+             ui.text_edit_singleline(&mut self.provider_args);
+         });
+         ui.small(
+-            "Go uses the configured external AgentRuntime when present; otherwise the selected local model runs through the governed native AgentRuntime. Both share the immutable proposal, Agent Host permissions, live Editor MCP writer, managed code workspace, validation, Play/frame evidence, and completion contract.",
++            "Go uses the configured external AgentRuntime when present; otherwise the selected Local, Hosted API, or Enterprise ModelBackend runs through the governed native AgentRuntime. Hosted inference requires Network access approval. All native backends share the immutable proposal, Agent Host permissions, live Editor MCP writer, managed code workspace, validation, Play/frame evidence, and completion contract.",
+         );
+         let mut stop_requested = false;
+         let mut interrupt_requested = false;
+@@ -1860,8 +2142,9 @@ impl AiStudioPanel {
+             let can_go = self.process.is_none()
+                 && !self.native_runtime_busy()
+                 && self.pending_permission.is_none()
++                && self.pending_question_permission.is_none()
+                 && (!self.provider_program.trim().is_empty()
+-                    || !self.local_model_name.trim().is_empty());
++                    || self.selected_native_model_config().is_ok());
+             if ui.add_enabled(can_go, egui::Button::new("Go")).clicked() {
+                 self.begin_run();
+             }
+@@ -1955,6 +2238,27 @@ impl AiStudioPanel {
+     }
+ 
+     fn show_permission_prompt(&mut self, ui: &mut egui::Ui) {
++        if self.pending_question_permission.is_some() {
++            ui.separator();
++            ui.group(|ui| {
++                ui.strong("Approval required");
++                ui.label(AgentCapability::NetworkAccess.label());
++                ui.small("Hosted question context leaves this machine only after approval. Credentials never enter the permission record.");
++                ui.horizontal(|ui| {
++                    for (label, scope) in [
++                        ("Allow once", ApprovalScope::Once),
++                        ("This session", ApprovalScope::Run),
++                        ("This project", ApprovalScope::Project),
++                        ("Deny", ApprovalScope::Deny),
++                    ] {
++                        if ui.button(label).clicked() {
++                            self.resolve_pending_question_permission(scope);
++                        }
++                    }
++                });
++            });
++            return;
++        }
+         let Some(pending) = self.pending_permission.as_ref() else {
+             return;
+         };
+@@ -2108,17 +2412,20 @@ impl AiStudioPanel {
+ 
+     fn begin_run_authorized(&mut self, authorized_proposal_version: u64) -> Result<String, String> {
+         let external_provider = self.provider_program.trim().to_owned();
+-        let (mode, provider_label) = if !external_provider.is_empty() {
+-            (AgentRuntimeMode::External, external_provider)
+-        } else if !self.local_model_name.trim().is_empty() {
+-            (AgentRuntimeMode::Native, format!("native:{}", self.local_model_name.trim()))
++        let (mode, provider_label, native_config) = if !external_provider.is_empty() {
++            (AgentRuntimeMode::External, external_provider, None)
+         } else {
+-            return Err("Configure either a compatible external agent program or an installed local model before Go.".to_owned());
++            let config = self.selected_native_model_config()?;
++            let label = config.label();
++            (AgentRuntimeMode::Native, label, Some(config))
+         };
++        let native_requires_network = native_config
++            .as_ref()
++            .is_some_and(NativeModelConfig::requires_network);
+         let run_id = self.host.start_run_authorized(&self.selected_session, authorized_proposal_version, provider_label).map_err(|error| error.to_string())?;
+         self.active_run_id = Some(run_id.clone());
+         self.active_runtime_mode = Some(mode);
+-        self.native_agent_runtime = None;
++        self.native_agent_runtime = native_config.map(NativeAgentRuntime::configured);
+         self.native_mcp_task = None;
+         self.pending_native_mcp_tool = None;
+         self.code_workspace = None;
+@@ -2136,7 +2443,16 @@ impl AiStudioPanel {
+         self.managed_playtest_started_at = None;
+         self.last_captured_frame = None;
+         match mode {
+-            AgentRuntimeMode::External => self.request_permission(run_id.clone(), AgentCapability::ExternalAgentProcess, PendingPermissionAction::LaunchExternalAgent),
++            AgentRuntimeMode::External => self.request_permission(
++                run_id.clone(),
++                AgentCapability::ExternalAgentProcess,
++                PendingPermissionAction::LaunchExternalAgent,
++            ),
++            AgentRuntimeMode::Native if native_requires_network => self.request_permission(
++                run_id.clone(),
++                AgentCapability::NetworkAccess,
++                PendingPermissionAction::StartNativeAgent,
++            ),
+             AgentRuntimeMode::Native => self.start_native_agent_execution(&run_id)?,
+         }
+         Ok(run_id)
+@@ -2206,6 +2522,11 @@ impl AiStudioPanel {
+             PendingPermissionAction::LaunchExternalAgent => {
+                 self.launch_external_agent(run_id, ExternalAgentPurpose::BuildOrRepair)
+             }
++            PendingPermissionAction::StartNativeAgent => {
++                if let Err(error) = self.start_native_agent_execution(run_id) {
++                    self.fail_run(run_id, error);
++                }
++            }
+             PendingPermissionAction::LaunchRuntimeEvaluation => {
+                 self.launch_external_agent(run_id, ExternalAgentPurpose::RuntimeEvaluation)
+             }
+@@ -3096,7 +3417,7 @@ fn capability_label(value: CapabilityAvailability) -> &'static str {
+ 
+ fn model_capability_summary(profile: &ModelCapabilityProfile) -> String {
+     format!(
+-        "Backend: {} · Model: {} · structured: {} · tools: {} · images: {} · reasoning: {} · context: {} · benchmark: {}",
++        "Backend: {} · Model: {} · structured: {} · tools: {} · images: {} · reasoning: {} · context: {} · streaming: {} · usage: {} · benchmark: {}",
+         profile.backend_id,
+         if profile.model_id.is_empty() {
+             "not selected"
+@@ -3111,6 +3432,8 @@ fn model_capability_summary(profile: &ModelCapabilityProfile) -> String {
+             .context_limit
+             .map(|limit| limit.to_string())
+             .unwrap_or_else(|| "unknown".to_owned()),
++        capability_flag(profile.streaming),
++        capability_flag(profile.usage),
+         if profile.benchmark_verified {
+             "verified"
+         } else {
+@@ -3368,6 +3691,39 @@ mod tests {
+         );
+     }
+ 
++    #[test]
++    fn hosted_preferences_exclude_sensitive_auth_state() {
++        let preferences = AiStudioPreferences {
++            schema_version: AI_STUDIO_PREFERENCES_SCHEMA_VERSION,
++            quality_preference: QualityPreference::Balanced,
++            model_backend: ModelBackendPreference::HostedApi,
++            local_model_endpoint: DEFAULT_LOCAL_MODEL_ENDPOINT.to_owned(),
++            local_model_name: String::new(),
++            hosted_model_endpoint: "https://provider.example/v1/chat/completions".to_owned(),
++            hosted_model_name: "example-model".to_owned(),
++        };
++        let json = serde_json::to_string(&preferences).expect("serialize preferences");
++        assert!(!json.contains("authorization"));
++        assert!(!json.contains("bearer"));
++        assert!(!json.contains("protected_path"));
++    }
++
++    #[test]
++    fn hosted_model_config_requires_network_and_reports_implemented_capabilities() {
++        let config = NativeModelConfig::Hosted(HostedModelConfig {
++            endpoint: "https://provider.example/v1/chat/completions".to_owned(),
++            model: "example-model".to_owned(),
++            auth_mode: HostedAuthMode::ApiKey,
++            encrypted_secret_path: PathBuf::from("protected-state"),
++        });
++        assert!(config.requires_network());
++        let profile = config.capability_profile();
++        assert_eq!(profile.image_input, Some(false));
++        assert_eq!(profile.streaming, Some(false));
++        assert_eq!(profile.usage, Some(true));
++        assert_eq!(profile.resource_capabilities, Default::default());
++    }
++
+     #[test]
+     fn detached_presentation_close_and_reopen_preserves_placement() {
+         let mut presentation = AiStudioPresentationState::default();
+diff --git a/crates/editor/src/hosted_model_backend.rs b/crates/editor/src/hosted_model_backend.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..17043a90d928135497820a3b5284bba5d380962c
+--- /dev/null
++++ b/crates/editor/src/hosted_model_backend.rs
+@@ -0,0 +1,561 @@
++//! Hosted and enterprise inference adapters for the native AI Studio harness.
++//!
++//! Provider credentials remain machine-local application secrets. On Windows,
++//! GameEngine protects API keys with the current-user Data Protection API before
++//! writing ciphertext below the Editor application-data root. The hosted request
++//! path decrypts only for the lifetime of one request and never serializes the
++//! credential into project or Agent Host state.
++
++use serde::{Deserialize, Serialize};
++use std::fmt;
++use std::fs;
++use std::io::{self, Read, Write};
++use std::path::{Path, PathBuf};
++use std::process::{Command, Stdio};
++use std::sync::atomic::{AtomicBool, Ordering};
++use std::time::Duration;
++
++const MAX_PROVIDER_OUTPUT_BYTES: usize = 8 * 1024 * 1024;
++const MAX_SECRET_HELPER_OUTPUT_BYTES: usize = 64 * 1024;
++const MAX_PROVIDER_MESSAGE_CHARS: usize = 500;
++
++const DPAPI_PROTECT_SCRIPT: &str = r#"$ErrorActionPreference='Stop';$plain=[Console]::In.ReadToEnd();$bytes=[Text.Encoding]::UTF8.GetBytes($plain);$protected=[Security.Cryptography.ProtectedData]::Protect($bytes,$null,[Security.Cryptography.DataProtectionScope]::CurrentUser);[Console]::Out.Write([Convert]::ToBase64String($protected));if($bytes.Length -gt 0){[Array]::Clear($bytes,0,$bytes.Length)}"#;
++const DPAPI_UNPROTECT_SCRIPT: &str = r#"$ErrorActionPreference='Stop';$cipher=[Console]::In.ReadToEnd().Trim();$protected=[Convert]::FromBase64String($cipher);$bytes=[Security.Cryptography.ProtectedData]::Unprotect($protected,$null,[Security.Cryptography.DataProtectionScope]::CurrentUser);[Console]::Out.Write([Text.Encoding]::UTF8.GetString($bytes));if($bytes.Length -gt 0){[Array]::Clear($bytes,0,$bytes.Length)}"#;
++const HOSTED_HTTP_SCRIPT: &str = r#"$ErrorActionPreference='Stop';$request=[Console]::In.ReadToEnd()|ConvertFrom-Json;$headers=@{};if($null -ne $request.authorization -and $request.authorization.Length -gt 0){$headers['Authorization']='Bearer '+$request.authorization};$parameters=@{Uri=$request.endpoint;Method='Post';Headers=$headers;ContentType='application/json';Body=$request.body;TimeoutSec=120;UseBasicParsing=$true};if($request.enterprise_managed){$parameters['UseDefaultCredentials']=$true};try{$response=Invoke-WebRequest @parameters;$result=[ordered]@{ok=$true;status=[int]$response.StatusCode;body=[string]$response.Content;message=''}}catch{$status=0;$body='';if($null -ne $_.Exception.Response){try{$status=[int]$_.Exception.Response.StatusCode.value__}catch{};try{$stream=$_.Exception.Response.GetResponseStream();if($null -ne $stream){$reader=New-Object IO.StreamReader($stream);$body=$reader.ReadToEnd();$reader.Dispose()}}catch{}};if($body.Length -eq 0 -and $null -ne $_.ErrorDetails){$body=[string]$_.ErrorDetails.Message};$result=[ordered]@{ok=$false;status=$status;body=$body;message=[string]$_.Exception.Message}};[Console]::Out.Write(($result|ConvertTo-Json -Compress -Depth 8))"#;
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub(crate) enum HostedAuthMode {
++    ApiKey,
++    EnterpriseManaged,
++}
++
++impl HostedAuthMode {
++    pub(crate) fn backend_id(self) -> &'static str {
++        match self {
++            Self::ApiKey => "openai-compatible-hosted",
++            Self::EnterpriseManaged => "openai-compatible-enterprise",
++        }
++    }
++
++    fn enterprise_managed(self) -> bool {
++        self == Self::EnterpriseManaged
++    }
++}
++
++#[derive(Debug, Clone)]
++pub(crate) struct HostedModelConfig {
++    pub(crate) endpoint: String,
++    pub(crate) model: String,
++    pub(crate) auth_mode: HostedAuthMode,
++    pub(crate) encrypted_secret_path: PathBuf,
++}
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub(crate) enum HostedFailureCategory {
++    UnsupportedPlatform,
++    InvalidConfiguration,
++    CredentialUnavailable,
++    Authentication,
++    RateLimited,
++    SafetyRefusal,
++    ContextTooLarge,
++    ProviderRejected,
++    Server,
++    Transport,
++    InvalidResponse,
++    Interrupted,
++}
++
++#[derive(Debug)]
++pub(crate) struct HostedBackendError {
++    pub(crate) category: HostedFailureCategory,
++    pub(crate) retryable: bool,
++    pub(crate) status: Option<u16>,
++    message: String,
++}
++
++impl HostedBackendError {
++    fn new(category: HostedFailureCategory, retryable: bool, status: Option<u16>, message: impl Into<String>) -> Self {
++        Self {
++            category,
++            retryable,
++            status,
++            message: sanitize_provider_message(&message.into()),
++        }
++    }
++
++    pub(crate) fn interrupted() -> Self {
++        Self::new(HostedFailureCategory::Interrupted, false, None, "hosted inference was interrupted")
++    }
++}
++
++impl fmt::Display for HostedBackendError {
++    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
++        match self.status {
++            Some(status) => write!(formatter, "hosted model backend {:?} (HTTP {status}, retryable={}): {}", self.category, self.retryable, self.message),
++            None => write!(formatter, "hosted model backend {:?} (retryable={}): {}", self.category, self.retryable, self.message),
++        }
++    }
++}
++
++impl std::error::Error for HostedBackendError {}
++
++#[derive(Debug)]
++pub(crate) struct HostedGeneration {
++    pub(crate) text: String,
++    pub(crate) prompt_tokens: Option<u64>,
++    pub(crate) response_tokens: Option<u64>,
++}
++
++struct SecretBytes(Vec<u8>);
++
++impl SecretBytes {
++    fn expose(&self) -> Result<&str, HostedBackendError> {
++        std::str::from_utf8(&self.0).map_err(|_| HostedBackendError::new(
++            HostedFailureCategory::CredentialUnavailable,
++            false,
++            None,
++            "stored credential is not valid UTF-8",
++        ))
++    }
++}
++
++impl Drop for SecretBytes {
++    fn drop(&mut self) {
++        self.0.fill(0);
++    }
++}
++
++pub(crate) fn credential_is_configured(path: &Path) -> bool {
++    path.is_file()
++}
++
++pub(crate) fn store_api_key(path: &Path, secret: &str) -> Result<(), HostedBackendError> {
++    if secret.trim().is_empty() {
++        return Err(HostedBackendError::new(
++            HostedFailureCategory::CredentialUnavailable,
++            false,
++            None,
++            "API credential cannot be empty",
++        ));
++    }
++    ensure_windows()?;
++    let encrypted = run_powershell(
++        DPAPI_PROTECT_SCRIPT,
++        secret.as_bytes(),
++        &AtomicBool::new(false),
++        MAX_SECRET_HELPER_OUTPUT_BYTES,
++    )?;
++    let parent = path.parent().ok_or_else(|| HostedBackendError::new(
++        HostedFailureCategory::CredentialUnavailable,
++        false,
++        None,
++        "credential path has no parent directory",
++    ))?;
++    fs::create_dir_all(parent).map_err(credential_io_error)?;
++    let temp = path.with_extension("dpapi.tmp");
++    fs::write(&temp, encrypted).map_err(credential_io_error)?;
++    if path.exists() {
++        fs::remove_file(path).map_err(credential_io_error)?;
++    }
++    fs::rename(&temp, path).map_err(credential_io_error)
++}
++
++pub(crate) fn remove_api_key(path: &Path) -> Result<(), HostedBackendError> {
++    match fs::remove_file(path) {
++        Ok(()) => Ok(()),
++        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
++        Err(error) => Err(credential_io_error(error)),
++    }
++}
++
++fn load_api_key(path: &Path) -> Result<SecretBytes, HostedBackendError> {
++    ensure_windows()?;
++    let ciphertext = fs::read(path).map_err(|error| {
++        HostedBackendError::new(
++            HostedFailureCategory::CredentialUnavailable,
++            false,
++            None,
++            format!("could not read protected credential: {error}"),
++        )
++    })?;
++    let plaintext = run_powershell(
++        DPAPI_UNPROTECT_SCRIPT,
++        &ciphertext,
++        &AtomicBool::new(false),
++        MAX_SECRET_HELPER_OUTPUT_BYTES,
++    )?;
++    if plaintext.is_empty() {
++        return Err(HostedBackendError::new(
++            HostedFailureCategory::CredentialUnavailable,
++            false,
++            None,
++            "protected credential decrypted to an empty value",
++        ));
++    }
++    Ok(SecretBytes(plaintext))
++}
++
++pub(crate) fn generate_hosted(
++    config: &HostedModelConfig,
++    prompt: &str,
++    interrupted: &AtomicBool,
++) -> Result<HostedGeneration, HostedBackendError> {
++    ensure_windows()?;
++    validate_https_endpoint(&config.endpoint)?;
++    if config.model.trim().is_empty() {
++        return Err(HostedBackendError::new(
++            HostedFailureCategory::InvalidConfiguration,
++            false,
++            None,
++            "a hosted model name is required",
++        ));
++    }
++    if interrupted.load(Ordering::Acquire) {
++        return Err(HostedBackendError::interrupted());
++    }
++
++    let secret = if config.auth_mode == HostedAuthMode::ApiKey {
++        Some(load_api_key(&config.encrypted_secret_path)?)
++    } else {
++        None
++    };
++    let authorization = secret.as_ref().map(SecretBytes::expose).transpose()?;
++    let request_body = serde_json::to_string(&ChatCompletionRequest {
++        model: config.model.trim(),
++        messages: [ChatMessage { role: "user", content: prompt }],
++        stream: false,
++    }).map_err(json_error)?;
++    let envelope = HostedRequestEnvelope {
++        endpoint: config.endpoint.trim(),
++        authorization,
++        enterprise_managed: config.auth_mode.enterprise_managed(),
++        body: &request_body,
++    };
++    let mut input = serde_json::to_vec(&envelope).map_err(json_error)?;
++    let output = run_powershell(
++        HOSTED_HTTP_SCRIPT,
++        &input,
++        interrupted,
++        MAX_PROVIDER_OUTPUT_BYTES,
++    );
++    input.fill(0);
++    let output = output?;
++    let transport: PowerShellHttpResult = serde_json::from_slice(&output).map_err(|_| HostedBackendError::new(
++        HostedFailureCategory::InvalidResponse,
++        false,
++        None,
++        "platform HTTP helper returned an invalid response envelope",
++    ))?;
++    if !transport.ok {
++        return Err(classify_provider_failure(transport.status, &transport.body, &transport.message));
++    }
++    if transport.status < 200 || transport.status >= 300 {
++        return Err(classify_provider_failure(transport.status, &transport.body, &transport.message));
++    }
++    parse_chat_completion(&transport.body)
++}
++
++fn validate_https_endpoint(endpoint: &str) -> Result<(), HostedBackendError> {
++    let trimmed = endpoint.trim();
++    let authority_and_path = trimmed.strip_prefix("https://").ok_or_else(|| HostedBackendError::new(
++        HostedFailureCategory::InvalidConfiguration,
++        false,
++        None,
++        "hosted model endpoints must use HTTPS",
++    ))?;
++    let authority = authority_and_path.split('/').next().unwrap_or_default();
++    if authority.is_empty() || authority.contains('@') || trimmed.contains('#') {
++        return Err(HostedBackendError::new(
++            HostedFailureCategory::InvalidConfiguration,
++            false,
++            None,
++            "hosted endpoint must contain an HTTPS host without embedded credentials or fragments",
++        ));
++    }
++    Ok(())
++}
++
++#[derive(Serialize)]
++struct ChatCompletionRequest<'a> {
++    model: &'a str,
++    messages: [ChatMessage<'a>; 1],
++    stream: bool,
++}
++
++#[derive(Serialize)]
++struct ChatMessage<'a> {
++    role: &'static str,
++    content: &'a str,
++}
++
++#[derive(Serialize)]
++struct HostedRequestEnvelope<'a> {
++    endpoint: &'a str,
++    authorization: Option<&'a str>,
++    enterprise_managed: bool,
++    body: &'a str,
++}
++
++#[derive(Deserialize)]
++struct PowerShellHttpResult {
++    ok: bool,
++    status: u16,
++    #[serde(default)]
++    body: String,
++    #[serde(default)]
++    message: String,
++}
++
++#[derive(Deserialize)]
++struct ChatCompletionResponse {
++    #[serde(default)]
++    choices: Vec<ChatCompletionChoice>,
++    #[serde(default)]
++    usage: Option<ChatCompletionUsage>,
++}
++
++#[derive(Deserialize)]
++struct ChatCompletionChoice {
++    message: ChatCompletionMessage,
++    #[serde(default)]
++    finish_reason: Option<String>,
++}
++
++#[derive(Deserialize)]
++struct ChatCompletionMessage {
++    #[serde(default)]
++    content: Option<String>,
++    #[serde(default)]
++    refusal: Option<String>,
++}
++
++#[derive(Deserialize)]
++struct ChatCompletionUsage {
++    #[serde(default)]
++    prompt_tokens: Option<u64>,
++    #[serde(default)]
++    completion_tokens: Option<u64>,
++}
++
++fn parse_chat_completion(body: &str) -> Result<HostedGeneration, HostedBackendError> {
++    let response: ChatCompletionResponse = serde_json::from_str(body).map_err(|_| HostedBackendError::new(
++        HostedFailureCategory::InvalidResponse,
++        false,
++        None,
++        "hosted provider returned invalid chat-completion JSON",
++    ))?;
++    let choice = response.choices.first().ok_or_else(|| HostedBackendError::new(
++        HostedFailureCategory::InvalidResponse,
++        false,
++        None,
++        "hosted provider returned no completion choice",
++    ))?;
++    if choice.finish_reason.as_deref() == Some("content_filter")
++        || choice.message.refusal.as_deref().is_some_and(|value| !value.trim().is_empty())
++    {
++        return Err(HostedBackendError::new(
++            HostedFailureCategory::SafetyRefusal,
++            false,
++            None,
++            "hosted provider refused the request under its safety policy",
++        ));
++    }
++    let text = choice.message.content.as_deref().unwrap_or_default().trim().to_owned();
++    if text.is_empty() {
++        return Err(HostedBackendError::new(
++            HostedFailureCategory::InvalidResponse,
++            false,
++            None,
++            "hosted provider returned an empty completion",
++        ));
++    }
++    Ok(HostedGeneration {
++        text,
++        prompt_tokens: response.usage.as_ref().and_then(|usage| usage.prompt_tokens),
++        response_tokens: response.usage.as_ref().and_then(|usage| usage.completion_tokens),
++    })
++}
++
++fn classify_provider_failure(status: u16, body: &str, fallback: &str) -> HostedBackendError {
++    let message = if body.trim().is_empty() { fallback } else { body };
++    let lowered = message.to_ascii_lowercase();
++    if lowered.contains("context length") || lowered.contains("maximum context") || lowered.contains("too many tokens") {
++        return HostedBackendError::new(HostedFailureCategory::ContextTooLarge, false, status_option(status), "provider context limit was exceeded");
++    }
++    if lowered.contains("content_filter") || lowered.contains("safety policy") || lowered.contains("moderation") {
++        return HostedBackendError::new(HostedFailureCategory::SafetyRefusal, false, status_option(status), "provider safety policy refused the request");
++    }
++    match status {
++        0 => HostedBackendError::new(HostedFailureCategory::Transport, true, None, message),
++        401 | 403 => HostedBackendError::new(HostedFailureCategory::Authentication, false, Some(status), "provider authentication or authorization failed"),
++        408 | 425 => HostedBackendError::new(HostedFailureCategory::Transport, true, Some(status), message),
++        429 => HostedBackendError::new(HostedFailureCategory::RateLimited, true, Some(status), "provider rate limit was reached"),
++        500..=599 => HostedBackendError::new(HostedFailureCategory::Server, true, Some(status), message),
++        _ => HostedBackendError::new(HostedFailureCategory::ProviderRejected, false, Some(status), message),
++    }
++}
++
++fn status_option(status: u16) -> Option<u16> {
++    (status != 0).then_some(status)
++}
++
++fn sanitize_provider_message(message: &str) -> String {
++    let lowered = message.to_ascii_lowercase();
++    if lowered.contains("authorization") || lowered.contains("bearer ") || lowered.contains("api_key") || lowered.contains("api key") || lowered.contains("secret") {
++        return "provider returned a sensitive error; details were redacted".to_owned();
++    }
++    let trimmed = message.trim();
++    if trimmed.chars().count() <= MAX_PROVIDER_MESSAGE_CHARS {
++        trimmed.to_owned()
++    } else {
++        let mut output = trimmed.chars().take(MAX_PROVIDER_MESSAGE_CHARS).collect::<String>();
++        output.push('…');
++        output
++    }
++}
++
++fn credential_io_error(error: io::Error) -> HostedBackendError {
++    HostedBackendError::new(
++        HostedFailureCategory::CredentialUnavailable,
++        false,
++        None,
++        format!("secure credential storage failed: {error}"),
++    )
++}
++
++fn json_error(error: serde_json::Error) -> HostedBackendError {
++    HostedBackendError::new(HostedFailureCategory::InvalidConfiguration, false, None, format!("hosted request JSON failed: {error}"))
++}
++
++fn ensure_windows() -> Result<(), HostedBackendError> {
++    if cfg!(target_os = "windows") {
++        Ok(())
++    } else {
++        Err(HostedBackendError::new(
++            HostedFailureCategory::UnsupportedPlatform,
++            false,
++            None,
++            "first-release hosted credential protection requires Windows DPAPI; no insecure fallback is permitted",
++        ))
++    }
++}
++
++fn run_powershell(
++    script: &str,
++    input: &[u8],
++    interrupted: &AtomicBool,
++    max_output: usize,
++) -> Result<Vec<u8>, HostedBackendError> {
++    let mut child = Command::new("powershell.exe")
++        .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script])
++        .stdin(Stdio::piped())
++        .stdout(Stdio::piped())
++        .stderr(Stdio::null())
++        .spawn()
++        .map_err(|error| HostedBackendError::new(HostedFailureCategory::Transport, true, None, format!("could not start Windows platform helper: {error}")))?;
++    if let Some(mut stdin) = child.stdin.take() {
++        stdin.write_all(input).map_err(|error| HostedBackendError::new(HostedFailureCategory::Transport, true, None, format!("could not send request to Windows platform helper: {error}")))?;
++    }
++    let stdout = child.stdout.take().ok_or_else(|| HostedBackendError::new(HostedFailureCategory::Transport, true, None, "Windows platform helper stdout was unavailable"))?;
++    let reader = std::thread::spawn(move || read_capped(stdout, max_output));
++    let status = loop {
++        if interrupted.load(Ordering::Acquire) {
++            let _ = child.kill();
++            let _ = child.wait();
++            let _ = reader.join();
++            return Err(HostedBackendError::interrupted());
++        }
++        match child.try_wait().map_err(|error| HostedBackendError::new(HostedFailureCategory::Transport, true, None, format!("Windows platform helper wait failed: {error}")))? {
++            Some(status) => break status,
++            None => std::thread::sleep(Duration::from_millis(25)),
++        }
++    };
++    let output = reader.join().map_err(|_| HostedBackendError::new(HostedFailureCategory::Transport, true, None, "Windows platform helper output reader failed"))?
++        .map_err(|error| HostedBackendError::new(HostedFailureCategory::Transport, true, None, format!("Windows platform helper output failed: {error}")))?;
++    if !status.success() {
++        return Err(HostedBackendError::new(HostedFailureCategory::Transport, true, None, "Windows platform helper failed"));
++    }
++    if output.len() > max_output {
++        return Err(HostedBackendError::new(HostedFailureCategory::InvalidResponse, false, None, "hosted provider response exceeded the safety limit"));
++    }
++    Ok(output)
++}
++
++fn read_capped(mut reader: impl Read, max_output: usize) -> io::Result<Vec<u8>> {
++    let mut output = Vec::new();
++    let mut buffer = [0_u8; 8192];
++    loop {
++        let read = reader.read(&mut buffer)?;
++        if read == 0 {
++            break;
++        }
++        if output.len() <= max_output {
++            let remaining = max_output.saturating_add(1).saturating_sub(output.len());
++            output.extend_from_slice(&buffer[..read.min(remaining)]);
++        }
++    }
++    Ok(output)
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn hosted_endpoint_requires_https_without_embedded_credentials() {
++        assert!(validate_https_endpoint("https://provider.example/v1/chat/completions").is_ok());
++        assert!(validate_https_endpoint("http://provider.example/v1/chat/completions").is_err());
++        assert!(validate_https_endpoint("https://user:secret@provider.example/v1/chat/completions").is_err());
++    }
++
++    #[test]
++    fn provider_failures_are_classified_without_success_fallback() {
++        let auth = classify_provider_failure(401, "invalid token", "");
