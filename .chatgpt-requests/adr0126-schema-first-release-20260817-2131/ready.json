@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0126-schema-first-release-20260817-2131",
+  "target_branch": "chatgpt/gameengine-adr0126-first-release-v2",
+  "expected_head_sha": "686a1f257aca25f9667d8ae815fbc66ed9bd34ac",
+  "baseline_main_sha": "f0f8d6436235b706dd86d8a7a7d5630a75a1dce4",
+  "patch_sha256": "2431412ff1da2e62d75973082b5bbe35ec4f3cd9acedde520c1ac0e578f6493b",
+  "patch_bytes": 26532,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Align Timeline schema with ADR0126 first release",
+  "pr_title": "GameEngine: complete ADR 0126 Timeline first release",
+  "pr_body": "## Summary\n\nContinues ADR0126 first-release completion on current main. This batch narrows Timeline authoring to the six required initial track families, replaces raw animation asset ownership with stable Animation Set motion-slot references, adds an explicit Transform property registry, permits targetless non-spatial Audio tracks while restricting spatial bindings to stable entities, and bounds Timeline Event names/payloads.\n\nDraft PR remains intentionally unmerged while runtime composition, Project Rust, Sequencer preview, packaged-player parity, and Visual Validation are completed."
+}
