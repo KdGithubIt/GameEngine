@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0126-cli-help-parity-20260817-2010",
+  "target_branch": "chatgpt/gameengine-adr0126-first-release",
+  "expected_head_sha": "7f2721674bf2200e8e66354afa7e414299f8418d",
+  "baseline_main_sha": "d03ed9e573818eb0ca088f37953f611d6ed4d22e",
+  "patch_sha256": "e814bf90120b06921c2b93362842f2d26ffe459bef5941f559f225d60a484c0e",
+  "patch_bytes": 7818,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Document Timeline CLI capability paths",
+  "pr_title": "GameEngine: complete ADR0126 Timeline and Sequencer",
+  "pr_body": "## Summary\n\nContinues ADR 0126 first-release completion and restores ADR 0132 CLI parity by documenting every Timeline capability command in the canonical CLI help surface.\n\n<!-- gameengine-visual-validation: editor -->\n<!-- gameengine-visual-authoring-tool: Sequencer -->\n\n<!-- gameengine-chatgpt-dispatcher -->"
+}
