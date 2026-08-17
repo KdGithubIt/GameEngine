@@ -1,0 +1,25 @@
+diff --git a/crates/authoring/src/project_settings.rs b/crates/authoring/src/project_settings.rs
+index 936de635db94ad016dedbd205b19a21fa7a96bad..f505ce952aab0f0ade686bcf047639f2f4d552c4 100644
+--- a/crates/authoring/src/project_settings.rs
++++ b/crates/authoring/src/project_settings.rs
+@@ -484,6 +484,7 @@ mod tests {
+             }],
+             start_scene: Some("scenes/main.scene.json".into()),
+             system_settings: SystemSettings::default(),
++            native_2d: crate::native_2d::Project2dSettings::default(),
+         };
+ 
+         let json = serde_json::to_string_pretty(&settings).expect("must serialize");
+diff --git a/crates/physics/src/native_2d.rs b/crates/physics/src/native_2d.rs
+index a77557366353a45746023aa4f21ca6bec67d7d14..00c57d30293ca943ea7421f1aa4336cc759998d5 100644
+--- a/crates/physics/src/native_2d.rs
++++ b/crates/physics/src/native_2d.rs
+@@ -298,7 +298,7 @@ impl Default for CharacterController2d {
+         Self {
+             half_extents: Vec2::new(0.45, 0.9),
+             skin: 0.02,
+-            slope_limit_radians: 0.7853982,
++            slope_limit_radians: std::f32::consts::FRAC_PI_4,
+             ground_snap: 0.1,
+             drop_through_seconds: 0.0,
+             grounded: false,
