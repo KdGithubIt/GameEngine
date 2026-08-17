@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/engine/src/app.rs","old":"use crate::morph::{material_morph_system, morph_blend_system};\nuse crate::skinning::joint_palette_system;\n","new":"use crate::morph::{material_morph_system, morph_blend_system};\nuse crate::native_2d::{sprite_animation_2d_fixed_system, SpriteAnimationEvents2d};\nuse crate::skinning::joint_palette_system;\n"}
