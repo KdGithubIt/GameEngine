@@ -1,0 +1,115 @@
+diff --git a/crates/editor/src/main.rs b/crates/editor/src/main.rs
+index 2c6d8a2604e8bc6dbe91994b758c0bbdec4204b2..587e544a52b6a3ecd6db412fb617f3aca227841f 100644
+--- a/crates/editor/src/main.rs
++++ b/crates/editor/src/main.rs
+@@ -76,6 +76,8 @@ impl EditorShell {
+                 app.prepare_navigation_visual_validation();
+             } else if requested == "Spatial Audio" {
+                 app.prepare_spatial_audio_visual_validation();
++            } else if requested == "Spatial Audio Details" {
++                app.prepare_spatial_audio_details_visual_validation();
+             } else {
+                 if requested == "VFX Builder" {
+                     app.prepare_vfx_visual_validation();
+diff --git a/crates/editor/src/ui/audio_authoring.rs b/crates/editor/src/ui/audio_authoring.rs
+index 6eb7f8cb658139400c5f8707771ed9c6c9429501..5d6be0be47e21f14d7b4aab7a0d5b7947332148b 100644
+--- a/crates/editor/src/ui/audio_authoring.rs
++++ b/crates/editor/src/ui/audio_authoring.rs
+@@ -234,6 +234,19 @@ impl EditorApp {
+ 
+     #[cfg(feature = "visual-validation")]
+     pub fn prepare_spatial_audio_visual_validation(&mut self) {
++        self.prepare_spatial_audio_visual_validation_with_scroll(None);
++    }
++
++    #[cfg(feature = "visual-validation")]
++    pub fn prepare_spatial_audio_details_visual_validation(&mut self) {
++        self.prepare_spatial_audio_visual_validation_with_scroll(Some(300.0));
++    }
++
++    #[cfg(feature = "visual-validation")]
++    fn prepare_spatial_audio_visual_validation_with_scroll(
++        &mut self,
++        inspector_scroll_offset: Option<f32>,
++    ) {
+         let registry = engine::components::builtin_registry();
+         let transform_type = ComponentTypeId::new(engine::scene_bridge::TRANSFORM_COMPONENT);
+         let emitter_type = ComponentTypeId::new(engine::scene_bridge::AUDIO_EMITTER_COMPONENT);
+@@ -244,6 +257,7 @@ impl EditorApp {
+         // Keep the task-specific visual capture focused on the audio Inspector rather than
+         // spending the runner's constrained desktop height on the utility dock or Transform.
+         self.bottom_panel_open = false;
++        self.inspector_scroll_request = inspector_scroll_offset;
+         self.preferences
+             .component_card_open
+             .insert(transform_type.as_str().to_owned(), false);
+diff --git a/crates/editor/src/ui/chrome.rs b/crates/editor/src/ui/chrome.rs
+index ee9521b935f7b5dd94d5a13ea99ad75875200995..08ab960db8c2cf76d55632fe4c983cb17c6d18eb 100644
+--- a/crates/editor/src/ui/chrome.rs
++++ b/crates/editor/src/ui/chrome.rs
+@@ -2085,6 +2085,7 @@ pub(super) fn show_primary_left_dock_panel<R>(
+ pub(super) fn show_inspector_panel<R>(
+     ui: &mut egui::Ui,
+     max_width: f32,
++    vertical_scroll_offset: Option<f32>,
+     add_contents: impl FnOnce(&mut egui::Ui) -> R,
+ ) -> egui::InnerResponse<R> {
+     egui::Panel::right("inspector_panel")
+@@ -2108,8 +2109,11 @@ pub(super) fn show_inspector_panel<R>(
+             // into one-glyph-per-line text. Labels expose elided text on hover.
+             viewport_ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+ 
+-            let result = egui::ScrollArea::vertical()
+-                .auto_shrink([false, false])
++            let mut scroll_area = egui::ScrollArea::vertical().auto_shrink([false, false]);
++            if let Some(offset) = vertical_scroll_offset {
++                scroll_area = scroll_area.vertical_scroll_offset(offset);
++            }
++            let result = scroll_area
+                 .show(&mut viewport_ui, |ui| {
+                     let viewport_width = ui.available_width();
+                     ui.set_width(viewport_width);
+diff --git a/crates/editor/src/ui/inspector/layout.rs b/crates/editor/src/ui/inspector/layout.rs
+index 61e84b5c479e24460e6c02b2086efee79b578e2f..038070d386767e75330ab3b26038a5301d8dd64f 100644
+--- a/crates/editor/src/ui/inspector/layout.rs
++++ b/crates/editor/src/ui/inspector/layout.rs
+@@ -147,7 +147,7 @@ fn show_inspector_field_label(
+     display_name: &str,
+     description: &str,
+ ) -> egui::Response {
+-    let width = (ui.available_width() * 0.34).clamp(88.0, 132.0);
++    let width = (ui.available_width() * 0.34).clamp(112.0, 132.0);
+     ui.add_sized([width, 20.0], egui::Label::new(display_name).truncate())
+         .on_hover_text(description)
+ }
+diff --git a/crates/editor/src/ui/mod.rs b/crates/editor/src/ui/mod.rs
+index 3b58ea92bbd3864697d2f496112e22c0e26f5258..02263d27856e26c8f2f29555bb2f60285357f51a 100644
+--- a/crates/editor/src/ui/mod.rs
++++ b/crates/editor/src/ui/mod.rs
+@@ -321,6 +321,8 @@ pub struct EditorApp {
+     add_component_picker_open: bool,
+     /// Revision-keyed Inspector catalogs and imported skeleton choices.
+     inspector_cache: InspectorDerivedCache,
++    /// One-shot vertical Inspector scroll request consumed by the next UI frame.
++    inspector_scroll_request: Option<f32>,
+     pending_game_package: Option<PendingGamePackage>,
+     /// Active tab in the main left-side navigation dock.
+     left_panel_tab: LeftPanelTab,
+@@ -491,6 +493,7 @@ impl EditorApp {
+             component_search: String::new(),
+             add_component_picker_open: false,
+             inspector_cache: InspectorDerivedCache::default(),
++            inspector_scroll_request: None,
+             pending_game_package: None,
+             left_panel_tab: LeftPanelTab::Hierarchy,
+             new_motion_slot_name: String::new(),
+@@ -832,7 +835,8 @@ impl eframe::App for EditorApp {
+         // space for node labels and badges instead of showing two inspectors.
+         if !self.behavior_debug.visible {
+             let inspector_maximum_width = inspector_max_width(ui.available_width());
+-            show_inspector_panel(ui, inspector_maximum_width, |ui| {
++            let inspector_scroll_request = self.inspector_scroll_request.take();
++            show_inspector_panel(ui, inspector_maximum_width, inspector_scroll_request, |ui| {
+                 self.show_data_asset_tools(ui);
+                 ui.separator();
+                 // The three inspector surfaces replace one another inside this
