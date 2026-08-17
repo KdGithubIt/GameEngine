@@ -119,39 +119,44 @@ impl EditorApp {
             return;
         };
 
+        let has_graph_debug = self.has_graph_debug_targets();
+        if !has_graph_debug {
+            self.graph_debug.visible = false;
+        }
         control_row(ui, |ui| {
             ui.strong("View");
             let previous = self.preferences.play_mode_view;
             if ui
                 .selectable_label(
-                    !self.behavior_debug.visible && previous == PlayModeView::Game,
+                    !self.graph_debug.visible && previous == PlayModeView::Game,
                     "Game View",
                 )
                 .clicked()
             {
-                self.behavior_debug.visible = false;
+                self.graph_debug.visible = false;
                 self.preferences.play_mode_view = PlayModeView::Game;
             }
             if ui
                 .selectable_label(
-                    !self.behavior_debug.visible && previous == PlayModeView::Scene,
+                    !self.graph_debug.visible && previous == PlayModeView::Scene,
                     "Scene View",
                 )
                 .clicked()
             {
-                self.behavior_debug.visible = false;
+                self.graph_debug.visible = false;
                 self.preferences.play_mode_view = PlayModeView::Scene;
             }
-            if ui
-                .selectable_label(self.behavior_debug.visible, "Behavior Tree")
-                .clicked()
+            if has_graph_debug
+                && ui
+                    .selectable_label(self.graph_debug.visible, "Graph Debug")
+                    .clicked()
             {
-                self.behavior_debug.visible = true;
+                self.graph_debug.visible = true;
             }
             if self.preferences.play_mode_view != previous {
                 self.preferences.save();
             }
-            if !self.behavior_debug.visible
+            if !self.graph_debug.visible
                 && self.preferences.play_mode_view == PlayModeView::Scene
             {
                 ui.separator();
@@ -162,12 +167,12 @@ impl EditorApp {
             }
         });
         ui.separator();
-        if self.behavior_debug.visible {
+        if self.graph_debug.visible {
             if self.game_view_focused {
                 self.release_all_forwarded_input();
                 self.game_view_focused = false;
             }
-            self.show_behavior_tree_debug_workspace(ui);
+            self.show_graph_debug_workspace(ui);
             return;
         }
 
@@ -657,6 +662,7 @@ impl EditorApp {
             Ok(start) => {
                 self.session.extend_diagnostics(start.diagnostics);
                 self.runtime_state = Some(start.state);
+                self.graph_debug.begin_play(&self.session);
                 self.behavior_debug.clear();
                 self.selected_runtime_entity = None;
                 self.editor_mode = EditorMode::Playing;
@@ -692,6 +698,7 @@ impl EditorApp {
                 }
                 self.session.extend_diagnostics(start.diagnostics);
                 self.runtime_state = Some(start.state);
+                self.graph_debug.begin_play(&self.session);
                 self.behavior_debug.clear_observation();
                 self.selected_runtime_entity = None;
             }
@@ -713,6 +720,7 @@ impl EditorApp {
             }
         }
         self.runtime_state = None;
+        self.graph_debug.clear();
         self.behavior_debug.clear();
         self.selected_runtime_entity = None;
         self.editor_mode = EditorMode::Edit;

@@ -11,7 +11,8 @@ use std::path::Path;
 
 use engine_authoring::{
     compile_animation_graph, AnimState, AnimTransition, AnimationGraphDomain,
-    AnimationStatePlaybackMode, CompiledAnimGraph, Diagnostic, Graph,
+    AnimationStatePlaybackMode, AssetId, CompiledAnimGraph, Diagnostic, EdgeId, Graph, GraphId,
+    MotionSlotId, MotionSourceRef, MotionSourceVariant,
 };
 
 use crate::animation::{AnimationClip, Animator};
@@ -243,6 +244,36 @@ fn parse_bool_literal(value: &str) -> Option<bool> {
     }
 }
 
+/// Read-only provenance for one resolved Animation Set motion slot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnimationMotionDebugBinding {
+    /// Stable graph-owned motion slot.
+    pub motion_slot: MotionSlotId,
+    /// Human-readable binding label captured from the Animation Set.
+    pub display_name: String,
+    /// Author-selected stable motion source.
+    pub source: MotionSourceRef,
+    /// Variant that scene conversion actually resolved.
+    pub resolved_variant: MotionSourceVariant,
+    /// Session-local concrete clip handle identity.
+    pub resolved_clip_runtime_id: u64,
+}
+
+/// Stable source mapping captured when an Animation Controller is converted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnimationGraphDebugSource {
+    /// Animation Graph asset referenced by the controller.
+    pub graph_asset: AssetId,
+    /// Stable semantic graph identity loaded from that asset.
+    pub graph_id: GraphId,
+    /// Animation Set asset resolved with the graph.
+    pub animation_set_asset: AssetId,
+    /// Source edge IDs in the same deterministic order as compiled transitions.
+    pub transition_edges: Vec<Option<EdgeId>>,
+    /// Resolved motion evidence keyed by stable MotionSlotId.
+    pub motion_bindings: BTreeMap<MotionSlotId, AnimationMotionDebugBinding>,
+}
+
 /// Runs a compiled Animation Graph against a sibling [`Animator`] component.
 pub struct AnimGraphPlayer {
     graph: CompiledAnimGraph,
@@ -255,7 +286,9 @@ pub struct AnimGraphPlayer {
     pub fade_duration: f32,
     entered: bool,
     last_transition: Option<AnimTransition>,
+    last_transition_index: Option<usize>,
     transition_sequence: u64,
+    debug_source: Option<AnimationGraphDebugSource>,
 }
 
 impl AnimGraphPlayer {
@@ -288,7 +321,9 @@ impl AnimGraphPlayer {
             fade_duration: 0.2,
             entered: false,
             last_transition: None,
+            last_transition_index: None,
             transition_sequence: 0,
+            debug_source: None,
         }
     }
 
@@ -363,12 +398,29 @@ impl AnimGraphPlayer {
         self.current_state = self.graph.entry_state;
         self.entered = false;
         self.last_transition = None;
+        self.last_transition_index = None;
         self.transition_sequence = 0;
     }
 
     /// Returns the latest accepted transition.
     pub fn last_transition(&self) -> Option<&AnimTransition> {
         self.last_transition.as_ref()
+    }
+
+    /// Returns the stable source edge for the latest accepted transition.
+    pub fn last_transition_edge(&self) -> Option<&EdgeId> {
+        let index = self.last_transition_index?;
+        self.debug_source.as_ref()?.transition_edges.get(index)?.as_ref()
+    }
+
+    /// Installs read-only source and binding provenance captured by scene conversion.
+    pub fn set_debug_source(&mut self, source: AnimationGraphDebugSource) {
+        self.debug_source = Some(source);
+    }
+
+    /// Returns source and binding provenance for runtime observation.
+    pub fn debug_source(&self) -> Option<&AnimationGraphDebugSource> {
+        self.debug_source.as_ref()
     }
 
     /// Monotonic counter incremented for every accepted transition.
@@ -451,6 +503,7 @@ pub fn anim_graph_system(mut query: engine_ecs::Query<(&mut AnimGraphPlayer, &mu
         }
         player.current_state = target_index;
         player.last_transition = Some(transition.clone());
+        player.last_transition_index = Some(transition_index);
         player.transition_sequence = player.transition_sequence.wrapping_add(1);
         let state = player.graph.states[target_index].clone();
         let fade_duration = transition.fade_duration.unwrap_or(player.fade_duration);
@@ -554,6 +607,17 @@ impl std::error::Error for AnimGraphLoadError {
 /// Returns an I/O, JSON parse, graph compilation, or typed transition-condition
 /// diagnostic when the asset cannot become a runnable state machine.
 pub fn load_animation_graph(path: &Path) -> Result<CompiledAnimGraph, AnimGraphLoadError> {
+    load_animation_graph_document(path).map(|(_, compiled)| compiled)
+}
+
+/// Loads the semantic source graph together with its compiled runtime artifact.
+///
+/// The semantic graph is returned only as read-only provenance for callers that
+/// must preserve stable `GraphId`/`EdgeId` mappings while constructing runtime
+/// observation metadata. Runtime execution continues to use `CompiledAnimGraph`.
+pub fn load_animation_graph_document(
+    path: &Path,
+) -> Result<(Graph, CompiledAnimGraph), AnimGraphLoadError> {
     let json = std::fs::read_to_string(path).map_err(AnimGraphLoadError::Io)?;
     let graph: Graph = serde_json::from_str(&json).map_err(AnimGraphLoadError::Parse)?;
     let domain = AnimationGraphDomain::new();
@@ -577,7 +641,7 @@ pub fn load_animation_graph(path: &Path) -> Result<CompiledAnimGraph, AnimGraphL
         })
         .collect::<Vec<_>>();
     if diagnostics.is_empty() {
-        Ok(compiled)
+        Ok((graph, compiled))
     } else {
         Err(AnimGraphLoadError::Compile(diagnostics))
     }
