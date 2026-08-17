@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "docs/adr/0125-vfx-effect-authoring-and-runtime-architecture.md",
+  "old": "Status: Proposed",
+  "new": "Status: Accepted"
+}
