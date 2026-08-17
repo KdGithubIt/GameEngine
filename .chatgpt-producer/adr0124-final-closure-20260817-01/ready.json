@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0124-final-closure-20260817-01",
+  "target_branch": "chatgpt/gameengine-adr0124-final-closure-20260817",
+  "expected_head_sha": "2109204b493072e10bd04e8a571f03cb487120fe",
+  "baseline_main_sha": "2109204b493072e10bd04e8a571f03cb487120fe",
+  "edit_parts": ["edit-0000.json"],
+  "commit_message": "Accept ADR 0124 after final closure audit",
+  "pr_title": "GameEngine: accept ADR 0124 after final closure audit",
+  "pr_body": "## Summary\n\nMarks ADR 0124 Accepted after a current-main first-release closure audit. No Navigation product-code gap was found; final Windows and Navigation visual validation are required on this exact branch head.\n\n<!-- gameengine-visual-validation: editor -->\n<!-- gameengine-visual-authoring-tool: Navigation -->\n\n<!-- gameengine-chatgpt-dispatcher -->"
+}
