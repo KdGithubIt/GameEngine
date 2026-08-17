@@ -753,7 +753,7 @@ impl EditorApp {
                 graph_document.kind.as_str()
             ));
         }
-        let slots = engine_authoring::animation_graph_motion_slots(&graph_document)
+        let slots = engine_authoring::animation_graph_motion_slots(graph_document)
             .map_err(|error| format!("{} has invalid Motion Slots: {error}", entry.path))?;
         let mut states =
             std::collections::BTreeMap::<engine_authoring::MotionSlotId, Vec<String>>::new();

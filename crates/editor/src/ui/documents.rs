@@ -622,7 +622,11 @@ impl EditorApp {
                             kind: event.kind,
                         });
                     } else if event.kind != FileSyncKind::Removed {
-                        self.reload_external_document_owner(&owner, &absolute);
+                        self.reload_external_document_owner(
+                            &owner,
+                            &absolute,
+                            ExternalReloadPolicy::CleanOnly,
+                        );
                     } else {
                         self.session.push_diagnostic(engine_authoring::Diagnostic::warning(
                             "editor.file_sync.open_document_removed",
@@ -892,6 +896,7 @@ impl EditorApp {
         &mut self,
         owner: &ExternalDocumentOwner,
         path: &Path,
+        policy: ExternalReloadPolicy,
     ) {
         let result = match owner {
             ExternalDocumentOwner::Workspace(tab_id) => {
@@ -902,19 +907,44 @@ impl EditorApp {
                 .map_err(|error| error.to_string())
                 .and_then(|json| engine_authoring::AnimationSet::from_json(&json).map_err(|error| error.to_string()))
                 .and_then(|document| {
-                    self.animation_set_editor
+                    let state = self
+                        .animation_set_editor
                         .as_mut()
-                        .ok_or_else(|| "Animation Set editor is closed".to_owned())
-                        .map(|state| state.reload_discarding_changes(document))
+                        .ok_or_else(|| "Animation Set editor is closed".to_owned())?;
+                    match policy {
+                        ExternalReloadPolicy::CleanOnly => state
+                            .reload_clean(document)
+                            .then_some(())
+                            .ok_or_else(|| {
+                                "Animation Set became dirty before external reload".to_owned()
+                            }),
+                        ExternalReloadPolicy::DiscardChanges => {
+                            state.reload_discarding_changes(document);
+                            Ok(())
+                        }
+                    }
                 }),
             ExternalDocumentOwner::Material(relative) => fs::read_to_string(path)
                 .map_err(|error| error.to_string())
                 .and_then(|json| engine_authoring::MaterialAsset::from_json(&json).map_err(|error| error.to_string()))
                 .and_then(|material| {
-                    self.material_editor
-                        .reload_discarding_changes(relative, material)
-                        .then_some(())
-                        .ok_or_else(|| format!("material {} is no longer open", relative.display()))
+                    let reloaded = match policy {
+                        ExternalReloadPolicy::CleanOnly => {
+                            self.material_editor.reload_clean(relative, material)
+                        }
+                        ExternalReloadPolicy::DiscardChanges => self
+                            .material_editor
+                            .reload_discarding_changes(relative, material),
+                    };
+                    reloaded.then_some(()).ok_or_else(|| match policy {
+                        ExternalReloadPolicy::CleanOnly => format!(
+                            "material {} became dirty before external reload",
+                            relative.display()
+                        ),
+                        ExternalReloadPolicy::DiscardChanges => {
+                            format!("material {} is no longer open", relative.display())
+                        }
+                    })
                 }),
         };
         match result {
@@ -962,7 +992,11 @@ impl EditorApp {
             self.external_document_conflict = None;
         } else if reload {
             self.external_document_conflict = None;
-            self.reload_external_document_owner(&owner, &path);
+            self.reload_external_document_owner(
+                &owner,
+                &path,
+                ExternalReloadPolicy::DiscardChanges,
+            );
         }
     }
 
@@ -1037,6 +1071,12 @@ enum UnsavedChangesChoice {
     Save,
     Discard,
     Cancel,
+}
+
+#[derive(Clone, Copy)]
+enum ExternalReloadPolicy {
+    CleanOnly,
+    DiscardChanges,
 }
 
 #[derive(Clone)]

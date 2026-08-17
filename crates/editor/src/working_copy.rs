@@ -62,8 +62,10 @@ pub(crate) fn graph_working_copy<'a>(
     path: &Path,
 ) -> Option<(&'a Graph, u64)> {
     let session = workspace.session_for_path(path)?;
-    session.graph_working_copy_json()?;
-    Some((session.graph(), session.document_revision()))
+    Some((
+        session.graph_working_copy()?,
+        session.document_revision(),
+    ))
 }
 
 #[cfg(test)]

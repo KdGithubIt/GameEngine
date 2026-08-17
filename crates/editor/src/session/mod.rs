@@ -257,6 +257,11 @@ impl EditorSession {
         &self.graph
     }
 
+    /// Returns the authoritative Graph working copy when this session owns a Graph document.
+    pub(crate) fn graph_working_copy(&self) -> Option<&Graph> {
+        matches!(&self.current_document, CurrentDocument::Graph { .. }).then_some(&self.graph)
+    }
+
     /// Serializes the current Graph working copy through its domain schema.
     ///
     /// Failure remains an authoritative invalid working copy; callers must not

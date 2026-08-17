@@ -3995,6 +3995,7 @@ mod tests {
             None,
             &engine::scene_bridge::SharedGltfImportCache::default(),
             &engine::SharedGpuMeshCache::default(),
+            &engine::authoring_overlay::AuthoringDocumentOverlay::new(),
             [640, 360],
             true,
         );
@@ -4041,6 +4042,7 @@ mod tests {
             None,
             &engine::scene_bridge::SharedGltfImportCache::default(),
             &engine::SharedGpuMeshCache::default(),
+            &engine::authoring_overlay::AuthoringDocumentOverlay::new(),
             [640, 360],
             true,
         );

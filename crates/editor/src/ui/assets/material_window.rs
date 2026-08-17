@@ -1,7 +1,7 @@
-//! Material editor window, material persistence, and texture previews.
+//! Material editor window, explicit material persistence, and texture previews.
 //!
-//! Material edits are continuous, so writes are debounced through a pending
-//! save queue instead of touching the file on every frame.
+//! Continuous edits debounce only Scene View preview refresh. Canonical Material
+//! persistence happens through explicit Save/Save All (ADR 0139).
 
 use crate::ui::*;
 
