@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/vfx_builder.rs","old":"        self.normalize_selection(&effect);\n        let compilation = VfxAuthoringService::new().compile(&effect);","new":"        self.normalize_selection(&effect);\n        let compilation = self.background.compilation_for(&effect, ui.ctx());"}
