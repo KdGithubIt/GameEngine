@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/launcher/src/main.rs","old":"const MAX_RECENT_PROJECTS: usize = 10;\n\n","new":""}

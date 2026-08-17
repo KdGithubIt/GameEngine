@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/launcher/Cargo.toml","old":"version = \"0.1.0\"\nedition = \"2024\"\n\n[features]\n","new":"version = \"0.1.0\"\nedition = \"2024\"\ndefault-run = \"engine-launcher\"\n\n[features]\n"}
