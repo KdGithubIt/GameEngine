@@ -1,0 +1,13 @@
+diff --git a/crates/engine/src/components/tests.rs b/crates/engine/src/components/tests.rs
+index 61d48442b120ee9e969879f967fc85ff3634593f..24a2787a592a70ebcac2dba66444f831167ab1f8 100644
+--- a/crates/engine/src/components/tests.rs
++++ b/crates/engine/src/components/tests.rs
+@@ -208,6 +208,8 @@ fn registry_iterates_in_registration_order() {
+             NAVIGATION_LINK_COMPONENT,
+             NAVIGATION_MODIFIER_COMPONENT,
+             VFX_PLAYER_COMPONENT,
++            CAMERA_2D_COMPONENT,
++            SPRITE_RENDERER_2D_COMPONENT,
+         ]
+     );
+ }
