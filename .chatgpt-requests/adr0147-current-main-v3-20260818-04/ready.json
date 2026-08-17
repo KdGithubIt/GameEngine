@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0147-current-main-v3-20260818-04",
+  "target_branch": "chatgpt/gameengine-adr0147-detached-ai-studio-v3",
+  "expected_head_sha": "8c868ea613f2033f0f2274c26921547c9cdb39af",
+  "baseline_main_sha": "8c868ea613f2033f0f2274c26921547c9cdb39af",
+  "patch_sha256": "bd8af5306772facd62c290185c0b4065442ccbd86a1d3946e564f0fa382e14bc",
+  "patch_bytes": 18264,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Implement ADR0147 detached AI Studio",
+  "pr_title": "GameEngine: implement ADR0147 detached AI Studio",
+  "pr_body": "## Summary\n\n- implement ADR0147 Tier 1 as a detachable native eframe viewport while retaining one project-scoped Agent Host\n- preserve session/run/permission/workspace/resource-arbitration state across detach, close, reopen, and reattach\n- capture the actual detached Windows child window for visual validation and focus that child during validation so desktop pixels correspond to the detached viewport\n- mark ADR0147 Accepted\n\n<!-- gameengine-visual-validation: editor -->"
+}
