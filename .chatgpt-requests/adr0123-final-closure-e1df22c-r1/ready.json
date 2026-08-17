@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0123-final-closure-e1df22c-r1",
+  "target_branch": "chatgpt/gameengine-adr0123-final-closure",
+  "expected_head_sha": "e1df22ca311274ac7645a226f214c9d4e941756c",
+  "baseline_main_sha": "e1df22ca311274ac7645a226f214c9d4e941756c",
+  "patch_sha256": "a3660cd0253d36e4d34260734829f8d17f10a7835aa56a1fbfa7d8afa8813af8",
+  "patch_bytes": 15703,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Complete ADR 0123 debugger closure",
+  "pr_title": "ADR 0123: complete Stateful Behavior Tree first release",
+  "pr_body": "## Summary\n\n- preserve the already-complete stateful Behavior Tree executor, compiled graph, runtime snapshot, and authoring contracts\n- add read-only transient selected-node runtime details without mutating Graph or GraphView selection\n- close visual acceptance with deterministic Running, Success, Failure, abort/reset, elapsed-time, palette, graph, and detail evidence\n- keep Editor, CLI, and MCP authoring on the shared BehaviorTreeAuthoringService/schema registry and mark ADR 0123 Accepted\n\n## Validation\n\nRun affected Windows Validation and Editor Visual Validation.\n\n<!-- gameengine-visual-validation: editor -->"
+}
