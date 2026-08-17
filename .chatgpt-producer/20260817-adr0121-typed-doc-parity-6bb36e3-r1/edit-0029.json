@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/animation_set_editor.rs",
+  "old": "    undo: Vec<AnimationSet>,\n    redo: Vec<AnimationSet>,\n}",
+  "new": "    undo: Vec<AnimationSet>,\n    redo: Vec<AnimationSet>,\n    authoring: TypedDocumentAuthoringState,\n}"
+}
