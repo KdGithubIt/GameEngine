@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "            pending_code_changes: Vec::new(),\n            pending_permission: None,\n            status: None,\n        })",
+  "new": "            pending_code_changes: Vec::new(),\n            pending_permission: None,\n            pending_runtime_action: None,\n            managed_playtest_requested: false,\n            managed_capture_requested: false,\n            managed_playtest_started_at: None,\n            last_captured_frame: None,\n            status: None,\n        })"
+}
