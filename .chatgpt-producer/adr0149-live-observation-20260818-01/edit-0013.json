@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ai_studio.rs","old":"use crate::live_observation::{\n    LiveObservationError, LiveObservationManager, DEFAULT_LIVE_OBSERVATION_FPS,\n};","new":"use crate::live_observation::{LiveObservationError, LiveObservationManager};"}
