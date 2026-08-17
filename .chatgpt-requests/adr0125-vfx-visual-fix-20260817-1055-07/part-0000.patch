@@ -1,0 +1,17 @@
+diff --git a/crates/editor/src/vfx_builder_completion.rs b/crates/editor/src/vfx_builder_completion.rs
+index ff3efb8438cdee3b7817c83855f014779d70ff9a..0b9b561e99500c31f1bdf67bf6c4f1ebc12e11da 100644
+--- a/crates/editor/src/vfx_builder_completion.rs
++++ b/crates/editor/src/vfx_builder_completion.rs
+@@ -440,7 +440,11 @@ impl super::VfxBuilderState {
+         }) {
+             self.completion.select_module(module);
+         }
+-        self.completion.preview.open_effect(&effect);
++        let compilation = service.compile(&effect);
++        self.completion.preview.preview_seed = effect.seed;
++        self.completion
++            .preview
++            .apply_compilation(&effect, &compilation, false);
+         self.completion.preview.seek_to(1.25);
+         self.status = Some("Visual validation fixture: Smoke template at 1.25 s.".to_owned());
+     }
