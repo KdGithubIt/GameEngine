@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ui/mcp.rs",
+  "old": "mod parity_tests {\n    use super::*;\n    use crate::session::EditorSession;\n    use engine_authoring::{\n        GraphCommand, GraphViewCommand, UiDocumentCommand, Value as AuthoringValue, Vec2, Viewport,\n    };\n    use serde_json::{json, Value};\n",
+  "new": "mod parity_tests {\n    use super::*;\n    use crate::animation_set_editor::AnimationSetEditorState;\n    use crate::material_editor::MaterialEditorPanel;\n    use crate::project_settings_panel::ProjectSettingsPanel;\n    use crate::session::EditorSession;\n    use engine_authoring::{\n        AnimationSet, AssetId, GraphCommand, GraphViewCommand, MaterialAsset, ProjectSettings,\n        UiDocumentCommand, Value as AuthoringValue, Vec2, Viewport,\n    };\n    use serde_json::{json, Value};\n    use std::path::PathBuf;\n"
+}
