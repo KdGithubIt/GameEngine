@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/engine/src/native_2d.rs","old":"use crate::time::FixedTime;\nuse engine_ecs::{Entity, Query, Res, ResMut};\n","new":"use crate::time::FixedTime;\nuse engine_authoring::AssetId;\nuse engine_ecs::{Entity, Query, Res, ResMut};\n"}
