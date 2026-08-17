@@ -149,10 +149,10 @@ pub(super) fn show_audio_component_extras(
     if component_type.as_str() == engine::scene_bridge::AUDIO_EMITTER_COMPONENT {
         ui.separator();
         ui.strong("Attenuation Preview");
-        if let Some(emitter) = parse_emitter(value) {
-            draw_attenuation_preview(ui, emitter.settings);
+        if let Some(settings) = parse_spatial_settings(value) {
+            draw_attenuation_preview(ui, settings);
         } else {
-            ui.weak("Complete the emitter fields to preview attenuation.");
+            ui.weak("Complete the spatial fields to preview attenuation.");
         }
         ui.separator();
         ui.strong("Audition");
@@ -241,8 +241,21 @@ impl EditorApp {
         let Some(transform) = registry.get(&transform_type).map(|definition| definition.schema.default_value()) else { return; };
         let Some(mut emitter) = registry.get(&emitter_type).map(|definition| definition.schema.default_value()) else { return; };
         let Some(listener) = registry.get(&listener_type).map(|definition| definition.schema.default_value()) else { return; };
+        // Keep the task-specific visual capture focused on the audio Inspector rather than
+        // spending the runner's constrained desktop height on the utility dock or Transform.
+        self.bottom_panel_open = false;
+        self.preferences
+            .component_card_open
+            .insert(transform_type.as_str().to_owned(), false);
+        self.preferences
+            .component_card_open
+            .insert(emitter_type.as_str().to_owned(), true);
+        self.preferences
+            .component_card_open
+            .insert(listener_type.as_str().to_owned(), true);
         let Value::Object(fields) = &mut emitter else { return; };
-        fields.insert("clip".to_owned(), Value::AssetRef(AssetId::generate()));
+        // The visual-validation fixture must not fabricate an unresolved asset reference.
+        // Attenuation/gizmos are spatial-only; audition remains visible but stopped until a real clip is selected.
         fields.insert("spatial_blend".to_owned(), Value::F64(1.0));
         fields.insert("min_distance".to_owned(), Value::F64(1.5));
         fields.insert("max_distance".to_owned(), Value::F64(6.0));
@@ -268,22 +281,27 @@ fn audition_spatial_gains(
     engine::audio::spatial_voice_gains(listener, emitter, settings)
 }
 
-fn parse_emitter(value: &Value) -> Option<EmitterPreview> {
+fn parse_spatial_settings(value: &Value) -> Option<engine::audio::AudioVoiceSpatialSettings> {
     let Value::Object(fields) = value else { return None; };
-    let Value::AssetRef(clip) = fields.get("clip")? else { return None; };
     let rolloff = match fields.get("rolloff") {
         Some(Value::String(value)) if value == "inverse" => engine::audio::AudioRolloffMode::Inverse,
         _ => engine::audio::AudioRolloffMode::Linear,
     };
+    Some(engine::audio::AudioVoiceSpatialSettings {
+        volume: number(fields.get("volume"), 1.0),
+        spatial_blend: number(fields.get("spatial_blend"), 1.0),
+        min_distance: number(fields.get("min_distance"), 1.0),
+        max_distance: number(fields.get("max_distance"), 20.0),
+        rolloff,
+    })
+}
+
+fn parse_emitter(value: &Value) -> Option<EmitterPreview> {
+    let Value::Object(fields) = value else { return None; };
+    let Value::AssetRef(clip) = fields.get("clip")? else { return None; };
     Some(EmitterPreview {
         clip: clip.clone(),
-        settings: engine::audio::AudioVoiceSpatialSettings {
-            volume: number(fields.get("volume"), 1.0),
-            spatial_blend: number(fields.get("spatial_blend"), 1.0),
-            min_distance: number(fields.get("min_distance"), 1.0),
-            max_distance: number(fields.get("max_distance"), 20.0),
-            rolloff,
-        },
+        settings: parse_spatial_settings(value)?,
         looping: matches!(fields.get("looping"), Some(Value::Bool(true))),
     })
 }
@@ -360,5 +378,34 @@ mod tests {
         }
         transaction.commit(&mut scene).expect("listener fixture must commit");
         assert_eq!(active_game_listener(&scene), Some(expected));
+    }
+
+    #[test]
+    fn audition_controls_remain_transient() {
+        let directory = tempfile::tempdir().expect("temporary scene directory");
+        let path = directory.path().join("audio.scene.json");
+        let scene = AuthoringScene::new();
+        std::fs::write(
+            &path,
+            scene.to_canonical_json().expect("empty scene fixture serializes"),
+        )
+        .expect("empty scene fixture writes");
+        let mut session = EditorSession::empty_behavior_tree();
+        session.open_scene(path).expect("scene fixture opens");
+        let mut app = EditorApp::new(session);
+        let revision = app.session.document_revision();
+        let selected = EntityId::generate();
+
+        app.handle_audio_inspector_action(
+            &selected,
+            &Value::Null,
+            AudioInspectorAction::UseSceneViewListener,
+        );
+        app.handle_audio_inspector_action(&selected, &Value::Null, AudioInspectorAction::Stop);
+        app.handle_audio_inspector_action(&selected, &Value::Null, AudioInspectorAction::Restart);
+        app.audio_audition.reset_project();
+
+        assert_eq!(app.session.document_revision(), revision);
+        assert!(!app.session.is_dirty());
     }
 }

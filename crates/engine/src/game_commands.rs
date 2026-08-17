@@ -2424,6 +2424,27 @@ mod tests {
     }
 
     #[test]
+    fn spatial_audio_rejects_stale_entity_generation_during_preflight() {
+        let mut world = World::new();
+        let entity = world.spawn_with(Transform::default()).unwrap();
+        world.insert_resource(GameAudioCommandQueue::default());
+        let stale = GameEntityHandle {
+            id: entity.id(),
+            generation: entity.generation().wrapping_add(1),
+        };
+        let command = GameCommand::play_spatial_sound_effect(
+            stale,
+            "audio.effect.test",
+            engine_scripting::game_io::GameSpatialAudioOptions::default(),
+        );
+
+        assert!(matches!(
+            prepare_game_commands(&world, &[command]),
+            Err(GameCommandError::StaleTarget { index: 0, target }) if target == stale
+        ));
+    }
+
+    #[test]
     fn command_after_despawn_is_rejected_during_preflight() {
         let mut world = World::new();
         let entity = world.spawn_with(Transform::default()).unwrap();
