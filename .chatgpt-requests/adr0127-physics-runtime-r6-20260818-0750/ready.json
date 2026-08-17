@@ -1,0 +1,16 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0127-physics-runtime-r6-20260818-0750",
+  "target_branch": "chatgpt/gameengine-adr0127-physics-runtime-r5",
+  "expected_head_sha": "8c868ea613f2033f0f2274c26921547c9cdb39af",
+  "baseline_main_sha": "8c868ea613f2033f0f2274c26921547c9cdb39af",
+  "patch_sha256": "5b6b89c5186cf2bff243925a82ebebb2342365b31d29ce9c935b775cbfcba672",
+  "patch_bytes": 77677,
+  "patch_parts": [
+    "part-0000.patch",
+    "part-0001.patch"
+  ],
+  "commit_message": "Complete ADR 0127 native 2D physics first-release runtime",
+  "pr_title": "GameEngine: complete ADR 0127 native 2D physics first release (r5)",
+  "pr_body": "## Summary\n\nReplays the Windows-validated ADR 0127 first-release Native 2D implementation on current main after new overlapping scene-bridge changes made r4 unmergeable. Preserves current scene-bridge diagnostics while retaining the previously validated registry-order and engine-physics Clippy fixes.\n\n## Validation\n\nRun GameEngine Windows Validation using impact-based affected scope.\n"
+}
