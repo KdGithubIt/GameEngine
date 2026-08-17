@@ -311,6 +311,92 @@ impl Default for AgentProposal {
     }
 }
 
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct AuthoritativeStateSnapshot {
+    pub(crate) document_revision: u64,
+    pub(crate) game_code_generation: u64,
+    pub(crate) document_path: Option<PathBuf>,
+    pub(crate) document_dirty: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct AgentWorkingState {
+    pub(crate) implementation_objective: String,
+    pub(crate) architecture_constraints: Vec<String>,
+    pub(crate) ownership_crate_decisions: Vec<String>,
+    pub(crate) target_files_documents: Vec<String>,
+    pub(crate) concrete_edits: Vec<String>,
+    pub(crate) typed_mcp_operations: Vec<String>,
+    pub(crate) tests: Vec<String>,
+    pub(crate) assumptions: Vec<String>,
+    pub(crate) replan_conditions: Vec<String>,
+    pub(crate) relevant_source_provenance: Vec<String>,
+    pub(crate) current_code_workspace_diff: Vec<String>,
+    pub(crate) validation_results: Vec<String>,
+    pub(crate) observed_runtime_state: Vec<String>,
+    pub(crate) open_problems: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) authoritative_snapshot_before_interrupt: Option<AuthoritativeStateSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) interrupted_from: Option<AgentRunState>,
+}
+
+impl AgentWorkingState {
+    fn from_proposal(proposal: &AgentProposal) -> Self {
+        let mut target_files_documents = proposal.planned_project_changes.clone();
+        target_files_documents.extend(proposal.planned_code_changes.iter().cloned());
+        target_files_documents.extend(proposal.planned_assets.iter().cloned());
+        Self {
+            implementation_objective: proposal.goal.clone(),
+            architecture_constraints: proposal.requirements.clone(),
+            ownership_crate_decisions: Vec::new(),
+            target_files_documents,
+            concrete_edits: proposal.planned_code_changes.clone(),
+            typed_mcp_operations: proposal.planned_project_changes.clone(),
+            tests: proposal.validation_plan.clone(),
+            assumptions: proposal.assumptions.clone(),
+            replan_conditions: proposal.acceptance_criteria.clone(),
+            relevant_source_provenance: Vec::new(),
+            current_code_workspace_diff: Vec::new(),
+            validation_results: Vec::new(),
+            observed_runtime_state: Vec::new(),
+            open_problems: Vec::new(),
+            authoritative_snapshot_before_interrupt: None,
+            interrupted_from: None,
+        }
+    }
+}
+
+impl Default for AgentWorkingState {
+    fn default() -> Self {
+        Self::from_proposal(&AgentProposal::default())
+    }
+}
+
+// First-release semantic working-state update contract; provider wiring is intentionally optional.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Default)]
+pub(crate) struct AgentWorkingStateUpdate {
+    pub(crate) architecture_constraints: Vec<String>,
+    pub(crate) ownership_crate_decisions: Vec<String>,
+    pub(crate) target_files_documents: Vec<String>,
+    pub(crate) concrete_edits: Vec<String>,
+    pub(crate) typed_mcp_operations: Vec<String>,
+    pub(crate) tests: Vec<String>,
+    pub(crate) assumptions: Vec<String>,
+    pub(crate) replan_conditions: Vec<String>,
+    pub(crate) relevant_source_provenance: Vec<String>,
+    pub(crate) open_problems: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ResumeDisposition {
+    ResumedUnchanged,
+    ReinspectRequired,
+    RepairRequired,
+}
+
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -319,6 +405,8 @@ pub(crate) enum AgentRunState {
     Planning,
     Executing,
     AwaitingUser,
+    /// Explicit resumable control state for manual editing; not a product question.
+    InterruptedForEditing,
     Validating,
     Playtesting,
     Evaluating,
@@ -354,6 +442,9 @@ pub(crate) enum AgentEventKind {
     Validation,
     Playtest,
     CapturedFrame,
+    EditingInterrupted,
+    EditingResumed,
+    ResourcePolicy,
     Cancellation,
     Failure,
     Completion,
@@ -593,6 +684,9 @@ pub(crate) struct AgentRun {
     pub(crate) state: AgentRunState,
     pub(crate) events: Vec<AgentEvent>,
     pub(crate) completion: CompletionReport,
+    /// Provider-independent semantic working set retained independently of model residency.
+    #[serde(default)]
+    pub(crate) working_state: AgentWorkingState,
     #[serde(default)]
     pub(crate) validation_attempts: Vec<ManagedValidationAttempt>,
     #[serde(default)]
@@ -774,6 +868,7 @@ impl AgentHost {
             state: AgentRunState::Inspecting,
             events: Vec::new(),
             completion: CompletionReport::default(),
+            working_state: AgentWorkingState::from_proposal(&session.proposal),
             validation_attempts: Vec::new(),
             code_checkpoints: Vec::new(),
             audit: AgentRunAudit::default(),
@@ -830,6 +925,136 @@ impl AgentHost {
             self.release_writer(run_id);
         }
         self.persist_session(&session_id)
+    }
+
+    // First-release semantic working-state update contract; providers may opt into it incrementally.
+    #[allow(dead_code)]
+    pub(crate) fn record_working_state_update(
+        &mut self,
+        run_id: &str,
+        update: AgentWorkingStateUpdate,
+    ) -> Result<(), AgentHostError> {
+        let (session_id, _) = self.run_location(run_id)?;
+        let run = self.run_mut_in_session(&session_id, run_id)?;
+        if !update.architecture_constraints.is_empty() {
+            run.working_state.architecture_constraints = update.architecture_constraints;
+        }
+        if !update.ownership_crate_decisions.is_empty() {
+            run.working_state.ownership_crate_decisions = update.ownership_crate_decisions;
+        }
+        if !update.target_files_documents.is_empty() {
+            run.working_state.target_files_documents = update.target_files_documents;
+        }
+        if !update.concrete_edits.is_empty() {
+            run.working_state.concrete_edits = update.concrete_edits;
+        }
+        if !update.typed_mcp_operations.is_empty() {
+            run.working_state.typed_mcp_operations = update.typed_mcp_operations;
+        }
+        if !update.tests.is_empty() {
+            run.working_state.tests = update.tests;
+        }
+        if !update.assumptions.is_empty() {
+            run.working_state.assumptions = update.assumptions;
+        }
+        if !update.replan_conditions.is_empty() {
+            run.working_state.replan_conditions = update.replan_conditions;
+        }
+        if !update.relevant_source_provenance.is_empty() {
+            run.working_state.relevant_source_provenance = update.relevant_source_provenance;
+        }
+        if !update.open_problems.is_empty() {
+            run.working_state.open_problems = update.open_problems;
+        }
+        push_event(
+            run,
+            AgentEventKind::SemanticProgress,
+            "Provider-independent implementation working state was updated.".to_owned(),
+        );
+        self.persist_session(&session_id)
+    }
+
+    /// Suspends one non-terminal run for manual editing without cancelling it.
+    pub(crate) fn interrupt_for_editing(
+        &mut self,
+        run_id: &str,
+        snapshot: AuthoritativeStateSnapshot,
+    ) -> Result<(), AgentHostError> {
+        let (session_id, current) = self.run_location(run_id)?;
+        if current == AgentRunState::InterruptedForEditing {
+            return Ok(());
+        }
+        if !valid_transition(current, AgentRunState::InterruptedForEditing) {
+            return Err(AgentHostError::InvalidTransition {
+                from: current,
+                to: AgentRunState::InterruptedForEditing,
+            });
+        }
+        let run = self.run_mut_in_session(&session_id, run_id)?;
+        run.working_state.interrupted_from = Some(current);
+        run.working_state.authoritative_snapshot_before_interrupt = Some(snapshot);
+        run.state = AgentRunState::InterruptedForEditing;
+        push_event(
+            run,
+            AgentEventKind::EditingInterrupted,
+            "AI inference paused for manual editing; the run remains resumable.".to_owned(),
+        );
+        self.persist_session(&session_id)
+    }
+
+    /// Resumes an editing-interrupted run only after authoritative state is re-inspected.
+    pub(crate) fn resume_after_editing(
+        &mut self,
+        run_id: &str,
+        current_snapshot: AuthoritativeStateSnapshot,
+    ) -> Result<ResumeDisposition, AgentHostError> {
+        let (session_id, current) = self.run_location(run_id)?;
+        if current != AgentRunState::InterruptedForEditing {
+            return Err(AgentHostError::InvalidTransition {
+                from: current,
+                to: AgentRunState::Inspecting,
+            });
+        }
+        let run = self.run_mut_in_session(&session_id, run_id)?;
+        let previous = run
+            .working_state
+            .interrupted_from
+            .unwrap_or(AgentRunState::Inspecting);
+        let unchanged = run
+            .working_state
+            .authoritative_snapshot_before_interrupt
+            .as_ref()
+            .is_some_and(|snapshot| snapshot == &current_snapshot);
+        let (next, disposition) = if unchanged {
+            (previous, ResumeDisposition::ResumedUnchanged)
+        } else if matches!(
+            previous,
+            AgentRunState::Executing
+                | AgentRunState::Validating
+                | AgentRunState::Playtesting
+                | AgentRunState::Evaluating
+                | AgentRunState::Repairing
+        ) {
+            (AgentRunState::Repairing, ResumeDisposition::RepairRequired)
+        } else {
+            (AgentRunState::Inspecting, ResumeDisposition::ReinspectRequired)
+        };
+        run.working_state.authoritative_snapshot_before_interrupt = None;
+        run.working_state.interrupted_from = None;
+        run.state = next;
+        push_event(
+            run,
+            AgentEventKind::EditingResumed,
+            if unchanged {
+                format!("Authoritative state is unchanged; resuming {next:?}.")
+            } else {
+                format!(
+                    "Authoritative state changed during manual editing; stale assumptions were rejected and the run returns to {next:?}."
+                )
+            },
+        );
+        self.persist_session(&session_id)?;
+        Ok(disposition)
     }
 
     pub(crate) fn record_event(
@@ -1763,6 +1988,21 @@ fn valid_transition(from: AgentRunState, to: AgentRunState) -> bool {
     }
     if matches!(to, AgentRunState::Failed | AgentRunState::Cancelled) {
         return true;
+    }
+    if to == AgentRunState::InterruptedForEditing {
+        return from != AgentRunState::InterruptedForEditing;
+    }
+    if from == AgentRunState::InterruptedForEditing {
+        return matches!(
+            to,
+            AgentRunState::Inspecting
+                | AgentRunState::Planning
+                | AgentRunState::Executing
+                | AgentRunState::Validating
+                | AgentRunState::Playtesting
+                | AgentRunState::Evaluating
+                | AgentRunState::Repairing
+        );
     }
     matches!(
         (from, to),

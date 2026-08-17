@@ -273,6 +273,12 @@ impl eframe::App for EditorShell {
             context.send_viewport_cmd(eframe::egui::ViewportCommand::Close);
             return;
         }
+        if self.app.take_ai_studio_restore_completed() {
+            self.ai_studio.report_runtime_result(
+                context,
+                engine_editor::ai_studio::AiStudioRuntimeResult::EditorRestored,
+            );
+        }
         if let Some(action) = self.ai_studio.take_runtime_action() {
             let result = self.app.handle_ai_studio_runtime_action(action, frame.wgpu_render_state());
             self.ai_studio.report_runtime_result(context, result);

@@ -241,6 +241,15 @@ pub struct EditorApp {
     prefab_placement_source: Option<PathBuf>,
     /// Whether editor command preferences are visible.
     show_editor_preferences: bool,
+    /// Application-layer presentation posture for native inference.
+    ///
+    /// This is transient Editor state only; it never participates in authoring
+    /// transactions, serialization, Stable IDs, revisions, or undo/redo.
+    inference_focused: bool,
+    /// True after presentation restoration was requested until one normal Editor frame draws.
+    inference_restore_pending: bool,
+    /// One-shot completion signal emitted only after the restored Editor drew a frame.
+    inference_restore_completed: bool,
     /// Scene view offscreen renderer and editor orbit camera.
     scene_view: SceneView,
     /// Current Scene View conversion or rendering problem.
@@ -457,6 +466,9 @@ impl EditorApp {
             source_viewer: None,
             prefab_placement_source: None,
             show_editor_preferences: false,
+            inference_focused: false,
+            inference_restore_pending: false,
+            inference_restore_completed: false,
             scene_view: SceneView::new(),
             scene_view_problem: None,
             animation_preview: AnimationPreviewWindow::default(),
@@ -867,7 +879,14 @@ impl eframe::App for EditorApp {
 
         egui::CentralPanel::default().show_inside(ui, |ui| {
             self.show_workspace_header(ui);
-            if self.is_playing() {
+            if self.inference_focused {
+                ui.vertical_centered(|ui| {
+                    ui.add_space(54.0);
+                    ui.heading("InferenceFocused");
+                    ui.label("Scene/Game presentation and optional previews are suspended for local inference.");
+                    ui.small("AI Studio, Stop, Interrupt for Editing, permissions, and authoritative Editor state remain live.");
+                });
+            } else if self.is_playing() {
                 self.show_runtime_workspace(ui, frame);
             } else if self.session.scene().is_some() {
                 self.show_scene_workspace(ui, frame);
@@ -921,7 +940,9 @@ impl eframe::App for EditorApp {
         self.show_asset_mutation_window(ui.ctx());
         self.show_editor_preferences_window(ui.ctx());
         self.show_source_viewer_window(ui.ctx());
-        self.show_animation_preview_window(ui.ctx(), frame);
+        if !self.inference_focused {
+            self.show_animation_preview_window(ui.ctx(), frame);
+        }
         self.show_external_document_conflict(ui.ctx());
 
         // 全パネルの描画後にTooltipレイヤーへ出すことで、
@@ -929,6 +950,10 @@ impl eframe::App for EditorApp {
         show_asset_drag_preview(ui.ctx());
         self.show_notifications(ui.ctx());
         self.show_play_build_overlay(ui.ctx());
+        if self.inference_restore_pending && !self.inference_focused {
+            self.inference_restore_pending = false;
+            self.inference_restore_completed = true;
+        }
     }
 }
 
