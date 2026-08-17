@@ -1,0 +1,277 @@
+diff --git a/crates/editor/src/authoring_windows.rs b/crates/editor/src/authoring_windows.rs
+index 5621a7824a10675735d9dec472ee3e59c9feb592..5152991aec289894190494f8ae6e9d5a0c310140 100644
+--- a/crates/editor/src/authoring_windows.rs
++++ b/crates/editor/src/authoring_windows.rs
+@@ -53,18 +53,23 @@ impl AuthoringWindows {
+         if self.vfx_open {
+             let vfx_open = &mut self.vfx_open;
+             let vfx = &mut self.vfx;
+-            egui::Window::new("VFX Builder")
++            let window = egui::Window::new("VFX Builder")
+                 .id(egui::Id::new("embedded_vfx_builder"))
+                 .open(vfx_open)
+                 .default_width(1_180.0)
+                 .default_height(780.0)
+-                .resizable(true)
+-                .show(context, |ui| {
+-                    let scroll_area = egui::ScrollArea::vertical();
+-                    #[cfg(feature = "visual-validation")]
+-                    let scroll_area = scroll_area.vertical_scroll_offset(900.0);
+-                    scroll_area.show(ui, |ui| vfx.show(ui, project));
+-                });
++                .resizable(true);
++            #[cfg(feature = "visual-validation")]
++            let window = window
++                .default_width(520.0)
++                .default_height(700.0)
++                .default_pos(egui::pos2(555.0, 34.0));
++            window.show(context, |ui| {
++                let scroll_area = egui::ScrollArea::vertical();
++                #[cfg(feature = "visual-validation")]
++                let scroll_area = scroll_area.vertical_scroll_offset(900.0);
++                scroll_area.show(ui, |ui| vfx.show(ui, project));
++            });
+         }
+     }
+ }
+diff --git a/crates/editor/src/main.rs b/crates/editor/src/main.rs
+index 2c2b9d5a641ded05541f7a213e101906fec25ea3..1e382364d837ef353489bf26f930bd4e689f1831 100644
+--- a/crates/editor/src/main.rs
++++ b/crates/editor/src/main.rs
+@@ -75,6 +75,9 @@ impl EditorShell {
+             if requested == "Navigation" {
+                 app.prepare_navigation_visual_validation();
+             } else {
++                if requested == "VFX Builder" {
++                    app.prepare_vfx_visual_validation();
++                }
+                 let tool = AuthoringTool::ALL
+                     .into_iter()
+                     .find(|tool| tool.label() == requested)
+diff --git a/crates/editor/src/scene_view.rs b/crates/editor/src/scene_view.rs
+index cbf07bc2b71ad595ec74fb8c5ae8cb300b63805e..09b91d4b65981a882751916200b42a896d9cd682 100644
+--- a/crates/editor/src/scene_view.rs
++++ b/crates/editor/src/scene_view.rs
+@@ -1702,10 +1702,16 @@ impl SceneView {
+                 ui.painter().text(
+                     rect.left_bottom() + egui::vec2(8.0, -8.0),
+                     egui::Align2::LEFT_BOTTOM,
+-                    format!(
+-                        "Particles {} / {}  |  {:.1}/s  |  preview {:.2}s",
+-                        debug.live, debug.maximum, debug.spawn_rate, self.particle_preview_elapsed
+-                    ),
++                    match debug.spawn_rate {
++                        Some(spawn_rate) => format!(
++                            "Particles {} / {}  |  {:.1}/s  |  preview {:.2}s",
++                            debug.live, debug.maximum, spawn_rate, self.particle_preview_elapsed
++                        ),
++                        None => format!(
++                            "VFX particles {} / {}  |  deterministic preview {:.2}s",
++                            debug.live, debug.maximum, self.particle_preview_elapsed
++                        ),
++                    },
+                     egui::TextStyle::Monospace.resolve(ui.style()),
+                     egui::Color32::from_rgb(80, 230, 255),
+                 );
+@@ -2175,10 +2181,19 @@ fn skipped_component_notice(diagnostics: &[engine_authoring::Diagnostic]) -> Opt
+ }
+ 
+ fn simulate_particle_preview(world: &mut engine::ecs::World, elapsed_seconds: f32) {
+-    let mut emitters =
+-        engine::Query::<(&mut engine::ParticleEmitter, &GlobalTransform)>::new(world);
+-    for (_, (emitter, transform)) in emitters.iter_mut() {
+-        emitter.simulate_preview(elapsed_seconds, transform.matrix().col(3).truncate());
++    {
++        let mut emitters =
++            engine::Query::<(&mut engine::ParticleEmitter, &GlobalTransform)>::new(world);
++        for (_, (emitter, transform)) in emitters.iter_mut() {
++            emitter.simulate_preview(elapsed_seconds, transform.matrix().col(3).truncate());
++        }
++    }
++    let mut players = engine::Query::<(&mut engine::VfxPlayer, &GlobalTransform)>::new(world);
++    for (_, (player, transform)) in players.iter_mut() {
++        player.instance_mut().seek_preview(
++            elapsed_seconds,
++            transform.matrix().col(3).truncate(),
++        );
+     }
+ }
+ 
+@@ -2682,7 +2697,7 @@ fn authoring_local_transform(
+ struct ParticleDebugSnapshot {
+     live: usize,
+     maximum: usize,
+-    spawn_rate: f32,
++    spawn_rate: Option<f32>,
+     bounds: Option<(Vec3, Vec3)>,
+     origin: Vec3,
+     direction: Vec3,
+@@ -2692,21 +2707,59 @@ fn selected_particle_debug(
+     world: &mut engine::ecs::World,
+     selected: &EntityId,
+ ) -> Option<ParticleDebugSnapshot> {
++    {
++        let query = engine::Query::<(
++            &engine::RuntimeEntityIdentity,
++            &engine::ParticleEmitter,
++            &GlobalTransform,
++        )>::new(world);
++        if let Some(debug) = query
++            .iter()
++            .find_map(|(_, (identity, emitter, transform))| {
++                (&identity.authoring_id == selected).then(|| ParticleDebugSnapshot {
++                    live: emitter.live_count(),
++                    maximum: emitter.max_particles,
++                    spawn_rate: Some(emitter.spawn_rate),
++                    bounds: emitter.live_bounds(),
++                    origin: transform.matrix().col(3).truncate(),
++                    direction: emitter.direction,
++                })
++            })
++        {
++            return Some(debug);
++        }
++    }
++
+     let query = engine::Query::<(
+         &engine::RuntimeEntityIdentity,
+-        &engine::ParticleEmitter,
++        &engine::VfxPlayer,
+         &GlobalTransform,
+     )>::new(world);
+     query
+         .iter()
+-        .find_map(|(_, (identity, emitter, transform))| {
+-            (&identity.authoring_id == selected).then(|| ParticleDebugSnapshot {
+-                live: emitter.live_count(),
+-                maximum: emitter.max_particles,
+-                spawn_rate: emitter.spawn_rate,
+-                bounds: emitter.live_bounds(),
+-                origin: transform.matrix().col(3).truncate(),
+-                direction: emitter.direction,
++        .find_map(|(_, (identity, player, transform))| {
++            (&identity.authoring_id == selected).then(|| {
++                let instance = player.instance();
++                let bounds = instance
++                    .emitters()
++                    .iter()
++                    .filter_map(|emitter| emitter.live_bounds())
++                    .fold(None::<(Vec3, Vec3)>, |combined, (min, max)| {
++                        Some(match combined {
++                            None => (min, max),
++                            Some((current_min, current_max)) => {
++                                (current_min.min(min), current_max.max(max))
++                            }
++                        })
++                    });
++                ParticleDebugSnapshot {
++                    live: instance.stats().live_particles,
++                    maximum: instance.effect().max_particles as usize,
++                    spawn_rate: None,
++                    bounds,
++                    origin: transform.matrix().col(3).truncate(),
++                    direction: Vec3::Y,
++                }
+             })
+         })
+ }
+@@ -2839,7 +2892,9 @@ fn entity_icon(entity: &engine_authoring::AuthoringEntity) -> Option<EntityIcon>
+         || has(engine::scene_bridge::AUDIO_LISTENER_COMPONENT)
+     {
+         Some(EntityIcon::Audio)
+-    } else if has(engine::scene_bridge::PARTICLE_EMITTER_COMPONENT) {
++    } else if has(engine::scene_bridge::PARTICLE_EMITTER_COMPONENT)
++        || has(engine::scene_bridge::VFX_PLAYER_COMPONENT)
++    {
+         Some(EntityIcon::Particle)
+     } else {
+         None
+diff --git a/crates/editor/src/ui/mod.rs b/crates/editor/src/ui/mod.rs
+index 44c36d213061d79b5d57edab61f12dfcf880e3b2..045999b20a4bc8cac21e7bf249809f1328969543 100644
+--- a/crates/editor/src/ui/mod.rs
++++ b/crates/editor/src/ui/mod.rs
+@@ -62,6 +62,8 @@ mod navigation_workspace;
+ mod play;
+ mod presentation;
+ mod viewport;
++#[cfg(feature = "visual-validation")]
++mod vfx_visual_validation;
+ 
+ pub use mcp::EditorMcpCallFailure;
+ 
+diff --git a/crates/editor/src/ui/vfx_visual_validation.rs b/crates/editor/src/ui/vfx_visual_validation.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..4f4c8da357457ebcacb17d85a152f1656270acaa
+--- /dev/null
++++ b/crates/editor/src/ui/vfx_visual_validation.rs
+@@ -0,0 +1,70 @@
++use super::EditorApp;
++use engine_authoring::{
++    replace_file_contents, AssetId, ComponentTypeId, Value, VfxAuthoringService, VfxTemplate,
++};
++use std::collections::BTreeMap;
++use std::path::PathBuf;
++
++impl EditorApp {
++    pub fn prepare_vfx_visual_validation(&mut self) {
++        if let Err(error) = self.prepare_vfx_visual_validation_fixture() {
++            eprintln!("VFX visual validation fixture failed: {error}");
++        }
++    }
++
++    fn prepare_vfx_visual_validation_fixture(&mut self) -> Result<(), String> {
++        let project = self
++            .project_root
++            .clone()
++            .ok_or_else(|| "open a project before preparing VFX visual validation".to_owned())?;
++        let service = VfxAuthoringService::new();
++        let effect = service.template(VfxTemplate::Smoke);
++        let json = service
++            .effect_to_canonical_json(&effect)
++            .map_err(|error| error.to_string())?;
++        let relative_path = PathBuf::from("vfx/visual_validation_smoke.vfx.json");
++        let asset_path = project.assets_root().join(&relative_path);
++        if let Some(parent) = asset_path.parent() {
++            std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
++        }
++        replace_file_contents(&asset_path, &json).map_err(|error| error.to_string())?;
++
++        let effect_asset = AssetId::generate();
++        self.asset_manifest.insert(
++            effect_asset.clone(),
++            engine::asset::ManifestEntry {
++                path: relative_path,
++                name: Some("Visual Validation Smoke".to_owned()),
++                import_settings: engine::asset::ImportSettings::default(),
++            },
++        );
++
++        let component_type = ComponentTypeId::new(engine::scene_bridge::VFX_PLAYER_COMPONENT);
++        let registry = engine::builtin_registry();
++        let definition = registry
++            .get(&component_type)
++            .ok_or_else(|| "missing built-in VFX Player schema".to_owned())?;
++        let mut component = definition.schema.default_value();
++        let Value::Object(fields) = &mut component else {
++            return Err("VFX Player schema is not object-valued".to_owned());
++        };
++        fields.insert("effect".to_owned(), Value::AssetRef(effect_asset));
++        fields.insert("looping".to_owned(), Value::Bool(true));
++        fields.insert("parameter_overrides".to_owned(), Value::Object(BTreeMap::new()));
++
++        let entity = self
++            .session
++            .create_scene_entity("visual_vfx_player")
++            .map_err(|error| error.to_string())?;
++        self.session
++            .add_scene_component(entity.clone(), component_type, component)
++            .map_err(|error| error.to_string())?;
++        self.selected_entity = Some(entity.clone());
++        if let Some(scene) = self.session.scene() {
++            let _ = self.scene_view.focus_entity(scene, &entity);
++        }
++        self.scene_view.restart_particle_preview();
++        self.scene_view.invalidate_asset_preview();
++        Ok(())
++    }
++}
