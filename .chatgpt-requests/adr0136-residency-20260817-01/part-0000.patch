@@ -1,0 +1,526 @@
+diff --git a/docs/adr/0136-editor-preview-asset-residency-and-asynchronous-streaming.md b/docs/adr/0136-editor-preview-asset-residency-and-asynchronous-streaming.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..bd062240888b81612c2a5dfd6b431c1ecbe3d954
+--- /dev/null
++++ b/docs/adr/0136-editor-preview-asset-residency-and-asynchronous-streaming.md
+@@ -0,0 +1,488 @@
++# ADR 0136: Editor Preview Asset Residency and Asynchronous Streaming
++
++Status: Accepted
++Date: 2026-08-17
++Amends: ADR 0071, ADR 0104
++Relates to: ADR 0068, ADR 0072, ADR 0075, ADR 0078, ADR 0117, ADR 0135
++
++## Context
++
++GameEngine already moved the source-import path for large model files off the
++Editor UI thread. `AssetImportManager` performs model parsing and image decoding
++on a background worker, and ADR 0075 deliberately serializes mutation-bearing
++imports through one queued worker. That solved the case where adding or
++reimporting a source directly froze the immediate-mode Editor.
++
++The interactive preview path is different. A Scene View rebuild still performs
++authoring-to-runtime conversion synchronously from `SceneView::show`. On a model
++cache miss, conversion can reach the format-independent model importer and read,
++parse, decode, and construct model data before the next UI frame. ADR 0071
++reduced repeated glTF work by retaining parsed model and decoded texture data,
++and ADR 0072 retains one preview world across unchanged frames. ADR 0104 also
++requires GPU mesh uploads to survive a preview-world rebuild.
++
++Those optimizations currently stop at a single `SceneView` instance. The
++dedicated Animation Preview owns a separate `SceneView`, therefore a separate
++source/decode cache, GPU mesh cache, preview world, and preview renderer. Other
++preview surfaces can make the same choice. A character that is already visible
++in the main Scene View can consequently become a cold asset again when
++Animation Preview first opens. The first draw of a cold preview can additionally
++initialize its `PreviewRenderer` synchronously from the immediate UI path.
++
++This is the wrong lifetime boundary. Imported model identity belongs to the
++project, GPU resource identity belongs to the active device and asset
++generation, while a preview world belongs only to one view and its simulation
++state. Conflating all three lifetimes inside `SceneView` produces duplicate CPU
++work, duplicate GPU work, avoidable first-open stalls, and no single place to
++apply streaming or memory-pressure policy.
++
++ADR 0117 makes the ownership boundary explicit: one Editor process edits exactly
++one project for its process lifetime. That project-scoped Editor workspace is
++therefore the natural lifetime for reusable CPU asset residency. The active GPU
++device is the natural lifetime for reusable GPU residency and preview pipeline
++state. ADR 0135 may deliberately reclaim recreatable GPU resources for native
++agent inference, so any new residency contract must also support explicit
++eviction and correct reconstruction.
++
++A project-wide decision is required for five related changes:
++
++1. sharing asset caches across every Editor preview surface;
++2. reusing successful background-import results instead of reparsing the source
++   during preview conversion;
++3. sharing GPU residency across preview worlds;
++4. removing cold preview-renderer initialization from window-open/UI-frame
++   latency; and
++5. making cold asset materialization asynchronous with bounded GPU upload work.
++
++## Decision
++
++### 1. Reusable CPU asset residency is project-scoped, not `SceneView`-scoped
++
++The Editor owns one project-scoped asset-residency service for the lifetime of
++its `EditorWorkspace`. The concrete type name is not a public compatibility
++contract; `ProjectAssetResidency` is used here as a conceptual name.
++
++Every preview surface in that Editor process MUST obtain reusable immutable
++asset data through the same residency service, including at minimum:
++
++- the main Scene View;
++- Animation Preview;
++- material/model/asset previews that need imported model data;
++- thumbnail or inspector previews that materialize the same assets; and
++- future graph or debugging views that render project assets.
++
++The service retains immutable, conversion-ready CPU results such as parsed
++model/import results and decoded texture payloads. The representation after the
++parser boundary remains format-independent according to ADR 0078. The Editor
++MUST NOT create separate PMX, FBX, and glTF residency architectures merely
++because the current ADR 0071 cache has a historical glTF-specific name.
++
++A resident entry is identified by stable project asset identity plus an
++in-memory **asset generation** representing the exact successful source/import
++state that produced it. Generation invalidation MUST account for every input
++that can change the conversion-ready result, including source/dependency
++changes and import settings that affect model construction. Stable `AssetId`
++values themselves do not change when a generation changes.
++
++Multiple requests for the same asset generation MUST coalesce onto one
++in-flight materialization. Two preview windows requesting the same cold model
++must not launch two parsers.
++
++Project close drops project CPU residency. A project switch is process
++replacement under ADR 0117, so project residency is never silently rebound from
++one project to another.
++
++This amends ADR 0071 for the Editor: its shared parse/decode behavior remains
++valid, but the owning lifetime is raised from one repeated-conversion host to
++the project-scoped Editor residency service. `SharedGltfImportCache` MAY remain
++as a lower-level compatibility helper for non-Editor hosts and during migration.
++
++### 2. Successful background import publishes the conversion-ready result for preview reuse
++
++The source import/reimport pipeline and preview materialization MUST converge on
++the same immutable conversion-ready result.
++
++After a background import succeeds, the Editor publishes that exact successful
++result, or an immutable equivalent derived without reparsing source bytes, into
++project residency before preview consumers request it. The publication is
++atomic with respect to residency generation: a consumer observes either the
++previous complete generation or the new complete generation, never a mixture of
++old meshes with new materials, skeletons, clips, or decoded textures.
++
++Conceptually:
++
++```text
++source file / dependencies
++        |
++        v
++background read + parse + decode + model build
++        |
++        +------> import metadata / generated artifact persistence
++        |
++        v
++project CPU residency (immutable generation)
++        |
++        +------> Scene View conversion
++        +------> Animation Preview conversion
++        +------> other preview consumers
++```
++
++The background importer MUST NOT discard a large conversion-ready model result
++and force the Scene View to reconstruct the same result from the source a moment
++later.
++
++A cold Editor process may have valid persisted import metadata but no in-memory
++resident model yet. In that case, the first preview request schedules a
++read-only background materialization for the current asset generation and
++publishes the result into the same residency service. It does not make the
++immediate UI frame perform source parsing.
++
++If the source or relevant import inputs change while work is in flight, the
++completed stale result MUST be discarded rather than published under the new
++generation. Reimport creates or advances the generation and atomically replaces
++the resident result only after the new result is complete.
++
++Mutation-bearing import jobs MAY remain serialized initially as ADR 0075
++defines. This ADR does not require unlimited parallel imports. Worker count is a
++scheduler policy; the hard requirement is that expensive source work is not
++performed by the UI thread and duplicate requests for one generation are
++deduplicated.
++
++### 3. GPU asset residency is shared across preview worlds on the active device
++
++GPU meshes, imported textures, and other immutable reusable GPU asset resources
++MUST be reusable across all preview worlds that render the same current asset
++generation on the same GPU device.
++
++A preview world may keep world-local runtime handles or alias tables, but those
++handles MUST resolve to shared device-resident buffers/textures rather than
++causing a fresh upload merely because another `SceneView`, Animation Preview,
++or thumbnail world was constructed.
++
++The cache key MUST distinguish at least:
++
++- GPU device generation/identity;
++- asset or content identity; and
++- the source/import generation whose immutable CPU data produced the upload.
++
++Pointer identity MAY be an optimization when it is backed by the stronger
++generation/content contract; pointer identity alone must not make stale GPU
++content appear current.
++
++`SharedGpuMeshCache` is the existing starting mechanism for mesh residency. The
++Editor-level composition MUST share one compatible backing residency across its
++preview surfaces instead of constructing one independent backing cache per
++`SceneView`. Equivalent sharing is required for imported texture residency
++where duplicate preview uploads can occur.
++
++The following remain view-local and MUST NOT be shared merely to satisfy this
++ADR:
++
++- ECS/runtime preview worlds;
++- animation graph state and preview time;
++- particle or secondary-physics simulation state;
++- selection, camera, and gizmo state;
++- color/depth render targets whose size or lifetime belongs to one view; and
++- other mutable per-preview state.
++
++This preserves the isolation contract of ADR 0072. We share immutable expensive
++asset residency, not the preview world itself.
++
++GPU residency is recreatable. It is released on device loss/reset and project
++shutdown, and it participates in ADR 0135 staged memory reclaim. An intentional
++ADR 0135 eviction is allowed to cause a later re-upload; ordinary opening of a
++second preview is not.
++
++This further specifies ADR 0104's shared-GPU-cache requirement: "shared" means
++shared across Editor preview surfaces for the applicable device/project
++lifetime, not merely shared across rebuilds of one preview world.
++
++### 4. Preview renderer initialization is device-lifetime preparation, not window-open work
++
++Opening an Animation Preview or another preview window MUST NOT synchronously
++perform cold renderer/pipeline initialization through an immediate-mode
++`show`/draw call.
++
++After the Editor obtains its GPU device, it owns device-scoped preview rendering
++services. Expensive immutable renderer state such as shader modules, bind-group
++layouts, render pipelines, samplers, and other device-wide preview
++infrastructure SHOULD be created once and reused by every preview surface when
++the renderer architecture permits it.
++
++Initialization may occur during Editor bootstrap or as an explicit warm-up task
++after the device is ready. The implementation does not have to make every GPU
++API call execute on a background OS thread; it does have to remove synchronous
++waiting for cold renderer construction from the user action that opens a
++preview.
++
++A view still owns its own size-dependent render targets and mutable render
++state. This ADR does not require one globally mutable `PreviewRenderer` object
++when doing so would create aliasing or state-coupling problems. The required
++sharing boundary is the expensive immutable/device-scoped preparation.
++
++If warm-up is not complete when a window opens, the Editor keeps the UI
++interactive and shows a lightweight preparing state until the service is ready.
++It MUST NOT use `pollster::block_on` or an equivalent unbounded wait inside the
++preview's immediate UI path to hide that state.
++
++Device reset invalidates prepared renderer services and schedules them for
++reconstruction using the same non-blocking presentation behavior.
++
++### 5. Cold preview loading is asynchronous and GPU uploads are frame-budgeted
++
++Interactive Editor preview paths adopt an asynchronous materialization pipeline:
++
++```text
++request AssetId + generation
++        |
++        v
++in-flight dedupe / priority scheduler
++        |
++        v
++worker: file I/O -> parser -> image decode -> model build
++        |
++        v
++project CPU residency
++        |
++        v
++budgeted GPU upload queue
++        |
++        v
++device GPU residency
++        |
++        v
++preview world consumes ready handles
++```
++
++The following operations MUST NOT run synchronously as part of an ordinary
++Editor UI-frame draw because a preview needs an asset:
++
++- reading a large model source or dependency;
++- parsing PMX, FBX, glTF/GLB, or another heavyweight model format;
++- decoding imported images;
++- rebuilding derived animation/model data whose cost scales with source size;
++- waiting for cold preview-renderer initialization; or
++- performing an unbounded batch of GPU uploads.
++
++Small bounded metadata checks such as file stamps MAY remain synchronous when
++measurement shows they are safe, but they MUST NOT become a path back to
++whole-file reads or hashes.
++
++File-backed data used only to populate preview UI, such as Animation Set
++choices, SHOULD be retained by document/asset revision or loaded through the
++same asynchronous/cached application layer rather than read and parsed from
++disk every immediate-mode frame.
++
++GPU uploads may need to execute through the render/device owner, but they are
++scheduled under a per-frame budget. The implementation owns the concrete
++budget units and adaptive policy; it SHOULD account for bytes, elapsed upload
++time, and/or upload count rather than hard-coding one model-size threshold as
++an architecture rule.
++
++Upload/materialization priority is at least:
++
++1. assets required by the currently visible, user-focused preview;
++2. assets required by other visible previews;
++3. speculative/warm-up work; and
++4. thumbnails and background presentation.
++
++A higher-priority request may move ahead of queued lower-priority work without
++duplicating an already-running job. Cancellation and generation checks prevent
++obsolete work from being published.
++
++While a required asset is pending, the preview renders the last complete
++generation when that is semantically safe, otherwise a placeholder/loading
++state. The Editor remains interactive. Availability of a model is therefore an
++asynchronous state, not permission to block the UI thread until the model is
++ready.
++
++## Cross-Cutting Invariants
++
++The five decisions above are one contract and MUST preserve the following
++invariants.
++
++### Authoring and runtime boundaries
++
++- Canonical project files remain the source of truth. Residency is derived,
++  ephemeral application state.
++- No Scene, prefab, graph, Animation Set, Material, project-settings, or asset
++  manifest schema changes are introduced by this ADR.
++- `StableId`, `AssetId`, `EntityId`, imported sub-asset IDs, and serialization
++  rules do not change.
++- Authoring transactions, undo/redo, Problems diagnostics, and best-effort
++  conversion remain owned by their existing layers.
++- Runtime/player/packaging hosts are not required to become asynchronous by
++  this ADR. They may reuse lower-level residency primitives later, but Editor
++  responsiveness must not weaken strict one-shot conversion semantics.
++
++### Generation and last-good behavior
++
++- A resident generation is immutable after publication.
++- Reimport or relevant import-settings change produces a new generation rather
++  than mutating a published generation in place.
++- One preview build must not mix asset generations.
++- An obsolete in-flight result is dropped if its requested generation is no
++  longer current.
++- Last-good rendering is permitted only from a complete prior generation and
++  must be visibly replaced when the current generation becomes ready.
++- A failed new generation preserves the prior complete generation for preview
++  continuity when doing so does not misrepresent a deleted/unavailable asset;
++  the failure remains visible through existing diagnostics.
++
++### Ownership and memory pressure
++
++- The project-scoped service owns CPU residency; preview windows borrow/share
++  immutable entries.
++- Device-scoped services own GPU residency and reusable renderer preparation.
++- Preview worlds own mutable simulation state only.
++- ADR 0135 may explicitly evict recreatable GPU residency. Reclaim does not
++  invalidate canonical authoring state or CPU asset generation identity.
++- The first implementation MAY retain CPU entries for the Editor project
++  lifetime. A later measured LRU/size budget may evict cold CPU entries without
++  changing this ADR as long as correctness and in-flight dedupe are preserved.
++
++## Required Verification
++
++Implementation of this ADR is not complete until the following behavior is
++demonstrated.
++
++1. **Scene View -> Animation Preview reuse.** With one imported model already
++   fully resident and visible in the main Scene View, opening Animation Preview
++   for that model performs no second source-file read/parse, image decode, or
++   identical mesh/texture GPU upload. Constructing the isolated preview ECS
++   world and its view-local render targets is allowed.
++2. **Cold preview stays interactive.** Opening a preview for a cold large model
++   leaves the Editor event/UI loop responsive while CPU materialization runs
++   off-thread and GPU uploads respect the configured frame budget.
++3. **Open/close reuse.** Closing and reopening a preview does not repeat cold
++   model work unless the relevant generation was invalidated or residency was
++   intentionally evicted.
++4. **Atomic reimport replacement.** A reimport cannot expose mixed old/new
++   meshes, materials, skeletons, clips, or textures to one preview build.
++5. **In-flight dedupe.** Concurrent requests from at least two preview surfaces
++   for the same cold generation execute one source materialization.
++6. **Device/project cleanup.** Project shutdown releases project residency;
++   device loss/reset invalidates device residency and renderer preparation; both
++   can be reconstructed correctly.
++7. **ADR 0135 recovery.** After deliberate aggressive GPU reclaim, returning to
++   manual editing recreates evicted residency correctly and the re-upload is
++   observable as intentional recovery rather than a normal preview duplicate.
++
++Tests SHOULD use deterministic counters or instrumented loaders for source
++materialization and upload counts rather than timing-only assertions.
++Performance instrumentation SHOULD separately expose CPU materialization,
++decode, queued GPU bytes, uploaded GPU bytes, and preview-ready latency so a
++future regression can identify which stage returned to the UI path.
++
++## Consequences
++
++- Opening Animation Preview for a character already shown by Scene View no
++  longer treats that character as a cold model merely because the preview owns
++  a different runtime world.
++- The first cold model still has real I/O, parsing, decoding, and upload cost,
++  but that cost becomes asynchronous presentation state instead of one long UI
++  frame.
++- Reusing the background import result removes duplicated CPU work that a cache
++  alone cannot avoid when the importer and preview own unrelated result
++  lifetimes.
++- Project/device residency intentionally retains more memory than
++  per-window caches. This is the latency/memory tradeoff required for an editor;
++  ADR 0135 provides an explicit aggressive GPU-reclaim path when memory is more
++  valuable than resume latency.
++- Asynchronous readiness introduces state that preview UI must represent:
++  queued, materializing, CPU-ready, uploading, ready, failed, cancelled, and
++  stale-generation outcomes. Those states must be observable rather than
++  collapsed into a blocking call.
++- Sharing immutable GPU resources reduces upload duplication but increases the
++  importance of precise generation invalidation and device-loss handling.
++- The design creates one place to add measured eviction, prefetch, or disk
++  derived-artifact caching later without teaching every preview window its own
++  policy.
++
++## Alternatives Considered
++
++### Keep one cache per `SceneView`
++
++Rejected. It optimizes repeated frames in one view but directly preserves the
++reported failure mode: a model warm in Scene View can be cold in Animation
++Preview.
++
++### Add more background threads but keep independent caches
++
++Rejected as the architectural fix. Parallel duplicate work may reduce wall
++clock time on some machines while increasing CPU, I/O, memory, and GPU
++contention. Sharing and in-flight deduplication remove the work instead.
++
++### Share only `SharedGpuMeshCache`
++
++Rejected as incomplete. It avoids some duplicate mesh uploads while source
++reads, model parsing, image decoding, texture uploads, and renderer cold-start
++work can still stall or repeat.
++
++### Share one runtime preview world between Scene View and Animation Preview
++
++Rejected. Camera, selection, animation time, graph state, secondary physics,
++particles, and other mutable preview state have different semantics. ADR 0072's
++per-preview persistent world remains the correct isolation boundary.
++
++### Eagerly load every project asset at Editor startup
++
++Rejected. Large projects would trade an on-demand stall for excessive startup
++time and memory residency. Residency is shared and demand-driven, with optional
++low-priority warm-up.
++
++### Make a disk-derived asset database mandatory in this ADR
++
++Rejected for the first implementation. A content-addressed on-disk derived
++artifact store can improve cold-process startup further, but it adds importer
++versioning, artifact compatibility, cleanup, and storage policy. The in-memory
++project/device residency and asynchronous materialization contract is required
++whether or not that later cache exists.
++
++### Define a fixed worker count or fixed MiB-per-frame upload limit
++
++Rejected as an architecture contract. Hardware, model sizes, backend behavior,
++and Editor workload differ. The contract is bounded, prioritized work with
++measurement; exact scheduler limits are implementation policy.
++
++## Compatibility and Migration
++
++This ADR changes no persisted format and requires no project migration.
++
++Implementation is staged in the same order as the five decisions:
++
++1. introduce project-scoped CPU residency and inject it into every existing
++   preview surface, initially adapting ADR 0071-compatible cached results;
++2. publish successful background import/materialization results into that
++   residency and make preview conversion consume them instead of reparsing;
++3. lift mesh/texture GPU residency to the shared device/project preview
++   composition and preserve per-world handles as aliases;
++4. split device-scoped preview renderer preparation from per-view mutable
++   render state and remove blocking cold initialization from preview `show`;
++5. route cold materialization and GPU upload through the priority scheduler and
++   enforce the per-frame upload budget/placeholder behavior.
++
++The stages MAY ship in separate pull requests, but a partially completed
++migration must not claim the verification guarantees of a later stage.
++
++ADR 0071 remains an Accepted historical decision and a valid lower-level
++repeated-conversion mechanism; this ADR amends the Editor ownership scope and
++generalizes the result beyond one format-specific cache.
++
++ADR 0072 remains authoritative for preview-world persistence and isolation.
++This ADR deliberately does not share mutable runtime worlds.
++
++ADR 0104 remains authoritative for Editor responsiveness. Its GPU-residency
++decision is clarified to apply across Editor preview surfaces, not only rebuilds
++of one Scene View.
++
++ADR 0135 remains authoritative for native-agent GPU arbitration. Shared preview
++GPU residency is considered recreatable persistent Editor state: retain it in
++the normal path when budgets fit, and evict it only through explicit staged
++reclaim when required.
++
++Any implementation that changes an existing public Rust API, including
++`GpuMeshCache` composition or model-import result publication, must update all
++workspace callers and documentation in the same change according to the normal
++breaking-change workflow. No public API shape is fixed by the conceptual names
++used in this ADR.
+diff --git a/docs/adr/README.md b/docs/adr/README.md
+index 713a87c4277422a807c93426613f6052523b031a..d8ac9feb486427a7909f53cd72209cd7bd6f6894 100644
+--- a/docs/adr/README.md
++++ b/docs/adr/README.md
+@@ -85,15 +85,17 @@ the beginning:
+ - **Project and Editor lifecycle:**
+   [0023](0023-project-root-ownership.md),
+   [0103](0103-play-mode-editor-viewport.md),
+-  [0104](0104-editor-edit-responsiveness.md), and
+-  [0117](0117-project-first-launcher-and-editor-application-lifecycle.md).
++  [0104](0104-editor-edit-responsiveness.md),
++  [0117](0117-project-first-launcher-and-editor-application-lifecycle.md), and
++  [0136](0136-editor-preview-asset-residency-and-asynchronous-streaming.md).
+ - **Assets and import:** [0021](0021-asset-reference-model-and-manifest.md),
+   [0078](0078-format-independent-model-ir.md),
+   [0081](0081-fbx-import-via-ufbx.md),
+   [0094](0094-generic-data-assets.md),
+   [0101](0101-imported-material-extraction-and-remap.md),
+-  [0105](0105-model-level-material-and-texture-sub-asset-overrides.md), and
+-  [0134](0134-portable-prefab-instance-source.md).
++  [0105](0105-model-level-material-and-texture-sub-asset-overrides.md),
++  [0134](0134-portable-prefab-instance-source.md), and
++  [0136](0136-editor-preview-asset-residency-and-asynchronous-streaming.md).
+ - **Rendering and materials:**
+   [0055](0055-render-authoring-and-material-v2-contract.md),
+   [0100](0100-generic-shading-models-and-outline-pass.md),
+@@ -276,3 +278,5 @@ implementation contract.
+ | [0132](0132-declarative-authoring-capability-registry-and-automatic-adapter-exposure.md) | Declarative Authoring Capability Registry and Automatic Adapter Exposure |
+ | [0133](0133-remote-ai-studio-companion-access-and-private-network-boundary.md) | Remote AI Studio Companion Access and Private Network Boundary |
+ | [0134](0134-portable-prefab-instance-source.md) | Portable Prefab Instance Source |
++| [0135](0135-native-agent-inference-scheduling-and-editor-gpu-resource-arbitration.md) | Native Agent Inference Scheduling and Editor GPU Resource Arbitration |
++| [0136](0136-editor-preview-asset-residency-and-asynchronous-streaming.md) | Editor Preview Asset Residency and Asynchronous Streaming |
