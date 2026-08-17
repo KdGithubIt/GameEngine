@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ai_studio.rs","old":"            self.process = None;\n            if let Some(run_id) = run_id\n","new":"            self.process = None;\n            self.process_purpose = None;\n            if let Some(run_id) = run_id\n"}
