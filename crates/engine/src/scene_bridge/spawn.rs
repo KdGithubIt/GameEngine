@@ -2547,6 +2547,96 @@ pub(crate) fn spawn_sprite_renderer_2d_component(
     Ok(())
 }
 
+fn resolve_sprite_animation_document(
+    asset: &AssetId,
+    context: &mut SpawnContext<'_>,
+) -> Result<Arc<SpriteAnimationDocument>, SceneBridgeError> {
+    if let Some(document) = context.asset_state.sprite_animation_documents.get(asset) {
+        return Ok(Arc::clone(document));
+    }
+    let path = manifest_asset_path(asset, context)?;
+    if !crate::components::asset_path_matches_kind(crate::components::AssetKind::SpriteAnimation, &path) {
+        return Err(SceneBridgeError::AssetLoad {
+            asset: asset.clone(),
+            source: AssetLoadError::InvalidAsset {
+                path,
+                message: "SpriteAnimator2D clip must reference a *.spriteanim.json asset".to_owned(),
+            },
+        });
+    }
+    let json = std::fs::read_to_string(&path).map_err(|source| SceneBridgeError::AssetLoad {
+        asset: asset.clone(),
+        source: AssetLoadError::Io {
+            path: path.clone(),
+            source,
+        },
+    })?;
+    let document = serde_json::from_str::<SpriteAnimationDocument>(&json).map_err(|source| {
+        SceneBridgeError::AssetLoad {
+            asset: asset.clone(),
+            source: AssetLoadError::InvalidAsset {
+                path: path.clone(),
+                message: source.to_string(),
+            },
+        }
+    })?;
+    let validation = document.validate();
+    if !validation.is_empty() {
+        return Err(SceneBridgeError::AssetLoad {
+            asset: asset.clone(),
+            source: AssetLoadError::InvalidAsset {
+                path,
+                message: validation.join("; "),
+            },
+        });
+    }
+    let document = Arc::new(document);
+    context
+        .asset_state
+        .sprite_animation_documents
+        .insert(asset.clone(), Arc::clone(&document));
+    Ok(document)
+}
+
+pub(crate) fn spawn_sprite_animator_2d_component(
+    entity: Entity,
+    value: &Value,
+    context: &mut SpawnContext<'_>,
+) -> Result<(), ComponentSpawnError> {
+    let component_type = ComponentTypeId::new(SPRITE_ANIMATOR_2D_COMPONENT);
+    const EXPECTED: &str = "a SpriteAnimator2D object with clip, autoplay, speed, and optional looping_override fields";
+    let fields = ComponentFields::new(context.authoring_entity, &component_type, value, EXPECTED)?;
+    let Some(clip_asset) = fields.assignable_asset_ref("clip")?.cloned() else {
+        context.asset_diagnostics.push(component_inactive_diagnostic(
+            context.authoring_entity,
+            &component_type,
+            "clip",
+        ));
+        return Ok(());
+    };
+    let speed = fields.f32("speed")?;
+    if !speed.is_finite() || speed < 0.0 {
+        return Err(fields.invalid(EXPECTED).into());
+    }
+    let looping_override = match fields.get("looping_override") {
+        None | Some(Value::Null) => None,
+        Some(Value::Bool(value)) => Some(*value),
+        _ => return Err(fields.invalid(EXPECTED).into()),
+    };
+    let clip = resolve_sprite_animation_document(&clip_asset, context)?;
+    context.world.add_component(
+        entity,
+        SpriteAnimatorRuntime2d::new(
+            clip_asset,
+            clip,
+            fields.bool("autoplay")?,
+            speed,
+            looping_override,
+        ),
+    )?;
+    Ok(())
+}
+
 pub(crate) fn spawn_directional_light_component(
     entity: Entity,
     value: &Value,

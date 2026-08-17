@@ -1,6 +1,46 @@
 //! Deterministic Sprite Animation playback (ADR 0127).
 
-use engine_authoring::{SpriteAnimationDocument, SpriteRef};
+use engine_authoring::{AssetId, SpriteAnimationDocument, SpriteRef};
+use std::sync::Arc;
+
+/// Runtime SpriteAnimator2D component that shares immutable clip data while keeping per-entity playback state.
+#[derive(Debug, Clone)]
+pub struct SpriteAnimatorRuntime2d {
+    /// Stable authored Sprite Animation asset identity.
+    pub clip_asset: AssetId,
+    /// Shared immutable clip data resolved during scene conversion.
+    pub clip: Arc<SpriteAnimationDocument>,
+    /// Independent playback state owned by this entity.
+    pub state: SpriteAnimationState2d,
+    /// Optional per-instance looping override.
+    pub looping_override: Option<bool>,
+}
+
+impl SpriteAnimatorRuntime2d {
+    /// Creates one runtime animator from persisted playback settings.
+    pub fn new(
+        clip_asset: AssetId,
+        clip: Arc<SpriteAnimationDocument>,
+        autoplay: bool,
+        speed: f32,
+        looping_override: Option<bool>,
+    ) -> Self {
+        let mut state = SpriteAnimationState2d {
+            playing: autoplay,
+            speed: speed.max(0.0),
+            ..SpriteAnimationState2d::default()
+        };
+        if !autoplay {
+            state.pause();
+        }
+        Self {
+            clip_asset,
+            clip,
+            state,
+            looping_override,
+        }
+    }
+}
 
 /// Independent per-entity runtime playback state for an immutable Sprite Animation asset.
 #[derive(Debug, Clone, PartialEq)]

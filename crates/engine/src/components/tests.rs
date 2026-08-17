@@ -34,6 +34,15 @@ fn registry_returns_registered_definition() {
         .get(&ComponentTypeId::new(CAMERA_COMPONENT))
         .is_some());
     assert!(registry
+        .get(&ComponentTypeId::new(CAMERA_2D_COMPONENT))
+        .is_some());
+    assert!(registry
+        .get(&ComponentTypeId::new(SPRITE_RENDERER_2D_COMPONENT))
+        .is_some());
+    assert!(registry
+        .get(&ComponentTypeId::new(SPRITE_ANIMATOR_2D_COMPONENT))
+        .is_some());
+    assert!(registry
         .get(&ComponentTypeId::new(DIRECTIONAL_LIGHT_COMPONENT))
         .is_some());
     assert!(registry
@@ -210,6 +219,7 @@ fn registry_iterates_in_registration_order() {
             VFX_PLAYER_COMPONENT,
             CAMERA_2D_COMPONENT,
             SPRITE_RENDERER_2D_COMPONENT,
+            SPRITE_ANIMATOR_2D_COMPONENT,
         ]
     );
 }

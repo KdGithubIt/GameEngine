@@ -263,6 +263,26 @@ const SPRITE_RENDERER_2D_FIELDS: &[FieldDef] = &[
     boolean("visible", "Visible", "Whether this sprite contributes a runtime render instance.", true),
 ];
 
+const SPRITE_ANIMATOR_2D_FIELDS: &[FieldDef] = &[
+    asset_ref(
+        "clip",
+        "Sprite Animation",
+        "Sprite Animation document evaluated independently for this entity.",
+        AssetKind::SpriteAnimation,
+        FieldDefaultSpec::Unassigned,
+    ),
+    boolean("autoplay", "Autoplay", "Start clip playback when the runtime entity becomes active.", true),
+    number("speed", "Speed", "Non-negative deterministic playback speed multiplier.", 1.0, NON_NEGATIVE),
+    FieldDef::new(
+        "looping_override",
+        "Looping Override",
+        "Optional per-entity looping override; unassigned uses the clip default.",
+        FieldKind::Bool,
+        FieldDefaultSpec::Unassigned,
+    )
+    .optional(),
+];
+
 const DIRECTIONAL_LIGHT_FIELDS: &[FieldDef] = &[
     FieldDef::new(
         "direction_x",
@@ -2040,6 +2060,15 @@ pub(super) fn builtin_components() -> Vec<BuiltinComponent> {
             1,
             SPRITE_RENDERER_2D_FIELDS,
             spawn_sprite_renderer_2d_component,
+        ),
+        BuiltinComponent::new(
+            SPRITE_ANIMATOR_2D_COMPONENT,
+            "Sprite Animator 2D",
+            "Evaluates a Sprite Animation clip in fixed time and drives SpriteRenderer2D.",
+            "Animation",
+            1,
+            SPRITE_ANIMATOR_2D_FIELDS,
+            spawn_sprite_animator_2d_component,
         ),
     ]
 }

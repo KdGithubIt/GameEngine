@@ -49,6 +49,7 @@ use crate::script_api::{
 };
 use crate::shadow::{presentation_resource_mirror_system, EnvironmentLighting, ShadowSettings};
 use crate::morph::{material_morph_system, morph_blend_system};
+use crate::native_2d::{sprite_animation_2d_fixed_system, SpriteAnimationEvents2d};
 use crate::skinning::joint_palette_system;
 use crate::time::{FixedTime, Time};
 use crate::transform::transform_propagation_system;
@@ -121,6 +122,7 @@ impl App {
         ecs.insert_resource(GpuMeshCache::default());
         ecs.insert_resource(InstanceStats::default());
         ecs.insert_resource(FixedTime::default());
+        ecs.insert_resource(SpriteAnimationEvents2d::default());
         ecs.insert_resource(Gravity::default());
         ecs.insert_resource(GameplayPhysicsWorld::default());
         ecs.insert_resource(UiBindings::default());
@@ -242,6 +244,14 @@ impl App {
                 "Copies scene-owned shadow, environment, and post-process settings into renderer resources.",
             ),
             presentation_resource_mirror_system,
+        );
+        ecs.add_fixed_system_with_descriptor(
+            builtin_system(
+                "engine.sprite_animation_2d",
+                "Sprite Animation 2D",
+                "Advances SpriteAnimator2D playback and writes the current SpriteRef to SpriteRenderer2D.",
+            ),
+            sprite_animation_2d_fixed_system,
         );
         ecs.add_fixed_system_with_descriptor(
             builtin_system(
