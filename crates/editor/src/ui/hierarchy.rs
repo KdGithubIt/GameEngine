@@ -140,6 +140,27 @@ impl EditorApp {
                     egui::vec2(ui.available_width(), 24.0),
                     egui::Layout::right_to_left(egui::Align::Center),
                     |ui| {
+                        if let Some(severity) = self.problems_panel.entity_severity(&id) {
+                            let (symbol, color, label) = match severity {
+                                engine_authoring::Severity::Error => (
+                                    "●",
+                                    egui::Color32::from_rgb(220, 60, 60),
+                                    "Entity has errors in Problems",
+                                ),
+                                engine_authoring::Severity::Warning => (
+                                    "●",
+                                    egui::Color32::from_rgb(220, 180, 60),
+                                    "Entity has warnings in Problems",
+                                ),
+                                engine_authoring::Severity::Info => (
+                                    "●",
+                                    egui::Color32::LIGHT_GRAY,
+                                    "Entity has information in Problems",
+                                ),
+                            };
+                            ui.label(egui::RichText::new(symbol).color(color))
+                                .on_hover_text(label);
+                        }
                         let has_state_override = !row.enabled || is_hidden || is_locked;
                         let status_text = if has_state_override {
                             egui::RichText::new("⋯").color(egui::Color32::YELLOW)
