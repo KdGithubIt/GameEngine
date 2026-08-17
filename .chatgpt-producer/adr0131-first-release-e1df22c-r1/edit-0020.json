@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "                        self.last_captured_frame = Some((\n                            texture,\n                            artifact_id.clone(),\n                            capture.width,\n                            capture.height,\n                        ));\n                        self.status = Some(format!(",
+  "new": "                        self.last_captured_frame = Some((\n                            texture,\n                            artifact_id.clone(),\n                            capture.width,\n                            capture.height,\n                        ));\n                        self.managed_capture_requested = false;\n                        self.status = Some(format!("
+}
