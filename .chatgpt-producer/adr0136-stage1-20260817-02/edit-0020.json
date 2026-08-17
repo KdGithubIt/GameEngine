@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ui/animation_preview.rs","old":"use super::*;\nuse crate::scene_view::{AnimationPreviewMode, AnimationPreviewRequest};\n","new":"use super::*;\nuse crate::preview_residency::ProjectAssetResidency;\nuse crate::scene_view::{AnimationPreviewMode, AnimationPreviewRequest};\n"}

@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/asset_import.rs","old":"#[derive(Debug)]\npub struct AssetImportResult {\n","new":"pub struct AssetImportResult {\n"}

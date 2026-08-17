@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/scene_view.rs","old":"            let reuse =\n                !non_transform_preview && self.preview.as_ref().is_some_and(|p| p.key == key);\n","new":"            let reuse = !non_transform_preview\n                && !self.waiting_for_residency\n                && self.preview.as_ref().is_some_and(|p| p.key == key);\n"}
