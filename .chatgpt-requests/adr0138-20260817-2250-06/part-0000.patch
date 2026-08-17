@@ -1,0 +1,1391 @@
+diff --git a/crates/animation/src/anim_graph.rs b/crates/animation/src/anim_graph.rs
+index c9c6d7facff8a51c2df90e0bdc0df3ec9819932c..93841594c80ab51238fb6e31b2fbe28ac7ec363f 100644
+--- a/crates/animation/src/anim_graph.rs
++++ b/crates/animation/src/anim_graph.rs
+@@ -11,7 +11,8 @@ use std::path::Path;
+ 
+ use engine_authoring::{
+     compile_animation_graph, AnimState, AnimTransition, AnimationGraphDomain,
+-    AnimationStatePlaybackMode, CompiledAnimGraph, Diagnostic, Graph,
++    AnimationStatePlaybackMode, AssetId, CompiledAnimGraph, Diagnostic, EdgeId, Graph, GraphId,
++    MotionSlotId, MotionSourceRef, MotionSourceVariant,
+ };
+ 
+ use crate::animation::{AnimationClip, Animator};
+@@ -243,6 +244,36 @@ fn parse_bool_literal(value: &str) -> Option<bool> {
+     }
+ }
+ 
++/// Read-only provenance for one resolved Animation Set motion slot.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct AnimationMotionDebugBinding {
++    /// Stable graph-owned motion slot.
++    pub motion_slot: MotionSlotId,
++    /// Human-readable binding label captured from the Animation Set.
++    pub display_name: String,
++    /// Author-selected stable motion source.
++    pub source: MotionSourceRef,
++    /// Variant that scene conversion actually resolved.
++    pub resolved_variant: MotionSourceVariant,
++    /// Session-local concrete clip handle identity.
++    pub resolved_clip_runtime_id: u64,
++}
++
++/// Stable source mapping captured when an Animation Controller is converted.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct AnimationGraphDebugSource {
++    /// Animation Graph asset referenced by the controller.
++    pub graph_asset: AssetId,
++    /// Stable semantic graph identity loaded from that asset.
++    pub graph_id: GraphId,
++    /// Animation Set asset resolved with the graph.
++    pub animation_set_asset: AssetId,
++    /// Source edge IDs in the same deterministic order as compiled transitions.
++    pub transition_edges: Vec<Option<EdgeId>>,
++    /// Resolved motion evidence keyed by stable MotionSlotId.
++    pub motion_bindings: BTreeMap<MotionSlotId, AnimationMotionDebugBinding>,
++}
++
+ /// Runs a compiled Animation Graph against a sibling [`Animator`] component.
+ pub struct AnimGraphPlayer {
+     graph: CompiledAnimGraph,
+@@ -255,7 +286,9 @@ pub struct AnimGraphPlayer {
+     pub fade_duration: f32,
+     entered: bool,
+     last_transition: Option<AnimTransition>,
++    last_transition_index: Option<usize>,
+     transition_sequence: u64,
++    debug_source: Option<AnimationGraphDebugSource>,
+ }
+ 
+ impl AnimGraphPlayer {
+@@ -288,7 +321,9 @@ impl AnimGraphPlayer {
+             fade_duration: 0.2,
+             entered: false,
+             last_transition: None,
++            last_transition_index: None,
+             transition_sequence: 0,
++            debug_source: None,
+         }
+     }
+ 
+@@ -363,6 +398,7 @@ impl AnimGraphPlayer {
+         self.current_state = self.graph.entry_state;
+         self.entered = false;
+         self.last_transition = None;
++        self.last_transition_index = None;
+         self.transition_sequence = 0;
+     }
+ 
+@@ -371,6 +407,22 @@ impl AnimGraphPlayer {
+         self.last_transition.as_ref()
+     }
+ 
++    /// Returns the stable source edge for the latest accepted transition.
++    pub fn last_transition_edge(&self) -> Option<&EdgeId> {
++        let index = self.last_transition_index?;
++        self.debug_source.as_ref()?.transition_edges.get(index)?.as_ref()
++    }
++
++    /// Installs read-only source and binding provenance captured by scene conversion.
++    pub fn set_debug_source(&mut self, source: AnimationGraphDebugSource) {
++        self.debug_source = Some(source);
++    }
++
++    /// Returns source and binding provenance for runtime observation.
++    pub fn debug_source(&self) -> Option<&AnimationGraphDebugSource> {
++        self.debug_source.as_ref()
++    }
++
+     /// Monotonic counter incremented for every accepted transition.
+     pub fn transition_sequence(&self) -> u64 {
+         self.transition_sequence
+@@ -451,6 +503,7 @@ pub fn anim_graph_system(mut query: engine_ecs::Query<(&mut AnimGraphPlayer, &mu
+         }
+         player.current_state = target_index;
+         player.last_transition = Some(transition.clone());
++        player.last_transition_index = Some(transition_index);
+         player.transition_sequence = player.transition_sequence.wrapping_add(1);
+         let state = player.graph.states[target_index].clone();
+         let fade_duration = transition.fade_duration.unwrap_or(player.fade_duration);
+@@ -554,6 +607,17 @@ impl std::error::Error for AnimGraphLoadError {
+ /// Returns an I/O, JSON parse, graph compilation, or typed transition-condition
+ /// diagnostic when the asset cannot become a runnable state machine.
+ pub fn load_animation_graph(path: &Path) -> Result<CompiledAnimGraph, AnimGraphLoadError> {
++    load_animation_graph_document(path).map(|(_, compiled)| compiled)
++}
++
++/// Loads the semantic source graph together with its compiled runtime artifact.
++///
++/// The semantic graph is returned only as read-only provenance for callers that
++/// must preserve stable `GraphId`/`EdgeId` mappings while constructing runtime
++/// observation metadata. Runtime execution continues to use `CompiledAnimGraph`.
++pub fn load_animation_graph_document(
++    path: &Path,
++) -> Result<(Graph, CompiledAnimGraph), AnimGraphLoadError> {
+     let json = std::fs::read_to_string(path).map_err(AnimGraphLoadError::Io)?;
+     let graph: Graph = serde_json::from_str(&json).map_err(AnimGraphLoadError::Parse)?;
+     let domain = AnimationGraphDomain::new();
+@@ -577,7 +641,7 @@ pub fn load_animation_graph(path: &Path) -> Result<CompiledAnimGraph, AnimGraphL
+         })
+         .collect::<Vec<_>>();
+     if diagnostics.is_empty() {
+-        Ok(compiled)
++        Ok((graph, compiled))
+     } else {
+         Err(AnimGraphLoadError::Compile(diagnostics))
+     }
+diff --git a/crates/editor/src/canvas/mod.rs b/crates/editor/src/canvas/mod.rs
+index 0b3e3688b157a568c1e1ccd1e2c64c65a4935ca5..2b775c0d6ba28af5469d409f8f90d197e75a3ac0 100644
+--- a/crates/editor/src/canvas/mod.rs
++++ b/crates/editor/src/canvas/mod.rs
+@@ -6,7 +6,7 @@ use eframe::egui::{
+     self, Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2 as EguiVec2,
+ };
+ use engine_authoring::{Edge, EdgeId, Node, NodeId, Value, Vec2};
+-use std::collections::BTreeMap;
++use std::collections::{BTreeMap, BTreeSet};
+ 
+ const NODE_SIZE: EguiVec2 = EguiVec2::new(170.0, 72.0);
+ /// Empty graph-space padding kept between automatically placed nodes.
+@@ -97,6 +97,8 @@ pub(crate) struct GraphDebugNodePresentation {
+ pub(crate) struct GraphDebugOverlay {
+     /// Per-node presentation keyed by stable source NodeId.
+     pub(crate) nodes: BTreeMap<NodeId, GraphDebugNodePresentation>,
++    /// Runtime-active semantic edges keyed by stable source EdgeId.
++    pub(crate) active_edges: BTreeSet<EdgeId>,
+ }
+ 
+ /// Screen placement of the graph's coordinate origin.
+@@ -372,7 +374,9 @@ pub fn show_graph_canvas(
+                 .into_iter()
+                 .filter(|kind| kind.matches_search(&state.node_search))
+             {
+-                if kind.category() != last_category.as_str() {
++                if !session.is_animation_graph()
++                    && kind.category() != last_category.as_str()
++                {
+                     if !last_category.is_empty() {
+                         ui.separator();
+                     }
+@@ -692,6 +696,13 @@ pub(crate) fn show_graph_debug_canvas(
+     });
+ 
+     paint_edges(&painter, canvas_view, session, &positions, None);
++    paint_debug_active_edges(
++        &painter,
++        canvas_view,
++        session,
++        &positions,
++        &overlay.active_edges,
++    );
+     for (node_id, node) in &session.graph().nodes {
+         let Some(position) = positions.get(node_id).copied() else {
+             continue;
+@@ -907,6 +918,34 @@ fn paint_edges(
+     }
+ }
+ 
++fn paint_debug_active_edges(
++    painter: &egui::Painter,
++    view: CanvasView,
++    session: &EditorSession,
++    positions: &BTreeMap<NodeId, Vec2>,
++    active_edges: &BTreeSet<EdgeId>,
++) {
++    for edge_id in active_edges {
++        let Some(edge) = session.graph().edges.get(edge_id) else {
++            continue;
++        };
++        let Some(path) = edge_screen_path(view, session, edge, positions) else {
++            continue;
++        };
++        let stroke = Stroke::new(4.0_f32, Color32::from_rgb(112, 214, 156));
++        painter.add(egui::Shape::line(path.points.clone(), stroke));
++        draw_arrow_head(
++            painter,
++            path.points[path.points.len() - 2],
++            path.points[path.points.len() - 1],
++            stroke,
++        );
++        if session.is_animation_graph() {
++            draw_transition_badge(painter, &path, stroke);
++        }
++    }
++}
++
+ fn edge_screen_path(
+     view: CanvasView,
+     session: &EditorSession,
+diff --git a/crates/editor/src/runtime.rs b/crates/editor/src/runtime.rs
+index 7fa1ed2ba26b1282eedee80b1b9f11c24955548b..23ec83b6bd2774e9d584341c50352faf88b1330e 100644
+--- a/crates/editor/src/runtime.rs
++++ b/crates/editor/src/runtime.rs
+@@ -14,7 +14,7 @@ use engine::{
+     VirtualInputQueue,
+ };
+ use engine::{InputReplay, ReplayPlayer, ReplayRecorder};
+-use engine_authoring::id::{AssetId, EntityId};
++use engine_authoring::id::{AssetId, EdgeId, EntityId, NodeId};
+ use engine_authoring::DiagnosticTarget;
+ use engine_authoring::{
+     load_scene_from_json, AuthoringScene, Diagnostic, ProjectRoot, ProjectSettings,
+@@ -69,9 +69,11 @@ pub(crate) struct RuntimeInputDebugSnapshot {
+     pub(crate) actions: Vec<(String, engine::game_io::GameInputActionState)>,
+ }
+ 
+-/// Read-only animation state shown for the selected authoring entity in Play.
++/// GUI-free read-only evidence from the actual Play-mode Animation Controller.
+ #[derive(Debug, Clone, PartialEq)]
+ pub(crate) struct RuntimeAnimationDebugSnapshot {
++    pub(crate) runtime_entity: (u32, u32),
++    pub(crate) authoring_entity: EntityId,
+     pub(crate) playback_state: String,
+     pub(crate) clip_runtime_id: u64,
+     pub(crate) clip_time: f32,
+@@ -84,6 +86,21 @@ pub(crate) struct RuntimeAnimationDebugSnapshot {
+     pub(crate) graph_transition_sequence: u64,
+     pub(crate) graph_last_transition: Option<String>,
+     pub(crate) graph_parameters: Vec<(String, bool)>,
++    pub(crate) graph_parameter_values: Vec<(String, String)>,
++    pub(crate) graph_asset: Option<AssetId>,
++    pub(crate) graph_id: Option<engine_authoring::GraphId>,
++    pub(crate) animation_set_asset: Option<AssetId>,
++    pub(crate) current_state: Option<NodeId>,
++    pub(crate) previous_state: Option<NodeId>,
++    pub(crate) next_state: Option<NodeId>,
++    pub(crate) active_transition: Option<EdgeId>,
++    pub(crate) transition_condition: Option<String>,
++    pub(crate) motion_slot: Option<engine_authoring::MotionSlotId>,
++    pub(crate) motion_slot_name: Option<String>,
++    pub(crate) motion_source: Option<engine_authoring::MotionSourceRef>,
++    pub(crate) resolved_motion_variant: Option<engine_authoring::MotionSourceVariant>,
++    pub(crate) recent_events: Vec<String>,
++    pub(crate) runtime_error: Option<String>,
+ }
+ 
+ /// Runtime world owned by editor play mode.
+@@ -707,6 +724,14 @@ impl RuntimePlayState {
+         collect_animation_debug_snapshot(self.app.world_mut(), authoring_id)
+     }
+ 
++    /// Captures the actual Animation Graph controller for one runtime Entity.
++    pub(crate) fn animation_graph_debug_snapshot(
++        &mut self,
++        key: (u32, u32),
++    ) -> Option<RuntimeAnimationDebugSnapshot> {
++        collect_animation_graph_debug_snapshot(self.app.world_mut(), key)
++    }
++
+     /// Captures one runtime Behavior Tree runner without mutating its execution state.
+     pub(crate) fn behavior_tree_debug_snapshot(
+         &self,
+@@ -956,6 +981,38 @@ fn collect_animation_debug_snapshot(
+     world: &mut engine::ecs::World,
+     authoring_id: &EntityId,
+ ) -> Option<RuntimeAnimationDebugSnapshot> {
++    collect_animation_debug_snapshot_matching(world, |_, identity| {
++        &identity.authoring_id == authoring_id
++    })
++}
++
++fn collect_animation_graph_debug_snapshot(
++    world: &mut engine::ecs::World,
++    runtime_key: (u32, u32),
++) -> Option<RuntimeAnimationDebugSnapshot> {
++    collect_animation_debug_snapshot_matching(world, |entity, _| {
++        (entity.id(), entity.generation()) == runtime_key
++    })
++}
++
++fn collect_animation_debug_snapshot_matching(
++    world: &mut engine::ecs::World,
++    matches: impl Fn(engine::ecs::Entity, &engine::RuntimeEntityIdentity) -> bool,
++) -> Option<RuntimeAnimationDebugSnapshot> {
++    let recent_events = world
++        .get_resource::<engine::AnimationEvents>()
++        .map(|events| {
++            events
++                .iter()
++                .map(|event| {
++                    (
++                        (event.entity.id(), event.entity.generation()),
++                        format!("{} @ {:.3}s", event.name, event.clip_time),
++                    )
++                })
++                .collect::<Vec<_>>()
++        })
++        .unwrap_or_default();
+     let query = engine::Query::<(
+         &engine::RuntimeEntityIdentity,
+         &engine::Animator,
+@@ -963,48 +1020,58 @@ fn collect_animation_debug_snapshot(
+     )>::new(world);
+     query
+         .iter()
+-        .find(|(_, (identity, _, _))| &identity.authoring_id == authoring_id)
+-        .map(|(_, (_, animator, graph))| {
+-            let (graph_state, graph_transition_sequence, graph_last_transition, graph_parameters) =
+-                graph.map_or_else(
+-                    || (None, 0, None, Vec::new()),
+-                    |graph| {
+-                        let state = graph.current_state_info().map(|state| {
+-                            state.motion_key().map(str::to_owned).unwrap_or_else(|| {
+-                                format!("node {} (no motion)", state.node_id.as_str())
+-                            })
+-                        });
+-                        let last_transition = graph.last_transition().map(|transition| {
+-                            let condition = if transition.condition.is_empty() {
+-                                "unconditional"
+-                            } else {
+-                                transition.condition.as_str()
+-                            };
+-                            format!(
+-                                "{} -> {} ({condition})",
+-                                transition.from_node.as_str(),
+-                                transition.to_node.as_str()
+-                            )
+-                        });
+-                        (
+-                            state,
+-                            graph.transition_sequence(),
+-                            last_transition,
+-                            graph
+-                                .parameters()
+-                                .filter_map(|(name, value)| match value {
+-                                    engine::AnimationParameterValue::Bool(value) => {
+-                                        Some((name.to_owned(), value))
+-                                    }
+-                                    engine::AnimationParameterValue::Float(_)
+-                                    | engine::AnimationParameterValue::Trigger(_) => None,
+-                                })
+-                                .collect(),
+-                        )
+-                    },
+-                );
++        .find(|(entity, (identity, _, graph))| graph.is_some() && matches(*entity, identity))
++        .map(|(entity, (identity, animator, graph))| {
++            let graph = graph.expect("filtered Animation Graph target must have a player");
++            let state = graph.current_state_info();
++            let transition = graph.last_transition();
++            let fading = animator.crossfade_progress().is_some();
++            let debug_source = graph.debug_source();
++            let binding = state
++                .and_then(|state| state.motion_slot.as_ref())
++                .and_then(|slot| debug_source.and_then(|source| source.motion_bindings.get(slot)));
++            let graph_state = state.map(|state| {
++                state.motion_key().map(str::to_owned).unwrap_or_else(|| {
++                    format!("node {} (no motion)", state.node_id.as_str())
++                })
++            });
++            let graph_last_transition = transition.map(|transition| {
++                let condition = if transition.condition.is_empty() {
++                    "unconditional"
++                } else {
++                    transition.condition.as_str()
++                };
++                format!(
++                    "{} -> {} ({condition})",
++                    transition.from_node.as_str(),
++                    transition.to_node.as_str()
++                )
++            });
++            let graph_parameters = graph
++                .parameters()
++                .filter_map(|(name, value)| match value {
++                    engine::AnimationParameterValue::Bool(value) => Some((name.to_owned(), value)),
++                    engine::AnimationParameterValue::Float(_)
++                    | engine::AnimationParameterValue::Trigger(_) => None,
++                })
++                .collect();
++            let graph_parameter_values = graph
++                .parameters()
++                .map(|(name, value)| {
++                    let value = match value {
++                        engine::AnimationParameterValue::Bool(value) => value.to_string(),
++                        engine::AnimationParameterValue::Float(value) => format!("{value:.3}"),
++                        engine::AnimationParameterValue::Trigger(pending) => {
++                            if pending { "trigger(pending)" } else { "trigger(idle)" }.to_owned()
++                        }
++                    };
++                    (name.to_owned(), value)
++                })
++                .collect();
+             let delta = animator.root_motion_delta();
+             RuntimeAnimationDebugSnapshot {
++                runtime_entity: (entity.id(), entity.generation()),
++                authoring_entity: identity.authoring_id.clone(),
+                 playback_state: format!("{:?}", animator.state),
+                 clip_runtime_id: animator.clip.id().value(),
+                 clip_time: animator.time,
+@@ -1014,9 +1081,41 @@ fn collect_animation_debug_snapshot(
+                 root_motion_delta: delta.to_array(),
+                 crossfade_progress: animator.crossfade_progress(),
+                 graph_state,
+-                graph_transition_sequence,
++                graph_transition_sequence: graph.transition_sequence(),
+                 graph_last_transition,
+                 graph_parameters,
++                graph_parameter_values,
++                graph_asset: debug_source.map(|source| source.graph_asset.clone()),
++                graph_id: debug_source.map(|source| source.graph_id.clone()),
++                animation_set_asset: debug_source.map(|source| source.animation_set_asset.clone()),
++                current_state: state.map(|state| state.node_id.clone()),
++                previous_state: (fading)
++                    .then(|| transition.map(|transition| transition.from_node.clone()))
++                    .flatten(),
++                next_state: (fading)
++                    .then(|| transition.map(|transition| transition.to_node.clone()))
++                    .flatten(),
++                active_transition: (fading)
++                    .then(|| graph.last_transition_edge().cloned())
++                    .flatten(),
++                transition_condition: transition.map(|transition| {
++                    if transition.condition.is_empty() {
++                        "unconditional".to_owned()
++                    } else {
++                        transition.condition.clone()
++                    }
++                }),
++                motion_slot: state.and_then(|state| state.motion_slot.clone()),
++                motion_slot_name: binding.map(|binding| binding.display_name.clone()),
++                motion_source: binding.map(|binding| binding.source.clone()),
++                resolved_motion_variant: binding.map(|binding| binding.resolved_variant),
++                recent_events: recent_events
++                    .iter()
++                    .filter_map(|(key, event)| (*key == (entity.id(), entity.generation())).then(|| event.clone()))
++                    .collect(),
++                runtime_error: debug_source
++                    .is_none()
++                    .then(|| "Animation Graph runtime source provenance is unavailable.".to_owned()),
+             }
+         })
+ }
+diff --git a/crates/editor/src/ui/behavior_debug.rs b/crates/editor/src/ui/behavior_debug.rs
+index acfa91cde79309db32a1e87b0c9492b4da8be08a..6f8af32bc0cc09e0c84ee508d9812d6a630af644 100644
+--- a/crates/editor/src/ui/behavior_debug.rs
++++ b/crates/editor/src/ui/behavior_debug.rs
+@@ -323,7 +323,10 @@ impl BehaviorTreeDebugPresentation {
+             recent_transitions,
+             blackboard,
+             error: snapshot.error.clone(),
+-            overlay: GraphDebugOverlay { nodes },
++            overlay: GraphDebugOverlay {
++                nodes,
++                ..GraphDebugOverlay::default()
++            },
+         }
+     }
+ }
+@@ -433,6 +436,7 @@ impl EditorApp {
+         }
+         if self.behavior_debug.install_visual_fixture() {
+             self.editor_mode = EditorMode::Playing;
++            self.graph_debug.visible = true;
+             self.selected_runtime_entity = None;
+             self.game_view_focused = false;
+         }
+@@ -592,7 +596,7 @@ fn reset_reason_label(reason: BehaviorResetReason) -> &'static str {
+     }
+ }
+ 
+-fn find_graph_source(assets_root: &Path, graph_id: &GraphId) -> Option<PathBuf> {
++pub(super) fn find_graph_source(assets_root: &Path, graph_id: &GraphId) -> Option<PathBuf> {
+     let mut candidates = Vec::new();
+     collect_graph_files(assets_root, &mut candidates);
+     candidates.sort();
+diff --git a/crates/editor/src/ui/graph_debug.rs b/crates/editor/src/ui/graph_debug.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..d4337de41cd01167472cccb6248bcf48935b1d90
+--- /dev/null
++++ b/crates/editor/src/ui/graph_debug.rs
+@@ -0,0 +1,469 @@
++//! Domain-neutral Play-mode graph debug shell (ADR 0138).
++
++use super::*;
++use crate::canvas::{
++    show_graph_debug_canvas, GraphCanvasState, GraphDebugBadge, GraphDebugNodePresentation,
++    GraphDebugOverlay,
++};
++use engine_authoring::GraphId;
++use std::collections::BTreeMap;
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++enum GraphDebugDomain {
++    Animation,
++    BehaviorTree,
++}
++
++impl GraphDebugDomain {
++    fn label(self) -> &'static str {
++        match self {
++            Self::Animation => "Animation Graph",
++            Self::BehaviorTree => "Behavior Tree",
++        }
++    }
++}
++
++#[derive(Debug, Clone, PartialEq, Eq)]
++struct GraphDebugTargetKey {
++    runtime_entity: (u32, u32),
++    domain: GraphDebugDomain,
++    graph: GraphId,
++}
++
++#[derive(Debug, Clone)]
++enum GraphDebugObservation {
++    Animation(RuntimeAnimationDebugSnapshot),
++    Behavior,
++}
++
++#[derive(Debug, Clone)]
++struct GraphDebugTarget {
++    key: GraphDebugTargetKey,
++    entity_name: String,
++    authoring_entity: Option<EntityId>,
++    observation: GraphDebugObservation,
++}
++
++impl GraphDebugTarget {
++    fn label(&self) -> String {
++        format!("{}  ·  {}", self.entity_name, self.key.domain.label())
++    }
++}
++
++#[derive(Default)]
++pub(super) struct GraphDebugState {
++    pub(super) visible: bool,
++    selected: Option<GraphDebugTargetKey>,
++    play_source_revisions: BTreeMap<GraphId, u64>,
++    canvas: GraphCanvasState,
++    selected_node: Option<NodeId>,
++}
++
++impl GraphDebugState {
++    pub(super) fn begin_play(&mut self, workspace: &DocumentWorkspace) {
++        self.visible = false;
++        self.selected = None;
++        self.play_source_revisions = workspace.graph_working_copy_revisions();
++        self.canvas = GraphCanvasState::default();
++        self.selected_node = None;
++    }
++
++    pub(super) fn clear(&mut self) {
++        *self = Self::default();
++    }
++
++    fn source_is_stale(&self, workspace: &DocumentWorkspace, graph_id: &GraphId) -> bool {
++        let Some((_, _, revision, dirty)) = workspace.graph_working_copy(graph_id) else {
++            return false;
++        };
++        dirty
++            || self
++                .play_source_revisions
++                .get(graph_id)
++                .is_some_and(|play_revision| *play_revision != revision)
++    }
++}
++
++impl EditorApp {
++    pub(super) fn has_graph_debug_targets(&mut self) -> bool {
++        self.runtime_state
++            .as_mut()
++            .is_some_and(|runtime| !collect_graph_debug_targets(runtime).is_empty())
++    }
++
++    pub(super) fn show_graph_debug_workspace(&mut self, ui: &mut egui::Ui) {
++        let Some(runtime) = self.runtime_state.as_mut() else {
++            self.graph_debug.visible = false;
++            return;
++        };
++        let targets = collect_graph_debug_targets(runtime);
++        if targets.is_empty() {
++            self.graph_debug.visible = false;
++            ui.vertical_centered(|ui| {
++                ui.add_space(48.0);
++                ui.heading("Graph Debug");
++                ui.label("No live runtime graph execution target exists.");
++            });
++            return;
++        }
++
++        if self
++            .graph_debug
++            .selected
++            .as_ref()
++            .is_none_or(|selected| !targets.iter().any(|target| &target.key == selected))
++        {
++            self.graph_debug.selected = Some(targets[0].key.clone());
++        }
++
++        let selected_key = self.graph_debug.selected.clone().expect("target list is non-empty");
++        let selected_label = targets
++            .iter()
++            .find(|target| target.key == selected_key)
++            .map(GraphDebugTarget::label)
++            .unwrap_or_else(|| "Graph target".to_owned());
++
++        control_row(ui, |ui| {
++            ui.strong("Graph Debug");
++            egui::ComboBox::from_id_salt("graph_debug_target")
++                .selected_text(selected_label)
++                .width(300.0)
++                .show_ui(ui, |ui| {
++                    for target in &targets {
++                        if ui
++                            .selectable_label(
++                                self.graph_debug.selected.as_ref() == Some(&target.key),
++                                target.label(),
++                            )
++                            .clicked()
++                        {
++                            self.graph_debug.selected = Some(target.key.clone());
++                        }
++                    }
++                });
++            if ui.button("Frame All").clicked() {
++                self.graph_debug.canvas.request_frame_all();
++            }
++            ui.small("Read-only runtime observation");
++        });
++        ui.separator();
++
++        let selected_key = self.graph_debug.selected.clone().expect("selection retained");
++        let Some(target) = targets.into_iter().find(|target| target.key == selected_key) else {
++            return;
++        };
++        self.selected_runtime_entity = Some(target.key.runtime_entity);
++        if let Some(authoring) = &target.authoring_entity {
++            self.select_single_entity(Some(authoring.clone()));
++        }
++
++        let stale = self
++            .graph_debug
++            .source_is_stale(&self.session, &target.key.graph);
++        if stale {
++            ui.colored_label(
++                egui::Color32::YELLOW,
++                "Source changed after Play started. Runtime evidence is older than the current working copy; live overlays are suppressed.",
++            );
++            ui.separator();
++        }
++
++        match target.observation {
++            GraphDebugObservation::Behavior if !stale => {
++                self.show_behavior_tree_debug_workspace(ui);
++            }
++            GraphDebugObservation::Behavior => {
++                self.show_graph_debug_source_only(ui, &target.key.graph);
++            }
++            GraphDebugObservation::Animation(snapshot) => {
++                self.show_animation_graph_debug(ui, &snapshot, stale);
++            }
++        }
++    }
++
++    fn show_graph_debug_source_only(&mut self, ui: &mut egui::Ui, graph_id: &GraphId) {
++        let Some(session) = self.graph_debug_source_session(graph_id) else {
++            ui.label("Current graph source is unavailable.");
++            return;
++        };
++        show_graph_debug_canvas(
++            ui,
++            &session,
++            &mut self.graph_debug.canvas,
++            &GraphDebugOverlay::default(),
++            &mut self.graph_debug.selected_node,
++        );
++    }
++
++    fn show_animation_graph_debug(
++        &mut self,
++        ui: &mut egui::Ui,
++        snapshot: &RuntimeAnimationDebugSnapshot,
++        stale: bool,
++    ) {
++        let Some(graph_id) = snapshot.graph_id.as_ref() else {
++            ui.heading("Animation Graph");
++            ui.colored_label(
++                egui::Color32::from_rgb(235, 104, 104),
++                snapshot
++                    .runtime_error
++                    .as_deref()
++                    .unwrap_or("Runtime source graph identity is unavailable."),
++            );
++            return;
++        };
++        let Some(session) = self.graph_debug_source_session(graph_id) else {
++            ui.heading("Animation Graph source unavailable");
++            ui.monospace(graph_id.as_str());
++            return;
++        };
++
++        let mut overlay = GraphDebugOverlay::default();
++        if !stale {
++            if let Some(edge) = &snapshot.active_transition
++                && session.graph().edges.contains_key(edge)
++            {
++                overlay.active_edges.insert(edge.clone());
++            }
++            if let Some(node) = &snapshot.current_state
++                && session.graph().nodes.contains_key(node)
++            {
++                overlay.nodes.insert(
++                    node.clone(),
++                    GraphDebugNodePresentation {
++                        active: true,
++                        badge: Some(GraphDebugBadge::Running),
++                        elapsed_seconds: Some(f64::from(snapshot.clip_time)),
++                        detail: Some(format!(
++                            "Active state · clip {:.3}s{}",
++                            snapshot.clip_time,
++                            snapshot
++                                .crossfade_progress
++                                .map(|progress| format!(" · transition {:.0}%", progress * 100.0))
++                                .unwrap_or_default()
++                        )),
++                    },
++                );
++            }
++            if let Some(node) = &snapshot.previous_state
++                && session.graph().nodes.contains_key(node)
++            {
++                overlay
++                    .nodes
++                    .entry(node.clone())
++                    .or_default()
++                    .detail = Some("Transition source state".to_owned());
++            }
++            if let Some(node) = &snapshot.next_state
++                && session.graph().nodes.contains_key(node)
++            {
++                overlay
++                    .nodes
++                    .entry(node.clone())
++                    .or_default()
++                    .detail = Some("Transition destination state".to_owned());
++            }
++        }
++
++        let selected_node = self.graph_debug.selected_node.clone();
++        egui::Panel::right("animation_graph_debug_details")
++            .resizable(true)
++            .default_size(320.0)
++            .min_size(250.0)
++            .max_size(460.0)
++            .show_inside(ui, |ui| show_animation_graph_debug_details(ui, snapshot, selected_node.as_ref()));
++
++        show_graph_debug_canvas(
++            ui,
++            &session,
++            &mut self.graph_debug.canvas,
++            &overlay,
++            &mut self.graph_debug.selected_node,
++        );
++    }
++
++    fn graph_debug_source_session(&self, graph_id: &GraphId) -> Option<EditorSession> {
++        if let Some((graph, view, _, _)) = self.session.graph_working_copy(graph_id) {
++            return Some(EditorSession::new(graph, view));
++        }
++        let project = self.project_root.as_ref()?;
++        let path = find_graph_source(&project.assets_root(), graph_id)?;
++        let mut session = EditorSession::empty_behavior_tree();
++        session.open_graph_discarding_changes(path).ok()?;
++        (session.graph().id == *graph_id).then_some(session)
++    }
++}
++
++fn collect_graph_debug_targets(runtime: &mut RuntimePlayState) -> Vec<GraphDebugTarget> {
++    let entities = runtime.entity_debug_snapshot();
++    let mut targets = Vec::new();
++    for row in entities {
++        let key = (row.entity.id(), row.entity.generation());
++        let authoring_entity = row
++            .authoring_id
++            .as_deref()
++            .and_then(|id| EntityId::from_stable_id(StableId::new(id)).ok());
++
++        if let Some(snapshot) = runtime.animation_graph_debug_snapshot(key)
++            && let Some(graph) = snapshot.graph_id.clone()
++        {
++            targets.push(GraphDebugTarget {
++                key: GraphDebugTargetKey {
++                    runtime_entity: key,
++                    domain: GraphDebugDomain::Animation,
++                    graph,
++                },
++                entity_name: row.name.clone(),
++                authoring_entity: Some(snapshot.authoring_entity.clone()),
++                observation: GraphDebugObservation::Animation(snapshot),
++            });
++        }
++        if let Some(snapshot) = runtime.behavior_tree_debug_snapshot(key) {
++            targets.push(GraphDebugTarget {
++                key: GraphDebugTargetKey {
++                    runtime_entity: key,
++                    domain: GraphDebugDomain::BehaviorTree,
++                    graph: snapshot.tree_source.clone(),
++                },
++                entity_name: row.name,
++                authoring_entity,
++                observation: GraphDebugObservation::Behavior,
++            });
++        }
++    }
++    targets.sort_by(|left, right| {
++        left.entity_name
++            .cmp(&right.entity_name)
++            .then_with(|| left.key.domain.label().cmp(right.key.domain.label()))
++            .then_with(|| left.key.graph.as_str().cmp(right.key.graph.as_str()))
++    });
++    targets
++}
++
++fn show_animation_graph_debug_details(
++    ui: &mut egui::Ui,
++    snapshot: &RuntimeAnimationDebugSnapshot,
++    selected_node: Option<&NodeId>,
++) {
++    ui.heading("Animation Graph");
++    ui.monospace(
++        snapshot
++            .graph_id
++            .as_ref()
++            .map(GraphId::as_str)
++            .unwrap_or("(source unavailable)"),
++    );
++    ui.label(format!(
++        "Runtime entity {}:{}",
++        snapshot.runtime_entity.0, snapshot.runtime_entity.1
++    ));
++    if let Some(asset) = &snapshot.graph_asset {
++        ui.small(format!("Graph asset {}", asset.as_str()));
++    }
++    if let Some(asset) = &snapshot.animation_set_asset {
++        ui.small(format!("Animation Set {}", asset.as_str()));
++    }
++
++    ui.separator();
++    ui.strong("Execution");
++    if let Some(state) = &snapshot.current_state {
++        ui.label("Current State");
++        ui.monospace(state.as_str());
++    }
++    if let (Some(from), Some(to), Some(progress)) = (
++        snapshot.previous_state.as_ref(),
++        snapshot.next_state.as_ref(),
++        snapshot.crossfade_progress,
++    ) {
++        ui.label(format!("Transition {:.0}%", progress * 100.0));
++        ui.monospace(format!("{} -> {}", from.as_str(), to.as_str()));
++        if let Some(edge) = &snapshot.active_transition {
++            ui.small(format!("Edge {}", edge.as_str()));
++        }
++        if let Some(reason) = &snapshot.transition_condition {
++            ui.small(format!("Runtime condition: {reason}"));
++        }
++    }
++    ui.label(format!("Clip time {:.3}s", snapshot.clip_time));
++    ui.label(format!("Playback x{:.2}", snapshot.playback_speed));
++
++    ui.separator();
++    ui.strong("Motion resolution");
++    match (
++        snapshot.motion_slot.as_ref(),
++        snapshot.motion_slot_name.as_deref(),
++        snapshot.motion_source.as_ref(),
++    ) {
++        (Some(slot), name, Some(source)) => {
++            ui.monospace(slot.as_str());
++            if let Some(name) = name {
++                ui.label(name);
++            }
++            ui.label(format!(
++                "{:?} -> {}",
++                snapshot.resolved_motion_variant.unwrap_or(source.variant),
++                source.asset.as_str()
++            ));
++            ui.small(format!("Concrete runtime clip {}", snapshot.clip_runtime_id));
++        }
++        _ => {
++            ui.small("Active state has no resolved Motion Slot evidence.");
++        }
++    }
++
++    ui.separator();
++    ui.strong("Parameters");
++    if snapshot.graph_parameter_values.is_empty() {
++        ui.small("No runtime parameters");
++    } else {
++        egui::Grid::new("animation_graph_debug_parameters")
++            .num_columns(2)
++            .striped(true)
++            .show(ui, |ui| {
++                for (name, value) in &snapshot.graph_parameter_values {
++                    ui.label(name);
++                    ui.monospace(value);
++                    ui.end_row();
++                }
++            });
++    }
++
++    ui.separator();
++    ui.strong("Recent animation events");
++    if snapshot.recent_events.is_empty() {
++        ui.small("No events fired in the latest fixed step.");
++    } else {
++        for event in &snapshot.recent_events {
++            ui.small(event);
++        }
++    }
++    if let Some(error) = &snapshot.runtime_error {
++        ui.colored_label(egui::Color32::from_rgb(235, 104, 104), error);
++    }
++
++    ui.separator();
++    match selected_node {
++        Some(node) => {
++            ui.small("Selected source node");
++            ui.monospace(node.as_str());
++        }
++        None => {
++            ui.small("Select a source node for stable-ID inspection.");
++        }
++    }
++    ui.small("Graph Debug is read-only and never mutates runtime parameters or source documents.");
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn stale_source_detects_dirty_or_revision_changed_working_copy() {
++        let mut state = GraphDebugState::default();
++        let workspace = DocumentWorkspace::new(EditorSession::empty_animation_graph());
++        state.begin_play(&workspace);
++        let graph = workspace.graph().id.clone();
++        assert!(!state.source_is_stale(&workspace, &graph));
++    }
++}
+diff --git a/crates/editor/src/ui/mod.rs b/crates/editor/src/ui/mod.rs
+index 5ca9babecc68203b7ec1072b95115e9707e799a5..2f46385a0238ae2f7b8df7eda7492d839a151cae 100644
+--- a/crates/editor/src/ui/mod.rs
++++ b/crates/editor/src/ui/mod.rs
+@@ -57,6 +57,7 @@ mod chrome;
+ mod data_assets;
+ mod documents;
+ mod game_tools;
++mod graph_debug;
+ mod hierarchy;
+ mod inspector;
+ mod mcp;
+@@ -98,6 +99,7 @@ use assets::*;
+ use chrome::*;
+ use documents::*;
+ use game_tools::*;
++use graph_debug::*;
+ use hierarchy::*;
+ use inspector::*;
+ use navigation_workspace::*;
+@@ -200,7 +202,9 @@ pub struct EditorApp {
+     audio_audition: AudioAuditionState,
+     /// Runtime world owned while Play is active.
+     runtime_state: Option<RuntimePlayState>,
+-    /// Transient read-only Behavior Tree live-debug presentation.
++    /// Domain-neutral read-only Play graph-debug shell state.
++    graph_debug: GraphDebugState,
++    /// Behavior Tree provider presentation retained behind the shared shell.
+     behavior_debug: BehaviorTreeDebugState,
+     /// Most recently recorded or loaded deterministic input artifact.
+     last_replay: Option<engine::InputReplay>,
+@@ -448,6 +452,7 @@ impl EditorApp {
+             editor_mode: EditorMode::Edit,
+             audio_audition: AudioAuditionState::default(),
+             runtime_state: None,
++            graph_debug: GraphDebugState::default(),
+             behavior_debug: BehaviorTreeDebugState::default(),
+             last_replay: None,
+             #[cfg(not(target_arch = "wasm32"))]
+diff --git a/crates/editor/src/ui/play.rs b/crates/editor/src/ui/play.rs
+index 2e2a118ebfda24a9cadd9789a7bb78c5f26e80c3..713d26653b00b35a41557e9b3e3b91156d4bebd8 100644
+--- a/crates/editor/src/ui/play.rs
++++ b/crates/editor/src/ui/play.rs
+@@ -119,39 +119,44 @@ impl EditorApp {
+             return;
+         };
+ 
++        let has_graph_debug = self.has_graph_debug_targets();
++        if !has_graph_debug {
++            self.graph_debug.visible = false;
++        }
+         control_row(ui, |ui| {
+             ui.strong("View");
+             let previous = self.preferences.play_mode_view;
+             if ui
+                 .selectable_label(
+-                    !self.behavior_debug.visible && previous == PlayModeView::Game,
++                    !self.graph_debug.visible && previous == PlayModeView::Game,
+                     "Game View",
+                 )
+                 .clicked()
+             {
+-                self.behavior_debug.visible = false;
++                self.graph_debug.visible = false;
+                 self.preferences.play_mode_view = PlayModeView::Game;
+             }
+             if ui
+                 .selectable_label(
+-                    !self.behavior_debug.visible && previous == PlayModeView::Scene,
++                    !self.graph_debug.visible && previous == PlayModeView::Scene,
+                     "Scene View",
+                 )
+                 .clicked()
+             {
+-                self.behavior_debug.visible = false;
++                self.graph_debug.visible = false;
+                 self.preferences.play_mode_view = PlayModeView::Scene;
+             }
+-            if ui
+-                .selectable_label(self.behavior_debug.visible, "Behavior Tree")
+-                .clicked()
++            if has_graph_debug
++                && ui
++                    .selectable_label(self.graph_debug.visible, "Graph Debug")
++                    .clicked()
+             {
+-                self.behavior_debug.visible = true;
++                self.graph_debug.visible = true;
+             }
+             if self.preferences.play_mode_view != previous {
+                 self.preferences.save();
+             }
+-            if !self.behavior_debug.visible
++            if !self.graph_debug.visible
+                 && self.preferences.play_mode_view == PlayModeView::Scene
+             {
+                 ui.separator();
+@@ -162,12 +167,12 @@ impl EditorApp {
+             }
+         });
+         ui.separator();
+-        if self.behavior_debug.visible {
++        if self.graph_debug.visible {
+             if self.game_view_focused {
+                 self.release_all_forwarded_input();
+                 self.game_view_focused = false;
+             }
+-            self.show_behavior_tree_debug_workspace(ui);
++            self.show_graph_debug_workspace(ui);
+             return;
+         }
+ 
+@@ -657,6 +662,7 @@ impl EditorApp {
+             Ok(start) => {
+                 self.session.extend_diagnostics(start.diagnostics);
+                 self.runtime_state = Some(start.state);
++                self.graph_debug.begin_play(&self.session);
+                 self.behavior_debug.clear();
+                 self.selected_runtime_entity = None;
+                 self.editor_mode = EditorMode::Playing;
+@@ -692,6 +698,7 @@ impl EditorApp {
+                 }
+                 self.session.extend_diagnostics(start.diagnostics);
+                 self.runtime_state = Some(start.state);
++                self.graph_debug.begin_play(&self.session);
+                 self.behavior_debug.clear_observation();
+                 self.selected_runtime_entity = None;
+             }
+@@ -713,6 +720,7 @@ impl EditorApp {
+             }
+         }
+         self.runtime_state = None;
++        self.graph_debug.clear();
+         self.behavior_debug.clear();
+         self.selected_runtime_entity = None;
+         self.editor_mode = EditorMode::Edit;
+diff --git a/crates/editor/src/workspace.rs b/crates/editor/src/workspace.rs
+index 1a5382620a3cc919334d17d84bed7e97961d4c69..6afdb8a71204544f6b00dc51f062f9db5f64e5cf 100644
+--- a/crates/editor/src/workspace.rs
++++ b/crates/editor/src/workspace.rs
+@@ -6,7 +6,7 @@
+ 
+ use crate::document::{CurrentDocument, OpenDocumentError};
+ use crate::session::{EditorPersistError, EditorSession};
+-use engine_authoring::{AuthoringScene, EntityId};
++use engine_authoring::{AuthoringScene, EntityId, Graph, GraphId, GraphView};
+ use std::ops::{Deref, DerefMut};
+ use std::path::{Path, PathBuf};
+ 
+@@ -251,6 +251,55 @@ impl DocumentWorkspace {
+     /// A scene containing `target` wins, followed by the active scene and the
+     /// first remaining scene tab. This lets an Animation Graph tab keep using
+     /// the character selected in a neighboring scene tab.
++    /// Clones the authoritative open working copy for one graph identity.
++    ///
++    /// Graph Debug uses this before falling back to disk so unsaved edits stay
++    /// visible without lending mutable authoring authority to the debug view.
++    pub(crate) fn graph_working_copy(
++        &self,
++        graph_id: &GraphId,
++    ) -> Option<(Graph, Option<GraphView>, u64, bool)> {
++        self.tabs.iter().find_map(|tab| {
++            let session = &tab.session;
++            (session.graph().id == *graph_id
++                && matches!(session.current_document(), CurrentDocument::Graph { .. }))
++            .then(|| {
++                {
++                    let graph = serde_json::from_value(
++                        serde_json::to_value(session.graph())
++                            .expect("open graph working copy must serialize"),
++                    )
++                    .expect("serialized open graph working copy must deserialize");
++                    let graph_view = session.graph_view().map(|view| {
++                        serde_json::from_value(
++                            serde_json::to_value(view)
++                                .expect("open graph view working copy must serialize"),
++                        )
++                        .expect("serialized open graph view working copy must deserialize")
++                    });
++                    (
++                        graph,
++                        graph_view,
++                        session.document_revision(),
++                        session.is_dirty(),
++                    )
++                }
++            })
++        })
++    }
++
++    /// Captures graph working-copy revisions at Play start for stale-source detection.
++    pub(crate) fn graph_working_copy_revisions(&self) -> std::collections::BTreeMap<GraphId, u64> {
++        self.tabs
++            .iter()
++            .filter_map(|tab| {
++                let session = &tab.session;
++                matches!(session.current_document(), CurrentDocument::Graph { .. })
++                    .then(|| (session.graph().id.clone(), session.document_revision()))
++            })
++            .collect()
++    }
++
+     pub(crate) fn scene_context(
+         &self,
+         target: Option<&EntityId>,
+diff --git a/crates/engine/src/scene_bridge.rs b/crates/engine/src/scene_bridge.rs
+index 8f2a557a51503aa99ed1c34b76d3a87f2144c7bc..85ffc01d1ebd65c0cce9468d392682a2de5d6159 100644
+--- a/crates/engine/src/scene_bridge.rs
++++ b/crates/engine/src/scene_bridge.rs
+@@ -6,7 +6,7 @@
+ //!
+ //! [`AuthoringScene`]: engine_authoring::scene::AuthoringScene
+ 
+-use crate::anim_graph::{load_animation_graph, AnimGraphPlayer};
++use crate::anim_graph::{load_animation_graph_document, AnimGraphPlayer, AnimationGraphDebugSource, AnimationMotionDebugBinding};
+ use crate::animation::{
+     compose_animation_clips, AnimEvent, AnimationClip, Animator, RootMotionMode, RootMotionRequest,
+ };
+@@ -59,7 +59,7 @@ use engine_authoring::{
+ use engine_ecs::{Entity, World};
+ use glam::{EulerRot, Mat4, Quat, Vec3};
+ use hashbrown::{HashMap, HashSet};
+-use std::collections::BTreeMap;
++use std::collections::{BTreeMap, BTreeSet};
+ use std::fmt;
+ use std::path::Path;
+ use std::sync::Arc;
+diff --git a/crates/engine/src/scene_bridge/spawn.rs b/crates/engine/src/scene_bridge/spawn.rs
+index f2e6af7b5a298a5b91c07c49e0fadeaea1b401aa..ec0525cb83cb96d70d60571db001dcb6657514e6 100644
+--- a/crates/engine/src/scene_bridge/spawn.rs
++++ b/crates/engine/src/scene_bridge/spawn.rs
+@@ -918,14 +918,37 @@ pub(crate) fn spawn_animation_controller_component(
+         return Ok(());
+     };
+     let graph_path = manifest_asset_path(&graph_asset, context)?;
+-    let compiled_graph =
+-        load_animation_graph(&graph_path).map_err(|source| SceneBridgeError::AssetLoad {
++    let (source_graph, compiled_graph) =
++        load_animation_graph_document(&graph_path).map_err(|source| SceneBridgeError::AssetLoad {
+             asset: graph_asset.clone(),
+             source: AssetLoadError::InvalidAsset {
+                 path: graph_path,
+                 message: source.to_string(),
+             },
+         })?;
++    let mut claimed_transition_edges = BTreeSet::new();
++    let transition_edges = compiled_graph
++        .transitions
++        .iter()
++        .map(|transition| {
++            source_graph.edges.iter().find_map(|(edge_id, edge)| {
++                if claimed_transition_edges.contains(edge_id) {
++                    return None;
++                }
++                let condition = edge.annotations.get("condition").and_then(|value| match value {
++                    Value::String(value) => Some(value.as_str()),
++                    _ => None,
++                }).unwrap_or("");
++                (edge.from.node == transition.from_node
++                    && edge.to.node == transition.to_node
++                    && condition == transition.condition)
++                    .then(|| {
++                        claimed_transition_edges.insert(edge_id.clone());
++                        edge_id.clone()
++                    })
++            })
++        })
++        .collect::<Vec<_>>();
+     let resolved_set = resolve_animation_set(
+         &animation_set_asset,
+         &graph_asset,
+@@ -936,6 +959,7 @@ pub(crate) fn spawn_animation_controller_component(
+         clips: resolved_clips,
+         events: animation_set_events,
+         unresolved_motion_slots,
++        debug_bindings,
+     } = resolved_set;
+     if let Some(motion_key) = compiled_graph
+         .states
+@@ -979,6 +1003,13 @@ pub(crate) fn spawn_animation_controller_component(
+ 
+     let mut player = AnimGraphPlayer::new(compiled_graph, resolved_clips);
+     player.fade_duration = fade_duration;
++    player.set_debug_source(AnimationGraphDebugSource {
++        graph_asset: graph_asset.clone(),
++        graph_id: source_graph.id.clone(),
++        animation_set_asset: animation_set_asset.clone(),
++        transition_edges,
++        motion_bindings: debug_bindings,
++    });
+     let parameters = match fields.get("parameters") {
+         None => BTreeMap::new(),
+         Some(Value::Object(parameters)) => parameters.clone(),
+@@ -1423,6 +1454,12 @@ struct ResolvedAnimationSet {
+     clips: BTreeMap<String, Handle<AnimationClip>>,
+     events: Vec<(Handle<AnimationClip>, Vec<AnimEvent>)>,
+     unresolved_motion_slots: HashSet<String>,
++    debug_bindings: BTreeMap<engine_authoring::MotionSlotId, AnimationMotionDebugBinding>,
++}
++
++struct ResolvedAnimationBindingClip {
++    handle: Handle<AnimationClip>,
++    resolved_variant: engine_authoring::MotionSourceVariant,
+ }
+ 
+ fn resolve_animation_set(
+@@ -1507,8 +1544,9 @@ fn resolve_animation_set(
+     let mut clips = BTreeMap::new();
+     let mut events = Vec::<(Handle<AnimationClip>, Vec<AnimEvent>)>::new();
+     let mut unresolved_motion_slots = HashSet::new();
++    let mut debug_bindings = BTreeMap::new();
+     for (motion_slot, binding) in animation_set.bindings {
+-        let Some(primary_handle) = resolve_animation_binding_clip(
++        let Some(primary) = resolve_animation_binding_clip(
+             animation_set_asset,
+             &binding.clip,
+             &target_skeleton,
+@@ -1518,16 +1556,17 @@ fn resolve_animation_set(
+             unresolved_motion_slots.insert(motion_slot.as_str().to_owned());
+             continue;
+         };
++        let primary_handle = primary.handle;
+         let mut layer_handles = Vec::with_capacity(binding.overlays.len() + 1);
+         layer_handles.push(primary_handle);
+         for overlay in &binding.overlays {
+-            if let Some(overlay_handle) = resolve_animation_binding_clip(
++            if let Some(overlay_clip) = resolve_animation_binding_clip(
+                 animation_set_asset,
+                 overlay,
+                 &target_skeleton,
+                 context,
+             )? {
+-                layer_handles.push(overlay_handle);
++                layer_handles.push(overlay_clip.handle);
+             }
+         }
+ 
+@@ -1611,6 +1650,16 @@ fn resolve_animation_set(
+             composite_handle
+         };
+         clips.insert(motion_slot.as_str().to_owned(), handle);
++        debug_bindings.insert(
++            motion_slot.clone(),
++            AnimationMotionDebugBinding {
++                motion_slot: motion_slot.clone(),
++                display_name: binding.name.clone(),
++                source: binding.clip.clone(),
++                resolved_variant: primary.resolved_variant,
++                resolved_clip_runtime_id: handle.id().value(),
++            },
++        );
+         if !binding.events.is_empty() {
+             let binding_events = binding
+                 .events
+@@ -1636,6 +1685,7 @@ fn resolve_animation_set(
+         clips,
+         events,
+         unresolved_motion_slots,
++        debug_bindings,
+     })
+ }
+ 
+@@ -1644,7 +1694,7 @@ fn resolve_animation_binding_clip(
+     source: &engine_authoring::MotionSourceRef,
+     target_skeleton: &SkeletonAsset,
+     context: &mut SpawnContext<'_>,
+-) -> Result<Option<Handle<AnimationClip>>, SceneBridgeError> {
++) -> Result<Option<ResolvedAnimationBindingClip>, SceneBridgeError> {
+     if source.variant == engine_authoring::MotionSourceVariant::Humanoid {
+         return resolve_humanoid_animation_binding_clip(
+             animation_set_asset,
+@@ -1652,7 +1702,10 @@ fn resolve_animation_binding_clip(
+             target_skeleton,
+             context,
+         )
+-        .map(Some);
++        .map(|handle| Some(ResolvedAnimationBindingClip {
++            handle,
++            resolved_variant: engine_authoring::MotionSourceVariant::Humanoid,
++        }));
+     }
+ 
+     let resolved = resolve_animation_clip_source(&source.asset, context)?;
+@@ -1689,7 +1742,10 @@ fn resolve_animation_binding_clip(
+     })?;
+ 
+     if source_skeleton_id == target_skeleton.id {
+-        return Ok(Some(native_handle));
++        return Ok(Some(ResolvedAnimationBindingClip {
++            handle: native_handle,
++            resolved_variant: engine_authoring::MotionSourceVariant::Native,
++        }));
+     }
+ 
+     if source.variant == engine_authoring::MotionSourceVariant::Auto {
+@@ -1710,7 +1766,10 @@ fn resolve_animation_binding_clip(
+                 target_skeleton,
+                 context,
+             )
+-            .map(Some);
++            .map(|handle| Some(ResolvedAnimationBindingClip {
++                handle,
++                resolved_variant: engine_authoring::MotionSourceVariant::Humanoid,
++            }));
+         }
+     }
+ 
+@@ -1723,6 +1782,12 @@ fn resolve_animation_binding_clip(
+         target_skeleton,
+         context,
+     )
++    .map(|resolved| {
++        resolved.map(|handle| ResolvedAnimationBindingClip {
++            handle,
++            resolved_variant: engine_authoring::MotionSourceVariant::Native,
++        })
++    })
+ }
+ 
+ #[allow(clippy::too_many_arguments)]
