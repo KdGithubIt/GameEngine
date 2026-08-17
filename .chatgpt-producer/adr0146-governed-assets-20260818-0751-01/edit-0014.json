@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/lib.rs","old":"mod agent_host;\nmod native_agent;","new":"// ADR 0146 defines the provider-neutral managed asset boundary before concrete\n// provider integrations are enabled by AI Studio.\n#[allow(dead_code)]\nmod agent_asset_acquisition;\nmod agent_host;\nmod native_agent;"}
