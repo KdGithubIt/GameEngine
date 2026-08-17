@@ -880,6 +880,35 @@ fn sibling_executable(name: &str) -> Result<PathBuf, LifecycleError> {
     Ok(path)
 }
 
+/// Reports whether the single Launcher application lease is currently held.
+///
+/// This is a read-only application-lifecycle query. It does not activate or
+/// spawn the Launcher and does not write canonical project data.
+///
+/// # Errors
+///
+/// Returns an error when the user-local lifecycle lock cannot be inspected.
+pub fn launcher_is_active() -> Result<bool, LifecycleError> {
+    launcher_is_running()
+}
+
+/// Returns an opaque key for one canonical project location.
+///
+/// The key is derived from the same normalized canonical location used by the
+/// Editor lease. It is application-lifecycle metadata, not a persisted project
+/// identifier and not a replacement for [`ProjectId`].
+///
+/// # Errors
+///
+/// Returns an error when `path` cannot be canonicalized.
+pub fn project_location_key(path: &Path) -> Result<String, LifecycleError> {
+    let canonical = fs::canonicalize(path).map_err(|source| LifecycleError::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    Ok(format!("{:016x}", location_hash(&canonical)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
