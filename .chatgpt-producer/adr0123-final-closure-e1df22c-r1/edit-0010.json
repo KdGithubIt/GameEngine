@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ui/behavior_debug.rs",
+  "old": "            graph_session: Some(EditorSession::empty_behavior_tree()),\n            invalidated: true,\n            message: Some(\"stale\".into()),\n            ..BehaviorTreeDebugState::default()\n        };\n\n        state.clear_observation();\n\n        assert!(state.visible);\n        assert!(state.source_key.is_none());\n        assert!(state.graph_session.is_none());\n        assert!(!state.invalidated);\n        assert!(state.message.is_none());\n",
+  "new": "            graph_session: Some(EditorSession::empty_behavior_tree()),\n            invalidated: true,\n            message: Some(\"stale\".into()),\n            selected_node: Some(NodeId::generate()),\n            ..BehaviorTreeDebugState::default()\n        };\n\n        state.clear_observation();\n\n        assert!(state.visible);\n        assert!(state.source_key.is_none());\n        assert!(state.graph_session.is_none());\n        assert!(!state.invalidated);\n        assert!(state.message.is_none());\n        assert!(state.selected_node.is_none());\n"
+}
