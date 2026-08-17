@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/animation_set_editor.rs",
+  "old": "    replace_file_contents, AnimationBinding, AnimationSet, AnimationSetEvent, AssetId, MotionSlot,\n    MotionSlotId, MotionSourceRef,\n};",
+  "new": "    replace_file_contents, AnimationBinding, AnimationSet, AnimationSetEvent, AssetId,\n    AuthoringPermissions, MotionSlot, MotionSlotId, MotionSourceRef, TypedDocumentAuthoringError,\n    TypedDocumentAuthoringMutation, TypedDocumentAuthoringService, TypedDocumentAuthoringSnapshot,\n    TypedDocumentAuthoringState, TypedDocumentAuthoringValidation,\n};"
+}
