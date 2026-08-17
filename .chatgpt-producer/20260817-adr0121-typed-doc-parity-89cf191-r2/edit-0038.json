@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/animation_set_editor.rs",
+  "old": "    AuthoringPermissions, MotionSlot, MotionSlotId, MotionSourceRef, TypedDocumentAuthoringError,",
+  "new": "    AuthoringPermission, AuthoringPermissions, MotionSlot, MotionSlotId, MotionSourceRef,\n    TypedDocumentAuthoringError,"
+}
