@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/main.rs",
+  "old": "            } else if requested == \"Spatial Audio\" {\n                app.prepare_spatial_audio_visual_validation();\n            } else {",
+  "new": "            } else if requested == \"Spatial Audio\" {\n                app.prepare_spatial_audio_visual_validation();\n            } else if requested == \"Spatial Audio Details\" {\n                app.prepare_spatial_audio_details_visual_validation();\n            } else {"
+}
