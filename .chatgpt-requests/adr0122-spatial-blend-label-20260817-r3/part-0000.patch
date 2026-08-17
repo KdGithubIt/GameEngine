@@ -1,0 +1,13 @@
+diff --git a/crates/engine/src/components/builtins.rs b/crates/engine/src/components/builtins.rs
+index 7b77fd50d1c5721a1e2ecf1e1cb3a149837403e0..c32c3e82b3e4dfa4cb1ad1070730a813568c00ce 100644
+--- a/crates/engine/src/components/builtins.rs
++++ b/crates/engine/src/components/builtins.rs
+@@ -1330,7 +1330,7 @@ const AUDIO_EMITTER_FIELDS: &[FieldDef] = &[
+     ),
+     number(
+         "spatial_blend",
+-        "Spatial Blend (2D ↔ 3D)",
++        "Spatial Blend",
+         "Blend from centered 2D (0.0) to positional 3D (1.0).",
+         1.0,
+         UNIT_INTERVAL,
