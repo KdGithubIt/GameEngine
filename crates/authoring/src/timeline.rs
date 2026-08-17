@@ -51,7 +51,22 @@ pub enum TimelinePropertyValue {
 /// First-release typed track family.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum TimelineTrackKind { Animation, TransformProperty, CameraCut, Event, Audio, Vfx, Prefab }
+pub enum TimelineTrackKind {
+    /// Animation motion sampling.
+    Animation,
+    /// Entity transform or typed property interpolation.
+    TransformProperty,
+    /// Runtime-only camera selection override.
+    CameraCut,
+    /// Bounded Timeline gameplay event.
+    Event,
+    /// Production audio playback request.
+    Audio,
+    /// Production VFX playback request.
+    Vfx,
+    /// Production prefab spawn request.
+    Prefab,
+}
 impl TimelineTrackKind {
     /// Explicit discontinuous-time contract.
     pub const fn seek_capability(self) -> SeekCapability {
@@ -104,19 +119,49 @@ pub const fn timeline_track_registry() -> &'static [TimelineTrackDescriptor] {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TimelineClipPayload {
     /// Animation asset sampled at local clip time.
-    Animation { motion: AssetId },
+    Animation {
+        /// Stable motion asset identifier.
+        motion: AssetId,
+    },
     /// Entity property interpolation.
-    TransformProperty { property: String, from: TimelinePropertyValue, to: TimelinePropertyValue },
+    TransformProperty {
+        /// Stable property path interpreted by the production adapter.
+        property: String,
+        /// Property value at the start of the clip.
+        from: TimelinePropertyValue,
+        /// Property value at the end of the clip.
+        to: TimelinePropertyValue,
+    },
     /// Runtime-only active-camera override.
     CameraCut,
     /// Bounded gameplay event.
-    Event { name: String, payload: String },
+    Event {
+        /// Stable event name delivered through the host event path.
+        name: String,
+        /// Bounded serialized event payload.
+        payload: String,
+    },
     /// Production audio clip request.
-    Audio { clip: AssetId, volume: f32, looping: bool },
+    Audio {
+        /// Stable audio asset identifier.
+        clip: AssetId,
+        /// Authored linear gain.
+        volume: f32,
+        /// Whether the requested voice loops while the clip is active.
+        looping: bool,
+    },
     /// Production VFX effect request.
-    Vfx { effect: AssetId, looping: bool },
+    Vfx {
+        /// Stable VFX asset identifier.
+        effect: AssetId,
+        /// Whether the effect loops while the clip is active.
+        looping: bool,
+    },
     /// Production prefab spawn request.
-    Prefab { prefab: AssetId },
+    Prefab {
+        /// Stable prefab asset identifier.
+        prefab: AssetId,
+    },
 }
 impl TimelineClipPayload {
     /// Family of this payload.
@@ -203,9 +248,27 @@ impl TimelineDocument {
 #[derive(Debug, Clone, PartialEq)]
 pub enum CompiledTimelinePayload {
     /// One clip payload with stable binding and source metadata.
-    Clip { clip_id: TimelineClipId, track_id: TimelineTrackId, binding: Option<TimelineBinding>, duration: TimelineTick, source_offset: TimelineTick, payload: TimelineClipPayload },
+    Clip {
+        /// Stable source clip identifier.
+        clip_id: TimelineClipId,
+        /// Stable owning track identifier.
+        track_id: TimelineTrackId,
+        /// Stable authoring binding resolved by the production adapter.
+        binding: Option<TimelineBinding>,
+        /// Persisted clip duration in canonical ticks.
+        duration: TimelineTick,
+        /// Persisted source offset in canonical ticks.
+        source_offset: TimelineTick,
+        /// Typed source payload retained for composition-layer dispatch.
+        payload: TimelineClipPayload,
+    },
     /// Marker event.
-    Marker { marker_id: TimelineMarkerId, event: String },
+    Marker {
+        /// Stable source marker identifier.
+        marker_id: TimelineMarkerId,
+        /// Stable event name emitted for the marker.
+        event: String,
+    },
 }
 
 /// Diagnostic severity.

@@ -359,10 +359,10 @@ impl TimelinePlayer {
     pub fn set_rate(&mut self, rate: PlaybackRate) { self.rate = rate; self.rate_remainder = 0; }
     /// Configures a loop range.
     pub fn set_loop(&mut self, range: Option<TimelineLoop>) -> Result<(), TimelineLoopError> {
-        if let Some(r) = range {
-            if r.start < TimelineTick::ZERO || r.start >= r.end || r.end > self.duration {
-                return Err(TimelineLoopError);
-            }
+        if let Some(r) = range
+            && (r.start < TimelineTick::ZERO || r.start >= r.end || r.end > self.duration)
+        {
+            return Err(TimelineLoopError);
         }
         self.loop_range = range;
         Ok(())
