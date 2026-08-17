@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/scene_view.rs","old":"                    .fold(None, |combined, (min, max)| {\n","new":"                    .fold(None::<(Vec3, Vec3)>, |combined, (min, max)| {\n"}
