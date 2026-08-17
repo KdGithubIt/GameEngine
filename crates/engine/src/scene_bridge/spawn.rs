@@ -1008,7 +1008,7 @@ pub(crate) fn spawn_animation_controller_component(
         let set_label = context
             .manifest
             .get(&animation_set_asset)
-            .filter_map(|entry| entry.name.as_deref())
+            .and_then(|entry| entry.name.as_deref())
             .filter(|name| !name.trim().is_empty())
             .unwrap_or_else(|| animation_set_asset.as_str());
         let mut related_targets = vec![
