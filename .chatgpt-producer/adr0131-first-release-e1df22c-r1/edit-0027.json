@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "    #[test]\n    fn code_change_summary_keeps_deletion_blocked() {",
+  "new": "    #[test]\n    fn provider_output_redacts_mcp_and_bearer_secrets() {\n        let token = \"super-secret-token\";\n        assert_eq!(\n            redact_sensitive_provider_output(\n                \"Authorization: Bearer super-secret-token\",\n                token,\n            ),\n            \"Authorization: Bearer [REDACTED]\"\n        );\n        assert_eq!(\n            redact_sensitive_provider_output(\n                \"GAMEENGINE_MCP_AUTH_TOKEN=super-secret-token\",\n                token,\n            ),\n            \"GAMEENGINE_MCP_AUTH_TOKEN=[REDACTED]\"\n        );\n    }\n\n    #[test]\n    fn provider_semantic_progress_is_structured_json() {\n        let event: ProviderAgentEvent = serde_json::from_str(\n            r#\"{\"type\":\"progress\",\"step\":\"inspect\",\"detail\":\"scene\"}\"#,\n        )\n        .expect(\"semantic event\");\n        assert!(matches!(\n            event,\n            ProviderAgentEvent::Progress { step, detail }\n                if step == \"inspect\" && detail == \"scene\"\n        ));\n    }\n\n    #[test]\n    fn code_change_summary_keeps_deletion_blocked() {"
+}
