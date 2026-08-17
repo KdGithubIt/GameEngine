@@ -1,0 +1,121 @@
+diff --git a/docs/CHATGPT_AUTOMATION_INCIDENTS.md b/docs/CHATGPT_AUTOMATION_INCIDENTS.md
+index 376dd4ceec50550bd5190e9b1ae463e41b341c2c..d1a72baf52b09101c6cae2f8e92c8c771e58a90f 100644
+--- a/docs/CHATGPT_AUTOMATION_INCIDENTS.md
++++ b/docs/CHATGPT_AUTOMATION_INCIDENTS.md
+@@ -48,6 +48,7 @@ INC-004  Main advanced after task baseline and polluted validation  Validation
+ INC-005  Patch headers included checkout-directory prefix           Dispatcher         Resolved
+ INC-006  eframe screenshot helper incompatible with default wgpu    Visual validation  Resolved
+ INC-007  Missing-request probe misread unresolved revision text     Transport          Resolved
++INC-008  Documentation placeholder tripped public snapshot scan     Validation         Resolved
+ ```
+ 
+ ## INC-001: Markdown trailing whitespace rejected by patch preflight
+@@ -143,6 +144,15 @@ between those attempts.
+   that hunk against the exact target EOF. Dispatcher run `31931372697` passed
+   reconstruction/application and produced commit
+   `b3421b3c454ca7ebde31a2a9585e441d91ea7802` in Draft PR #49.
++- The same target-alignment class recurred in ADR 0131 managed-validation
++  request `20260816-adr0131-managed-validation-0b2191a-r2`: Dispatcher run
++  `31944776376` rejected `crates/editor/src/agent_host.rs` while the request
++  targeted `0b2191a06a4ec7311937327c425c76fdea2a4956`. The failed patch used
++  synthetic-file hunk coordinates near lines 1, 19, and 60 instead of the exact
++  target locations near lines 356, 1398, and 2037.
++- Recovery request `20260816-adr0131-mv-fix-r3` regenerated the same correction
++  against the exact target coordinates. Dispatcher run `31944910663` passed and
++  produced commit `d047d7ab89d668b5324869b3aaf9a92329f15182` in Draft PR #88.
+ 
+ ### Root cause
+ 
+@@ -187,6 +197,13 @@ preflight; EOF presence and blank-line context are part of patch applicability.
+ - Recovery Dispatcher run: `31931372697`
+ - Recovery PR: `#49`
+ - Recovery commit: `b3421b3c454ca7ebde31a2a9585e441d91ea7802`
++- ADR 0131 repeated failed request:
++  `20260816-adr0131-managed-validation-0b2191a-r2`
++- ADR 0131 repeated failed Dispatcher run: `31944776376`
++- ADR 0131 recovery request: `20260816-adr0131-mv-fix-r3`
++- ADR 0131 recovery Dispatcher run: `31944910663`
++- ADR 0131 recovery PR: `#88`
++- ADR 0131 recovery commit: `d047d7ab89d668b5324869b3aaf9a92329f15182`
+ 
+ ## INC-003: Published patch bytes differed from preflight artifact
+ 
+@@ -540,6 +557,78 @@ workflow once the transport defect is corrected.
+ - Confirmed recovery transport commit: `7b9f3b79fdbcc980c5d79b96a4100ae7e97d271c`
+ - Fresh successful ADR 0131 publisher runs: `31938262049`, `31938631848`, `31939039568`
+ 
++## INC-008: Documentation placeholder tripped public snapshot scan
++
++Status: Resolved
++Layer: Validation
++First confirmed: 2026-08-17
++Last confirmed: 2026-08-17
++
++### Symptom
++
++ADR 0121 Draft PR #122 reached Windows Validation, but validation run
++`31983199685` stopped in `Plan validation scope` before any Windows Rust gate
++ran. The planner's public snapshot self-test classified the documented Windows
++user-profile placeholder in ADR 0134 as a high-confidence private user path.
++
++### Evidence
++
++- Validation run `31983199685` failed `Test validation planner layouts`; the
++  Windows validation matrix was skipped, so the failure occurred before Rust
++  validation.
++- The scanner finding came from
++  `docs/adr/0134-portable-prefab-instance-source.md`, where the matched path was
++  an explicit documentation placeholder rather than a concrete private machine
++  path.
++- Infrastructure PR #137 changed only the `private-user-path` detector and its
++  public-snapshot regression test: the placeholder is allowed while a synthetic
++  concrete Windows user-profile path must still be rejected. PR #137 merged as
++  `89cf19154b1664ef8de83d91cdbeeb2c4242a738`.
++- Replacement ADR 0121 validation run `31985480476` then passed
++  `Test validation planner layouts`, confirming the scanner/planner recovery; a
++  later product test failure made that overall run fail for a separate reason.
++- Recovery validation run `31985901970` also passed the planner self-test and
++  completed successfully on product head
++  `bc2c697ae49232c0d75deed782ce94286d8ecc8f`, which became merged PR #145.
++
++### Root cause
++
++The public snapshot scanner's high-confidence private-user-path expression
++treated the explicit `...` documentation placeholder after the Windows user
++directory prefix as though it were a concrete local username. Because the
++public snapshot scan is exercised inside the validation planner self-test, the
++false positive blocked unrelated product validation before Rust gates could
++start.
++
++### Resolution
++
++Keep detection of concrete private Windows user-profile paths, but distinguish
++the documented placeholder form. Infrastructure PR #137 added that distinction
++and a regression test covering both cases. Subsequent ADR 0121 validation
++confirmed that the planner self-test passed, and run `31985901970` completed the
++selected affected validation successfully.
++
++### Prevention / ChatGPT next action
++
++When the public snapshot security self-test fails, inspect the scanner finding
++before changing product code or blindly retrying validation. A false positive
++in placeholder classification belongs to validation infrastructure and must be
++fixed on a separate automation branch without weakening the real private-path
++regression case. After the infrastructure fix reaches `main`, rerun the
++original product validation and confirm both the planner self-test and the final
++validation summary.
++
++### References
++
++- Blocked product PR: `#122`
++- Infrastructure PR: `#137`
++- Infrastructure merge commit: `89cf19154b1664ef8de83d91cdbeeb2c4242a738`
++- Failed validation run: `31983199685`
++- Planner-recovery validation run: `31985480476`
++- Successful recovery validation run: `31985901970`
++- Recovery product PR: `#145`
++- Recovery product head: `bc2c697ae49232c0d75deed782ce94286d8ecc8f`
++
+ ## Entry template
+ 
+ Copy this section for a materially new root cause. Incident IDs are monotonic
