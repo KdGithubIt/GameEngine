@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0136-residency-20260817-01",
+  "target_branch": "chatgpt/gameengine-adr0136-preview-asset-residency",
+  "expected_head_sha": "d03ed9e573818eb0ca088f37953f611d6ed4d22e",
+  "baseline_main_sha": "d03ed9e573818eb0ca088f37953f611d6ed4d22e",
+  "patch_sha256": "c5f062a7abc6473246d1a86ac87b26be5bd61f2bae8a81deea7072c965ff41bd",
+  "patch_bytes": 26595,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Add ADR 0136 preview asset residency",
+  "pr_title": "GameEngine: define preview asset residency and streaming",
+  "pr_body": "## Summary\n\n- add ADR 0136 for project-scoped CPU asset residency shared by Editor previews\n- require background import/materialization result reuse and device-scoped GPU residency\n- move preview renderer warm-up out of window-open latency\n- define asynchronous cold loading with prioritized, frame-budgeted GPU uploads\n- register ADR 0135/0136 in the ADR index\n\n## Scope\n\nDocumentation/design only. No Editor/runtime implementation changes are included."
+}
