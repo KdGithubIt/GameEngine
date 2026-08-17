@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0147-detached-ai-studio-20260817-01",
+  "target_branch": "chatgpt/gameengine-adr0147-detached-ai-studio",
+  "expected_head_sha": "b4ea5dd8a60497f7ac71e886842adde86e1a3087",
+  "baseline_main_sha": "b4ea5dd8a60497f7ac71e886842adde86e1a3087",
+  "patch_sha256": "e3e1255f04a3290ccf26d6a5b24223576c17feff87370e9b7df959e0c65d5d59",
+  "patch_bytes": 15667,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Implement ADR0147 detached AI Studio",
+  "pr_title": "GameEngine: implement ADR0147 detached AI Studio",
+  "pr_body": "## Summary\n\n- implement ADR0147 Tier 1 as a detachable native eframe viewport while retaining one project-scoped Agent Host\n- preserve session/run/permission/workspace/resource-arbitration state across detach, close, reopen, and reattach\n- add deterministic detached-window visual capture for AI Studio UI changes and focused presentation-state regression coverage\n- mark ADR0147 Accepted\n\n<!-- gameengine-visual-validation: editor -->"
+}
