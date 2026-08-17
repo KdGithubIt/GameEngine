@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ui/audio_authoring.rs",
+  "old": "    #[cfg(feature = \"visual-validation\")]\n    pub fn prepare_spatial_audio_details_visual_validation(&mut self) {\n        self.prepare_spatial_audio_visual_validation_with_scroll(Some(300.0));\n    }\n\n    #[cfg(feature = \"visual-validation\")]\n    fn prepare_spatial_audio_visual_validation_with_scroll(\n",
+  "new": "    #[cfg(feature = \"visual-validation\")]\n    pub fn prepare_spatial_audio_details_visual_validation(&mut self) {\n        self.prepare_spatial_audio_visual_validation_with_scroll(Some(300.0));\n    }\n\n    #[cfg(feature = \"visual-validation\")]\n    pub fn prepare_spatial_audio_listener_visual_validation(&mut self) {\n        self.prepare_spatial_audio_visual_validation_with_scroll(None);\n        let emitter_type =\n            ComponentTypeId::new(engine::scene_bridge::AUDIO_EMITTER_COMPONENT);\n        self.preferences\n            .component_card_open\n            .insert(emitter_type.as_str().to_owned(), false);\n    }\n\n    #[cfg(feature = \"visual-validation\")]\n    fn prepare_spatial_audio_visual_validation_with_scroll(\n"
+}
