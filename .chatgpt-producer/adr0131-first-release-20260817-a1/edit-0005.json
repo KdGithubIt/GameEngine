@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/agent_host.rs",
+  "old": "        let session = self.session_mut(session_id)?;\n        proposal.version = session.proposal.version.saturating_add(1);\n        let version = proposal.version;\n        session.proposal = proposal;\n        self.persist_session(session_id)?;\n        Ok(version)",
+  "new": "        let session = self.session_mut(session_id)?;\n        proposal.version = session.proposal.version.saturating_add(1);\n        let version = proposal.version;\n        session.proposal = proposal.clone();\n        session.proposal_history.push(proposal);\n        self.persist_session(session_id)?;\n        Ok(version)"
+}
