@@ -77,7 +77,15 @@ impl MaterialEditorPanel {
 
     /// Replaces a clean open material after an external disk change.
     pub fn reload_clean(&mut self, path: &Path, material: MaterialAsset) -> bool {
-        if self.is_dirty(path) || !self.materials.contains_key(path) {
+        if self.is_dirty(path) {
+            return false;
+        }
+        self.reload_discarding_changes(path, material)
+    }
+
+    /// Replaces one open material after the author explicitly chooses the disk version.
+    pub fn reload_discarding_changes(&mut self, path: &Path, material: MaterialAsset) -> bool {
+        if !self.materials.contains_key(path) {
             return false;
         }
         self.materials.insert(path.to_path_buf(), material.clone());

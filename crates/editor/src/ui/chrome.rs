@@ -218,6 +218,13 @@ impl EditorApp {
                     ui.close();
                 }
                 if ui
+                    .add_enabled(!self.is_playing(), egui::Button::new("Save All"))
+                    .clicked()
+                {
+                    self.save_all();
+                    ui.close();
+                }
+                if ui
                     .add_enabled(
                         !self.is_playing(),
                         egui::Button::new("Save As...    Ctrl+Shift+S"),

@@ -799,6 +799,8 @@ pub struct SceneView {
     /// when [`PreviewKey`] changes; an idle frame reuses it wholesale, doing
     /// no scene conversion, mesh copy, or GPU re-upload.
     preview: Option<PreviewWorld>,
+    /// Immutable Editor working-copy snapshot consumed by the next preview conversion.
+    authoring_overlay: engine::authoring_overlay::AuthoringDocumentOverlay,
 }
 
 /// The persistent Scene View preview world and the inputs it was built from
@@ -935,6 +937,7 @@ impl SceneView {
             gpu_mesh_cache: engine::SharedGpuMeshCache::default(),
             manifest_hash_cache: None,
             preview: None,
+            authoring_overlay: engine::authoring_overlay::AuthoringDocumentOverlay::new(),
         }
     }
 
@@ -1130,6 +1133,18 @@ impl SceneView {
     pub fn invalidate_asset_preview(&mut self) {
         self.preview = None;
         self.manifest_hash_cache = None;
+    }
+
+    /// Publishes one immutable set of Editor working copies to Scene View.
+    pub(crate) fn set_authoring_overlay(
+        &mut self,
+        overlay: engine::authoring_overlay::AuthoringDocumentOverlay,
+    ) {
+        if self.authoring_overlay == overlay {
+            return;
+        }
+        self.authoring_overlay = overlay;
+        self.preview = None;
     }
     /// Draws the Scene View, renders the authoring scene, and returns interaction results.
     #[allow(clippy::too_many_arguments)]
@@ -1530,6 +1545,7 @@ impl SceneView {
                     game_module,
                     &self.gltf_cache,
                     &self.gpu_mesh_cache,
+                    &self.authoring_overlay,
                     size,
                     self.show_sky,
                 );
@@ -2305,6 +2321,7 @@ fn build_preview_app_with_sky(
     game_module: Option<&Arc<engine::game_module::GameModule>>,
     gltf_cache: &engine::scene_bridge::SharedGltfImportCache,
     gpu_mesh_cache: &engine::SharedGpuMeshCache,
+    authoring_overlay: &engine::authoring_overlay::AuthoringDocumentOverlay,
     size: [u32; 2],
     sky_enabled: bool,
 ) -> (
@@ -2333,6 +2350,7 @@ fn build_preview_app_with_sky(
     // Reusing parsed glTF sources and decoded images across rebuilds keeps
     // large imports interactive (ADR 0071).
     app.insert_resource(gltf_cache.clone());
+    app.insert_resource(authoring_overlay.clone());
 
     app.insert_resource(engine::SkySettings {
         enabled: sky_enabled,

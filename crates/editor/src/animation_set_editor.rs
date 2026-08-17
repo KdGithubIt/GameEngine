@@ -55,12 +55,17 @@ impl AnimationSetEditorState {
         if self.is_dirty() {
             return false;
         }
+        self.reload_discarding_changes(document);
+        true
+    }
+
+    /// Replaces this Animation Set after the author explicitly chooses the disk version.
+    pub fn reload_discarding_changes(&mut self, document: AnimationSet) {
         self.document = document.clone();
         self.clean_document = document;
         self.authoring = TypedDocumentAuthoringState::new();
         self.undo.clear();
         self.redo.clear();
-        true
     }
 
     /// Returns whether an undo entry is available.
