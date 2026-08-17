@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ai_studio.rs","old":"                let command = input.command()?;\n                self.managed_input_plan.push_back(command);\n                self.host\n","new":"                let command = input.command()?;\n                self.managed_candidate_input_recipe.push(command);\n                self.host\n"}
