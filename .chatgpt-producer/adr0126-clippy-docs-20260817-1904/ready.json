@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0126-clippy-docs-20260817-1904",
+  "target_branch": "chatgpt/gameengine-adr0126-first-release",
+  "expected_head_sha": "433e5252cac1a9a94c9f913ca023b954a0a3aca5",
+  "baseline_main_sha": "d03ed9e573818eb0ca088f37953f611d6ed4d22e",
+  "edit_parts": [
+    "edit-0000.json",
+    "edit-0001.json",
+    "edit-0002.json",
+    "edit-0003.json"
+  ],
+  "commit_message": "Fix Timeline lint diagnostics",
+  "pr_title": "GameEngine: complete ADR0126 Timeline and Sequencer",
+  "pr_body": "## Summary\n\nContinues ADR 0126 first-release completion and fixes the Timeline public-contract documentation plus Rust 1.97 Clippy-required loop validation form.\n\n<!-- gameengine-visual-validation: editor -->\n<!-- gameengine-visual-authoring-tool: Sequencer -->"
+}
