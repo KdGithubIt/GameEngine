@@ -9,11 +9,14 @@ use glam::{Mat4, Quat, Vec3};
 use hashbrown::HashMap;
 
 pub use engine_render_runtime::camera::{
-    camera_aspect_system, default_camera_transform, Camera3D, ViewportSize,
+    camera_aspect_system, default_camera_transform, Camera3D, GameCameraSelectionOverride,
+    ViewportSize,
 };
 pub(crate) use engine_render_runtime::camera::{
-    camera_selection_key, select_active_game_camera,
+    camera_selection_key, select_active_game_camera_with_override,
 };
+#[cfg(test)]
+use engine_render_runtime::camera::select_active_game_camera;
 
 /// A camera that orbits around a fixed world-space target point.
 ///
