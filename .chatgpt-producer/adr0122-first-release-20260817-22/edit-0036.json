@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ui/inspector/entity_panel.rs","old":"            let mut edit = None;\n            let game_display_name = self","new":"            let mut edit = None;\n            let mut audio_action = None;\n            let game_display_name = self"}
