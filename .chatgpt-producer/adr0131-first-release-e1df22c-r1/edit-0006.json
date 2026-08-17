@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "use engine_authoring::ProjectRoot;\nuse std::ffi::{OsStr, OsString};\nuse std::path::PathBuf;\n\n/// Ephemeral Editor-owned MCP connection injected into compatible agent runtimes.",
+  "new": "use engine_authoring::ProjectRoot;\nuse serde::Deserialize;\nuse std::ffi::{OsStr, OsString};\nuse std::path::PathBuf;\n\nconst PROVIDER_EVENT_PREFIX: &str = \"GAMEENGINE_AGENT_EVENT \";\n\n#[derive(Debug, Deserialize)]\n#[serde(tag = \"type\", rename_all = \"snake_case\")]\nenum ProviderAgentEvent {\n    Progress {\n        step: String,\n        detail: String,\n    },\n    ToolAction {\n        tool: String,\n        action: String,\n        success: Option<bool>,\n    },\n    CompletionGate {\n        gate: String,\n        status: CompletionStatus,\n        message: String,\n    },\n    PlaytestResult {\n        launched: bool,\n        interactions_passed: Option<bool>,\n        message: String,\n    },\n}\n\n/// Ephemeral Editor-owned MCP connection injected into compatible agent runtimes."
+}
