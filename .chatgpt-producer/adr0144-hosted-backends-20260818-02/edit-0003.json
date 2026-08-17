@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/native_agent.rs","old":"    WorkerDisconnected,\n    Io(io::Error),\n    Json(serde_json::Error),","new":"    WorkerDisconnected,\n    Hosted(HostedBackendError),\n    Io(io::Error),\n    Json(serde_json::Error),"}

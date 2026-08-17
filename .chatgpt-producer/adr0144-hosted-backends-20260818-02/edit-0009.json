@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/native_agent.rs","old":"        config: LocalModelConfig,\n        project_root: PathBuf,","new":"        config: NativeModelConfig,\n        project_root: PathBuf,"}

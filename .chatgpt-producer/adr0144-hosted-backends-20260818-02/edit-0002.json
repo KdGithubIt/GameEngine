@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/native_agent.rs","old":"use crate::resource_arbitration::ModelResourceCapabilities;","new":"use crate::hosted_model_backend::{\n    generate_hosted, HostedAuthMode, HostedBackendError, HostedModelConfig,\n};\nuse crate::resource_arbitration::ModelResourceCapabilities;"}
