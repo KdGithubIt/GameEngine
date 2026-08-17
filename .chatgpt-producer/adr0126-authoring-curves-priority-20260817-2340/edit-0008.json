@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/authoring/src/timeline.rs","old":"            source_offset: TimelineTick::ZERO,\n            payload,","new":"            source_offset: TimelineTick::ZERO,\n            blend: TimelineBlend::default(),\n            payload,"}
