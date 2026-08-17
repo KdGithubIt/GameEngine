@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/scene_view.rs","old":"    } else if has(engine::scene_bridge::PARTICLE_EMITTER_COMPONENT) {\n        Some(EntityIcon::Particle)\n","new":"    } else if has(engine::scene_bridge::PARTICLE_EMITTER_COMPONENT)\n        || has(engine::scene_bridge::VFX_PLAYER_COMPONENT)\n    {\n        Some(EntityIcon::Particle)\n"}
