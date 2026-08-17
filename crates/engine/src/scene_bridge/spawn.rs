@@ -970,6 +970,80 @@ pub(crate) fn spawn_animation_controller_component(
         if unresolved_motion_slots.contains(motion_key) {
             return Ok(());
         }
+
+        let slot_display_name = engine_authoring::animation_graph_motion_slots(&source_graph)
+            .ok()
+            .and_then(|slots| {
+                slots
+                    .into_iter()
+                    .find(|slot| slot.id.as_str() == motion_key)
+                    .map(|slot| slot.display_name)
+            })
+            .unwrap_or_else(|| motion_key.to_owned());
+        let requiring_states = compiled_graph
+            .states
+            .iter()
+            .filter(|state| state.motion_key() == Some(motion_key))
+            .collect::<Vec<_>>();
+        let state_summary = requiring_states
+            .iter()
+            .map(|state| {
+                source_graph
+                    .nodes
+                    .get(&state.node_id)
+                    .and_then(|node| node.name.as_deref())
+                    .filter(|name| !name.trim().is_empty())
+                    .map_or_else(
+                        || state.node_id.as_str().to_owned(),
+                        |name| format!("{name} ({})", state.node_id.as_str()),
+                    )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let graph_label = if source_graph.display_name.trim().is_empty() {
+            source_graph.name.as_str()
+        } else {
+            source_graph.display_name.as_str()
+        };
+        let set_label = context
+            .manifest
+            .get(&animation_set_asset)
+            .filter_map(|entry| entry.name.as_deref())
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or_else(|| animation_set_asset.as_str());
+        let mut related_targets = vec![
+            DiagnosticTarget::Asset {
+                id: graph_asset.clone(),
+            },
+            DiagnosticTarget::Asset {
+                id: animation_set_asset.clone(),
+            },
+            DiagnosticTarget::Graph {
+                id: source_graph.id.clone(),
+            },
+        ];
+        related_targets.extend(requiring_states.iter().map(|state| DiagnosticTarget::Node {
+            graph: source_graph.id.clone(),
+            node: state.node_id.clone(),
+        }));
+        context.asset_diagnostics.push(
+            Diagnostic::error(
+                "anim.animation_set_missing_motion_slot_binding",
+                format!(
+                    "Animation Set \"{set_label}\" is missing Motion Slot \"{slot_display_name}\" ({motion_key}) required by State(s) {state_summary} in Graph \"{graph_label}\"."
+                ),
+            )
+            .with_target(DiagnosticTarget::Component {
+                entity: context.authoring_entity.id.clone(),
+                component_type: component_type.clone(),
+            })
+            .with_related_targets(related_targets)
+            .with_context_value("graph_asset_id", graph_asset.as_str())
+            .with_context_value("graph_id", source_graph.id.as_str())
+            .with_context_value("animation_set_asset_id", animation_set_asset.as_str())
+            .with_context_value("motion_slot_id", motion_key)
+            .with_context_value("motion_slot_display_name", slot_display_name),
+        );
         return Err(fields
             .invalid("an Animation Set binding for every graph motion slot")
             .into());

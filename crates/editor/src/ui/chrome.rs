@@ -1090,6 +1090,9 @@ impl EditorApp {
                         self.problems_panel.suppressed_codes();
                     self.preferences.save();
                 }
+                if let Some(target) = output.navigate_to {
+                    self.navigate_to_diagnostic_target(Some(target));
+                }
                 if let Some(diagnostic) = output.clicked {
                     // The skeleton bind report (ADR 0077 §6, AP-5) is a
                     // detail view opened from its Problems entry rather than
