@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/engine/src/scene_bridge/spawn.rs",
+  "old": "    Ok(ResolvedAnimationSet {\n        clips,\n        events,\n        unresolved_motion_slots,\n    })",
+  "new": "    Ok(ResolvedAnimationSet {\n        clips,\n        events,\n        unresolved_motion_slots,\n        debug_bindings,\n    })"
+}

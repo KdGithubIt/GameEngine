@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ui/behavior_debug.rs","old":"fn find_graph_source(assets_root: &Path, graph_id: &GraphId) -> Option<PathBuf> {","new":"pub(super) fn find_graph_source(assets_root: &Path, graph_id: &GraphId) -> Option<PathBuf> {"}

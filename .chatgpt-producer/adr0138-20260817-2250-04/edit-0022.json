@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/workspace.rs","old":"use engine_authoring::{AuthoringScene, EntityId};","new":"use engine_authoring::{AuthoringScene, EntityId, Graph, GraphId, GraphView};"}

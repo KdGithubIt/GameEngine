@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/runtime.rs","old":"use engine_authoring::id::{AssetId, EntityId};\nuse engine_authoring::DiagnosticTarget;","new":"use engine_authoring::id::{AssetId, EdgeId, EntityId, NodeId};\nuse engine_authoring::DiagnosticTarget;"}
