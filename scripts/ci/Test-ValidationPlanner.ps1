@@ -72,6 +72,7 @@ function Invoke-LayoutTests {
             [string]$Event,
             [string[]]$Paths,
             [string]$ExpectedMode,
+            [string[]]$ExpectedChanged = @(),
             [string[]]$ExpectedAffected = @()
         )
         $changed = Join-Path $temp "$LayoutName-$Name.changed.txt"
@@ -86,6 +87,11 @@ function Invoke-LayoutTests {
         if ($plan.validation_mode -ne $ExpectedMode) {
             throw "$LayoutName/$Name expected mode $ExpectedMode, got $($plan.validation_mode)."
         }
+        $actualChanged = @($plan.changed_packages | Sort-Object)
+        $expectedChanged = @($ExpectedChanged | Sort-Object)
+        if (($actualChanged -join ",") -ne ($expectedChanged -join ",")) {
+            throw "$LayoutName/$Name expected changed '$($expectedChanged -join ",")', got '$($actualChanged -join ",")'."
+        }
         $actual = @($plan.affected_packages | Sort-Object)
         $expected = @($ExpectedAffected | Sort-Object)
         if (($actual -join ",") -ne ($expected -join ",")) {
@@ -95,20 +101,22 @@ function Invoke-LayoutTests {
     }
 
     Assert-Plan "docs-only" "pull_request" @((Path-InWorkspace "docs/README.md")) "docs"
-    Assert-Plan "leaf-change" "pull_request" @((Path-InWorkspace "crates/leaf/src/lib.rs")) "affected" @("leaf")
-    Assert-Plan "dependent-chain-fast-path" "pull_request" @((Path-InWorkspace "crates/base/src/lib.rs")) "affected" @("base")
-    Assert-Plan "multiple-packages" "pull_request" @((Path-InWorkspace "crates/base/src/lib.rs"), (Path-InWorkspace "crates/leaf/src/lib.rs")) "affected" @("base", "leaf")
-    Assert-Plan "crate-addition" "pull_request" @((Path-InWorkspace "crates/newcrate/src/lib.rs"), (Path-InWorkspace "crates/newcrate/Cargo.toml")) "affected" @("newcrate")
+    Assert-Plan "leaf-change" "pull_request" @((Path-InWorkspace "crates/leaf/src/lib.rs")) "affected" @("leaf") @("leaf")
+    Assert-Plan "dependent-chain" "pull_request" @((Path-InWorkspace "crates/base/src/lib.rs")) "affected" @("base") @("base", "mid", "top")
+    Assert-Plan "middle-dependent-chain" "pull_request" @((Path-InWorkspace "crates/mid/src/lib.rs")) "affected" @("mid") @("mid", "top")
+    Assert-Plan "multiple-packages" "pull_request" @((Path-InWorkspace "crates/base/src/lib.rs"), (Path-InWorkspace "crates/leaf/src/lib.rs")) "affected" @("base", "leaf") @("base", "leaf", "mid", "top")
+    Assert-Plan "crate-addition" "pull_request" @((Path-InWorkspace "crates/newcrate/src/lib.rs"), (Path-InWorkspace "crates/newcrate/Cargo.toml")) "affected" @("newcrate") @("newcrate")
     Assert-Plan "crate-deletion" "pull_request" @((Path-InWorkspace "crates/removed/src/lib.rs")) "full"
-    Assert-Plan "package-manifest" "pull_request" @((Path-InWorkspace "crates/base/Cargo.toml")) "affected" @("base")
+    Assert-Plan "package-manifest" "pull_request" @((Path-InWorkspace "crates/base/Cargo.toml")) "affected" @("base") @("base", "mid", "top")
     Assert-Plan "workspace-manifest" "pull_request" @((Path-InWorkspace "Cargo.toml")) "full"
     Assert-Plan "cargo-lock" "pull_request" @((Path-InWorkspace "Cargo.lock")) "full"
     Assert-Plan "ci-workflow" "pull_request" @(".github/workflows/gameengine-windows-validation.yml") "full"
     Assert-Plan "nightly" "schedule" @((Path-InWorkspace "crates/leaf/src/lib.rs")) "full"
-    Assert-Plan "main-push" "push" @((Path-InWorkspace "crates/leaf/src/lib.rs")) "full"
-    Assert-Plan "pull-request" "pull_request" @((Path-InWorkspace "crates/leaf/src/lib.rs")) "affected" @("leaf")
-    Assert-Plan "merge-group" "merge_group" @((Path-InWorkspace "crates/leaf/src/lib.rs")) "affected" @("leaf")
-    Assert-Plan "dispatcher" "workflow_dispatch" @((Path-InWorkspace "crates/leaf/src/lib.rs")) "affected" @("leaf")
+    Assert-Plan "main-push-leaf" "push" @((Path-InWorkspace "crates/leaf/src/lib.rs")) "affected" @("leaf") @("leaf")
+    Assert-Plan "main-push-dependent-chain" "push" @((Path-InWorkspace "crates/base/src/lib.rs")) "affected" @("base") @("base", "mid", "top")
+    Assert-Plan "pull-request" "pull_request" @((Path-InWorkspace "crates/leaf/src/lib.rs")) "affected" @("leaf") @("leaf")
+    Assert-Plan "merge-group" "merge_group" @((Path-InWorkspace "crates/leaf/src/lib.rs")) "affected" @("leaf") @("leaf")
+    Assert-Plan "dispatcher" "workflow_dispatch" @((Path-InWorkspace "crates/leaf/src/lib.rs")) "affected" @("leaf") @("leaf")
 
     $forcedChanged = Join-Path $temp "$LayoutName-ci-script-short-circuit.changed.txt"
     (Path-InWorkspace "scripts/ci/example.ps1") | Set-Content -LiteralPath $forcedChanged -Encoding utf8
@@ -160,9 +168,6 @@ try {
         -Workspace $standaloneRepo `
         -Prefix ""
 
-    # The current private workflow already executes this planner regression suite.
-    # Running the snapshot boundary test here keeps migration tooling covered before
-    # the standalone public workflow exists.
     $snapshotTest = Join-Path $PSScriptRoot "../public/Test-PublicSnapshot.ps1"
     & $snapshotTest
 } finally {
