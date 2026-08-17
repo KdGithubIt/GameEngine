@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "20260817-adr0123-current-main-closure-r1",
+  "target_branch": "chatgpt/gameengine-adr0123-current-main-closure",
+  "expected_head_sha": "6bb36e3789f49ec13f16ef1b447be1cdc3be3d5c",
+  "baseline_main_sha": "6bb36e3789f49ec13f16ef1b447be1cdc3be3d5c",
+  "patch_sha256": "8811e8f82222635b28482cd2b5910f7e319403bc9044aaa5cf45be51227bd85d",
+  "patch_bytes": 5447,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Close ADR 0123 visual validation on current main",
+  "pr_title": "ADR 0123: close current-main Behavior Tree validation",
+  "pr_body": "## Summary\n\n- preserve the already-merged ADR 0123 runtime, lifecycle, abort, stateful decorator, Project Rust dispatch, and read-only debugger contracts\n- add deterministic visual-validation evidence for the shared schema palette alongside the live runtime graph\n- show Success, Failure, Running, abort/reset, elapsed state, runner identity, generation, and recent lifecycle without clipping\n- keep persisted graph documents, Stable IDs, compiled DTOs, and runtime execution semantics unchanged\n\n## Validation\n\nRun affected Windows Validation and Editor Visual Validation, then review the actual screenshot artifact.\n\n<!-- gameengine-visual-validation: editor -->\n\n<!-- gameengine-chatgpt-dispatcher -->"
+}
