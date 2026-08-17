@@ -440,7 +440,11 @@ impl super::VfxBuilderState {
         }) {
             self.completion.select_module(module);
         }
-        self.completion.preview.open_effect(&effect);
+        let compilation = service.compile(&effect);
+        self.completion.preview.preview_seed = effect.seed;
+        self.completion
+            .preview
+            .apply_compilation(&effect, &compilation, false);
         self.completion.preview.seek_to(1.25);
         self.status = Some("Visual validation fixture: Smoke template at 1.25 s.".to_owned());
     }
