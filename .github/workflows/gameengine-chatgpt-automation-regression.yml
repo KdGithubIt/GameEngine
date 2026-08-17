@@ -24,7 +24,7 @@ jobs:
   request-protocol:
     name: Request protocol regressions
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
 
     steps:
       - name: Check out exact revision
@@ -33,5 +33,8 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Run incident regression suite
+      - name: Run Dispatcher request regressions
         run: python3 .github/chatgpt/test_request_protocol.py
+
+      - name: Run connector trusted producer regressions
+        run: python3 .github/chatgpt/test_producer_protocol.py
