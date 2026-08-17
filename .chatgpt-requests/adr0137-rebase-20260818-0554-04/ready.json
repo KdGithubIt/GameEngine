@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0137-rebase-20260818-0554-04",
+  "target_branch": "chatgpt/gameengine-adr0137-r5",
+  "expected_head_sha": "2d6dc07734015929c05a42708f0d5289891c685b",
+  "baseline_main_sha": "2d6dc07734015929c05a42708f0d5289891c685b",
+  "patch_sha256": "a170592223a21b913c25057ac7ed7c7bde15ac9b64c3c4ae70e0d1947c1ad4b5",
+  "patch_bytes": 23595,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Rebase ADR 0137 diagnostics onto current main",
+  "pr_title": "GameEngine: implement ADR 0137 diagnostic ownership",
+  "pr_body": "## Summary\n\nReapplies ADR 0137 first-release diagnostic ownership and progressive disclosure on current main after ADR 0139 working-copy integration. Preserves ADR 0139 authoring overlays while adding semantic Animation Set missing-slot diagnostics, Problems repair navigation, and Hierarchy/Inspector/Scene View projections.\n\n## Validation\n\nRun Windows Validation and Editor Visual Validation on the rebased Draft PR.\n\n<!-- gameengine-visual-validation: editor -->\n<!-- gameengine-visual-authoring-tool: Spatial Audio -->\n\n<!-- gameengine-chatgpt-dispatcher -->"
+}
