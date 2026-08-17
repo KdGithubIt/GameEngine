@@ -984,6 +984,69 @@ fn collect_animation_debug_snapshot(
     collect_animation_debug_snapshot_matching(world, |_, identity| {
         &identity.authoring_id == authoring_id
     })
+    .or_else(|| collect_animator_debug_snapshot(world, authoring_id))
+}
+
+fn collect_animator_debug_snapshot(
+    world: &mut engine::ecs::World,
+    authoring_id: &EntityId,
+) -> Option<RuntimeAnimationDebugSnapshot> {
+    let recent_events = world
+        .get_resource::<engine::AnimationEvents>()
+        .map(|events| {
+            events
+                .iter()
+                .map(|event| {
+                    (
+                        (event.entity.id(), event.entity.generation()),
+                        format!("{} @ {:.3}s", event.name, event.clip_time),
+                    )
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let query = engine::Query::<(&engine::RuntimeEntityIdentity, &engine::Animator)>::new(world);
+    query
+        .iter()
+        .find(|(_, (identity, _))| &identity.authoring_id == authoring_id)
+        .map(|(entity, (identity, animator))| {
+            let delta = animator.root_motion_delta();
+            RuntimeAnimationDebugSnapshot {
+                runtime_entity: (entity.id(), entity.generation()),
+                authoring_entity: identity.authoring_id.clone(),
+                playback_state: format!("{:?}", animator.state),
+                clip_runtime_id: animator.clip.id().value(),
+                clip_time: animator.time,
+                playback_speed: animator.playback_speed,
+                looping: animator.looping,
+                root_motion_mode: format!("{:?}", animator.root_motion_mode),
+                root_motion_delta: delta.to_array(),
+                crossfade_progress: animator.crossfade_progress(),
+                graph_state: None,
+                graph_transition_sequence: 0,
+                graph_last_transition: None,
+                graph_parameters: Vec::new(),
+                graph_parameter_values: Vec::new(),
+                graph_asset: None,
+                graph_id: None,
+                animation_set_asset: None,
+                current_state: None,
+                previous_state: None,
+                next_state: None,
+                active_transition: None,
+                transition_condition: None,
+                motion_slot: None,
+                motion_slot_name: None,
+                motion_source: None,
+                resolved_motion_variant: None,
+                recent_events: recent_events
+                    .iter()
+                    .filter(|(key, _)| *key == (entity.id(), entity.generation()))
+                    .map(|(_, event)| event.clone())
+                    .collect(),
+                runtime_error: None,
+            }
+        })
 }
 
 fn collect_animation_graph_debug_snapshot(
