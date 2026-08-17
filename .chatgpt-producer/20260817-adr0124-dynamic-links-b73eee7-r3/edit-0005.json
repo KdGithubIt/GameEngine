@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/physics/src/navigation.rs",
+  "old": "        assert!(matches!(forward, NavigationPathResult::Complete(_)));\n        let reverse = query.query_path(\n            DEFAULT_NAVIGATION_PROFILE,",
+  "new": "        assert!(matches!(forward, NavigationPathResult::Complete(_)));\n        let mut closed_door = NavigationQueryFilter::default();\n        closed_door.disable_traversal_tag(\"jump\");\n        let filtered = query.query_path_with_filter(\n            DEFAULT_NAVIGATION_PROFILE,\n            Vec3::new(0.5, 0.0, 0.5),\n            Vec3::new(0.5, 3.0, 0.5),\n            &closed_door,\n        );\n        assert!(matches!(\n            filtered,\n            NavigationPathResult::Failure(NavigationQueryFailure::NoPath)\n        ));\n        let reverse = query.query_path(\n            DEFAULT_NAVIGATION_PROFILE,"
+}

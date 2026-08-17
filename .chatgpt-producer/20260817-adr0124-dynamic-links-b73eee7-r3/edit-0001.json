@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/physics/src/navigation.rs",
+  "old": "    /// Runs a typed corridor/path query for one stable agent profile.\n    pub fn query_path(&self, profile_id: &str, start: Vec3, end: Vec3) -> NavigationPathResult {\n        let Some(profile) = self.nav_mesh.profile(profile_id) else {",
+  "new": "    /// Runs a typed corridor/path query for one stable agent profile.\n    pub fn query_path(&self, profile_id: &str, start: Vec3, end: Vec3) -> NavigationPathResult {\n        self.query_path_with_filter(profile_id, start, end, &NavigationQueryFilter::default())\n    }\n\n    /// Runs a typed path query while applying engine-owned dynamic traversal overrides.\n    pub fn query_path_with_filter(\n        &self,\n        profile_id: &str,\n        start: Vec3,\n        end: Vec3,\n        filter: &NavigationQueryFilter,\n    ) -> NavigationPathResult {\n        let Some(profile) = self.nav_mesh.profile(profile_id) else {"
+}
