@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "docs/CHATGPT_AUTOMATION_INCIDENTS.md",
+  "old": "INC-006  eframe screenshot helper incompatible with default wgpu    Visual validation  Resolved\nINC-007  Missing-request probe misread unresolved revision text     Transport          Resolved\n```",
+  "new": "INC-006  eframe screenshot helper incompatible with default wgpu    Visual validation  Resolved\nINC-007  Missing-request probe misread unresolved revision text     Transport          Resolved\nINC-008  Documentation placeholder tripped public snapshot scan     Validation         Resolved\n```"
+}
