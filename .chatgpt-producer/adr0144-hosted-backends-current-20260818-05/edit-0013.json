@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/native_agent_runtime.rs","old":"use crate::native_agent::{LocalModelConfig, ModelCapabilityProfile, NativeAgentError, NativeModelTask};\n","new":"use crate::native_agent::{\n    LocalModelConfig, ModelCapabilityProfile, NativeAgentError, NativeModelConfig, NativeModelTask,\n};\n"}
