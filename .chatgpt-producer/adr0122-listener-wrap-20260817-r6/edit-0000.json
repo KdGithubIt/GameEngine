@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ui/audio_authoring.rs",
+  "old": "    } else if component_type.as_str() == engine::scene_bridge::AUDIO_LISTENER_COMPONENT {\n        ui.separator();\n        ui.small(\"Scene View shows this listener's world-space orientation. Highest enabled priority wins; equal highest priorities use deterministic entity order.\");\n        None\n",
+  "new": "    } else if component_type.as_str() == engine::scene_bridge::AUDIO_LISTENER_COMPONENT {\n        ui.separator();\n        ui.scope(|ui| {\n            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);\n            ui.small(\"Scene View shows this listener's world-space orientation. Highest enabled priority wins; equal highest priorities use deterministic entity order.\");\n        });\n        None\n"
+}
