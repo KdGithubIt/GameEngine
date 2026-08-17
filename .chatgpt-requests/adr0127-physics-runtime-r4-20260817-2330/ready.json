@@ -1,0 +1,16 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0127-physics-runtime-r4-20260817-2330",
+  "target_branch": "chatgpt/gameengine-adr0127-physics-runtime-r3",
+  "expected_head_sha": "b4ea5dd8a60497f7ac71e886842adde86e1a3087",
+  "baseline_main_sha": "b4ea5dd8a60497f7ac71e886842adde86e1a3087",
+  "patch_sha256": "add3d01f16d82b52848311c3f765760bfa5c58e2726d837b68470104dcae0a51",
+  "patch_bytes": 77677,
+  "patch_parts": [
+    "part-0000.patch",
+    "part-0001.patch"
+  ],
+  "commit_message": "Complete ADR 0127 native 2D physics first-release runtime",
+  "pr_title": "GameEngine: complete ADR 0127 native 2D physics first release (r3)",
+  "pr_body": "## Summary\n\nReplays the ADR 0127 first-release Native 2D implementation on current main and fixes Windows Validation failures in registry-order coverage and engine-physics Clippy.\n\n## Validation\n\nRun GameEngine Windows Validation using impact-based affected scope.\n"
+}
