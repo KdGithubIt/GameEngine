@@ -1,0 +1,802 @@
++        "GET" => return write_http_response(&mut stream, 405, "text/plain", b"server-sent event stream is not enabled"),
++        "POST" => {}
++        _ => return write_http_response(&mut stream, 405, "text/plain", b"method not allowed"),
++    }
++    if !request.headers.get("content-type").is_some_and(|value| value.to_ascii_lowercase().starts_with("application/json")) {
++        return write_http_response(&mut stream, 415, "text/plain", b"application/json is required");
++    }
++    let accepts = request.headers.get("accept").map(|value| value.to_ascii_lowercase()).unwrap_or_default();
++    if !accepts.contains("application/json") || !accepts.contains("text/event-stream") {
++        return write_http_response(&mut stream, 406, "text/plain", b"accept must include application/json and text/event-stream");
++    }
++
++    let message: Value = match serde_json::from_slice(&request.body) {
++        Ok(Value::Object(message)) => Value::Object(message),
++        Ok(_) => return write_json_rpc_error(&mut stream, Value::Null, -32600, "invalid JSON-RPC request"),
++        Err(_) => return write_json_rpc_error(&mut stream, Value::Null, -32700, "parse error"),
++    };
++    let object = message.as_object().expect("JSON object was checked before dispatch");
++    if object.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
++        return write_json_rpc_error(&mut stream, object.get("id").cloned().unwrap_or(Value::Null), -32600, "jsonrpc must be 2.0");
++    }
++    let Some(method) = object.get("method").and_then(Value::as_str) else {
++        return write_json_rpc_error(&mut stream, object.get("id").cloned().unwrap_or(Value::Null), -32600, "method is required");
++    };
++    let id = object.get("id").cloned();
++    if method != "initialize" && request.headers.get("mcp-protocol-version").map(String::as_str) != Some(MCP_PROTOCOL_VERSION) {
++        return write_http_response(&mut stream, 400, "text/plain", b"missing or unsupported MCP-Protocol-Version");
++    }
++    if id.is_none() {
++        return write_http_response(&mut stream, 202, "text/plain", b"");
++    }
++
++    let id = id.unwrap_or(Value::Null);
++    let result = match method {
++        "initialize" => initialize_result(server_info),
++        "ping" => json!({}),
++        "tools/list" => tools_list_result(),
++        "tools/call" => {
++            let params = object.get("params").and_then(Value::as_object);
++            let Some(name) = params.and_then(|params| params.get("name")).and_then(Value::as_str) else {
++                return write_json_rpc_error(&mut stream, id, -32602, "tools/call requires a tool name");
++            };
++            let arguments = params.and_then(|params| params.get("arguments")).cloned().unwrap_or_else(|| json!({}));
++            match dispatch_tool_call(name, arguments, request_sender, wake_host) {
++                Ok(result) => result,
++                Err(DispatchError::HostDisconnected) => return write_json_rpc_error(&mut stream, id, -32603, "authoring host is unavailable"),
++                Err(DispatchError::Timeout) => return write_json_rpc_error(&mut stream, id, -32603, "authoring host timed out"),
++            }
++        }
++        _ => return write_json_rpc_error(&mut stream, id, -32601, "method not found"),
++    };
++    write_json_rpc_result(&mut stream, id, result)
++}
++
++fn initialize_result(server_info: &McpServerInfo) -> Value {
++    json!({
++        "protocolVersion": MCP_PROTOCOL_VERSION,
++        "capabilities": {"tools": {"listChanged": false}},
++        "serverInfo": {"name": server_info.name, "version": env!("CARGO_PKG_VERSION")},
++        "instructions": server_info.instructions
++    })
++}
++
++fn tools_list_result() -> Value {
++    json!({
++        "tools": authoring_tool_descriptors().into_iter().map(tool_descriptor_json).collect::<Vec<_>>()
++    })
++}
++
++fn tool_descriptor_json(descriptor: McpToolDescriptor) -> Value {
++    json!({
++        "name": descriptor.name,
++        "description": descriptor.description,
++        "inputSchema": descriptor.input_schema
++    })
++}
++
++enum DispatchError { HostDisconnected, Timeout }
++
++fn dispatch_tool_call(
++    name: &str,
++    arguments: Value,
++    request_sender: &mpsc::Sender<McpRequest>,
++    wake_host: &Arc<dyn Fn() + Send + Sync>,
++) -> Result<Value, DispatchError> {
++    let (response_sender, response_receiver) = mpsc::sync_channel(1);
++    request_sender.send(McpRequest {
++        name: name.to_owned(),
++        arguments,
++        response: response_sender,
++    }).map_err(|_| DispatchError::HostDisconnected)?;
++    wake_host();
++    let response = response_receiver.recv_timeout(HOST_RESPONSE_TIMEOUT).map_err(|error| match error {
++        mpsc::RecvTimeoutError::Timeout => DispatchError::Timeout,
++        mpsc::RecvTimeoutError::Disconnected => DispatchError::HostDisconnected,
++    })?;
++    Ok(match response {
++        McpHostResult::Success(value) => json!({
++            "content": [{"type": "text", "text": serde_json::to_string(&value).unwrap_or_else(|_| "{\"error\":\"result serialization failed\"}".into())}],
++            "structuredContent": value
++        }),
++        McpHostResult::ToolError { code, message } => json!({
++            "content": [{"type": "text", "text": message.clone()}],
++            "structuredContent": {"code": code, "message": message},
++            "isError": true
++        }),
++    })
++}
++
++struct HttpRequest {
++    method: String,
++    path: String,
++    headers: BTreeMap<String, String>,
++    body: Vec<u8>,
++}
++
++enum HttpReadError {
++    Io(io::Error), BadRequest, RequestTooLarge, LengthRequired, UnsupportedTransferEncoding,
++}
++
++impl From<io::Error> for HttpReadError {
++    fn from(error: io::Error) -> Self { Self::Io(error) }
++}
++
++fn read_http_request(stream: &mut TcpStream) -> Result<HttpRequest, HttpReadError> {
++    let mut buffer = Vec::with_capacity(4096);
++    let header_end = loop {
++        if buffer.len() > MAX_HEADER_BYTES { return Err(HttpReadError::RequestTooLarge); }
++        if let Some(position) = find_bytes(&buffer, b"\r\n\r\n") { break position + 4; }
++        let mut chunk = [0_u8; 4096];
++        let read = stream.read(&mut chunk)?;
++        if read == 0 { return Err(HttpReadError::BadRequest); }
++        buffer.extend_from_slice(&chunk[..read]);
++    };
++    let header_text = std::str::from_utf8(&buffer[..header_end - 4]).map_err(|_| HttpReadError::BadRequest)?;
++    let mut lines = header_text.split("\r\n");
++    let request_line = lines.next().ok_or(HttpReadError::BadRequest)?;
++    let mut request_parts = request_line.split_whitespace();
++    let method = request_parts.next().ok_or(HttpReadError::BadRequest)?.to_owned();
++    let path = request_parts.next().ok_or(HttpReadError::BadRequest)?.to_owned();
++    if request_parts.next().is_none() || request_parts.next().is_some() { return Err(HttpReadError::BadRequest); }
++    let mut headers = BTreeMap::new();
++    for line in lines {
++        let (name, value) = line.split_once(':').ok_or(HttpReadError::BadRequest)?;
++        headers.insert(name.trim().to_ascii_lowercase(), value.trim().to_owned());
++    }
++    if headers.contains_key("transfer-encoding") { return Err(HttpReadError::UnsupportedTransferEncoding); }
++    let content_length = match headers.get("content-length") {
++        Some(value) => value.parse::<usize>().map_err(|_| HttpReadError::BadRequest)?,
++        None if method == "POST" => return Err(HttpReadError::LengthRequired),
++        None => 0,
++    };
++    if content_length > MAX_BODY_BYTES { return Err(HttpReadError::RequestTooLarge); }
++    let mut body = buffer[header_end..].to_vec();
++    while body.len() < content_length {
++        let remaining = content_length - body.len();
++        let mut chunk = vec![0_u8; remaining.min(4096)];
++        let read = stream.read(&mut chunk)?;
++        if read == 0 { return Err(HttpReadError::BadRequest); }
++        body.extend_from_slice(&chunk[..read]);
++    }
++    body.truncate(content_length);
++    Ok(HttpRequest { method, path, headers, body })
++}
++
++fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
++    haystack.windows(needle.len()).position(|window| window == needle)
++}
++
++fn origin_is_loopback(origin: &str) -> bool {
++    let authority = origin.strip_prefix("http://").or_else(|| origin.strip_prefix("https://"));
++    let Some(authority) = authority else { return false; };
++    if authority.contains('/') || authority.contains('@') { return false; }
++    authority == "localhost"
++        || authority.starts_with("localhost:")
++        || authority == "127.0.0.1"
++        || authority.starts_with("127.0.0.1:")
++        || authority == "[::1]"
++        || authority.starts_with("[::1]:")
++}
++
++fn write_json_rpc_result(stream: &mut TcpStream, id: Value, result: Value) -> io::Result<()> {
++    let body = serde_json::to_vec(&json!({"jsonrpc": "2.0", "id": id, "result": result}))
++        .expect("JSON-RPC result values are serializable");
++    write_http_response(stream, 200, "application/json", &body)
++}
++
++fn write_json_rpc_error(stream: &mut TcpStream, id: Value, code: i64, message: &str) -> io::Result<()> {
++    let body = serde_json::to_vec(&json!({
++        "jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}
++    })).expect("JSON-RPC error values are serializable");
++    write_http_response(stream, 200, "application/json", &body)
++}
++
++fn write_http_response(stream: &mut TcpStream, status: u16, content_type: &str, body: &[u8]) -> io::Result<()> {
++    let reason = match status {
++        200 => "OK", 202 => "Accepted", 400 => "Bad Request", 401 => "Unauthorized",
++        403 => "Forbidden", 404 => "Not Found", 405 => "Method Not Allowed",
++        406 => "Not Acceptable", 411 => "Length Required", 413 => "Content Too Large",
++        415 => "Unsupported Media Type", 501 => "Not Implemented", _ => "Error",
++    };
++    write!(stream, "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n", body.len())?;
++    stream.write_all(body)?;
++    stream.flush()
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    fn start() -> (McpServer, mpsc::Receiver<McpRequest>) {
++        McpServer::start(McpServerInfo::new("gameengine-test", "saved-file test host"), || {})
++            .expect("MCP server must bind")
++    }
++
++    fn exchange(server: &McpServer, request: &str) -> String {
++        let mut stream = TcpStream::connect(server.local_addr).expect("loopback connect");
++        stream.set_read_timeout(Some(Duration::from_secs(2))).expect("read timeout");
++        stream.write_all(request.as_bytes()).expect("request write");
++        let mut response = String::new();
++        stream.read_to_string(&mut response).expect("response read");
++        response
++    }
++
++    fn post(server: &McpServer, body: &str, extra_headers: &str) -> String {
++        let request = format!(
++            "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {}\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\nContent-Length: {}\r\n{}\r\n{}",
++            server.authorization_token(), body.len(), extra_headers, body
++        );
++        exchange(server, &request)
++    }
++
++    #[test]
++    fn endpoint_is_loopback_only_and_requires_authorization() {
++        let (server, _requests) = start();
++        assert!(server.endpoint().starts_with("http://127.0.0.1:"));
++        let body = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#;
++        let request = format!(
++            "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\nContent-Length: {}\r\n\r\n{}", body.len(), body
++        );
++        assert!(exchange(&server, &request).starts_with("HTTP/1.1 401"));
++    }
++
++    #[test]
++    fn hostile_browser_origin_is_rejected() {
++        let (server, _requests) = start();
++        let body = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#;
++        assert!(post(&server, body, "Origin: https://example.invalid\r\n").starts_with("HTTP/1.1 403"));
++    }
++
++    #[test]
++    fn initialize_and_tools_list_use_shared_inventory() {
++        let (server, _requests) = start();
++        let initialize = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#;
++        let response = post(&server, initialize, "");
++        assert!(response.contains("saved-file test host"));
++        let list = r#"{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}"#;
++        let response = post(&server, list, "MCP-Protocol-Version: 2025-11-25\r\n");
++        assert!(response.contains("\"scene.apply\""));
++        assert!(response.contains("\"behavior_tree.apply\""));
++    }
++
++    #[test]
++    fn tool_call_is_routed_to_host_channel() {
++        let (server, requests) = start();
++        let host = thread::spawn(move || {
++            let request = requests.recv_timeout(Duration::from_secs(2)).expect("tool request");
++            assert_eq!(request.name(), "project.describe");
++            request.respond(McpHostResult::Success(json!({"project": "ok"})));
++        });
++        let call = r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"project.describe","arguments":{}}}"#;
++        let response = post(&server, call, "MCP-Protocol-Version: 2025-11-25\r\n");
++        host.join().expect("host thread");
++        assert!(response.contains("\"project\":\"ok\""));
++    }
++}
+diff --git a/crates/project-lifecycle/src/lib.rs b/crates/project-lifecycle/src/lib.rs
+index 9a63b40c7a252d4d5231f21d88672455ab327a95..91148668d5f4fa9e2008cb24667fec85083d4f62 100644
+--- a/crates/project-lifecycle/src/lib.rs
++++ b/crates/project-lifecycle/src/lib.rs
+@@ -2,8 +2,9 @@
+ //!
+ //! This crate sits above `engine-authoring`: it validates the engine
+ //! association in `project.json`, creates complete project scaffolds, owns the
+-//! authoritative per-location Editor lease, and carries only ephemeral
+-//! Launcher/Editor process-control state outside the project working tree.
++//! authoritative per-location project-writer lease shared by Editor and headless
++//! authoring hosts, and carries only ephemeral process-control state outside the
++//! project working tree.
+ 
+ #![warn(missing_docs)]
+ #![warn(rustdoc::broken_intra_doc_links)]
+@@ -25,6 +26,7 @@ pub const CURRENT_ENGINE_ASSOCIATION: &str = env!("CARGO_PKG_VERSION");
+ 
+ const EDITOR_LOCK_FILE: &str = "editor.lock";
+ const EDITOR_OWNER_FILE: &str = "editor-owner.json";
++const HEADLESS_WRITER_OWNER_FILE: &str = "headless-writer-owner.json";
+ const EDITOR_READY_FILE: &str = "editor-ready.json";
+ const EDITOR_MCP_FILE: &str = "editor-mcp.json";
+ const EDITOR_ACTIVATE_FILE: &str = "activate.request";
+@@ -50,6 +52,13 @@ pub enum LifecycleError {
+     InvalidProjectName(String),
+     /// The canonical project location already has an Editor process.
+     EditorAlreadyOpen(PathBuf),
++    /// The canonical project location already has an authoritative writer.
++    ProjectWriterAlreadyOwned {
++        /// Canonical project location protected by the writer lease.
++        canonical_project: PathBuf,
++        /// Descriptive writer role when current metadata identifies it.
++        owner: Option<ProjectWriterRole>,
++    },
+     /// A sibling desktop executable could not be located.
+     ExecutableNotFound(PathBuf),
+     /// One filesystem operation failed.
+@@ -85,6 +94,21 @@ impl fmt::Display for LifecycleError {
+             Self::EditorAlreadyOpen(path) => {
+                 write!(f, "an Editor already owns {}", path.display())
+             }
++            Self::ProjectWriterAlreadyOwned {
++                canonical_project,
++                owner,
++            } => match owner {
++                Some(owner) => write!(
++                    f,
++                    "project writer {owner:?} already owns {}",
++                    canonical_project.display()
++                ),
++                None => write!(
++                    f,
++                    "another project writer already owns {}",
++                    canonical_project.display()
++                ),
++            },
+             Self::ExecutableNotFound(path) => {
+                 write!(f, "desktop executable not found: {}", path.display())
+             }
+@@ -107,6 +131,7 @@ impl std::error::Error for LifecycleError {
+             | Self::ProjectAlreadyExists(_)
+             | Self::InvalidProjectName(_)
+             | Self::EditorAlreadyOpen(_)
++            | Self::ProjectWriterAlreadyOwned { .. }
+             | Self::ExecutableNotFound(_)
+             | Self::Scaffold { .. } => None,
+         }
+@@ -138,6 +163,34 @@ pub struct EditorOwnerMetadata {
+     pub acquired_unix_ms: u64,
+ }
+ 
++/// Descriptive role for the process holding the authoritative project-writer lease.
++#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
++#[serde(rename_all = "snake_case")]
++pub enum ProjectWriterRole {
++    /// Interactive Editor working-copy owner.
++    Editor,
++    /// GUI-free saved-project MCP writer.
++    HeadlessMcp,
++}
++
++/// Ephemeral descriptive metadata for the authoritative project writer.
++///
++/// The OS file lock remains the authority. This metadata is never sufficient to
++/// claim ownership by itself and is ignored once the lock is released.
++#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
++pub struct ProjectWriterOwnerMetadata {
++    /// Operating-system process identifier.
++    pub process_id: u32,
++    /// Stable project identity read from the current `project.json`.
++    pub project_id: ProjectId,
++    /// Canonical location protected by the authoritative lease.
++    pub canonical_project: PathBuf,
++    /// Role of the current writer process.
++    pub role: ProjectWriterRole,
++    /// Unix timestamp in milliseconds when the lease was acquired.
++    pub acquired_unix_ms: u64,
++}
++
+ #[derive(Debug, Clone, Serialize, Deserialize)]
+ struct EditorReadyMetadata {
+     process_id: u32,
+@@ -287,6 +340,33 @@ impl Drop for EditorLease {
+     }
+ }
+ 
++/// Authoritative GUI-free project-writer lease for the headless MCP host.
++///
++/// This lease uses the same physical OS lock as [`EditorLease`], preserving the
++/// existing lock location while extending ownership to another writer role.
++/// Metadata beside the lock is descriptive only.
++pub struct HeadlessProjectLease {
++    project: ProjectRoot,
++    _lock: File,
++    state_dir: PathBuf,
++}
++
++impl HeadlessProjectLease {
++    /// Returns the concrete project owned by this headless writer process.
++    pub fn project_root(&self) -> &ProjectRoot {
++        &self.project
++    }
++}
++
++impl Drop for HeadlessProjectLease {
++    fn drop(&mut self) {
++        remove_owned_writer_metadata(
++            &self.state_dir.join(HEADLESS_WRITER_OWNER_FILE),
++            std::process::id(),
++        );
++    }
++}
++
+ /// Exclusive single-instance lease and request channel for the Launcher.
+ pub struct LauncherSession {
+     _lock: File,
+@@ -449,10 +529,20 @@ pub fn acquire_editor_project(path: &Path) -> Result<EditorLease, LifecycleError
+     match lock.try_lock() {
+         Ok(()) => {}
+         Err(TryLockError::WouldBlock) => {
+-            let _ = write_control_request(&state_dir.join(EDITOR_ACTIVATE_FILE));
+-            return Err(LifecycleError::EditorAlreadyOpen(
+-                project.path().to_path_buf(),
+-            ));
++            match described_writer_role(&state_dir) {
++                Some(ProjectWriterRole::Editor) => {
++                    let _ = write_control_request(&state_dir.join(EDITOR_ACTIVATE_FILE));
++                    return Err(LifecycleError::EditorAlreadyOpen(
++                        project.path().to_path_buf(),
++                    ));
++                }
++                owner => {
++                    return Err(LifecycleError::ProjectWriterAlreadyOwned {
++                        canonical_project: project.path().to_path_buf(),
++                        owner,
++                    });
++                }
++            }
+         }
+         Err(TryLockError::Error(source)) => {
+             return Err(LifecycleError::Io {
+@@ -464,6 +554,7 @@ pub fn acquire_editor_project(path: &Path) -> Result<EditorLease, LifecycleError
+ 
+     let _ = fs::remove_file(state_dir.join(EDITOR_READY_FILE));
+     let _ = fs::remove_file(state_dir.join(EDITOR_MCP_FILE));
++    let _ = fs::remove_file(state_dir.join(HEADLESS_WRITER_OWNER_FILE));
+     write_json(
+         &state_dir.join(EDITOR_OWNER_FILE),
+         &EditorOwnerMetadata {
+@@ -482,6 +573,104 @@ pub fn acquire_editor_project(path: &Path) -> Result<EditorLease, LifecycleError
+     })
+ }
+ 
++/// Acquires the authoritative project-writer lease for a GUI-free MCP host.
++///
++/// The physical lock is exactly the same lock used by [`acquire_editor_project`],
++/// so Editor and headless writer roles cannot both own one canonical location.
++/// Descriptive metadata is written only after the OS grants the lock.
++///
++/// # Errors
++///
++/// Returns project/compatibility failures, lock I/O errors, or
++/// [`LifecycleError::ProjectWriterAlreadyOwned`] when another writer is active.
++pub fn acquire_headless_project(path: &Path) -> Result<HeadlessProjectLease, LifecycleError> {
++    let project = inspect_project(path)?;
++    let state_dir = project_state_dir(&project);
++    fs::create_dir_all(&state_dir).map_err(|source| LifecycleError::Io {
++        path: state_dir.clone(),
++        source,
++    })?;
++    let lock_path = state_dir.join(EDITOR_LOCK_FILE);
++    let lock = open_lock_file(&lock_path)?;
++    match lock.try_lock() {
++        Ok(()) => {}
++        Err(TryLockError::WouldBlock) => {
++            return Err(LifecycleError::ProjectWriterAlreadyOwned {
++                canonical_project: project.path().to_path_buf(),
++                owner: described_writer_role(&state_dir),
++            });
++        }
++        Err(TryLockError::Error(source)) => {
++            return Err(LifecycleError::Io {
++                path: lock_path,
++                source,
++            });
++        }
++    }
++
++    let _ = fs::remove_file(state_dir.join(EDITOR_OWNER_FILE));
++    let _ = fs::remove_file(state_dir.join(EDITOR_READY_FILE));
++    let _ = fs::remove_file(state_dir.join(EDITOR_MCP_FILE));
++    let _ = fs::remove_file(state_dir.join(EDITOR_ACTIVATE_FILE));
++    let _ = fs::remove_file(state_dir.join(EDITOR_CLOSE_FILE));
++    write_json(
++        &state_dir.join(HEADLESS_WRITER_OWNER_FILE),
++        &ProjectWriterOwnerMetadata {
++            process_id: std::process::id(),
++            project_id: project.project_id().clone(),
++            canonical_project: project.path().to_path_buf(),
++            role: ProjectWriterRole::HeadlessMcp,
++            acquired_unix_ms: unix_millis(),
++        },
++    )?;
++    Ok(HeadlessProjectLease {
++        project,
++        _lock: lock,
++        state_dir,
++    })
++}
++
++/// Returns descriptive metadata for the active authoritative project writer.
++///
++/// Stale JSON alone never counts as ownership; the shared OS lock must currently
++/// be held. A corrupt or absent descriptive record yields `Ok(None)` rather than
++/// weakening or manufacturing writer authority.
++///
++/// # Errors
++///
++/// Returns an error if project inspection or lock probing fails.
++pub fn project_writer_owner_metadata(
++    path: &Path,
++) -> Result<Option<ProjectWriterOwnerMetadata>, LifecycleError> {
++    let project = inspect_project(path)?;
++    let state_dir = project_state_dir(&project);
++    if !editor_lock_is_held(&state_dir)? {
++        return Ok(None);
++    }
++    if let Ok(Some(metadata)) =
++        read_json_optional::<ProjectWriterOwnerMetadata>(&state_dir.join(HEADLESS_WRITER_OWNER_FILE))
++        && metadata.project_id == *project.project_id()
++        && metadata.canonical_project.as_path() == project.path()
++        && metadata.role == ProjectWriterRole::HeadlessMcp
++    {
++        return Ok(Some(metadata));
++    }
++    if let Ok(Some(metadata)) =
++        read_json_optional::<EditorOwnerMetadata>(&state_dir.join(EDITOR_OWNER_FILE))
++        && metadata.project_id == *project.project_id()
++        && metadata.canonical_project.as_path() == project.path()
++    {
++        return Ok(Some(ProjectWriterOwnerMetadata {
++            process_id: metadata.process_id,
++            project_id: metadata.project_id,
++            canonical_project: metadata.canonical_project,
++            role: ProjectWriterRole::Editor,
++            acquired_unix_ms: metadata.acquired_unix_ms,
++        }));
++    }
++    Ok(None)
++}
++
+ /// Returns diagnostic metadata for the active Editor owner, when the location
+ /// is currently leased.
+ ///
+@@ -568,11 +757,21 @@ pub fn launch_or_activate_editor(path: &Path) -> Result<EditorLaunch, LifecycleE
+     let project = inspect_project(path)?;
+     let state_dir = project_state_dir(&project);
+     if editor_lock_is_held(&state_dir)? {
+-        write_control_request(&state_dir.join(EDITOR_ACTIVATE_FILE))?;
+-        return Ok(EditorLaunch {
+-            outcome: EditorLaunchOutcome::Activated,
+-            canonical_project: project.path().to_path_buf(),
+-        });
++        match described_writer_role(&state_dir) {
++            Some(ProjectWriterRole::Editor) => {
++                write_control_request(&state_dir.join(EDITOR_ACTIVATE_FILE))?;
++                return Ok(EditorLaunch {
++                    outcome: EditorLaunchOutcome::Activated,
++                    canonical_project: project.path().to_path_buf(),
++                });
++            }
++            owner => {
++                return Err(LifecycleError::ProjectWriterAlreadyOwned {
++                    canonical_project: project.path().to_path_buf(),
++                    owner,
++                });
++            }
++        }
+     }
+ 
+     let editor = sibling_executable("engine-editor")?;
+@@ -838,6 +1037,31 @@ fn read_json_optional<T: for<'de> Deserialize<'de>>(
+     Ok(Some(serde_json::from_str(&text)?))
+ }
+ 
++fn described_writer_role(state_dir: &Path) -> Option<ProjectWriterRole> {
++    if let Ok(Some(metadata)) = read_json_optional::<ProjectWriterOwnerMetadata>(
++        &state_dir.join(HEADLESS_WRITER_OWNER_FILE),
++    ) {
++        return Some(metadata.role);
++    }
++    if read_json_optional::<EditorOwnerMetadata>(&state_dir.join(EDITOR_OWNER_FILE))
++        .ok()
++        .flatten()
++        .is_some()
++    {
++        return Some(ProjectWriterRole::Editor);
++    }
++    None
++}
++
++fn remove_owned_writer_metadata(path: &Path, process_id: u32) {
++    let Ok(Some(metadata)) = read_json_optional::<ProjectWriterOwnerMetadata>(path) else {
++        return;
++    };
++    if metadata.process_id == process_id {
++        let _ = fs::remove_file(path);
++    }
++}
++
+ fn remove_owned_metadata(path: &Path, process_id: u32) {
+     let Ok(Some(metadata)) = read_json_optional::<EditorOwnerMetadata>(path) else {
+         return;
+@@ -912,6 +1136,78 @@ mod tests {
+         acquire_editor_project(&final_path).expect("lease must be released on drop");
+     }
+ 
++    #[test]
++    fn editor_and_headless_writer_are_mutually_exclusive_and_handoff_cleanly() {
++        let parent = tempfile::tempdir().expect("temp directory must be created");
++        let final_path = parent.path().join("WriterOwnershipGame");
++        create_standard_project(&final_path, "WriterOwnershipGame")
++            .expect("scaffold must succeed");
++
++        let editor = acquire_editor_project(&final_path).expect("Editor writer must acquire");
++        let denied = acquire_headless_project(&final_path);
++        assert!(matches!(
++            denied,
++            Err(LifecycleError::ProjectWriterAlreadyOwned {
++                owner: Some(ProjectWriterRole::Editor),
++                ..
++            })
++        ));
++        let owner = project_writer_owner_metadata(&final_path)
++            .expect("writer metadata lookup")
++            .expect("Editor writer metadata");
++        assert_eq!(owner.role, ProjectWriterRole::Editor);
++
++        drop(editor);
++        let headless =
++            acquire_headless_project(&final_path).expect("headless writer must acquire after handoff");
++        let owner = project_writer_owner_metadata(&final_path)
++            .expect("writer metadata lookup")
++            .expect("headless writer metadata");
++        assert_eq!(owner.role, ProjectWriterRole::HeadlessMcp);
++        assert!(matches!(
++            acquire_editor_project(&final_path),
++            Err(LifecycleError::ProjectWriterAlreadyOwned {
++                owner: Some(ProjectWriterRole::HeadlessMcp),
++                ..
++            })
++        ));
++
++        drop(headless);
++        acquire_editor_project(&final_path).expect("Editor must reacquire after headless release");
++    }
++
++    #[test]
++    fn stale_headless_metadata_without_os_lock_never_claims_writer_authority() {
++        let parent = tempfile::tempdir().expect("temp directory must be created");
++        let final_path = parent.path().join("StaleWriterMetadataGame");
++        let project = create_standard_project(&final_path, "StaleWriterMetadataGame")
++            .expect("scaffold must succeed");
++        let state_dir = project_state_dir(&project);
++        fs::create_dir_all(&state_dir).expect("lifecycle state directory");
++        write_json(
++            &state_dir.join(HEADLESS_WRITER_OWNER_FILE),
++            &ProjectWriterOwnerMetadata {
++                process_id: u32::MAX,
++                project_id: project.project_id().clone(),
++                canonical_project: project.path().to_path_buf(),
++                role: ProjectWriterRole::HeadlessMcp,
++                acquired_unix_ms: 1,
++            },
++        )
++        .expect("stale metadata fixture");
++
++        assert!(
++            project_writer_owner_metadata(&final_path)
++                .expect("writer metadata lookup")
++                .is_none(),
++            "metadata without an active OS lock must not grant authority"
++        );
++        let editor = acquire_editor_project(&final_path)
++            .expect("stale metadata must not prevent Editor acquisition");
++        assert!(!state_dir.join(HEADLESS_WRITER_OWNER_FILE).exists());
++        drop(editor);
++    }
++
+     #[test]
+     fn opening_lock_file_preserves_existing_contents() {
+         let parent = tempfile::tempdir().expect("temp directory must be created");
+diff --git a/docs/AI_FRIENDLY_AUTHORING_SPEC.md b/docs/AI_FRIENDLY_AUTHORING_SPEC.md
+index ae2d6f93a58e29fa38c2dd5b34f8f32fbcaad94c..a2c6f7f4690bce116f9257d7626aef7dadfee343 100644
+--- a/docs/AI_FRIENDLY_AUTHORING_SPEC.md
++++ b/docs/AI_FRIENDLY_AUTHORING_SPEC.md
+@@ -1068,6 +1068,16 @@ The ADR 0035 AI Agent Bridge remains the input, frame-observation, and visual
+ interaction path. It MUST NOT be treated as a substitute for semantic authoring
+ parity when a capability changes persisted project data.
+ 
++ADR 0151 adds a GUI-free MCP host without adding a second authoring model. A
++write-capable headless host MUST acquire the same per-location OS-backed project
++writer authority used by the Editor before it loads authoritative saved project
++state. Editor and headless writer ownership are mutually exclusive. A read-only
++headless host MAY coexist with an Editor only as an explicitly reported saved-file
++snapshot; it cannot observe or claim parity with the Editor's dirty in-memory
++working copy. Both modes expose the canonical `engine-mcp` inventory and route
++semantic operations directly to shared authoring services rather than through CLI
++argv/stdout or host-specific mutation logic.
++
+ Example CLI:
+ 
+ ```text
+diff --git a/docs/ARCHITECTURE_OVERVIEW.md b/docs/ARCHITECTURE_OVERVIEW.md
+index b9b915be152ff6fe129e4e06b0549a073a82eb55..d651a1d1128bbbe5dcf5344dc65147261d5a62a2 100644
+--- a/docs/ARCHITECTURE_OVERVIEW.md
++++ b/docs/ARCHITECTURE_OVERVIEW.md
+@@ -45,7 +45,7 @@ The current workspace contains these runtime-domain packages:
+ 
+ The application and authoring side contains `engine-authoring`,
+ `engine-project-lifecycle`, `engine-launcher`, `engine-editor`, `engine-cli`,
+-`engine-mcp`, and the project Rust macro crates.
++`engine-mcp`, `engine-mcp-host`, and the project Rust macro crates.
+ 
+ This is an ownership map, not a declaration that every package depends on the
+ package above it. Actual dependencies should be narrower than the conceptual
+@@ -108,15 +108,23 @@ ADR 0117 defines a project-first desktop lifecycle:
+ 
+ ADR 0121 defines the structured AI boundary:
+ 
+-- MCP is the structured AI authoring interface for a project open in the
+-  Editor.
+-- The active Editor owns the initial project-scoped loopback MCP endpoint.
++- MCP is the structured AI authoring interface for project-scoped semantic
++  authoring.
++- The active Editor owns its project-scoped loopback MCP endpoint and routes
++  requests into the live Editor working copy.
+ - `engine-mcp` remains a transport-agnostic adapter over shared authoring
+   services.
+-- CLI is the supported headless authoring/automation adapter.
++- CLI remains a supported headless authoring/automation adapter.
+ - The AI Agent Bridge is for runtime observation/input and visual interaction,
+   not a replacement semantic authoring model.
+ 
++ADR 0151 extends that boundary with `engine-mcp-host`: a GUI-free MCP process
++may own authoritative saved-project writes only after acquiring the same
++OS-backed per-location writer lease as the Editor. Editor and headless writer
++roles are mutually exclusive. A read-only headless host may coexist, but its
++view is explicitly a saved-file snapshot and never includes a live Editor's
++dirty in-memory state.
++
+ ## 5. Asset, animation, physics, and rendering boundaries
+ 
+ Import formats normalize into shared engine contracts instead of creating
+diff --git a/docs/adr/0151-headless-write-capable-mcp-host-and-project-writer-ownership.md b/docs/adr/0151-headless-write-capable-mcp-host-and-project-writer-ownership.md
+index 980fb5f5e07638f92a48331effefab76180aaa81..7ec644522615497b305cf78c4fc3b8958e0d5216 100644
+--- a/docs/adr/0151-headless-write-capable-mcp-host-and-project-writer-ownership.md
++++ b/docs/adr/0151-headless-write-capable-mcp-host-and-project-writer-ownership.md
+@@ -1,6 +1,6 @@
+ # ADR 0151: Headless Write-Capable MCP Host and Project-Writer Ownership
+ 
+-Status: Proposed
++Status: Accepted
+ Date: 2026-08-17
+ Builds on: ADR 0117, ADR 0121
+ Relates to: ADR 0131, ADR 0139, ADR 0152
+@@ -35,6 +35,14 @@ A headless host loads canonical saved project data and owns any in-memory workin
+ 
+ ADR 0131 Agent Runtime may target a headless host only when the project-writer ownership contract confirms that host is authoritative. Remote AI Studio or a native Agent must not silently start a headless writer beside an Editor to bypass availability or stale-state errors.
+ 
++## Implementation
++
++`engine-project-lifecycle` keeps the existing per-location OS lock as the single writer authority and extends it with an explicit headless writer role. Editor and headless writer acquisition therefore contend on the same physical lock. Role metadata is diagnostic only; stale metadata without a live OS lock cannot claim ownership.
++
++`engine-mcp-host` provides the GUI-free Streamable HTTP host and a saved-project authoring state adapter over the existing `engine-mcp` inventory. Writer mode acquires the lifecycle writer lease before loading project state and persists successful project-data mutations with the canonical serializers owned by the existing authoring/document layers. Read-only mode may coexist with an Editor, grants no commit permissions, and reports its view as a `saved_file_snapshot` with live Editor unsaved state explicitly unavailable.
++
++The headless process does not invoke `engine-cli` to perform authoring and does not introduce alternate command, Stable ID, transaction, validation, or persisted document schemas.
++
+ ## Dependencies and parallel work
+ 
+ This ADR can be implemented in parallel with ADR 0141-0149 and ADR 0153. ADR 0152 depends on the writer-ownership model established here before enabling concurrent AI writers.
+diff --git a/docs/adr/README.md b/docs/adr/README.md
+index c6112a62f29399796506a16ceec07314feb4f5d9..acaa99a332c2f611c903f5fb6d4bbc0df20a0986 100644
+--- a/docs/adr/README.md
++++ b/docs/adr/README.md
+@@ -117,8 +117,9 @@ the beginning:
+   [0035](0035-ai-agent-bridge-ipc.md),
+   [0121](0121-ai-native-authoring-parity-and-project-scoped-mcp-lifecycle.md),
+   [0131](0131-conversational-ai-studio-agent-runtime-and-governed-workspace.md),
+-  [0132](0132-declarative-authoring-capability-registry-and-automatic-adapter-exposure.md), and
+-  [0133](0133-remote-ai-studio-companion-access-and-private-network-boundary.md).
++  [0132](0132-declarative-authoring-capability-registry-and-automatic-adapter-exposure.md),
++  [0133](0133-remote-ai-studio-companion-access-and-private-network-boundary.md), and
++  [0151](0151-headless-write-capable-mcp-host-and-project-writer-ownership.md).
+ 
+ ## Proposed Decisions
+ 
+@@ -294,6 +295,6 @@ implementation contract.
+ | [0148](0148-remote-host-lifecycle-project-activation-and-narrow-startup-operations.md) | **Proposed** — Remote Host Lifecycle, Project Activation, and Narrow Startup Operations |
+ | [0149](0149-engine-native-live-observation-and-media-transport.md) | **Proposed** — Engine-Native Live Observation and Media Transport |
+ | [0150](0150-multi-model-routing-and-workload-specialization.md) | **Proposed** — Multi-Model Routing and Workload Specialization |
+-| [0151](0151-headless-write-capable-mcp-host-and-project-writer-ownership.md) | **Proposed** — Headless Write-Capable MCP Host and Project-Writer Ownership |
++| [0151](0151-headless-write-capable-mcp-host-and-project-writer-ownership.md) | Headless Write-Capable MCP Host and Project-Writer Ownership |
+ | [0152](0152-multi-agent-writer-coordination-and-conflict-ownership.md) | **Proposed** — Multi-Agent Writer Coordination and Conflict Ownership |
+ | [0153](0153-agent-process-confinement-and-os-provider-sandbox-integration.md) | **Proposed** — Agent Process Confinement and OS/Provider Sandbox Integration |
