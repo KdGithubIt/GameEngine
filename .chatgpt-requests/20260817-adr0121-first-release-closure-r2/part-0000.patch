@@ -1,0 +1,858 @@
+diff --git a/crates/editor/src/material_editor.rs b/crates/editor/src/material_editor.rs
+index 1d579bfe82fb550a989e28230ee888fad1c12a7e..6b0a83b0232a24b51e1441af8592e9f16c5c6488 100644
+--- a/crates/editor/src/material_editor.rs
++++ b/crates/editor/src/material_editor.rs
+@@ -14,7 +14,9 @@ use engine_authoring::{
+     TypedDocumentAuthoringValidation,
+ };
+ use std::collections::BTreeMap;
+-use std::path::PathBuf;
++use std::path::{Path, PathBuf};
++
++const UNDO_LIMIT: usize = 100;
+ 
+ // ---------------------------------------------------------------------------
+ // Data model
+@@ -30,6 +32,8 @@ pub struct MaterialEditorPanel {
+     /// The relative path of the currently selected / active material.
+     pub active: Option<PathBuf>,
+     authoring: BTreeMap<PathBuf, TypedDocumentAuthoringState>,
++    undo: BTreeMap<PathBuf, Vec<MaterialAsset>>,
++    redo: BTreeMap<PathBuf, Vec<MaterialAsset>>,
+ }
+ 
+ impl MaterialEditorPanel {
+@@ -43,6 +47,8 @@ impl MaterialEditorPanel {
+         self.active = Some(rel_path.clone());
+         self.authoring
+             .insert(rel_path.clone(), TypedDocumentAuthoringState::new());
++        self.undo.insert(rel_path.clone(), Vec::new());
++        self.redo.insert(rel_path.clone(), Vec::new());
+         self.materials.insert(rel_path, material);
+     }
+ 
+@@ -127,7 +133,7 @@ impl MaterialEditorPanel {
+             .map(Some)
+     }
+ 
+-    /// Applies one atomic replacement to the active Material.
++    /// Applies one atomic replacement to the active Material as one undoable edit.
+     pub fn structured_apply(
+         &mut self,
+         permissions: &AuthoringPermissions,
+@@ -138,21 +144,126 @@ impl MaterialEditorPanel {
+         let Some(key) = self.active.clone() else {
+             return Ok(None);
+         };
+-        let (Some(document), Some(state)) =
+-            (self.materials.get_mut(&key), self.authoring.get_mut(&key))
+-        else {
++        let Some(before) = self.materials.get(&key).cloned() else {
+             return Ok(None);
+         };
+-        TypedDocumentAuthoringService::new()
+-            .apply(
++        let mutation = {
++            let (Some(document), Some(state)) =
++                (self.materials.get_mut(&key), self.authoring.get_mut(&key))
++            else {
++                return Ok(None);
++            };
++            TypedDocumentAuthoringService::new().apply(
+                 document,
+                 state,
+                 permissions,
+                 expected_revision,
+                 expected_generation,
+                 replacement,
+-            )
+-            .map(Some)
++            )?
++        };
++        if mutation.success && !mutation.diff.is_empty() {
++            self.push_undo_snapshot(&key, before);
++            self.redo.entry(key).or_default().clear();
++        }
++        Ok(Some(mutation))
++    }
++
++    /// Returns whether the active Material has an undo entry.
++    pub fn can_undo(&self) -> bool {
++        self.active
++            .as_ref()
++            .and_then(|key| self.undo.get(key))
++            .is_some_and(|history| !history.is_empty())
++    }
++
++    /// Returns whether the active Material has a redo entry.
++    pub fn can_redo(&self) -> bool {
++        self.active
++            .as_ref()
++            .and_then(|key| self.redo.get(key))
++            .is_some_and(|history| !history.is_empty())
++    }
++
++    /// Restores the previous Material snapshot through the shared semantic boundary.
++    pub fn undo(&mut self) -> bool {
++        let Some(key) = self.active.clone() else {
++            return false;
++        };
++        let Some(previous) = self.undo.get_mut(&key).and_then(Vec::pop) else {
++            return false;
++        };
++        let Some(current) = self.materials.get(&key).cloned() else {
++            self.undo.entry(key).or_default().push(previous);
++            return false;
++        };
++        match self.apply_history_replacement(&key, previous.clone()) {
++            Ok(true) => {
++                self.redo.entry(key).or_default().push(current);
++                true
++            }
++            Ok(false) | Err(_) => {
++                self.undo.entry(key).or_default().push(previous);
++                false
++            }
++        }
++    }
++
++    /// Reapplies the next Material snapshot through the shared semantic boundary.
++    pub fn redo(&mut self) -> bool {
++        let Some(key) = self.active.clone() else {
++            return false;
++        };
++        let Some(next) = self.redo.get_mut(&key).and_then(Vec::pop) else {
++            return false;
++        };
++        let Some(current) = self.materials.get(&key).cloned() else {
++            self.redo.entry(key).or_default().push(next);
++            return false;
++        };
++        match self.apply_history_replacement(&key, next.clone()) {
++            Ok(true) => {
++                self.push_undo_snapshot(&key, current);
++                true
++            }
++            Ok(false) | Err(_) => {
++                self.redo.entry(key).or_default().push(next);
++                false
++            }
++        }
++    }
++
++    fn apply_history_replacement(
++        &mut self,
++        key: &Path,
++        replacement: MaterialAsset,
++    ) -> Result<bool, TypedDocumentAuthoringError> {
++        let (Some(document), Some(state)) =
++            (self.materials.get_mut(key), self.authoring.get_mut(key))
++        else {
++            return Ok(false);
++        };
++        let revision = state.revision();
++        let generation = state.generation();
++        let permissions = AuthoringPermissions::read_only()
++            .with(AuthoringPermission::ProjectDataWrite);
++        let mutation = TypedDocumentAuthoringService::new().apply(
++            document,
++            state,
++            &permissions,
++            revision,
++            generation,
++            replacement,
++        )?;
++        Ok(mutation.success && !mutation.diff.is_empty())
++    }
++
++    fn push_undo_snapshot(&mut self, key: &Path, snapshot: MaterialAsset) {
++        let history = self.undo.entry(key.to_path_buf()).or_default();
++        if history.len() >= UNDO_LIMIT {
++            history.remove(0);
++        }
++        history.push(snapshot);
+     }
+ }
+ 
+diff --git a/crates/editor/src/project_settings_panel.rs b/crates/editor/src/project_settings_panel.rs
+index 11daa159e2cddced3e2c1fbc4b02cc54277c0fe9..4a1a6fee7542583f7b15770b6bfc9d02ff49ad86 100644
+--- a/crates/editor/src/project_settings_panel.rs
++++ b/crates/editor/src/project_settings_panel.rs
+@@ -16,6 +16,8 @@ use engine_authoring::{
+     TypedDocumentAuthoringState, TypedDocumentAuthoringValidation,
+ };
+ 
++const UNDO_LIMIT: usize = 100;
++
+ // ---------------------------------------------------------------------------
+ // Panel state
+ // ---------------------------------------------------------------------------
+@@ -34,6 +36,8 @@ pub struct ProjectSettingsPanel {
+     /// `true` when the panel contains unsaved changes.
+     pub is_dirty: bool,
+     authoring: TypedDocumentAuthoringState,
++    undo: Vec<ProjectSettings>,
++    redo: Vec<ProjectSettings>,
+ }
+ 
+ impl ProjectSettingsPanel {
+@@ -44,6 +48,8 @@ impl ProjectSettingsPanel {
+             post_process: PostProcessSettings::default(),
+             is_dirty: false,
+             authoring: TypedDocumentAuthoringState::new(),
++            undo: Vec::new(),
++            redo: Vec::new(),
+         }
+     }
+ 
+@@ -68,15 +74,105 @@ impl ProjectSettingsPanel {
+         TypedDocumentAuthoringService::new().preview(&self.settings, &self.authoring, permissions, expected_revision, expected_generation, replacement)
+     }
+ 
+-    /// Applies one complete Project Settings replacement atomically.
+-    pub fn structured_apply(&mut self, permissions: &AuthoringPermissions, expected_revision: u64, expected_generation: u64, replacement: ProjectSettings) -> Result<TypedDocumentAuthoringMutation<ProjectSettings>, TypedDocumentAuthoringError> {
+-        let mutation = TypedDocumentAuthoringService::new().apply(&mut self.settings, &mut self.authoring, permissions, expected_revision, expected_generation, replacement)?;
++    /// Applies one complete Project Settings replacement as one undoable edit.
++    pub fn structured_apply(
++        &mut self,
++        permissions: &AuthoringPermissions,
++        expected_revision: u64,
++        expected_generation: u64,
++        replacement: ProjectSettings,
++    ) -> Result<TypedDocumentAuthoringMutation<ProjectSettings>, TypedDocumentAuthoringError> {
++        let before = self.settings.clone();
++        let mutation = TypedDocumentAuthoringService::new().apply(
++            &mut self.settings,
++            &mut self.authoring,
++            permissions,
++            expected_revision,
++            expected_generation,
++            replacement,
++        )?;
+         if mutation.success && !mutation.diff.is_empty() {
++            self.push_undo_snapshot(before);
++            self.redo.clear();
+             self.is_dirty = true;
+         }
+         Ok(mutation)
+     }
+ 
++    /// Returns whether a Project Settings undo entry is available.
++    pub fn can_undo(&self) -> bool {
++        !self.undo.is_empty()
++    }
++
++    /// Returns whether a Project Settings redo entry is available.
++    pub fn can_redo(&self) -> bool {
++        !self.redo.is_empty()
++    }
++
++    /// Restores the previous Project Settings snapshot through the shared semantic boundary.
++    pub fn undo(&mut self) -> bool {
++        let Some(previous) = self.undo.pop() else {
++            return false;
++        };
++        let current = self.settings.clone();
++        match self.apply_history_replacement(previous.clone()) {
++            Ok(true) => {
++                self.redo.push(current);
++                self.is_dirty = true;
++                true
++            }
++            Ok(false) | Err(_) => {
++                self.undo.push(previous);
++                false
++            }
++        }
++    }
++
++    /// Reapplies the next Project Settings snapshot through the shared semantic boundary.
++    pub fn redo(&mut self) -> bool {
++        let Some(next) = self.redo.pop() else {
++            return false;
++        };
++        let current = self.settings.clone();
++        match self.apply_history_replacement(next.clone()) {
++            Ok(true) => {
++                self.push_undo_snapshot(current);
++                self.is_dirty = true;
++                true
++            }
++            Ok(false) | Err(_) => {
++                self.redo.push(next);
++                false
++            }
++        }
++    }
++
++    fn apply_history_replacement(
++        &mut self,
++        replacement: ProjectSettings,
++    ) -> Result<bool, TypedDocumentAuthoringError> {
++        let revision = self.authoring.revision();
++        let generation = self.authoring.generation();
++        let permissions = AuthoringPermissions::read_only()
++            .with(AuthoringPermission::ProjectDataWrite);
++        let mutation = TypedDocumentAuthoringService::new().apply(
++            &mut self.settings,
++            &mut self.authoring,
++            &permissions,
++            revision,
++            generation,
++            replacement,
++        )?;
++        Ok(mutation.success && !mutation.diff.is_empty())
++    }
++
++    fn push_undo_snapshot(&mut self, snapshot: ProjectSettings) {
++        if self.undo.len() >= UNDO_LIMIT {
++            self.undo.remove(0);
++        }
++        self.undo.push(snapshot);
++    }
++
+     // ── Tags ──────────────────────────────────────────────────────────────
+ 
+     /// Appends `tag` to the tag list unless it is already present.
+diff --git a/crates/editor/src/ui/mcp.rs b/crates/editor/src/ui/mcp.rs
+index 73c2fd93e7a2b0302564e38fdcc6a6c92664f897..15b0968865deb9025266a98b40bb84913b752c14 100644
+--- a/crates/editor/src/ui/mcp.rs
++++ b/crates/editor/src/ui/mcp.rs
+@@ -759,11 +759,16 @@ mod tests {
+ #[cfg(test)]
+ mod parity_tests {
+     use super::*;
++    use crate::animation_set_editor::AnimationSetEditorState;
++    use crate::material_editor::MaterialEditorPanel;
++    use crate::project_settings_panel::ProjectSettingsPanel;
+     use crate::session::EditorSession;
+     use engine_authoring::{
+-        GraphCommand, GraphViewCommand, UiDocumentCommand, Value as AuthoringValue, Vec2, Viewport,
++        AnimationSet, AssetId, GraphCommand, GraphViewCommand, MaterialAsset, ProjectSettings,
++        UiDocumentCommand, Value as AuthoringValue, Vec2, Viewport,
+     };
+     use serde_json::{json, Value};
++    use std::path::PathBuf;
+ 
+     fn editor_app() -> (tempfile::TempDir, EditorApp) {
+         let parent = tempfile::tempdir().expect("temporary project parent");
+@@ -773,6 +778,12 @@ mod parity_tests {
+         (parent, EditorApp::from_project(root))
+     }
+ 
++    fn cli_json(args: Vec<String>) -> Value {
++        let result = engine_cli::run_cli_with_status(args).expect("CLI invocation");
++        assert_eq!(result.exit_code, 0, "{}", result.output);
++        serde_json::from_str(&result.output).expect("CLI output JSON")
++    }
++
+     #[test]
+     fn generic_graph_and_layout_adapters_produce_equivalent_results() {
+         let seed = EditorSession::behavior_tree_example().expect("behavior tree example");
+@@ -1104,4 +1115,506 @@ mod parity_tests {
+             serde_json::to_value(direct.ui_document().expect("direct UI")).expect("UI value")
+         );
+     }
++
++    #[test]
++    fn typed_material_adapters_are_equivalent_and_editor_apply_is_undoable() {
++        let (directory, mut app) = editor_app();
++        let project = app.project_root().clone();
++        let relative = PathBuf::from("materials/adr0121-parity.material.json");
++        let absolute = project.assets_root().join(&relative);
++        std::fs::create_dir_all(absolute.parent().expect("material parent"))
++            .expect("material directory");
++
++        let baseline_json = MaterialAsset::default().to_json().expect("material JSON");
++        std::fs::write(&absolute, &baseline_json).expect("material fixture");
++        let baseline = MaterialAsset::from_json(&baseline_json).expect("canonical material");
++        let mut replacement_source = baseline.clone();
++        replacement_source.cast_shadow = !baseline.cast_shadow;
++        let replacement_json = replacement_source
++            .to_json()
++            .expect("replacement material JSON");
++        let replacement =
++            MaterialAsset::from_json(&replacement_json).expect("canonical replacement material");
++        let replacement_path = directory.path().join("material-replacement.json");
++        std::fs::write(&replacement_path, &replacement_json).expect("material replacement fixture");
++
++        let permissions = mcp_authoring_permissions();
++        let mut direct = MaterialEditorPanel::new();
++        direct.open_material(relative.clone(), baseline.clone());
++        let direct_base = direct
++            .structured_inspect(&permissions)
++            .expect("direct material inspect")
++            .expect("direct active material");
++        let direct_validation = direct
++            .structured_validate(&permissions)
++            .expect("direct material validate")
++            .expect("direct active material");
++        let direct_preview = direct
++            .structured_preview(
++                &permissions,
++                direct_base.revision,
++                direct_base.generation,
++                replacement.clone(),
++            )
++            .expect("direct material preview")
++            .expect("direct active material");
++        let direct_apply = direct
++            .structured_apply(
++                &permissions,
++                direct_base.revision,
++                direct_base.generation,
++                replacement.clone(),
++            )
++            .expect("direct material apply")
++            .expect("direct active material");
++        assert!(direct_apply.success);
++        assert!(direct.can_undo());
++
++        app.material_editor
++            .open_material(relative.clone(), baseline.clone());
++        let mcp_base = app
++            .handle_mcp_tool_call(
++                "authoring.inspect",
++                json!({"capability": "material.inspect"}),
++            )
++            .expect("generic material inspect");
++        let revision = mcp_base["revision"].as_u64().expect("material revision");
++        let generation = mcp_base["generation"]
++            .as_u64()
++            .expect("material generation");
++        let mcp_validation = app
++            .handle_mcp_tool_call(
++                "authoring.validate",
++                json!({"capability": "material.validate"}),
++            )
++            .expect("generic material validate");
++        assert_eq!(mcp_validation["success"], Value::Bool(direct_validation.success));
++        assert_eq!(
++            mcp_validation["diagnostics"],
++            serde_json::to_value(&direct_validation.diagnostics).expect("material diagnostics")
++        );
++        let arguments = json!({
++            "expected_revision": revision,
++            "expected_generation": generation,
++            "replacement": replacement.clone()
++        });
++        let domain_preview = app
++            .handle_mcp_tool_call("material.preview", arguments.clone())
++            .expect("domain material preview");
++        let generic_preview = app
++            .handle_mcp_tool_call(
++                "authoring.preview",
++                json!({"capability": "material.preview", "arguments": arguments.clone()}),
++            )
++            .expect("generic material preview");
++        assert_eq!(domain_preview, generic_preview);
++        assert_eq!(
++            generic_preview["diff"],
++            serde_json::to_value(&direct_preview.diff).expect("material preview diff")
++        );
++        let generic_apply = app
++            .handle_mcp_tool_call(
++                "authoring.apply",
++                json!({"capability": "material.apply", "arguments": arguments}),
++            )
++            .expect("generic material apply");
++        assert_eq!(
++            generic_apply["diff"],
++            serde_json::to_value(&direct_apply.diff).expect("material apply diff")
++        );
++        assert!(app.material_editor.can_undo());
++        assert!(app.material_editor.undo());
++        assert_eq!(app.material_editor.active_material(), Some(&baseline));
++        assert!(app.material_editor.can_redo());
++        assert!(app.material_editor.redo());
++        assert_eq!(app.material_editor.active_material(), Some(&replacement));
++        let stale = app
++            .handle_mcp_tool_call(
++                "authoring.apply",
++                json!({
++                    "capability": "material.apply",
++                    "arguments": {
++                        "expected_revision": revision,
++                        "expected_generation": generation,
++                        "replacement": replacement.clone()
++                    }
++                }),
++            )
++            .expect_err("stale material apply");
++        assert_eq!(stale.code(), "authoring.stale_revision");
++
++        let cli_validation = cli_json(vec![
++            "material".into(),
++            "validate".into(),
++            project.path().to_string_lossy().into_owned(),
++            relative.to_string_lossy().into_owned(),
++        ]);
++        assert_eq!(cli_validation["success"], Value::Bool(direct_validation.success));
++        assert_eq!(
++            cli_validation["diagnostics"],
++            serde_json::to_value(&direct_validation.diagnostics).expect("CLI material diagnostics")
++        );
++        let cli_preview = cli_json(vec![
++            "material".into(),
++            "preview".into(),
++            project.path().to_string_lossy().into_owned(),
++            relative.to_string_lossy().into_owned(),
++            replacement_path.to_string_lossy().into_owned(),
++        ]);
++        assert_eq!(
++            cli_preview["diff"],
++            serde_json::to_value(&direct_preview.diff).expect("CLI material preview diff")
++        );
++        let cli_apply = cli_json(vec![
++            "material".into(),
++            "apply".into(),
++            project.path().to_string_lossy().into_owned(),
++            relative.to_string_lossy().into_owned(),
++            replacement_path.to_string_lossy().into_owned(),
++        ]);
++        assert_eq!(
++            cli_apply["diff"],
++            serde_json::to_value(&direct_apply.diff).expect("CLI material apply diff")
++        );
++        let persisted = MaterialAsset::from_json(
++            &std::fs::read_to_string(&absolute).expect("persisted material JSON"),
++        )
++        .expect("persisted material");
++        assert_eq!(persisted, replacement);
++    }
++
++    #[test]
++    fn typed_project_settings_adapters_are_equivalent_and_editor_apply_is_undoable() {
++        let (directory, mut app) = editor_app();
++        let project = app.project_root().clone();
++        let baseline = app
++            .project_settings_panel
++            .as_ref()
++            .expect("project settings panel")
++            .settings
++            .clone();
++        let mut replacement = baseline.clone();
++        replacement.tags.push("adr0121_parity".into());
++        let replacement_path = directory.path().join("project-settings-replacement.json");
++        std::fs::write(
++            &replacement_path,
++            serde_json::to_string_pretty(&replacement).expect("settings replacement JSON"),
++        )
++        .expect("settings replacement fixture");
++
++        let permissions = mcp_authoring_permissions();
++        let mut direct = ProjectSettingsPanel::new(baseline.clone());
++        let direct_base = direct
++            .structured_inspect(&permissions)
++            .expect("direct settings inspect");
++        let direct_validation = direct
++            .structured_validate(&permissions)
++            .expect("direct settings validate");
++        let direct_preview = direct
++            .structured_preview(
++                &permissions,
++                direct_base.revision,
++                direct_base.generation,
++                replacement.clone(),
++            )
++            .expect("direct settings preview");
++        let direct_apply = direct
++            .structured_apply(
++                &permissions,
++                direct_base.revision,
++                direct_base.generation,
++                replacement.clone(),
++            )
++            .expect("direct settings apply");
++        assert!(direct_apply.success);
++        assert!(direct.can_undo());
++
++        let mcp_base = app
++            .handle_mcp_tool_call(
++                "authoring.inspect",
++                json!({"capability": "project_settings.inspect"}),
++            )
++            .expect("generic settings inspect");
++        let revision = mcp_base["revision"].as_u64().expect("settings revision");
++        let generation = mcp_base["generation"]
++            .as_u64()
++            .expect("settings generation");
++        let mcp_validation = app
++            .handle_mcp_tool_call(
++                "authoring.validate",
++                json!({"capability": "project_settings.validate"}),
++            )
++            .expect("generic settings validate");
++        assert_eq!(mcp_validation["success"], Value::Bool(direct_validation.success));
++        assert_eq!(
++            mcp_validation["diagnostics"],
++            serde_json::to_value(&direct_validation.diagnostics).expect("settings diagnostics")
++        );
++        let arguments = json!({
++            "expected_revision": revision,
++            "expected_generation": generation,
++            "replacement": replacement.clone()
++        });
++        let domain_preview = app
++            .handle_mcp_tool_call("project_settings.preview", arguments.clone())
++            .expect("domain settings preview");
++        let generic_preview = app
++            .handle_mcp_tool_call(
++                "authoring.preview",
++                json!({
++                    "capability": "project_settings.preview",
++                    "arguments": arguments.clone()
++                }),
++            )
++            .expect("generic settings preview");
++        assert_eq!(domain_preview, generic_preview);
++        assert_eq!(
++            generic_preview["diff"],
++            serde_json::to_value(&direct_preview.diff).expect("settings preview diff")
++        );
++        let generic_apply = app
++            .handle_mcp_tool_call(
++                "authoring.apply",
++                json!({"capability": "project_settings.apply", "arguments": arguments}),
++            )
++            .expect("generic settings apply");
++        assert_eq!(
++            generic_apply["diff"],
++            serde_json::to_value(&direct_apply.diff).expect("settings apply diff")
++        );
++        let panel = app
++            .project_settings_panel
++            .as_mut()
++            .expect("live project settings panel");
++        assert!(panel.can_undo());
++        assert!(panel.undo());
++        assert_eq!(panel.settings, baseline);
++        assert!(panel.can_redo());
++        assert!(panel.redo());
++        assert_eq!(panel.settings, replacement);
++        let stale = app
++            .handle_mcp_tool_call(
++                "authoring.apply",
++                json!({
++                    "capability": "project_settings.apply",
++                    "arguments": {
++                        "expected_revision": revision,
++                        "expected_generation": generation,
++                        "replacement": replacement.clone()
++                    }
++                }),
++            )
++            .expect_err("stale settings apply");
++        assert_eq!(stale.code(), "authoring.stale_revision");
++
++        let cli_validation = cli_json(vec![
++            "project_settings".into(),
++            "validate".into(),
++            project.path().to_string_lossy().into_owned(),
++        ]);
++        assert_eq!(cli_validation["success"], Value::Bool(direct_validation.success));
++        assert_eq!(
++            cli_validation["diagnostics"],
++            serde_json::to_value(&direct_validation.diagnostics).expect("CLI settings diagnostics")
++        );
++        let cli_preview = cli_json(vec![
++            "project_settings".into(),
++            "preview".into(),
++            project.path().to_string_lossy().into_owned(),
++            replacement_path.to_string_lossy().into_owned(),
++        ]);
++        assert_eq!(
++            cli_preview["diff"],
++            serde_json::to_value(&direct_preview.diff).expect("CLI settings preview diff")
++        );
++        let cli_apply = cli_json(vec![
++            "project_settings".into(),
++            "apply".into(),
++            project.path().to_string_lossy().into_owned(),
++            replacement_path.to_string_lossy().into_owned(),
++        ]);
++        assert_eq!(
++            cli_apply["diff"],
++            serde_json::to_value(&direct_apply.diff).expect("CLI settings apply diff")
++        );
++        let persisted = ProjectSettings::load(project.path()).expect("persisted settings");
++        assert_eq!(persisted, replacement);
++    }
++
++    #[test]
++    fn typed_animation_set_adapters_are_equivalent_and_preserve_editor_undo() {
++        let (directory, mut app) = editor_app();
++        let project = app.project_root().clone();
++        let relative = PathBuf::from("animations/adr0121-parity.animset.json");
++        let absolute = project.assets_root().join(&relative);
++        std::fs::create_dir_all(absolute.parent().expect("animation parent"))
++            .expect("animation directory");
++
++        let baseline = AnimationSet::empty();
++        std::fs::write(
++            &absolute,
++            baseline.to_canonical_json().expect("animation set JSON"),
++        )
++        .expect("animation set fixture");
++        let mut replacement = baseline.clone();
++        replacement.graph = Some(AssetId::generate());
++        let replacement_path = directory.path().join("animation-set-replacement.json");
++        std::fs::write(
++            &replacement_path,
++            replacement
++                .to_canonical_json()
++                .expect("animation replacement JSON"),
++        )
++        .expect("animation replacement fixture");
++
++        let permissions = mcp_authoring_permissions();
++        let mut direct = AnimationSetEditorState::new(
++            relative.clone(),
++            absolute.clone(),
++            baseline.clone(),
++        );
++        let direct_base = direct
++            .structured_inspect(&permissions)
++            .expect("direct animation inspect");
++        let direct_validation = direct
++            .structured_validate(&permissions)
++            .expect("direct animation validate");
++        let direct_preview = direct
++            .structured_preview(
++                &permissions,
++                direct_base.revision,
++                direct_base.generation,
++                replacement.clone(),
++            )
++            .expect("direct animation preview");
++        let direct_apply = direct
++            .structured_apply(
++                &permissions,
++                direct_base.revision,
++                direct_base.generation,
++                replacement.clone(),
++            )
++            .expect("direct animation apply");
++        assert!(direct_apply.success);
++        assert!(direct.can_undo());
++
++        app.animation_set_editor = Some(AnimationSetEditorState::new(
++            relative.clone(),
++            absolute.clone(),
++            baseline.clone(),
++        ));
++        let mcp_base = app
++            .handle_mcp_tool_call(
++                "authoring.inspect",
++                json!({"capability": "animation_set.inspect"}),
++            )
++            .expect("generic animation inspect");
++        let revision = mcp_base["revision"].as_u64().expect("animation revision");
++        let generation = mcp_base["generation"]
++            .as_u64()
++            .expect("animation generation");
++        let mcp_validation = app
++            .handle_mcp_tool_call(
++                "authoring.validate",
++                json!({"capability": "animation_set.validate"}),
++            )
++            .expect("generic animation validate");
++        assert_eq!(mcp_validation["success"], Value::Bool(direct_validation.success));
++        assert_eq!(
++            mcp_validation["diagnostics"],
++            serde_json::to_value(&direct_validation.diagnostics).expect("animation diagnostics")
++        );
++        let arguments = json!({
++            "expected_revision": revision,
++            "expected_generation": generation,
++            "replacement": replacement.clone()
++        });
++        let domain_preview = app
++            .handle_mcp_tool_call("animation_set.preview", arguments.clone())
++            .expect("domain animation preview");
++        let generic_preview = app
++            .handle_mcp_tool_call(
++                "authoring.preview",
++                json!({"capability": "animation_set.preview", "arguments": arguments.clone()}),
++            )
++            .expect("generic animation preview");
++        assert_eq!(domain_preview, generic_preview);
++        assert_eq!(
++            generic_preview["diff"],
++            serde_json::to_value(&direct_preview.diff).expect("animation preview diff")
++        );
++        let generic_apply = app
++            .handle_mcp_tool_call(
++                "authoring.apply",
++                json!({"capability": "animation_set.apply", "arguments": arguments}),
++            )
++            .expect("generic animation apply");
++        assert_eq!(
++            generic_apply["diff"],
++            serde_json::to_value(&direct_apply.diff).expect("animation apply diff")
++        );
++        let editor = app
++            .animation_set_editor
++            .as_mut()
++            .expect("live animation set editor");
++        assert!(editor.can_undo());
++        assert!(editor.undo());
++        assert_eq!(editor.document, baseline);
++        assert!(editor.can_redo());
++        assert!(editor.redo());
++        assert_eq!(editor.document, replacement);
++        let stale = app
++            .handle_mcp_tool_call(
++                "authoring.apply",
++                json!({
++                    "capability": "animation_set.apply",
++                    "arguments": {
++                        "expected_revision": revision,
++                        "expected_generation": generation,
++                        "replacement": replacement.clone()
++                    }
++                }),
++            )
++            .expect_err("stale animation apply");
++        assert_eq!(stale.code(), "authoring.stale_revision");
++
++        let cli_validation = cli_json(vec![
++            "animation_set".into(),
++            "validate".into(),
++            project.path().to_string_lossy().into_owned(),
++            relative.to_string_lossy().into_owned(),
++        ]);
++        assert_eq!(cli_validation["success"], Value::Bool(direct_validation.success));
++        assert_eq!(
++            cli_validation["diagnostics"],
++            serde_json::to_value(&direct_validation.diagnostics).expect("CLI animation diagnostics")
++        );
++        let cli_preview = cli_json(vec![
++            "animation_set".into(),
++            "preview".into(),
++            project.path().to_string_lossy().into_owned(),
++            relative.to_string_lossy().into_owned(),
++            replacement_path.to_string_lossy().into_owned(),
++        ]);
++        assert_eq!(
++            cli_preview["diff"],
++            serde_json::to_value(&direct_preview.diff).expect("CLI animation preview diff")
++        );
++        let cli_apply = cli_json(vec![
++            "animation_set".into(),
++            "apply".into(),
++            project.path().to_string_lossy().into_owned(),
++            relative.to_string_lossy().into_owned(),
++            replacement_path.to_string_lossy().into_owned(),
++        ]);
++        assert_eq!(
++            cli_apply["diff"],
++            serde_json::to_value(&direct_apply.diff).expect("CLI animation apply diff")
++        );
++        let persisted = AnimationSet::from_json(
++            &std::fs::read_to_string(&absolute).expect("persisted animation JSON"),
++        )
++        .expect("persisted animation set");
++        assert_eq!(persisted, replacement);
++    }
+ }
