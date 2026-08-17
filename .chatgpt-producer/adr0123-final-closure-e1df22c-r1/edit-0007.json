@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ui/behavior_debug.rs",
+  "old": "        self.visible = true;\n        self.graph_session = Some(session);\n        self.fixture_snapshot = Some(snapshot);\n",
+  "new": "        self.visible = true;\n        self.graph_session = Some(session);\n        self.selected_node = nodes.get(2).cloned();\n        self.fixture_snapshot = Some(snapshot);\n"
+}
