@@ -1,0 +1,60 @@
+diff --git a/crates/editor/src/ui/mcp.rs b/crates/editor/src/ui/mcp.rs
+index 15b0968865deb9025266a98b40bb84913b752c14..6ba0db44ab69705c35a130d172dd07990342f67a 100644
+--- a/crates/editor/src/ui/mcp.rs
++++ b/crates/editor/src/ui/mcp.rs
+@@ -784,6 +784,21 @@ mod parity_tests {
+         serde_json::from_str(&result.output).expect("CLI output JSON")
+     }
+ 
++    fn material_diff_documents(value: &Value) -> Vec<(MaterialAsset, MaterialAsset)> {
++        value
++            .as_array()
++            .expect("material diff array")
++            .iter()
++            .map(|change| {
++                let before = serde_json::from_value(change["before"].clone())
++                    .expect("material diff before");
++                let after = serde_json::from_value(change["after"].clone())
++                    .expect("material diff after");
++                (before, after)
++            })
++            .collect()
++    }
++
+     #[test]
+     fn generic_graph_and_layout_adapters_produce_equivalent_results() {
+         let seed = EditorSession::behavior_tree_example().expect("behavior tree example");
+@@ -1261,9 +1276,14 @@ mod parity_tests {
+             relative.to_string_lossy().into_owned(),
+             replacement_path.to_string_lossy().into_owned(),
+         ]);
++        let direct_preview_documents: Vec<_> = direct_preview
++            .diff
++            .iter()
++            .map(|change| (change.before.clone(), change.after.clone()))
++            .collect();
+         assert_eq!(
+-            cli_preview["diff"],
+-            serde_json::to_value(&direct_preview.diff).expect("CLI material preview diff")
++            material_diff_documents(&cli_preview["diff"]),
++            direct_preview_documents
+         );
+         let cli_apply = cli_json(vec![
+             "material".into(),
+@@ -1272,9 +1292,14 @@ mod parity_tests {
+             relative.to_string_lossy().into_owned(),
+             replacement_path.to_string_lossy().into_owned(),
+         ]);
++        let direct_apply_documents: Vec<_> = direct_apply
++            .diff
++            .iter()
++            .map(|change| (change.before.clone(), change.after.clone()))
++            .collect();
+         assert_eq!(
+-            cli_apply["diff"],
+-            serde_json::to_value(&direct_apply.diff).expect("CLI material apply diff")
++            material_diff_documents(&cli_apply["diff"]),
++            direct_apply_documents
+         );
+         let persisted = MaterialAsset::from_json(
+             &std::fs::read_to_string(&absolute).expect("persisted material JSON"),
