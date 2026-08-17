@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ui/mod.rs","old":"            runtime_state: None,\n            behavior_debug: BehaviorTreeDebugState::default(),","new":"            runtime_state: None,\n            graph_debug: GraphDebugState::default(),\n            behavior_debug: BehaviorTreeDebugState::default(),"}
