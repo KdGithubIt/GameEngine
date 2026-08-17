@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "            let can_go = self.process.is_none()\n                && self.pending_permission.is_none()\n                && !self.provider_program.trim().is_empty();",
+  "new": "            let can_go = self.process.is_none()\n                && !self.native_runtime_busy()\n                && self.pending_permission.is_none()\n                && (!self.provider_program.trim().is_empty()\n                    || !self.local_model_name.trim().is_empty());"
+}
