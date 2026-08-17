@@ -1,0 +1,893 @@
+diff --git a/docs/adr/0140-ai-capability-roadmap-and-parallel-delivery-order.md b/docs/adr/0140-ai-capability-roadmap-and-parallel-delivery-order.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..7cfbd9eb987d1fff497178f31fa30440199dec11
+--- /dev/null
++++ b/docs/adr/0140-ai-capability-roadmap-and-parallel-delivery-order.md
+@@ -0,0 +1,80 @@
++# ADR 0140: AI Capability Roadmap and Parallel Delivery Order
++
++Status: Proposed
++Date: 2026-08-17
++Relates to: ADR 0035, ADR 0117, ADR 0121, ADR 0131, ADR 0132, ADR 0133, ADR 0135, ADR 0139
++
++## Context
++
++ADR 0121, ADR 0131, ADR 0133, and ADR 0135 establish the first-release AI authoring, Agent Host, Remote AI Studio, and native-inference resource contracts. Their first-release requirements intentionally leave several later capabilities open. Those capabilities are large enough that implementing them under one follow-up ADR would couple unrelated provider, renderer, lifecycle, security, and authoring risks.
++
++The repository also supports parallel ChatGPT implementation work. Parallel work is safe only when each task has a clear ownership boundary and does not depend on an unmerged sibling branch. A roadmap therefore needs to state dependencies without making later work assume another task branch.
++
++## Decision
++
++The post-first-release AI roadmap is split into focused ADRs:
++
++- ADR 0141: native write-capable Agent Runtime and governed tool loop;
++- ADR 0142: GameEngine Agent Benchmark and curated local-model catalog;
++- ADR 0143: native ModelBackend resource controls and hardware telemetry;
++- ADR 0144: hosted and enterprise ModelBackend integration and credential ownership;
++- ADR 0145: first-class external Agent Runtime provider adapters;
++- ADR 0146: governed AI asset acquisition and generative-content providers;
++- ADR 0147: detached local AI Studio frontend and versioned local host protocol;
++- ADR 0148: remote host lifecycle, project activation, and narrow remote startup operations;
++- ADR 0149: engine-native live observation and media transport;
++- ADR 0150: multi-model routing and workload specialization;
++- ADR 0151: headless write-capable MCP host and project-writer ownership;
++- ADR 0152: multi-agent writer coordination and conflict ownership; and
++- ADR 0153: agent process confinement and OS/provider sandbox integration.
++
++These ADRs refine existing boundaries. They MUST NOT replace `AgentSession`, `AgentRun`, `AgentEvent`, proposal snapshots, permission policy, the code workspace, MCP authoring authority, completion gates, Remote AI Studio idempotency/reconnect semantics, or ADR 0135 resource arbitration.
++
++## Delivery waves
++
++### Wave A: independent foundations
++
++The following ADRs may be implemented in parallel from current `main` because their required base contracts already exist:
++
++```text
++0141 Native write-capable Agent Runtime
++0143 Native backend resource controls
++0144 Hosted / enterprise ModelBackend
++0145 External Agent Runtime adapters
++0146 Asset acquisition providers
++0147 Detached local AI Studio frontend
++0148 Remote host lifecycle
++0149 Engine-native live observation
++0151 Headless writer ownership
++0153 Process confinement / sandbox integration
++```
++
++Each implementation still starts from its own current-main baseline. No Wave A task may assume another Wave A branch is merged. If two tasks need the same new public contract, that contract must first land through the owning ADR or the tasks must remain independent until integration on `main`.
++
++### Wave B: measured model selection
++
++ADR 0142 follows ADR 0141 for its full write-capable benchmark corpus. Benchmark harness scaffolding may begin earlier, but official implementation/repair/playtest recommendations require the native write-capable path to exist. ADR 0143 telemetry SHOULD be consumed when available but is not required to start the benchmark service.
++
++### Wave C: model routing optimization
++
++ADR 0150 follows ADR 0141 and ADR 0142. A multi-model router is not accepted as a correctness dependency before a single-model native Agent is complete and GameEngine-specific evidence shows a measurable benefit. ADR 0143 and ADR 0144 may provide additional routing signals/backends when they have already landed.
++
++### Wave D: concurrent writers
++
++ADR 0152 follows ADR 0151 and the existing ADR 0139 working-copy authority. Multiple AI writers require an explicit writer/lease/conflict model and MUST NOT be introduced merely by allowing several existing single-writer runs to mutate concurrently. ADR 0141 should also be stable enough to provide a representative writer client before multi-writer behavior is enabled.
++
++## Parallel implementation rule
++
++Parallel ADR work uses only accepted/current contracts from `main`. An implementation branch MUST NOT import types, assumptions, schema changes, or behavior that exist only on another unmerged ADR branch. When an optional integration becomes desirable, it is performed after both prerequisite contracts are on `main` or through a separate integration change.
++
++## Deferred ideas that do not yet receive separate ADRs
++
++ADR 0133 already permits later WebSocket transport, native iOS/Android clients, direct semantic remote controls over shared authoring capabilities, and supported public-Internet reachability subject to a new threat model. Those remain explicit future triggers rather than scheduled implementation ADRs until a demonstrated product need justifies their additional platform or security surface.
++
++Likewise, provider-specific model families are catalog data under ADR 0142 rather than one ADR per model.
++
++## Verification
++
++This roadmap is satisfied when each child ADR can be implemented and validated independently against current `main`, declared prerequisites are respected, and no child ADR weakens existing first-release completion or trust boundaries.
++
++Documentation-only adoption of this ADR requires no Visual Validation.
+diff --git a/docs/adr/0141-native-write-capable-agent-runtime-and-governed-tool-loop.md b/docs/adr/0141-native-write-capable-agent-runtime-and-governed-tool-loop.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..6b690155c8a8104e0e59dff84bde779027b33d6b
+--- /dev/null
++++ b/docs/adr/0141-native-write-capable-agent-runtime-and-governed-tool-loop.md
+@@ -0,0 +1,79 @@
++# ADR 0141: Native Write-Capable Agent Runtime and Governed Tool Loop
++
++Status: Proposed
++Date: 2026-08-17
++Builds on: ADR 0121, ADR 0131, ADR 0132, ADR 0135
++Relates to: ADR 0035, ADR 0139
++
++## Context
++
++The current native AI path is deliberately read-oriented. `native_agent.rs` retrieves repository/project evidence and calls a user-selected loopback local model, but it does not acquire mutation permissions or participate in the write-capable `AgentRun` state machine. The existing external Agent Runtime path already proves the governed orchestration needed for proposal snapshots, permissions, code workspaces, managed validation, Play, frame capture, evaluation, repair, and completion.
++
++The missing capability is an engine-owned native model/tool loop that can perform the same governed work without creating a second authoring architecture.
++
++## Decision
++
++GameEngine adds a provider-independent `NativeAgentRuntime` implementation that participates in the existing Agent Host exactly as an Agent Runtime. It delegates inference to `ModelBackend` and delegates side effects to existing managed services.
++
++Conceptually:
++
++```text
++AgentHost
++  -> NativeAgentRuntime
++       -> ModelBackend
++       -> typed MCP authoring tools
++       -> AgentCodeWorkspace
++       -> managed validation
++       -> Play / AI Agent Bridge
++       -> frame evaluation
++```
++
++The native runtime MUST NOT write canonical Scene, Graph, Prefab, UI, Material, settings, Animation Set, or other authoring files directly. Structured project authoring continues through the authoritative Editor MCP boundary from ADR 0121/0132. Source mutation continues through the ADR 0131 code workspace.
++
++## Tool loop contract
++
++A native turn may inspect state, reason, request a managed tool, observe its structured result, and continue until it reaches a host-owned state transition. Tool availability is determined by AgentRun phase, proposal capabilities, provider capability profile, and permission policy.
++
++The model never owns completion truth. Host-owned validation, Play, frame, evaluation, and interaction gates remain authoritative. A model output claiming success cannot bypass an incomplete gate.
++
++The runtime MUST support structured tool-call failure as normal evidence. Invalid arguments, stale revisions, denied permissions, validator failures, import failures, and runtime failures are returned to the harness and may trigger re-inspection or repair.
++
++## Reasoning and execution boundary
++
++Deterministic operations execute without an unnecessary model turn once their inputs are fully specified. Model inference is reacquired when a new semantic decision is required. Strong reasoning SHOULD retain concrete implementation decisions in provider-independent `AgentWorkingState` so unloading or restarting a model does not lose the run's governed progress.
++
++## Permissions
++
++The native runtime uses the existing ADR 0131 broker. Asking a question remains read-oriented. Mutation requires an explicit proposal and Go snapshot. Network, asset acquisition, raw filesystem, arbitrary command execution, runtime control, and frame capture remain separately authorized capabilities.
++
++## Cancellation and interruption
++
++Stop retains cancellation semantics. ADR 0135 Interrupt-for-Editing may suspend active native inference, reduce model residency, restore Editor resources, and later resume after authoritative-state re-inspection. The native runtime MUST be restartable at a safe reasoning boundary when a backend cannot resume an in-flight generation.
++
++## Harness baseline
++
++The first write-capable native harness uses one selected model and one provider-independent policy. Model-family-specific agents are forbidden. Tunable retrieval, context compaction, tool exposure, validation cadence, repair budget, and reasoning mode are `HarnessPolicy` concerns and must remain measurable.
++
++## Dependencies and parallel work
++
++This ADR may be implemented in parallel with ADR 0143-0149, ADR 0151, and ADR 0153 because ADR 0131 already defines the required boundaries. It does not depend on ADR 0142 or ADR 0150. ADR 0142 needs this runtime for its complete write-capable benchmark corpus; ADR 0150 needs this runtime as its single-model baseline.
++
++## Verification
++
++Implementation must prove at least:
++
++- a local model can start an authorized `AgentRun` from an exact proposal snapshot;
++- typed MCP inspection/mutation uses the live Editor writer and rejects stale revision work;
++- source edits occur through the code workspace with reviewable checkpoints/diffs;
++- denied or elevated operations enter the existing permission flow;
++- managed validation results are host-owned evidence;
++- Play, frame capture, visual evaluation, and repair can be driven through the existing completion loop;
++- provider/model failure cannot fabricate completion;
++- Stop cancels while Interrupt-for-Editing remains resumable; and
++- project-shared history contains no model credentials or transient inference state.
++
++Editor-visible implementation requires Visual Validation for AI Studio progress, permission, interruption, and completion presentation.
++
++## Non-goals
++
++This ADR does not introduce multi-model routing, choose a recommended model family, implement hosted credentials, add a second project writer, or move Agent Host ownership into runtime crates.
+diff --git a/docs/adr/0142-gameengine-agent-benchmark-and-curated-model-catalog.md b/docs/adr/0142-gameengine-agent-benchmark-and-curated-model-catalog.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..b49dae89412f3d69c2936769fe72a662724ee780
+--- /dev/null
++++ b/docs/adr/0142-gameengine-agent-benchmark-and-curated-model-catalog.md
+@@ -0,0 +1,67 @@
++# ADR 0142: GameEngine Agent Benchmark and Curated Model Catalog
++
++Status: Proposed
++Date: 2026-08-17
++Builds on: ADR 0131, ADR 0135, ADR 0141
++Relates to: ADR 0143, ADR 0150
++
++## Context
++
++GameEngine already records native-question metadata and ADR 0131 requires model recommendations to be based on GameEngine-specific evidence rather than third-party leaderboards. The current product still requires a user to supply a compatible local endpoint/model manually and has no authoritative benchmark corpus that can justify Lightweight, Balanced, or High Quality recommendations.
++
++A recommendation system must compare models under the same harness and completion criteria. Raw tokens per second is insufficient because the product goal is successful governed game creation.
++
++## Decision
++
++GameEngine maintains a versioned **GameEngine Agent Benchmark** and a curated **Local Model Catalog** derived from its results. Benchmark data is product/application data, not canonical project authoring data.
++
++### Benchmark identity
++
++Each comparable result records at least:
++
++- benchmark corpus/version;
++- harness version;
++- exact model and runtime representation, including quantization when applicable;
++- backend/runtime version;
++- hardware identity and total GPU/system memory;
++- quality/workload policy;
++- available tool/permission budget; and
++- completion criteria used by the task.
++
++A comparison that changes multiple dimensions must be labeled non-equivalent rather than presented as a model-only ranking.
++
++### Task corpus
++
++The benchmark SHOULD include representative read questions, project inspection, code implementation, typed authoring mutation, validation/repair, Play/runtime interaction, and visual evaluation tasks. The corpus must exercise real GameEngine contracts such as stale revisions, permission requests, code workspace reconciliation, managed validation, and host-owned completion.
++
++Private user projects are not silently uploaded into the benchmark corpus. Repository-owned fixtures and intentionally contributed benchmark projects are preferred.
++
++### Metrics
++
++Applicable measurements include acceptance-criteria success, completion-gate success, model turns, tool calls, invalid tool calls, code edits, validation attempts, repair loops, Play/frame/evaluation attempts, human interventions, elapsed time, token counts, load latency, TTFT, generation throughput, peak backend/Editor GPU memory, model unload/reload cost, renderer reclaim/resume cost, and OOM failures. Unavailable telemetry is recorded as unavailable.
++
++### Curated catalog
++
++The catalog presents a small set of understandable profiles such as Lightweight, Balanced, and High Quality. Each entry records runtime/backend identity, exact model/version, source, license/provenance, transfer/storage size, memory guidance, context/modality/tool capabilities, benchmark version, and recommendation evidence.
++
++Model weights are never bundled merely because an entry is recommended. Download is an explicit user action with source and expected storage/transfer shown before acquisition. Existing compatible local runtimes/models SHOULD be discoverable. Advanced users may configure compatible custom models that remain marked unverified until benchmarked.
++
++## Recommendation policy
++
++No hard-coded `VRAM >= N => model X` rule is architectural truth. Recommendations combine measured success, latency, memory pressure, model capabilities, licensing/provenance, and supported backend behavior. Hardware-specific recommendations may exist as product data.
++
++The RTX 4070 Ti 12 GB remains the first reference profile from ADR 0135, not a minimum requirement. Additional hardware profiles may be added independently.
++
++## Dependencies and parallel work
++
++Benchmark storage/UI scaffolding may begin in parallel with ADR 0141. Official write-capable implementation recommendations require ADR 0141 to be available. ADR 0143 telemetry enriches resource measurements but does not block the benchmark architecture. ADR 0150 MUST NOT become the default until this ADR demonstrates a measurable benefit over the single-model baseline.
++
++## Verification
++
++Implementation must prove reproducible same-harness comparisons, explicit unavailable telemetry, stable benchmark versioning, catalog provenance, no secret/project-history leakage, installed-model discovery where supported, and UI distinction between compatible/unverified and benchmark-recommended models.
++
++Catalog/benchmark UI changes require Editor Visual Validation.
++
++## Non-goals
++
++This ADR does not select one permanent model family, make third-party scores authoritative, automatically download weights without consent, or define multi-model routing policy.
+diff --git a/docs/adr/0143-native-model-backend-resource-controls-and-hardware-telemetry.md b/docs/adr/0143-native-model-backend-resource-controls-and-hardware-telemetry.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..5f57f1c0f7c907dbe9a947af7a22e801b7db1a9e
+--- /dev/null
++++ b/docs/adr/0143-native-model-backend-resource-controls-and-hardware-telemetry.md
+@@ -0,0 +1,58 @@
++# ADR 0143: Native ModelBackend Resource Controls and Hardware Telemetry
++
++Status: Proposed
++Date: 2026-08-17
++Builds on: ADR 0131, ADR 0135
++Relates to: ADR 0003, ADR 0072, ADR 0104, ADR 0136, ADR 0142
++
++## Context
++
++ADR 0135 defines workload classes, quality preferences, inference-focused Editor suspension, transient renderer reclaim, interruption/resume, and capability-driven model residency. The current generic local backend truthfully reports provider-specific resource controls as unavailable. The missing layer is concrete adapter support for resource telemetry and safe unload/offload/residency operations.
++
++Without that integration the policy can suspend Editor presentation but cannot reliably return model memory to Play or request a larger safe reasoning budget from a backend.
++
++## Decision
++
++`ModelBackend` implementations may expose a capability object for resource behavior. Capabilities are optional and truthful; unsupported controls remain unavailable. The application-layer resource broker consumes them without importing backend-specific process or GPU ownership into renderer/runtime crates.
++
++Capabilities may include:
++
++- model representation size;
++- estimated/measured GPU residency;
++- CPU/GPU offload controls;
++- device selection;
++- context/KV-cache placement;
++- inference-cache release;
++- model unload/reload;
++- load/unload timing; and
++- backend-specific memory telemetry.
++
++A backend operation reports completion only after the adapter has evidence that the requested state change occurred or after the backend's documented acknowledgement contract is satisfied. Guessing from process lifetime, model name, or nominal VRAM is forbidden.
++
++## Hardware observation
++
++Renderer/application and model telemetry remain separate sources. The broker may combine total device capacity, known renderer allocations, backend estimates, measured peaks from earlier runs, conservative headroom, and operating-system/platform information. If exact free VRAM is unavailable, the result is an estimate with explicit uncertainty rather than a fabricated exact value.
++
++## Resource transitions
++
++The broker requests backend controls only at ADR 0135 safe boundaries. Play and required frame capture have priority over local inference. Interrupt-for-Editing may reduce or unload model residency. Resume can reload/reacquire resources only after authoritative-state re-inspection.
++
++Deep-only aggressive renderer reclaim remains conditional on measurements. This ADR does not authorize the agent layer to destroy renderer-owned resources directly; renderer release/invalidation APIs remain owned by their renderer/resource layer.
++
++## Adapter isolation
++
++Provider-specific HTTP/process APIs belong in the ModelBackend adapter/application boundary. Runtime ECS, `engine-authoring`, `engine-mcp`, and low-level renderer crates must not depend on Ollama or another inference runtime SDK merely to expose telemetry.
++
++## Dependencies and parallel work
++
++This ADR can be implemented in parallel with ADR 0141, ADR 0144-0149, ADR 0151, and ADR 0153. It does not require ADR 0142, but ADR 0142 should consume the resulting telemetry when available. ADR 0150 may later use resource capabilities as routing inputs.
++
++## Verification
++
++Tests must cover unavailable capability honesty, successful and failed unload/offload requests, interruption releasing supported residency, Play priority reclaim, reload timing/telemetry, no canonical authoring changes during resource transitions, and safe renderer restoration after any approved reclaim path. Hardware-dependent tests must distinguish deterministic adapter contract tests from reference-machine measurement runs.
++
++Editor-visible resource posture controls require Visual Validation.
++
++## Non-goals
++
++This ADR does not implement OS-wide GPU scheduling, control external Claude/Codex processes that do not expose a safe resource API, or define model selection/routing policy.
+diff --git a/docs/adr/0144-hosted-and-enterprise-model-backends-and-credential-ownership.md b/docs/adr/0144-hosted-and-enterprise-model-backends-and-credential-ownership.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..2ff15b0ad59c5710126d051a2447c6abd99a7dd5
+--- /dev/null
++++ b/docs/adr/0144-hosted-and-enterprise-model-backends-and-credential-ownership.md
+@@ -0,0 +1,58 @@
++# ADR 0144: Hosted and Enterprise ModelBackends and Credential Ownership
++
++Status: Proposed
++Date: 2026-08-17
++Builds on: ADR 0131
++Relates to: ADR 0141, ADR 0142, ADR 0150
++
++## Context
++
++ADR 0131 separates an engine-owned native Agent Runtime from the `ModelBackend` that performs inference. The current implementation only provides a loopback local-model backend. Direct hosted APIs and future enterprise inference gateways are planned but must not collapse into the separate external Agent Runtime abstraction used by coding-agent processes.
++
++Hosted integration also introduces credentials, network permission, rate limits, provider errors, usage accounting, and data-boundary concerns that do not exist for a loopback local runtime.
++
++## Decision
++
++GameEngine may add hosted and enterprise `ModelBackend` adapters behind the same native Agent harness. These adapters provide inference only; they do not own AgentRun lifecycle, MCP authoring, code mutation, permissions, validation, Play, or completion.
++
++Conceptually:
++
++```text
++NativeAgentRuntime
++  -> ModelBackend
++       -> Local backend
++       -> Hosted API backend
++       -> Enterprise-managed backend
++```
++
++A provider's API shape MUST NOT leak into the provider-independent Agent Host contract. Provider-specific request/response mapping, streaming, retry classification, usage metadata, and authentication live in the adapter.
++
++## Credential ownership
++
++GameEngine-owned API credentials must be stored in an OS credential facility or equivalent secure user secret store. They MUST NOT be written to canonical project files, project-shared AI history, logs, Remote AI Studio payloads, benchmark fixtures, or provider-independent session serialization.
++
++Provider-managed login/session flows may retain credentials in the provider's own approved storage. Enterprise-managed authentication may use an organization-provided credential mechanism without forcing an API-key abstraction.
++
++## Network and data policy
++
++Using a hosted backend requires the existing ADR 0131 network capability. AI Studio must make the active backend and remote-processing posture visible. Repository/project context is sent only as selected by the harness for the authorized task; adapters must not silently upload entire projects merely because the backend is remote.
++
++Provider request failures are structured as retryable/non-retryable backend evidence. Rate limiting, authentication expiry, safety refusals, server errors, and transport loss cannot be converted into successful AgentRun completion.
++
++## Capability profile
++
++Hosted adapters report discoverable context, tool/structured-output, image, reasoning, streaming, and usage capabilities. Unsupported features remain unavailable. Backend-specific resource controls for remote GPUs are not represented as local ADR 0135 GPU residency controls.
++
++## Dependencies and parallel work
++
++This ADR can be implemented in parallel with ADR 0141 and other Wave A ADRs because ADR 0131 already defines the ModelBackend boundary. ADR 0150 may later route to hosted models only after ADR 0142 proves a benefit.
++
++## Verification
++
++Implementation must cover secret-storage boundaries, no secret serialization, explicit network permission, provider error mapping, cancellation/stream interruption, capability honesty, context-size handling, sanitized Remote AI Studio status, and unchanged host-owned completion gates.
++
++Credential/backend selection UI requires Editor Visual Validation.
++
++## Non-goals
++
++This ADR does not define provider-specific external coding agents, route between multiple models, or make a hosted provider authoritative for project mutation.
+diff --git a/docs/adr/0145-first-class-external-agent-runtime-provider-adapters.md b/docs/adr/0145-first-class-external-agent-runtime-provider-adapters.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..da9ed8e0726460d0c53440437bcd8141c9801a72
+--- /dev/null
++++ b/docs/adr/0145-first-class-external-agent-runtime-provider-adapters.md
+@@ -0,0 +1,55 @@
++# ADR 0145: First-Class External Agent Runtime Provider Adapters
++
++Status: Proposed
++Date: 2026-08-17
++Builds on: ADR 0131
++Relates to: ADR 0121, ADR 0133, ADR 0153
++
++## Context
++
++ADR 0131 already supports a generic external-process Agent Runtime with ephemeral Editor MCP connection injection. That boundary is intentionally provider-neutral, but a generic process launcher cannot expose provider-specific login state, capabilities, structured progress, cancellation behavior, resumability, or diagnostics for products such as Claude Code, Codex, and future compatible coding agents.
++
++First-class adapters are useful only if they remain clients of the existing Agent Host rather than creating vendor-specific AI Studio semantics.
++
++## Decision
++
++GameEngine may provide dedicated `ExternalAgentRuntime` adapters for supported coding-agent providers. Each adapter maps provider lifecycle and protocol behavior into existing `AgentEvent`, run-state, permission, cancellation, and diagnostic contracts.
++
++Adapters may own:
++
++- provider executable/session discovery;
++- provider-managed login/authentication status;
++- supported capability detection;
++- provider command/protocol construction;
++- MCP endpoint/credential injection at process launch;
++- structured provider event translation;
++- graceful cancellation/termination; and
++- provider-specific retry/diagnostic classification.
++
++Adapters MUST NOT own project authoring semantics, bypass the code workspace, commit Git history automatically, define separate permission scopes, or mark host completion gates successful.
++
++## Authentication
++
++When a provider legitimately manages subscription/account authentication, GameEngine does not require or copy an API key. Provider-managed credentials remain provider-owned. GameEngine stores only non-secret adapter configuration and provider status needed for UX.
++
++## MCP and workspace boundary
++
++The active Editor MCP endpoint remains loopback-only and project-scoped. Ephemeral MCP connection material is injected only into the local provider process that needs it and is not persisted to project/shared AI records or forwarded to Remote AI Studio. Source edits continue through the Agent Code Workspace unless an explicitly elevated escape-hatch operation is approved.
++
++## Provider events
++
++Raw stdout/stderr may be retained for local diagnostics but is not the sole UI truth. The adapter should translate provider progress into semantic events when the provider exposes enough structure. Unknown provider messages remain diagnostics instead of inventing semantic success.
++
++## Dependencies and parallel work
++
++This ADR can be implemented in parallel with ADR 0141-0144 and ADR 0146-0149. ADR 0153 may later add provider/OS sandbox capabilities around these processes but is not required for first-class adapter semantics.
++
++## Verification
++
++Each supported adapter must prove provider discovery/auth status, MCP injection without persistence, cancellation, process failure mapping, sanitized remote status, no bypass of host permissions/completion, and compatibility with the generic external runtime fallback.
++
++Provider selection/auth UI requires Editor Visual Validation.
++
++## Non-goals
++
++This ADR does not treat external coding agents as `ModelBackend`, assume one authentication method for all providers, or guarantee OS confinement merely because an adapter is first-class.
+diff --git a/docs/adr/0146-governed-ai-asset-acquisition-and-generative-content-providers.md b/docs/adr/0146-governed-ai-asset-acquisition-and-generative-content-providers.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..b61cdc96850e8723d5cff47b22be0e10b5728930
+--- /dev/null
++++ b/docs/adr/0146-governed-ai-asset-acquisition-and-generative-content-providers.md
+@@ -0,0 +1,59 @@
++# ADR 0146: Governed AI Asset Acquisition and Generative Content Providers
++
++Status: Proposed
++Date: 2026-08-17
++Builds on: ADR 0131
++Relates to: ADR 0021, ADR 0029, ADR 0075, ADR 0121
++
++## Context
++
++ADR 0131 reserves an asset acquisition service for AI workflows. The current agent can reason about existing project assets but does not provide a governed service for searching external catalogs, downloading content, or requesting generated images, audio, or 3D assets. Falling back to arbitrary shell/curl writes would bypass manifest/import rules and make provenance and permissions provider-specific.
++
++## Decision
++
++GameEngine adds a GUI-free **Agent Asset Acquisition Service** above the normal asset import/manifest pipeline. AI runtimes request typed search/acquire/generate operations; providers perform remote/local acquisition; accepted content then enters existing GameEngine import and registration paths.
++
++Provider classes may include:
++
++- external asset catalogs;
++- local asset libraries;
++- image generation;
++- audio generation;
++- 3D/model generation; and
++- future organization-managed content sources.
++
++A provider does not receive direct authoring authority merely because it returns files.
++
++## Permissions
++
++Network acquisition requires ADR 0131 network permission. Writing acquired assets requires the appropriate asset-write capability. Paid generation, external licensing acceptance, unusually large downloads, or provider credential use may require an additional explicit user decision when the provider contract cannot be covered safely by the existing permission grant.
++
++## Provenance and licensing
++
++When available, acquired content records reviewable source/provider identity, original asset identifier/URL or generation request identity, license/provenance metadata, and acquisition timestamp/version. This metadata is collaboration/audit information and must not contain provider credentials or temporary download tokens.
++
++Generated-content prompts and provider responses may be retained in AI audit/session history when allowed by session privacy policy, but they are not canonical gameplay data unless deliberately authored into a project document.
++
++## Import boundary
++
++Providers return bounded acquisition artifacts into a controlled staging area. Final project paths are chosen through GameEngine path confinement and normal asset import semantics. Providers MUST NOT write arbitrary project locations, mutate `asset_manifest.json` directly, or bypass importer validation.
++
++Failed acquisition/import is structured evidence for repair or user action; a downloaded-but-unimportable artifact is not reported as a completed project asset.
++
++## Remote AI Studio
++
++Remote clients may approve a pending asset/network permission and view summarized provenance/status, but provider credentials, temporary download URLs, raw filesystem paths, and unrestricted provider output are sanitized under ADR 0133.
++
++## Dependencies and parallel work
++
++This ADR can be implemented in parallel with ADR 0141-0145 and ADR 0147-0149. The native Agent from ADR 0141 can consume the service when both are on `main`, but external Agent Runtimes may also use it through the same host capability.
++
++## Verification
++
++Implementation must cover network/asset permission enforcement, project-root confinement, provider failure mapping, import-pipeline reuse, provenance retention, no credential persistence, duplicate/idempotent acquisition where relevant, cancellation, and remote sanitization.
++
++Asset-acquisition UI and provenance review require Editor Visual Validation.
++
++## Non-goals
++
++This ADR does not choose one commercial asset marketplace or generator, permit arbitrary web downloads by default, or define new canonical asset formats.
+diff --git a/docs/adr/0147-detached-local-ai-studio-frontend-and-versioned-host-protocol.md b/docs/adr/0147-detached-local-ai-studio-frontend-and-versioned-host-protocol.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..a3a0de9052963c29bf20d6e146e9a08029d41857
+--- /dev/null
++++ b/docs/adr/0147-detached-local-ai-studio-frontend-and-versioned-host-protocol.md
+@@ -0,0 +1,54 @@
++# ADR 0147: Detached Local AI Studio Frontend and Versioned Host Protocol
++
++Status: Proposed
++Date: 2026-08-17
++Builds on: ADR 0131
++Relates to: ADR 0117, ADR 0133, ADR 0135, ADR 0139
++
++## Context
++
++ADR 0131 states that the embedded Editor panel is only one presentation of AI Studio and requires the first local presentation extension to support detaching into a separate native OS window/viewport without creating a second Agent Host. It also permits a later same-machine separate-process or loopback local-web frontend through a versioned authenticated local protocol.
++
++The current AI Studio presentation is an Editor-owned egui window. A stronger separation improves workspace usability and allows AI conversation/progress to remain visible without giving a new frontend project-authoring ownership.
++
++## Decision
++
++GameEngine introduces two compatible local presentation tiers over the same project Agent Host.
++
++### Tier 1: detached native viewport/window
++
++The first implementation uses the existing Editor process and Agent Host but presents AI Studio in an independent native OS window/viewport. Detach, close, reopen, and reattach are presentation operations only. They MUST NOT create a new session, provider runtime, writer, permission broker, code workspace, or GPU resource broker.
++
++Closing the detached window does not cancel an active run.
++
++### Tier 2: same-machine frontend protocol
++
++A later separate process or loopback local-web client may connect to the same Agent Host through a versioned authenticated local frontend protocol. The protocol exposes frontend-oriented session/run snapshots, conversation/proposal actions, permission decisions, semantic events, and presentation-safe artifacts.
++
++It does not expose raw MCP, arbitrary filesystem/shell/Git execution, provider credentials, or a second mutable project working copy.
++
++## Local authentication
++
++Separate-process access uses ephemeral/revocable user-private credentials and loopback-only transport by default. Endpoint/credential state is application data outside canonical project files and project-shared AI history. Remote reachability remains ADR 0133 rather than being obtained by widening the local bind address.
++
++## State ownership
++
++Agent Host remains authoritative for sessions/runs. ADR 0139 remains authoritative for Editor working copies. ADR 0135 remains authoritative for native inference resource state. The frontend may display these states and request host actions but cannot own or mutate their underlying policy independently.
++
++## UX continuity
++
++Embedded, detached, and later same-machine clients should preserve the same conversation, proposal version, active run, pending permissions/questions, validation/playtest state, completion report, and audit history. Presentation-specific layout/scroll/draft state may remain local client state.
++
++## Dependencies and parallel work
++
++This ADR can be implemented in parallel with ADR 0141-0146, ADR 0148-0149, ADR 0151, and ADR 0153. It does not require Remote AI Studio changes.
++
++## Verification
++
++Implementation must prove one Agent Host across detach/reattach, run survival when a local presentation closes, identical proposal/run identity across views, no duplicate project writer, no credential persistence, and preserved ADR 0135 interrupt/resource semantics.
++
++Both detached-window and separate-frontend UI work require Visual Validation.
++
++## Non-goals
++
++This ADR does not make AI Studio remotely reachable, define mobile clients, move project authoring out of the Editor, or expose raw native GPU controls to the frontend.
+diff --git a/docs/adr/0148-remote-host-lifecycle-project-activation-and-narrow-startup-operations.md b/docs/adr/0148-remote-host-lifecycle-project-activation-and-narrow-startup-operations.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..938459c1c6c8deb604c54472bee2213558cf9d37
+--- /dev/null
++++ b/docs/adr/0148-remote-host-lifecycle-project-activation-and-narrow-startup-operations.md
+@@ -0,0 +1,56 @@
++# ADR 0148: Remote Host Lifecycle, Project Activation, and Narrow Startup Operations
++
++Status: Proposed
++Date: 2026-08-17
++Builds on: ADR 0117, ADR 0133
++Relates to: ADR 0121, ADR 0131
++
++## Context
++
++ADR 0133 intentionally assumes the Windows host is already powered on, connected to the private network, required GameEngine services are running, and the target project is open in its project-scoped Editor when write-capable authoring is needed. Power-on, OS login, Launcher control, project selection, and Editor startup are separate lifecycle concerns.
++
++Remote AI Studio becomes substantially more useful when a user can safely bring an existing project-scoped Editor service into the required ready state without receiving a generic remote shell/process launcher.
++
++## Decision
++
++GameEngine may add narrow authenticated remote lifecycle operations above ADR 0117 application lifecycle. The lifecycle surface is a separate application authority from AgentRun mutation permissions and remains constrained to known GameEngine lifecycle actions.
++
++Supported capability slices may include:
++
++1. report host/Launcher/Editor availability;
++2. list only projects known through the user's Launcher/recent-project application state;
++3. activate an already-running Editor for a selected canonical project location;
++4. request Launcher-managed Editor startup for an explicitly selected project; and
++5. report bootstrap readiness/failure back to Remote AI Studio.
++
++Machine wake/power-on may be integrated only through an explicit platform/provider capability with bounded target identity. OS credential entry or automatic interactive login is not part of the GameEngine project lifecycle contract.
++
++## No generic remote launcher
++
++The remote lifecycle API MUST NOT accept arbitrary executable paths, argv, shell commands, environment variables, or filesystem locations. Editor startup uses ADR 0117 Launcher/project-lifecycle contracts and existing project compatibility/lease checks.
++
++If the requested project already has an Editor lease, the existing Editor is activated instead of starting a second writer. If startup fails, the remote client receives sanitized structured lifecycle diagnostics.
++
++## Authentication and network boundary
++
++ADR 0133 private-network reachability remains authoritative. Lifecycle actions require an authenticated remote identity and an explicit lifecycle permission/policy suitable for the operation. Network membership alone does not grant Editor startup.
++
++Machine-specific endpoint, process, wake, and Launcher state remains user/application data and is not written to canonical project data or project-shared AI session records.
++
++## Relationship to AgentRun
++
++Starting/activating the required Editor only establishes application availability. It does not imply Go, grant authoring permissions, resume a cancelled run, or bypass pending permission/AwaitingUser decisions. Once available, normal Remote AI Studio continues through the same Agent Host and project-scoped MCP writer.
++
++## Dependencies and parallel work
++
++This ADR can be implemented in parallel with ADR 0141-0147, ADR 0149, ADR 0151, and ADR 0153. It does not depend on engine-native video.
++
++## Verification
++
++Implementation must cover duplicate-open prevention, project lease reuse, explicit project selection, incompatible-project failure, failed Editor bootstrap, no arbitrary process execution surface, sanitized remote errors, no lifecycle credentials in project data, and unchanged AgentRun authorization semantics.
++
++Remote lifecycle UI changes require mobile/narrow-layout Visual Validation in addition to any Launcher/Editor visual evidence.
++
++## Non-goals
++
++This ADR does not implement general remote desktop, arbitrary OS login automation, public Internet ingress, or a universal Wake-on-LAN service. Those require platform/security decisions outside the project-writer lifecycle.
+diff --git a/docs/adr/0149-engine-native-live-observation-and-media-transport.md b/docs/adr/0149-engine-native-live-observation-and-media-transport.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..bf32ca6a363b368ffb35847a06c98153852c55ca
+--- /dev/null
++++ b/docs/adr/0149-engine-native-live-observation-and-media-transport.md
+@@ -0,0 +1,58 @@
++# ADR 0149: Engine-Native Live Observation and Media Transport
++
++Status: Proposed
++Date: 2026-08-17
++Builds on: ADR 0035, ADR 0131, ADR 0133
++Relates to: ADR 0003, ADR 0135
++
++## Context
++
++Remote AI Studio first release uses bounded captured frames and visual-evaluation results. ADR 0133 explicitly keeps custom H.264/HEVC encoding, WebRTC, desktop capture, NAT traversal, and mobile video clients outside the first release and recommends existing remote-display software for optional live viewing.
++
++A future engine-native live view is justified only when GameEngine needs semantic integration that external remote display cannot provide, such as run-step-linked low-latency Game View observation, bounded frame provenance, or controlled media delivery to an AI Studio client.
++
++## Decision
++
++If GameEngine adds engine-native live observation, it is an observation/media subsystem above renderer-owned capture boundaries and below AI Studio presentation. It does not become an authoring path or a second runtime input authority.
++
++The media source must identify what is being observed, such as Game View, a specific runtime camera, or a supported Editor viewport. Renderer readback/capture APIs remain owned by renderer/application composition according to ADR 0003. The AI/remote layer consumes bounded frames or encoded samples and does not take ownership of GPU resources.
++
++## Media pipeline
++
++A concrete implementation must define:
++
++```text
++renderer-owned observation source
++  -> bounded capture/readback
++  -> encoder abstraction
++  -> authenticated media session
++  -> AI Studio client
++```
++
++Codec and transport are implementation choices only after their dependency, licensing, latency, platform, and security costs are measured. WebRTC or another low-latency protocol may be used, but signaling/media authentication must remain distinct from raw MCP and provider credentials.
++
++## Completion and evidence
++
++Live video supplements captured-frame evidence. ADR 0131 completion still requires owned frame/visual-evaluation evidence when applicable. A transient video stream does not replace the captured artifact used for audit, reconnect, or deterministic completion reporting.
++
++## Resource arbitration
++
++Live observation competes for renderer/encoder resources. ADR 0135 Play/frame-capture priority remains authoritative. Native inference must yield sufficient GPU budget for required rendering and observation. The remote client never receives raw model/renderer resource controls.
++
++## Security
++
++Media endpoints are private/authenticated by default and must not expose desktop-wide capture unless a separate explicit product decision authorizes that scope. Captured content may contain project/private information; access follows the same remote identity/session policy as Remote AI Studio and is not written to canonical project data.
++
++## Dependencies and parallel work
++
++This ADR can be implemented in parallel with other Wave A ADRs. It does not depend on ADR 0148 remote lifecycle. Integration with a native mobile app remains optional under ADR 0133 and is not required for this ADR.
++
++## Verification
++
++Implementation must measure end-to-end latency, encoder/readback overhead, renderer impact, reconnect behavior, access control, source identity, captured-frame audit continuity, and correct behavior when the media client disconnects while an AgentRun continues.
++
++Remote/live-view UI requires Visual Validation. Performance/resource validation must accompany renderer/media implementation.
++
++## Non-goals
++
++This ADR does not create a general remote desktop product, provide public NAT traversal by default, replace typed MCP authoring with pixel interaction, or make live video mandatory for Remote AI Studio completion.
+diff --git a/docs/adr/0150-multi-model-routing-and-workload-specialization.md b/docs/adr/0150-multi-model-routing-and-workload-specialization.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..c8d37eab63d7aca07fd23e5fd6032c833b663488
+--- /dev/null
++++ b/docs/adr/0150-multi-model-routing-and-workload-specialization.md
+@@ -0,0 +1,59 @@
++# ADR 0150: Multi-Model Routing and Workload Specialization
++
++Status: Proposed
++Date: 2026-08-17
++Builds on: ADR 0131, ADR 0141, ADR 0142
++Relates to: ADR 0135, ADR 0143, ADR 0144
++
++## Context
++
++ADR 0131 intentionally chooses one user-selected model as the first native baseline. That makes context continuity, failure diagnosis, resource behavior, and benchmark comparisons understandable. It permits a later `ModelRouter` only when GameEngine-specific measurements demonstrate a meaningful benefit.
++
++Potential specialization includes a smaller model for simple questions, a strong reasoning/coding model for implementation and repair, and a vision-capable model for frame evaluation. Routing too early would hide whether failures come from the model, context handoff, tool policy, or orchestration.
++
++## Decision
++
++GameEngine may introduce a provider-independent `ModelRouter` after the ADR 0141 single-model native Agent is complete and ADR 0142 provides a reproducible baseline. Routing is an optimization layer inside the native Agent Runtime; it does not create several AgentRuns or several proposal authorities.
++
++A routing decision may consider:
++
++- workload class and run phase;
++- required structured-output/tool/image/reasoning capabilities;
++- measured task quality;
++- latency and power targets;
++- context size;
++- local resource pressure and ADR 0143 capabilities;
++- user quality preference; and
++- provider/network availability.
++
++## Context handoff
++
++All models operate over the same provider-independent session/run state. Handoff uses `AgentWorkingState`, selected source provenance, proposal snapshot, relevant tool results, validation/runtime evidence, and explicit unresolved problems. One model's private transient KV cache or hidden conversation state cannot be the only copy of information required by the next model.
++
++Routing MUST preserve immutable run objectives, permissions, source provenance, stale-state checks, audit history, and completion gates.
++
++## Capability loss
++
++The router may select only a backend/model whose declared capabilities satisfy the requested turn. If image evaluation requires image input, switching to a text-only model must produce an explicit unavailable/fallback decision rather than silently marking evaluation successful.
++
++## Measurement and adoption
++
++Every routing policy has a version and is benchmarked against the ADR 0142 single-model baseline. A policy is adopted only when it improves a defined combination of task success, latency, memory, power, or cost without unacceptable regressions. Routing decisions and model identities are recorded in run/benchmark audit data with secrets removed.
++
++## Failure and fallback
++
++Provider/model failure may fall back to another compatible model only when the fallback preserves the same run semantics and user policy. A fallback that changes remote-processing posture, cost class, or required permission must request the appropriate user decision instead of silently switching.
++
++## Dependencies and parallel work
++
++Implementation is sequenced after ADR 0141 and ADR 0142. ADR 0143 and ADR 0144 are optional inputs; if they are not yet on `main`, the router uses only available resource/provider signals.
++
++## Verification
++
++Tests and benchmarks must prove stable session/run identity across model switches, explicit context handoff, capability-safe routing, preserved permission/completion semantics, measured improvement over baseline, deterministic fallback policy where possible, and no hidden credential/context leakage between providers.
++
++Routing/model-status UI requires Editor Visual Validation.
++
++## Non-goals
++
++This ADR does not make multiple models a correctness requirement, allow weak models to rewrite architecture-sensitive decisions without evidence, or route to an unverified model merely because it is cheaper/faster.
+diff --git a/docs/adr/0151-headless-write-capable-mcp-host-and-project-writer-ownership.md b/docs/adr/0151-headless-write-capable-mcp-host-and-project-writer-ownership.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..980fb5f5e07638f92a48331effefab76180aaa81
+--- /dev/null
++++ b/docs/adr/0151-headless-write-capable-mcp-host-and-project-writer-ownership.md
+@@ -0,0 +1,50 @@
++# ADR 0151: Headless Write-Capable MCP Host and Project-Writer Ownership
++
++Status: Proposed
++Date: 2026-08-17
++Builds on: ADR 0117, ADR 0121
++Relates to: ADR 0131, ADR 0139, ADR 0152
++
++## Context
++
++ADR 0121 deliberately makes the initial write-capable MCP endpoint Editor-attached and project-scoped. When no Editor is open, CLI is the supported headless mutation path. A future headless write-capable MCP host is useful for automation servers, non-visual agent work, and environments where starting the full Editor is unnecessary, but it cannot become a second writer beside a live Editor.
++
++ADR 0117 already defines an OS-backed exclusive Editor lease for a canonical project location. ADR 0139 separately defines authoritative in-memory working copies inside a live Editor process. A headless writer needs an application-level ownership contract that composes with both.
++
++## Decision
++
++GameEngine may add a GUI-free **Headless Authoring Host** that exposes the same `engine-mcp` tool semantics only after acquiring explicit project-writer ownership for the canonical project location. It is a host for shared authoring services, not a separate authoring implementation.
++
++## Writer ownership
++
++A project location has one authoritative write host at a time. The ownership mechanism must prevent the headless host from acquiring write authority while an Editor owns the same location. The existing project-lifecycle lease may be generalized or composed with a writer-role lease, but authority must remain OS/process robust rather than metadata-only.
++
++A read-only headless MCP service may coexist when it cannot observe dirty Editor working copies; it must clearly report that its view is saved-file state rather than the live Editor working copy. It MUST NOT claim parity with the live Editor for unsaved authoring state.
++
++## Authoring semantics
++
++The headless host uses the same capability registry, schemas, commands, transactions, validation, path confinement, stale-generation checks, and serialization as Editor MCP/CLI. It does not route through CLI argv/stdout and does not add headless-only mutation rules.
++
++One mutation request remains one bounded transaction unless a later ADR explicitly changes ADR 0121 transaction identity.
++
++## Persistence and working copies
++
++A headless host loads canonical saved project data and owns any in-memory working state it creates for its process. There is no hidden synchronization with an Editor process. Transitioning writer ownership between headless and Editor hosts requires the prior writer to release ownership and persist/resolve dirty state according to its contract before the next writer becomes authoritative.
++
++## Agent Host integration
++
++ADR 0131 Agent Runtime may target a headless host only when the project-writer ownership contract confirms that host is authoritative. Remote AI Studio or a native Agent must not silently start a headless writer beside an Editor to bypass availability or stale-state errors.
++
++## Dependencies and parallel work
++
++This ADR can be implemented in parallel with ADR 0141-0149 and ADR 0153. ADR 0152 depends on the writer-ownership model established here before enabling concurrent AI writers.
++
++## Verification
++
++Implementation must prove mutual exclusion with Editor ownership, crash-safe lease release, identical shared authoring semantics, no MCP-specific direct file replacement, explicit saved-state visibility for read-only coexistence, safe writer handoff, and unchanged canonical serialization/Stable IDs.
++
++Headless-only implementation requires no Visual Validation unless Launcher/Editor ownership/conflict UX is changed.
++
++## Non-goals
++
++This ADR does not introduce concurrent writers, real-time collaboration, cross-call open transactions, or a second project working copy that is magically merged with dirty Editor memory.
+diff --git a/docs/adr/0152-multi-agent-writer-coordination-and-conflict-ownership.md b/docs/adr/0152-multi-agent-writer-coordination-and-conflict-ownership.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..94368da2c4dc22828af330f7ce73f55165e3d9e7
+--- /dev/null
++++ b/docs/adr/0152-multi-agent-writer-coordination-and-conflict-ownership.md
+@@ -0,0 +1,61 @@
++# ADR 0152: Multi-Agent Writer Coordination and Conflict Ownership
++
++Status: Proposed
++Date: 2026-08-17
++Builds on: ADR 0131, ADR 0139, ADR 0151
++Relates to: ADR 0005, ADR 0121, ADR 0141
++
++## Context
++
++ADR 0131 intentionally permits multiple read-oriented sessions but only one AI run per Editor project to hold the writer role. Human editing remains allowed because stale revision/generation checks provide a clear conflict boundary. A future workflow may benefit from several AI agents working on independent domains, but simply removing the single-writer guard would create ambiguous ownership of documents, source files, permissions, repair loops, and completion evidence.
++
++## Decision
++
++GameEngine introduces multi-agent writing only through explicit **work ownership** and **conflict detection** above the existing authoring/code-workspace boundaries. One project authority remains responsible for canonical mutations; multiple agents do not become independent file writers.
++
++## Work claims
++
++A write-capable run declares a bounded working set at an appropriate semantic level, such as:
++
++- authoring document identities;
++- source files/modules or code-workspace paths;
++- asset acquisition targets; and
++- shared resources that require exclusive coordination.
++
++Claims are run-control/application metadata, not canonical project data. Claims may be refined as inspection discovers additional required scope. Expanding into a conflicting claim requires waiting, re-planning, or an explicit conflict resolution decision.
++
++## Authoring conflicts
++
++Authoring mutations still use ADR 0121/0139 authoritative revisions and transactions. A claim does not bypass stale-revision rejection. Two agents whose scopes are disjoint may progress concurrently; conflicting changes serialize at the authoritative service or cause one agent to re-inspect/re-plan.
++
++## Source-code conflicts
++
++Each AgentSession/Run retains governed code-workspace checkpoints/diffs. Multi-agent integration must detect overlapping source edits against a common authoritative baseline. Automatic merge is allowed only when it is structurally safe and reviewable. Conflicts become explicit run evidence; agents MUST NOT overwrite another run's applied change by force.
++
++## Human editing
++
++Human edits remain outside AI claim ownership and are always allowed. They may invalidate one or more agent assumptions and cause stale rejection/replanning. AI claims cannot lock the human out of the Editor.
++
++## Completion and audit
++
++Each run keeps its own proposal snapshot, permissions, events, validation evidence, and completion report. Project-level orchestration may summarize dependency relationships between runs, but one run cannot claim completion based solely on another run's unverified output.
++
++Audit history records claim acquisition/release, waits/conflicts, cross-run dependencies, reconciliations, and final applied changes.
++
++## Scheduling
++
++The first multi-writer implementation SHOULD prefer conservative concurrency: allow obviously disjoint read/authoring/code scopes and serialize ambiguous/shared scopes. Optimistic broad parallelism is not a correctness goal.
++
++## Dependencies and parallel work
++
++This ADR is Wave D. It follows ADR 0151 writer ownership and should use a stable ADR 0141 native writer as one representative client. It MUST NOT be implemented by depending on unmerged sibling branches.
++
++## Verification
++
++Tests must cover disjoint concurrent work, overlapping document claims, overlapping source edits, human edits during both runs, stale-revision rejection, run cancellation releasing claims, crash/restart cleanup, explicit conflict reporting, and independent completion gates.
++
++Multi-agent status/conflict UI requires Editor Visual Validation.
++
++## Non-goals
++
++This ADR does not provide real-time multi-user collaboration, distributed CRDT project files, automatic resolution of every Git/source conflict, or permission for several processes to bypass one authoritative project writer.
+diff --git a/docs/adr/0153-agent-process-confinement-and-os-provider-sandbox-integration.md b/docs/adr/0153-agent-process-confinement-and-os-provider-sandbox-integration.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..63d46ad117c02eca4db0e57c55aad15bca67e586
+--- /dev/null
++++ b/docs/adr/0153-agent-process-confinement-and-os-provider-sandbox-integration.md
+@@ -0,0 +1,51 @@
++# ADR 0153: Agent Process Confinement and OS/Provider Sandbox Integration
++
++Status: Proposed
++Date: 2026-08-17
++Builds on: ADR 0131
++Relates to: ADR 0145
++
++## Context
++
++ADR 0131 explicitly distinguishes GameEngine application permissions from operating-system confinement. An external agent process running with the user's normal OS identity may access resources outside GameEngine even when AI Studio policy would have denied the equivalent managed capability. The first release correctly avoids claiming a universal sandbox, but future provider/OS integration can strengthen the boundary where the platform supports it.
++
++## Decision
++
++GameEngine may integrate real provider or operating-system confinement as an optional capability of an external Agent Runtime adapter. Confinement is defense in depth above the existing permission broker; it does not replace semantic permissions, MCP transactions, code-workspace confinement, or audit history.
++
