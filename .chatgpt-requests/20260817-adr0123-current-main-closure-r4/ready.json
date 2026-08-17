@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "20260817-adr0123-current-main-closure-r4",
+  "target_branch": "chatgpt/gameengine-adr0123-current-main-closure",
+  "expected_head_sha": "17d194de1b3422e93c311e794fedcce23c5aae49",
+  "baseline_main_sha": "6bb36e3789f49ec13f16ef1b447be1cdc3be3d5c",
+  "patch_sha256": "5245cd100a234aa8df19b44e1d3993f730b115f6b3c74bb8d7bfb130f0258745",
+  "patch_bytes": 2609,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Stack ADR 0123 visual validation workspace",
+  "pr_title": "ADR 0123: close current-main Behavior Tree validation",
+  "pr_body": "## Summary\n\n- preserve the already-merged ADR 0123 runtime/lifecycle/abort/stateful decorator contracts\n- provide deterministic visual evidence for schema-driven authoring and the live runtime graph\n- stack the authoring palette above a wide graph/debug row so active-path and lifecycle evidence remain legible\n- keep persisted graph documents, Stable IDs, compiled DTOs, and runtime execution semantics unchanged\n\n## Validation\n\nRun affected Windows Validation and Editor Visual Validation. Windows Validation has a confirmed current-main planner blocker in the public-snapshot security scan unrelated to this product diff.\n\n<!-- gameengine-visual-validation: editor -->\n\n<!-- gameengine-chatgpt-dispatcher -->"
+}
