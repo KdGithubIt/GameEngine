@@ -33,5 +33,5 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Run incident regression suite
-        run: python3 .github/chatgpt/test_request_protocol.py
+      - name: Run incident and producer regression suites
+        run: python3 -m unittest discover -s .github/chatgpt -p 'test_*_protocol.py' -v

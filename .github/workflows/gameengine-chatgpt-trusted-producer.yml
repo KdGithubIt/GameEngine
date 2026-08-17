@@ -1,0 +1,294 @@
+name: GameEngine ChatGPT Trusted Producer
+
+run-name: >-
+  Build ChatGPT request from ${{ github.event_name == 'issues' && format('issue #{0}', github.event.issue.number) || github.event.inputs.producer_branch }}
+
+on:
+  issues:
+    types:
+      - opened
+  workflow_dispatch:
+    inputs:
+      producer_branch:
+        description: Immutable chatgpt-producer-stage-<request-id> branch
+        required: true
+        type: string
+      producer_commit:
+        description: Full producer ready commit SHA
+        required: true
+        type: string
+
+permissions:
+  actions: write
+  contents: write
+  issues: write
+
+concurrency:
+  group: gameengine-chatgpt-trusted-producer
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  produce:
+    name: Build and publish immutable Dispatcher request
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      ((github.event.issue.author_association == 'OWNER' ||
+        github.event.issue.author_association == 'MEMBER' ||
+        github.event.issue.author_association == 'COLLABORATOR') &&
+       startsWith(github.event.issue.title, 'GameEngine ChatGPT Producer: '))
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out trusted controls from main
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Resolve trusted producer input
+        id: input
+        shell: bash
+        env:
+          EXPECTED_REPOSITORY: KdGithubIt/GameEngine
+          ISSUE_BODY: ${{ github.event.issue.body }}
+          ISSUE_ASSOCIATION: ${{ github.event.issue.author_association }}
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          DISPATCH_PRODUCER_BRANCH: ${{ github.event.inputs.producer_branch }}
+          DISPATCH_PRODUCER_COMMIT: ${{ github.event.inputs.producer_commit }}
+        run: |
+          set -euo pipefail
+
+          fail() {
+            echo "::error::$1"
+            exit 1
+          }
+
+          [[ "$GITHUB_REPOSITORY" == "$EXPECTED_REPOSITORY" ]] ||
+            fail "This workflow is restricted to $EXPECTED_REPOSITORY."
+          [[ "$GITHUB_REF_NAME" == "main" ]] ||
+            fail "The write-capable trusted producer must run from main."
+
+          issue_number=""
+          case "$GITHUB_EVENT_NAME" in
+            issues)
+              case "$ISSUE_ASSOCIATION" in
+                OWNER|MEMBER|COLLABORATOR) ;;
+                *) fail "Connector producer signal must be opened by a repository owner/member/collaborator." ;;
+              esac
+              printf '%s' "$ISSUE_BODY" > "$RUNNER_TEMP/chatgpt-producer-signal.json"
+              jq -e 'type == "object" and
+                .signal == "gameengine-chatgpt-producer-v1" and
+                (.request_id | type == "string") and
+                (.producer_branch | type == "string") and
+                (.producer_commit | type == "string") and
+                (keys | sort == ["producer_branch", "producer_commit", "request_id", "signal"])' \
+                "$RUNNER_TEMP/chatgpt-producer-signal.json" >/dev/null ||
+                fail "Issue body must be the exact GameEngine ChatGPT producer signal JSON object."
+              request_id="$(jq -r '.request_id' "$RUNNER_TEMP/chatgpt-producer-signal.json")"
+              producer_branch="$(jq -r '.producer_branch' "$RUNNER_TEMP/chatgpt-producer-signal.json")"
+              producer_commit="$(jq -r '.producer_commit' "$RUNNER_TEMP/chatgpt-producer-signal.json")"
+              [[ "$ISSUE_TITLE" == "GameEngine ChatGPT Producer: $request_id" ]] ||
+                fail "Producer signal Issue title must exactly identify request_id."
+              issue_number="$ISSUE_NUMBER"
+              ;;
+            workflow_dispatch)
+              producer_branch="$DISPATCH_PRODUCER_BRANCH"
+              producer_commit="$DISPATCH_PRODUCER_COMMIT"
+              request_id=""
+              ;;
+            *)
+              fail "Unsupported trusted producer event: $GITHUB_EVENT_NAME"
+              ;;
+          esac
+
+          [[ "$producer_branch" =~ ^chatgpt-producer-stage-([A-Za-z0-9][A-Za-z0-9._-]{0,63})$ ]] ||
+            fail "producer_branch must be chatgpt-producer-stage-<request-id>."
+          branch_request_id="${BASH_REMATCH[1]}"
+          if [[ -n "$request_id" ]]; then
+            [[ "$request_id" == "$branch_request_id" ]] ||
+              fail "Issue request_id must match producer_branch."
+          else
+            request_id="$branch_request_id"
+          fi
+          [[ "$producer_commit" =~ ^[0-9a-fA-F]{40}$ ]] ||
+            fail "producer_commit must be a full commit SHA."
+
+          {
+            echo "producer_branch=$producer_branch"
+            echo "producer_commit=$producer_commit"
+            echo "request_id=$request_id"
+            echo "issue_number=$issue_number"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build request from immutable producer branch
+        id: build
+        shell: bash
+        env:
+          PRODUCER_BRANCH: ${{ steps.input.outputs.producer_branch }}
+          PRODUCER_COMMIT: ${{ steps.input.outputs.producer_commit }}
+          REQUEST_ID: ${{ steps.input.outputs.request_id }}
+        run: |
+          set -euo pipefail
+
+          output_dir="$RUNNER_TEMP/chatgpt-built-request"
+          rm -rf "$output_dir"
+          python3 .github/chatgpt/producer_protocol.py build \
+            --request-repo "$GITHUB_WORKSPACE" \
+            --producer-branch "$PRODUCER_BRANCH" \
+            --producer-commit "$PRODUCER_COMMIT" \
+            --request-id "$REQUEST_ID" \
+            --output-dir "$output_dir" \
+            > "$RUNNER_TEMP/chatgpt-producer-result.json"
+
+          cat "$RUNNER_TEMP/chatgpt-producer-result.json"
+          ready="$output_dir/ready.json"
+          stage_branch="chatgpt-dispatch-stage-$REQUEST_ID"
+          target_branch="$(jq -r '.target_branch' "$ready")"
+          expected_head="$(jq -r '.expected_head_sha' "$ready")"
+          baseline_main="$(jq -r '.baseline_main_sha' "$ready")"
+
+          {
+            echo "output_dir=$output_dir"
+            echo "stage_branch=$stage_branch"
+            echo "target_branch=$target_branch"
+            echo "expected_head=$expected_head"
+            echo "baseline_main=$baseline_main"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Publish exact builder output to immutable stage branch
+        id: publish
+        shell: bash
+        env:
+          PRODUCER_BRANCH: ${{ steps.input.outputs.producer_branch }}
+          PRODUCER_COMMIT: ${{ steps.input.outputs.producer_commit }}
+          REQUEST_ID: ${{ steps.input.outputs.request_id }}
+          OUTPUT_DIR: ${{ steps.build.outputs.output_dir }}
+          STAGE_BRANCH: ${{ steps.build.outputs.stage_branch }}
+          TARGET_BRANCH: ${{ steps.build.outputs.target_branch }}
+          EXPECTED_HEAD: ${{ steps.build.outputs.expected_head }}
+          BASELINE_MAIN: ${{ steps.build.outputs.baseline_main }}
+        run: |
+          set -euo pipefail
+
+          fail() {
+            echo "::error::$1"
+            exit 1
+          }
+
+          remote_producer="$(git ls-remote origin "refs/heads/$PRODUCER_BRANCH" | awk '{print $1}')"
+          [[ "$remote_producer" == "$PRODUCER_COMMIT" ]] ||
+            fail "Producer branch moved after its signal. Use a new request ID."
+
+          remote_target="$(git ls-remote origin "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
+          [[ "$remote_target" == "$EXPECTED_HEAD" ]] ||
+            fail "Target branch moved after request build. Rebuild from current target state."
+          remote_main="$(git ls-remote origin refs/heads/main | awk '{print $1}')"
+          [[ "$remote_main" == "$BASELINE_MAIN" ]] ||
+            fail "main advanced after request build. Rebuild from current main."
+
+          existing_stage="$(git ls-remote origin "refs/heads/$STAGE_BRANCH" | awk '{print $1}')"
+          [[ -z "$existing_stage" ]] ||
+            fail "Stage branch already exists; request IDs are immutable and may not be reused."
+
+          git checkout --detach "$BASELINE_MAIN"
+          git switch -c "$STAGE_BRANCH"
+          git config user.name "ChatGPT GameEngine Trusted Producer"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          request_dir=".chatgpt-requests/$REQUEST_ID"
+          mkdir -p "$request_dir"
+          shopt -s nullglob
+          parts=("$OUTPUT_DIR"/part-*.patch)
+          [[ ${#parts[@]} -ge 1 ]] || fail "Mechanical builder produced no patch parts."
+          for part in "${parts[@]}"; do
+            cp "$part" "$request_dir/$(basename "$part")"
+          done
+          git add "$request_dir"/part-*.patch
+          git commit -m "Stage ChatGPT request $REQUEST_ID patch parts"
+
+          remote_producer="$(git ls-remote origin "refs/heads/$PRODUCER_BRANCH" | awk '{print $1}')"
+          [[ "$remote_producer" == "$PRODUCER_COMMIT" ]] ||
+            fail "Producer branch moved before ready publication. Use a new request ID."
+          remote_target="$(git ls-remote origin "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
+          [[ "$remote_target" == "$EXPECTED_HEAD" ]] ||
+            fail "Target branch moved before ready publication. Rebuild from current target state."
+          remote_main="$(git ls-remote origin refs/heads/main | awk '{print $1}')"
+          [[ "$remote_main" == "$BASELINE_MAIN" ]] ||
+            fail "main advanced before ready publication. Rebuild from current main."
+
+          cp "$OUTPUT_DIR/ready.json" "$request_dir/ready.json"
+          git add "$request_dir/ready.json"
+          git commit -m "Mark ChatGPT request $REQUEST_ID ready"
+          request_commit="$(git rev-parse HEAD)"
+
+          git push \
+            --force-with-lease="refs/heads/$STAGE_BRANCH:" \
+            origin "HEAD:refs/heads/$STAGE_BRANCH"
+
+          {
+            echo "request_commit=$request_commit"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Dispatch trusted transport publisher
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STAGE_BRANCH: ${{ steps.build.outputs.stage_branch }}
+          REQUEST_COMMIT: ${{ steps.publish.outputs.request_commit }}
+        run: |
+          set -euo pipefail
+          gh workflow run gameengine-chatgpt-transport-publisher.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref main \
+            -f stage_branch="$STAGE_BRANCH" \
+            -f request_commit="$REQUEST_COMMIT"
+
+      - name: Close accepted connector signal issue
+        if: ${{ success() && github.event_name == 'issues' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ steps.input.outputs.issue_number }}
+          REQUEST_ID: ${{ steps.input.outputs.request_id }}
+          STAGE_BRANCH: ${{ steps.build.outputs.stage_branch }}
+          REQUEST_COMMIT: ${{ steps.publish.outputs.request_commit }}
+        run: |
+          gh issue close "$ISSUE_NUMBER" \
+            --repo "$GITHUB_REPOSITORY" \
+            --comment "Accepted trusted producer request \`$REQUEST_ID\`; staged as \`$STAGE_BRANCH\` at \`$REQUEST_COMMIT\`."
+
+      - name: Comment on failed connector signal issue
+        if: ${{ failure() && github.event_name == 'issues' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          gh issue comment "$ISSUE_NUMBER" \
+            --repo "$GITHUB_REPOSITORY" \
+            --body "Trusted producer processing failed. Inspect this workflow run before creating a new immutable producer request."
+
+      - name: Summarize trusted producer result
+        if: ${{ success() }}
+        shell: bash
+        env:
+          PRODUCER_BRANCH: ${{ steps.input.outputs.producer_branch }}
+          PRODUCER_COMMIT: ${{ steps.input.outputs.producer_commit }}
+          REQUEST_ID: ${{ steps.input.outputs.request_id }}
+          STAGE_BRANCH: ${{ steps.build.outputs.stage_branch }}
+          REQUEST_COMMIT: ${{ steps.publish.outputs.request_commit }}
+        run: |
+          {
+            echo "### ChatGPT connector producer request built"
+            echo
+            echo "- Producer branch: \`$PRODUCER_BRANCH\`"
+            echo "- Producer ready commit: \`$PRODUCER_COMMIT\`"
+            echo "- Request: \`$REQUEST_ID\`"
+            echo "- Stage branch: \`$STAGE_BRANCH\`"
+            echo "- Stage ready commit: \`$REQUEST_COMMIT\`"
+            echo "- Mechanical request builder: passed"
+            echo "- Direct connector write to chatgpt-dispatch: not used"
+          } >> "$GITHUB_STEP_SUMMARY"
