@@ -1,7 +1,7 @@
 name: GameEngine ChatGPT Transport Stage Signal
 
 run-name: >-
-  ChatGPT staged request ready ${{ github.sha }}
+  ChatGPT staged request ready ${{ github.event_name == 'workflow_dispatch' && inputs.stage_branch || github.ref_name }} ${{ github.event_name == 'workflow_dispatch' && inputs.request_commit || github.sha }}
 
 on:
   push:
@@ -9,12 +9,22 @@ on:
       - "chatgpt-dispatch-stage-*"
     paths:
       - ".chatgpt-requests/**/ready.json"
+  workflow_dispatch:
+    inputs:
+      stage_branch:
+        description: Immutable chatgpt-dispatch-stage-<request-id> branch
+        required: true
+        type: string
+      request_commit:
+        description: Full ready commit SHA at the immutable stage branch head
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: gameengine-chatgpt-stage-signal-${{ github.ref_name }}
+  group: gameengine-chatgpt-stage-signal-${{ github.event_name == 'workflow_dispatch' && inputs.stage_branch || github.ref_name }}
   cancel-in-progress: false
 
 jobs:
@@ -27,6 +37,7 @@ jobs:
       - name: Check out the staged request commit
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.request_commit || github.sha }}
           fetch-depth: 2
           persist-credentials: false
 
@@ -34,6 +45,10 @@ jobs:
         shell: bash
         env:
           EXPECTED_REPOSITORY: KdGithubIt/GameEngine
+          STAGE_BRANCH: ${{ github.event_name == 'workflow_dispatch' && inputs.stage_branch || github.ref_name }}
+          REQUEST_COMMIT: ${{ github.event_name == 'workflow_dispatch' && inputs.request_commit || github.sha }}
+          PUSH_BRANCH: ${{ github.ref_name }}
+          PUSH_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
 
@@ -44,15 +59,28 @@ jobs:
 
           [[ "$GITHUB_REPOSITORY" == "$EXPECTED_REPOSITORY" ]] ||
             fail "This workflow is restricted to $EXPECTED_REPOSITORY."
-          [[ "$GITHUB_REF_NAME" =~ ^chatgpt-dispatch-stage-([A-Za-z0-9][A-Za-z0-9._-]{0,63})$ ]] ||
+          [[ "$STAGE_BRANCH" =~ ^chatgpt-dispatch-stage-([A-Za-z0-9][A-Za-z0-9._-]{0,63})$ ]] ||
             fail "This signal is restricted to chatgpt-dispatch-stage-<request-id>."
           request_id="${BASH_REMATCH[1]}"
-
-          [[ "$GITHUB_SHA" =~ ^[0-9a-fA-F]{40}$ ]] ||
+          [[ "$REQUEST_COMMIT" =~ ^[0-9a-fA-F]{40}$ ]] ||
             fail "The staged request head must be a full commit SHA."
 
+          if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
+            [[ "$PUSH_BRANCH" == "$STAGE_BRANCH" && "$PUSH_SHA" == "$REQUEST_COMMIT" ]] ||
+              fail "Push signal context does not match the staged request identity."
+          elif [[ "$GITHUB_EVENT_NAME" != "workflow_dispatch" ]]; then
+            fail "Unsupported stage signal event: $GITHUB_EVENT_NAME"
+          fi
+
+          remote_head="$(git ls-remote origin "refs/heads/$STAGE_BRANCH" | awk '{print $1}')"
+          [[ "$remote_head" == "$REQUEST_COMMIT" ]] ||
+            fail "The stage branch moved before the read-only signal validated it."
+          actual_head="$(git rev-parse HEAD)"
+          [[ "$actual_head" == "$REQUEST_COMMIT" ]] ||
+            fail "The checked-out ready commit does not match the requested immutable stage head."
+
           mapfile -d '' changed_paths < <(
-            git diff-tree --no-commit-id --name-only -r -z "$GITHUB_SHA"
+            git diff-tree --no-commit-id --name-only -r -z "$REQUEST_COMMIT"
           )
           [[ ${#changed_paths[@]} -eq 1 ]] ||
             fail "The staged ready commit must change exactly one file."
@@ -62,16 +90,16 @@ jobs:
           [[ "$ready_path" == "$expected_ready_path" ]] ||
             fail "The staged ready commit must add $expected_ready_path."
 
-          change_status="$(git diff-tree --no-commit-id --name-status -r "$GITHUB_SHA")"
+          change_status="$(git diff-tree --no-commit-id --name-status -r "$REQUEST_COMMIT")"
           [[ "$change_status" == $'A\t'"$ready_path" ]] ||
             fail "ready.json must be newly added in the final staged commit."
 
-          ready_mode="$(git ls-tree "$GITHUB_SHA" -- "$ready_path" | awk '{print $1}')"
+          ready_mode="$(git ls-tree "$REQUEST_COMMIT" -- "$ready_path" | awk '{print $1}')"
           [[ "$ready_mode" == "100644" ]] ||
             fail "ready.json must be a normal non-executable file."
 
           manifest="$RUNNER_TEMP/chatgpt-stage-ready.json"
-          git show "$GITHUB_SHA:$ready_path" > "$manifest"
+          git show "$REQUEST_COMMIT:$ready_path" > "$manifest"
           jq -e . "$manifest" >/dev/null || fail "ready.json is not valid JSON."
           [[ "$(jq -r '.request_id // empty' "$manifest")" == "$request_id" ]] ||
             fail "ready.json request_id must match the staging branch."
@@ -79,8 +107,8 @@ jobs:
           {
             echo "### ChatGPT staged request signal accepted"
             echo
-            echo "- Stage branch: \`$GITHUB_REF_NAME\`"
-            echo "- Stage commit: \`$GITHUB_SHA\`"
+            echo "- Stage branch: \`$STAGE_BRANCH\`"
+            echo "- Stage commit: \`$REQUEST_COMMIT\`"
             echo "- Ready marker: \`$ready_path\`"
             echo "- Mutation permissions: none"
           } >> "$GITHUB_STEP_SUMMARY"
