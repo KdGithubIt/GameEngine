@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/authoring_windows.rs","old":"                .resizable(true)\n                .show(context, |ui| vfx.show(ui, project));","new":"                .resizable(true)\n                .show(context, |ui| {\n                    egui::ScrollArea::vertical().show(ui, |ui| vfx.show(ui, project));\n                });"}
