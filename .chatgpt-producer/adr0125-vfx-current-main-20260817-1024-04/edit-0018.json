@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/engine/src/game_host/core.rs","old":"use crate::ui_document::{UiBindingValue, UiBindings, UiEventFrame};\nuse engine_authoring::Value;","new":"use crate::ui_document::{UiBindingValue, UiBindings, UiEventFrame};\nuse crate::vfx::{VfxPlaybackState, VfxPlayer, VfxRuntimeBackend};\nuse engine_authoring::Value;"}
