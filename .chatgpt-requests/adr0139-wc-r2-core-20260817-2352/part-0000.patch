@@ -1,0 +1,1204 @@
+diff --git a/crates/animation/src/anim_graph.rs b/crates/animation/src/anim_graph.rs
+index 93841594c80ab51238fb6e31b2fbe28ac7ec363f..3f66bc901df145695886c1a8db209de53b249282 100644
+--- a/crates/animation/src/anim_graph.rs
++++ b/crates/animation/src/anim_graph.rs
+@@ -610,6 +610,18 @@ pub fn load_animation_graph(path: &Path) -> Result<CompiledAnimGraph, AnimGraphL
+     load_animation_graph_document(path).map(|(_, compiled)| compiled)
+ }
+ 
++/// Compiles and validates one in-memory `anim.graph` JSON snapshot.
++///
++/// Editor hosts use this for unsaved working copies so runtime composition does
++/// not need a temporary file and cannot silently fall back to an older saved graph.
++///
++/// # Errors
++///
++/// Returns a JSON parse, graph compilation, or typed transition-condition diagnostic.
++pub fn load_animation_graph_json(json: &str) -> Result<CompiledAnimGraph, AnimGraphLoadError> {
++    load_animation_graph_document_json(json).map(|(_, compiled)| compiled)
++}
++
+ /// Loads the semantic source graph together with its compiled runtime artifact.
+ ///
+ /// The semantic graph is returned only as read-only provenance for callers that
+@@ -619,7 +631,18 @@ pub fn load_animation_graph_document(
+     path: &Path,
+ ) -> Result<(Graph, CompiledAnimGraph), AnimGraphLoadError> {
+     let json = std::fs::read_to_string(path).map_err(AnimGraphLoadError::Io)?;
+-    let graph: Graph = serde_json::from_str(&json).map_err(AnimGraphLoadError::Parse)?;
++    load_animation_graph_document_json(&json)
++}
++
++/// Parses, compiles, and validates an in-memory semantic Animation Graph.
++///
++/// # Errors
++///
++/// Returns a JSON parse, graph compilation, or typed transition-condition diagnostic.
++pub fn load_animation_graph_document_json(
++    json: &str,
++) -> Result<(Graph, CompiledAnimGraph), AnimGraphLoadError> {
++    let graph: Graph = serde_json::from_str(json).map_err(AnimGraphLoadError::Parse)?;
+     let domain = AnimationGraphDomain::new();
+     let compiled =
+         compile_animation_graph(&domain, &graph).map_err(AnimGraphLoadError::Compile)?;
+diff --git a/crates/editor/src/animation_set_editor.rs b/crates/editor/src/animation_set_editor.rs
+index 9d1e0ebd88beda05c532ad11b500e10ce4b766e7..e3c4ec31c1e9daa250f82375a60aa8218731730a 100644
+--- a/crates/editor/src/animation_set_editor.rs
++++ b/crates/editor/src/animation_set_editor.rs
+@@ -45,6 +45,24 @@ impl AnimationSetEditorState {
+         self.document != self.clean_document
+     }
+ 
++    /// Returns process-local revision/generation metadata for this working copy.
++    pub fn revision_generation(&self) -> (u64, u64) {
++        (self.authoring.revision(), self.authoring.generation())
++    }
++
++    /// Replaces this working copy from disk only while it is clean.
++    pub fn reload_clean(&mut self, document: AnimationSet) -> bool {
++        if self.is_dirty() {
++            return false;
++        }
++        self.document = document.clone();
++        self.clean_document = document;
++        self.authoring = TypedDocumentAuthoringState::new();
++        self.undo.clear();
++        self.redo.clear();
++        true
++    }
++
+     /// Returns whether an undo entry is available.
+     pub fn can_undo(&self) -> bool {
+         !self.undo.is_empty()
+diff --git a/crates/editor/src/lib.rs b/crates/editor/src/lib.rs
+index 2abdd37297d205b212e9fc37c878d4af1eee24d5..abccdd29deda065cbbf88e96c8fd749b54d5032f 100644
+--- a/crates/editor/src/lib.rs
++++ b/crates/editor/src/lib.rs
+@@ -49,6 +49,7 @@ pub mod ui_builder;
+ mod vfx_builder;
+ pub mod view_aspect;
+ mod view_resolution;
++mod working_copy;
+ mod workspace;
+ 
+ pub use ai_studio::{AiStudioConnection, AiStudioPanel};
+diff --git a/crates/editor/src/material_editor.rs b/crates/editor/src/material_editor.rs
+index 6b0a83b0232a24b51e1441af8592e9f16c5c6488..a743dad97d9ae65c3cdb298496cbd095a81a2529 100644
+--- a/crates/editor/src/material_editor.rs
++++ b/crates/editor/src/material_editor.rs
+@@ -32,6 +32,7 @@ pub struct MaterialEditorPanel {
+     /// The relative path of the currently selected / active material.
+     pub active: Option<PathBuf>,
+     authoring: BTreeMap<PathBuf, TypedDocumentAuthoringState>,
++    clean_materials: BTreeMap<PathBuf, MaterialAsset>,
+     undo: BTreeMap<PathBuf, Vec<MaterialAsset>>,
+     redo: BTreeMap<PathBuf, Vec<MaterialAsset>>,
+ }
+@@ -42,16 +43,56 @@ impl MaterialEditorPanel {
+         Self::default()
+     }
+ 
+-    /// Inserts or replaces a material in the panel and sets it as active.
++    /// Opens one material and makes it active without creating a second mutable owner.
+     pub fn open_material(&mut self, rel_path: PathBuf, material: MaterialAsset) {
+         self.active = Some(rel_path.clone());
++        if self.materials.contains_key(&rel_path) {
++            return;
++        }
+         self.authoring
+             .insert(rel_path.clone(), TypedDocumentAuthoringState::new());
++        self.clean_materials.insert(rel_path.clone(), material.clone());
+         self.undo.insert(rel_path.clone(), Vec::new());
+         self.redo.insert(rel_path.clone(), Vec::new());
+         self.materials.insert(rel_path, material);
+     }
+ 
++    /// Returns whether one open material differs from its last successfully saved value.
++    pub fn is_dirty(&self, path: &Path) -> bool {
++        self.materials.get(path).zip(self.clean_materials.get(path))
++            .is_some_and(|(current, clean)| current != clean)
++    }
++
++    /// Returns whether any open material has unsaved changes.
++    pub fn any_dirty(&self) -> bool {
++        self.materials.keys().any(|path| self.is_dirty(path))
++    }
++
++    /// Marks one material clean after its current value was persisted successfully.
++    pub fn mark_saved(&mut self, path: &Path) {
++        if let Some(current) = self.materials.get(path).cloned() {
++            self.clean_materials.insert(path.to_path_buf(), current);
++        }
++    }
++
++    /// Replaces a clean open material after an external disk change.
++    pub fn reload_clean(&mut self, path: &Path, material: MaterialAsset) -> bool {
++        if self.is_dirty(path) || !self.materials.contains_key(path) {
++            return false;
++        }
++        self.materials.insert(path.to_path_buf(), material.clone());
++        self.clean_materials.insert(path.to_path_buf(), material);
++        self.authoring.insert(path.to_path_buf(), TypedDocumentAuthoringState::new());
++        self.undo.insert(path.to_path_buf(), Vec::new());
++        self.redo.insert(path.to_path_buf(), Vec::new());
++        true
++    }
++
++    /// Returns revision/generation metadata for one open material.
++    pub fn revision_generation(&self, path: &Path) -> Option<(u64, u64)> {
++        self.authoring.get(path).map(|state| (state.revision(), state.generation()))
++    }
++
+     /// Returns the currently active material, if any.
+     pub fn active_material(&self) -> Option<&MaterialAsset> {
+         self.active.as_ref().and_then(|k| self.materials.get(k))
+diff --git a/crates/editor/src/runtime.rs b/crates/editor/src/runtime.rs
+index c26fbdfc96063c6ceb87a5783ed91cadbb3d567a..5d7d2a03db4eded1367face1bd77dccb5a3dfbbc 100644
+--- a/crates/editor/src/runtime.rs
++++ b/crates/editor/src/runtime.rs
+@@ -147,7 +147,7 @@ impl RuntimePlayState {
+         scene: &AuthoringScene,
+         project: Option<&ProjectRoot>,
+     ) -> Result<PlayStart, PlayError> {
+-        Self::start_impl(scene, project, None, None)
++        Self::start_impl(scene, project, None, None, None)
+     }
+ 
+     /// Same as [`RuntimePlayState::start`], but also registers
+@@ -163,7 +163,7 @@ impl RuntimePlayState {
+         project: Option<&ProjectRoot>,
+         initial_scene_path: &str,
+     ) -> Result<PlayStart, PlayError> {
+-        Self::start_impl(scene, project, Some(initial_scene_path), None)
++        Self::start_impl(scene, project, Some(initial_scene_path), None, None)
+     }
+ 
+     /// Convenience wrapper that derives the initial scene path from an
+@@ -190,10 +190,24 @@ impl RuntimePlayState {
+         project: Option<&ProjectRoot>,
+         document_path: Option<&Path>,
+         game_module: Option<Arc<engine::game_module::GameModule>>,
++    ) -> Result<PlayStart, PlayError> {
++        Self::start_from_document_with_game_module_and_overlay(
++            scene, project, document_path, game_module, None,
++        )
++    }
++
++    /// Starts Play from the same scene while supplying an immutable snapshot of
++    /// unsaved project documents that must override saved asset files.
++    pub fn start_from_document_with_game_module_and_overlay(
++        scene: &AuthoringScene,
++        project: Option<&ProjectRoot>,
++        document_path: Option<&Path>,
++        game_module: Option<Arc<engine::game_module::GameModule>>,
++        overlay: Option<engine::authoring_overlay::AuthoringDocumentOverlay>,
+     ) -> Result<PlayStart, PlayError> {
+         match document_path.and_then(|path| relative_scene_path(project, path)) {
+-            Some(relative) => Self::start_impl(scene, project, Some(&relative), game_module),
+-            None => Self::start_impl(scene, project, None, game_module),
++            Some(relative) => Self::start_impl(scene, project, Some(&relative), game_module, overlay),
++            None => Self::start_impl(scene, project, None, game_module, overlay),
+         }
+     }
+ 
+@@ -202,6 +216,7 @@ impl RuntimePlayState {
+         project: Option<&ProjectRoot>,
+         initial_scene_path: Option<&str>,
+         game_module: Option<Arc<engine::game_module::GameModule>>,
++        authoring_overlay: Option<engine::authoring_overlay::AuthoringDocumentOverlay>,
+     ) -> Result<PlayStart, PlayError> {
+         let diagnostics = scene.validate();
+         if diagnostics.iter().any(Diagnostic::is_blocking) {
+@@ -248,6 +263,10 @@ impl RuntimePlayState {
+             app.insert_resource(engine::SaveStore::new(project.path().join("saves")));
+         }
+ 
++        if let Some(overlay) = authoring_overlay {
++            app.insert_resource(overlay);
++        }
++
+         let entity_map =
+             spawn_from_authoring_scene(app.world_mut(), scene).map_err(PlayError::SceneBridge)?;
+ 
+diff --git a/crates/editor/src/session/mod.rs b/crates/editor/src/session/mod.rs
+index b3ac4dbf2cea7f445a325ae2174e4f8c1c9559a9..93731b8b9d4268d14ba827af350cffeaea68b89b 100644
+--- a/crates/editor/src/session/mod.rs
++++ b/crates/editor/src/session/mod.rs
+@@ -257,6 +257,18 @@ impl EditorSession {
+         &self.graph
+     }
+ 
++    /// Serializes the current Graph working copy through its domain schema.
++    ///
++    /// Failure remains an authoritative invalid working copy; callers must not
++    /// interpret it as permission to reread an older saved file.
++    pub(crate) fn graph_working_copy_json(&self) -> Option<Result<String, String>> {
++        matches!(&self.current_document, CurrentDocument::Graph { .. }).then(|| {
++            self.graph
++                .to_canonical_json(self.domain.schema_registry())
++                .map_err(|error| error.to_string())
++        })
++    }
++
+     /// Returns the optional presentation graph view.
+     pub fn graph_view(&self) -> Option<&GraphView> {
+         self.graph_view.as_ref()
+diff --git a/crates/editor/src/ui/assets/animation_set_window.rs b/crates/editor/src/ui/assets/animation_set_window.rs
+index dc2ad0a0d4c53f67f4edf0a8faf1be6b6bb4bbea..d7a678a2ef37520afab5360b1a63edc964fc0393 100644
+--- a/crates/editor/src/ui/assets/animation_set_window.rs
++++ b/crates/editor/src/ui/assets/animation_set_window.rs
+@@ -735,9 +735,17 @@ impl EditorApp {
+         let path = project
+             .resolve_asset(&entry.path)
+             .map_err(|error| error.to_string())?;
+-        let json = fs::read_to_string(&path).map_err(|error| error.to_string())?;
+-        let graph_document = serde_json::from_str::<engine_authoring::Graph>(&json)
+-            .map_err(|error| error.to_string())?;
++        let disk_graph;
++        let graph_document = if let Some((working_copy, _revision)) =
++            graph_working_copy(&self.session, &path)
++        {
++            working_copy
++        } else {
++            let json = fs::read_to_string(&path).map_err(|error| error.to_string())?;
++            disk_graph = serde_json::from_str::<engine_authoring::Graph>(&json)
++                .map_err(|error| error.to_string())?;
++            &disk_graph
++        };
+         if graph_document.kind.as_str() != "anim.graph" {
+             return Err(format!(
+                 "{} is `{}`, not an Animation Graph",
+@@ -774,6 +782,19 @@ impl EditorApp {
+         Ok(AnimationSetGraphModel { slots, states })
+     }
+ 
++    /// Persists the current Animation Set through its validated atomic save adapter.
++    pub(in crate::ui) fn save_animation_set_document(&mut self) -> Result<(), String> {
++        let state = self
++            .animation_set_editor
++            .as_ref()
++            .ok_or_else(|| "Animation Set editor is closed".to_owned())?;
++        validate_animation_set_clip_references(&state.document, &self.asset_manifest)?;
++        self.animation_set_editor
++            .as_mut()
++            .expect("checked above")
++            .save()
++    }
++
+     fn apply_animation_set_ui_action(&mut self, action: Option<AnimationSetUiAction>) {
+         let Some(action) = action else {
+             return;
+diff --git a/crates/editor/src/ui/assets/material_window.rs b/crates/editor/src/ui/assets/material_window.rs
+index 55842d6a2138d9b540af294a2268d5b3e7b3b480..737dfc7fbc9be3f5f8b293ee49ffc7106a480fdd 100644
+--- a/crates/editor/src/ui/assets/material_window.rs
++++ b/crates/editor/src/ui/assets/material_window.rs
+@@ -7,7 +7,6 @@ use crate::ui::*;
+ 
+ impl EditorApp {
+     pub(in crate::ui) fn show_material_editor_window(&mut self, context: &egui::Context) {
+-        self.flush_pending_material_saves(context);
+         self.flush_material_scene_preview_refresh(context);
+         if !self.show_material_editor {
+             return;
+@@ -42,7 +41,6 @@ impl EditorApp {
+             self.queue_active_material_save(context);
+         }
+         if !self.show_material_editor {
+-            self.flush_all_pending_material_saves();
+             self.flush_material_scene_preview_refresh(context);
+         }
+         if reimport_preview {
+@@ -82,57 +80,17 @@ impl EditorApp {
+         choices
+     }
+ 
+-    /// Queues the latest active value and replaces any older value for the
+-    /// same path while a slider or color picker is still moving.
++    /// Schedules only the Scene View refresh for the latest accepted Material edit.
++    ///
++    /// ADR 0139 deliberately keeps canonical persistence out of this debounce path:
++    /// the Material working copy remains authoritative until explicit Save/Save All.
+     pub(in crate::ui) fn queue_active_material_save(&mut self, context: &egui::Context) {
+-        let Some(relative_path) = self.material_editor.active.clone() else {
+-            return;
+-        };
+-        let Some(material) = self.material_editor.active_material().cloned() else {
+-            return;
+-        };
+-        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(120);
+-        self.pending_material_saves.insert(
+-            relative_path,
+-            PendingMaterialSave { material, deadline },
+-        );
++        self.material_scene_preview_deadline =
++            Some(std::time::Instant::now() + std::time::Duration::from_millis(120));
++        self.refresh_scene_problems();
+         context.request_repaint_after(std::time::Duration::from_millis(120));
+     }
+ 
+-    /// Writes each Material once after its continuous edit reaches a quiet
+-    /// period, avoiding synchronous file replacement and fsync every frame.
+-    pub(in crate::ui) fn flush_pending_material_saves(&mut self, context: &egui::Context) {
+-        let now = std::time::Instant::now();
+-        let due = self
+-            .pending_material_saves
+-            .iter()
+-            .filter(|(_, pending)| pending.deadline <= now)
+-            .map(|(path, _)| path.clone())
+-            .collect::<Vec<_>>();
+-        for path in due {
+-            if let Some(pending) = self.pending_material_saves.remove(&path) {
+-                self.persist_material(path, pending.material);
+-            }
+-        }
+-        if let Some(next) = self
+-            .pending_material_saves
+-            .values()
+-            .map(|pending| pending.deadline)
+-            .min()
+-        {
+-            context.request_repaint_after(next.saturating_duration_since(now));
+-        }
+-    }
+-
+-    /// Persists every queued value before closing its editor or replacing the
+-    /// project that owns its relative path.
+-    pub(in crate::ui) fn flush_all_pending_material_saves(&mut self) {
+-        let pending = std::mem::take(&mut self.pending_material_saves);
+-        for (path, pending) in pending {
+-            self.persist_material(path, pending.material);
+-        }
+-    }
+-
+     /// Applies one deferred Scene View rebuild after continuous Material edits
+     /// have been quiet long enough to avoid rebuilding on every drag frame.
+     fn flush_material_scene_preview_refresh(&mut self, context: &egui::Context) {
+@@ -219,49 +177,49 @@ impl EditorApp {
+ 
+     #[cfg(test)]
+     pub(in crate::ui) fn save_active_material(&mut self) {
+-        let Some(relative_path) = self.material_editor.active.clone() else {
+-            return;
+-        };
+-        let Some(material) = self.material_editor.active_material().cloned() else {
+-            return;
+-        };
+-        self.persist_material(relative_path, material);
++        if let Some(relative_path) = self.material_editor.active.clone() {
++            let _ = self.save_material_document(&relative_path);
++        }
+     }
+ 
+-    /// Persists one captured Material value and schedules one preview rebuild.
+-    fn persist_material(
+-        &mut self,
+-        relative_path: PathBuf,
+-        material: engine_authoring::MaterialAsset,
+-    ) {
+-        let Some(project) = self.project_root.clone() else {
+-            return;
+-        };
++    /// Persists one Material working copy and advances its saved baseline only on success.
++    pub(in crate::ui) fn save_material_document(&mut self, relative_path: &Path) -> Result<(), String> {
++        let project = self
++            .project_root
++            .clone()
++            .ok_or_else(|| "no project is open".to_owned())?;
++        let material = self
++            .material_editor
++            .materials
++            .get(relative_path)
++            .cloned()
++            .ok_or_else(|| format!("material {} is not open", relative_path.display()))?;
++        material.validate().map_err(|error| error.to_string())?;
++        let json = material.to_json().map_err(|error| error.to_string())?;
+         let relative = relative_path.to_string_lossy();
+-        let result = material
+-            .validate()
+-            .map_err(|error| error.to_string())
+-            .and_then(|()| material.to_json().map_err(|error| error.to_string()))
+-            .and_then(|json| {
+-                project
+-                    .resolve_asset_for_write(&relative)
+-                    .map_err(|error| error.to_string())
+-                    .and_then(|path| {
+-                        replace_file_contents(&path, &json).map_err(|error| error.to_string())
+-                    })
+-            });
+-        match result {
+-            Ok(()) => {
+-                self.material_scene_preview_deadline = Some(std::time::Instant::now());
+-                self.refresh_scene_problems();
+-            }
+-            Err(error) => self
+-                .session
+-                .push_diagnostic(engine_authoring::Diagnostic::error(
+-                    "editor.material_save_failed",
+-                    format!("failed to save {}: {error}", relative_path.display()),
+-                )),
++        let path = project
++            .resolve_asset_for_write(&relative)
++            .map_err(|error| error.to_string())?;
++        replace_file_contents(&path, &json).map_err(|error| error.to_string())?;
++        self.material_editor.mark_saved(relative_path);
++        self.material_scene_preview_deadline = Some(std::time::Instant::now());
++        self.refresh_scene_problems();
++        Ok(())
++    }
++
++    /// Persists every dirty Material working copy.
++    pub(in crate::ui) fn save_all_material_documents(&mut self) -> Result<(), String> {
++        let dirty = self
++            .material_editor
++            .materials
++            .keys()
++            .filter(|path| self.material_editor.is_dirty(path))
++            .cloned()
++            .collect::<Vec<_>>();
++        for path in dirty {
++            self.save_material_document(&path)?;
+         }
++        Ok(())
+     }
+ 
+ }
+diff --git a/crates/editor/src/ui/documents.rs b/crates/editor/src/ui/documents.rs
+index 80d3668811053deff74c15b0da9afcfd8c8329b1..7d3de93b84d733c7c75055fadda9a6008557188f 100644
+--- a/crates/editor/src/ui/documents.rs
++++ b/crates/editor/src/ui/documents.rs
+@@ -86,6 +86,36 @@ impl EditorApp {
+         }
+     }
+ 
++    /// Returns whether any workspace or specialized editor owns unsaved authoring state.
++    fn any_authoring_dirty(&self) -> bool {
++        self.session.any_dirty()
++            || self.material_editor.any_dirty()
++            || self.animation_set_editor.as_ref().is_some_and(AnimationSetEditorState::is_dirty)
++    }
++
++    /// Persists every dirty working copy through its existing validated atomic adapter.
++    fn save_all_authoring_documents(&mut self) -> Result<(), String> {
++        self.session.save_all().map_err(|error| error.to_string())?;
++        if self.animation_set_editor.as_ref().is_some_and(AnimationSetEditorState::is_dirty) {
++            self.save_animation_set_document()?;
++        }
++        self.save_all_material_documents()?;
++        Ok(())
++    }
++
++    /// Saves every dirty document, including specialized editor working copies.
++    pub(super) fn save_all(&mut self) {
++        if self.save_blocked_while_playing() {
++            return;
++        }
++        if let Err(error) = self.save_all_authoring_documents() {
++            self.session.push_diagnostic(engine_authoring::Diagnostic::error(
++                "editor.save_all_failed",
++                format!("save all failed: {error}"),
++            ));
++        }
++    }
++
+     pub(super) fn save_as(&mut self) {
+         if self.save_blocked_while_playing() {
+             return;
+@@ -134,7 +164,7 @@ impl EditorApp {
+                 ));
+             return;
+         }
+-        if self.session.any_dirty() {
++        if self.any_authoring_dirty() {
+             self.pending_unsaved_action = Some(PendingUnsavedAction::SwitchProject);
+         } else {
+             self.activate_launcher_for_project_switch();
+@@ -359,13 +389,13 @@ impl EditorApp {
+                 if let Some(pending) = self.pending_unsaved_action.take() {
+                     match pending {
+                         PendingUnsavedAction::SwitchProject => {
+-                            if let Err(error) = self.session.save_all() {
++                            if let Err(error) = self.save_all_authoring_documents() {
+                                 self.session
+                                     .push_diagnostic(engine_authoring::Diagnostic::error(
+                                         "editor.save_all_failed",
+                                         format!("could not save every open document: {error}"),
+                                     ));
+-                                // A failed save leaves at least one tab dirty. Keep the
++                                // A failed save leaves at least one working copy dirty. Keep the
+                                 // dialog open so project replacement cannot proceed.
+                                 self.pending_unsaved_action =
+                                     Some(PendingUnsavedAction::SwitchProject);
+diff --git a/crates/editor/src/ui/mod.rs b/crates/editor/src/ui/mod.rs
+index 2f46385a0238ae2f7b8df7eda7492d839a151cae..d82db1aafa78fd715463bc25a1ce321206c445b8 100644
+--- a/crates/editor/src/ui/mod.rs
++++ b/crates/editor/src/ui/mod.rs
+@@ -33,6 +33,7 @@ use crate::session::{SceneAlignment, SceneAxis};
+ use crate::systems_panel::{show_systems_panel, SystemsPanel};
+ use crate::ui_builder::{show_ui_builder, show_ui_builder_inspector, UiBuilderState};
+ use crate::view_aspect::ViewAspect;
++use crate::working_copy::{capture_authoring_overlay, graph_working_copy};
+ use crate::workspace::{DocumentWorkspace, WorkspaceDocumentKind, WorkspaceTabId};
+ use eframe::{egui, egui_wgpu};
+ use engine::{InputCommand, InputSource, KeyCode};
+@@ -78,12 +79,6 @@ struct SceneFilesystemValidationJob {
+     receiver: std::sync::mpsc::Receiver<Vec<engine_authoring::Diagnostic>>,
+ }
+ 
+-/// Latest unsaved value for one Material path during a continuous UI edit.
+-struct PendingMaterialSave {
+-    material: engine_authoring::MaterialAsset,
+-    deadline: std::time::Instant,
+-}
+-
+ /// Revision-keyed choices used by the Material Editor's texture pickers.
+ struct MaterialTextureChoicesCache {
+     manifest_revision: u64,
+@@ -152,8 +147,6 @@ pub struct EditorApp {
+     /// Quiet-period deadline that coalesces continuous Material controls into
+     /// one Scene View rebuild after the drag pauses.
+     material_scene_preview_deadline: Option<std::time::Instant>,
+-    /// Coalesced Material file writes keyed by project-relative path.
+-    pending_material_saves: std::collections::BTreeMap<PathBuf, PendingMaterialSave>,
+     material_texture_choices_cache: Option<MaterialTextureChoicesCache>,
+     /// Open Animation Set document edited through the dedicated typed window.
+     animation_set_editor: Option<AnimationSetEditorState>,
+@@ -427,7 +420,6 @@ impl EditorApp {
+             material_editor: MaterialEditorPanel::new(),
+             show_material_editor: false,
+             material_scene_preview_deadline: None,
+-            pending_material_saves: std::collections::BTreeMap::new(),
+             material_texture_choices_cache: None,
+             animation_set_editor: None,
+             pending_animation_set_graph: None,
+@@ -544,11 +536,9 @@ impl EditorApp {
+     /// This stays private because ADR 0117 forbids rebinding one Editor
+     /// process from one project to another after workspace construction.
+     fn initialize_project_root(&mut self, root: ProjectRoot) {
+-        self.flush_all_pending_material_saves();
+         self.audio_audition.reset_project();
+         self.scene_view.clear_project_caches();
+         self.material_scene_preview_deadline = None;
+-        self.pending_material_saves.clear();
+         self.material_texture_choices_cache = None;
+         let _ = self.asset_import.cancel();
+         self.navigation_bake.clear();
+@@ -1044,6 +1034,12 @@ impl EditorApp {
+         };
+         let scene = scene.clone();
+         let manifest = self.asset_manifest.clone();
++        let authoring_overlay = capture_authoring_overlay(
++            &self.session,
++            self.animation_set_editor.as_ref(),
++            &self.material_editor,
++            self.project_root.as_ref(),
++        );
+         let project = project.clone();
+         let scene_path = self.session.current_document_path().map(Path::to_path_buf);
+         let generation = self.scene_validation_generation;
+@@ -1051,10 +1047,11 @@ impl EditorApp {
+         match std::thread::Builder::new()
+             .name("scene-filesystem-validation".to_owned())
+             .spawn(move || {
+-                let mut diagnostics = engine::validate_builtin_component_asset_files(
++                let mut diagnostics = engine::validate_builtin_component_asset_files_with_overlay(
+                     &scene,
+                     &manifest,
+                     &project.assets_root(),
++                    &authoring_overlay,
+                 );
+                 diagnostics.extend(navigation_artifact_diagnostics(
+                     &scene,
+diff --git a/crates/editor/src/ui/play.rs b/crates/editor/src/ui/play.rs
+index 713d26653b00b35a41557e9b3e3b91156d4bebd8..163e20f2eb889864be4c4cbdc04b2e0c8fe0e7d0 100644
+--- a/crates/editor/src/ui/play.rs
++++ b/crates/editor/src/ui/play.rs
+@@ -648,12 +648,19 @@ impl EditorApp {
+         // every still-present problem into the fresh Play log.
+         self.mirrored_problem_keys.clear();
+         self.refresh_scene_problems();
++        let authoring_overlay = capture_authoring_overlay(
++            &self.session,
++            self.animation_set_editor.as_ref(),
++            &self.material_editor,
++            self.project_root.as_ref(),
++        );
+         let result = match self.session.scene() {
+-            Some(scene) => RuntimePlayState::start_from_document_with_game_module(
++            Some(scene) => RuntimePlayState::start_from_document_with_game_module_and_overlay(
+                 scene,
+                 self.project_root.as_ref(),
+                 self.session.current_document_path(),
+                 self.game_module.as_ref().map(Arc::clone),
++                Some(authoring_overlay),
+             ),
+             None => Err(PlayError::NoScene),
+         };
+diff --git a/crates/editor/src/working_copy.rs b/crates/editor/src/working_copy.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..f3a597f859e5ed98345db544c8c868064d1da269
+--- /dev/null
++++ b/crates/editor/src/working_copy.rs
+@@ -0,0 +1,86 @@
++//! Editor composition boundary for authoritative working copies (ADR 0139).
++//!
++//! Mutable document ownership stays in the existing workspace/specialized editor
++//! sessions. This module only borrows those owners and captures immutable snapshots
++//! for consumers that otherwise resolve project assets from disk.
++
++use crate::animation_set_editor::AnimationSetEditorState;
++use crate::material_editor::MaterialEditorPanel;
++use crate::workspace::DocumentWorkspace;
++use engine::authoring_overlay::{AuthoringDocumentOverlay, AuthoringDocumentSnapshot};
++use engine_authoring::{Graph, ProjectRoot};
++use std::path::Path;
++
++pub(crate) fn capture_authoring_overlay(
++    workspace: &DocumentWorkspace,
++    animation_set: Option<&AnimationSetEditorState>,
++    materials: &MaterialEditorPanel,
++    project: Option<&ProjectRoot>,
++) -> AuthoringDocumentOverlay {
++    let mut overlay = AuthoringDocumentOverlay::new();
++
++    for session in workspace.sessions() {
++        let Some(path) = session.current_document_path() else { continue; };
++        let Some(serialized) = session.graph_working_copy_json() else { continue; };
++        let revision = session.document_revision();
++        let snapshot = match serialized {
++            Ok(contents) => AuthoringDocumentSnapshot::text(revision, revision, contents),
++            Err(message) => AuthoringDocumentSnapshot::invalid(revision, revision, message),
++        };
++        overlay.insert(path.to_path_buf(), snapshot);
++    }
++
++    if let Some(state) = animation_set {
++        let (revision, generation) = state.revision_generation();
++        let snapshot = match state.document.to_canonical_json() {
++            Ok(contents) => AuthoringDocumentSnapshot::text(revision, generation, contents),
++            Err(error) => AuthoringDocumentSnapshot::invalid(revision, generation, error.to_string()),
++        };
++        overlay.insert(state.absolute_path.clone(), snapshot);
++    }
++
++    if let Some(project) = project {
++        for (relative, material) in &materials.materials {
++            let Some((revision, generation)) = materials.revision_generation(relative) else { continue; };
++            let serialized = material
++                .validate()
++                .map_err(|error| error.to_string())
++                .and_then(|()| material.to_json().map_err(|error| error.to_string()));
++            let snapshot = match serialized {
++                Ok(contents) => AuthoringDocumentSnapshot::text(revision, generation, contents),
++                Err(message) => AuthoringDocumentSnapshot::invalid(revision, generation, message),
++            };
++            overlay.insert(project.assets_root().join(relative), snapshot);
++        }
++    }
++
++    overlay
++}
++
++pub(crate) fn graph_working_copy<'a>(
++    workspace: &'a DocumentWorkspace,
++    path: &Path,
++) -> Option<(&'a Graph, u64)> {
++    let session = workspace.session_for_path(path)?;
++    session.graph_working_copy_json()?;
++    Some((session.graph(), session.document_revision()))
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use crate::workspace::{DocumentWorkspace, WorkspaceDocumentKind};
++    use crate::EditorSession;
++
++    #[test]
++    fn open_graph_is_captured_without_touching_disk() {
++        let directory = tempfile::tempdir().expect("temp");
++        let path = directory.path().join("test.graph.json");
++        let mut session = EditorSession::empty_animation_graph();
++        session.save_as(path.clone()).expect("save fixture");
++        let mut workspace = DocumentWorkspace::new(EditorSession::empty_behavior_tree());
++        workspace.open_document(WorkspaceDocumentKind::Graph, path.clone()).expect("open");
++        let overlay = capture_authoring_overlay(&workspace, None, &MaterialEditorPanel::new(), None);
++        assert!(overlay.get(&path).is_some());
++    }
++}
+diff --git a/crates/editor/src/workspace.rs b/crates/editor/src/workspace.rs
+index 6afdb8a71204544f6b00dc51f062f9db5f64e5cf..8b82e72f64fdeeb359117e4b9dab8f2d39f72eca 100644
+--- a/crates/editor/src/workspace.rs
++++ b/crates/editor/src/workspace.rs
+@@ -88,6 +88,21 @@ impl DocumentWorkspace {
+         self.tabs.iter_mut().find(|tab| tab.id == id).map(|tab| &mut tab.session)
+     }
+ 
++    /// Iterates every open session without transferring working-copy ownership.
++    pub(crate) fn sessions(&self) -> impl Iterator<Item = &EditorSession> {
++        self.tabs.iter().map(|tab| &tab.session)
++    }
++
++    /// Returns the one existing session that owns `path`, if the document is open.
++    pub(crate) fn session_for_path(&self, path: &Path) -> Option<&EditorSession> {
++        self.tabs.iter().find_map(|tab| {
++            tab.session
++                .current_document_path()
++                .is_some_and(|candidate| candidate == path)
++                .then_some(&tab.session)
++        })
++    }
++
+     pub(crate) fn summaries(&self) -> Vec<WorkspaceTabSummary> {
+         self.tabs
+             .iter()
+diff --git a/crates/engine/src/authoring_overlay.rs b/crates/engine/src/authoring_overlay.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..abd699400f09a21802ae63c65611760b36df08af
+--- /dev/null
++++ b/crates/engine/src/authoring_overlay.rs
+@@ -0,0 +1,80 @@
++//! Process-local authoring document snapshots supplied by editor hosts.
++//!
++//! ADR 0139 keeps mutable working-copy ownership in the editor. Runtime and
++//! validation code receive an immutable, engine-neutral overlay at composition
++//! boundaries so an open working copy wins over the saved file without making
++//! engine crates depend on editor session types.
++
++use std::collections::BTreeMap;
++use std::path::{Path, PathBuf};
++
++/// One immutable authoring document value captured from an editor working copy.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct AuthoringDocumentSnapshot {
++    revision: u64,
++    generation: u64,
++    contents: Result<String, String>,
++}
++
++impl AuthoringDocumentSnapshot {
++    /// Creates a valid text snapshot.
++    pub fn text(revision: u64, generation: u64, contents: String) -> Self {
++        Self { revision, generation, contents: Ok(contents) }
++    }
++
++    /// Creates an invalid snapshot that deliberately blocks disk fallback.
++    pub fn invalid(revision: u64, generation: u64, message: String) -> Self {
++        Self { revision, generation, contents: Err(message) }
++    }
++
++    /// Returns the process-local logical revision captured for this snapshot.
++    pub fn revision(&self) -> u64 { self.revision }
++
++    /// Returns the process-local generation captured for this snapshot.
++    pub fn generation(&self) -> u64 { self.generation }
++
++    /// Returns the captured text or the working-copy validation/serialization error.
++    pub fn contents(&self) -> Result<&str, &str> {
++        self.contents.as_deref().map_err(String::as_str)
++    }
++}
++
++/// Immutable project document overlay used by one validation/preview/Play composition.
++#[derive(Debug, Clone, Default, PartialEq, Eq)]
++pub struct AuthoringDocumentOverlay {
++    documents: BTreeMap<PathBuf, AuthoringDocumentSnapshot>,
++}
++
++impl AuthoringDocumentOverlay {
++    /// Creates an empty overlay.
++    pub fn new() -> Self { Self::default() }
++
++    /// Inserts or replaces the authoritative snapshot for `path`.
++    pub fn insert(&mut self, path: PathBuf, snapshot: AuthoringDocumentSnapshot) {
++        self.documents.insert(path, snapshot);
++    }
++
++    /// Returns the authoritative working-copy snapshot for `path`, if one exists.
++    pub fn get(&self, path: &Path) -> Option<&AuthoringDocumentSnapshot> {
++        self.documents.get(path)
++    }
++
++    /// Returns whether no working-copy snapshots were captured.
++    pub fn is_empty(&self) -> bool { self.documents.is_empty() }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn invalid_snapshot_never_turns_into_missing_disk_fallback() {
++        let path = PathBuf::from("assets/test.graph.json");
++        let mut overlay = AuthoringDocumentOverlay::new();
++        overlay.insert(path.clone(), AuthoringDocumentSnapshot::invalid(7, 3, "invalid graph".into()));
++        let snapshot = overlay.get(&path).expect("working copy remains authoritative");
++        assert_eq!(snapshot.revision(), 7);
++        assert_eq!(snapshot.generation(), 3);
++        assert_eq!(snapshot.contents(), Err("invalid graph"));
++    }
++}
+diff --git a/crates/engine/src/components/validation.rs b/crates/engine/src/components/validation.rs
+index 7dc9d1f7a098a38a0ed01a22820aa097da149428..0665cf279a80f67c6ffbd1d878d1423097129a47 100644
+--- a/crates/engine/src/components/validation.rs
++++ b/crates/engine/src/components/validation.rs
+@@ -715,6 +715,15 @@ pub fn validate_builtin_component_assets(
+     scene: &AuthoringScene,
+     manifest: &AssetManifest,
+     asset_root: Option<&Path>,
++) -> Vec<Diagnostic> {
++    validate_builtin_component_assets_impl(scene, manifest, asset_root, None)
++}
++
++fn validate_builtin_component_assets_impl(
++    scene: &AuthoringScene,
++    manifest: &AssetManifest,
++    asset_root: Option<&Path>,
++    overlay: Option<&crate::authoring_overlay::AuthoringDocumentOverlay>,
+ ) -> Vec<Diagnostic> {
+     let registry = builtin_registry();
+     let mut diagnostics = Vec::new();
+@@ -736,6 +745,7 @@ pub fn validate_builtin_component_assets(
+                         asset_root,
+                         &target,
+                         &mut diagnostics,
++                        overlay,
+                     );
+                 }
+             let (InspectorHint::Fields { fields: hints }, Value::Object(fields)) =
+@@ -756,6 +766,7 @@ pub fn validate_builtin_component_assets(
+                                         asset_root,
+                                         &target,
+                                         &mut diagnostics,
++                                        overlay,
+                                     );
+                                 }
+                         }
+@@ -773,6 +784,7 @@ pub fn validate_builtin_component_assets(
+                                     asset_root,
+                                     &target,
+                                     &mut diagnostics,
++                                    overlay,
+                                 );
+                             }
+                         }
+@@ -792,6 +804,7 @@ pub fn validate_builtin_component_assets(
+                     asset_root,
+                     &target,
+                     &mut diagnostics,
++                    overlay,
+                 );
+             }
+             if component_type.as_str() == ANIMATION_CONTROLLER_COMPONENT {
+@@ -801,6 +814,7 @@ pub fn validate_builtin_component_assets(
+                     asset_root,
+                     &target,
+                     &mut diagnostics,
++                    overlay,
+                 );
+             }
+         }
+@@ -837,12 +851,38 @@ pub fn validate_builtin_component_asset_files(
+     complete
+ }
+ 
++/// Runs filesystem-backed validation while treating captured Editor working copies
++/// as authoritative over their saved project files.
++pub fn validate_builtin_component_asset_files_with_overlay(
++    scene: &AuthoringScene,
++    manifest: &AssetManifest,
++    asset_root: &Path,
++    overlay: &crate::authoring_overlay::AuthoringDocumentOverlay,
++) -> Vec<Diagnostic> {
++    let inline = validate_builtin_component_asset_references(scene, manifest);
++    let mut complete =
++        validate_builtin_component_assets_impl(scene, manifest, Some(asset_root), Some(overlay));
++    complete.retain(|diagnostic| !inline.contains(diagnostic));
++    complete
++}
++
++fn read_authoring_text(
++    path: &Path,
++    overlay: Option<&crate::authoring_overlay::AuthoringDocumentOverlay>,
++) -> Result<String, String> {
++    if let Some(snapshot) = overlay.and_then(|overlay| overlay.get(path)) {
++        return snapshot.contents().map(str::to_owned).map_err(str::to_owned);
++    }
++    std::fs::read_to_string(path).map_err(|error| error.to_string())
++}
++
+ fn validate_animation_controller_bindings(
+     fields: &BTreeMap<String, Value>,
+     manifest: &AssetManifest,
+     asset_root: Option<&Path>,
+     target: &DiagnosticTarget,
+     diagnostics: &mut Vec<Diagnostic>,
++    overlay: Option<&crate::authoring_overlay::AuthoringDocumentOverlay>,
+ ) {
+     let (
+         Some(Value::AssetRef(graph_id)),
+@@ -858,7 +898,7 @@ fn validate_animation_controller_bindings(
+         return;
+     };
+     let animation_set_path = asset_root.join(&animation_set_entry.path);
+-    let animation_set = std::fs::read_to_string(&animation_set_path)
++    let animation_set = read_authoring_text(&animation_set_path, overlay)
+         .ok()
+         .and_then(|json| engine_authoring::AnimationSet::from_json(&json).ok());
+     let Some(animation_set) = animation_set else {
+@@ -886,9 +926,15 @@ fn validate_animation_controller_bindings(
+     }
+ 
+     let graph_path = asset_root.join(&graph_entry.path);
+-    let Ok(graph) = crate::anim_graph::load_animation_graph(&graph_path) else {
+-        return;
++    let graph = if let Some(snapshot) = overlay.and_then(|overlay| overlay.get(&graph_path)) {
++        snapshot
++            .contents()
++            .map_err(str::to_owned)
++            .and_then(|json| crate::anim_graph::load_animation_graph_json(json).map_err(|error| error.to_string()))
++    } else {
++        crate::anim_graph::load_animation_graph(&graph_path).map_err(|error| error.to_string())
+     };
++    let Ok(graph) = graph else { return; };
+     for state in &graph.states {
+         let Some(slot) = &state.motion_slot else {
+             continue;
+@@ -916,6 +962,7 @@ fn validate_component_asset(
+     asset_root: Option<&Path>,
+     target: &DiagnosticTarget,
+     diagnostics: &mut Vec<Diagnostic>,
++    overlay: Option<&crate::authoring_overlay::AuthoringDocumentOverlay>,
+ ) {
+     if builtin_asset_matches_kind(asset, kind) {
+         return;
+@@ -974,7 +1021,8 @@ fn validate_component_asset(
+         return;
+     };
+     let full_path = asset_root.join(relative_path);
+-    if !full_path.is_file() {
++    let has_working_copy = overlay.is_some_and(|overlay| overlay.get(&full_path).is_some());
++    if !has_working_copy && !full_path.is_file() {
+         diagnostics.push(
+             Diagnostic::error(
+                 "scene.asset_missing_file",
+@@ -996,6 +1044,7 @@ fn validate_component_asset(
+             asset_root,
+             target,
+             diagnostics,
++            overlay,
+         );
+         return;
+     }
+@@ -1007,6 +1056,7 @@ fn validate_component_asset(
+             asset_root,
+             target,
+             diagnostics,
++            overlay,
+         );
+         return;
+     }
+@@ -1033,7 +1083,7 @@ fn validate_component_asset(
+     let Some(expected_graph_kind) = expected_graph_kind(kind) else {
+         return;
+     };
+-    let actual_kind = std::fs::read_to_string(&full_path)
++    let actual_kind = read_authoring_text(&full_path, overlay)
+         .ok()
+         .and_then(|json| serde_json::from_str::<serde_json::Value>(&json).ok())
+         .and_then(|document| document.get("kind")?.as_str().map(str::to_owned));
+@@ -1078,9 +1128,9 @@ fn validate_animation_set_dependencies(
+     asset_root: &Path,
+     target: &DiagnosticTarget,
+     diagnostics: &mut Vec<Diagnostic>,
++    overlay: Option<&crate::authoring_overlay::AuthoringDocumentOverlay>,
+ ) {
+-    let animation_set = std::fs::read_to_string(animation_set_path)
+-        .map_err(|error| error.to_string())
++    let animation_set = read_authoring_text(animation_set_path, overlay)
+         .and_then(|json| {
+             engine_authoring::AnimationSet::from_json(&json).map_err(|error| error.to_string())
+         });
+@@ -1110,6 +1160,7 @@ fn validate_animation_set_dependencies(
+             Some(asset_root),
+             target,
+             diagnostics,
++            overlay,
+         );
+     }
+     for binding in animation_set.bindings.values() {
+@@ -1138,6 +1189,7 @@ fn validate_animation_set_dependencies(
+                 Some(asset_root),
+                 target,
+                 diagnostics,
++                overlay,
+             );
+         }
+     }
+@@ -1378,9 +1430,9 @@ fn validate_material_dependencies(
+     asset_root: &Path,
+     target: &DiagnosticTarget,
+     diagnostics: &mut Vec<Diagnostic>,
++    overlay: Option<&crate::authoring_overlay::AuthoringDocumentOverlay>,
+ ) {
+-    let material = std::fs::read_to_string(material_path)
+-        .map_err(|error| error.to_string())
++    let material = read_authoring_text(material_path, overlay)
+         .and_then(|json| {
+             engine_authoring::MaterialAsset::from_json(&json).map_err(|error| error.to_string())
+         });
+diff --git a/crates/engine/src/lib.rs b/crates/engine/src/lib.rs
+index 325ca5573326b582fe0091b2142c81666cb6c267..d56c740ba9c096a1fe22b1b14021d3de3fdcb738 100644
+--- a/crates/engine/src/lib.rs
++++ b/crates/engine/src/lib.rs
+@@ -19,6 +19,8 @@ pub mod animation_parameters;
+ pub mod app;
+ /// Runtime asset storage and loading.
+ pub mod asset;
++/// Immutable editor working-copy snapshots supplied at runtime composition boundaries.
++pub mod authoring_overlay;
+ /// Runtime audio assets and playback control.
+ pub mod audio;
+ /// Runtime executor for compiled Behavior Tree artifacts.
+@@ -250,6 +252,7 @@ pub use combat::{
+ };
+ pub use components::{
+     asset_path_matches_kind, builtin_registry, validate_builtin_component_asset_files,
++    validate_builtin_component_asset_files_with_overlay,
+     validate_builtin_component_asset_references, validate_builtin_component_assets,
+     validate_builtin_component_values, AssetKind, ComponentDefinition, ComponentRegistry,
+     ComponentSpawnError, FieldDef, InspectorFieldCondition, InspectorFieldControl, InspectorHint,
+diff --git a/crates/engine/src/scene_bridge.rs b/crates/engine/src/scene_bridge.rs
+index 85ffc01d1ebd65c0cce9468d392682a2de5d6159..04b473be59733fbd8f24b92c4c5484e63a6528b9 100644
+--- a/crates/engine/src/scene_bridge.rs
++++ b/crates/engine/src/scene_bridge.rs
+@@ -6,13 +6,17 @@
+ //!
+ //! [`AuthoringScene`]: engine_authoring::scene::AuthoringScene
+ 
+-use crate::anim_graph::{load_animation_graph_document, AnimGraphPlayer, AnimationGraphDebugSource, AnimationMotionDebugBinding};
++use crate::anim_graph::{
++    load_animation_graph_document, load_animation_graph_document_json, AnimGraphPlayer,
++    AnimationGraphDebugSource, AnimationMotionDebugBinding,
++};
+ use crate::animation::{
+     compose_animation_clips, AnimEvent, AnimationClip, Animator, RootMotionMode, RootMotionRequest,
+ };
+ use crate::asset::{
+     AssetLoadError, AssetManifest, Assets, Handle, ImportedSubAssetKind, RuntimeAssetId,
+ };
++use crate::authoring_overlay::AuthoringDocumentOverlay;
+ use crate::audio::{AudioAsset, AudioEmitter, AudioListener, AudioRolloffMode, MusicController};
+ use crate::behavior_tree::BehaviorTreeRunner;
+ use crate::camera::{Camera3D, FollowCamera, LockOnCamera, OrbitCamera};
+@@ -443,6 +447,11 @@ pub(crate) struct BridgeAssetState {
+     /// Conversion-local runtime handles remain owned by this state; only the
+     /// immutable serialized bake is shared through [`crate::DerivedCache`].
+     pub(crate) derived_cache: Option<crate::DerivedCache>,
++    /// Immutable authoring working copies captured by the host for this conversion.
++    ///
++    /// The bridge never mutates this overlay and never knows about Editor session
++    /// types. When an entry exists, loaders must use it instead of rereading disk.
++    pub(crate) authoring_overlay: AuthoringDocumentOverlay,
+     pub(crate) added_mesh_handles: Vec<Handle<Mesh>>,
+     pub(crate) added_material_handles: Vec<Handle<Material>>,
+     pub(crate) added_animation_clip_handles: Vec<Handle<AnimationClip>>,
+@@ -768,6 +777,12 @@ fn apply_conversion_plan(
+         // engine-native cached clip, so editor hosts can provide the project
+         // cache without changing strict conversion or rollback ownership.
+         derived_cache: world.get_resource::<crate::DerivedCache>().cloned(),
++        // Editor Play/preview inserts an immutable snapshot before conversion.
++        // Absence means this is a normal runtime/player conversion and disk remains the source.
++        authoring_overlay: world
++            .get_resource::<AuthoringDocumentOverlay>()
++            .cloned()
++            .unwrap_or_default(),
+         ..BridgeAssetState::default()
+     };
+     let mut asset_diagnostics = Vec::new();
+diff --git a/crates/engine/src/scene_bridge/asset_load.rs b/crates/engine/src/scene_bridge/asset_load.rs
+index daafc9950461c69ae1df02b6e7e13d5c47a29f67..8bd023638c4f25abb664010d918edbab0ba71e6c 100644
+--- a/crates/engine/src/scene_bridge/asset_load.rs
++++ b/crates/engine/src/scene_bridge/asset_load.rs
+@@ -278,11 +278,21 @@ pub(super) fn load_material_asset(
+     let material_path = asset_root
+         .unwrap_or_else(|| Path::new("."))
+         .join(&entry.path);
+-    let parsed = std::fs::read_to_string(&material_path)
+-        .map_err(|error| error.to_string())
+-        .and_then(|json| {
+-            engine_authoring::MaterialAsset::from_json(&json).map_err(|error| error.to_string())
+-        });
++    let parsed = if let Some(snapshot) = asset_state.authoring_overlay.get(&material_path) {
++        snapshot
++            .contents()
++            .map(str::to_owned)
++            .map_err(str::to_owned)
++            .and_then(|json| {
++                engine_authoring::MaterialAsset::from_json(&json).map_err(|error| error.to_string())
++            })
++    } else {
++        std::fs::read_to_string(&material_path)
++            .map_err(|error| error.to_string())
++            .and_then(|json| {
++                engine_authoring::MaterialAsset::from_json(&json).map_err(|error| error.to_string())
++            })
++    };
+     let parsed = match parsed {
+         Ok(parsed) => parsed,
+         Err(error) => {
+diff --git a/crates/engine/src/scene_bridge/spawn.rs b/crates/engine/src/scene_bridge/spawn.rs
+index ec0525cb83cb96d70d60571db001dcb6657514e6..1ad97a2d23a3cd83b4ec7bfb7932c59893fea72f 100644
+--- a/crates/engine/src/scene_bridge/spawn.rs
++++ b/crates/engine/src/scene_bridge/spawn.rs
+@@ -919,7 +919,19 @@ pub(crate) fn spawn_animation_controller_component(
+     };
+     let graph_path = manifest_asset_path(&graph_asset, context)?;
+     let (source_graph, compiled_graph) =
+-        load_animation_graph_document(&graph_path).map_err(|source| SceneBridgeError::AssetLoad {
++        if let Some(snapshot) = context.asset_state.authoring_overlay.get(&graph_path) {
++            let json = snapshot.contents().map_err(|message| SceneBridgeError::AssetLoad {
++                asset: graph_asset.clone(),
++                source: AssetLoadError::InvalidAsset {
++                    path: graph_path.clone(),
++                    message: message.to_owned(),
++                },
++            })?;
++            load_animation_graph_document_json(json)
++        } else {
++            load_animation_graph_document(&graph_path)
++        }
++        .map_err(|source| SceneBridgeError::AssetLoad {
+             asset: graph_asset.clone(),
+             source: AssetLoadError::InvalidAsset {
+                 path: graph_path,
+@@ -1507,13 +1519,23 @@ fn resolve_animation_set(
+             },
+         })?
+     };
+-    let json = std::fs::read_to_string(&path).map_err(|source| SceneBridgeError::AssetLoad {
+-        asset: animation_set_asset.clone(),
+-        source: AssetLoadError::Io {
+-            path: path.clone(),
+-            source,
+-        },
+-    })?;
++    let json = if let Some(snapshot) = context.asset_state.authoring_overlay.get(&path) {
++        snapshot.contents().map(str::to_owned).map_err(|message| SceneBridgeError::AssetLoad {
++            asset: animation_set_asset.clone(),
++            source: AssetLoadError::InvalidAsset {
++                path: path.clone(),
++                message: message.to_owned(),
++            },
++        })?
++    } else {
++        std::fs::read_to_string(&path).map_err(|source| SceneBridgeError::AssetLoad {
++            asset: animation_set_asset.clone(),
++            source: AssetLoadError::Io {
++                path: path.clone(),
++                source,
++            },
++        })?
++    };
+     let animation_set =
+         AnimationSet::from_json(&json).map_err(|source| SceneBridgeError::AssetLoad {
+             asset: animation_set_asset.clone(),
