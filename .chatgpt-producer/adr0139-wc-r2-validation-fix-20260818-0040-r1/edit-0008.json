@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ui/documents.rs","old":"#[derive(Clone)]\nenum ExternalDocumentOwner {","new":"#[derive(Clone, Copy)]\nenum ExternalReloadPolicy {\n    CleanOnly,\n    DiscardChanges,\n}\n\n#[derive(Clone)]\nenum ExternalDocumentOwner {"}
