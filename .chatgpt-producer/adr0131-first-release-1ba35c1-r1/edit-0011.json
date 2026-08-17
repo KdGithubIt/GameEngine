@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "    pending_code_changes: Vec<CodeChange>,\n    pending_permission: Option<PendingPermission>,\n    status: Option<String>,\n}",
+  "new": "    pending_code_changes: Vec<CodeChange>,\n    pending_permission: Option<PendingPermission>,\n    pending_runtime_action: Option<AiStudioRuntimeAction>,\n    managed_playtest_requested: bool,\n    managed_capture_requested: bool,\n    managed_playtest_started_at: Option<std::time::Instant>,\n    last_captured_frame: Option<(egui::TextureHandle, String, u32, u32)>,\n    status: Option<String>,\n}"
+}

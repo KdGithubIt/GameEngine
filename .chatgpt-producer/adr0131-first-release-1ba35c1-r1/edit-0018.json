@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "fn split_direct_args(text: &str) -> Vec<String> {\n    text.split_whitespace().map(ToOwned::to_owned).collect()\n}\n\nfn change_summary(change: &CodeChange) -> &'static str {",
+  "new": "fn encode_agent_frame_png(capture: &crate::FrameCapture) -> Result<Vec<u8>, png::EncodingError> {\n    let mut png_bytes = Vec::new();\n    {\n        let mut encoder = png::Encoder::new(&mut png_bytes, capture.width, capture.height);\n        encoder.set_color(png::ColorType::Rgba);\n        encoder.set_depth(png::BitDepth::Eight);\n        let mut writer = encoder.write_header()?;\n        writer.write_image_data(&capture.rgba8)?;\n    }\n    Ok(png_bytes)\n}\n\nfn split_direct_args(text: &str) -> Vec<String> {\n    text.split_whitespace().map(ToOwned::to_owned).collect()\n}\n\nfn change_summary(change: &CodeChange) -> &'static str {"
+}

@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/agent_host.rs",
+  "old": "const MAX_PROVIDER_EVENT_CHARS: usize = 4_000;\nstatic ID_COUNTER: AtomicU64 = AtomicU64::new(0);",
+  "new": "const MAX_PROVIDER_EVENT_CHARS: usize = 4_000;\nconst MAX_PERSISTED_EVENTS_PER_RUN: usize = 512;\nstatic ID_COUNTER: AtomicU64 = AtomicU64::new(0);"
+}

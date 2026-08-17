@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/main.rs",
+  "old": "        eframe::App::logic(&mut self.app, context, frame);\n        #[cfg(feature = \"visual-validation\")]\n        self.handle_visual_validation_capture(context);",
+  "new": "        if let Some(action) = self.ai_studio.take_runtime_action() {\n            let result = self.app.handle_ai_studio_runtime_action(action, frame.wgpu_render_state());\n            self.ai_studio.report_runtime_result(context, result);\n        }\n        eframe::App::logic(&mut self.app, context, frame);\n        if self.ai_studio.waiting_for_playtest_start() && self.app.ai_studio_playtest_running() {\n            self.ai_studio.report_runtime_result(\n                context,\n                engine_editor::ai_studio::AiStudioRuntimeResult::PlayStarted,\n            );\n        }\n        #[cfg(feature = \"visual-validation\")]\n        self.handle_visual_validation_capture(context);"
+}

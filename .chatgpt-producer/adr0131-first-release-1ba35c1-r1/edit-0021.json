@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "            Ok(run_id) => {\n                self.active_run_id = Some(run_id.clone());\n                self.request_permission(",
+  "new": "            Ok(run_id) => {\n                self.active_run_id = Some(run_id.clone());\n                self.pending_runtime_action = None;\n                self.managed_playtest_requested = false;\n                self.managed_capture_requested = false;\n                self.managed_playtest_started_at = None;\n                self.last_captured_frame = None;\n                self.request_permission("
+}

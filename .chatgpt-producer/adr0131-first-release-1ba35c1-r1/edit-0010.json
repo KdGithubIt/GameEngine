@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "enum PendingPermissionAction {\n    LaunchExternalAgent,\n    ApplyCodeChanges,\n}",
+  "new": "enum PendingPermissionAction {\n    LaunchExternalAgent,\n    ApplyCodeChanges,\n    LaunchPlaytest,\n    CaptureFrame,\n}"
+}

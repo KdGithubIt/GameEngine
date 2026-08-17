@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/agent_host.rs","old":"impl CodeWorkspace {\n    pub(crate) fn create(\n","new":"impl CodeWorkspace {\n    #[cfg(test)]\n    pub(crate) fn create(\n"}
