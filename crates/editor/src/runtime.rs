@@ -14,7 +14,7 @@ use engine::{
     VirtualInputQueue,
 };
 use engine::{InputReplay, ReplayPlayer, ReplayRecorder};
-use engine_authoring::id::{AssetId, EntityId};
+use engine_authoring::id::{AssetId, EdgeId, EntityId, NodeId};
 use engine_authoring::DiagnosticTarget;
 use engine_authoring::{
     load_scene_from_json, AuthoringScene, Diagnostic, ProjectRoot, ProjectSettings,
@@ -69,9 +69,11 @@ pub(crate) struct RuntimeInputDebugSnapshot {
     pub(crate) actions: Vec<(String, engine::game_io::GameInputActionState)>,
 }
 
-/// Read-only animation state shown for the selected authoring entity in Play.
+/// GUI-free read-only evidence from the actual Play-mode Animation Controller.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct RuntimeAnimationDebugSnapshot {
+    pub(crate) runtime_entity: (u32, u32),
+    pub(crate) authoring_entity: EntityId,
     pub(crate) playback_state: String,
     pub(crate) clip_runtime_id: u64,
     pub(crate) clip_time: f32,
@@ -84,6 +86,21 @@ pub(crate) struct RuntimeAnimationDebugSnapshot {
     pub(crate) graph_transition_sequence: u64,
     pub(crate) graph_last_transition: Option<String>,
     pub(crate) graph_parameters: Vec<(String, bool)>,
+    pub(crate) graph_parameter_values: Vec<(String, String)>,
+    pub(crate) graph_asset: Option<AssetId>,
+    pub(crate) graph_id: Option<engine_authoring::GraphId>,
+    pub(crate) animation_set_asset: Option<AssetId>,
+    pub(crate) current_state: Option<NodeId>,
+    pub(crate) previous_state: Option<NodeId>,
+    pub(crate) next_state: Option<NodeId>,
+    pub(crate) active_transition: Option<EdgeId>,
+    pub(crate) transition_condition: Option<String>,
+    pub(crate) motion_slot: Option<engine_authoring::MotionSlotId>,
+    pub(crate) motion_slot_name: Option<String>,
+    pub(crate) motion_source: Option<engine_authoring::MotionSourceRef>,
+    pub(crate) resolved_motion_variant: Option<engine_authoring::MotionSourceVariant>,
+    pub(crate) recent_events: Vec<String>,
+    pub(crate) runtime_error: Option<String>,
 }
 
 /// Runtime world owned by editor play mode.
@@ -707,6 +724,14 @@ impl RuntimePlayState {
         collect_animation_debug_snapshot(self.app.world_mut(), authoring_id)
     }
 
+    /// Captures the actual Animation Graph controller for one runtime Entity.
+    pub(crate) fn animation_graph_debug_snapshot(
+        &mut self,
+        key: (u32, u32),
+    ) -> Option<RuntimeAnimationDebugSnapshot> {
+        collect_animation_graph_debug_snapshot(self.app.world_mut(), key)
+    }
+
     /// Captures one runtime Behavior Tree runner without mutating its execution state.
     pub(crate) fn behavior_tree_debug_snapshot(
         &self,
@@ -956,6 +981,101 @@ fn collect_animation_debug_snapshot(
     world: &mut engine::ecs::World,
     authoring_id: &EntityId,
 ) -> Option<RuntimeAnimationDebugSnapshot> {
+    collect_animation_debug_snapshot_matching(world, |_, identity| {
+        &identity.authoring_id == authoring_id
+    })
+    .or_else(|| collect_animator_debug_snapshot(world, authoring_id))
+}
+
+fn collect_animator_debug_snapshot(
+    world: &mut engine::ecs::World,
+    authoring_id: &EntityId,
+) -> Option<RuntimeAnimationDebugSnapshot> {
+    let recent_events = world
+        .get_resource::<engine::AnimationEvents>()
+        .map(|events| {
+            events
+                .iter()
+                .map(|event| {
+                    (
+                        (event.entity.id(), event.entity.generation()),
+                        format!("{} @ {:.3}s", event.name, event.clip_time),
+                    )
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let query = engine::Query::<(&engine::RuntimeEntityIdentity, &engine::Animator)>::new(world);
+    query
+        .iter()
+        .find(|(_, (identity, _))| &identity.authoring_id == authoring_id)
+        .map(|(entity, (identity, animator))| {
+            let delta = animator.root_motion_delta();
+            RuntimeAnimationDebugSnapshot {
+                runtime_entity: (entity.id(), entity.generation()),
+                authoring_entity: identity.authoring_id.clone(),
+                playback_state: format!("{:?}", animator.state),
+                clip_runtime_id: animator.clip.id().value(),
+                clip_time: animator.time,
+                playback_speed: animator.playback_speed,
+                looping: animator.looping,
+                root_motion_mode: format!("{:?}", animator.root_motion_mode),
+                root_motion_delta: delta.to_array(),
+                crossfade_progress: animator.crossfade_progress(),
+                graph_state: None,
+                graph_transition_sequence: 0,
+                graph_last_transition: None,
+                graph_parameters: Vec::new(),
+                graph_parameter_values: Vec::new(),
+                graph_asset: None,
+                graph_id: None,
+                animation_set_asset: None,
+                current_state: None,
+                previous_state: None,
+                next_state: None,
+                active_transition: None,
+                transition_condition: None,
+                motion_slot: None,
+                motion_slot_name: None,
+                motion_source: None,
+                resolved_motion_variant: None,
+                recent_events: recent_events
+                    .iter()
+                    .filter(|(key, _)| *key == (entity.id(), entity.generation()))
+                    .map(|(_, event)| event.clone())
+                    .collect(),
+                runtime_error: None,
+            }
+        })
+}
+
+fn collect_animation_graph_debug_snapshot(
+    world: &mut engine::ecs::World,
+    runtime_key: (u32, u32),
+) -> Option<RuntimeAnimationDebugSnapshot> {
+    collect_animation_debug_snapshot_matching(world, |entity, _| {
+        (entity.id(), entity.generation()) == runtime_key
+    })
+}
+
+fn collect_animation_debug_snapshot_matching(
+    world: &mut engine::ecs::World,
+    matches: impl Fn(engine::ecs::Entity, &engine::RuntimeEntityIdentity) -> bool,
+) -> Option<RuntimeAnimationDebugSnapshot> {
+    let recent_events = world
+        .get_resource::<engine::AnimationEvents>()
+        .map(|events| {
+            events
+                .iter()
+                .map(|event| {
+                    (
+                        (event.entity.id(), event.entity.generation()),
+                        format!("{} @ {:.3}s", event.name, event.clip_time),
+                    )
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
     let query = engine::Query::<(
         &engine::RuntimeEntityIdentity,
         &engine::Animator,
@@ -963,48 +1083,58 @@ fn collect_animation_debug_snapshot(
     )>::new(world);
     query
         .iter()
-        .find(|(_, (identity, _, _))| &identity.authoring_id == authoring_id)
-        .map(|(_, (_, animator, graph))| {
-            let (graph_state, graph_transition_sequence, graph_last_transition, graph_parameters) =
-                graph.map_or_else(
-                    || (None, 0, None, Vec::new()),
-                    |graph| {
-                        let state = graph.current_state_info().map(|state| {
-                            state.motion_key().map(str::to_owned).unwrap_or_else(|| {
-                                format!("node {} (no motion)", state.node_id.as_str())
-                            })
-                        });
-                        let last_transition = graph.last_transition().map(|transition| {
-                            let condition = if transition.condition.is_empty() {
-                                "unconditional"
-                            } else {
-                                transition.condition.as_str()
-                            };
-                            format!(
-                                "{} -> {} ({condition})",
-                                transition.from_node.as_str(),
-                                transition.to_node.as_str()
-                            )
-                        });
-                        (
-                            state,
-                            graph.transition_sequence(),
-                            last_transition,
-                            graph
-                                .parameters()
-                                .filter_map(|(name, value)| match value {
-                                    engine::AnimationParameterValue::Bool(value) => {
-                                        Some((name.to_owned(), value))
-                                    }
-                                    engine::AnimationParameterValue::Float(_)
-                                    | engine::AnimationParameterValue::Trigger(_) => None,
-                                })
-                                .collect(),
-                        )
-                    },
-                );
+        .find(|(entity, (identity, _, graph))| graph.is_some() && matches(*entity, identity))
+        .map(|(entity, (identity, animator, graph))| {
+            let graph = graph.expect("filtered Animation Graph target must have a player");
+            let state = graph.current_state_info();
+            let transition = graph.last_transition();
+            let fading = animator.crossfade_progress().is_some();
+            let debug_source = graph.debug_source();
+            let binding = state
+                .and_then(|state| state.motion_slot.as_ref())
+                .and_then(|slot| debug_source.and_then(|source| source.motion_bindings.get(slot)));
+            let graph_state = state.map(|state| {
+                state.motion_key().map(str::to_owned).unwrap_or_else(|| {
+                    format!("node {} (no motion)", state.node_id.as_str())
+                })
+            });
+            let graph_last_transition = transition.map(|transition| {
+                let condition = if transition.condition.is_empty() {
+                    "unconditional"
+                } else {
+                    transition.condition.as_str()
+                };
+                format!(
+                    "{} -> {} ({condition})",
+                    transition.from_node.as_str(),
+                    transition.to_node.as_str()
+                )
+            });
+            let graph_parameters = graph
+                .parameters()
+                .filter_map(|(name, value)| match value {
+                    engine::AnimationParameterValue::Bool(value) => Some((name.to_owned(), value)),
+                    engine::AnimationParameterValue::Float(_)
+                    | engine::AnimationParameterValue::Trigger(_) => None,
+                })
+                .collect();
+            let graph_parameter_values = graph
+                .parameters()
+                .map(|(name, value)| {
+                    let value = match value {
+                        engine::AnimationParameterValue::Bool(value) => value.to_string(),
+                        engine::AnimationParameterValue::Float(value) => format!("{value:.3}"),
+                        engine::AnimationParameterValue::Trigger(pending) => {
+                            if pending { "trigger(pending)" } else { "trigger(idle)" }.to_owned()
+                        }
+                    };
+                    (name.to_owned(), value)
+                })
+                .collect();
             let delta = animator.root_motion_delta();
             RuntimeAnimationDebugSnapshot {
+                runtime_entity: (entity.id(), entity.generation()),
+                authoring_entity: identity.authoring_id.clone(),
                 playback_state: format!("{:?}", animator.state),
                 clip_runtime_id: animator.clip.id().value(),
                 clip_time: animator.time,
@@ -1014,9 +1144,42 @@ fn collect_animation_debug_snapshot(
                 root_motion_delta: delta.to_array(),
                 crossfade_progress: animator.crossfade_progress(),
                 graph_state,
-                graph_transition_sequence,
+                graph_transition_sequence: graph.transition_sequence(),
                 graph_last_transition,
                 graph_parameters,
+                graph_parameter_values,
+                graph_asset: debug_source.map(|source| source.graph_asset.clone()),
+                graph_id: debug_source.map(|source| source.graph_id.clone()),
+                animation_set_asset: debug_source.map(|source| source.animation_set_asset.clone()),
+                current_state: state.map(|state| state.node_id.clone()),
+                previous_state: (fading)
+                    .then(|| transition.map(|transition| transition.from_node.clone()))
+                    .flatten(),
+                next_state: (fading)
+                    .then(|| transition.map(|transition| transition.to_node.clone()))
+                    .flatten(),
+                active_transition: (fading)
+                    .then(|| graph.last_transition_edge().cloned())
+                    .flatten(),
+                transition_condition: transition.map(|transition| {
+                    if transition.condition.is_empty() {
+                        "unconditional".to_owned()
+                    } else {
+                        transition.condition.clone()
+                    }
+                }),
+                motion_slot: state.and_then(|state| state.motion_slot.clone()),
+                motion_slot_name: binding.map(|binding| binding.display_name.clone()),
+                motion_source: binding.map(|binding| binding.source.clone()),
+                resolved_motion_variant: binding.map(|binding| binding.resolved_variant),
+                recent_events: recent_events
+                    .iter()
+                    .filter(|(key, _)| *key == (entity.id(), entity.generation()))
+                    .map(|(_, event)| event.clone())
+                    .collect(),
+                runtime_error: debug_source
+                    .is_none()
+                    .then(|| "Animation Graph runtime source provenance is unavailable.".to_owned()),
             }
         })
 }

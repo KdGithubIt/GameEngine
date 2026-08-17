@@ -6,7 +6,7 @@ use eframe::egui::{
     self, Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2 as EguiVec2,
 };
 use engine_authoring::{Edge, EdgeId, Node, NodeId, Value, Vec2};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 const NODE_SIZE: EguiVec2 = EguiVec2::new(170.0, 72.0);
 /// Empty graph-space padding kept between automatically placed nodes.
@@ -97,6 +97,8 @@ pub(crate) struct GraphDebugNodePresentation {
 pub(crate) struct GraphDebugOverlay {
     /// Per-node presentation keyed by stable source NodeId.
     pub(crate) nodes: BTreeMap<NodeId, GraphDebugNodePresentation>,
+    /// Runtime-active semantic edges keyed by stable source EdgeId.
+    pub(crate) active_edges: BTreeSet<EdgeId>,
 }
 
 /// Screen placement of the graph's coordinate origin.
@@ -372,7 +374,9 @@ pub fn show_graph_canvas(
                 .into_iter()
                 .filter(|kind| kind.matches_search(&state.node_search))
             {
-                if kind.category() != last_category.as_str() {
+                if !session.is_animation_graph()
+                    && kind.category() != last_category.as_str()
+                {
                     if !last_category.is_empty() {
                         ui.separator();
                     }
@@ -692,6 +696,13 @@ pub(crate) fn show_graph_debug_canvas(
     });
 
     paint_edges(&painter, canvas_view, session, &positions, None);
+    paint_debug_active_edges(
+        &painter,
+        canvas_view,
+        session,
+        &positions,
+        &overlay.active_edges,
+    );
     for (node_id, node) in &session.graph().nodes {
         let Some(position) = positions.get(node_id).copied() else {
             continue;
@@ -904,6 +915,34 @@ fn paint_edges(
                 draw_transition_badge(painter, &path, stroke);
                 draw_transition_label(painter, path.label_center, &label, selected, hovered);
             }
+    }
+}
+
+fn paint_debug_active_edges(
+    painter: &egui::Painter,
+    view: CanvasView,
+    session: &EditorSession,
+    positions: &BTreeMap<NodeId, Vec2>,
+    active_edges: &BTreeSet<EdgeId>,
+) {
+    for edge_id in active_edges {
+        let Some(edge) = session.graph().edges.get(edge_id) else {
+            continue;
+        };
+        let Some(path) = edge_screen_path(view, session, edge, positions) else {
+            continue;
+        };
+        let stroke = Stroke::new(4.0_f32, Color32::from_rgb(112, 214, 156));
+        painter.add(egui::Shape::line(path.points.clone(), stroke));
+        draw_arrow_head(
+            painter,
+            path.points[path.points.len() - 2],
+            path.points[path.points.len() - 1],
+            stroke,
+        );
+        if session.is_animation_graph() {
+            draw_transition_badge(painter, &path, stroke);
+        }
     }
 }
 

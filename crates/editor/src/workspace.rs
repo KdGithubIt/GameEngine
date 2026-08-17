@@ -6,7 +6,7 @@
 
 use crate::document::{CurrentDocument, OpenDocumentError};
 use crate::session::{EditorPersistError, EditorSession};
-use engine_authoring::{AuthoringScene, EntityId};
+use engine_authoring::{AuthoringScene, EntityId, Graph, GraphId, GraphView};
 use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
 
@@ -251,6 +251,55 @@ impl DocumentWorkspace {
     /// A scene containing `target` wins, followed by the active scene and the
     /// first remaining scene tab. This lets an Animation Graph tab keep using
     /// the character selected in a neighboring scene tab.
+    /// Clones the authoritative open working copy for one graph identity.
+    ///
+    /// Graph Debug uses this before falling back to disk so unsaved edits stay
+    /// visible without lending mutable authoring authority to the debug view.
+    pub(crate) fn graph_working_copy(
+        &self,
+        graph_id: &GraphId,
+    ) -> Option<(Graph, Option<GraphView>, u64, bool)> {
+        self.tabs.iter().find_map(|tab| {
+            let session = &tab.session;
+            (session.graph().id == *graph_id
+                && matches!(session.current_document(), CurrentDocument::Graph { .. }))
+            .then(|| {
+                {
+                    let graph = serde_json::from_value(
+                        serde_json::to_value(session.graph())
+                            .expect("open graph working copy must serialize"),
+                    )
+                    .expect("serialized open graph working copy must deserialize");
+                    let graph_view = session.graph_view().map(|view| {
+                        serde_json::from_value(
+                            serde_json::to_value(view)
+                                .expect("open graph view working copy must serialize"),
+                        )
+                        .expect("serialized open graph view working copy must deserialize")
+                    });
+                    (
+                        graph,
+                        graph_view,
+                        session.document_revision(),
+                        session.is_dirty(),
+                    )
+                }
+            })
+        })
+    }
+
+    /// Captures graph working-copy revisions at Play start for stale-source detection.
+    pub(crate) fn graph_working_copy_revisions(&self) -> std::collections::BTreeMap<GraphId, u64> {
+        self.tabs
+            .iter()
+            .filter_map(|tab| {
+                let session = &tab.session;
+                matches!(session.current_document(), CurrentDocument::Graph { .. })
+                    .then(|| (session.graph().id.clone(), session.document_revision()))
+            })
+            .collect()
+    }
+
     pub(crate) fn scene_context(
         &self,
         target: Option<&EntityId>,

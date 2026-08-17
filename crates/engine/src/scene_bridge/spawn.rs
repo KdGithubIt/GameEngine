@@ -918,14 +918,37 @@ pub(crate) fn spawn_animation_controller_component(
         return Ok(());
     };
     let graph_path = manifest_asset_path(&graph_asset, context)?;
-    let compiled_graph =
-        load_animation_graph(&graph_path).map_err(|source| SceneBridgeError::AssetLoad {
+    let (source_graph, compiled_graph) =
+        load_animation_graph_document(&graph_path).map_err(|source| SceneBridgeError::AssetLoad {
             asset: graph_asset.clone(),
             source: AssetLoadError::InvalidAsset {
                 path: graph_path,
                 message: source.to_string(),
             },
         })?;
+    let mut claimed_transition_edges = BTreeSet::new();
+    let transition_edges = compiled_graph
+        .transitions
+        .iter()
+        .map(|transition| {
+            source_graph.edges.iter().find_map(|(edge_id, edge)| {
+                if claimed_transition_edges.contains(edge_id) {
+                    return None;
+                }
+                let condition = edge.annotations.get("condition").and_then(|value| match value {
+                    Value::String(value) => Some(value.as_str()),
+                    _ => None,
+                }).unwrap_or("");
+                (edge.from.node == transition.from_node
+                    && edge.to.node == transition.to_node
+                    && condition == transition.condition)
+                    .then(|| {
+                        claimed_transition_edges.insert(edge_id.clone());
+                        edge_id.clone()
+                    })
+            })
+        })
+        .collect::<Vec<_>>();
     let resolved_set = resolve_animation_set(
         &animation_set_asset,
         &graph_asset,
@@ -936,6 +959,7 @@ pub(crate) fn spawn_animation_controller_component(
         clips: resolved_clips,
         events: animation_set_events,
         unresolved_motion_slots,
+        debug_bindings,
     } = resolved_set;
     if let Some(motion_key) = compiled_graph
         .states
@@ -979,6 +1003,13 @@ pub(crate) fn spawn_animation_controller_component(
 
     let mut player = AnimGraphPlayer::new(compiled_graph, resolved_clips);
     player.fade_duration = fade_duration;
+    player.set_debug_source(AnimationGraphDebugSource {
+        graph_asset: graph_asset.clone(),
+        graph_id: source_graph.id.clone(),
+        animation_set_asset: animation_set_asset.clone(),
+        transition_edges,
+        motion_bindings: debug_bindings,
+    });
     let parameters = match fields.get("parameters") {
         None => BTreeMap::new(),
         Some(Value::Object(parameters)) => parameters.clone(),
@@ -1423,6 +1454,12 @@ struct ResolvedAnimationSet {
     clips: BTreeMap<String, Handle<AnimationClip>>,
     events: Vec<(Handle<AnimationClip>, Vec<AnimEvent>)>,
     unresolved_motion_slots: HashSet<String>,
+    debug_bindings: BTreeMap<engine_authoring::MotionSlotId, AnimationMotionDebugBinding>,
+}
+
+struct ResolvedAnimationBindingClip {
+    handle: Handle<AnimationClip>,
+    resolved_variant: engine_authoring::MotionSourceVariant,
 }
 
 fn resolve_animation_set(
@@ -1507,8 +1544,9 @@ fn resolve_animation_set(
     let mut clips = BTreeMap::new();
     let mut events = Vec::<(Handle<AnimationClip>, Vec<AnimEvent>)>::new();
     let mut unresolved_motion_slots = HashSet::new();
+    let mut debug_bindings = BTreeMap::new();
     for (motion_slot, binding) in animation_set.bindings {
-        let Some(primary_handle) = resolve_animation_binding_clip(
+        let Some(primary) = resolve_animation_binding_clip(
             animation_set_asset,
             &binding.clip,
             &target_skeleton,
@@ -1518,16 +1556,17 @@ fn resolve_animation_set(
             unresolved_motion_slots.insert(motion_slot.as_str().to_owned());
             continue;
         };
+        let primary_handle = primary.handle;
         let mut layer_handles = Vec::with_capacity(binding.overlays.len() + 1);
         layer_handles.push(primary_handle);
         for overlay in &binding.overlays {
-            if let Some(overlay_handle) = resolve_animation_binding_clip(
+            if let Some(overlay_clip) = resolve_animation_binding_clip(
                 animation_set_asset,
                 overlay,
                 &target_skeleton,
                 context,
             )? {
-                layer_handles.push(overlay_handle);
+                layer_handles.push(overlay_clip.handle);
             }
         }
 
@@ -1611,6 +1650,16 @@ fn resolve_animation_set(
             composite_handle
         };
         clips.insert(motion_slot.as_str().to_owned(), handle);
+        debug_bindings.insert(
+            motion_slot.clone(),
+            AnimationMotionDebugBinding {
+                motion_slot: motion_slot.clone(),
+                display_name: binding.name.clone(),
+                source: binding.clip.clone(),
+                resolved_variant: primary.resolved_variant,
+                resolved_clip_runtime_id: handle.id().value(),
+            },
+        );
         if !binding.events.is_empty() {
             let binding_events = binding
                 .events
@@ -1636,6 +1685,7 @@ fn resolve_animation_set(
         clips,
         events,
         unresolved_motion_slots,
+        debug_bindings,
     })
 }
 
@@ -1644,7 +1694,7 @@ fn resolve_animation_binding_clip(
     source: &engine_authoring::MotionSourceRef,
     target_skeleton: &SkeletonAsset,
     context: &mut SpawnContext<'_>,
-) -> Result<Option<Handle<AnimationClip>>, SceneBridgeError> {
+) -> Result<Option<ResolvedAnimationBindingClip>, SceneBridgeError> {
     if source.variant == engine_authoring::MotionSourceVariant::Humanoid {
         return resolve_humanoid_animation_binding_clip(
             animation_set_asset,
@@ -1652,7 +1702,10 @@ fn resolve_animation_binding_clip(
             target_skeleton,
             context,
         )
-        .map(Some);
+        .map(|handle| Some(ResolvedAnimationBindingClip {
+            handle,
+            resolved_variant: engine_authoring::MotionSourceVariant::Humanoid,
+        }));
     }
 
     let resolved = resolve_animation_clip_source(&source.asset, context)?;
@@ -1689,7 +1742,10 @@ fn resolve_animation_binding_clip(
     })?;
 
     if source_skeleton_id == target_skeleton.id {
-        return Ok(Some(native_handle));
+        return Ok(Some(ResolvedAnimationBindingClip {
+            handle: native_handle,
+            resolved_variant: engine_authoring::MotionSourceVariant::Native,
+        }));
     }
 
     if source.variant == engine_authoring::MotionSourceVariant::Auto {
@@ -1710,7 +1766,10 @@ fn resolve_animation_binding_clip(
                 target_skeleton,
                 context,
             )
-            .map(Some);
+            .map(|handle| Some(ResolvedAnimationBindingClip {
+                handle,
+                resolved_variant: engine_authoring::MotionSourceVariant::Humanoid,
+            }));
         }
     }
 
@@ -1723,6 +1782,12 @@ fn resolve_animation_binding_clip(
         target_skeleton,
         context,
     )
+    .map(|resolved| {
+        resolved.map(|handle| ResolvedAnimationBindingClip {
+            handle,
+            resolved_variant: engine_authoring::MotionSourceVariant::Native,
+        })
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
