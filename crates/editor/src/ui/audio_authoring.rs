@@ -389,7 +389,7 @@ fn draw_attenuation_preview(
         if let Some(previous) = previous {
             painter.line_segment(
                 [previous, point],
-                egui::Stroke::new(1.5, ui.visuals().text_color()),
+                egui::Stroke::new(1.5_f32, ui.visuals().text_color()),
             );
         }
         previous = Some(point);

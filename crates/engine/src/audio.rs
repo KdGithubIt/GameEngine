@@ -252,6 +252,8 @@ impl GameAudioCommandQueue {
 }
 
 /// Resolves and applies queued project-Rust audio requests.
+// ECS system injection intentionally keeps these independently borrow-tracked resources explicit.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn game_audio_effect_system(
     mut queue: ResMut<GameAudioCommandQueue>,
     mut transforms: Query<&GlobalTransform>,
@@ -441,6 +443,7 @@ mod tests {
         let mut queue = GameAudioCommandQueue::default();
         queue.push_preflighted(GameAudioCommand::StopBackgroundMusic);
         app.insert_resource(queue);
+        app.insert_resource(SpatialAudioRuntime::default());
         app.add_system(game_audio_effect_system);
 
         app.update().expect("headless audio system must run");
