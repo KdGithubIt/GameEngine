@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/platform/src/audio.rs","old":"struct ActiveVoice {\n    sink: rodio::Sink,\n    looping: bool,\n}\n\nimpl ActiveVoice {","new":"struct ActiveVoice {\n    sink: rodio::Sink,\n    looping: bool,\n}\n\n#[cfg(not(target_arch = \"wasm32\"))]\nimpl ActiveVoice {"}
