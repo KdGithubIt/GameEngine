@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ui/navigation_workspace.rs",
+  "old": "impl super::EditorApp {\n    pub(super) fn open_navigation_window(&mut self) {",
+  "new": "impl super::EditorApp {\n    #[cfg(feature = \"visual-validation\")]\n    pub fn prepare_navigation_visual_validation(&mut self) {\n        self.open_navigation_window();\n    }\n\n    pub(super) fn open_navigation_window(&mut self) {"
+}
