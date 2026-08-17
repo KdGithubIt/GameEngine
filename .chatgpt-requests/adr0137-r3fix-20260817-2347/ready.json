@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0137-r3fix-20260817-2347",
+  "target_branch": "chatgpt/gameengine-adr0137-r3",
+  "expected_head_sha": "b4ea5dd8a60497f7ac71e886842adde86e1a3087",
+  "baseline_main_sha": "b4ea5dd8a60497f7ac71e886842adde86e1a3087",
+  "patch_sha256": "c6288f3209ecef860e538733a90aacb4c7bedba02430bd5ffeb2544b337ced16",
+  "patch_bytes": 23597,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Implement ADR 0137 diagnostic ownership",
+  "pr_title": "GameEngine: implement ADR 0137 diagnostic ownership",
+  "pr_body": "## Summary\n\nImplements ADR 0137 first-release diagnostic ownership and progressive disclosure. Integrates with the current-main ADR 0138 Animation Graph debug-source contract instead of reloading the graph document, and handles optional manifest display names correctly.\n\n## Validation\n\nRun Windows Validation and Visual Validation for the Editor presentation changes."
+}
