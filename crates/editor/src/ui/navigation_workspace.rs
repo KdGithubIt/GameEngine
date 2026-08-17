@@ -150,6 +150,11 @@ fn load_navigation_document_for_ui(
 }
 
 impl super::EditorApp {
+    #[cfg(feature = "visual-validation")]
+    pub fn prepare_navigation_visual_validation(&mut self) {
+        self.open_navigation_window();
+    }
+
     pub(super) fn open_navigation_window(&mut self) {
         self.navigation_workspace.visible = true;
         if self.navigation_workspace.settings_document.is_none() {
