@@ -1,0 +1,59 @@
+diff --git a/crates/editor/src/main.rs b/crates/editor/src/main.rs
+index 752d60780e3f0a106d983e8167c77be2368d512f..a20396056bf581659980f45e6188a0e3a5ed6d40 100644
+--- a/crates/editor/src/main.rs
++++ b/crates/editor/src/main.rs
+@@ -45,6 +45,9 @@ impl EditorShell {
+         context: &eframe::egui::Context,
+     ) -> Result<Self, String> {
+         let root = project_lease.project_root().clone();
++        #[cfg(feature = "visual-validation")]
++        let mut app = engine_editor::EditorApp::from_project(root.clone());
++        #[cfg(not(feature = "visual-validation"))]
+         let app = engine_editor::EditorApp::from_project(root.clone());
+         let (mcp_server, mcp_requests) =
+             EditorMcpServer::start(context.clone()).map_err(|error| error.to_string())?;
+@@ -69,15 +72,19 @@ impl EditorShell {
+         #[cfg(feature = "visual-validation")]
+         if let Some(requested) = std::env::var_os("GAMEENGINE_VISUAL_AUTHORING_TOOL") {
+             let requested = requested.to_string_lossy();
+-            let tool = AuthoringTool::ALL
+-                .into_iter()
+-                .find(|tool| tool.label() == requested)
+-                .ok_or_else(|| {
+-                    format!(
+-                        "visual-validation authoring tool `{requested}` is not available in this Editor build"
+-                    )
+-                })?;
+-            authoring_windows.open(tool);
++            if requested == "Navigation" {
++                app.prepare_navigation_visual_validation();
++            } else {
++                let tool = AuthoringTool::ALL
++                    .into_iter()
++                    .find(|tool| tool.label() == requested)
++                    .ok_or_else(|| {
++                        format!(
++                            "visual-validation authoring tool `{requested}` is not available in this Editor build"
++                        )
++                    })?;
++                authoring_windows.open(tool);
++            }
+         }
+         project_lease.mark_ready().map_err(|error| error.to_string())?;
+         #[cfg(feature = "visual-validation")]
+diff --git a/crates/editor/src/ui/navigation_workspace.rs b/crates/editor/src/ui/navigation_workspace.rs
+index e46747e0eef1835d0478f3fcfc85960e81e4ee71..439b288033028e9243626ba1d2a5281eb182cb21 100644
+--- a/crates/editor/src/ui/navigation_workspace.rs
++++ b/crates/editor/src/ui/navigation_workspace.rs
+@@ -150,6 +150,11 @@ fn load_navigation_document_for_ui(
+ }
+ 
+ impl super::EditorApp {
++    #[cfg(feature = "visual-validation")]
++    pub fn prepare_navigation_visual_validation(&mut self) {
++        self.open_navigation_window();
++    }
++
+     pub(super) fn open_navigation_window(&mut self) {
+         self.navigation_workspace.visible = true;
+         if self.navigation_workspace.settings_document.is_none() {
