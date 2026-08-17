@@ -1,0 +1,249 @@
+diff --git a/crates/editor/src/scene_view.rs b/crates/editor/src/scene_view.rs
+index e105b25c994c51b65e70e9a8135424149c67a7a8..1a80ede19c672708178c353dd324b2059db54c86 100644
+--- a/crates/editor/src/scene_view.rs
++++ b/crates/editor/src/scene_view.rs
+@@ -3995,6 +3995,7 @@ mod tests {
+             None,
+             &engine::scene_bridge::SharedGltfImportCache::default(),
+             &engine::SharedGpuMeshCache::default(),
++            &engine::authoring_overlay::AuthoringDocumentOverlay::new(),
+             [640, 360],
+             true,
+         );
+@@ -4041,6 +4042,7 @@ mod tests {
+             None,
+             &engine::scene_bridge::SharedGltfImportCache::default(),
+             &engine::SharedGpuMeshCache::default(),
++            &engine::authoring_overlay::AuthoringDocumentOverlay::new(),
+             [640, 360],
+             true,
+         );
+diff --git a/crates/editor/src/session/mod.rs b/crates/editor/src/session/mod.rs
+index 93731b8b9d4268d14ba827af350cffeaea68b89b..f4387eb790080e5665a951e8a8df5f02c5bcca04 100644
+--- a/crates/editor/src/session/mod.rs
++++ b/crates/editor/src/session/mod.rs
+@@ -257,6 +257,11 @@ impl EditorSession {
+         &self.graph
+     }
+ 
++    /// Returns the authoritative Graph working copy when this session owns a Graph document.
++    pub(crate) fn graph_working_copy(&self) -> Option<&Graph> {
++        matches!(&self.current_document, CurrentDocument::Graph { .. }).then_some(&self.graph)
++    }
++
+     /// Serializes the current Graph working copy through its domain schema.
+     ///
+     /// Failure remains an authoritative invalid working copy; callers must not
+diff --git a/crates/editor/src/ui/assets/animation_set_window.rs b/crates/editor/src/ui/assets/animation_set_window.rs
+index d7a678a2ef37520afab5360b1a63edc964fc0393..58e907cc05dc5b77203128cb167617a850c5f67c 100644
+--- a/crates/editor/src/ui/assets/animation_set_window.rs
++++ b/crates/editor/src/ui/assets/animation_set_window.rs
+@@ -753,7 +753,7 @@ impl EditorApp {
+                 graph_document.kind.as_str()
+             ));
+         }
+-        let slots = engine_authoring::animation_graph_motion_slots(&graph_document)
++        let slots = engine_authoring::animation_graph_motion_slots(graph_document)
+             .map_err(|error| format!("{} has invalid Motion Slots: {error}", entry.path))?;
+         let mut states =
+             std::collections::BTreeMap::<engine_authoring::MotionSlotId, Vec<String>>::new();
+diff --git a/crates/editor/src/ui/assets/material_window.rs b/crates/editor/src/ui/assets/material_window.rs
+index cb4c2b7b6e19f988089b23e6c0e2215a515be231..1b2c891bafa0cb2de52a566ecd9036422347c1e2 100644
+--- a/crates/editor/src/ui/assets/material_window.rs
++++ b/crates/editor/src/ui/assets/material_window.rs
+@@ -1,7 +1,7 @@
+-//! Material editor window, material persistence, and texture previews.
++//! Material editor window, explicit material persistence, and texture previews.
+ //!
+-//! Material edits are continuous, so writes are debounced through a pending
+-//! save queue instead of touching the file on every frame.
++//! Continuous edits debounce only Scene View preview refresh. Canonical Material
++//! persistence happens through explicit Save/Save All (ADR 0139).
+ 
+ use crate::ui::*;
+ 
+diff --git a/crates/editor/src/ui/documents.rs b/crates/editor/src/ui/documents.rs
+index 0e213f75757423f167c3a15445f0ef54c9c4d0c5..0ae0904f15f3660cbd4c1d783dc1752621cadeaf 100644
+--- a/crates/editor/src/ui/documents.rs
++++ b/crates/editor/src/ui/documents.rs
+@@ -622,7 +622,11 @@ impl EditorApp {
+                             kind: event.kind,
+                         });
+                     } else if event.kind != FileSyncKind::Removed {
+-                        self.reload_external_document_owner(&owner, &absolute);
++                        self.reload_external_document_owner(
++                            &owner,
++                            &absolute,
++                            ExternalReloadPolicy::CleanOnly,
++                        );
+                     } else {
+                         self.session.push_diagnostic(engine_authoring::Diagnostic::warning(
+                             "editor.file_sync.open_document_removed",
+@@ -892,6 +896,7 @@ impl EditorApp {
+         &mut self,
+         owner: &ExternalDocumentOwner,
+         path: &Path,
++        policy: ExternalReloadPolicy,
+     ) {
+         let result = match owner {
+             ExternalDocumentOwner::Workspace(tab_id) => {
+@@ -902,19 +907,44 @@ impl EditorApp {
+                 .map_err(|error| error.to_string())
+                 .and_then(|json| engine_authoring::AnimationSet::from_json(&json).map_err(|error| error.to_string()))
+                 .and_then(|document| {
+-                    self.animation_set_editor
++                    let state = self
++                        .animation_set_editor
+                         .as_mut()
+-                        .ok_or_else(|| "Animation Set editor is closed".to_owned())
+-                        .map(|state| state.reload_discarding_changes(document))
++                        .ok_or_else(|| "Animation Set editor is closed".to_owned())?;
++                    match policy {
++                        ExternalReloadPolicy::CleanOnly => state
++                            .reload_clean(document)
++                            .then_some(())
++                            .ok_or_else(|| {
++                                "Animation Set became dirty before external reload".to_owned()
++                            }),
++                        ExternalReloadPolicy::DiscardChanges => {
++                            state.reload_discarding_changes(document);
++                            Ok(())
++                        }
++                    }
+                 }),
+             ExternalDocumentOwner::Material(relative) => fs::read_to_string(path)
+                 .map_err(|error| error.to_string())
+                 .and_then(|json| engine_authoring::MaterialAsset::from_json(&json).map_err(|error| error.to_string()))
+                 .and_then(|material| {
+-                    self.material_editor
+-                        .reload_discarding_changes(relative, material)
+-                        .then_some(())
+-                        .ok_or_else(|| format!("material {} is no longer open", relative.display()))
++                    let reloaded = match policy {
++                        ExternalReloadPolicy::CleanOnly => {
++                            self.material_editor.reload_clean(relative, material)
++                        }
++                        ExternalReloadPolicy::DiscardChanges => self
++                            .material_editor
++                            .reload_discarding_changes(relative, material),
++                    };
++                    reloaded.then_some(()).ok_or_else(|| match policy {
++                        ExternalReloadPolicy::CleanOnly => format!(
++                            "material {} became dirty before external reload",
++                            relative.display()
++                        ),
++                        ExternalReloadPolicy::DiscardChanges => {
++                            format!("material {} is no longer open", relative.display())
++                        }
++                    })
+                 }),
+         };
+         match result {
+@@ -962,7 +992,11 @@ impl EditorApp {
+             self.external_document_conflict = None;
+         } else if reload {
+             self.external_document_conflict = None;
+-            self.reload_external_document_owner(&owner, &path);
++            self.reload_external_document_owner(
++                &owner,
++                &path,
++                ExternalReloadPolicy::DiscardChanges,
++            );
+         }
+     }
+ 
+@@ -1039,6 +1073,12 @@ enum UnsavedChangesChoice {
+     Cancel,
+ }
+ 
++#[derive(Clone, Copy)]
++enum ExternalReloadPolicy {
++    CleanOnly,
++    DiscardChanges,
++}
++
+ #[derive(Clone)]
+ enum ExternalDocumentOwner {
+     Workspace(WorkspaceTabId),
+diff --git a/crates/editor/src/ui/tests.rs b/crates/editor/src/ui/tests.rs
+index 8b6738899504d452c6ce7192a38219e8a6264375..dc55caeea2108b56611750bcbc94c6ef46934b16 100644
+--- a/crates/editor/src/ui/tests.rs
++++ b/crates/editor/src/ui/tests.rs
+@@ -2336,17 +2336,18 @@ fn material_editor_saves_typed_changes_through_project_path_boundary() {
+ }
+ 
+ #[test]
+-fn continuous_material_edits_are_coalesced_before_disk_write() {
++fn continuous_material_edits_require_explicit_save_before_disk_write() {
+     let directory = tempfile::tempdir().expect("temporary project root");
+     let root = ProjectRoot::create(
+         directory.path(),
+         engine_authoring::ProjectConfig {
+-            name: "MaterialDebounceTest".into(),
++            name: "MaterialExplicitSaveTest".into(),
+             schema_version: engine_authoring::PROJECT_SCHEMA_VERSION,
+         },
+     )
+     .expect("project fixture");
+     let material_path = root.assets_root().join("surface.material.json");
++    let relative_path = PathBuf::from("surface.material.json");
+     let original = engine_authoring::MaterialAsset::default();
+     std::fs::write(
+         &material_path,
+@@ -2360,28 +2361,26 @@ fn continuous_material_edits_are_coalesced_before_disk_write() {
+         ..original.clone()
+     };
+     app.material_editor
+-        .open_material(PathBuf::from("surface.material.json"), changed.clone());
++        .open_material(relative_path.clone(), changed.clone());
+     let context = egui::Context::default();
+ 
+     app.queue_active_material_save(&context);
+-    let before_quiet_period = engine_authoring::MaterialAsset::from_json(
+-        &std::fs::read_to_string(&material_path).expect("queued material file"),
++    let before_save = engine_authoring::MaterialAsset::from_json(
++        &std::fs::read_to_string(&material_path).expect("unsaved material file"),
+     )
+-    .expect("queued material remains valid");
+-    assert_eq!(before_quiet_period, original);
++    .expect("unsaved material remains valid");
++    assert_eq!(before_save, original);
++    assert!(app.material_editor.is_dirty(&relative_path));
++    assert!(app.material_scene_preview_deadline.is_some());
+ 
+-    for pending in app.pending_material_saves.values_mut() {
+-        pending.deadline = std::time::Instant::now();
+-    }
+-    app.flush_pending_material_saves(&context);
++    app.save_active_material();
+ 
+     let saved = engine_authoring::MaterialAsset::from_json(
+-        &std::fs::read_to_string(material_path).expect("flushed material file"),
++        &std::fs::read_to_string(&material_path).expect("saved material file"),
+     )
+-    .expect("flushed material remains valid");
++    .expect("saved material remains valid");
+     assert_eq!(saved, changed);
+-    assert!(app.pending_material_saves.is_empty());
+-    assert!(app.material_scene_preview_deadline.is_some());
++    assert!(!app.material_editor.is_dirty(&relative_path));
+ }
+ 
+ #[test]
+diff --git a/crates/editor/src/working_copy.rs b/crates/editor/src/working_copy.rs
+index f3a597f859e5ed98345db544c8c868064d1da269..8854eb861e9441679466d25905fe4035e8f70593 100644
+--- a/crates/editor/src/working_copy.rs
++++ b/crates/editor/src/working_copy.rs
+@@ -62,8 +62,10 @@ pub(crate) fn graph_working_copy<'a>(
+     path: &Path,
+ ) -> Option<(&'a Graph, u64)> {
+     let session = workspace.session_for_path(path)?;
+-    session.graph_working_copy_json()?;
+-    Some((session.graph(), session.document_revision()))
++    Some((
++        session.graph_working_copy()?,
++        session.document_revision(),
++    ))
+ }
+ 
+ #[cfg(test)]
