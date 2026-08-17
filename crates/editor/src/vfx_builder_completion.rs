@@ -1090,8 +1090,10 @@ mod tests {
         effect.emitters.push(emitter);
 
         let compilation = VfxAuthoringService::new().compile(&effect);
-        let mut preview = VfxPreviewState::default();
-        preview.current_time = 0.75;
+        let mut preview = VfxPreviewState {
+            current_time: 0.75,
+            ..Default::default()
+        };
         preview.apply_compilation(&effect, &compilation, true);
 
         let compiled = compilation

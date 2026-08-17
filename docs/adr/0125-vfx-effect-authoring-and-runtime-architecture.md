@@ -1,6 +1,6 @@
 # ADR 0125: VFX Effect Authoring and Runtime Architecture
 
-Status: Proposed
+Status: Accepted
 Date: 2026-08-16
 Builds on: ADR 0042, ADR 0044, ADR 0054, ADR 0072, ADR 0104, ADR 0113, ADR 0121
 
