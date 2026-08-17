@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ui/play.rs","old":"        self.runtime_state = None;\n        self.behavior_debug.clear();","new":"        self.runtime_state = None;\n        self.graph_debug.clear();\n        self.behavior_debug.clear();"}
