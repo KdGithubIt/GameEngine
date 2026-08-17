@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "request_id": "20260817-adr0122-tail-44f9655-r1",
+  "target_branch": "chatgpt/gameengine-adr0122-spatial-audio-complete-v6",
+  "expected_head_sha": "44f9655812a3894d9fe6d5e27aca452ef6602ed4",
+  "baseline_main_sha": "adc622bb0080aebc25945744dbdb478a60f75cf4",
+  "edit_parts": ["edit-0000.json","edit-0001.json","edit-0002.json","edit-0003.json","edit-0004.json","edit-0005.json","edit-0006.json","edit-0007.json","edit-0008.json","edit-0009.json","edit-0010.json","edit-0011.json","edit-0012.json"],
+  "commit_message": "Finish ADR 0122 spatial audio tests and visual fixture",
+  "pr_title": "Complete ADR 0122 spatial audio first release",
+  "pr_body": "## Summary\n\nCompletes ADR 0122 spatial audio first-release requirements and closes remaining lifecycle/test coverage. The visual-validation fixture no longer fabricates an unresolved audio asset; attenuation preview is spatial-field driven while audition still requires a real clip.\n\n## Validation\n\nRun fresh Windows affected validation and Spatial Audio Editor Visual Validation on the final head."
+}
