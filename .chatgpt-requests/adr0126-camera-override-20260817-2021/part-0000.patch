@@ -1,0 +1,383 @@
+diff --git a/crates/engine/src/app.rs b/crates/engine/src/app.rs
+index a9cf7000a3d5a96b39cf208bd2c330b5f8c42a46..8f77b6af3455274b43204cffed8ddcbb49026e83 100644
+--- a/crates/engine/src/app.rs
++++ b/crates/engine/src/app.rs
+@@ -16,7 +16,7 @@ use crate::asset::{AssetServer, Assets};
+ use crate::audio::{
+     game_audio_effect_system, AudioAsset, GameAudioCommandQueue, SpatialAudioRuntime,
+ };
+-use crate::camera::{camera_aspect_system, ViewportSize};
++use crate::camera::{camera_aspect_system, GameCameraSelectionOverride, ViewportSize};
+ use crate::game_module::{
+     GameComponentDefaults, GameModule, GameModuleResource, GameModuleRunError, GameSystemSchedule,
+ };
+@@ -98,6 +98,7 @@ impl App {
+         let mut ecs = EcsApp::new();
+         ecs.insert_resource(Time::default());
+         ecs.insert_resource(ViewportSize::default());
++        ecs.insert_resource(GameCameraSelectionOverride::default());
+         ecs.insert_resource(Assets::<Mesh>::default());
+         ecs.insert_resource(Assets::<Material>::default());
+         ecs.insert_resource(Assets::<AudioAsset>::default());
+diff --git a/crates/engine/src/camera.rs b/crates/engine/src/camera.rs
+index a91d5c619035753b101821653986eeb806affb72..9e0137209b91beaa323c9afb7e0c0543f204dff7 100644
+--- a/crates/engine/src/camera.rs
++++ b/crates/engine/src/camera.rs
+@@ -9,10 +9,11 @@ use glam::{Mat4, Quat, Vec3};
+ use hashbrown::HashMap;
+ 
+ pub use engine_render_runtime::camera::{
+-    camera_aspect_system, default_camera_transform, Camera3D, ViewportSize,
++    camera_aspect_system, default_camera_transform, Camera3D, GameCameraSelectionOverride,
++    ViewportSize,
+ };
+ pub(crate) use engine_render_runtime::camera::{
+-    camera_selection_key, select_active_game_camera,
++    camera_selection_key, select_active_game_camera, select_active_game_camera_with_override,
+ };
+ 
+ /// A camera that orbits around a fixed world-space target point.
+diff --git a/crates/engine/src/lock_on.rs b/crates/engine/src/lock_on.rs
+index 3d106ac3213cf5dca75682a73bff79fd28c7dee1..1be020145ec469242587d388615007ac4151c902 100644
+--- a/crates/engine/src/lock_on.rs
++++ b/crates/engine/src/lock_on.rs
+@@ -8,11 +8,13 @@
+ //! frame the locked target and should be registered immediately after
+ //! [`lock_on_system`] in the frame schedule.
+ 
+-use engine_ecs::{Entity, Query, ResMut};
++use engine_ecs::{Entity, Query, Res, ResMut};
+ use glam::Vec3;
+ use hashbrown::HashMap;
+ 
+-use crate::camera::{select_active_game_camera, Camera3D, LockOnCamera};
++use crate::camera::{
++    select_active_game_camera_with_override, Camera3D, GameCameraSelectionOverride, LockOnCamera,
++};
+ use crate::collision::{
+     segment_blocked_by_static, static_obstacle_aabbs, Collider, PhysicsBody, TriggerVolume,
+ };
+@@ -56,6 +58,7 @@ use engine_gameplay::lock_on::LockRequest;
+ /// configuration there is no `source` position or selection policy to use.
+ pub fn lock_on_system(
+     mut lock: ResMut<TargetLock>,
++    camera_override: Option<Res<GameCameraSelectionOverride>>,
+     cameras: Query<(&Camera3D, Option<&LockOnCamera>)>,
+     lock_targets: Query<&LockOnTarget>,
+     transforms: Query<&GlobalTransform>,
+@@ -68,7 +71,12 @@ pub fn lock_on_system(
+ ) {
+     let request = lock.pending.take();
+ 
+-    let Some((_, (_, Some(camera)))) = select_active_game_camera(cameras.iter()) else {
++    let override_target = camera_override
++        .as_deref()
++        .and_then(GameCameraSelectionOverride::target);
++    let Some((_, (_, Some(camera)))) =
++        select_active_game_camera_with_override(cameras.iter(), override_target)
++    else {
+         log::debug!(
+             "lock_on_system: active camera has no LockOnCamera; lock-on request ignored"
+         );
+diff --git a/crates/engine/src/player.rs b/crates/engine/src/player.rs
+index de09a519fbadaba857e08aa420ed74538fcf94d2..03af122bb79bb4c2aa5070e84eb682e817d708c8 100644
+--- a/crates/engine/src/player.rs
++++ b/crates/engine/src/player.rs
+@@ -1,6 +1,8 @@
+ //! Player controller component and system.
+ 
+-use crate::camera::{select_active_game_camera, Camera3D};
++use crate::camera::{
++    select_active_game_camera_with_override, Camera3D, GameCameraSelectionOverride,
++};
+ use crate::character_controller::KinematicCharacterController;
+ use crate::game_io::GameInputActionState;
+ use crate::input::{GamepadAxis, GamepadAxisState, GamepadButton, Input, KeyCode, MouseButton};
+@@ -668,6 +670,7 @@ fn resolve_named_action(
+ pub fn player_character_motor_system(
+     fixed_time: engine_ecs::Res<FixedTime>,
+     intents: engine_ecs::Res<PlayerMovementIntents>,
++    camera_override: Option<engine_ecs::Res<GameCameraSelectionOverride>>,
+     cameras: engine_ecs::Query<(&Camera3D, &GlobalTransform)>,
+     mut players: engine_ecs::Query<
+         (
+@@ -678,10 +681,16 @@ pub fn player_character_motor_system(
+         engine_ecs::With<PlayerMarker>,
+     >,
+ ) {
+-    let camera_basis = select_active_game_camera(cameras.iter()).map(|(_, (_, global))| {
+-        let (_, rotation, _) = global.matrix().to_scale_rotation_translation();
+-        planar_camera_basis(rotation)
+-    });
++    let override_target = camera_override
++        .as_deref()
++        .and_then(GameCameraSelectionOverride::target);
++    let camera_basis =
++        select_active_game_camera_with_override(cameras.iter(), override_target).map(
++            |(_, (_, global))| {
++                let (_, rotation, _) = global.matrix().to_scale_rotation_translation();
++                planar_camera_basis(rotation)
++            },
++        );
+ 
+     for (entity, (config, motor, transform)) in &mut players {
+         let intent = intents.get(entity).unwrap_or_default();
+diff --git a/crates/render-runtime/src/camera.rs b/crates/render-runtime/src/camera.rs
+index 4ecee9c150549dcb0333982680e2f64a255af133..005efc57f23a9b00ec9ab78a86b43872a47e557d 100644
+--- a/crates/render-runtime/src/camera.rs
++++ b/crates/render-runtime/src/camera.rs
+@@ -65,6 +65,34 @@ impl Default for Camera3D {
+     }
+ }
+ 
++/// Transient runtime-only override for Game View camera selection.
++///
++/// Authoring never serializes this resource. Composition layers such as Timeline
++/// may point it at one live camera without rewriting [`Camera3D::enabled`] or
++/// [`Camera3D::priority`]. A missing target falls back to normal priority
++/// selection so stale runtime identities cannot black out the Game View.
++#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
++pub struct GameCameraSelectionOverride {
++    target: Option<engine_ecs::Entity>,
++}
++
++impl GameCameraSelectionOverride {
++    /// Returns the currently requested runtime camera entity.
++    pub fn target(&self) -> Option<engine_ecs::Entity> {
++        self.target
++    }
++
++    /// Replaces the transient camera target.
++    pub fn set_target(&mut self, target: engine_ecs::Entity) {
++        self.target = Some(target);
++    }
++
++    /// Removes the transient override and restores normal camera selection.
++    pub fn clear(&mut self) {
++        self.target = None;
++    }
++}
++
+ /// Builds the total ordering used by every Game View camera consumer.
+ ///
+ /// This is public only as a cross-crate runtime adapter contract; application
+@@ -80,6 +108,37 @@ pub fn camera_selection_key(
+         .then_some((Reverse(camera.priority), entity_id, entity_generation))
+ }
+ 
++/// Selects a transient override when it is live, otherwise the normal Game View camera.
++///
++/// The override intentionally bypasses [`Camera3D::enabled`] and priority: a
++/// Timeline-owned standby camera can therefore become active without changing
++/// persisted camera fields. If the requested entity is absent from `cameras`,
++/// normal enabled-camera ordering is used.
++#[doc(hidden)]
++pub fn select_active_game_camera_with_override<'camera, T>(
++    cameras: impl Iterator<Item = (engine_ecs::Entity, (&'camera Camera3D, T))>,
++    override_target: Option<engine_ecs::Entity>,
++) -> Option<(engine_ecs::Entity, (&'camera Camera3D, T))> {
++    let mut fallback = None;
++    for candidate in cameras {
++        let entity = candidate.0;
++        if override_target == Some(entity) {
++            return Some(candidate);
++        }
++        let camera = candidate.1.0;
++        let Some(key) = camera_selection_key(entity.id(), entity.generation(), camera) else {
++            continue;
++        };
++        let replace = fallback
++            .as_ref()
++            .is_none_or(|(best_key, _)| key < *best_key);
++        if replace {
++            fallback = Some((key, candidate));
++        }
++    }
++    fallback.map(|(_, candidate)| candidate)
++}
++
+ /// Selects the enabled Game View camera with the highest priority.
+ ///
+ /// The payload is generic so rendering, movement, LOD, and lock-on can attach
+@@ -89,15 +148,7 @@ pub fn camera_selection_key(
+ pub fn select_active_game_camera<'camera, T>(
+     cameras: impl Iterator<Item = (engine_ecs::Entity, (&'camera Camera3D, T))>,
+ ) -> Option<(engine_ecs::Entity, (&'camera Camera3D, T))> {
+-    cameras
+-        .filter_map(|candidate| {
+-            let entity = candidate.0;
+-            let camera = candidate.1.0;
+-            camera_selection_key(entity.id(), entity.generation(), camera)
+-                .map(|key| (key, candidate))
+-        })
+-        .min_by_key(|(key, _)| *key)
+-        .map(|(_, candidate)| candidate)
++    select_active_game_camera_with_override(cameras, None)
+ }
+ 
+ /// Stores the current viewport dimensions.
+@@ -148,3 +199,54 @@ pub fn default_camera_transform() -> Transform {
+         glam::Vec3::Y,
+     )
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn transient_override_can_select_a_disabled_standby_camera() {
++        let normal_entity = engine_ecs::Entity::from_raw(1, 0);
++        let standby_entity = engine_ecs::Entity::from_raw(2, 0);
++        let normal = Camera3D {
++            priority: 50,
++            ..Camera3D::default()
++        };
++        let standby = Camera3D {
++            enabled: false,
++            ..Camera3D::default()
++        };
++
++        let selected = select_active_game_camera_with_override(
++            [
++                (normal_entity, (&normal, ())),
++                (standby_entity, (&standby, ())),
++            ]
++            .into_iter(),
++            Some(standby_entity),
++        );
++
++        assert_eq!(selected.map(|(entity, _)| entity), Some(standby_entity));
++        assert!(!standby.enabled);
++        assert_eq!(standby.priority, 0);
++    }
++
++    #[test]
++    fn missing_override_target_falls_back_to_normal_priority_order() {
++        let low_entity = engine_ecs::Entity::from_raw(1, 0);
++        let high_entity = engine_ecs::Entity::from_raw(2, 0);
++        let missing = engine_ecs::Entity::from_raw(99, 0);
++        let low = Camera3D::default();
++        let high = Camera3D {
++            priority: 10,
++            ..Camera3D::default()
++        };
++
++        let selected = select_active_game_camera_with_override(
++            [(low_entity, (&low, ())), (high_entity, (&high, ()))].into_iter(),
++            Some(missing),
++        );
++
++        assert_eq!(selected.map(|(entity, _)| entity), Some(high_entity));
++    }
++}
+diff --git a/crates/render-runtime/src/lod.rs b/crates/render-runtime/src/lod.rs
+index e4c447d332b99ce6352967b89350b1278a984f8f..ee6e128701e2eef336a1cfaba7a7bdfad35fdc0f 100644
+--- a/crates/render-runtime/src/lod.rs
++++ b/crates/render-runtime/src/lod.rs
+@@ -1,7 +1,9 @@
+ //! Level-of-detail (LOD) component and selection system (Phase 47).
+ 
+ use crate::asset::Handle;
+-use crate::camera::{select_active_game_camera, Camera3D};
++use crate::camera::{
++    select_active_game_camera_with_override, Camera3D, GameCameraSelectionOverride,
++};
+ use crate::mesh::Mesh;
+ use crate::transform::GlobalTransform;
+ use engine_ecs::Query;
+@@ -49,12 +51,17 @@ pub struct InstanceStats {
+ /// existing [`Handle<Mesh>`] alongside the [`LodGroup`]; groups with no
+ /// levels are skipped.
+ pub fn lod_selection_system(
++    camera_override: Option<engine_ecs::Res<GameCameraSelectionOverride>>,
+     cameras: Query<(&Camera3D, &GlobalTransform)>,
+     mut groups: Query<(&LodGroup, &GlobalTransform, &mut Handle<Mesh>)>,
+ ) {
+-    let camera_pos: glam::Vec3 = select_active_game_camera(cameras.iter())
+-        .map(|(_, (_, tf))| tf.matrix().col(3).truncate())
+-        .unwrap_or(glam::Vec3::ZERO);
++    let override_target = camera_override
++        .as_deref()
++        .and_then(GameCameraSelectionOverride::target);
++    let camera_pos: glam::Vec3 =
++        select_active_game_camera_with_override(cameras.iter(), override_target)
++            .map(|(_, (_, tf))| tf.matrix().col(3).truncate())
++            .unwrap_or(glam::Vec3::ZERO);
+ 
+     for (_, (lod, tf, handle)) in groups.iter_mut() {
+         let Some(lowest_detail) = lod.levels.last() else {
+diff --git a/crates/render-runtime/src/render_backend.rs b/crates/render-runtime/src/render_backend.rs
+index f6f31c216771ce98cf5b64fb4e4be64385107b84..7a74723d06556ee0882b7e11faaded89fdf28476 100644
+--- a/crates/render-runtime/src/render_backend.rs
++++ b/crates/render-runtime/src/render_backend.rs
+@@ -2,7 +2,9 @@ use bytemuck::{Pod, Zeroable};
+ use std::fmt;
+ use std::sync::{Arc, Weak};
+ 
+-use crate::camera::{select_active_game_camera, Camera3D, ViewportSize};
++use crate::camera::{
++    select_active_game_camera_with_override, Camera3D, GameCameraSelectionOverride, ViewportSize,
++};
+ use crate::debug_draw::{DebugLine, DebugLines};
+ use crate::environment::EnvironmentGpuState;
+ use crate::light::{AmbientLight, DirectionalLight, PointLight, SkySettings, SpotLight};
+@@ -1874,8 +1876,11 @@ impl WorldRenderer {
+         use crate::transform::Transform;
+         use engine_ecs::Query;
+ 
++        let override_target = world
++            .get_resource::<GameCameraSelectionOverride>()
++            .and_then(GameCameraSelectionOverride::target);
+         let query = Query::<(&Camera3D, &Transform)>::new(world);
+-        select_active_game_camera(query.iter())
++        select_active_game_camera_with_override(query.iter(), override_target)
+             .map(|(_, (camera, transform))| (camera.clone(), transform.clone()))
+     }
+ 
+diff --git a/crates/render-runtime/src/renderer.rs b/crates/render-runtime/src/renderer.rs
+index fb95daea1cdf38b552aa9991941b73788cd9a953..b2a42c7095ceaaa3b33ca3a81141534320e3a858 100644
+--- a/crates/render-runtime/src/renderer.rs
++++ b/crates/render-runtime/src/renderer.rs
+@@ -3,7 +3,9 @@
+ use std::fmt;
+ 
+ use crate::bloom::BloomPass;
+-use crate::camera::{select_active_game_camera, Camera3D};
++use crate::camera::{
++    select_active_game_camera_with_override, Camera3D, GameCameraSelectionOverride,
++};
+ use crate::temporal::{TemporalCameraSample, TemporalCameraSource, TemporalHistory};
+ use crate::transform::Transform;
+ 
+@@ -175,16 +177,21 @@ impl WorldRenderer {
+     fn active_temporal_camera(
+         world: &mut engine_ecs::World,
+     ) -> Option<TemporalCameraSample> {
++        let override_target = world
++            .get_resource::<GameCameraSelectionOverride>()
++            .and_then(GameCameraSelectionOverride::target);
+         let query = engine_ecs::Query::<(&Camera3D, &Transform)>::new(world);
+-        select_active_game_camera(query.iter()).map(|(entity, (camera, transform))| {
+-            TemporalCameraSample::new(
+-                TemporalCameraSource::WorldEntity {
+-                    id: entity.id(),
+-                    generation: entity.generation(),
+-                },
+-                camera.view_projection_matrix(transform),
+-            )
+-        })
++        select_active_game_camera_with_override(query.iter(), override_target).map(
++            |(entity, (camera, transform))| {
++                TemporalCameraSample::new(
++                    TemporalCameraSource::WorldEntity {
++                        id: entity.id(),
++                        generation: entity.generation(),
++                    },
++                    camera.view_projection_matrix(transform),
++                )
++            },
++        )
+     }
+ }
+ 
