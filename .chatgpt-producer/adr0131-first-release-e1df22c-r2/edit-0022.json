@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "            (\n                OsString::from(\"GAMEENGINE_AGENT_AUTHORING_CONTRACT\"),\n                OsString::from(\n                    \"Use the injected Editor MCP endpoint for persisted authoring changes. Use this isolated workspace only for project code and return code changes for review.\",\n                ),\n            ),\n        ];",
+  "new": "            (\n                OsString::from(\"GAMEENGINE_AGENT_AUTHORING_CONTRACT\"),\n                OsString::from(\n                    \"Use the injected Editor MCP endpoint for persisted authoring changes. Use this isolated workspace only for project code and return code changes for review.\",\n                ),\n            ),\n            (\n                OsString::from(\"GAMEENGINE_AGENT_EVENT_PROTOCOL\"),\n                OsString::from(\n                    \"Emit semantic events as one stdout line prefixed GAMEENGINE_AGENT_EVENT followed by JSON. Supported types: progress, tool_action, completion_gate, playtest_result. Never emit credentials or bearer tokens.\",\n                ),\n            ),\n        ];"
+}
