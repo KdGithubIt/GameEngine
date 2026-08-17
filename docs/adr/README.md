@@ -286,7 +286,7 @@ implementation contract.
 | [0140](0140-ai-capability-roadmap-and-parallel-delivery-order.md) | **Proposed** — AI Capability Roadmap and Parallel Delivery Order |
 | [0141](0141-native-write-capable-agent-runtime-and-governed-tool-loop.md) | **Proposed** — Native Write-Capable Agent Runtime and Governed Tool Loop |
 | [0142](0142-gameengine-agent-benchmark-and-curated-model-catalog.md) | **Proposed** — GameEngine Agent Benchmark and Curated Model Catalog |
-| [0143](0143-native-model-backend-resource-controls-and-hardware-telemetry.md) | **Proposed** — Native ModelBackend Resource Controls and Hardware Telemetry |
+| [0143](0143-native-model-backend-resource-controls-and-hardware-telemetry.md) | Native ModelBackend Resource Controls and Hardware Telemetry |
 | [0144](0144-hosted-and-enterprise-model-backends-and-credential-ownership.md) | **Proposed** — Hosted and Enterprise ModelBackends and Credential Ownership |
 | [0145](0145-first-class-external-agent-runtime-provider-adapters.md) | **Proposed** — First-Class External Agent Runtime Provider Adapters |
 | [0146](0146-governed-ai-asset-acquisition-and-generative-content-providers.md) | **Proposed** — Governed AI Asset Acquisition and Generative Content Providers |
