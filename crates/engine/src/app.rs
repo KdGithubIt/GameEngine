@@ -13,7 +13,9 @@ use winit::{
 };
 
 use crate::asset::{AssetServer, Assets};
-use crate::audio::{game_audio_effect_system, AudioAsset, GameAudioCommandQueue};
+use crate::audio::{
+    game_audio_effect_system, AudioAsset, GameAudioCommandQueue, SpatialAudioRuntime,
+};
 use crate::camera::{camera_aspect_system, ViewportSize};
 use crate::game_module::{
     GameComponentDefaults, GameModule, GameModuleResource, GameModuleRunError, GameSystemSchedule,
@@ -100,6 +102,7 @@ impl App {
         ecs.insert_resource(Assets::<Material>::default());
         ecs.insert_resource(Assets::<AudioAsset>::default());
         ecs.insert_resource(GameAudioCommandQueue::default());
+        ecs.insert_resource(SpatialAudioRuntime::default());
         ecs.insert_resource(Assets::<std::sync::Arc<Texture>>::default());
         ecs.insert_resource(AssetServer::default());
         ecs.insert_resource(AmbientLight::default());
