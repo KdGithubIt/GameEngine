@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0126-core-20260817-1846",
+  "target_branch": "chatgpt/gameengine-adr0126-first-release",
+  "expected_head_sha": "384c4c47d5e80224f0d48e3c454dbc8071edb0ca",
+  "baseline_main_sha": "d03ed9e573818eb0ca088f37953f611d6ed4d22e",
+  "patch_sha256": "67333b687d5a03ab83d945ff91ff431d52f9f50e62ff4ff55e656f078cb37530",
+  "patch_bytes": 9745,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Complete Timeline core authoring contracts",
+  "pr_title": "GameEngine: complete ADR0126 Timeline and Sequencer",
+  "pr_body": "## Summary\n\nContinues ADR 0126 first-release completion by establishing the shared Timeline track registry, transactional Timeline authoring batches, and documented Clippy-clean public contracts.\n\n<!-- gameengine-visual-validation: editor -->\n<!-- gameengine-visual-authoring-tool: Sequencer -->"
+}
