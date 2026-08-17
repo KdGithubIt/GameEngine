@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ui/mod.rs","old":"    /// Coalesced Material file writes keyed by project-relative path.\n    pending_material_saves: std::collections::BTreeMap<PathBuf, PendingMaterialSave>,\n","new":""}
