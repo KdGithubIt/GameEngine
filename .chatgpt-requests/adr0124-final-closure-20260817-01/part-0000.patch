@@ -1,0 +1,12 @@
+diff --git a/docs/adr/0124-production-navigation-mesh-and-bake-workflow.md b/docs/adr/0124-production-navigation-mesh-and-bake-workflow.md
+index f394fa2b4ca3f7efc31d3499df3b7b5f5c1be8bf..efb97983f497921f25d8553685a1ec2992396047 100644
+--- a/docs/adr/0124-production-navigation-mesh-and-bake-workflow.md
++++ b/docs/adr/0124-production-navigation-mesh-and-bake-workflow.md
+@@ -1,6 +1,6 @@
+ # ADR 0124: Production Navigation Mesh and Bake Workflow
+ 
+-Status: Proposed
++Status: Accepted
+ Date: 2026-08-16
+ Builds on: ADR 0039, ADR 0057, ADR 0104, ADR 0113, ADR 0114, ADR 0121
+ 
