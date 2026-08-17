@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ai_studio.rs","old":"use std::path::PathBuf;","new":"use std::path::PathBuf;\nuse std::sync::mpsc::Receiver;"}
