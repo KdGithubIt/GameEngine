@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/asset_import.rs","old":"/// Completed background model source (glTF/GLB or FBX) catalog operation.\n#[derive(Debug)]\npub struct AssetImportResult {\n","new":"/// Completed background model source (glTF/GLB or FBX) catalog operation.\npub struct AssetImportResult {\n"}
