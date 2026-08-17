@@ -147,7 +147,7 @@ fn show_inspector_field_label(
     display_name: &str,
     description: &str,
 ) -> egui::Response {
-    let width = (ui.available_width() * 0.34).clamp(88.0, 132.0);
+    let width = (ui.available_width() * 0.34).clamp(112.0, 132.0);
     ui.add_sized([width, 20.0], egui::Label::new(display_name).truncate())
         .on_hover_text(description)
 }

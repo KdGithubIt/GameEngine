@@ -234,6 +234,19 @@ impl EditorApp {
 
     #[cfg(feature = "visual-validation")]
     pub fn prepare_spatial_audio_visual_validation(&mut self) {
+        self.prepare_spatial_audio_visual_validation_with_scroll(None);
+    }
+
+    #[cfg(feature = "visual-validation")]
+    pub fn prepare_spatial_audio_details_visual_validation(&mut self) {
+        self.prepare_spatial_audio_visual_validation_with_scroll(Some(300.0));
+    }
+
+    #[cfg(feature = "visual-validation")]
+    fn prepare_spatial_audio_visual_validation_with_scroll(
+        &mut self,
+        inspector_scroll_offset: Option<f32>,
+    ) {
         let registry = engine::components::builtin_registry();
         let transform_type = ComponentTypeId::new(engine::scene_bridge::TRANSFORM_COMPONENT);
         let emitter_type = ComponentTypeId::new(engine::scene_bridge::AUDIO_EMITTER_COMPONENT);
@@ -244,6 +257,7 @@ impl EditorApp {
         // Keep the task-specific visual capture focused on the audio Inspector rather than
         // spending the runner's constrained desktop height on the utility dock or Transform.
         self.bottom_panel_open = false;
+        self.inspector_scroll_request = inspector_scroll_offset;
         self.preferences
             .component_card_open
             .insert(transform_type.as_str().to_owned(), false);

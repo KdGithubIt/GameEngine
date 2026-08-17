@@ -321,6 +321,8 @@ pub struct EditorApp {
     add_component_picker_open: bool,
     /// Revision-keyed Inspector catalogs and imported skeleton choices.
     inspector_cache: InspectorDerivedCache,
+    /// One-shot vertical Inspector scroll request consumed by the next UI frame.
+    inspector_scroll_request: Option<f32>,
     pending_game_package: Option<PendingGamePackage>,
     /// Active tab in the main left-side navigation dock.
     left_panel_tab: LeftPanelTab,
@@ -491,6 +493,7 @@ impl EditorApp {
             component_search: String::new(),
             add_component_picker_open: false,
             inspector_cache: InspectorDerivedCache::default(),
+            inspector_scroll_request: None,
             pending_game_package: None,
             left_panel_tab: LeftPanelTab::Hierarchy,
             new_motion_slot_name: String::new(),
@@ -832,7 +835,8 @@ impl eframe::App for EditorApp {
         // space for node labels and badges instead of showing two inspectors.
         if !self.behavior_debug.visible {
             let inspector_maximum_width = inspector_max_width(ui.available_width());
-            show_inspector_panel(ui, inspector_maximum_width, |ui| {
+            let inspector_scroll_request = self.inspector_scroll_request.take();
+            show_inspector_panel(ui, inspector_maximum_width, inspector_scroll_request, |ui| {
                 self.show_data_asset_tools(ui);
                 ui.separator();
                 // The three inspector surfaces replace one another inside this
