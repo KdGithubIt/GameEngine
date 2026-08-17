@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0127-native2d-scene-bridge-repair-20260817-1934-08",
+  "target_branch": "chatgpt/gameengine-adr0127-native-2d-completion",
+  "expected_head_sha": "15d9eea23430666a9f67bdd7f108085c4fddd9b7",
+  "baseline_main_sha": "d03ed9e573818eb0ca088f37953f611d6ed4d22e",
+  "patch_sha256": "93d2e4c0893e3dc2b279631a8f95f5615474e78f70c946e8592d944e8bb6a2eb",
+  "patch_bytes": 1795,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Repair Native 2D scene bridge validation",
+  "pr_title": "GameEngine: complete ADR 0127 Native 2D architecture",
+  "pr_body": "Repairs the Camera2D/SpriteRenderer2D scene-bridge slice by removing an unused built-in import and assigning the new typed Sprite Atlas/Sprite Animation references to their correct existing Inspector visual families."
+}
