@@ -6,7 +6,7 @@
 //!
 //! [`AuthoringScene`]: engine_authoring::scene::AuthoringScene
 
-use crate::anim_graph::{load_animation_graph, AnimGraphPlayer};
+use crate::anim_graph::{load_animation_graph_document, AnimGraphPlayer, AnimationGraphDebugSource, AnimationMotionDebugBinding};
 use crate::animation::{
     compose_animation_clips, AnimEvent, AnimationClip, Animator, RootMotionMode, RootMotionRequest,
 };
@@ -59,7 +59,7 @@ use engine_authoring::{
 use engine_ecs::{Entity, World};
 use glam::{EulerRot, Mat4, Quat, Vec3};
 use hashbrown::{HashMap, HashSet};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::path::Path;
 use std::sync::Arc;

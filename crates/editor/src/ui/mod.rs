@@ -57,6 +57,7 @@ mod chrome;
 mod data_assets;
 mod documents;
 mod game_tools;
+mod graph_debug;
 mod hierarchy;
 mod inspector;
 mod mcp;
@@ -98,6 +99,7 @@ use assets::*;
 use chrome::*;
 use documents::*;
 use game_tools::*;
+use graph_debug::*;
 use hierarchy::*;
 use inspector::*;
 use navigation_workspace::*;
@@ -200,7 +202,9 @@ pub struct EditorApp {
     audio_audition: AudioAuditionState,
     /// Runtime world owned while Play is active.
     runtime_state: Option<RuntimePlayState>,
-    /// Transient read-only Behavior Tree live-debug presentation.
+    /// Domain-neutral read-only Play graph-debug shell state.
+    graph_debug: GraphDebugState,
+    /// Behavior Tree provider presentation retained behind the shared shell.
     behavior_debug: BehaviorTreeDebugState,
     /// Most recently recorded or loaded deterministic input artifact.
     last_replay: Option<engine::InputReplay>,
@@ -448,6 +452,7 @@ impl EditorApp {
             editor_mode: EditorMode::Edit,
             audio_audition: AudioAuditionState::default(),
             runtime_state: None,
+            graph_debug: GraphDebugState::default(),
             behavior_debug: BehaviorTreeDebugState::default(),
             last_replay: None,
             #[cfg(not(target_arch = "wasm32"))]

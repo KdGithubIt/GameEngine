@@ -323,7 +323,10 @@ impl BehaviorTreeDebugPresentation {
             recent_transitions,
             blackboard,
             error: snapshot.error.clone(),
-            overlay: GraphDebugOverlay { nodes },
+            overlay: GraphDebugOverlay {
+                nodes,
+                ..GraphDebugOverlay::default()
+            },
         }
     }
 }
@@ -433,6 +436,7 @@ impl EditorApp {
         }
         if self.behavior_debug.install_visual_fixture() {
             self.editor_mode = EditorMode::Playing;
+            self.graph_debug.visible = true;
             self.selected_runtime_entity = None;
             self.game_view_focused = false;
         }
@@ -592,7 +596,7 @@ fn reset_reason_label(reason: BehaviorResetReason) -> &'static str {
     }
 }
 
-fn find_graph_source(assets_root: &Path, graph_id: &GraphId) -> Option<PathBuf> {
+pub(super) fn find_graph_source(assets_root: &Path, graph_id: &GraphId) -> Option<PathBuf> {
     let mut candidates = Vec::new();
     collect_graph_files(assets_root, &mut candidates);
     candidates.sort();
