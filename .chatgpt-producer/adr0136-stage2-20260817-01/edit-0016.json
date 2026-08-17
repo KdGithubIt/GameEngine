@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/preview_residency.rs","old":"        self.model_cache.clear();\n        self.gpu_mesh_cache.clear();\n    }\n","new":"        self.model_cache.clear();\n        self.gpu_mesh_cache.clear();\n        self.gpu_texture_cache.clear();\n    }\n"}
