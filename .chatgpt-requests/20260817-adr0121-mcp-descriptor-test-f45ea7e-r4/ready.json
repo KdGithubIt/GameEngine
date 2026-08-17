@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "20260817-adr0121-mcp-descriptor-test-f45ea7e-r4",
+  "target_branch": "chatgpt/gameengine-adr0121-typed-document-parity-v2",
+  "expected_head_sha": "f45ea7eb2448aef761e7df7f627c36b70f670d69",
+  "baseline_main_sha": "89cf19154b1664ef8de83d91cdbeeb2c4242a738",
+  "patch_sha256": "e0b34525b4863670d0e5ccb2c5c8b58753b47b438dc07abb65afa692e959fa11",
+  "patch_bytes": 1125,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Update ADR 0121 MCP descriptor coverage test",
+  "pr_title": "GameEngine: complete ADR 0121 typed document parity",
+  "pr_body": "## Summary\n\nCompletes the remaining first-release ADR 0121 typed-document parity slice and updates the MCP descriptor coverage regression to include Material, Project Settings, and Animation Set capabilities.\n\n## Validation\n\nRe-run Windows Validation for the affected scope."
+}
