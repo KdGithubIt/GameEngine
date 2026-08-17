@@ -3169,6 +3169,8 @@ fn draw_audio_listener_orientation(lines: &mut DebugLines, info: &EntityPickInfo
     draw_arrow_tip(lines, tip, forward, 0.18, color);
 }
 
+// This draw helper keeps independent world/view inputs explicit; wrapping them solely to satisfy the lint would hide their distinct coordinate-space roles.
+#[allow(clippy::too_many_arguments)]
 fn draw_audio_distance_handles(
     painter: &egui::Painter,
     center: Vec3,
