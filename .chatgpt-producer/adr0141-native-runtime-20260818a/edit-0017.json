@@ -1,0 +1,3 @@
+{
+  "operation":"replace_text","path":"crates/editor/src/ai_studio.rs","old":"            if let Some(run_id) = run_id\n                && let Err(error) = self.host.cancel_run(&run_id)\n            {\n                self.status = Some(error.to_string());\n            }\n        }\n        if interrupt_requested {","new":"            if let Some(run_id) = run_id\n                && let Err(error) = self.host.cancel_run(&run_id)\n            {\n                self.status = Some(error.to_string());\n            }\n            self.native_agent_runtime = None;\n            self.active_runtime_mode = None;\n        }\n        if interrupt_requested {"
+}
