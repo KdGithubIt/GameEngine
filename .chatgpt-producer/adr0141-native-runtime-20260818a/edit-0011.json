@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "            native_question: None,\n            pending_native_question_start: None,\n            native_question_session: None,\n            provider_program: String::new(),",
+  "new": "            native_question: None,\n            pending_native_question_start: None,\n            native_question_session: None,\n            native_agent_runtime: None,\n            native_mcp_task: None,\n            pending_native_mcp_tool: None,\n            active_runtime_mode: None,\n            provider_program: String::new(),"
+}
