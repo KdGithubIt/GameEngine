@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0126-schema-events-v11-3764a985",
+  "target_branch": "chatgpt/gameengine-adr0126-first-release-v11",
+  "expected_head_sha": "3764a985570b0f5da0f9443430d3210b8aca2aaf",
+  "baseline_main_sha": "3a54fc93ba231820ae417d6978d388b14886f7c1",
+  "edit_parts": [
+    "edit-0000.json", "edit-0001.json", "edit-0002.json", "edit-0003.json",
+    "edit-0004.json", "edit-0005.json", "edit-0006.json", "edit-0007.json",
+    "edit-0008.json", "edit-0009.json", "edit-0010.json", "edit-0011.json",
+    "edit-0012.json", "edit-0013.json", "edit-0014.json", "edit-0015.json",
+    "edit-0016.json"
+  ],
+  "commit_message": "Complete ADR0126 schema and Event crossing semantics",
+  "pr_title": "GameEngine: complete ADR0126 Timeline and Sequencer",
+  "pr_body": "## Summary\n\nContinues ADR0126 first-release completion on the current-main Draft PR. The Timeline schema is tightened to the six ADR track families, Animation clips persist stable Animation Set + MotionSlotId identity, Transform/Property clips persist validated multi-key typed curves with a shared deterministic sampler, and Event/marker payloads are bounded.\n\nEvent-track clips now compile as side-effect points at their authored start tick, giving them the same exact crossing and scrub-preview policy as sequence markers: one firing on a forward crossing, no repeated firing while the old interval would have remained active, and suppression on ordinary manual scrub unless Preview Events is explicitly enabled.\n\nThe PR remains Draft while production runtime composition, Project Rust integration, the dedicated Sequencer workspace, and required Windows/Visual Validation continue."
+}
