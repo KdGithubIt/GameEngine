@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0127-native2d-validation-fix-20260817-1833-03",
+  "target_branch": "chatgpt/gameengine-adr0127-native-2d-completion",
+  "expected_head_sha": "28141a7741eb39e4c9a311b47c11c0c4c8e8a36a",
+  "baseline_main_sha": "d03ed9e573818eb0ca088f37953f611d6ed4d22e",
+  "patch_sha256": "f1b2165556f452ddfa1662563390807ae2a336cd726a627e7818829f84f1977c",
+  "patch_bytes": 20908,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Fix Native 2D public API validation",
+  "pr_title": "GameEngine: complete ADR 0127 Native 2D architecture",
+  "pr_body": "Repairs the Native 2D public authoring API so the affected Windows validation gate can compile, lint, test, and document the ADR 0127 work before the remaining runtime and Editor integration is completed."
+}
