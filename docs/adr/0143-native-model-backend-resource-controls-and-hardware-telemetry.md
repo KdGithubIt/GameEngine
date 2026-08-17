@@ -1,6 +1,6 @@
 # ADR 0143: Native ModelBackend Resource Controls and Hardware Telemetry
 
-Status: Proposed
+Status: Accepted
 Date: 2026-08-17
 Builds on: ADR 0131, ADR 0135
 Relates to: ADR 0003, ADR 0072, ADR 0104, ADR 0136, ADR 0142
@@ -46,6 +46,16 @@ Provider-specific HTTP/process APIs belong in the ModelBackend adapter/applicati
 ## Dependencies and parallel work
 
 This ADR can be implemented in parallel with ADR 0141, ADR 0144-0149, ADR 0151, and ADR 0153. It does not require ADR 0142, but ADR 0142 should consume the resulting telemetry when available. ADR 0150 may later use resource capabilities as routing inputs.
+
+## First-release implementation
+
+The initial governed adapter is the existing loopback-only Ollama-compatible ModelBackend. It reads `/api/ps` for backend-reported model representation size, GPU residency, and context length. Values are recorded as measured only when the backend reports them; device-wide free VRAM remains unavailable rather than being inferred from model size.
+
+Model release and reload use the backend's `keep_alive` contract, and CPU-only residency requests use the backend's `num_gpu = 0` option. Each mutation is followed by a fresh `/api/ps` observation. Release completes only after the selected model is observed non-resident, reload only after it is observed resident, and GPU offload only after residency is absent, zero, or measurably lower than before. An acknowledgement without confirming telemetry is reported as an unconfirmed transition rather than success.
+
+AI Studio runs these resource transitions on an application-owned worker. Interrupt-for-Editing waits for the native inference worker to reach its safe interruption boundary, then releases supported model residency before requesting Editor presentation restore. Managed Play resolves a `RuntimeObservation` resource plan and releases or reduces supported model residency before requesting runtime launch. Transition failure never fabricates success and does not let local inference take priority over required Editor restoration or Play. Resume still re-inspects authoritative Editor state before any later inference can reacquire model resources.
+
+These controls and measurements are transient application state only. They do not mutate canonical authoring data, Stable IDs, serialization, runtime ECS state, or renderer ownership. Device selection, explicit KV placement, and inference-cache release remain unavailable in the first release.
 
 ## Verification
 

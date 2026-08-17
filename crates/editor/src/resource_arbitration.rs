@@ -113,6 +113,19 @@ impl Default for ModelResourceCapabilities {
     }
 }
 
+/// Resource operation exposed by a concrete `ModelBackend` adapter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ModelResourceOperation {
+    /// Read backend-owned residency telemetry without changing model state.
+    Observe,
+    /// Move as much model residency as the backend can verify away from the GPU.
+    ReduceGpuResidency,
+    /// Release the selected model from backend residency.
+    Release,
+    /// Reacquire the selected model after an explicit release.
+    Reload,
+}
+
 /// Resource telemetry provenance. Unknown values remain explicitly unavailable.
 // First-release benchmark telemetry contract; exact backend wiring is capability-dependent.
 #[allow(dead_code)]
@@ -126,6 +139,51 @@ pub(crate) enum TelemetryValue<T> {
     /// The owning subsystem cannot determine this value reliably.
     #[default]
     Unavailable,
+}
+
+/// Backend-owned model residency telemetry.
+///
+/// Device-wide free memory is intentionally absent: a backend model snapshot
+/// cannot truthfully synthesize that renderer/platform-owned measurement.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct ModelResourceTelemetry {
+    pub(crate) resident: TelemetryValue<bool>,
+    pub(crate) representation_size_bytes: TelemetryValue<u64>,
+    pub(crate) gpu_residency_bytes: TelemetryValue<u64>,
+    pub(crate) context_length_tokens: TelemetryValue<u64>,
+}
+
+/// Verified result of one backend resource transition.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ModelResourceTransition {
+    pub(crate) operation: ModelResourceOperation,
+    pub(crate) before: ModelResourceTelemetry,
+    pub(crate) after: ModelResourceTelemetry,
+    pub(crate) operation_latency_ms: TelemetryValue<u64>,
+    pub(crate) backend_load_latency_ms: TelemetryValue<u64>,
+}
+
+/// Maps provider-independent residency intent to an actually supported backend operation.
+pub(crate) fn resource_operation_for_residency_request(
+    request: ModelResidencyRequest,
+    capabilities: ModelResourceCapabilities,
+) -> Option<ModelResourceOperation> {
+    match request {
+        ModelResidencyRequest::Keep => None,
+        ModelResidencyRequest::ReduceIfSupported => {
+            (capabilities.cpu_gpu_offload == CapabilityAvailability::Available)
+                .then_some(ModelResourceOperation::ReduceGpuResidency)
+        }
+        ModelResidencyRequest::ReleaseIfSupported => {
+            if capabilities.unload_reload == CapabilityAvailability::Available {
+                Some(ModelResourceOperation::Release)
+            } else if capabilities.cpu_gpu_offload == CapabilityAvailability::Available {
+                Some(ModelResourceOperation::ReduceGpuResidency)
+            } else {
+                None
+            }
+        }
+    }
 }
 
 /// Observed pressure used by the application-layer broker.
@@ -214,6 +272,8 @@ pub(crate) fn resolve_resource_plan(
             reclaim: ReclaimLevel::None,
             model_residency: if capabilities.unload_reload == CapabilityAvailability::Available {
                 ModelResidencyRequest::ReleaseIfSupported
+            } else if capabilities.cpu_gpu_offload == CapabilityAvailability::Available {
+                ModelResidencyRequest::ReduceIfSupported
             } else {
                 ModelResidencyRequest::Keep
             },
@@ -226,7 +286,7 @@ pub(crate) fn resolve_resource_plan(
             reclaim: ReclaimLevel::None,
             model_residency: if capabilities.unload_reload == CapabilityAvailability::Available {
                 ModelResidencyRequest::ReleaseIfSupported
-            } else if capabilities.gpu_residency == CapabilityAvailability::Available {
+            } else if capabilities.cpu_gpu_offload == CapabilityAvailability::Available {
                 ModelResidencyRequest::ReduceIfSupported
             } else {
                 ModelResidencyRequest::Keep
@@ -391,28 +451,89 @@ mod tests {
     }
 
     #[test]
-    fn runtime_observation_prioritizes_renderer_and_only_requests_supported_release() {
+    fn runtime_observation_prioritizes_renderer_and_only_requests_supported_controls() {
         let unsupported = resolve_resource_plan(
             InferenceWorkload::RuntimeObservation,
             QualityPreference::Deep,
             MemoryPressure::Constrained,
-            ModelResourceCapabilities::default(),
+            ModelResourceCapabilities {
+                gpu_residency: CapabilityAvailability::Available,
+                ..ModelResourceCapabilities::default()
+            },
         );
         assert_eq!(unsupported.priority, ResourcePriority::RuntimeRendering);
         assert_eq!(unsupported.model_residency, ModelResidencyRequest::Keep);
+        assert_eq!(
+            resource_operation_for_residency_request(
+                unsupported.model_residency,
+                ModelResourceCapabilities::default(),
+            ),
+            None
+        );
 
+        let offload = ModelResourceCapabilities {
+            cpu_gpu_offload: CapabilityAvailability::Available,
+            ..ModelResourceCapabilities::default()
+        };
+        let offload_plan = resolve_resource_plan(
+            InferenceWorkload::RuntimeObservation,
+            QualityPreference::Deep,
+            MemoryPressure::Constrained,
+            offload,
+        );
+        assert_eq!(
+            offload_plan.model_residency,
+            ModelResidencyRequest::ReduceIfSupported
+        );
+        assert_eq!(
+            resource_operation_for_residency_request(offload_plan.model_residency, offload),
+            Some(ModelResourceOperation::ReduceGpuResidency)
+        );
+
+        let unload = ModelResourceCapabilities {
+            unload_reload: CapabilityAvailability::Available,
+            cpu_gpu_offload: CapabilityAvailability::Available,
+            ..ModelResourceCapabilities::default()
+        };
         let supported = resolve_resource_plan(
             InferenceWorkload::RuntimeObservation,
             QualityPreference::Deep,
             MemoryPressure::Constrained,
-            ModelResourceCapabilities {
-                unload_reload: CapabilityAvailability::Available,
-                ..ModelResourceCapabilities::default()
-            },
+            unload,
         );
         assert_eq!(
             supported.model_residency,
             ModelResidencyRequest::ReleaseIfSupported
+        );
+        assert_eq!(
+            resource_operation_for_residency_request(supported.model_residency, unload),
+            Some(ModelResourceOperation::Release)
+        );
+    }
+
+    #[test]
+    fn release_request_falls_back_to_verified_offload_not_telemetry_only() {
+        let telemetry_only = ModelResourceCapabilities {
+            gpu_residency: CapabilityAvailability::Available,
+            ..ModelResourceCapabilities::default()
+        };
+        assert_eq!(
+            resource_operation_for_residency_request(
+                ModelResidencyRequest::ReleaseIfSupported,
+                telemetry_only,
+            ),
+            None
+        );
+        let offload = ModelResourceCapabilities {
+            cpu_gpu_offload: CapabilityAvailability::Available,
+            ..ModelResourceCapabilities::default()
+        };
+        assert_eq!(
+            resource_operation_for_residency_request(
+                ModelResidencyRequest::ReleaseIfSupported,
+                offload,
+            ),
+            Some(ModelResourceOperation::ReduceGpuResidency)
         );
     }
 }

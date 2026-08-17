@@ -11,13 +11,14 @@ use crate::agent_host::{
     ProcessStream, ResumeDisposition,
 };
 use crate::native_agent::{
-    LocalModelConfig, ModelCapabilityProfile, NativeAnswer, NativeQuestionTask, QuestionMessage,
-    QuestionRole, DEFAULT_LOCAL_MODEL_ENDPOINT,
+    LocalModelConfig, ModelCapabilityProfile, ModelResourceTask, NativeAnswer, NativeQuestionTask,
+    QuestionMessage, QuestionRole, DEFAULT_LOCAL_MODEL_ENDPOINT,
 };
 use crate::resource_arbitration::{
-    classify_workload, resolve_resource_plan, CapabilityAvailability, InferenceWorkload,
-    MemoryPressure, PresentationPosture, QualityPreference, ReclaimLevel, ResourcePlan,
-    WorkloadSignals,
+    classify_workload, resolve_resource_plan, resource_operation_for_residency_request,
+    CapabilityAvailability, InferenceWorkload, MemoryPressure, ModelResidencyRequest,
+    ModelResourceOperation, ModelResourceTelemetry, PresentationPosture, QualityPreference,
+    ReclaimLevel, ResourcePlan, TelemetryValue, WorkloadSignals,
 };
 use crate::remote_ai_studio::{
     events_json, frame_bytes, sessions_json, snapshot_json, RemoteAiStudioRequest,
@@ -136,6 +137,15 @@ enum RuntimeRepairDecision {
 enum ExternalAgentPurpose {
     BuildOrRepair,
     RuntimeEvaluation,
+}
+
+enum ModelResourceContinuation {
+    RestoreForEditing,
+    LaunchManagedPlay { run_id: String },
+    ResumeAfterEditing {
+        run_id: Option<String>,
+        state: AiStudioAuthoritativeState,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -302,6 +312,9 @@ pub struct AiStudioPanel {
     local_model_name: String,
     resolved_workload: InferenceWorkload,
     resource_plan: ResourcePlan,
+    model_resource_task: Option<ModelResourceTask>,
+    model_resource_continuation: Option<ModelResourceContinuation>,
+    last_model_resource_telemetry: ModelResourceTelemetry,
     editing_interrupted: bool,
     restore_for_editing: bool,
     interrupt_snapshot: Option<AiStudioAuthoritativeState>,
@@ -377,6 +390,9 @@ impl AiStudioPanel {
                 MemoryPressure::Unknown,
                 Default::default(),
             ),
+            model_resource_task: None,
+            model_resource_continuation: None,
+            last_model_resource_telemetry: ModelResourceTelemetry::default(),
             editing_interrupted: false,
             restore_for_editing: false,
             interrupt_snapshot: None,
@@ -472,26 +488,7 @@ impl AiStudioPanel {
                 return;
             }
             AiStudioRuntimeResult::AuthoritativeState(state) => {
-                if let Some(run_id) = self.active_run_id.clone() {
-                    match self.host.resume_after_editing(&run_id, state.clone().into()) {
-                        Ok(ResumeDisposition::ResumedUnchanged) => {
-                            self.status = Some("Authoritative state is unchanged; the run may resume.".to_owned());
-                        }
-                        Ok(ResumeDisposition::ReinspectRequired) => {
-                            self.status = Some("User edits changed authoritative state; the run returned to inspection.".to_owned());
-                        }
-                        Ok(ResumeDisposition::RepairRequired) => {
-                            self.status = Some("User edits changed acceptance-relevant state; the run returned to repair.".to_owned());
-                        }
-                        Err(error) => {
-                            self.status = Some(error.to_string());
-                            return;
-                        }
-                    }
-                } else {
-                    self.status = Some("Authoritative Editor state re-inspected.".to_owned());
-                }
-                self.editing_interrupted = false;
+                self.begin_model_reload_after_authoritative_inspection(state.clone());
                 return;
             }
             _ => {}
@@ -610,6 +607,7 @@ impl AiStudioPanel {
         self.ensure_remote_gateway(context);
         self.poll_remote_requests();
         self.poll_native_question(context);
+        self.poll_model_resource_task(context);
         self.poll_external_process(context);
         self.poll_managed_validation(context);
         self.request_managed_source_repair_if_ready();
@@ -984,10 +982,23 @@ impl AiStudioPanel {
                 .capability_profile();
                 ui.small(model_capability_summary(&profile));
                 ui.small(format!(
-                    "Resource controls: unload/reload {} · GPU residency {} · memory telemetry {}",
+                    "Resource controls: unload/reload {} · CPU offload {} · GPU residency telemetry {} · memory telemetry {}",
                     capability_label(profile.resource_capabilities.unload_reload),
+                    capability_label(profile.resource_capabilities.cpu_gpu_offload),
                     capability_label(profile.resource_capabilities.gpu_residency),
                     capability_label(profile.resource_capabilities.backend_memory_telemetry),
+                ));
+                ui.small(format!(
+                    "Observed model resources: resident {} · model size {} · GPU residency {} · context {}",
+                    telemetry_bool_label(&self.last_model_resource_telemetry.resident),
+                    telemetry_bytes_label(
+                        &self.last_model_resource_telemetry.representation_size_bytes
+                    ),
+                    telemetry_bytes_label(&self.last_model_resource_telemetry.gpu_residency_bytes),
+                    telemetry_count_label(
+                        &self.last_model_resource_telemetry.context_length_tokens,
+                        "tokens"
+                    ),
                 ));
                 ui.small(format!(
                     "Resource posture: {:?} · workload {:?} · reclaim {:?}",
@@ -996,7 +1007,7 @@ impl AiStudioPanel {
                     self.resource_plan.reclaim
                 ));
                 ui.small(
-                    "The initial backend accepts loopback HTTP only. Unsupported controls remain unavailable; exact VRAM and TTFT are never fabricated.",
+                    "The initial backend accepts loopback HTTP only. Provider-reported model residency is shown with provenance; device-wide free VRAM and TTFT are never fabricated.",
                 );
             });
     }
@@ -1079,6 +1090,180 @@ impl AiStudioPanel {
         }
     }
 
+    fn begin_model_reload_after_authoritative_inspection(
+        &mut self,
+        state: AiStudioAuthoritativeState,
+    ) {
+        let continuation = ModelResourceContinuation::ResumeAfterEditing {
+            run_id: self.active_run_id.clone(),
+            state,
+        };
+        if self.model_resource_task.is_some() {
+            self.status = Some(
+                "Authoritative state was re-inspected, but model reload is waiting for the active resource transition to finish."
+                    .to_owned(),
+            );
+            return;
+        }
+        let config = LocalModelConfig {
+            endpoint: self.local_model_endpoint.clone(),
+            model: self.local_model_name.clone(),
+        };
+        let capabilities = config.capability_profile().resource_capabilities;
+        if config.model.trim().is_empty()
+            || capabilities.unload_reload != CapabilityAvailability::Available
+        {
+            self.finish_model_resource_continuation(continuation);
+            return;
+        }
+        match ModelResourceTask::spawn(config, ModelResourceOperation::Reload) {
+            Ok(task) => {
+                self.model_resource_task = Some(task);
+                self.model_resource_continuation = Some(continuation);
+                self.status = Some(
+                    "Authoritative state re-inspected; reacquiring model residency before Resume completes..."
+                        .to_owned(),
+                );
+            }
+            Err(error) => {
+                self.status = Some(format!(
+                    "Model reload could not start after authoritative-state re-inspection: {error}; continuing without claiming model residency was reacquired."
+                ));
+                self.finish_model_resource_continuation(continuation);
+            }
+        }
+    }
+
+    fn begin_model_residency_request(
+        &mut self,
+        request: ModelResidencyRequest,
+        continuation: ModelResourceContinuation,
+    ) {
+        if self.model_resource_task.is_some() {
+            self.status = Some(
+                "A model resource transition is already active; the new transition was not started."
+                    .to_owned(),
+            );
+            return;
+        }
+        let config = LocalModelConfig {
+            endpoint: self.local_model_endpoint.clone(),
+            model: self.local_model_name.clone(),
+        };
+        let capabilities = config.capability_profile().resource_capabilities;
+        let Some(operation) =
+            resource_operation_for_residency_request(request, capabilities)
+        else {
+            self.finish_model_resource_continuation(continuation);
+            return;
+        };
+        match ModelResourceTask::spawn(config, operation) {
+            Ok(task) => {
+                self.model_resource_task = Some(task);
+                self.model_resource_continuation = Some(continuation);
+                self.status = Some(format!(
+                    "Applying verified model resource transition {operation:?}..."
+                ));
+            }
+            Err(error) => {
+                self.status = Some(format!(
+                    "Model resource transition could not start: {error}; continuing without claiming residency changed."
+                ));
+                self.finish_model_resource_continuation(continuation);
+            }
+        }
+    }
+
+    fn poll_model_resource_task(&mut self, context: &egui::Context) {
+        let Some(task) = self.model_resource_task.as_ref() else {
+            return;
+        };
+        let Some(result) = task.poll() else {
+            context.request_repaint_after(std::time::Duration::from_millis(100));
+            return;
+        };
+        self.model_resource_task = None;
+        let continuation = self.model_resource_continuation.take();
+        match result {
+            Ok(transition) => {
+                self.last_model_resource_telemetry = transition.after.clone();
+                self.status = Some(format!(
+                    "Verified model resource transition {:?} in {} ms.",
+                    transition.operation,
+                    telemetry_u64_value(&transition.operation_latency_ms)
+                ));
+            }
+            Err(error) => {
+                self.status = Some(format!(
+                    "Model resource transition failed: {error}; continuing without claiming residency changed."
+                ));
+            }
+        }
+        if let Some(continuation) = continuation {
+            self.finish_model_resource_continuation(continuation);
+        }
+    }
+
+    fn finish_model_resource_continuation(&mut self, continuation: ModelResourceContinuation) {
+        match continuation {
+            ModelResourceContinuation::RestoreForEditing => {
+                self.pending_runtime_action = Some(AiStudioRuntimeAction::RestoreEditorPresentation);
+            }
+            ModelResourceContinuation::LaunchManagedPlay { run_id } => {
+                if self.active_run_id.as_deref() == Some(run_id.as_str())
+                    && self
+                        .host
+                        .run(&run_id)
+                        .is_ok_and(|run| run.state == AgentRunState::Playtesting)
+                {
+                    self.request_permission(
+                        run_id,
+                        AgentCapability::RuntimeLaunch,
+                        PendingPermissionAction::LaunchPlaytest,
+                    );
+                }
+            }
+            ModelResourceContinuation::ResumeAfterEditing { run_id, state } => {
+                let resource_status = self.status.take();
+                let resume_status = if let Some(run_id) = run_id {
+                    match self.host.resume_after_editing(&run_id, state.into()) {
+                        Ok(ResumeDisposition::ResumedUnchanged) => {
+                            "Authoritative state is unchanged; the run may resume.".to_owned()
+                        }
+                        Ok(ResumeDisposition::ReinspectRequired) => {
+                            "User edits changed authoritative state; the run returned to inspection."
+                                .to_owned()
+                        }
+                        Ok(ResumeDisposition::RepairRequired) => {
+                            "User edits changed acceptance-relevant state; the run returned to repair."
+                                .to_owned()
+                        }
+                        Err(error) => {
+                            self.status = Some(error.to_string());
+                            return;
+                        }
+                    }
+                } else {
+                    "Authoritative Editor state re-inspected.".to_owned()
+                };
+                self.editing_interrupted = false;
+                self.status = Some(match resource_status {
+                    Some(resource_status)
+                        if resource_status
+                            .starts_with("Verified model resource transition Reload")
+                            || resource_status.starts_with("Model resource transition failed:")
+                            || resource_status.starts_with(
+                                "Model reload could not start after authoritative-state re-inspection:",
+                            ) =>
+                    {
+                        format!("{resume_status} {resource_status}")
+                    }
+                    _ => resume_status,
+                });
+            }
+        }
+    }
+
     fn save_preferences(&mut self) {
         let preferences = AiStudioPreferences {
             schema_version: AI_STUDIO_PREFERENCES_SCHEMA_VERSION,
@@ -1116,6 +1301,7 @@ impl AiStudioPanel {
         let restore_after_inference = self.resource_plan.presentation
             == PresentationPosture::InferenceFocused
             && !self.editing_interrupted
+            && !self.restore_for_editing
             && self.pending_runtime_action.is_none();
         let session_id = self
             .native_question_session
@@ -1123,6 +1309,7 @@ impl AiStudioPanel {
             .unwrap_or_else(|| self.selected_session.clone());
         match result {
             Ok(answer) => {
+                self.last_model_resource_telemetry = answer.resource_telemetry.clone();
                 let message = format_native_answer(&answer);
                 match self.host.append_message(
                     &session_id,
@@ -1140,7 +1327,12 @@ impl AiStudioPanel {
             }
             Err(error) => self.status = Some(error.to_string()),
         }
-        if restore_after_inference {
+        if self.restore_for_editing {
+            self.begin_model_residency_request(
+                ModelResidencyRequest::ReleaseIfSupported,
+                ModelResourceContinuation::RestoreForEditing,
+            );
+        } else if restore_after_inference {
             self.pending_runtime_action = Some(AiStudioRuntimeAction::RestoreEditorPresentation);
         }
     }
@@ -1227,6 +1419,7 @@ impl AiStudioPanel {
             }
             let can_interrupt = !self.editing_interrupted
                 && self.pending_runtime_action.is_none()
+                && self.model_resource_task.is_none()
                 && (self.native_question.is_some()
                     || self.resource_plan.presentation == PresentationPosture::InferenceFocused
                     || self.active_run_id.as_ref().is_some_and(|run_id| {
@@ -1262,6 +1455,8 @@ impl AiStudioPanel {
                 task.interrupt();
             }
             self.pending_native_question_start = None;
+            self.model_resource_continuation = None;
+            self.restore_for_editing = false;
             if let Some(process) = self.process.as_mut()
                 && let Err(error) = process.cancel()
             {
@@ -1276,16 +1471,23 @@ impl AiStudioPanel {
             }
         }
         if interrupt_requested {
+            let waiting_for_inference = self.native_question.is_some();
             if let Some(task) = self.native_question.as_ref() {
                 task.interrupt();
             }
             self.pending_native_question_start = None;
             self.restore_for_editing = true;
-            self.pending_runtime_action = Some(AiStudioRuntimeAction::RestoreEditorPresentation);
-            self.status = Some(
-                "Stopping inference at a safe backend boundary and restoring Editor presentation..."
-                    .to_owned(),
-            );
+            if waiting_for_inference {
+                self.status = Some(
+                    "Stopping inference at a safe backend boundary before releasing model residency..."
+                        .to_owned(),
+                );
+            } else {
+                self.begin_model_residency_request(
+                    ModelResidencyRequest::ReleaseIfSupported,
+                    ModelResourceContinuation::RestoreForEditing,
+                );
+            }
         }
         if resume_requested {
             self.pending_runtime_action = Some(AiStudioRuntimeAction::InspectAuthoritativeState);
@@ -1968,7 +2170,10 @@ impl AiStudioPanel {
     }
 
     fn request_managed_playtest_if_ready(&mut self) {
-        if self.managed_playtest_requested || self.pending_runtime_action.is_some() {
+        if self.managed_playtest_requested
+            || self.pending_runtime_action.is_some()
+            || self.model_resource_task.is_some()
+        {
             return;
         }
         let Some(run_id) = self.active_run_id.clone() else { return; };
@@ -1980,7 +2185,23 @@ impl AiStudioPanel {
         self.managed_evaluation_requested = false;
         self.managed_runtime_observation = None;
         self.managed_playtest_requested = true;
-        self.request_permission(run_id, AgentCapability::RuntimeLaunch, PendingPermissionAction::LaunchPlaytest);
+
+        let profile = LocalModelConfig {
+            endpoint: self.local_model_endpoint.clone(),
+            model: self.local_model_name.clone(),
+        }
+        .capability_profile();
+        self.resolved_workload = InferenceWorkload::RuntimeObservation;
+        self.resource_plan = resolve_resource_plan(
+            InferenceWorkload::RuntimeObservation,
+            self.quality_preference,
+            MemoryPressure::Unknown,
+            profile.resource_capabilities,
+        );
+        self.begin_model_residency_request(
+            self.resource_plan.model_residency,
+            ModelResourceContinuation::LaunchManagedPlay { run_id },
+        );
     }
 
     fn request_next_managed_runtime_input_if_ready(&mut self) {
@@ -2408,6 +2629,46 @@ fn capability_flag(value: Option<bool>) -> &'static str {
     }
 }
 
+fn telemetry_bool_label(value: &TelemetryValue<bool>) -> String {
+    match value {
+        TelemetryValue::Measured(true) => "yes (measured)".to_owned(),
+        TelemetryValue::Measured(false) => "no (measured)".to_owned(),
+        TelemetryValue::ConservativeEstimate(true) => "yes (estimate)".to_owned(),
+        TelemetryValue::ConservativeEstimate(false) => "no (estimate)".to_owned(),
+        TelemetryValue::Unavailable => "unavailable".to_owned(),
+    }
+}
+
+fn telemetry_bytes_label(value: &TelemetryValue<u64>) -> String {
+    match value {
+        TelemetryValue::Measured(bytes) => {
+            format!("{:.1} MiB (measured)", *bytes as f64 / (1024.0 * 1024.0))
+        }
+        TelemetryValue::ConservativeEstimate(bytes) => {
+            format!("{:.1} MiB (estimate)", *bytes as f64 / (1024.0 * 1024.0))
+        }
+        TelemetryValue::Unavailable => "unavailable".to_owned(),
+    }
+}
+
+fn telemetry_count_label(value: &TelemetryValue<u64>, unit: &str) -> String {
+    match value {
+        TelemetryValue::Measured(value) => format!("{value} {unit} (measured)"),
+        TelemetryValue::ConservativeEstimate(value) => {
+            format!("{value} {unit} (estimate)")
+        }
+        TelemetryValue::Unavailable => "unavailable".to_owned(),
+    }
+}
+
+fn telemetry_u64_value(value: &TelemetryValue<u64>) -> String {
+    match value {
+        TelemetryValue::Measured(value) => value.to_string(),
+        TelemetryValue::ConservativeEstimate(value) => format!("~{value}"),
+        TelemetryValue::Unavailable => "unavailable".to_owned(),
+    }
+}
+
 fn format_native_answer(answer: &NativeAnswer) -> String {
     let mut message = answer.text.trim().to_owned();
     message.push_str("\n\nSources / provenance:\n");
@@ -2446,6 +2707,14 @@ fn format_native_answer(answer: &NativeAnswer) -> String {
         optional_metric(answer.metrics.generation_duration_ms),
         optional_metric(answer.metrics.generation_tokens_per_second_milli),
         optional_metric(answer.metrics.ttft_ms),
+    ));
+    message.push_str("\nResource telemetry:\n");
+    message.push_str(&format!(
+        "- resident={} · model_size={} · gpu_residency={} · context={}",
+        telemetry_bool_label(&answer.resource_telemetry.resident),
+        telemetry_bytes_label(&answer.resource_telemetry.representation_size_bytes),
+        telemetry_bytes_label(&answer.resource_telemetry.gpu_residency_bytes),
+        telemetry_count_label(&answer.resource_telemetry.context_length_tokens, "tokens"),
     ));
     message
 }
