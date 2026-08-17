@@ -2361,7 +2361,10 @@ fn continuous_material_edits_require_explicit_save_before_disk_write() {
         ..original.clone()
     };
     app.material_editor
-        .open_material(relative_path.clone(), changed.clone());
+        .open_material(relative_path.clone(), original.clone());
+    *app.material_editor
+        .active_material_mut()
+        .expect("active material working copy") = changed.clone();
     let context = egui::Context::default();
 
     app.queue_active_material_save(&context);
