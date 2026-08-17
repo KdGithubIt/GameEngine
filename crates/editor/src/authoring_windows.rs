@@ -53,18 +53,23 @@ impl AuthoringWindows {
         if self.vfx_open {
             let vfx_open = &mut self.vfx_open;
             let vfx = &mut self.vfx;
-            egui::Window::new("VFX Builder")
+            let window = egui::Window::new("VFX Builder")
                 .id(egui::Id::new("embedded_vfx_builder"))
                 .open(vfx_open)
                 .default_width(1_180.0)
                 .default_height(780.0)
-                .resizable(true)
-                .show(context, |ui| {
-                    let scroll_area = egui::ScrollArea::vertical();
-                    #[cfg(feature = "visual-validation")]
-                    let scroll_area = scroll_area.vertical_scroll_offset(900.0);
-                    scroll_area.show(ui, |ui| vfx.show(ui, project));
-                });
+                .resizable(true);
+            #[cfg(feature = "visual-validation")]
+            let window = window
+                .default_width(520.0)
+                .default_height(700.0)
+                .default_pos(egui::pos2(555.0, 34.0));
+            window.show(context, |ui| {
+                let scroll_area = egui::ScrollArea::vertical();
+                #[cfg(feature = "visual-validation")]
+                let scroll_area = scroll_area.vertical_scroll_offset(900.0);
+                scroll_area.show(ui, |ui| vfx.show(ui, project));
+            });
         }
     }
 }
