@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "dispatcher-post-push-recovery-docs-20260818-0428",
+  "target_branch": "chatgpt/gameengine-dispatcher-post-push-recovery",
+  "expected_head_sha": "1b77fd0da0c4c24023b989f6f147fc3f4a24512d",
+  "baseline_main_sha": "b4ea5dd8a60497f7ac71e886842adde86e1a3087",
+  "patch_sha256": "699d6b012adca0090433eb33c59430a5295e28f89b6dd53100dab18b223df7e1",
+  "patch_bytes": 1374,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Document verified dispatcher post-push recovery",
+  "pr_title": "CI: add verified dispatcher post-push recovery",
+  "pr_body": "## Summary\n\n- add a trusted post-push recovery workflow with no product branch write permission\n- prove an already-pushed target commit exactly matches the published schema-v2 request before PR/validation reconciliation\n- retry transient GitHub 5xx failures while creating or reconciling the Draft PR and dispatching exact-head Windows Validation\n- add regression coverage and document the recovery contract\n\n## Trigger\n\nADR0126 v4 request `adr0126-current-main-replay-v4-20260817-2350` pushed commit `627b0dd31de5c592e5a0549ff3d49c0a7c9beda5`, then the normal Dispatcher failed on GitHub GraphQL HTTP 503 before Draft PR creation and Windows Validation dispatch. Replaying normal apply is unsafe because the target already moved.\n\n## Trust boundary\n\nThe recovery workflow has `contents: read`, `pull-requests: write`, and `actions: write`. It cannot modify the product branch. It shares the normal Dispatcher concurrency group and requires exact request/commit/diff/baseline verification before it can reconcile review metadata.\n\n## Validation\n\nAutomation regression and Windows validation must pass before merge. Production post-push recovery remains unverified until this Draft PR is reviewed and merged by the user."
+}
