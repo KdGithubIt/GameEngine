@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/authoring_windows.rs","old":"use crate::authoring_tools::AuthoringTool;\nuse crate::vfx_builder::VfxBuilderState;","new":"use crate::authoring_tools::AuthoringTool;\nuse crate::native_2d_editor::Native2dEditorState;\nuse crate::vfx_builder::VfxBuilderState;"}
