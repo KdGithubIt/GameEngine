@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0127-native2d-scene-bridge-20260817-1922-07",
+  "target_branch": "chatgpt/gameengine-adr0127-native-2d-completion",
+  "expected_head_sha": "d08f47d5c923fd786325102bfae76febbbe1afa6",
+  "baseline_main_sha": "d03ed9e573818eb0ca088f37953f611d6ed4d22e",
+  "patch_sha256": "90ccd6e724777d9cc1f6725cd6f8c45c13dad26ab1611bc5742c45d4217fbbce",
+  "patch_bytes": 14763,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Bridge Camera2D and sprites into runtime ECS",
+  "pr_title": "GameEngine: complete ADR 0127 Native 2D architecture",
+  "pr_body": "Connects the first Native 2D production authoring slice to the ordinary built-in component registry and scene bridge. Camera2D and SpriteRenderer2D now persist through the same scene conversion path as existing runtime components, with typed Sprite Atlas asset filtering and stable SpriteId/SortingLayerId conversion tests."
+}
