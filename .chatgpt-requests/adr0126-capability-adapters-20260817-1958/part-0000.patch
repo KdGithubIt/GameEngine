@@ -1,0 +1,359 @@
+diff --git a/crates/authoring/src/capability.rs b/crates/authoring/src/capability.rs
+index c2a1460b7e244d1c53cbdac81ce8ffdc6168b475..532b570aacdeff6b349d118eacf15438def135ea 100644
+--- a/crates/authoring/src/capability.rs
++++ b/crates/authoring/src/capability.rs
+@@ -174,6 +174,8 @@ pub enum AuthoringDomain {
+     ProjectSettings,
+     /// Animation Set asset documents.
+     AnimationSet,
++    /// Timeline sequence documents and live Sequencer sessions.
++    Timeline,
+ }
+ 
+ /// Authoring document a capability reads or mutates.
+@@ -207,6 +209,8 @@ pub enum AuthoringDocumentKind {
+     ProjectSettings,
+     /// An Animation Set asset document.
+     AnimationSet,
++    /// A Timeline sequence document.
++    Timeline,
+ }
+ 
+ /// Semantic shape of one capability.
+@@ -734,6 +738,10 @@ fn ui_documents() -> Vec<AuthoringDocumentKind> {
+     vec![AuthoringDocumentKind::UiDocument]
+ }
+ 
++fn timeline_documents() -> Vec<AuthoringDocumentKind> {
++    vec![AuthoringDocumentKind::Timeline]
++}
++
+ fn typed_document_replace_schema(document_type: &str) -> AuthoringSchemaRef {
+     AuthoringSchemaRef::typed_json(
+         document_type,
+@@ -915,6 +923,36 @@ fn builtin_capabilities() -> Vec<AuthoringCapability> {
+             AuthoringSchemaRef::of_type("UiAuthoringMutation"),
+             "Apply one atomic declarative UI command batch.",
+         ),
++        query(
++            "timeline.inspect",
++            AuthoringDomain::Timeline,
++            timeline_documents(),
++            AuthoringSchemaRef::of_type("TimelineAuthoringSnapshot"),
++            "Inspect the live committed Timeline with revision and generation tokens.",
++        ),
++        validation(
++            "timeline.validate",
++            AuthoringDomain::Timeline,
++            timeline_documents(),
++            AuthoringSchemaRef::of_type("TimelineAuthoringValidation"),
++            "Validate the live committed Timeline without mutation.",
++        ),
++        preview(
++            "timeline.preview",
++            AuthoringDomain::Timeline,
++            timeline_documents(),
++            "TimelineAuthoringCommand",
++            AuthoringSchemaRef::of_type("TimelineAuthoringMutation"),
++            "Preview one atomic Timeline command batch against an exact revision/generation base.",
++        ),
++        commit(
++            "timeline.apply",
++            AuthoringDomain::Timeline,
++            timeline_documents(),
++            "TimelineAuthoringCommand",
++            AuthoringSchemaRef::of_type("TimelineAuthoringMutation"),
++            "Apply one atomic Timeline command batch through the shared authoring transaction boundary.",
++        ),
+         query("material.inspect", AuthoringDomain::Material, vec![AuthoringDocumentKind::MaterialAsset], AuthoringSchemaRef::of_type("TypedDocumentAuthoringSnapshot<MaterialAsset>"), "Inspect the active Material through the shared typed-document boundary."),
+         validation("material.validate", AuthoringDomain::Material, vec![AuthoringDocumentKind::MaterialAsset], AuthoringSchemaRef::of_type("TypedDocumentAuthoringValidation"), "Validate the active Material through the shared typed-document boundary."),
+         with_input(preview("material.preview", AuthoringDomain::Material, vec![AuthoringDocumentKind::MaterialAsset], "MaterialAsset", AuthoringSchemaRef::of_type("TypedDocumentAuthoringMutation<MaterialAsset>"), "Preview one atomic Material replacement."), typed_document_replace_schema("MaterialAsset")),
+diff --git a/crates/cli/src/generic_cli.rs b/crates/cli/src/generic_cli.rs
+index 234f674f549824334c368301786051058b1e1b32..627bffcbe0c167cf970566030dbdfada2f86d7bc 100644
+--- a/crates/cli/src/generic_cli.rs
++++ b/crates/cli/src/generic_cli.rs
+@@ -4,8 +4,8 @@ use super::{CliError, CliRunResult, to_json};
+ use engine_authoring::{
+     AuthoringGraphDomain, AuthoringPermission, AuthoringPermissions, Diagnostic, Graph,
+     GraphAuthoringService, GraphCommand, GraphDomain, GraphView, GraphViewAuthoringService,
+-    GraphViewCommand, UiAuthoringService, UiAuthoringSession, UiDocument, UiDocumentCommand,
+-    replace_file_contents,
++    GraphViewCommand, TimelineAuthoringCommand, TimelineAuthoringService, UiAuthoringService,
++    UiAuthoringSession, UiDocument, UiDocumentCommand, load_timeline, replace_file_contents,
+ };
+ use serde::de::DeserializeOwned;
+ use std::fs;
+@@ -93,7 +93,24 @@ pub(super) fn dispatch(args: &[String]) -> Option<Result<CliRunResult, CliError>
+                 true,
+             ))
+         }
+-        _ if args.first().is_some_and(|value| value == "graph" || value == "ui") => {
++        [domain, command, path] if domain == "timeline" && command == "inspect" => {
++            Some(timeline_inspect(Path::new(path)))
++        }
++        [domain, command, path] if domain == "timeline" && command == "validate" => {
++            Some(timeline_validate(Path::new(path)))
++        }
++        [domain, command, path, commands_path]
++            if domain == "timeline" && (command == "preview" || command == "apply") =>
++        {
++            Some(timeline_mutate(
++                Path::new(path),
++                Path::new(commands_path),
++                command == "apply",
++            ))
++        }
++        _ if args.first().is_some_and(|value| {
++            value == "graph" || value == "ui" || value == "timeline"
++        }) => {
+             Some(Err(CliError::UnknownCommand {
+                 args: args.join(" "),
+             }))
+@@ -281,6 +298,60 @@ fn ui_mutate(path: &Path, commands_path: &Path, persist: bool) -> Result<CliRunR
+     Ok(CliRunResult::diagnostics(to_json(&output)?, !output.success))
+ }
+ 
++fn timeline_inspect(path: &Path) -> Result<CliRunResult, CliError> {
++    let session = TimelineAuthoringService::new(load_timeline(path).map_err(authoring_error)?)
++        .map_err(authoring_error)?;
++    let output = session
++        .inspect(&read_permissions())
++        .map_err(authoring_error)?;
++    Ok(CliRunResult::success(to_json(&output)?))
++}
++
++fn timeline_validate(path: &Path) -> Result<CliRunResult, CliError> {
++    let session = TimelineAuthoringService::new(load_timeline(path).map_err(authoring_error)?)
++        .map_err(authoring_error)?;
++    let output = session
++        .validate(&read_permissions())
++        .map_err(authoring_error)?;
++    Ok(CliRunResult::diagnostics(
++        to_json(&output)?,
++        !output.success,
++    ))
++}
++
++fn timeline_mutate(
++    path: &Path,
++    commands_path: &Path,
++    persist: bool,
++) -> Result<CliRunResult, CliError> {
++    let mut session = TimelineAuthoringService::new(load_timeline(path).map_err(authoring_error)?)
++        .map_err(authoring_error)?;
++    let commands: Vec<TimelineAuthoringCommand> = load_json(commands_path)?;
++    let permissions = writable_permissions();
++    let base = session.inspect(&permissions).map_err(authoring_error)?;
++    let output = if persist {
++        session.apply_commands(
++            &permissions,
++            base.revision,
++            base.generation,
++            commands,
++        )
++    } else {
++        session.preview_commands(
++            &permissions,
++            base.revision,
++            base.generation,
++            commands,
++        )
++    }
++    .map_err(authoring_error)?;
++
++    if persist && output.success && !output.diff.is_empty() {
++        session.save(path).map_err(authoring_error)?;
++    }
++    Ok(CliRunResult::diagnostics(to_json(&output)?, !output.success))
++}
++
+ fn read_permissions() -> AuthoringPermissions {
+     AuthoringPermissions::read_only()
+ }
+diff --git a/crates/mcp/src/generic_authoring.rs b/crates/mcp/src/generic_authoring.rs
+index 3d22236d461b3947844db49ef53e8940356e2ed5..27f3a2e4fe6c8c2feeb3e05764c6978bd79debef 100644
+--- a/crates/mcp/src/generic_authoring.rs
++++ b/crates/mcp/src/generic_authoring.rs
+@@ -11,7 +11,9 @@ use engine_authoring::{
+     GraphAuthoringMutation, GraphAuthoringService, GraphAuthoringSnapshot,
+     GraphAuthoringValidation, GraphCommand, GraphView, GraphViewAuthoringError,
+     GraphViewAuthoringMutation, GraphViewAuthoringService, GraphViewAuthoringSnapshot,
+-    GraphViewAuthoringValidation, GraphViewCommand, UiAuthoringError, UiAuthoringMutation,
++    GraphViewAuthoringValidation, GraphViewCommand, TimelineAuthoringCommand,
++    TimelineAuthoringError, TimelineAuthoringMutation, TimelineAuthoringService,
++    TimelineAuthoringSnapshot, TimelineAuthoringValidation, UiAuthoringError, UiAuthoringMutation,
+     UiAuthoringService, UiAuthoringSession, UiAuthoringSnapshot, UiAuthoringValidation,
+     UiDocumentCommand, UnsupportedGraphKind,
+ };
+@@ -51,6 +53,17 @@ pub struct UiMutationInput {
+     pub commands: Vec<UiDocumentCommand>,
+ }
+ 
++/// Mutation request shared by Timeline preview and apply tools.
++#[derive(Debug, Deserialize)]
++pub struct TimelineMutationInput {
++    /// Authoritative Timeline revision observed by the caller.
++    pub expected_revision: u64,
++    /// Authoritative live-session generation observed by the caller.
++    pub expected_generation: u64,
++    /// Timeline commands to apply atomically.
++    pub commands: Vec<TimelineAuthoringCommand>,
++}
++
+ /// Whole-document replacement request shared by persisted typed-document tools.
+ ///
+ /// The active Editor supplies the authoritative document and revision state;
+@@ -76,6 +89,8 @@ pub enum GenericAuthoringMcpError {
+     GraphView(GraphViewAuthoringError),
+     /// Shared declarative UI authoring rejected the request.
+     Ui(UiAuthoringError),
++    /// Shared Timeline authoring rejected the request.
++    Timeline(TimelineAuthoringError),
+ }
+ 
+ impl GenericAuthoringMcpError {
+@@ -86,6 +101,7 @@ impl GenericAuthoringMcpError {
+             Self::Graph(error) => error.code(),
+             Self::GraphView(error) => error.code(),
+             Self::Ui(error) => error.code(),
++            Self::Timeline(error) => error.code(),
+         }
+     }
+ }
+@@ -97,6 +113,7 @@ impl fmt::Display for GenericAuthoringMcpError {
+             Self::Graph(error) => error.fmt(formatter),
+             Self::GraphView(error) => error.fmt(formatter),
+             Self::Ui(error) => error.fmt(formatter),
++            Self::Timeline(error) => error.fmt(formatter),
+         }
+     }
+ }
+@@ -108,6 +125,7 @@ impl std::error::Error for GenericAuthoringMcpError {
+             Self::Graph(error) => Some(error),
+             Self::GraphView(error) => Some(error),
+             Self::Ui(error) => Some(error),
++            Self::Timeline(error) => Some(error),
+         }
+     }
+ }
+@@ -136,7 +154,13 @@ impl From<UiAuthoringError> for GenericAuthoringMcpError {
+     }
+ }
+ 
+-/// Transport-neutral MCP handlers for generic Graph, GraphView, and UI authoring.
++impl From<TimelineAuthoringError> for GenericAuthoringMcpError {
++    fn from(error: TimelineAuthoringError) -> Self {
++        Self::Timeline(error)
++    }
++}
++
++/// Transport-neutral MCP handlers for generic Graph, GraphView, UI, and Timeline authoring.
+ #[derive(Debug, Default, Clone, Copy)]
+ pub struct GenericAuthoringMcpTools;
+ 
+@@ -160,6 +184,7 @@ impl GenericAuthoringMcpTools {
+                 AuthoringDomain::Material,
+                 AuthoringDomain::ProjectSettings,
+                 AuthoringDomain::AnimationSet,
++                AuthoringDomain::Timeline,
+             ],
+         )
+     }
+@@ -323,6 +348,54 @@ impl GenericAuthoringMcpTools {
+             input.commands,
+         )?)
+     }
++
++    /// Inspects a live Timeline authoring session.
++    pub fn timeline_inspect(
++        &self,
++        session: &TimelineAuthoringService,
++        permissions: &AuthoringPermissions,
++    ) -> Result<TimelineAuthoringSnapshot, GenericAuthoringMcpError> {
++        Ok(session.inspect(permissions)?)
++    }
++
++    /// Validates a live Timeline authoring session.
++    pub fn timeline_validate(
++        &self,
++        session: &TimelineAuthoringService,
++        permissions: &AuthoringPermissions,
++    ) -> Result<TimelineAuthoringValidation, GenericAuthoringMcpError> {
++        Ok(session.validate(permissions)?)
++    }
++
++    /// Previews Timeline commands without mutation.
++    pub fn timeline_preview(
++        &self,
++        session: &TimelineAuthoringService,
++        permissions: &AuthoringPermissions,
++        input: TimelineMutationInput,
++    ) -> Result<TimelineAuthoringMutation, GenericAuthoringMcpError> {
++        Ok(session.preview_commands(
++            permissions,
++            input.expected_revision,
++            input.expected_generation,
++            input.commands,
++        )?)
++    }
++
++    /// Applies Timeline commands to the authoritative live session.
++    pub fn timeline_apply(
++        &self,
++        session: &mut TimelineAuthoringService,
++        permissions: &AuthoringPermissions,
++        input: TimelineMutationInput,
++    ) -> Result<TimelineAuthoringMutation, GenericAuthoringMcpError> {
++        Ok(session.apply_commands(
++            permissions,
++            input.expected_revision,
++            input.expected_generation,
++            input.commands,
++        )?)
++    }
+ }
+ 
+ #[cfg(test)]
+@@ -345,7 +418,9 @@ mod tests {
+         assert!(names.contains(&"material.inspect".to_owned()));
+         assert!(names.contains(&"project_settings.apply".to_owned()));
+         assert!(names.contains(&"animation_set.validate".to_owned()));
+-        assert_eq!(names.len(), 24);
++        assert!(names.contains(&"timeline.inspect".to_owned()));
++        assert!(names.contains(&"timeline.apply".to_owned()));
++        assert_eq!(names.len(), 28);
+     }
+ 
+     #[test]
+@@ -365,5 +440,18 @@ mod tests {
+             apply.input_schema["properties"]["commands"]["items"]["title"],
+             json!("UiDocumentCommand")
+         );
++
++        let timeline_apply = descriptors
++            .iter()
++            .find(|descriptor| descriptor.name == "timeline.apply")
++            .expect("timeline.apply must be advertised");
++        let timeline_capability = registry
++            .require(&AuthoringCapabilityId::new("timeline.apply"))
++            .expect("timeline.apply must be registered");
++        assert_eq!(timeline_apply.input_schema, timeline_capability.input.json_schema);
++        assert_eq!(
++            timeline_apply.input_schema["properties"]["commands"]["items"]["title"],
++            json!("TimelineAuthoringCommand")
++        );
+     }
+ }
+diff --git a/crates/mcp/src/lib.rs b/crates/mcp/src/lib.rs
+index 3142338b0f6ec054842ade5804fd30097e5a7abc..19fdfd14444f3396f2c2f5050bb3889f46ee1f46 100644
+--- a/crates/mcp/src/lib.rs
++++ b/crates/mcp/src/lib.rs
+@@ -36,7 +36,7 @@ pub use capability::{
+ };
+ pub use generic_authoring::{
+     GenericAuthoringMcpError, GenericAuthoringMcpTools, GraphMutationInput,
+-    GraphViewMutationInput, TypedDocumentMutationInput, UiMutationInput,
++    GraphViewMutationInput, TimelineMutationInput, TypedDocumentMutationInput, UiMutationInput,
+ };
+ pub use prefab::{PrefabCreateInput, PrefabInstantiateInput, PrefabMcpTools};
+ pub use scene::{
