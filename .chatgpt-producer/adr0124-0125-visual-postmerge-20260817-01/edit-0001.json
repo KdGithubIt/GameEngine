@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ui/vfx_visual_validation.rs","old":"        let relative_path = PathBuf::from(\"vfx/visual_validation_smoke.vfx.json\");\n","new":"        let relative_path = \"vfx/visual_validation_smoke.vfx.json\".to_owned();\n"}
