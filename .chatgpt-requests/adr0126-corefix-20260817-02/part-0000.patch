@@ -1,0 +1,35 @@
+diff --git a/crates/authoring/src/id.rs b/crates/authoring/src/id.rs
+index 009e26699a72b74cd25aeee7c7ebb99ba7bb46e9..7fbb00e4159965b124a1f921c87426231dd7a515 100644
+--- a/crates/authoring/src/id.rs
++++ b/crates/authoring/src/id.rs
+@@ -265,10 +265,26 @@ define_id!(
+     "motion"
+ );
+ 
+-define_id!(/// Stable Timeline document identifier. TimelineId, "timeline");
+-define_id!(/// Stable Timeline track identifier. TimelineTrackId, "track");
+-define_id!(/// Stable Timeline clip identifier. TimelineClipId, "clip");
+-define_id!(/// Stable Timeline marker identifier. TimelineMarkerId, "marker");
++define_id!(
++    /// Stable Timeline document identifier.
++    TimelineId,
++    "timeline"
++);
++define_id!(
++    /// Stable Timeline track identifier.
++    TimelineTrackId,
++    "track"
++);
++define_id!(
++    /// Stable Timeline clip identifier.
++    TimelineClipId,
++    "clip"
++);
++define_id!(
++    /// Stable Timeline marker identifier.
++    TimelineMarkerId,
++    "marker"
++);
+ 
+ // ---------------------------------------------------------------------------
+ // Deterministic sub-asset ID derivation (ADR 0032)
