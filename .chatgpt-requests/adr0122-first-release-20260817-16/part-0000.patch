@@ -1,0 +1,1396 @@
+diff --git a/crates/editor/src/main.rs b/crates/editor/src/main.rs
+index 2c2b9d5a641ded05541f7a213e101906fec25ea3..ebffa23e642a78b8f7ed90253b17398aafe438e0 100644
+--- a/crates/editor/src/main.rs
++++ b/crates/editor/src/main.rs
+@@ -74,6 +74,8 @@ impl EditorShell {
+             let requested = requested.to_string_lossy();
+             if requested == "Navigation" {
+                 app.prepare_navigation_visual_validation();
++            } else if requested == "Spatial Audio" {
++                app.prepare_spatial_audio_visual_validation();
+             } else {
+                 let tool = AuthoringTool::ALL
+                     .into_iter()
+diff --git a/crates/editor/src/scene_view.rs b/crates/editor/src/scene_view.rs
+index cbf07bc2b71ad595ec74fb8c5ae8cb300b63805e..6630909510cc8c96c96e4cfa1de953dffddb4984 100644
+--- a/crates/editor/src/scene_view.rs
++++ b/crates/editor/src/scene_view.rs
+@@ -441,8 +441,10 @@ pub struct SceneViewOutput {
+     pub picked_entity: Option<EntityId>,
+     /// Front-most declarative UI node clicked in UI selection mode.
+     pub picked_ui_node: Option<SceneUiNodeSelection>,
+-    /// One completed gizmo edit. A complete pointer drag becomes one undo step.
++    /// One completed transform gizmo edit. A complete pointer drag becomes one undo step.
+     pub gizmo_edit: Option<GizmoEdit>,
++    /// One completed AudioEmitter distance-handle edit.
++    pub audio_distance_edit: Option<AudioDistanceGizmoEdit>,
+     /// World-space intersection of a primary click with the authoring Z=0 plane.
+     pub placement_position: Option<[f64; 3]>,
+     /// Entities inside a completed marquee (box-select) drag.
+@@ -586,6 +588,34 @@ pub struct GizmoEdit {
+     pub axis_direction: [f32; 3],
+ }
+ 
++/// AudioEmitter distance field manipulated by a Scene View handle.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum AudioDistanceField {
++    /// Distance where positional attenuation begins.
++    Min,
++    /// Distance where positional attenuation reaches its floor.
++    Max,
++}
++
++impl AudioDistanceField {
++    /// Serialized AudioEmitter field name updated by the authoring command.
++    pub(crate) const fn field_name(self) -> &'static str {
++        match self {
++            Self::Min => "min_distance",
++            Self::Max => "max_distance",
++        }
++    }
++}
++
++/// One completed Scene View edit of an AudioEmitter distance handle.
++#[derive(Debug, Clone, Copy, PartialEq)]
++pub struct AudioDistanceGizmoEdit {
++    /// Authored distance field changed by the drag.
++    pub field: AudioDistanceField,
++    /// Final non-negative distance in world units.
++    pub distance: f32,
++}
++
+ /// One transient component value rendered by the Scene View before commit.
+ ///
+ /// Inspector drags use this value to update the preview world every frame
+@@ -614,6 +644,18 @@ struct GizmoDragState {
+     base_transform: Value,
+ }
+ 
++struct AudioDistanceDragState {
++    entity: EntityId,
++    field: AudioDistanceField,
++    direction: Vec3,
++    base_distance: f32,
++    min_distance: f32,
++    max_distance: f32,
++    accumulated_delta: f32,
++    effective_distance: f32,
++    center: Vec3,
++}
++
+ struct EntityPickInfo {
+     id: EntityId,
+     center: Vec3,
+@@ -699,6 +741,8 @@ pub struct SceneView {
+     ui_texture_renderer: Option<SceneUiTextureRenderer>,
+     entity_pick_info: Vec<EntityPickInfo>,
+     gizmo_drag: Option<GizmoDragState>,
++    /// Active transient drag of one AudioEmitter distance handle.
++    audio_distance_drag: Option<AudioDistanceDragState>,
+     /// Screen position where a marquee (box-select) drag started.
+     box_select_start: Option<egui::Pos2>,
+     /// Logical viewport rect and physical render-target size of the most recent
+@@ -866,6 +910,7 @@ impl SceneView {
+             ui_texture_renderer: None,
+             entity_pick_info: Vec::new(),
+             gizmo_drag: None,
++            audio_distance_drag: None,
+             box_select_start: None,
+             last_view: None,
+             show_sky: true,
+@@ -898,6 +943,46 @@ impl SceneView {
+         self.camera.reset();
+     }
+ 
++    /// Resolves the current authoring world-space pose for one AudioEmitter.
++    pub(crate) fn authoring_audio_emitter_pose(
++        scene: &AuthoringScene,
++        entity: &EntityId,
++    ) -> Option<engine::audio::AudioEmitterPose> {
++        scene.entity(entity)?;
++        let tx_type = ComponentTypeId::new(engine::scene_bridge::TRANSFORM_COMPONENT);
++        let mut memo = std::collections::BTreeMap::new();
++        let world = resolve_world_matrix(entity, scene, &tx_type, &mut memo, 0);
++        Some(engine::audio::AudioEmitterPose {
++            position: world.transform_point3(Vec3::ZERO).to_array(),
++        })
++    }
++
++    /// Resolves the current authoring world-space pose for one AudioListener.
++    pub(crate) fn authoring_audio_listener_pose(
++        scene: &AuthoringScene,
++        entity: &EntityId,
++    ) -> Option<engine::audio::AudioListenerPose> {
++        scene.entity(entity)?;
++        let tx_type = ComponentTypeId::new(engine::scene_bridge::TRANSFORM_COMPONENT);
++        let mut memo = std::collections::BTreeMap::new();
++        let world = resolve_world_matrix(entity, scene, &tx_type, &mut memo, 0);
++        let right = world.x_axis.truncate().normalize_or_zero();
++        Some(engine::audio::AudioListenerPose {
++            position: world.transform_point3(Vec3::ZERO).to_array(),
++            right: if right == Vec3::ZERO { Vec3::X } else { right }.to_array(),
++        })
++    }
++
++    /// Returns the transient Scene View camera pose used only by explicit audition.
++    pub(crate) fn editor_audio_listener_pose(&self) -> engine::audio::AudioListenerPose {
++        let transform = self.camera.to_transform();
++        let right = (transform.rotation * Vec3::X).normalize_or_zero();
++        engine::audio::AudioListenerPose {
++            position: transform.translation.to_array(),
++            right: if right == Vec3::ZERO { Vec3::X } else { right }.to_array(),
++        }
++    }
++
+     /// Synchronizes the Scene View highlight with UI Builder selection.
+     ///
+     /// Synchronization only applies when the Builder document is the same
+@@ -1065,6 +1150,7 @@ impl SceneView {
+                 picked_entity: None,
+                 picked_ui_node: None,
+                 gizmo_edit: None,
++                audio_distance_edit: None,
+                 placement_position: None,
+                 box_selected: None,
+             };
+@@ -1127,40 +1213,91 @@ impl SceneView {
+             &self.entity_pick_info,
+         );
+ 
+-        // Detect a drag on any transform handle. The mode is captured at drag
+-        // start so changing a shortcut cannot reinterpret an active gesture.
++        // Audio distance handles share the Scene View pointer gesture with the
++        // transform gizmo. Audio handles win only when their visible tip is hit.
+         if response.drag_started() {
+             let primary_down = ui.input(|i| i.pointer.button_down(egui::PointerButton::Primary));
+             if primary_down {
+-                let base_transform = selected_entity.and_then(|entity| {
+-                    interaction_scene
+-                        .entity(entity)
+-                        .and_then(|item| item.components.get(&transform_component_type()))
+-                        .cloned()
+-                });
+-                if let (Some(pos), Some(center), Some(base_transform)) = (
++                self.audio_distance_drag = None;
++                self.gizmo_drag = None;
++                if let (Some(pos), Some(entity), Some(center), Some((min_distance, max_distance))) = (
+                     response.interact_pointer_pos(),
++                    selected_entity,
+                     selected_center,
+-                    base_transform,
++                    selected_entity.and_then(|entity| audio_emitter_distances(interaction_scene, entity)),
+                 ) {
+-                    let len = gizmo_axis_length(center, vp, rect);
+-                    self.gizmo_drag =
+-                        hit_test_gizmo_axis(pos, center, vp, rect, gizmo_mode, len, &axis_dirs)
+-                            .map(|axis| GizmoDragState {
+-                                axis,
+-                                axis_dir: axis_direction_of(&axis_dirs, axis),
+-                                mode: gizmo_mode,
+-                                accumulated_delta: 0.0,
+-                                effective_delta: 0.0,
+-                                origin_center: center,
+-                                base_transform,
+-                            });
++                    let direction = audio_distance_handle_direction(&self.camera);
++                    if let Some(field) = hit_test_audio_distance_handle(
++                        pos, center, min_distance, max_distance, direction, vp, rect,
++                    ) {
++                        let base_distance = match field {
++                            AudioDistanceField::Min => min_distance,
++                            AudioDistanceField::Max => max_distance,
++                        };
++                        self.audio_distance_drag = Some(AudioDistanceDragState {
++                            entity: (*entity).clone(),
++                            field,
++                            direction,
++                            base_distance,
++                            min_distance,
++                            max_distance,
++                            accumulated_delta: 0.0,
++                            effective_distance: base_distance,
++                            center,
++                        });
++                    }
++                }
++
++                if self.audio_distance_drag.is_none() {
++                    let base_transform = selected_entity.and_then(|entity| {
++                        interaction_scene
++                            .entity(entity)
++                            .and_then(|item| item.components.get(&transform_component_type()))
++                            .cloned()
++                    });
++                    if let (Some(pos), Some(center), Some(base_transform)) = (
++                        response.interact_pointer_pos(),
++                        selected_center,
++                        base_transform,
++                    ) {
++                        let len = gizmo_axis_length(center, vp, rect);
++                        self.gizmo_drag =
++                            hit_test_gizmo_axis(pos, center, vp, rect, gizmo_mode, len, &axis_dirs)
++                                .map(|axis| GizmoDragState {
++                                    axis,
++                                    axis_dir: axis_direction_of(&axis_dirs, axis),
++                                    mode: gizmo_mode,
++                                    accumulated_delta: 0.0,
++                                    effective_delta: 0.0,
++                                    origin_center: center,
++                                    base_transform,
++                                });
++                    }
+                 }
+             }
+         }
+ 
+         // Accumulate per-frame pointer movement. Committing only at pointer-up
+         // produces one authoring transaction and therefore one undo item.
++        let mut audio_distance_edit = None;
++        if let Some(drag) = &mut self.audio_distance_drag
++            && response.dragged_by(egui::PointerButton::Primary)
++        {
++            let screen_delta = response.ctx.input(|input| input.pointer.delta());
++            let delta = screen_delta_to_world(
++                screen_delta, drag.direction, drag.center, vp, rect,
++            );
++            if delta.is_finite() {
++                drag.accumulated_delta += delta;
++            }
++            drag.effective_distance = clamp_audio_distance(
++                drag.field,
++                drag.base_distance + drag.accumulated_delta,
++                drag.min_distance,
++                drag.max_distance,
++            );
++        }
++
+         let mut gizmo_edit = None;
+         if let Some(drag) = &mut self.gizmo_drag
+             && response.dragged_by(egui::PointerButton::Primary) {
+@@ -1208,6 +1345,15 @@ impl SceneView {
+ 
+         let primary_down =
+             ui.input(|input| input.pointer.button_down(egui::PointerButton::Primary));
++        if !primary_down
++            && let Some(drag) = self.audio_distance_drag.take()
++            && (drag.effective_distance - drag.base_distance).abs() > f32::EPSILON
++        {
++            audio_distance_edit = Some(AudioDistanceGizmoEdit {
++                field: drag.field,
++                distance: drag.effective_distance,
++            });
++        }
+         let mut completed_gizmo_preview = None;
+         if !primary_down
+             && let Some(drag) = self.gizmo_drag.take()
+@@ -1228,6 +1374,7 @@ impl SceneView {
+         let mut box_selected = None;
+         if response.drag_started_by(egui::PointerButton::Primary)
+             && self.gizmo_drag.is_none()
++            && self.audio_distance_drag.is_none()
+             && !self.ui_selection_enabled
+         {
+             self.box_select_start = response.interact_pointer_pos();
+@@ -1490,6 +1637,9 @@ impl SceneView {
+                             draw_camera_frustum(dl, info, render_scene);
+                         }
+                     }
++                    if has_audio_listener(render_scene, &info.id) {
++                        draw_audio_listener_orientation(dl, info);
++                    }
+                 }
+                 if let Some(sel_id) = selected_entity
+                     && let Some(info) = self.entity_pick_info.iter().find(|e| &e.id == sel_id) {
+@@ -1515,6 +1665,18 @@ impl SceneView {
+                                 draw_distance_ring(dl, info.center, distance);
+                             }
+                         }
++                        if let Some((min_distance, max_distance)) = audio_emitter_display_distances(
++                            render_scene,
++                            sel_id,
++                            self.audio_distance_drag.as_ref(),
++                        ) {
++                            draw_audio_distance_shell(
++                                dl, info.center, min_distance, Vec3::new(0.15, 0.85, 1.0),
++                            );
++                            draw_audio_distance_shell(
++                                dl, info.center, max_distance, Vec3::new(0.2, 0.45, 1.0),
++                            );
++                        }
+                     }
+                 if let Some(path) = navigation_test_path {
+                     for segment in path.windows(2) {
+@@ -1637,6 +1799,24 @@ impl SceneView {
+                 draw_game_frame_guide(&ui.painter().with_clip_rect(rect), rect, game_frame);
+             }
+ 
++            if let Some(sel_id) = selected_entity
++                && let Some(info) = self.entity_pick_info.iter().find(|info| &info.id == sel_id)
++                && let Some(distances) = audio_emitter_display_distances(
++                    render_scene,
++                    sel_id,
++                    self.audio_distance_drag.as_ref(),
++                )
++            {
++                draw_audio_distance_handles(
++                    &ui.painter().with_clip_rect(rect),
++                    info.center,
++                    audio_distance_handle_direction(&self.camera),
++                    distances,
++                    (vp, rect),
++                    self.audio_distance_drag.as_ref().map(|drag| drag.field),
++                );
++            }
++
+             if self.show_ui_overlay {
+                 // UI interaction is metadata-driven: the baked texture never enters
+                 // the editor's widget layer or emits gameplay events.
+@@ -1777,6 +1957,7 @@ impl SceneView {
+             picked_entity,
+             picked_ui_node,
+             gizmo_edit,
++            audio_distance_edit,
+             placement_position,
+             box_selected,
+         }
+@@ -2912,6 +3093,127 @@ fn draw_distance_ring(lines: &mut DebugLines, center: Vec3, radius: f32) {
+     }
+ }
+ 
++fn audio_emitter_distances(scene: &AuthoringScene, entity: &EntityId) -> Option<(f32, f32)> {
++    let component = ComponentTypeId::new(engine::scene_bridge::AUDIO_EMITTER_COMPONENT);
++    let Value::Object(fields) = scene.entity(entity)?.components.get(&component)? else {
++        return None;
++    };
++    let min_distance = obj_f64_or(fields, "min_distance", 1.0) as f32;
++    let max_distance = obj_f64_or(fields, "max_distance", 20.0) as f32;
++    (min_distance.is_finite() && max_distance.is_finite())
++        .then_some((min_distance.max(0.0), max_distance.max(min_distance).max(0.0)))
++}
++
++fn audio_emitter_display_distances(
++    scene: &AuthoringScene,
++    entity: &EntityId,
++    drag: Option<&AudioDistanceDragState>,
++) -> Option<(f32, f32)> {
++    let (mut min_distance, mut max_distance) = audio_emitter_distances(scene, entity)?;
++    if let Some(drag) = drag.filter(|drag| &drag.entity == entity) {
++        match drag.field {
++            AudioDistanceField::Min => min_distance = drag.effective_distance,
++            AudioDistanceField::Max => max_distance = drag.effective_distance,
++        }
++    }
++    Some((min_distance, max_distance))
++}
++
++fn has_audio_listener(scene: &AuthoringScene, entity: &EntityId) -> bool {
++    scene.entity(entity).is_some_and(|item| {
++        item.components.contains_key(&ComponentTypeId::new(
++            engine::scene_bridge::AUDIO_LISTENER_COMPONENT,
++        ))
++    })
++}
++
++fn audio_distance_handle_direction(camera: &EditorViewCamera) -> Vec3 {
++    let right = (camera.to_transform().rotation * Vec3::X).normalize_or_zero();
++    if right == Vec3::ZERO { Vec3::X } else { right }
++}
++
++fn clamp_audio_distance(
++    field: AudioDistanceField,
++    candidate: f32,
++    min_distance: f32,
++    max_distance: f32,
++) -> f32 {
++    let candidate = if candidate.is_finite() { candidate.max(0.0) } else { 0.0 };
++    match field {
++        AudioDistanceField::Min => candidate.min(max_distance.max(0.0)),
++        AudioDistanceField::Max => candidate.max(min_distance.max(0.0)),
++    }
++}
++
++fn hit_test_audio_distance_handle(
++    pointer: egui::Pos2,
++    center: Vec3,
++    min_distance: f32,
++    max_distance: f32,
++    direction: Vec3,
++    vp: Mat4,
++    rect: egui::Rect,
++) -> Option<AudioDistanceField> {
++    const HANDLE_RADIUS: f32 = 12.0;
++    [(AudioDistanceField::Min, min_distance), (AudioDistanceField::Max, max_distance)]
++        .into_iter()
++        .map(|(field, distance)| {
++            let tip = world_to_screen(center + direction * distance, vp, rect);
++            ((pointer - tip).length(), field)
++        })
++        .filter(|(distance, _)| *distance <= HANDLE_RADIUS)
++        .min_by(|(left, _), (right, _)| left.total_cmp(right))
++        .map(|(_, field)| field)
++}
++
++fn draw_audio_distance_shell(lines: &mut DebugLines, center: Vec3, radius: f32, color: Vec3) {
++    if !radius.is_finite() || radius <= 0.0 {
++        return;
++    }
++    draw_rotation_ring(lines, center, [1.0, 0.0, 0.0], color, radius);
++    draw_rotation_ring(lines, center, [0.0, 1.0, 0.0], color, radius);
++    draw_rotation_ring(lines, center, [0.0, 0.0, 1.0], color, radius);
++}
++
++fn draw_audio_listener_orientation(lines: &mut DebugLines, info: &EntityPickInfo) {
++    let right = info.world.x_axis.truncate().normalize_or_zero();
++    let forward = -info.world.z_axis.truncate().normalize_or_zero();
++    let right = if right == Vec3::ZERO { Vec3::X } else { right };
++    let forward = if forward == Vec3::ZERO { Vec3::NEG_Z } else { forward };
++    let color = Vec3::new(0.35, 0.9, 1.0);
++    lines.line(info.center - right * 0.55, info.center + right * 0.55, color);
++    let tip = info.center + forward * 0.9;
++    lines.line(info.center, tip, color);
++    draw_arrow_tip(lines, tip, forward, 0.18, color);
++}
++
++fn draw_audio_distance_handles(
++    painter: &egui::Painter,
++    center: Vec3,
++    direction: Vec3,
++    distances: (f32, f32),
++    view: (Mat4, egui::Rect),
++    active: Option<AudioDistanceField>,
++) {
++    let (min_distance, max_distance) = distances;
++    let (vp, rect) = view;
++    for (field, distance, label, color) in [
++        (AudioDistanceField::Min, min_distance, "min", egui::Color32::from_rgb(90, 220, 255)),
++        (AudioDistanceField::Max, max_distance, "max", egui::Color32::from_rgb(70, 145, 255)),
++    ] {
++        let tip = world_to_screen(center + direction * distance, vp, rect);
++        let radius = if active == Some(field) { 7.0 } else { 5.0 };
++        painter.circle_filled(tip, radius, color);
++        painter.text(
++            tip + egui::vec2(8.0, -8.0),
++            egui::Align2::LEFT_BOTTOM,
++            format!("{label} {distance:.2} m"),
++            egui::FontId::monospace(11.0),
++            color,
++        );
++    }
++}
++
+ // ---------------------------------------------------------------------------
+ // Debug line helpers
+ // ---------------------------------------------------------------------------
+@@ -3436,6 +3738,13 @@ mod tests {
+         assert_eq!(camera.distance, 10.0);
+     }
+ 
++    #[test]
++    fn audio_distance_gizmo_preserves_an_ordered_non_negative_range() {
++        assert_eq!(clamp_audio_distance(AudioDistanceField::Min, 12.0, 1.0, 10.0), 10.0);
++        assert_eq!(clamp_audio_distance(AudioDistanceField::Min, -2.0, 1.0, 10.0), 0.0);
++        assert_eq!(clamp_audio_distance(AudioDistanceField::Max, 0.25, 1.0, 10.0), 1.0);
++    }
++
+     #[test]
+     fn component_preview_updates_cloned_scene_without_mutating_authoring_source() {
+         let scene = engine_authoring::test_fixtures::load_scene_fixture(
+diff --git a/crates/editor/src/ui/audio_authoring.rs b/crates/editor/src/ui/audio_authoring.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..2befddbe7137496edc8b3f57bb1d72e987c58aa5
+--- /dev/null
++++ b/crates/editor/src/ui/audio_authoring.rs
+@@ -0,0 +1,364 @@
++//! Transient spatial-audio authoring helpers for the Inspector.
++
++use super::*;
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
++pub(super) enum AuditionListenerSource {
++    #[default]
++    GameListener,
++    SceneView,
++}
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub(super) enum AudioInspectorAction {
++    Play,
++    Stop,
++    Restart,
++    UseGameListener,
++    UseSceneViewListener,
++}
++
++pub(super) struct AudioAuditionState {
++    audio: Option<engine::audio::AudioSystem>,
++    assets: engine::asset::Assets<engine::audio::AudioAsset>,
++    asset_server: Option<engine::asset::AssetServer>,
++    asset_root: Option<PathBuf>,
++    voice: Option<engine::audio::AudioVoiceId>,
++    active_entity: Option<EntityId>,
++    pub(super) listener_source: AuditionListenerSource,
++    status: String,
++}
++
++impl Default for AudioAuditionState {
++    fn default() -> Self {
++        Self {
++            audio: None,
++            assets: engine::asset::Assets::default(),
++            asset_server: None,
++            asset_root: None,
++            voice: None,
++            active_entity: None,
++            listener_source: AuditionListenerSource::GameListener,
++            status: "Stopped".to_owned(),
++        }
++    }
++}
++
++impl AudioAuditionState {
++    pub(super) fn poll(&mut self) {
++        let Some(audio) = self.audio.as_mut() else { return; };
++        let completed = audio.drain_completed_voices();
++        if self.voice.is_some_and(|voice| completed.contains(&voice)) {
++            self.voice = None;
++            self.active_entity = None;
++            self.status = "Audition finished".to_owned();
++        }
++    }
++
++    pub(super) fn reset_project(&mut self) {
++        self.stop();
++        self.assets = engine::asset::Assets::default();
++        self.asset_server = None;
++        self.asset_root = None;
++        self.listener_source = AuditionListenerSource::GameListener;
++        self.status = "Stopped".to_owned();
++    }
++
++    fn stop(&mut self) {
++        self.active_entity = None;
++        if let (Some(audio), Some(voice)) = (self.audio.as_mut(), self.voice.take())
++            && let Err(error) = audio.stop_voice(voice)
++        {
++            self.status = format!("Stop failed: {error}");
++            return;
++        }
++        self.status = "Stopped".to_owned();
++    }
++
++    fn play(
++        &mut self,
++        entity: EntityId,
++        asset_root: &Path,
++        asset_id: AssetId,
++        asset_path: &str,
++        gains: engine::audio::StereoGains,
++        looping: bool,
++    ) {
++        self.stop();
++        if self.asset_root.as_deref() != Some(asset_root) {
++            self.assets = engine::asset::Assets::default();
++            self.asset_server = Some(engine::asset::AssetServer::with_assets_root(asset_root));
++            self.asset_root = Some(asset_root.to_path_buf());
++        }
++        if self.audio.is_none() {
++            match engine::audio::AudioSystem::new() {
++                Ok(audio) => self.audio = Some(audio),
++                Err(error) => {
++                    self.status = format!("Audio device unavailable: {error}");
++                    return;
++                }
++            }
++        }
++        let Some(server) = self.asset_server.as_mut() else { return; };
++        let handle = match server.load_audio(asset_id, asset_path, &mut self.assets) {
++            Ok(handle) => handle,
++            Err(error) => {
++                self.status = format!("Audition load failed: {error}");
++                return;
++            }
++        };
++        let Some(asset) = self.assets.get(&handle) else {
++            self.status = "Audition clip disappeared from the transient cache".to_owned();
++            return;
++        };
++        match self.audio.as_mut().expect("audio initialized above").start_voice(asset, gains, looping) {
++            Ok(voice) => {
++                self.voice = Some(voice);
++                self.active_entity = Some(entity);
++                self.status = "Playing transient audition".to_owned();
++            }
++            Err(error) => self.status = format!("Audition failed: {error}"),
++        }
++    }
++
++    fn active_entity(&self) -> Option<EntityId> {
++        self.active_entity.clone()
++    }
++
++    fn update_gains(&mut self, gains: engine::audio::StereoGains) {
++        let (Some(audio), Some(voice)) = (self.audio.as_ref(), self.voice) else { return; };
++        if let Err(error) = audio.update_voice(voice, gains) {
++            self.status = format!("Audition update failed: {error}");
++        }
++    }
++}
++
++#[derive(Clone)]
++struct EmitterPreview {
++    clip: AssetId,
++    settings: engine::audio::AudioVoiceSpatialSettings,
++    looping: bool,
++}
++
++pub(super) fn show_audio_component_extras(
++    ui: &mut egui::Ui,
++    component_type: &ComponentTypeId,
++    value: &Value,
++    audition: &AudioAuditionState,
++) -> Option<AudioInspectorAction> {
++    if component_type.as_str() == engine::scene_bridge::AUDIO_EMITTER_COMPONENT {
++        ui.separator();
++        ui.strong("Attenuation Preview");
++        if let Some(emitter) = parse_emitter(value) {
++            draw_attenuation_preview(ui, emitter.settings);
++        } else {
++            ui.weak("Complete the emitter fields to preview attenuation.");
++        }
++        ui.separator();
++        ui.strong("Audition");
++        let mut action = None;
++        control_row(ui, |ui| {
++            ui.label("Listener");
++            if ui.selectable_label(audition.listener_source == AuditionListenerSource::GameListener, "Game Listener").clicked() {
++                action = Some(AudioInspectorAction::UseGameListener);
++            }
++            if ui.selectable_label(audition.listener_source == AuditionListenerSource::SceneView, "Scene View").clicked() {
++                action = Some(AudioInspectorAction::UseSceneViewListener);
++            }
++        });
++        control_row(ui, |ui| {
++            if ui.button("▶ Play").clicked() { action = Some(AudioInspectorAction::Play); }
++            if ui.button("■ Stop").clicked() { action = Some(AudioInspectorAction::Stop); }
++            if ui.button("↻ Restart").clicked() { action = Some(AudioInspectorAction::Restart); }
++            ui.weak(&audition.status);
++        });
++        ui.small("Audition is transient and uses the production spatial evaluator and managed voice backend.");
++        action
++    } else if component_type.as_str() == engine::scene_bridge::AUDIO_LISTENER_COMPONENT {
++        ui.separator();
++        ui.small("Scene View shows this listener's world-space orientation. Highest enabled priority wins; equal highest priorities use deterministic entity order.");
++        None
++    } else {
++        None
++    }
++}
++
++impl EditorApp {
++    pub(super) fn update_audio_audition(&mut self) {
++        let Some(active_entity) = self.audio_audition.active_entity() else { return; };
++        let snapshot = self.session.scene().and_then(|scene| {
++            let component = ComponentTypeId::new(engine::scene_bridge::AUDIO_EMITTER_COMPONENT);
++            let value = scene.entity(&active_entity)?.components.get(&component)?;
++            let emitter = parse_emitter(value)?;
++            let emitter_pose = SceneView::authoring_audio_emitter_pose(scene, &active_entity)?;
++            let game_listener = active_game_listener(scene)
++                .and_then(|id| SceneView::authoring_audio_listener_pose(scene, &id));
++            Some((emitter, emitter_pose, game_listener))
++        });
++        let Some((emitter, emitter_pose, game_listener)) = snapshot else {
++            self.audio_audition.stop();
++            self.audio_audition.status = "Audition stopped because the emitter is no longer available".to_owned();
++            return;
++        };
++        let listener = match self.audio_audition.listener_source {
++            AuditionListenerSource::GameListener => game_listener,
++            AuditionListenerSource::SceneView => Some(self.scene_view.editor_audio_listener_pose()),
++        };
++        self.audio_audition.update_gains(audition_spatial_gains(listener, emitter_pose, emitter.settings));
++    }
++
++    pub(super) fn handle_audio_inspector_action(
++        &mut self,
++        selected: &EntityId,
++        value: &Value,
++        action: AudioInspectorAction,
++    ) {
++        match action {
++            AudioInspectorAction::Stop => { self.audio_audition.stop(); return; }
++            AudioInspectorAction::UseGameListener => { self.audio_audition.listener_source = AuditionListenerSource::GameListener; return; }
++            AudioInspectorAction::UseSceneViewListener => { self.audio_audition.listener_source = AuditionListenerSource::SceneView; return; }
++            AudioInspectorAction::Play | AudioInspectorAction::Restart => {}
++        }
++        let Some(emitter) = parse_emitter(value) else { self.audio_audition.status = "Emitter fields are incomplete".to_owned(); return; };
++        let Some(scene) = self.session.scene() else { self.audio_audition.status = "Open a scene before auditioning audio".to_owned(); return; };
++        let Some(emitter_pose) = SceneView::authoring_audio_emitter_pose(scene, selected) else { self.audio_audition.status = "The emitter has no resolved world transform".to_owned(); return; };
++        let listener = match self.audio_audition.listener_source {
++            AuditionListenerSource::SceneView => Some(self.scene_view.editor_audio_listener_pose()),
++            AuditionListenerSource::GameListener => active_game_listener(scene).and_then(|id| SceneView::authoring_audio_listener_pose(scene, &id)),
++        };
++        let gains = audition_spatial_gains(listener, emitter_pose, emitter.settings);
++        let Some(project) = self.project_root.as_ref() else { self.audio_audition.status = "Open a project before auditioning audio".to_owned(); return; };
++        let Some(entry) = self.asset_manifest.get(&emitter.clip) else { self.audio_audition.status = "Emitter clip is not registered in the asset manifest".to_owned(); return; };
++        self.audio_audition.play(selected.clone(), &project.assets_root(), emitter.clip, &entry.path, gains, emitter.looping);
++    }
++
++    #[cfg(feature = "visual-validation")]
++    pub fn prepare_spatial_audio_visual_validation(&mut self) {
++        let registry = engine::components::builtin_registry();
++        let transform_type = ComponentTypeId::new(engine::scene_bridge::TRANSFORM_COMPONENT);
++        let emitter_type = ComponentTypeId::new(engine::scene_bridge::AUDIO_EMITTER_COMPONENT);
++        let listener_type = ComponentTypeId::new(engine::scene_bridge::AUDIO_LISTENER_COMPONENT);
++        let Some(transform) = registry.get(&transform_type).map(|definition| definition.schema.default_value()) else { return; };
++        let Some(mut emitter) = registry.get(&emitter_type).map(|definition| definition.schema.default_value()) else { return; };
++        let Some(listener) = registry.get(&listener_type).map(|definition| definition.schema.default_value()) else { return; };
++        let Value::Object(fields) = &mut emitter else { return; };
++        fields.insert("clip".to_owned(), Value::AssetRef(AssetId::generate()));
++        fields.insert("spatial_blend".to_owned(), Value::F64(1.0));
++        fields.insert("min_distance".to_owned(), Value::F64(1.5));
++        fields.insert("max_distance".to_owned(), Value::F64(6.0));
++        fields.insert("rolloff".to_owned(), Value::String("linear".to_owned()));
++        fields.insert("looping".to_owned(), Value::Bool(true));
++        let Ok(entity) = self.session.create_scene_entity("Spatial Audio Preview") else { return; };
++        if self.session.add_scene_component(entity.clone(), transform_type, transform).is_err()
++            || self.session.add_scene_component(entity.clone(), emitter_type, emitter).is_err()
++            || self.session.add_scene_component(entity.clone(), listener_type, listener).is_err()
++        { return; }
++        self.select_single_entity(Some(entity.clone()));
++        if let Some(scene) = self.session.scene() {
++            let _ = self.scene_view.focus_entity(scene, &entity);
++        }
++    }
++}
++
++fn audition_spatial_gains(
++    listener: Option<engine::audio::AudioListenerPose>,
++    emitter: engine::audio::AudioEmitterPose,
++    settings: engine::audio::AudioVoiceSpatialSettings,
++) -> engine::audio::StereoGains {
++    engine::audio::spatial_voice_gains(listener, emitter, settings)
++}
++
++fn parse_emitter(value: &Value) -> Option<EmitterPreview> {
++    let Value::Object(fields) = value else { return None; };
++    let Value::AssetRef(clip) = fields.get("clip")? else { return None; };
++    let rolloff = match fields.get("rolloff") {
++        Some(Value::String(value)) if value == "inverse" => engine::audio::AudioRolloffMode::Inverse,
++        _ => engine::audio::AudioRolloffMode::Linear,
++    };
++    Some(EmitterPreview {
++        clip: clip.clone(),
++        settings: engine::audio::AudioVoiceSpatialSettings {
++            volume: number(fields.get("volume"), 1.0),
++            spatial_blend: number(fields.get("spatial_blend"), 1.0),
++            min_distance: number(fields.get("min_distance"), 1.0),
++            max_distance: number(fields.get("max_distance"), 20.0),
++            rolloff,
++        },
++        looping: matches!(fields.get("looping"), Some(Value::Bool(true))),
++    })
++}
++
++fn active_game_listener(scene: &AuthoringScene) -> Option<EntityId> {
++    let component = ComponentTypeId::new(engine::scene_bridge::AUDIO_LISTENER_COMPONENT);
++    scene.entities().filter_map(|(id, entity)| {
++        let Value::Object(fields) = entity.components.get(&component)? else { return None; };
++        if !matches!(fields.get("enabled"), Some(Value::Bool(true))) { return None; }
++        Some((integer(fields.get("priority"), 0), id.clone()))
++    }).max_by(|(lp, li), (rp, ri)| lp.cmp(rp).then_with(|| ri.as_str().cmp(li.as_str()))).map(|(_, id)| id)
++}
++
++fn draw_attenuation_preview(ui: &mut egui::Ui, settings: engine::audio::AudioVoiceSpatialSettings) {
++    let width = ui.available_width().max(80.0);
++    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, 72.0), egui::Sense::hover());
++    let painter = ui.painter_at(rect);
++    let max_distance = settings.max_distance.max(settings.min_distance).max(1.0);
++    let listener = engine::audio::AudioListenerPose { position: [0.0; 3], right: [1.0, 0.0, 0.0] };
++    let mut previous = None;
++    for index in 0..=48 {
++        let t = index as f32 / 48.0;
++        let distance = max_distance * 1.2 * t;
++        let emitter = engine::audio::AudioEmitterPose { position: [0.0, 0.0, -distance] };
++        let gains = audition_spatial_gains(Some(listener), emitter, engine::audio::AudioVoiceSpatialSettings { volume: 1.0, spatial_blend: 1.0, ..settings });
++        let gain = (gains.left * gains.left + gains.right * gains.right).sqrt().clamp(0.0, 1.0);
++        let point = egui::pos2(rect.left() + rect.width() * t, rect.bottom() - rect.height() * gain);
++        if let Some(previous) = previous {
++            painter.line_segment([previous, point], egui::Stroke::new(1.5_f32, ui.visuals().text_color()));
++        }
++        previous = Some(point);
++    }
++}
++
++fn number(value: Option<&Value>, default: f32) -> f32 {
++    match value { Some(Value::F64(value)) => *value as f32, Some(Value::I64(value)) => *value as f32, Some(Value::U64(value)) => *value as f32, _ => default }
++}
++
++fn integer(value: Option<&Value>, default: i64) -> i64 {
++    match value { Some(Value::I64(value)) => *value, Some(Value::U64(value)) => i64::try_from(*value).unwrap_or(i64::MAX), _ => default }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn audition_and_runtime_use_identical_spatial_result() {
++        let listener = engine::audio::AudioListenerPose { position: [1.0, 0.0, 0.0], right: [1.0, 0.0, 0.0] };
++        let emitter = engine::audio::AudioEmitterPose { position: [-2.0, 0.0, 1.0] };
++        let settings = engine::audio::AudioVoiceSpatialSettings { volume: 0.75, spatial_blend: 0.8, min_distance: 1.0, max_distance: 12.0, rolloff: engine::audio::AudioRolloffMode::Inverse };
++        assert_eq!(audition_spatial_gains(Some(listener), emitter, settings), engine::audio::spatial_voice_gains(Some(listener), emitter, settings));
++    }
++
++    #[test]
++    fn listener_selection_uses_priority_then_stable_id() {
++        let mut scene = AuthoringScene::new();
++        let listener_type = ComponentTypeId::new(engine::scene_bridge::AUDIO_LISTENER_COMPONENT);
++        let high_a = EntityId::generate();
++        let high_b = EntityId::generate();
++        let low = EntityId::generate();
++        let expected = if high_a.as_str() < high_b.as_str() { high_a.clone() } else { high_b.clone() };
++        let mut transaction = engine_authoring::Transaction::begin(&scene);
++        for (id, priority) in [(high_a, 7_i64), (high_b, 7_i64), (low, 3_i64)] {
++            transaction.apply(AuthoringCommand::CreateEntity { id: id.clone(), name: "listener".to_owned(), parent: None });
++            transaction.apply(AuthoringCommand::AddComponent {
++                entity: id,
++                component_type: listener_type.clone(),
++                value: Value::Object(std::collections::BTreeMap::from([
++                    ("enabled".to_owned(), Value::Bool(true)),
++                    ("priority".to_owned(), Value::I64(priority)),
++                ])),
++            });
++        }
++        transaction.commit(&mut scene).expect("listener fixture must commit");
++        assert_eq!(active_game_listener(&scene), Some(expected));
++    }
++}
+diff --git a/crates/editor/src/ui/inspector/entity_panel.rs b/crates/editor/src/ui/inspector/entity_panel.rs
+index 148ead51859c0a9e9c6a002b9105538e646adc63..5f4dc51ea3bc4b2a4d50c5d029b9c06a127a0237 100644
+--- a/crates/editor/src/ui/inspector/entity_panel.rs
++++ b/crates/editor/src/ui/inspector/entity_panel.rs
+@@ -476,6 +476,7 @@ impl EditorApp {
+                     upsert_property_value(&mut edited_value, &pending.path, pending.value.clone());
+                 }
+             let mut edit = None;
++            let mut audio_action = None;
+             let game_display_name = self
+                 .game_module
+                 .as_ref()
+@@ -519,6 +520,12 @@ impl EditorApp {
+                             &mut edited_value,
+                             &mut animation_asset_action,
+                         );
++                        audio_action = show_audio_component_extras(
++                            ui,
++                            component_type,
++                            &edited_value,
++                            &self.audio_audition,
++                        );
+                         if component_type.as_str()
+                             == engine::scene_bridge::SKINNED_MODEL_COMPONENT
+                         {
+@@ -640,6 +647,9 @@ impl EditorApp {
+                     }
+                 }
+             });
++            if let Some(action) = audio_action {
++                self.handle_audio_inspector_action(&selected, &edited_value, action);
++            }
+             if let Some(edit) = edit {
+                 self.apply_component_edit(selected.clone(), component_type.clone(), value, edit);
+             }
+diff --git a/crates/editor/src/ui/mod.rs b/crates/editor/src/ui/mod.rs
+index 44c36d213061d79b5d57edab61f12dfcf880e3b2..2a04fc82a30ebb56d0712b372ddb7693394898b7 100644
+--- a/crates/editor/src/ui/mod.rs
++++ b/crates/editor/src/ui/mod.rs
+@@ -25,7 +25,8 @@ use crate::runtime::{
+     RuntimeDiagnosticKind, RuntimeInputDebugSnapshot, RuntimePlayState,
+ };
+ use crate::scene_view::{
+-    GizmoEdit, GizmoMode, GizmoSpace, SceneComponentPreview, SceneUiNodeSelection, SceneView,
++    AudioDistanceGizmoEdit, GizmoEdit, GizmoMode, GizmoSpace, SceneComponentPreview,
++    SceneUiNodeSelection, SceneView,
+ };
+ use crate::session::{EditorPersistError, EditorSession, GraphNodeInsertKind};
+ use crate::session::{SceneAlignment, SceneAxis};
+@@ -47,6 +48,7 @@ use std::{
+     path::{Path, PathBuf},
+ };
+ mod animation_graph_parameters;
++mod audio_authoring;
+ mod behavior_debug;
+ mod animation_preview;
+ mod asset_inspector;
+@@ -87,6 +89,7 @@ struct MaterialTextureChoicesCache {
+ }
+ 
+ use animation_preview::*;
++use audio_authoring::*;
+ use behavior_debug::*;
+ use asset_inspector::*;
+ use assets::*;
+@@ -191,6 +194,8 @@ pub struct EditorApp {
+     hierarchy_filter: String,
+     /// Current editor play mode.
+     editor_mode: EditorMode,
++    /// Transient spatial-audio audition backend; never serialized into project data.
++    audio_audition: AudioAuditionState,
+     /// Runtime world owned while Play is active.
+     runtime_state: Option<RuntimePlayState>,
+     /// Transient read-only Behavior Tree live-debug presentation.
+@@ -428,6 +433,7 @@ impl EditorApp {
+             locked_entities: std::collections::BTreeSet::new(),
+             hierarchy_filter: String::new(),
+             editor_mode: EditorMode::Edit,
++            audio_audition: AudioAuditionState::default(),
+             runtime_state: None,
+             behavior_debug: BehaviorTreeDebugState::default(),
+             last_replay: None,
+@@ -517,6 +523,7 @@ impl EditorApp {
+     /// process from one project to another after workspace construction.
+     fn initialize_project_root(&mut self, root: ProjectRoot) {
+         self.flush_all_pending_material_saves();
++        self.audio_audition.reset_project();
+         self.scene_view.clear_project_caches();
+         self.material_scene_preview_deadline = None;
+         self.pending_material_saves.clear();
+@@ -644,6 +651,8 @@ impl Default for EditorApp {
+ 
+ impl eframe::App for EditorApp {
+     fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
++        self.audio_audition.poll();
++        self.update_audio_audition();
+         // The UI Builder resolves image sources and offers texture choices
+         // from transient state; refreshing here keeps it in sync with the
+         // open project and manifest without threading them through every
+diff --git a/crates/editor/src/ui/viewport.rs b/crates/editor/src/ui/viewport.rs
+index a83479d588097ad9e472bd7e1452d9b4020a1b26..2c8f142594db4972a3defa50399c561d30e12e93 100644
+--- a/crates/editor/src/ui/viewport.rs
++++ b/crates/editor/src/ui/viewport.rs
+@@ -219,6 +219,9 @@ impl EditorApp {
+         if let Some(edit) = output.gizmo_edit {
+             self.apply_scene_gizmo_edit(edit);
+         }
++        if let Some(edit) = output.audio_distance_edit {
++            self.apply_audio_distance_gizmo_edit(edit);
++        }
+         if let (Some(source), Some(position), Some(project_root)) = (
+             self.prefab_placement_source.clone(),
+             output.placement_position,
+@@ -664,6 +667,27 @@ impl EditorApp {
+             .map(|(asset, _)| asset.clone())
+     }
+ 
++    fn apply_audio_distance_gizmo_edit(&mut self, edit: AudioDistanceGizmoEdit) {
++        let Some(entity) = self.selected_entity.clone() else { return; };
++        let component_type = ComponentTypeId::new(engine::scene_bridge::AUDIO_EMITTER_COMPONENT);
++        let Some(Value::Object(mut fields)) = self
++            .session
++            .scene_entity(&entity)
++            .and_then(|item| item.components.get(&component_type).cloned())
++        else { return; };
++        fields.insert(
++            edit.field.field_name().to_owned(),
++            Value::F64(f64::from(edit.distance)),
++        );
++        let result = self.session.set_scene_component_value(
++            entity,
++            component_type,
++            Value::Object(fields),
++        );
++        self.apply_ui_result(result);
++        self.refresh_scene_problems();
++    }
++
+     fn apply_scene_gizmo_edit(&mut self, edit: GizmoEdit) {
+         use crate::gizmo::{apply_rotate_delta, apply_scale_delta, transform_component_type};
+         let Some(sel_id) = self.selected_entity.clone() else {
+diff --git a/crates/engine/src/app.rs b/crates/engine/src/app.rs
+index 442580bff6e8af95e5fd08811ac1a3c38518b50b..a9cf7000a3d5a96b39cf208bd2c330b5f8c42a46 100644
+--- a/crates/engine/src/app.rs
++++ b/crates/engine/src/app.rs
+@@ -13,7 +13,9 @@ use winit::{
+ };
+ 
+ use crate::asset::{AssetServer, Assets};
+-use crate::audio::{game_audio_effect_system, AudioAsset, GameAudioCommandQueue};
++use crate::audio::{
++    game_audio_effect_system, AudioAsset, GameAudioCommandQueue, SpatialAudioRuntime,
++};
+ use crate::camera::{camera_aspect_system, ViewportSize};
+ use crate::game_module::{
+     GameComponentDefaults, GameModule, GameModuleResource, GameModuleRunError, GameSystemSchedule,
+@@ -100,6 +102,7 @@ impl App {
+         ecs.insert_resource(Assets::<Material>::default());
+         ecs.insert_resource(Assets::<AudioAsset>::default());
+         ecs.insert_resource(GameAudioCommandQueue::default());
++        ecs.insert_resource(SpatialAudioRuntime::default());
+         ecs.insert_resource(Assets::<std::sync::Arc<Texture>>::default());
+         ecs.insert_resource(AssetServer::default());
+         ecs.insert_resource(AmbientLight::default());
+diff --git a/crates/engine/src/audio.rs b/crates/engine/src/audio.rs
+index 2a13a1a2f63aec8e9ef70eb08226438b222c86a5..616558e09877f5199d6a97352a290a4e50874e2a 100644
+--- a/crates/engine/src/audio.rs
++++ b/crates/engine/src/audio.rs
+@@ -2,11 +2,232 @@
+ 
+ pub use engine_platform::audio::*;
+ 
+-use std::collections::VecDeque;
++use std::collections::{HashMap, HashSet, VecDeque};
+ 
+ use crate::asset::{AssetManifest, AssetServer, Assets};
++use crate::transform::GlobalTransform;
+ use engine_authoring::{AssetId, StableId};
+-use engine_ecs::{Res, ResMut};
++use engine_ecs::{Entity, Query, Res, ResMut};
++pub use engine_platform::spatial_audio::{
++    AudioEmitterPose, AudioListenerPose, AudioVoiceSpatialSettings,
++};
++use engine_platform::spatial_audio::spatial_stereo_gains;
++
++/// Validated spatial policy for one project Rust sound request.
++#[derive(Debug, Clone, Copy, PartialEq)]
++pub(crate) struct GameSpatialAudioOptions {
++    pub(crate) volume: f32,
++    pub(crate) spatial_blend: f32,
++    pub(crate) min_distance: f32,
++    pub(crate) max_distance: f32,
++    pub(crate) rolloff: AudioRolloffMode,
++    pub(crate) looping: bool,
++}
++
++impl GameSpatialAudioOptions {
++    fn settings(self) -> AudioVoiceSpatialSettings {
++        AudioVoiceSpatialSettings {
++            volume: self.volume,
++            spatial_blend: self.spatial_blend,
++            min_distance: self.min_distance,
++            max_distance: self.max_distance,
++            rolloff: self.rolloff,
++        }
++    }
++}
++
++#[derive(Debug, Clone, Copy)]
++struct GameSpatialVoice {
++    source: Entity,
++    voice_id: AudioVoiceId,
++    options: GameSpatialAudioOptions,
++}
++
++/// Process-local ownership and copied world-space state for spatial audio.
++///
++/// Runtime entity and backend voice identities never cross the authoring or
++/// project-Rust boundaries. Listener and emitter poses are rebuilt from the
++/// current ECS world after transform propagation.
++#[derive(Debug, Default)]
++pub(crate) struct SpatialAudioRuntime {
++    listener: Option<AudioListenerPose>,
++    poses: HashMap<Entity, AudioEmitterPose>,
++    voices: HashMap<Entity, AudioVoiceId>,
++    game_voices: Vec<GameSpatialVoice>,
++}
++
++/// Copies the current listener selection and entity poses into the neutral audio frame.
++pub(crate) fn spatial_audio_frame_system(
++    mut transforms: Query<&GlobalTransform>,
++    mut listeners: Query<(&AudioListener, &GlobalTransform)>,
++    mut runtime: ResMut<SpatialAudioRuntime>,
++) {
++    runtime.listener = active_listener_pose(&mut listeners);
++    runtime.poses.clear();
++    runtime.poses.extend(
++        (&mut transforms)
++            .into_iter()
++            .map(|(entity, transform)| (entity, emitter_pose(transform))),
++    );
++}
++
++/// Synchronizes authored emitters to managed voices using the current neutral audio frame.
++pub(crate) fn spatial_audio_system(
++    mut emitters: Query<&mut AudioEmitter>,
++    assets: Res<Assets<AudioAsset>>,
++    mut audio: Option<ResMut<AudioSystem>>,
++    mut runtime: ResMut<SpatialAudioRuntime>,
++) {
++    let Some(audio) = audio.as_deref_mut() else {
++        runtime.voices.clear();
++        runtime.game_voices.clear();
++        for (_, emitter) in &mut emitters {
++            if emitter.autoplay && emitter.state() == &AuthoredAudioState::Pending {
++                emitter.mark_playback_unavailable();
++            }
++        }
++        return;
++    };
++
++    let completed = audio
++        .drain_completed_voices()
++        .into_iter()
++        .collect::<HashSet<_>>();
++    runtime
++        .voices
++        .retain(|_, voice_id| !completed.contains(voice_id));
++    runtime
++        .game_voices
++        .retain(|voice| !completed.contains(&voice.voice_id));
++
++    let listener = runtime.listener;
++    let mut live_emitters = HashSet::new();
++    for (entity, emitter) in &mut emitters {
++        let Some(emitter_pose) = runtime.poses.get(&entity).copied() else {
++            continue;
++        };
++        live_emitters.insert(entity);
++        let settings = AudioVoiceSpatialSettings {
++            volume: emitter.volume,
++            spatial_blend: emitter.spatial_blend,
++            min_distance: emitter.min_distance,
++            max_distance: emitter.max_distance,
++            rolloff: emitter.rolloff,
++        };
++        let gains = emitter_gains(listener, emitter_pose, settings);
++
++        if let Some(voice_id) = runtime.voices.get(&entity).copied() {
++            if let Err(error) = audio.update_voice(voice_id, gains) {
++                log::error!("failed to update spatial audio voice for entity {entity}: {error}");
++            }
++            continue;
++        }
++        if !emitter.autoplay || emitter.state() != &AuthoredAudioState::Pending {
++            continue;
++        }
++        let Some(asset) = assets.get(&emitter.clip) else {
++            emitter.mark_playback_failed("decoded clip handle is missing");
++            continue;
++        };
++        match audio.start_voice(asset, gains, emitter.looping) {
++            Ok(voice_id) => {
++                runtime.voices.insert(entity, voice_id);
++                emitter.mark_playback_started();
++            }
++            Err(error) => emitter.mark_playback_failed(error.to_string()),
++        }
++    }
++
++    let stale_entities = runtime
++        .voices
++        .keys()
++        .filter(|entity| !live_emitters.contains(entity))
++        .copied()
++        .collect::<Vec<_>>();
++    for entity in stale_entities {
++        if let Some(voice_id) = runtime.voices.remove(&entity)
++            && let Err(error) = audio.stop_voice(voice_id)
++        {
++            log::error!("failed to stop stale spatial audio voice for entity {entity}: {error}");
++        }
++    }
++}
++
++fn active_listener_pose(
++    listeners: &mut Query<(&AudioListener, &GlobalTransform)>,
++) -> Option<AudioListenerPose> {
++    let mut selected: Option<(i64, Entity, AudioListenerPose)> = None;
++    for (entity, (listener, transform)) in listeners {
++        if !listener.enabled {
++            continue;
++        }
++        let pose = listener_pose(transform);
++        let should_select = match selected.as_ref() {
++            Some((priority, selected_entity, _)) => {
++                listener.priority > *priority
++                    || (listener.priority == *priority && entity < *selected_entity)
++            }
++            None => true,
++        };
++        if should_select {
++            selected = Some((listener.priority, entity, pose));
++        }
++    }
++    selected.map(|(_, _, pose)| pose)
++}
++
++fn listener_pose(transform: &GlobalTransform) -> AudioListenerPose {
++    let matrix = transform.matrix();
++    AudioListenerPose {
++        position: matrix.col(3).truncate().to_array(),
++        right: matrix.col(0).truncate().to_array(),
++    }
++}
++
++fn emitter_pose(transform: &GlobalTransform) -> AudioEmitterPose {
++    AudioEmitterPose {
++        position: transform.matrix().col(3).truncate().to_array(),
++    }
++}
++
++/// Evaluates one voice using the same production spatial path used by ECS synchronization.
++///
++/// Editor audition calls this neutral composition helper instead of maintaining
++/// a second spatial implementation. A missing listener preserves only the
++/// authored non-spatial remainder.
++pub fn spatial_voice_gains(
++    listener: Option<AudioListenerPose>,
++    emitter: AudioEmitterPose,
++    settings: AudioVoiceSpatialSettings,
++) -> StereoGains {
++    emitter_gains(listener, emitter, settings)
++}
++
++fn emitter_gains(
++    listener: Option<AudioListenerPose>,
++    emitter: AudioEmitterPose,
++    settings: AudioVoiceSpatialSettings,
++) -> StereoGains {
++    match listener {
++        Some(listener) => spatial_stereo_gains(listener, emitter, settings),
++        None => {
++            let volume = finite_unit(settings.volume);
++            let non_spatial = 1.0 - finite_unit(settings.spatial_blend);
++            StereoGains {
++                left: volume * non_spatial,
++                right: volume * non_spatial,
++            }
++        }
++    }
++}
++
++fn finite_unit(value: f32) -> f32 {
++    if value.is_finite() {
++        value.clamp(0.0, 1.0)
++    } else {
++        0.0
++    }
++}
+ 
+ /// Maximum pending project-Rust audio requests.
+ pub const MAX_GAME_AUDIO_COMMANDS: usize = 256;
+@@ -15,6 +236,11 @@ pub const MAX_GAME_AUDIO_COMMANDS: usize = 256;
+ #[derive(Debug, Clone, PartialEq)]
+ pub(crate) enum GameAudioCommand {
+     PlaySoundEffect { asset_id: String },
++    PlaySpatialSoundEffect {
++        asset_id: String,
++        source: Entity,
++        options: GameSpatialAudioOptions,
++    },
+     PlayBackgroundMusic { asset_id: String, fade_seconds: f32 },
+     StopBackgroundMusic,
+     SetMasterVolume(f32),
+@@ -45,11 +271,37 @@ impl GameAudioCommandQueue {
+ /// Resolves and applies queued project-Rust audio requests.
+ pub(crate) fn game_audio_effect_system(
+     mut queue: ResMut<GameAudioCommandQueue>,
++    mut runtime: ResMut<SpatialAudioRuntime>,
+     mut audio_system: Option<ResMut<AudioSystem>>,
+     mut asset_server: Option<ResMut<AssetServer>>,
+     manifest: Option<Res<AssetManifest>>,
+     mut audio_assets: Option<ResMut<Assets<AudioAsset>>>,
+ ) {
++    if let Some(audio) = audio_system.as_deref_mut() {
++        let SpatialAudioRuntime {
++            listener,
++            poses,
++            game_voices,
++            ..
++        } = &mut *runtime;
++        let listener = *listener;
++        game_voices.retain(|voice| {
++            let Some(emitter) = poses.get(&voice.source).copied() else {
++                if let Err(error) = audio.stop_voice(voice.voice_id) {
++                    log::error!("failed to stop stale project spatial voice: {error}");
++                }
++                return false;
++            };
++            let gains = emitter_gains(listener, emitter, voice.options.settings());
++            if let Err(error) = audio.update_voice(voice.voice_id, gains) {
++                log::error!("failed to update project spatial voice: {error}");
++            }
++            true
++        });
++    } else {
++        runtime.game_voices.clear();
++    }
++
+     for command in queue.commands.drain(..) {
+         let result = match command {
+             GameAudioCommand::StopBackgroundMusic => {
+@@ -73,6 +325,37 @@ pub(crate) fn game_audio_effect_system(
+                 manifest.as_deref(),
+                 audio_assets.as_deref_mut(),
+             ),
++            GameAudioCommand::PlaySpatialSoundEffect {
++                asset_id,
++                source,
++                options,
++            } => {
++                let Some(emitter) = runtime.poses.get(&source).copied() else {
++                    log::warn!("project Rust spatial audio source {source} has no GlobalTransform");
++                    continue;
++                };
++                let gains = emitter_gains(runtime.listener, emitter, options.settings());
++                match resolve_and_start_spatial(
++                    &asset_id,
++                    gains,
++                    options.looping,
++                    audio_system.as_deref_mut(),
++                    asset_server.as_deref_mut(),
++                    manifest.as_deref(),
++                    audio_assets.as_deref_mut(),
++                ) {
++                    Some(Ok(voice_id)) => {
++                        runtime.game_voices.push(GameSpatialVoice {
++                            source,
++                            voice_id,
++                            options,
++                        });
++                        Some(Ok(()))
++                    }
++                    Some(Err(error)) => Some(Err(error)),
++                    None => None,
++                }
++            }
+             GameAudioCommand::PlayBackgroundMusic {
+                 asset_id,
+                 fade_seconds,
+@@ -96,6 +379,36 @@ pub(crate) fn game_audio_effect_system(
+     }
+ }
+ 
++fn resolve_and_start_spatial(
++    asset_id: &str,
++    gains: StereoGains,
++    looping: bool,
++    audio: Option<&mut AudioSystem>,
++    server: Option<&mut AssetServer>,
++    manifest: Option<&AssetManifest>,
++    assets: Option<&mut Assets<AudioAsset>>,
++) -> Option<Result<AudioVoiceId, AudioError>> {
++    let stable = StableId::new(asset_id);
++    let Ok(asset_id) = AssetId::from_stable_id(stable) else {
++        log::error!("project Rust audio asset ID `{asset_id}` became invalid after preflight");
++        return None;
++    };
++    let entry = manifest?.get(&asset_id)?;
++    let server = server?;
++    let assets = assets?;
++    let audio = audio?;
++    let handle = match server.load_audio(asset_id, &entry.path, assets) {
++        Ok(handle) => handle,
++        Err(error) => {
++            return Some(Err(AudioError::Playback {
++                message: error.to_string(),
++            }));
++        }
++    };
++    let asset = assets.get(&handle)?;
++    Some(audio.start_voice(asset, gains, looping))
++}
++
+ fn resolve_and_play(
+     asset_id: &str,
+     fade_seconds: Option<f32>,
+@@ -144,6 +457,7 @@ mod tests {
