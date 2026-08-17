@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/engine/src/components.rs","old":"    SceneBridgeError, ANIMATION_CONTROLLER_COMPONENT, AUDIO_EMITTER_COMPONENT,","new":"    SceneBridgeError, ANIMATION_CONTROLLER_COMPONENT, AUDIO_EMITTER_COMPONENT,\n    AUDIO_LISTENER_COMPONENT,"}

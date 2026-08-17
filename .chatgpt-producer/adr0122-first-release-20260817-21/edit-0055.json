@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/scene_view.rs","old":"            picked_entity,\n            picked_ui_node,\n            gizmo_edit,\n            placement_position,","new":"            picked_entity,\n            picked_ui_node,\n            gizmo_edit,\n            audio_distance_edit,\n            placement_position,"}
