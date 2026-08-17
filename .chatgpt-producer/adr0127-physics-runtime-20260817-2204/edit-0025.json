@@ -1,0 +1,1 @@
+{"operation":"create_text","path":"crates/engine/src/native_2d.rs","content":"//! Cross-domain Native 2D physics composition (ADR 0127).\n\npub use engine_physics::native_2d::*;\n\n// CHATGPT_NATIVE2D_ENGINE_BODY\n"}
