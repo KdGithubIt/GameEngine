@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/render-runtime/src/lod.rs","old":"pub fn lod_selection_system(\n    cameras: Query<(&Camera3D, &GlobalTransform)>,","new":"pub fn lod_selection_system(\n    camera_override: Option<engine_ecs::Res<GameCameraSelectionOverride>>,\n    cameras: Query<(&Camera3D, &GlobalTransform)>,"}
