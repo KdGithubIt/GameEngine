@@ -279,6 +279,8 @@ pub struct EditorApp {
     game_build: GameBuildManager,
     /// Background production navigation bake and cancellation channel.
     navigation_bake: NavigationBakeManager,
+    /// Dedicated production navigation bake, profile, status, and path-test UI.
+    navigation_workspace: NavigationWorkspaceUi,
     /// Latest successfully loaded project game-module generation.
     game_module: Option<Arc<engine::game_module::GameModule>>,
     /// Starts Play automatically after a requested prerequisite build succeeds.
@@ -464,6 +466,7 @@ impl EditorApp {
             game_build_problems: Vec::new(),
             game_build: GameBuildManager::default(),
             navigation_bake: NavigationBakeManager::default(),
+            navigation_workspace: NavigationWorkspaceUi::default(),
             game_module: None,
             play_after_game_build: false,
             game_build_requested_after_edit: false,
@@ -890,6 +893,7 @@ impl eframe::App for EditorApp {
         self.show_material_editor_window(ui.ctx());
         self.show_animation_set_editor_window(ui.ctx());
         self.show_project_settings_window(ui.ctx());
+        self.show_navigation_window(ui.ctx());
         self.show_texture_preview_window(ui.ctx());
         self.show_skeleton_bind_report_window(ui.ctx());
         self.show_retarget_map_editor_window(ui.ctx());

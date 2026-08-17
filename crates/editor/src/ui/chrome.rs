@@ -459,6 +459,16 @@ impl EditorApp {
                 }
                 if ui
                     .add_enabled(
+                        self.session.scene().is_some() && !self.is_playing(),
+                        egui::Button::new("Navigation..."),
+                    )
+                    .clicked()
+                {
+                    self.open_navigation_window();
+                    ui.close();
+                }
+                if ui
+                    .add_enabled(
                         self.session.scene().is_some()
                             && !self.is_playing()
                             && !self.navigation_bake.is_running(),
