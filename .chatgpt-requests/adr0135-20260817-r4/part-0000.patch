@@ -1,0 +1,1398 @@
+diff --git a/crates/editor/src/agent_host.rs b/crates/editor/src/agent_host.rs
+index 9b01a38699c7a5f4685ab1e0eb728c654a492e7b..df8f7711a7284a49e39dde4f5d96866a61441353 100644
+--- a/crates/editor/src/agent_host.rs
++++ b/crates/editor/src/agent_host.rs
+@@ -311,6 +311,90 @@ impl Default for AgentProposal {
+     }
+ }
+ 
++
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++pub(crate) struct AuthoritativeStateSnapshot {
++    pub(crate) document_revision: u64,
++    pub(crate) game_code_generation: u64,
++    pub(crate) document_path: Option<PathBuf>,
++    pub(crate) document_dirty: bool,
++}
++
++#[derive(Debug, Clone, Serialize, Deserialize)]
++pub(crate) struct AgentWorkingState {
++    pub(crate) implementation_objective: String,
++    pub(crate) architecture_constraints: Vec<String>,
++    pub(crate) ownership_crate_decisions: Vec<String>,
++    pub(crate) target_files_documents: Vec<String>,
++    pub(crate) concrete_edits: Vec<String>,
++    pub(crate) typed_mcp_operations: Vec<String>,
++    pub(crate) tests: Vec<String>,
++    pub(crate) assumptions: Vec<String>,
++    pub(crate) replan_conditions: Vec<String>,
++    pub(crate) relevant_source_provenance: Vec<String>,
++    pub(crate) current_code_workspace_diff: Vec<String>,
++    pub(crate) validation_results: Vec<String>,
++    pub(crate) observed_runtime_state: Vec<String>,
++    pub(crate) open_problems: Vec<String>,
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub(crate) authoritative_snapshot_before_interrupt: Option<AuthoritativeStateSnapshot>,
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub(crate) interrupted_from: Option<AgentRunState>,
++}
++
++impl AgentWorkingState {
++    fn from_proposal(proposal: &AgentProposal) -> Self {
++        let mut target_files_documents = proposal.planned_project_changes.clone();
++        target_files_documents.extend(proposal.planned_code_changes.iter().cloned());
++        target_files_documents.extend(proposal.planned_assets.iter().cloned());
++        Self {
++            implementation_objective: proposal.goal.clone(),
++            architecture_constraints: proposal.requirements.clone(),
++            ownership_crate_decisions: Vec::new(),
++            target_files_documents,
++            concrete_edits: proposal.planned_code_changes.clone(),
++            typed_mcp_operations: proposal.planned_project_changes.clone(),
++            tests: proposal.validation_plan.clone(),
++            assumptions: proposal.assumptions.clone(),
++            replan_conditions: proposal.acceptance_criteria.clone(),
++            relevant_source_provenance: Vec::new(),
++            current_code_workspace_diff: Vec::new(),
++            validation_results: Vec::new(),
++            observed_runtime_state: Vec::new(),
++            open_problems: Vec::new(),
++            authoritative_snapshot_before_interrupt: None,
++            interrupted_from: None,
++        }
++    }
++}
++
++impl Default for AgentWorkingState {
++    fn default() -> Self {
++        Self::from_proposal(&AgentProposal::default())
++    }
++}
++
++#[derive(Debug, Clone, Default)]
++pub(crate) struct AgentWorkingStateUpdate {
++    pub(crate) architecture_constraints: Vec<String>,
++    pub(crate) ownership_crate_decisions: Vec<String>,
++    pub(crate) target_files_documents: Vec<String>,
++    pub(crate) concrete_edits: Vec<String>,
++    pub(crate) typed_mcp_operations: Vec<String>,
++    pub(crate) tests: Vec<String>,
++    pub(crate) assumptions: Vec<String>,
++    pub(crate) replan_conditions: Vec<String>,
++    pub(crate) relevant_source_provenance: Vec<String>,
++    pub(crate) open_problems: Vec<String>,
++}
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub(crate) enum ResumeDisposition {
++    ResumedUnchanged,
++    ReinspectRequired,
++    RepairRequired,
++}
++
+ #[allow(dead_code)]
+ #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+ #[serde(rename_all = "snake_case")]
+@@ -319,6 +403,8 @@ pub(crate) enum AgentRunState {
+     Planning,
+     Executing,
+     AwaitingUser,
++    /// Explicit resumable control state for manual editing; not a product question.
++    InterruptedForEditing,
+     Validating,
+     Playtesting,
+     Evaluating,
+@@ -354,6 +440,9 @@ pub(crate) enum AgentEventKind {
+     Validation,
+     Playtest,
+     CapturedFrame,
++    EditingInterrupted,
++    EditingResumed,
++    ResourcePolicy,
+     Cancellation,
+     Failure,
+     Completion,
+@@ -593,6 +682,9 @@ pub(crate) struct AgentRun {
+     pub(crate) state: AgentRunState,
+     pub(crate) events: Vec<AgentEvent>,
+     pub(crate) completion: CompletionReport,
++    /// Provider-independent semantic working set retained independently of model residency.
++    #[serde(default)]
++    pub(crate) working_state: AgentWorkingState,
+     #[serde(default)]
+     pub(crate) validation_attempts: Vec<ManagedValidationAttempt>,
+     #[serde(default)]
+@@ -774,6 +866,7 @@ impl AgentHost {
+             state: AgentRunState::Inspecting,
+             events: Vec::new(),
+             completion: CompletionReport::default(),
++            working_state: AgentWorkingState::from_proposal(&session.proposal),
+             validation_attempts: Vec::new(),
+             code_checkpoints: Vec::new(),
+             audit: AgentRunAudit::default(),
+@@ -832,6 +925,134 @@ impl AgentHost {
+         self.persist_session(&session_id)
+     }
+ 
++    pub(crate) fn record_working_state_update(
++        &mut self,
++        run_id: &str,
++        update: AgentWorkingStateUpdate,
++    ) -> Result<(), AgentHostError> {
++        let (session_id, _) = self.run_location(run_id)?;
++        let run = self.run_mut_in_session(&session_id, run_id)?;
++        if !update.architecture_constraints.is_empty() {
++            run.working_state.architecture_constraints = update.architecture_constraints;
++        }
++        if !update.ownership_crate_decisions.is_empty() {
++            run.working_state.ownership_crate_decisions = update.ownership_crate_decisions;
++        }
++        if !update.target_files_documents.is_empty() {
++            run.working_state.target_files_documents = update.target_files_documents;
++        }
++        if !update.concrete_edits.is_empty() {
++            run.working_state.concrete_edits = update.concrete_edits;
++        }
++        if !update.typed_mcp_operations.is_empty() {
++            run.working_state.typed_mcp_operations = update.typed_mcp_operations;
++        }
++        if !update.tests.is_empty() {
++            run.working_state.tests = update.tests;
++        }
++        if !update.assumptions.is_empty() {
++            run.working_state.assumptions = update.assumptions;
++        }
++        if !update.replan_conditions.is_empty() {
++            run.working_state.replan_conditions = update.replan_conditions;
++        }
++        if !update.relevant_source_provenance.is_empty() {
++            run.working_state.relevant_source_provenance = update.relevant_source_provenance;
++        }
++        if !update.open_problems.is_empty() {
++            run.working_state.open_problems = update.open_problems;
++        }
++        push_event(
++            run,
++            AgentEventKind::SemanticProgress,
++            "Provider-independent implementation working state was updated.".to_owned(),
++        );
++        self.persist_session(&session_id)
++    }
++
++    /// Suspends one non-terminal run for manual editing without cancelling it.
++    pub(crate) fn interrupt_for_editing(
++        &mut self,
++        run_id: &str,
++        snapshot: AuthoritativeStateSnapshot,
++    ) -> Result<(), AgentHostError> {
++        let (session_id, current) = self.run_location(run_id)?;
++        if current == AgentRunState::InterruptedForEditing {
++            return Ok(());
++        }
++        if !valid_transition(current, AgentRunState::InterruptedForEditing) {
++            return Err(AgentHostError::InvalidTransition {
++                from: current,
++                to: AgentRunState::InterruptedForEditing,
++            });
++        }
++        let run = self.run_mut_in_session(&session_id, run_id)?;
++        run.working_state.interrupted_from = Some(current);
++        run.working_state.authoritative_snapshot_before_interrupt = Some(snapshot);
++        run.state = AgentRunState::InterruptedForEditing;
++        push_event(
++            run,
++            AgentEventKind::EditingInterrupted,
++            "AI inference paused for manual editing; the run remains resumable.".to_owned(),
++        );
++        self.persist_session(&session_id)
++    }
++
++    /// Resumes an editing-interrupted run only after authoritative state is re-inspected.
++    pub(crate) fn resume_after_editing(
++        &mut self,
++        run_id: &str,
++        current_snapshot: AuthoritativeStateSnapshot,
++    ) -> Result<ResumeDisposition, AgentHostError> {
++        let (session_id, current) = self.run_location(run_id)?;
++        if current != AgentRunState::InterruptedForEditing {
++            return Err(AgentHostError::InvalidTransition {
++                from: current,
++                to: AgentRunState::Inspecting,
++            });
++        }
++        let run = self.run_mut_in_session(&session_id, run_id)?;
++        let previous = run
++            .working_state
++            .interrupted_from
++            .unwrap_or(AgentRunState::Inspecting);
++        let unchanged = run
++            .working_state
++            .authoritative_snapshot_before_interrupt
++            .as_ref()
++            .is_some_and(|snapshot| snapshot == &current_snapshot);
++        let (next, disposition) = if unchanged {
++            (previous, ResumeDisposition::ResumedUnchanged)
++        } else if matches!(
++            previous,
++            AgentRunState::Executing
++                | AgentRunState::Validating
++                | AgentRunState::Playtesting
++                | AgentRunState::Evaluating
++                | AgentRunState::Repairing
++        ) {
++            (AgentRunState::Repairing, ResumeDisposition::RepairRequired)
++        } else {
++            (AgentRunState::Inspecting, ResumeDisposition::ReinspectRequired)
++        };
++        run.working_state.authoritative_snapshot_before_interrupt = None;
++        run.working_state.interrupted_from = None;
++        run.state = next;
++        push_event(
++            run,
++            AgentEventKind::EditingResumed,
++            if unchanged {
++                format!("Authoritative state is unchanged; resuming {next:?}.")
++            } else {
++                format!(
++                    "Authoritative state changed during manual editing; stale assumptions were rejected and the run returns to {next:?}."
++                )
++            },
++        );
++        self.persist_session(&session_id)?;
++        Ok(disposition)
++    }
++
+     pub(crate) fn record_event(
+         &mut self,
+         run_id: &str,
+@@ -1764,6 +1985,21 @@ fn valid_transition(from: AgentRunState, to: AgentRunState) -> bool {
+     if matches!(to, AgentRunState::Failed | AgentRunState::Cancelled) {
+         return true;
+     }
++    if to == AgentRunState::InterruptedForEditing {
++        return from != AgentRunState::InterruptedForEditing;
++    }
++    if from == AgentRunState::InterruptedForEditing {
++        return matches!(
++            to,
++            AgentRunState::Inspecting
++                | AgentRunState::Planning
++                | AgentRunState::Executing
++                | AgentRunState::Validating
++                | AgentRunState::Playtesting
++                | AgentRunState::Evaluating
++                | AgentRunState::Repairing
++        );
++    }
+     matches!(
+         (from, to),
+         (AgentRunState::Inspecting, AgentRunState::Planning)
+diff --git a/crates/editor/src/ai_studio.rs b/crates/editor/src/ai_studio.rs
+index 69fcd694311d3b2e24fe9c794e26f073f4a7bede..4b2ce292b2b9c989c0b85bd5929cd11cea7af0c2 100644
+--- a/crates/editor/src/ai_studio.rs
++++ b/crates/editor/src/ai_studio.rs
+@@ -6,13 +6,19 @@
+ 
+ use crate::agent_host::{
+     project_storage_key, AgentCapability, AgentEventKind, AgentHost, AgentProposal, AgentRunState,
+-    ApprovalScope, CodeChange, CodeWorkspace, CompletionStatus, ConversationRole,
+-    ExternalAgentProcess, ManagedValidationAttemptStatus, PermissionCheck, ProcessStream,
++    ApprovalScope, AuthoritativeStateSnapshot, CodeChange, CodeWorkspace, CompletionStatus,
++    ConversationRole, ExternalAgentProcess, ManagedValidationAttemptStatus, PermissionCheck,
++    ProcessStream, ResumeDisposition,
+ };
+ use crate::native_agent::{
+     LocalModelConfig, ModelCapabilityProfile, NativeAnswer, NativeQuestionTask, QuestionMessage,
+     QuestionRole, DEFAULT_LOCAL_MODEL_ENDPOINT,
+ };
++use crate::resource_arbitration::{
++    classify_workload, resolve_resource_plan, CapabilityAvailability, InferenceWorkload,
++    MemoryPressure, PresentationPosture, QualityPreference, ReclaimLevel, ResourcePlan,
++    WorkloadSignals,
++};
+ use crate::remote_ai_studio::{
+     events_json, frame_bytes, sessions_json, snapshot_json, RemoteAiStudioRequest,
+     RemoteAiStudioResponse, RemoteAiStudioServer, RemoteOperation, RemotePermissionScope,
+@@ -20,14 +26,96 @@ use crate::remote_ai_studio::{
+ use eframe::egui;
+ use engine::{InputCommand, KeyCode, MouseButton};
+ use engine_authoring::ProjectRoot;
+-use serde::Deserialize;
++use serde::{Deserialize, Serialize};
+ use std::collections::VecDeque;
+ use std::ffi::{OsStr, OsString};
++use std::fs;
+ use std::path::PathBuf;
+ 
+ const PROVIDER_EVENT_PREFIX: &str = "GAMEENGINE_AGENT_EVENT ";
+ const MAX_AUTONOMOUS_SOURCE_REPAIRS: usize = 2;
+ const MAX_AUTONOMOUS_RUNTIME_REPAIRS: usize = 2;
++const AI_STUDIO_PREFERENCES_SCHEMA_VERSION: u32 = 1;
++
++#[derive(Debug, Clone, Serialize, Deserialize)]
++struct AiStudioPreferences {
++    schema_version: u32,
++    #[serde(default)]
++    quality_preference: QualityPreference,
++    #[serde(default = "default_local_model_endpoint")]
++    local_model_endpoint: String,
++    #[serde(default)]
++    local_model_name: String,
++}
++
++impl Default for AiStudioPreferences {
++    fn default() -> Self {
++        Self {
++            schema_version: AI_STUDIO_PREFERENCES_SCHEMA_VERSION,
++            quality_preference: QualityPreference::Auto,
++            local_model_endpoint: DEFAULT_LOCAL_MODEL_ENDPOINT.to_owned(),
++            local_model_name: String::new(),
++        }
++    }
++}
++
++fn default_local_model_endpoint() -> String {
++    DEFAULT_LOCAL_MODEL_ENDPOINT.to_owned()
++}
++
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct AiStudioAuthoritativeState {
++    /// Unique Editor document revision observed at the resource-control boundary.
++    pub document_revision: u64,
++    /// Monotonic project game-code generation observed at the same boundary.
++    pub game_code_generation: u64,
++    /// Current document path, when a document is open.
++    pub document_path: Option<PathBuf>,
++    /// Whether the authoritative document has unsaved changes.
++    pub document_dirty: bool,
++}
++
++/// Renderer-facing reclaim request that carries no agent/model identity.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum AiStudioReclaimLevel {
++    /// Keep current presentation residency.
++    None,
++    /// Release view-local and transient recreatable presentation resources.
++    Transient,
++    /// Release additional reusable but recreatable presentation residency.
++    Aggressive,
++}
++
++impl From<ReclaimLevel> for AiStudioReclaimLevel {
++    fn from(value: ReclaimLevel) -> Self {
++        match value {
++            ReclaimLevel::None => Self::None,
++            ReclaimLevel::Transient => Self::Transient,
++            ReclaimLevel::Aggressive => Self::Aggressive,
++        }
++    }
++}
++
++impl From<AiStudioReclaimLevel> for ReclaimLevel {
++    fn from(value: AiStudioReclaimLevel) -> Self {
++        match value {
++            AiStudioReclaimLevel::None => Self::None,
++            AiStudioReclaimLevel::Transient => Self::Transient,
++            AiStudioReclaimLevel::Aggressive => Self::Aggressive,
++        }
++    }
++}
++
++impl From<AiStudioAuthoritativeState> for AuthoritativeStateSnapshot {
++    fn from(value: AiStudioAuthoritativeState) -> Self {
++        Self {
++            document_revision: value.document_revision,
++            game_code_generation: value.game_code_generation,
++            document_path: value.document_path,
++            document_dirty: value.document_dirty,
++        }
++    }
++}
+ 
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+ enum SourceRepairDecision {
+@@ -127,6 +215,12 @@ impl AiStudioConnection {
+ /// Managed Editor-runtime operation requested by AI Studio after authorization.
+ #[derive(Debug, Clone, Copy, PartialEq)]
+ pub enum AiStudioRuntimeAction {
++    /// Suspend optional Editor presentation and release recreatable GPU resources.
++    EnterInferenceFocused { reclaim: AiStudioReclaimLevel },
++    /// Restore normal Editor presentation; completion is reported after one drawn frame.
++    RestoreEditorPresentation,
++    /// Capture current authoritative Editor revision/generation before resuming a run.
++    InspectAuthoritativeState,
+     /// Start the normal Editor Play path for the active project.
+     StartPlaytest,
+     /// Queue one provider-planned command through the normal AI Agent virtual-input source.
+@@ -139,6 +233,14 @@ pub enum AiStudioRuntimeAction {
+ 
+ /// Result of one managed Editor-runtime operation returned to AI Studio.
+ pub enum AiStudioRuntimeResult {
++    /// Optional Editor presentation is suspended at the requested reclaim level.
++    InferenceFocusedEntered { reclaim: AiStudioReclaimLevel },
++    /// Restore was requested and authoritative state was captured before manual editing.
++    EditorRestorePending { state: AiStudioAuthoritativeState },
++    /// A normal Editor frame was drawn after restoration.
++    EditorRestored,
++    /// Current authoritative Editor identity was inspected for Resume.
++    AuthoritativeState(AiStudioAuthoritativeState),
+     /// Play is running and runtime observation is available.
+     PlayStarted,
+     /// Play start is waiting for an engine-managed game-code build.
+@@ -184,9 +286,17 @@ pub struct AiStudioPanel {
+     selected_session: String,
+     proposal_draft: AgentProposal,
+     message_draft: String,
++    preferences_path: PathBuf,
++    quality_preference: QualityPreference,
+     local_model_endpoint: String,
+     local_model_name: String,
++    resolved_workload: InferenceWorkload,
++    resource_plan: ResourcePlan,
++    editing_interrupted: bool,
++    restore_for_editing: bool,
++    interrupt_snapshot: Option<AiStudioAuthoritativeState>,
+     native_question: Option<NativeQuestionTask>,
++    pending_native_question_start: Option<(LocalModelConfig, Vec<QuestionMessage>, String)>,
+     native_question_session: Option<String>,
+     provider_program: String,
+     provider_args: String,
+@@ -220,6 +330,8 @@ impl AiStudioPanel {
+             .join("GameEngine")
+             .join("ai")
+             .join(project_storage_key(project.project_id().as_str(), project.path()));
++        let preferences_path = data_root.join("preferences.json");
++        let preferences = load_ai_studio_preferences(&preferences_path);
+         let mut host = AgentHost::open(project.path().to_path_buf(), data_root)
+             .map_err(|error| error.to_string())?;
+         let selected_session = match host.session_ids().into_iter().next_back() {
+@@ -244,9 +356,22 @@ impl AiStudioPanel {
+             selected_session,
+             proposal_draft,
+             message_draft: String::new(),
+-            local_model_endpoint: DEFAULT_LOCAL_MODEL_ENDPOINT.to_owned(),
+-            local_model_name: String::new(),
++            preferences_path,
++            quality_preference: preferences.quality_preference,
++            local_model_endpoint: preferences.local_model_endpoint,
++            local_model_name: preferences.local_model_name,
++            resolved_workload: InferenceWorkload::InteractiveReasoning,
++            resource_plan: resolve_resource_plan(
++                InferenceWorkload::InteractiveReasoning,
++                preferences.quality_preference,
++                MemoryPressure::Unknown,
++                Default::default(),
++            ),
++            editing_interrupted: false,
++            restore_for_editing: false,
++            interrupt_snapshot: None,
+             native_question: None,
++            pending_native_question_start: None,
+             native_question_session: None,
+             provider_program: String::new(),
+             provider_args: String::new(),
+@@ -290,8 +415,87 @@ impl AiStudioPanel {
+ 
+     /// Records the result of an Editor-owned managed runtime action.
+     pub fn report_runtime_result(&mut self, context: &egui::Context, result: AiStudioRuntimeResult) {
++        match &result {
++            AiStudioRuntimeResult::InferenceFocusedEntered { reclaim } => {
++                self.status = Some(format!(
++                    "InferenceFocused: optional Editor presentation suspended ({reclaim:?} reclaim)."
++                ));
++                if let Some((config, conversation, session_id)) =
++                    self.pending_native_question_start.take()
++                {
++                    self.spawn_native_question(config, conversation, session_id);
++                }
++                return;
++            }
++            AiStudioRuntimeResult::EditorRestorePending { state } => {
++                if self.restore_for_editing {
++                    self.interrupt_snapshot = Some(state.clone());
++                    self.status = Some(
++                        "Restoring Editor presentation before manual editing...".to_owned(),
++                    );
++                } else {
++                    self.status = Some("Restoring Editor presentation after native inference...".to_owned());
++                }
++                return;
++            }
++            AiStudioRuntimeResult::EditorRestored => {
++                if self.restore_for_editing {
++                    if let (Some(run_id), Some(snapshot)) =
++                        (self.active_run_id.clone(), self.interrupt_snapshot.take())
++                    {
++                        if let Err(error) = self
++                            .host
++                            .interrupt_for_editing(&run_id, snapshot.into())
++                        {
++                            self.status = Some(error.to_string());
++                            self.restore_for_editing = false;
++                            return;
++                        }
++                    }
++                    self.editing_interrupted = true;
++                    self.status = Some(
++                        "AI paused for editing. Editor presentation is restored; Resume will re-inspect authoritative state."
++                            .to_owned(),
++                    );
++                } else {
++                    self.status = Some("Editor presentation restored after native inference.".to_owned());
++                }
++                self.restore_for_editing = false;
++                return;
++            }
++            AiStudioRuntimeResult::AuthoritativeState(state) => {
++                if let Some(run_id) = self.active_run_id.clone() {
++                    match self.host.resume_after_editing(&run_id, state.clone().into()) {
++                        Ok(ResumeDisposition::ResumedUnchanged) => {
++                            self.status = Some("Authoritative state is unchanged; the run may resume.".to_owned());
++                        }
++                        Ok(ResumeDisposition::ReinspectRequired) => {
++                            self.status = Some("User edits changed authoritative state; the run returned to inspection.".to_owned());
++                        }
++                        Ok(ResumeDisposition::RepairRequired) => {
++                            self.status = Some("User edits changed acceptance-relevant state; the run returned to repair.".to_owned());
++                        }
++                        Err(error) => {
++                            self.status = Some(error.to_string());
++                            return;
++                        }
++                    }
++                } else {
++                    self.status = Some("Authoritative Editor state re-inspected.".to_owned());
++                }
++                self.editing_interrupted = false;
++                return;
++            }
++            _ => {}
++        }
+         let Some(run_id) = self.active_run_id.clone() else { return; };
+         match result {
++            AiStudioRuntimeResult::InferenceFocusedEntered { .. }
++            | AiStudioRuntimeResult::EditorRestorePending { .. }
++            | AiStudioRuntimeResult::EditorRestored
++            | AiStudioRuntimeResult::AuthoritativeState(_) => unreachable!(
++                "resource-control results are handled before run-scoped runtime results"
++            ),
+             AiStudioRuntimeResult::PlayStarted => {
+                 if self.managed_playtest_started_at.is_none() {
+                     self.managed_playtest_started_at = Some(std::time::Instant::now());
+@@ -721,22 +925,49 @@ impl AiStudioPanel {
+ 
+     fn show_local_model_settings(&mut self, ui: &mut egui::Ui) {
+         egui::CollapsingHeader::new("Local model · read-only questions")
+-            .default_open(false)
++            .default_open(true)
+             .show(ui, |ui| {
++                ui.horizontal_wrapped(|ui| {
++                    ui.label("Quality");
++                    let previous = self.quality_preference;
++                    for quality in QualityPreference::ALL {
++                        ui.selectable_value(
++                            &mut self.quality_preference,
++                            quality,
++                            quality.label(),
++                        );
++                    }
++                    if self.quality_preference != previous {
++                        self.save_preferences();
++                    }
++                });
++                ui.small(
++                    "Quality is a machine-local latency/reasoning preference. It never exposes GPU layers, quantization, token budgets, or VRAM reservations.",
++                );
+                 ui.horizontal(|ui| {
+                     ui.label("Endpoint");
+-                    ui.add(
+-                        egui::TextEdit::singleline(&mut self.local_model_endpoint)
+-                            .desired_width(250.0),
+-                    );
++                    if ui
++                        .add(
++                            egui::TextEdit::singleline(&mut self.local_model_endpoint)
++                                .desired_width(250.0),
++                        )
++                        .changed()
++                    {
++                        self.save_preferences();
++                    }
+                 });
+                 ui.horizontal(|ui| {
+                     ui.label("Installed model");
+-                    ui.add(
+-                        egui::TextEdit::singleline(&mut self.local_model_name)
+-                            .desired_width(250.0)
+-                            .hint_text("model:tag"),
+-                    );
++                    if ui
++                        .add(
++                            egui::TextEdit::singleline(&mut self.local_model_name)
++                                .desired_width(250.0)
++                                .hint_text("model:tag"),
++                        )
++                        .changed()
++                    {
++                        self.save_preferences();
++                    }
+                 });
+                 let profile = LocalModelConfig {
+                     endpoint: self.local_model_endpoint.clone(),
+@@ -744,8 +975,20 @@ impl AiStudioPanel {
+                 }
+                 .capability_profile();
+                 ui.small(model_capability_summary(&profile));
++                ui.small(format!(
++                    "Resource controls: unload/reload {} · GPU residency {} · memory telemetry {}",
++                    capability_label(profile.resource_capabilities.unload_reload),
++                    capability_label(profile.resource_capabilities.gpu_residency),
++                    capability_label(profile.resource_capabilities.backend_memory_telemetry),
++                ));
++                ui.small(format!(
++                    "Resource posture: {:?} · workload {:?} · reclaim {:?}",
++                    self.resource_plan.presentation,
++                    self.resolved_workload,
++                    self.resource_plan.reclaim
++                ));
+                 ui.small(
+-                    "The initial backend accepts loopback HTTP only. Model capabilities stay unverified until GameEngine Agent Benchmark evidence exists; entering a custom installed model does not label it recommended.",
++                    "The initial backend accepts loopback HTTP only. Unsupported controls remain unavailable; exact VRAM and TTFT are never fabricated.",
+                 );
+             });
+     }
+@@ -777,19 +1020,82 @@ impl AiStudioPanel {
+             endpoint: self.local_model_endpoint.clone(),
+             model: self.local_model_name.clone(),
+         };
++        let profile = config.capability_profile();
++        let has_non_trivial_work = !self.proposal_draft.planned_code_changes.is_empty()
++            || !self.proposal_draft.planned_project_changes.is_empty()
++            || !self.proposal_draft.planned_assets.is_empty();
++        self.resolved_workload = classify_workload(WorkloadSignals {
++            strong_reasoning_required: has_non_trivial_work
++                && matches!(
++                    self.quality_preference,
++                    QualityPreference::Balanced | QualityPreference::Deep
++                ),
++            model_judgement_required: true,
++            ..WorkloadSignals::default()
++        });
++        self.resource_plan = resolve_resource_plan(
++            self.resolved_workload,
++            self.quality_preference,
++            MemoryPressure::Unknown,
++            profile.resource_capabilities,
++        );
++        if self.resource_plan.presentation == PresentationPosture::InferenceFocused {
++            self.pending_native_question_start = Some((config, conversation, session_id));
++            self.pending_runtime_action = Some(AiStudioRuntimeAction::EnterInferenceFocused {
++                reclaim: self.resource_plan.reclaim.into(),
++            });
++            self.status = Some(
++                "Preparing InferenceFocused presentation before native inference.".to_owned(),
++            );
++        } else {
++            self.spawn_native_question(config, conversation, session_id);
++        }
++    }
++
++    fn spawn_native_question(
++        &mut self,
++        config: LocalModelConfig,
++        conversation: Vec<QuestionMessage>,
++        session_id: String,
++    ) {
+         match NativeQuestionTask::spawn(config, self.project_root.clone(), conversation) {
+             Ok(task) => {
+                 self.native_question = Some(task);
+                 self.native_question_session = Some(session_id);
+-                self.status = Some(
+-                    "Native read-only question started without acquiring mutation permissions."
+-                        .to_owned(),
+-                );
++                self.status = Some(format!(
++                    "Native inference started with {:?} workload and {:?} quality.",
++                    self.resolved_workload, self.quality_preference
++                ));
+             }
+             Err(error) => self.status = Some(error.to_string()),
+         }
+     }
+ 
++    fn save_preferences(&mut self) {
++        let preferences = AiStudioPreferences {
++            schema_version: AI_STUDIO_PREFERENCES_SCHEMA_VERSION,
++            quality_preference: self.quality_preference,
++            local_model_endpoint: self.local_model_endpoint.clone(),
++            local_model_name: self.local_model_name.clone(),
++        };
++        match serde_json::to_vec_pretty(&preferences) {
++            Ok(bytes) => {
++                if let Some(parent) = self.preferences_path.parent()
++                    && let Err(error) = fs::create_dir_all(parent)
++                {
++                    self.status = Some(format!("Could not save AI Studio preferences: {error}"));
++                    return;
++                }
++                if let Err(error) = fs::write(&self.preferences_path, bytes) {
++                    self.status = Some(format!("Could not save AI Studio preferences: {error}"));
++                }
++            }
++            Err(error) => {
++                self.status = Some(format!("Could not serialize AI Studio preferences: {error}"));
++            }
++        }
++    }
++
+     fn poll_native_question(&mut self, context: &egui::Context) {
+         let Some(task) = self.native_question.as_ref() else {
+             return;
+@@ -799,6 +1105,10 @@ impl AiStudioPanel {
+             return;
+         };
+         self.native_question = None;
++        let restore_after_inference = self.resource_plan.presentation
++            == PresentationPosture::InferenceFocused
++            && !self.editing_interrupted
++            && self.pending_runtime_action.is_none();
+         let session_id = self
+             .native_question_session
+             .take()
+@@ -822,6 +1132,9 @@ impl AiStudioPanel {
+             }
+             Err(error) => self.status = Some(error.to_string()),
+         }
++        if restore_after_inference {
++            self.pending_runtime_action = Some(AiStudioRuntimeAction::RestoreEditorPresentation);
++        }
+     }
+ 
+     fn show_proposal(&mut self, ui: &mut egui::Ui) {
+@@ -884,7 +1197,9 @@ impl AiStudioPanel {
+             "The write-capable Go path launches an external AgentRuntime directly without a shell and injects the immutable proposal plus ephemeral Editor MCP connection. The local question backend above is a separate ModelBackend; a native write-capable tool loop is not enabled by this slice.",
+         );
+         let mut stop_requested = false;
+-        ui.horizontal(|ui| {
++        let mut interrupt_requested = false;
++        let mut resume_requested = false;
++        ui.horizontal_wrapped(|ui| {
+             let can_go = self.process.is_none()
+                 && self.pending_permission.is_none()
+                 && !self.provider_program.trim().is_empty();
+@@ -902,9 +1217,43 @@ impl AiStudioPanel {
+             if ui.add_enabled(can_stop, egui::Button::new("Stop")).clicked() {
+                 stop_requested = true;
+             }
++            let can_interrupt = !self.editing_interrupted
++                && self.pending_runtime_action.is_none()
++                && (self.native_question.is_some()
++                    || self.resource_plan.presentation == PresentationPosture::InferenceFocused
++                    || self.active_run_id.as_ref().is_some_and(|run_id| {
++                        self.host.run(run_id).is_ok_and(|run| {
++                            !matches!(
++                                run.state,
++                                AgentRunState::Completed
++                                    | AgentRunState::Failed
++                                    | AgentRunState::Cancelled
++                                    | AgentRunState::InterruptedForEditing
++                            )
++                        })
++                    }));
++            if ui
++                .add_enabled(can_interrupt, egui::Button::new("Interrupt for Editing"))
++                .clicked()
++            {
++                interrupt_requested = true;
++            }
++            if ui
++                .add_enabled(
++                    self.editing_interrupted && self.pending_runtime_action.is_none(),
++                    egui::Button::new("Resume"),
++                )
++                .clicked()
++            {
++                resume_requested = true;
++            }
+         });
+         if stop_requested {
+             let run_id = self.active_run_id.clone();
++            if let Some(task) = self.native_question.as_ref() {
++                task.interrupt();
++            }
++            self.pending_native_question_start = None;
+             if let Some(process) = self.process.as_mut()
+                 && let Err(error) = process.cancel()
+             {
+@@ -918,6 +1267,24 @@ impl AiStudioPanel {
+                 self.status = Some(error.to_string());
+             }
+         }
++        if interrupt_requested {
++            if let Some(task) = self.native_question.as_ref() {
++                task.interrupt();
++            }
++            self.pending_native_question_start = None;
++            self.restore_for_editing = true;
++            self.pending_runtime_action = Some(AiStudioRuntimeAction::RestoreEditorPresentation);
++            self.status = Some(
++                "Stopping inference at a safe backend boundary and restoring Editor presentation..."
++                    .to_owned(),
++            );
++        }
++        if resume_requested {
++            self.pending_runtime_action = Some(AiStudioRuntimeAction::InspectAuthoritativeState);
++            self.status = Some(
++                "Re-inspecting authoritative Editor state before Resume...".to_owned(),
++            );
++        }
+     }
+ 
+     fn show_permission_prompt(&mut self, ui: &mut egui::Ui) {
+@@ -1979,6 +2346,27 @@ fn provider_mouse_button(button: &str) -> Result<MouseButton, String> {
+     }
+ }
+ 
++fn load_ai_studio_preferences(path: &std::path::Path) -> AiStudioPreferences {
++    let Ok(bytes) = fs::read(path) else {
++        return AiStudioPreferences::default();
++    };
++    let Ok(preferences) = serde_json::from_slice::<AiStudioPreferences>(&bytes) else {
++        return AiStudioPreferences::default();
++    };
++    if preferences.schema_version == AI_STUDIO_PREFERENCES_SCHEMA_VERSION {
++        preferences
++    } else {
++        AiStudioPreferences::default()
++    }
++}
++
++fn capability_label(value: CapabilityAvailability) -> &'static str {
++    match value {
++        CapabilityAvailability::Available => "available",
++        CapabilityAvailability::Unavailable => "unavailable",
++    }
++}
++
+ fn model_capability_summary(profile: &ModelCapabilityProfile) -> String {
+     format!(
+         "Backend: {} · Model: {} · structured: {} · tools: {} · images: {} · reasoning: {} · context: {} · benchmark: {}",
+@@ -2033,7 +2421,7 @@ fn format_native_answer(answer: &NativeAnswer) -> String {
+     }
+     message.push_str("Harness evidence:\n");
+     message.push_str(&format!(
+-        "- {} · backend={} · model={} · turns={} · retrieved_chunks={} · prompt_chars={} · response_chars={} · elapsed_ms={} · prompt_tokens={} · response_tokens={} · backend_ms={}",
++        "- {} · backend={} · model={} · turns={} · retrieved_chunks={} · prompt_chars={} · response_chars={} · elapsed_ms={} · prompt_tokens={} · response_tokens={} · backend_ms={} · load_ms={} · prompt_eval_ms={} · generation_ms={} · generation_mtokens_per_s={} · ttft_ms={}",
+         answer.metrics.harness_version,
+         answer.metrics.backend_id,
+         answer.metrics.model_id,
+@@ -2045,6 +2433,11 @@ fn format_native_answer(answer: &NativeAnswer) -> String {
+         optional_metric(answer.metrics.prompt_eval_tokens),
+         optional_metric(answer.metrics.response_tokens),
+         optional_metric(answer.metrics.backend_duration_ms),
++        optional_metric(answer.metrics.load_latency_ms),
++        optional_metric(answer.metrics.prompt_eval_duration_ms),
++        optional_metric(answer.metrics.generation_duration_ms),
++        optional_metric(answer.metrics.generation_tokens_per_second_milli),
++        optional_metric(answer.metrics.ttft_ms),
+     ));
+     message
+ }
+diff --git a/crates/editor/src/lib.rs b/crates/editor/src/lib.rs
+index 383e3fc04c4e9710ce41a669df75b6cbc520bbae..2abdd37297d205b212e9fc37c878d4af1eee24d5 100644
+--- a/crates/editor/src/lib.rs
++++ b/crates/editor/src/lib.rs
+@@ -10,6 +10,7 @@
+ mod agent_host;
+ mod native_agent;
+ mod remote_ai_studio;
++mod resource_arbitration;
+ pub mod ai_studio;
+ pub mod anim_ux;
+ mod animation_set_editor;
+diff --git a/crates/editor/src/main.rs b/crates/editor/src/main.rs
+index 42ff487b8c3edd13a9cc64336a307fa2899a1099..5742fe24c73d0ab1cf0f3b1729fd577eed231be0 100644
+--- a/crates/editor/src/main.rs
++++ b/crates/editor/src/main.rs
+@@ -273,6 +273,12 @@ impl eframe::App for EditorShell {
+             context.send_viewport_cmd(eframe::egui::ViewportCommand::Close);
+             return;
+         }
++        if self.app.take_ai_studio_restore_completed() {
++            self.ai_studio.report_runtime_result(
++                context,
++                engine_editor::ai_studio::AiStudioRuntimeResult::EditorRestored,
++            );
++        }
+         if let Some(action) = self.ai_studio.take_runtime_action() {
+             let result = self.app.handle_ai_studio_runtime_action(action, frame.wgpu_render_state());
+             self.ai_studio.report_runtime_result(context, result);
+diff --git a/crates/editor/src/native_agent.rs b/crates/editor/src/native_agent.rs
+index 4d2d65d4136c585a873051128abaa5eff1ae810c..a89d169853ed67b8d34d93ed6a2de0fbe397f2bd 100644
+--- a/crates/editor/src/native_agent.rs
++++ b/crates/editor/src/native_agent.rs
+@@ -6,15 +6,18 @@
+ //! not acquire mutation permissions or participate in the write-capable
+ //! [`crate::agent_host::AgentRun`] state machine.
+ 
++use crate::resource_arbitration::ModelResourceCapabilities;
+ use serde::{Deserialize, Serialize};
+ use std::cmp::Reverse;
+ use std::collections::BTreeSet;
+ use std::fmt;
+ use std::fs;
+ use std::io::{self, Read, Write};
+-use std::net::{IpAddr, TcpStream, ToSocketAddrs};
++use std::net::{IpAddr, Shutdown, TcpStream, ToSocketAddrs};
+ use std::path::{Path, PathBuf};
++use std::sync::atomic::{AtomicBool, Ordering};
+ use std::sync::mpsc::{self, Receiver, TryRecvError};
++use std::sync::{Arc, Mutex};
+ use std::time::{Duration, Instant};
+ 
+ pub(crate) const DEFAULT_LOCAL_MODEL_ENDPOINT: &str = "http://127.0.0.1:11434";
+@@ -39,6 +42,7 @@ pub(crate) enum NativeAgentError {
+     InvalidHttpResponse(String),
+     ResponseTooLarge,
+     EmptyResponse,
++    Interrupted,
+     WorkerDisconnected,
+     Io(io::Error),
+     Json(serde_json::Error),
+@@ -66,6 +70,7 @@ impl fmt::Display for NativeAgentError {
+                 "local model backend response exceeded the safety limit"
+             ),
+             Self::EmptyResponse => write!(formatter, "local model returned an empty answer"),
++            Self::Interrupted => write!(formatter, "native model inference was interrupted"),
+             Self::WorkerDisconnected => {
+                 write!(formatter, "native question worker disconnected unexpectedly")
+             }
+@@ -113,6 +118,7 @@ impl LocalModelConfig {
+             image_input: None,
+             reasoning: None,
+             context_limit: None,
++            resource_capabilities: ModelResourceCapabilities::default(),
+             benchmark_verified: false,
+         }
+     }
+@@ -127,6 +133,12 @@ pub(crate) struct ModelCapabilityProfile {
+     pub(crate) image_input: Option<bool>,
+     pub(crate) reasoning: Option<bool>,
+     pub(crate) context_limit: Option<u64>,
++    /// Resource controls verified for this backend adapter.
++    ///
++    /// The initial generic loopback adapter deliberately reports every
++    /// provider-specific control as unavailable until a governed implementation
++    /// exists; AI Studio must never imply support by guessing from the server.
++    pub(crate) resource_capabilities: ModelResourceCapabilities,
+     pub(crate) benchmark_verified: bool,
+ }
+ 
+@@ -187,6 +199,14 @@ pub(crate) struct NativeMetrics {
+     pub(crate) prompt_eval_tokens: Option<u64>,
+     pub(crate) response_tokens: Option<u64>,
+     pub(crate) backend_duration_ms: Option<u64>,
++    pub(crate) load_latency_ms: Option<u64>,
++    pub(crate) prompt_eval_duration_ms: Option<u64>,
++    pub(crate) generation_duration_ms: Option<u64>,
++    /// Generation throughput in milli-tokens per second when the backend
++    /// reports both generated token count and generation duration.
++    pub(crate) generation_tokens_per_second_milli: Option<u64>,
++    /// The non-streaming baseline cannot observe first-token time exactly.
++    pub(crate) ttft_ms: Option<u64>,
+ }
+ 
+ #[derive(Debug, Clone)]
+@@ -198,6 +218,8 @@ pub(crate) struct NativeAnswer {
+ 
+ pub(crate) struct NativeQuestionTask {
+     result: Receiver<Result<NativeAnswer, NativeAgentError>>,
++    interrupted: Arc<AtomicBool>,
++    active_stream: Arc<Mutex<Option<TcpStream>>>,
+ }
+ 
+ impl NativeQuestionTask {
+@@ -213,13 +235,42 @@ impl NativeQuestionTask {
+         // the UI boundary instead of looking like a model timeout.
+         LocalHttpEndpoint::parse(&config.endpoint)?;
+         let (sender, result) = mpsc::channel();
++        let interrupted = Arc::new(AtomicBool::new(false));
++        let active_stream = Arc::new(Mutex::new(None));
++        let worker_interrupted = Arc::clone(&interrupted);
++        let worker_stream = Arc::clone(&active_stream);
+         std::thread::Builder::new()
+             .name("ai-native-question".to_owned())
+             .spawn(move || {
+-                let answer = answer_question(&config, &project_root, &conversation);
++                let answer = answer_question(
++                    &config,
++                    &project_root,
++                    &conversation,
++                    &worker_interrupted,
++                    &worker_stream,
++                );
+                 let _ = sender.send(answer);
+             })?;
+-        Ok(Self { result })
++        Ok(Self {
++            result,
++            interrupted,
++            active_stream,
++        })
++    }
++
++    /// Interrupts active inference without terminating or cancelling an AgentRun.
++    ///
++    /// Closing the request socket is the safe boundary available to the
++    /// first-release loopback HTTP backend. The worker reports
++    /// [`NativeAgentError::Interrupted`] instead of fabricating a provider
++    /// success.
++    pub(crate) fn interrupt(&self) {
++        self.interrupted.store(true, Ordering::Release);
++        if let Ok(guard) = self.active_stream.lock()
++            && let Some(stream) = guard.as_ref()
++        {
++            let _ = stream.shutdown(Shutdown::Both);
++        }
+     }
+ 
+     pub(crate) fn poll(&self) -> Option<Result<NativeAnswer, NativeAgentError>> {
+@@ -352,8 +403,13 @@ fn answer_question(
+     config: &LocalModelConfig,
+     project_root: &Path,
+     conversation: &[QuestionMessage],
++    interrupted: &AtomicBool,
++    active_stream: &Mutex<Option<TcpStream>>,
+ ) -> Result<NativeAnswer, NativeAgentError> {
+     let started = Instant::now();
++    if interrupted.load(Ordering::Acquire) {
++        return Err(NativeAgentError::Interrupted);
++    }
+     let query = conversation
+         .iter()
+         .rev()
+@@ -363,7 +419,10 @@ fn answer_question(
+     let engine_root = discover_engine_root();
+     let evidence = retrieve_evidence(query, engine_root.as_deref(), project_root)?;
+     let prompt = build_prompt(conversation, &evidence);
+-    let backend = generate_local(config, &prompt)?;
++    if interrupted.load(Ordering::Acquire) {
++        return Err(NativeAgentError::Interrupted);
++    }
++    let backend = generate_local(config, &prompt, interrupted, active_stream)?;
+     let text = backend.response.trim().to_owned();
+     if text.is_empty() {
+         return Err(NativeAgentError::EmptyResponse);
+@@ -382,6 +441,16 @@ fn answer_question(
+             prompt_eval_tokens: backend.prompt_eval_count,
+             response_tokens: backend.eval_count,
+             backend_duration_ms: backend.total_duration.map(|nanos| nanos / 1_000_000),
++            load_latency_ms: backend.load_duration.map(|nanos| nanos / 1_000_000),
++            prompt_eval_duration_ms: backend
++                .prompt_eval_duration
++                .map(|nanos| nanos / 1_000_000),
++            generation_duration_ms: backend.eval_duration.map(|nanos| nanos / 1_000_000),
++            generation_tokens_per_second_milli: generation_throughput_milli(
++                backend.eval_count,
++                backend.eval_duration,
++            ),
++            ttft_ms: None,
+         },
+         text,
+         sources,
+@@ -392,6 +461,19 @@ fn duration_ms(duration: Duration) -> u64 {
+     duration.as_millis().min(u128::from(u64::MAX)) as u64
+ }
+ 
++fn generation_throughput_milli(tokens: Option<u64>, duration_nanos: Option<u64>) -> Option<u64> {
++    let (Some(tokens), Some(duration_nanos)) = (tokens, duration_nanos) else {
++        return None;
++    };
++    if duration_nanos == 0 {
++        return None;
++    }
++    let scaled = u128::from(tokens)
++        .saturating_mul(1_000_000_000_000)
++        / u128::from(duration_nanos);
++    Some(scaled.min(u128::from(u64::MAX)) as u64)
++}
++
+ #[derive(Debug, Serialize)]
+ struct GenerateRequest<'a> {
+     model: &'a str,
+@@ -408,11 +490,19 @@ struct GenerateResponse {
+     eval_count: Option<u64>,
+     #[serde(default)]
+     total_duration: Option<u64>,
++    #[serde(default)]
++    load_duration: Option<u64>,
++    #[serde(default)]
++    prompt_eval_duration: Option<u64>,
++    #[serde(default)]
++    eval_duration: Option<u64>,
+ }
+ 
+ fn generate_local(
+     config: &LocalModelConfig,
+     prompt: &str,
++    interrupted: &AtomicBool,
++    active_stream: &Mutex<Option<TcpStream>>,
+ ) -> Result<GenerateResponse, NativeAgentError> {
+     let endpoint = LocalHttpEndpoint::parse(&config.endpoint)?;
+     let body = serde_json::to_vec(&GenerateRequest {
+@@ -421,6 +511,12 @@ fn generate_local(
+         stream: false,
+     })?;
+     let mut stream = endpoint.connect()?;
++    if interrupted.load(Ordering::Acquire) {
++        return Err(NativeAgentError::Interrupted);
++    }
++    if let Ok(mut guard) = active_stream.lock() {
++        *guard = stream.try_clone().ok();
++    }
+     write!(
+         stream,
+         "POST /api/generate HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\nAccept: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+@@ -431,9 +527,16 @@ fn generate_local(
+     stream.flush()?;
+ 
+     let mut response = Vec::new();
+-    stream
++    let read_result = stream
+         .take(MAX_HTTP_RESPONSE_BYTES + 1)
+-        .read_to_end(&mut response)?;
++        .read_to_end(&mut response);
++    if let Ok(mut guard) = active_stream.lock() {
++        *guard = None;
++    }
++    if interrupted.load(Ordering::Acquire) {
++        return Err(NativeAgentError::Interrupted);
++    }
++    read_result?;
+     if response.len() as u64 > MAX_HTTP_RESPONSE_BYTES {
+         return Err(NativeAgentError::ResponseTooLarge);
+     }
+diff --git a/crates/editor/src/resource_arbitration.rs b/crates/editor/src/resource_arbitration.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..6af068075e90fa47afa79beb285879e7145e5956
+--- /dev/null
++++ b/crates/editor/src/resource_arbitration.rs
+@@ -0,0 +1,417 @@
++//! Provider-independent native inference scheduling and resource arbitration.
++//!
++//! This module intentionally owns no renderer or model-provider implementation.
++//! It describes application-layer workload, quality, capability, reclaim, and
++//! benchmark contracts so AI Studio can coordinate those owners without leaking
++//! agent semantics into low-level rendering.
++
++use serde::{Deserialize, Serialize};
++
++/// Resource-relevant workload classification for native agent work.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case")]
++pub(crate) enum InferenceWorkload {
++    /// Low-latency model reasoning for conversation and lightweight inspection.
++    InteractiveReasoning,
++    /// Higher-value reasoning where implementation decisions should be retained.
++    StrongReasoning,
++    /// A fully specified managed operation that does not currently need inference.
++    DeterministicExecution,
++    /// Live Play, frame capture, or other runtime observation work.
++    RuntimeObservation,
++}
++
++/// User intent for native reasoning latency versus quality.
++#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case")]
++pub(crate) enum QualityPreference {
++    /// Let the harness choose the least expensive policy expected to succeed.
++    #[default]
++    Auto,
++    /// Prefer responsive inference and avoid expensive passes.
++    Fast,
++    /// Allow normal implementation and repair reasoning.
++    Balanced,
++    /// Prefer the strongest supported reasoning/resource posture.
++    Deep,
++}
++
++impl QualityPreference {
++    pub(crate) const ALL: [Self; 4] = [Self::Auto, Self::Fast, Self::Balanced, Self::Deep];
++
++    pub(crate) const fn label(self) -> &'static str {
++        match self {
++            Self::Auto => "Auto",
++            Self::Fast => "Fast",
++            Self::Balanced => "Balanced",
++            Self::Deep => "Deep",
++        }
++    }
++}
++
++/// Inputs used to classify work independently from an `AgentRun` phase.
++#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
++pub(crate) struct WorkloadSignals {
++    /// The next operation is already fully specified and managed by the engine.
++    pub(crate) fully_specified_managed_operation: bool,
++    /// Correctness requires live runtime/render observation.
++    pub(crate) runtime_observation_required: bool,
++    /// Current evidence requires a stronger architecture/repair reasoning pass.
++    pub(crate) strong_reasoning_required: bool,
++    /// A tool result still requires model judgement before the next operation.
++    pub(crate) model_judgement_required: bool,
++}
++
++/// Classifies work without treating semantic run phase as a GPU scheduler API.
++pub(crate) fn classify_workload(signals: WorkloadSignals) -> InferenceWorkload {
++    if signals.runtime_observation_required {
++        InferenceWorkload::RuntimeObservation
++    } else if signals.fully_specified_managed_operation && !signals.model_judgement_required {
++        InferenceWorkload::DeterministicExecution
++    } else if signals.strong_reasoning_required {
++        InferenceWorkload::StrongReasoning
++    } else {
++        InferenceWorkload::InteractiveReasoning
++    }
++}
++
++/// Whether a provider-independent backend operation is actually exposed.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case")]
++pub(crate) enum CapabilityAvailability {
++    /// The backend exposes a governed implementation of this operation.
++    Available,
++    /// The backend does not expose this operation.
++    Unavailable,
++}
++
++/// Resource controls a `ModelBackend` may expose.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
++pub(crate) struct ModelResourceCapabilities {
++    pub(crate) representation_size: CapabilityAvailability,
++    pub(crate) gpu_residency: CapabilityAvailability,
++    pub(crate) cpu_gpu_offload: CapabilityAvailability,
++    pub(crate) selectable_device: CapabilityAvailability,
++    pub(crate) kv_context_placement: CapabilityAvailability,
++    pub(crate) inference_cache_release: CapabilityAvailability,
++    pub(crate) unload_reload: CapabilityAvailability,
++    pub(crate) backend_memory_telemetry: CapabilityAvailability,
++}
++
++impl Default for ModelResourceCapabilities {
++    fn default() -> Self {
++        Self {
++            representation_size: CapabilityAvailability::Unavailable,
++            gpu_residency: CapabilityAvailability::Unavailable,
++            cpu_gpu_offload: CapabilityAvailability::Unavailable,
++            selectable_device: CapabilityAvailability::Unavailable,
++            kv_context_placement: CapabilityAvailability::Unavailable,
++            inference_cache_release: CapabilityAvailability::Unavailable,
++            unload_reload: CapabilityAvailability::Unavailable,
++            backend_memory_telemetry: CapabilityAvailability::Unavailable,
++        }
++    }
++}
++
++/// Resource telemetry provenance. Unknown values remain explicitly unavailable.
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(tag = "availability", content = "value", rename_all = "snake_case")]
++pub(crate) enum TelemetryValue<T> {
++    /// Value reported or measured by the owning subsystem.
++    Measured(T),
++    /// Conservative estimate used because exact measurement is unavailable.
++    ConservativeEstimate(T),
++    /// The owning subsystem cannot determine this value reliably.
++    Unavailable,
++}
++
++impl<T> Default for TelemetryValue<T> {
++    fn default() -> Self {
++        Self::Unavailable
++    }
++}
++
++/// Observed pressure used by the application-layer broker.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub(crate) enum MemoryPressure {
++    /// Available telemetry indicates normal headroom.
++    Normal,
++    /// Exact free memory is unavailable, so policy must retain conservative headroom.
++    Unknown,
++    /// Reliable evidence indicates shared-GPU pressure.
++    Constrained,
++}
++
++/// How aggressively Editor-owned recreatable GPU resources may be reclaimed.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case")]
++pub(crate) enum ReclaimLevel {
++    /// Keep normal presentation resources resident.
++    None,
++    /// Release view-local/transient targets while keeping reusable caches.
++    Transient,
++    /// Release additional recreatable reusable residency after transient reclaim.
++    Aggressive,
++}
++
++/// Which subsystem receives shared-GPU priority for the next step.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case")]
++pub(crate) enum ResourcePriority {
++    /// Normal interactive Editor operation.
++    EditorInteractive,
++    /// Native inference receives priority while optional presentation is suspended.
++    NativeInference,
++    /// Play/render/frame capture receives priority over local model residency.
++    RuntimeRendering,
++}
++
++/// Model residency request expressed without provider-specific knobs.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case")]
++pub(crate) enum ModelResidencyRequest {
++    /// Keep the current backend residency posture.
++    Keep,
++    /// Reduce residency only when the backend exposes an explicit supported control.
++    ReduceIfSupported,
++    /// Unload/release residency only when the backend exposes an explicit supported control.
++    ReleaseIfSupported,
++}
++
++/// Presentation posture selected by the broker.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case")]
++pub(crate) enum PresentationPosture {
++    /// Normal Editor presentation.
++    Interactive,
++    /// Optional GPU-heavy presentation work is suspended.
++    InferenceFocused,
++}
++
++/// Provider-independent result of one arbitration decision.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub(crate) struct ResourcePlan {
++    pub(crate) workload: InferenceWorkload,
++    pub(crate) priority: ResourcePriority,
++    pub(crate) presentation: PresentationPosture,
++    pub(crate) reclaim: ReclaimLevel,
++    pub(crate) model_residency: ModelResidencyRequest,
++    /// Whether the active operation should invoke a model at all.
++    pub(crate) inference_required: bool,
++}
++
++/// Resolves a resource posture without hard-coded model names or VRAM thresholds.
++pub(crate) fn resolve_resource_plan(
++    workload: InferenceWorkload,
++    quality: QualityPreference,
++    pressure: MemoryPressure,
++    capabilities: ModelResourceCapabilities,
++) -> ResourcePlan {
++    match workload {
++        InferenceWorkload::DeterministicExecution => ResourcePlan {
++            workload,
++            priority: ResourcePriority::EditorInteractive,
++            presentation: PresentationPosture::Interactive,
++            reclaim: ReclaimLevel::None,
++            model_residency: if capabilities.unload_reload == CapabilityAvailability::Available {
++                ModelResidencyRequest::ReleaseIfSupported
++            } else {

@@ -1,0 +1,420 @@
++                ModelResidencyRequest::Keep
++            },
++            inference_required: false,
++        },
++        InferenceWorkload::RuntimeObservation => ResourcePlan {
++            workload,
++            priority: ResourcePriority::RuntimeRendering,
++            presentation: PresentationPosture::Interactive,
++            reclaim: ReclaimLevel::None,
++            model_residency: if capabilities.unload_reload == CapabilityAvailability::Available {
++                ModelResidencyRequest::ReleaseIfSupported
++            } else if capabilities.gpu_residency == CapabilityAvailability::Available {
++                ModelResidencyRequest::ReduceIfSupported
++            } else {
++                ModelResidencyRequest::Keep
++            },
++            inference_required: false,
++        },
++        InferenceWorkload::StrongReasoning => {
++            let reclaim = match (quality, pressure) {
++                (QualityPreference::Deep, MemoryPressure::Constrained) => ReclaimLevel::Aggressive,
++                (_, MemoryPressure::Normal) if quality == QualityPreference::Fast => {
++                    ReclaimLevel::None
++                }
++                _ => ReclaimLevel::Transient,
++            };
++            ResourcePlan {
++                workload,
++                priority: ResourcePriority::NativeInference,
++                presentation: if reclaim == ReclaimLevel::None {
++                    PresentationPosture::Interactive
++                } else {
++                    PresentationPosture::InferenceFocused
++                },
++                reclaim,
++                model_residency: ModelResidencyRequest::Keep,
++                inference_required: true,
++            }
++        }
++        InferenceWorkload::InteractiveReasoning => ResourcePlan {
++            workload,
++            priority: ResourcePriority::NativeInference,
++            presentation: if quality == QualityPreference::Deep
++                && pressure != MemoryPressure::Normal
++            {
++                PresentationPosture::InferenceFocused
++            } else {
++                PresentationPosture::Interactive
++            },
++            reclaim: if quality == QualityPreference::Deep
++                && pressure != MemoryPressure::Normal
++            {
++                ReclaimLevel::Transient
++            } else {
++                ReclaimLevel::None
++            },
++            model_residency: ModelResidencyRequest::Keep,
++            inference_required: true,
++        },
++    }
++}
++
++/// Machine-readable benchmark record for one native inference/managed-work cycle.
++///
++/// Every value that cannot be measured by the owning subsystem remains
++/// [`TelemetryValue::Unavailable`]; callers must not replace it with a guessed
++/// precise value.
++#[derive(Debug, Clone, Serialize, Deserialize)]
++pub(crate) struct NativeBenchmarkRecord {
++    pub(crate) model_identity: String,
++    pub(crate) backend_runtime: String,
++    pub(crate) quality_preference: QualityPreference,
++    pub(crate) resolved_workload: InferenceWorkload,
++    pub(crate) hardware_identity: TelemetryValue<String>,
++    pub(crate) total_gpu_memory_bytes: TelemetryValue<u64>,
++    pub(crate) load_latency_ms: TelemetryValue<u64>,
++    pub(crate) reload_latency_ms: TelemetryValue<u64>,
++    pub(crate) unload_latency_ms: TelemetryValue<u64>,
++    pub(crate) ttft_ms: TelemetryValue<u64>,
++    pub(crate) generation_tokens_per_second_milli: TelemetryValue<u64>,
++    pub(crate) reasoning_wall_time_ms: TelemetryValue<u64>,
++    pub(crate) peak_model_gpu_memory_bytes: TelemetryValue<u64>,
++    pub(crate) peak_editor_gpu_memory_bytes: TelemetryValue<u64>,
++    pub(crate) reclaim_level: ReclaimLevel,
++    pub(crate) editor_suspend_latency_ms: TelemetryValue<u64>,
++    pub(crate) editor_resume_latency_ms: TelemetryValue<u64>,
++    pub(crate) renderer_reconstruction_latency_ms: TelemetryValue<u64>,
++    pub(crate) inference_oom: TelemetryValue<bool>,
++    pub(crate) renderer_oom: TelemetryValue<bool>,
++    pub(crate) acceptance_success: TelemetryValue<bool>,
++    pub(crate) validation_attempts: u32,
++    pub(crate) repair_attempts: u32,
++    pub(crate) human_interruption: bool,
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn workload_classification_is_not_run_phase_mapping() {
++        assert_eq!(
++            classify_workload(WorkloadSignals {
++                fully_specified_managed_operation: true,
++                ..WorkloadSignals::default()
++            }),
++            InferenceWorkload::DeterministicExecution
++        );
++        assert_eq!(
++            classify_workload(WorkloadSignals {
++                fully_specified_managed_operation: true,
++                model_judgement_required: true,
++                strong_reasoning_required: true,
++                ..WorkloadSignals::default()
++            }),
++            InferenceWorkload::StrongReasoning
++        );
++        assert_eq!(
++            classify_workload(WorkloadSignals {
++                runtime_observation_required: true,
++                strong_reasoning_required: true,
++                ..WorkloadSignals::default()
++            }),
++            InferenceWorkload::RuntimeObservation
++        );
++    }
++
++    #[test]
++    fn quality_resolution_never_forces_model_into_deterministic_execution() {
++        for quality in QualityPreference::ALL {
++            let plan = resolve_resource_plan(
++                InferenceWorkload::DeterministicExecution,
++                quality,
++                MemoryPressure::Unknown,
++                ModelResourceCapabilities::default(),
++            );
++            assert!(!plan.inference_required);
++            assert_eq!(plan.presentation, PresentationPosture::Interactive);
++        }
++    }
++
++    #[test]
++    fn unknown_memory_uses_conservative_transient_reclaim_not_fabricated_capacity() {
++        let plan = resolve_resource_plan(
++            InferenceWorkload::StrongReasoning,
++            QualityPreference::Deep,
++            MemoryPressure::Unknown,
++            ModelResourceCapabilities::default(),
++        );
++        assert_eq!(plan.reclaim, ReclaimLevel::Transient);
++        let free_memory: TelemetryValue<u64> = TelemetryValue::Unavailable;
++        assert_eq!(free_memory, TelemetryValue::Unavailable);
++    }
++
++    #[test]
++    fn deep_only_uses_aggressive_reclaim_with_observed_pressure() {
++        let constrained = resolve_resource_plan(
++            InferenceWorkload::StrongReasoning,
++            QualityPreference::Deep,
++            MemoryPressure::Constrained,
++            ModelResourceCapabilities::default(),
++        );
++        assert_eq!(constrained.reclaim, ReclaimLevel::Aggressive);
++
++        let balanced = resolve_resource_plan(
++            InferenceWorkload::StrongReasoning,
++            QualityPreference::Balanced,
++            MemoryPressure::Constrained,
++            ModelResourceCapabilities::default(),
++        );
++        assert_eq!(balanced.reclaim, ReclaimLevel::Transient);
++    }
++
++    #[test]
++    fn runtime_observation_prioritizes_renderer_and_only_requests_supported_release() {
++        let unsupported = resolve_resource_plan(
++            InferenceWorkload::RuntimeObservation,
++            QualityPreference::Deep,
++            MemoryPressure::Constrained,
++            ModelResourceCapabilities::default(),
++        );
++        assert_eq!(unsupported.priority, ResourcePriority::RuntimeRendering);
++        assert_eq!(unsupported.model_residency, ModelResidencyRequest::Keep);
++
++        let supported = resolve_resource_plan(
++            InferenceWorkload::RuntimeObservation,
++            QualityPreference::Deep,
++            MemoryPressure::Constrained,
++            ModelResourceCapabilities {
++                unload_reload: CapabilityAvailability::Available,
++                ..ModelResourceCapabilities::default()
++            },
++        );
++        assert_eq!(
++            supported.model_residency,
++            ModelResidencyRequest::ReleaseIfSupported
++        );
++    }
++}
+diff --git a/crates/editor/src/scene_view.rs b/crates/editor/src/scene_view.rs
+index 24407a7b2f07526fd62300a5836e89e5f52fa6a9..1f4ca60a617ab52237e2e2e921963ffe321db033 100644
+--- a/crates/editor/src/scene_view.rs
++++ b/crates/editor/src/scene_view.rs
+@@ -1089,6 +1089,34 @@ impl SceneView {
+         self.ui_texture_renderer = None;
+     }
+ 
++    /// Releases only view-local transient presentation resources.
++    ///
++    /// Persistent preview state, imported data, meshes, textures, and pipelines
++    /// remain resident so normal inference focus does not defeat ADR 0072/0104.
++    pub(crate) fn release_transient_resources(
++        &mut self,
++        render_state: &egui_wgpu::RenderState,
++    ) {
++        self.release(render_state);
++        self.last_view = None;
++    }
++
++    /// Releases additional recreatable preview residency after transient reclaim.
++    ///
++    /// This never touches canonical authoring state or low-level GPU ownership.
++    /// The shared import cache remains CPU-side and reusable; GPU mesh residency
++    /// and the preview world are reconstructed lazily on the next rendered frame.
++    pub(crate) fn release_recreatable_resources(
++        &mut self,
++        render_state: &egui_wgpu::RenderState,
++    ) {
++        self.release_transient_resources(render_state);
++        self.preview = None;
++        self.renderer = None;
++        self.gpu_mesh_cache.clear();
++        self.manifest_hash_cache = None;
++    }
++
+     /// Releases preview worlds and resident imports owned by the old project.
+     pub fn clear_project_caches(&mut self) {
+         self.preview = None;
+diff --git a/crates/editor/src/ui/animation_preview.rs b/crates/editor/src/ui/animation_preview.rs
+index 6e88638d03b0e473cb726f9274a432fedc919196..740e6cfd536afdf244f4fb15666823414fc82013 100644
+--- a/crates/editor/src/ui/animation_preview.rs
++++ b/crates/editor/src/ui/animation_preview.rs
+@@ -70,6 +70,18 @@ impl Default for AnimationPreviewWindow {
+ }
+ 
+ impl AnimationPreviewWindow {
++    pub(super) fn release_for_inference(
++        &mut self,
++        render_state: &egui_wgpu::RenderState,
++        aggressive: bool,
++    ) {
++        if aggressive {
++            self.view.release_recreatable_resources(render_state);
++        } else {
++            self.view.release_transient_resources(render_state);
++        }
++    }
++
+     /// Opens or refreshes the preview against an authoring scene snapshot.
+     pub(super) fn open_for_scene(
+         &mut self,
+diff --git a/crates/editor/src/ui/mod.rs b/crates/editor/src/ui/mod.rs
+index ae20d9d663217cae4ebb7b0d2a5655caea456c09..5ca9babecc68203b7ec1072b95115e9707e799a5 100644
+--- a/crates/editor/src/ui/mod.rs
++++ b/crates/editor/src/ui/mod.rs
+@@ -241,6 +241,15 @@ pub struct EditorApp {
+     prefab_placement_source: Option<PathBuf>,
+     /// Whether editor command preferences are visible.
+     show_editor_preferences: bool,
++    /// Application-layer presentation posture for native inference.
++    ///
++    /// This is transient Editor state only; it never participates in authoring
++    /// transactions, serialization, Stable IDs, revisions, or undo/redo.
++    inference_focused: bool,
++    /// True after presentation restoration was requested until one normal Editor frame draws.
++    inference_restore_pending: bool,
++    /// One-shot completion signal emitted only after the restored Editor drew a frame.
++    inference_restore_completed: bool,
+     /// Scene view offscreen renderer and editor orbit camera.
+     scene_view: SceneView,
+     /// Current Scene View conversion or rendering problem.
+@@ -457,6 +466,9 @@ impl EditorApp {
+             source_viewer: None,
+             prefab_placement_source: None,
+             show_editor_preferences: false,
++            inference_focused: false,
++            inference_restore_pending: false,
++            inference_restore_completed: false,
+             scene_view: SceneView::new(),
+             scene_view_problem: None,
+             animation_preview: AnimationPreviewWindow::default(),
+@@ -867,7 +879,14 @@ impl eframe::App for EditorApp {
+ 
+         egui::CentralPanel::default().show_inside(ui, |ui| {
+             self.show_workspace_header(ui);
+-            if self.is_playing() {
++            if self.inference_focused {
++                ui.vertical_centered(|ui| {
++                    ui.add_space(54.0);
++                    ui.heading("InferenceFocused");
++                    ui.label("Scene/Game presentation and optional previews are suspended for local inference.");
++                    ui.small("AI Studio, Stop, Interrupt for Editing, permissions, and authoritative Editor state remain live.");
++                });
++            } else if self.is_playing() {
+                 self.show_runtime_workspace(ui, frame);
+             } else if self.session.scene().is_some() {
+                 self.show_scene_workspace(ui, frame);
+@@ -921,7 +940,9 @@ impl eframe::App for EditorApp {
+         self.show_asset_mutation_window(ui.ctx());
+         self.show_editor_preferences_window(ui.ctx());
+         self.show_source_viewer_window(ui.ctx());
+-        self.show_animation_preview_window(ui.ctx(), frame);
++        if !self.inference_focused {
++            self.show_animation_preview_window(ui.ctx(), frame);
++        }
+         self.show_external_document_conflict(ui.ctx());
+ 
+         // 全パネルの描画後にTooltipレイヤーへ出すことで、
+@@ -929,6 +950,10 @@ impl eframe::App for EditorApp {
+         show_asset_drag_preview(ui.ctx());
+         self.show_notifications(ui.ctx());
+         self.show_play_build_overlay(ui.ctx());
++        if self.inference_restore_pending && !self.inference_focused {
++            self.inference_restore_pending = false;
++            self.inference_restore_completed = true;
++        }
+     }
+ }
+ 
+diff --git a/crates/editor/src/ui/play.rs b/crates/editor/src/ui/play.rs
+index f6afc3370d7cba91ed6a927973b37c2d10ea5b2e..2e2a118ebfda24a9cadd9789a7bb78c5f26e80c3 100644
+--- a/crates/editor/src/ui/play.rs
++++ b/crates/editor/src/ui/play.rs
+@@ -725,15 +725,74 @@ impl EditorApp {
+         }
+     }
+ 
++    fn ai_studio_authoritative_state(&self) -> crate::ai_studio::AiStudioAuthoritativeState {
++        crate::ai_studio::AiStudioAuthoritativeState {
++            document_revision: self.session.document_revision(),
++            game_code_generation: self.game_code_generation,
++            document_path: self.session.current_document_path().map(Path::to_path_buf),
++            document_dirty: self.session.is_dirty(),
++        }
++    }
++
++    /// Returns a one-shot signal only after a normal Editor frame has drawn following restore.
++    pub fn take_ai_studio_restore_completed(&mut self) -> bool {
++        std::mem::take(&mut self.inference_restore_completed)
++    }
++
+     /// Executes one AI Studio managed runtime action through the normal Editor Play path.
+     pub fn handle_ai_studio_runtime_action(
+         &mut self,
+         action: crate::ai_studio::AiStudioRuntimeAction,
+         render_state: Option<&egui_wgpu::RenderState>,
+     ) -> crate::ai_studio::AiStudioRuntimeResult {
+-        use crate::ai_studio::{AiStudioRuntimeAction, AiStudioRuntimeResult};
++        use crate::ai_studio::{AiStudioReclaimLevel, AiStudioRuntimeAction, AiStudioRuntimeResult};
+         match action {
++            AiStudioRuntimeAction::EnterInferenceFocused { reclaim } => {
++                if self.is_playing() {
++                    return AiStudioRuntimeResult::Failed(
++                        "InferenceFocused cannot preempt active Play; runtime rendering keeps GPU priority."
++                            .to_owned(),
++                    );
++                }
++                let Some(render_state) = render_state else {
++                    return AiStudioRuntimeResult::Failed(
++                        "WGPU render state is unavailable for presentation resource reclaim."
++                            .to_owned(),
++                    );
++                };
++                match reclaim {
++                    AiStudioReclaimLevel::None => {}
++                    AiStudioReclaimLevel::Transient => {
++                        self.scene_view.release_transient_resources(render_state);
++                        self.animation_preview
++                            .release_for_inference(render_state, false);
++                    }
++                    AiStudioReclaimLevel::Aggressive => {
++                        self.scene_view.release_recreatable_resources(render_state);
++                        self.animation_preview
++                            .release_for_inference(render_state, true);
++                    }
++                }
++                self.inference_focused = true;
++                self.inference_restore_pending = false;
++                self.inference_restore_completed = false;
++                AiStudioRuntimeResult::InferenceFocusedEntered { reclaim }
++            }
++            AiStudioRuntimeAction::RestoreEditorPresentation => {
++                self.inference_focused = false;
++                self.inference_restore_pending = true;
++                self.inference_restore_completed = false;
++                AiStudioRuntimeResult::EditorRestorePending {
++                    state: self.ai_studio_authoritative_state(),
++                }
++            }
++            AiStudioRuntimeAction::InspectAuthoritativeState => {
++                AiStudioRuntimeResult::AuthoritativeState(self.ai_studio_authoritative_state())
++            }
+             AiStudioRuntimeAction::StartPlaytest => {
++                self.inference_focused = false;
++                self.inference_restore_pending = false;
++                self.inference_restore_completed = false;
+                 if !self.is_playing() { self.start_play(); }
+                 if self.is_playing() {
+                     AiStudioRuntimeResult::PlayStarted
+@@ -753,6 +812,10 @@ impl EditorApp {
+                 AiStudioRuntimeResult::RuntimeInputQueued(command)
+             }
+             AiStudioRuntimeAction::CaptureFrame => {
++                // Live frame capture always outranks inference presentation.
++                self.inference_focused = false;
++                self.inference_restore_pending = false;
++                self.inference_restore_completed = false;
+                 let Some(render_state) = render_state else {
+                     return AiStudioRuntimeResult::Failed("WGPU render state is unavailable for managed frame capture.".to_owned());
+                 };
