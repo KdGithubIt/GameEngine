@@ -163,7 +163,7 @@ $detectors = [ordered]@{
     "private-key-header" = '-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----'
     "github-token" = '(?<![A-Za-z0-9_])(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})(?![A-Za-z0-9_])'
     "aws-access-key" = '(?<![A-Z0-9])(?:AKIA|ASIA)[A-Z0-9]{16}(?![A-Z0-9])'
-    "private-user-path" = '(?i)\b[A-Z]:\\Users\\[^\\\s]+\\'
+    "private-user-path" = '(?i)\b[A-Z]:\\Users\\(?!\.\.\.\\)[^\\\s]+\\'
 }
 $findings = @()
 Get-ChildItem -LiteralPath $destination -Recurse -File | ForEach-Object {
