@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0122-listener-wrap-20260817-r6",
+  "target_branch": "chatgpt/gameengine-adr0122-post-merge-validation-fix",
+  "expected_head_sha": "58fa107257d516b9a8d9e6203ddd67db0db44244",
+  "baseline_main_sha": "22b2b26abe3099a719f1af44117f73d2d5dd30e9",
+  "patch_sha256": "c62749e4e3bdfff21d7ae93aec24cef6d3c0d3a3572a857696a71ac7f9c913db",
+  "patch_bytes": 971,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Wrap ADR 0122 listener Inspector guidance",
+  "pr_title": "Fix ADR 0122 post-merge validation",
+  "pr_body": "## Summary\n\nFixes the post-merge ADR 0122 validation regression without changing spatial-audio runtime or serialization contracts. The legacy three-argument Inspector helper is test-only, a visual-validation-only listener capture target checks the real Audio Listener Inspector, and the listener guidance text explicitly wraps instead of inheriting dock-wide truncation.\n\n## Validation\n\nFresh Windows affected validation is required on the final head. Visual validation verifies the Spatial Audio overview/gizmos, scrolled emitter attenuation/audition controls, and the Audio Listener Inspector with readable guidance on that final head.\n\n<!-- gameengine-visual-validation: editor -->\n<!-- gameengine-visual-authoring-tool: Spatial Audio Listener -->\n\n<!-- gameengine-chatgpt-dispatcher -->"
+}
