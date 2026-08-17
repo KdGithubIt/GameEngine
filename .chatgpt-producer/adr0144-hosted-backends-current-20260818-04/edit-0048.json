@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/native_agent.rs","old":"                    .map_err(Into::into)\n                    .and_then(|response| {\n","new":"                    .map_err(NativeAgentError::from)\n                    .and_then(|response| {\n"}
