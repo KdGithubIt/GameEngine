@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/agent_host.rs",
+  "old": "            Self::ActiveWriterRun(id) => write!(\n                formatter,\n                \"agent run `{id}` already owns the project writer slot\"\n            ),\n            Self::InvalidTransition { from, to } => {",
+  "new": "            Self::ActiveWriterRun(id) => write!(\n                formatter,\n                \"agent run `{id}` already owns the project writer slot\"\n            ),\n            Self::StaleProposalVersion { expected, current } => write!(\n                formatter,\n                \"proposal version {expected} was authorized, but current proposal version is {current}\"\n            ),\n            Self::InvalidTransition { from, to } => {"
+}
