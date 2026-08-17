@@ -1,0 +1,3 @@
+{
+  "operation":"replace_text","path":"crates/editor/src/ai_studio.rs","old":"            self.pending_native_question_start = None;\n            if let Some(process) = self.process.as_mut()","new":"            self.pending_native_question_start = None;\n            if let Some(runtime) = self.native_agent_runtime.as_mut() { runtime.interrupt(); }\n            if let Some(task) = self.native_mcp_task.as_ref() { task.interrupt(); }\n            self.native_mcp_task = None;\n            self.pending_native_mcp_tool = None;\n            if let Some(process) = self.process.as_mut()"
+}
