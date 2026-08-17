@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/session/mod.rs","old":"        matches!(self.current_document, CurrentDocument::Graph { .. }).then(|| {\n            self.graph","new":"        matches!(&self.current_document, CurrentDocument::Graph { .. }).then(|| {\n            self.graph"}
