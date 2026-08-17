@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/mcp/src/generic_authoring.rs","old":"                AuthoringDomain::AnimationSet,\n            ],","new":"                AuthoringDomain::AnimationSet,\n                AuthoringDomain::Timeline,\n            ],"}

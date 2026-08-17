@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/authoring/src/timeline.rs","old":"#[derive(Debug, Clone, PartialEq, Eq)]\npub struct TimelineDiagnostic {","new":"#[derive(Debug, Clone, PartialEq, Eq, Serialize)]\npub struct TimelineDiagnostic {"}
