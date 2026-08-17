@@ -13,6 +13,10 @@ use crate::native_agent::{
     LocalModelConfig, ModelCapabilityProfile, NativeAnswer, NativeQuestionTask, QuestionMessage,
     QuestionRole, DEFAULT_LOCAL_MODEL_ENDPOINT,
 };
+use crate::remote_ai_studio::{
+    active_run_snapshot, event_batch, host_error as remote_host_error, load_frame, session_snapshot,
+    RemoteAiStudioGateway, RemoteCommand, RemoteGatewayRequest, RemoteResponse,
+};
 use eframe::egui;
 use engine::{InputCommand, KeyCode, MouseButton};
 use engine_authoring::ProjectRoot;
@@ -20,6 +24,7 @@ use serde::Deserialize;
 use std::collections::VecDeque;
 use std::ffi::{OsStr, OsString};
 use std::path::PathBuf;
+use std::sync::mpsc::Receiver;
 
 const PROVIDER_EVENT_PREFIX: &str = "GAMEENGINE_AGENT_EVENT ";
 const MAX_AUTONOMOUS_SOURCE_REPAIRS: usize = 2;
@@ -172,6 +177,7 @@ struct PendingPermission {
 /// through a reviewable isolated workspace. Project-shared history is explicit.
 pub struct AiStudioPanel {
     project_root: PathBuf,
+    project_id: String,
     connection: AiStudioConnection,
     host: AgentHost,
     selected_session: String,
@@ -183,6 +189,8 @@ pub struct AiStudioPanel {
     native_question_session: Option<String>,
     provider_program: String,
     provider_args: String,
+    remote_gateway: RemoteAiStudioGateway,
+    remote_requests: Receiver<RemoteGatewayRequest>,
     open: bool,
     active_run_id: Option<String>,
     process: Option<ExternalAgentProcess>,
@@ -208,11 +216,12 @@ pub struct AiStudioPanel {
 impl AiStudioPanel {
     /// Opens the project-scoped AI Studio state for an Editor project.
     pub fn new(project: &ProjectRoot, connection: AiStudioConnection) -> Result<Self, String> {
+        let project_id = project.project_id().as_str().to_owned();
         let data_root = dirs::data_local_dir()
             .unwrap_or_else(std::env::temp_dir)
             .join("GameEngine")
             .join("ai")
-            .join(project_storage_key(project.project_id().as_str(), project.path()));
+            .join(project_storage_key(&project_id, project.path()));
         let mut host = AgentHost::open(project.path().to_path_buf(), data_root)
             .map_err(|error| error.to_string())?;
         let selected_session = match host.session_ids().into_iter().next_back() {
@@ -227,8 +236,11 @@ impl AiStudioPanel {
             .proposal
             .clone();
         let active_run_id = host.active_writer_run_id().map(str::to_owned);
+        let (remote_gateway, remote_requests) = RemoteAiStudioGateway::start()
+            .map_err(|error| format!("could not start Remote AI Studio loopback gateway: {error}"))?;
         Ok(Self {
             project_root: project.path().to_path_buf(),
+            project_id,
             connection,
             host,
             selected_session,
@@ -240,6 +252,8 @@ impl AiStudioPanel {
             native_question_session: None,
             provider_program: String::new(),
             provider_args: String::new(),
+            remote_gateway,
+            remote_requests,
             open: true,
             active_run_id,
             process: None,
@@ -385,6 +399,7 @@ impl AiStudioPanel {
 
     /// Draws the AI Studio window and advances any active external agent process.
     pub fn show(&mut self, context: &egui::Context) {
+        self.poll_remote_gateway();
         self.poll_native_question(context);
         self.poll_external_process(context);
         self.poll_managed_validation(context);
@@ -406,6 +421,227 @@ impl AiStudioPanel {
         self.open = open;
     }
 
+    fn poll_remote_gateway(&mut self) {
+        while let Ok(request) = self.remote_requests.try_recv() {
+            let response = self.handle_remote_command(request.command);
+            request.respond(response);
+        }
+    }
+
+    fn handle_remote_command(&mut self, command: RemoteCommand) -> RemoteResponse {
+        match command {
+            RemoteCommand::SessionSnapshot { session_id } => {
+                let pending = self
+                    .pending_permission
+                    .as_ref()
+                    .map(|pending| (pending.run_id.as_str(), pending.capability));
+                match session_snapshot(
+                    &self.project_id,
+                    &self.host,
+                    session_id.as_deref(),
+                    pending,
+                    &self.project_root,
+                ) {
+                    Ok(snapshot) => RemoteResponse::json(200, snapshot),
+                    Err(error) => remote_host_error(&error),
+                }
+            }
+            RemoteCommand::ActiveRunSnapshot => {
+                RemoteResponse::json(200, active_run_snapshot(&self.host, &self.project_root))
+            }
+            RemoteCommand::ConversationMessage { session_id, text } => {
+                if text.trim().is_empty() {
+                    return RemoteResponse::error(
+                        400,
+                        "bad_request",
+                        "conversation message must not be empty",
+                        false,
+                    );
+                }
+                if let Err(error) = self.host.append_message(
+                    &session_id,
+                    ConversationRole::User,
+                    text.trim().to_owned(),
+                ) {
+                    return remote_host_error(&error);
+                }
+                self.selected_session = session_id.clone();
+                if let Ok(session) = self.host.session(&session_id) {
+                    self.proposal_draft = session.proposal.clone();
+                }
+                self.start_native_question();
+                RemoteResponse::json(200, serde_json::json!({"ok":true}))
+            }
+            RemoteCommand::Go {
+                session_id,
+                proposal_version,
+            } => {
+                let provider = self.provider_program.trim().to_owned();
+                if provider.is_empty() {
+                    return RemoteResponse::error(
+                        409,
+                        "provider_unavailable",
+                        "configure the AI Studio agent provider on the host before Go",
+                        false,
+                    );
+                }
+                let run_id = match self.host.start_run_authorized(
+                    &session_id,
+                    proposal_version,
+                    provider,
+                ) {
+                    Ok(run_id) => run_id,
+                    Err(error) => return remote_host_error(&error),
+                };
+                self.selected_session = session_id;
+                self.active_run_id = Some(run_id.clone());
+                self.pending_runtime_action = None;
+                self.managed_input_plan.clear();
+                self.managed_input_recipe.clear();
+                self.managed_candidate_input_recipe.clear();
+                self.managed_playtest_requested = false;
+                self.managed_capture_requested = false;
+                self.managed_repair_requested = false;
+                self.managed_runtime_repairs = 0;
+                self.managed_runtime_observation = None;
+                self.managed_evaluation_requested = false;
+                self.managed_playtest_started_at = None;
+                self.last_captured_frame = None;
+                self.request_permission(
+                    run_id.clone(),
+                    AgentCapability::ExternalAgentProcess,
+                    PendingPermissionAction::LaunchExternalAgent,
+                );
+                RemoteResponse::json(200, serde_json::json!({"run_id":run_id}))
+            }
+            RemoteCommand::Stop { run_id } => {
+                if self.host.active_writer_run_id() != Some(run_id.as_str()) {
+                    return RemoteResponse::error(
+                        409,
+                        "run_not_active",
+                        "Stop applies only to the exact active run",
+                        false,
+                    );
+                }
+                if self.active_run_id.as_deref() == Some(run_id.as_str()) {
+                    if let Some(process) = self.process.as_mut() {
+                        if let Err(error) = process.cancel() {
+                            self.status = Some(format!("Could not stop agent process: {error}"));
+                        }
+                    }
+                    self.process = None;
+                    self.process_purpose = None;
+                }
+                match self.host.cancel_run(&run_id) {
+                    Ok(()) => RemoteResponse::json(200, serde_json::json!({"run_id":run_id,"state":"cancelled"})),
+                    Err(error) => remote_host_error(&error),
+                }
+            }
+            RemoteCommand::AwaitingUserResponse {
+                session_id,
+                run_id,
+                text,
+            } => {
+                let session_has_run = self.host.session(&session_id).is_ok_and(|session| {
+                    session.runs.iter().any(|run| run.id == run_id)
+                });
+                if !session_has_run {
+                    return RemoteResponse::error(
+                        404,
+                        "run_not_found",
+                        "AI Studio run was not found in this session",
+                        false,
+                    );
+                }
+                if !self
+                    .host
+                    .run(&run_id)
+                    .is_ok_and(|run| run.state == AgentRunState::AwaitingUser)
+                {
+                    return RemoteResponse::error(
+                        409,
+                        "not_awaiting_user",
+                        "the run is not waiting for a user response",
+                        false,
+                    );
+                }
+                if text.trim().is_empty() {
+                    return RemoteResponse::error(
+                        400,
+                        "bad_request",
+                        "AwaitingUser response must not be empty",
+                        false,
+                    );
+                }
+                if let Err(error) = self.host.append_message(
+                    &session_id,
+                    ConversationRole::User,
+                    text.trim().to_owned(),
+                ) {
+                    return remote_host_error(&error);
+                }
+                match self.host.transition_run(
+                    &run_id,
+                    AgentRunState::Executing,
+                    "Remote user response received; resuming the governed run.",
+                ) {
+                    Ok(()) => RemoteResponse::json(200, serde_json::json!({"run_id":run_id,"resumed":true})),
+                    Err(error) => remote_host_error(&error),
+                }
+            }
+            RemoteCommand::PermissionResponse {
+                run_id,
+                capability,
+                scope,
+            } => {
+                let Some(pending) = self.pending_permission.as_ref() else {
+                    return RemoteResponse::error(
+                        409,
+                        "permission_not_pending",
+                        "there is no pending permission decision",
+                        false,
+                    );
+                };
+                if pending.run_id != run_id || pending.capability != capability {
+                    return RemoteResponse::error(
+                        409,
+                        "permission_mismatch",
+                        "permission response does not match the current pending request",
+                        false,
+                    );
+                }
+                let action = pending.action;
+                self.resolve_pending_permission(&run_id, capability, action, scope);
+                RemoteResponse::json(200, serde_json::json!({"run_id":run_id,"resolved":true}))
+            }
+            RemoteCommand::Events { run_id, after } => {
+                match event_batch(&self.host, &run_id, after, &self.project_root) {
+                    Ok(events) => RemoteResponse::json(200, events),
+                    Err(error) => remote_host_error(&error),
+                }
+            }
+            RemoteCommand::CapturedFrame {
+                project_id,
+                session_id,
+                run_id,
+                artifact_id,
+            } => {
+                if project_id != self.project_id {
+                    return RemoteResponse::error(
+                        404,
+                        "project_not_found",
+                        "captured frame does not belong to this project host",
+                        false,
+                    );
+                }
+                match load_frame(&self.host, &session_id, &run_id, &artifact_id) {
+                    Ok(bytes) => RemoteResponse::png(bytes),
+                    Err(error) => remote_host_error(&error),
+                }
+            }
+        }
+    }
+
     fn show_contents(&mut self, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
             ui.strong("Conversation-first project agent");
@@ -415,6 +651,10 @@ impl AiStudioPanel {
         ui.small(
             "External agent processes are application-level integrations, not an OS sandbox. Code is prepared in an isolated managed workspace and must be reviewed before apply.",
         );
+        ui.small(format!(
+            "Remote companion: {} · loopback only; expose it only through a trusted private reverse proxy.",
+            self.remote_gateway.url()
+        ));
         ui.separator();
 
         self.show_session_header(ui);

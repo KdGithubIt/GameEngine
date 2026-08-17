@@ -1684,6 +1684,26 @@ impl AgentHost {
         Ok((artifact_id, path))
     }
 
+    pub(crate) fn captured_frame_artifact_path(
+        &self,
+        run_id: &str,
+        artifact_id: &str,
+    ) -> Result<PathBuf, AgentHostError> {
+        self.run(run_id)?;
+        let is_safe = !artifact_id.is_empty()
+            && artifact_id
+                .chars()
+                .all(|character| character.is_ascii_alphanumeric() || character == '-' || character == '_');
+        if !is_safe {
+            return Err(AgentHostError::RunNotFound(run_id.to_owned()));
+        }
+        Ok(self
+            .storage_root
+            .join("artifacts")
+            .join(run_id)
+            .join(format!("{artifact_id}.png")))
+    }
+
     fn session_mut(&mut self, id: &str) -> Result<&mut AgentSession, AgentHostError> {
         self.sessions
             .get_mut(id)
