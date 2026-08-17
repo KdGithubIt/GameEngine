@@ -1,0 +1,33 @@
+diff --git a/crates/editor/src/authoring_windows.rs b/crates/editor/src/authoring_windows.rs
+index c18ab17f0727fb4739bd33867c5287c6809e4fe8..5621a7824a10675735d9dec472ee3e59c9feb592 100644
+--- a/crates/editor/src/authoring_windows.rs
++++ b/crates/editor/src/authoring_windows.rs
+@@ -60,7 +60,10 @@ impl AuthoringWindows {
+                 .default_height(780.0)
+                 .resizable(true)
+                 .show(context, |ui| {
+-                    egui::ScrollArea::vertical().show(ui, |ui| vfx.show(ui, project));
++                    let scroll_area = egui::ScrollArea::vertical();
++                    #[cfg(feature = "visual-validation")]
++                    let scroll_area = scroll_area.vertical_scroll_offset(900.0);
++                    scroll_area.show(ui, |ui| vfx.show(ui, project));
+                 });
+         }
+     }
+diff --git a/crates/editor/src/vfx_builder_completion.rs b/crates/editor/src/vfx_builder_completion.rs
+index 5126e962de57c33a9e9005bf3e5635df839a5ee9..0b9b561e99500c31f1bdf67bf6c4f1ebc12e11da 100644
+--- a/crates/editor/src/vfx_builder_completion.rs
++++ b/crates/editor/src/vfx_builder_completion.rs
+@@ -140,11 +140,7 @@ impl VfxPreviewState {
+         compilation: Option<&VfxCompilation>,
+     ) {
+         ui.separator();
+-        let preview_heading = ui.heading("Preview");
+-        #[cfg(feature = "visual-validation")]
+-        preview_heading.scroll_to_me(Some(egui::Align::TOP));
+-        #[cfg(not(feature = "visual-validation"))]
+-        let _ = preview_heading;
++        ui.heading("Preview");
+ 
+         let mut seek_requested = false;
+         let mut seed_changed = false;
