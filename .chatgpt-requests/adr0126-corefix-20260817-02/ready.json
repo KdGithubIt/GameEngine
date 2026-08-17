@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0126-corefix-20260817-02",
+  "target_branch": "chatgpt/gameengine-adr0126-first-release",
+  "expected_head_sha": "9d145400227ca909a16ad3170e6f156dced81cd4",
+  "baseline_main_sha": "d03ed9e573818eb0ca088f37953f611d6ed4d22e",
+  "patch_sha256": "391525e6eb00ed374b1428ec691a140da797812d7420fd81071de5978b37a3dc",
+  "patch_bytes": 1110,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Fix ADR0126 Timeline Stable ID declarations",
+  "pr_title": "GameEngine: complete ADR0126 Timeline and Sequencer",
+  "pr_body": "## Summary\n\nCompletes ADR 0126 Timeline / Sequencer first-release requirements from the task-start current main baseline. The implementation is split into validated producer requests on one task branch.\n\n<!-- gameengine-visual-validation: editor -->\n<!-- gameengine-visual-authoring-tool: Sequencer -->"
+}
