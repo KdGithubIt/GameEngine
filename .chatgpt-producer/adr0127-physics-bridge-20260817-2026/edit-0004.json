@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/engine/src/app.rs","old":"use crate::native_2d::{sprite_animation_2d_fixed_system, SpriteAnimationEvents2d};\n","new":"use crate::native_2d::{\n    physics_2d_fixed_system, sprite_animation_2d_fixed_system, PhysicsRuntime2d,\n    PhysicsSettings2d, SpriteAnimationEvents2d,\n};\n"}
