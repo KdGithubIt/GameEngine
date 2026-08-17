@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/vfx_builder.rs","old":"        self.show_completion_preview(ui, &effect);","new":"        self.show_completion_preview(ui, &effect, compilation.as_ref());"}
