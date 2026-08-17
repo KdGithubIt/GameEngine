@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/mcp-host/src/headless.rs","old":"                if !mutation.diff.is_empty() {\n","new":"                if !mutation.mutation.diff.is_empty() {\n"}
