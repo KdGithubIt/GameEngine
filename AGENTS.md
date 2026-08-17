@@ -57,25 +57,35 @@ When a Launcher or Editor change needs human-visible confirmation, follow
 supplements rather than replaces the normal Rust validation result; do not
 request it for changes that do not need screenshot review.
 
-Normal pull requests and merge-queue validation use affected-workspace planning.
-CI obtains the workspace package list from `cargo metadata`, maps changed files
-to their owning workspace packages, and validates the packages changed by that
-change. Package names and crate directories MUST NOT be duplicated in the
+Normal pull requests, Dispatcher-triggered validation, merge-group validation,
+and ordinary pushes to `main` use impact-based affected-workspace planning. CI
+obtains the workspace package list and dependency graph from `cargo metadata`,
+maps changed files to their owning workspace packages, and validates the changed
+packages plus their transitive reverse dependents. Package names, crate
+directories, and dependency relationships MUST NOT be duplicated in the
 workflow classifier.
 
-Affected Clippy, tests, and documentation all use the planner-selected changed
-package set. Reverse dependents are intentionally not added to the normal PR
-critical path; full validation on `main` and nightly is the safety net for
-cross-workspace coverage. A package-local `Cargo.toml` change may remain
-affected-mode when current metadata can classify it safely. The workspace
-manifest, lock file, pinned toolchain, CI/build configuration, deleted or
-otherwise unclassifiable package paths, and any other uncertain change force
-full validation.
+For PR-like validation, changed paths are computed from the merge base of the
+current base revision and the exact validated head. Unrelated commits that land
+on `main` after a task branch diverges MUST NOT be treated as task changes merely
+because the current main tip moved.
 
-Pushes to `main` and nightly validation always run full workspace Check,
-Clippy, tests, and documentation. Documentation-only changes recognized by the
-planner skip Rust compilation on PR and merge-group fast paths, but still
-receive full validation after landing on `main`.
+Affected Clippy, tests, and documentation use the planner-selected affected
+package set. A package-local `Cargo.toml` change may remain affected-mode when
+current metadata can classify it safely. The workspace manifest, lock file,
+pinned toolchain, CI/build/validation infrastructure, deleted or otherwise
+unclassifiable package paths, and any other uncertain change force full
+validation.
+
+Nightly validation always runs full workspace Check, Clippy, tests, and
+documentation. Ordinary pushes to `main` use affected planning unless their
+changed paths require full validation. Documentation-only changes recognized by
+the planner skip Rust compilation; nightly full validation remains the periodic
+workspace-wide safety net.
+
+Planner regression tests are validation-infrastructure tests. Run them when the
+validation workflows or `scripts/ci/**` change, not once for every unrelated
+product validation run.
 
 Run documentation validation locally when changing public documentation,
 rustdoc examples, or public APIs where a documentation failure is plausible,

@@ -274,14 +274,13 @@ jobs:
           : > "$changed"
           if [[ "$EVENT_NAME" == "schedule" || -z "$BASE_SHA" || "$BASE_SHA" =~ ^0+$ ]]; then
             echo "Cargo.lock" > "$changed"
+          elif [[ "$EVENT_NAME" == "pull_request" || "$EVENT_NAME" == "merge_group" || "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            merge_base="$(git merge-base "$BASE_SHA" "$HEAD_SHA")"
+            git diff --name-only "$merge_base" "$HEAD_SHA" -- > "$changed"
           else
             git diff --name-only "$BASE_SHA" "$HEAD_SHA" -- > "$changed"
           fi
           cat "$changed"
-
-      - name: Test validation planner layouts
-        shell: pwsh
-        run: ./scripts/ci/Test-ValidationPlanner.ps1
 
       - name: Build machine-readable validation plan
         id: plan

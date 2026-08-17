@@ -67,9 +67,15 @@ Prefer normal edits or content-based replacement over brittle line-number patche
 
 The permanent Windows validation workflow has three validation modes: `affected`, `full`, and `docs`.
 
-### Affected PR validation
+### Impact-based affected validation
 
-Normal pull requests and merge-group validation use changed-path classification. Known changes under one or more existing workspace crate directories select those changed packages only. Reverse dependents are deliberately excluded from the PR critical path; full validation on `main` and nightly recovers cross-workspace coverage.
+Normal pull requests, Dispatcher-triggered validation, merge-group validation, and ordinary pushes to `main` use impact-based changed-path classification.
+
+For PR-like validation, the changed path set is computed from the merge base of the current base revision and the exact validated head. This is intentionally different from diffing the current `main` tip directly against an older task head. If `main` advances with unrelated work after a task branch was created, those intervening base-branch files are not part of the task's validation scope.
+
+Known changes under one or more existing workspace crate directories first select the directly changed packages. CI then derives the transitive reverse-dependent closure from `cargo metadata`. This means a change to a low-level package validates that package plus every workspace package whose build can be affected through workspace dependency edges, while an isolated leaf-package change remains narrow.
+
+Package names, crate directories, and dependency relationships MUST NOT be duplicated manually in the workflow classifier. Cargo metadata is the source of truth.
 
 The executor runs three Windows matrix jobs in parallel:
 
@@ -83,21 +89,28 @@ For affected packages, Clippy uses package selection without `--all-targets`:
 cargo clippy -p <affected-package> ... -- -D warnings
 ```
 
-Tests use normal selected-package tests with `cargo test -p <package>`, and documentation uses `cargo doc -p <package> --no-deps`. When several packages change, each gate receives the same planner-selected package set.
+Tests use normal selected-package tests with `cargo test -p <package>`, and documentation uses `cargo doc -p <package> --no-deps`. When several packages are in the reverse-dependent closure, each gate receives the same planner-selected affected package set.
 
-`crates/rig/**` maps naturally through Cargo metadata to the low-dependency `engine-rig` package. Changes confined to rig primitives therefore validate without selecting renderer, windowing, audio, importers, or the Rapier-backed high-level engine package merely because those packages depend on rig.
+Formatting remains workspace-wide because the repository has one formatting contract and rustfmt is substantially cheaper than rebuilding the workspace.
+
+### Main pushes
+
+An ordinary push to `main` no longer forces the full workspace suite solely because it is a main push. The push's exact `before..head` changed paths use the same package ownership and reverse-dependent impact planner as PR validation.
+
+A main push still selects `full` when a workspace-wide, build-wide, or uncertain path changes, including the workspace manifest, lock file, pinned toolchain, CI/build infrastructure, or an unclassifiable path.
+
+This avoids repeating unrelated workspace tests after every merge while preserving dependent coverage for the packages that can actually be affected by the landed change.
 
 ### Full validation
 
 Full validation is selected when any of the following is true:
 
-- the run is for a push to `main`;
 - the run is the nightly scheduled validation;
 - `Cargo.toml`, `Cargo.lock`, or `rust-toolchain.toml` changes;
 - validation/build infrastructure changes, including the permanent validation workflow or validation scripts;
 - the changed path cannot be classified safely.
 
-A package-local `Cargo.toml` change may remain affected-mode when current Cargo metadata can classify it safely.
+A package-local `Cargo.toml` change may remain affected-mode when current Cargo metadata can classify it safely; reverse dependents of that package are included.
 
 Full validation uses the same three parallel Windows gates and runs:
 
@@ -109,17 +122,27 @@ cargo test --workspace
 cargo doc --workspace --no-deps
 ```
 
-The explicit workspace check runs only on `full` validation. Ordinary affected PRs keep the package-selected fast path instead of paying for a second full-workspace compilation.
+The explicit workspace check runs only on `full` validation. Ordinary affected changes keep the package-selected path instead of paying for a second full-workspace compilation.
 
 ### Documentation-only validation
 
-A PR that changes only explicitly recognized GameEngine documentation paths is classified as `docs`. Rust compilation is skipped for that PR. Full validation still runs after the documentation change lands on `main` and during the nightly run.
+A change that touches only explicitly recognized GameEngine documentation paths is classified as `docs`. Rust compilation is skipped for that change. The nightly full run remains the periodic workspace-wide safety net.
 
-### Exact-head and fallback safety
+### Planner regression validation
 
-Dispatcher-triggered validation still resolves the requested branch through the GitHub API, verifies its exact 40-character HEAD SHA, and validates that exact commit. If the dispatcher run cannot identify a matching PR, affected classification is not guessed; the run compares the requested head with the current `main` baseline and still falls back to full validation whenever the changed paths are workspace-wide or cannot be classified safely.
+`Test-ValidationPlanner.ps1` is a regression suite for validation infrastructure, not part of every product validation run. It runs from the automation-regression workflow when `.github/**` or `scripts/ci/**` changes rather than being executed once for every unrelated Audio, Renderer, ECS, or Editor change.
 
-Workspace package ownership comes from `cargo metadata`; package names and crate directories are not duplicated in the workflow classifier. Deleted or otherwise unclassifiable package paths force full validation.
+The regression suite covers standalone and nested workspace layouts, documentation-only changes, package additions/deletions, workspace-wide fallbacks, main-push behavior, and transitive reverse-dependent selection.
+
+### Exact-head, merge-base, and fallback safety
+
+Dispatcher-triggered validation still resolves the requested branch through the GitHub API, verifies its exact 40-character HEAD SHA, and validates that exact commit.
+
+When a matching PR exists, the validation planner uses the merge base between the current PR base revision and the exact requested head before computing changed paths. Therefore unrelated commits added to `main` after the task branch diverged do not pollute the task's changed-file list. This fixes validation-scope drift without weakening exact-head validation or pretending that the task branch contains commits it does not contain.
+
+If the dispatcher run cannot identify a matching PR, it still compares the requested head with current `main` through their merge base. Workspace-wide or unclassifiable changes continue to fall back to full validation.
+
+Workspace package ownership and reverse dependencies come from `cargo metadata`. Deleted or otherwise unclassifiable package paths force full validation.
 
 ### Caching and CI profiles
 
@@ -127,9 +150,11 @@ CI disables Cargo incremental compilation so cacheable compiler work can be reus
 
 The workflow does not run a separate `cargo fetch` step. Each gate lets Cargo fetch only what that command needs, avoiding a serialized dependency-fetch phase before compilation starts.
 
+The lint, test, and documentation jobs remain separate because they can execute concurrently when runner capacity exists. The workflow does not assume a single self-hosted runner topology merely to remove setup steps; runner-topology-specific consolidation should be measured before changing this contract.
+
 ### Results and diagnostics
 
-The workflow reports the selected mode, affected packages, and reason in the Actions summary and in the single validation PR comment.
+The workflow reports the selected mode, directly changed packages, affected packages, and reason in the Actions summary and in the single validation PR comment.
 
 A failing matrix gate uploads gate-specific diagnostics named like:
 
@@ -145,10 +170,12 @@ gameengine-windows-validation-<run-id>-<attempt>
 
 Its `summary.json` uses schema version 4 and records the validation mode, changed and affected packages, selected gate package sets, aggregate executor outcome, and overall result.
 
-The workflow run conclusion is authoritative. A PR fast-path run succeeds only when every matrix gate required by its selected mode succeeds.
+The workflow run conclusion is authoritative. An affected run succeeds only when every matrix gate required by its selected mode succeeds.
 
 ## Performance target
 
-For an ordinary PR that changes a known crate without Cargo/build configuration changes, the target wall-clock time is **2 to 5 minutes on a warm cache**. This is a target, not a correctness rule. Full `main`/nightly validation may take longer because broad workspace coverage is intentionally moved off the normal PR critical path.
+For an ordinary change to a known leaf package without Cargo/build configuration changes, the target wall-clock time is **2 to 5 minutes on a warm cache**. Foundational package changes may intentionally select more reverse dependents because the affected build surface is genuinely larger.
+
+Full validation is reserved for nightly coverage and workspace-wide or uncertain changes rather than every main push.
 
 The repository-native ChatGPT dispatcher protocol is defined in `CHATGPT_AUTOMATION.md`.

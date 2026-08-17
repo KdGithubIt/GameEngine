@@ -6,7 +6,7 @@ on:
       - ".github/**"
       - "docs/CHATGPT_AUTOMATION.md"
       - "docs/CHATGPT_AUTOMATION_INCIDENTS.md"
-      - "scripts/ci/Invoke-EditorVisualValidation.ps1"
+      - "scripts/ci/**"
   push:
     branches:
       - main
@@ -14,7 +14,7 @@ on:
       - ".github/**"
       - "docs/CHATGPT_AUTOMATION.md"
       - "docs/CHATGPT_AUTOMATION_INCIDENTS.md"
-      - "scripts/ci/Invoke-EditorVisualValidation.ps1"
+      - "scripts/ci/**"
   workflow_dispatch:
 
 permissions:
@@ -35,3 +35,19 @@ jobs:
 
       - name: Run incident and producer regression suites
         run: python3 -m unittest discover -s .github/chatgpt -p 'test_*_protocol.py' -v
+
+  validation-planner:
+    name: Validation planner regressions
+    runs-on: windows-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out exact revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Run validation planner regression suite
+        shell: pwsh
+        run: ./scripts/ci/Test-ValidationPlanner.ps1
