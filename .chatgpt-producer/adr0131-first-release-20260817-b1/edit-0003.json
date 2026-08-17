@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/agent_host.rs",
+  "old": "        let run = self.run_mut_in_session(&session_id, run_id)?;\n        push_event_with_evidence(\n            run,\n            AgentEventKind::ToolAction,\n            format!(\"{tool}: {action}\"),",
+  "new": "        let run = self.run_mut_in_session(&session_id, run_id)?;\n        if success != Some(false) {\n            if tool.starts_with(\"authoring.\")\n                || tool.starts_with(\"scene.\")\n                || tool.starts_with(\"prefab.\")\n                || tool.starts_with(\"vfx.\")\n                || tool.starts_with(\"behavior_tree.\")\n            {\n                run.audit.authoring_operations = run.audit.authoring_operations.saturating_add(1);\n            }\n            if tool == \"workspace.raw\" {\n                run.audit.raw_workspace_operations = run.audit.raw_workspace_operations.saturating_add(1);\n            }\n            if tool == \"command.custom\" {\n                run.audit.custom_commands = run.audit.custom_commands.saturating_add(1);\n            }\n        }\n        push_event_with_evidence(\n            run,\n            AgentEventKind::ToolAction,\n            format!(\"{tool}: {action}\"),"
+}
