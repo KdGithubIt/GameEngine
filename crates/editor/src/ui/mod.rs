@@ -62,6 +62,8 @@ mod navigation_workspace;
 mod play;
 mod presentation;
 mod viewport;
+#[cfg(feature = "visual-validation")]
+mod vfx_visual_validation;
 
 pub use mcp::EditorMcpCallFailure;
 

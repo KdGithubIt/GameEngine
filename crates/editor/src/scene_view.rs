@@ -1702,10 +1702,16 @@ impl SceneView {
                 ui.painter().text(
                     rect.left_bottom() + egui::vec2(8.0, -8.0),
                     egui::Align2::LEFT_BOTTOM,
-                    format!(
-                        "Particles {} / {}  |  {:.1}/s  |  preview {:.2}s",
-                        debug.live, debug.maximum, debug.spawn_rate, self.particle_preview_elapsed
-                    ),
+                    match debug.spawn_rate {
+                        Some(spawn_rate) => format!(
+                            "Particles {} / {}  |  {:.1}/s  |  preview {:.2}s",
+                            debug.live, debug.maximum, spawn_rate, self.particle_preview_elapsed
+                        ),
+                        None => format!(
+                            "VFX particles {} / {}  |  deterministic preview {:.2}s",
+                            debug.live, debug.maximum, self.particle_preview_elapsed
+                        ),
+                    },
                     egui::TextStyle::Monospace.resolve(ui.style()),
                     egui::Color32::from_rgb(80, 230, 255),
                 );
@@ -2175,10 +2181,19 @@ fn skipped_component_notice(diagnostics: &[engine_authoring::Diagnostic]) -> Opt
 }
 
 fn simulate_particle_preview(world: &mut engine::ecs::World, elapsed_seconds: f32) {
-    let mut emitters =
-        engine::Query::<(&mut engine::ParticleEmitter, &GlobalTransform)>::new(world);
-    for (_, (emitter, transform)) in emitters.iter_mut() {
-        emitter.simulate_preview(elapsed_seconds, transform.matrix().col(3).truncate());
+    {
+        let mut emitters =
+            engine::Query::<(&mut engine::ParticleEmitter, &GlobalTransform)>::new(world);
+        for (_, (emitter, transform)) in emitters.iter_mut() {
+            emitter.simulate_preview(elapsed_seconds, transform.matrix().col(3).truncate());
+        }
+    }
+    let mut players = engine::Query::<(&mut engine::VfxPlayer, &GlobalTransform)>::new(world);
+    for (_, (player, transform)) in players.iter_mut() {
+        player.instance_mut().seek_preview(
+            elapsed_seconds,
+            transform.matrix().col(3).truncate(),
+        );
     }
 }
 
@@ -2682,7 +2697,7 @@ fn authoring_local_transform(
 struct ParticleDebugSnapshot {
     live: usize,
     maximum: usize,
-    spawn_rate: f32,
+    spawn_rate: Option<f32>,
     bounds: Option<(Vec3, Vec3)>,
     origin: Vec3,
     direction: Vec3,
@@ -2692,21 +2707,59 @@ fn selected_particle_debug(
     world: &mut engine::ecs::World,
     selected: &EntityId,
 ) -> Option<ParticleDebugSnapshot> {
+    {
+        let query = engine::Query::<(
+            &engine::RuntimeEntityIdentity,
+            &engine::ParticleEmitter,
+            &GlobalTransform,
+        )>::new(world);
+        if let Some(debug) = query
+            .iter()
+            .find_map(|(_, (identity, emitter, transform))| {
+                (&identity.authoring_id == selected).then(|| ParticleDebugSnapshot {
+                    live: emitter.live_count(),
+                    maximum: emitter.max_particles,
+                    spawn_rate: Some(emitter.spawn_rate),
+                    bounds: emitter.live_bounds(),
+                    origin: transform.matrix().col(3).truncate(),
+                    direction: emitter.direction,
+                })
+            })
+        {
+            return Some(debug);
+        }
+    }
+
     let query = engine::Query::<(
         &engine::RuntimeEntityIdentity,
-        &engine::ParticleEmitter,
+        &engine::VfxPlayer,
         &GlobalTransform,
     )>::new(world);
     query
         .iter()
-        .find_map(|(_, (identity, emitter, transform))| {
-            (&identity.authoring_id == selected).then(|| ParticleDebugSnapshot {
-                live: emitter.live_count(),
-                maximum: emitter.max_particles,
-                spawn_rate: emitter.spawn_rate,
-                bounds: emitter.live_bounds(),
-                origin: transform.matrix().col(3).truncate(),
-                direction: emitter.direction,
+        .find_map(|(_, (identity, player, transform))| {
+            (&identity.authoring_id == selected).then(|| {
+                let instance = player.instance();
+                let bounds = instance
+                    .emitters()
+                    .iter()
+                    .filter_map(|emitter| emitter.live_bounds())
+                    .fold(None::<(Vec3, Vec3)>, |combined, (min, max)| {
+                        Some(match combined {
+                            None => (min, max),
+                            Some((current_min, current_max)) => {
+                                (current_min.min(min), current_max.max(max))
+                            }
+                        })
+                    });
+                ParticleDebugSnapshot {
+                    live: instance.stats().live_particles,
+                    maximum: instance.effect().max_particles as usize,
+                    spawn_rate: None,
+                    bounds,
+                    origin: transform.matrix().col(3).truncate(),
+                    direction: Vec3::Y,
+                }
             })
         })
 }
@@ -2839,7 +2892,9 @@ fn entity_icon(entity: &engine_authoring::AuthoringEntity) -> Option<EntityIcon>
         || has(engine::scene_bridge::AUDIO_LISTENER_COMPONENT)
     {
         Some(EntityIcon::Audio)
-    } else if has(engine::scene_bridge::PARTICLE_EMITTER_COMPONENT) {
+    } else if has(engine::scene_bridge::PARTICLE_EMITTER_COMPONENT)
+        || has(engine::scene_bridge::VFX_PLAYER_COMPONENT)
+    {
         Some(EntityIcon::Particle)
     } else {
         None
