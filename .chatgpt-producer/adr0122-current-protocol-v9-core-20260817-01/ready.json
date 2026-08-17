@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0122-current-protocol-v9-core-20260817-01",
+  "target_branch": "chatgpt/gameengine-adr0122-spatial-audio-complete-v9",
+  "expected_head_sha": "901221eac2aa0c9eb66e8b17af896d8a19179f4b",
+  "baseline_main_sha": "901221eac2aa0c9eb66e8b17af896d8a19179f4b",
+  "edit_parts": ["edit-0000.json","edit-0001.json","edit-0002.json","edit-0003.json","edit-0004.json","edit-0005.json","edit-0006.json","edit-0007.json","edit-0008.json","edit-0009.json","edit-0010.json","edit-0011.json","edit-0012.json","edit-0013.json","edit-0014.json","edit-0015.json","edit-0016.json","edit-0017.json","edit-0018.json","edit-0019.json","edit-0020.json","edit-0021.json","edit-0022.json","edit-0023.json","edit-0024.json","edit-0025.json","edit-0026.json","edit-0027.json","edit-0028.json","edit-0029.json","edit-0030.json","edit-0031.json","edit-0032.json","edit-0033.json","edit-0034.json","edit-0035.json","edit-0036.json","edit-0037.json","edit-0038.json","edit-0039.json","edit-0040.json","edit-0041.json","edit-0042.json","edit-0043.json","edit-0044.json","edit-0045.json","edit-0046.json","edit-0047.json","edit-0048.json","edit-0049.json","edit-0050.json","edit-0051.json","edit-0052.json","edit-0053.json","edit-0054.json","edit-0055.json","edit-0056.json","edit-0057.json","edit-0058.json","edit-0059.json","edit-0060.json","edit-0061.json","edit-0062.json","edit-0063.json"],
+  "commit_message": "Complete ADR 0122 spatial audio core",
+  "pr_title": "Complete ADR 0122 spatial audio first release",
+  "pr_body": "## Summary\n\nCompletes ADR 0122 spatial audio first-release requirements on the current protocol baseline. Reuses the existing engine-owned spatial evaluator and managed voice backend, adds deterministic listener selection, ECS synchronization, Project Rust deferred spatial playback, Editor authoring, audition, and Scene View gizmos.\n\n## Validation\n\nRun Windows affected validation and task-specific Spatial Audio Editor Visual Validation.\n\n<!-- gameengine-visual-validation: editor -->\n<!-- gameengine-visual-authoring-tool: Spatial Audio -->"
+}
