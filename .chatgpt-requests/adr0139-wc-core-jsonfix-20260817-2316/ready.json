@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0139-wc-core-jsonfix-20260817-2316",
+  "target_branch": "chatgpt/gameengine-adr0139-working-copy",
+  "expected_head_sha": "73ecdb99da92052d74595dd26e2872d7956fecf8",
+  "baseline_main_sha": "73ecdb99da92052d74595dd26e2872d7956fecf8",
+  "patch_sha256": "0347d627e80691a567619bf8481430b1fe18235bd3cbd36daac26986a971be14",
+  "patch_bytes": 52437,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Implement ADR 0139 working-copy authority core",
+  "pr_title": "Implement ADR 0139 authoritative working copies",
+  "pr_body": "Implements ADR 0139 authoritative Editor working-copy and saved-copy coherency.\n\n- keeps existing workspace and specialized editor sessions as the single mutable owners\n- supplies immutable working-copy snapshots to Problems validation and Play\n- removes Material canonical autosave and makes persistence explicit through Save/Save All\n- makes Animation Set consume an open Animation Graph working copy\n\nA follow-up request on the same task branch completes Scene View snapshot consumption and external-file conflict UI before final validation."
+}
