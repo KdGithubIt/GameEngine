@@ -610,6 +610,18 @@ pub fn load_animation_graph(path: &Path) -> Result<CompiledAnimGraph, AnimGraphL
     load_animation_graph_document(path).map(|(_, compiled)| compiled)
 }
 
+/// Compiles and validates one in-memory `anim.graph` JSON snapshot.
+///
+/// Editor hosts use this for unsaved working copies so runtime composition does
+/// not need a temporary file and cannot silently fall back to an older saved graph.
+///
+/// # Errors
+///
+/// Returns a JSON parse, graph compilation, or typed transition-condition diagnostic.
+pub fn load_animation_graph_json(json: &str) -> Result<CompiledAnimGraph, AnimGraphLoadError> {
+    load_animation_graph_document_json(json).map(|(_, compiled)| compiled)
+}
+
 /// Loads the semantic source graph together with its compiled runtime artifact.
 ///
 /// The semantic graph is returned only as read-only provenance for callers that
@@ -619,7 +631,18 @@ pub fn load_animation_graph_document(
     path: &Path,
 ) -> Result<(Graph, CompiledAnimGraph), AnimGraphLoadError> {
     let json = std::fs::read_to_string(path).map_err(AnimGraphLoadError::Io)?;
-    let graph: Graph = serde_json::from_str(&json).map_err(AnimGraphLoadError::Parse)?;
+    load_animation_graph_document_json(&json)
+}
+
+/// Parses, compiles, and validates an in-memory semantic Animation Graph.
+///
+/// # Errors
+///
+/// Returns a JSON parse, graph compilation, or typed transition-condition diagnostic.
+pub fn load_animation_graph_document_json(
+    json: &str,
+) -> Result<(Graph, CompiledAnimGraph), AnimGraphLoadError> {
+    let graph: Graph = serde_json::from_str(json).map_err(AnimGraphLoadError::Parse)?;
     let domain = AnimationGraphDomain::new();
     let compiled =
         compile_animation_graph(&domain, &graph).map_err(AnimGraphLoadError::Compile)?;

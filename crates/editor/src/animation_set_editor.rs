@@ -45,6 +45,29 @@ impl AnimationSetEditorState {
         self.document != self.clean_document
     }
 
+    /// Returns process-local revision/generation metadata for this working copy.
+    pub fn revision_generation(&self) -> (u64, u64) {
+        (self.authoring.revision(), self.authoring.generation())
+    }
+
+    /// Replaces this working copy from disk only while it is clean.
+    pub fn reload_clean(&mut self, document: AnimationSet) -> bool {
+        if self.is_dirty() {
+            return false;
+        }
+        self.reload_discarding_changes(document);
+        true
+    }
+
+    /// Replaces this Animation Set after the author explicitly chooses the disk version.
+    pub fn reload_discarding_changes(&mut self, document: AnimationSet) {
+        self.document = document.clone();
+        self.clean_document = document;
+        self.authoring = TypedDocumentAuthoringState::new();
+        self.undo.clear();
+        self.redo.clear();
+    }
+
     /// Returns whether an undo entry is available.
     pub fn can_undo(&self) -> bool {
         !self.undo.is_empty()

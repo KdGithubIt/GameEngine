@@ -86,6 +86,36 @@ impl EditorApp {
         }
     }
 
+    /// Returns whether any workspace or specialized editor owns unsaved authoring state.
+    fn any_authoring_dirty(&self) -> bool {
+        self.session.any_dirty()
+            || self.material_editor.any_dirty()
+            || self.animation_set_editor.as_ref().is_some_and(AnimationSetEditorState::is_dirty)
+    }
+
+    /// Persists every dirty working copy through its existing validated atomic adapter.
+    fn save_all_authoring_documents(&mut self) -> Result<(), String> {
+        self.session.save_all().map_err(|error| error.to_string())?;
+        if self.animation_set_editor.as_ref().is_some_and(AnimationSetEditorState::is_dirty) {
+            self.save_animation_set_document()?;
+        }
+        self.save_all_material_documents()?;
+        Ok(())
+    }
+
+    /// Saves every dirty document, including specialized editor working copies.
+    pub(super) fn save_all(&mut self) {
+        if self.save_blocked_while_playing() {
+            return;
+        }
+        if let Err(error) = self.save_all_authoring_documents() {
+            self.session.push_diagnostic(engine_authoring::Diagnostic::error(
+                "editor.save_all_failed",
+                format!("save all failed: {error}"),
+            ));
+        }
+    }
+
     pub(super) fn save_as(&mut self) {
         if self.save_blocked_while_playing() {
             return;
@@ -134,7 +164,7 @@ impl EditorApp {
                 ));
             return;
         }
-        if self.session.any_dirty() {
+        if self.any_authoring_dirty() {
             self.pending_unsaved_action = Some(PendingUnsavedAction::SwitchProject);
         } else {
             self.activate_launcher_for_project_switch();
@@ -359,13 +389,13 @@ impl EditorApp {
                 if let Some(pending) = self.pending_unsaved_action.take() {
                     match pending {
                         PendingUnsavedAction::SwitchProject => {
-                            if let Err(error) = self.session.save_all() {
+                            if let Err(error) = self.save_all_authoring_documents() {
                                 self.session
                                     .push_diagnostic(engine_authoring::Diagnostic::error(
                                         "editor.save_all_failed",
                                         format!("could not save every open document: {error}"),
                                     ));
-                                // A failed save leaves at least one tab dirty. Keep the
+                                // A failed save leaves at least one working copy dirty. Keep the
                                 // dialog open so project replacement cannot proceed.
                                 self.pending_unsaved_action =
                                     Some(PendingUnsavedAction::SwitchProject);
@@ -555,28 +585,56 @@ impl EditorApp {
             }
             FileSyncArea::Assets => {
                 let absolute = project.path().join(&event.relative_path);
-                let dirty_open_document = self
-                    .session
-                    .tab_for_path(&absolute)
-                    .is_some_and(|tab_id| self.session.tab_is_dirty(tab_id));
-                if let Some(tab_id) = self.session.tab_for_path(&absolute) {
-                    if self.session.tab_is_dirty(tab_id) {
+                let material_relative = event
+                    .relative_path
+                    .strip_prefix(Path::new("assets"))
+                    .ok()
+                    .filter(|path| !path.as_os_str().is_empty())
+                    .map(Path::to_path_buf);
+                let animation_set_open = self
+                    .animation_set_editor
+                    .as_ref()
+                    .is_some_and(|state| state.absolute_path == absolute);
+                let material_open = material_relative.as_ref().is_some_and(|path| {
+                    self.material_editor.materials.contains_key(path)
+                });
+                let workspace_tab = self.session.tab_for_path(&absolute);
+                let dirty_open_document = workspace_tab
+                    .is_some_and(|tab_id| self.session.tab_is_dirty(tab_id))
+                    || (animation_set_open
+                        && self.animation_set_editor.as_ref().is_some_and(AnimationSetEditorState::is_dirty))
+                    || material_relative
+                        .as_ref()
+                        .is_some_and(|path| material_open && self.material_editor.is_dirty(path));
+
+                let owner = if animation_set_open {
+                    Some(ExternalDocumentOwner::AnimationSet)
+                } else if material_open {
+                    material_relative.clone().map(ExternalDocumentOwner::Material)
+                } else {
+                    workspace_tab.map(ExternalDocumentOwner::Workspace)
+                };
+                if let Some(owner) = owner {
+                    if dirty_open_document {
                         self.external_document_conflict = Some(ExternalDocumentConflict {
-                            tab_id,
-                            path: absolute,
+                            owner,
+                            path: absolute.clone(),
                             kind: event.kind,
                         });
                     } else if event.kind != FileSyncKind::Removed {
-                        self.reload_external_document(tab_id, &absolute);
+                        self.reload_external_document_owner(
+                            &owner,
+                            &absolute,
+                            ExternalReloadPolicy::CleanOnly,
+                        );
                     } else {
-                        self.session
-                            .push_diagnostic(engine_authoring::Diagnostic::warning(
-                                "editor.file_sync.open_document_removed",
-                                format!(
-                                    "the open document was removed externally: {}",
-                                    absolute.display()
-                                ),
-                            ));
+                        self.session.push_diagnostic(engine_authoring::Diagnostic::warning(
+                            "editor.file_sync.open_document_removed",
+                            format!(
+                                "the open document was removed externally: {}",
+                                absolute.display()
+                            ),
+                        ));
                     }
                 }
                 self.asset_browser.refresh(&project.assets_root());
@@ -834,12 +892,83 @@ impl EditorApp {
         }
     }
 
+    fn reload_external_document_owner(
+        &mut self,
+        owner: &ExternalDocumentOwner,
+        path: &Path,
+        policy: ExternalReloadPolicy,
+    ) {
+        let result = match owner {
+            ExternalDocumentOwner::Workspace(tab_id) => {
+                self.reload_external_document(*tab_id, path);
+                return;
+            }
+            ExternalDocumentOwner::AnimationSet => fs::read_to_string(path)
+                .map_err(|error| error.to_string())
+                .and_then(|json| engine_authoring::AnimationSet::from_json(&json).map_err(|error| error.to_string()))
+                .and_then(|document| {
+                    let state = self
+                        .animation_set_editor
+                        .as_mut()
+                        .ok_or_else(|| "Animation Set editor is closed".to_owned())?;
+                    match policy {
+                        ExternalReloadPolicy::CleanOnly => state
+                            .reload_clean(document)
+                            .then_some(())
+                            .ok_or_else(|| {
+                                "Animation Set became dirty before external reload".to_owned()
+                            }),
+                        ExternalReloadPolicy::DiscardChanges => {
+                            state.reload_discarding_changes(document);
+                            Ok(())
+                        }
+                    }
+                }),
+            ExternalDocumentOwner::Material(relative) => fs::read_to_string(path)
+                .map_err(|error| error.to_string())
+                .and_then(|json| engine_authoring::MaterialAsset::from_json(&json).map_err(|error| error.to_string()))
+                .and_then(|material| {
+                    let reloaded = match policy {
+                        ExternalReloadPolicy::CleanOnly => {
+                            self.material_editor.reload_clean(relative, material)
+                        }
+                        ExternalReloadPolicy::DiscardChanges => self
+                            .material_editor
+                            .reload_discarding_changes(relative, material),
+                    };
+                    reloaded.then_some(()).ok_or_else(|| match policy {
+                        ExternalReloadPolicy::CleanOnly => format!(
+                            "material {} became dirty before external reload",
+                            relative.display()
+                        ),
+                        ExternalReloadPolicy::DiscardChanges => {
+                            format!("material {} is no longer open", relative.display())
+                        }
+                    })
+                }),
+        };
+        match result {
+            Ok(()) => {
+                self.scene_view.invalidate_asset_preview();
+                self.refresh_scene_problems();
+                self.session.push_diagnostic(engine_authoring::Diagnostic::info(
+                    "editor.file_sync.document_reloaded",
+                    format!("reloaded external change from {}", path.display()),
+                ));
+            }
+            Err(error) => self.session.push_diagnostic(engine_authoring::Diagnostic::error(
+                "editor.file_sync.reload_failed",
+                format!("could not reload {}: {error}", path.display()),
+            )),
+        }
+    }
+
     pub(super) fn show_external_document_conflict(&mut self, context: &egui::Context) {
         let Some(conflict) = self.external_document_conflict.as_ref() else {
             return;
         };
         let path = conflict.path.clone();
-        let tab_id = conflict.tab_id;
+        let owner = conflict.owner.clone();
         let kind = conflict.kind;
         let mut keep = false;
         let mut reload = false;
@@ -863,7 +992,11 @@ impl EditorApp {
             self.external_document_conflict = None;
         } else if reload {
             self.external_document_conflict = None;
-            self.reload_external_document(tab_id, &path);
+            self.reload_external_document_owner(
+                &owner,
+                &path,
+                ExternalReloadPolicy::DiscardChanges,
+            );
         }
     }
 
@@ -940,8 +1073,21 @@ enum UnsavedChangesChoice {
     Cancel,
 }
 
+#[derive(Clone, Copy)]
+enum ExternalReloadPolicy {
+    CleanOnly,
+    DiscardChanges,
+}
+
+#[derive(Clone)]
+enum ExternalDocumentOwner {
+    Workspace(WorkspaceTabId),
+    AnimationSet,
+    Material(PathBuf),
+}
+
 pub(super) struct ExternalDocumentConflict {
-    tab_id: WorkspaceTabId,
+    owner: ExternalDocumentOwner,
     path: PathBuf,
     kind: FileSyncKind,
 }

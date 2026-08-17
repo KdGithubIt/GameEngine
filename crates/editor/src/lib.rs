@@ -49,6 +49,7 @@ pub mod ui_builder;
 mod vfx_builder;
 pub mod view_aspect;
 mod view_resolution;
+mod working_copy;
 mod workspace;
 
 pub use ai_studio::{AiStudioConnection, AiStudioPanel};

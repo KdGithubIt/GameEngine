@@ -735,9 +735,17 @@ impl EditorApp {
         let path = project
             .resolve_asset(&entry.path)
             .map_err(|error| error.to_string())?;
-        let json = fs::read_to_string(&path).map_err(|error| error.to_string())?;
-        let graph_document = serde_json::from_str::<engine_authoring::Graph>(&json)
-            .map_err(|error| error.to_string())?;
+        let disk_graph;
+        let graph_document = if let Some((working_copy, _revision)) =
+            graph_working_copy(&self.session, &path)
+        {
+            working_copy
+        } else {
+            let json = fs::read_to_string(&path).map_err(|error| error.to_string())?;
+            disk_graph = serde_json::from_str::<engine_authoring::Graph>(&json)
+                .map_err(|error| error.to_string())?;
+            &disk_graph
+        };
         if graph_document.kind.as_str() != "anim.graph" {
             return Err(format!(
                 "{} is `{}`, not an Animation Graph",
@@ -745,7 +753,7 @@ impl EditorApp {
                 graph_document.kind.as_str()
             ));
         }
-        let slots = engine_authoring::animation_graph_motion_slots(&graph_document)
+        let slots = engine_authoring::animation_graph_motion_slots(graph_document)
             .map_err(|error| format!("{} has invalid Motion Slots: {error}", entry.path))?;
         let mut states =
             std::collections::BTreeMap::<engine_authoring::MotionSlotId, Vec<String>>::new();
@@ -772,6 +780,19 @@ impl EditorApp {
             );
         }
         Ok(AnimationSetGraphModel { slots, states })
+    }
+
+    /// Persists the current Animation Set through its validated atomic save adapter.
+    pub(in crate::ui) fn save_animation_set_document(&mut self) -> Result<(), String> {
+        let state = self
+            .animation_set_editor
+            .as_ref()
+            .ok_or_else(|| "Animation Set editor is closed".to_owned())?;
+        validate_animation_set_clip_references(&state.document, &self.asset_manifest)?;
+        self.animation_set_editor
+            .as_mut()
+            .expect("checked above")
+            .save()
     }
 
     fn apply_animation_set_ui_action(&mut self, action: Option<AnimationSetUiAction>) {

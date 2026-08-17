@@ -2336,17 +2336,18 @@ fn material_editor_saves_typed_changes_through_project_path_boundary() {
 }
 
 #[test]
-fn continuous_material_edits_are_coalesced_before_disk_write() {
+fn continuous_material_edits_require_explicit_save_before_disk_write() {
     let directory = tempfile::tempdir().expect("temporary project root");
     let root = ProjectRoot::create(
         directory.path(),
         engine_authoring::ProjectConfig {
-            name: "MaterialDebounceTest".into(),
+            name: "MaterialExplicitSaveTest".into(),
             schema_version: engine_authoring::PROJECT_SCHEMA_VERSION,
         },
     )
     .expect("project fixture");
     let material_path = root.assets_root().join("surface.material.json");
+    let relative_path = PathBuf::from("surface.material.json");
     let original = engine_authoring::MaterialAsset::default();
     std::fs::write(
         &material_path,
@@ -2360,28 +2361,29 @@ fn continuous_material_edits_are_coalesced_before_disk_write() {
         ..original.clone()
     };
     app.material_editor
-        .open_material(PathBuf::from("surface.material.json"), changed.clone());
+        .open_material(relative_path.clone(), original.clone());
+    *app.material_editor
+        .active_material_mut()
+        .expect("active material working copy") = changed.clone();
     let context = egui::Context::default();
 
     app.queue_active_material_save(&context);
-    let before_quiet_period = engine_authoring::MaterialAsset::from_json(
-        &std::fs::read_to_string(&material_path).expect("queued material file"),
+    let before_save = engine_authoring::MaterialAsset::from_json(
+        &std::fs::read_to_string(&material_path).expect("unsaved material file"),
     )
-    .expect("queued material remains valid");
-    assert_eq!(before_quiet_period, original);
+    .expect("unsaved material remains valid");
+    assert_eq!(before_save, original);
+    assert!(app.material_editor.is_dirty(&relative_path));
+    assert!(app.material_scene_preview_deadline.is_some());
 
-    for pending in app.pending_material_saves.values_mut() {
-        pending.deadline = std::time::Instant::now();
-    }
-    app.flush_pending_material_saves(&context);
+    app.save_active_material();
 
     let saved = engine_authoring::MaterialAsset::from_json(
-        &std::fs::read_to_string(material_path).expect("flushed material file"),
+        &std::fs::read_to_string(&material_path).expect("saved material file"),
     )
-    .expect("flushed material remains valid");
+    .expect("saved material remains valid");
     assert_eq!(saved, changed);
-    assert!(app.pending_material_saves.is_empty());
-    assert!(app.material_scene_preview_deadline.is_some());
+    assert!(!app.material_editor.is_dirty(&relative_path));
 }
 
 #[test]
