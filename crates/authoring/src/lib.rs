@@ -156,7 +156,7 @@ pub use material_asset::{
 pub use native_2d::{
     Native2dIdError, PhysicsMaterial2d, PixelPreviewPolicy, PixelRect, PixelsPerUnit,
     Project2dSettings, SortingLayer, SortingLayerId, SpriteAnimationDocument,
-    SpriteAnimationFrame, SpriteAnimator2d, SpriteFiltering, SpriteId, SpriteRef,
+    SpriteAnimationFrame, SpriteAnimator2d, SpriteAtlasDocument, SpriteFiltering, SpriteId, SpriteRef,
     SpriteRegion, SpriteRenderer2d, TileCell, TileChunk, TileChunkCoord, TileCollisionShape,
     TileDefinition, TileId, TileLayerId, TileMapDocument, TileMapLayer, TileMapStroke,
     TileSetDocument, SPRITE_ANIMATION_SCHEMA_VERSION, SPRITE_ATLAS_SCHEMA_VERSION,
