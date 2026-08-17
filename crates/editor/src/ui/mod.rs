@@ -836,7 +836,11 @@ impl eframe::App for EditorApp {
         if !self.behavior_debug.visible {
             let inspector_maximum_width = inspector_max_width(ui.available_width());
             let inspector_scroll_request = self.inspector_scroll_request.take();
-            show_inspector_panel(ui, inspector_maximum_width, inspector_scroll_request, |ui| {
+            show_inspector_panel_at_offset(
+                ui,
+                inspector_maximum_width,
+                inspector_scroll_request,
+                |ui| {
                 self.show_data_asset_tools(ui);
                 ui.separator();
                 // The three inspector surfaces replace one another inside this

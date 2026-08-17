@@ -2085,6 +2085,14 @@ pub(super) fn show_primary_left_dock_panel<R>(
 pub(super) fn show_inspector_panel<R>(
     ui: &mut egui::Ui,
     max_width: f32,
+    add_contents: impl FnOnce(&mut egui::Ui) -> R,
+) -> egui::InnerResponse<R> {
+    show_inspector_panel_at_offset(ui, max_width, None, add_contents)
+}
+
+pub(super) fn show_inspector_panel_at_offset<R>(
+    ui: &mut egui::Ui,
+    max_width: f32,
     vertical_scroll_offset: Option<f32>,
     add_contents: impl FnOnce(&mut egui::Ui) -> R,
 ) -> egui::InnerResponse<R> {
