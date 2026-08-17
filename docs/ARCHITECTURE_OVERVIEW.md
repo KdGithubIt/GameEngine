@@ -45,7 +45,7 @@ The current workspace contains these runtime-domain packages:
 
 The application and authoring side contains `engine-authoring`,
 `engine-project-lifecycle`, `engine-launcher`, `engine-editor`, `engine-cli`,
-`engine-mcp`, and the project Rust macro crates.
+`engine-mcp`, `engine-mcp-host`, and the project Rust macro crates.
 
 This is an ownership map, not a declaration that every package depends on the
 package above it. Actual dependencies should be narrower than the conceptual
@@ -108,14 +108,22 @@ ADR 0117 defines a project-first desktop lifecycle:
 
 ADR 0121 defines the structured AI boundary:
 
-- MCP is the structured AI authoring interface for a project open in the
-  Editor.
-- The active Editor owns the initial project-scoped loopback MCP endpoint.
+- MCP is the structured AI authoring interface for project-scoped semantic
+  authoring.
+- The active Editor owns its project-scoped loopback MCP endpoint and routes
+  requests into the live Editor working copy.
 - `engine-mcp` remains a transport-agnostic adapter over shared authoring
   services.
-- CLI is the supported headless authoring/automation adapter.
+- CLI remains a supported headless authoring/automation adapter.
 - The AI Agent Bridge is for runtime observation/input and visual interaction,
   not a replacement semantic authoring model.
+
+ADR 0151 extends that boundary with `engine-mcp-host`: a GUI-free MCP process
+may own authoritative saved-project writes only after acquiring the same
+OS-backed per-location writer lease as the Editor. Editor and headless writer
+roles are mutually exclusive. A read-only headless host may coexist, but its
+view is explicitly a saved-file snapshot and never includes a live Editor's
+dirty in-memory state.
 
 ## 5. Asset, animation, physics, and rendering boundaries
 

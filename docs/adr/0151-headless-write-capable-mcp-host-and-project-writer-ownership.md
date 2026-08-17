@@ -1,6 +1,6 @@
 # ADR 0151: Headless Write-Capable MCP Host and Project-Writer Ownership
 
-Status: Proposed
+Status: Accepted
 Date: 2026-08-17
 Builds on: ADR 0117, ADR 0121
 Relates to: ADR 0131, ADR 0139, ADR 0152
@@ -34,6 +34,14 @@ A headless host loads canonical saved project data and owns any in-memory workin
 ## Agent Host integration
 
 ADR 0131 Agent Runtime may target a headless host only when the project-writer ownership contract confirms that host is authoritative. Remote AI Studio or a native Agent must not silently start a headless writer beside an Editor to bypass availability or stale-state errors.
+
+## Implementation
+
+`engine-project-lifecycle` keeps the existing per-location OS lock as the single writer authority and extends it with an explicit headless writer role. Editor and headless writer acquisition therefore contend on the same physical lock. Role metadata is diagnostic only; stale metadata without a live OS lock cannot claim ownership.
+
+`engine-mcp-host` provides the GUI-free Streamable HTTP host and a saved-project authoring state adapter over the existing `engine-mcp` inventory. Writer mode acquires the lifecycle writer lease before loading project state and persists successful project-data mutations with the canonical serializers owned by the existing authoring/document layers. Read-only mode may coexist with an Editor, grants no commit permissions, and reports its view as a `saved_file_snapshot` with live Editor unsaved state explicitly unavailable.
+
+The headless process does not invoke `engine-cli` to perform authoring and does not introduce alternate command, Stable ID, transaction, validation, or persisted document schemas.
 
 ## Dependencies and parallel work
 
