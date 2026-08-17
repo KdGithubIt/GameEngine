@@ -1220,7 +1220,8 @@ pub(crate) fn spawn_audio_emitter_component(
     context: &mut SpawnContext<'_>,
 ) -> Result<(), ComponentSpawnError> {
     let component_type = ComponentTypeId::new(AUDIO_EMITTER_COMPONENT);
-    let expected = "an object with clip, volume, distance, spatial blend, and autoplay fields";
+    let expected =
+        "an object with clip, volume, spatial blend, distance, rolloff, looping, and autoplay fields";
     let fields = ComponentFields::new(context.authoring_entity, &component_type, value, expected)?;
     if !context
         .authoring_entity
@@ -1246,14 +1247,20 @@ pub(crate) fn spawn_audio_emitter_component(
     let spatial_blend = fields.f32("spatial_blend")?;
     let min_distance = fields.f32("min_distance")?;
     let max_distance = fields.f32("max_distance")?;
-    let autoplay = fields.bool_or("autoplay", false)?;
+    let rolloff = match fields.string("rolloff")? {
+        "linear" => AudioRolloffMode::Linear,
+        "inverse" => AudioRolloffMode::Inverse,
+        _ => return Err(fields.invalid("rolloff must be linear or inverse").into()),
+    };
+    let looping = fields.bool("looping")?;
+    let autoplay = fields.bool("autoplay")?;
     if !(0.0..=1.0).contains(&volume)
         || !(0.0..=1.0).contains(&spatial_blend)
-        || min_distance <= 0.0
+        || min_distance < 0.0
         || max_distance < min_distance
     {
         return Err(fields
-            .invalid("volume/spatial_blend in 0..=1 and 0 < min_distance <= max_distance")
+            .invalid("volume/spatial_blend in 0..=1 and 0 <= min_distance <= max_distance")
             .into());
     }
     let handle = resolve_audio_asset(&clip, context)?;
@@ -1266,7 +1273,8 @@ pub(crate) fn spawn_audio_emitter_component(
             min_distance,
             max_distance,
             autoplay,
-        ),
+        )
+        .with_spatial_playback(rolloff, looping),
     )?;
     Ok(())
 }
@@ -1277,12 +1285,22 @@ pub(crate) fn spawn_audio_listener_component(
     context: &mut SpawnContext<'_>,
 ) -> Result<(), ComponentSpawnError> {
     let component_type = ComponentTypeId::new(AUDIO_LISTENER_COMPONENT);
-    let expected = "an object with an enabled boolean field";
+    let expected = "an object with enabled and priority fields";
     let fields = ComponentFields::new(context.authoring_entity, &component_type, value, expected)?;
-    let enabled = fields.bool_or("enabled", true)?;
+    if !context
+        .authoring_entity
+        .components
+        .contains_key(&ComponentTypeId::new(TRANSFORM_COMPONENT))
+    {
+        return Err(fields
+            .invalid("an engine.transform component on the same entity")
+            .into());
+    }
+    let enabled = fields.bool("enabled")?;
+    let priority = fields.i64("priority")?;
     context
         .world
-        .add_component(entity, AudioListener { enabled })?;
+        .add_component(entity, AudioListener { enabled, priority })?;
     Ok(())
 }
 

@@ -1,6 +1,6 @@
 //! Runtime audio assets, authored playback components, and platform backend.
 
-pub use crate::spatial_audio::{AudioVoiceId, StereoGains};
+pub use crate::spatial_audio::{AudioRolloffMode, AudioVoiceId, StereoGains};
 
 use std::fmt;
 use std::io::Cursor;
@@ -120,7 +120,7 @@ pub enum AuthoredAudioState {
     Failed(String),
 }
 
-/// Authorable one-shot sound emitter attached to a spatial entity.
+/// Authorable sound emitter attached to a spatial entity.
 pub struct AudioEmitter {
     /// Decoded clip played when autoplay is enabled.
     pub clip: Handle<AudioAsset>,
@@ -132,13 +132,17 @@ pub struct AudioEmitter {
     pub min_distance: f32,
     /// Distance at which attenuation reaches its floor.
     pub max_distance: f32,
+    /// Distance attenuation curve selected by authoring.
+    pub rolloff: AudioRolloffMode,
+    /// Whether the managed voice repeats until stopped or despawned.
+    pub looping: bool,
     /// Whether conversion should produce one automatic playback request.
     pub autoplay: bool,
     state: AuthoredAudioState,
 }
 
 impl AudioEmitter {
-    /// Creates a validated pending emitter.
+    /// Creates a validated pending emitter with the default spatial policy.
     pub fn new(
         clip: Handle<AudioAsset>,
         volume: f32,
@@ -153,14 +157,38 @@ impl AudioEmitter {
             spatial_blend,
             min_distance,
             max_distance,
+            rolloff: AudioRolloffMode::Linear,
+            looping: false,
             autoplay,
             state: AuthoredAudioState::Pending,
         }
     }
 
+    /// Applies the authorable spatial playback policy without exposing backend voice state.
+    pub fn with_spatial_playback(mut self, rolloff: AudioRolloffMode, looping: bool) -> Self {
+        self.rolloff = rolloff;
+        self.looping = looping;
+        self
+    }
+
     /// Returns the latest automatic playback state.
     pub fn state(&self) -> &AuthoredAudioState {
         &self.state
+    }
+
+    /// Records that the runtime host started this emitter successfully.
+    pub fn mark_playback_started(&mut self) {
+        self.state = AuthoredAudioState::Playing;
+    }
+
+    /// Records that this host cannot provide an audio backend.
+    pub fn mark_playback_unavailable(&mut self) {
+        self.state = AuthoredAudioState::Unavailable;
+    }
+
+    /// Records a runtime playback failure without exposing backend voice identity.
+    pub fn mark_playback_failed(&mut self, message: impl Into<String>) {
+        self.state = AuthoredAudioState::Failed(message.into());
     }
 }
 
@@ -169,6 +197,17 @@ impl AudioEmitter {
 pub struct AudioListener {
     /// Disabled listeners remain authored but do not participate in selection.
     pub enabled: bool,
+    /// Higher enabled priorities win; equal priorities use deterministic entity order.
+    pub priority: i64,
+}
+
+impl Default for AudioListener {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            priority: 0,
+        }
+    }
 }
 
 /// Authorable background-music startup policy.
@@ -465,7 +504,7 @@ impl AudioSystem {
             voice_id,
             respond_to,
         })?;
-        self.voice_gains.remove(&voice_id);
+        retire_managed_voice(&mut self.voice_gains, voice_id);
         Ok(())
     }
 
@@ -476,7 +515,7 @@ impl AudioSystem {
             Err(_) => Vec::new(),
         };
         for voice_id in &completed {
-            self.voice_gains.remove(voice_id);
+            retire_managed_voice(&mut self.voice_gains, *voice_id);
         }
         completed
     }
@@ -765,7 +804,7 @@ fn run_audio_thread(
                 voice_id,
                 respond_to,
             }) => {
-                if let Some(voice) = voices.remove(&voice_id) {
+                if let Some(voice) = retire_managed_voice(&mut voices, voice_id) {
                     voice.sink.stop();
                 }
                 let _ = respond_to.send(Ok(()));
@@ -809,7 +848,7 @@ fn run_audio_thread(
         se_sinks.retain(|sink| !sink.empty());
         let completed = voices
             .iter()
-            .filter_map(|(voice_id, voice)| voice.sink.empty().then_some(*voice_id))
+            .filter_map(|(voice_id, voice)| voice.is_naturally_complete().then_some(*voice_id))
             .collect::<Vec<_>>();
         for voice_id in completed {
             voices.remove(&voice_id);
@@ -837,6 +876,23 @@ fn apply_bus_volumes(
 #[cfg(not(target_arch = "wasm32"))]
 struct ActiveVoice {
     sink: rodio::Sink,
+    looping: bool,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl ActiveVoice {
+    fn is_naturally_complete(&self) -> bool {
+        managed_voice_naturally_completes(self.looping, self.sink.empty())
+    }
+}
+
+fn managed_voice_naturally_completes(looping: bool, sink_empty: bool) -> bool {
+    !looping && sink_empty
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn retire_managed_voice<T>(voices: &mut HashMap<AudioVoiceId, T>, voice_id: AudioVoiceId) -> Option<T> {
+    voices.remove(&voice_id)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1015,7 +1071,7 @@ fn play_voice_on_thread(
     } else {
         sink.append(source);
     }
-    Ok(ActiveVoice { sink })
+    Ok(ActiveVoice { sink, looping })
 }
 
 fn sanitize_stereo_gains(gains: StereoGains) -> [f32; 2] {
@@ -1075,6 +1131,24 @@ mod tests {
         assert_eq!(fade_duration(-1.0), Duration::ZERO);
         assert_eq!(fade_duration(f32::NAN), Duration::ZERO);
         assert_eq!(fade_duration(f32::INFINITY), Duration::ZERO);
+    }
+
+    #[test]
+    fn managed_voice_completion_distinguishes_one_shot_and_looping() {
+        assert!(!managed_voice_naturally_completes(false, false));
+        assert!(managed_voice_naturally_completes(false, true));
+        assert!(!managed_voice_naturally_completes(true, false));
+        assert!(!managed_voice_naturally_completes(true, true));
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn managed_voice_retirement_removes_backend_control_identity() {
+        let voice = AudioVoiceId(7);
+        let mut controls = HashMap::from([(voice, 42_u8)]);
+        assert_eq!(retire_managed_voice(&mut controls, voice), Some(42));
+        assert!(!controls.contains_key(&voice));
+        assert_eq!(retire_managed_voice(&mut controls, voice), None);
     }
 
     fn test_wav_bytes() -> Vec<u8> {

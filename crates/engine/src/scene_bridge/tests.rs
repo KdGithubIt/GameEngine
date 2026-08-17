@@ -2159,9 +2159,11 @@ fn authorable_audio_components_decode_once_and_execute_headless_state() {
                     "spatial_blend": 1.0,
                     "min_distance": 1.0,
                     "max_distance": 12.0,
+                    "rolloff": "linear",
+                    "looping": false,
                     "autoplay": true
                 },
-                (AUDIO_LISTENER_COMPONENT): {"enabled": true},
+                (AUDIO_LISTENER_COMPONENT): {"enabled": true, "priority": 0},
                 (MUSIC_CONTROLLER_COMPONENT): {
                     "clip": {"$type": "asset_ref", "id": audio_asset.as_str()},
                     "volume": 0.6,

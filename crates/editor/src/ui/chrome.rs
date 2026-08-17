@@ -2087,6 +2087,15 @@ pub(super) fn show_inspector_panel<R>(
     max_width: f32,
     add_contents: impl FnOnce(&mut egui::Ui) -> R,
 ) -> egui::InnerResponse<R> {
+    show_inspector_panel_at_offset(ui, max_width, None, add_contents)
+}
+
+pub(super) fn show_inspector_panel_at_offset<R>(
+    ui: &mut egui::Ui,
+    max_width: f32,
+    vertical_scroll_offset: Option<f32>,
+    add_contents: impl FnOnce(&mut egui::Ui) -> R,
+) -> egui::InnerResponse<R> {
     egui::Panel::right("inspector_panel")
         .resizable(true)
         .default_size(INSPECTOR_DEFAULT_WIDTH)
@@ -2108,8 +2117,11 @@ pub(super) fn show_inspector_panel<R>(
             // into one-glyph-per-line text. Labels expose elided text on hover.
             viewport_ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
 
-            let result = egui::ScrollArea::vertical()
-                .auto_shrink([false, false])
+            let mut scroll_area = egui::ScrollArea::vertical().auto_shrink([false, false]);
+            if let Some(offset) = vertical_scroll_offset {
+                scroll_area = scroll_area.vertical_scroll_offset(offset);
+            }
+            let result = scroll_area
                 .show(&mut viewport_ui, |ui| {
                     let viewport_width = ui.available_width();
                     ui.set_width(viewport_width);
