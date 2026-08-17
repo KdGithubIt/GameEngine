@@ -759,11 +759,16 @@ mod tests {
 #[cfg(test)]
 mod parity_tests {
     use super::*;
+    use crate::animation_set_editor::AnimationSetEditorState;
+    use crate::material_editor::MaterialEditorPanel;
+    use crate::project_settings_panel::ProjectSettingsPanel;
     use crate::session::EditorSession;
     use engine_authoring::{
-        GraphCommand, GraphViewCommand, UiDocumentCommand, Value as AuthoringValue, Vec2, Viewport,
+        AnimationSet, AssetId, GraphCommand, GraphViewCommand, MaterialAsset, ProjectSettings,
+        UiDocumentCommand, Value as AuthoringValue, Vec2, Viewport,
     };
     use serde_json::{json, Value};
+    use std::path::PathBuf;
 
     fn editor_app() -> (tempfile::TempDir, EditorApp) {
         let parent = tempfile::tempdir().expect("temporary project parent");
@@ -771,6 +776,27 @@ mod parity_tests {
         let root = engine_project_lifecycle::create_standard_project(&path, "McpParityGame")
             .expect("project scaffold");
         (parent, EditorApp::from_project(root))
+    }
+
+    fn cli_json(args: Vec<String>) -> Value {
+        let result = engine_cli::run_cli_with_status(args).expect("CLI invocation");
+        assert_eq!(result.exit_code, 0, "{}", result.output);
+        serde_json::from_str(&result.output).expect("CLI output JSON")
+    }
+
+    fn material_diff_documents(value: &Value) -> Vec<(MaterialAsset, MaterialAsset)> {
+        value
+            .as_array()
+            .expect("material diff array")
+            .iter()
+            .map(|change| {
+                let before = serde_json::from_value(change["before"].clone())
+                    .expect("material diff before");
+                let after = serde_json::from_value(change["after"].clone())
+                    .expect("material diff after");
+                (before, after)
+            })
+            .collect()
     }
 
     #[test]
@@ -1103,5 +1129,517 @@ mod parity_tests {
             cli_ui_value,
             serde_json::to_value(direct.ui_document().expect("direct UI")).expect("UI value")
         );
+    }
+
+    #[test]
+    fn typed_material_adapters_are_equivalent_and_editor_apply_is_undoable() {
+        let (directory, mut app) = editor_app();
+        let project = app.project_root().clone();
+        let relative = PathBuf::from("materials/adr0121-parity.material.json");
+        let absolute = project.assets_root().join(&relative);
+        std::fs::create_dir_all(absolute.parent().expect("material parent"))
+            .expect("material directory");
+
+        let baseline_json = MaterialAsset::default().to_json().expect("material JSON");
+        std::fs::write(&absolute, &baseline_json).expect("material fixture");
+        let baseline = MaterialAsset::from_json(&baseline_json).expect("canonical material");
+        let mut replacement_source = baseline.clone();
+        replacement_source.cast_shadow = !baseline.cast_shadow;
+        let replacement_json = replacement_source
+            .to_json()
+            .expect("replacement material JSON");
+        let replacement =
+            MaterialAsset::from_json(&replacement_json).expect("canonical replacement material");
+        let replacement_path = directory.path().join("material-replacement.json");
+        std::fs::write(&replacement_path, &replacement_json).expect("material replacement fixture");
+
+        let permissions = mcp_authoring_permissions();
+        let mut direct = MaterialEditorPanel::new();
+        direct.open_material(relative.clone(), baseline.clone());
+        let direct_base = direct
+            .structured_inspect(&permissions)
+            .expect("direct material inspect")
+            .expect("direct active material");
+        let direct_validation = direct
+            .structured_validate(&permissions)
+            .expect("direct material validate")
+            .expect("direct active material");
+        let direct_preview = direct
+            .structured_preview(
+                &permissions,
+                direct_base.revision,
+                direct_base.generation,
+                replacement.clone(),
+            )
+            .expect("direct material preview")
+            .expect("direct active material");
+        let direct_apply = direct
+            .structured_apply(
+                &permissions,
+                direct_base.revision,
+                direct_base.generation,
+                replacement.clone(),
+            )
+            .expect("direct material apply")
+            .expect("direct active material");
+        assert!(direct_apply.success);
+        assert!(direct.can_undo());
+
+        app.material_editor
+            .open_material(relative.clone(), baseline.clone());
+        let mcp_base = app
+            .handle_mcp_tool_call(
+                "authoring.inspect",
+                json!({"capability": "material.inspect"}),
+            )
+            .expect("generic material inspect");
+        let revision = mcp_base["revision"].as_u64().expect("material revision");
+        let generation = mcp_base["generation"]
+            .as_u64()
+            .expect("material generation");
+        let mcp_validation = app
+            .handle_mcp_tool_call(
+                "authoring.validate",
+                json!({"capability": "material.validate"}),
+            )
+            .expect("generic material validate");
+        assert_eq!(mcp_validation["success"], Value::Bool(direct_validation.success));
+        assert_eq!(
+            mcp_validation["diagnostics"],
+            serde_json::to_value(&direct_validation.diagnostics).expect("material diagnostics")
+        );
+        let arguments = json!({
+            "expected_revision": revision,
+            "expected_generation": generation,
+            "replacement": replacement.clone()
+        });
+        let domain_preview = app
+            .handle_mcp_tool_call("material.preview", arguments.clone())
+            .expect("domain material preview");
+        let generic_preview = app
+            .handle_mcp_tool_call(
+                "authoring.preview",
+                json!({"capability": "material.preview", "arguments": arguments.clone()}),
+            )
+            .expect("generic material preview");
+        assert_eq!(domain_preview, generic_preview);
+        assert_eq!(
+            generic_preview["diff"],
+            serde_json::to_value(&direct_preview.diff).expect("material preview diff")
+        );
+        let generic_apply = app
+            .handle_mcp_tool_call(
+                "authoring.apply",
+                json!({"capability": "material.apply", "arguments": arguments}),
+            )
+            .expect("generic material apply");
+        assert_eq!(
+            generic_apply["diff"],
+            serde_json::to_value(&direct_apply.diff).expect("material apply diff")
+        );
+        assert!(app.material_editor.can_undo());
+        assert!(app.material_editor.undo());
+        assert_eq!(app.material_editor.active_material(), Some(&baseline));
+        assert!(app.material_editor.can_redo());
+        assert!(app.material_editor.redo());
+        assert_eq!(app.material_editor.active_material(), Some(&replacement));
+        let stale = app
+            .handle_mcp_tool_call(
+                "authoring.apply",
+                json!({
+                    "capability": "material.apply",
+                    "arguments": {
+                        "expected_revision": revision,
+                        "expected_generation": generation,
+                        "replacement": replacement.clone()
+                    }
+                }),
+            )
+            .expect_err("stale material apply");
+        assert_eq!(stale.code(), "authoring.stale_revision");
+
+        let cli_validation = cli_json(vec![
+            "material".into(),
+            "validate".into(),
+            project.path().to_string_lossy().into_owned(),
+            relative.to_string_lossy().into_owned(),
+        ]);
+        assert_eq!(cli_validation["success"], Value::Bool(direct_validation.success));
+        assert_eq!(
+            cli_validation["diagnostics"],
+            serde_json::to_value(&direct_validation.diagnostics).expect("CLI material diagnostics")
+        );
+        let cli_preview = cli_json(vec![
+            "material".into(),
+            "preview".into(),
+            project.path().to_string_lossy().into_owned(),
+            relative.to_string_lossy().into_owned(),
+            replacement_path.to_string_lossy().into_owned(),
+        ]);
+        let direct_preview_documents: Vec<_> = direct_preview
+            .diff
+            .iter()
+            .map(|change| (change.before.clone(), change.after.clone()))
+            .collect();
+        assert_eq!(
+            material_diff_documents(&cli_preview["diff"]),
+            direct_preview_documents
+        );
+        let cli_apply = cli_json(vec![
+            "material".into(),
+            "apply".into(),
+            project.path().to_string_lossy().into_owned(),
+            relative.to_string_lossy().into_owned(),
+            replacement_path.to_string_lossy().into_owned(),
+        ]);
+        let direct_apply_documents: Vec<_> = direct_apply
+            .diff
+            .iter()
+            .map(|change| (change.before.clone(), change.after.clone()))
+            .collect();
+        assert_eq!(
+            material_diff_documents(&cli_apply["diff"]),
+            direct_apply_documents
+        );
+        let persisted = MaterialAsset::from_json(
+            &std::fs::read_to_string(&absolute).expect("persisted material JSON"),
+        )
+        .expect("persisted material");
+        assert_eq!(persisted, replacement);
+    }
+
+    #[test]
+    fn typed_project_settings_adapters_are_equivalent_and_editor_apply_is_undoable() {
+        let (directory, mut app) = editor_app();
+        let project = app.project_root().clone();
+        let baseline = app
+            .project_settings_panel
+            .as_ref()
+            .expect("project settings panel")
+            .settings
+            .clone();
+        let mut replacement = baseline.clone();
+        replacement.tags.push("adr0121_parity".into());
+        let replacement_path = directory.path().join("project-settings-replacement.json");
+        std::fs::write(
+            &replacement_path,
+            serde_json::to_string_pretty(&replacement).expect("settings replacement JSON"),
+        )
+        .expect("settings replacement fixture");
+
+        let permissions = mcp_authoring_permissions();
+        let mut direct = ProjectSettingsPanel::new(baseline.clone());
+        let direct_base = direct
+            .structured_inspect(&permissions)
+            .expect("direct settings inspect");
+        let direct_validation = direct
+            .structured_validate(&permissions)
+            .expect("direct settings validate");
+        let direct_preview = direct
+            .structured_preview(
+                &permissions,
+                direct_base.revision,
+                direct_base.generation,
+                replacement.clone(),
+            )
+            .expect("direct settings preview");
+        let direct_apply = direct
+            .structured_apply(
+                &permissions,
+                direct_base.revision,
+                direct_base.generation,
+                replacement.clone(),
+            )
+            .expect("direct settings apply");
+        assert!(direct_apply.success);
+        assert!(direct.can_undo());
+
+        let mcp_base = app
+            .handle_mcp_tool_call(
+                "authoring.inspect",
+                json!({"capability": "project_settings.inspect"}),
+            )
+            .expect("generic settings inspect");
+        let revision = mcp_base["revision"].as_u64().expect("settings revision");
+        let generation = mcp_base["generation"]
+            .as_u64()
+            .expect("settings generation");
+        let mcp_validation = app
+            .handle_mcp_tool_call(
+                "authoring.validate",
+                json!({"capability": "project_settings.validate"}),
+            )
+            .expect("generic settings validate");
+        assert_eq!(mcp_validation["success"], Value::Bool(direct_validation.success));
+        assert_eq!(
+            mcp_validation["diagnostics"],
+            serde_json::to_value(&direct_validation.diagnostics).expect("settings diagnostics")
+        );
+        let arguments = json!({
+            "expected_revision": revision,
+            "expected_generation": generation,
+            "replacement": replacement.clone()
+        });
+        let domain_preview = app
+            .handle_mcp_tool_call("project_settings.preview", arguments.clone())
+            .expect("domain settings preview");
+        let generic_preview = app
+            .handle_mcp_tool_call(
+                "authoring.preview",
+                json!({
+                    "capability": "project_settings.preview",
+                    "arguments": arguments.clone()
+                }),
+            )
+            .expect("generic settings preview");
+        assert_eq!(domain_preview, generic_preview);
+        assert_eq!(
+            generic_preview["diff"],
+            serde_json::to_value(&direct_preview.diff).expect("settings preview diff")
+        );
+        let generic_apply = app
+            .handle_mcp_tool_call(
+                "authoring.apply",
+                json!({"capability": "project_settings.apply", "arguments": arguments}),
+            )
+            .expect("generic settings apply");
+        assert_eq!(
+            generic_apply["diff"],
+            serde_json::to_value(&direct_apply.diff).expect("settings apply diff")
+        );
+        let panel = app
+            .project_settings_panel
+            .as_mut()
+            .expect("live project settings panel");
+        assert!(panel.can_undo());
+        assert!(panel.undo());
+        assert_eq!(panel.settings, baseline);
+        assert!(panel.can_redo());
+        assert!(panel.redo());
+        assert_eq!(panel.settings, replacement);
+        let stale = app
+            .handle_mcp_tool_call(
+                "authoring.apply",
+                json!({
+                    "capability": "project_settings.apply",
+                    "arguments": {
+                        "expected_revision": revision,
+                        "expected_generation": generation,
+                        "replacement": replacement.clone()
+                    }
+                }),
+            )
+            .expect_err("stale settings apply");
+        assert_eq!(stale.code(), "authoring.stale_revision");
+
+        let cli_validation = cli_json(vec![
+            "project_settings".into(),
+            "validate".into(),
+            project.path().to_string_lossy().into_owned(),
+        ]);
+        assert_eq!(cli_validation["success"], Value::Bool(direct_validation.success));
+        assert_eq!(
+            cli_validation["diagnostics"],
+            serde_json::to_value(&direct_validation.diagnostics).expect("CLI settings diagnostics")
+        );
+        let cli_preview = cli_json(vec![
+            "project_settings".into(),
+            "preview".into(),
+            project.path().to_string_lossy().into_owned(),
+            replacement_path.to_string_lossy().into_owned(),
+        ]);
+        assert_eq!(
+            cli_preview["diff"],
+            serde_json::to_value(&direct_preview.diff).expect("CLI settings preview diff")
+        );
+        let cli_apply = cli_json(vec![
+            "project_settings".into(),
+            "apply".into(),
+            project.path().to_string_lossy().into_owned(),
+            replacement_path.to_string_lossy().into_owned(),
+        ]);
+        assert_eq!(
+            cli_apply["diff"],
+            serde_json::to_value(&direct_apply.diff).expect("CLI settings apply diff")
+        );
+        let persisted = ProjectSettings::load(project.path()).expect("persisted settings");
+        assert_eq!(persisted, replacement);
+    }
+
+    #[test]
+    fn typed_animation_set_adapters_are_equivalent_and_preserve_editor_undo() {
+        let (directory, mut app) = editor_app();
+        let project = app.project_root().clone();
+        let relative = PathBuf::from("animations/adr0121-parity.animset.json");
+        let absolute = project.assets_root().join(&relative);
+        std::fs::create_dir_all(absolute.parent().expect("animation parent"))
+            .expect("animation directory");
+
+        let baseline = AnimationSet::empty();
+        std::fs::write(
+            &absolute,
+            baseline.to_canonical_json().expect("animation set JSON"),
+        )
+        .expect("animation set fixture");
+        let mut replacement = baseline.clone();
+        replacement.graph = Some(AssetId::generate());
+        let replacement_path = directory.path().join("animation-set-replacement.json");
+        std::fs::write(
+            &replacement_path,
+            replacement
+                .to_canonical_json()
+                .expect("animation replacement JSON"),
+        )
+        .expect("animation replacement fixture");
+
+        let permissions = mcp_authoring_permissions();
+        let mut direct = AnimationSetEditorState::new(
+            relative.clone(),
+            absolute.clone(),
+            baseline.clone(),
+        );
+        let direct_base = direct
+            .structured_inspect(&permissions)
+            .expect("direct animation inspect");
+        let direct_validation = direct
+            .structured_validate(&permissions)
+            .expect("direct animation validate");
+        let direct_preview = direct
+            .structured_preview(
+                &permissions,
+                direct_base.revision,
+                direct_base.generation,
+                replacement.clone(),
+            )
+            .expect("direct animation preview");
+        let direct_apply = direct
+            .structured_apply(
+                &permissions,
+                direct_base.revision,
+                direct_base.generation,
+                replacement.clone(),
+            )
+            .expect("direct animation apply");
+        assert!(direct_apply.success);
+        assert!(direct.can_undo());
+
+        app.animation_set_editor = Some(AnimationSetEditorState::new(
+            relative.clone(),
+            absolute.clone(),
+            baseline.clone(),
+        ));
+        let mcp_base = app
+            .handle_mcp_tool_call(
+                "authoring.inspect",
+                json!({"capability": "animation_set.inspect"}),
+            )
+            .expect("generic animation inspect");
+        let revision = mcp_base["revision"].as_u64().expect("animation revision");
+        let generation = mcp_base["generation"]
+            .as_u64()
+            .expect("animation generation");
+        let mcp_validation = app
+            .handle_mcp_tool_call(
+                "authoring.validate",
+                json!({"capability": "animation_set.validate"}),
+            )
+            .expect("generic animation validate");
+        assert_eq!(mcp_validation["success"], Value::Bool(direct_validation.success));
+        assert_eq!(
+            mcp_validation["diagnostics"],
+            serde_json::to_value(&direct_validation.diagnostics).expect("animation diagnostics")
+        );
+        let arguments = json!({
+            "expected_revision": revision,
+            "expected_generation": generation,
+            "replacement": replacement.clone()
+        });
+        let domain_preview = app
+            .handle_mcp_tool_call("animation_set.preview", arguments.clone())
+            .expect("domain animation preview");
+        let generic_preview = app
+            .handle_mcp_tool_call(
+                "authoring.preview",
+                json!({"capability": "animation_set.preview", "arguments": arguments.clone()}),
+            )
+            .expect("generic animation preview");
+        assert_eq!(domain_preview, generic_preview);
+        assert_eq!(
+            generic_preview["diff"],
+            serde_json::to_value(&direct_preview.diff).expect("animation preview diff")
+        );
+        let generic_apply = app
+            .handle_mcp_tool_call(
+                "authoring.apply",
+                json!({"capability": "animation_set.apply", "arguments": arguments}),
+            )
+            .expect("generic animation apply");
+        assert_eq!(
+            generic_apply["diff"],
+            serde_json::to_value(&direct_apply.diff).expect("animation apply diff")
+        );
+        let editor = app
+            .animation_set_editor
+            .as_mut()
+            .expect("live animation set editor");
+        assert!(editor.can_undo());
+        assert!(editor.undo());
+        assert_eq!(editor.document, baseline);
+        assert!(editor.can_redo());
+        assert!(editor.redo());
+        assert_eq!(editor.document, replacement);
+        let stale = app
+            .handle_mcp_tool_call(
+                "authoring.apply",
+                json!({
+                    "capability": "animation_set.apply",
+                    "arguments": {
+                        "expected_revision": revision,
+                        "expected_generation": generation,
+                        "replacement": replacement.clone()
+                    }
+                }),
+            )
+            .expect_err("stale animation apply");
+        assert_eq!(stale.code(), "authoring.stale_revision");
+
+        let cli_validation = cli_json(vec![
+            "animation_set".into(),
+            "validate".into(),
+            project.path().to_string_lossy().into_owned(),
+            relative.to_string_lossy().into_owned(),
+        ]);
+        assert_eq!(cli_validation["success"], Value::Bool(direct_validation.success));
+        assert_eq!(
+            cli_validation["diagnostics"],
+            serde_json::to_value(&direct_validation.diagnostics).expect("CLI animation diagnostics")
+        );
+        let cli_preview = cli_json(vec![
+            "animation_set".into(),
+            "preview".into(),
+            project.path().to_string_lossy().into_owned(),
+            relative.to_string_lossy().into_owned(),
+            replacement_path.to_string_lossy().into_owned(),
+        ]);
+        assert_eq!(
+            cli_preview["diff"],
+            serde_json::to_value(&direct_preview.diff).expect("CLI animation preview diff")
+        );
+        let cli_apply = cli_json(vec![
+            "animation_set".into(),
+            "apply".into(),
+            project.path().to_string_lossy().into_owned(),
+            relative.to_string_lossy().into_owned(),
+            replacement_path.to_string_lossy().into_owned(),
+        ]);
+        assert_eq!(
+            cli_apply["diff"],
+            serde_json::to_value(&direct_apply.diff).expect("CLI animation apply diff")
+        );
+        let persisted = AnimationSet::from_json(
+            &std::fs::read_to_string(&absolute).expect("persisted animation JSON"),
+        )
+        .expect("persisted animation set");
+        assert_eq!(persisted, replacement);
     }
 }
