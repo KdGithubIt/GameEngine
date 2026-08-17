@@ -282,6 +282,73 @@ impl NativeQuestionTask {
     }
 }
 
+/// Cancellable raw model turn used by the write-capable native AgentRuntime.
+pub(crate) struct NativeModelTask {
+    result: Receiver<Result<String, NativeAgentError>>,
+    interrupted: Arc<AtomicBool>,
+    active_stream: Arc<Mutex<Option<TcpStream>>>,
+}
+
+impl NativeModelTask {
+    pub(crate) fn spawn(
+        config: LocalModelConfig,
+        prompt: String,
+        images: Vec<Vec<u8>>,
+    ) -> Result<Self, NativeAgentError> {
+        if config.model.trim().is_empty() {
+            return Err(NativeAgentError::EmptyModel);
+        }
+        LocalHttpEndpoint::parse(&config.endpoint)?;
+        let (sender, result) = mpsc::channel();
+        let interrupted = Arc::new(AtomicBool::new(false));
+        let active_stream = Arc::new(Mutex::new(None));
+        let worker_interrupted = Arc::clone(&interrupted);
+        let worker_stream = Arc::clone(&active_stream);
+        std::thread::Builder::new()
+            .name("ai-native-model-turn".to_owned())
+            .spawn(move || {
+                let result = generate_local(
+                    &config,
+                    &prompt,
+                    &images,
+                    &worker_interrupted,
+                    &worker_stream,
+                )
+                .and_then(|response| {
+                    let text = response.response.trim().to_owned();
+                    if text.is_empty() {
+                        Err(NativeAgentError::EmptyResponse)
+                    } else {
+                        Ok(text)
+                    }
+                });
+                let _ = sender.send(result);
+            })?;
+        Ok(Self {
+            result,
+            interrupted,
+            active_stream,
+        })
+    }
+
+    pub(crate) fn interrupt(&self) {
+        self.interrupted.store(true, Ordering::Release);
+        if let Ok(guard) = self.active_stream.lock()
+            && let Some(stream) = guard.as_ref()
+        {
+            let _ = stream.shutdown(Shutdown::Both);
+        }
+    }
+
+    pub(crate) fn poll(&self) -> Option<Result<String, NativeAgentError>> {
+        match self.result.try_recv() {
+            Ok(result) => Some(result),
+            Err(TryRecvError::Empty) => None,
+            Err(TryRecvError::Disconnected) => Some(Err(NativeAgentError::WorkerDisconnected)),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct LocalHttpEndpoint {
     host: String,
@@ -422,7 +489,7 @@ fn answer_question(
     if interrupted.load(Ordering::Acquire) {
         return Err(NativeAgentError::Interrupted);
     }
-    let backend = generate_local(config, &prompt, interrupted, active_stream)?;
+    let backend = generate_local(config, &prompt, &[], interrupted, active_stream)?;
     let text = backend.response.trim().to_owned();
     if text.is_empty() {
         return Err(NativeAgentError::EmptyResponse);
@@ -479,6 +546,8 @@ struct GenerateRequest<'a> {
     model: &'a str,
     prompt: &'a str,
     stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    images: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -501,14 +570,22 @@ struct GenerateResponse {
 fn generate_local(
     config: &LocalModelConfig,
     prompt: &str,
+    images: &[Vec<u8>],
     interrupted: &AtomicBool,
     active_stream: &Mutex<Option<TcpStream>>,
 ) -> Result<GenerateResponse, NativeAgentError> {
     let endpoint = LocalHttpEndpoint::parse(&config.endpoint)?;
+    let encoded_images = (!images.is_empty()).then(|| {
+        images
+            .iter()
+            .map(|image| encode_base64(image))
+            .collect::<Vec<_>>()
+    });
     let body = serde_json::to_vec(&GenerateRequest {
         model: config.model.trim(),
         prompt,
         stream: false,
+        images: encoded_images,
     })?;
     let mut stream = endpoint.connect()?;
     if interrupted.load(Ordering::Acquire) {
@@ -549,6 +626,29 @@ fn generate_local(
         ));
     }
     serde_json::from_slice(&parsed.body).map_err(Into::into)
+}
+
+fn encode_base64(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut output = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let first = chunk[0];
+        let second = chunk.get(1).copied().unwrap_or(0);
+        let third = chunk.get(2).copied().unwrap_or(0);
+        output.push(TABLE[(first >> 2) as usize] as char);
+        output.push(TABLE[(((first & 0x03) << 4) | (second >> 4)) as usize] as char);
+        if chunk.len() > 1 {
+            output.push(TABLE[(((second & 0x0f) << 2) | (third >> 6)) as usize] as char);
+        } else {
+            output.push('=');
+        }
+        if chunk.len() > 2 {
+            output.push(TABLE[(third & 0x3f) as usize] as char);
+        } else {
+            output.push('=');
+        }
+    }
+    output
 }
 
 struct ParsedHttpResponse {

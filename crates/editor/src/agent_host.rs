@@ -2417,6 +2417,18 @@ impl CodeWorkspace {
         &self.workspace_root
     }
 
+    /// Writes one UTF-8 file inside the isolated managed code workspace.
+    ///
+    /// This never writes the live project. The normal collect/review/apply path
+    /// remains responsible for stale checks before canonical source mutation.
+    pub(crate) fn write_text(&self, relative: &Path, text: &str) -> Result<(), AgentHostError> {
+        validate_code_relative_path(relative)?;
+        if !is_managed_code_file(relative) {
+            return Err(AgentHostError::InvalidRelativePath(relative.to_path_buf()));
+        }
+        write_text_atomic(&self.workspace_root.join(relative), text)
+    }
+
     pub(crate) fn collect_changes(&self) -> Result<Vec<CodeChange>, AgentHostError> {
         let mut paths = self.baseline.keys().cloned().collect::<BTreeSet<_>>();
         collect_workspace_code_paths(&self.workspace_root, &mut paths)?;

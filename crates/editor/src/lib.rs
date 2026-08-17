@@ -9,6 +9,7 @@
 
 mod agent_host;
 mod native_agent;
+mod native_agent_runtime;
 mod remote_ai_studio;
 mod resource_arbitration;
 pub mod ai_studio;
