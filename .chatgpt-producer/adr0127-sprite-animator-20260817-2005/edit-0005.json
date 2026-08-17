@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/engine/src/scene_bridge.rs","old":"use crate::native_2d::{Camera2d, SortingLayerId, SpriteId, SpriteRef, SpriteRenderer2d, ViewportFit2d};\n","new":"use crate::native_2d::{\n    Camera2d, SortingLayerId, SpriteAnimationDocument, SpriteAnimatorRuntime2d, SpriteId,\n    SpriteRef, SpriteRenderer2d, ViewportFit2d,\n};\n"}
