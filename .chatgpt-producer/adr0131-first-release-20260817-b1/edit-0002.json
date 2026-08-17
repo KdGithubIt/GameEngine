@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/agent_host.rs",
+  "old": "            validation_attempts: Vec::new(),\n            code_checkpoints: Vec::new(),\n            started_unix_ms: unix_ms(),",
+  "new": "            validation_attempts: Vec::new(),\n            code_checkpoints: Vec::new(),\n            audit: AgentRunAudit::default(),\n            started_unix_ms: unix_ms(),"
+}
