@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "request_id": "20260817-adr0124-gates-5292379-r2",
+  "target_branch": "chatgpt/gameengine-adr0124-production-navigation-v14",
+  "expected_head_sha": "5292379ffd4a165c3375eeeaae740cc10901df82",
+  "baseline_main_sha": "89cf19154b1664ef8de83d91cdbeeb2c4242a738",
+  "edit_parts": [
+    "edit-0000.json",
+    "edit-0001.json",
+    "edit-0002.json",
+    "edit-0003.json",
+    "edit-0004.json",
+    "edit-0005.json",
+    "edit-0006.json",
+    "edit-0007.json"
+  ],
+  "commit_message": "Fix ADR 0124 navigation currentness gates",
+  "pr_title": "Complete ADR 0124 production navigation first release",
+  "pr_body": "Complete the ADR 0124 first-release production navigation workflow on current main. This follow-up routes Editor baking through the shared production bake service, adds debounced stale diagnostics, and prevents Play or packaging from consuming missing, invalid, or stale navigation artifacts.\n\n<!-- gameengine-visual-validation: editor -->"
+}
