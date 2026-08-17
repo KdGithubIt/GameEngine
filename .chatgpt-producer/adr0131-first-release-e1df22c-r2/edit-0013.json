@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "        self.poll_native_question(context);\n        self.poll_external_process(context);\n        self.poll_managed_validation(context);\n        let mut open = self.open;",
+  "new": "        self.poll_native_question(context);\n        self.poll_external_process(context);\n        self.poll_managed_validation(context);\n        self.request_managed_playtest_if_ready();\n        self.poll_managed_playtest_timeout();\n        let mut open = self.open;"
+}
