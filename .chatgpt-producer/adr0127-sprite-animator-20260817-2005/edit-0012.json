@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/engine/src/components/tests.rs","old":"            VFX_PLAYER_COMPONENT,\n            CAMERA_2D_COMPONENT,\n            SPRITE_RENDERER_2D_COMPONENT,\n","new":"            VFX_PLAYER_COMPONENT,\n            CAMERA_2D_COMPONENT,\n            SPRITE_RENDERER_2D_COMPONENT,\n            SPRITE_ANIMATOR_2D_COMPONENT,\n"}
