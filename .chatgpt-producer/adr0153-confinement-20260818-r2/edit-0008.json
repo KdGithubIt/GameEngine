@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ai_studio.rs","old":"    preferences_path: PathBuf,\n    quality_preference: QualityPreference,\n    local_model_endpoint: String,","new":"    preferences_path: PathBuf,\n    quality_preference: QualityPreference,\n    confinement_requirement: AgentConfinementRequirement,\n    local_model_endpoint: String,"}
