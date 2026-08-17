@@ -218,6 +218,9 @@ impl EditorApp {
         if let Some(edit) = output.gizmo_edit {
             self.apply_scene_gizmo_edit(edit);
         }
+        if let Some(edit) = output.audio_distance_edit {
+            self.apply_audio_distance_gizmo_edit(edit);
+        }
         if let (Some(source), Some(position), Some(project_root)) = (
             self.prefab_placement_source.clone(),
             output.placement_position,
@@ -663,6 +666,31 @@ impl EditorApp {
             .map(|(asset, _)| asset.clone())
     }
 
+    fn apply_audio_distance_gizmo_edit(&mut self, edit: AudioDistanceGizmoEdit) {
+        let Some(entity) = self.selected_entity.clone() else {
+            return;
+        };
+        let component_type = ComponentTypeId::new(engine::scene_bridge::AUDIO_EMITTER_COMPONENT);
+        let Some(Value::Object(mut fields)) = self
+            .session
+            .scene_entity(&entity)
+            .and_then(|item| item.components.get(&component_type).cloned())
+        else {
+            return;
+        };
+        fields.insert(
+            edit.field.field_name().to_owned(),
+            Value::F64(f64::from(edit.distance)),
+        );
+        let result = self.session.set_scene_component_value(
+            entity,
+            component_type,
+            Value::Object(fields),
+        );
+        self.apply_ui_result(result);
+        self.refresh_scene_problems();
+    }
+
     fn apply_scene_gizmo_edit(&mut self, edit: GizmoEdit) {
         use crate::gizmo::{apply_rotate_delta, apply_scale_delta, transform_component_type};
         let Some(sel_id) = self.selected_entity.clone() else {
@@ -745,4 +773,64 @@ pub(super) fn dropped_asset_is_model_source(
         engine::AssetKind::GltfSource,
         std::path::Path::new(&entry.path),
     )
+}
+
+#[cfg(test)]
+mod audio_distance_tests {
+    use super::*;
+    use engine_authoring::{AuthoringCommand, AuthoringScene, Transaction};
+
+    #[test]
+    fn audio_distance_gizmo_commits_through_the_scene_session() {
+        let mut scene = AuthoringScene::new();
+        let entity = EntityId::generate();
+        let component_type = ComponentTypeId::new(engine::scene_bridge::AUDIO_EMITTER_COMPONENT);
+        let mut transaction = Transaction::begin(&scene);
+        transaction.apply(AuthoringCommand::CreateEntity {
+            id: entity.clone(),
+            name: "emitter".to_owned(),
+            parent: None,
+        });
+        transaction.apply(AuthoringCommand::AddComponent {
+            entity: entity.clone(),
+            component_type: component_type.clone(),
+            value: Value::Object(std::collections::BTreeMap::from([
+                ("min_distance".to_owned(), Value::F64(1.0)),
+                ("max_distance".to_owned(), Value::F64(20.0)),
+            ])),
+        });
+        transaction
+            .commit(&mut scene)
+            .expect("audio emitter fixture must commit");
+
+        let directory = tempfile::tempdir().expect("temporary scene directory");
+        let path = directory.path().join("audio.scene.json");
+        std::fs::write(
+            &path,
+            scene.to_canonical_json().expect("scene fixture serializes"),
+        )
+        .expect("scene fixture writes");
+        let mut session = EditorSession::empty_behavior_tree();
+        session.open_scene(path).expect("scene fixture opens");
+        let mut app = EditorApp::new(session);
+        app.selected_entity = Some(entity.clone());
+        let revision = app.session.document_revision();
+
+        app.apply_audio_distance_gizmo_edit(AudioDistanceGizmoEdit {
+            field: crate::scene_view::AudioDistanceField::Max,
+            distance: 12.0,
+        });
+
+        let Value::Object(fields) = app
+            .session
+            .scene_entity(&entity)
+            .and_then(|item| item.components.get(&component_type))
+            .expect("audio emitter component remains present")
+        else {
+            panic!("audio emitter remains an object");
+        };
+        assert_eq!(fields.get("max_distance"), Some(&Value::F64(12.0)));
+        assert_ne!(app.session.document_revision(), revision);
+        assert!(app.session.is_dirty());
+    }
 }

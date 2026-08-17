@@ -8,9 +8,10 @@ use crate::asset::{AssetManifest, AssetServer, Assets};
 use crate::transform::GlobalTransform;
 use engine_authoring::{AssetId, StableId};
 use engine_ecs::{Entity, Query, Res, ResMut};
-use engine_platform::spatial_audio::{
-    spatial_stereo_gains, AudioEmitterPose, AudioListenerPose, AudioVoiceSpatialSettings,
+pub use engine_platform::spatial_audio::{
+    AudioEmitterPose, AudioListenerPose, AudioVoiceSpatialSettings,
 };
+use engine_platform::spatial_audio::spatial_stereo_gains;
 
 /// Validated spatial policy for one project Rust sound request.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -170,6 +171,19 @@ fn emitter_pose(transform: &GlobalTransform) -> AudioEmitterPose {
     AudioEmitterPose {
         position: transform.matrix().col(3).truncate().to_array(),
     }
+}
+
+/// Evaluates one voice using the same production spatial path used by ECS synchronization.
+///
+/// Editor audition calls this neutral composition helper instead of maintaining
+/// a second spatial implementation. A missing listener preserves only the
+/// authored non-spatial remainder.
+pub fn spatial_voice_gains(
+    listener: Option<AudioListenerPose>,
+    emitter: AudioEmitterPose,
+    settings: AudioVoiceSpatialSettings,
+) -> StereoGains {
+    emitter_gains(listener, emitter, settings)
 }
 
 fn emitter_gains(

@@ -1108,6 +1108,40 @@ mod tests {
         assert_eq!((outgoing, incoming, is_complete), (0.0, 1.0, true));
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn managed_voice_update_reuses_existing_voice_state() {
+        let (command_sender, _command_receiver) = mpsc::channel();
+        let (_completed_sender, completed_receiver) = mpsc::channel();
+        let voice_id = AudioVoiceId(7);
+        let shared = Arc::new(Mutex::new([0.2, 0.8]));
+        let mut voice_gains = HashMap::new();
+        voice_gains.insert(voice_id, Arc::clone(&shared));
+        let audio = AudioSystem {
+            command_sender,
+            completed_receiver: Mutex::new(completed_receiver),
+            voice_gains,
+            worker: Mutex::new(None),
+            next_voice_id: 8,
+            volumes: AudioBusVolumes::default(),
+        };
+
+        audio
+            .update_voice(
+                voice_id,
+                StereoGains {
+                    left: 0.6,
+                    right: 0.4,
+                },
+            )
+            .expect("managed gain update must not require an audio device");
+
+        assert_eq!(*shared.lock().expect("test gain lock"), [0.6, 0.4]);
+        assert_eq!(audio.voice_gains.len(), 1);
+        assert!(audio.voice_gains.contains_key(&voice_id));
+        assert_eq!(audio.next_voice_id, 8, "update must not allocate a new voice");
+    }
+
     #[test]
     fn invalid_crossfade_durations_request_immediate_replacement() {
         assert_eq!(fade_duration(0.0), Duration::ZERO);

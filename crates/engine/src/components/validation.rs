@@ -1528,3 +1528,70 @@ fn schema_value_matches(value: &Value, field_type: &FieldType) -> bool {
         _ => false,
     }
 }
+
+#[cfg(test)]
+mod spatial_audio_tests {
+    use super::*;
+    use engine_authoring::{AuthoringCommand, Transaction};
+
+    fn add_component(
+        scene: &mut AuthoringScene,
+        component_type: ComponentTypeId,
+        value: Value,
+    ) -> EntityId {
+        let entity = EntityId::generate();
+        let mut transaction = Transaction::begin(scene);
+        transaction.apply(AuthoringCommand::CreateEntity {
+            id: entity.clone(),
+            name: "audio".to_owned(),
+            parent: None,
+        });
+        transaction.apply(AuthoringCommand::AddComponent {
+            entity: entity.clone(),
+            component_type,
+            value,
+        });
+        transaction
+            .commit(scene)
+            .expect("spatial audio validation fixture must commit");
+        entity
+    }
+
+    #[test]
+    fn equal_highest_listener_priorities_are_reported_as_ambiguous() {
+        let mut scene = AuthoringScene::new();
+        let listener = ComponentTypeId::new(AUDIO_LISTENER_COMPONENT);
+        let value = || Value::Object(BTreeMap::from([
+            ("enabled".to_owned(), Value::Bool(true)),
+            ("priority".to_owned(), Value::I64(5)),
+        ]));
+        add_component(&mut scene, listener.clone(), value());
+        add_component(&mut scene, listener, value());
+
+        let diagnostics = validate_spatial_audio_scene(&scene);
+        assert_eq!(
+            diagnostics
+                .iter()
+                .filter(|diagnostic| diagnostic.code == "scene.audio_listener_priority_ambiguous")
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn spatial_emitter_without_enabled_listener_is_reported() {
+        let mut scene = AuthoringScene::new();
+        add_component(
+            &mut scene,
+            ComponentTypeId::new(AUDIO_EMITTER_COMPONENT),
+            Value::Object(BTreeMap::from([
+                ("spatial_blend".to_owned(), Value::F64(1.0)),
+            ])),
+        );
+
+        let diagnostics = validate_spatial_audio_scene(&scene);
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == "scene.spatial_audio_listener_missing"
+        }));
+    }
+}

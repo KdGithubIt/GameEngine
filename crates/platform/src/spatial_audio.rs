@@ -297,6 +297,39 @@ mod tests {
     }
 
     #[test]
+    fn moving_listener_changes_pan_for_a_stationary_emitter() {
+        let settings = AudioVoiceSpatialSettings {
+            volume: 1.0,
+            spatial_blend: 1.0,
+            min_distance: 10.0,
+            max_distance: 20.0,
+            rolloff: AudioRolloffMode::Linear,
+        };
+        let emitter = AudioEmitterPose {
+            position: [1.0, 0.0, 0.0],
+        };
+        let from_left = spatial_stereo_gains(
+            AudioListenerPose {
+                position: [0.0, 0.0, 0.0],
+                right: [1.0, 0.0, 0.0],
+            },
+            emitter,
+            settings,
+        );
+        let from_right = spatial_stereo_gains(
+            AudioListenerPose {
+                position: [2.0, 0.0, 0.0],
+                right: [1.0, 0.0, 0.0],
+            },
+            emitter,
+            settings,
+        );
+
+        assert!(from_left.right > from_left.left);
+        assert!(from_right.left > from_right.right);
+    }
+
+    #[test]
     fn spatial_mix_sanitizes_non_finite_inputs() {
         let gains = spatial_stereo_gains(
             AudioListenerPose {

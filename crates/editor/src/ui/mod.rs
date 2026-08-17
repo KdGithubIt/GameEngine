@@ -25,7 +25,8 @@ use crate::runtime::{
     RuntimeDiagnosticKind, RuntimeInputDebugSnapshot, RuntimePlayState,
 };
 use crate::scene_view::{
-    GizmoEdit, GizmoMode, GizmoSpace, SceneComponentPreview, SceneUiNodeSelection, SceneView,
+    AudioDistanceGizmoEdit, GizmoEdit, GizmoMode, GizmoSpace, SceneComponentPreview,
+    SceneUiNodeSelection, SceneView,
 };
 use crate::session::{EditorPersistError, EditorSession, GraphNodeInsertKind};
 use crate::session::{SceneAlignment, SceneAxis};
@@ -47,6 +48,7 @@ use std::{
     path::{Path, PathBuf},
 };
 mod animation_graph_parameters;
+mod audio_authoring;
 mod behavior_debug;
 mod animation_preview;
 mod asset_inspector;
@@ -86,6 +88,7 @@ struct MaterialTextureChoicesCache {
 }
 
 use animation_preview::*;
+use audio_authoring::*;
 use behavior_debug::*;
 use asset_inspector::*;
 use assets::*;
@@ -189,6 +192,8 @@ pub struct EditorApp {
     hierarchy_filter: String,
     /// Current editor play mode.
     editor_mode: EditorMode,
+    /// Transient spatial-audio audition backend; never serialized into project data.
+    audio_audition: AudioAuditionState,
     /// Runtime world owned while Play is active.
     runtime_state: Option<RuntimePlayState>,
     /// Transient read-only Behavior Tree live-debug presentation.
@@ -422,6 +427,7 @@ impl EditorApp {
             locked_entities: std::collections::BTreeSet::new(),
             hierarchy_filter: String::new(),
             editor_mode: EditorMode::Edit,
+            audio_audition: AudioAuditionState::default(),
             runtime_state: None,
             behavior_debug: BehaviorTreeDebugState::default(),
             last_replay: None,
@@ -509,6 +515,7 @@ impl EditorApp {
     /// process from one project to another after workspace construction.
     fn initialize_project_root(&mut self, root: ProjectRoot) {
         self.flush_all_pending_material_saves();
+        self.audio_audition.reset_project();
         self.scene_view.clear_project_caches();
         self.material_scene_preview_deadline = None;
         self.pending_material_saves.clear();
@@ -635,6 +642,8 @@ impl Default for EditorApp {
 
 impl eframe::App for EditorApp {
     fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        self.audio_audition.poll();
+        self.update_audio_audition();
         // The UI Builder resolves image sources and offers texture choices
         // from transient state; refreshing here keeps it in sync with the
         // open project and manifest without threading them through every
