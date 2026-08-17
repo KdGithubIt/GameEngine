@@ -44,6 +44,8 @@ impl SeverityFilter {
 pub struct ProblemsOutput {
     /// Diagnostic clicked for editor navigation or a dedicated detail view.
     pub clicked: Option<Diagnostic>,
+    /// Related semantic target selected from an explicit repair action.
+    pub navigate_to: Option<DiagnosticTarget>,
     /// Whether the persistent code-suppression preference changed.
     pub suppression_changed: bool,
 }
@@ -115,6 +117,20 @@ impl ProblemsPanel {
     /// Counts actionable Problems entries for the bottom-dock tab label.
     pub fn active_issue_count(&self) -> usize {
         self.active_count(Severity::Error) + self.active_count(Severity::Warning)
+    }
+
+    /// Highest active severity targeting an entity or one of its components.
+    pub fn entity_severity(&self, entity: &engine_authoring::EntityId) -> Option<Severity> {
+        self.problems
+            .iter()
+            .filter(|diagnostic| !self.is_suppressed(diagnostic))
+            .filter(|diagnostic| match diagnostic.target.as_ref() {
+                Some(DiagnosticTarget::Entity { id }) => id == entity,
+                Some(DiagnosticTarget::Component { entity: id, .. }) => id == entity,
+                _ => false,
+            })
+            .map(|diagnostic| diagnostic.severity)
+            .max()
     }
 
     /// Draws the Problems panel into `ui`.
@@ -237,6 +253,16 @@ impl ProblemsPanel {
                             &group.code,
                             &mut suppress_code,
                         );
+                        if !diagnostic.related_targets.is_empty() {
+                            ui.horizontal_wrapped(|ui| {
+                                ui.small("Repair:");
+                                for target in &diagnostic.related_targets {
+                                    if ui.small_button(repair_action_label(target)).clicked() {
+                                        output.navigate_to = Some(target.clone());
+                                    }
+                                }
+                            });
+                        }
                         continue;
                     }
 
@@ -273,6 +299,16 @@ impl ProblemsPanel {
                                     output.clicked = Some(diagnostic.clone());
                                 }
                                 response.clone().on_hover_text(target_hover_text(target));
+                            }
+                            if !diagnostic.related_targets.is_empty() {
+                                ui.horizontal_wrapped(|ui| {
+                                    ui.small("Repair:");
+                                    for target in &diagnostic.related_targets {
+                                        if ui.small_button(repair_action_label(target)).clicked() {
+                                            output.navigate_to = Some(target.clone());
+                                        }
+                                    }
+                                });
                             }
                         }
                     });
@@ -486,6 +522,21 @@ fn add_suppression_menu(
 /// Problems rows display only the diagnostic code and message.
 fn problem_text(diagnostic: &Diagnostic) -> String {
     format!("[{}] {}", diagnostic.code, diagnostic.message)
+}
+
+/// Compact label for one explicit Problems repair action.
+fn repair_action_label(target: &DiagnosticTarget) -> &'static str {
+    match target {
+        DiagnosticTarget::Entity { .. } => "Select Entity",
+        DiagnosticTarget::Component { .. } => "Reveal Component",
+        DiagnosticTarget::Asset { .. } => "Open Asset",
+        DiagnosticTarget::Graph { .. } => "Open Graph",
+        DiagnosticTarget::Node { .. } => "Frame State",
+        DiagnosticTarget::Edge { .. } => "Frame Edge",
+        DiagnosticTarget::Port { .. } => "Frame Port",
+        DiagnosticTarget::Group { .. } => "Frame Group",
+        DiagnosticTarget::SourceFile { .. } => "Open Source",
+    }
 }
 
 /// Describes a diagnostic navigation target for the row's hover tooltip.
