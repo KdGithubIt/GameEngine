@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0146-governed-assets-20260818-r2-01",
+  "target_branch": "chatgpt/gameengine-adr146-v2",
+  "expected_head_sha": "86544a6c8d9bb770633b1ae4eb22fac26278f50c",
+  "baseline_main_sha": "86544a6c8d9bb770633b1ae4eb22fac26278f50c",
+  "patch_sha256": "4d3d5e84ebb1e154f98b71877fa8f47dc4394d577e4b02bec4bcb2c188edd154",
+  "patch_bytes": 53876,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Implement governed AI asset acquisition",
+  "pr_title": "GameEngine: implement ADR 0146 governed asset acquisition",
+  "pr_body": "## Summary\n\n- adds a provider-neutral governed asset acquisition service for typed search, acquisition, and generation\n- stages bounded provider artifacts and reuses the canonical external asset import/manifest path\n- retains safe provenance and idempotency while excluding credentials and temporary download URLs\n- sanitizes acquisition audit data exposed through Remote AI Studio\n\n## Validation\n\n- GameEngine Windows Validation"
+}
