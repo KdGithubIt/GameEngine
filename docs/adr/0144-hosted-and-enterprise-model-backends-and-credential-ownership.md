@@ -1,6 +1,6 @@
 # ADR 0144: Hosted and Enterprise ModelBackends and Credential Ownership
 
-Status: Proposed
+Status: Accepted
 Date: 2026-08-17
 Builds on: ADR 0131
 Relates to: ADR 0141, ADR 0142, ADR 0150
@@ -52,6 +52,14 @@ This ADR can be implemented in parallel with ADR 0141 and other Wave A ADRs beca
 Implementation must cover secret-storage boundaries, no secret serialization, explicit network permission, provider error mapping, cancellation/stream interruption, capability honesty, context-size handling, sanitized Remote AI Studio status, and unchanged host-owned completion gates.
 
 Credential/backend selection UI requires Editor Visual Validation.
+
+## Initial implementation
+
+The first accepted implementation keeps the existing read-oriented native harness and adds two remote processing postures behind the same backend boundary: an API-key hosted HTTPS adapter and an enterprise HTTPS adapter using the organization-managed Windows identity/session. API-key material is protected with Windows DPAPI under the Editor's machine-local application data and is never part of AI Studio preferences, Agent Host sessions, project-shared history, Remote AI Studio payloads, or canonical project data.
+
+Hosted questions reuse `AgentCapability::NetworkAccess` before request dispatch. The adapter maps authentication, rate limiting, safety refusal, context-limit rejection, server failure, transport failure, invalid response, and interruption to backend failures rather than completion. The first remote adapter is intentionally non-streaming and reports unsupported/unknown structured output, tools, images, reasoning, context limits, and local GPU controls honestly. Remote companion status exposes only the sanitized local/hosted/enterprise processing posture.
+
+The provider remains inference-only: proposal snapshots, mutation permissions, validation, Play, captured evidence, and completion gates remain owned by the existing Agent Host and managed Editor paths.
 
 ## Non-goals
 

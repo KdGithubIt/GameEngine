@@ -788,6 +788,33 @@ impl AgentHost {
             .ok_or_else(|| AgentHostError::SessionNotFound(id.to_owned()))
     }
 
+    pub(crate) fn check_session_permission(
+        &mut self,
+        session_id: &str,
+        capability: AgentCapability,
+    ) -> Result<PermissionCheck, AgentHostError> {
+        self.session(session_id)?;
+        Ok(self
+            .permissions
+            .check(&format!("question:{session_id}"), capability))
+    }
+
+    pub(crate) fn resolve_session_permission(
+        &mut self,
+        session_id: &str,
+        capability: AgentCapability,
+        scope: ApprovalScope,
+    ) -> Result<(), AgentHostError> {
+        self.session(session_id)?;
+        let subject = format!("question:{session_id}");
+        self.permissions.resolve(&subject, capability, scope);
+        if scope == ApprovalScope::Project {
+            self.permissions
+                .save(&self.storage_root.join("permissions.json"))?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn create_session(&mut self, title: impl Into<String>) -> Result<String, AgentHostError> {
         let session = AgentSession::new(title.into());
         let id = session.id.clone();

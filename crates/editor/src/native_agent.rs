@@ -6,6 +6,7 @@
 //! not acquire mutation permissions or participate in the write-capable
 //! [`crate::agent_host::AgentRun`] state machine.
 
+use crate::hosted_model_backend::{generate_hosted, HostedBackendError, HostedModelConfig};
 use crate::resource_arbitration::ModelResourceCapabilities;
 use serde::{Deserialize, Serialize};
 use std::cmp::Reverse;
@@ -44,6 +45,7 @@ pub(crate) enum NativeAgentError {
     EmptyResponse,
     Interrupted,
     WorkerDisconnected,
+    Hosted(HostedBackendError),
     Io(io::Error),
     Json(serde_json::Error),
 }
@@ -74,6 +76,7 @@ impl fmt::Display for NativeAgentError {
             Self::WorkerDisconnected => {
                 write!(formatter, "native question worker disconnected unexpectedly")
             }
+            Self::Hosted(error) => write!(formatter, "{error}"),
             Self::Io(error) => write!(formatter, "native agent I/O error: {error}"),
             Self::Json(error) => write!(formatter, "native agent JSON error: {error}"),
         }
@@ -93,6 +96,12 @@ impl std::error::Error for NativeAgentError {
 impl From<io::Error> for NativeAgentError {
     fn from(value: io::Error) -> Self {
         Self::Io(value)
+    }
+}
+
+impl From<HostedBackendError> for NativeAgentError {
+    fn from(value: HostedBackendError) -> Self {
+        Self::Hosted(value)
     }
 }
 
@@ -118,8 +127,55 @@ impl LocalModelConfig {
             image_input: None,
             reasoning: None,
             context_limit: None,
+            streaming: Some(false),
+            usage: Some(true),
             resource_capabilities: ModelResourceCapabilities::default(),
             benchmark_verified: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum NativeModelConfig {
+    Local(LocalModelConfig),
+    Hosted(HostedModelConfig),
+}
+
+impl NativeModelConfig {
+    pub(crate) fn capability_profile(&self) -> ModelCapabilityProfile {
+        match self {
+            Self::Local(config) => config.capability_profile(),
+            Self::Hosted(config) => ModelCapabilityProfile {
+                backend_id: config.auth_mode.backend_id(),
+                model_id: config.model.trim().to_owned(),
+                structured_output: Some(false),
+                tool_use: Some(false),
+                image_input: Some(false),
+                reasoning: None,
+                context_limit: None,
+                streaming: Some(false),
+                usage: Some(true),
+                resource_capabilities: ModelResourceCapabilities::default(),
+                benchmark_verified: false,
+            },
+        }
+    }
+
+    pub(crate) fn requires_network(&self) -> bool {
+        matches!(self, Self::Hosted(_))
+    }
+
+    fn backend_id(&self) -> &'static str {
+        match self {
+            Self::Local(_) => BACKEND_ID,
+            Self::Hosted(config) => config.auth_mode.backend_id(),
+        }
+    }
+
+    fn model_id(&self) -> String {
+        match self {
+            Self::Local(config) => config.model.trim().to_owned(),
+            Self::Hosted(config) => config.model.trim().to_owned(),
         }
     }
 }
@@ -133,6 +189,8 @@ pub(crate) struct ModelCapabilityProfile {
     pub(crate) image_input: Option<bool>,
     pub(crate) reasoning: Option<bool>,
     pub(crate) context_limit: Option<u64>,
+    pub(crate) streaming: Option<bool>,
+    pub(crate) usage: Option<bool>,
     /// Resource controls verified for this backend adapter.
     ///
     /// The initial generic loopback adapter deliberately reports every
@@ -224,16 +282,24 @@ pub(crate) struct NativeQuestionTask {
 
 impl NativeQuestionTask {
     pub(crate) fn spawn(
-        config: LocalModelConfig,
+        config: NativeModelConfig,
         project_root: PathBuf,
         conversation: Vec<QuestionMessage>,
     ) -> Result<Self, NativeAgentError> {
-        if config.model.trim().is_empty() {
-            return Err(NativeAgentError::EmptyModel);
+        match &config {
+            NativeModelConfig::Local(config) => {
+                if config.model.trim().is_empty() {
+                    return Err(NativeAgentError::EmptyModel);
+                }
+                // Validate before spawning so malformed loopback endpoints fail at
+                // the UI boundary instead of looking like a model timeout.
+                LocalHttpEndpoint::parse(&config.endpoint)?;
+            }
+            NativeModelConfig::Hosted(config) if config.model.trim().is_empty() => {
+                return Err(NativeAgentError::EmptyModel);
+            }
+            NativeModelConfig::Hosted(_) => {}
         }
-        // Validate before spawning so malformed/non-loopback endpoints fail at
-        // the UI boundary instead of looking like a model timeout.
-        LocalHttpEndpoint::parse(&config.endpoint)?;
         let (sender, result) = mpsc::channel();
         let interrupted = Arc::new(AtomicBool::new(false));
         let active_stream = Arc::new(Mutex::new(None));
@@ -400,7 +466,7 @@ fn is_loopback_host(host: &str) -> bool {
 }
 
 fn answer_question(
-    config: &LocalModelConfig,
+    config: &NativeModelConfig,
     project_root: &Path,
     conversation: &[QuestionMessage],
     interrupted: &AtomicBool,
@@ -422,39 +488,71 @@ fn answer_question(
     if interrupted.load(Ordering::Acquire) {
         return Err(NativeAgentError::Interrupted);
     }
-    let backend = generate_local(config, &prompt, interrupted, active_stream)?;
-    let text = backend.response.trim().to_owned();
-    if text.is_empty() {
+    let backend = match config {
+        NativeModelConfig::Local(config) => {
+            let response = generate_local(config, &prompt, interrupted, active_stream)?;
+            BackendGeneration {
+                text: response.response.trim().to_owned(),
+                prompt_tokens: response.prompt_eval_count,
+                response_tokens: response.eval_count,
+                backend_duration_ms: response.total_duration.map(|nanos| nanos / 1_000_000),
+                load_latency_ms: response.load_duration.map(|nanos| nanos / 1_000_000),
+                prompt_eval_duration_ms: response.prompt_eval_duration.map(|nanos| nanos / 1_000_000),
+                generation_duration_ms: response.eval_duration.map(|nanos| nanos / 1_000_000),
+                generation_tokens_per_second_milli: generation_throughput_milli(response.eval_count, response.eval_duration),
+            }
+        }
+        NativeModelConfig::Hosted(config) => {
+            let response = generate_hosted(config, &prompt, interrupted)?;
+            BackendGeneration {
+                text: response.text.trim().to_owned(),
+                prompt_tokens: response.prompt_tokens,
+                response_tokens: response.response_tokens,
+                backend_duration_ms: None,
+                load_latency_ms: None,
+                prompt_eval_duration_ms: None,
+                generation_duration_ms: None,
+                generation_tokens_per_second_milli: None,
+            }
+        }
+    };
+    if backend.text.is_empty() {
         return Err(NativeAgentError::EmptyResponse);
     }
     let sources = distinct_sources(&evidence);
     Ok(NativeAnswer {
         metrics: NativeMetrics {
             harness_version: BASELINE_HARNESS_VERSION,
-            backend_id: BACKEND_ID,
-            model_id: config.model.trim().to_owned(),
+            backend_id: config.backend_id(),
+            model_id: config.model_id(),
             model_turns: 1,
             retrieval_chunks: evidence.len(),
             prompt_chars: prompt.chars().count(),
-            response_chars: text.chars().count(),
+            response_chars: backend.text.chars().count(),
             elapsed_ms: duration_ms(started.elapsed()),
-            prompt_eval_tokens: backend.prompt_eval_count,
-            response_tokens: backend.eval_count,
-            backend_duration_ms: backend.total_duration.map(|nanos| nanos / 1_000_000),
-            load_latency_ms: backend.load_duration.map(|nanos| nanos / 1_000_000),
-            prompt_eval_duration_ms: backend
-                .prompt_eval_duration
-                .map(|nanos| nanos / 1_000_000),
-            generation_duration_ms: backend.eval_duration.map(|nanos| nanos / 1_000_000),
-            generation_tokens_per_second_milli: generation_throughput_milli(
-                backend.eval_count,
-                backend.eval_duration,
-            ),
+            prompt_eval_tokens: backend.prompt_tokens,
+            response_tokens: backend.response_tokens,
+            backend_duration_ms: backend.backend_duration_ms,
+            load_latency_ms: backend.load_latency_ms,
+            prompt_eval_duration_ms: backend.prompt_eval_duration_ms,
+            generation_duration_ms: backend.generation_duration_ms,
+            generation_tokens_per_second_milli: backend.generation_tokens_per_second_milli,
             ttft_ms: None,
         },
-        text,
+        text: backend.text,
         sources,
     })
+}
+
+struct BackendGeneration {
+    text: String,
+    prompt_tokens: Option<u64>,
+    response_tokens: Option<u64>,
+    backend_duration_ms: Option<u64>,
+    load_latency_ms: Option<u64>,
+    prompt_eval_duration_ms: Option<u64>,
+    generation_duration_ms: Option<u64>,
+    generation_tokens_per_second_milli: Option<u64>,
 }
 
 fn duration_ms(duration: Duration) -> u64 {

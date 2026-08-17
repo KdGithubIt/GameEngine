@@ -10,9 +10,11 @@ use crate::agent_host::{
     ConversationRole, ExternalAgentProcess, ManagedValidationAttemptStatus, PermissionCheck,
     ProcessStream, ResumeDisposition,
 };
+use crate::hosted_model_backend;
+use crate::hosted_model_backend::{HostedAuthMode, HostedModelConfig};
 use crate::native_agent::{
-    LocalModelConfig, ModelCapabilityProfile, NativeAnswer, NativeQuestionTask, QuestionMessage,
-    QuestionRole, DEFAULT_LOCAL_MODEL_ENDPOINT,
+    LocalModelConfig, ModelCapabilityProfile, NativeAnswer, NativeModelConfig, NativeQuestionTask,
+    QuestionMessage, QuestionRole, DEFAULT_LOCAL_MODEL_ENDPOINT,
 };
 use crate::resource_arbitration::{
     classify_workload, resolve_resource_plan, CapabilityAvailability, InferenceWorkload,
@@ -35,17 +37,32 @@ use std::path::PathBuf;
 const PROVIDER_EVENT_PREFIX: &str = "GAMEENGINE_AGENT_EVENT ";
 const MAX_AUTONOMOUS_SOURCE_REPAIRS: usize = 2;
 const MAX_AUTONOMOUS_RUNTIME_REPAIRS: usize = 2;
-const AI_STUDIO_PREFERENCES_SCHEMA_VERSION: u32 = 1;
+const AI_STUDIO_PREFERENCES_SCHEMA_VERSION: u32 = 2;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+enum ModelBackendPreference {
+    #[default]
+    Local,
+    HostedApi,
+    Enterprise,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct AiStudioPreferences {
     schema_version: u32,
     #[serde(default)]
     quality_preference: QualityPreference,
+    #[serde(default)]
+    model_backend: ModelBackendPreference,
     #[serde(default = "default_local_model_endpoint")]
     local_model_endpoint: String,
     #[serde(default)]
     local_model_name: String,
+    #[serde(default)]
+    hosted_model_endpoint: String,
+    #[serde(default)]
+    hosted_model_name: String,
 }
 
 impl Default for AiStudioPreferences {
@@ -53,8 +70,11 @@ impl Default for AiStudioPreferences {
         Self {
             schema_version: AI_STUDIO_PREFERENCES_SCHEMA_VERSION,
             quality_preference: QualityPreference::Auto,
+            model_backend: ModelBackendPreference::Local,
             local_model_endpoint: DEFAULT_LOCAL_MODEL_ENDPOINT.to_owned(),
             local_model_name: String::new(),
+            hosted_model_endpoint: String::new(),
+            hosted_model_name: String::new(),
         }
     }
 }
@@ -281,6 +301,12 @@ struct PendingPermission {
     action: PendingPermissionAction,
 }
 
+struct PendingQuestionPermission {
+    session_id: String,
+    config: NativeModelConfig,
+    conversation: Vec<QuestionMessage>,
+}
+
 /// Project-scoped conversation-first AI Studio window.
 ///
 /// The panel persists sessions outside canonical project data by default,
@@ -298,15 +324,21 @@ pub struct AiStudioPanel {
     message_draft: String,
     preferences_path: PathBuf,
     quality_preference: QualityPreference,
+    model_backend: ModelBackendPreference,
     local_model_endpoint: String,
     local_model_name: String,
+    hosted_model_endpoint: String,
+    hosted_model_name: String,
+    hosted_secret_path: PathBuf,
+    hosted_secret_draft: String,
     resolved_workload: InferenceWorkload,
     resource_plan: ResourcePlan,
     editing_interrupted: bool,
     restore_for_editing: bool,
     interrupt_snapshot: Option<AiStudioAuthoritativeState>,
     native_question: Option<NativeQuestionTask>,
-    pending_native_question_start: Option<(LocalModelConfig, Vec<QuestionMessage>, String)>,
+    pending_native_question_start: Option<(NativeModelConfig, Vec<QuestionMessage>, String)>,
+    pending_question_permission: Option<PendingQuestionPermission>,
     native_question_session: Option<String>,
     provider_program: String,
     provider_args: String,
@@ -341,6 +373,7 @@ impl AiStudioPanel {
             .join("ai")
             .join(project_storage_key(project.project_id().as_str(), project.path()));
         let preferences_path = data_root.join("preferences.json");
+        let hosted_secret_path = data_root.join("secrets").join("hosted-api-key.dpapi");
         let preferences = load_ai_studio_preferences(&preferences_path);
         let mut host = AgentHost::open(project.path().to_path_buf(), data_root)
             .map_err(|error| error.to_string())?;
@@ -368,8 +401,13 @@ impl AiStudioPanel {
             message_draft: String::new(),
             preferences_path,
             quality_preference: preferences.quality_preference,
+            model_backend: preferences.model_backend,
             local_model_endpoint: preferences.local_model_endpoint,
             local_model_name: preferences.local_model_name,
+            hosted_model_endpoint: preferences.hosted_model_endpoint,
+            hosted_model_name: preferences.hosted_model_name,
+            hosted_secret_path,
+            hosted_secret_draft: String::new(),
             resolved_workload: InferenceWorkload::InteractiveReasoning,
             resource_plan: resolve_resource_plan(
                 InferenceWorkload::InteractiveReasoning,
@@ -382,6 +420,7 @@ impl AiStudioPanel {
             interrupt_snapshot: None,
             native_question: None,
             pending_native_question_start: None,
+            pending_question_permission: None,
             native_question_session: None,
             provider_program: String::new(),
             provider_args: String::new(),
@@ -667,7 +706,17 @@ impl AiStudioPanel {
                     (permission.run_id.as_str(), permission.capability)
                 });
                 match snapshot_json(&self.host, &self.project_id, &session_id, pending) {
-                    Ok(snapshot) => RemoteAiStudioResponse::json(snapshot),
+                    Ok(mut snapshot) => {
+                        if let Some(object) = snapshot.as_object_mut() {
+                            let posture = match self.model_backend {
+                                ModelBackendPreference::Local => serde_json::json!({"kind":"local","remote_processing":false}),
+                                ModelBackendPreference::HostedApi => serde_json::json!({"kind":"hosted_api","remote_processing":true,"credential":"configured_or_missing"}),
+                                ModelBackendPreference::Enterprise => serde_json::json!({"kind":"enterprise","remote_processing":true,"credential":"organization_managed"}),
+                            };
+                            object.insert("processing_posture".to_owned(), posture);
+                        }
+                        RemoteAiStudioResponse::json(snapshot)
+                    },
                     Err(error) => RemoteAiStudioResponse::error(404, "session_not_found", error, false),
                 }
             }
@@ -932,79 +981,150 @@ impl AiStudioPanel {
     }
 
     fn show_local_model_settings(&mut self, ui: &mut egui::Ui) {
-        egui::CollapsingHeader::new("Local model · read-only questions")
+        egui::CollapsingHeader::new("Model backend · read-only questions")
             .default_open(true)
             .show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("Backend");
+                    egui::ComboBox::from_id_salt("ai_studio_model_backend")
+                        .selected_text(match self.model_backend {
+                            ModelBackendPreference::Local => "Local",
+                            ModelBackendPreference::HostedApi => "Hosted API",
+                            ModelBackendPreference::Enterprise => "Enterprise",
+                        })
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut self.model_backend, ModelBackendPreference::Local, "Local");
+                            ui.selectable_value(&mut self.model_backend, ModelBackendPreference::HostedApi, "Hosted API");
+                            ui.selectable_value(&mut self.model_backend, ModelBackendPreference::Enterprise, "Enterprise");
+                        });
+                    if ui.button("Save backend").clicked() {
+                        self.save_preferences();
+                    }
+                });
+                ui.small(match self.model_backend {
+                    ModelBackendPreference::Local => "Processing posture: local machine only.",
+                    ModelBackendPreference::HostedApi => "Processing posture: selected context is sent to a remote HTTPS provider after Network access approval.",
+                    ModelBackendPreference::Enterprise => "Processing posture: selected context is sent to the configured enterprise HTTPS endpoint after Network access approval.",
+                });
                 ui.horizontal_wrapped(|ui| {
                     ui.label("Quality");
                     let previous = self.quality_preference;
                     for quality in QualityPreference::ALL {
-                        ui.selectable_value(
-                            &mut self.quality_preference,
-                            quality,
-                            quality.label(),
-                        );
+                        ui.selectable_value(&mut self.quality_preference, quality, quality.label());
                     }
                     if self.quality_preference != previous {
                         self.save_preferences();
                     }
                 });
-                ui.small(
-                    "Quality is a machine-local latency/reasoning preference. It never exposes GPU layers, quantization, token budgets, or VRAM reservations.",
-                );
-                ui.horizontal(|ui| {
-                    ui.label("Endpoint");
-                    if ui
-                        .add(
-                            egui::TextEdit::singleline(&mut self.local_model_endpoint)
-                                .desired_width(250.0),
-                        )
-                        .changed()
-                    {
-                        self.save_preferences();
+                match self.model_backend {
+                    ModelBackendPreference::Local => {
+                        ui.horizontal(|ui| {
+                            ui.label("Endpoint");
+                            if ui.add(egui::TextEdit::singleline(&mut self.local_model_endpoint).desired_width(300.0)).changed() {
+                                self.save_preferences();
+                            }
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Installed model");
+                            if ui.add(egui::TextEdit::singleline(&mut self.local_model_name).desired_width(260.0).hint_text("model:tag")).changed() {
+                                self.save_preferences();
+                            }
+                        });
                     }
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Installed model");
-                    if ui
-                        .add(
-                            egui::TextEdit::singleline(&mut self.local_model_name)
-                                .desired_width(250.0)
-                                .hint_text("model:tag"),
-                        )
-                        .changed()
-                    {
-                        self.save_preferences();
+                    ModelBackendPreference::HostedApi | ModelBackendPreference::Enterprise => {
+                        ui.horizontal(|ui| {
+                            ui.label("HTTPS chat endpoint");
+                            if ui.add(egui::TextEdit::singleline(&mut self.hosted_model_endpoint).desired_width(320.0).hint_text("https://…/v1/chat/completions")).changed() {
+                                self.save_preferences();
+                            }
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Model");
+                            if ui.add(egui::TextEdit::singleline(&mut self.hosted_model_name).desired_width(260.0)).changed() {
+                                self.save_preferences();
+                            }
+                        });
+                        if self.model_backend == ModelBackendPreference::HostedApi {
+                            ui.horizontal(|ui| {
+                                ui.label("API credential");
+                                ui.add(egui::TextEdit::singleline(&mut self.hosted_secret_draft).password(true).desired_width(220.0).hint_text("stored with Windows DPAPI"));
+                                if ui.button("Store securely").clicked() {
+                                    match hosted_model_backend::store_api_key(&self.hosted_secret_path, &self.hosted_secret_draft) {
+                                        Ok(()) => {
+                                            self.hosted_secret_draft.clear();
+                                            self.status = Some("Hosted API credential stored in the machine-local OS-protected secret store.".to_owned());
+                                        }
+                                        Err(error) => self.status = Some(error.to_string()),
+                                    }
+                                }
+                                if ui.button("Remove").clicked() {
+                                    match hosted_model_backend::remove_api_key(&self.hosted_secret_path) {
+                                        Ok(()) => self.status = Some("Hosted API credential removed.".to_owned()),
+                                        Err(error) => self.status = Some(error.to_string()),
+                                    }
+                                }
+                            });
+                            ui.small(if hosted_model_backend::credential_is_configured(&self.hosted_secret_path) {
+                                "Credential status: configured. Secret value is never serialized or shown remotely."
+                            } else {
+                                "Credential status: not configured."
+                            });
+                        } else {
+                            ui.small("Enterprise authentication is delegated to the organization-managed Windows identity/session; GameEngine stores no API key.");
+                        }
                     }
-                });
-                let profile = LocalModelConfig {
-                    endpoint: self.local_model_endpoint.clone(),
-                    model: self.local_model_name.clone(),
                 }
-                .capability_profile();
-                ui.small(model_capability_summary(&profile));
-                ui.small(format!(
-                    "Resource controls: unload/reload {} · GPU residency {} · memory telemetry {}",
-                    capability_label(profile.resource_capabilities.unload_reload),
-                    capability_label(profile.resource_capabilities.gpu_residency),
-                    capability_label(profile.resource_capabilities.backend_memory_telemetry),
-                ));
+                if let Ok(config) = self.selected_native_model_config() {
+                    let profile = config.capability_profile();
+                    ui.small(model_capability_summary(&profile));
+                    ui.small(format!(
+                        "Resource controls: unload/reload {} · GPU residency {} · memory telemetry {}",
+                        capability_label(profile.resource_capabilities.unload_reload),
+                        capability_label(profile.resource_capabilities.gpu_residency),
+                        capability_label(profile.resource_capabilities.backend_memory_telemetry),
+                    ));
+                }
                 ui.small(format!(
                     "Resource posture: {:?} · workload {:?} · reclaim {:?}",
-                    self.resource_plan.presentation,
-                    self.resolved_workload,
-                    self.resource_plan.reclaim
+                    self.resource_plan.presentation, self.resolved_workload, self.resource_plan.reclaim
                 ));
-                ui.small(
-                    "The initial backend accepts loopback HTTP only. Unsupported controls remain unavailable; exact VRAM and TTFT are never fabricated.",
-                );
             });
     }
 
-    fn start_native_question(&mut self) {
-        if self.local_model_name.trim().is_empty() {
-            return;
+    fn selected_native_model_config(&self) -> Result<NativeModelConfig, String> {
+        match self.model_backend {
+            ModelBackendPreference::Local => Ok(NativeModelConfig::Local(LocalModelConfig {
+                endpoint: self.local_model_endpoint.clone(),
+                model: self.local_model_name.clone(),
+            })),
+            ModelBackendPreference::HostedApi => {
+                if !hosted_model_backend::credential_is_configured(&self.hosted_secret_path) {
+                    return Err("Store a hosted API credential before sending a hosted question.".to_owned());
+                }
+                Ok(NativeModelConfig::Hosted(HostedModelConfig {
+                    endpoint: self.hosted_model_endpoint.clone(),
+                    model: self.hosted_model_name.clone(),
+                    auth_mode: HostedAuthMode::ApiKey,
+                    encrypted_secret_path: self.hosted_secret_path.clone(),
+                }))
+            }
+            ModelBackendPreference::Enterprise => Ok(NativeModelConfig::Hosted(HostedModelConfig {
+                endpoint: self.hosted_model_endpoint.clone(),
+                model: self.hosted_model_name.clone(),
+                auth_mode: HostedAuthMode::EnterpriseManaged,
+                encrypted_secret_path: self.hosted_secret_path.clone(),
+            })),
         }
+    }
+
+    fn start_native_question(&mut self) {
+        let config = match self.selected_native_model_config() {
+            Ok(config) => config,
+            Err(error) => {
+                self.status = Some(error);
+                return;
+            }
+        };
         let session_id = self.selected_session.clone();
         let conversation = match self.host.session(&session_id) {
             Ok(session) => session
@@ -1024,20 +1144,13 @@ impl AiStudioPanel {
                 return;
             }
         };
-        let config = LocalModelConfig {
-            endpoint: self.local_model_endpoint.clone(),
-            model: self.local_model_name.clone(),
-        };
         let profile = config.capability_profile();
         let has_non_trivial_work = !self.proposal_draft.planned_code_changes.is_empty()
             || !self.proposal_draft.planned_project_changes.is_empty()
             || !self.proposal_draft.planned_assets.is_empty();
         self.resolved_workload = classify_workload(WorkloadSignals {
             strong_reasoning_required: has_non_trivial_work
-                && matches!(
-                    self.quality_preference,
-                    QualityPreference::Balanced | QualityPreference::Deep
-                ),
+                && matches!(self.quality_preference, QualityPreference::Balanced | QualityPreference::Deep),
             model_judgement_required: true,
             ..WorkloadSignals::default()
         });
@@ -1047,14 +1160,41 @@ impl AiStudioPanel {
             MemoryPressure::Unknown,
             profile.resource_capabilities,
         );
+        if config.requires_network() {
+            match self.host.check_session_permission(&session_id, AgentCapability::NetworkAccess) {
+                Ok(PermissionCheck::Granted) => {
+                    self.prepare_native_question(config, conversation, session_id);
+                }
+                Ok(PermissionCheck::RequiresApproval) => {
+                    self.pending_question_permission = Some(PendingQuestionPermission {
+                        session_id,
+                        config,
+                        conversation,
+                    });
+                    self.status = Some("Hosted model access is waiting for explicit Network access approval.".to_owned());
+                }
+                Ok(PermissionCheck::Denied) => {
+                    self.status = Some("Network access is denied for hosted model processing.".to_owned());
+                }
+                Err(error) => self.status = Some(error.to_string()),
+            }
+        } else {
+            self.prepare_native_question(config, conversation, session_id);
+        }
+    }
+
+    fn prepare_native_question(
+        &mut self,
+        config: NativeModelConfig,
+        conversation: Vec<QuestionMessage>,
+        session_id: String,
+    ) {
         if self.resource_plan.presentation == PresentationPosture::InferenceFocused {
             self.pending_native_question_start = Some((config, conversation, session_id));
             self.pending_runtime_action = Some(AiStudioRuntimeAction::EnterInferenceFocused {
                 reclaim: self.resource_plan.reclaim.into(),
             });
-            self.status = Some(
-                "Preparing InferenceFocused presentation before native inference.".to_owned(),
-            );
+            self.status = Some("Preparing InferenceFocused presentation before native inference.".to_owned());
         } else {
             self.spawn_native_question(config, conversation, session_id);
         }
@@ -1062,7 +1202,7 @@ impl AiStudioPanel {
 
     fn spawn_native_question(
         &mut self,
-        config: LocalModelConfig,
+        config: NativeModelConfig,
         conversation: Vec<QuestionMessage>,
         session_id: String,
     ) {
@@ -1083,8 +1223,11 @@ impl AiStudioPanel {
         let preferences = AiStudioPreferences {
             schema_version: AI_STUDIO_PREFERENCES_SCHEMA_VERSION,
             quality_preference: self.quality_preference,
+            model_backend: self.model_backend,
             local_model_endpoint: self.local_model_endpoint.clone(),
             local_model_name: self.local_model_name.clone(),
+            hosted_model_endpoint: self.hosted_model_endpoint.clone(),
+            hosted_model_name: self.hosted_model_name.clone(),
         };
         match serde_json::to_vec_pretty(&preferences) {
             Ok(bytes) => {
@@ -1296,6 +1439,52 @@ impl AiStudioPanel {
     }
 
     fn show_permission_prompt(&mut self, ui: &mut egui::Ui) {
+        if self.pending_question_permission.is_some() {
+            let mut resolution = None;
+            ui.separator();
+            ui.group(|ui| {
+                ui.strong("Network approval required");
+                ui.label(AgentCapability::NetworkAccess.label());
+                ui.small("Hosted questions send only the selected native-harness context to the configured remote backend. Credentials stay machine-local and are never part of Agent Host serialization.");
+                ui.horizontal(|ui| {
+                    for (label, scope) in [
+                        ("Allow once", ApprovalScope::Once),
+                        ("This project", ApprovalScope::Project),
+                        ("Deny", ApprovalScope::Deny),
+                    ] {
+                        if ui.button(label).clicked() {
+                            resolution = Some(scope);
+                        }
+                    }
+                });
+            });
+            if let Some(scope) = resolution
+                && let Some(pending) = self.pending_question_permission.take()
+            {
+                if let Err(error) = self.host.resolve_session_permission(
+                    &pending.session_id,
+                    AgentCapability::NetworkAccess,
+                    scope,
+                ) {
+                    self.status = Some(error.to_string());
+                } else if scope == ApprovalScope::Deny {
+                    self.status = Some("Denied Network access for the hosted question.".to_owned());
+                } else {
+                    match self.host.check_session_permission(
+                        &pending.session_id,
+                        AgentCapability::NetworkAccess,
+                    ) {
+                        Ok(PermissionCheck::Granted) => self.prepare_native_question(
+                            pending.config,
+                            pending.conversation,
+                            pending.session_id,
+                        ),
+                        Ok(_) => self.status = Some("Network permission was not granted.".to_owned()),
+                        Err(error) => self.status = Some(error.to_string()),
+                    }
+                }
+            }
+        }
         let Some(pending) = self.pending_permission.as_ref() else {
             return;
         };
@@ -2377,7 +2566,7 @@ fn capability_label(value: CapabilityAvailability) -> &'static str {
 
 fn model_capability_summary(profile: &ModelCapabilityProfile) -> String {
     format!(
-        "Backend: {} · Model: {} · structured: {} · tools: {} · images: {} · reasoning: {} · context: {} · benchmark: {}",
+        "Backend: {} · Model: {} · structured: {} · tools: {} · images: {} · reasoning: {} · context: {} · streaming: {} · usage: {} · benchmark: {}",
         profile.backend_id,
         if profile.model_id.is_empty() {
             "not selected"
@@ -2392,6 +2581,8 @@ fn model_capability_summary(profile: &ModelCapabilityProfile) -> String {
             .context_limit
             .map(|limit| limit.to_string())
             .unwrap_or_else(|| "unknown".to_owned()),
+        capability_flag(profile.streaming),
+        capability_flag(profile.usage),
         if profile.benchmark_verified {
             "verified"
         } else {
