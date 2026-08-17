@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/main.rs",
+  "old": "        let app = engine_editor::EditorApp::from_project(root.clone());\n        let (mcp_server, mcp_requests) =",
+  "new": "        #[cfg(feature = \"visual-validation\")]\n        let mut app = engine_editor::EditorApp::from_project(root.clone());\n        #[cfg(not(feature = \"visual-validation\"))]\n        let app = engine_editor::EditorApp::from_project(root.clone());\n        let (mcp_server, mcp_requests) ="
+}
