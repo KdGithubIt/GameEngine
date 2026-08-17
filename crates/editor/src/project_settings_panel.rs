@@ -16,6 +16,8 @@ use engine_authoring::{
     TypedDocumentAuthoringState, TypedDocumentAuthoringValidation,
 };
 
+const UNDO_LIMIT: usize = 100;
+
 // ---------------------------------------------------------------------------
 // Panel state
 // ---------------------------------------------------------------------------
@@ -34,6 +36,8 @@ pub struct ProjectSettingsPanel {
     /// `true` when the panel contains unsaved changes.
     pub is_dirty: bool,
     authoring: TypedDocumentAuthoringState,
+    undo: Vec<ProjectSettings>,
+    redo: Vec<ProjectSettings>,
 }
 
 impl ProjectSettingsPanel {
@@ -44,6 +48,8 @@ impl ProjectSettingsPanel {
             post_process: PostProcessSettings::default(),
             is_dirty: false,
             authoring: TypedDocumentAuthoringState::new(),
+            undo: Vec::new(),
+            redo: Vec::new(),
         }
     }
 
@@ -68,13 +74,103 @@ impl ProjectSettingsPanel {
         TypedDocumentAuthoringService::new().preview(&self.settings, &self.authoring, permissions, expected_revision, expected_generation, replacement)
     }
 
-    /// Applies one complete Project Settings replacement atomically.
-    pub fn structured_apply(&mut self, permissions: &AuthoringPermissions, expected_revision: u64, expected_generation: u64, replacement: ProjectSettings) -> Result<TypedDocumentAuthoringMutation<ProjectSettings>, TypedDocumentAuthoringError> {
-        let mutation = TypedDocumentAuthoringService::new().apply(&mut self.settings, &mut self.authoring, permissions, expected_revision, expected_generation, replacement)?;
+    /// Applies one complete Project Settings replacement as one undoable edit.
+    pub fn structured_apply(
+        &mut self,
+        permissions: &AuthoringPermissions,
+        expected_revision: u64,
+        expected_generation: u64,
+        replacement: ProjectSettings,
+    ) -> Result<TypedDocumentAuthoringMutation<ProjectSettings>, TypedDocumentAuthoringError> {
+        let before = self.settings.clone();
+        let mutation = TypedDocumentAuthoringService::new().apply(
+            &mut self.settings,
+            &mut self.authoring,
+            permissions,
+            expected_revision,
+            expected_generation,
+            replacement,
+        )?;
         if mutation.success && !mutation.diff.is_empty() {
+            self.push_undo_snapshot(before);
+            self.redo.clear();
             self.is_dirty = true;
         }
         Ok(mutation)
+    }
+
+    /// Returns whether a Project Settings undo entry is available.
+    pub fn can_undo(&self) -> bool {
+        !self.undo.is_empty()
+    }
+
+    /// Returns whether a Project Settings redo entry is available.
+    pub fn can_redo(&self) -> bool {
+        !self.redo.is_empty()
+    }
+
+    /// Restores the previous Project Settings snapshot through the shared semantic boundary.
+    pub fn undo(&mut self) -> bool {
+        let Some(previous) = self.undo.pop() else {
+            return false;
+        };
+        let current = self.settings.clone();
+        match self.apply_history_replacement(previous.clone()) {
+            Ok(true) => {
+                self.redo.push(current);
+                self.is_dirty = true;
+                true
+            }
+            Ok(false) | Err(_) => {
+                self.undo.push(previous);
+                false
+            }
+        }
+    }
+
+    /// Reapplies the next Project Settings snapshot through the shared semantic boundary.
+    pub fn redo(&mut self) -> bool {
+        let Some(next) = self.redo.pop() else {
+            return false;
+        };
+        let current = self.settings.clone();
+        match self.apply_history_replacement(next.clone()) {
+            Ok(true) => {
+                self.push_undo_snapshot(current);
+                self.is_dirty = true;
+                true
+            }
+            Ok(false) | Err(_) => {
+                self.redo.push(next);
+                false
+            }
+        }
+    }
+
+    fn apply_history_replacement(
+        &mut self,
+        replacement: ProjectSettings,
+    ) -> Result<bool, TypedDocumentAuthoringError> {
+        let revision = self.authoring.revision();
+        let generation = self.authoring.generation();
+        let permissions = AuthoringPermissions::read_only()
+            .with(AuthoringPermission::ProjectDataWrite);
+        let mutation = TypedDocumentAuthoringService::new().apply(
+            &mut self.settings,
+            &mut self.authoring,
+            &permissions,
+            revision,
+            generation,
+            replacement,
+        )?;
+        Ok(mutation.success && !mutation.diff.is_empty())
+    }
+
+    fn push_undo_snapshot(&mut self, snapshot: ProjectSettings) {
+        if self.undo.len() >= UNDO_LIMIT {
+            self.undo.remove(0);
+        }
+        self.undo.push(snapshot);
     }
 
     // ── Tags ──────────────────────────────────────────────────────────────

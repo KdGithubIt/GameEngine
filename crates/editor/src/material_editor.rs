@@ -16,6 +16,8 @@ use engine_authoring::{
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+const UNDO_LIMIT: usize = 100;
+
 // ---------------------------------------------------------------------------
 // Data model
 // ---------------------------------------------------------------------------
@@ -30,6 +32,8 @@ pub struct MaterialEditorPanel {
     /// The relative path of the currently selected / active material.
     pub active: Option<PathBuf>,
     authoring: BTreeMap<PathBuf, TypedDocumentAuthoringState>,
+    undo: BTreeMap<PathBuf, Vec<MaterialAsset>>,
+    redo: BTreeMap<PathBuf, Vec<MaterialAsset>>,
 }
 
 impl MaterialEditorPanel {
@@ -43,6 +47,8 @@ impl MaterialEditorPanel {
         self.active = Some(rel_path.clone());
         self.authoring
             .insert(rel_path.clone(), TypedDocumentAuthoringState::new());
+        self.undo.insert(rel_path.clone(), Vec::new());
+        self.redo.insert(rel_path.clone(), Vec::new());
         self.materials.insert(rel_path, material);
     }
 
@@ -127,7 +133,7 @@ impl MaterialEditorPanel {
             .map(Some)
     }
 
-    /// Applies one atomic replacement to the active Material.
+    /// Applies one atomic replacement to the active Material as one undoable edit.
     pub fn structured_apply(
         &mut self,
         permissions: &AuthoringPermissions,
@@ -138,21 +144,126 @@ impl MaterialEditorPanel {
         let Some(key) = self.active.clone() else {
             return Ok(None);
         };
-        let (Some(document), Some(state)) =
-            (self.materials.get_mut(&key), self.authoring.get_mut(&key))
-        else {
+        let Some(before) = self.materials.get(&key).cloned() else {
             return Ok(None);
         };
-        TypedDocumentAuthoringService::new()
-            .apply(
+        let mutation = {
+            let (Some(document), Some(state)) =
+                (self.materials.get_mut(&key), self.authoring.get_mut(&key))
+            else {
+                return Ok(None);
+            };
+            TypedDocumentAuthoringService::new().apply(
                 document,
                 state,
                 permissions,
                 expected_revision,
                 expected_generation,
                 replacement,
-            )
-            .map(Some)
+            )?
+        };
+        if mutation.success && !mutation.diff.is_empty() {
+            self.push_undo_snapshot(&key, before);
+            self.redo.entry(key).or_default().clear();
+        }
+        Ok(Some(mutation))
+    }
+
+    /// Returns whether the active Material has an undo entry.
+    pub fn can_undo(&self) -> bool {
+        self.active
+            .as_ref()
+            .and_then(|key| self.undo.get(key))
+            .is_some_and(|history| !history.is_empty())
+    }
+
+    /// Returns whether the active Material has a redo entry.
+    pub fn can_redo(&self) -> bool {
+        self.active
+            .as_ref()
+            .and_then(|key| self.redo.get(key))
+            .is_some_and(|history| !history.is_empty())
+    }
+
+    /// Restores the previous Material snapshot through the shared semantic boundary.
+    pub fn undo(&mut self) -> bool {
+        let Some(key) = self.active.clone() else {
+            return false;
+        };
+        let Some(previous) = self.undo.get_mut(&key).and_then(Vec::pop) else {
+            return false;
+        };
+        let Some(current) = self.materials.get(&key).cloned() else {
+            self.undo.entry(key).or_default().push(previous);
+            return false;
+        };
+        match self.apply_history_replacement(&key, previous.clone()) {
+            Ok(true) => {
+                self.redo.entry(key).or_default().push(current);
+                true
+            }
+            Ok(false) | Err(_) => {
+                self.undo.entry(key).or_default().push(previous);
+                false
+            }
+        }
+    }
+
+    /// Reapplies the next Material snapshot through the shared semantic boundary.
+    pub fn redo(&mut self) -> bool {
+        let Some(key) = self.active.clone() else {
+            return false;
+        };
+        let Some(next) = self.redo.get_mut(&key).and_then(Vec::pop) else {
+            return false;
+        };
+        let Some(current) = self.materials.get(&key).cloned() else {
+            self.redo.entry(key).or_default().push(next);
+            return false;
+        };
+        match self.apply_history_replacement(&key, next.clone()) {
+            Ok(true) => {
+                self.push_undo_snapshot(&key, current);
+                true
+            }
+            Ok(false) | Err(_) => {
+                self.redo.entry(key).or_default().push(next);
+                false
+            }
+        }
+    }
+
+    fn apply_history_replacement(
+        &mut self,
+        key: &PathBuf,
+        replacement: MaterialAsset,
+    ) -> Result<bool, TypedDocumentAuthoringError> {
+        let (Some(document), Some(state)) =
+            (self.materials.get_mut(key), self.authoring.get_mut(key))
+        else {
+            return Ok(false);
+        };
+        let revision = state.revision();
+        let generation = state.generation();
+        let permissions = AuthoringPermissions::read_only()
+            .with(AuthoringPermission::ProjectDataWrite);
+        let mutation = TypedDocumentAuthoringService::new().apply(
+            document,
+            state,
+            &permissions,
+            revision,
+            generation,
+            replacement,
+        )?;
+        Ok(mutation.success && !mutation.diff.is_empty())
+    }
+
+    fn push_undo_snapshot(&mut self, key: &PathBuf, snapshot: MaterialAsset) {
+        let history = self.undo.entry(key.clone()).or_default();
+        if history.len() >= UNDO_LIMIT {
+            history.remove(0);
+        }
+        history.push(snapshot);
     }
 }
 
