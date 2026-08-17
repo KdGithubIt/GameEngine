@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "enum ModelResourceContinuation {\n    RestoreForEditing,\n    LaunchManagedPlay { run_id: String },\n}\n",
+  "new": "enum ModelResourceContinuation {\n    RestoreForEditing,\n    LaunchManagedPlay { run_id: String },\n    ResumeAfterEditing {\n        run_id: Option<String>,\n        state: AiStudioAuthoritativeState,\n    },\n}\n"
+}

@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/main.rs","old":"            if requested == \"Navigation\" {\n                app.prepare_navigation_visual_validation();\n","new":"            if requested == \"AI Studio\" {\n                ai_studio.open();\n            } else if requested == \"Navigation\" {\n                app.prepare_navigation_visual_validation();\n"}
