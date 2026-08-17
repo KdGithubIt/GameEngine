@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0126-core-20260817-01",
+  "target_branch": "chatgpt/gameengine-adr0126-first-release",
+  "expected_head_sha": "d03ed9e573818eb0ca088f37953f611d6ed4d22e",
+  "baseline_main_sha": "d03ed9e573818eb0ca088f37953f611d6ed4d22e",
+  "patch_sha256": "285d9d07aebbbcb565aaaf1d52aeb79d2037e2d52651bf5c60f4c06e3c4fb95c",
+  "patch_bytes": 47836,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Implement ADR0126 Timeline core and authoring",
+  "pr_title": "GameEngine: complete ADR0126 Timeline and Sequencer",
+  "pr_body": "## Summary\n\nCompletes ADR 0126 Timeline / Sequencer first-release requirements from the task-start current main baseline. The implementation is split into validated producer requests on one task branch.\n\n<!-- gameengine-visual-validation: editor -->\n<!-- gameengine-visual-authoring-tool: Sequencer -->"
+}
