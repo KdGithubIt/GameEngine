@@ -950,6 +950,22 @@ impl AgentHost {
         message: impl Into<String>,
     ) -> Result<(), AgentHostError> {
         let (session_id, state) = self.run_location(run_id)?;
+        if gate == "visual_evaluation" {
+            if state != AgentRunState::Evaluating {
+                return Err(AgentHostError::Io(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "visual_evaluation is reportable only while evaluating a host-captured frame",
+                )));
+            }
+            if status == CompletionStatus::Passed
+                && self.run(run_id)?.completion.frame_capture != CompletionStatus::Passed
+            {
+                return Err(AgentHostError::Io(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "visual_evaluation cannot pass without host-owned frame-capture evidence",
+                )));
+            }
+        }
         {
             let run = self.run_mut_in_session(&session_id, run_id)?;
             match gate {
@@ -2662,6 +2678,51 @@ mod tests {
             &event.evidence,
             Some(AgentEventEvidence::CapturedFrame { artifact_id: id, width: 2, height: 2 }) if id == &artifact_id
         )));
+        let _ = fs::remove_dir_all(project);
+        let _ = fs::remove_dir_all(storage);
+    }
+
+    #[test]
+    fn visual_evaluation_pass_requires_host_captured_frame_in_evaluating_state() {
+        let project = temp_path("visual-evaluation-project");
+        let storage = temp_path("visual-evaluation-storage");
+        fs::create_dir_all(&project).expect("test project directory");
+        let mut host = AgentHost::open(project.clone(), storage.clone()).expect("host");
+        let session = host.create_session("Visual evaluation").expect("session");
+        let run = host.start_run(&session, "test").expect("run");
+        host.transition_run(&run, AgentRunState::Executing, "execute")
+            .expect("executing");
+
+        assert!(host
+            .record_completion_gate(
+                &run,
+                "visual_evaluation",
+                CompletionStatus::Passed,
+                "provider preclaim",
+            )
+            .is_err());
+        assert_eq!(
+            host.run(&run).expect("run").completion.visual_evaluation,
+            CompletionStatus::Pending
+        );
+
+        host.transition_run(&run, AgentRunState::Validating, "validate")
+            .expect("validating");
+        host.transition_run(&run, AgentRunState::Playtesting, "playtest")
+            .expect("playtesting");
+        host.store_captured_frame_artifact(&run, 2, 2, b"png")
+            .expect("artifact");
+        host.record_completion_gate(
+            &run,
+            "visual_evaluation",
+            CompletionStatus::Passed,
+            "evaluated host frame",
+        )
+        .expect("visual evaluation");
+        assert_eq!(
+            host.run(&run).expect("run").completion.visual_evaluation,
+            CompletionStatus::Passed
+        );
         let _ = fs::remove_dir_all(project);
         let _ = fs::remove_dir_all(storage);
     }
