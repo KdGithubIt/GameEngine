@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/agent_host.rs","old":"            sessions,\n            active_writer_run,\n            permissions,\n            active_validation: None,\n","new":"            sessions,\n            active_writer_run,\n            permissions,\n            pending_permission: None,\n            active_validation: None,\n"}
