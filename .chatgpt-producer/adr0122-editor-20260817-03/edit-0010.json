@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ui/audio_authoring.rs","old":"            voice: None,\n            listener_source: AuditionListenerSource::GameListener,\n","new":"            voice: None,\n            active_entity: None,\n            listener_source: AuditionListenerSource::GameListener,\n"}
