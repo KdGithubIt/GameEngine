@@ -1,0 +1,36 @@
+diff --git a/crates/editor/src/ui/chrome.rs b/crates/editor/src/ui/chrome.rs
+index 08ab960db8c2cf76d55632fe4c983cb17c6d18eb..b40af9e6735c08b7f52d2467beb987dc05c7a2fa 100644
+--- a/crates/editor/src/ui/chrome.rs
++++ b/crates/editor/src/ui/chrome.rs
+@@ -2083,6 +2083,14 @@ pub(super) fn show_primary_left_dock_panel<R>(
+ /// size never contributes to the panel response. Dock-local truncation also
+ /// keeps narrow horizontal controls on one line.
+ pub(super) fn show_inspector_panel<R>(
++    ui: &mut egui::Ui,
++    max_width: f32,
++    add_contents: impl FnOnce(&mut egui::Ui) -> R,
++) -> egui::InnerResponse<R> {
++    show_inspector_panel_at_offset(ui, max_width, None, add_contents)
++}
++
++pub(super) fn show_inspector_panel_at_offset<R>(
+     ui: &mut egui::Ui,
+     max_width: f32,
+     vertical_scroll_offset: Option<f32>,
+diff --git a/crates/editor/src/ui/mod.rs b/crates/editor/src/ui/mod.rs
+index 02263d27856e26c8f2f29555bb2f60285357f51a..ae20d9d663217cae4ebb7b0d2a5655caea456c09 100644
+--- a/crates/editor/src/ui/mod.rs
++++ b/crates/editor/src/ui/mod.rs
+@@ -836,7 +836,11 @@ impl eframe::App for EditorApp {
+         if !self.behavior_debug.visible {
+             let inspector_maximum_width = inspector_max_width(ui.available_width());
+             let inspector_scroll_request = self.inspector_scroll_request.take();
+-            show_inspector_panel(ui, inspector_maximum_width, inspector_scroll_request, |ui| {
++            show_inspector_panel_at_offset(
++                ui,
++                inspector_maximum_width,
++                inspector_scroll_request,
++                |ui| {
+                 self.show_data_asset_tools(ui);
+                 ui.separator();
+                 // The three inspector surfaces replace one another inside this
