@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "20260817-adr0124-dynamic-links-b73eee7-r3",
+  "target_branch": "chatgpt/gameengine-adr0124-production-navigation-v13",
+  "expected_head_sha": "b73eee71d658e3d182a0824a43e01f297c0e9157",
+  "baseline_main_sha": "6bb36e3789f49ec13f16ef1b447be1cdc3be3d5c",
+  "patch_sha256": "44532762ce82d687726b7f05cf3914d01c628ae2410d61f3e5d584ba54dbe19c",
+  "patch_bytes": 4603,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Add ADR 0124 dynamic navigation traversal",
+  "pr_title": "Complete ADR 0124 production navigation first release",
+  "pr_body": "Complete ADR 0124 on current main while preserving the existing NavMeshQuery and stable navigation component IDs. This follow-up adds engine-owned query-time traversal filtering for stable off-mesh link IDs and neutral traversal tags so doors and other dynamic traversal policies can disable baked links without exposing backend polygon/reference types.\n\n<!-- gameengine-visual-validation: editor -->"
+}
