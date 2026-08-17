@@ -1,0 +1,45 @@
+index ae2d6f93a58e29fa38c2dd5b34f8f32fbcaad94c..d070a6cfe990e1a38ef63ff2728def694c87a0cf 100644
+--- a/docs/AI_FRIENDLY_AUTHORING_SPEC.md
++++ b/docs/AI_FRIENDLY_AUTHORING_SPEC.md
+@@ -1064,6 +1064,14 @@ subscription tokens, local model handles, and Editor MCP credentials MUST NOT be
+ serialized into session records or canonical project data. External runtimes
+ receive only the ephemeral MCP connection needed for the active run.
+ 
++Per ADR 0144, hosted and enterprise `ModelBackend` adapters remain inference-only
++inside the native harness. Hosted processing requires `NetworkAccess`, exposes its
++remote-processing posture without exposing credentials or endpoint secrets, and
++stores GameEngine-owned API credentials only in an OS-protected machine-local
++secret store. Provider failures, rate limits, safety refusals, authentication
++failures, transport interruption, and unsupported capabilities remain explicit
++backend evidence and cannot satisfy Agent Host completion gates.
++
+ The ADR 0035 AI Agent Bridge remains the input, frame-observation, and visual
+ interaction path. It MUST NOT be treated as a substitute for semantic authoring
+ parity when a capability changes persisted project data.
+diff --git a/docs/adr/0144-hosted-and-enterprise-model-backends-and-credential-ownership.md b/docs/adr/0144-hosted-and-enterprise-model-backends-and-credential-ownership.md
+index 2ff15b0ad59c5710126d051a2447c6abd99a7dd5..941f4151742f4cecf7ec65d1bfe13139e3d550e6 100644
+--- a/docs/adr/0144-hosted-and-enterprise-model-backends-and-credential-ownership.md
++++ b/docs/adr/0144-hosted-and-enterprise-model-backends-and-credential-ownership.md
+@@ -1,6 +1,6 @@
+ # ADR 0144: Hosted and Enterprise ModelBackends and Credential Ownership
+ 
+-Status: Proposed
++Status: Accepted
+ Date: 2026-08-17
+ Builds on: ADR 0131
+ Relates to: ADR 0141, ADR 0142, ADR 0150
+@@ -53,6 +53,14 @@ Implementation must cover secret-storage boundaries, no secret serialization, ex
+ 
+ Credential/backend selection UI requires Editor Visual Validation.
+ 
++## Initial implementation
++
++The first accepted implementation keeps the existing read-oriented native harness and adds two remote processing postures behind the same backend boundary: an API-key hosted HTTPS adapter and an enterprise HTTPS adapter using the organization-managed Windows identity/session. API-key material is protected with Windows DPAPI under the Editor's machine-local application data and is never part of AI Studio preferences, Agent Host sessions, project-shared history, Remote AI Studio payloads, or canonical project data.
++
++Hosted questions reuse `AgentCapability::NetworkAccess` before request dispatch. The adapter maps authentication, rate limiting, safety refusal, context-limit rejection, server failure, transport failure, invalid response, and interruption to backend failures rather than completion. The first remote adapter is intentionally non-streaming and reports unsupported/unknown structured output, tools, images, reasoning, context limits, and local GPU controls honestly. Remote companion status exposes only the sanitized local/hosted/enterprise processing posture.
++
++The provider remains inference-only: proposal snapshots, mutation permissions, validation, Play, captured evidence, and completion gates remain owned by the existing Agent Host and managed Editor paths.
++
+ ## Non-goals
+ 
+ This ADR does not define provider-specific external coding agents, route between multiple models, or make a hosted provider authoritative for project mutation.
