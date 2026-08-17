@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ui/mod.rs","old":"mod animation_graph_parameters;\nmod behavior_debug;","new":"mod animation_graph_parameters;\nmod audio_authoring;\nmod behavior_debug;"}
