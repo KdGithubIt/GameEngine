@@ -471,13 +471,19 @@ Choose recovery by failing layer:
   request commit; do not republish.
 - Dispatcher failed after successfully pushing the exact product commit but before
   Draft PR or Windows Validation reconciliation: do not replay normal apply and do
-  not republish. After the trusted recovery workflow is available on `main`, run
+  not republish. After the trusted recovery workflow is available on `main`, invoke
   `gameengine-chatgpt-dispatcher-recovery.yml` with the same published full request
-  commit. Recovery is schema-v2 only, has no product `contents: write` permission,
-  proves the target is the one-parent child of `expected_head_sha`, requires the
-  exact reconstructed request patch to equal that commit's diff bytes, preserves
-  baseline ancestry even if `main` advanced afterward, then only reconciles the
-  Draft PR and exact-head Windows Validation.
+  commit. A producer with workflow-dispatch capability may use its
+  `request_commit` input. A connector-only producer instead opens a transient Issue
+  titled `GameEngine ChatGPT Dispatcher Recovery: <full-request-commit>` whose body
+  is exactly `{"signal":"gameengine-chatgpt-dispatcher-recovery-v1","request_commit":"<full-request-commit>"}`.
+  The Issue trigger accepts only `OWNER`, `MEMBER`, or `COLLABORATOR` authors and
+  closes the signal only after successful reconciliation. Recovery is schema-v2
+  only, has no product `contents: write` permission, proves the target is the
+  one-parent child of `expected_head_sha`, requires the exact reconstructed request
+  patch to equal that commit's diff bytes, preserves baseline ancestry even if
+  `main` advanced afterward, then only reconciles the Draft PR and exact-head
+  Windows Validation.
 - Dispatcher path rejection: do not weaken product allow-list. Trusted automation
   changes require separate infrastructure branch/Draft PR.
 - Windows Validation failure: read summary mode/scope, job logs, diagnostics, and
