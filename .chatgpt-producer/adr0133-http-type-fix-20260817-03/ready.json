@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0133-http-type-fix-20260817-03",
+  "target_branch": "chatgpt/gameengine-adr0133-remote-companion-20260817",
+  "expected_head_sha": "eb9573f7995a04de6d944f40b1ab006bc1296f3b",
+  "baseline_main_sha": "f0f8d6436235b706dd86d8a7a7d5630a75a1dce4",
+  "edit_parts": ["edit-0000.json"],
+  "commit_message": "Fix ADR 0133 HTTP status code typing",
+  "pr_title": "GameEngine: implement ADR 0133 Remote AI Studio companion",
+  "pr_body": "## Summary\n\n- add the loopback-only Remote AI Studio HTTP/SSE companion gateway over the existing authoritative Agent Host\n- add client request idempotency, exact proposal-version Go, stale Stop/permission protection, snapshot + ordered event cursor recovery, safe captured-frame retrieval, and sanitized structured remote responses\n- add a responsive web companion for conversation, proposal acceptance criteria, Go/Stop, pending decisions, run/completion progress, and captured-frame review\n- preserve the existing loopback Editor MCP boundary and do not expose arbitrary shell, process, filesystem, Git, raw MCP, or native GPU/resource controls\n- add integration-focused ADR 0133 regression coverage against the existing AgentHost contracts\n- fix HTTP parser status-code literals to preserve the declared u16 error contract\n\n## Validation\n\nRun permanent Windows Validation with the repository planner. Remote companion UI changes require visual validation including narrow/mobile layout review.\n\n<!-- gameengine-visual-validation: editor -->\n\n<!-- gameengine-chatgpt-dispatcher -->"
+}
