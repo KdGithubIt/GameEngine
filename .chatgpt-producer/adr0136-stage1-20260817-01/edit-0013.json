@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/scene_view.rs","old":"struct PreviewKey {\n    scene_revision: u64,\n    manifest_hash: u64,\n    game_module: Option<usize>,\n","new":"struct PreviewKey {\n    scene_revision: u64,\n    manifest_hash: u64,\n    residency_revision: u64,\n    game_module: Option<usize>,\n"}
