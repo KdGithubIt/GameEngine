@@ -63,6 +63,7 @@ fn default_local_model_endpoint() -> String {
     DEFAULT_LOCAL_MODEL_ENDPOINT.to_owned()
 }
 
+/// Authoritative Editor identity captured across native-inference interruption boundaries.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AiStudioAuthoritativeState {
     /// Unique Editor document revision observed at the resource-control boundary.
@@ -216,7 +217,10 @@ impl AiStudioConnection {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum AiStudioRuntimeAction {
     /// Suspend optional Editor presentation and release recreatable GPU resources.
-    EnterInferenceFocused { reclaim: AiStudioReclaimLevel },
+    EnterInferenceFocused {
+        /// Reclaim level selected by the application-layer resource broker.
+        reclaim: AiStudioReclaimLevel,
+    },
     /// Restore normal Editor presentation; completion is reported after one drawn frame.
     RestoreEditorPresentation,
     /// Capture current authoritative Editor revision/generation before resuming a run.
@@ -234,9 +238,15 @@ pub enum AiStudioRuntimeAction {
 /// Result of one managed Editor-runtime operation returned to AI Studio.
 pub enum AiStudioRuntimeResult {
     /// Optional Editor presentation is suspended at the requested reclaim level.
-    InferenceFocusedEntered { reclaim: AiStudioReclaimLevel },
+    InferenceFocusedEntered {
+        /// Reclaim level that was applied before native inference.
+        reclaim: AiStudioReclaimLevel,
+    },
     /// Restore was requested and authoritative state was captured before manual editing.
-    EditorRestorePending { state: AiStudioAuthoritativeState },
+    EditorRestorePending {
+        /// Authoritative Editor identity captured before presentation restore completes.
+        state: AiStudioAuthoritativeState,
+    },
     /// A normal Editor frame was drawn after restoration.
     EditorRestored,
     /// Current authoritative Editor identity was inspected for Resume.
@@ -442,15 +452,13 @@ impl AiStudioPanel {
                 if self.restore_for_editing {
                     if let (Some(run_id), Some(snapshot)) =
                         (self.active_run_id.clone(), self.interrupt_snapshot.take())
-                    {
-                        if let Err(error) = self
+                        && let Err(error) = self
                             .host
                             .interrupt_for_editing(&run_id, snapshot.into())
-                        {
-                            self.status = Some(error.to_string());
-                            self.restore_for_editing = false;
-                            return;
-                        }
+                    {
+                        self.status = Some(error.to_string());
+                        self.restore_for_editing = false;
+                        return;
                     }
                     self.editing_interrupted = true;
                     self.status = Some(

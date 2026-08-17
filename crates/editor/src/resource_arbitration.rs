@@ -114,7 +114,9 @@ impl Default for ModelResourceCapabilities {
 }
 
 /// Resource telemetry provenance. Unknown values remain explicitly unavailable.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+// First-release benchmark telemetry contract; exact backend wiring is capability-dependent.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "availability", content = "value", rename_all = "snake_case")]
 pub(crate) enum TelemetryValue<T> {
     /// Value reported or measured by the owning subsystem.
@@ -122,13 +124,8 @@ pub(crate) enum TelemetryValue<T> {
     /// Conservative estimate used because exact measurement is unavailable.
     ConservativeEstimate(T),
     /// The owning subsystem cannot determine this value reliably.
+    #[default]
     Unavailable,
-}
-
-impl<T> Default for TelemetryValue<T> {
-    fn default() -> Self {
-        Self::Unavailable
-    }
 }
 
 /// Observed pressure used by the application-layer broker.
@@ -139,6 +136,8 @@ pub(crate) enum MemoryPressure {
     /// Exact free memory is unavailable, so policy must retain conservative headroom.
     Unknown,
     /// Reliable evidence indicates shared-GPU pressure.
+    // Reserved for backends/renderers that can report reliable pressure in this release.
+    #[allow(dead_code)]
     Constrained,
 }
 
@@ -283,6 +282,8 @@ pub(crate) fn resolve_resource_plan(
 /// Every value that cannot be measured by the owning subsystem remains
 /// [`TelemetryValue::Unavailable`]; callers must not replace it with a guessed
 /// precise value.
+// First-release machine-readable benchmark schema; emission is enabled when owning telemetry exists.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct NativeBenchmarkRecord {
     pub(crate) model_identity: String,

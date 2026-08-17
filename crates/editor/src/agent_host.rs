@@ -374,6 +374,8 @@ impl Default for AgentWorkingState {
     }
 }
 
+// First-release semantic working-state update contract; provider wiring is intentionally optional.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub(crate) struct AgentWorkingStateUpdate {
     pub(crate) architecture_constraints: Vec<String>,
@@ -925,6 +927,8 @@ impl AgentHost {
         self.persist_session(&session_id)
     }
 
+    // First-release semantic working-state update contract; providers may opt into it incrementally.
+    #[allow(dead_code)]
     pub(crate) fn record_working_state_update(
         &mut self,
         run_id: &str,
