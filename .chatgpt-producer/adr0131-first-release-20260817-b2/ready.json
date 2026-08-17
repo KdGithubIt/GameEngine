@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0131-first-release-20260817-b2",
+  "target_branch": "chatgpt/gameengine-adr0131-first-release-v3",
+  "expected_head_sha": "233165e5c651f762e243f48707f96ef1142b0da4",
+  "baseline_main_sha": "d03ed9e573818eb0ca088f37953f611d6ed4d22e",
+  "edit_parts": [
+    "edit-0000.json",
+    "edit-0001.json",
+    "edit-0002.json"
+  ],
+  "commit_message": "Remove premature ADR 0131 slice APIs",
+  "pr_title": "GameEngine: complete ADR 0131 first-release agent contracts",
+  "pr_body": "Repairs the B1 lint failure at its request-slicing root cause: removes producer APIs that were introduced before their production consumers. They will be reintroduced atomically with the corresponding managed runtime/native/asset consumers instead of suppressing dead-code warnings."
+}
