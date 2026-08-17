@@ -121,10 +121,6 @@ if ($EventName -eq "schedule") {
     $plan = New-Plan -Mode "full" -Skip $false `
         -Reason "Nightly validation always runs the full workspace suite." `
         -ChangedPackages @() -AffectedPackages @()
-} elseif ($EventName -eq "push") {
-    $plan = New-Plan -Mode "full" -Skip $false `
-        -Reason "Pushes to main always run the full workspace suite." `
-        -ChangedPackages @() -AffectedPackages @()
 } elseif ($changedPaths.Count -eq 0) {
     $plan = New-Plan -Mode "skip" -Skip $true `
         -Reason "No relevant changed paths were found." `
@@ -263,10 +259,46 @@ if ($EventName -eq "schedule") {
                     -Reason "No Rust workspace package is affected." `
                     -ChangedPackages @() -AffectedPackages @()
             } else {
+                $reverseDependents = @{}
+                foreach ($id in $workspaceMemberIds.Keys) {
+                    $reverseDependents[$id] = New-Object System.Collections.Generic.List[string]
+                }
+
+                foreach ($node in @($metadata.resolve.nodes)) {
+                    $dependentId = [string]$node.id
+                    if (-not $workspaceMemberIds.ContainsKey($dependentId)) {
+                        continue
+                    }
+                    foreach ($dependencyIdValue in @($node.dependencies)) {
+                        $dependencyId = [string]$dependencyIdValue
+                        if ($workspaceMemberIds.ContainsKey($dependencyId)) {
+                            $reverseDependents[$dependencyId].Add($dependentId)
+                        }
+                    }
+                }
+
+                $affectedIds = New-Object System.Collections.Generic.HashSet[string]
+                $pending = New-Object System.Collections.Generic.Queue[string]
+                foreach ($id in $changedIds) {
+                    if ($affectedIds.Add($id)) {
+                        $pending.Enqueue($id)
+                    }
+                }
+
+                while ($pending.Count -gt 0) {
+                    $dependencyId = $pending.Dequeue()
+                    foreach ($dependentId in $reverseDependents[$dependencyId]) {
+                        if ($affectedIds.Add($dependentId)) {
+                            $pending.Enqueue($dependentId)
+                        }
+                    }
+                }
+
                 $changedNames = @($changedIds | ForEach-Object { $packagesById[$_].name })
+                $affectedNames = @($affectedIds | ForEach-Object { $packagesById[$_].name })
                 $plan = New-Plan -Mode "affected" -Skip $false `
-                    -Reason "Changed workspace packages were selected from cargo metadata; reverse-dependent coverage runs on main and nightly." `
-                    -ChangedPackages $changedNames -AffectedPackages $changedNames
+                    -Reason "Changed workspace packages and their transitive reverse dependents were selected from cargo metadata." `
+                    -ChangedPackages $changedNames -AffectedPackages $affectedNames
             }
         }
     }
