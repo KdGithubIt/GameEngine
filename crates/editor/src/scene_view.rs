@@ -877,14 +877,7 @@ impl PreviewNotice {
     ///
     /// The first skipped component target is preserved when available so a
     /// Problems-panel click can navigate to the affected authoring component.
-    fn skipped_components(
-        message: String,
-        target: Option<engine_authoring::DiagnosticTarget>,
-    ) -> Self {
-        let mut diagnostic = Diagnostic::warning("editor.scene_view.components_skipped", message);
-        if let Some(target) = target {
-            diagnostic = diagnostic.with_target(target);
-        }
+    fn skipped_components(diagnostic: Diagnostic) -> Self {
         Self::SkippedComponents(diagnostic)
     }
 
@@ -1961,42 +1954,46 @@ impl SceneView {
                 .preview_notice
                 .as_ref()
                 .expect("a preview notice exists when it is ready to draw");
-            let diagnostic = notice.diagnostic();
-            let (background, foreground) = match notice {
-                PreviewNotice::Failure(_) => (
-                    egui::Color32::from_rgba_unmultiplied(80, 12, 12, 220),
-                    egui::Color32::LIGHT_RED,
-                ),
-                PreviewNotice::SkippedComponents(_) => (
-                    egui::Color32::from_rgba_unmultiplied(84, 62, 8, 220),
-                    egui::Color32::LIGHT_YELLOW,
-                ),
-            };
-            let text_padding = 12.0;
-            let notice_width = (rect.width() - 16.0).max(1.0);
-            let text_width = (notice_width - text_padding * 2.0).max(1.0);
-            let galley = ui.painter().layout(
-                diagnostic.message.clone(),
-                egui::FontId::proportional(18.0),
-                foreground,
-                text_width,
-            );
-            let maximum_height = (rect.height() - 16.0).max(1.0);
-            let notice_height = (galley.size().y + text_padding * 2.0)
-                .max(56.0)
-                .min(maximum_height);
-            let notice_rect = egui::Rect::from_min_size(
-                rect.left_top() + egui::vec2(8.0, 8.0),
-                egui::vec2(notice_width, notice_height),
-            );
-            ui.painter().rect_filled(notice_rect, 4.0, background);
-            ui.painter()
-                .with_clip_rect(notice_rect.shrink(text_padding))
-                .galley(
-                    notice_rect.min + egui::vec2(text_padding, text_padding),
-                    galley,
-                    foreground,
-                );
+            match notice {
+                PreviewNotice::Failure(diagnostic) => {
+                    let background = egui::Color32::from_rgba_unmultiplied(80, 12, 12, 220);
+                    let foreground = egui::Color32::LIGHT_RED;
+                    let text_padding = 12.0;
+                    let notice_width = (rect.width() - 16.0).max(1.0);
+                    let text_width = (notice_width - text_padding * 2.0).max(1.0);
+                    let galley = ui.painter().layout(
+                        diagnostic.message.clone(),
+                        egui::FontId::proportional(18.0),
+                        foreground,
+                        text_width,
+                    );
+                    let maximum_height = (rect.height() - 16.0).max(1.0);
+                    let notice_height = (galley.size().y + text_padding * 2.0)
+                        .max(56.0)
+                        .min(maximum_height);
+                    let notice_rect = egui::Rect::from_min_size(
+                        rect.left_top() + egui::vec2(8.0, 8.0),
+                        egui::vec2(notice_width, notice_height),
+                    );
+                    ui.painter().rect_filled(notice_rect, 4.0, background);
+                    ui.painter()
+                        .with_clip_rect(notice_rect.shrink(text_padding))
+                        .galley(
+                            notice_rect.min + egui::vec2(text_padding, text_padding),
+                            galley,
+                            foreground,
+                        );
+                }
+                PreviewNotice::SkippedComponents(_) => {
+                    ui.painter().text(
+                        rect.right_top() + egui::vec2(-8.0, 8.0),
+                        egui::Align2::RIGHT_TOP,
+                        "Preview incomplete · see Problems",
+                        egui::TextStyle::Small.resolve(ui.style()),
+                        egui::Color32::LIGHT_YELLOW,
+                    );
+                }
+            }
         }
 
         SceneViewOutput {
@@ -2393,6 +2390,18 @@ fn skipped_component_notice(diagnostics: &[engine_authoring::Diagnostic]) -> Opt
         .filter(|diagnostic| diagnostic.code == engine::scene_bridge::COMPONENT_SKIPPED_DIAGNOSTIC)
         .collect();
     let first = skipped.first()?;
+
+    // Prefer a domain-owned semantic cause emitted by the component converter.
+    // The mechanism-oriented skip remains in bridge diagnostics for Console and
+    // engineering evidence, but Problems receives the repairable fact.
+    if let Some(semantic) = diagnostics.iter().find(|diagnostic| {
+        diagnostic.code != engine::scene_bridge::COMPONENT_SKIPPED_DIAGNOSTIC
+            && diagnostic.target == first.target
+            && diagnostic.severity != engine_authoring::Severity::Info
+    }) {
+        return Some(PreviewNotice::skipped_components(semantic.clone()));
+    }
+
     let message = if skipped.len() == 1 {
         first.message.clone()
     } else {
@@ -2402,10 +2411,13 @@ fn skipped_component_notice(diagnostics: &[engine_authoring::Diagnostic]) -> Opt
             first.message
         )
     };
-    Some(PreviewNotice::skipped_components(
-        message,
-        first.target.clone(),
-    ))
+    let mut fallback = Diagnostic::warning("editor.scene_view.components_skipped", message)
+        .with_related_targets(first.related_targets.clone())
+        .with_context_value("preview_incomplete", "true");
+    if let Some(target) = first.target.clone() {
+        fallback = fallback.with_target(target);
+    }
+    Some(PreviewNotice::skipped_components(fallback))
 }
 
 fn simulate_particle_preview(world: &mut engine::ecs::World, elapsed_seconds: f32) {

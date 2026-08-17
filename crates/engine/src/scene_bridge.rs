@@ -1459,6 +1459,10 @@ fn component_skipped_diagnostic(
             entity.as_str()
         ),
     )
+    .with_target(DiagnosticTarget::Component {
+        entity: entity.clone(),
+        component_type: component_type.clone(),
+    })
 }
 
 fn rollback_bridge_changes(
