@@ -3,14 +3,16 @@
 //! The window translates gestures into [`VfxCommand`] values and applies them
 //! through [`VfxAuthoringService`]. It never edits raw JSON as business logic.
 
+#[path = "vfx_builder_background.rs"]
+mod background;
 #[path = "vfx_builder_completion.rs"]
 mod completion;
 
 use eframe::egui;
 use engine_authoring::{
-    replace_file_contents, ProjectRoot, VfxAuthoringService, VfxCommand, VfxCurve, VfxEmitter,
-    VfxEmitterId, VfxEffect, VfxGradient, VfxModule, VfxModuleOperation, VfxPhase,
-    VfxScalarValue, VfxShape, VfxVectorValue,
+    ProjectRoot, VfxAuthoringService, VfxCommand, VfxCurve, VfxEmitter, VfxEmitterId, VfxEffect,
+    VfxGradient, VfxModule, VfxModuleOperation, VfxPhase, VfxScalarValue, VfxShape,
+    VfxVectorValue,
 };
 use std::path::{Path, PathBuf};
 
@@ -29,11 +31,14 @@ pub(crate) struct VfxBuilderState {
     undo_stack: Vec<Vec<VfxCommand>>,
     redo_stack: Vec<Vec<VfxCommand>>,
     status: Option<String>,
+    background: background::VfxBackgroundTasks,
 }
 
 impl VfxBuilderState {
     /// Draws the VFX Builder for the current project.
     pub(crate) fn show(&mut self, ui: &mut egui::Ui, project: &ProjectRoot) {
+        self.poll_background();
+        let io_busy = self.background.io_busy();
         let mut pending_command = None;
         let mut request_open = false;
         let mut request_save = false;
@@ -41,9 +46,11 @@ impl VfxBuilderState {
         let mut request_redo = false;
 
         ui.horizontal(|ui| {
-            request_open = ui.button("Open VFX...").clicked();
+            request_open = ui
+                .add_enabled(!io_busy, egui::Button::new("Open VFX..."))
+                .clicked();
             request_save = ui
-                .add_enabled(self.effect.is_some(), egui::Button::new("Save"))
+                .add_enabled(self.effect.is_some() && !io_busy, egui::Button::new("Save"))
                 .clicked();
             ui.separator();
             request_undo = ui
@@ -59,10 +66,10 @@ impl VfxBuilderState {
         });
 
         if request_open {
-            self.open_with_picker(project);
+            self.open_with_picker(project, ui.ctx());
         }
         if request_save {
-            self.save();
+            self.save(ui.ctx());
         }
         if request_undo {
             self.undo();
@@ -85,7 +92,7 @@ impl VfxBuilderState {
         };
 
         self.normalize_selection(&effect);
-        let compilation = VfxAuthoringService::new().compile(&effect);
+        let compilation = self.background.compilation_for(&effect, ui.ctx());
 
         ui.separator();
         ui.horizontal_wrapped(|ui| {
@@ -93,8 +100,8 @@ impl VfxBuilderState {
             ui.label(format!("Seed {}", effect.seed));
             ui.label(format!("Effect cap {}", effect.max_particles));
             let estimated = compilation
-                .compiled_effect
                 .as_ref()
+                .and_then(|compilation| compilation.compiled_effect.as_ref())
                 .map(|compiled| {
                     compiled
                         .emitters
@@ -307,13 +314,15 @@ impl VfxBuilderState {
             self.show_completion_properties(&mut columns[1], &effect);
         });
 
-        self.show_completion_preview(ui, &effect);
+        self.show_completion_preview(ui, &effect, compilation.as_ref());
 
         if let Some(command) = pending_command {
             self.apply_user_commands(vec![command]);
         }
 
-        if !compilation.diagnostics.is_empty() {
+        if let Some(compilation) = compilation
+            && !compilation.diagnostics.is_empty()
+        {
             ui.separator();
             ui.collapsing("Diagnostics", |ui| {
                 for diagnostic in compilation.diagnostics {
@@ -324,7 +333,7 @@ impl VfxBuilderState {
         self.show_status(ui);
     }
 
-    fn open_with_picker(&mut self, project: &ProjectRoot) {
+    fn open_with_picker(&mut self, project: &ProjectRoot, ctx: &egui::Context) {
         let Some(path) = rfd::FileDialog::new()
             .set_directory(project.assets_root())
             .add_filter("VFX effect", &["json"])
@@ -336,32 +345,11 @@ impl VfxBuilderState {
             self.status = Some("VFX Builder only opens project-local *.vfx.json assets.".to_owned());
             return;
         }
-        let json = match std::fs::read_to_string(&path) {
-            Ok(json) => json,
-            Err(error) => {
-                self.status = Some(format!("Open failed: {error}"));
-                return;
-            }
-        };
-        match VfxAuthoringService::new().effect_from_json(&json) {
-            Ok(effect) => {
-                self.effect = Some(effect);
-                self.path = Some(path);
-                self.undo_stack.clear();
-                self.redo_stack.clear();
-                self.status = Some("Opened VFX effect.".to_owned());
-                self.selected_emitter = None;
-                if let Some(effect) = self.effect.clone() {
-                    self.normalize_selection(&effect);
-                }
-            }
-            Err(error) => {
-                self.status = Some(format!("Open failed: {error}"));
-            }
-        }
+        self.background.open(path, ctx);
+        self.status = Some("Opening VFX effect...".to_owned());
     }
 
-    fn save(&mut self) {
+    fn save(&mut self, ctx: &egui::Context) {
         let (Some(effect), Some(path)) = (self.effect.as_ref(), self.path.as_ref()) else {
             return;
         };
@@ -372,10 +360,43 @@ impl VfxBuilderState {
                 return;
             }
         };
-        match replace_file_contents(path, &json) {
-            Ok(()) => self.status = Some("Saved VFX effect.".to_owned()),
-            Err(error) => self.status = Some(format!("Save failed: {error}")),
+        self.background.save(path.clone(), json, ctx);
+        self.status = Some("Saving VFX effect...".to_owned());
+    }
+
+    fn poll_background(&mut self) {
+        let Some(completion) = self.background.take_io_completion() else {
+            return;
+        };
+        match completion {
+            background::VfxIoCompletion::Open { path, result } => match result {
+                Ok(effect) => self.install_effect(path, effect, "Opened VFX effect."),
+                Err(error) => self.status = Some(format!("Open failed: {error}")),
+            },
+            background::VfxIoCompletion::Save { result } => match result {
+                Ok(()) => self.status = Some("Saved VFX effect.".to_owned()),
+                Err(error) => self.status = Some(format!("Save failed: {error}")),
+            },
+            background::VfxIoCompletion::Create {
+                path,
+                effect,
+                result,
+            } => match result {
+                Ok(()) => self.install_effect(path, effect, "Created VFX asset from shared template."),
+                Err(error) => self.status = Some(format!("Template save failed: {error}")),
+            },
         }
+    }
+
+    fn install_effect(&mut self, path: PathBuf, effect: VfxEffect, message: &str) {
+        self.effect = Some(effect.clone());
+        self.path = Some(path);
+        self.selected_emitter = None;
+        self.undo_stack.clear();
+        self.redo_stack.clear();
+        self.completion = completion::VfxCompletionState::default();
+        self.normalize_selection(&effect);
+        self.status = Some(message.to_owned());
     }
 
     fn apply_user_commands(&mut self, commands: Vec<VfxCommand>) {

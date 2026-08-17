@@ -59,7 +59,12 @@ impl AuthoringWindows {
                 .default_width(1_180.0)
                 .default_height(780.0)
                 .resizable(true)
-                .show(context, |ui| vfx.show(ui, project));
+                .show(context, |ui| {
+                    let scroll_area = egui::ScrollArea::vertical();
+                    #[cfg(feature = "visual-validation")]
+                    let scroll_area = scroll_area.vertical_scroll_offset(900.0);
+                    scroll_area.show(ui, |ui| vfx.show(ui, project));
+                });
         }
     }
 }
