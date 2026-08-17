@@ -1,8 +1,10 @@
 //! Toolkit-independent Animation Set editor state and undoable mutations.
 
 use engine_authoring::{
-    replace_file_contents, AnimationBinding, AnimationSet, AnimationSetEvent, AssetId, MotionSlot,
-    MotionSlotId, MotionSourceRef,
+    replace_file_contents, AnimationBinding, AnimationSet, AnimationSetEvent, AssetId,
+    AuthoringPermissions, MotionSlot, MotionSlotId, MotionSourceRef, TypedDocumentAuthoringError,
+    TypedDocumentAuthoringMutation, TypedDocumentAuthoringService, TypedDocumentAuthoringSnapshot,
+    TypedDocumentAuthoringState, TypedDocumentAuthoringValidation,
 };
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -20,6 +22,7 @@ pub struct AnimationSetEditorState {
     clean_document: AnimationSet,
     undo: Vec<AnimationSet>,
     redo: Vec<AnimationSet>,
+    authoring: TypedDocumentAuthoringState,
 }
 
 impl AnimationSetEditorState {
@@ -32,6 +35,7 @@ impl AnimationSetEditorState {
             document,
             undo: Vec::new(),
             redo: Vec::new(),
+            authoring: TypedDocumentAuthoringState::new(),
         }
     }
 
@@ -48,6 +52,32 @@ impl AnimationSetEditorState {
     /// Returns whether a redo entry is available.
     pub fn can_redo(&self) -> bool {
         !self.redo.is_empty()
+    }
+
+    /// Inspects the Animation Set through the shared typed-document service.
+    pub fn structured_inspect(&self, permissions: &AuthoringPermissions) -> Result<TypedDocumentAuthoringSnapshot<AnimationSet>, TypedDocumentAuthoringError> {
+        TypedDocumentAuthoringService::new().inspect(&self.document, &self.authoring, permissions)
+    }
+
+    /// Validates the Animation Set through the shared typed-document service.
+    pub fn structured_validate(&self, permissions: &AuthoringPermissions) -> Result<TypedDocumentAuthoringValidation, TypedDocumentAuthoringError> {
+        TypedDocumentAuthoringService::new().validate(&self.document, &self.authoring, permissions)
+    }
+
+    /// Previews a complete Animation Set replacement without mutation.
+    pub fn structured_preview(&self, permissions: &AuthoringPermissions, expected_revision: u64, expected_generation: u64, replacement: AnimationSet) -> Result<TypedDocumentAuthoringMutation<AnimationSet>, TypedDocumentAuthoringError> {
+        TypedDocumentAuthoringService::new().preview(&self.document, &self.authoring, permissions, expected_revision, expected_generation, replacement)
+    }
+
+    /// Applies a complete Animation Set replacement as one undoable edit.
+    pub fn structured_apply(&mut self, permissions: &AuthoringPermissions, expected_revision: u64, expected_generation: u64, replacement: AnimationSet) -> Result<TypedDocumentAuthoringMutation<AnimationSet>, TypedDocumentAuthoringError> {
+        let before = self.document.clone();
+        let mutation = TypedDocumentAuthoringService::new().apply(&mut self.document, &mut self.authoring, permissions, expected_revision, expected_generation, replacement)?;
+        if mutation.success && !mutation.diff.is_empty() {
+            self.push_undo_snapshot(before);
+            self.redo.clear();
+        }
+        Ok(mutation)
     }
 
     /// Restores the previous document snapshot.
@@ -341,10 +371,14 @@ impl AnimationSetEditorState {
     }
 
     fn push_undo_without_clearing_redo(&mut self) {
+        self.push_undo_snapshot(self.document.clone());
+    }
+
+    fn push_undo_snapshot(&mut self, snapshot: AnimationSet) {
         if self.undo.len() >= UNDO_LIMIT {
             self.undo.remove(0);
         }
-        self.undo.push(self.document.clone());
+        self.undo.push(snapshot);
     }
 }
 
