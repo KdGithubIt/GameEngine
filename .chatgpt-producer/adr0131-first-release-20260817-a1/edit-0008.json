@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/agent_host.rs",
+  "old": "    pub(crate) fn start_run(\n        &mut self,\n        session_id: &str,\n        authorized_proposal_version: u64,\n        provider_label: impl Into<String>,\n    ) -> Result<String, AgentHostError> {",
+  "new": "    #[cfg(test)]\n    fn start_run(\n        &mut self,\n        session_id: &str,\n        provider_label: impl Into<String>,\n    ) -> Result<String, AgentHostError> {\n        let version = self.session(session_id)?.proposal.version;\n        self.start_run_authorized(session_id, version, provider_label)\n    }\n\n    pub(crate) fn start_run_authorized(\n        &mut self,\n        session_id: &str,\n        authorized_proposal_version: u64,\n        provider_label: impl Into<String>,\n    ) -> Result<String, AgentHostError> {"
+}
