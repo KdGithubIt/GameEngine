@@ -1,0 +1,349 @@
+diff --git a/crates/editor/src/ai_studio.rs b/crates/editor/src/ai_studio.rs
+index 72fec8c2b5be89b35938969a41d5b78e31330956..546407da7c0ce143ee1c01043b1c09c20a5327ee 100644
+--- a/crates/editor/src/ai_studio.rs
++++ b/crates/editor/src/ai_studio.rs
+@@ -353,11 +353,7 @@ pub struct AiStudioPanel {
+     provider_args: String,
+     presentation: AiStudioPresentationState,
+     #[cfg(feature = "visual-validation")]
+-    detached_visual_capture_path: Option<PathBuf>,
+-    #[cfg(feature = "visual-validation")]
+-    detached_visual_capture_requested: bool,
+-    #[cfg(feature = "visual-validation")]
+-    detached_visual_capture_finished: bool,
++    detached_visual_frames: u8,
+     active_run_id: Option<String>,
+     process: Option<ExternalAgentProcess>,
+     process_purpose: Option<ExternalAgentPurpose>,
+@@ -434,12 +430,7 @@ impl AiStudioPanel {
+             provider_args: String::new(),
+             presentation: AiStudioPresentationState::default(),
+             #[cfg(feature = "visual-validation")]
+-            detached_visual_capture_path: std::env::var_os("GAMEENGINE_SCREENSHOT_TO")
+-                .map(PathBuf::from),
+-            #[cfg(feature = "visual-validation")]
+-            detached_visual_capture_requested: false,
+-            #[cfg(feature = "visual-validation")]
+-            detached_visual_capture_finished: false,
++            detached_visual_frames: 0,
+             active_run_id,
+             process: None,
+             process_purpose: None,
+@@ -473,9 +464,9 @@ impl AiStudioPanel {
+     }
+ 
+     #[cfg(feature = "visual-validation")]
+-    /// Returns whether the detached validation viewport finished its screenshot attempt.
+-    pub fn detached_visual_validation_capture_finished(&self) -> bool {
+-        self.detached_visual_capture_finished
++    /// Returns whether the detached native viewport has completed two rendered frames.
++    pub fn detached_visual_validation_capture_ready(&self) -> bool {
++        self.detached_visual_frames >= 2
+     }
+ 
+     /// Takes one authorized managed runtime action for the Editor shell to execute.
+@@ -739,11 +730,14 @@ impl AiStudioPanel {
+                 });
+                 ui.separator();
+                 self.show_contents(ui);
+-                #[cfg(feature = "visual-validation")]
+-                self.handle_detached_visual_validation_capture(ui);
+             },
+         );
+ 
++        #[cfg(feature = "visual-validation")]
++        {
++            self.detached_visual_frames = self.detached_visual_frames.saturating_add(1);
++        }
++
+         if reattach_requested {
+             self.presentation.reattach();
+         } else if close_requested {
+@@ -751,50 +745,6 @@ impl AiStudioPanel {
+         }
+     }
+ 
+-    #[cfg(feature = "visual-validation")]
+-    fn handle_detached_visual_validation_capture(&mut self, ui: &mut egui::Ui) {
+-        if self.detached_visual_capture_finished {
+-            return;
+-        }
+-        let Some(path) = self.detached_visual_capture_path.clone() else {
+-            return;
+-        };
+-        let detached_viewport_id =
+-            egui::ViewportId::from_hash_of("gameengine_ai_studio_detached");
+-        let viewport_ids = ui
+-            .ctx()
+-            .input(|input| input.raw.viewports.keys().copied().collect::<Vec<_>>());
+-        let screenshot = viewport_ids.into_iter().find_map(|input_viewport_id| {
+-            ui.ctx().input_for(input_viewport_id, |input| {
+-                input.events.iter().find_map(|event| match event {
+-                    egui::Event::Screenshot {
+-                        viewport_id,
+-                        image,
+-                        ..
+-                    } if *viewport_id == detached_viewport_id => Some(image.clone()),
+-                    _ => None,
+-                })
+-            })
+-        });
+-        if let Some(image) = screenshot {
+-            if let Err(error) = write_detached_visual_validation_png(&path, image.as_ref()) {
+-                let _ = std::fs::remove_file(&path);
+-                eprintln!("[editor.ai_studio_visual_validation_capture_failed] {error}");
+-            }
+-            self.detached_visual_capture_path = None;
+-            self.detached_visual_capture_finished = true;
+-            return;
+-        }
+-        if !self.detached_visual_capture_requested {
+-            self.detached_visual_capture_requested = true;
+-            ui.ctx().send_viewport_cmd_to(
+-                detached_viewport_id,
+-                egui::ViewportCommand::Screenshot(egui::UserData::default()),
+-            );
+-        }
+-        ui.ctx().request_repaint();
+-    }
+-
+     fn ensure_remote_gateway(&mut self, context: &egui::Context) {
+         if self.remote_server.is_some() {
+             return;
+@@ -2641,28 +2591,6 @@ fn edit_lines(ui: &mut egui::Ui, label: &str, values: &mut Vec<String>) {
+     }
+ }
+ 
+-#[cfg(feature = "visual-validation")]
+-fn write_detached_visual_validation_png(
+-    path: &std::path::Path,
+-    image: &egui::ColorImage,
+-) -> Result<(), String> {
+-    let [width, height] = image.size;
+-    let file = std::fs::File::create(path).map_err(|error| error.to_string())?;
+-    let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), width as u32, height as u32);
+-    encoder.set_color(png::ColorType::Rgba);
+-    encoder.set_depth(png::BitDepth::Eight);
+-    let mut writer = encoder.write_header().map_err(|error| error.to_string())?;
+-    let rgba = image
+-        .pixels
+-        .iter()
+-        .flat_map(|pixel| pixel.to_array())
+-        .collect::<Vec<_>>();
+-    writer
+-        .write_image_data(&rgba)
+-        .map_err(|error| error.to_string())?;
+-    writer.finish().map_err(|error| error.to_string())
+-}
+-
+ fn encode_agent_frame_png(capture: &crate::FrameCapture) -> Result<Vec<u8>, png::EncodingError> {
+     let mut png_bytes = Vec::new();
+     {
+diff --git a/crates/editor/src/main.rs b/crates/editor/src/main.rs
+index 2e6f83ee0bec504ae47773712ec3a3b80f367838..7b0e18856d12eb904733ba41d68155fb88097992 100644
+--- a/crates/editor/src/main.rs
++++ b/crates/editor/src/main.rs
+@@ -151,25 +151,35 @@ impl EditorShell {
+         };
+ 
+         if self.visual_ai_studio_detached_capture {
+-            if self.ai_studio.detached_visual_validation_capture_finished() {
+-                self.visual_capture_path = None;
+-                context.send_viewport_cmd(eframe::egui::ViewportCommand::Close);
++            let requested_at = *self
++                .visual_capture_requested_at
++                .get_or_insert_with(Instant::now);
++            if self.ai_studio.detached_visual_validation_capture_ready() {
++                match capture_ai_studio_native_window(&path) {
++                    Ok(()) => {
++                        self.visual_capture_path = None;
++                        context.send_viewport_cmd(eframe::egui::ViewportCommand::Close);
++                    }
++                    Err(error) => {
++                        let _ = std::fs::remove_file(&path);
++                        eprintln!(
++                            "[editor.ai_studio_visual_validation_capture_failed] {error}"
++                        );
++                        self.visual_capture_path = None;
++                        context.send_viewport_cmd(eframe::egui::ViewportCommand::Close);
++                    }
++                }
+                 return;
+             }
+-            match self.visual_capture_requested_at {
+-                None => {
+-                    self.visual_capture_requested_at = Some(Instant::now());
+-                    context.request_repaint();
+-                }
+-                Some(requested_at) if requested_at.elapsed() >= Duration::from_secs(5) => {
+-                    let _ = std::fs::remove_file(&path);
+-                    eprintln!(
+-                        "[editor.ai_studio_visual_validation_capture_failed] detached screenshot event was not returned"
+-                    );
+-                    self.visual_capture_path = None;
+-                    context.send_viewport_cmd(eframe::egui::ViewportCommand::Close);
+-                }
+-                Some(_) => context.request_repaint(),
++            if requested_at.elapsed() >= Duration::from_secs(5) {
++                let _ = std::fs::remove_file(&path);
++                eprintln!(
++                    "[editor.ai_studio_visual_validation_capture_failed] detached native window did not reach capture-ready state"
++                );
++                self.visual_capture_path = None;
++                context.send_viewport_cmd(eframe::egui::ViewportCommand::Close);
++            } else {
++                context.request_repaint();
+             }
+             return;
+         }
+@@ -388,6 +398,150 @@ fn visual_validation_touches_ai_studio() -> bool {
+         .is_some_and(|output| !output.stdout.is_empty())
+ }
+ 
++#[cfg(all(feature = "visual-validation", target_os = "windows"))]
++fn capture_ai_studio_native_window(path: &Path) -> Result<(), String> {
++    const SCRIPT: &str = r#"
++$ErrorActionPreference = 'Stop'
++Add-Type -AssemblyName System.Drawing
++Add-Type -TypeDefinition @'
++using System;
++using System.Runtime.InteropServices;
++using System.Text;
++
++public static class GameEngineNativeWindowCapture
++{
++    public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
++
++    [StructLayout(LayoutKind.Sequential)]
++    public struct RECT
++    {
++        public int Left;
++        public int Top;
++        public int Right;
++        public int Bottom;
++    }
++
++    [DllImport("user32.dll")]
++    [return: MarshalAs(UnmanagedType.Bool)]
++    public static extern bool EnumWindows(EnumWindowsProc callback, IntPtr lParam);
++
++    [DllImport("user32.dll")]
++    public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
++
++    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
++    public static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int maxCount);
++
++    [DllImport("user32.dll")]
++    [return: MarshalAs(UnmanagedType.Bool)]
++    public static extern bool IsWindowVisible(IntPtr hWnd);
++
++    [DllImport("user32.dll")]
++    [return: MarshalAs(UnmanagedType.Bool)]
++    public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
++}
++'@
++
++$targetPid = [uint32]$env:GAMEENGINE_VISUAL_CAPTURE_PID
++$targetTitle = $env:GAMEENGINE_VISUAL_CAPTURE_TITLE
++$outputPath = $env:GAMEENGINE_VISUAL_CAPTURE_PATH
++$windowHandle = [IntPtr]::Zero
++
++for ($attempt = 0; $attempt -lt 40 -and $windowHandle -eq [IntPtr]::Zero; $attempt++) {
++    $script:gameEngineWindowHandle = [IntPtr]::Zero
++    $callback = [GameEngineNativeWindowCapture+EnumWindowsProc] {
++        param([IntPtr]$hWnd, [IntPtr]$lParam)
++
++        if (-not [GameEngineNativeWindowCapture]::IsWindowVisible($hWnd)) {
++            return $true
++        }
++
++        [uint32]$candidatePid = 0
++        [void][GameEngineNativeWindowCapture]::GetWindowThreadProcessId($hWnd, [ref]$candidatePid)
++        if ($candidatePid -ne $targetPid) {
++            return $true
++        }
++
++        $title = [System.Text.StringBuilder]::new(512)
++        [void][GameEngineNativeWindowCapture]::GetWindowText($hWnd, $title, $title.Capacity)
++        if ($title.ToString() -eq $targetTitle) {
++            $script:gameEngineWindowHandle = $hWnd
++            return $false
++        }
++
++        return $true
++    }
++
++    [void][GameEngineNativeWindowCapture]::EnumWindows($callback, [IntPtr]::Zero)
++    $windowHandle = $script:gameEngineWindowHandle
++    if ($windowHandle -eq [IntPtr]::Zero) {
++        Start-Sleep -Milliseconds 50
++    }
++}
++
++if ($windowHandle -eq [IntPtr]::Zero) {
++    throw "AI Studio native window was not found for process $targetPid."
++}
++
++$rect = New-Object -TypeName 'GameEngineNativeWindowCapture+RECT'
++if (-not [GameEngineNativeWindowCapture]::GetWindowRect($windowHandle, [ref]$rect)) {
++    throw 'GetWindowRect failed for the AI Studio native window.'
++}
++
++$width = $rect.Right - $rect.Left
++$height = $rect.Bottom - $rect.Top
++if ($width -le 0 -or $height -le 0) {
++    throw "AI Studio native window has invalid bounds ${width}x${height}."
++}
++
++$bitmap = [System.Drawing.Bitmap]::new($width, $height)
++$graphics = [System.Drawing.Graphics]::FromImage($bitmap)
++try {
++    $size = [System.Drawing.Size]::new($width, $height)
++    $graphics.CopyFromScreen($rect.Left, $rect.Top, 0, 0, $size)
++    $bitmap.Save($outputPath, [System.Drawing.Imaging.ImageFormat]::Png)
++}
++finally {
++    $graphics.Dispose()
++    $bitmap.Dispose()
++}
++"#;
++
++    let output = std::process::Command::new("powershell.exe")
++        .args([
++            "-NoLogo",
++            "-NoProfile",
++            "-NonInteractive",
++            "-ExecutionPolicy",
++            "Bypass",
++            "-Command",
++            SCRIPT,
++        ])
++        .env("GAMEENGINE_VISUAL_CAPTURE_PID", std::process::id().to_string())
++        .env("GAMEENGINE_VISUAL_CAPTURE_TITLE", "AI Studio")
++        .env("GAMEENGINE_VISUAL_CAPTURE_PATH", path.as_os_str())
++        .output()
++        .map_err(|error| format!("failed to start native-window capture: {error}"))?;
++
++    if output.status.success() {
++        Ok(())
++    } else {
++        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
++        Err(if stderr.is_empty() {
++            format!(
++                "native-window capture exited with status {}",
++                output.status
++            )
++        } else {
++            format!("native-window capture failed: {stderr}")
++        })
++    }
++}
++
++#[cfg(all(feature = "visual-validation", not(target_os = "windows")))]
++fn capture_ai_studio_native_window(_path: &Path) -> Result<(), String> {
++    Err("detached AI Studio visual capture requires Windows".to_owned())
++}
++
+ #[cfg(feature = "visual-validation")]
+ fn write_visual_validation_png(
+     path: &Path,
