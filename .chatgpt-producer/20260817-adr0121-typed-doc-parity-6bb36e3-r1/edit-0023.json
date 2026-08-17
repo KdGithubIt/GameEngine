@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/project_settings_panel.rs",
+  "old": "    /// `true` when the panel contains unsaved changes.\n    pub is_dirty: bool,\n}",
+  "new": "    /// `true` when the panel contains unsaved changes.\n    pub is_dirty: bool,\n    authoring: TypedDocumentAuthoringState,\n}"
+}
