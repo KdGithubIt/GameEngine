@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ui/mod.rs","old":"mod viewport;\n\npub use mcp::EditorMcpCallFailure;\n","new":"mod viewport;\n#[cfg(feature = \"visual-validation\")]\nmod vfx_visual_validation;\n\npub use mcp::EditorMcpCallFailure;\n"}
