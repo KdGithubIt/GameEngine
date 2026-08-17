@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ui/chrome.rs",
+  "old": "pub(super) fn show_inspector_panel<R>(\n    ui: &mut egui::Ui,\n    max_width: f32,\n    add_contents: impl FnOnce(&mut egui::Ui) -> R,\n) -> egui::InnerResponse<R> {",
+  "new": "pub(super) fn show_inspector_panel<R>(\n    ui: &mut egui::Ui,\n    max_width: f32,\n    vertical_scroll_offset: Option<f32>,\n    add_contents: impl FnOnce(&mut egui::Ui) -> R,\n) -> egui::InnerResponse<R> {"
+}
