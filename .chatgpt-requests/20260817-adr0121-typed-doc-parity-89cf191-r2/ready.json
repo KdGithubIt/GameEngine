@@ -1,0 +1,16 @@
+{
+  "schema_version": 2,
+  "request_id": "20260817-adr0121-typed-doc-parity-89cf191-r2",
+  "target_branch": "chatgpt/gameengine-adr0121-typed-document-parity-v2",
+  "expected_head_sha": "89cf19154b1664ef8de83d91cdbeeb2c4242a738",
+  "baseline_main_sha": "89cf19154b1664ef8de83d91cdbeeb2c4242a738",
+  "patch_sha256": "8bbdb8888d2ace98ce53ef821077bd219afa37a3756ead6c2281a338aee41b70",
+  "patch_bytes": 78873,
+  "patch_parts": [
+    "part-0000.patch",
+    "part-0001.patch"
+  ],
+  "commit_message": "Complete ADR 0121 typed document authoring parity",
+  "pr_title": "GameEngine: complete ADR 0121 typed document parity",
+  "pr_body": "## Summary\n\nCompletes the remaining first-release ADR 0121 typed-document parity slice on current main. Adds a shared transactional typed-document service for Material, Project Settings, and Animation Set; registers the capabilities through ADR 0132; exposes equivalent CLI and live Editor-attached MCP paths; routes Material and Project Settings GUI commits through the shared service; and routes Animation Set granular GUI edits plus undo/redo through the same live revision boundary. Persisted schemas, Stable IDs, and existing Scene/Prefab/Graph/UI architecture remain unchanged.\n\n## Architecture\n\nMCP remains Editor-attached and does not become a competing file writer. CLI persistence continues through ProjectRoot confinement and existing canonical document writers. Existing ADR 0132 registry-driven discovery and generic invocation are extended rather than duplicated.\n\n## Validation\n\nRun the repository Windows Validation workflow for the affected scope and follow all required CI checks."
+}
