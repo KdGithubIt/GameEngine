@@ -1,0 +1,160 @@
+diff --git a/crates/authoring/src/timeline.rs b/crates/authoring/src/timeline.rs
+index 5dfaa9d7b37e579c3b073fd31b25a32c335290dc..b5956c8a8e3382f34908a1a802187ae712e62c31 100644
+--- a/crates/authoring/src/timeline.rs
++++ b/crates/authoring/src/timeline.rs
+@@ -65,6 +65,40 @@ impl TimelineTrackKind {
+     }
+ }
+ 
++/// Shared registry metadata for one Timeline track family.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub struct TimelineTrackDescriptor {
++    /// Stable type identifier consumed by authoring and adapter surfaces.
++    pub type_id: &'static str,
++    /// Typed persisted family.
++    pub kind: TimelineTrackKind,
++    /// Human-readable Editor label.
++    pub label: &'static str,
++    /// Discontinuous-time policy owned by this family.
++    pub seek_capability: SeekCapability,
++    /// Whether the first-release Sequencer exposes numeric curve editing.
++    pub supports_curves: bool,
++}
++
++/// Canonical first-release Timeline track registry.
++///
++/// Editor menus and external authoring adapters consume this table instead of
++/// maintaining independent hard-coded track-family lists.
++pub const TIMELINE_TRACK_REGISTRY: [TimelineTrackDescriptor; 7] = [
++    TimelineTrackDescriptor { type_id: "engine.timeline.animation", kind: TimelineTrackKind::Animation, label: "Animation", seek_capability: SeekCapability::Seekable, supports_curves: false },
++    TimelineTrackDescriptor { type_id: "engine.timeline.transform_property", kind: TimelineTrackKind::TransformProperty, label: "Transform / Property", seek_capability: SeekCapability::Stateless, supports_curves: true },
++    TimelineTrackDescriptor { type_id: "engine.timeline.camera_cut", kind: TimelineTrackKind::CameraCut, label: "Camera Cut", seek_capability: SeekCapability::Stateless, supports_curves: false },
++    TimelineTrackDescriptor { type_id: "engine.timeline.event", kind: TimelineTrackKind::Event, label: "Event", seek_capability: SeekCapability::Stateless, supports_curves: false },
++    TimelineTrackDescriptor { type_id: "engine.timeline.audio", kind: TimelineTrackKind::Audio, label: "Audio", seek_capability: SeekCapability::NonSeekable, supports_curves: false },
++    TimelineTrackDescriptor { type_id: "engine.timeline.vfx", kind: TimelineTrackKind::Vfx, label: "VFX", seek_capability: SeekCapability::ReplayRequired, supports_curves: false },
++    TimelineTrackDescriptor { type_id: "engine.timeline.prefab", kind: TimelineTrackKind::Prefab, label: "Prefab", seek_capability: SeekCapability::ReplayRequired, supports_curves: false },
++];
++
++/// Returns the canonical Timeline track registry.
++pub const fn timeline_track_registry() -> &'static [TimelineTrackDescriptor] {
++    &TIMELINE_TRACK_REGISTRY
++}
++
+ /// Typed payload persisted in one clip.
+ #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+ #[serde(tag = "kind", rename_all = "snake_case")]
+@@ -176,13 +210,32 @@ pub enum CompiledTimelinePayload {
+ 
+ /// Diagnostic severity.
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+-pub enum TimelineDiagnosticSeverity { Warning, Error }
++pub enum TimelineDiagnosticSeverity {
++    /// Non-fatal authoring limitation or advisory.
++    Warning,
++    /// Error that prevents a valid compiled schedule.
++    Error,
++}
+ /// Compile/validation diagnostic.
+ #[derive(Debug, Clone, PartialEq, Eq)]
+-pub struct TimelineDiagnostic { pub severity: TimelineDiagnosticSeverity, pub code: &'static str, pub target: String, pub message: String }
++pub struct TimelineDiagnostic {
++    /// Diagnostic severity.
++    pub severity: TimelineDiagnosticSeverity,
++    /// Stable machine-readable diagnostic code.
++    pub code: &'static str,
++    /// Stable Timeline sub-object identity associated with the problem.
++    pub target: String,
++    /// Human-readable diagnostic message.
++    pub message: String,
++}
+ /// Compile result; schedule is absent when any error exists.
+ #[derive(Debug, Clone)]
+-pub struct TimelineCompilation { pub diagnostics: Vec<TimelineDiagnostic>, pub schedule: Option<CompiledTimeline<CompiledTimelinePayload>> }
++pub struct TimelineCompilation {
++    /// Pure validation/compilation diagnostics.
++    pub diagnostics: Vec<TimelineDiagnostic>,
++    /// Immutable schedule when no error diagnostic was produced.
++    pub schedule: Option<CompiledTimeline<CompiledTimelinePayload>>,
++}
+ 
+ /// Validates and compiles deterministic track/clip/marker order.
+ pub fn compile_timeline(document: &TimelineDocument) -> TimelineCompilation {
+@@ -231,7 +284,16 @@ fn error_diag(code: &'static str, target: &str, message: impl Into<String>) -> T
+ 
+ /// Timeline persistence error.
+ #[derive(Debug)]
+-pub enum TimelineDocumentError { Io(std::io::Error), Json(serde_json::Error), WrongSuffix, Invalid(Vec<TimelineDiagnostic>) }
++pub enum TimelineDocumentError {
++    /// Filesystem operation failed.
++    Io(std::io::Error),
++    /// JSON serialization or deserialization failed.
++    Json(serde_json::Error),
++    /// Path did not use the canonical Timeline suffix.
++    WrongSuffix,
++    /// Document failed pure Timeline validation.
++    Invalid(Vec<TimelineDiagnostic>),
++}
+ impl fmt::Display for TimelineDocumentError { fn fmt(&self, f:&mut fmt::Formatter<'_>)->fmt::Result { match self { Self::Io(e)=>e.fmt(f), Self::Json(e)=>e.fmt(f), Self::WrongSuffix=>f.write_str("Timeline path must end in .timeline.json"), Self::Invalid(d)=>write!(f,"Timeline has {} validation diagnostics",d.len()) } } }
+ impl std::error::Error for TimelineDocumentError {}
+ /// Saves canonical pretty JSON after validation.
+diff --git a/crates/authoring/src/timeline_authoring.rs b/crates/authoring/src/timeline_authoring.rs
+index 96fe82a83c1c6469d5d7426d0c3d97e5c28e9ad5..87a57b96a7fbd46e23eddd736801630e1d4dae2a 100644
+--- a/crates/authoring/src/timeline_authoring.rs
++++ b/crates/authoring/src/timeline_authoring.rs
+@@ -87,7 +87,35 @@ impl TimelineAuthoringService {
+     /// Validates a command against a clone without mutation.
+     pub fn preview(&self, expected:TimelineRevision, command:&TimelineAuthoringCommand)->Result<TimelineAuthoringPreview,TimelineAuthoringError>{ self.check_revision(expected)?; let mut candidate=self.document.clone(); apply_command(&mut candidate,command)?; let diagnostics=validate_timeline(&candidate); Ok(TimelineAuthoringPreview{document:candidate,diagnostics}) }
+     /// Atomically applies one command after validation.
+-    pub fn apply(&mut self, expected:TimelineRevision, command:TimelineAuthoringCommand)->Result<TimelineRevision,TimelineAuthoringError>{ let preview=self.preview(expected,&command)?; if preview.diagnostics.iter().any(|d|matches!(d.severity,crate::timeline::TimelineDiagnosticSeverity::Error)){return Err(TimelineAuthoringError::Invalid(preview.diagnostics))} self.undo.push(self.document.clone()); self.document=preview.document; self.redo.clear(); self.revision=self.revision.wrapping_add(1); Ok(self.revision) }
++    pub fn apply(&mut self, expected:TimelineRevision, command:TimelineAuthoringCommand)->Result<TimelineRevision,TimelineAuthoringError>{
++        self.apply_transaction(expected, std::iter::once(command))
++    }
++    /// Atomically applies a granular command transaction with one undo boundary.
++    ///
++    /// Every command is evaluated against the candidate produced by the prior
++    /// command. The committed document is replaced only after the complete
++    /// candidate validates, so GUI drag gestures, CLI batches, and external
++    /// authoring adapters share identical all-or-nothing semantics.
++    pub fn apply_transaction(
++        &mut self,
++        expected: TimelineRevision,
++        commands: impl IntoIterator<Item = TimelineAuthoringCommand>,
++    ) -> Result<TimelineRevision, TimelineAuthoringError> {
++        self.check_revision(expected)?;
++        let mut candidate = self.document.clone();
++        for command in commands {
++            apply_command(&mut candidate, &command)?;
++        }
++        let diagnostics = validate_timeline(&candidate);
++        if diagnostics.iter().any(|d| matches!(d.severity, crate::timeline::TimelineDiagnosticSeverity::Error)) {
++            return Err(TimelineAuthoringError::Invalid(diagnostics));
++        }
++        self.undo.push(self.document.clone());
++        self.document = candidate;
++        self.redo.clear();
++        self.revision = self.revision.wrapping_add(1);
++        Ok(self.revision)
++    }
+     /// Undoes one committed transaction.
+     pub fn undo(&mut self)->bool{ let Some(previous)=self.undo.pop()else{return false}; self.redo.push(std::mem::replace(&mut self.document,previous)); self.revision=self.revision.wrapping_add(1); true }
+     /// Redoes one undone transaction.
+diff --git a/crates/timeline/src/lib.rs b/crates/timeline/src/lib.rs
+index 443ab82c6868988c9617926f6efcf4fdf16014f7..5d25837334273bcc3932d36d4799d7cd30a91075 100644
+--- a/crates/timeline/src/lib.rs
++++ b/crates/timeline/src/lib.rs
+@@ -359,8 +359,13 @@ impl TimelinePlayer {
+     pub fn set_rate(&mut self, rate: PlaybackRate) { self.rate = rate; self.rate_remainder = 0; }
+     /// Configures a loop range.
+     pub fn set_loop(&mut self, range: Option<TimelineLoop>) -> Result<(), TimelineLoopError> {
+-        if let Some(r) = range && (r.start < TimelineTick::ZERO || r.start >= r.end || r.end > self.duration) { return Err(TimelineLoopError); }
+-        self.loop_range = range; Ok(())
++        if let Some(r) = range {
++            if r.start < TimelineTick::ZERO || r.start >= r.end || r.end > self.duration {
++                return Err(TimelineLoopError);
++            }
++        }
++        self.loop_range = range;
++        Ok(())
+     }
+     /// Seeks and returns the exact discontinuous evaluation request.
+     pub fn seek(&mut self, tick: TimelineTick, preview_events: bool) -> EvaluationRequest {
