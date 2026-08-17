@@ -140,11 +140,7 @@ impl VfxPreviewState {
         compilation: Option<&VfxCompilation>,
     ) {
         ui.separator();
-        let preview_heading = ui.heading("Preview");
-        #[cfg(feature = "visual-validation")]
-        preview_heading.scroll_to_me(Some(egui::Align::TOP));
-        #[cfg(not(feature = "visual-validation"))]
-        let _ = preview_heading;
+        ui.heading("Preview");
 
         let mut seek_requested = false;
         let mut seed_changed = false;
