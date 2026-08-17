@@ -180,9 +180,10 @@ pub(crate) enum AgentConfinementLayer {
 }
 
 #[allow(dead_code)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum AgentConfinementGuarantee {
+    #[default]
     Unavailable,
     Enforced,
 }
@@ -219,6 +220,8 @@ pub(crate) struct AgentConfinementProfile {
     pub(crate) filesystem_guarantee: AgentConfinementGuarantee,
     pub(crate) network_guarantee: AgentConfinementGuarantee,
     pub(crate) process_tree_guarantee: AgentConfinementGuarantee,
+    #[serde(default)]
+    pub(crate) credential_secrecy_guarantee: AgentConfinementGuarantee,
     pub(crate) requested_network_policy: AgentConfinementNetworkPolicy,
 }
 
@@ -230,6 +233,7 @@ impl AgentConfinementProfile {
             filesystem_guarantee: AgentConfinementGuarantee::Unavailable,
             network_guarantee: AgentConfinementGuarantee::Unavailable,
             process_tree_guarantee: AgentConfinementGuarantee::Unavailable,
+            credential_secrecy_guarantee: AgentConfinementGuarantee::Unavailable,
             requested_network_policy: network_policy,
         }
     }
@@ -241,6 +245,7 @@ impl AgentConfinementProfile {
             filesystem_guarantee: AgentConfinementGuarantee::Unavailable,
             network_guarantee: AgentConfinementGuarantee::Unavailable,
             process_tree_guarantee: AgentConfinementGuarantee::Unavailable,
+            credential_secrecy_guarantee: AgentConfinementGuarantee::Unavailable,
             requested_network_policy: network_policy,
         }
     }
@@ -257,6 +262,7 @@ impl AgentConfinementProfile {
         ) && self.filesystem_guarantee == AgentConfinementGuarantee::Enforced
             && self.network_guarantee == AgentConfinementGuarantee::Enforced
             && self.process_tree_guarantee == AgentConfinementGuarantee::Enforced
+            && self.credential_secrecy_guarantee == AgentConfinementGuarantee::Enforced
     }
 
     pub(crate) fn summary(&self) -> String {
@@ -268,11 +274,12 @@ impl AgentConfinementProfile {
             AgentConfinementLayer::Unavailable => "Confinement unavailable",
         };
         format!(
-            "{layer} ({mechanism}); filesystem: {filesystem}, network: {network}, process tree: {process_tree}, requested network: {requested_network}",
+            "{layer} ({mechanism}); filesystem: {filesystem}, network: {network}, process tree: {process_tree}, credential secrecy: {credentials}, requested network: {requested_network}",
             mechanism = self.mechanism,
             filesystem = self.filesystem_guarantee.label(),
             network = self.network_guarantee.label(),
             process_tree = self.process_tree_guarantee.label(),
+            credentials = self.credential_secrecy_guarantee.label(),
             requested_network = self.requested_network_policy.label(),
         )
     }
@@ -2883,6 +2890,14 @@ pub(crate) struct AgentProcessLaunchOutcome {
     pub(crate) profile: AgentConfinementProfile,
 }
 
+/// Provider/platform-owned process creation boundary for real confinement.
+///
+/// A provider that reports `credential_secrecy_guarantee: Enforced` must keep
+/// provider credentials and MCP authorization material out of the sandboxed
+/// child process, including inherited parent environment. It may use a
+/// provider-native broker, helper, or equivalent out-of-process credential
+/// channel. The generic application-policy-only launcher intentionally does
+/// not claim that guarantee.
 pub(crate) trait AgentProcessConfinementProvider {
     fn spawn(
         &self,
@@ -3133,10 +3148,34 @@ mod tests {
             profile.filesystem_guarantee,
             AgentConfinementGuarantee::Unavailable
         );
+        assert_eq!(
+            profile.credential_secrecy_guarantee,
+            AgentConfinementGuarantee::Unavailable
+        );
         assert!(!profile.satisfies(
             AgentConfinementRequirement::RequireProviderOrOsConfinement
         ));
         assert!(profile.summary().starts_with("Application policy only"));
+    }
+
+    #[test]
+    fn strong_confinement_requires_credential_secrecy() {
+        let mut profile = AgentConfinementProfile {
+            layer: AgentConfinementLayer::ProviderSandbox,
+            mechanism: "test_provider_sandbox".to_owned(),
+            filesystem_guarantee: AgentConfinementGuarantee::Enforced,
+            network_guarantee: AgentConfinementGuarantee::Enforced,
+            process_tree_guarantee: AgentConfinementGuarantee::Enforced,
+            credential_secrecy_guarantee: AgentConfinementGuarantee::Unavailable,
+            requested_network_policy: AgentConfinementNetworkPolicy::LoopbackOnly,
+        };
+        assert!(!profile.satisfies(
+            AgentConfinementRequirement::RequireProviderOrOsConfinement
+        ));
+        profile.credential_secrecy_guarantee = AgentConfinementGuarantee::Enforced;
+        assert!(profile.satisfies(
+            AgentConfinementRequirement::RequireProviderOrOsConfinement
+        ));
     }
 
     #[test]
