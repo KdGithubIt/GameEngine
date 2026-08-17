@@ -21,6 +21,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 const SESSION_SCHEMA_VERSION: u32 = 1;
 const POLICY_SCHEMA_VERSION: u32 = 1;
 const MAX_PROVIDER_EVENT_CHARS: usize = 4_000;
+const MAX_PERSISTED_EVENTS_PER_RUN: usize = 512;
 static ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug)]
@@ -333,6 +334,9 @@ pub(crate) enum AgentEventKind {
     StateChanged,
     UserMessage,
     AssistantMessage,
+    Proposal,
+    SemanticProgress,
+    ToolAction,
     PermissionRequested,
     PermissionResolved,
     ProviderOutput,
@@ -341,9 +345,20 @@ pub(crate) enum AgentEventKind {
     CodeChangesApplied,
     Validation,
     Playtest,
+    CapturedFrame,
     Cancellation,
     Failure,
     Completion,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "evidence", rename_all = "snake_case")]
+pub(crate) enum AgentEventEvidence {
+    Progress { step: String, detail: String },
+    ToolAction { tool: String, action: String, success: Option<bool> },
+    Playtest { launched: bool, interactions_passed: Option<bool> },
+    CapturedFrame { artifact_id: String, width: u32, height: u32 },
+    CompletionGate { gate: String, status: CompletionStatus },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -354,6 +369,8 @@ pub(crate) struct AgentEvent {
     pub(crate) message: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) validation: Option<ManagedValidationEvent>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) evidence: Option<AgentEventEvidence>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -527,6 +544,20 @@ impl CompletionReport {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct CodeCheckpointChange {
+    pub(crate) relative_path: PathBuf,
+    pub(crate) before: Option<String>,
+    pub(crate) after: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct CodeCheckpoint {
+    pub(crate) id: String,
+    pub(crate) changes: Vec<CodeCheckpointChange>,
+    pub(crate) created_unix_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct AgentRun {
     pub(crate) id: String,
     pub(crate) proposal_snapshot: AgentProposal,
@@ -536,6 +567,8 @@ pub(crate) struct AgentRun {
     pub(crate) completion: CompletionReport,
     #[serde(default)]
     pub(crate) validation_attempts: Vec<ManagedValidationAttempt>,
+    #[serde(default)]
+    pub(crate) code_checkpoints: Vec<CodeCheckpoint>,
     pub(crate) started_unix_ms: u64,
     pub(crate) finished_unix_ms: Option<u64>,
 }
@@ -687,6 +720,7 @@ impl AgentHost {
             events: Vec::new(),
             completion: CompletionReport::default(),
             validation_attempts: Vec::new(),
+            code_checkpoints: Vec::new(),
             started_unix_ms: unix_ms(),
             finished_unix_ms: None,
         };
@@ -757,6 +791,189 @@ impl AgentHost {
             .ok_or_else(|| AgentHostError::RunNotFound(run_id.to_owned()))?;
         push_event(run, kind, message.into());
         self.persist_session(&session_id)
+    }
+
+    pub(crate) fn record_code_checkpoint(
+        &mut self,
+        run_id: &str,
+        changes: &[CodeChange],
+    ) -> Result<String, AgentHostError> {
+        let checkpoint_id = next_id("code-checkpoint");
+        let (session_id, _) = self.run_location(run_id)?;
+        let run = self.run_mut_in_session(&session_id, run_id)?;
+        run.code_checkpoints.push(CodeCheckpoint {
+            id: checkpoint_id.clone(),
+            changes: changes
+                .iter()
+                .map(|change| CodeCheckpointChange {
+                    relative_path: change.relative_path.clone(),
+                    before: change.before.clone(),
+                    after: change.after.clone(),
+                })
+                .collect(),
+            created_unix_ms: unix_ms(),
+        });
+        push_event(
+            run,
+            AgentEventKind::CodeChangesDetected,
+            format!(
+                "Recorded code checkpoint {checkpoint_id} with {} changed file(s).",
+                changes.len()
+            ),
+        );
+        self.persist_session(&session_id)?;
+        Ok(checkpoint_id)
+    }
+
+    pub(crate) fn record_semantic_progress(
+        &mut self,
+        run_id: &str,
+        step: impl Into<String>,
+        detail: impl Into<String>,
+    ) -> Result<(), AgentHostError> {
+        let step = step.into();
+        let detail = detail.into();
+        let (session_id, _) = self.run_location(run_id)?;
+        let run = self.run_mut_in_session(&session_id, run_id)?;
+        push_event_with_evidence(
+            run,
+            AgentEventKind::SemanticProgress,
+            format!("{step}: {detail}"),
+            None,
+            Some(AgentEventEvidence::Progress { step, detail }),
+        );
+        self.persist_session(&session_id)
+    }
+
+    pub(crate) fn record_tool_action(
+        &mut self,
+        run_id: &str,
+        tool: impl Into<String>,
+        action: impl Into<String>,
+        success: Option<bool>,
+    ) -> Result<(), AgentHostError> {
+        let tool = tool.into();
+        let action = action.into();
+        let (session_id, _) = self.run_location(run_id)?;
+        let run = self.run_mut_in_session(&session_id, run_id)?;
+        push_event_with_evidence(
+            run,
+            AgentEventKind::ToolAction,
+            format!("{tool}: {action}"),
+            None,
+            Some(AgentEventEvidence::ToolAction { tool, action, success }),
+        );
+        self.persist_session(&session_id)
+    }
+
+    pub(crate) fn record_completion_gate(
+        &mut self,
+        run_id: &str,
+        gate: &str,
+        status: CompletionStatus,
+        message: impl Into<String>,
+    ) -> Result<(), AgentHostError> {
+        let (session_id, state) = self.run_location(run_id)?;
+        {
+            let run = self.run_mut_in_session(&session_id, run_id)?;
+            match gate {
+                "acceptance_criteria" => run.completion.acceptance_criteria = status,
+                "authoring_validation" => run.completion.authoring_validation = status,
+                "visual_evaluation" => run.completion.visual_evaluation = status,
+                _ => return Err(AgentHostError::Io(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("completion gate `{gate}` is not provider-reportable"),
+                ))),
+            }
+            push_event_with_evidence(
+                run,
+                AgentEventKind::SemanticProgress,
+                message.into(),
+                None,
+                Some(AgentEventEvidence::CompletionGate {
+                    gate: gate.to_owned(),
+                    status,
+                }),
+            );
+        }
+        self.persist_session(&session_id)?;
+        if status == CompletionStatus::Failed && state == AgentRunState::Evaluating {
+            self.transition_run(
+                run_id,
+                AgentRunState::Repairing,
+                format!("Completion gate `{gate}` failed; repair is required."),
+            )?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn record_playtest_result(
+        &mut self,
+        run_id: &str,
+        launched: bool,
+        interactions_passed: Option<bool>,
+        message: impl Into<String>,
+    ) -> Result<(), AgentHostError> {
+        let (session_id, state) = self.run_location(run_id)?;
+        {
+            let run = self.run_mut_in_session(&session_id, run_id)?;
+            run.completion.play_launch = if launched { CompletionStatus::Passed } else { CompletionStatus::Failed };
+            run.completion.interaction_scenarios = match interactions_passed {
+                Some(true) => CompletionStatus::Passed,
+                Some(false) => CompletionStatus::Failed,
+                None if run.proposal_snapshot.playtest_plan.is_empty() => CompletionStatus::NotApplicable,
+                None => CompletionStatus::Pending,
+            };
+            push_event_with_evidence(
+                run,
+                AgentEventKind::Playtest,
+                message.into(),
+                None,
+                Some(AgentEventEvidence::Playtest { launched, interactions_passed }),
+            );
+        }
+        self.persist_session(&session_id)?;
+        if (!launched || interactions_passed == Some(false))
+            && matches!(state, AgentRunState::Playtesting | AgentRunState::Evaluating)
+        {
+            self.transition_run(
+                run_id,
+                AgentRunState::Repairing,
+                "Managed playtest failed; repair is required.",
+            )?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn record_captured_frame(
+        &mut self,
+        run_id: &str,
+        artifact_id: impl Into<String>,
+        width: u32,
+        height: u32,
+    ) -> Result<(), AgentHostError> {
+        let artifact_id = artifact_id.into();
+        let (session_id, state) = self.run_location(run_id)?;
+        {
+            let run = self.run_mut_in_session(&session_id, run_id)?;
+            run.completion.frame_capture = CompletionStatus::Passed;
+            push_event_with_evidence(
+                run,
+                AgentEventKind::CapturedFrame,
+                format!("Captured managed Play frame {artifact_id} ({width}x{height})."),
+                None,
+                Some(AgentEventEvidence::CapturedFrame { artifact_id, width, height }),
+            );
+        }
+        self.persist_session(&session_id)?;
+        if state == AgentRunState::Playtesting {
+            self.transition_run(
+                run_id,
+                AgentRunState::Evaluating,
+                "Managed Play frame captured; visual evaluation remains required.",
+            )?;
+        }
+        Ok(())
     }
 
     pub(crate) fn cancel_run(&mut self, run_id: &str) -> Result<(), AgentHostError> {
@@ -971,7 +1188,7 @@ impl AgentHost {
             .get(gate_index)
             .ok_or_else(|| AgentHostError::RunNotFound(run_id.to_owned()))?
             .gate;
-        let game_dir = self.workspace_root(run_id).join("game");
+        let game_dir = self.workspace_paths(run_id)?.0.join("game");
         if !game_dir.join("Cargo.toml").is_file() {
             self.fail_managed_validation(
                 run_id,
@@ -1190,22 +1407,24 @@ impl AgentHost {
     }
 
     fn advance_after_validation(&mut self, run_id: &str) -> Result<(), AgentHostError> {
-        let next = if self.run(run_id)?.proposal_snapshot.playtest_plan.is_empty() {
-            AgentRunState::Evaluating
-        } else {
-            AgentRunState::Playtesting
-        };
+        let playtest_required = !self.run(run_id)?.proposal_snapshot.playtest_plan.is_empty();
+        if !playtest_required {
+            let (session_id, _) = self.run_location(run_id)?;
+            let run = self.run_mut_in_session(&session_id, run_id)?;
+            run.completion.play_launch = CompletionStatus::NotApplicable;
+            run.completion.frame_capture = CompletionStatus::NotApplicable;
+            run.completion.visual_evaluation = CompletionStatus::NotApplicable;
+            run.completion.interaction_scenarios = CompletionStatus::NotApplicable;
+            self.persist_session(&session_id)?;
+        }
+        let next = if playtest_required { AgentRunState::Playtesting } else { AgentRunState::Evaluating };
         self.transition_run(
             run_id,
             next,
-            match next {
-                AgentRunState::Playtesting => {
-                    "Managed source validation passed; playtest evidence is still required."
-                }
-                AgentRunState::Evaluating => {
-                    "Managed source validation passed; final evaluation remains required."
-                }
-                _ => unreachable!("post-validation state is fixed by the agent state machine"),
+            if playtest_required {
+                "Managed source validation passed; playtest evidence is still required."
+            } else {
+                "Managed source validation passed; no playtest was requested by this proposal."
             },
         )
     }
@@ -1282,8 +1501,34 @@ impl AgentHost {
         Ok(path)
     }
 
-    pub(crate) fn workspace_root(&self, run_id: &str) -> PathBuf {
-        self.storage_root.join("workspaces").join(run_id)
+    pub(crate) fn workspace_paths(
+        &self,
+        run_id: &str,
+    ) -> Result<(PathBuf, PathBuf), AgentHostError> {
+        let (session_id, _) = self.run_location(run_id)?;
+        Ok((
+            self.storage_root.join("workspaces").join(&session_id),
+            self.storage_root
+                .join("workspace-baselines")
+                .join(format!("{session_id}.json")),
+        ))
+    }
+
+    pub(crate) fn store_captured_frame_artifact(
+        &mut self,
+        run_id: &str,
+        width: u32,
+        height: u32,
+        png_bytes: &[u8],
+    ) -> Result<(String, PathBuf), AgentHostError> {
+        self.run(run_id)?;
+        let artifact_id = next_id("frame");
+        let directory = self.storage_root.join("artifacts").join(run_id);
+        fs::create_dir_all(&directory)?;
+        let path = directory.join(format!("{artifact_id}.png"));
+        fs::write(&path, png_bytes)?;
+        self.record_captured_frame(run_id, artifact_id.clone(), width, height)?;
+        Ok((artifact_id, path))
     }
 
     fn session_mut(&mut self, id: &str) -> Result<&mut AgentSession, AgentHostError> {
@@ -1362,14 +1607,29 @@ fn valid_transition(from: AgentRunState, to: AgentRunState) -> bool {
 }
 
 fn push_event(run: &mut AgentRun, kind: AgentEventKind, message: String) {
+    push_event_with_evidence(run, kind, message, None, None);
+}
+
+fn push_event_with_evidence(
+    run: &mut AgentRun,
+    kind: AgentEventKind,
+    message: String,
+    validation: Option<ManagedValidationEvent>,
+    evidence: Option<AgentEventEvidence>,
+) {
     let sequence = run.events.last().map_or(1, |event| event.sequence + 1);
     run.events.push(AgentEvent {
         sequence,
         created_unix_ms: unix_ms(),
         kind,
         message,
-        validation: None,
+        validation,
+        evidence,
     });
+    if run.events.len() > MAX_PERSISTED_EVENTS_PER_RUN {
+        let overflow = run.events.len() - MAX_PERSISTED_EVENTS_PER_RUN;
+        run.events.drain(..overflow);
+    }
 }
 
 fn push_validation_event(
@@ -1377,14 +1637,13 @@ fn push_validation_event(
     message: String,
     validation: ManagedValidationEvent,
 ) {
-    let sequence = run.events.last().map_or(1, |event| event.sequence + 1);
-    run.events.push(AgentEvent {
-        sequence,
-        created_unix_ms: unix_ms(),
-        kind: AgentEventKind::Validation,
+    push_event_with_evidence(
+        run,
+        AgentEventKind::Validation,
         message,
-        validation: Some(validation),
-    });
+        Some(validation),
+        None,
+    );
 }
 
 fn managed_validation_plan(
@@ -1641,20 +1900,59 @@ pub(crate) struct CodeChange {
     pub(crate) after: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PersistedCodeWorkspaceBaseline {
+    schema_version: u32,
+    files: BTreeMap<PathBuf, Option<String>>,
+}
+
 pub(crate) struct CodeWorkspace {
     project_root: PathBuf,
     workspace_root: PathBuf,
+    baseline_path: Option<PathBuf>,
     baseline: BTreeMap<PathBuf, Option<String>>,
 }
 
 impl CodeWorkspace {
+    #[cfg(test)]
     pub(crate) fn create(
         project_root: &Path,
         workspace_root: PathBuf,
     ) -> Result<Self, AgentHostError> {
+        Self::initialize(project_root, workspace_root, None)
+    }
+
+    pub(crate) fn open_or_create(
+        project_root: &Path,
+        workspace_root: PathBuf,
+        baseline_path: PathBuf,
+    ) -> Result<Self, AgentHostError> {
+        if workspace_root.is_dir() && baseline_path.is_file() {
+            let persisted: PersistedCodeWorkspaceBaseline =
+                serde_json::from_slice(&fs::read(&baseline_path)?)?;
+            if persisted.schema_version == 1 {
+                return Ok(Self {
+                    project_root: project_root.to_path_buf(),
+                    workspace_root,
+                    baseline_path: Some(baseline_path),
+                    baseline: persisted.files,
+                });
+            }
+        }
         if workspace_root.exists() {
             fs::remove_dir_all(&workspace_root)?;
         }
+        if baseline_path.exists() {
+            fs::remove_file(&baseline_path)?;
+        }
+        Self::initialize(project_root, workspace_root, Some(baseline_path))
+    }
+
+    fn initialize(
+        project_root: &Path,
+        workspace_root: PathBuf,
+        baseline_path: Option<PathBuf>,
+    ) -> Result<Self, AgentHostError> {
         fs::create_dir_all(&workspace_root)?;
         let mut baseline = BTreeMap::new();
         for relative in [
@@ -1667,11 +1965,27 @@ impl CodeWorkspace {
                 copy_code_tree(project_root, &workspace_root, relative, &mut baseline)?;
             }
         }
-        Ok(Self {
+        let workspace = Self {
             project_root: project_root.to_path_buf(),
             workspace_root,
+            baseline_path,
             baseline,
-        })
+        };
+        workspace.persist_baseline()?;
+        Ok(workspace)
+    }
+
+    fn persist_baseline(&self) -> Result<(), AgentHostError> {
+        let Some(path) = &self.baseline_path else {
+            return Ok(());
+        };
+        write_json_atomic(
+            path,
+            &PersistedCodeWorkspaceBaseline {
+                schema_version: 1,
+                files: self.baseline.clone(),
+            },
+        )
     }
 
     pub(crate) fn root(&self) -> &Path {
@@ -1709,7 +2023,7 @@ impl CodeWorkspace {
                 &self.project_root.join(&change.relative_path),
                 &change.relative_path,
             )?;
-            if live != change.before {
+            if live != change.before && live != change.after {
                 return Err(AgentHostError::StaleCodeFile(change.relative_path.clone()));
             }
         }
@@ -1718,10 +2032,14 @@ impl CodeWorkspace {
             let after = change.after.as_deref().ok_or_else(|| {
                 AgentHostError::UnsupportedCodeDeletion(change.relative_path.clone())
             })?;
-            write_text_atomic(&destination, after)?;
+            let live = read_optional_utf8(&destination, &change.relative_path)?;
+            if live.as_deref() != Some(after) {
+                write_text_atomic(&destination, after)?;
+            }
             self.baseline
                 .insert(change.relative_path.clone(), Some(after.to_owned()));
         }
+        self.persist_baseline()?;
         Ok(())
     }
 }
@@ -1873,7 +2191,7 @@ fn write_text_atomic(path: &Path, text: &str) -> Result<(), AgentHostError> {
     Ok(())
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ProcessStream {
     Stdout,
     Stderr,
@@ -2040,6 +2358,58 @@ mod tests {
     }
 
     #[test]
+    fn session_runs_share_one_code_workspace_identity() {
+        let project = temp_path("session-workspace-project");
+        let storage = temp_path("session-workspace-storage");
+        fs::create_dir_all(&project).expect("test project directory");
+        let mut host = AgentHost::open(project.clone(), storage.clone()).expect("host");
+        let session = host.create_session("Workspace").expect("session");
+        let first = host.start_run(&session, "test").expect("first run");
+        let first_paths = host.workspace_paths(&first).expect("first workspace");
+        host.cancel_run(&first).expect("cancel first");
+        let second = host.start_run(&session, "test").expect("second run");
+        let second_paths = host.workspace_paths(&second).expect("second workspace");
+        assert_eq!(first_paths, second_paths);
+        let _ = fs::remove_dir_all(project);
+        let _ = fs::remove_dir_all(storage);
+    }
+
+    #[test]
+    fn reopened_session_workspace_preserves_stale_apply_baseline() {
+        let project = temp_path("reopen-workspace-project");
+        let workspace = temp_path("reopen-workspace");
+        let baseline = temp_path("reopen-workspace-baseline.json");
+        fs::create_dir_all(project.join("game/src")).expect("project tree");
+        fs::write(project.join("game/src/lib.rs"), "pub fn value() -> u32 { 1 }\n")
+            .expect("base file");
+        {
+            let code = CodeWorkspace::open_or_create(
+                &project,
+                workspace.clone(),
+                baseline.clone(),
+            )
+            .expect("workspace");
+            fs::write(
+                code.root().join("game/src/lib.rs"),
+                "pub fn value() -> u32 { 2 }\n",
+            )
+            .expect("workspace edit");
+        }
+        fs::write(project.join("game/src/lib.rs"), "pub fn value() -> u32 { 3 }\n")
+            .expect("human edit");
+        let mut reopened = CodeWorkspace::open_or_create(&project, workspace.clone(), baseline.clone())
+            .expect("reopened workspace");
+        let changes = reopened.collect_changes().expect("changes");
+        assert!(matches!(
+            reopened.apply_changes(&changes),
+            Err(AgentHostError::StaleCodeFile(_))
+        ));
+        let _ = fs::remove_dir_all(project);
+        let _ = fs::remove_dir_all(workspace);
+        let _ = fs::remove_file(baseline);
+    }
+
+    #[test]
     fn code_apply_rejects_stale_live_file() {
         let project = temp_path("code-project");
         let workspace = temp_path("code-workspace");
@@ -2061,6 +2431,65 @@ mod tests {
         ));
         let _ = fs::remove_dir_all(project);
         let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn code_apply_retry_is_idempotent_after_success() {
+        let project = temp_path("code-idempotent-project");
+        let workspace = temp_path("code-idempotent-workspace");
+        fs::create_dir_all(project.join("game/src")).expect("project tree");
+        fs::write(project.join("game/src/lib.rs"), "pub fn value() -> u32 { 1 }\n").expect("base file");
+        let mut code = CodeWorkspace::create(&project, workspace.clone()).expect("workspace");
+        fs::write(workspace.join("game/src/lib.rs"), "pub fn value() -> u32 { 2 }\n").expect("workspace edit");
+        let changes = code.collect_changes().expect("changes");
+        code.apply_changes(&changes).expect("first apply");
+        code.apply_changes(&changes).expect("idempotent retry");
+        assert_eq!(fs::read_to_string(project.join("game/src/lib.rs")).expect("live file"), "pub fn value() -> u32 { 2 }\n");
+        let _ = fs::remove_dir_all(project);
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn event_history_is_bounded_and_sequence_remains_monotonic() {
+        let project = temp_path("event-bound-project");
+        let storage = temp_path("event-bound-storage");
+        fs::create_dir_all(&project).expect("test project directory");
+        let mut host = AgentHost::open(project.clone(), storage.clone()).expect("host");
+        let session = host.create_session("Events").expect("session");
+        let run = host.start_run(&session, "test").expect("run");
+        for index in 0..(MAX_PERSISTED_EVENTS_PER_RUN + 25) {
+            host.record_semantic_progress(&run, "step", format!("event {index}")).expect("event");
+        }
+        let events = &host.run(&run).expect("run").events;
+        assert_eq!(events.len(), MAX_PERSISTED_EVENTS_PER_RUN);
+        assert!(events.windows(2).all(|pair| pair[0].sequence < pair[1].sequence));
+        assert!(events.first().expect("first").sequence > 1);
+        let _ = fs::remove_dir_all(project);
+        let _ = fs::remove_dir_all(storage);
+    }
+
+    #[test]
+    fn managed_frame_artifact_sets_structured_completion_evidence() {
+        let project = temp_path("frame-project");
+        let storage = temp_path("frame-storage");
+        fs::create_dir_all(&project).expect("test project directory");
+        let mut host = AgentHost::open(project.clone(), storage.clone()).expect("host");
+        let session = host.create_session("Frame").expect("session");
+        let run = host.start_run(&session, "test").expect("run");
+        host.transition_run(&run, AgentRunState::Executing, "execute").expect("executing");
+        host.transition_run(&run, AgentRunState::Validating, "validate").expect("validating");
+        host.transition_run(&run, AgentRunState::Playtesting, "playtest").expect("playtesting");
+        let (artifact_id, path) = host.store_captured_frame_artifact(&run, 2, 2, b"png").expect("artifact");
+        assert!(path.is_file());
+        let run_state = host.run(&run).expect("run");
+        assert_eq!(run_state.completion.frame_capture, CompletionStatus::Passed);
+        assert_eq!(run_state.state, AgentRunState::Evaluating);
+        assert!(run_state.events.iter().any(|event| matches!(
+            &event.evidence,
+            Some(AgentEventEvidence::CapturedFrame { artifact_id: id, width: 2, height: 2 }) if id == &artifact_id
+        )));
+        let _ = fs::remove_dir_all(project);
+        let _ = fs::remove_dir_all(storage);
     }
 
     #[test]

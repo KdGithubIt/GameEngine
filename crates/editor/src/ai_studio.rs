@@ -15,8 +15,20 @@ use crate::native_agent::{
 };
 use eframe::egui;
 use engine_authoring::ProjectRoot;
+use serde::Deserialize;
 use std::ffi::{OsStr, OsString};
 use std::path::PathBuf;
+
+const PROVIDER_EVENT_PREFIX: &str = "GAMEENGINE_AGENT_EVENT ";
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum ProviderAgentEvent {
+    Progress { step: String, detail: String },
+    ToolAction { tool: String, action: String, success: Option<bool> },
+    CompletionGate { gate: String, status: CompletionStatus, message: String },
+    PlaytestResult { launched: bool, interactions_passed: Option<bool>, message: String },
+}
 
 /// Ephemeral Editor-owned MCP connection injected into compatible agent runtimes.
 ///
@@ -38,10 +50,37 @@ impl AiStudioConnection {
     }
 }
 
+/// Managed Editor-runtime operation requested by AI Studio after authorization.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AiStudioRuntimeAction {
+    /// Start the normal Editor Play path for the active project.
+    StartPlaytest,
+    /// Capture the currently rendered Game View through the engine frame-capture path.
+    CaptureFrame,
+    /// Stop the managed Editor Play session.
+    StopPlaytest,
+}
+
+/// Result of one managed Editor-runtime operation returned to AI Studio.
+pub enum AiStudioRuntimeResult {
+    /// Play is running and runtime observation is available.
+    PlayStarted,
+    /// Play start is waiting for an engine-managed game-code build.
+    PlayStartPending,
+    /// The managed Play session stopped.
+    PlayStopped,
+    /// A Game View frame was captured by the runtime renderer.
+    FrameCaptured(crate::FrameCapture),
+    /// The requested operation failed without bypassing the normal runtime path.
+    Failed(String),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PendingPermissionAction {
     LaunchExternalAgent,
     ApplyCodeChanges,
+    LaunchPlaytest,
+    CaptureFrame,
 }
 
 struct PendingPermission {
@@ -74,6 +113,11 @@ pub struct AiStudioPanel {
     code_workspace: Option<CodeWorkspace>,
     pending_code_changes: Vec<CodeChange>,
     pending_permission: Option<PendingPermission>,
+    pending_runtime_action: Option<AiStudioRuntimeAction>,
+    managed_playtest_requested: bool,
+    managed_capture_requested: bool,
+    managed_playtest_started_at: Option<std::time::Instant>,
+    last_captured_frame: Option<(egui::TextureHandle, String, u32, u32)>,
     status: Option<String>,
 }
 
@@ -118,6 +162,11 @@ impl AiStudioPanel {
             code_workspace: None,
             pending_code_changes: Vec::new(),
             pending_permission: None,
+            pending_runtime_action: None,
+            managed_playtest_requested: false,
+            managed_capture_requested: false,
+            managed_playtest_started_at: None,
+            last_captured_frame: None,
             status: None,
         })
     }
@@ -127,11 +176,85 @@ impl AiStudioPanel {
         self.open = true;
     }
 
+    /// Takes one authorized managed runtime action for the Editor shell to execute.
+    pub fn take_runtime_action(&mut self) -> Option<AiStudioRuntimeAction> {
+        self.pending_runtime_action.take()
+    }
+
+    /// Returns whether AI Studio is waiting for the normal Editor Play path to become active.
+    pub fn waiting_for_playtest_start(&self) -> bool {
+        self.managed_playtest_requested && self.managed_playtest_started_at.is_none()
+    }
+
+    /// Records the result of an Editor-owned managed runtime action.
+    pub fn report_runtime_result(&mut self, context: &egui::Context, result: AiStudioRuntimeResult) {
+        let Some(run_id) = self.active_run_id.clone() else { return; };
+        match result {
+            AiStudioRuntimeResult::PlayStarted => {
+                if self.managed_playtest_started_at.is_none() {
+                    self.managed_playtest_started_at = Some(std::time::Instant::now());
+                    if let Err(error) = self.host.record_playtest_result(
+                        &run_id,
+                        true,
+                        None,
+                        "Managed Editor Play launched successfully.",
+                    ) {
+                        self.status = Some(error.to_string());
+                    }
+                }
+            }
+            AiStudioRuntimeResult::PlayStartPending => {
+                self.status = Some("Managed Play is waiting for the engine-managed game-code build.".to_owned());
+            }
+            AiStudioRuntimeResult::PlayStopped => {
+                self.managed_playtest_started_at = None;
+                self.status = Some("Managed Play stopped.".to_owned());
+            }
+            AiStudioRuntimeResult::FrameCaptured(capture) => {
+                match encode_agent_frame_png(&capture)
+                    .map_err(|error| error.to_string())
+                    .and_then(|png| self.host.store_captured_frame_artifact(
+                        &run_id, capture.width, capture.height, &png,
+                    ).map_err(|error| error.to_string()))
+                {
+                    Ok((artifact_id, _path)) => {
+                        let image = egui::ColorImage::from_rgba_unmultiplied(
+                            [capture.width as usize, capture.height as usize],
+                            &capture.rgba8,
+                        );
+                        let texture = context.load_texture(
+                            format!("ai-studio-{artifact_id}"),
+                            image,
+                            egui::TextureOptions::LINEAR,
+                        );
+                        self.last_captured_frame = Some((texture, artifact_id.clone(), capture.width, capture.height));
+                        self.managed_capture_requested = false;
+                        self.status = Some(format!("Captured managed Play frame {artifact_id}."));
+                    }
+                    Err(error) => {
+                        self.managed_capture_requested = false;
+                        self.status = Some(format!("Managed frame capture could not be stored: {error}"));
+                    }
+                }
+            }
+            AiStudioRuntimeResult::Failed(message) => {
+                if self.managed_playtest_started_at.is_none() {
+                    let _ = self.host.record_playtest_result(&run_id, false, Some(false), message.clone());
+                } else {
+                    let _ = self.host.record_event(&run_id, AgentEventKind::Failure, message.clone());
+                }
+                self.status = Some(message);
+            }
+        }
+    }
+
     /// Draws the AI Studio window and advances any active external agent process.
     pub fn show(&mut self, context: &egui::Context) {
         self.poll_native_question(context);
         self.poll_external_process(context);
         self.poll_managed_validation(context);
+        self.request_managed_playtest_if_ready();
+        self.poll_managed_playtest_timeout();
         let mut open = self.open;
         egui::Window::new("AI Studio")
             .id(egui::Id::new("gameengine_ai_studio"))
@@ -591,6 +714,25 @@ impl AiStudioPanel {
         completion_row(ui, "Visual evaluation", report.visual_evaluation);
         completion_row(ui, "Interaction scenarios", report.interaction_scenarios);
         ui.small("Completion evidence is owned by the agent host and managed engine services.");
+        ui.horizontal(|ui| {
+            let can_capture = self.managed_playtest_started_at.is_some()
+                && !self.managed_capture_requested
+                && self.pending_permission.is_none()
+                && self.pending_runtime_action.is_none();
+            if ui.add_enabled(can_capture, egui::Button::new("Capture managed frame")).clicked() {
+                self.managed_capture_requested = true;
+                self.request_permission(run_id.to_owned(), AgentCapability::FrameCapture, PendingPermissionAction::CaptureFrame);
+            }
+            if ui.add_enabled(self.managed_playtest_started_at.is_some(), egui::Button::new("Stop managed Play")).clicked() {
+                self.pending_runtime_action = Some(AiStudioRuntimeAction::StopPlaytest);
+            }
+        });
+        if let Some((texture, artifact_id, width, height)) = &self.last_captured_frame {
+            ui.group(|ui| {
+                ui.strong(format!("Captured frame · {artifact_id} · {width}x{height}"));
+                ui.add(egui::Image::new(texture).fit_to_exact_size(egui::vec2(480.0, 270.0)).maintain_aspect_ratio(true));
+            });
+        }
         if ui.button("Complete run").clicked() {
             match self.host.complete_run(run_id) {
                 Ok(()) => self.status = Some("Run completion contract satisfied.".to_owned()),
@@ -611,6 +753,11 @@ impl AiStudioPanel {
         match self.host.start_run(&self.selected_session, provider) {
             Ok(run_id) => {
                 self.active_run_id = Some(run_id.clone());
+                self.pending_runtime_action = None;
+                self.managed_playtest_requested = false;
+                self.managed_capture_requested = false;
+                self.managed_playtest_started_at = None;
+                self.last_captured_frame = None;
                 self.request_permission(
                     run_id,
                     AgentCapability::ExternalAgentProcess,
@@ -684,12 +831,28 @@ impl AiStudioPanel {
         match action {
             PendingPermissionAction::LaunchExternalAgent => self.launch_external_agent(run_id),
             PendingPermissionAction::ApplyCodeChanges => self.apply_code_changes(run_id),
+            PendingPermissionAction::LaunchPlaytest => {
+                self.pending_runtime_action = Some(AiStudioRuntimeAction::StartPlaytest);
+            }
+            PendingPermissionAction::CaptureFrame => {
+                self.pending_runtime_action = Some(AiStudioRuntimeAction::CaptureFrame);
+            }
         }
     }
 
     fn launch_external_agent(&mut self, run_id: &str) {
-        let workspace_root = self.host.workspace_root(run_id);
-        let workspace = match CodeWorkspace::create(&self.project_root, workspace_root) {
+        let (workspace_root, baseline_path) = match self.host.workspace_paths(run_id) {
+            Ok(paths) => paths,
+            Err(error) => {
+                self.fail_run(run_id, format!("Could not resolve code workspace: {error}"));
+                return;
+            }
+        };
+        let workspace = match CodeWorkspace::open_or_create(
+            &self.project_root,
+            workspace_root,
+            baseline_path,
+        ) {
             Ok(workspace) => workspace,
             Err(error) => {
                 self.fail_run(run_id, format!("Could not prepare code workspace: {error}"));
@@ -735,6 +898,12 @@ impl AiStudioPanel {
                     "Use the injected Editor MCP endpoint for persisted authoring changes. Use this isolated workspace only for project code and return code changes for review.",
                 ),
             ),
+            (
+                OsString::from("GAMEENGINE_AGENT_EVENT_PROTOCOL"),
+                OsString::from(
+                    "Emit semantic events as one stdout line prefixed GAMEENGINE_AGENT_EVENT followed by JSON. Supported types: progress, tool_action, completion_gate, playtest_result. Never emit credentials or bearer tokens.",
+                ),
+            ),
         ];
         let args = split_direct_args(&self.provider_args);
         match ExternalAgentProcess::spawn(
@@ -771,6 +940,21 @@ impl AiStudioPanel {
             .map(ExternalAgentProcess::drain_output)
             .unwrap_or_default();
         for line in output {
+            if line.stream == ProcessStream::Stdout
+                && let Some(payload) = line.text.strip_prefix(PROVIDER_EVENT_PREFIX)
+            {
+                match serde_json::from_str::<ProviderAgentEvent>(payload) {
+                    Ok(event) => {
+                        if let Err(error) = self.record_provider_semantic_event(&run_id, event) {
+                            self.status = Some(error);
+                        }
+                        continue;
+                    }
+                    Err(error) => {
+                        self.status = Some(format!("Provider emitted an invalid semantic AgentEvent: {error}"));
+                    }
+                }
+            }
             let stream = match line.stream {
                 ProcessStream::Stdout => "stdout",
                 ProcessStream::Stderr => "stderr",
@@ -778,7 +962,7 @@ impl AiStudioPanel {
             if let Err(error) = self.host.record_event(
                 &run_id,
                 AgentEventKind::ProviderOutput,
-                format!("{stream}: {}", line.text),
+                format!("{stream} output received; raw provider text omitted from persisted history."),
             ) {
                 self.status = Some(error.to_string());
             }
@@ -807,6 +991,38 @@ impl AiStudioPanel {
         }
     }
 
+    fn request_managed_playtest_if_ready(&mut self) {
+        if self.managed_playtest_requested || self.pending_runtime_action.is_some() {
+            return;
+        }
+        let Some(run_id) = self.active_run_id.clone() else { return; };
+        if !self.host.run(&run_id).is_ok_and(|run| run.state == AgentRunState::Playtesting) {
+            return;
+        }
+        self.managed_playtest_requested = true;
+        self.request_permission(run_id, AgentCapability::RuntimeLaunch, PendingPermissionAction::LaunchPlaytest);
+    }
+
+    fn poll_managed_playtest_timeout(&mut self) {
+        let Some(started_at) = self.managed_playtest_started_at else { return; };
+        if started_at.elapsed() < std::time::Duration::from_secs(120) {
+            return;
+        }
+        let Some(run_id) = self.active_run_id.clone() else { return; };
+        let state = self.host.run(&run_id).map(|run| run.state).ok();
+        if matches!(state, Some(AgentRunState::Playtesting | AgentRunState::Evaluating)) {
+            let _ = self.host.record_playtest_result(
+                &run_id,
+                true,
+                Some(false),
+                "Managed playtest exceeded the 120 second first-release timeout before required evidence completed.",
+            );
+        }
+        self.pending_runtime_action = Some(AiStudioRuntimeAction::StopPlaytest);
+        self.managed_playtest_started_at = None;
+        self.status = Some("Managed Play stopped at the 120 second timeout.".to_owned());
+    }
+
     fn poll_managed_validation(&mut self, context: &egui::Context) {
         let Some(run_id) = self.active_run_id.clone() else {
             return;
@@ -832,11 +1048,7 @@ impl AiStudioPanel {
             },
             None => Vec::new(),
         };
-        if let Err(error) = self.host.record_event(
-            run_id,
-            AgentEventKind::CodeChangesDetected,
-            format!("Detected {} managed code file change(s).", changes.len()),
-        ) {
+        if let Err(error) = self.host.record_code_checkpoint(run_id, &changes) {
             self.status = Some(error.to_string());
         }
         let has_code_changes = !changes.is_empty();
@@ -873,6 +1085,22 @@ impl AiStudioPanel {
                 }
             }
             Err(error) => self.status = Some(error.to_string()),
+        }
+    }
+
+    fn record_provider_semantic_event(&mut self, run_id: &str, event: ProviderAgentEvent) -> Result<(), String> {
+        match event {
+            ProviderAgentEvent::Progress { step, detail } => self.host.record_semantic_progress(run_id, step, detail).map_err(|error| error.to_string()),
+            ProviderAgentEvent::ToolAction { tool, action, success } => self.host.record_tool_action(run_id, tool, action, success).map_err(|error| error.to_string()),
+            ProviderAgentEvent::CompletionGate { gate, status, message } => self.host.record_completion_gate(run_id, &gate, status, message).map_err(|error| error.to_string()),
+            ProviderAgentEvent::PlaytestResult { launched, interactions_passed, message } => {
+                self.host.record_playtest_result(run_id, launched, interactions_passed, message).map_err(|error| error.to_string())?;
+                if launched && interactions_passed == Some(true) && !self.managed_capture_requested {
+                    self.managed_capture_requested = true;
+                    self.request_permission(run_id.to_owned(), AgentCapability::FrameCapture, PendingPermissionAction::CaptureFrame);
+                }
+                Ok(())
+            }
         }
     }
 
@@ -983,6 +1211,18 @@ fn edit_lines(ui: &mut egui::Ui, label: &str, values: &mut Vec<String>) {
     }
 }
 
+fn encode_agent_frame_png(capture: &crate::FrameCapture) -> Result<Vec<u8>, png::EncodingError> {
+    let mut png_bytes = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut png_bytes, capture.width, capture.height);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder.write_header()?;
+        writer.write_image_data(&capture.rgba8)?;
+    }
+    Ok(png_bytes)
+}
+
 fn split_direct_args(text: &str) -> Vec<String> {
     text.split_whitespace().map(ToOwned::to_owned).collect()
 }
@@ -1022,6 +1262,17 @@ mod tests {
             split_direct_args("--flag value ; echo nope"),
             ["--flag", "value", ";", "echo", "nope"]
         );
+    }
+
+    #[test]
+    fn provider_semantic_progress_is_structured_json() {
+        let event: ProviderAgentEvent = serde_json::from_str(
+            r#"{"type":"progress","step":"inspect","detail":"scene"}"#,
+        ).expect("semantic event");
+        assert!(matches!(
+            event,
+            ProviderAgentEvent::Progress { step, detail } if step == "inspect" && detail == "scene"
+        ));
     }
 
     #[test]
