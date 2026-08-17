@@ -1,0 +1,54 @@
+diff --git a/crates/editor/src/remote_ai_studio.rs b/crates/editor/src/remote_ai_studio.rs
+index e1b6d837305b37fdec10ce13fa22f02b0f2b24b1..514e25d33efef33aded98f87e80cc21cc583c503 100644
+--- a/crates/editor/src/remote_ai_studio.rs
++++ b/crates/editor/src/remote_ai_studio.rs
+@@ -648,7 +648,7 @@ fn read_http_request(stream: &mut TcpStream) -> Result<HttpRequest, u16> {
+     let mut bytes = Vec::new();
+     let mut buffer = [0_u8; 4096];
+     let header_end = loop {
+-        let read = stream.read(&mut buffer).map_err(|_| 400)?;
++        let read = stream.read(&mut buffer).map_err(|_| 400u16)?;
+         if read == 0 {
+             return Err(400);
+         }
+@@ -663,18 +663,18 @@ fn read_http_request(stream: &mut TcpStream) -> Result<HttpRequest, u16> {
+             return Err(431);
+         }
+     };
+-    let header_text = std::str::from_utf8(&bytes[..header_end]).map_err(|_| 400)?;
++    let header_text = std::str::from_utf8(&bytes[..header_end]).map_err(|_| 400u16)?;
+     let mut lines = header_text.split("\r\n");
+-    let request_line = lines.next().ok_or(400)?;
++    let request_line = lines.next().ok_or(400u16)?;
+     let mut request_parts = request_line.split_whitespace();
+-    let method = request_parts.next().ok_or(400)?.to_owned();
+-    let path = request_parts.next().ok_or(400)?.to_owned();
++    let method = request_parts.next().ok_or(400u16)?.to_owned();
++    let path = request_parts.next().ok_or(400u16)?.to_owned();
+     if request_parts.next().is_none() || request_parts.next().is_some() {
+         return Err(400);
+     }
+     let mut headers = BTreeMap::new();
+     for line in lines.filter(|line| !line.is_empty()) {
+-        let (name, value) = line.split_once(':').ok_or(400)?;
++        let (name, value) = line.split_once(':').ok_or(400u16)?;
+         headers.insert(name.trim().to_ascii_lowercase(), value.trim().to_owned());
+     }
+     if headers.contains_key("transfer-encoding") {
+@@ -682,14 +682,14 @@ fn read_http_request(stream: &mut TcpStream) -> Result<HttpRequest, u16> {
+     }
+     let content_length = headers
+         .get("content-length")
+-        .map(|value| value.parse::<usize>().map_err(|_| 400))
++        .map(|value| value.parse::<usize>().map_err(|_| 400u16))
+         .transpose()?
+         .unwrap_or(0);
+     if content_length > MAX_BODY_BYTES {
+         return Err(413);
+     }
+     while bytes.len() < header_end + content_length {
+-        let read = stream.read(&mut buffer).map_err(|_| 400)?;
++        let read = stream.read(&mut buffer).map_err(|_| 400u16)?;
+         if read == 0 {
+             return Err(400);
+         }
