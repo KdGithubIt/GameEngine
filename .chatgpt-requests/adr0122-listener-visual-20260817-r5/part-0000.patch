@@ -1,0 +1,34 @@
+diff --git a/crates/editor/src/main.rs b/crates/editor/src/main.rs
+index 587e544a52b6a3ecd6db412fb617f3aca227841f..42ff487b8c3edd13a9cc64336a307fa2899a1099 100644
+--- a/crates/editor/src/main.rs
++++ b/crates/editor/src/main.rs
+@@ -78,6 +78,8 @@ impl EditorShell {
+                 app.prepare_spatial_audio_visual_validation();
+             } else if requested == "Spatial Audio Details" {
+                 app.prepare_spatial_audio_details_visual_validation();
++            } else if requested == "Spatial Audio Listener" {
++                app.prepare_spatial_audio_listener_visual_validation();
+             } else {
+                 if requested == "VFX Builder" {
+                     app.prepare_vfx_visual_validation();
+diff --git a/crates/editor/src/ui/audio_authoring.rs b/crates/editor/src/ui/audio_authoring.rs
+index 5d6be0be47e21f14d7b4aab7a0d5b7947332148b..26cf39ec89e7c70de19e706267f05496453a49cd 100644
+--- a/crates/editor/src/ui/audio_authoring.rs
++++ b/crates/editor/src/ui/audio_authoring.rs
+@@ -242,6 +242,16 @@ impl EditorApp {
+         self.prepare_spatial_audio_visual_validation_with_scroll(Some(300.0));
+     }
+ 
++    #[cfg(feature = "visual-validation")]
++    pub fn prepare_spatial_audio_listener_visual_validation(&mut self) {
++        self.prepare_spatial_audio_visual_validation_with_scroll(None);
++        let emitter_type =
++            ComponentTypeId::new(engine::scene_bridge::AUDIO_EMITTER_COMPONENT);
++        self.preferences
++            .component_card_open
++            .insert(emitter_type.as_str().to_owned(), false);
++    }
++
+     #[cfg(feature = "visual-validation")]
+     fn prepare_spatial_audio_visual_validation_with_scroll(
+         &mut self,
