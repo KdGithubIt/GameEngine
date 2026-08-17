@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0125-visual-closure-20260817-02",
+  "target_branch": "chatgpt/gameengine-adr0125-final-closure-20260817",
+  "expected_head_sha": "6c05b3f6b5b55e0127e52ce2802609604d9a5fc9",
+  "baseline_main_sha": "2109204b493072e10bd04e8a571f03cb487120fe",
+  "edit_parts": [
+    "edit-0000.json",
+    "edit-0001.json",
+    "edit-0002.json",
+    "edit-0003.json",
+    "edit-0004.json",
+    "edit-0005.json",
+    "edit-0006.json",
+    "edit-0007.json",
+    "edit-0008.json",
+    "edit-0009.json"
+  ],
+  "commit_message": "Complete ADR 0125 Scene View visual closure",
+  "pr_title": "GameEngine: complete ADR 0125 final closure",
+  "pr_body": "## Summary\n\nCompletes ADR 0125 visual closure by connecting VFX Player to deterministic Scene View preview/debug rendering and by capturing the production Scene View together with the VFX Builder.\n\n<!-- gameengine-visual-validation: editor -->\n<!-- gameengine-visual-authoring-tool: VFX Builder -->\n<!-- gameengine-chatgpt-dispatcher -->"
+}
