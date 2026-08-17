@@ -1,0 +1,29 @@
+diff --git a/crates/editor/src/vfx_builder_completion.rs b/crates/editor/src/vfx_builder_completion.rs
+index 0b9b561e99500c31f1bdf67bf6c4f1ebc12e11da..9a5ccc191b91a4d8da5314edaf4fe9a38205b117 100644
+--- a/crates/editor/src/vfx_builder_completion.rs
++++ b/crates/editor/src/vfx_builder_completion.rs
+@@ -1090,8 +1090,10 @@ mod tests {
+         effect.emitters.push(emitter);
+ 
+         let compilation = VfxAuthoringService::new().compile(&effect);
+-        let mut preview = VfxPreviewState::default();
+-        preview.current_time = 0.75;
++        let mut preview = VfxPreviewState {
++            current_time: 0.75,
++            ..Default::default()
++        };
+         preview.apply_compilation(&effect, &compilation, true);
+ 
+         let compiled = compilation
+diff --git a/docs/adr/0125-vfx-effect-authoring-and-runtime-architecture.md b/docs/adr/0125-vfx-effect-authoring-and-runtime-architecture.md
+index 0e4876acc10cb29fcf116a64302b504b7e276a97..6e78d04cd934333ce37fc230a2e5618fa73c5aa2 100644
+--- a/docs/adr/0125-vfx-effect-authoring-and-runtime-architecture.md
++++ b/docs/adr/0125-vfx-effect-authoring-and-runtime-architecture.md
+@@ -1,6 +1,6 @@
+ # ADR 0125: VFX Effect Authoring and Runtime Architecture
+ 
+-Status: Proposed
++Status: Accepted
+ Date: 2026-08-16
+ Builds on: ADR 0042, ADR 0044, ADR 0054, ADR 0072, ADR 0104, ADR 0113, ADR 0121
+ 
