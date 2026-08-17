@@ -499,10 +499,10 @@ impl EditorApp {
             .join(format!("{scene_stem}.navmesh.bake.json"));
         let document = std::fs::read_to_string(&document_path)
             .ok()
-            .and_then(|json| crate::navmesh_bake::NavMeshBakeDocument::from_json(&json).ok())
-            .unwrap_or_else(|| crate::navmesh_bake::NavMeshBakeDocument {
+            .and_then(|json| engine::navigation_bake::NavMeshBakeDocument::from_json(&json).ok())
+            .unwrap_or_else(|| engine::navigation_bake::NavMeshBakeDocument {
                 output_asset: format!("navigation/{scene_stem}.navmesh.json"),
-                ..crate::navmesh_bake::NavMeshBakeDocument::default()
+                ..engine::navigation_bake::NavMeshBakeDocument::default()
             });
         match self.navigation_bake.start(
             tab_id,
@@ -626,6 +626,23 @@ impl EditorApp {
         let Some(project_root) = self.project_root.clone() else {
             return;
         };
+        let navigation_gate = match self.session.scene() {
+            Some(scene) => require_current_navigation_artifact(
+                scene,
+                &project_root,
+                &self.asset_manifest,
+                self.session.current_document_path(),
+            ),
+            None => Ok(()),
+        };
+        if let Err(error) = navigation_gate {
+            self.session
+                .push_diagnostic(engine_authoring::Diagnostic::error(
+                    "editor.package_navigation_not_current",
+                    error,
+                ));
+            return;
+        }
         let settings = match ProjectSettings::load(project_root.path()) {
             Ok(settings) => settings,
             Err(error) => {
