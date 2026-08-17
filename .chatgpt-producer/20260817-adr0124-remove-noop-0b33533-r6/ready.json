@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "request_id": "20260817-adr0124-remove-noop-0b33533-r6",
+  "target_branch": "chatgpt/gameengine-adr0124-production-navigation-v14",
+  "expected_head_sha": "0b335338e3eec4446e040447d68a311406d2e646",
+  "baseline_main_sha": "89cf19154b1664ef8de83d91cdbeeb2c4242a738",
+  "edit_parts": [
+    "edit-0000.json"
+  ],
+  "commit_message": "Remove unrelated visual trigger file",
+  "pr_title": "Complete ADR 0124 production navigation first release",
+  "pr_body": "Complete ADR 0124 on current main. This cleanup removes an unrelated empty visual-trigger file so the Draft PR contains only the requested navigation implementation.\n\n<!-- gameengine-visual-validation: editor -->"
+}
