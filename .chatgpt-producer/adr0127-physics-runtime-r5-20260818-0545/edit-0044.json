@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/physics/src/native_2d.rs","old":"impl CharacterController2d {","new":"#[derive(Debug, Clone, Copy)]\nstruct ControllerBlockerQuery {\n    center: Vec2,\n    half_extents: Vec2,\n    mask: u32,\n    ignore_entity: Option<u64>,\n    drop_through_seconds: f32,\n    start: Vec2,\n    delta: Vec2,\n}\n\nimpl CharacterController2d {"}
