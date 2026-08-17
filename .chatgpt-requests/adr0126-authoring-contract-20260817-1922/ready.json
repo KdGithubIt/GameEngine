@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0126-authoring-contract-20260817-1922",
+  "target_branch": "chatgpt/gameengine-adr0126-first-release",
+  "expected_head_sha": "ed42b838142c18f3f5545600875ceec6cb5a11d2",
+  "baseline_main_sha": "d03ed9e573818eb0ca088f37953f611d6ed4d22e",
+  "patch_sha256": "3cbec2d5b6f0f1ed57a939751b6d62011b9debc301450f6d0269a2280f0b6d23",
+  "patch_bytes": 30299,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Align Timeline shared authoring contract",
+  "pr_title": "GameEngine: complete ADR0126 Timeline and Sequencer",
+  "pr_body": "## Summary\n\nContinues ADR 0126 first-release completion by aligning Timeline live authoring with the shared permission, revision/generation, structured preview/apply, and serialization contracts required for Editor/CLI/MCP parity. Persisted Timeline JSON and stable IDs are unchanged.\n\n<!-- gameengine-visual-validation: editor -->\n<!-- gameengine-visual-authoring-tool: Sequencer -->\n\n<!-- gameengine-chatgpt-dispatcher -->"
+}
