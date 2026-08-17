@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/scene_view.rs","old":"                        self.audio_distance_drag = Some(AudioDistanceDragState {\n                            entity: entity.clone(),\n","new":"                        self.audio_distance_drag = Some(AudioDistanceDragState {\n                            entity: (*entity).clone(),\n"}
