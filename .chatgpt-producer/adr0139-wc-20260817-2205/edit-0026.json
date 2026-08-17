@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ui/documents.rs","old":"        if self.session.any_dirty() {\n            self.pending_unsaved_action = Some(PendingUnsavedAction::SwitchProject);","new":"        if self.any_authoring_dirty() {\n            self.pending_unsaved_action = Some(PendingUnsavedAction::SwitchProject);"}
