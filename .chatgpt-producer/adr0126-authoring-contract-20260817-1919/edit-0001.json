@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/authoring/src/timeline_authoring.rs","old":"#[serde(tag = \"kind\", rename_all = \"snake_case\")]","new":"#[serde(tag = \"kind\", content = \"value\", rename_all = \"snake_case\")]"}
