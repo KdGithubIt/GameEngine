@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ui/chrome.rs",
+  "old": "pub(super) fn show_inspector_panel<R>(",
+  "new": "#[cfg(test)]\npub(super) fn show_inspector_panel<R>("
+}
