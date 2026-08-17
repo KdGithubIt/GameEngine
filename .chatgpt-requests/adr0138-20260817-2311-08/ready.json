@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0138-20260817-2311-08",
+  "target_branch": "chatgpt/gameengine-adr0138-graph-debug-r2",
+  "expected_head_sha": "1fd6a5ca7f3fb9a016e6fa7b210d2f365d9398c3",
+  "baseline_main_sha": "73ecdb99da92052d74595dd26e2872d7956fecf8",
+  "patch_sha256": "4178506f88d4fa0edb18e195d7e158f47665944a9268a570e329398bf227b66e",
+  "patch_bytes": 774,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Fix ADR 0138 runtime event filter",
+  "pr_title": "GameEngine: implement ADR 0138 unified Graph Debug",
+  "pr_body": "## Summary\n\n- fix the runtime event filter reference level found by affected Windows validation\n\n## Validation\n\nRe-run affected Windows Validation and Editor visual validation.\n\n<!-- gameengine-visual-validation: editor -->"
+}
