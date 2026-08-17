@@ -1,0 +1,1 @@
+{"operation":"create_text","path":"crates/timeline/Cargo.toml","content":"[package]\nname = \"engine-timeline\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[features]\ndefault = []\nserde = [\"dep:serde\"]\n\n[dependencies]\nserde = { version = \"1\", features = [\"derive\"], optional = true }\n"}
