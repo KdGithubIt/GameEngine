@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/cli/src/lib.rs",
+  "old": "mod scene_cli;\nmod vfx_cli;",
+  "new": "mod scene_cli;\nmod typed_document_cli;\nmod vfx_cli;"
+}
