@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0127-physics-runtime-20260817-2205",
+  "target_branch": "chatgpt/gameengine-adr0127-physics-runtime",
+  "expected_head_sha": "6700b76cf4e7db84dbebc9a9ebb82432b44510d9",
+  "baseline_main_sha": "6700b76cf4e7db84dbebc9a9ebb82432b44510d9",
+  "edit_parts": ["edit-0000.json","edit-0001.json","edit-0002.json","edit-0003.json","edit-0004.json","edit-0005.json","edit-0006.json","edit-0007.json","edit-0008.json","edit-0009.json","edit-0010.json","edit-0011.json","edit-0012.json","edit-0013.json","edit-0014.json","edit-0015.json","edit-0016.json","edit-0017.json","edit-0018.json","edit-0019.json","edit-0020.json","edit-0021.json","edit-0022.json","edit-0023.json","edit-0024.json","edit-0025.json","edit-0026.json","edit-0027.json","edit-0028.json","edit-0029.json","edit-0030.json","edit-0031.json","edit-0032.json","edit-0033.json","edit-0034.json","edit-0035.json","edit-0036.json","edit-0037.json","edit-0038.json"],
+  "commit_message": "Implement native 2D physics runtime",
+  "pr_title": "GameEngine: implement ADR 0127 native 2D physics runtime",
+  "pr_body": "## Summary\n\n- add typed project 2D settings and stable sorting-layer identity\n- add a dedicated deterministic 2D physics world with bodies, colliders, queries, contacts, one-way platforms, controller primitives, and structured planar diagnostics\n- bridge authored Collider2D/RigidBody2D/CharacterController2D into the shared Editor Play and packaged Player runtime\n\n## Validation\n\nRun permanent Windows Validation with the repository impact planner.\n\n<!-- gameengine-chatgpt-dispatcher -->\n"
+}
