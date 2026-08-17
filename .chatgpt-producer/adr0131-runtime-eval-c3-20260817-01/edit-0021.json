@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ai_studio.rs","old":"                self.process = None;\n                self.pending_code_changes.clear();\n","new":"                self.process = None;\n                self.process_purpose = None;\n                self.pending_code_changes.clear();\n"}
