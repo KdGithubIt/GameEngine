@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "request_id": "20260817-adr0121-typed-doc-parity-6bb36e3-r1",
+  "target_branch": "chatgpt/gameengine-adr0121-typed-document-parity",
+  "expected_head_sha": "6bb36e3789f49ec13f16ef1b447be1cdc3be3d5c",
+  "baseline_main_sha": "6bb36e3789f49ec13f16ef1b447be1cdc3be3d5c",
+  "edit_parts": ["edit-0000.json","edit-0001.json","edit-0002.json","edit-0003.json","edit-0004.json","edit-0005.json","edit-0006.json","edit-0007.json","edit-0008.json","edit-0009.json","edit-0010.json","edit-0011.json","edit-0012.json","edit-0013.json","edit-0014.json","edit-0015.json","edit-0016.json","edit-0017.json","edit-0018.json","edit-0019.json","edit-0020.json","edit-0021.json","edit-0022.json","edit-0023.json","edit-0024.json","edit-0025.json","edit-0026.json","edit-0027.json","edit-0028.json","edit-0029.json","edit-0030.json","edit-0031.json","edit-0032.json","edit-0033.json","edit-0034.json","edit-0035.json","edit-0036.json","edit-0037.json"],
+  "commit_message": "Complete ADR 0121 typed document authoring parity",
+  "pr_title": "GameEngine: complete ADR 0121 typed document parity",
+  "pr_body": "## Summary\n\nCompletes the remaining first-release ADR 0121 typed-document parity slice on current main. Adds a shared transactional typed-document service for Material, Project Settings, and Animation Set; registers the capabilities through ADR 0132; exposes equivalent CLI and live Editor-attached MCP paths; and routes Material/Project Settings GUI commits through the shared service without changing persisted schemas, Stable IDs, or existing Scene/Prefab/Graph/UI architecture.\n\n## Architecture\n\nMCP remains Editor-attached and does not become a competing file writer. CLI persistence continues through ProjectRoot confinement and existing canonical document writers. Existing ADR 0132 registry-driven discovery and generic invocation are extended rather than duplicated.\n\n## Validation\n\nRun the repository Windows Validation workflow for the affected scope and follow all required CI checks."
+}
