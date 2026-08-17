@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/agent_host.rs",
+  "old": "#[derive(Debug)]\npub(crate) enum ProcessStream {",
+  "new": "#[derive(Debug, Clone, Copy, PartialEq, Eq)]\npub(crate) enum ProcessStream {"
+}
