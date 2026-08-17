@@ -1,6 +1,7 @@
 //! Offscreen Scene View panel with editor camera, grid, and entity picking.
 
 use crate::gizmo::{apply_rotate_delta, apply_scale_delta, transform_component_type, GizmoAxis};
+use crate::preview_residency::{PreviewResidencyState, ProjectAssetResidency};
 use crate::view_aspect::ViewAspect;
 use crate::view_resolution::render_target_size_in_pixels;
 use eframe::{egui, egui_wgpu, wgpu};
@@ -784,15 +785,13 @@ pub struct SceneView {
     animation_preview_status: Option<AnimationPreviewStatus>,
     last_particle_frame: Instant,
     preview_notice: Option<PreviewNotice>,
+    /// Whether this view is presenting a last-good/placeholder world while assets prepare.
+    waiting_for_residency: bool,
     /// Start of a continuous preview failure. One-frame rebuild failures are
     /// intentionally not painted so scene/document switches cannot flash red.
     preview_failure_since: Option<Instant>,
-    /// Cross-frame glTF parse/decode cache (ADR 0071). Consulted whenever the
-    /// preview world is rebuilt so a referenced glTF/GLB source is parsed and
-    /// its images decoded at most once per edit rather than once per frame.
-    gltf_cache: engine::scene_bridge::SharedGltfImportCache,
-    /// Device-local mesh uploads retained across preview-world rebuilds.
-    gpu_mesh_cache: engine::SharedGpuMeshCache,
+    /// Project-scoped immutable CPU/GPU residency shared with every preview surface.
+    residency: ProjectAssetResidency,
     /// Manifest hash recomputed only when the manifest's revision changes.
     manifest_hash_cache: Option<(u64, u64)>,
     /// Persistent preview world reused across frames (ADR 0072). Rebuilt only
@@ -843,10 +842,11 @@ struct PreviewWorld {
 /// cheap content hash (asset registration or reimport changes it). Transient
 /// gesture previews are handled outside this key: transform drags use the
 /// fast path, and non-transform component previews force a per-frame rebuild.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct PreviewKey {
     scene_revision: u64,
     manifest_hash: u64,
+    residency_revision: u64,
     game_module: Option<usize>,
     project_root: Option<std::path::PathBuf>,
     sky_enabled: bool,
@@ -903,6 +903,11 @@ impl Default for SceneView {
 impl SceneView {
     /// Creates a new scene view with default camera settings.
     pub fn new() -> Self {
+        Self::with_residency(ProjectAssetResidency::default())
+    }
+
+    /// Creates a view backed by the Editor project's shared preview residency.
+    pub(crate) fn with_residency(residency: ProjectAssetResidency) -> Self {
         Self {
             camera: EditorViewCamera::default(),
             renderer: None,
@@ -930,9 +935,9 @@ impl SceneView {
             animation_preview_status: None,
             last_particle_frame: Instant::now(),
             preview_notice: None,
+            waiting_for_residency: false,
             preview_failure_since: None,
-            gltf_cache: engine::scene_bridge::SharedGltfImportCache::default(),
-            gpu_mesh_cache: engine::SharedGpuMeshCache::default(),
+            residency,
             manifest_hash_cache: None,
             preview: None,
         }
@@ -1092,8 +1097,7 @@ impl SceneView {
     /// Releases preview worlds and resident imports owned by the old project.
     pub fn clear_project_caches(&mut self) {
         self.preview = None;
-        self.gltf_cache = engine::scene_bridge::SharedGltfImportCache::default();
-        self.gpu_mesh_cache.clear();
+        self.residency.clear_project();
         self.manifest_hash_cache = None;
     }
 
@@ -1477,6 +1481,7 @@ impl SceneView {
             let key = PreviewKey {
                 scene_revision,
                 manifest_hash,
+                residency_revision: self.residency.revision(),
                 game_module: game_module.map(|module| Arc::as_ptr(module) as usize),
                 project_root: project_root.map(|root| root.assets_root()),
                 sky_enabled: self.show_sky,
@@ -1491,32 +1496,116 @@ impl SceneView {
             // it forces a full rebuild for the duration of the gesture.
             let non_transform_preview = component_preview
                 .is_some_and(|preview| preview.component_type != transform_component_type());
-            let reuse =
-                !non_transform_preview && self.preview.as_ref().is_some_and(|p| p.key == key);
+            let reuse = !non_transform_preview
+                && !self.waiting_for_residency
+                && self.preview.as_ref().is_some_and(|p| p.key == key);
 
             if !reuse {
-                let (app, spawn_notice, bridge) = build_preview_app_with_sky(
-                    render_scene,
-                    project_root,
-                    manifest,
-                    game_module,
-                    &self.gltf_cache,
-                    &self.gpu_mesh_cache,
-                    size,
-                    self.show_sky,
-                );
-                self.preview_notice = spawn_notice;
-                self.preview = Some(PreviewWorld {
-                    app,
-                    key,
-                    bridge,
-                    transform_overrides: Vec::new(),
-                    animation_system_installed: false,
-                    animation_graph_system_installed: false,
-                    animation_sampled_elapsed: -1.0,
-                    animation_fixed_step_remainder: 0.0,
-                    animation_transition_started: false,
-                });
+                let assets_root = project_root.map(ProjectRoot::assets_root);
+                let readiness =
+                    self.residency
+                        .prepare_scene(render_scene, manifest, assets_root.as_deref());
+                match readiness {
+                    PreviewResidencyState::Ready => {
+                        self.waiting_for_residency = false;
+                        let model_cache = self.residency.model_cache();
+                        let gpu_mesh_cache = self.residency.gpu_mesh_cache();
+                        let (app, spawn_notice, bridge) = build_preview_app_with_sky(
+                            render_scene,
+                            project_root,
+                            manifest,
+                            game_module,
+                            &model_cache,
+                            &gpu_mesh_cache,
+                            size,
+                            self.show_sky,
+                        );
+                        self.preview_notice = spawn_notice;
+                        self.preview = Some(PreviewWorld {
+                            app,
+                            key: key.clone(),
+                            bridge,
+                            transform_overrides: Vec::new(),
+                            animation_system_installed: false,
+                            animation_graph_system_installed: false,
+                            animation_sampled_elapsed: -1.0,
+                            animation_fixed_step_remainder: 0.0,
+                            animation_transition_started: false,
+                        });
+                    }
+                    PreviewResidencyState::Pending => {
+                        self.waiting_for_residency = true;
+                        response
+                            .ctx
+                            .request_repaint_after(std::time::Duration::from_millis(33));
+                        ui.painter().text(
+                            rect.center(),
+                            egui::Align2::CENTER_CENTER,
+                            "Preparing preview assets...",
+                            egui::FontId::proportional(14.0),
+                            egui::Color32::WHITE,
+                        );
+                        if self.preview.is_none() {
+                            let model_cache = self.residency.model_cache();
+                            let gpu_mesh_cache = self.residency.gpu_mesh_cache();
+                            let empty_scene = AuthoringScene::new();
+                            let (app, _, bridge) = build_preview_app_with_sky(
+                                &empty_scene,
+                                project_root,
+                                manifest,
+                                game_module,
+                                &model_cache,
+                                &gpu_mesh_cache,
+                                size,
+                                self.show_sky,
+                            );
+                            self.preview = Some(PreviewWorld {
+                                app,
+                                key: key.clone(),
+                                bridge,
+                                transform_overrides: Vec::new(),
+                                animation_system_installed: false,
+                                animation_graph_system_installed: false,
+                                animation_sampled_elapsed: -1.0,
+                                animation_fixed_step_remainder: 0.0,
+                                animation_transition_started: false,
+                            });
+                        }
+                    }
+                    PreviewResidencyState::Failed(message) => {
+                        self.waiting_for_residency = false;
+                        self.preview_notice = Some(PreviewNotice::failure(
+                            "editor.scene_view.asset_materialization_failed",
+                            format!("Scene View asset preparation failed: {message}"),
+                        ));
+                        if self.preview.is_none() {
+                            let model_cache = self.residency.model_cache();
+                            let gpu_mesh_cache = self.residency.gpu_mesh_cache();
+                            let empty_scene = AuthoringScene::new();
+                            let (app, _, bridge) = build_preview_app_with_sky(
+                                &empty_scene,
+                                project_root,
+                                manifest,
+                                game_module,
+                                &model_cache,
+                                &gpu_mesh_cache,
+                                size,
+                                self.show_sky,
+                            );
+                            self.preview = Some(PreviewWorld {
+                                app,
+                                key: key.clone(),
+                                bridge,
+                                transform_overrides: Vec::new(),
+                                animation_system_installed: false,
+                                animation_graph_system_installed: false,
+                                animation_sampled_elapsed: -1.0,
+                                animation_fixed_step_remainder: 0.0,
+                                animation_transition_started: false,
+                            });
+                        }
+                    }
+                }
             }
 
             let animation_preview_request = self.animation_preview_request.clone();

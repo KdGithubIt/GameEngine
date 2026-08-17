@@ -35,6 +35,7 @@ pub mod material_editor;
 pub mod navmesh_bake;
 pub mod prefab_workflow;
 pub mod preferences;
+mod preview_residency;
 pub mod problems;
 pub mod project_settings_panel;
 pub mod runtime;

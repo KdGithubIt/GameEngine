@@ -689,7 +689,7 @@ impl EditorApp {
             ));
     }
 
-    pub(in crate::ui) fn handle_asset_import_result(&mut self, result: AssetImportResult) {
+    pub(in crate::ui) fn handle_asset_import_result(&mut self, mut result: AssetImportResult) {
         let Some(project) = self.project_root.clone() else {
             return;
         };
@@ -731,6 +731,34 @@ impl EditorApp {
             self.refresh_scene_problems();
             return;
         }
+
+        if let Some(expected_stamp) = result.source_stamp.as_ref() {
+            let still_current = engine::SourceStamp::capture(
+                &result.source_path,
+                &result.source_dependencies,
+            )
+            .is_ok_and(|current| &current == expected_stamp);
+            if !still_current {
+                self.session
+                    .push_diagnostic(engine_authoring::Diagnostic::info(
+                        "asset.import_stale_generation",
+                        format!(
+                            "discarded stale import of `{}` because the source changed while it was running",
+                            result.source_path.display()
+                        ),
+                    ));
+                if result.source_path.is_file() {
+                    self.queue_model_import(
+                        result.source_id.clone(),
+                        result.source_path.clone(),
+                    );
+                }
+                return;
+            }
+        }
+        let conversion_ready_model = result.conversion_ready_model.take();
+        let conversion_ready_textures =
+            std::mem::take(&mut result.conversion_ready_textures);
 
         let assets_root = project.assets_root();
         let dependencies = result
@@ -821,6 +849,18 @@ impl EditorApp {
             return;
         }
         self.asset_manifest = manifest;
+        if let Some(imported) = conversion_ready_model
+            && let Some(entry) = self.asset_manifest.get(&result.source_id)
+        {
+            self.preview_residency.publish_import_result(
+                &result.source_id,
+                &result.source_path,
+                &result.source_dependencies,
+                &entry.import_settings,
+                imported,
+                conversion_ready_textures,
+            );
+        }
 
         // AP-5: rebuild this source's bind report and contact interval
         // summary from the fresh import result, in memory only.

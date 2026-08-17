@@ -1,6 +1,7 @@
 //! Dedicated clip, transition, and Animation Graph preview window.
 
 use super::*;
+use crate::preview_residency::ProjectAssetResidency;
 use crate::scene_view::{AnimationPreviewMode, AnimationPreviewRequest};
 
 /// User-facing mode selected in the Animation Preview window.
@@ -42,7 +43,13 @@ pub(super) struct AnimationPreviewWindow {
 
 impl Default for AnimationPreviewWindow {
     fn default() -> Self {
-        let mut view = SceneView::new();
+        Self::with_residency(ProjectAssetResidency::default())
+    }
+}
+
+impl AnimationPreviewWindow {
+    pub(super) fn with_residency(residency: ProjectAssetResidency) -> Self {
+        let mut view = SceneView::with_residency(residency);
         view.show_ui_overlay = false;
         view.show_lod_debug = false;
         view.particle_preview_enabled = false;
@@ -66,6 +73,10 @@ impl Default for AnimationPreviewWindow {
             parameters: std::collections::BTreeMap::new(),
             playing: true,
         }
+    }
+
+    pub(super) fn clear_project_caches(&mut self) {
+        self.view.clear_project_caches();
     }
 }
 

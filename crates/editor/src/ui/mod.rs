@@ -18,6 +18,7 @@ use crate::game_build::{
 };
 use crate::material_editor::{show_material_editor_panel, MaterialEditorPanel};
 use crate::preferences::{EditorPreferences, PlayModeView};
+use crate::preview_residency::ProjectAssetResidency;
 use crate::problems::ProblemsPanel;
 use crate::project_settings_panel::{show_project_settings_panel, ProjectSettingsPanel};
 use crate::runtime::{
@@ -241,6 +242,8 @@ pub struct EditorApp {
     prefab_placement_source: Option<PathBuf>,
     /// Whether editor command preferences are visible.
     show_editor_preferences: bool,
+    /// Immutable CPU/GPU asset residency shared by all project preview surfaces.
+    preview_residency: ProjectAssetResidency,
     /// Scene view offscreen renderer and editor orbit camera.
     scene_view: SceneView,
     /// Current Scene View conversion or rendering problem.
@@ -391,6 +394,10 @@ pub struct EditorApp {
 impl EditorApp {
     /// Creates an editor app around an existing session.
     pub fn new(session: EditorSession) -> Self {
+        let preview_residency = ProjectAssetResidency::default();
+        let scene_view = SceneView::with_residency(preview_residency.clone());
+        let animation_preview =
+            AnimationPreviewWindow::with_residency(preview_residency.clone());
         Self {
             session: DocumentWorkspace::new(session),
             canvas: GraphCanvasState::default(),
@@ -457,9 +464,10 @@ impl EditorApp {
             source_viewer: None,
             prefab_placement_source: None,
             show_editor_preferences: false,
-            scene_view: SceneView::new(),
+            preview_residency,
+            scene_view,
             scene_view_problem: None,
-            animation_preview: AnimationPreviewWindow::default(),
+            animation_preview,
             gizmo_mode: GizmoMode::Translate,
             gizmo_space: GizmoSpace::Global,
             entity_clipboard: None,
@@ -530,6 +538,7 @@ impl EditorApp {
         self.flush_all_pending_material_saves();
         self.audio_audition.reset_project();
         self.scene_view.clear_project_caches();
+        self.animation_preview.clear_project_caches();
         self.material_scene_preview_deadline = None;
         self.pending_material_saves.clear();
         self.material_texture_choices_cache = None;
