@@ -476,11 +476,15 @@ impl EditorApp {
     }
 
     pub(super) fn bake_current_navmesh(&mut self) {
+        if self.navigation_bake.is_running() {
+            return;
+        }
         let (Some(project), Some(scene)) =
             (self.project_root.clone(), self.session.scene().cloned())
         else {
             return;
         };
+        let tab_id = self.session.active_tab_id();
         let scene_stem = self
             .session
             .current_document_path()
@@ -493,54 +497,79 @@ impl EditorApp {
             .assets_root()
             .join("navigation")
             .join(format!("{scene_stem}.navmesh.bake.json"));
-        let mut document = std::fs::read_to_string(&document_path)
+        let document = std::fs::read_to_string(&document_path)
             .ok()
-            .and_then(|json| crate::navmesh_bake::NavMeshBakeDocument::from_json(&json).ok())
-            .unwrap_or_else(|| crate::navmesh_bake::NavMeshBakeDocument {
+            .and_then(|json| engine::navigation_bake::NavMeshBakeDocument::from_json(&json).ok())
+            .unwrap_or_else(|| engine::navigation_bake::NavMeshBakeDocument {
                 output_asset: format!("navigation/{scene_stem}.navmesh.json"),
-                ..crate::navmesh_bake::NavMeshBakeDocument::default()
+                ..engine::navigation_bake::NavMeshBakeDocument::default()
             });
-        let cancelled = std::sync::atomic::AtomicBool::new(false);
-        match crate::navmesh_bake::bake_scene_navmesh(
-            &scene,
-            &project,
-            &mut self.asset_manifest,
-            &mut document,
-            &cancelled,
+        match self.navigation_bake.start(
+            tab_id,
+            scene,
+            project,
+            self.asset_manifest.clone(),
+            document,
+            document_path,
         ) {
-            Ok(result) => {
-                if let Some(parent) = document_path.parent() {
-                    let _ = std::fs::create_dir_all(parent);
-                }
-                match document.to_canonical_json().and_then(|json| {
-                    std::fs::write(&document_path, json)
-                        .map_err(crate::navmesh_bake::NavMeshBakeError::Io)
-                }) {
-                    Ok(()) => {}
-                    Err(error) => {
-                        self.session
-                            .push_diagnostic(engine_authoring::Diagnostic::warning(
-                                "editor.navmesh_bake_document_failed",
-                                error.to_string(),
-                            ))
-                    }
-                }
+            Ok(()) => self
+                .session
+                .push_diagnostic(engine_authoring::Diagnostic::info(
+                    "editor.navmesh_bake_started",
+                    "navigation bake started in the background",
+                )),
+            Err(error) => self
+                .session
+                .push_diagnostic(engine_authoring::Diagnostic::error(
+                    "editor.navmesh_bake_start_failed",
+                    error,
+                )),
+        }
+    }
 
+    pub(super) fn cancel_current_navmesh_bake(&mut self) {
+        if self.navigation_bake.cancel() {
+            self.session
+                .push_diagnostic(engine_authoring::Diagnostic::info(
+                    "editor.navmesh_bake_cancelling",
+                    "navigation bake cancellation requested",
+                ));
+        }
+    }
+
+    pub(super) fn handle_navigation_bake_completion(
+        &mut self,
+        completion: NavigationBakeCompletion,
+    ) {
+        match completion {
+            NavigationBakeCompletion::Succeeded {
+                tab_id,
+                project,
+                manifest,
+                result,
+            } => {
+                self.asset_manifest = manifest;
                 let component_type = engine_authoring::ComponentTypeId::new(
                     engine::scene_bridge::NAV_MESH_SURFACE_COMPONENT,
                 );
-                let existing_surface = self.session.scene().and_then(|scene| {
+                let Some(session) = self.session.tab_session_mut(tab_id) else {
+                    self.session.push_diagnostic(engine_authoring::Diagnostic::warning(
+                        "editor.navmesh_bake_tab_closed",
+                        "navigation bake completed after its source scene tab was closed",
+                    ));
+                    return;
+                };
+                let existing_surface = session.scene().and_then(|scene| {
                     scene
                         .entities()
                         .find(|(_, entity)| entity.components.contains_key(&component_type))
                         .map(|(id, _)| id.clone())
                 });
                 if existing_surface.is_none() {
-                    let added = self
-                        .session
+                    let added = session
                         .create_scene_entity("navmesh_surface")
                         .and_then(|entity| {
-                            self.session.add_scene_component(
+                            session.add_scene_component(
                                 entity,
                                 component_type,
                                 engine_authoring::Value::Object(std::collections::BTreeMap::from(
@@ -552,26 +581,44 @@ impl EditorApp {
                             )
                         });
                     if let Err(error) = added {
-                        self.session
-                            .push_diagnostic(engine_authoring::Diagnostic::warning(
-                                "editor.navmesh_surface_add_failed",
-                                error.to_string(),
-                            ));
+                        session.push_diagnostic(engine_authoring::Diagnostic::warning(
+                            "editor.navmesh_surface_add_failed",
+                            error.to_string(),
+                        ));
                     }
                 }
                 self.asset_browser.refresh(&project.assets_root());
-                self.session
-                    .push_diagnostic(engine_authoring::Diagnostic::info(
-                        "editor.navmesh_bake_succeeded",
-                        format!("baked NavMesh to {}", result.output_path.display()),
-                    ));
+                session.push_diagnostic(engine_authoring::Diagnostic::info(
+                    "editor.navmesh_bake_succeeded",
+                    format!(
+                        "baked NavMesh to {} ({} profiles, {} tiles, {} polygons, {} links)",
+                        result.output_path.display(),
+                        result.stats.profile_count,
+                        result.stats.tile_count,
+                        result.stats.polygon_count,
+                        result.stats.link_count
+                    ),
+                ));
             }
-            Err(error) => self
-                .session
-                .push_diagnostic(engine_authoring::Diagnostic::error(
+            NavigationBakeCompletion::Cancelled { tab_id } => {
+                if let Some(session) = self.session.tab_session_mut(tab_id) {
+                    session.push_diagnostic(engine_authoring::Diagnostic::info(
+                        "editor.navmesh_bake_cancelled",
+                        "navigation bake cancelled; the previous valid artifact was preserved",
+                    ));
+                }
+            }
+            NavigationBakeCompletion::Failed { tab_id, error } => {
+                let diagnostic = engine_authoring::Diagnostic::error(
                     "editor.navmesh_bake_failed",
-                    error.to_string(),
-                )),
+                    error,
+                );
+                if let Some(session) = self.session.tab_session_mut(tab_id) {
+                    session.push_diagnostic(diagnostic);
+                } else {
+                    self.session.push_diagnostic(diagnostic);
+                }
+            }
         }
     }
 
@@ -579,6 +626,23 @@ impl EditorApp {
         let Some(project_root) = self.project_root.clone() else {
             return;
         };
+        let navigation_gate = match self.session.scene() {
+            Some(scene) => require_current_navigation_artifact(
+                scene,
+                &project_root,
+                &self.asset_manifest,
+                self.session.current_document_path(),
+            ),
+            None => Ok(()),
+        };
+        if let Err(error) = navigation_gate {
+            self.session
+                .push_diagnostic(engine_authoring::Diagnostic::error(
+                    "editor.package_navigation_not_current",
+                    error,
+                ));
+            return;
+        }
         let settings = match ProjectSettings::load(project_root.path()) {
             Ok(settings) => settings,
             Err(error) => {

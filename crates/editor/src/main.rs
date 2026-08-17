@@ -45,6 +45,9 @@ impl EditorShell {
         context: &eframe::egui::Context,
     ) -> Result<Self, String> {
         let root = project_lease.project_root().clone();
+        #[cfg(feature = "visual-validation")]
+        let mut app = engine_editor::EditorApp::from_project(root.clone());
+        #[cfg(not(feature = "visual-validation"))]
         let app = engine_editor::EditorApp::from_project(root.clone());
         let (mcp_server, mcp_requests) =
             EditorMcpServer::start(context.clone()).map_err(|error| error.to_string())?;
@@ -69,15 +72,19 @@ impl EditorShell {
         #[cfg(feature = "visual-validation")]
         if let Some(requested) = std::env::var_os("GAMEENGINE_VISUAL_AUTHORING_TOOL") {
             let requested = requested.to_string_lossy();
-            let tool = AuthoringTool::ALL
-                .into_iter()
-                .find(|tool| tool.label() == requested)
-                .ok_or_else(|| {
-                    format!(
-                        "visual-validation authoring tool `{requested}` is not available in this Editor build"
-                    )
-                })?;
-            authoring_windows.open(tool);
+            if requested == "Navigation" {
+                app.prepare_navigation_visual_validation();
+            } else {
+                let tool = AuthoringTool::ALL
+                    .into_iter()
+                    .find(|tool| tool.label() == requested)
+                    .ok_or_else(|| {
+                        format!(
+                            "visual-validation authoring tool `{requested}` is not available in this Editor build"
+                        )
+                    })?;
+                authoring_windows.open(tool);
+            }
         }
         project_lease.mark_ready().map_err(|error| error.to_string())?;
         #[cfg(feature = "visual-validation")]

@@ -184,6 +184,7 @@ impl EditorApp {
             self.gizmo_mode,
             self.gizmo_space,
             open_ui_document,
+            Some(self.navigation_workspace.path_waypoints.as_slice()),
             render_state,
         );
         // Refresh Problems only when the visible Scene View diagnostic changes.

@@ -58,6 +58,7 @@ mod game_tools;
 mod hierarchy;
 mod inspector;
 mod mcp;
+mod navigation_workspace;
 mod play;
 mod presentation;
 mod viewport;
@@ -94,6 +95,7 @@ use documents::*;
 use game_tools::*;
 use hierarchy::*;
 use inspector::*;
+use navigation_workspace::*;
 use play::*;
 use presentation::*;
 
@@ -275,6 +277,10 @@ pub struct EditorApp {
     game_build_problems: Vec<engine_authoring::Diagnostic>,
     /// Background Cargo process and completion channel for project Rust code.
     game_build: GameBuildManager,
+    /// Background production navigation bake and cancellation channel.
+    navigation_bake: NavigationBakeManager,
+    /// Dedicated production navigation bake, profile, status, and path-test UI.
+    navigation_workspace: NavigationWorkspaceUi,
     /// Latest successfully loaded project game-module generation.
     game_module: Option<Arc<engine::game_module::GameModule>>,
     /// Starts Play automatically after a requested prerequisite build succeeds.
@@ -459,6 +465,8 @@ impl EditorApp {
             asset_import_problems: Vec::new(),
             game_build_problems: Vec::new(),
             game_build: GameBuildManager::default(),
+            navigation_bake: NavigationBakeManager::default(),
+            navigation_workspace: NavigationWorkspaceUi::default(),
             game_module: None,
             play_after_game_build: false,
             game_build_requested_after_edit: false,
@@ -514,6 +522,7 @@ impl EditorApp {
         self.pending_material_saves.clear();
         self.material_texture_choices_cache = None;
         let _ = self.asset_import.cancel();
+        self.navigation_bake.clear();
         self.asset_import_problems.clear();
         self.game_build_problems.clear();
         self.scene_view_problem = None;
@@ -674,6 +683,12 @@ impl eframe::App for EditorApp {
         }
         if let Some(result) = self.game_build.poll() {
             self.handle_game_build_result(result);
+        }
+        if self.navigation_bake.is_running() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(50));
+        }
+        if let Some(completion) = self.navigation_bake.poll() {
+            self.handle_navigation_bake_completion(completion);
         }
         self.poll_coalesced_game_build(ctx);
         self.poll_project_filesystem(ctx);
@@ -878,6 +893,7 @@ impl eframe::App for EditorApp {
         self.show_material_editor_window(ui.ctx());
         self.show_animation_set_editor_window(ui.ctx());
         self.show_project_settings_window(ui.ctx());
+        self.show_navigation_window(ui.ctx());
         self.show_texture_preview_window(ui.ctx());
         self.show_skeleton_bind_report_window(ui.ctx());
         self.show_retarget_map_editor_window(ui.ctx());
@@ -979,17 +995,24 @@ impl EditorApp {
         };
         let scene = scene.clone();
         let manifest = self.asset_manifest.clone();
-        let asset_root = project.assets_root();
+        let project = project.clone();
+        let scene_path = self.session.current_document_path().map(Path::to_path_buf);
         let generation = self.scene_validation_generation;
         let (sender, receiver) = std::sync::mpsc::channel();
         match std::thread::Builder::new()
             .name("scene-filesystem-validation".to_owned())
             .spawn(move || {
-                let diagnostics = engine::validate_builtin_component_asset_files(
+                let mut diagnostics = engine::validate_builtin_component_asset_files(
                     &scene,
                     &manifest,
-                    &asset_root,
+                    &project.assets_root(),
                 );
+                diagnostics.extend(navigation_artifact_diagnostics(
+                    &scene,
+                    &project,
+                    &manifest,
+                    scene_path.as_deref(),
+                ));
                 let _ = sender.send(diagnostics);
             })
         {
