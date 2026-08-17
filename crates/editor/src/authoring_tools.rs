@@ -71,12 +71,13 @@ mod tests {
 
     #[test]
     fn catalog_order_and_labels_are_stable() {
-        assert_eq!(AuthoringTool::ALL.len(), 5);
+        assert_eq!(AuthoringTool::ALL.len(), 6);
         assert_eq!(AuthoringTool::ALL[0].label(), "Ability Designer");
         assert_eq!(
             AuthoringTool::ALL[3].label(),
             "Advanced Geometry Designer"
         );
         assert_eq!(AuthoringTool::ALL[4].label(), "VFX Builder");
+        assert_eq!(AuthoringTool::ALL[5].label(), "Native 2D");
     }
 }

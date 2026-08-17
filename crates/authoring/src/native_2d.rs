@@ -99,7 +99,10 @@ pub struct Project2dSettings {
     /// Default texture sampling policy for sprite regions without an override.
     pub default_filtering: SpriteFiltering,
     /// Fixed-step gravity vector in the world XY gameplay plane.
-    pub gravity: [f32; 2],
+    ///
+    /// Persisted authoring values use `f64` so Editor, CLI, and MCP JSON round-trips
+    /// preserve the same decimal value. Runtime physics converts explicitly at its boundary.
+    pub gravity: [f64; 2],
     /// Project-wide default policy for pixel-aware previews and cameras.
     pub pixel_preview: PixelPreviewPolicy,
     /// Ordered logical draw layers addressed by stable identity.
