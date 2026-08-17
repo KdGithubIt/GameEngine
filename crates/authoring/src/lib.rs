@@ -175,11 +175,13 @@ pub use scene_authoring::{
     SceneAuthoringValidation,
 };
 pub use timeline::{
-    compile_timeline, load_timeline, save_timeline, timeline_track_registry, validate_timeline,
-    CompiledTimelinePayload, TimelineBinding, TimelineClip, TimelineClipPayload, TimelineCompilation,
-    TimelineDiagnostic, TimelineDiagnosticSeverity, TimelineDisplayRate, TimelineDocument,
-    TimelineDocumentError, TimelineMarker, TimelinePropertyValue, TimelineTrack,
-    TimelineTrackDescriptor, TimelineTrackKind, TIMELINE_FILE_SUFFIX, TIMELINE_SCHEMA_VERSION,
+    compile_timeline, load_timeline, sample_timeline_property, save_timeline,
+    timeline_property_registry, timeline_track_registry, validate_timeline, CompiledTimelinePayload,
+    TimelineBinding, TimelineClip, TimelineClipPayload, TimelineCompilation, TimelineDiagnostic,
+    TimelineDiagnosticSeverity, TimelineDisplayRate, TimelineDocument, TimelineDocumentError,
+    TimelineMarker, TimelinePropertyDescriptor, TimelinePropertyKey, TimelinePropertyValue,
+    TimelinePropertyValueKind, TimelineTrack, TimelineTrackDescriptor, TimelineTrackKind,
+    TIMELINE_FILE_SUFFIX, TIMELINE_PROPERTY_REGISTRY, TIMELINE_SCHEMA_VERSION,
     TIMELINE_TRACK_REGISTRY,
 };
 pub use timeline_authoring::{
