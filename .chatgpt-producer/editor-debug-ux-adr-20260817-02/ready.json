@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "request_id": "editor-debug-ux-adr-20260817-02",
+  "target_branch": "chatgpt/gameengine-editor-debug-ux-adr",
+  "expected_head_sha": "f0f8d6436235b706dd86d8a7a7d5630a75a1dce4",
+  "baseline_main_sha": "f0f8d6436235b706dd86d8a7a7d5630a75a1dce4",
+  "edit_parts": [
+    "edit-0000.json",
+    "edit-0001.json",
+    "edit-0002.json",
+    "edit-0003.json",
+    "edit-0004.json",
+    "edit-0005.json",
+    "edit-0006.json",
+    "edit-0007.json",
+    "edit-0008.json",
+    "edit-0009.json",
+    "edit-0010.json",
+    "edit-0011.json",
+    "edit-0012.json"
+  ],
+  "commit_message": "Define Editor diagnostics, Graph Debug, and working-copy UX",
+  "pr_title": "Define Editor diagnostic and Graph Debug UX architecture",
+  "pr_body": "## Summary\n\n- add ADR 0137 for actionable diagnostics, progressive disclosure, and navigation\n- add ADR 0138 for a domain-neutral Play-mode Graph Debug shell with domain providers\n- add ADR 0139 for authoritative Editor working copies and explicit disk persistence\n- align Scene View best-effort diagnostics, Behavior Tree debugging, AI Studio presentation, Remote AI Studio boundaries, and the authoring specification\n\n## Scope\n\nDocumentation and ADR changes only. No Editor or runtime implementation changes."
+}
