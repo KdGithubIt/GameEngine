@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/authoring/src/lib.rs","old":"pub mod material_asset;\npub mod persist;","new":"pub mod material_asset;\n/// Native 2D project, sprite, animation, and tile authoring contracts (ADR 0127).\npub mod native_2d;\npub mod persist;"}
