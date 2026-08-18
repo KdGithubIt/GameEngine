@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0145-provider-adapters-20260818-09",
+  "target_branch": "chatgpt/gameengine-adr0145-provider-adapters-v6",
+  "expected_head_sha": "a70696f0caa23ec490f96270d3fcab72e000b295",
+  "baseline_main_sha": "a70696f0caa23ec490f96270d3fcab72e000b295",
+  "patch_sha256": "116a0b451e8fe75e0fff269453aeda08b26e28e8a9963fff07b20d1ed0e0bf36",
+  "patch_bytes": 58608,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Implement ADR0145 external provider adapters",
+  "pr_title": "Implement ADR0145 first-class external agent provider adapters",
+  "pr_body": "Implements ADR 0145 on current main with first-class Claude Code and Codex external AgentRuntime adapters while retaining the generic command fallback. Provider-managed credentials remain provider-owned; GameEngine persists only the non-secret provider selection and sanitized adapter status, and injects the loopback Editor MCP endpoint plus ephemeral bearer material only into the local child process. Structured provider output is translated into the existing AgentHost semantic event contract, unknown output remains diagnostic-only, and provider failures receive sanitized classification. The integration preserves ADR 0131 permissions, code workspace, managed validation, Play/frame evidence, and completion authority, reuses the ADR 0153 confinement seam without claiming stronger sandboxing, and integrates ADR 0152 canonical-authoring work claims so external mutation waits deterministically on conflicting writer ownership and releases the claim with process lifetime.\n\n<!-- gameengine-visual-validation: editor -->"
+}
