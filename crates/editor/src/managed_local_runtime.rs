@@ -1370,12 +1370,13 @@ fn powershell_output(
 }
 
 fn sha256_via_platform(path: &Path) -> Result<String, ManagedLocalRuntimeError> {
-    let path_text = path.to_string_lossy();
     #[cfg(target_os = "windows")]
-    let output = powershell_output(
-        "(Get-FileHash -Algorithm SHA256 -LiteralPath $args[0]).Hash",
-        &[&path_text],
-    )?;
+    let output = Command::new("certutil.exe")
+        .arg("-hashfile")
+        .arg(path)
+        .arg("SHA256")
+        .output()
+        .map_err(model_io)?;
     #[cfg(not(target_os = "windows"))]
     let output = Command::new("sha256sum")
         .arg(path)
@@ -1387,18 +1388,17 @@ fn sha256_via_platform(path: &Path) -> Result<String, ManagedLocalRuntimeError> 
             format!("SHA-256 calculation failed: {}", command_output_text(&output)),
         ));
     }
-    let digest = String::from_utf8_lossy(&output.stdout)
+    let output_text = decode_windows_command_text(&output.stdout);
+    let digest = output_text
         .split_whitespace()
-        .next()
-        .unwrap_or_default()
-        .trim()
-        .to_ascii_lowercase();
-    if !is_sha256_hex(&digest) {
-        return Err(ManagedLocalRuntimeError::new(
-            ManagedDiagnosticLayer::ModelTransferOrIntegrity,
-            "SHA-256 calculation returned an invalid digest",
-        ));
-    }
+        .map(|token| token.trim().to_ascii_lowercase())
+        .find(|token| is_sha256_hex(token))
+        .ok_or_else(|| {
+            ManagedLocalRuntimeError::new(
+                ManagedDiagnosticLayer::ModelTransferOrIntegrity,
+                "SHA-256 calculation returned no valid digest",
+            )
+        })?;
     Ok(digest)
 }
 
