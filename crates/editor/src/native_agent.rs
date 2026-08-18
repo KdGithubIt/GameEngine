@@ -281,6 +281,51 @@ pub(crate) struct NativeAnswer {
     pub(crate) metrics: NativeMetrics,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct InstalledLocalModel {
+    pub(crate) name: String,
+    pub(crate) digest: Option<String>,
+    pub(crate) size_bytes: Option<u64>,
+    pub(crate) parameter_size: Option<String>,
+    pub(crate) quantization_level: Option<String>,
+    pub(crate) family: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct InstalledModelInventory {
+    pub(crate) endpoint: String,
+    pub(crate) backend_version: Option<String>,
+    pub(crate) models: Vec<InstalledLocalModel>,
+}
+
+pub(crate) struct InstalledModelDiscoveryTask {
+    result: Receiver<Result<InstalledModelInventory, NativeAgentError>>,
+}
+
+impl InstalledModelDiscoveryTask {
+    pub(crate) fn spawn(endpoint: String) -> Result<Self, NativeAgentError> {
+        LocalHttpEndpoint::parse(&endpoint)?;
+        let (sender, result) = mpsc::channel();
+        std::thread::Builder::new()
+            .name("ai-local-model-discovery".to_owned())
+            .spawn(move || {
+                let inventory = discover_installed_models(&endpoint);
+                let _ = sender.send(inventory);
+            })?;
+        Ok(Self { result })
+    }
+
+    pub(crate) fn poll(&self) -> Option<Result<InstalledModelInventory, NativeAgentError>> {
+        match self.result.try_recv() {
+            Ok(result) => Some(result),
+            Err(TryRecvError::Empty) => None,
+            Err(TryRecvError::Disconnected) => Some(Err(NativeAgentError::BackendUnavailable(
+                "local model discovery worker disconnected unexpectedly".to_owned(),
+            ))),
+        }
+    }
+}
+
 pub(crate) struct NativeQuestionTask {
     result: Receiver<Result<NativeAnswer, NativeAgentError>>,
     interrupted: Arc<AtomicBool>,
@@ -566,6 +611,101 @@ fn is_loopback_host(host: &str) -> bool {
     host.trim_matches(|character| matches!(character, '[' | ']'))
         .parse::<IpAddr>()
         .is_ok_and(|address| address.is_loopback())
+}
+
+#[derive(Debug, Deserialize)]
+struct LocalTagsResponse {
+    #[serde(default)]
+    models: Vec<LocalTagModel>,
+}
+
+#[derive(Debug, Deserialize)]
+struct LocalTagModel {
+    name: String,
+    #[serde(default)]
+    digest: Option<String>,
+    #[serde(default)]
+    size: Option<u64>,
+    #[serde(default)]
+    details: LocalTagDetails,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct LocalTagDetails {
+    #[serde(default)]
+    family: Option<String>,
+    #[serde(default)]
+    parameter_size: Option<String>,
+    #[serde(default)]
+    quantization_level: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct LocalVersionResponse {
+    version: String,
+}
+
+fn discover_installed_models(endpoint_value: &str) -> Result<InstalledModelInventory, NativeAgentError> {
+    let endpoint = LocalHttpEndpoint::parse(endpoint_value)?;
+    let tags = get_local_json::<LocalTagsResponse>(&endpoint, "/api/tags")?;
+    let backend_version = get_local_json::<LocalVersionResponse>(&endpoint, "/api/version")
+        .ok()
+        .map(|response| response.version)
+        .filter(|version| !version.trim().is_empty());
+    let mut models = tags
+        .models
+        .into_iter()
+        .filter(|model| !model.name.trim().is_empty())
+        .map(|model| InstalledLocalModel {
+            name: model.name,
+            digest: model.digest.filter(|digest| !digest.trim().is_empty()),
+            size_bytes: model.size,
+            parameter_size: model
+                .details
+                .parameter_size
+                .filter(|value| !value.trim().is_empty()),
+            quantization_level: model
+                .details
+                .quantization_level
+                .filter(|value| !value.trim().is_empty()),
+            family: model.details.family.filter(|value| !value.trim().is_empty()),
+        })
+        .collect::<Vec<_>>();
+    models.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(InstalledModelInventory {
+        endpoint: endpoint_value.to_owned(),
+        backend_version,
+        models,
+    })
+}
+
+fn get_local_json<T>(endpoint: &LocalHttpEndpoint, path: &str) -> Result<T, NativeAgentError>
+where
+    T: for<'de> Deserialize<'de>,
+{
+    let mut stream = endpoint.connect()?;
+    write!(
+        stream,
+        "GET {path} HTTP/1.1\r\nHost: {}\r\nAccept: application/json\r\nConnection: close\r\n\r\n",
+        endpoint.host_header(),
+    )?;
+    stream.flush()?;
+    let mut response = Vec::new();
+    stream
+        .take(MAX_HTTP_RESPONSE_BYTES + 1)
+        .read_to_end(&mut response)?;
+    if response.len() as u64 > MAX_HTTP_RESPONSE_BYTES {
+        return Err(NativeAgentError::ResponseTooLarge);
+    }
+    let parsed = parse_http_response(&response)?;
+    if parsed.status != 200 {
+        let message = String::from_utf8_lossy(&parsed.body);
+        return Err(NativeAgentError::HttpStatus(
+            parsed.status,
+            truncate_text(message.trim(), 500),
+        ));
+    }
+    serde_json::from_slice(&parsed.body).map_err(Into::into)
 }
 
 fn answer_question(
@@ -1181,6 +1321,39 @@ fn discover_engine_root() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn installed_model_discovery_reads_loopback_tags_and_version() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("listener");
+        let address = listener.local_addr().expect("listener address");
+        let worker = std::thread::spawn(move || {
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().expect("accept discovery request");
+                let mut request = [0_u8; 1024];
+                let read = stream.read(&mut request).expect("read discovery request");
+                let request = String::from_utf8_lossy(&request[..read]);
+                let body = if request.starts_with("GET /api/tags " ) {
+                    r#"{"models":[{"name":"test-model:q4","digest":"sha256:test","size":42,"details":{"family":"test","parameter_size":"1B","quantization_level":"Q4_K_M"}}]}"#
+                } else {
+                    r#"{"version":"1.2.3"}"#
+                };
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body,
+                )
+                .expect("write discovery response");
+            }
+        });
+        let endpoint = format!("http://127.0.0.1:{}", address.port());
+        let inventory = discover_installed_models(&endpoint).expect("discover installed models");
+        worker.join().expect("discovery server");
+        assert_eq!(inventory.backend_version.as_deref(), Some("1.2.3"));
+        assert_eq!(inventory.models.len(), 1);
+        assert_eq!(inventory.models[0].name, "test-model:q4");
+        assert_eq!(inventory.models[0].quantization_level.as_deref(), Some("Q4_K_M"));
+    }
 
     fn temp_path(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
