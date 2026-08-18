@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/native_2d_editor.rs",
+  "old": "    ) -> Result<Self, String> {\n        let path = project.resolve_asset(relative).map_err(|error| error.to_string())?;\n        let text = std::fs::read_to_string(&path).map_err(|error| error.to_string())?;\n        let document = engine_authoring::TileMapDocument::from_json(&text)\n",
+  "new": "    ) -> Result<Self, String> {\n        let relative = relative\n            .to_str()\n            .ok_or_else(|| \"Tile Map path contains non-UTF-8 characters\".to_owned())?;\n        let path = project\n            .resolve_asset(relative)\n            .map_err(|error| error.to_string())?;\n        let text = std::fs::read_to_string(&path).map_err(|error| error.to_string())?;\n        let document = engine_authoring::TileMapDocument::from_json(&text)\n"
+}
