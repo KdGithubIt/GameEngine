@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/agent_host.rs","old":"        if state.is_terminal() {\n            self.release_writer(run_id);\n        }\n        self.persist_session(&session_id)\n","new":"        if state.is_terminal() {\n            self.release_run_resources(run_id)?;\n        }\n        self.persist_session(&session_id)\n"}

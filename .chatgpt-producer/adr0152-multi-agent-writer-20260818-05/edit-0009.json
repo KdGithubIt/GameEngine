@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/agent_host.rs","old":"    active_writer_run: Option<String>,\n    permissions: PermissionBroker,\n","new":"    active_writer_runs: BTreeSet<String>,\n    permissions: PermissionBroker,\n"}

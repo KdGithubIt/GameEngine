@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/agent_host.rs","old":"    ActiveWriterRun(String),\n    StaleProposalVersion {\n","new":"    InvalidWorkClaim(String),\n    WorkClaimConflict {\n        requested: AgentWorkClaim,\n        owner_run_id: String,\n        owner_claim: AgentWorkClaim,\n    },\n    StaleProposalVersion {\n"}

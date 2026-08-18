@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/agent_host.rs","old":"    Proposal,\n    SemanticProgress,\n    ToolAction,\n","new":"    Proposal,\n    WorkClaimAcquired,\n    WorkClaimReleased,\n    WorkConflict,\n    WorkWait,\n    CrossRunDependency,\n    Reconciliation,\n    SemanticProgress,\n    ToolAction,\n"}
