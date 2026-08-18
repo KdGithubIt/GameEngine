@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/authoring/src/animation_set.rs","old":"    /// Persisted format version. Version 1 is currently the only accepted\n    /// value.\n","new":"    /// Persisted format version. Schema v3 is the only accepted current\n    /// value; older route-policy formats are rejected rather than migrated.\n"}
