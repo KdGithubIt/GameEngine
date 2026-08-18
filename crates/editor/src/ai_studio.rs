@@ -1594,13 +1594,13 @@ impl AiStudioPanel {
                                 ui.spinner();
                             }
                         });
-                        if matches!(setup_status, ManagedSetupStatus::RestartRequired) {
+                        if matches!(&setup_status, ManagedSetupStatus::RestartRequired) {
                             ui.small(
                                 "Windows reported that setup requires a restart. GameEngine persists only a machine-local continuation marker and does not reboot automatically. Reopen the Editor after the restart to continue.",
                             );
                         }
                         if !matches!(
-                            setup_status,
+                            &setup_status,
                             ManagedSetupStatus::RuntimeNotInstalled
                                 | ManagedSetupStatus::OperatingSystemPrerequisiteUnavailable(_)
                         ) {
