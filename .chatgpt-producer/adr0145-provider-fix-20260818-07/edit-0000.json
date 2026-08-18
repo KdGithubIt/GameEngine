@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "            quality_preference: QualityPreference::Balanced,\n            confinement_requirement: AgentConfinementRequirement::default(),\n            model_backend: ModelBackendPreference::HostedApi,",
+  "new": "            quality_preference: QualityPreference::Balanced,\n            confinement_requirement: AgentConfinementRequirement::default(),\n            external_agent_provider: ExternalAgentProviderKind::ClaudeCode,\n            model_backend: ModelBackendPreference::HostedApi,"
+}
