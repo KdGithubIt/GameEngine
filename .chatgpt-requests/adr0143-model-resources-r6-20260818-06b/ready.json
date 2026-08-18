@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0143-model-resources-r6-20260818-06b",
+  "target_branch": "chatgpt/gameengine-adr0143-model-resources-r6",
+  "expected_head_sha": "10d47f93f027cbcd7ec5279b509c9be361a72db2",
+  "baseline_main_sha": "a70696f0caa23ec490f96270d3fcab72e000b295",
+  "patch_sha256": "349eb729d1d0bc4e21b103cb6feda32b71eaedea6f2dfaf951a37b5cf7f416ab",
+  "patch_bytes": 24165,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Integrate ADR0143 resource transitions with ADR0152 AI Studio",
+  "pr_title": "GameEngine: implement ADR 0143 model resource controls",
+  "pr_body": "## Summary\n\nContinues ADR0143 on current ADR0152 main. Local Ollama-compatible ModelBackends expose truthful provider-owned residency telemetry and verified unload/reload/CPU-offload operations. AI Studio releases supported local model residency before Editor restoration and managed Play, reacquires local residency only after authoritative-state re-inspection, and preserves ADR0152 work-claim ownership plus the existing AgentHost/native-runtime Resume path. ADR0144 Hosted API and Enterprise backends retain unavailable local GPU residency controls and existing Network/credential ownership. Provider-reported model telemetry is displayed without fabricating device-wide free VRAM or TTFT.\n\nADR0143 remains Proposed until the final verification tranche confirms the orchestration requirements.\n\n## Validation\n\nWindows Validation: affected. Visual Validation: required for AI Studio. Current visual validation auto-detects the AI Studio source diff; no AuthoringTool marker is used because AI Studio is not an AuthoringTool::ALL label.\n\n<!-- gameengine-chatgpt-dispatcher -->\n<!-- gameengine-visual-validation: editor -->"
+}
