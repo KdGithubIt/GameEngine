@@ -204,9 +204,12 @@ so every fixed callback observes the exact simulation step it is running.
 ## Engine views and event streams
 
 Entity queries can copy authoring identity, local/global Transform, character,
-animation, lock-on, navigation, and UI-binding views. `UiBindings` is encoded
-as a stable name-keyed object with string, number, and boolean values; the
-engine resource itself never crosses the module boundary.
+skeletal animation, Native 2D sprite-animation, lock-on, navigation, and UI-binding views.
+`SpriteAnimationState` exposes the stable Sprite Animation `AssetId`, playing state,
+current frame/tick, speed, and effective looping policy without exposing engine ECS
+references or process-local asset handles. `UiBindings` is encoded as a stable
+name-keyed object with string, number, and boolean values; the engine resource
+itself never crosses the module boundary.
 
 Declared event streams receive host-owned records with monotonically
 increasing per-stream sequences. Collision records contain `enter`, `stay`, or
@@ -280,6 +283,16 @@ leave a partially changed animator.
 `set_animation_condition` writes a named boolean condition on a live
 `AnimGraphPlayer`. Empty names, missing graph/animator components, stale
 targets, and unloaded clips reject the entire callback output before mutation.
+
+Native 2D Sprite Animation uses the same deferred `Animation` command family but
+keeps its authored identity contract: `play_sprite_animation`,
+`pause_sprite_animation`, and `stop_sprite_animation` control the entity's independent
+`SpriteAnimator2D` state, while `select_sprite_animation` takes a stable Sprite Animation
+`AssetId` plus an initial frame. Selection resolves only clips already loaded through the
+scene/runtime asset boundary and rejects an unloaded asset or out-of-range frame during
+atomic command preflight. `SpriteAnimationStateView` reports the same stable clip ID and
+current deterministic frame/tick state. Unlike skeletal crossfade clip IDs, these stable
+Sprite Animation IDs are safe to persist in authored project data.
 
 ## UI commands
 
