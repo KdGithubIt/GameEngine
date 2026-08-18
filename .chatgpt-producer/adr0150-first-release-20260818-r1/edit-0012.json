@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "                ui.small(format!(\n                    \"Resource posture: {:?} · workload {:?} · reclaim {:?}\",\n                    self.resource_plan.presentation,\n                    self.resolved_workload,\n                    self.resource_plan.reclaim\n                ));\n                self.show_agent_benchmark(ui);",
+  "new": "                ui.small(format!(\n                    \"Resource posture: {:?} · workload {:?} · reclaim {:?}\",\n                    self.resource_plan.presentation,\n                    self.resolved_workload,\n                    self.resource_plan.reclaim\n                ));\n                ui.small(self.model_routing_status());\n                self.show_agent_benchmark(ui);"
+}
