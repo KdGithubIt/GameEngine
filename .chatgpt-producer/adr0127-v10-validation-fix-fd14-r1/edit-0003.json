@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/native_2d_editor.rs",
+  "old": "    let mut paths = manifest\n        .iter()\n        .filter_map(|(_, entry)| {\n            entry\n                .path\n                .to_ascii_lowercase()\n                .ends_with(suffix)\n                .then(|| PathBuf::from(&entry.path))\n        })\n        .collect::<Vec<_>>();\n",
+  "new": "    let mut paths = manifest\n        .iter()\n        .filter(|(_, entry)| entry.path.to_ascii_lowercase().ends_with(suffix))\n        .map(|(_, entry)| PathBuf::from(&entry.path))\n        .collect::<Vec<_>>();\n"
+}
