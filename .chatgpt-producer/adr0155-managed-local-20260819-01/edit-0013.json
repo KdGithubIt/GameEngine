@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/native_agent.rs",
+  "old": "    Ok(InstalledModelInventory {\n        endpoint: endpoint_value.to_owned(),\n        backend_version,\n        models,\n    })\n",
+  "new": "    Ok(InstalledModelInventory {\n        endpoint: endpoint_value.to_owned(),\n        backend_version,\n        execution_environment: None,\n        launch_policy_version: None,\n        models,\n    })\n"
+}

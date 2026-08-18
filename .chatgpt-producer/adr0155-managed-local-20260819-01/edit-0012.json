@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/native_agent.rs",
+  "old": "pub(crate) struct InstalledModelInventory {\n    pub(crate) endpoint: String,\n    pub(crate) backend_version: Option<String>,\n    pub(crate) models: Vec<InstalledLocalModel>,\n}\n",
+  "new": "pub(crate) struct InstalledModelInventory {\n    pub(crate) endpoint: String,\n    pub(crate) backend_version: Option<String>,\n    pub(crate) execution_environment: Option<String>,\n    pub(crate) launch_policy_version: Option<String>,\n    pub(crate) models: Vec<InstalledLocalModel>,\n}\n"
+}

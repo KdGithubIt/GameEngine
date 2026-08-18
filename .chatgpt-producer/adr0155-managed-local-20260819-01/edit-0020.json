@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/native_agent.rs",
+  "old": "        NativeModelConfig::Local(config) => LocalHttpEndpoint::parse(&config.endpoint)\n            .and_then(|endpoint| observe_ollama_model(&endpoint, config.model.trim()))\n            .unwrap_or_default(),\n        NativeModelConfig::Hosted(_) => ModelResourceTelemetry::default(),\n",
+  "new": "        NativeModelConfig::Local(config) => LocalHttpEndpoint::parse(&config.endpoint)\n            .and_then(|endpoint| observe_ollama_model(&endpoint, config.model.trim()))\n            .unwrap_or_default(),\n        NativeModelConfig::Managed(config) => managed_resource_telemetry(config)\n            .unwrap_or_default(),\n        NativeModelConfig::Hosted(_) => ModelResourceTelemetry::default(),\n"
+}

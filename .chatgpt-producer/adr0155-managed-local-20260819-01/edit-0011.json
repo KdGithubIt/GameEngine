@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/native_agent.rs",
+  "old": "    pub(crate) fn label(&self) -> String {\n        format!(\"native:{}:{}\", self.backend_id(), self.model_id())\n    }\n",
+  "new": "    pub(crate) fn execution_environment_id(&self) -> Option<&'static str> {\n        match self {\n            Self::Managed(config) => Some(config.config.environment.benchmark_id()),\n            Self::Local(_) | Self::Hosted(_) => None,\n        }\n    }\n\n    pub(crate) fn label(&self) -> String {\n        format!(\"native:{}:{}\", self.backend_id(), self.model_id())\n    }\n"
+}

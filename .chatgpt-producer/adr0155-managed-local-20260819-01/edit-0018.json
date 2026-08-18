@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/native_agent.rs",
+  "old": "                    NativeModelConfig::Hosted(_) if !images.is_empty() => {\n                        Err(NativeAgentError::UnsupportedCapability(\n                            \"image input for the configured hosted adapter\".to_owned(),\n                        ))\n                    }\n",
+  "new": "                    NativeModelConfig::Managed(_) if !images.is_empty() => {\n                        Err(NativeAgentError::UnsupportedCapability(\n                            \"image input for the managed llama.cpp adapter\".to_owned(),\n                        ))\n                    }\n                    NativeModelConfig::Managed(config) => generate_managed(\n                        config,\n                        &prompt,\n                        &worker_interrupted,\n                        &worker_stream,\n                    )\n                    .map(|response| response.text),\n                    NativeModelConfig::Hosted(_) if !images.is_empty() => {\n                        Err(NativeAgentError::UnsupportedCapability(\n                            \"image input for the configured hosted adapter\".to_owned(),\n                        ))\n                    }\n"
+}
