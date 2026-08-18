@@ -20,6 +20,12 @@ pub struct AnimationSetEditorState {
     pub absolute_path: PathBuf,
     /// Editable Animation Set document.
     pub document: AnimationSet,
+    /// Transient target skeleton used only to preview ADR 0154 routing.
+    ///
+    /// This is deliberately outside `document`, undo snapshots, save, and
+    /// canonical serialization so choosing a preview target never changes
+    /// runtime project data.
+    pub target_preview_skeleton: Option<AssetId>,
     clean_document: AnimationSet,
     undo: Vec<AnimationSet>,
     redo: Vec<AnimationSet>,
@@ -34,6 +40,7 @@ impl AnimationSetEditorState {
             absolute_path,
             clean_document: document.clone(),
             document,
+            target_preview_skeleton: None,
             undo: Vec::new(),
             redo: Vec::new(),
             authoring: TypedDocumentAuthoringState::new(),
@@ -485,6 +492,35 @@ mod tests {
             PathBuf::from("set.animset.json"),
             document,
         )
+    }
+
+    #[test]
+    fn target_preview_selection_is_transient_and_does_not_dirty_the_animation_set() {
+        let document = AnimationSet::new(AssetId::generate());
+        let canonical = document
+            .to_canonical_json()
+            .expect("fixture must serialize");
+        let mut state = editor(document);
+
+        state.target_preview_skeleton = Some(AssetId::generate());
+        assert!(!state.is_dirty());
+        assert_eq!(
+            state
+                .document
+                .to_canonical_json()
+                .expect("working copy must serialize"),
+            canonical
+        );
+
+        state.target_preview_skeleton = Some(AssetId::generate());
+        assert!(!state.is_dirty());
+        assert_eq!(
+            state
+                .document
+                .to_canonical_json()
+                .expect("working copy must serialize"),
+            canonical
+        );
     }
 
     #[test]

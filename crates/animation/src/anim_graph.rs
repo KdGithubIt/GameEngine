@@ -12,10 +12,11 @@ use std::path::Path;
 use engine_authoring::{
     compile_animation_graph, AnimState, AnimTransition, AnimationGraphDomain,
     AnimationStatePlaybackMode, AssetId, CompiledAnimGraph, Diagnostic, EdgeId, Graph, GraphId,
-    MotionSlotId, MotionSourceRef, MotionSourceVariant,
+    MotionSlotId, MotionSourceRef,
 };
 
 use crate::animation::{AnimationClip, Animator};
+use crate::motion_binding::AnimationMotionRoute;
 use crate::animation_parameters::{
     AnimationParameterError, AnimationParameterKind, AnimationParameterValue, AnimationParameters,
 };
@@ -253,8 +254,8 @@ pub struct AnimationMotionDebugBinding {
     pub display_name: String,
     /// Author-selected stable motion source.
     pub source: MotionSourceRef,
-    /// Variant that scene conversion actually resolved.
-    pub resolved_variant: MotionSourceVariant,
+    /// Target-aware route that scene conversion actually resolved.
+    pub resolved_route: AnimationMotionRoute,
     /// Session-local concrete clip handle identity.
     pub resolved_clip_runtime_id: u64,
 }

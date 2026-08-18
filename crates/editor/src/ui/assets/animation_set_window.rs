@@ -4,6 +4,9 @@
 //! Clip sub-assets, together with the clip reference validation that keeps an
 //! invalid binding from being written back to disk.
 
+use crate::preview_residency::{
+    PreviewAssetPriority, PreviewResidencyState, ProjectAssetResidency,
+};
 use crate::ui::*;
 
 struct AnimationSetGraphModel {
@@ -15,6 +18,363 @@ struct AnimationSetGraphModel {
 struct MotionSourceChoice {
     label: String,
     source: engine_authoring::MotionSourceRef,
+}
+
+#[derive(Clone)]
+struct AnimationTargetPreviewChoice {
+    label: String,
+    skeleton: AssetId,
+}
+
+fn animation_target_preview_choices(
+    manifest: &engine::AssetManifest,
+) -> Vec<AnimationTargetPreviewChoice> {
+    let mut choices = Vec::new();
+    for (_, source) in manifest.iter() {
+        if !engine::asset_path_matches_kind(
+            engine::AssetKind::GltfSource,
+            std::path::Path::new(&source.path),
+        ) {
+            continue;
+        }
+        let source_label = source.name.as_deref().unwrap_or(&source.path);
+        let multiple = source.import_settings.skeleton_records.len() > 1;
+        for record in &source.import_settings.skeleton_records {
+            let Ok(skeleton) =
+                AssetId::from_stable_id(engine_authoring::StableId::new(&record.id))
+            else {
+                continue;
+            };
+            choices.push(AnimationTargetPreviewChoice {
+                label: if multiple {
+                    format!("{source_label} / {}", record.id)
+                } else {
+                    source_label.to_owned()
+                },
+                skeleton,
+            });
+        }
+    }
+    choices.sort_by(|left, right| left.label.cmp(&right.label));
+    choices
+}
+
+fn preview_motion_route(
+    manifest: &engine::AssetManifest,
+    assets_root: Option<&std::path::Path>,
+    preview_residency: Option<&ProjectAssetResidency>,
+    source: &engine_authoring::MotionSourceRef,
+    target_skeleton: &AssetId,
+) -> Option<engine::motion_binding::AnimationMotionRoute> {
+    let (owner_source, owner_entry, sub_asset) = manifest.imported_sub_asset(&source.asset)?;
+    let candidate_kind = match sub_asset.kind {
+        engine::ImportedSubAssetKind::Animation => {
+            engine::motion_binding::AnimationMotionCandidateKind::ModelBound
+        }
+        engine::ImportedSubAssetKind::HumanoidMotion => {
+            engine::motion_binding::AnimationMotionCandidateKind::Humanoid
+        }
+        _ => return None,
+    };
+    let source_skeleton = if candidate_kind
+        == engine::motion_binding::AnimationMotionCandidateKind::ModelBound
+    {
+        match preview_model_bound_source_skeleton(
+            manifest,
+            assets_root,
+            preview_residency,
+            owner_source,
+            owner_entry,
+            sub_asset,
+        ) {
+            PreviewSourceSkeletonState::Ready(source_skeleton) => source_skeleton,
+            PreviewSourceSkeletonState::Pending => return None,
+        }
+    } else {
+        None
+    };
+    let retarget_maps = assets_root
+        .map(|root| engine::load_registered_retarget_maps(root, manifest))
+        .unwrap_or_default();
+    let retarget_map = source_skeleton.as_ref().and_then(|source_skeleton| {
+        retarget_maps
+            .iter()
+            .find(|(_, map)| {
+                &map.source_skeleton == source_skeleton
+                    && &map.target_skeleton == target_skeleton
+            })
+            .map(|(id, _)| id.clone())
+    });
+    let humanoid_fallback = (sub_asset.kind == engine::ImportedSubAssetKind::Animation)
+        .then(|| {
+            owner_entry
+                .import_settings
+                .sub_assets
+                .iter()
+                .any(|candidate| {
+                    candidate.kind == engine::ImportedSubAssetKind::HumanoidMotion
+                        && candidate.index == sub_asset.index
+                        && candidate.target_model_source.is_none()
+                })
+        })
+        .filter(|available| *available)
+        .map(|_| {
+            engine::asset::imported_logical_humanoid_motion_sub_asset_id(
+                owner_source,
+                sub_asset.index as usize,
+            )
+        });
+    let target_humanoid_usable = manifest
+        .iter()
+        .find_map(|(_, entry)| {
+            entry
+                .import_settings
+                .skeleton_records
+                .iter()
+                .find(|record| record.id == target_skeleton.as_str())
+                .map(|record| {
+                    entry
+                        .import_settings
+                        .humanoid_profiles
+                        .iter()
+                        .any(|profile| profile.is_structurally_usable_with_record(record))
+                })
+        })
+        .unwrap_or(false);
+    Some(engine::motion_binding::plan_animation_motion(
+        &engine::motion_binding::AnimationMotionPlanInput {
+            candidate: source.asset.clone(),
+            candidate_kind,
+            source_skeleton,
+            target_skeleton: target_skeleton.clone(),
+            retarget_map,
+            humanoid_fallback,
+            target_humanoid_usable,
+        },
+    ))
+}
+
+enum PreviewSourceSkeletonState {
+    Ready(Option<AssetId>),
+    Pending,
+}
+
+fn preview_model_bound_source_skeleton(
+    manifest: &engine::AssetManifest,
+    assets_root: Option<&std::path::Path>,
+    preview_residency: Option<&ProjectAssetResidency>,
+    owner_source: &AssetId,
+    owner_entry: &engine::ManifestEntry,
+    sub_asset: &engine::ImportedSubAsset,
+) -> PreviewSourceSkeletonState {
+    if let Some(target_model_source) = sub_asset.target_model_source.as_deref() {
+        let Some(target_model_source) =
+            AssetId::from_stable_id(engine_authoring::StableId::new(target_model_source)).ok()
+        else {
+            return PreviewSourceSkeletonState::Ready(None);
+        };
+        let Some(target_entry) = manifest.get(&target_model_source) else {
+            return PreviewSourceSkeletonState::Ready(None);
+        };
+
+        let mut shared = target_entry
+            .import_settings
+            .skeleton_records
+            .iter()
+            .filter(|target_record| {
+                owner_entry
+                    .import_settings
+                    .skeleton_records
+                    .iter()
+                    .any(|record| record.id == target_record.id)
+            });
+        if let Some(record) = shared.next()
+            && shared.next().is_none()
+        {
+            return PreviewSourceSkeletonState::Ready(
+                AssetId::from_stable_id(engine_authoring::StableId::new(&record.id)).ok(),
+            );
+        }
+
+        return PreviewSourceSkeletonState::Ready(
+            (target_entry.import_settings.skeleton_records.len() == 1)
+                .then(|| &target_entry.import_settings.skeleton_records[0].id)
+                .and_then(|id| {
+                    AssetId::from_stable_id(engine_authoring::StableId::new(id)).ok()
+                }),
+        );
+    }
+
+    if owner_entry.import_settings.skeleton_records.len() == 1 {
+        return PreviewSourceSkeletonState::Ready(
+            AssetId::from_stable_id(engine_authoring::StableId::new(
+                &owner_entry.import_settings.skeleton_records[0].id,
+            ))
+            .ok(),
+        );
+    }
+
+    let Some(residency) = preview_residency else {
+        return PreviewSourceSkeletonState::Ready(None);
+    };
+    match residency.prepare_model_source(
+        owner_source,
+        manifest,
+        assets_root,
+        PreviewAssetPriority::Visible,
+    ) {
+        PreviewResidencyState::Pending => return PreviewSourceSkeletonState::Pending,
+        PreviewResidencyState::Failed(_) => {
+            return PreviewSourceSkeletonState::Ready(None);
+        }
+        PreviewResidencyState::Ready => {}
+    }
+    let Some(imported) = residency.cached_model_source(owner_source, manifest, assets_root) else {
+        return PreviewSourceSkeletonState::Pending;
+    };
+    PreviewSourceSkeletonState::Ready(animation_source_skeleton_from_parts(
+        &sub_asset.id,
+        imported
+            .animations
+            .iter()
+            .map(|animation| (animation.id.as_str(), animation.skin_index)),
+        |skin_index| {
+            imported
+                .skins
+                .get(skin_index)
+                .map(|skin| skin.skeleton.id.clone())
+        },
+    ))
+}
+
+fn animation_source_skeleton_from_parts<'a>(
+    candidate_id: &str,
+    animations: impl IntoIterator<Item = (&'a str, usize)>,
+    skin_skeleton: impl Fn(usize) -> Option<AssetId>,
+) -> Option<AssetId> {
+    let skin_index = animations
+        .into_iter()
+        .find_map(|(id, skin_index)| (id == candidate_id).then_some(skin_index))?;
+    skin_skeleton(skin_index)
+}
+
+fn show_motion_route_preview(
+    ui: &mut egui::Ui,
+    route: Option<&engine::motion_binding::AnimationMotionRoute>,
+    has_target: bool,
+) {
+    let Some(route) = route else {
+        ui.small(if has_target {
+            "Route: resolving imported source"
+        } else {
+            "Route: select Target Preview"
+        });
+        return;
+    };
+    ui.horizontal_wrapped(|ui| {
+        let response = match route {
+            engine::motion_binding::AnimationMotionRoute::Failed { .. } => {
+                ui.colored_label(egui::Color32::RED, format!("Route: {}", route.badge()))
+            }
+            _ => ui.label(format!("Route: {}", route.badge())),
+        };
+        match route {
+            engine::motion_binding::AnimationMotionRoute::Retarget { map } => {
+                ui.small(format!("Map: {}", map.as_str()));
+            }
+            engine::motion_binding::AnimationMotionRoute::Humanoid { motion } => {
+                ui.small(format!("Motion: {}", motion.as_str()));
+            }
+            engine::motion_binding::AnimationMotionRoute::Failed { reason } => {
+                ui.small(format!("Reason: {reason}"));
+            }
+            engine::motion_binding::AnimationMotionRoute::Native => {}
+        }
+        response.on_hover_text(route.attempted_routing());
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn skeleton_record(id: &AssetId, identity: u64) -> engine::asset::SkeletonRecord {
+        engine::asset::SkeletonRecord {
+            id: id.as_str().to_owned(),
+            identity,
+            next_bone_id: 0,
+            bones: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn target_preview_recomputes_native_and_failed_routes_from_the_same_candidate() {
+        let source_id = AssetId::generate();
+        let candidate_id = AssetId::generate();
+        let source_skeleton = AssetId::generate();
+        let other_skeleton = AssetId::generate();
+        let mut manifest = engine::AssetManifest::default();
+        manifest.insert(
+            source_id,
+            engine::ManifestEntry {
+                path: "models/source.glb".to_owned(),
+                name: Some("source".to_owned()),
+                import_settings: engine::ImportSettings {
+                    sub_assets: vec![engine::ImportedSubAsset {
+                        id: candidate_id.as_str().to_owned(),
+                        kind: engine::ImportedSubAssetKind::Animation,
+                        name: "Walk".to_owned(),
+                        index: 0,
+                        target_model_source: None,
+                    }],
+                    skeleton_records: vec![skeleton_record(&source_skeleton, 7)],
+                    ..engine::ImportSettings::default()
+                },
+            },
+        );
+        let candidate = engine_authoring::MotionSourceRef::new(candidate_id);
+
+        let native = preview_motion_route(
+            &manifest,
+            None,
+            None,
+            &candidate,
+            &source_skeleton,
+        )
+        .expect("registered Animation candidate must produce a route");
+        let failed = preview_motion_route(
+            &manifest,
+            None,
+            None,
+            &candidate,
+            &other_skeleton,
+        )
+        .expect("registered Animation candidate must produce a route");
+
+        assert_eq!(native.badge(), "Native");
+        assert_eq!(failed.badge(), "Failed");
+    }
+
+    #[test]
+    fn multi_skeleton_import_uses_the_animation_skin_instead_of_manifest_order() {
+        let first_animation = AssetId::generate();
+        let second_animation = AssetId::generate();
+        let first_skeleton = AssetId::generate();
+        let second_skeleton = AssetId::generate();
+        let animations = [
+            (first_animation.as_str(), 1_usize),
+            (second_animation.as_str(), 0_usize),
+        ];
+        let skeletons = [first_skeleton.clone(), second_skeleton.clone()];
+
+        let resolved = animation_source_skeleton_from_parts(
+            first_animation.as_str(),
+            animations,
+            |skin_index| skeletons.get(skin_index).cloned(),
+        );
+
+        assert_eq!(resolved, Some(second_skeleton));
+    }
 }
 
 fn humanoid_motion_choices(
@@ -46,24 +406,20 @@ fn humanoid_motion_choices(
 }
 
 fn animation_set_motion_source_choices(
-    native: &[AssetChoice],
+    model_bound: &[AssetChoice],
     humanoid: &[AssetChoice],
 ) -> Vec<MotionSourceChoice> {
-    let mut choices = Vec::with_capacity(native.len() * 2 + humanoid.len());
-    for choice in native {
+    let mut choices = Vec::with_capacity(model_bound.len() + humanoid.len());
+    for choice in model_bound {
         choices.push(MotionSourceChoice {
-            label: format!("[Auto] {}", choice.label),
-            source: engine_authoring::MotionSourceRef::auto(choice.id.clone()),
-        });
-        choices.push(MotionSourceChoice {
-            label: format!("[Native] {}", choice.label),
-            source: engine_authoring::MotionSourceRef::native(choice.id.clone()),
+            label: format!("[Model] {}", choice.label),
+            source: engine_authoring::MotionSourceRef::new(choice.id.clone()),
         });
     }
     for choice in humanoid {
         choices.push(MotionSourceChoice {
             label: format!("[Humanoid] {}", choice.label),
-            source: engine_authoring::MotionSourceRef::humanoid(choice.id.clone()),
+            source: engine_authoring::MotionSourceRef::new(choice.id.clone()),
         });
     }
     choices
@@ -77,14 +433,7 @@ fn motion_source_display_label(
         .iter()
         .find(|choice| choice.source == *source)
         .map(|choice| choice.label.clone())
-        .unwrap_or_else(|| {
-            let variant = match source.variant {
-                engine_authoring::MotionSourceVariant::Auto => "Auto",
-                engine_authoring::MotionSourceVariant::Native => "Native",
-                engine_authoring::MotionSourceVariant::Humanoid => "Humanoid",
-            };
-            format!("Missing [{variant}] ({})", source.asset.as_str())
-        })
+        .unwrap_or_else(|| format!("Missing ({})", source.asset.as_str()))
 }
 
 /// Stable identity for the Animation Set editor window.
@@ -233,41 +582,36 @@ enum AnimationSetUiAction {
     },
 }
 
-/// Checks that a motion source about to be stored in an Animation Set points at
-/// the imported sub-asset kind required by its explicit variant.
+/// Checks that a motion candidate about to be stored in an Animation Set is
+/// an imported model-bound Animation or portable HumanoidMotion sub-asset.
 ///
-/// Auto and Native are rooted at an imported `Animation` sub-asset. Humanoid is
-/// rooted at an imported `HumanoidMotion` sub-asset. The variant is persisted
-/// and is never inferred from a display name or a parent source.
+/// Schema v3 persists the candidate identity only; route policy is derived
+/// later from import metadata and the selected target skeleton (ADR 0154).
 pub(in crate::ui) fn validate_imported_animation_motion_source_reference(
     manifest: &engine::AssetManifest,
     source: &engine_authoring::MotionSourceRef,
 ) -> Result<(), String> {
-    let (expected_kind, expected_label) = match source.variant {
-        engine_authoring::MotionSourceVariant::Auto
-        | engine_authoring::MotionSourceVariant::Native => {
-            (engine::ImportedSubAssetKind::Animation, "Animation Clip")
-        }
-        engine_authoring::MotionSourceVariant::Humanoid => (
-            engine::ImportedSubAssetKind::HumanoidMotion,
-            "HumanoidMotion",
-        ),
-    };
-
     match manifest.imported_sub_asset(&source.asset) {
-        Some((_, _, sub_asset)) if sub_asset.kind == expected_kind => Ok(()),
-        Some((_, _, _)) => Err(format!(
-            "asset `{}` is an imported sub-asset, but {:?} requires an imported {expected_label}",
+        Some((_, _, sub_asset))
+            if matches!(
+                sub_asset.kind,
+                engine::ImportedSubAssetKind::Animation
+                    | engine::ImportedSubAssetKind::HumanoidMotion
+            ) =>
+        {
+            Ok(())
+        }
+        Some((_, _, sub_asset)) => Err(format!(
+            "asset `{}` is {:?}; Animation Sets require an imported Animation or HumanoidMotion candidate",
             source.asset.as_str(),
-            source.variant
+            sub_asset.kind
         )),
         None if manifest.get(&source.asset).is_some() => Err(format!(
-            "asset `{}` is a source asset; {:?} requires its imported {expected_label} sub-asset instead",
-            source.asset.as_str(),
-            source.variant
+            "asset `{}` is a source asset; select one of its imported Animation or HumanoidMotion sub-assets instead",
+            source.asset.as_str()
         )),
         None => Err(format!(
-            "asset `{}` is not a registered imported {expected_label} sub-asset",
+            "asset `{}` is not a registered imported Animation or HumanoidMotion sub-asset",
             source.asset.as_str()
         )),
     }
@@ -351,6 +695,10 @@ impl EditorApp {
             humanoid_motion_choices(&self.asset_manifest, assets_root.as_deref());
         let motion_source_choices =
             animation_set_motion_source_choices(&native_clip_choices, &humanoid_clip_choices);
+        let target_preview_choices = animation_target_preview_choices(&self.asset_manifest);
+        let preview_manifest = self.asset_manifest.clone();
+        let preview_assets_root = assets_root.clone();
+        let preview_residency = self.preview_residency.clone();
         let graph_model = read_only_state
             .document
             .graph
@@ -452,6 +800,37 @@ impl EditorApp {
                     }
                 });
 
+                let target_preview_label = state
+                    .target_preview_skeleton
+                    .as_ref()
+                    .and_then(|selected| {
+                        target_preview_choices
+                            .iter()
+                            .find(|choice| &choice.skeleton == selected)
+                            .map(|choice| choice.label.as_str())
+                    })
+                    .unwrap_or("No target - routing unresolved");
+                control_row(ui, |ui| {
+                    ui.label("Target Preview");
+                    egui::ComboBox::from_id_salt("animation_set_target_preview")
+                        .selected_text(target_preview_label)
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(
+                                &mut state.target_preview_skeleton,
+                                None,
+                                "No target - routing unresolved",
+                            );
+                            for choice in &target_preview_choices {
+                                ui.selectable_value(
+                                    &mut state.target_preview_skeleton,
+                                    Some(choice.skeleton.clone()),
+                                    &choice.label,
+                                );
+                            }
+                        });
+                });
+                ui.small("Preview-only: this target is never saved into the Animation Set.");
+
                 match &graph_model {
                     Some(Err(error)) => {
                         ui.colored_label(
@@ -549,19 +928,53 @@ impl EditorApp {
                                     && payload.kind == AssetKind::AnimationClip {
                                         action = Some(AnimationSetUiAction::SetBinding {
                                             slot: slot.clone(),
-                                            motion: Some(engine_authoring::MotionSourceRef::native(
+                                            motion: Some(engine_authoring::MotionSourceRef::new(
                                                 payload.asset_id.clone(),
                                             )),
                                         });
                                     }
                                 if let Some(binding) = state.document.bindings.get(&slot.id) {
+                                    let primary_route = state
+                                        .target_preview_skeleton
+                                        .as_ref()
+                                        .and_then(|target| {
+                                            preview_motion_route(
+                                                &preview_manifest,
+                                                preview_assets_root.as_deref(),
+                                                Some(&preview_residency),
+                                                &binding.clip,
+                                                target,
+                                            )
+                                        });
+                                    show_motion_route_preview(
+                                        ui,
+                                        primary_route.as_ref(),
+                                        state.target_preview_skeleton.is_some(),
+                                    );
                                     ui.small("Overlays (later entries have higher priority)");
                                     for (index, overlay) in binding.overlays.iter().enumerate() {
+                                        let overlay_route = state
+                                            .target_preview_skeleton
+                                            .as_ref()
+                                            .and_then(|target| {
+                                                preview_motion_route(
+                                                    &preview_manifest,
+                                                    preview_assets_root.as_deref(),
+                                                    Some(&preview_residency),
+                                                    overlay,
+                                                    target,
+                                                )
+                                            });
                                         ui.horizontal(|ui| {
                                             ui.label(motion_source_display_label(
                                                 overlay,
                                                 &motion_source_choices,
                                             ));
+                                            show_motion_route_preview(
+                                                ui,
+                                                overlay_route.as_ref(),
+                                                state.target_preview_skeleton.is_some(),
+                                            );
                                             if ui.small_button("↑").clicked() && index > 0 {
                                                 action = Some(AnimationSetUiAction::MoveOverlay {
                                                     slot: slot.id.clone(),

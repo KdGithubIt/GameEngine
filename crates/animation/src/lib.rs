@@ -23,6 +23,8 @@ pub mod humanoid;
 pub mod humanoid_motion;
 /// Animation-side morph assets, bindings, and weights.
 pub mod morph;
+/// Target-aware Animation Set motion candidate routing (ADR 0154).
+pub mod motion_binding;
 /// Pure pose sampling and blending.
 pub mod pose_graph;
 /// Skeleton retargeting and baked-clip cache integration.

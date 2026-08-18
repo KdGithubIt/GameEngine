@@ -190,8 +190,12 @@ impl EditorApp {
         // Refresh Problems only when the visible Scene View diagnostic changes.
         // The existing Problems-to-Console mirror then records a new appearance
         // once without flooding Console on every rendered frame.
-        if self.scene_view_problem != output.preview_diagnostic {
+        let motion_binding_diagnostics = self.scene_view.current_motion_binding_diagnostics();
+        if self.scene_view_problem != output.preview_diagnostic
+            || self.scene_view_motion_binding_diagnostics != motion_binding_diagnostics
+        {
             self.scene_view_problem = output.preview_diagnostic.clone();
+            self.scene_view_motion_binding_diagnostics = motion_binding_diagnostics;
             self.refresh_scene_problems();
         }
         if let Some(entity) = output.picked_entity {

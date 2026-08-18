@@ -298,6 +298,25 @@ impl EditorApp {
                 self.start_next_model_import();
                 return;
             }
+            let humanoid_source_is_configured = self
+                .asset_manifest
+                .get(&asset_id)
+                .is_some_and(|entry| {
+                    entry
+                        .import_settings
+                        .motion_humanoid_source_model
+                        .is_some()
+                });
+            let humanoid_source = self.motion_humanoid_source(&asset_id);
+            if humanoid_source_is_configured && humanoid_source.is_none() {
+                self.session.push_diagnostic(engine_authoring::Diagnostic::warning(
+                    "asset.motion_humanoid_source_invalid",
+                    format!(
+                        "`{}` keeps its Native candidates, but its configured Humanoid source model is no longer associated or has no structurally usable Humanoid profile",
+                        source_path.display()
+                    ),
+                ));
+            }
             let retarget_maps = engine::load_registered_retarget_maps(
                 &project.assets_root(),
                 &self.asset_manifest,
@@ -323,6 +342,7 @@ impl EditorApp {
                         })
                         .collect(),
                     original_model,
+                    humanoid_source,
                     retarget_maps,
                     existing_skeletons,
                     contact_bones,
@@ -401,6 +421,57 @@ impl EditorApp {
         .ok()?;
         let entry = self.asset_manifest.get(&model_id)?;
         Some((model_id, entry.path.clone()))
+    }
+
+    /// Resolves persisted VMD Humanoid provenance to one associated usable model.
+    fn motion_humanoid_source(
+        &self,
+        motion_id: &engine_authoring::AssetId,
+    ) -> Option<crate::asset_import::MotionHumanoidSource> {
+        let project = self.project_root.as_ref()?;
+        let motion_entry = self.asset_manifest.get(motion_id)?;
+        let configured = motion_entry
+            .import_settings
+            .motion_humanoid_source_model
+            .as_deref()?;
+        let associated = motion_entry
+            .import_settings
+            .resolved_motion_model_sources()
+            .into_iter()
+            .any(|model| model == configured)
+            || motion_entry
+                .import_settings
+                .motion_original_model_source
+                .as_deref()
+                == Some(configured);
+        if !associated {
+            return None;
+        }
+        let model_id = engine_authoring::AssetId::from_stable_id(
+            engine_authoring::StableId::new(configured),
+        )
+        .ok()?;
+        let model_entry = self.asset_manifest.get(&model_id)?;
+        let profile = model_entry
+            .import_settings
+            .humanoid_profiles
+            .iter()
+            .find(|profile| {
+                model_entry
+                    .import_settings
+                    .skeleton_records
+                    .iter()
+                    .any(|record| profile.is_structurally_usable_with_record(record))
+            })
+            .cloned()?;
+        Some(crate::asset_import::MotionHumanoidSource {
+            model: crate::asset_import::MotionImportTarget {
+                model_source_id: model_id,
+                model_path: project.assets_root().join(&model_entry.path),
+                contact_bones: model_entry.import_settings.contact_bones.clone(),
+            },
+            profile,
+        })
     }
 
     /// Queues every registered or unregistered model in the project.

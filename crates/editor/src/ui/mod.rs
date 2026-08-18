@@ -257,6 +257,7 @@ pub struct EditorApp {
     /// This is retained separately from Console history because Problems
     /// represents current state and removes the entry when the preview heals.
     scene_view_problem: Option<engine_authoring::Diagnostic>,
+    scene_view_motion_binding_diagnostics: Vec<engine_authoring::Diagnostic>,
     /// Dedicated clip, transition, and graph inspection surface.
     animation_preview: AnimationPreviewWindow,
     /// Active transform gizmo mode (Translate / Rotate / Scale).
@@ -473,6 +474,7 @@ impl EditorApp {
             preview_residency: preview_residency.clone(),
             scene_view: SceneView::with_residency(preview_residency.clone()),
             scene_view_problem: None,
+            scene_view_motion_binding_diagnostics: Vec::new(),
             animation_preview: AnimationPreviewWindow::with_residency(preview_residency),
             gizmo_mode: GizmoMode::Translate,
             gizmo_space: GizmoSpace::Global,
@@ -551,6 +553,7 @@ impl EditorApp {
         self.asset_import_problems.clear();
         self.game_build_problems.clear();
         self.scene_view_problem = None;
+        self.scene_view_motion_binding_diagnostics.clear();
         if let Err(error) = self.asset_inspector.open_project(&root) {
             self.session
                 .push_diagnostic(engine_authoring::Diagnostic::warning(
@@ -1007,6 +1010,7 @@ impl EditorApp {
         problems.extend(self.game_build_problems.iter().cloned());
         problems.extend(self.component_source_index.diagnostics().iter().cloned());
         problems.extend(self.scene_view_problem.iter().cloned());
+        problems.extend(self.scene_view_motion_binding_diagnostics.iter().cloned());
         self.mirror_new_problems_to_console(&problems);
         self.problems_panel.set_problems(problems);
     }

@@ -98,7 +98,7 @@ pub(crate) struct RuntimeAnimationDebugSnapshot {
     pub(crate) motion_slot: Option<engine_authoring::MotionSlotId>,
     pub(crate) motion_slot_name: Option<String>,
     pub(crate) motion_source: Option<engine_authoring::MotionSourceRef>,
-    pub(crate) resolved_motion_variant: Option<engine_authoring::MotionSourceVariant>,
+    pub(crate) resolved_motion_route: Option<engine::motion_binding::AnimationMotionRoute>,
     pub(crate) recent_events: Vec<String>,
     pub(crate) runtime_error: Option<String>,
 }
@@ -319,6 +319,13 @@ impl RuntimePlayState {
         diagnostics.extend(system_settings_diagnostics(report));
 
         diagnostics.extend(entity_map.asset_diagnostics.iter().cloned());
+        if diagnostics.iter().any(|diagnostic| {
+            diagnostic.is_blocking()
+                && diagnostic.code
+                    == engine::scene_bridge::ANIMATION_MOTION_BINDING_FAILED_DIAGNOSTIC
+        }) {
+            return Err(PlayError::InvalidScene { diagnostics });
+        }
 
         if !has_camera(app.world_mut()) {
             insert_default_camera(app.world_mut()).map_err(PlayError::DefaultCamera)?;
@@ -1058,7 +1065,7 @@ fn collect_animator_debug_snapshot(
                 motion_slot: None,
                 motion_slot_name: None,
                 motion_source: None,
-                resolved_motion_variant: None,
+                resolved_motion_route: None,
                 recent_events: recent_events
                     .iter()
                     .filter(|(key, _)| *key == (entity.id(), entity.generation()))
@@ -1191,7 +1198,7 @@ fn collect_animation_debug_snapshot_matching(
                 motion_slot: state.and_then(|state| state.motion_slot.clone()),
                 motion_slot_name: binding.map(|binding| binding.display_name.clone()),
                 motion_source: binding.map(|binding| binding.source.clone()),
-                resolved_motion_variant: binding.map(|binding| binding.resolved_variant),
+                resolved_motion_route: binding.map(|binding| binding.resolved_route.clone()),
                 recent_events: recent_events
                     .iter()
                     .filter(|(key, _)| *key == (entity.id(), entity.generation()))

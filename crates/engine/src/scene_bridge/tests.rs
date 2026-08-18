@@ -1781,8 +1781,8 @@ fn animator_clip_from_a_different_skeleton_without_a_retarget_map_is_not_applied
         bridge
             .asset_diagnostics
             .iter()
-            .any(|d| d.code == crate::retarget::RETARGET_MAP_MISSING_DIAGNOSTIC),
-        "a missing map must be reported: {:?}",
+            .any(|d| d.code == ANIMATION_MOTION_BINDING_FAILED_DIAGNOSTIC),
+        "the shared ADR0154 planner must report the failed Native -> Retarget -> Humanoid route: {:?}",
         bridge.asset_diagnostics
     );
     let entity = bridge

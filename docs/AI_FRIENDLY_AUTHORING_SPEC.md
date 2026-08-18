@@ -562,6 +562,38 @@ selector index 0. The former `rigid_body_rig` kind and `rigidbodyrig` derivation
 namespace are not compatibility aliases and MUST NOT be silently interpreted as
 the current kind (ADR 0112, ADR 0115).
 
+### 8.4 Animation Motion Candidate and Humanoid Provenance Contract
+
+ADR 0154 makes Animation Set motion bindings candidate-oriented and target-aware.
+The current `*.animset.json` schema is version 3. Each primary binding and
+overlay persists only the stable imported candidate `AssetId`; it MUST NOT
+persist an Auto/Native/Humanoid route policy. `ImportedSubAssetKind::Animation`
+identifies a model-bound candidate, while `HumanoidMotion` identifies the
+explicit portable candidate. Schema-2 route-policy documents are obsolete
+current-format input and MUST be rejected rather than silently reinterpreted.
+
+For a concrete target skeleton, tools MUST use the shared GUI-free motion
+planner. Model-bound candidates resolve in the fixed order Native -> explicit
+Retarget Map -> logical Humanoid fallback -> Failed. An explicitly selected
+HumanoidMotion resolves only Humanoid or Failed. Target Preview state and the
+computed Native/Retarget/Humanoid/Failed result are transient derived state and
+MUST NOT be serialized into the Animation Set. A Failed route is an authoring
+error for each affected scene/controller target, is surfaced through Problems
+before Play, and blocks Play/package preflight without blocking Animation Set
+save.
+
+Motion-only import settings keep concrete Native output targets in
+`motion_model_sources`. The optional `motion_humanoid_source_model` is a
+different stable provenance field: it names one associated model with a usable
+Humanoid profile that import/reimport uses to generate the logical,
+target-independent HumanoidMotion sibling. Humanoid is never inserted as a fake
+`motion_model_sources` target. Reordering or adding concrete output targets MUST
+NOT silently change persisted Humanoid provenance, and changing provenance MUST
+regenerate portable motion content and invalidate dependent derived bakes while
+keeping the logical Humanoid candidate identity target-independent. Runtime,
+Editor preview/Problems, and packaging MUST consume imported portable motion;
+they MUST NOT create it lazily as a side effect of resolving a binding.
+
 ## 9. Domain-Neutral Graph Model
 
 Shader Graph, Behavior Tree, Animation Graph, and future graph types MUST share

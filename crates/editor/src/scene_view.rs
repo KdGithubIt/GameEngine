@@ -1252,6 +1252,24 @@ impl SceneView {
         self.waiting_for_residency = false;
     }
 
+    pub(crate) fn current_motion_binding_diagnostics(&self) -> Vec<Diagnostic> {
+        self.preview
+            .as_ref()
+            .and_then(|preview| preview.bridge.as_ref())
+            .map(|bridge| {
+                bridge
+                    .asset_diagnostics
+                    .iter()
+                    .filter(|diagnostic| {
+                        diagnostic.code
+                            == engine::scene_bridge::ANIMATION_MOTION_BINDING_FAILED_DIAGNOSTIC
+                    })
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     /// Rebuilds the persistent preview world after an asset value or override
     /// changes without discarding reusable model and GPU caches.
     pub fn invalidate_asset_preview(&mut self) {

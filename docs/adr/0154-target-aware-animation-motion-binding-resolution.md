@@ -1,6 +1,6 @@
 # ADR 0154: Animation Motion Candidates, Import-Owned Humanoid Variants, and Target-Aware Resolution
 
-Status: Proposed
+Status: Accepted
 Date: 2026-08-18
 Amends: ADR 0085, ADR 0099, ADR 0110
 Relates to: ADR 0024, ADR 0079, ADR 0091, ADR 0115, ADR 0137

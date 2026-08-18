@@ -118,6 +118,8 @@ pub mod model_ir;
 /// Morph targets: named vertex and material deformations blended on top of a
 /// mesh (ADR 0097 §5).
 pub mod morph;
+/// Target-aware Animation Set motion candidate routing (ADR 0154).
+pub mod motion_binding;
 /// GUI-free production navigation bake service shared by authoring adapters.
 pub mod navigation_bake;
 /// Production tiled polygon navigation and runtime query facade.
@@ -222,7 +224,8 @@ pub use animation_parameters::{
 };
 pub use app::App;
 pub use asset::{
-    imported_motion_sub_asset_id, imported_sub_asset_id, AssetLoadError, AssetManifest,
+    imported_logical_humanoid_motion_sub_asset_id, imported_motion_sub_asset_id,
+    imported_sub_asset_id, AssetLoadError, AssetManifest,
     AssetManifestError, AssetPathError, AssetServer, Assets, Handle, ImportSettings,
     ImportedSubAsset, ImportedSubAssetKind, ManifestEntry, RuntimeAssetId, SkeletonBoneRecord,
     SkeletonRecord, SourceFileStamp, SourceStamp,
