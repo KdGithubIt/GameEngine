@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/native_2d_editor/tile_map_pointer.rs",
+  "old": "        } else if response.clicked_by(primary) {\n            if let Some(cell) = pointer_cell {\n                loaded.stamp = loaded.service.copy_stamp(\n                    layer,\n                    engine_authoring::TileRect::from_corners(cell, cell),\n                );\n            }\n        }\n",
+  "new": "        } else if response.clicked_by(primary) && let Some(cell) = pointer_cell {\n            loaded.stamp = loaded.service.copy_stamp(\n                layer,\n                engine_authoring::TileRect::from_corners(cell, cell),\n            );\n        }\n"
+}
