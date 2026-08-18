@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0152-multi-agent-writer-20260818-06",
+  "target_branch": "chatgpt/gameengine-adr0152-multi-agent-writer-v2",
+  "expected_head_sha": "421121de8f9810c82d8f2995b9795932033ef33d",
+  "baseline_main_sha": "97c0c97802f81be7b332583759a2c5bf31254476",
+  "edit_parts": [
+    "edit-0000.json",
+    "edit-0001.json",
+    "edit-0002.json",
+    "edit-0003.json",
+    "edit-0004.json",
+    "edit-0005.json"
+  ],
+  "commit_message": "Complete ADR0152 asset target ownership",
+  "pr_title": "Implement ADR0152 multi-agent writer coordination",
+  "pr_body": "Implements ADR0152 on current main while preserving one authoritative project writer host. Adds persisted per-run semantic work claims, deterministic conflict/wait evidence, terminal/restart cleanup, and independent completion evidence. Native AgentRuntime code writes acquire code-path claims before isolated workspace mutation; managed apply reasserts ownership and retains the common-baseline stale-file guard. Live MCP mutations acquire conservative canonical-authoring ownership before typed Editor dispatch, while read-only MCP calls remain claim-free. Governed external/generated asset acquisition now acquires hierarchical project-assets destination ownership after permission checks and before provider execution/import. Human editing remains unlocked and authoritative revision/generation/path/import checks remain final. Coverage includes disjoint concurrent work, overlapping authoring/source/asset claims, human-edit reinspection across concurrent runs, cancellation release, restart cleanup, stale proposal/source protection, explicit waits/conflicts, and independent completion gates. ADR0152 is Accepted and the canonical authoring specification is updated.\n\nVisual Validation is not required because this patch introduces no new Editor layout, dialog, spacing, colors, icons, panels, or dedicated multi-agent presentation; existing generic event/status presentation only reports the new run-control evidence."
+}
