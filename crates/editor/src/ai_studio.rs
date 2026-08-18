@@ -5,9 +5,9 @@
 //! workspace rules live in the GUI-free `agent_host` module.
 
 use crate::agent_benchmark::{
-    agent_run_record, benchmark_task, read_question_record, BenchmarkRecord, BenchmarkStore,
-    BenchmarkTaskKind, CatalogProfile, CuratedModelCatalog, BENCHMARK_CORPUS_VERSION,
-    BENCHMARK_TASKS,
+    agent_run_record, benchmark_task, read_question_record, AgentRunBenchmarkIdentity,
+    BenchmarkHardwareIdentity, BenchmarkRecord, BenchmarkStore, BenchmarkTaskKind, CatalogProfile,
+    CuratedModelCatalog, BENCHMARK_CORPUS_VERSION, BENCHMARK_TASKS,
 };
 use crate::agent_host::{
     project_storage_key, AgentCapability, AgentConfinementNetworkPolicy, AgentConfinementRequest,
@@ -195,8 +195,10 @@ struct ManagedRuntimeObservation {
 
 #[derive(Debug, Clone)]
 struct NativeQuestionBenchmarkPolicy {
+    task_id: String,
     quality: QualityPreference,
     workload: InferenceWorkload,
+    hardware: BenchmarkHardwareIdentity,
     inventory: Option<InstalledModelInventory>,
 }
 
@@ -209,9 +211,12 @@ struct NativeQuestionBenchmarkSnapshot {
 #[derive(Debug, Clone)]
 struct NativeRunBenchmarkContext {
     run_id: String,
+    task_id: String,
     backend_id: String,
     model_id: String,
     quality: QualityPreference,
+    workload: InferenceWorkload,
+    hardware: BenchmarkHardwareIdentity,
     inventory: Option<InstalledModelInventory>,
 }
 
@@ -426,6 +431,8 @@ pub struct AiStudioPanel {
     benchmark_records: Vec<BenchmarkRecord>,
     model_catalog: CuratedModelCatalog,
     benchmark_task_id: String,
+    benchmark_hardware: BenchmarkHardwareIdentity,
+    benchmark_hardware_probe_attempted: bool,
     installed_model_inventory: Option<InstalledModelInventory>,
     model_discovery: Option<InstalledModelDiscoveryTask>,
     native_question_benchmark_policy: Option<NativeQuestionBenchmarkPolicy>,
@@ -539,6 +546,8 @@ impl AiStudioPanel {
             benchmark_records,
             model_catalog,
             benchmark_task_id: BENCHMARK_TASKS[0].id.to_owned(),
+            benchmark_hardware: BenchmarkHardwareIdentity::default(),
+            benchmark_hardware_probe_attempted: false,
             installed_model_inventory: None,
             model_discovery: None,
             native_question_benchmark_policy: None,
@@ -606,6 +615,25 @@ impl AiStudioPanel {
     /// Moves AI Studio into an independent native viewport while preserving the same host state.
     pub fn detach(&mut self) {
         self.presentation.detach();
+    }
+
+    /// Captures the active Editor adapter and reliable machine memory identity once.
+    ///
+    /// Unsupported or ambiguous platform telemetry remains explicitly unavailable.
+    pub fn observe_benchmark_hardware(&mut self, frame: &eframe::Frame) {
+        if self.benchmark_hardware_probe_attempted {
+            return;
+        }
+        let Some(render_state) = frame.wgpu_render_state() else {
+            return;
+        };
+        let adapter = render_state.adapter.get_info();
+        self.benchmark_hardware = BenchmarkHardwareIdentity::from_editor_adapter(
+            &adapter.name,
+            adapter.vendor,
+            adapter.device,
+        );
+        self.benchmark_hardware_probe_attempted = true;
     }
 
     #[cfg(feature = "visual-validation")]
@@ -1670,7 +1698,7 @@ impl AiStudioPanel {
             self.benchmark_records.len(),
             self.model_catalog.catalog_version
         ))
-        .default_open(false)
+        .default_open(cfg!(feature = "visual-validation"))
         .show(ui, |ui| {
             ui.small(format!(
                 "Versioned corpus: {BENCHMARK_CORPUS_VERSION}. Recommendations require complete, comparable GameEngine task evidence; third-party scores alone never qualify a model."
@@ -1746,7 +1774,7 @@ impl AiStudioPanel {
                 }
             });
             ui.small(
-                "Record only when the current result intentionally executes the selected corpus task. Records are machine-local and omit prompts, conversation history, retrieved source text, project paths, and credentials; this feature never uploads private projects.",
+                "Choose the Evidence task before starting inference or a native run; its versioned identity is frozen at execution start. Record only when that result intentionally executes the frozen corpus task. Records are machine-local and omit prompts, conversation history, retrieved source text, project paths, and credentials; this feature never uploads private projects.",
             );
         });
     }
@@ -1806,19 +1834,23 @@ impl AiStudioPanel {
             return false;
         };
         if task.kind == BenchmarkTaskKind::ReadQuestion {
-            return self.last_native_question_benchmark.is_some();
+            return self
+                .last_native_question_benchmark
+                .as_ref()
+                .is_some_and(|snapshot| snapshot.policy.task_id == task.id);
         }
         self.native_run_benchmark_context
             .as_ref()
             .is_some_and(|benchmark| {
-                self.host.run(&benchmark.run_id).is_ok_and(|run| {
-                    matches!(
-                        run.state,
-                        AgentRunState::Completed
-                            | AgentRunState::Failed
-                            | AgentRunState::Cancelled
-                    )
-                })
+                benchmark.task_id == task.id
+                    && self.host.run(&benchmark.run_id).is_ok_and(|run| {
+                        matches!(
+                            run.state,
+                            AgentRunState::Completed
+                                | AgentRunState::Failed
+                                | AgentRunState::Cancelled
+                        )
+                    })
             })
     }
 
@@ -1836,11 +1868,12 @@ impl AiStudioPanel {
                 return;
             };
             read_question_record(
-                task.id,
+                &snapshot.policy.task_id,
                 &snapshot.metrics,
                 snapshot.policy.inventory.as_ref(),
                 snapshot.policy.quality,
                 snapshot.policy.workload,
+                &snapshot.policy.hardware,
             )
         } else {
             let Some(context) = self.native_run_benchmark_context.clone() else {
@@ -1858,12 +1891,16 @@ impl AiStudioPanel {
                 }
             };
             agent_run_record(
-                task.id,
+                &context.task_id,
                 &run,
-                &context.backend_id,
-                &context.model_id,
-                context.inventory.as_ref(),
-                context.quality,
+                AgentRunBenchmarkIdentity {
+                    backend_id: &context.backend_id,
+                    model_id: &context.model_id,
+                    inventory: context.inventory.as_ref(),
+                    quality: context.quality,
+                    workload: context.workload,
+                    hardware: &context.hardware,
+                },
             )
         };
         let record = match record {
@@ -2057,8 +2094,10 @@ impl AiStudioPanel {
             None
         };
         self.native_question_benchmark_policy = Some(NativeQuestionBenchmarkPolicy {
+            task_id: self.benchmark_task_id.clone(),
             quality: self.quality_preference,
             workload: self.resolved_workload,
+            hardware: self.benchmark_hardware.clone(),
             inventory,
         });
         if self.resource_plan.presentation == PresentationPosture::InferenceFocused {
@@ -3073,6 +3112,18 @@ impl AiStudioPanel {
         let native_requires_network = native_config
             .as_ref()
             .is_some_and(NativeModelConfig::requires_network);
+        let has_non_trivial_work = !self.proposal_draft.planned_code_changes.is_empty()
+            || !self.proposal_draft.planned_project_changes.is_empty()
+            || !self.proposal_draft.planned_assets.is_empty();
+        let benchmark_workload = classify_workload(WorkloadSignals {
+            strong_reasoning_required: has_non_trivial_work
+                && matches!(
+                    self.quality_preference,
+                    QualityPreference::Balanced | QualityPreference::Deep
+                ),
+            model_judgement_required: true,
+            ..WorkloadSignals::default()
+        });
         let native_benchmark_identity = native_config.as_ref().map(|config| {
             let inventory = if matches!(config, NativeModelConfig::Local(_)) {
                 self.current_installed_inventory().cloned()
@@ -3092,9 +3143,12 @@ impl AiStudioPanel {
         self.native_run_benchmark_context = native_benchmark_identity.map(
             |(backend_id, model_id, inventory)| NativeRunBenchmarkContext {
                 run_id: run_id.clone(),
+                task_id: self.benchmark_task_id.clone(),
                 backend_id,
                 model_id,
                 quality: self.quality_preference,
+                workload: benchmark_workload,
+                hardware: self.benchmark_hardware.clone(),
                 inventory,
             },
         );
