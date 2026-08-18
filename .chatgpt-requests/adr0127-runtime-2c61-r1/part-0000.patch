@@ -1,0 +1,645 @@
+diff --git a/crates/editor/src/ui/inspector/asset_reference.rs b/crates/editor/src/ui/inspector/asset_reference.rs
+index 8464b6abedfbce65956f4a05c532cf1c9b5b9c25..d13793868d49091c6d2909c151809fbac5f27a0f 100644
+--- a/crates/editor/src/ui/inspector/asset_reference.rs
++++ b/crates/editor/src/ui/inspector/asset_reference.rs
+@@ -91,11 +91,14 @@ pub(in crate::ui) fn asset_reference_browser_kind(
+         | engine::AssetKind::Morph
+         | engine::AssetKind::SecondaryMotionRig => BrowserKind::Mesh,
+         engine::AssetKind::Material => BrowserKind::Material,
+-        engine::AssetKind::Texture => BrowserKind::Texture,
+-        engine::AssetKind::AnimationClip => BrowserKind::AnimationClip,
++        engine::AssetKind::Texture | engine::AssetKind::SpriteAtlas => BrowserKind::Texture,
++        engine::AssetKind::AnimationClip | engine::AssetKind::SpriteAnimation => BrowserKind::AnimationClip,
+         engine::AssetKind::MotionSource => BrowserKind::MotionSource,
+-        engine::AssetKind::AnimationGraph | engine::AssetKind::BehaviorTree => BrowserKind::Graph,
+-        engine::AssetKind::VfxEffect => BrowserKind::Graph,
++        engine::AssetKind::AnimationGraph
++        | engine::AssetKind::BehaviorTree
++        | engine::AssetKind::VfxEffect
++        | engine::AssetKind::TileSet
++        | engine::AssetKind::TileMap => BrowserKind::Graph,
+         engine::AssetKind::AnimationSet => BrowserKind::AnimationSet,
+         engine::AssetKind::Audio => BrowserKind::Audio,
+         engine::AssetKind::NavMesh => BrowserKind::NavMesh,
+diff --git a/crates/engine/src/camera.rs b/crates/engine/src/camera.rs
+index a91d5c619035753b101821653986eeb806affb72..b50eae2332aa40258dce4230d071672660971eb8 100644
+--- a/crates/engine/src/camera.rs
++++ b/crates/engine/src/camera.rs
+@@ -9,7 +9,8 @@ use glam::{Mat4, Quat, Vec3};
+ use hashbrown::HashMap;
+ 
+ pub use engine_render_runtime::camera::{
+-    camera_aspect_system, default_camera_transform, Camera3D, ViewportSize,
++    camera_aspect_system, default_camera_transform, select_game_camera_intent, Camera3D,
++    GameCameraIntent, GameCameraKind, GameCameraSelection, ViewportSize,
+ };
+ pub(crate) use engine_render_runtime::camera::{
+     camera_selection_key, select_active_game_camera,
+diff --git a/crates/engine/src/components.rs b/crates/engine/src/components.rs
+index c7e1126a9ecf8088f37c9575f5ea8ad49c672a72..cb271fb0d8fed82f2534130716abc78ba94ce980 100644
+--- a/crates/engine/src/components.rs
++++ b/crates/engine/src/components.rs
+@@ -12,7 +12,8 @@ use crate::scene_bridge::{
+     AUDIO_LISTENER_COMPONENT,
+     BUILTIN_BLUE_MATERIAL_ASSET_ID, BUILTIN_ORANGE_MATERIAL_ASSET_ID, BUILTIN_QUAD_ASSET_ID,
+     BUILTIN_TRIANGLE_ASSET_ID, BUILTIN_UI_DOCUMENT_ASSET_ID, BUILTIN_WHITE_MATERIAL_ASSET_ID,
+-    CAMERA_COMPONENT, CHARACTER_CONTROLLER_COMPONENT, FOOT_IK_COMPONENT, LOD_GROUP_COMPONENT,
++    CAMERA_2D_COMPONENT, CAMERA_COMPONENT, CHARACTER_CONTROLLER_COMPONENT, FOOT_IK_COMPONENT,
++    LOD_GROUP_COMPONENT,
+     PARTICLE_EMITTER_COMPONENT, RUNTIME_METADATA_COMPONENT, SHADOW_SETTINGS_COMPONENT,
+     SKINNED_MESH_RENDERER_COMPONENT, SKINNED_MODEL_COMPONENT, STATIC_MESH_RENDERER_COMPONENT,
+     TRANSFORM_COMPONENT,
+@@ -54,6 +55,14 @@ pub enum AssetKind {
+     Prefab,
+     /// A typed `*.vfx.json` visual-effect document (ADR 0125).
+     VfxEffect,
++    /// A versioned `*.spriteatlas.json` Native 2D sprite-atlas document.
++    SpriteAtlas,
++    /// A versioned `*.spriteanim.json` Native 2D sprite-animation document.
++    SpriteAnimation,
++    /// A versioned `*.tileset.json` Native 2D tile-set document.
++    TileSet,
++    /// A versioned `*.tilemap.json` Native 2D tile-map document.
++    TileMap,
+     /// A glTF/GLB, FBX, or PMX source document used for mesh, skin, or
+     /// animation import (ADR 0081 widened this from glTF/GLB-only, ADR 0097
+     /// widened it again to PMX; the variant name is a pre-existing misnomer
+@@ -112,6 +121,10 @@ pub fn asset_path_matches_kind(kind: AssetKind, path: &Path) -> bool {
+         AssetKind::UiDocument => file_name.ends_with(".ui.json"),
+         AssetKind::Prefab => file_name.ends_with(".prefab.json"),
+         AssetKind::VfxEffect => file_name.ends_with(".vfx.json"),
++        AssetKind::SpriteAtlas => file_name.ends_with(".spriteatlas.json"),
++        AssetKind::SpriteAnimation => file_name.ends_with(".spriteanim.json"),
++        AssetKind::TileSet => file_name.ends_with(".tileset.json"),
++        AssetKind::TileMap => file_name.ends_with(".tilemap.json"),
+         AssetKind::GltfSource => extension_matches(extension, &["gltf", "glb", "fbx", "pmx"]),
+         AssetKind::MotionSource => extension_matches(extension, &["vmd"]),
+         // Skins, skeletons, morphs, and secondary-motion rigs are only ever
+diff --git a/crates/engine/src/components/builtins.rs b/crates/engine/src/components/builtins.rs
+index ec286a518391a69623a79342f1f5ec67b049209a..204133bb14d5f30ee19c972111ef71e156ef4f98 100644
+--- a/crates/engine/src/components/builtins.rs
++++ b/crates/engine/src/components/builtins.rs
+@@ -235,6 +235,44 @@ const CAMERA_FIELDS: &[FieldDef] = &[
+     .with_control(InspectorFieldControl::Number(POSITIVE)),
+ ];
+ 
++const CAMERA_2D_FIELDS: &[FieldDef] = &[
++    boolean("enabled", "Enabled", "Whether this camera participates in shared Game View arbitration.", true),
++    integer("priority", "Priority", "Shared 2D/3D camera selection priority; higher values win.", 0, NumericRange::inclusive(i32::MIN as f64, i32::MAX as f64)),
++    number("orthographic_height", "Orthographic Height", "Vertical world-space span before zoom.", 10.0, POSITIVE),
++    number("zoom", "Zoom", "Positive orthographic zoom multiplier.", 1.0, POSITIVE),
++    float("near", "Near", "Near clipping plane in Camera2D space.", -1000.0),
++    float("far", "Far", "Far clipping plane in Camera2D space; must exceed Near.", 1000.0),
++    boolean("pixel_perfect", "Pixel Perfect", "Use deterministic reference-pixel projection without rewriting authored transforms.", false),
++    number("reference_pixels_per_unit", "Reference Pixels Per Unit", "Reference source pixels represented by one world unit.", 100.0, POSITIVE),
++    integer("reference_width", "Reference Width", "Pixel-perfect reference resolution width.", 320, U32_RANGE),
++    integer("reference_height", "Reference Height", "Pixel-perfect reference resolution height.", 180, U32_RANGE),
++    enumeration("fit", "Viewport Fit", "How the reference frame fits the actual viewport.", "fit", &["fit", "fill", "stretch"]),
++];
++
++const SPRITE_RENDERER_2D_FIELDS: &[FieldDef] = &[
++    asset_ref("atlas", "Sprite Atlas", "Sprite Atlas document containing the stable SpriteId region.", AssetKind::SpriteAtlas, FieldDefaultSpec::Unassigned),
++    text("sprite_id", "Sprite ID", "Stable SpriteId inside the selected atlas.", ""),
++    number("tint_r", "Tint R", "Linear red tint multiplier.", 1.0, NON_NEGATIVE),
++    number("tint_g", "Tint G", "Linear green tint multiplier.", 1.0, NON_NEGATIVE),
++    number("tint_b", "Tint B", "Linear blue tint multiplier.", 1.0, NON_NEGATIVE),
++    number("tint_a", "Tint A", "Linear alpha tint multiplier.", 1.0, UNIT_INTERVAL),
++    boolean("flip_x", "Flip X", "Mirror texture coordinates horizontally.", false),
++    boolean("flip_y", "Flip Y", "Mirror texture coordinates vertically.", false),
++    text("sorting_layer", "Sorting Layer ID", "Stable SortingLayerId from Project Settings.", "sorting_layer_00000000000000000000000000"),
++    integer("order_in_layer", "Order In Layer", "Signed authored order inside the logical sorting layer.", 0, NumericRange::inclusive(i32::MIN as f64, i32::MAX as f64)),
++    boolean("visible", "Visible", "Whether this sprite contributes a runtime draw.", true),
++    enumeration("blend", "Blend", "Supported unlit SpriteRenderer2D blend mode.", "alpha", &["alpha", "premultiplied_alpha", "additive"]),
++    asset_ref("material_override", "Material Override", "Optional material compatibility override used for deterministic batching.", AssetKind::Material, FieldDefaultSpec::Unassigned).optional(),
++];
++
++const SPRITE_ANIMATOR_2D_FIELDS: &[FieldDef] = &[
++    asset_ref("clip", "Sprite Animation", "Sprite Animation document evaluated independently for this entity.", AssetKind::SpriteAnimation, FieldDefaultSpec::Unassigned),
++    boolean("autoplay", "Autoplay", "Start clip playback when the runtime entity becomes active.", true),
++    number("speed", "Speed", "Non-negative deterministic playback speed multiplier.", 1.0, NON_NEGATIVE),
++    FieldDef::new("looping_override", "Looping Override", "Optional per-entity looping override; unassigned uses the clip default.", FieldKind::Bool, FieldDefaultSpec::Unassigned).optional(),
++    integer("initial_frame", "Initial Frame", "Zero-based initial frame selected when playback becomes active.", 0, U32_RANGE),
++];
++
+ const DIRECTIONAL_LIGHT_FIELDS: &[FieldDef] = &[
+     FieldDef::new(
+         "direction_x",
+@@ -1999,6 +2037,33 @@ pub(super) fn builtin_components() -> Vec<BuiltinComponent> {
+             COLLIDER_FIELDS,
+             spawn_collider_component,
+         ),
++        BuiltinComponent::new(
++            CAMERA_2D_COMPONENT,
++            "Camera 2D",
++            "Orthographic XY camera participating in the shared Game View camera contract.",
++            "Rendering",
++            1,
++            CAMERA_2D_FIELDS,
++            spawn_camera_2d_component,
++        ),
++        BuiltinComponent::new(
++            SPRITE_RENDERER_2D_COMPONENT,
++            "Sprite Renderer 2D",
++            "Renders one stable SpriteRef using logical sorting rather than Transform Z.",
++            "Rendering",
++            1,
++            SPRITE_RENDERER_2D_FIELDS,
++            spawn_sprite_renderer_2d_component,
++        ),
++        BuiltinComponent::new(
++            SPRITE_ANIMATOR_2D_COMPONENT,
++            "Sprite Animator 2D",
++            "Evaluates a Sprite Animation clip in fixed time and drives SpriteRenderer2D.",
++            "Animation",
++            1,
++            SPRITE_ANIMATOR_2D_FIELDS,
++            spawn_sprite_animator_2d_component,
++        ),
+         BuiltinComponent::new(
+             COLLIDER_2D_COMPONENT,
+             "Collider 2D",
+diff --git a/crates/engine/src/components/validation.rs b/crates/engine/src/components/validation.rs
+index 0665cf279a80f67c6ffbd1d878d1423097129a47..eb26307b0ea89c291a5617bad7b04731ae9b7f76 100644
+--- a/crates/engine/src/components/validation.rs
++++ b/crates/engine/src/components/validation.rs
+@@ -296,11 +296,53 @@ pub fn validate_builtin_component_values(scene: &AuthoringScene) -> Vec<Diagnost
+         }
+     }
+     diagnostics.extend(validate_skinned_models_without_renderers(scene));
++    diagnostics.extend(validate_game_camera_scene(scene));
+     diagnostics.extend(validate_spatial_audio_scene(scene));
+     diagnostics.extend(crate::render_limits::validate_scene_render_limits(scene));
+     diagnostics
+ }
+ 
++fn validate_game_camera_scene(scene: &AuthoringScene) -> Vec<Diagnostic> {
++    let camera_3d = ComponentTypeId::new(CAMERA_COMPONENT);
++    let camera_2d = ComponentTypeId::new(CAMERA_2D_COMPONENT);
++    let mut enabled = Vec::new();
++    for (entity_id, entity) in scene.entities() {
++        for component_type in [&camera_3d, &camera_2d] {
++            let Some(Value::Object(fields)) = entity.components.get(component_type) else {
++                continue;
++            };
++            if fields.get("enabled") != Some(&Value::Bool(true)) {
++                continue;
++            }
++            let Some(priority) = fields.get("priority").and_then(|value| match value {
++                Value::I64(value) => i32::try_from(*value).ok(),
++                Value::U64(value) => i32::try_from(*value).ok(),
++                _ => None,
++            }) else {
++                continue;
++            };
++            enabled.push((entity_id.clone(), component_type.clone(), priority));
++        }
++    }
++    let Some(highest) = enabled.iter().map(|(_, _, priority)| *priority).max() else {
++        return Vec::new();
++    };
++    if enabled.iter().filter(|(_, _, priority)| *priority == highest).count() <= 1 {
++        return Vec::new();
++    }
++    enabled
++        .into_iter()
++        .filter(|(_, _, priority)| *priority == highest)
++        .map(|(entity, component_type, _)| {
++            Diagnostic::error(
++                "scene.game_camera_priority_ambiguous",
++                "Multiple enabled Camera2D/Camera3D components share the highest priority; assign a unique highest priority instead of relying on runtime entity order.",
++            )
++            .with_target(DiagnosticTarget::Component { entity, component_type })
++        })
++        .collect()
++}
++
+ fn validate_spatial_audio_scene(scene: &AuthoringScene) -> Vec<Diagnostic> {
+     let mut diagnostics = Vec::new();
+     let listener_type = ComponentTypeId::new(AUDIO_LISTENER_COMPONENT);
+diff --git a/crates/engine/src/native_2d.rs b/crates/engine/src/native_2d.rs
+index 944e1c721f225a74369b1c691bce914ea7a67cb6..4baf25e89826f4272b76bf61ff5bfdd16671439c 100644
+--- a/crates/engine/src/native_2d.rs
++++ b/crates/engine/src/native_2d.rs
+@@ -1,6 +1,22 @@
+ //! Cross-domain Native 2D physics composition (ADR 0127).
+ 
++pub use engine_animation::sprite_2d::{
++    SpriteAnimationRuntimeError, SpriteAnimationState2d, SpriteAnimatorRuntime2d, SpriteFrameEvent2d,
++};
++pub use engine_assets::native_2d::{
++    compile_sprite_atlas, compile_tile_map, compile_tile_set, CompiledSpriteAtlas,
++    CompiledSpriteRegion, CompiledTile, CompiledTileChunk, CompiledTileLayer, CompiledTileMap,
++    CompiledTileSet, Native2dCompileError,
++};
+ pub use engine_physics::native_2d::*;
++pub use engine_render_runtime::native_2d::{
++    cull_tile_chunks, sort_and_batch_sprites, validate_camera_transform, Camera2d,
++    Camera2dDiagnostic, Native2dRenderMetrics, SpriteBatch2d, SpriteInstance2d,
++    TileChunkBounds2d, ViewRect2d, ViewportFit2d, VisibleTileChunk2d,
++};
++pub use engine_authoring::{
++    SpriteBlendMode, SpriteRenderer2d, SpriteRef, TileLayerId, TileMapDocument, TileSetDocument,
++};
+ 
+ use crate::transform::{GlobalTransform, Parent, Transform};
+ use engine_authoring::Project2dSettings;
+@@ -151,6 +167,57 @@ pub fn physics_2d_fixed_system(
+     }
+ }
+ 
++/// One named frame event emitted by SpriteAnimator2D in the current fixed step.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct SpriteAnimationEvent2d {
++    /// Runtime entity whose playback entered the frame.
++    pub entity: Entity,
++    /// Stable Sprite Animation asset used by the animator.
++    pub clip: engine_authoring::AssetId,
++    /// Frame index entered by deterministic playback.
++    pub frame_index: usize,
++    /// Authored event name.
++    pub name: String,
++}
++
++/// Fixed-step Sprite Animation event stream visible to later gameplay systems.
++#[derive(Debug, Default)]
++pub struct SpriteAnimationEvents2d {
++    events: Vec<SpriteAnimationEvent2d>,
++}
++
++impl SpriteAnimationEvents2d {
++    /// Iterates events emitted by the most recent SpriteAnimator2D evaluation.
++    pub fn iter(&self) -> impl Iterator<Item = &SpriteAnimationEvent2d> {
++        self.events.iter()
++    }
++}
++
++/// Advances per-entity Sprite Animation state and writes only the current SpriteRef to rendering.
++pub fn sprite_animation_2d_fixed_system(
++    fixed_time: Res<crate::time::FixedTime>,
++    mut events: ResMut<SpriteAnimationEvents2d>,
++    mut query: Query<(&mut SpriteAnimatorRuntime2d, &mut SpriteRenderer2d)>,
++) {
++    events.events.clear();
++    let seconds = f64::from(fixed_time.fixed_delta.max(0.0));
++    for (entity, (animator, renderer)) in query.iter_mut() {
++        let clip = animator.clip.clone();
++        let emitted = animator
++            .state
++            .advance_fixed_seconds(clip.as_ref(), seconds, animator.looping_override);
++        if let Some(sprite) = animator.state.current_sprite(clip.as_ref()) {
++            renderer.sprite = sprite.clone();
++        }
++        events.events.extend(emitted.into_iter().map(|event| SpriteAnimationEvent2d {
++            entity,
++            clip: animator.clip_asset.clone(),
++            frame_index: event.frame_index,
++            name: event.name,
++        }));
++    }
++}
++
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+diff --git a/crates/engine/src/runtime_systems.rs b/crates/engine/src/runtime_systems.rs
+index ac3440bd42792fd978979b8a337c581f6d86805d..025ff88164802cd849a50160f09cb0c3392f3f65 100644
+--- a/crates/engine/src/runtime_systems.rs
++++ b/crates/engine/src/runtime_systems.rs
+@@ -23,7 +23,8 @@ use crate::secondary_motion::{
+     secondary_motion_presentation_system, secondary_motion_system, SecondaryMotionWorlds,
+ };
+ use crate::native_2d::{
+-    physics_2d_fixed_system, Gravity2d, Physics2dDiagnostics, PhysicsRuntime2d,
++    physics_2d_fixed_system, sprite_animation_2d_fixed_system, Gravity2d, Physics2dDiagnostics,
++    PhysicsRuntime2d, SpriteAnimationEvents2d,
+ };
+ use crate::navmesh::{nav_mesh_agent_system, nav_mesh_debug_draw_system};
+ use crate::physics::velocity_system;
+@@ -91,6 +92,9 @@ pub fn register_runtime_systems(app: &mut App) -> Result<(), SystemRegistrationE
+     if app.world().get_resource::<Physics2dDiagnostics>().is_none() {
+         app.insert_resource(Physics2dDiagnostics::default());
+     }
++    if app.world().get_resource::<SpriteAnimationEvents2d>().is_none() {
++        app.insert_resource(SpriteAnimationEvents2d::default());
++    }
+     app.try_add_system_with_descriptor(
+         engine_system(
+             "engine.combat_debug",
+@@ -229,6 +233,16 @@ pub fn register_runtime_systems(app: &mut App) -> Result<(), SystemRegistrationE
+         .expect("built-in system IDs are valid"),
+         animation_system,
+     )?;
++    app.try_add_fixed_system_with_descriptor(
++        engine_system(
++            "engine.sprite_animation_2d",
++            "Sprite Animation 2D",
++            "Advances deterministic per-entity Sprite Animation state and publishes the current SpriteRef.",
++        )
++        .try_after("engine.animation_graph")
++        .expect("built-in system IDs are valid"),
++        sprite_animation_2d_fixed_system,
++    )?;
+     app.try_add_fixed_system_with_descriptor(
+         engine_system(
+             "engine.root_motion_motor",
+diff --git a/crates/engine/src/scene_bridge.rs b/crates/engine/src/scene_bridge.rs
+index ce19fb43d6e7afaf6bcd9d37572277e62efe382f..f5cf553f6c0b7fe1282631f7cbb3229ca1fc03c3 100644
+--- a/crates/engine/src/scene_bridge.rs
++++ b/crates/engine/src/scene_bridge.rs
+@@ -20,6 +20,9 @@ use crate::authoring_overlay::AuthoringDocumentOverlay;
+ use crate::audio::{AudioAsset, AudioEmitter, AudioListener, AudioRolloffMode, MusicController};
+ use crate::behavior_tree::BehaviorTreeRunner;
+ use crate::camera::{Camera3D, FollowCamera, LockOnCamera, OrbitCamera};
++use crate::native_2d::{
++    Camera2d, SpriteAnimatorRuntime2d, SpriteBlendMode, SpriteRef, SpriteRenderer2d, ViewportFit2d,
++};
+ use crate::character_controller::KinematicCharacterController;
+ use crate::collision::{Collider, CollisionLayers, PhysicsBody, TriggerVolume};
+ use crate::combat::DamageReceiver;
+@@ -58,7 +61,8 @@ use engine_authoring::ui::{UiDocument, UiNode, UiNodeKind, UiString};
+ use engine_authoring::value::Value;
+ use engine_authoring::{
+     AnimationSet, AuthoringEntity, BehaviorTreeAuthoringService, Diagnostic, DiagnosticTarget,
+-    Graph, VfxAuthoringService, VfxModuleOperation,
++    Graph, SortingLayerId, SpriteAnimationDocument, SpriteId, VfxAuthoringService,
++    VfxModuleOperation,
+ };
+ use engine_ecs::{Entity, World};
+ use glam::{EulerRot, Mat4, Quat, Vec3};
+@@ -105,6 +109,13 @@ pub const LOD_GROUP_COMPONENT: &str = "engine.lod_group";
+ /// The `"engine.camera"` component type string recognised by the bridge.
+ pub const CAMERA_COMPONENT: &str = "engine.camera";
+ 
++/// Native orthographic XY camera component (ADR 0127).
++pub const CAMERA_2D_COMPONENT: &str = "engine.camera_2d";
++/// Native SpriteRenderer2D component using stable SpriteRef identity.
++pub const SPRITE_RENDERER_2D_COMPONENT: &str = "engine.sprite_renderer_2d";
++/// Native deterministic SpriteAnimator2D component.
++pub const SPRITE_ANIMATOR_2D_COMPONENT: &str = "engine.sprite_animator_2d";
++
+ /// The `"engine.directional_light"` component type string recognised by the bridge.
+ pub const DIRECTIONAL_LIGHT_COMPONENT: &str = "engine.directional_light";
+ 
+@@ -421,6 +432,8 @@ pub(crate) struct BridgeAssetState {
+     pub(crate) mesh_handles: HashMap<AssetId, Handle<Mesh>>,
+     pub(crate) material_handles: HashMap<AssetId, Handle<Material>>,
+     pub(crate) animation_clip_handles: HashMap<AssetId, BTreeMap<String, Handle<AnimationClip>>>,
++    /// Parsed immutable Sprite Animation documents shared by every entity referencing the asset.
++    pub(crate) sprite_animation_documents: HashMap<AssetId, Arc<SpriteAnimationDocument>>,
+     /// Source asset ID -> the `(sub-asset ID, runtime clip key)` pairs that
+     /// source contributed, recorded when its clips were first loaded.
+     ///
+diff --git a/crates/engine/src/scene_bridge/spawn.rs b/crates/engine/src/scene_bridge/spawn.rs
+index 3826f9c19d47ac377377150134a71a0170d3f31a..aded84ebb9a4b6f05addd409d7788d79a4cd3d6e 100644
+--- a/crates/engine/src/scene_bridge/spawn.rs
++++ b/crates/engine/src/scene_bridge/spawn.rs
+@@ -2623,6 +2623,171 @@ pub(crate) fn spawn_camera_component(
+     Ok(())
+ }
+ 
++pub(crate) fn spawn_camera_2d_component(
++    entity: Entity,
++    value: &Value,
++    context: &mut SpawnContext<'_>,
++) -> Result<(), ComponentSpawnError> {
++    let component_type = ComponentTypeId::new(CAMERA_2D_COMPONENT);
++    const EXPECTED: &str = "a Camera2D object with valid orthographic projection and reference-resolution fields";
++    let fields = ComponentFields::new(context.authoring_entity, &component_type, value, EXPECTED)?;
++    let priority = i32::try_from(fields.i64("priority")?).map_err(|_| fields.invalid(EXPECTED))?;
++    let width = u32::try_from(fields.i64("reference_width")?).map_err(|_| fields.invalid(EXPECTED))?;
++    let height = u32::try_from(fields.i64("reference_height")?).map_err(|_| fields.invalid(EXPECTED))?;
++    let fit = match fields.string("fit")? {
++        "fit" => ViewportFit2d::Fit,
++        "fill" => ViewportFit2d::Fill,
++        "stretch" => ViewportFit2d::Stretch,
++        _ => return Err(fields.invalid(EXPECTED).into()),
++    };
++    let camera = Camera2d {
++        enabled: fields.bool("enabled")?,
++        priority,
++        orthographic_height: fields.f32("orthographic_height")?,
++        zoom: fields.f32("zoom")?,
++        near: fields.f32("near")?,
++        far: fields.f32("far")?,
++        pixel_perfect: fields.bool("pixel_perfect")?,
++        reference_pixels_per_unit: fields.f32("reference_pixels_per_unit")?,
++        reference_resolution: [width, height],
++        fit,
++    };
++    if width == 0 || height == 0 || camera.projection([width, height]).is_err() {
++        return Err(fields.invalid(EXPECTED).into());
++    }
++    context.world.add_component(entity, camera)?;
++    Ok(())
++}
++
++pub(crate) fn spawn_sprite_renderer_2d_component(
++    entity: Entity,
++    value: &Value,
++    context: &mut SpawnContext<'_>,
++) -> Result<(), ComponentSpawnError> {
++    let component_type = ComponentTypeId::new(SPRITE_RENDERER_2D_COMPONENT);
++    const EXPECTED: &str = "a SpriteRenderer2D object with stable atlas/SpriteId, tint, sorting, blend, and visibility fields";
++    let fields = ComponentFields::new(context.authoring_entity, &component_type, value, EXPECTED)?;
++    let Some(atlas) = fields.assignable_asset_ref("atlas")?.cloned() else {
++        context.asset_diagnostics.push(component_inactive_diagnostic(
++            context.authoring_entity,
++            &component_type,
++            "atlas",
++        ));
++        return Ok(());
++    };
++    let sprite = SpriteId::parse(fields.string("sprite_id")?.to_owned()).map_err(|_| fields.invalid(EXPECTED))?;
++    let sorting_layer = SortingLayerId::parse(fields.string("sorting_layer")?.to_owned()).map_err(|_| fields.invalid(EXPECTED))?;
++    let order_in_layer = i32::try_from(fields.i64("order_in_layer")?).map_err(|_| fields.invalid(EXPECTED))?;
++    let tint = [
++        fields.f32("tint_r")?,
++        fields.f32("tint_g")?,
++        fields.f32("tint_b")?,
++        fields.f32("tint_a")?,
++    ];
++    if tint.iter().any(|value| !value.is_finite())
++        || tint[..3].iter().any(|value| *value < 0.0)
++        || !(0.0..=1.0).contains(&tint[3])
++    {
++        return Err(fields.invalid(EXPECTED).into());
++    }
++    let blend = match fields.string("blend")? {
++        "alpha" => SpriteBlendMode::Alpha,
++        "premultiplied_alpha" => SpriteBlendMode::PremultipliedAlpha,
++        "additive" => SpriteBlendMode::Additive,
++        _ => return Err(fields.invalid(EXPECTED).into()),
++    };
++    let material_override = fields.assignable_asset_ref("material_override")?.cloned();
++    context.world.add_component(
++        entity,
++        SpriteRenderer2d {
++            sprite: SpriteRef { atlas, sprite },
++            tint,
++            flip_x: fields.bool("flip_x")?,
++            flip_y: fields.bool("flip_y")?,
++            sorting_layer,
++            order_in_layer,
++            visible: fields.bool("visible")?,
++            blend,
++            material_override,
++        },
++    )?;
++    Ok(())
++}
++
++fn resolve_sprite_animation_document(
++    asset: &AssetId,
++    context: &mut SpawnContext<'_>,
++) -> Result<Arc<SpriteAnimationDocument>, SceneBridgeError> {
++    if let Some(document) = context.asset_state.sprite_animation_documents.get(asset) {
++        return Ok(Arc::clone(document));
++    }
++    let path = manifest_asset_path(asset, context)?;
++    if !crate::components::asset_path_matches_kind(crate::components::AssetKind::SpriteAnimation, &path) {
++        return Err(SceneBridgeError::AssetLoad {
++            asset: asset.clone(),
++            source: AssetLoadError::InvalidAsset {
++                path,
++                message: "SpriteAnimator2D clip must reference a *.spriteanim.json asset".to_owned(),
++            },
++        });
++    }
++    let json = std::fs::read_to_string(&path).map_err(|source| SceneBridgeError::AssetLoad {
++        asset: asset.clone(),
++        source: AssetLoadError::Io { path: path.clone(), source },
++    })?;
++    let document = SpriteAnimationDocument::from_json(&json).map_err(|source| SceneBridgeError::AssetLoad {
++        asset: asset.clone(),
++        source: AssetLoadError::InvalidAsset { path: path.clone(), message: source.to_string() },
++    })?;
++    let validation = document.validate();
++    if !validation.is_empty() {
++        return Err(SceneBridgeError::AssetLoad {
++            asset: asset.clone(),
++            source: AssetLoadError::InvalidAsset { path, message: validation.join("; ") },
++        });
++    }
++    let document = Arc::new(document);
++    context.asset_state.sprite_animation_documents.insert(asset.clone(), Arc::clone(&document));
++    Ok(document)
++}
++
++pub(crate) fn spawn_sprite_animator_2d_component(
++    entity: Entity,
++    value: &Value,
++    context: &mut SpawnContext<'_>,
++) -> Result<(), ComponentSpawnError> {
++    let component_type = ComponentTypeId::new(SPRITE_ANIMATOR_2D_COMPONENT);
++    const EXPECTED: &str = "a SpriteAnimator2D object with clip, autoplay, speed, looping override, and initial frame";
++    let fields = ComponentFields::new(context.authoring_entity, &component_type, value, EXPECTED)?;
++    let Some(clip_asset) = fields.assignable_asset_ref("clip")?.cloned() else {
++        context.asset_diagnostics.push(component_inactive_diagnostic(
++            context.authoring_entity,
++            &component_type,
++            "clip",
++        ));
++        return Ok(());
++    };
++    let speed = fields.f32("speed")?;
++    let looping_override = match fields.get("looping_override") {
++        None | Some(Value::Null) => None,
++        Some(Value::Bool(value)) => Some(*value),
++        _ => return Err(fields.invalid(EXPECTED).into()),
++    };
++    let initial_frame = usize::try_from(fields.i64("initial_frame")?).map_err(|_| fields.invalid(EXPECTED))?;
++    let clip = resolve_sprite_animation_document(&clip_asset, context)?;
++    let animator = SpriteAnimatorRuntime2d::new(
++        clip_asset,
++        clip,
++        fields.bool("autoplay")?,
++        speed,
++        looping_override,
++        initial_frame,
++    )
++    .map_err(|_| fields.invalid(EXPECTED))?;
++    context.world.add_component(entity, animator)?;
++    Ok(())
++}
++
+ pub(crate) fn spawn_directional_light_component(
+     entity: Entity,
+     value: &Value,
+diff --git a/crates/render-runtime/src/camera.rs b/crates/render-runtime/src/camera.rs
+index 4ecee9c150549dcb0333982680e2f64a255af133..b4612e5d65d757e9c6a24750c16d38ad5ffbfa75 100644
+--- a/crates/render-runtime/src/camera.rs
++++ b/crates/render-runtime/src/camera.rs
+@@ -65,7 +65,72 @@ impl Default for Camera3D {
+     }
+ }
+ 
+-/// Builds the total ordering used by every Game View camera consumer.
++/// Projection family participating in the shared Game View arbitration contract.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum GameCameraKind {
++    /// Existing perspective Camera3D.
++    ThreeD,
++    /// Native orthographic Camera2D.
++    TwoD,
++}
++
++/// Backend-neutral enabled/priority intent contributed by any Game View camera.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub struct GameCameraIntent {
++    /// Runtime entity identity used only as a deterministic payload key.
++    pub entity: engine_ecs::Entity,
++    /// Projection family of this candidate.
++    pub kind: GameCameraKind,
++    /// Whether the candidate may drive the Game View.
++    pub enabled: bool,
++    /// Shared authored priority; higher values win.
++    pub priority: i32,
++}
++
++/// Shared Camera2D/Camera3D arbitration result.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum GameCameraSelection {
++    /// No enabled game camera exists.
++    None,
++    /// Exactly one enabled camera owns the highest authored priority.
++    Selected(GameCameraIntent),
++    /// Multiple enabled cameras share the highest authored priority.
++    Ambiguous {
++        /// Highest tied priority.
++        priority: i32,
++        /// Number of candidates tied at that priority.
++        count: usize,
++    },
++}
++
++/// Generalizes ADR 0107 camera intent across Camera3D and Camera2D.
++///
++/// Runtime entity order is never used to hide an authored highest-priority tie;
++/// authoring surfaces can therefore report the same ambiguity the runtime sees.
++pub fn select_game_camera_intent(
++    candidates: impl IntoIterator<Item = GameCameraIntent>,
++) -> GameCameraSelection {
++    let mut enabled = candidates.into_iter().filter(|candidate| candidate.enabled);
++    let Some(mut best) = enabled.next() else {
++        return GameCameraSelection::None;
++    };
++    let mut tied = 1_usize;
++    for candidate in enabled {
++        if candidate.priority > best.priority {
++            best = candidate;
++            tied = 1;
++        } else if candidate.priority == best.priority {
++            tied += 1;
++        }
++    }
++    if tied > 1 {
++        GameCameraSelection::Ambiguous { priority: best.priority, count: tied }
++    } else {
++        GameCameraSelection::Selected(best)
++    }
++}
++
++/// Builds the total ordering used by every Camera3D-only compatibility consumer.
+ ///
+ /// This is public only as a cross-crate runtime adapter contract; application
+ /// code should normally use [`select_active_game_camera`].
