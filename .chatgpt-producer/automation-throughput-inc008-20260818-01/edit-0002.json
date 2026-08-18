@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "docs/CHATGPT_AUTOMATION_INCIDENTS.md",
+  "old": "Keep detection of concrete private Windows user-profile paths, but distinguish\nthe documented placeholder form. Infrastructure PR #137 added that distinction\nand a regression test covering both cases. Subsequent ADR 0121 validation\nconfirmed that the planner self-test passed, and run `31985901970` completed the\nselected affected validation successfully.\n\n### Prevention / ChatGPT next action",
+  "new": "Keep detection of concrete private Windows user-profile paths, but distinguish\nthe documented placeholder form. Infrastructure PR #137 added that distinction\nand a regression test covering both cases. Subsequent ADR 0121 validation\nconfirmed that the planner self-test passed, and run `31985901970` completed the\nselected affected validation successfully. The 2026-08-18 recurrence required no\nscanner change: PR #630 changed the synthetic Remote AI Studio fixture to the\nalready-supported explicit `...` placeholder, and run `32109663223` confirmed\nthe planner/public-snapshot regression recovered while keeping the concrete-path\ncase protected.\n\n### Prevention / ChatGPT next action"
+}
