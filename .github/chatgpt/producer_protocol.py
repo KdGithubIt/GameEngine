@@ -289,13 +289,14 @@ def build_producer_request(args: argparse.Namespace) -> dict[str, Any]:
     if remote_target != expected:
         raise ProducerProtocolError(f"target branch moved: observed {remote_target}, expected {expected}")
     remote_main = request_protocol._ls_remote(repo, args.remote, "refs/heads/main")
-    if remote_main != baseline:
-        raise ProducerProtocolError(f"main advanced: observed {remote_main}, producer baseline is {baseline}")
 
-    _git(repo, "fetch", "--no-tags", args.remote, expected, baseline)
-    ancestry = request_protocol._run(repo, "git", "merge-base", "--is-ancestor", baseline, expected, check=False)
-    if ancestry.returncode != 0:
-        raise ProducerProtocolError("target branch does not contain the declared current-main baseline")
+    _git(repo, "fetch", "--no-tags", args.remote, expected, baseline, remote_main)
+    target_ancestry = request_protocol._run(repo, "git", "merge-base", "--is-ancestor", baseline, expected, check=False)
+    if target_ancestry.returncode != 0:
+        raise ProducerProtocolError("target branch does not contain the declared main baseline")
+    main_ancestry = request_protocol._run(repo, "git", "merge-base", "--is-ancestor", baseline, remote_main, check=False)
+    if main_ancestry.returncode != 0:
+        raise ProducerProtocolError("current main no longer descends from the producer baseline")
 
     _validate_history(repo, baseline, producer_commit, manifest)
     edits = _load_edits(repo, producer_commit, manifest)

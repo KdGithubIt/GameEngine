@@ -1,7 +1,7 @@
 # ChatGPT GitHub Automation
 
 Status: Accepted
-Version: 2.1.0
+Version: 2.2.0
 Canonical location: `docs/CHATGPT_AUTOMATION.md`
 
 ## Purpose
@@ -15,7 +15,7 @@ execution environment, the normal path is:
 ```text
 ChatGPT + GitHub connector
   -> exact chatgpt/gameengine-* target branch
-  -> chatgpt-producer-stage-<request-id> from current main
+  -> chatgpt-producer-stage-<request-id> from captured main baseline
   -> connector writes small structured edit-NNNN.json payloads
   -> final .chatgpt-producer/<request-id>/ready.json commit
   -> connector opens a transient producer-signal Issue
@@ -72,17 +72,20 @@ comes from `main`, not from the producer-controlled branch. The job is gated to
 Issue titles beginning with `GameEngine ChatGPT Producer: ` and trusted author
 associations `OWNER`, `MEMBER`, or `COLLABORATOR`.
 
-The trusted producer re-fetches the producer branch, target branch, and `main`;
-validates exact branch identity, immutable ready commit, linear request history,
-current baseline, edit-plan file list, path safety, and edit operation schemas;
-then applies the operations to a detached checkout whose HEAD is exactly
-`expected_head_sha`.
+Trusted producer jobs are isolated by immutable producer request identity rather
+than one repository-wide queue. Different producer requests may build in
+parallel because they read independent immutable producer branches and publish
+to independent `chatgpt-dispatch-stage-*` branches. The trusted producer still
+re-fetches the producer branch, target branch, and `main`; validates exact branch
+identity, immutable ready commit, linear request history, baseline ancestry,
+edit-plan file list, path safety, and edit operation schemas; then applies the
+operations to a detached checkout whose HEAD is exactly `expected_head_sha`.
 
 Only after those operations are staged does trusted automation invoke
-`.github/chatgpt/request_protocol.py build`. That existing builder creates the
-unified diff mechanically from Git, performs strict patch/path/mode preflight,
-rechecks remote target and `main`, splits immutable transport parts on newline
-boundaries, and emits schema-v2 hash/byte-count metadata.
+`.github/chatgpt/request_protocol.py build`. The builder creates the unified diff
+mechanically from Git, performs strict patch/path/mode preflight, rechecks the
+exact remote target and current-main compatibility, splits immutable transport
+parts on newline boundaries, and emits schema-v2 hash/byte-count metadata.
 
 The trusted producer publishes only the exact builder output to a fresh
 `chatgpt-dispatch-stage-<request-id>` branch. A workflow's own `GITHUB_TOKEN`
@@ -90,11 +93,22 @@ push does not start ordinary push-triggered workflows, so it explicitly starts
 the trusted transport publisher from `main` with the exact stage branch and full
 ready commit SHA.
 
-The transport publisher repeats trusted pre-publish validation before mutating
-`chatgpt-dispatch`, globally serializes publication, and uses an exact lease. It
-then explicitly starts the trusted Dispatcher from `main`. The Dispatcher again
-validates request bytes, baseline, paths, and target HEAD before applying the
-product patch.
+Transport publisher jobs perform immutable-stage and request preflight in
+parallel. The shared `chatgpt-dispatch` ref remains a single-writer state by Git
+semantics: immediately before publication each publisher re-fetches the latest
+transport HEAD, cherry-picks only its validated immutable request, and attempts
+an exact `--force-with-lease` update. A lease race caused by another trusted
+publisher is re-fetched and retried with a bounded loop. No producer writes the
+shared ref directly.
+
+The Dispatcher is not repository-globally serialized. A read-only resolver first
+validates the published request enough to derive its safe `chatgpt/gameengine-*`
+target branch. The write-capable Dispatcher job is then serialized only for that
+validated target branch, covering exact-head apply, target push, Draft PR
+reconciliation, and Windows Validation dispatch as one target-scoped critical
+section. Different target branches may proceed concurrently. The exact target
+`expected_head_sha` check plus final `--force-with-lease` remains the stale-write
+boundary inside that queue.
 
 Normal product requests MUST NOT modify `.github/**` or
 `.chatgpt-requests/**`. Connector edit operations are validated by the same
@@ -117,8 +131,8 @@ and a new producer branch.
 ### `chatgpt-dispatch-stage-<request-id>`
 
 Immutable per-request transport staging branch. It starts from the declared
-current `main` baseline and contains one or more builder-generated patch-part
-addition commits followed by one final Dispatcher `ready.json` addition.
+`main` baseline and contains one or more builder-generated patch-part addition
+commits followed by one final Dispatcher `ready.json` addition.
 
 Before ready, commits may add only:
 
@@ -139,7 +153,9 @@ branch.
 
 Long-lived shared transport branch containing immutable request records under
 `.chatgpt-requests/<request-id>/`. The trusted transport publisher is the normal
-single writer. Producers MUST NOT update this ref directly.
+single writer. Multiple trusted publisher jobs may preflight concurrently, but
+only an exact lease update may advance this ref. Producers MUST NOT update this
+ref directly.
 
 ### `chatgpt/gameengine-*`
 
@@ -222,8 +238,10 @@ The envelope lives at:
 
 `request_id` MUST match branch and directory. `edit_parts` MUST exactly list the
 contiguous edit files. `expected_head_sha` and `baseline_main_sha` are full
-40-character SHAs. Current target must equal `expected_head_sha`, current `main`
-must equal `baseline_main_sha`, and the baseline must be an ancestor of target.
+40-character SHAs. Current target must equal `expected_head_sha`, and the
+baseline must be an ancestor of target. Current `main` may equal the baseline or
+may have advanced as a descendant; advancement is accepted only after the
+current-main drift policy below proves that the request is still safe.
 
 The producer envelope is not a Dispatcher request. The trusted producer applies
 its edit plan and then uses the normal mechanical builder to create the
@@ -267,28 +285,31 @@ For a normal implementation when ChatGPT has only the GitHub connector:
    work starts from current `main`.
 3. Capture exact target HEAD and current `main` as `expected_head_sha` and
    `baseline_main_sha`.
-4. Create a unique `chatgpt-producer-stage-<request-id>` from that exact current
+4. Create a unique `chatgpt-producer-stage-<request-id>` from that exact captured
    `main` baseline.
 5. Read exact target file content needed to form precise edit anchors. Create
    only small structured edit payloads on the producer branch; do not rewrite a
    huge existing source through Contents API just to transport a change.
 6. Add all contiguous edit payload files before ready.
-7. Re-read target and `main`. If either differs from captured SHAs, abandon this
-   unpublished producer request and rebuild from current state with a new ID.
+7. Re-read target before producer ready. If target differs from
+   `expected_head_sha`, abandon the unpublished producer request and rebuild from
+   current target state with a new ID. If `main` advanced, require the captured
+   baseline to remain its ancestor; detailed impact is re-evaluated by the
+   canonical builder rather than changing the SHA in the existing request.
 8. Add exactly `.chatgpt-producer/<request-id>/ready.json` in a separate final
    commit and no other file in that commit.
 9. Re-read producer branch and capture full ready commit SHA. Never modify the
    branch after this point.
 10. Open the transient producer-signal Issue with exact title/body above.
 11. Trusted producer validates signal authority, producer immutability/history,
-    target/main state, edit payloads, and product paths.
+    exact target state, main-baseline ancestry, edit payloads, and product paths.
 12. It applies ordered edits to an exact target checkout and stages resulting
     product state.
 13. `request_protocol.py build` mechanically creates/preflights schema-v2 request
-    bytes and rechecks remote target/main.
+    bytes, rechecks exact remote target, and evaluates current-main drift.
 14. Immediately before releasing Dispatcher ready, trusted production again
-    checks producer branch, target branch, and `main`. Any movement aborts the
-    unpublished stage request.
+    checks producer immutability, exact target, and main-baseline ancestry. Main
+    advancement alone does not rewrite or mutate the already-built request.
 15. Trusted producer publishes exact builder output to a fresh
     `chatgpt-dispatch-stage-<request-id>` and explicitly starts trusted publisher
     from `main`.
@@ -321,17 +342,50 @@ The builder:
    worktree;
 6. applies only to a temporary index, runs `git diff --cached --check`, enforces
    public path allow-list, and rejects symlink/submodule modes;
-7. re-reads remote target and `main` before emitting ready unless running the
-   explicit regression-test-only bypass;
-8. splits only at newline boundaries;
-9. computes exact `patch_sha256` and `patch_bytes`; and
-10. emits schema-v2 `ready.json` plus contiguous `part-NNNN.patch` files.
+7. re-reads exact remote target and current `main` before emitting ready unless
+   running the explicit regression-test-only bypass;
+8. if current `main` advanced from the declared baseline, applies the safe
+   current-main drift policy below;
+9. splits only at newline boundaries;
+10. computes exact `patch_sha256` and `patch_bytes`; and
+11. emits schema-v2 `ready.json` plus contiguous `part-NNNN.patch` files.
 
 Builder output is immutable. It MUST NOT be retyped, reformatted, line-ending
 converted, manually re-split, or synthetically reconstructed. A ChatGPT session
 that cannot execute the builder directly MUST use connector-only trusted
 production rather than requiring a local Worker process or hand-authoring a
 patch.
+
+## Current-main drift policy
+
+`expected_head_sha` remains strict: target movement always makes the request
+stale. `baseline_main_sha` is a compatibility baseline, not a demand that the
+`main` ref remain forever frozen while unrelated parallel work lands.
+
+For schema-v2 build/preflight when current `main` differs from
+`baseline_main_sha`:
+
+1. the baseline MUST still be an ancestor of current `main`;
+2. the target MUST still equal `expected_head_sha` and contain the baseline;
+3. the exact patch MUST still pass strict target preflight;
+4. ordinary documentation-only main drift is compatible, but authoring and
+   automation contracts such as root `AGENTS.md`, code style/development
+   workflow, AI-friendly authoring, this automation protocol, and the Direct
+   Worker protocol are fail-closed and require rebuild;
+5. otherwise current Cargo metadata is used to map changed crate paths to
+   workspace packages and transitive reverse dependents;
+6. request scope and main-drift scope MUST be disjoint to continue;
+7. request-side package manifests (`*/Cargo.toml`) are fail-closed because they
+   can change the dependency graph that current-main metadata describes; root
+   workspace manifest, `Cargo.lock`, pinned toolchain, automation/build/
+   validation infrastructure, deleted or unclassifiable paths, or overlapping
+   affected package scopes likewise require rebuild/re-evaluation from current
+   main.
+
+The policy is intentionally fail-closed. A request never changes its declared
+baseline or expected target SHA in place. Safe main advancement preserves the
+same immutable patch; unsafe advancement requires a new request built from the
+new state.
 
 ## Direct builder lifecycle
 
@@ -341,15 +395,17 @@ A producer with a trusted real checkout may instead:
 2. Prepare intended change in a disposable exact-target checkout and stage only
    intended files.
 3. Run the mechanical request builder.
-4. Create unique `chatgpt-dispatch-stage-<request-id>` from current `main`.
+4. Create unique `chatgpt-dispatch-stage-<request-id>` from the captured
+   `baseline_main_sha`.
 5. Publish exact builder-emitted parts without transformation.
-6. Re-read target and `main`; if either moved, abandon unpublished request,
-   rebuild from current state, and use a new ID.
+6. Re-read target before ready; target movement always requires rebuild. If
+   `main` advanced, require baseline ancestry and let trusted preflight evaluate
+   drift impact instead of discarding a request solely because the ref moved.
 7. Add exact builder-emitted `ready.json` in its own final commit.
 8. Continue through publisher, Dispatcher, Draft PR, and validation.
 
-A stale request is never force-applied. SHA fields are never replaced without
-regenerating the corresponding product patch.
+A stale target request is never force-applied. SHA fields are never replaced
+without regenerating the corresponding product patch.
 
 ## Dispatcher `ready.json`
 
@@ -377,7 +433,7 @@ requests during migration. New producer work MUST use schema 2.
 All schemas require matching request ID, safe target, full target SHA, bounded
 one-line commit message/title, PR body at most 8,000 characters, exact patch-part
 list, and no legacy auto-merge authorization marker. Schema v2 additionally
-requires current-main baseline identity/ancestry and exact reconstructed patch
+requires a full main baseline with valid ancestry plus exact reconstructed patch
 SHA-256/byte count.
 
 ## Patch parts
@@ -398,53 +454,77 @@ Published bytes MUST be identical to builder-preflighted bytes.
 
 ## Transport publisher safety checks
 
-Before advancing `chatgpt-dispatch`, trusted publisher:
+Before advancing `chatgpt-dispatch`, each trusted publisher:
 
 1. accepts successful immutable stage signal or explicit trusted recovery
    dispatch with stage branch and full ready commit;
 2. requires stage HEAD still equal exact ready commit;
-3. requires linear history based on `main`;
+3. requires linear history based on a baseline reachable from current `main`;
 4. allows pre-ready commits to add only patch parts and final commit only ready;
 5. validates names, modes, counts, sizes, schema, request ID;
 6. loads controls from current `main`;
-7. re-reads target/current `main` and validates v2 baseline ancestry;
+7. re-reads exact target/current `main`, validates v2 baseline ancestry, and
+   evaluates current-main drift;
 8. verifies reconstructed hash and byte count;
 9. runs strict exact-target applicability, `git diff --cached --check`, path
    allow-list, symlink/submodule checks;
 10. rejects differing request-ID reuse and treats identical content idempotently;
-11. enters global publisher concurrency before selecting latest transport HEAD;
-12. cherry-picks validated immutable request;
-13. re-reads remote transport before push and uses exact lease; and
-14. explicitly starts trusted Dispatcher from `main` with published full ready
-    commit SHA.
+11. performs the expensive validation above without a repository-global
+    publisher queue;
+12. immediately before shared-ref mutation rechecks immutable stage, exact
+    target, and the current-main observation used by preflight;
+13. re-fetches the latest `chatgpt-dispatch` HEAD, cherry-picks the validated
+    immutable request, and pushes with an exact lease;
+14. when another trusted publisher wins that lease first, re-fetches and retries
+    from the new transport HEAD with a bounded loop; and
+15. explicitly starts trusted Dispatcher from `main` with the published full
+    ready commit SHA.
 
-Publisher concurrency uses `cancel-in-progress: false` and `queue: max`.
-Canceled/queued publication is replayed with same immutable stage branch and full
-ready commit. Producers never bypass transport serialization.
+The shared transport ref is therefore serialized only at the atomic Git ref
+update, not for the entire validation job. A normal trusted-publisher race is not
+an incident and does not require a new request. If bounded retries are exhausted,
+replay the same immutable stage branch/full ready commit after diagnosing whether
+unexpected writers or service failures are present. Producers never bypass the
+transport trust boundary.
 
 ## Dispatcher safety checks
 
 Trusted Dispatcher:
 
-1. requires selected full request commit reachable from `chatgpt-dispatch`;
-2. verifies final commit added only declared ready;
-3. validates schema, part names, modes, counts, sizes;
-4. accepts schema 1 only for migration compatibility and schema 2 for normal
+1. runs a read-only resolver from trusted `main` that proves the selected full
+   request commit is reachable from `chatgpt-dispatch`, verifies the final ready
+   commit shape, and validates the target branch syntax before using that branch
+   as a concurrency key;
+2. serializes the write-capable job by that validated target branch, not by one
+   repository-global Dispatcher queue;
+3. inside the target-scoped queue repeats full request authority/envelope
+   validation rather than trusting the resolver as authorization;
+4. verifies final commit added only declared ready;
+5. validates schema, part names, modes, counts, sizes;
+6. accepts schema 1 only for migration compatibility and schema 2 for normal
    current requests;
-5. requires current target HEAD equal `expected_head_sha`;
-6. reconstructs patch and revalidates v2 hash, bytes, baseline, current `main`,
-   ancestry;
-7. runs `git apply --check --whitespace=error-all`;
-8. applies to local index only;
-9. rejects `.github/**`, `.chatgpt-requests/**`, and every path outside public
-   allow-list, including old rename paths with rename detection disabled;
-10. rejects modes `120000` and `160000`;
-11. runs `git diff --cached --check`;
-12. re-reads target HEAD immediately before commit/push; and
-13. pushes with exact lease for `expected_head_sha`.
+7. requires current target HEAD equal `expected_head_sha`;
+8. runs canonical trusted preflight again, including v2 hash/bytes, baseline
+   ancestry, exact patch applicability, and current-main drift policy;
+9. runs `git apply --check --whitespace=error-all`;
+10. applies to local index only;
+11. rejects `.github/**`, `.chatgpt-requests/**`, and every path outside public
+    allow-list, including old rename paths with rename detection disabled;
+12. rejects modes `120000` and `160000`;
+13. runs `git diff --cached --check`;
+14. re-reads target HEAD immediately before commit/push;
+15. for schema v2 requires `main` still equal the exact main SHA observed by the
+    trusted preflight; if it moved, replaying the same published request reruns
+    impact evaluation; and
+16. pushes with exact lease for `expected_head_sha`, then keeps Draft PR
+    reconciliation and exact-head Windows Validation dispatch inside the same
+    target-scoped queue.
 
-Dispatcher concurrency also uses `cancel-in-progress: false` and `queue: max`.
-No stale request is force-applied.
+Different target branches may apply and reconcile concurrently. Requests for the
+same target branch are queued through push, Draft PR reconciliation, and
+Validation dispatch so a later request cannot move the PR head while an earlier
+request is still reconciling it. Exact target leases still reject stale requests
+inside that queue. No stale target request is force-applied.
 
 ## Failure diagnosis before retry
 
@@ -455,7 +535,15 @@ Choose recovery by failing layer:
 - Producer edit payload rejected: fix operation schema, exact text anchor, safe
   path, expected delete blob, or contiguous payload list in a new request.
 - Producer branch moved after ready: never rewrite it; use a new request ID.
-- Stale target/main: rebuild from current state; never replace only SHA fields.
+- Target stale: rebuild from current target state; never replace only SHA fields.
+- Main advanced safely: keep the immutable request when canonical drift preflight
+  says scopes are compatible. If drift is unsafe, rebuild from current main.
+- Main advanced across authoring or automation contract documents: rebuild from
+  current main and re-read the changed contract before producing a replacement
+  request.
+- Request changes a package manifest after main advanced: rebuild from current
+  main; do not evaluate dependency overlap from metadata that predates the
+  request's dependency-graph change.
 - Builder rejected staged product state: fix actual edit intent; never hand-edit
   generated diff.
 - Corrupt/misaligned patch: discard unpublished artifact and regenerate from
@@ -463,12 +551,18 @@ Choose recovery by failing layer:
 - Publisher rejected stage: verify immutable stage shape, ready commit, part
   sequence/sizes/schema, and exact builder bytes.
 - Hash/byte mismatch: abandon unpublished request and rebuild with new ID.
-- Transport moved outside serialization: identify external writer; never
-  force-update from producer.
+- Publisher exact-lease race with another trusted publisher: allow the bounded
+  refetch/retry path to resolve it. Do not create a new request merely because
+  `chatgpt-dispatch` advanced normally.
+- Unexpected transport writer or bounded lease exhaustion: identify the writer
+  or external failure; never force-update from a producer.
 - Publisher canceled before publication: replay from `main` with same immutable
   stage branch/full ready commit.
 - Dispatcher canceled after transport publication: replay same published full
   request commit; do not republish.
+- Dispatcher observes `main` moving after trusted preflight: replay the same
+  published request commit so drift impact is recomputed; do not republish unless
+  the request itself is rejected as incompatible.
 - Dispatcher failed after successfully pushing the exact product commit but before
   Draft PR or Windows Validation reconciliation: do not replay normal apply and do
   not republish. After the trusted recovery workflow is available on `main`, run
@@ -495,7 +589,10 @@ protocol.
 `test_*_protocol.py` whenever automation/protocol paths change. Coverage includes
 existing INC-001 through INC-007 protections plus connector edit-plan generation,
 create/delete behavior, trust-boundary/traversal rejection, exact-match guards,
-immutable producer-head checks, and default-branch Issue-signal handoff.
+immutable producer-head checks, default-branch Issue-signal handoff, safe
+current-main drift including request-side dependency-manifest and authoring-
+contract fail-closed checks, per-request producer concurrency, lease-based
+transport publication, and target-scoped Dispatcher serialization.
 
 A deterministic durable automation fix SHOULD gain a regression when practical.
 
@@ -584,5 +681,5 @@ never through Dispatcher product path.
 
 No write-capable bypass is installed. If connector producer, trusted producer,
 publisher, Dispatcher, or validation is unavailable, diagnose and repair trusted
-path instead of bypassing staging, exact-head checks, single-writer transport,
-Draft PR, or validation guarantees.
+path instead of bypassing staging, exact-head checks, lease-protected
+single-writer transport, Draft PR, or validation guarantees.

@@ -69,6 +69,26 @@ class RepoFixture:
         self.run("git", "commit", "-m", "Mark request ready")
         return self.text("git", "rev-parse", "HEAD")
 
+    def advance_main_docs(self) -> str:
+        self.run("git", "checkout", "main")
+        (self.repo / "docs" / "other.md").write_text("unrelated\n", encoding="utf-8")
+        self.run("git", "add", "docs/other.md")
+        self.run("git", "commit", "-m", "Advance docs")
+        head = self.text("git", "rev-parse", "HEAD")
+        self.run("git", "push", "origin", "main")
+        return head
+
+    def advance_main_automation(self) -> str:
+        self.run("git", "checkout", "main")
+        workflow = self.repo / ".github" / "workflows" / "example.yml"
+        workflow.parent.mkdir(parents=True)
+        workflow.write_text("name: example\n", encoding="utf-8")
+        self.run("git", "add", ".github/workflows/example.yml")
+        self.run("git", "commit", "-m", "Advance automation")
+        head = self.text("git", "rev-parse", "HEAD")
+        self.run("git", "push", "origin", "main")
+        return head
+
 
 GOOD_PATCH = b"""diff --git a/docs/sample.md b/docs/sample.md
 index df967b9..5ea2ed4 100644
@@ -102,12 +122,62 @@ class RequestProtocolRegressionTests(unittest.TestCase):
             with self.assertRaisesRegex(protocol.ProtocolError, "patch_sha256"):
                 protocol.preflight_stage(fixture.repo, commit, "inc003")
 
-    def test_inc004_advanced_main_baseline_is_rejected(self) -> None:
+    def test_inc004_non_ancestor_main_baseline_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             fixture = RepoFixture(Path(temp))
             commit = fixture.make_request("inc004", GOOD_PATCH, baseline="0" * 40)
-            with self.assertRaisesRegex(protocol.ProtocolError, "main advanced"):
+            with self.assertRaises(protocol.ProtocolError):
                 protocol.preflight_stage(fixture.repo, commit, "inc004")
+
+    def test_unrelated_documentation_main_drift_is_allowed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            fixture = RepoFixture(Path(temp))
+            commit = fixture.make_request("docs-drift", GOOD_PATCH)
+            advanced = fixture.advance_main_docs()
+            result = protocol.preflight_stage(fixture.repo, commit, "docs-drift")
+            self.assertEqual(result["baseline_main_sha"], fixture.base)
+            self.assertEqual(result["observed_main_sha"], advanced)
+
+    def test_docs_request_rejects_automation_main_drift(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            fixture = RepoFixture(Path(temp))
+            commit = fixture.make_request("docs-vs-automation-drift", GOOD_PATCH)
+            fixture.advance_main_automation()
+            with self.assertRaisesRegex(protocol.ProtocolError, "workspace-wide, automation, or authoring-contract path"):
+                protocol.preflight_stage(fixture.repo, commit, "docs-vs-automation-drift")
+
+    def test_main_drift_dependency_overlap_is_rejected_from_metadata(self) -> None:
+        workspace = Path("/workspace")
+        metadata = {
+            "workspace_members": ["dep", "app", "other"],
+            "packages": [
+                {"id": "dep", "name": "dep", "manifest_path": "/workspace/crates/dep/Cargo.toml"},
+                {"id": "app", "name": "app", "manifest_path": "/workspace/crates/app/Cargo.toml"},
+                {"id": "other", "name": "other", "manifest_path": "/workspace/crates/other/Cargo.toml"},
+            ],
+            "resolve": {
+                "nodes": [
+                    {"id": "dep", "dependencies": []},
+                    {"id": "app", "dependencies": ["dep"]},
+                    {"id": "other", "dependencies": []},
+                ]
+            },
+        }
+        request_scope = protocol._affected_workspace_packages(["crates/app/src/lib.rs"], metadata, workspace)
+        dependency_drift = protocol._affected_workspace_packages(["crates/dep/src/lib.rs"], metadata, workspace)
+        unrelated_drift = protocol._affected_workspace_packages(["crates/other/src/lib.rs"], metadata, workspace)
+        self.assertEqual(request_scope, {"app"})
+        self.assertEqual(dependency_drift, {"dep", "app"})
+        self.assertTrue(request_scope & dependency_drift)
+        self.assertFalse(request_scope & unrelated_drift)
+
+    def test_main_drift_automation_path_is_rejected_without_metadata(self) -> None:
+        with self.assertRaisesRegex(protocol.ProtocolError, "automation infrastructure"):
+            protocol._affected_workspace_packages(
+                [".github/workflows/gameengine-chatgpt-dispatcher.yml"],
+                {"workspace_members": [], "packages": [], "resolve": {"nodes": []}},
+                Path("/workspace"),
+            )
 
     def test_inc005_checkout_prefix_path_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -155,6 +225,27 @@ class RequestProtocolRegressionTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[2]
         publisher = (root / ".github" / "workflows" / "gameengine-chatgpt-transport-publisher.yml").read_text(encoding="utf-8")
         self.assertIn('git rev-parse --verify "$transport_head:$request_dir"', publisher)
+
+    def test_transport_publisher_preflights_in_parallel_and_lease_retries(self) -> None:
+        root = Path(__file__).resolve().parents[2]
+        publisher = (root / ".github" / "workflows" / "gameengine-chatgpt-transport-publisher.yml").read_text(encoding="utf-8")
+        self.assertNotIn("group: gameengine-chatgpt-transport-publisher", publisher)
+        self.assertIn("for attempt in 1 2 3 4 5 6 7 8; do", publisher)
+        self.assertIn('--force-with-lease="refs/heads/chatgpt-dispatch:$transport_head"', publisher)
+        self.assertIn("run_preflight", publisher)
+
+    def test_dispatcher_serializes_reconciliation_per_target_branch(self) -> None:
+        root = Path(__file__).resolve().parents[2]
+        dispatcher = (root / ".github" / "workflows" / "gameengine-chatgpt-dispatcher.yml").read_text(encoding="utf-8")
+        self.assertIn("Resolve trusted target branch lock", dispatcher)
+        self.assertIn("permissions:\n      contents: read", dispatcher)
+        self.assertIn("needs: resolve", dispatcher)
+        self.assertIn("group: gameengine-chatgpt-dispatcher-${{ needs.resolve.outputs.target_branch }}", dispatcher)
+        self.assertIn("queue: max", dispatcher)
+        self.assertIn("Run trusted current-main request preflight", dispatcher)
+        self.assertIn('--force-with-lease="refs/heads/$TARGET_BRANCH:$EXPECTED_HEAD_SHA"', dispatcher)
+        self.assertIn("main moved after trusted preflight", dispatcher)
+        self.assertIn("target_branch changed between read-only lock resolution", dispatcher)
 
 
 if __name__ == "__main__":
