@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/lib.rs","old":"mod texture_preview;\nmod ui;","new":"mod texture_preview;\nmod timeline_editor;\nmod ui;"}
