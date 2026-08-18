@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0133-edge-profile-and-full-clippy-20260818-03",
+  "target_branch": "chatgpt/gameengine-adr0133-first-release-current-main",
+  "expected_head_sha": "d0941cfa90a3fe31f58a59045fcd029271090e04",
+  "baseline_main_sha": "4e9865c2db754ef5a2a33e1ac42d1cd5cf318229",
+  "patch_sha256": "aa97d342405cf1989d0c3c29fd4630638af1feaffcb0a825791058f134609523",
+  "patch_bytes": 8959,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Fix ADR0133 visual capture lifecycle and full validation",
+  "pr_title": "GameEngine: complete ADR0133 Remote AI Studio first release",
+  "pr_body": "## Summary\n\n- add exact-head Remote AI Studio browser visual validation using the real loopback gateway and production companion HTML/JS\n- seed deterministic Agent Host state only under the `visual-validation` feature\n- capture desktop, narrow, and mobile browser viewports plus tall companion evidence\n- keep unique Edge visual-validation profiles alive for the Windows job lifetime so Edge child processes cannot lose their ProcessSingleton directory between captures\n- move the pre-existing Animation Set test module to the end of its file so current-main full clippy validation is not blocked by `items_after_test_module`\n- keep the accepted visual-validation spec version at 1.5\n\n## Validation\n\n- exact final-head full Windows Validation\n- Automation Regression because `scripts/ci/**` changes\n- Remote browser visual review at desktop, narrow, and mobile widths\n\n<!-- gameengine-visual-validation: editor -->\n<!-- gameengine-visual-remote-ai-studio: browser -->"
+}
