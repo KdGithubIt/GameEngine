@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0126-current-main-combined-v13-ed923d42",
+  "target_branch": "chatgpt/gameengine-adr0126-first-release-v13",
+  "expected_head_sha": "ed923d42c7651b74d2400eb38a8959013d8e0bb8",
+  "baseline_main_sha": "ed923d42c7651b74d2400eb38a8959013d8e0bb8",
+  "edit_parts": [
+    "edit-0000.json", "edit-0001.json", "edit-0002.json", "edit-0003.json",
+    "edit-0004.json", "edit-0005.json", "edit-0006.json", "edit-0007.json",
+    "edit-0008.json", "edit-0009.json", "edit-0010.json", "edit-0011.json",
+    "edit-0012.json", "edit-0013.json", "edit-0014.json", "edit-0015.json",
+    "edit-0016.json", "edit-0017.json", "edit-0018.json", "edit-0019.json",
+    "edit-0020.json", "edit-0021.json", "edit-0022.json", "edit-0023.json",
+    "edit-0024.json", "edit-0025.json", "edit-0026.json", "edit-0027.json",
+    "edit-0028.json", "edit-0029.json", "edit-0030.json", "edit-0031.json",
+    "edit-0032.json", "edit-0033.json", "edit-0034.json", "edit-0035.json",
+    "edit-0036.json", "edit-0037.json", "edit-0038.json", "edit-0039.json",
+    "edit-0040.json", "edit-0041.json", "edit-0042.json", "edit-0043.json",
+    "edit-0044.json", "edit-0045.json", "edit-0046.json", "edit-0047.json",
+    "edit-0048.json", "edit-0049.json", "edit-0050.json", "edit-0051.json",
+    "edit-0052.json", "edit-0053.json", "edit-0054.json", "edit-0055.json",
+    "edit-0056.json", "edit-0057.json", "edit-0058.json", "edit-0059.json",
+    "edit-0060.json", "edit-0061.json", "edit-0062.json", "edit-0063.json",
+    "edit-0064.json", "edit-0065.json", "edit-0066.json", "edit-0067.json",
+    "edit-0068.json", "edit-0069.json", "edit-0070.json", "edit-0071.json",
+    "edit-0072.json", "edit-0073.json", "edit-0074.json", "edit-0075.json",
+    "edit-0076.json", "edit-0077.json", "edit-0078.json", "edit-0079.json",
+    "edit-0080.json"
+  ],
+  "commit_message": "Complete ADR0126 Timeline foundation and first-release schema on current main",
+  "pr_title": "GameEngine: complete ADR0126 Timeline and Sequencer",
+  "pr_body": "## Summary\n\nRebuilds the reviewed ADR0126 Timeline foundation on the exact current-main baseline and folds the first-release schema corrections into the same preflight. This establishes the neutral 48 kHz Timeline clock/scheduler/player, stable IDs and persistence, transactional authoring + capability/CLI/MCP surfaces, the six first-release track families, stable Animation Set + MotionSlotId binding, typed multi-key Transform curves, bounded Event payloads, and exact Event crossing/scrub-preview semantics.\n\nThe PR remains Draft while production runtime composition, Project Rust integration, dedicated Sequencer authoring/preview, Windows Validation, and Visual Validation continue on this branch."
+}
