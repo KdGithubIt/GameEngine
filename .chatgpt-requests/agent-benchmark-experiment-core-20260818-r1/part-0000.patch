@@ -1,0 +1,656 @@
+diff --git a/crates/editor/resources/agent_benchmark_fixture_v1/assets/scenes/main.scene.json b/crates/editor/resources/agent_benchmark_fixture_v1/assets/scenes/main.scene.json
+new file mode 100644
+index 0000000000000000000000000000000000000000..2fbd38dc2edaa312c4ecd72351b5bbc3cc2f315f
+--- /dev/null
++++ b/crates/editor/resources/agent_benchmark_fixture_v1/assets/scenes/main.scene.json
+@@ -0,0 +1,4 @@
++{
++  "schema_version": 1,
++  "entities": []
++}
+diff --git a/crates/editor/resources/agent_benchmark_fixture_v1/benchmark_scenarios.json b/crates/editor/resources/agent_benchmark_fixture_v1/benchmark_scenarios.json
+new file mode 100644
+index 0000000000000000000000000000000000000000..fea98724ed2c2dbbb7ade5ab7bf26e35e869e080
+--- /dev/null
++++ b/crates/editor/resources/agent_benchmark_fixture_v1/benchmark_scenarios.json
+@@ -0,0 +1,13 @@
++{
++  "schema_version": 1,
++  "fixture_version": "gameengine-agent-fixture-v1",
++  "tasks": [
++    {"task_id":"read_question_v1","goal":"Answer which function defines the fixture score and report repository/project provenance.","requires":["retrieved_evidence","provenance"]},
++    {"task_id":"project_inspection_v1","goal":"Inspect the benchmark project and report its scene and Rust game-code structure.","requires":["acceptance_criteria","authoring_validation"]},
++    {"task_id":"code_implementation_v1","goal":"Change fixture_score so value 4 produces 8 and update its test through the managed code workspace.","requires":["managed_code_write","source_validation"]},
++    {"task_id":"typed_authoring_mutation_v1","goal":"Create one named benchmark entity through the authoritative typed authoring/MCP path.","requires":["typed_authoring","authoring_validation"]},
++    {"task_id":"validation_repair_v1","goal":"Repair the task-injected failing fixture test after observing the managed validation failure, then revalidate.","requires":["initial_validation_failure","repair","revalidation"]},
++    {"task_id":"runtime_interaction_v1","goal":"Launch normal Editor Play, send the task-provided Agent virtual input recipe, and prove the expected runtime outcome.","requires":["normal_play","virtual_input","interaction_scenarios"]},
++    {"task_id":"visual_evaluation_v1","goal":"Capture the Game View and evaluate the actual image; text-only capability must remain unavailable.","requires":["frame_capture","image_input","visual_evaluation"]}
++  ]
++}
+diff --git a/crates/editor/resources/agent_benchmark_fixture_v1/game/Cargo.toml b/crates/editor/resources/agent_benchmark_fixture_v1/game/Cargo.toml
+new file mode 100644
+index 0000000000000000000000000000000000000000..94ce229c1615f28b60b5b055e1649487333080d5
+--- /dev/null
++++ b/crates/editor/resources/agent_benchmark_fixture_v1/game/Cargo.toml
+@@ -0,0 +1,12 @@
++[package]
++name = "gameengine-agent-benchmark-fixture"
++version = "0.1.0"
++edition = "2021"
++
++[lib]
++crate-type = ["cdylib"]
++
++[dependencies]
++engine = "0.1.0"
++
++[workspace]
+diff --git a/crates/editor/resources/agent_benchmark_fixture_v1/game/src/benchmark_target.rs b/crates/editor/resources/agent_benchmark_fixture_v1/game/src/benchmark_target.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..7d2415c9758a02b59a3ca1ec962ae701930b25b7
+--- /dev/null
++++ b/crates/editor/resources/agent_benchmark_fixture_v1/game/src/benchmark_target.rs
+@@ -0,0 +1,14 @@
++/// Returns the deterministic baseline score used by Agent Benchmark code tasks.
++pub fn fixture_score(value: i32) -> i32 {
++    value + 1
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn fixture_score_baseline_is_valid() {
++        assert_eq!(fixture_score(4), 5);
++    }
++}
+diff --git a/crates/editor/resources/agent_benchmark_fixture_v1/game/src/lib.rs b/crates/editor/resources/agent_benchmark_fixture_v1/game/src/lib.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..467f7f49b28a62f482d498e5458f2c8eb7161b09
+--- /dev/null
++++ b/crates/editor/resources/agent_benchmark_fixture_v1/game/src/lib.rs
+@@ -0,0 +1,5 @@
++//! Repository-owned GameEngine Agent Benchmark fixture.
++
++pub mod benchmark_target;
++
++engine::export_game_module!();
+diff --git a/crates/editor/resources/agent_benchmark_fixture_v1/project.json b/crates/editor/resources/agent_benchmark_fixture_v1/project.json
+new file mode 100644
+index 0000000000000000000000000000000000000000..083e7ad051cf7c57e1fd9ed2e3143e072734d005
+--- /dev/null
++++ b/crates/editor/resources/agent_benchmark_fixture_v1/project.json
+@@ -0,0 +1,6 @@
++{
++  "schema_version": 2,
++  "project_id": "project_01M03VCS2BFPBHYTXXWRBAGN0K",
++  "name": "GameEngineAgentBenchmarkFixture",
++  "engine_version": "0.1.0"
++}
+diff --git a/crates/editor/src/benchmark_experiment.rs b/crates/editor/src/benchmark_experiment.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..c2fbff9ff3681d3544ffe2f217175f36ee7a0ce0
+--- /dev/null
++++ b/crates/editor/src/benchmark_experiment.rs
+@@ -0,0 +1,548 @@
++//! Reproducible multi-model experiment planning and fixture isolation for ADR 0142.
++//!
++//! This module is deliberately GUI-free. AI Studio may drive the coordinator, but
++//! experiment identity, deterministic ordering, run isolation, result persistence,
++//! and model-only comparison rules live here so they are testable without a model.
++
++#![allow(dead_code)]
++
++use crate::agent_benchmark::{benchmark_task, BenchmarkRecord, BENCHMARK_CORPUS_VERSION, BENCHMARK_HARNESS_VERSION};
++use crate::resource_arbitration::{QualityPreference, TelemetryValue};
++use serde::{Deserialize, Serialize};
++use std::collections::{BTreeMap, BTreeSet};
++use std::fs;
++use std::path::{Path, PathBuf};
++
++pub(crate) const BENCHMARK_EXPERIMENT_SCHEMA_VERSION: u32 = 1;
++pub(crate) const BENCHMARK_FIXTURE_VERSION: &str = "gameengine-agent-fixture-v1";
++pub(crate) const BENCHMARK_FIXTURE_REPOSITORY_PATH: &str =
++    "crates/editor/resources/agent_benchmark_fixture_v1";
++pub(crate) const SINGLE_MODEL_ROUTING_POLICY: &str = "single-model-no-routing-v1";
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case")]
++pub(crate) enum BenchmarkExecutionOrder {
++    ModelTaskRepeat,
++    SeededInterleaved { seed: u64 },
++}
++
++impl Default for BenchmarkExecutionOrder {
++    fn default() -> Self {
++        Self::ModelTaskRepeat
++    }
++}
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case")]
++pub(crate) enum BenchmarkRoutingMode {
++    SingleModel,
++    Routed,
++}
++
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++pub(crate) struct BenchmarkExperimentSpec {
++    pub(crate) schema_version: u32,
++    pub(crate) experiment_id: String,
++    pub(crate) engine_commit_head: String,
++    pub(crate) corpus_version: String,
++    pub(crate) harness_version: String,
++    pub(crate) fixture_version: String,
++    pub(crate) backend_id: String,
++    pub(crate) model_ids: Vec<String>,
++    pub(crate) task_ids: Vec<String>,
++    pub(crate) repeat_count: u32,
++    pub(crate) quality: QualityPreference,
++    pub(crate) routing_mode: BenchmarkRoutingMode,
++    pub(crate) execution_order: BenchmarkExecutionOrder,
++    pub(crate) stop_on_failure: bool,
++    pub(crate) output_destination: PathBuf,
++}
++
++impl BenchmarkExperimentSpec {
++    pub(crate) fn local_single_model_comparison(
++        experiment_id: impl Into<String>,
++        engine_commit_head: impl Into<String>,
++        model_ids: Vec<String>,
++        task_ids: Vec<String>,
++        repeat_count: u32,
++        quality: QualityPreference,
++        output_destination: PathBuf,
++    ) -> Self {
++        Self {
++            schema_version: BENCHMARK_EXPERIMENT_SCHEMA_VERSION,
++            experiment_id: experiment_id.into(),
++            engine_commit_head: engine_commit_head.into(),
++            corpus_version: BENCHMARK_CORPUS_VERSION.to_owned(),
++            harness_version: BENCHMARK_HARNESS_VERSION.to_owned(),
++            fixture_version: BENCHMARK_FIXTURE_VERSION.to_owned(),
++            backend_id: "ollama-compatible".to_owned(),
++            model_ids,
++            task_ids,
++            repeat_count,
++            quality,
++            routing_mode: BenchmarkRoutingMode::SingleModel,
++            execution_order: BenchmarkExecutionOrder::ModelTaskRepeat,
++            stop_on_failure: false,
++            output_destination,
++        }
++    }
++
++    pub(crate) fn validate(&self) -> Result<(), String> {
++        if self.schema_version != BENCHMARK_EXPERIMENT_SCHEMA_VERSION {
++            return Err(format!(
++                "unsupported benchmark experiment schema {}",
++                self.schema_version
++            ));
++        }
++        if self.experiment_id.trim().is_empty() {
++            return Err("benchmark experiment id must be non-empty".to_owned());
++        }
++        if !is_full_git_sha(&self.engine_commit_head) {
++            return Err("benchmark experiment requires an exact 40-character GameEngine commit SHA".to_owned());
++        }
++        if self.corpus_version != BENCHMARK_CORPUS_VERSION
++            || self.harness_version != BENCHMARK_HARNESS_VERSION
++            || self.fixture_version != BENCHMARK_FIXTURE_VERSION
++        {
++            return Err("benchmark corpus, harness, and fixture versions must match the current runner".to_owned());
++        }
++        if self.backend_id.trim().is_empty() {
++            return Err("benchmark backend id must be non-empty".to_owned());
++        }
++        if self.model_ids.is_empty() {
++            return Err("benchmark experiment requires at least one exact model id".to_owned());
++        }
++        if self.repeat_count == 0 {
++            return Err("benchmark repeat count must be at least one".to_owned());
++        }
++        if self.task_ids.is_empty() {
++            return Err("benchmark experiment requires at least one task".to_owned());
++        }
++        let mut models = BTreeSet::new();
++        for model in &self.model_ids {
++            if model.trim().is_empty() || !models.insert(model.as_str()) {
++                return Err("benchmark model ids must be non-empty and unique".to_owned());
++            }
++        }
++        let mut tasks = BTreeSet::new();
++        for task in &self.task_ids {
++            if benchmark_task(task).is_none() || !tasks.insert(task.as_str()) {
++                return Err(format!("benchmark task `{task}` is unknown or duplicated"));
++            }
++        }
++        Ok(())
++    }
++
++    pub(crate) fn planned_runs(&self) -> Result<Vec<BenchmarkPlannedRun>, String> {
++        self.validate()?;
++        let mut runs = Vec::new();
++        for model_id in &self.model_ids {
++            for task_id in &self.task_ids {
++                for repetition in 0..self.repeat_count {
++                    runs.push(BenchmarkPlannedRun {
++                        ordinal: runs.len() as u64,
++                        model_id: model_id.clone(),
++                        task_id: task_id.clone(),
++                        repetition,
++                    });
++                }
++            }
++        }
++        if let BenchmarkExecutionOrder::SeededInterleaved { seed } = self.execution_order {
++            deterministic_shuffle(&mut runs, seed);
++            for (ordinal, run) in runs.iter_mut().enumerate() {
++                run.ordinal = ordinal as u64;
++            }
++        }
++        Ok(runs)
++    }
++}
++
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++pub(crate) struct BenchmarkPlannedRun {
++    pub(crate) ordinal: u64,
++    pub(crate) model_id: String,
++    pub(crate) task_id: String,
++    pub(crate) repetition: u32,
++}
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case")]
++pub(crate) enum BenchmarkRunOutcome {
++    Passed,
++    Failed,
++    Unavailable,
++    Interrupted,
++}
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case")]
++pub(crate) enum BenchmarkRunFailureKind {
++    Backend,
++    OutOfMemory,
++    CapabilityUnavailable,
++    CompletionGate,
++    Harness,
++    Interrupted,
++}
++
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++pub(crate) struct BenchmarkExperimentResult {
++    pub(crate) experiment_id: String,
++    pub(crate) engine_commit_head: String,
++    pub(crate) fixture_version: String,
++    pub(crate) routing_mode: BenchmarkRoutingMode,
++    pub(crate) run: BenchmarkPlannedRun,
++    pub(crate) started_unix_ms: u64,
++    pub(crate) finished_unix_ms: u64,
++    pub(crate) outcome: BenchmarkRunOutcome,
++    pub(crate) failure_kind: Option<BenchmarkRunFailureKind>,
++    pub(crate) routed_to_another_model: bool,
++    pub(crate) record: Option<BenchmarkRecord>,
++}
++
++impl BenchmarkExperimentResult {
++    pub(crate) fn validate_against(&self, spec: &BenchmarkExperimentSpec) -> Result<(), String> {
++        if self.experiment_id != spec.experiment_id
++            || self.engine_commit_head != spec.engine_commit_head
++            || self.fixture_version != spec.fixture_version
++            || self.routing_mode != spec.routing_mode
++        {
++            return Err("benchmark result identity does not match the frozen experiment".to_owned());
++        }
++        if self.finished_unix_ms < self.started_unix_ms {
++            return Err("benchmark run end precedes its start".to_owned());
++        }
++        if spec.routing_mode == BenchmarkRoutingMode::SingleModel && self.routed_to_another_model {
++            return Err("single-model benchmark result was contaminated by model routing".to_owned());
++        }
++        if let Some(record) = self.record.as_ref() {
++            if record.identity.model.backend_id != spec.backend_id
++                || record.identity.model.model_id != self.run.model_id
++                || record.identity.task_id != self.run.task_id
++            {
++                return Err("benchmark record model/task identity does not match the planned run".to_owned());
++            }
++        }
++        Ok(())
++    }
++}
++
++pub(crate) struct BenchmarkExperimentStore {
++    root: PathBuf,
++}
++
++impl BenchmarkExperimentStore {
++    pub(crate) fn open(root: PathBuf) -> Result<Self, String> {
++        fs::create_dir_all(&root).map_err(|error| error.to_string())?;
++        Ok(Self { root })
++    }
++
++    pub(crate) fn write_spec(&self, spec: &BenchmarkExperimentSpec) -> Result<PathBuf, String> {
++        spec.validate()?;
++        let experiment_root = self.root.join(safe_component(&spec.experiment_id));
++        fs::create_dir_all(&experiment_root).map_err(|error| error.to_string())?;
++        let path = experiment_root.join("experiment.json");
++        write_json_atomic(&path, spec)?;
++        Ok(path)
++    }
++
++    pub(crate) fn write_result(
++        &self,
++        spec: &BenchmarkExperimentSpec,
++        result: &BenchmarkExperimentResult,
++    ) -> Result<PathBuf, String> {
++        result.validate_against(spec)?;
++        let runs_root = self
++            .root
++            .join(safe_component(&spec.experiment_id))
++            .join("runs");
++        fs::create_dir_all(&runs_root).map_err(|error| error.to_string())?;
++        let path = runs_root.join(format!("run-{:04}.json", result.run.ordinal));
++        write_json_atomic(&path, result)?;
++        Ok(path)
++    }
++}
++
++pub(crate) struct BenchmarkFixtureSandbox {
++    template_root: PathBuf,
++    run_root: PathBuf,
++}
++
++impl BenchmarkFixtureSandbox {
++    pub(crate) fn new(template_root: PathBuf, run_root: PathBuf) -> Self {
++        Self {
++            template_root,
++            run_root,
++        }
++    }
++
++    pub(crate) fn reset_run(
++        &self,
++        experiment_id: &str,
++        ordinal: u64,
++    ) -> Result<PathBuf, String> {
++        if !self.template_root.is_dir() {
++            return Err(format!(
++                "benchmark fixture template `{}` is unavailable",
++                self.template_root.display()
++            ));
++        }
++        let destination = self
++            .run_root
++            .join(safe_component(experiment_id))
++            .join(format!("run-{ordinal:04}"));
++        if destination.exists() {
++            fs::remove_dir_all(&destination).map_err(|error| error.to_string())?;
++        }
++        fs::create_dir_all(&destination).map_err(|error| error.to_string())?;
++        copy_fixture_tree(&self.template_root, &destination)?;
++        Ok(destination)
++    }
++}
++
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub(crate) struct BenchmarkModelSummary {
++    pub(crate) model_id: String,
++    pub(crate) planned_runs: usize,
++    pub(crate) passed_runs: usize,
++    pub(crate) failed_runs: usize,
++    pub(crate) unavailable_runs: usize,
++    pub(crate) completion_successes: usize,
++    pub(crate) aggregate_elapsed_ms: u64,
++}
++
++pub(crate) fn summarize_experiment(
++    spec: &BenchmarkExperimentSpec,
++    results: &[BenchmarkExperimentResult],
++) -> Result<Vec<BenchmarkModelSummary>, String> {
++    spec.validate()?;
++    let mut summaries = spec
++        .model_ids
++        .iter()
++        .map(|model_id| {
++            (
++                model_id.clone(),
++                BenchmarkModelSummary {
++                    model_id: model_id.clone(),
++                    planned_runs: 0,
++                    passed_runs: 0,
++                    failed_runs: 0,
++                    unavailable_runs: 0,
++                    completion_successes: 0,
++                    aggregate_elapsed_ms: 0,
++                },
++            )
++        })
++        .collect::<BTreeMap<_, _>>();
++    for planned in spec.planned_runs()? {
++        summaries
++            .get_mut(&planned.model_id)
++            .expect("validated model exists")
++            .planned_runs += 1;
++    }
++    for result in results {
++        result.validate_against(spec)?;
++        let summary = summaries
++            .get_mut(&result.run.model_id)
++            .ok_or_else(|| "benchmark result references a model outside the experiment".to_owned())?;
++        match result.outcome {
++            BenchmarkRunOutcome::Passed => summary.passed_runs += 1,
++            BenchmarkRunOutcome::Failed => summary.failed_runs += 1,
++            BenchmarkRunOutcome::Unavailable => summary.unavailable_runs += 1,
++            BenchmarkRunOutcome::Interrupted => summary.failed_runs += 1,
++        }
++        if let Some(record) = result.record.as_ref() {
++            if record.metrics.completion_success == TelemetryValue::Measured(true) {
++                summary.completion_successes += 1;
++            }
++            if let TelemetryValue::Measured(elapsed) = record.metrics.elapsed_ms {
++                summary.aggregate_elapsed_ms = summary.aggregate_elapsed_ms.saturating_add(elapsed);
++            }
++        }
++    }
++    Ok(summaries.into_values().collect())
++}
++
++fn is_full_git_sha(value: &str) -> bool {
++    value.len() == 40 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
++}
++
++fn deterministic_shuffle<T>(values: &mut [T], seed: u64) {
++    let mut state = seed ^ 0x9e37_79b9_7f4a_7c15;
++    if state == 0 {
++        state = 0xa5a5_5a5a_d3c1_b7e9;
++    }
++    for index in (1..values.len()).rev() {
++        state ^= state << 13;
++        state ^= state >> 7;
++        state ^= state << 17;
++        values.swap(index, (state as usize) % (index + 1));
++    }
++}
++
++fn copy_fixture_tree(source: &Path, destination: &Path) -> Result<(), String> {
++    for entry in fs::read_dir(source).map_err(|error| error.to_string())? {
++        let entry = entry.map_err(|error| error.to_string())?;
++        let file_type = entry.file_type().map_err(|error| error.to_string())?;
++        if file_type.is_symlink() {
++            return Err(format!(
++                "benchmark fixture cannot contain symlink `{}`",
++                entry.path().display()
++            ));
++        }
++        let name = entry.file_name();
++        if name == "target" || name == ".git" {
++            continue;
++        }
++        let target = destination.join(&name);
++        if file_type.is_dir() {
++            fs::create_dir_all(&target).map_err(|error| error.to_string())?;
++            copy_fixture_tree(&entry.path(), &target)?;
++        } else if file_type.is_file() {
++            fs::copy(entry.path(), target).map_err(|error| error.to_string())?;
++        }
++    }
++    Ok(())
++}
++
++fn safe_component(value: &str) -> String {
++    let component = value
++        .chars()
++        .map(|character| {
++            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_') {
++                character
++            } else {
++                '-'
++            }
++        })
++        .collect::<String>();
++    if component.is_empty() {
++        "experiment".to_owned()
++    } else {
++        component
++    }
++}
++
++fn write_json_atomic(path: &Path, value: &impl Serialize) -> Result<(), String> {
++    let bytes = serde_json::to_vec_pretty(value).map_err(|error| error.to_string())?;
++    let parent = path
++        .parent()
++        .ok_or_else(|| "benchmark output path has no parent".to_owned())?;
++    fs::create_dir_all(parent).map_err(|error| error.to_string())?;
++    let temporary = path.with_extension("tmp");
++    fs::write(&temporary, bytes).map_err(|error| error.to_string())?;
++    if path.exists() {
++        fs::remove_file(path).map_err(|error| error.to_string())?;
++    }
++    fs::rename(temporary, path).map_err(|error| error.to_string())
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use crate::agent_benchmark::BENCHMARK_TASKS;
++
++    fn exact_head() -> String {
++        "0123456789abcdef0123456789abcdef01234567".to_owned()
++    }
++
++    fn four_model_spec(root: PathBuf) -> BenchmarkExperimentSpec {
++        BenchmarkExperimentSpec::local_single_model_comparison(
++            "suite",
++            exact_head(),
++            vec![
++                "model-a:q4".to_owned(),
++                "model-b:q4".to_owned(),
++                "model-c:q8".to_owned(),
++                "model-d:f16".to_owned(),
++            ],
++            BENCHMARK_TASKS.iter().map(|task| task.id.to_owned()).collect(),
++            3,
++            QualityPreference::Balanced,
++            root,
++        )
++    }
++
++    #[test]
++    fn four_models_seven_tasks_three_repetitions_plan_exactly_eighty_four_runs() {
++        let root = tempfile::tempdir().expect("root");
++        let spec = four_model_spec(root.path().to_path_buf());
++        let runs = spec.planned_runs().expect("plan");
++        assert_eq!(runs.len(), 84);
++        assert_eq!(runs.first().expect("first").ordinal, 0);
++        assert_eq!(runs.last().expect("last").ordinal, 83);
++    }
++
++    #[test]
++    fn seeded_order_is_deterministic_and_recorded() {
++        let root = tempfile::tempdir().expect("root");
++        let mut spec = four_model_spec(root.path().to_path_buf());
++        spec.execution_order = BenchmarkExecutionOrder::SeededInterleaved { seed: 42 };
++        let first = spec.planned_runs().expect("first");
++        let second = spec.planned_runs().expect("second");
++        assert_eq!(first, second);
++    }
++
++    #[test]
++    fn fixture_reset_removes_previous_run_contamination() {
++        let root = tempfile::tempdir().expect("root");
++        let template = root.path().join("template");
++        fs::create_dir_all(template.join("game/src")).expect("template");
++        fs::write(template.join("game/src/lib.rs"), "baseline").expect("baseline");
++        let sandbox = BenchmarkFixtureSandbox::new(template, root.path().join("runs"));
++        let destination = sandbox.reset_run("suite", 0).expect("reset");
++        fs::write(destination.join("game/src/lib.rs"), "mutated").expect("mutate");
++        fs::write(destination.join("generated.txt"), "contamination").expect("generated");
++        let reset = sandbox.reset_run("suite", 0).expect("reset again");
++        assert_eq!(fs::read_to_string(reset.join("game/src/lib.rs")).expect("text"), "baseline");
++        assert!(!reset.join("generated.txt").exists());
++    }
++
++    #[test]
++    fn single_model_result_rejects_router_contamination() {
++        let root = tempfile::tempdir().expect("root");
++        let spec = four_model_spec(root.path().to_path_buf());
++        let run = spec.planned_runs().expect("plan").remove(0);
++        let result = BenchmarkExperimentResult {
++            experiment_id: spec.experiment_id.clone(),
++            engine_commit_head: spec.engine_commit_head.clone(),
++            fixture_version: spec.fixture_version.clone(),
++            routing_mode: BenchmarkRoutingMode::SingleModel,
++            run,
++            started_unix_ms: 1,
++            finished_unix_ms: 2,
++            outcome: BenchmarkRunOutcome::Failed,
++            failure_kind: Some(BenchmarkRunFailureKind::Harness),
++            routed_to_another_model: true,
++            record: None,
++        };
++        assert!(result.validate_against(&spec).is_err());
++    }
++
++    #[test]
++    fn capability_mismatch_is_persistable_without_fabricated_success() {
++        let root = tempfile::tempdir().expect("root");
++        let spec = four_model_spec(root.path().to_path_buf());
++        let run = spec
++            .planned_runs()
++            .expect("plan")
++            .into_iter()
++            .find(|run| run.task_id == "visual_evaluation_v1")
++            .expect("visual run");
++        let result = BenchmarkExperimentResult {
++            experiment_id: spec.experiment_id.clone(),
++            engine_commit_head: spec.engine_commit_head.clone(),
++            fixture_version: spec.fixture_version.clone(),
++            routing_mode: BenchmarkRoutingMode::SingleModel,
++            run,
++            started_unix_ms: 10,
++            finished_unix_ms: 11,
++            outcome: BenchmarkRunOutcome::Unavailable,
++            failure_kind: Some(BenchmarkRunFailureKind::CapabilityUnavailable),
++            routed_to_another_model: false,
++            record: None,
++        };
++        result.validate_against(&spec).expect("valid unavailable result");
++    }
++}
+diff --git a/crates/editor/src/lib.rs b/crates/editor/src/lib.rs
+index 11db348839a8d50eb02dd859e6f092d3df725f84..0822c97dcbd122dcee61ea3e0fbf78af6ccc8a96 100644
+--- a/crates/editor/src/lib.rs
++++ b/crates/editor/src/lib.rs
+@@ -12,6 +12,7 @@
+ #[allow(dead_code)]
+ mod agent_asset_acquisition;
+ mod agent_benchmark;
++mod benchmark_experiment;
+ mod agent_host;
+ mod external_agent_provider;
+ mod hosted_model_backend;
