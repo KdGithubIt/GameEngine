@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0156-campaign-core-fix-20260818-01",
+  "target_branch": "chatgpt/gameengine-adr0156-benchmark-campaigns",
+  "expected_head_sha": "b9f93be302c59291f05bf827bf22aece3f9f090d",
+  "baseline_main_sha": "fdb22b2a4ba20c61dd2c5275905e74275ad65463",
+  "edit_parts": [
+    "edit-0000.json",
+    "edit-0001.json",
+    "edit-0002.json",
+    "edit-0003.json",
+    "edit-0004.json",
+    "edit-0005.json",
+    "edit-0006.json",
+    "edit-0007.json"
+  ],
+  "commit_message": "Fix ADR 0156 campaign core validation",
+  "pr_title": "GameEngine: implement ADR 0156 benchmark campaigns",
+  "pr_body": "## Summary\n\nImplements ADR 0156 benchmark campaigns with immutable execution plans, exact representation and fixture identity, deterministic sequential scheduling, failure-preserving evidence, pause/resume compatibility checks, and reproducible reporting.\n\nThis correction removes an authoring-boundary duplicate Rust block that made the first campaign-core commit uncompilable, preserves strict per-task fixture equivalence while grouping catalog evidence at campaign-suite scope, and prevents Windows/WSL runtime-characterization evidence from entering model ranking.\n\n## Validation\n\nWindows Validation is requested by the trusted dispatcher. AI Studio campaign controls and their required Visual Validation will be added on this same Draft PR after the corrected core is green."
+}
