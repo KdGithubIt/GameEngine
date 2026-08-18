@@ -262,27 +262,29 @@ function Invoke-RemoteBrowserScreenshot {
         "gameengine-edge-visual-" + [Guid]::NewGuid().ToString("N")
     )
     New-Item -ItemType Directory -Force -Path $profileRoot | Out-Null
-    try {
-        $arguments = @(
-            "--headless=new",
-            "--disable-gpu",
-            "--hide-scrollbars",
-            "--no-first-run",
-            "--disable-default-apps",
-            "--user-data-dir=$profileRoot",
-            "--window-size=$Width,$Height",
-            "--virtual-time-budget=4500",
-            "--screenshot=$outputPath",
-            $Url
-        )
-        Write-Host "==> Edge Remote AI Studio capture $Name (${Width}x${Height})"
-        & $EdgeExecutable @arguments | Out-Host
-        if ($LASTEXITCODE -ne 0) {
-            throw "Microsoft Edge screenshot '$Name' failed with exit code $LASTEXITCODE."
-        }
-    } finally {
-        Remove-Item -LiteralPath $profileRoot -Recurse -Force -ErrorAction SilentlyContinue
+    $arguments = @(
+        "--headless=new",
+        "--disable-gpu",
+        "--hide-scrollbars",
+        "--no-first-run",
+        "--disable-default-apps",
+        "--user-data-dir=$profileRoot",
+        "--window-size=$Width,$Height",
+        "--virtual-time-budget=4500",
+        "--screenshot=$outputPath",
+        $Url
+    )
+    Write-Host "==> Edge Remote AI Studio capture $Name (${Width}x${Height})"
+    & $EdgeExecutable @arguments | Out-Host
+    if ($LASTEXITCODE -ne 0) {
+        throw "Microsoft Edge screenshot '$Name' failed with exit code $LASTEXITCODE."
     }
+
+    # Edge's headless parent can return after a child process has taken ownership
+    # of the profile singleton. Removing the profile immediately can invalidate
+    # that still-running child and race the next capture. Each screenshot already
+    # uses a unique profile under the runner temp directory, so leave it alive for
+    # the job lifetime and let the ephemeral runner cleanup reclaim it safely.
 
     if (-not (Test-Path -LiteralPath $outputPath -PathType Leaf)) {
         throw "Remote AI Studio browser screenshot was not produced: $outputPath"
