@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/engine/src/scene_bridge.rs","old":"    Graph, SortingLayerId, SpriteAnimationDocument, SpriteAtlasDocument, SpriteId,\n    VfxAuthoringService,\n","new":"    Graph, SortingLayerId, SpriteAnimationDocument, SpriteAtlasDocument, SpriteId, TileMapDocument,\n    TileSetDocument, VfxAuthoringService,\n"}
