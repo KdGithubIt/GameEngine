@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0126-schema-events-v13-ed923d42",
+  "target_branch": "chatgpt/gameengine-adr0126-first-release-v13",
+  "expected_head_sha": "bd9d458eabd305a4967a7d4e0097dad164fe4b18",
+  "baseline_main_sha": "ed923d42c7651b74d2400eb38a8959013d8e0bb8",
+  "patch_sha256": "2bc1ce867742d12dfeca789b0807ff9f11901f4126f66d51f3f32feac5d33626",
+  "patch_bytes": 38986,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Complete ADR0126 schema and Event crossing semantics",
+  "pr_title": "GameEngine: complete ADR0126 Timeline and Sequencer",
+  "pr_body": "## Summary\n\nContinues ADR0126 first-release completion. The Timeline schema is tightened to the six first-release track families; Animation clips persist stable Animation Set + MotionSlotId identity; Transform/Property clips use validated multi-key typed curves and a shared deterministic sampler; Event/marker payloads are bounded; and Event-track clips compile as exact side-effect points with crossing and scrub-preview semantics.\n\nThe PR remains Draft while production runtime composition, Project Rust integration, the dedicated Sequencer workspace, and required Windows/Visual Validation continue."
+}
