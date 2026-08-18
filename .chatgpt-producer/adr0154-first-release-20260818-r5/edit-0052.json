@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/asset_import.rs","old":"                sub_assets,\n                skeleton_records,\n                humanoid_profiles: Vec::new(),","new":"                sub_assets,\n                animation_source_skeletons,\n                skeleton_records,\n                humanoid_profiles: Vec::new(),"}
