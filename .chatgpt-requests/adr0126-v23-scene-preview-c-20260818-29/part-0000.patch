@@ -1,0 +1,103 @@
+diff --git a/crates/editor/src/scene_view.rs b/crates/editor/src/scene_view.rs
+index 041699c925a3f1b054d49fdea7895dee27cc540b..0b6c0038740364a4083def539c5a7b2531913d43 100644
+--- a/crates/editor/src/scene_view.rs
++++ b/crates/editor/src/scene_view.rs
+@@ -747,6 +747,7 @@ pub(crate) struct TimelinePreviewRequest {
+     pub(crate) transport_revision: u64,
+     pub(crate) requested_tick: engine::timeline::TimelineTick,
+     pub(crate) playing: bool,
++    pub(crate) stopped: bool,
+     pub(crate) loop_preview: bool,
+ }
+ 
+@@ -1846,6 +1847,7 @@ impl SceneView {
+             && let (Some(texture), Some(renderer)) = (&self.texture, &mut self.renderer)
+         {
+             let animation_preview_request = self.animation_preview_request.clone();
++            let timeline_preview_request = self.timeline_preview_request.clone();
+             let preview = self
+                 .preview
+                 .as_mut()
+@@ -1887,26 +1889,40 @@ impl SceneView {
+             if self.particle_preview_enabled {
+                 simulate_particle_preview(app.world_mut(), self.particle_preview_elapsed);
+             }
+-            if self.animation_preview_enabled {
++            if self.animation_preview_enabled || timeline_preview_request.is_some() {
+                 // Install the complete pose pipeline once per world. Animation
+                 // now writes RigPose layers, so preview output must be composed
+                 // and published just like runtime output. Optional MMD physics
+                 // sits between procedural modifiers and final publication.
+                 if !preview.animation_system_installed {
+-                    let graph_enabled = matches!(
+-                        animation_preview_request
+-                            .as_ref()
+-                            .map(|request| &request.mode),
+-                        Some(AnimationPreviewMode::Graph { .. })
+-                    );
++                    let timeline_enabled = timeline_preview_request.is_some();
++                    let graph_enabled = !timeline_enabled
++                        && matches!(
++                            animation_preview_request
++                                .as_ref()
++                                .map(|request| &request.mode),
++                            Some(AnimationPreviewMode::Graph { .. })
++                        );
+                     install_animation_preview_systems(
+                         app,
+                         graph_enabled,
+                         self.animation_secondary_physics_enabled,
++                        timeline_enabled,
+                     );
+                     preview.animation_graph_system_installed = graph_enabled;
+                     preview.animation_system_installed = true;
+                 }
++                if let Some(request) = timeline_preview_request.as_ref() {
++                    self.animation_preview_status = None;
++                    self.timeline_preview_status = Some(sample_timeline_preview(
++                        app,
++                        request,
++                        &mut preview.timeline_source_revision,
++                        &mut preview.timeline_transport_revision,
++                        &mut preview.timeline_fixed_step_remainder,
++                        &mut preview.timeline_last_frame,
++                    ));
++                } else {
+                 let mut animation_status =
+                     match (animation_preview_request.as_ref(), animation_preview_target) {
+                         (Some(request), Some(target)) => Some(sample_requested_animation_preview(
+@@ -1943,6 +1959,7 @@ impl SceneView {
+                     ));
+                 }
+                 self.animation_preview_status = animation_status;
++                }
+             }
+             let particle_debug = self
+                 .show_particle_debug
+@@ -2789,8 +2806,12 @@ fn install_animation_preview_systems(
+     app: &mut engine::App,
+     graph_enabled: bool,
+     secondary_physics_enabled: bool,
++    timeline_enabled: bool,
+ ) {
+     ensure_animation_preview_resources(app);
++    if timeline_enabled {
++        engine::timeline::ensure_timeline_preview_resources(app);
++    }
+     if secondary_physics_enabled
+         && app
+             .world()
+@@ -2804,7 +2825,13 @@ fn install_animation_preview_systems(
+     if graph_enabled {
+         app.add_fixed_system(engine::anim_graph_system);
+     }
++    if timeline_enabled {
++        app.add_fixed_system(engine::timeline::timeline_prepare_system);
++    }
+     app.add_fixed_system(engine::animation_system);
++    if timeline_enabled {
++        app.add_fixed_system(engine::timeline::timeline_transform_system);
++    }
+     app.add_fixed_system(engine::transform_propagation_system);
+     app.add_fixed_system(engine::foot_ik_system);
+     if secondary_physics_enabled {
