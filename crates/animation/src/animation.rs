@@ -316,6 +316,7 @@ enum AnimatorDiscontinuity {
 
 /// An ECS component that plays an [`AnimationClip`] on an entity's
 /// [`Transform`].
+#[derive(Clone)]
 pub struct Animator {
     /// The clip to play.
     pub clip: Handle<AnimationClip>,
@@ -350,6 +351,7 @@ pub struct Animator {
 /// Sampled and advanced by [`animation_system`] alongside the target clip
 /// (`Animator::clip`/`Animator::time`) so a fade source in motion (e.g. a
 /// walk cycle) does not freeze its feet mid-fade.
+#[derive(Clone)]
 struct CrossfadeState {
     /// The clip being faded out of.
     clip: Handle<AnimationClip>,
@@ -401,6 +403,36 @@ impl Animator {
         self.time = seconds.max(0.0);
         if self.discontinuity != Some(AnimatorDiscontinuity::Reposition) {
             self.discontinuity = Some(AnimatorDiscontinuity::Seek);
+        }
+    }
+
+    /// Selects one already-resolved runtime clip and holds an exact pose sample.
+    ///
+    /// Timeline/Sequencer composition uses the normal [`animation_system`] sampler rather than
+    /// maintaining a second skeletal evaluator. A zero playback speed keeps the requested
+    /// local time fixed while the Playing state still allows the production sampler to write
+    /// the pose during this fixed step. Crossfade state is intentionally cleared because a
+    /// Timeline clip is an explicit higher-level sample, not a graph transition.
+    pub fn sample_timeline_pose(
+        &mut self,
+        clip: Handle<AnimationClip>,
+        seconds: f32,
+        discontinuous_seek: bool,
+    ) {
+        if !seconds.is_finite() {
+            return;
+        }
+        let clip_changed = self.clip != clip;
+        self.clip = clip;
+        self.time = seconds.max(0.0);
+        self.state = AnimatorState::Playing;
+        self.playback_speed = 0.0;
+        self.fade = None;
+        self.root_motion_delta = Vec3::ZERO;
+        if discontinuous_seek {
+            self.discontinuity = Some(AnimatorDiscontinuity::Seek);
+        } else if clip_changed {
+            self.discontinuity = Some(AnimatorDiscontinuity::Reposition);
         }
     }
 

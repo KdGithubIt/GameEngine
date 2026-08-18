@@ -12,6 +12,7 @@ members = [
     "crates/import",
     "crates/scripting",
     "crates/scene",
+    "crates/timeline",
     "crates/renderer",
     "crates/engine",
     "crates/authoring",

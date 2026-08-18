@@ -290,6 +290,7 @@ pub struct AnimGraphPlayer {
     last_transition_index: Option<usize>,
     transition_sequence: u64,
     debug_source: Option<AnimationGraphDebugSource>,
+    timeline_overridden: bool,
 }
 
 impl AnimGraphPlayer {
@@ -325,6 +326,7 @@ impl AnimGraphPlayer {
             last_transition_index: None,
             transition_sequence: 0,
             debug_source: None,
+            timeline_overridden: false,
         }
     }
 
@@ -424,6 +426,38 @@ impl AnimGraphPlayer {
         self.debug_source.as_ref()
     }
 
+    /// Resolves a persisted Animation Set + MotionSlotId pair to the runtime clip that
+    /// scene conversion already selected for this rig. Runtime handles never escape into
+    /// persisted Timeline data.
+    pub fn timeline_clip_handle(
+        &self,
+        animation_set: &AssetId,
+        motion_slot: &MotionSlotId,
+    ) -> Option<Handle<AnimationClip>> {
+        let source = self.debug_source.as_ref()?;
+        if &source.animation_set_asset != animation_set {
+            return None;
+        }
+        let runtime_id = source
+            .motion_bindings
+            .get(motion_slot)?
+            .resolved_clip_runtime_id;
+        self.clips
+            .values()
+            .copied()
+            .find(|handle| handle.id().value() == runtime_id)
+    }
+
+    /// Marks this graph as transiently owned by Timeline sampling.
+    pub fn set_timeline_overridden(&mut self, overridden: bool) {
+        self.timeline_overridden = overridden;
+    }
+
+    /// Returns whether Timeline currently owns the sibling Animator sample.
+    pub fn is_timeline_overridden(&self) -> bool {
+        self.timeline_overridden
+    }
+
     /// Monotonic counter incremented for every accepted transition.
     pub fn transition_sequence(&self) -> u64 {
         self.transition_sequence
@@ -472,6 +506,9 @@ impl AnimGraphPlayer {
 /// consumed only after its target state has been resolved successfully.
 pub fn anim_graph_system(mut query: engine_ecs::Query<(&mut AnimGraphPlayer, &mut Animator)>) {
     for (_entity, (player, animator)) in query.iter_mut() {
+        if player.timeline_overridden {
+            continue;
+        }
         if !player.entered {
             player.entered = true;
             if let Some(state) = player.graph.states.get(player.current_state).cloned() {
