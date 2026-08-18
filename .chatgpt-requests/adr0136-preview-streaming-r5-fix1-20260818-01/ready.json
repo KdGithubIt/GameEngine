@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0136-preview-streaming-r5-fix1-20260818-01",
+  "target_branch": "chatgpt/gameengine-adr0136-preview-streaming-r5",
+  "expected_head_sha": "c1c3c8ec59226cde0da112441c3023e44823fa9d",
+  "baseline_main_sha": "97c0c97802f81be7b332583759a2c5bf31254476",
+  "patch_sha256": "eafa8db0689915d36b5e2351287866446af9674c705041a23ee9cc9cec6ac044",
+  "patch_bytes": 601,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Fix ADR 0136 preview streaming lint",
+  "pr_title": "GameEngine: implement ADR 0136 preview residency and streaming",
+  "pr_body": "## Summary\n\nImplements project-scoped preview CPU/GPU residency, asynchronous preview renderer warm-up, frame-budgeted GPU uploads, atomic reimport promotion, and ADR 0135 reclaim recovery for ADR 0136.\n\nRemoves the redundant unused internal upload-report helper identified by affected clippy validation."
+}
