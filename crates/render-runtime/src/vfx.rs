@@ -9,8 +9,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use engine_authoring::{
-    CompiledVfxEffect, CompiledVfxEmitter, CompiledVfxOperation, VfxEmitterId, VfxModuleId,
-    VfxModuleOperation, VfxScalarValue, VfxShape, VfxVectorValue,
+    AssetId, CompiledVfxEffect, CompiledVfxEmitter, CompiledVfxOperation, VfxEmitterId,
+    VfxModuleId, VfxModuleOperation, VfxScalarValue, VfxShape, VfxVectorValue,
 };
 use engine_ecs::{Query, Res};
 use glam::Vec3;
