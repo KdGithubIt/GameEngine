@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/benchmark_experiment.rs",
+  "old": "//! and model-only comparison rules live here so they are testable without a model.\n\nuse crate::agent_benchmark::{benchmark_task, BenchmarkRecord, BENCHMARK_CORPUS_VERSION, BENCHMARK_HARNESS_VERSION, BENCHMARK_TASKS};",
+  "new": "//! and model-only comparison rules live here so they are testable without a model.\n\n#![allow(dead_code)]\n\nuse crate::agent_benchmark::{benchmark_task, BenchmarkRecord, BENCHMARK_CORPUS_VERSION, BENCHMARK_HARNESS_VERSION};"
+}
