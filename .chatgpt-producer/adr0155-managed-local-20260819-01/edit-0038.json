@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "enum ModelBackendPreference {\n    #[default]\n    Local,\n    HostedApi,\n    Enterprise,\n}\n",
+  "new": "enum ModelBackendPreference {\n    #[default]\n    ManagedLocal,\n    #[serde(rename = \"local\")]\n    OllamaCompatible,\n    HostedApi,\n    Enterprise,\n}\n"
+}

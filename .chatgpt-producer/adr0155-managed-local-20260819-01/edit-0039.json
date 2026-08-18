@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "    #[serde(default)]\n    model_backend: ModelBackendPreference,\n    #[serde(default = \"default_local_model_endpoint\")]\n    local_model_endpoint: String,\n",
+  "new": "    #[serde(default)]\n    model_backend: ModelBackendPreference,\n    #[serde(default)]\n    managed_environment: ManagedExecutionEnvironment,\n    #[serde(default)]\n    managed_model_id: String,\n    #[serde(default = \"default_local_model_endpoint\")]\n    local_model_endpoint: String,\n"
+}

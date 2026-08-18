@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "        let preferences = load_ai_studio_preferences(&preferences_path);\n        let benchmark_store = BenchmarkStore::open(ai_root.join(\"benchmark\"))?;\n",
+  "new": "        let preferences = load_ai_studio_preferences(&preferences_path);\n        let managed_local = ManagedLocalAiStudio::new(\n            ai_root.join(\"managed-local\"),\n            preferences.managed_environment,\n            preferences.managed_model_id.clone(),\n        )?;\n        let benchmark_store = BenchmarkStore::open(ai_root.join(\"benchmark\"))?;\n"
+}

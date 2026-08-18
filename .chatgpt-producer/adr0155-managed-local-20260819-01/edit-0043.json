@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "            model_backend: preferences.model_backend,\n            local_model_endpoint: preferences.local_model_endpoint,\n            local_model_name: preferences.local_model_name,\n",
+  "new": "            model_backend: preferences.model_backend,\n            managed_local,\n            local_model_endpoint: preferences.local_model_endpoint,\n            local_model_name: preferences.local_model_name,\n"
+}

@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "            external_agent_provider: ExternalAgentProviderKind::default(),\n            model_backend: ModelBackendPreference::Local,\n            local_model_endpoint: DEFAULT_LOCAL_MODEL_ENDPOINT.to_owned(),\n",
+  "new": "            external_agent_provider: ExternalAgentProviderKind::default(),\n            model_backend: ModelBackendPreference::ManagedLocal,\n            managed_environment: ManagedExecutionEnvironment::WindowsNative,\n            managed_model_id: String::new(),\n            local_model_endpoint: DEFAULT_LOCAL_MODEL_ENDPOINT.to_owned(),\n"
+}

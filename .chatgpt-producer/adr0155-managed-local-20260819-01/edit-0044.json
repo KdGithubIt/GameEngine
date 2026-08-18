@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "        self.poll_remote_requests();\n        self.poll_model_discovery(context);\n        self.poll_native_question(context);\n",
+  "new": "        self.poll_remote_requests();\n        self.managed_local.poll(context);\n        if let Some(status) = self.managed_local.take_status() {\n            self.status = Some(status);\n        }\n        self.poll_model_discovery(context);\n        self.poll_native_question(context);\n"
+}

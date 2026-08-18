@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "use crate::live_observation::{LiveObservationError, LiveObservationManager};\nuse crate::model_router::{ModelRoutingPolicy, MODEL_ROUTER_POLICY_VERSION};\n",
+  "new": "use crate::live_observation::{LiveObservationError, LiveObservationManager};\nuse crate::managed_local_ai_studio::ManagedLocalAiStudio;\nuse crate::managed_local_runtime::ManagedExecutionEnvironment;\nuse crate::model_router::{ModelRoutingPolicy, MODEL_ROUTER_POLICY_VERSION};\n"
+}
