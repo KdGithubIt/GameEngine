@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "        runtime\n            .start_turn(&run, context.as_deref(), images)\n            .map_err(|error| error.to_string())?;\n        self.status = Some(format!(\n            \"{} is reasoning in {:?}; managed tools remain host-owned.\",\n            runtime.backend_label(),\n            run.state\n        ));\n        Ok(())",
+  "new": "        runtime\n            .start_turn(&run, context.as_deref(), images)\n            .map_err(|error| error.to_string())?;\n        let backend_label = runtime.backend_label();\n        let routing_summary = runtime.routing_policy_summary();\n        let routing_decisions = runtime.take_routing_decisions();\n        for decision in routing_decisions {\n            self.host\n                .record_semantic_progress(run_id, \"model_routing\", decision.audit_summary())\n                .map_err(|error| error.to_string())?;\n        }\n        self.status = Some(format!(\n            \"{} is reasoning in {:?}; {}. Managed tools remain host-owned.\",\n            backend_label,\n            run.state,\n            routing_summary\n        ));\n        Ok(())"
+}
