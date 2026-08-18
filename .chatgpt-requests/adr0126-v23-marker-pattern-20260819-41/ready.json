@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0126-v23-marker-pattern-20260819-41",
+  "target_branch": "chatgpt/gameengine-adr0126-first-release-v23",
+  "expected_head_sha": "6619c5775f929bace851de04f363c9f34dbc1bf1",
+  "baseline_main_sha": "96c8ffb18a74eabec2164daa61f694f131019ddc",
+  "patch_sha256": "eaeb133bf346bc003f719439d0df34d3373cc95c333877b6490d26c0d39e3ba5",
+  "patch_bytes": 1552,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Fix Timeline marker payload matching",
+  "pr_title": "GameEngine: complete ADR 0126 Timeline / Sequencer first release",
+  "pr_body": "## Summary\n\nFixes production Timeline marker event matching against the current compiled payload contract before final Windows and visual validation.\n\n<!-- gameengine-visual-validation: editor -->\n"
+}
