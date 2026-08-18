@@ -1,0 +1,5 @@
+{
+  "operation": "create_text",
+  "path": "crates/editor/resources/agent_benchmark_fixture_v1/assets/scenes/main.scene.json",
+  "content": "{\n  \"schema_version\": 1,\n  \"entities\": []\n}\n"
+}
