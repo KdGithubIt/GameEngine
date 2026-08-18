@@ -46,24 +46,20 @@ fn humanoid_motion_choices(
 }
 
 fn animation_set_motion_source_choices(
-    native: &[AssetChoice],
+    model_bound: &[AssetChoice],
     humanoid: &[AssetChoice],
 ) -> Vec<MotionSourceChoice> {
-    let mut choices = Vec::with_capacity(native.len() * 2 + humanoid.len());
-    for choice in native {
+    let mut choices = Vec::with_capacity(model_bound.len() + humanoid.len());
+    for choice in model_bound {
         choices.push(MotionSourceChoice {
-            label: format!("[Auto] {}", choice.label),
-            source: engine_authoring::MotionSourceRef::auto(choice.id.clone()),
-        });
-        choices.push(MotionSourceChoice {
-            label: format!("[Native] {}", choice.label),
-            source: engine_authoring::MotionSourceRef::native(choice.id.clone()),
+            label: format!("[Model] {}", choice.label),
+            source: engine_authoring::MotionSourceRef::new(choice.id.clone()),
         });
     }
     for choice in humanoid {
         choices.push(MotionSourceChoice {
             label: format!("[Humanoid] {}", choice.label),
-            source: engine_authoring::MotionSourceRef::humanoid(choice.id.clone()),
+            source: engine_authoring::MotionSourceRef::new(choice.id.clone()),
         });
     }
     choices
@@ -77,14 +73,7 @@ fn motion_source_display_label(
         .iter()
         .find(|choice| choice.source == *source)
         .map(|choice| choice.label.clone())
-        .unwrap_or_else(|| {
-            let variant = match source.variant {
-                engine_authoring::MotionSourceVariant::Auto => "Auto",
-                engine_authoring::MotionSourceVariant::Native => "Native",
-                engine_authoring::MotionSourceVariant::Humanoid => "Humanoid",
-            };
-            format!("Missing [{variant}] ({})", source.asset.as_str())
-        })
+        .unwrap_or_else(|| format!("Missing ({})", source.asset.as_str()))
 }
 
 /// Stable identity for the Animation Set editor window.
@@ -233,41 +222,36 @@ enum AnimationSetUiAction {
     },
 }
 
-/// Checks that a motion source about to be stored in an Animation Set points at
-/// the imported sub-asset kind required by its explicit variant.
+/// Checks that a motion candidate about to be stored in an Animation Set is
+/// an imported model-bound Animation or portable HumanoidMotion sub-asset.
 ///
-/// Auto and Native are rooted at an imported `Animation` sub-asset. Humanoid is
-/// rooted at an imported `HumanoidMotion` sub-asset. The variant is persisted
-/// and is never inferred from a display name or a parent source.
+/// Schema v3 persists the candidate identity only; route policy is derived
+/// later from import metadata and the selected target skeleton (ADR 0154).
 pub(in crate::ui) fn validate_imported_animation_motion_source_reference(
     manifest: &engine::AssetManifest,
     source: &engine_authoring::MotionSourceRef,
 ) -> Result<(), String> {
-    let (expected_kind, expected_label) = match source.variant {
-        engine_authoring::MotionSourceVariant::Auto
-        | engine_authoring::MotionSourceVariant::Native => {
-            (engine::ImportedSubAssetKind::Animation, "Animation Clip")
-        }
-        engine_authoring::MotionSourceVariant::Humanoid => (
-            engine::ImportedSubAssetKind::HumanoidMotion,
-            "HumanoidMotion",
-        ),
-    };
-
     match manifest.imported_sub_asset(&source.asset) {
-        Some((_, _, sub_asset)) if sub_asset.kind == expected_kind => Ok(()),
-        Some((_, _, _)) => Err(format!(
-            "asset `{}` is an imported sub-asset, but {:?} requires an imported {expected_label}",
+        Some((_, _, sub_asset))
+            if matches!(
+                sub_asset.kind,
+                engine::ImportedSubAssetKind::Animation
+                    | engine::ImportedSubAssetKind::HumanoidMotion
+            ) =>
+        {
+            Ok(())
+        }
+        Some((_, _, sub_asset)) => Err(format!(
+            "asset `{}` is {:?}; Animation Sets require an imported Animation or HumanoidMotion candidate",
             source.asset.as_str(),
-            source.variant
+            sub_asset.kind
         )),
         None if manifest.get(&source.asset).is_some() => Err(format!(
-            "asset `{}` is a source asset; {:?} requires its imported {expected_label} sub-asset instead",
-            source.asset.as_str(),
-            source.variant
+            "asset `{}` is a source asset; select one of its imported Animation or HumanoidMotion sub-assets instead",
+            source.asset.as_str()
         )),
         None => Err(format!(
-            "asset `{}` is not a registered imported {expected_label} sub-asset",
+            "asset `{}` is not a registered imported Animation or HumanoidMotion sub-asset",
             source.asset.as_str()
         )),
     }
@@ -549,7 +533,7 @@ impl EditorApp {
                                     && payload.kind == AssetKind::AnimationClip {
                                         action = Some(AnimationSetUiAction::SetBinding {
                                             slot: slot.clone(),
-                                            motion: Some(engine_authoring::MotionSourceRef::native(
+                                            motion: Some(engine_authoring::MotionSourceRef::new(
                                                 payload.asset_id.clone(),
                                             )),
                                         });
