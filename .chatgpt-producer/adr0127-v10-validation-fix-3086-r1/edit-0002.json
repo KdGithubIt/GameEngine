@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/native_2d_editor.rs",
+  "old": "                self.animation_frame = 0;\n                self.animation_preview = engine::SpriteAnimationState2d::default();\n                self.status = None;\n",
+  "new": "                self.animation_frame = 0;\n                self.animation_preview = engine::native_2d::SpriteAnimationState2d::default();\n                self.status = None;\n"
+}
