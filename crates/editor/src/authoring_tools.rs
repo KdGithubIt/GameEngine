@@ -11,17 +11,20 @@ pub enum AuthoringTool {
     UiContractDesigner,
     /// Layered NavMesh, links, static meshes, and spatial-query authoring.
     AdvancedGeometryDesigner,
+    /// Sprite Atlas, Sprite Animation, Tile Set, and Tile Map authoring.
+    Native2d,
     /// Typed multi-emitter VFX asset authoring.
     VfxBuilder,
 }
 
 impl AuthoringTool {
     /// Stable display order used by editor menus.
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::AbilityDesigner,
         Self::RuntimeEventTimeline,
         Self::UiContractDesigner,
         Self::AdvancedGeometryDesigner,
+        Self::Native2d,
         Self::VfxBuilder,
     ];
 
@@ -32,6 +35,7 @@ impl AuthoringTool {
             Self::RuntimeEventTimeline => "Runtime Event Timeline",
             Self::UiContractDesigner => "UI Contract Designer",
             Self::AdvancedGeometryDesigner => "Advanced Geometry Designer",
+            Self::Native2d => "Native 2D",
             Self::VfxBuilder => "VFX Builder",
         }
     }
@@ -51,6 +55,9 @@ impl AuthoringTool {
             Self::AdvancedGeometryDesigner => {
                 "Author layered NavMeshes, floor links, static triangles, paths, and raycasts."
             }
+            Self::Native2d => {
+                "Author Sprite Atlases, Sprite Animations, Tile Sets, and sparse Tile Maps."
+            }
             Self::VfxBuilder => {
                 "Author typed emitters and ordered spawn, update, and render modules."
             }
@@ -64,12 +71,13 @@ mod tests {
 
     #[test]
     fn catalog_order_and_labels_are_stable() {
-        assert_eq!(AuthoringTool::ALL.len(), 5);
+        assert_eq!(AuthoringTool::ALL.len(), 6);
         assert_eq!(AuthoringTool::ALL[0].label(), "Ability Designer");
         assert_eq!(
             AuthoringTool::ALL[3].label(),
             "Advanced Geometry Designer"
         );
-        assert_eq!(AuthoringTool::ALL[4].label(), "VFX Builder");
+        assert_eq!(AuthoringTool::ALL[4].label(), "Native 2D");
+        assert_eq!(AuthoringTool::ALL[5].label(), "VFX Builder");
     }
 }
