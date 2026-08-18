@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/engine/src/scene_bridge/asset_load.rs","old":"fn decoded_imported_texture(\n","new":"pub(super) fn decoded_imported_texture(\n"}
