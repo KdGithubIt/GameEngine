@@ -5,7 +5,8 @@
 //! into a project or update `asset_manifest.json`.
 
 use crate::agent_host::{
-    AgentCapability, AgentHost, AgentHostError, AssetAcquisitionRecord, PermissionCheck,
+    AgentCapability, AgentHost, AgentHostError, AgentWorkClaim, AssetAcquisitionRecord,
+    PermissionCheck,
 };
 use crate::asset_management::{import_external_asset_files, AssetManagementError};
 use engine::AssetManifest;
@@ -429,6 +430,10 @@ impl AgentAssetAcquisitionService {
             return Err(AssetAcquisitionError::ExplicitUserDecisionRequired);
         }
         require_permissions(host, run_id, requirements.requires_network)?;
+        host.acquire_work_claims(
+            run_id,
+            [asset_destination_claim(&request.destination_folder)],
+        )?;
 
         let output = match &request.operation {
             AssetProviderOperation::Acquire { provider_asset_id } => {
@@ -695,6 +700,16 @@ fn sanitize_metadata(value: &str) -> String {
     let mut truncated = trimmed.chars().take(MAX_METADATA_CHARS).collect::<String>();
     truncated.push('…');
     truncated
+}
+
+fn asset_destination_claim(destination_folder: &Path) -> AgentWorkClaim {
+    let relative = destination_folder.to_string_lossy().replace('\\', "/");
+    let key = if relative.is_empty() || relative == "." {
+        "project_assets".to_owned()
+    } else {
+        format!("project_assets/{relative}")
+    };
+    AgentWorkClaim::asset_target(key)
 }
 
 fn request_fingerprint(provider_id: &str, request: &AssetAcquisitionRequest) -> String {
@@ -1011,6 +1026,59 @@ mod tests {
         )
         .expect("acquisition");
         assert_eq!(provider.calls, 1);
+    }
+
+    #[test]
+    fn overlapping_asset_destination_claim_blocks_provider_execution() {
+        let (_project_dir, _storage_dir, project, mut manifest, mut host, owner_run) =
+            setup("asset-claim-conflict");
+        grant_acquisition(&mut host, &owner_run, true);
+        host.acquire_work_claims(
+            &owner_run,
+            [AgentWorkClaim::asset_target("project_assets/textures")],
+        )
+        .expect("owner claim");
+
+        let waiter_session = host.create_session("Asset claim waiter").expect("session");
+        let waiter_version = host
+            .session(&waiter_session)
+            .expect("session")
+            .proposal
+            .version;
+        let waiter_run = host
+            .start_run_authorized(&waiter_session, waiter_version, "test")
+            .expect("waiter run");
+        grant_acquisition(&mut host, &waiter_run, true);
+
+        let cancellation = AssetAcquisitionCancellation::default();
+        let context = AssetProviderContext::new(None, &cancellation);
+        let request = acquire_request("asset-claim-wait");
+        let mut provider = MockProvider::default();
+        assert!(matches!(
+            AgentAssetAcquisitionService::execute(
+                &mut host,
+                &waiter_run,
+                &project,
+                &mut manifest,
+                &mut provider,
+                &request,
+                &context,
+            ),
+            Err(AssetAcquisitionError::Host(AgentHostError::WorkClaimConflict {
+                owner_run_id,
+                ..
+            })) if owner_run_id == owner_run
+        ));
+        assert_eq!(provider.calls, 0);
+        let waiter = host.run(&waiter_run).expect("waiter run");
+        assert!(waiter
+            .events
+            .iter()
+            .any(|event| event.kind == crate::agent_host::AgentEventKind::WorkConflict));
+        assert!(waiter
+            .events
+            .iter()
+            .any(|event| event.kind == crate::agent_host::AgentEventKind::WorkWait));
     }
 
     #[test]
