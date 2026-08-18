@@ -1103,7 +1103,7 @@ fn collect_needed_humanoid_bakes(
                             .iter()
                             .find(|(_, map)| {
                                 map.source_skeleton == *source_skeleton
-                                    && map.target_skeleton == target_skeleton
+                                    && map.target_skeleton == *target_skeleton
                             })
                             .map(|(id, _)| id.clone())
                     });

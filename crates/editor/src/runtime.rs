@@ -320,7 +320,9 @@ impl RuntimePlayState {
 
         diagnostics.extend(entity_map.asset_diagnostics.iter().cloned());
         if diagnostics.iter().any(|diagnostic| {
-            diagnostic.is_blocking() && diagnostic.code == "anim.motion_binding_failed"
+            diagnostic.is_blocking()
+                && diagnostic.code
+                    == engine::scene_bridge::ANIMATION_MOTION_BINDING_FAILED_DIAGNOSTIC
         }) {
             return Err(PlayError::InvalidScene { diagnostics });
         }

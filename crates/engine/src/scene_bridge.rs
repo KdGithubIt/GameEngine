@@ -524,6 +524,10 @@ pub fn spawn_from_authoring_scene(
 /// [`spawn_from_authoring_scene_best_effort`].
 pub const COMPONENT_SKIPPED_DIAGNOSTIC: &str = "scene_bridge.component_skipped";
 
+/// Diagnostic code reported when a target-aware Animation Set motion binding
+/// has no Native, Retarget, or Humanoid route for the entity's target rig.
+pub const ANIMATION_MOTION_BINDING_FAILED_DIAGNOSTIC: &str = "anim.motion_binding_failed";
+
 /// Diagnostic code reported when a component converts to nothing because a
 /// schema-required asset reference has not been assigned yet (ADR 0069).
 ///

@@ -2002,7 +2002,7 @@ fn push_animation_motion_binding_failure(
     };
     context.asset_diagnostics.push(
         Diagnostic::error(
-            "anim.motion_binding_failed",
+            ANIMATION_MOTION_BINDING_FAILED_DIAGNOSTIC,
             format!(
                 "Animation Set `{}` slot `{}` candidate `{}` cannot resolve for target skeleton `{}`. Attempted routing: {}. Failure: {reason}",
                 animation_set_asset.as_str(),

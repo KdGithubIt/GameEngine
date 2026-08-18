@@ -28,6 +28,12 @@ fn animation_target_preview_choices(
 ) -> Vec<AnimationTargetPreviewChoice> {
     let mut choices = Vec::new();
     for (_, source) in manifest.iter() {
+        if !engine::asset_path_matches_kind(
+            engine::AssetKind::GltfSource,
+            std::path::Path::new(&source.path),
+        ) {
+            continue;
+        }
         let source_label = source.name.as_deref().unwrap_or(&source.path);
         let multiple = source.import_settings.skeleton_records.len() > 1;
         for record in &source.import_settings.skeleton_records {

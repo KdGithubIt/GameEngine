@@ -749,6 +749,23 @@ mod tests {
     }
 
     #[test]
+    fn portable_cache_key_changes_with_humanoid_source_provenance() {
+        let motion = AssetId::generate();
+        let source_a = AssetId::generate();
+        let source_b = AssetId::generate();
+        let without_provenance = imported_humanoid_motion_cache_key(&motion, "fingerprint", None);
+        let with_a = imported_humanoid_motion_cache_key(&motion, "fingerprint", Some(&source_a));
+        let with_b = imported_humanoid_motion_cache_key(&motion, "fingerprint", Some(&source_b));
+
+        assert_ne!(without_provenance, with_a);
+        assert_ne!(with_a, with_b);
+        assert_ne!(
+            with_a,
+            imported_humanoid_motion_cache_key(&motion, "changed", Some(&source_a))
+        );
+    }
+
+    #[test]
     fn model_space_rotation_delta_bakes_to_target() {
         let source = skeleton(AssetId::generate());
         let target = skeleton(AssetId::generate());
