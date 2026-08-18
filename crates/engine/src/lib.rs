@@ -160,6 +160,8 @@ pub mod rig_pose;
 pub mod runtime_metadata;
 /// Shared system registration profiles used by runtime hosts and editor catalogs.
 pub mod runtime_systems;
+/// Production Timeline composition, playback, and Project Rust-facing runtime state (ADR 0126).
+pub mod timeline;
 /// Save data model and slot storage (Phase 56 / ADR 0048).
 pub mod save;
 /// Temporary bridge from authoring scene data to runtime ECS entities.
