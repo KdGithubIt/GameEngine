@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0155-verification-contracts-20260819-01",
+  "target_branch": "chatgpt/gameengine-adr0155-managed-local-ai-v2",
+  "expected_head_sha": "6c157a42e0d96144d42cd3f8852d29e434556cc1",
+  "baseline_main_sha": "fef3a8b6ab1065026f789aa332a6d8a56b241571",
+  "edit_parts": [
+    "edit-0000.json",
+    "edit-0001.json",
+    "edit-0002.json",
+    "edit-0003.json",
+    "edit-0004.json"
+  ],
+  "commit_message": "Strengthen ADR0155 runtime verification",
+  "pr_title": "GameEngine: complete ADR0155 managed Local AI",
+  "pr_body": "## Summary\n\nCompletes the current-main-compatible ADR 0155 managed Local AI implementation and strengthens deterministic verification for Windows llama-server launch arguments, WSL fail-closed managed-distribution detection, and crash-before-health startup handling.\n\n<!-- gameengine-chatgpt-dispatcher -->\n<!-- gameengine-visual-validation: editor -->"
+}
