@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0126-v23-sequencer-surface-20260818-31",
+  "target_branch": "chatgpt/gameengine-adr0126-first-release-v23",
+  "expected_head_sha": "e932033c2bf03a819fe2de165497f2ad747dcaa6",
+  "baseline_main_sha": "96c8ffb18a74eabec2164daa61f694f131019ddc",
+  "patch_sha256": "df0ab737af3823abee77ce23de1c664298c186c57e57080f75a723676a0fbaf5",
+  "patch_bytes": 29503,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Add ADR 0126 Sequencer authoring surface",
+  "pr_title": "GameEngine: complete ADR 0126 Timeline / Sequencer first release",
+  "pr_body": "## Summary\n\nAdds the ADR 0126 Sequencer authoring surface with track/lane editing, transport, snapping, markers, typed asset selection, curve editing, mute/solo/lock controls, and Scene View preview handoff.\n\n<!-- gameengine-visual-validation: editor -->\n"
+}
