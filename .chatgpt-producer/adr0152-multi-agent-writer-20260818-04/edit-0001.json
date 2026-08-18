@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ai_studio.rs","old":"use crate::native_agent_runtime::{NativeAgentAction, NativeAgentRuntime, NativeMcpTask};","new":"use crate::native_agent_runtime::{mcp_write, NativeAgentAction, NativeAgentRuntime, NativeMcpTask};"}
