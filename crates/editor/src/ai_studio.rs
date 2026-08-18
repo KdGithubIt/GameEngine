@@ -6,11 +6,16 @@
 
 use crate::agent_host::{
     project_storage_key, AgentCapability, AgentConfinementNetworkPolicy, AgentConfinementRequest,
-    AgentConfinementRequirement, AgentEventKind, AgentHost, AgentProposal, AgentRunState,
+    AgentConfinementRequirement, AgentEventKind, AgentHost, AgentHostError, AgentProposal,
+    AgentRunState,
     AgentWorkClaim,
     ApprovalScope, AuthoritativeStateSnapshot, CodeChange, CodeWorkspace, CompletionStatus,
     ConversationRole, ExternalAgentProcess, ManagedValidationAttemptStatus, PermissionCheck,
     ProcessStream, ResumeDisposition,
+};
+use crate::external_agent_provider::{
+    build_launch_plan, probe_provider, translate_provider_line, ExternalAgentDiagnostics,
+    ExternalAgentProviderKind, ExternalAgentProviderStatus, ExternalAgentSemanticEvent,
 };
 use crate::hosted_model_backend;
 use crate::hosted_model_backend::{HostedAuthMode, HostedModelConfig};
@@ -34,7 +39,7 @@ use engine::{InputCommand, KeyCode, MouseButton};
 use engine_authoring::ProjectRoot;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsString;
 use std::fs;
 use std::path::PathBuf;
 
@@ -60,6 +65,8 @@ struct AiStudioPreferences {
     #[serde(default)]
     confinement_requirement: AgentConfinementRequirement,
     #[serde(default)]
+    external_agent_provider: ExternalAgentProviderKind,
+    #[serde(default)]
     model_backend: ModelBackendPreference,
     #[serde(default = "default_local_model_endpoint")]
     local_model_endpoint: String,
@@ -77,6 +84,7 @@ impl Default for AiStudioPreferences {
             schema_version: AI_STUDIO_PREFERENCES_SCHEMA_VERSION,
             quality_preference: QualityPreference::Auto,
             confinement_requirement: AgentConfinementRequirement::default(),
+            external_agent_provider: ExternalAgentProviderKind::default(),
             model_backend: ModelBackendPreference::Local,
             local_model_endpoint: DEFAULT_LOCAL_MODEL_ENDPOINT.to_owned(),
             local_model_name: String::new(),
@@ -381,6 +389,8 @@ pub struct AiStudioPanel {
     preferences_path: PathBuf,
     quality_preference: QualityPreference,
     confinement_requirement: AgentConfinementRequirement,
+    external_provider_kind: ExternalAgentProviderKind,
+    external_provider_status: ExternalAgentProviderStatus,
     model_backend: ModelBackendPreference,
     local_model_endpoint: String,
     local_model_name: String,
@@ -401,6 +411,9 @@ pub struct AiStudioPanel {
     native_mcp_task: Option<NativeMcpTask>,
     pending_native_mcp_tool: Option<String>,
     active_runtime_mode: Option<AgentRuntimeMode>,
+    active_external_provider: Option<ExternalAgentProviderKind>,
+    active_external_program: Option<String>,
+    active_external_args: Option<String>,
     provider_program: String,
     provider_args: String,
     presentation: AiStudioPresentationState,
@@ -409,6 +422,8 @@ pub struct AiStudioPanel {
     active_run_id: Option<String>,
     process: Option<ExternalAgentProcess>,
     process_purpose: Option<ExternalAgentPurpose>,
+    external_provider_diagnostics: ExternalAgentDiagnostics,
+    pending_external_work_owner: Option<(ExternalAgentPurpose, String)>,
     code_workspace: Option<CodeWorkspace>,
     pending_code_changes: Vec<CodeChange>,
     pending_permission: Option<PendingPermission>,
@@ -466,6 +481,10 @@ impl AiStudioPanel {
             preferences_path,
             quality_preference: preferences.quality_preference,
             confinement_requirement: preferences.confinement_requirement,
+            external_provider_kind: preferences.external_agent_provider,
+            external_provider_status: ExternalAgentProviderStatus::unchecked(
+                preferences.external_agent_provider,
+            ),
             model_backend: preferences.model_backend,
             local_model_endpoint: preferences.local_model_endpoint,
             local_model_name: preferences.local_model_name,
@@ -491,6 +510,9 @@ impl AiStudioPanel {
             native_mcp_task: None,
             pending_native_mcp_tool: None,
             active_runtime_mode: None,
+            active_external_provider: None,
+            active_external_program: None,
+            active_external_args: None,
             provider_program: String::new(),
             provider_args: String::new(),
             presentation: AiStudioPresentationState::default(),
@@ -499,6 +521,8 @@ impl AiStudioPanel {
             active_run_id,
             process: None,
             process_purpose: None,
+            external_provider_diagnostics: ExternalAgentDiagnostics::default(),
+            pending_external_work_owner: None,
             code_workspace: None,
             pending_code_changes: Vec::new(),
             pending_permission: None,
@@ -535,6 +559,9 @@ impl AiStudioPanel {
         self.hosted_model_endpoint = "https://provider.example/v1/chat/completions".to_owned();
         self.hosted_model_name = "example-hosted-model".to_owned();
         self.hosted_secret_draft.clear();
+        self.external_provider_kind = ExternalAgentProviderKind::ClaudeCode;
+        self.external_provider_status =
+            ExternalAgentProviderStatus::visual_fixture(ExternalAgentProviderKind::ClaudeCode);
     }
 
     #[cfg(feature = "visual-validation")]
@@ -784,6 +811,28 @@ impl AiStudioPanel {
         }
     }
 
+    fn retry_external_work_wait_if_ready(&mut self) {
+        let Some((purpose, owner_run_id)) = self.pending_external_work_owner.clone() else {
+            return;
+        };
+        let owner_finished = match self.host.run(&owner_run_id) {
+            Ok(run) => matches!(
+                run.state,
+                AgentRunState::Completed | AgentRunState::Failed | AgentRunState::Cancelled
+            ),
+            Err(_) => true,
+        };
+        if !owner_finished || self.process.is_some() || self.pending_permission.is_some() {
+            return;
+        }
+        let Some(run_id) = self.active_run_id.clone() else {
+            self.pending_external_work_owner = None;
+            return;
+        };
+        self.pending_external_work_owner = None;
+        self.launch_external_agent(&run_id, purpose);
+    }
+
     /// Draws the current AI Studio presentation and advances host-owned work.
     pub fn show(&mut self, context: &egui::Context) {
         self.ensure_remote_gateway(context);
@@ -791,6 +840,7 @@ impl AiStudioPanel {
         self.poll_native_question(context);
         self.poll_native_mcp(context);
         self.poll_native_agent_runtime(context);
+        self.retry_external_work_wait_if_ready();
         self.poll_external_process(context);
         self.poll_managed_validation(context);
         self.request_managed_source_repair_if_ready();
@@ -928,6 +978,10 @@ impl AiStudioPanel {
                                 }),
                             };
                             object.insert("processing_posture".to_owned(), posture);
+                            object.insert(
+                                "external_agent_provider".to_owned(),
+                                self.current_external_provider_status().remote_json(),
+                            );
                         }
                         RemoteAiStudioResponse::json(snapshot)
                     }
@@ -1106,6 +1160,7 @@ impl AiStudioPanel {
         }
         self.process = None;
         self.process_purpose = None;
+        self.pending_external_work_owner = None;
         self.host.cancel_run(run_id).map_err(|error| error.to_string())
     }
 
@@ -1647,6 +1702,7 @@ impl AiStudioPanel {
             schema_version: AI_STUDIO_PREFERENCES_SCHEMA_VERSION,
             quality_preference: self.quality_preference,
             confinement_requirement: self.confinement_requirement,
+            external_agent_provider: self.external_provider_kind,
             model_backend: self.model_backend,
             local_model_endpoint: self.local_model_endpoint.clone(),
             local_model_name: self.local_model_name.clone(),
@@ -2169,16 +2225,105 @@ impl AiStudioPanel {
         }
     }
 
+    fn current_external_provider_status(&self) -> ExternalAgentProviderStatus {
+        if self.external_provider_kind == ExternalAgentProviderKind::Generic {
+            ExternalAgentProviderStatus::generic(!self.provider_program.trim().is_empty())
+        } else if self.external_provider_status.kind == self.external_provider_kind {
+            self.external_provider_status.clone()
+        } else {
+            ExternalAgentProviderStatus::unchecked(self.external_provider_kind)
+        }
+    }
+
+    fn refresh_external_provider_status(&mut self) {
+        self.external_provider_status =
+            probe_provider(self.external_provider_kind, &self.provider_program);
+    }
+
+    fn external_provider_is_requested(&self) -> bool {
+        self.external_provider_kind != ExternalAgentProviderKind::Generic
+            || !self.provider_program.trim().is_empty()
+    }
+
+    fn external_provider_is_ready(&self) -> bool {
+        self.external_provider_is_requested() && self.current_external_provider_status().ready()
+    }
+
+    fn selected_external_provider(&self) -> Result<Option<ExternalAgentProviderKind>, String> {
+        if !self.external_provider_is_requested() {
+            return Ok(None);
+        }
+        let status = self.current_external_provider_status();
+        if !status.ready() {
+            return Err(format!(
+                "{} is not ready (discovery: {}, authentication: {}). Refresh provider status or choose another runtime.",
+                self.external_provider_kind.label(),
+                status.discovery.label(),
+                status.auth.label(),
+            ));
+        }
+        Ok(Some(self.external_provider_kind))
+    }
+
     fn show_provider(&mut self, ui: &mut egui::Ui) {
         ui.heading("Run");
+        let previous_provider = self.external_provider_kind;
+        let mut refresh_provider = false;
         ui.horizontal(|ui| {
-            ui.label("Compatible agent program");
-            ui.text_edit_singleline(&mut self.provider_program);
+            ui.label("External agent provider");
+            egui::ComboBox::from_id_salt("ai_studio_external_agent_provider")
+                .selected_text(self.external_provider_kind.label())
+                .show_ui(ui, |ui| {
+                    for provider in ExternalAgentProviderKind::ALL {
+                        ui.selectable_value(
+                            &mut self.external_provider_kind,
+                            provider,
+                            provider.label(),
+                        );
+                    }
+                });
+            if ui.button("Refresh status").clicked() {
+                refresh_provider = true;
+            }
         });
-        ui.horizontal(|ui| {
-            ui.label("Arguments");
-            ui.text_edit_singleline(&mut self.provider_args);
+        if previous_provider != self.external_provider_kind {
+            self.external_provider_status =
+                ExternalAgentProviderStatus::unchecked(self.external_provider_kind);
+            self.save_preferences();
+        }
+        if refresh_provider {
+            self.refresh_external_provider_status();
+        }
+        let provider_status = self.current_external_provider_status();
+        let capabilities = self.external_provider_kind.capabilities();
+        ui.group(|ui| {
+            ui.strong(format!("{} status", self.external_provider_kind.label()));
+            ui.label(format!(
+                "Discovery: {} · Authentication: {}",
+                provider_status.discovery.label(),
+                provider_status.auth.label(),
+            ));
+            ui.small(format!(
+                "Capabilities: provider auth {} · MCP injection {} · structured events {} · host cancellation {}",
+                capabilities.provider_managed_auth,
+                capabilities.mcp_injection,
+                capabilities.structured_events,
+                capabilities.host_cancellation,
+            ));
+            ui.small(
+                "Provider-managed login remains provider-owned. GameEngine stores no provider credential and reports only sanitized adapter status remotely.",
+            );
         });
+        if self.external_provider_kind == ExternalAgentProviderKind::Generic {
+            ui.horizontal(|ui| {
+                ui.label("Compatible agent program");
+                ui.text_edit_singleline(&mut self.provider_program);
+            });
+            ui.horizontal(|ui| {
+                ui.label("Arguments");
+                ui.text_edit_singleline(&mut self.provider_args);
+            });
+        }
         let previous_confinement_requirement = self.confinement_requirement;
         ui.horizontal(|ui| {
             ui.label("External process confinement");
@@ -2223,7 +2368,7 @@ impl AiStudioPanel {
             }
         });
         ui.small(
-            "Go uses the configured external AgentRuntime when present; otherwise the selected Local, Hosted API, or Enterprise ModelBackend runs through the governed native AgentRuntime. Hosted inference requires Network access approval. All native backends share the immutable proposal, Agent Host permissions, live Editor MCP writer, managed code workspace, validation, Play/frame evidence, and completion contract.",
+            "Go uses the selected first-class external provider when it is ready, the Generic command when configured, or otherwise the selected Local, Hosted API, or Enterprise ModelBackend. External adapters remain clients of the same immutable proposal, Agent Host permissions and work claims, code workspace, validation, Play/frame evidence, and completion contract.",
         );
         let mut stop_requested = false;
         let mut interrupt_requested = false;
@@ -2233,8 +2378,9 @@ impl AiStudioPanel {
                 && !self.native_runtime_busy()
                 && self.pending_permission.is_none()
                 && self.pending_question_permission.is_none()
-                && (!self.provider_program.trim().is_empty()
-                    || self.selected_native_model_config().is_ok());
+                && (self.external_provider_is_ready()
+                    || (!self.external_provider_is_requested()
+                        && self.selected_native_model_config().is_ok()));
             if ui.add_enabled(can_go, egui::Button::new("Go")).clicked() {
                 self.begin_run();
             }
@@ -2304,6 +2450,11 @@ impl AiStudioPanel {
             }
             self.native_agent_runtime = None;
             self.active_runtime_mode = None;
+            self.active_external_provider = None;
+            self.active_external_program = None;
+            self.active_external_args = None;
+            self.external_provider_diagnostics = ExternalAgentDiagnostics::default();
+            self.pending_external_work_owner = None;
         }
         if interrupt_requested {
             if let Some(task) = self.native_question.as_ref() { task.interrupt(); }
@@ -2501,9 +2652,13 @@ impl AiStudioPanel {
     }
 
     fn begin_run_authorized(&mut self, authorized_proposal_version: u64) -> Result<String, String> {
-        let external_provider = self.provider_program.trim().to_owned();
-        let (mode, provider_label, native_config) = if !external_provider.is_empty() {
-            (AgentRuntimeMode::External, external_provider, None)
+        let external_provider = self.selected_external_provider()?;
+        let (mode, provider_label, native_config) = if let Some(provider) = external_provider {
+            (
+                AgentRuntimeMode::External,
+                provider.run_label().to_owned(),
+                None,
+            )
         } else {
             let config = self.selected_native_model_config()?;
             let label = config.label();
@@ -2515,6 +2670,10 @@ impl AiStudioPanel {
         let run_id = self.host.start_run_authorized(&self.selected_session, authorized_proposal_version, provider_label).map_err(|error| error.to_string())?;
         self.active_run_id = Some(run_id.clone());
         self.active_runtime_mode = Some(mode);
+        self.active_external_provider = external_provider;
+        self.active_external_program = external_provider.map(|_| self.provider_program.clone());
+        self.active_external_args = external_provider.map(|_| self.provider_args.clone());
+        self.external_provider_diagnostics = ExternalAgentDiagnostics::default();
         self.native_agent_runtime = native_config.map(NativeAgentRuntime::configured);
         self.native_mcp_task = None;
         self.pending_native_mcp_tool = None;
@@ -2634,6 +2793,38 @@ impl AiStudioPanel {
     }
 
     fn launch_external_agent(&mut self, run_id: &str, purpose: ExternalAgentPurpose) {
+        let Some(provider_kind) = self.active_external_provider else {
+            self.fail_run(
+                run_id,
+                "External AgentRuntime has no provider snapshot for this run.".to_owned(),
+            );
+            return;
+        };
+        let generic_program = self.active_external_program.clone().unwrap_or_default();
+        let generic_args_text = self.active_external_args.clone().unwrap_or_default();
+        self.external_provider_diagnostics = ExternalAgentDiagnostics::default();
+        if purpose == ExternalAgentPurpose::BuildOrRepair {
+            match self.host.acquire_work_claims(
+                run_id,
+                [AgentWorkClaim::shared_resource("canonical_authoring")],
+            ) {
+                Ok(()) => self.pending_external_work_owner = None,
+                Err(AgentHostError::WorkClaimConflict { owner_run_id, .. }) => {
+                    self.pending_external_work_owner = Some((purpose, owner_run_id.clone()));
+                    self.status = Some(format!(
+                        "External agent is waiting for canonical authoring ownership held by run {owner_run_id}."
+                    ));
+                    return;
+                }
+                Err(error) => {
+                    self.fail_run(
+                        run_id,
+                        format!("Could not acquire external agent authoring ownership: {error}"),
+                    );
+                    return;
+                }
+            }
+        }
         let (workspace_root, baseline_path) = match self.host.workspace_paths(run_id) {
             Ok(paths) => paths,
             Err(error) => {
@@ -2731,7 +2922,7 @@ impl AiStudioPanel {
             ),
             (
                 OsString::from("GAMEENGINE_AGENT_PROPOSAL_JSON"),
-                OsString::from(proposal_json),
+                OsString::from(&proposal_json),
             ),
             (
                 OsString::from("GAMEENGINE_AGENT_AUTHORING_CONTRACT"),
@@ -2746,29 +2937,57 @@ impl AiStudioPanel {
                 ),
             ),
         ];
-        if let Some(repair_context) = repair_context {
+        if let Some(repair_context) = repair_context.as_deref() {
             environment.push((
                 OsString::from("GAMEENGINE_AGENT_REPAIR_CONTEXT"),
                 OsString::from(repair_context),
             ));
         }
-        if let Some(observation) = runtime_observation {
+        let runtime_evaluation_context = runtime_observation.as_ref().map(|observation| {
+            format!(
+                "Evaluate host-captured managed Play frame {} ({}x{}). Inspect the image at GAMEENGINE_AGENT_CAPTURE_PATH. Do not mutate project or workspace state during this evaluation. Emit completion_gate with gate=visual_evaluation and status=passed or failed before any failing playtest_result, then emit playtest_result for the exercised interaction scenario when evidence supports it. A pass without this host-owned frame is rejected.",
+                observation.artifact_id, observation.width, observation.height
+            )
+        });
+        if let Some(observation) = runtime_observation.as_ref() {
             environment.push((
                 OsString::from("GAMEENGINE_AGENT_CAPTURE_PATH"),
                 observation.path.as_os_str().to_os_string(),
             ));
+        }
+        if let Some(context) = runtime_evaluation_context.as_deref() {
             environment.push((
                 OsString::from("GAMEENGINE_AGENT_RUNTIME_EVALUATION_CONTEXT"),
-                OsString::from(format!(
-                    "Evaluate host-captured managed Play frame {} ({}x{}). Inspect the image at GAMEENGINE_AGENT_CAPTURE_PATH. Do not mutate project or workspace state during this evaluation. Emit completion_gate with gate=visual_evaluation and status=passed or failed before any failing playtest_result, then emit playtest_result for the exercised interaction scenario when evidence supports it. A pass without this host-owned frame is rejected.",
-                    observation.artifact_id, observation.width, observation.height
-                )),
+                OsString::from(context),
             ));
         }
-        let args = split_direct_args(&self.provider_args);
+        let provider_prompt = external_agent_provider_prompt(
+            &proposal_json,
+            repair_context.as_deref(),
+            runtime_evaluation_context.as_deref(),
+        );
+        let generic_args = split_direct_args(&generic_args_text);
+        let launch_plan = match build_launch_plan(
+            provider_kind,
+            &generic_program,
+            &generic_args,
+            &provider_prompt,
+            &self.connection.endpoint,
+        ) {
+            Ok(plan) => plan,
+            Err(error) => {
+                match purpose {
+                    ExternalAgentPurpose::BuildOrRepair => self.fail_run(run_id, error),
+                    ExternalAgentPurpose::RuntimeEvaluation => {
+                        self.record_runtime_evaluation_failure(run_id, error);
+                    }
+                }
+                return;
+            }
+        };
         match ExternalAgentProcess::spawn(
-            OsStr::new(self.provider_program.trim()),
-            &args,
+            launch_plan.program.as_os_str(),
+            &launch_plan.args,
             workspace.root(),
             &environment,
             &confinement_request,
@@ -2844,6 +3063,22 @@ impl AiStudioPanel {
         }
     }
 
+    fn release_external_authoring_claim(
+        &mut self,
+        run_id: &str,
+        purpose: ExternalAgentPurpose,
+    ) -> Result<(), String> {
+        if purpose != ExternalAgentPurpose::BuildOrRepair {
+            return Ok(());
+        }
+        self.host
+            .release_work_claims(
+                run_id,
+                [AgentWorkClaim::shared_resource("canonical_authoring")],
+            )
+            .map_err(|error| format!("Could not release external agent authoring ownership: {error}"))
+    }
+
     fn poll_external_process(&mut self, context: &egui::Context) {
         let Some(run_id) = self.active_run_id.clone() else {
             return;
@@ -2853,20 +3088,70 @@ impl AiStudioPanel {
             .as_ref()
             .map(ExternalAgentProcess::drain_output)
             .unwrap_or_default();
+        let provider_kind = self
+            .active_external_provider
+            .unwrap_or(ExternalAgentProviderKind::Generic);
         for line in output {
-            if line.stream == ProcessStream::Stdout
-                && let Some(payload) = line.text.strip_prefix(PROVIDER_EVENT_PREFIX)
-            {
-                match serde_json::from_str::<ProviderAgentEvent>(payload) {
-                    Ok(event) => {
-                        if let Err(error) = self.record_provider_semantic_event(&run_id, event) {
-                            self.status = Some(error);
+            self.external_provider_diagnostics
+                .observe(provider_kind, &line.text);
+            if line.stream == ProcessStream::Stdout {
+                if let Some(payload) = line.text.strip_prefix(PROVIDER_EVENT_PREFIX) {
+                    match serde_json::from_str::<ProviderAgentEvent>(payload) {
+                        Ok(event) => {
+                            if let Err(error) = self.record_provider_semantic_event(&run_id, event) {
+                                self.status = Some(error);
+                            }
+                            continue;
                         }
-                        continue;
+                        Err(error) => {
+                            self.status = Some(format!(
+                                "Provider emitted an invalid semantic AgentEvent: {error}"
+                            ));
+                        }
                     }
-                    Err(error) => {
-                        self.status = Some(format!("Provider emitted an invalid semantic AgentEvent: {error}"));
+                }
+                let translated = translate_provider_line(provider_kind, &line.text);
+                if !translated.is_empty() {
+                    for event in translated {
+                        match event {
+                            ExternalAgentSemanticEvent::Progress { step, detail } => {
+                                if let Err(error) =
+                                    self.host.record_semantic_progress(&run_id, step, detail)
+                                {
+                                    self.status = Some(error.to_string());
+                                }
+                            }
+                            ExternalAgentSemanticEvent::ToolAction {
+                                tool,
+                                action,
+                                success,
+                            } => {
+                                if let Err(error) = self
+                                    .host
+                                    .record_tool_action(&run_id, tool, action, success)
+                                {
+                                    self.status = Some(error.to_string());
+                                }
+                            }
+                            ExternalAgentSemanticEvent::GameEngineProtocolPayload(payload) => {
+                                match serde_json::from_str::<ProviderAgentEvent>(&payload) {
+                                    Ok(event) => {
+                                        if let Err(error) =
+                                            self.record_provider_semantic_event(&run_id, event)
+                                        {
+                                            self.status = Some(error);
+                                        }
+                                    }
+                                    Err(error) => {
+                                        self.status = Some(format!(
+                                            "Provider emitted an invalid semantic AgentEvent: {error}"
+                                        ));
+                                    }
+                                }
+                            }
+                        }
                     }
+                    continue;
                 }
             }
             let stream = match line.stream {
@@ -2893,6 +3178,10 @@ impl AiStudioPanel {
                     .process_purpose
                     .take()
                     .unwrap_or(ExternalAgentPurpose::BuildOrRepair);
+                if let Err(error) = self.release_external_authoring_claim(&run_id, purpose) {
+                    self.fail_run(&run_id, error);
+                    return;
+                }
                 if status.success() {
                     match purpose {
                         ExternalAgentPurpose::BuildOrRepair => {
@@ -2903,10 +3192,14 @@ impl AiStudioPanel {
                         }
                     }
                 } else {
-                    let message = format!(
-                        "External agent exited unsuccessfully with {:?}.",
-                        status.code()
-                    );
+                    let failure = self
+                        .external_provider_diagnostics
+                        .classify_exit(provider_kind, status.code());
+                    let message = if failure.retryable {
+                        format!("{} The provider classified this failure as retryable.", failure.message)
+                    } else {
+                        failure.message
+                    };
                     match purpose {
                         ExternalAgentPurpose::BuildOrRepair => self.fail_run(&run_id, message),
                         ExternalAgentPurpose::RuntimeEvaluation => {
@@ -2921,6 +3214,12 @@ impl AiStudioPanel {
                     .process_purpose
                     .take()
                     .unwrap_or(ExternalAgentPurpose::BuildOrRepair);
+                if let Err(release_error) =
+                    self.release_external_authoring_claim(&run_id, purpose)
+                {
+                    self.fail_run(&run_id, release_error);
+                    return;
+                }
                 let message = format!("Could not poll external agent: {error}");
                 match purpose {
                     ExternalAgentPurpose::BuildOrRepair => self.fail_run(&run_id, message),
@@ -3490,6 +3789,25 @@ fn managed_source_repair_context(run: &crate::agent_host::AgentRun) -> String {
     )
 }
 
+fn external_agent_provider_prompt(
+    proposal_json: &str,
+    repair_context: Option<&str>,
+    runtime_evaluation_context: Option<&str>,
+) -> String {
+    let mut prompt = format!(
+        "Act as a GameEngine external AgentRuntime for the immutable proposal below.\n\n{proposal_json}\n\nPersisted project authoring changes must use the injected gameengine_editor MCP server. Project code changes must stay inside the current isolated Agent Code Workspace. Do not commit, push, or alter Git history. Agent Host permissions, work claims, managed validation, Play/frame evidence, and completion gates remain authoritative. When reporting GameEngine semantic progress, emit a standalone line beginning GAMEENGINE_AGENT_EVENT followed by the supported JSON event payload. Never emit credentials, bearer tokens, or MCP authorization material."
+    );
+    if let Some(context) = repair_context {
+        prompt.push_str("\n\nRepair context:\n");
+        prompt.push_str(context);
+    }
+    if let Some(context) = runtime_evaluation_context {
+        prompt.push_str("\n\nRuntime evaluation context:\n");
+        prompt.push_str(context);
+    }
+    prompt
+}
+
 fn provider_key_code(key: &str) -> Result<KeyCode, String> {
     let normalized = key.trim().to_ascii_lowercase();
     let key = match normalized.as_str() {
@@ -3855,6 +4173,7 @@ mod tests {
             schema_version: AI_STUDIO_PREFERENCES_SCHEMA_VERSION,
             quality_preference: QualityPreference::Balanced,
             confinement_requirement: AgentConfinementRequirement::default(),
+            external_agent_provider: ExternalAgentProviderKind::ClaudeCode,
             model_backend: ModelBackendPreference::HostedApi,
             local_model_endpoint: DEFAULT_LOCAL_MODEL_ENDPOINT.to_owned(),
             local_model_name: String::new(),
