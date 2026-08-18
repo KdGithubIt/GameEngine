@@ -437,10 +437,12 @@ fn map_launch_error(error: LifecycleError) -> PublicLifecycleError {
             message: "The selected Launcher project is invalid or unavailable.",
             retryable: false,
         },
-        LifecycleError::EditorAlreadyOpen(_) => PublicLifecycleError {
-            category: ErrorCategory::EditorBootstrapFailed,
-            message: "The Editor lifecycle changed while the activation request was being processed.",
-            retryable: true,
+        LifecycleError::EditorAlreadyOpen(_) | LifecycleError::ProjectWriterAlreadyOwned { .. } => {
+            PublicLifecycleError {
+                category: ErrorCategory::EditorBootstrapFailed,
+                message: "The Editor lifecycle changed while the activation request was being processed.",
+                retryable: true,
+            }
         },
         LifecycleError::Io { .. }
         | LifecycleError::Json(_)
@@ -793,6 +795,19 @@ mod tests {
         assert!(json.contains("VisibleName"));
         assert!(!json.contains(project_path.to_string_lossy().as_ref()));
         assert!(!json.contains(root.path().to_string_lossy().as_ref()));
+    }
+
+    #[test]
+    fn writer_conflicts_are_retryable_bootstrap_failures() {
+        let public_error = map_launch_error(LifecycleError::ProjectWriterAlreadyOwned {
+            canonical_project: PathBuf::from("C:/Users/alice/private/project"),
+            owner: None,
+        });
+        let json = serde_json::to_string(&public_error).expect("public error must serialize");
+
+        assert_eq!(public_error.category, ErrorCategory::EditorBootstrapFailed);
+        assert!(public_error.retryable);
+        assert!(!json.contains("alice"));
     }
 
     #[test]
