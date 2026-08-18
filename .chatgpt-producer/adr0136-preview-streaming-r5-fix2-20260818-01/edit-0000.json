@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/scene_view.rs","old":"        let device_identity = Arc::as_ptr(&render_state.device) as usize;\n","new":"        let device_identity = (&render_state.device as *const wgpu::Device) as usize;\n"}
