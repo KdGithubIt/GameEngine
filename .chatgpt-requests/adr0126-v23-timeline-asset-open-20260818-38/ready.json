@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0126-v23-timeline-asset-open-20260818-38",
+  "target_branch": "chatgpt/gameengine-adr0126-first-release-v23",
+  "expected_head_sha": "c46e9ec39bdd8bfa484724c7c20058477522e891",
+  "baseline_main_sha": "96c8ffb18a74eabec2164daa61f694f131019ddc",
+  "patch_sha256": "a00146ac0ec5b6ac6c5dbc20af6934a8e291b075b33ebb72fdb4312969b091cd",
+  "patch_bytes": 4599,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Expose Timeline assets through the Asset Browser",
+  "pr_title": "GameEngine: complete ADR 0126 Timeline / Sequencer first release",
+  "pr_body": "## Summary\n\nExposes canonical .timeline.json assets in the Asset Browser, makes them registerable, and routes Open/double-click to the ADR 0126 Sequencer while preserving the existing workspace-document boundary.\n\n<!-- gameengine-visual-validation: editor -->\n"
+}
