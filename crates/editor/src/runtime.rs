@@ -123,6 +123,11 @@ pub struct RuntimePlayState {
     single_step_requested: bool,
     replay_recorder: Option<ReplayRecorder>,
     replay_player: Option<ReplayPlayer>,
+    /// Monotonic count of human-origin virtual-input commands observed by this Play world.
+    ///
+    /// Deterministic AI runtime plans use this application-owned signal to reject a Play
+    /// session that a human has already influenced instead of claiming comparable evidence.
+    human_input_generation: u64,
     /// Offscreen renderer kept across Game View resizes so panel drags do not
     /// rebuild shaders and pipelines every frame.
     renderer: Option<engine::PreviewRenderer>,
@@ -350,6 +355,7 @@ impl RuntimePlayState {
                 single_step_requested: false,
                 replay_recorder: None,
                 replay_player: None,
+                human_input_generation: 0,
                 renderer: None,
                 game_view: None,
                 scene_view: None,
@@ -508,6 +514,9 @@ impl RuntimePlayState {
 
     /// Queues one virtual input command for the next runtime tick.
     pub fn queue_input(&mut self, source: InputSource, command: InputCommand) {
+        if source == InputSource::Human {
+            self.human_input_generation = self.human_input_generation.saturating_add(1);
+        }
         if source != InputSource::Replay
             && let Some(recorder) = &mut self.replay_recorder {
                 let tick = self
@@ -520,6 +529,11 @@ impl RuntimePlayState {
         if let Some(queue) = self.app.world_mut().get_resource_mut::<VirtualInputQueue>() {
             queue.push(source, command);
         }
+    }
+
+    /// Returns the monotonic number of human-origin commands observed in this Play world.
+    pub(crate) fn human_input_generation(&self) -> u64 {
+        self.human_input_generation
     }
 
     /// Starts recording virtual input from the next fixed boundary.
@@ -566,9 +580,17 @@ impl RuntimePlayState {
     /// Polls the desktop controller adapter into the shared virtual queue.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn poll_gamepads(&mut self, context: &mut engine::gamepad::GilrsContext) {
-        if let Some(queue) = self.app.world_mut().get_resource_mut::<VirtualInputQueue>() {
-            context.poll(queue);
-        }
+        let queued_human_commands =
+            if let Some(queue) = self.app.world_mut().get_resource_mut::<VirtualInputQueue>() {
+                let before = queue.len();
+                context.poll(queue);
+                queue.len().saturating_sub(before)
+            } else {
+                0
+            };
+        self.human_input_generation = self
+            .human_input_generation
+            .saturating_add(queued_human_commands as u64);
     }
 
     /// Queues a focus-boundary release for the next runtime tick.

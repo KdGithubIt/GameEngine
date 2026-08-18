@@ -831,6 +831,7 @@ impl EditorApp {
                 AiStudioRuntimeResult::RuntimeInputQueued(command)
             }
             AiStudioRuntimeAction::PausePlaytest => {
+                let host_diagnostics = self.session.diagnostics().to_vec();
                 let Some(runtime) = self.runtime_state.as_mut() else {
                     return AiStudioRuntimeResult::Failed(
                         "Pause requires an active Editor Play session.".to_owned(),
@@ -838,10 +839,11 @@ impl EditorApp {
                 };
                 runtime.set_paused(true);
                 AiStudioRuntimeResult::RuntimePaused(
-                    crate::runtime_debug::capture_observation(runtime),
+                    crate::runtime_debug::capture_observation(runtime, &host_diagnostics),
                 )
             }
             AiStudioRuntimeAction::ResumePlaytest => {
+                let host_diagnostics = self.session.diagnostics().to_vec();
                 let Some(runtime) = self.runtime_state.as_mut() else {
                     return AiStudioRuntimeResult::Failed(
                         "Resume requires an active Editor Play session.".to_owned(),
@@ -849,23 +851,27 @@ impl EditorApp {
                 };
                 runtime.set_paused(false);
                 AiStudioRuntimeResult::RuntimeResumed(
-                    crate::runtime_debug::capture_observation(runtime),
+                    crate::runtime_debug::capture_observation(runtime, &host_diagnostics),
                 )
             }
             AiStudioRuntimeAction::StepPlaytest { steps } => {
+                let host_diagnostics = self.session.diagnostics().to_vec();
                 let Some(runtime) = self.runtime_state.as_mut() else {
                     return AiStudioRuntimeResult::Failed(
                         "Step requires an active Editor Play session.".to_owned(),
                     );
                 };
-                match crate::runtime_debug::step_paused(runtime, steps) {
+                match crate::runtime_debug::step_paused(runtime, steps, &host_diagnostics) {
                     Ok(observation) => AiStudioRuntimeResult::RuntimeStepped(observation),
                     Err(error) => AiStudioRuntimeResult::Failed(error.to_string()),
                 }
             }
             AiStudioRuntimeAction::RunDebugPlan(plan) => {
+                let host_diagnostics = self.session.diagnostics().to_vec();
                 let result = match self.runtime_state.as_mut() {
-                    Some(runtime) => crate::runtime_debug::execute_plan(runtime, &plan),
+                    Some(runtime) => {
+                        crate::runtime_debug::execute_plan(runtime, &plan, &host_diagnostics)
+                    }
                     None => {
                         return AiStudioRuntimeResult::Failed(
                             "Deterministic runtime input requires an active Editor Play session."
@@ -887,37 +893,47 @@ impl EditorApp {
                 }
             }
             AiStudioRuntimeAction::ObserveRuntime => {
+                let host_diagnostics = self.session.diagnostics().to_vec();
                 let Some(runtime) = self.runtime_state.as_ref() else {
                     return AiStudioRuntimeResult::Failed(
                         "Runtime observation requires an active Editor Play session.".to_owned(),
                     );
                 };
                 AiStudioRuntimeResult::RuntimeObserved(
-                    crate::runtime_debug::capture_observation(runtime),
+                    crate::runtime_debug::capture_observation(runtime, &host_diagnostics),
                 )
             }
             AiStudioRuntimeAction::WaitRuntime {
                 predicate,
                 max_ticks,
             } => {
+                let host_diagnostics = self.session.diagnostics().to_vec();
                 let Some(runtime) = self.runtime_state.as_mut() else {
                     return AiStudioRuntimeResult::Failed(
                         "Runtime wait requires an active Editor Play session.".to_owned(),
                     );
                 };
-                match crate::runtime_debug::wait_until(runtime, &predicate, max_ticks) {
+                match crate::runtime_debug::wait_until(
+                    runtime,
+                    &predicate,
+                    max_ticks,
+                    &host_diagnostics,
+                ) {
                     Ok(wait) => AiStudioRuntimeResult::RuntimeWaited(wait),
                     Err(error) => AiStudioRuntimeResult::Failed(error.to_string()),
                 }
             }
             AiStudioRuntimeAction::AssertRuntime { predicate } => {
+                let host_diagnostics = self.session.diagnostics().to_vec();
                 let Some(runtime) = self.runtime_state.as_ref() else {
                     return AiStudioRuntimeResult::Failed(
                         "Runtime assertion requires an active Editor Play session.".to_owned(),
                     );
                 };
                 AiStudioRuntimeResult::RuntimeAsserted(crate::runtime_debug::assert_predicate(
-                    runtime, &predicate,
+                    runtime,
+                    &predicate,
+                    &host_diagnostics,
                 ))
             }
             AiStudioRuntimeAction::ReplayLast => {
@@ -934,8 +950,13 @@ impl EditorApp {
                             .to_owned(),
                     );
                 }
+                let host_diagnostics = self.session.diagnostics().to_vec();
                 let result = match self.runtime_state.as_mut() {
-                    Some(runtime) => crate::runtime_debug::replay_to_completion(runtime, replay),
+                    Some(runtime) => crate::runtime_debug::replay_to_completion(
+                        runtime,
+                        replay,
+                        &host_diagnostics,
+                    ),
                     None => {
                         return AiStudioRuntimeResult::Failed(
                             "Replay reproduction lost the fresh Editor Play world.".to_owned(),
