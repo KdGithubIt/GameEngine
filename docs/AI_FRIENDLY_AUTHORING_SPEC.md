@@ -1064,6 +1064,16 @@ subscription tokens, local model handles, and Editor MCP credentials MUST NOT be
 serialized into session records or canonical project data. External runtimes
 receive only the ephemeral MCP connection needed for the active run.
 
+Per ADR 0144, hosted and enterprise `ModelBackend` adapters remain inference-only
+inside the native AgentRuntime. Hosted processing requires `NetworkAccess`,
+exposes a sanitized remote-processing posture without credentials or secret paths,
+and stores GameEngine-owned API credentials only in an OS-protected machine-local
+secret store. Provider failures, rate limits, safety refusals, authentication
+failures, transport interruption, context rejection, and unsupported capabilities
+remain explicit backend evidence and cannot satisfy Agent Host completion gates.
+The same backend seam is used for read-only questions and ADR 0141 write-capable
+native runs; project mutation continues through the existing governed services.
+
 The ADR 0035 AI Agent Bridge remains the input, frame-observation, and visual
 interaction path. It MUST NOT be treated as a substitute for semantic authoring
 parity when a capability changes persisted project data.

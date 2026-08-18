@@ -4,7 +4,9 @@
 //! services remain authoritative for every side effect and completion gate.
 
 use crate::agent_host::{AgentRun, AgentRunState, AgentWorkingStateUpdate, CompletionStatus};
-use crate::native_agent::{LocalModelConfig, ModelCapabilityProfile, NativeAgentError, NativeModelTask};
+use crate::native_agent::{
+    LocalModelConfig, ModelCapabilityProfile, NativeAgentError, NativeModelConfig, NativeModelTask,
+};
 use engine_mcp::authoring_tool_descriptors;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -52,10 +54,10 @@ pub(crate) trait ModelBackend: Send + Sync {
 }
 
 #[derive(Debug, Clone)]
-struct LocalModelBackend(LocalModelConfig);
+struct ConfiguredModelBackend(NativeModelConfig);
 
-impl ModelBackend for LocalModelBackend {
-    fn label(&self) -> String { format!("native:{}", self.0.model.trim()) }
+impl ModelBackend for ConfiguredModelBackend {
+    fn label(&self) -> String { self.0.label() }
     fn profile(&self) -> ModelCapabilityProfile { self.0.capability_profile() }
     fn start_turn(&self, prompt: String, images: Vec<Vec<u8>>)
         -> Result<Box<dyn ModelTurnTask>, NativeAgentError>
@@ -147,8 +149,15 @@ pub(crate) struct NativeAgentRuntime {
 }
 
 impl NativeAgentRuntime {
+    pub(crate) fn configured(config: NativeModelConfig) -> Self {
+        Self::new(
+            Box::new(ConfiguredModelBackend(config)),
+            HarnessPolicy::default(),
+        )
+    }
+    #[allow(dead_code)]
     pub(crate) fn local(config: LocalModelConfig) -> Self {
-        Self::new(Box::new(LocalModelBackend(config)), HarnessPolicy::default())
+        Self::configured(NativeModelConfig::Local(config))
     }
     fn new(backend: Box<dyn ModelBackend>, policy: HarnessPolicy) -> Self {
         Self { backend, policy, turns: 0, failures: 0, exchanges: Vec::new(), active: None }
@@ -220,12 +229,12 @@ fn build_prompt(run: &AgentRun, profile: &ModelCapabilityProfile, policy: Harnes
     exchanges: &[Exchange], context: Option<&str>) -> String
 {
     let mut prompt = format!(
-        "GameEngine NativeAgentRuntime ADR0141. Return exactly one JSON object, no markdown. Do not claim side effects; AgentHost owns truth.\nImmutable proposal={}\nstate={:?}\nworking_state={}\ncompletion={}\nbackend={} model={} structured={:?} tools={:?} image={:?} reasoning={:?} context_limit={:?}\nHarnessPolicy turns={} failures={} repair_budget={}. Canonical authoring ONLY via mcp_call; source ONLY via code_write isolated AgentCodeWorkspace. Stale revision, permission, validation, import and runtime failures are evidence. ready_for_validation returns control to host validation. Never mark source_validation/play_launch/frame_capture/interaction_scenarios.\n",
+        "GameEngine NativeAgentRuntime ADR0141. Return exactly one JSON object, no markdown. Do not claim side effects; AgentHost owns truth.\nImmutable proposal={}\nstate={:?}\nworking_state={}\ncompletion={}\nbackend={} model={} structured={:?} tools={:?} image={:?} reasoning={:?} context_limit={:?} streaming={:?} usage={:?}\nHarnessPolicy turns={} failures={} repair_budget={}. Canonical authoring ONLY via mcp_call; source ONLY via code_write isolated AgentCodeWorkspace. Stale revision, permission, validation, import and runtime failures are evidence. ready_for_validation returns control to host validation. Never mark source_validation/play_launch/frame_capture/interaction_scenarios.\n",
         serde_json::to_string(&run.proposal_snapshot).unwrap_or_default(), run.state,
         serde_json::to_string(&run.working_state).unwrap_or_default(),
         serde_json::to_string(&run.completion).unwrap_or_default(),
         profile.backend_id, profile.model_id, profile.structured_output, profile.tool_use,
-        profile.image_input, profile.reasoning, profile.context_limit,
+        profile.image_input, profile.reasoning, profile.context_limit, profile.streaming, profile.usage,
         policy.max_model_turns, policy.max_tool_failures, policy.repair_budget);
     if let Some(context) = context { prompt.push_str(&format!("phase_context={context}\n")); }
     for exchange in exchanges { prompt.push_str(&format!("tool_result {} success={}: {}\n", exchange.tool, exchange.success, exchange.result)); }

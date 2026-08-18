@@ -1,6 +1,6 @@
 # ADR 0144: Hosted and Enterprise ModelBackends and Credential Ownership
 
-Status: Proposed
+Status: Accepted
 Date: 2026-08-17
 Builds on: ADR 0131
 Relates to: ADR 0141, ADR 0142, ADR 0150
@@ -52,6 +52,16 @@ This ADR can be implemented in parallel with ADR 0141 and other Wave A ADRs beca
 Implementation must cover secret-storage boundaries, no secret serialization, explicit network permission, provider error mapping, cancellation/stream interruption, capability honesty, context-size handling, sanitized Remote AI Studio status, and unchanged host-owned completion gates.
 
 Credential/backend selection UI requires Editor Visual Validation.
+
+## Initial implementation
+
+The accepted first-release implementation adds API-key hosted HTTPS and enterprise HTTPS adapters behind the same provider-independent `ModelBackend` seam used by ADR 0141's write-capable `NativeAgentRuntime` and the read-only question harness. API-key material is protected with Windows DPAPI below the Editor's machine-local application data. It is never part of AI Studio preferences, Agent Host sessions, project-shared history, Remote AI Studio payloads, benchmark fixtures, or canonical project data. Enterprise mode uses the organization-managed Windows identity/session and stores no GameEngine API key.
+
+Hosted questions and native AgentRuns require the existing `AgentCapability::NetworkAccess` before request dispatch. The selected backend is frozen when a run starts so an approval wait cannot silently switch provider or model. Authentication, rate limiting, safety refusal, context-limit rejection, server failure, transport failure, invalid response, unsupported image input, and interruption remain explicit backend failures rather than completion.
+
+The generic OpenAI-compatible adapter is intentionally non-streaming in this release. It reports the request capabilities it actually implements, accepts optional usage metadata when returned, and leaves unknown reasoning/context limits unknown. Remote GPU controls remain unavailable rather than being projected into ADR 0135 local residency controls. Remote companion snapshots expose only the sanitized local/hosted/enterprise processing posture; endpoint, secret value, and secret-storage path are omitted.
+
+The provider remains inference-only. Proposal snapshots, MCP authoring, managed code mutation, validation, Play, captured evidence, and all completion gates remain owned by the existing Agent Host and managed Editor services, including when AI Studio is detached under ADR 0147.
 
 ## Non-goals
 
