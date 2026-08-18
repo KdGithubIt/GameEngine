@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/launcher/src/native_2d_template.rs",
+  "old": "                    \"engine.rigid_body_2d\": {\n                        \"mode\": \"fixed\", \"velocity_x\": 0.0, \"velocity_y\": 0.0,\n                        \"angular_velocity\": 0.0, \"gravity_scale\": 0.0, \"continuous\": false\n                    }\n                }\n            }\n        ]\n",
+  "new": "                    \"engine.rigid_body_2d\": {\n                        \"mode\": \"fixed\", \"velocity_x\": 0.0, \"velocity_y\": 0.0,\n                        \"angular_velocity\": 0.0, \"gravity_scale\": 0.0, \"continuous\": false\n                    }\n                }\n            },\n            {\n                \"id\": \"entity_00000000000000000000000005\",\n                \"name\": \"native_2d_hud\", \"display_name\": \"Native 2D HUD\",\n                \"description\": \"Runtime status and controls for the ADR 0127 proving project.\",\n                \"components\": {\n                    \"engine.ui_document\": asset_ref(HUD_ASSET)\n                }\n            }\n        ]\n"
+}
