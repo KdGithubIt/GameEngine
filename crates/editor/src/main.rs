@@ -68,7 +68,7 @@ impl EditorShell {
             ),
         )?;
         #[cfg(feature = "visual-validation")]
-        let visual_scenario = std::env::var("GAMEENGINE_VISUAL_AUTHORING_TOOL").ok();
+        let visual_scenario = visual_authoring_tool_scenario();
         #[cfg(feature = "visual-validation")]
         let (ai_studio, visual_ai_studio_detached_capture) = {
             let mut ai_studio = ai_studio;
@@ -385,7 +385,7 @@ impl eframe::App for EditorShell {
         self.ai_studio.show(&context);
         #[cfg(feature = "visual-validation")]
         {
-            let visual_scenario = std::env::var("GAMEENGINE_VISUAL_AUTHORING_TOOL").ok();
+            let visual_scenario = visual_authoring_tool_scenario();
             let ai_studio_scenario = matches!(
                 visual_scenario.as_deref(),
                 Some("ADR 0143 Model Resources") | Some("ADR 0145 External Agent")
@@ -401,6 +401,14 @@ impl eframe::App for EditorShell {
     fn clear_color(&self, _visuals: &eframe::egui::Visuals) -> [f32; 4] {
         eframe::egui::Color32::from_rgb(20, 22, 26).to_normalized_gamma_f32()
     }
+}
+
+#[cfg(feature = "visual-validation")]
+fn visual_authoring_tool_scenario() -> Option<String> {
+    std::env::var("GAMEENGINE_VISUAL_AUTHORING_TOOL")
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
 }
 
 #[cfg(feature = "visual-validation")]
