@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/lib.rs","old":"mod agent_host;\nmod hosted_model_backend;\n","new":"mod agent_host;\nmod external_agent_provider;\nmod hosted_model_backend;\n"}
