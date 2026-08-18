@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/agent_benchmark_campaign.rs","old":"            return Err(\"pre-measurement infrastructure failures use the bounded retry path\".to_owned());\n","new":"            return Err(\n                \"pre-measurement infrastructure failures use the bounded retry path\".to_owned(),\n            );\n"}
