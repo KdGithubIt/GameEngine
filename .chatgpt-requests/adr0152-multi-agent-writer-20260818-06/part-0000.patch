@@ -1,0 +1,128 @@
+diff --git a/crates/editor/src/agent_asset_acquisition.rs b/crates/editor/src/agent_asset_acquisition.rs
+index c731b9c512cf333d1e4c49120d988f371fd9e4ce..eadcbd5d26d1795f9352ad09a8929a480eddc680 100644
+--- a/crates/editor/src/agent_asset_acquisition.rs
++++ b/crates/editor/src/agent_asset_acquisition.rs
+@@ -5,7 +5,8 @@
+ //! into a project or update `asset_manifest.json`.
+ 
+ use crate::agent_host::{
+-    AgentCapability, AgentHost, AgentHostError, AssetAcquisitionRecord, PermissionCheck,
++    AgentCapability, AgentHost, AgentHostError, AgentWorkClaim, AssetAcquisitionRecord,
++    PermissionCheck,
+ };
+ use crate::asset_management::{import_external_asset_files, AssetManagementError};
+ use engine::AssetManifest;
+@@ -429,6 +430,10 @@ impl AgentAssetAcquisitionService {
+             return Err(AssetAcquisitionError::ExplicitUserDecisionRequired);
+         }
+         require_permissions(host, run_id, requirements.requires_network)?;
++        host.acquire_work_claims(
++            run_id,
++            [asset_destination_claim(&request.destination_folder)],
++        )?;
+ 
+         let output = match &request.operation {
+             AssetProviderOperation::Acquire { provider_asset_id } => {
+@@ -697,6 +702,16 @@ fn sanitize_metadata(value: &str) -> String {
+     truncated
+ }
+ 
++fn asset_destination_claim(destination_folder: &Path) -> AgentWorkClaim {
++    let relative = destination_folder.to_string_lossy().replace('\\', "/");
++    let key = if relative.is_empty() || relative == "." {
++        "project_assets".to_owned()
++    } else {
++        format!("project_assets/{relative}")
++    };
++    AgentWorkClaim::asset_target(key)
++}
++
+ fn request_fingerprint(provider_id: &str, request: &AssetAcquisitionRequest) -> String {
+     let mut hash = 0xcbf29ce484222325u64;
+     fn append(hash: &mut u64, bytes: &[u8]) {
+@@ -1013,6 +1028,59 @@ mod tests {
+         assert_eq!(provider.calls, 1);
+     }
+ 
++    #[test]
++    fn overlapping_asset_destination_claim_blocks_provider_execution() {
++        let (_project_dir, _storage_dir, project, mut manifest, mut host, owner_run) =
++            setup("asset-claim-conflict");
++        grant_acquisition(&mut host, &owner_run, true);
++        host.acquire_work_claims(
++            &owner_run,
++            [AgentWorkClaim::asset_target("project_assets/textures")],
++        )
++        .expect("owner claim");
++
++        let waiter_session = host.create_session("Asset claim waiter").expect("session");
++        let waiter_version = host
++            .session(&waiter_session)
++            .expect("session")
++            .proposal
++            .version;
++        let waiter_run = host
++            .start_run_authorized(&waiter_session, waiter_version, "test")
++            .expect("waiter run");
++        grant_acquisition(&mut host, &waiter_run, true);
++
++        let cancellation = AssetAcquisitionCancellation::default();
++        let context = AssetProviderContext::new(None, &cancellation);
++        let request = acquire_request("asset-claim-wait");
++        let mut provider = MockProvider::default();
++        assert!(matches!(
++            AgentAssetAcquisitionService::execute(
++                &mut host,
++                &waiter_run,
++                &project,
++                &mut manifest,
++                &mut provider,
++                &request,
++                &context,
++            ),
++            Err(AssetAcquisitionError::Host(AgentHostError::WorkClaimConflict {
++                owner_run_id,
++                ..
++            })) if owner_run_id == owner_run
++        ));
++        assert_eq!(provider.calls, 0);
++        let waiter = host.run(&waiter_run).expect("waiter run");
++        assert!(waiter
++            .events
++            .iter()
++            .any(|event| event.kind == crate::agent_host::AgentEventKind::WorkConflict));
++        assert!(waiter
++            .events
++            .iter()
++            .any(|event| event.kind == crate::agent_host::AgentEventKind::WorkWait));
++    }
++
+     #[test]
+     fn managed_acquisition_reuses_import_pipeline_and_persists_safe_provenance() {
+         let (_project_dir, storage_dir, project, mut manifest, mut host, run) = setup("import");
+diff --git a/docs/AI_FRIENDLY_AUTHORING_SPEC.md b/docs/AI_FRIENDLY_AUTHORING_SPEC.md
+index 433d1d541ea56c8f3ab2f6879abe3a4ae1eede9f..1086121278197128c67d5f339807b75fb86038b3 100644
+--- a/docs/AI_FRIENDLY_AUTHORING_SPEC.md
++++ b/docs/AI_FRIENDLY_AUTHORING_SPEC.md
+@@ -1041,7 +1041,7 @@ implementation. Runtime interaction remains under ADR 0035, while agent, code,
+ shell, network, and provider lifecycle remain under ADR 0131.
+ 
+ ADR 0131 adds AI Studio above MCP as a project-scoped conversational frontend.
+-ADR 0152 permits several non-terminal `AgentRun` values to coordinate writes only through explicit non-overlapping Agent Host work claims while preserving one authoritative project writer host. Claims are run-control metadata rather than canonical project data, MUST NOT bypass authoring revision/generation checks, and MUST NOT lock out human editing. Conflicting scope expansion MUST wait, re-plan, or be explicitly reconciled; managed source writes MUST acquire path ownership before modifying the isolated workspace and managed source apply MUST retain its common-baseline stale-file guard in addition to claim ownership. Native AgentRuntime live MCP mutations MUST acquire conservative canonical-authoring ownership before dispatch, while read-only MCP calls remain claim-free; the authoritative authoring service still performs the final revision/generation checks. Claim acquisition/release, conflicts, waits, cross-run dependencies, and reconciliation MUST remain auditable per run, and every run retains independent proposal, permission, validation, and completion evidence.
++ADR 0152 permits several non-terminal `AgentRun` values to coordinate writes only through explicit non-overlapping Agent Host work claims while preserving one authoritative project writer host. Claims are run-control metadata rather than canonical project data, MUST NOT bypass authoring revision/generation checks, and MUST NOT lock out human editing. Conflicting scope expansion MUST wait, re-plan, or be explicitly reconciled; managed source writes MUST acquire path ownership before modifying the isolated workspace and managed source apply MUST retain its common-baseline stale-file guard in addition to claim ownership. Native AgentRuntime live MCP mutations MUST acquire conservative canonical-authoring ownership before dispatch, while read-only MCP calls remain claim-free; governed external/generated asset acquisition MUST acquire hierarchical destination ownership before provider execution and project import, with the synthetic `project_assets` claim root covering imports into the assets root. The authoritative authoring and asset-management services still perform the final revision/generation/path and import checks. Claim acquisition/release, conflicts, waits, cross-run dependencies, and reconciliation MUST remain auditable per run, and every run retains independent proposal, permission, validation, and completion evidence.
+ AI Studio MUST be a client of a GUI-free agent host rather than a second
+ authoring implementation. A session owns conversation history and a versioned
+ structured proposal. Starting a run snapshots the exact proposal version; the
+diff --git a/docs/adr/0152-multi-agent-writer-coordination-and-conflict-ownership.md b/docs/adr/0152-multi-agent-writer-coordination-and-conflict-ownership.md
+index 08f7d71795d424271b02f013ea117110c6650512..f5a112e4b0204b9249eebfde4e3aea559f89d2b8 100644
+--- a/docs/adr/0152-multi-agent-writer-coordination-and-conflict-ownership.md
++++ b/docs/adr/0152-multi-agent-writer-coordination-and-conflict-ownership.md
+@@ -56,7 +56,7 @@ The Editor-owned `AgentHost` stores normalized `AgentWorkClaim` values on propos
+ 
+ Several non-terminal runs may coexist in the same authoritative project writer host when their claims are disjoint. Starting a run validates proposal-declared claims, and an active run may acquire or release additional claims as inspection refines its scope. Conflicting expansion returns a typed owner/claim conflict and records conflict/wait evidence in that run rather than force-applying. Terminal runs release all claims and run-scoped permissions; restart recovery reconstructs active-run ownership from persisted run metadata and removes stale claims from terminal records.
+ 
+-Native AgentRuntime code writes acquire code-path claims before modifying the isolated workspace, and the managed code-workspace apply path reasserts those claims before writing the live project while still performing the existing common-baseline stale-file check. Native AgentRuntime MCP mutations acquire one conservative `canonical_authoring` shared-resource claim before typed live Editor MCP dispatch; read-only MCP calls do not acquire it. Human edits therefore remain unlocked and may still invalidate an agent mutation after ownership was acquired. Structured authoring continues to use ADR 0121/0139 authoritative revisions and transactions; a claim is never permission to bypass stale-revision rejection.
++Native AgentRuntime code writes acquire code-path claims before modifying the isolated workspace, and the managed code-workspace apply path reasserts those claims before writing the live project while still performing the existing common-baseline stale-file check. Native AgentRuntime MCP mutations acquire one conservative `canonical_authoring` shared-resource claim before typed live Editor MCP dispatch; read-only MCP calls do not acquire it. Governed external/generated asset acquisition acquires a hierarchical `project_assets/<destination>` asset-target claim after permissions are granted and before provider execution; the synthetic `project_assets` root represents import into the assets root and conflicts with every nested asset destination. Human edits therefore remain unlocked and may still invalidate an agent mutation after ownership was acquired. Structured authoring continues to use ADR 0121/0139 authoritative revisions and transactions; a claim is never permission to bypass stale-revision rejection.
+ 
+ Claim acquisition/release, conflicts/waits, cross-run dependency records, and reconciliation records use the existing structured `AgentEvent` timeline. Completion reports remain per-run, so concurrent work cannot satisfy another run's completion gates.
+ 
