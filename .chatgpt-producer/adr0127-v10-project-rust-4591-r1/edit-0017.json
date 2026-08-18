@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/scripting/src/game_api.rs","old":"use engine_authoring::{ComponentTypeId, EntityId, StableId, Value};\n","new":"use engine_authoring::{AssetId, ComponentTypeId, EntityId, StableId, Value};\n"}

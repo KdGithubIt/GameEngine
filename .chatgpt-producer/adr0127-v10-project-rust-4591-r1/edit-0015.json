@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/engine/src/game_host/core.rs","old":"use crate::navmesh::NavMeshAgent;\nuse crate::player::InputActionMap;\n","new":"use crate::navmesh::NavMeshAgent;\nuse crate::native_2d::SpriteAnimatorRuntime2d;\nuse crate::player::InputActionMap;\n"}
