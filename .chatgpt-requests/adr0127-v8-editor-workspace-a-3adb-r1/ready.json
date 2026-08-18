@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0127-v8-editor-workspace-a-3adb-r1",
+  "target_branch": "chatgpt/gameengine-adr0127-first-release-current-main-v8",
+  "expected_head_sha": "3adbf2d2a1510fba69dcd5a7266a7757f6a58e31",
+  "baseline_main_sha": "f8c3bcca0cd63c2731435bb603fa8e115839bcac",
+  "patch_sha256": "0ab5a2fff7c20b506df9ae2cf1f6f103cc4303a3af5939507226f06855b66169",
+  "patch_bytes": 4039,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Add ADR0127 Native 2D Editor workspace base",
+  "pr_title": "GameEngine: complete ADR0127 Native 2D first release",
+  "pr_body": "Isolates the first two Native 2D Editor workspace changes for current-main v8: stable SpriteRef scene-entity creation through the existing EditorSession transaction and the initial unused workspace module source. This intentionally leaves the module unregistered so remaining workspace authoring can be preflighted independently."
+}
