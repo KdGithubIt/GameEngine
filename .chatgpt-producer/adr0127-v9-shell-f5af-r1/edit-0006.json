@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/authoring_windows.rs","old":"    advanced_geometry_open: bool,\n    vfx_open: bool,","new":"    advanced_geometry_open: bool,\n    native_2d_open: bool,\n    vfx_open: bool,"}
