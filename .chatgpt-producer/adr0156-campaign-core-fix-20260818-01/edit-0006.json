@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/agent_benchmark_campaign.rs",
+  "old": "                seed_policy: match self.plan.seed_policy {\n                    CampaignSeedPolicy::Fixed(_) => \"fixed\".to_owned(),\n                    CampaignSeedPolicy::ProviderUnavailable => \"provider_unavailable\".to_owned(),\n                },",
+  "new": "                seed_policy: match &self.plan.seed_policy {\n                    CampaignSeedPolicy::Fixed(_) => \"fixed\".to_owned(),\n                    CampaignSeedPolicy::ProviderUnavailable => \"provider_unavailable\".to_owned(),\n                },"
+}
