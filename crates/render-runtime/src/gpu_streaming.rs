@@ -35,12 +35,6 @@ pub(crate) struct GpuUploadReport {
     pub(crate) cache_hits: u32,
 }
 
-impl GpuUploadReport {
-    pub(crate) const fn has_deferred_work(self) -> bool {
-        self.deferred_uploads != 0
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum UploadKind {
     Mesh,
