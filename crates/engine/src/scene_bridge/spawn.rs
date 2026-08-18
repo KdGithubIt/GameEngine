@@ -1327,6 +1327,12 @@ pub(crate) fn spawn_vfx_player_component(
             parameter_overrides,
         ),
     )?;
+    context.world.add_component(
+        entity,
+        VfxSourceIdentity {
+            effect: effect_asset,
+        },
+    )?;
     context.world.add_component(entity, bindings)?;
     Ok(())
 }
