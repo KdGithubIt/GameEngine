@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ui/assets/animation_set_window.rs","old":"use crate::ui::*;","new":"use crate::preview_residency::{\n    PreviewAssetPriority, PreviewResidencyState, ProjectAssetResidency,\n};\nuse crate::ui::*;"}
