@@ -8,8 +8,11 @@ use crate::agent_benchmark::{
     benchmark_task, comparison_equivalence, BenchmarkExecutionIdentity, BenchmarkHardwareIdentity,
     BenchmarkModelIdentity, BenchmarkRecord, BenchmarkTaskKind, BenchmarkToolBudget,
     ComparisonEquivalence, BENCHMARK_CORPUS_VERSION, BENCHMARK_HARNESS_VERSION,
+    BENCHMARK_SCHEMA_VERSION, WORKLOAD_POLICY_VERSION,
 };
-use crate::resource_arbitration::{QualityPreference, TelemetryValue};
+use crate::native_agent::BASELINE_HARNESS_VERSION;
+use crate::native_agent_runtime::{HarnessPolicy, NATIVE_WRITE_HARNESS_VERSION};
+use crate::resource_arbitration::{InferenceWorkload, QualityPreference, TelemetryValue};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -115,6 +118,40 @@ pub(crate) fn campaign_task_harness(task_id: &str) -> Result<CampaignTaskHarness
             CampaignTaskHarness::ProductionRuntimeDebug
         }
     })
+}
+
+fn expected_runtime_harness(harness: CampaignTaskHarness) -> &'static str {
+    match harness {
+        CampaignTaskHarness::NativeReadQuestion => BASELINE_HARNESS_VERSION,
+        CampaignTaskHarness::GovernedAgentHost | CampaignTaskHarness::ProductionRuntimeDebug => {
+            NATIVE_WRITE_HARNESS_VERSION
+        }
+    }
+}
+
+fn tool_budget_matches_harness(
+    harness: CampaignTaskHarness,
+    budget: &BenchmarkToolBudget,
+) -> bool {
+    match harness {
+        CampaignTaskHarness::NativeReadQuestion => {
+            budget.max_model_turns == 1
+                && budget.max_tool_failures == 0
+                && budget.repair_budget == 0
+                && budget.permission_budget.len() == 1
+                && budget
+                    .permission_budget
+                    .first()
+                    .is_some_and(|capability| capability == "read_only")
+                && budget.work_claims.is_empty()
+        }
+        CampaignTaskHarness::GovernedAgentHost | CampaignTaskHarness::ProductionRuntimeDebug => {
+            let policy = HarnessPolicy::default();
+            budget.max_model_turns == policy.max_model_turns
+                && budget.max_tool_failures == policy.max_tool_failures
+                && budget.repair_budget == policy.repair_budget
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -244,6 +281,9 @@ struct HostOnlyEvaluator {
 pub(crate) struct CampaignTaskPlan {
     pub(crate) task_id: String,
     pub(crate) fixture: CampaignFixtureIdentity,
+    pub(crate) runtime_harness_version: String,
+    pub(crate) workload: InferenceWorkload,
+    pub(crate) tool_budget: BenchmarkToolBudget,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -268,7 +308,7 @@ pub(crate) struct BenchmarkCampaignPlan {
     pub(crate) execution_environments: Vec<CampaignExecutionEnvironment>,
     pub(crate) quality: QualityPreference,
     pub(crate) hardware: BenchmarkHardwareIdentity,
-    pub(crate) tool_budget: BenchmarkToolBudget,
+    pub(crate) workload_policy_version: String,
     pub(crate) sampling_profile: String,
     pub(crate) seed_policy: CampaignSeedPolicy,
 }
@@ -280,6 +320,7 @@ impl BenchmarkCampaignPlan {
             || self.benchmark_harness_version != BENCHMARK_HARNESS_VERSION
             || self.campaign_harness_version != CAMPAIGN_HARNESS_VERSION
             || self.schedule_version != CAMPAIGN_SCHEDULE_VERSION
+            || self.workload_policy_version != WORKLOAD_POLICY_VERSION
         {
             return Err("campaign schema or harness identity is incompatible".to_owned());
         }
@@ -307,13 +348,16 @@ impl BenchmarkCampaignPlan {
 
         let mut task_ids = BTreeSet::new();
         for task in &self.tasks {
-            campaign_task_harness(&task.task_id)?;
+            let harness = campaign_task_harness(&task.task_id)?;
             if !task_ids.insert(task.task_id.clone())
                 || task.fixture.fixture_id.trim().is_empty()
                 || task.fixture.fixture_version.trim().is_empty()
                 || task.fixture.instance_id.trim().is_empty()
+                || task.runtime_harness_version != expected_runtime_harness(harness)
+                || !tool_budget_matches_harness(harness, &task.tool_budget)
             {
-                return Err("campaign task/fixture identity is invalid or duplicated".to_owned());
+                return Err("campaign task/fixture execution identity is invalid or duplicated"
+                    .to_owned());
             }
         }
 
@@ -401,14 +445,30 @@ impl BenchmarkCampaignPlan {
             benchmark_harness_version: self.benchmark_harness_version.clone(),
             campaign_harness_version: self.campaign_harness_version.clone(),
             schedule_version: self.schedule_version.clone(),
+            workload_policy_version: self.workload_policy_version.clone(),
             candidates: self
                 .candidates
                 .iter()
                 .map(|candidate| CampaignRepresentation::from_model(&candidate.model))
                 .collect(),
             fixtures: self.tasks.iter().map(|task| task.fixture.clone()).collect(),
+            task_runtime_harness_versions: self
+                .tasks
+                .iter()
+                .map(|task| task.runtime_harness_version.clone())
+                .collect(),
+            task_workloads: self.tasks.iter().map(|task| task.workload).collect(),
+            task_tool_budgets: self
+                .tasks
+                .iter()
+                .map(|task| task.tool_budget.clone())
+                .collect(),
             hardware: self.hardware.clone(),
+            comparison_class: self.comparison_class,
+            execution_profile: self.execution_profile,
             execution_environments: self.execution_environments.clone(),
+            sampling_profile: self.sampling_profile.clone(),
+            seed_policy: self.seed_policy.clone(),
         }
     }
 }
@@ -419,10 +479,18 @@ pub(crate) struct CampaignResumeIdentity {
     pub(crate) benchmark_harness_version: String,
     pub(crate) campaign_harness_version: String,
     pub(crate) schedule_version: String,
+    pub(crate) workload_policy_version: String,
     pub(crate) candidates: Vec<CampaignRepresentation>,
     pub(crate) fixtures: Vec<CampaignFixtureIdentity>,
+    pub(crate) task_runtime_harness_versions: Vec<String>,
+    pub(crate) task_workloads: Vec<InferenceWorkload>,
+    pub(crate) task_tool_budgets: Vec<BenchmarkToolBudget>,
     pub(crate) hardware: BenchmarkHardwareIdentity,
+    pub(crate) comparison_class: CampaignComparisonClass,
+    pub(crate) execution_profile: CampaignExecutionProfile,
     pub(crate) execution_environments: Vec<CampaignExecutionEnvironment>,
+    pub(crate) sampling_profile: String,
+    pub(crate) seed_policy: CampaignSeedPolicy,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -753,9 +821,28 @@ impl BenchmarkCampaign {
     ) -> Result<(), String> {
         self.validate_request(request, CampaignRunStatus::Running)?;
         let expected_model = CampaignRepresentation::from_model(&request.model);
-        if CampaignRepresentation::from_model(&record.identity.model) != expected_model
+        let task_plan = &self.plan.tasks[request.schedule.task_index];
+        let descriptor = benchmark_task(&request.schedule.task_id)
+            .ok_or_else(|| "frozen campaign task descriptor is unavailable".to_owned())?;
+        let expected_completion_criteria = descriptor
+            .completion_criteria
+            .iter()
+            .map(|criterion| (*criterion).to_owned())
+            .collect::<Vec<_>>();
+        if record.schema_version != BENCHMARK_SCHEMA_VERSION
+            || record.identity.corpus_version != self.plan.corpus_version
+            || record.identity.harness_version != self.plan.benchmark_harness_version
+            || record.identity.runtime_harness_version != task_plan.runtime_harness_version
+            || CampaignRepresentation::from_model(&record.identity.model) != expected_model
             || record.identity.task_id != request.schedule.task_id
             || record.identity.hardware != self.plan.hardware
+            || record.identity.quality != self.plan.quality
+            || record.identity.workload_policy_version != self.plan.workload_policy_version
+            || record.identity.observed_workload
+                != TelemetryValue::Measured(task_plan.workload)
+            || record.identity.tool_budget != task_plan.tool_budget
+            || record.identity.completion_criteria != expected_completion_criteria
+            || record.identity.execution.is_some()
         {
             self.reject_run(request, CampaignFailureKind::IdentityMismatch)?;
             return Err("automatic campaign evidence identity mismatch".to_owned());
@@ -899,7 +986,7 @@ impl BenchmarkCampaignStore {
             .root
             .join(format!("{}.json.tmp", campaign.plan_fingerprint));
         fs::write(&temporary, bytes).map_err(|error| error.to_string())?;
-        fs::rename(&temporary, &path).map_err(|error| error.to_string())?;
+        replace_campaign_file(&temporary, &path)?;
         Ok(path)
     }
 
@@ -914,6 +1001,31 @@ impl BenchmarkCampaignStore {
             return Err("persisted campaign identity is incompatible or corrupted".to_owned());
         }
         Ok(campaign)
+    }
+}
+
+fn replace_campaign_file(temporary: &std::path::Path, path: &std::path::Path) -> Result<(), String> {
+    let backup = path.with_extension("json.bak");
+    if backup.exists() {
+        fs::remove_file(&backup).map_err(|error| error.to_string())?;
+    }
+    let had_existing = path.exists();
+    if had_existing {
+        fs::rename(path, &backup).map_err(|error| error.to_string())?;
+    }
+    match fs::rename(temporary, path) {
+        Ok(()) => {
+            if had_existing {
+                let _ = fs::remove_file(backup);
+            }
+            Ok(())
+        }
+        Err(error) => {
+            if had_existing {
+                let _ = fs::rename(&backup, path);
+            }
+            Err(error.to_string())
+        }
     }
 }
 
@@ -1231,10 +1343,7 @@ fn unix_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent_benchmark::{
-        BenchmarkIdentity, BenchmarkMetrics, BENCHMARK_SCHEMA_VERSION, BENCHMARK_TASKS,
-    };
-    use crate::resource_arbitration::InferenceWorkload;
+    use crate::agent_benchmark::{BenchmarkIdentity, BenchmarkMetrics, BENCHMARK_TASKS};
 
     fn model(name: &str) -> BenchmarkModelIdentity {
         BenchmarkModelIdentity {
@@ -1253,6 +1362,41 @@ mod tests {
             gpu: TelemetryValue::Measured("gpu".to_owned()),
             total_gpu_memory_bytes: TelemetryValue::Measured(12_000),
             total_system_memory_bytes: TelemetryValue::Measured(32_000),
+        }
+    }
+
+    fn task_plan(index: usize, task_id: &str) -> CampaignTaskPlan {
+        let harness = campaign_task_harness(task_id).expect("task harness");
+        let tool_budget = match harness {
+            CampaignTaskHarness::NativeReadQuestion => BenchmarkToolBudget {
+                max_model_turns: 1,
+                max_tool_failures: 0,
+                repair_budget: 0,
+                permission_budget: vec!["read_only".to_owned()],
+                work_claims: Vec::new(),
+            },
+            CampaignTaskHarness::GovernedAgentHost
+            | CampaignTaskHarness::ProductionRuntimeDebug => {
+                let policy = HarnessPolicy::default();
+                BenchmarkToolBudget {
+                    max_model_turns: policy.max_model_turns,
+                    max_tool_failures: policy.max_tool_failures,
+                    repair_budget: policy.repair_budget,
+                    permission_budget: vec!["managed".to_owned()],
+                    work_claims: Vec::new(),
+                }
+            }
+        };
+        CampaignTaskPlan {
+            task_id: task_id.to_owned(),
+            fixture: CampaignFixtureIdentity::for_task(task_id, 100 + index as u64),
+            runtime_harness_version: expected_runtime_harness(harness).to_owned(),
+            workload: match harness {
+                CampaignTaskHarness::NativeReadQuestion => InferenceWorkload::InteractiveReasoning,
+                CampaignTaskHarness::GovernedAgentHost
+                | CampaignTaskHarness::ProductionRuntimeDebug => InferenceWorkload::StrongReasoning,
+            },
+            tool_budget,
         }
     }
 
@@ -1277,10 +1421,7 @@ mod tests {
                 .iter()
                 .take(2)
                 .enumerate()
-                .map(|(index, task)| CampaignTaskPlan {
-                    task_id: task.id.to_owned(),
-                    fixture: CampaignFixtureIdentity::for_task(task.id, 100 + index as u64),
-                })
+                .map(|(index, task)| task_plan(index, task.id))
                 .collect(),
             repetitions: 2,
             comparison_class: CampaignComparisonClass::ModelComparison,
@@ -1288,13 +1429,7 @@ mod tests {
             execution_environments: vec![CampaignExecutionEnvironment::WindowsNative],
             quality: QualityPreference::Balanced,
             hardware: hardware(),
-            tool_budget: BenchmarkToolBudget {
-                max_model_turns: 24,
-                max_tool_failures: 4,
-                repair_budget: 2,
-                permission_budget: vec!["managed".to_owned()],
-                work_claims: Vec::new(),
-            },
+            workload_policy_version: WORKLOAD_POLICY_VERSION.to_owned(),
             sampling_profile: "temperature-0".to_owned(),
             seed_policy: CampaignSeedPolicy::Fixed(7),
         }
@@ -1302,6 +1437,12 @@ mod tests {
 
     fn record(model_name: &str, task_id: &str) -> BenchmarkRecord {
         let task = benchmark_task(task_id).expect("task");
+        let campaign_plan = plan();
+        let task_plan = campaign_plan
+            .tasks
+            .iter()
+            .find(|task| task.task_id == task_id)
+            .expect("campaign task plan");
         BenchmarkRecord {
             schema_version: BENCHMARK_SCHEMA_VERSION,
             recorded_unix_ms: 1,
@@ -1309,15 +1450,13 @@ mod tests {
                 corpus_version: BENCHMARK_CORPUS_VERSION.to_owned(),
                 task_id: task_id.to_owned(),
                 harness_version: BENCHMARK_HARNESS_VERSION.to_owned(),
-                runtime_harness_version: "runtime-v1".to_owned(),
+                runtime_harness_version: task_plan.runtime_harness_version.clone(),
                 model: model(model_name),
                 hardware: hardware(),
                 quality: QualityPreference::Balanced,
-                workload_policy_version: "adr0135-workload-policy-v1".to_owned(),
-                observed_workload: TelemetryValue::Measured(
-                    InferenceWorkload::InteractiveReasoning,
-                ),
-                tool_budget: plan().tool_budget,
+                workload_policy_version: WORKLOAD_POLICY_VERSION.to_owned(),
+                observed_workload: TelemetryValue::Measured(task_plan.workload),
+                tool_budget: task_plan.tool_budget.clone(),
                 completion_criteria: task
                     .completion_criteria
                     .iter()
@@ -1500,6 +1639,39 @@ mod tests {
     }
 
     #[test]
+    fn automatic_recording_rejects_frozen_harness_policy_drift() {
+        for mutation in 0..4 {
+            let mut campaign = BenchmarkCampaign::new(plan()).expect("campaign");
+            let verified = vec![model("model-a"), model("model-b")];
+            campaign.start(&verified).expect("start");
+            let request = campaign.begin_next_run().expect("next").expect("request");
+            campaign.mark_measurement_started(&request).expect("started");
+            let mut evidence = record("model-a", &request.schedule.task_id);
+            match mutation {
+                0 => evidence.identity.runtime_harness_version.push_str("-drift"),
+                1 => evidence.identity.quality = QualityPreference::Fast,
+                2 => {
+                    evidence.identity.observed_workload =
+                        TelemetryValue::Measured(InferenceWorkload::DeterministicExecution);
+                }
+                3 => {
+                    evidence.identity.tool_budget.max_model_turns = evidence
+                        .identity
+                        .tool_budget
+                        .max_model_turns
+                        .saturating_add(1);
+                }
+                _ => unreachable!("bounded mutation cases"),
+            }
+            assert!(campaign.complete_run(&request, evidence).is_err());
+            assert_eq!(
+                campaign.runs[request.schedule.ordinal as usize].status,
+                CampaignRunStatus::Rejected
+            );
+        }
+    }
+
+    #[test]
     fn pause_resume_preserves_evidence_and_rejects_drift() {
         let mut campaign = BenchmarkCampaign::new(plan()).expect("campaign");
         let verified = vec![model("model-a"), model("model-b")];
@@ -1544,6 +1716,24 @@ mod tests {
             report.candidates[0].peak_backend_gpu_memory_bytes,
             TelemetryValue::Unavailable
         );
+    }
+
+    #[test]
+    fn campaign_store_replaces_existing_progress_file() {
+        let root = tempfile::tempdir().expect("campaign store tempdir");
+        let store = BenchmarkCampaignStore::open(root.path().to_path_buf())
+            .expect("campaign store");
+        let mut campaign = BenchmarkCampaign::new(plan()).expect("campaign");
+        store.save(&campaign).expect("initial save");
+        campaign
+            .start(&[model("model-a"), model("model-b")])
+            .expect("start");
+        campaign.pause().expect("pause");
+        store.save(&campaign).expect("replace saved progress");
+        let loaded = store
+            .load(&campaign.plan_fingerprint)
+            .expect("reload saved progress");
+        assert_eq!(loaded.state, BenchmarkCampaignState::Paused);
     }
 
     #[test]

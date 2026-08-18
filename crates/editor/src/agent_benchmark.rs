@@ -20,7 +20,7 @@ pub(crate) const BENCHMARK_SCHEMA_VERSION: u32 = 2;
 const MIN_SUPPORTED_BENCHMARK_SCHEMA_VERSION: u32 = 1;
 pub(crate) const BENCHMARK_CORPUS_VERSION: &str = "gameengine-agent-v1";
 pub(crate) const BENCHMARK_HARNESS_VERSION: &str = "gameengine-agent-benchmark-harness-v1";
-const WORKLOAD_POLICY_VERSION: &str = "adr0135-workload-policy-v1";
+pub(crate) const WORKLOAD_POLICY_VERSION: &str = "adr0135-workload-policy-v1";
 const CATALOG_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
