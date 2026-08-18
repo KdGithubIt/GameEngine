@@ -66,6 +66,7 @@ mod mcp;
 mod navigation_workspace;
 mod play;
 mod presentation;
+mod sequencer;
 mod viewport;
 #[cfg(feature = "visual-validation")]
 mod vfx_visual_validation;
@@ -101,6 +102,7 @@ use inspector::*;
 use navigation_workspace::*;
 use play::*;
 use presentation::*;
+use sequencer::*;
 
 /// Editor application shell (Phase 8-C / 9-B / 9-C).
 pub struct EditorApp {
@@ -151,6 +153,8 @@ pub struct EditorApp {
     material_texture_choices_cache: Option<MaterialTextureChoicesCache>,
     /// Open Animation Set document edited through the dedicated typed window.
     animation_set_editor: Option<AnimationSetEditorState>,
+    /// Open Timeline document edited through the ADR 0126 Sequencer window.
+    timeline_sequencer: Option<TimelineSequencerState>,
     /// Graph selection waiting for stale-binding removal confirmation.
     pending_animation_set_graph: Option<AssetId>,
     /// Whether the two-choice Animation Set Clear confirmation is visible.
@@ -426,6 +430,7 @@ impl EditorApp {
             material_scene_preview_deadline: None,
             material_texture_choices_cache: None,
             animation_set_editor: None,
+            timeline_sequencer: None,
             pending_animation_set_graph: None,
             pending_animation_set_clear: false,
             animation_set_event_draft: None,
@@ -938,6 +943,7 @@ impl eframe::App for EditorApp {
         self.show_new_rust_script_modal(ui.ctx());
         self.show_material_editor_window(ui.ctx());
         self.show_animation_set_editor_window(ui.ctx());
+        self.show_timeline_sequencer_window(ui.ctx());
         self.show_project_settings_window(ui.ctx());
         self.show_navigation_window(ui.ctx());
         self.show_texture_preview_window(ui.ctx());

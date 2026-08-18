@@ -173,6 +173,9 @@ pub(in crate::ui) enum AssetBrowserAction {
         graph: Option<AssetId>,
         destination_folder: PathBuf,
     },
+    NewTimeline {
+        destination_folder: PathBuf,
+    },
     NewMaterial,
     NewRhaiScript,
     NewRustScript,
@@ -1225,6 +1228,14 @@ fn show_asset_browser(
                                             });
                                             ui.close();
                                         }
+                                        if ui.button("Timeline").clicked() {
+                                            action = Some(AssetBrowserAction::NewTimeline {
+                                                destination_folder: browser
+                                                    .selected_folder()
+                                                    .to_path_buf(),
+                                            });
+                                            ui.close();
+                                        }
                                     });
                                     ui.menu_button("UI", |ui| {
                                         if ui.button("UI Document").clicked() {
@@ -1282,6 +1293,7 @@ pub(in crate::ui) fn asset_kind_icon(kind: AssetKind) -> &'static str {
         AssetKind::Scene => "▣",
         AssetKind::Graph | AssetKind::GraphView => "◇",
         AssetKind::AnimationSet => "◎",
+        AssetKind::Timeline => "≋",
         AssetKind::AnimationClip => "▶",
         AssetKind::MotionSource => "↝",
         AssetKind::Texture => "▤",
@@ -1311,6 +1323,7 @@ pub(in crate::ui) fn asset_kind_color(kind: AssetKind) -> egui::Color32 {
         AssetKind::Audio => egui::Color32::from_rgb(250, 220, 110),
         AssetKind::Graph | AssetKind::GraphView => egui::Color32::from_rgb(150, 180, 255),
         AssetKind::AnimationSet => egui::Color32::from_rgb(190, 150, 255),
+        AssetKind::Timeline => egui::Color32::from_rgb(120, 210, 190),
         AssetKind::AnimationClip | AssetKind::MotionSource => {
             egui::Color32::from_rgb(120, 210, 255)
         }

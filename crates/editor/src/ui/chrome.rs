@@ -1042,6 +1042,9 @@ impl EditorApp {
                         graph,
                         destination_folder,
                     }) => self.create_animation_set_document_in_folder(graph, &destination_folder),
+                    Some(AssetBrowserAction::NewTimeline { destination_folder }) => {
+                        self.create_timeline_document_in_folder(&destination_folder)
+                    }
                     Some(AssetBrowserAction::NewMaterial) => self.create_material_document(),
                     Some(AssetBrowserAction::ShowInExplorer(path)) => {
                         self.show_asset_in_explorer(&path)

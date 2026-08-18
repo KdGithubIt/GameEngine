@@ -22,6 +22,8 @@ pub enum AssetKind {
     GraphView,
     /// `*.animset.json` author-owned motion-slot bindings.
     AnimationSet,
+    /// `*.timeline.json` Timeline / Sequencer document (ADR 0126).
+    Timeline,
     /// Virtual imported animation-clip sub-asset.
     ///
     /// The file scanner never creates this kind directly; the selected model
@@ -70,6 +72,7 @@ impl AssetKind {
             Self::Graph => "[graph]",
             Self::GraphView => "[view]",
             Self::AnimationSet => "[animset]",
+            Self::Timeline => "[timeline]",
             Self::AnimationClip => "[clip]",
             Self::MotionSource => "[motion]",
             Self::Texture => "[tex]",
@@ -619,6 +622,8 @@ pub fn classify_file_name(name: &str) -> Option<(AssetKind, String)> {
         (AssetKind::Scene, ".scene.json".len())
     } else if lower.ends_with(".animset.json") {
         (AssetKind::AnimationSet, ".animset.json".len())
+    } else if lower.ends_with(".timeline.json") {
+        (AssetKind::Timeline, ".timeline.json".len())
     } else if lower.ends_with(".material.json") {
         (AssetKind::Material, ".material.json".len())
     } else if lower.ends_with(".prefab.json") {

@@ -108,6 +108,10 @@ impl EditorApp {
                 self.open_animation_set_editor(PathBuf::from(&relative), abs_path);
                 return;
             }
+            AssetKind::Timeline => {
+                self.open_timeline_sequencer(PathBuf::from(&relative), abs_path);
+                return;
+            }
             AssetKind::Mesh
             | AssetKind::AnimationClip
             | AssetKind::MotionSource
@@ -133,6 +137,66 @@ impl EditorApp {
             }
         };
         self.request_open(pending);
+    }
+
+    /// Creates and registers an empty Timeline document in the selected asset folder.
+    pub(in crate::ui) fn create_timeline_document_in_folder(&mut self, destination_folder: &Path) {
+        if self.is_playing() {
+            self.report_error("editor.timeline_create_while_playing", "stop Play mode before creating a Timeline");
+            return;
+        }
+        let Some(project) = self.project_root.clone() else {
+            self.report_error("editor.timeline_create_without_project", "open a project before creating a Timeline");
+            return;
+        };
+        if !destination_folder.as_os_str().is_empty()
+            && asset_relative_path_string(destination_folder).is_none()
+        {
+            self.report_error("editor.timeline_create_failed", "Timeline destination must be an asset-relative folder");
+            return;
+        }
+        let directory = project.assets_root().join(destination_folder);
+        if let Err(error) = fs::create_dir_all(&directory) {
+            self.report_error("editor.timeline_create_failed", format!("could not create {}: {error}", directory.display()));
+            return;
+        }
+        let path = unique_document_path(&directory, "new_timeline", ".timeline.json");
+        let Some(relative) = path
+            .strip_prefix(project.assets_root())
+            .ok()
+            .and_then(asset_relative_path_string)
+        else {
+            self.report_error("editor.timeline_create_failed", format!("could not derive an asset-relative path for {}", path.display()));
+            return;
+        };
+        let document = engine_authoring::TimelineDocument::new(
+            "New Timeline",
+            engine::timeline::TimelineTick::new(10 * engine::timeline::TIMELINE_TICKS_PER_SECOND),
+        );
+        if let Err(error) = engine_authoring::save_timeline(&path, &document) {
+            self.report_error("editor.timeline_create_failed", error.to_string());
+            return;
+        }
+        let asset_id = AssetId::generate();
+        let mut manifest = self.asset_manifest.clone();
+        let name = unique_asset_name("new_timeline", &manifest);
+        manifest.insert(
+            asset_id,
+            engine::ManifestEntry {
+                path: relative.clone(),
+                name: Some(name),
+                import_settings: engine::ImportSettings::default(),
+            },
+        );
+        if let Err(error) = save_asset_manifest(&project, &manifest) {
+            let _ = fs::remove_file(&path);
+            self.report_error("editor.timeline_manifest_save_failed", error);
+            return;
+        }
+        self.asset_manifest = manifest;
+        self.asset_browser.refresh(&project.assets_root());
+        self.asset_browser.select_relative_path(Path::new(&relative));
+        self.open_timeline_sequencer(PathBuf::from(relative), path);
     }
 
     /// Creates a valid UI document at a collision-free project-relative path
