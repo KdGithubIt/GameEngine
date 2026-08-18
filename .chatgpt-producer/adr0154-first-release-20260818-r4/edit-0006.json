@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/animation/src/anim_graph.rs","old":"    /// Variant that scene conversion actually resolved.\n    pub resolved_variant: MotionSourceVariant,","new":"    /// Target-aware route that scene conversion actually resolved.\n    pub resolved_route: AnimationMotionRoute,"}
