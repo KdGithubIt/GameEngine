@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/authoring/src/native_2d_assets.rs",
+  "old": "/// Blend policy for one SpriteRenderer2D.\n#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]\n#[serde(rename_all = \"snake_case\")]\npub enum SpriteBlendMode {\n    /// Straight-alpha source over destination.\n    Alpha,\n    /// Premultiplied-alpha source over destination.\n    PremultipliedAlpha,\n    /// Add source color to the destination.\n    Additive,\n}\n\nimpl Default for SpriteBlendMode {\n    fn default() -> Self {\n        Self::Alpha\n    }\n}\n",
+  "new": "/// Blend policy for one SpriteRenderer2D.\n#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]\n#[serde(rename_all = \"snake_case\")]\npub enum SpriteBlendMode {\n    /// Straight-alpha source over destination.\n    #[default]\n    Alpha,\n    /// Premultiplied-alpha source over destination.\n    PremultipliedAlpha,\n    /// Add source color to the destination.\n    Additive,\n}\n"
+}
