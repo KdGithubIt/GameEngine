@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "struct NativeRunBenchmarkContext {\n    run_id: String,\n    task_id: String,\n    backend_id: String,\n    model_id: String,\n    quality: QualityPreference,\n    workload: InferenceWorkload,\n    hardware: BenchmarkHardwareIdentity,\n    inventory: Option<InstalledModelInventory>,\n}",
+  "new": "struct NativeRunBenchmarkContext {\n    run_id: String,\n    task_id: String,\n    backend_id: String,\n    model_id: String,\n    quality: QualityPreference,\n    workload: InferenceWorkload,\n    hardware: BenchmarkHardwareIdentity,\n    inventory: Option<InstalledModelInventory>,\n    routed: bool,\n}"
+}
