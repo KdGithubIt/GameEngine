@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/lib.rs",
+  "old": "#[allow(dead_code)]\nmod agent_asset_acquisition;\nmod agent_benchmark;\nmod agent_host;",
+  "new": "#[allow(dead_code)]\nmod agent_asset_acquisition;\nmod agent_benchmark;\n// ADR 0156 campaign orchestration includes host-only execution hooks that are consumed by\n// AI Studio and production runtime/model adapters incrementally.\n#[allow(dead_code)]\nmod agent_benchmark_campaign;\nmod agent_host;"
+}
