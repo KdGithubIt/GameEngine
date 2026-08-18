@@ -1,0 +1,186 @@
+diff --git a/crates/editor/src/agent_benchmark.rs b/crates/editor/src/agent_benchmark.rs
+index 4ac729492dd28070c5d4220a8d593cf2fd92899d..d9c8fa52b4658d52054d21ad83ed68d5c384057d 100644
+--- a/crates/editor/src/agent_benchmark.rs
++++ b/crates/editor/src/agent_benchmark.rs
+@@ -121,24 +121,27 @@ impl Default for BenchmarkHardwareIdentity {
+ 
+ impl BenchmarkHardwareIdentity {
+     pub(crate) fn from_editor_adapter(name: &str, vendor_id: u32, device_id: u32) -> Self {
+-        let mut identity = Self::default();
+         let name = name.trim();
+         if name.is_empty() {
+-            return identity;
++            return Self::default();
+         }
+-        identity.gpu = TelemetryValue::Measured(name.to_owned());
++        let gpu = TelemetryValue::Measured(name.to_owned());
+ 
+         #[cfg(target_os = "windows")]
+-        {
+-            let (gpu_memory, system_memory) =
+-                windows_hardware_memory(name, vendor_id, device_id);
+-            identity.total_gpu_memory_bytes = gpu_memory;
+-            identity.total_system_memory_bytes = system_memory;
+-        }
++        let (total_gpu_memory_bytes, total_system_memory_bytes) =
++            windows_hardware_memory(name, vendor_id, device_id);
+         #[cfg(not(target_os = "windows"))]
+-        let _ = (vendor_id, device_id);
++        let (total_gpu_memory_bytes, total_system_memory_bytes) = {
++            let _ = (vendor_id, device_id);
++            (TelemetryValue::Unavailable, TelemetryValue::Unavailable)
++        };
+ 
+-        identity
++        Self {
++            platform: format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH),
++            gpu,
++            total_gpu_memory_bytes,
++            total_system_memory_bytes,
++        }
+     }
+ }
+ 
+@@ -945,6 +948,7 @@ pub(crate) fn read_question_record(
+     if task.kind != BenchmarkTaskKind::ReadQuestion {
+         return Err("the last read-oriented result can only record a read-question benchmark task".to_owned());
+     }
++    let provenance_reported = metrics.retrieval_chunks > 0;
+     Ok(BenchmarkRecord {
+         schema_version: BENCHMARK_SCHEMA_VERSION,
+         recorded_unix_ms: unix_ms(),
+@@ -968,8 +972,8 @@ pub(crate) fn read_question_record(
+             completion_criteria: task.completion_criteria.iter().map(|criterion| (*criterion).to_owned()).collect(),
+         },
+         metrics: BenchmarkMetrics {
+-            acceptance_success: TelemetryValue::Measured(true),
+-            completion_success: TelemetryValue::Measured(true),
++            acceptance_success: TelemetryValue::Measured(provenance_reported),
++            completion_success: TelemetryValue::Measured(provenance_reported),
+             model_turns: TelemetryValue::Measured(u64::from(metrics.model_turns)),
+             tool_calls: TelemetryValue::Measured(0),
+             invalid_or_failed_tool_calls: TelemetryValue::Measured(0),
+@@ -1002,15 +1006,19 @@ fn work_claim_kind_label(claim: &AgentWorkClaim) -> Option<String> {
+         .map(ToOwned::to_owned)
+ }
+ 
++pub(crate) struct AgentRunBenchmarkIdentity<'a> {
++    pub(crate) backend_id: &'a str,
++    pub(crate) model_id: &'a str,
++    pub(crate) inventory: Option<&'a InstalledModelInventory>,
++    pub(crate) quality: QualityPreference,
++    pub(crate) workload: InferenceWorkload,
++    pub(crate) hardware: &'a BenchmarkHardwareIdentity,
++}
++
+ pub(crate) fn agent_run_record(
+     task_id: &str,
+     run: &AgentRun,
+-    backend_id: &str,
+-    model_id: &str,
+-    inventory: Option<&InstalledModelInventory>,
+-    quality: QualityPreference,
+-    workload: InferenceWorkload,
+-    hardware: &BenchmarkHardwareIdentity,
++    identity: AgentRunBenchmarkIdentity<'_>,
+ ) -> Result<BenchmarkRecord, String> {
+     let task = benchmark_task(task_id).ok_or_else(|| format!("unknown benchmark task `{task_id}`"))?;
+     if task.kind == BenchmarkTaskKind::ReadQuestion {
+@@ -1067,11 +1075,11 @@ pub(crate) fn agent_run_record(
+             task_id: task.id.to_owned(),
+             harness_version: BENCHMARK_HARNESS_VERSION.to_owned(),
+             runtime_harness_version: NATIVE_WRITE_HARNESS_VERSION.to_owned(),
+-            model: model_identity(backend_id, model_id, inventory),
+-            hardware: hardware.clone(),
+-            quality,
++            model: model_identity(identity.backend_id, identity.model_id, identity.inventory),
++            hardware: identity.hardware.clone(),
++            quality: identity.quality,
+             workload_policy_version: WORKLOAD_POLICY_VERSION.to_owned(),
+-            observed_workload: TelemetryValue::Measured(workload),
++            observed_workload: TelemetryValue::Measured(identity.workload),
+             tool_budget: BenchmarkToolBudget {
+                 max_model_turns: policy.max_model_turns,
+                 max_tool_failures: policy.max_tool_failures,
+@@ -1271,7 +1279,7 @@ mod tests {
+             total_gpu_memory_bytes: TelemetryValue::Measured(12_000),
+             total_system_memory_bytes: TelemetryValue::Measured(32_000),
+         };
+-        let metrics = NativeMetrics {
++        let mut metrics = NativeMetrics {
+             harness_version: "test-read-v1",
+             backend_id: "test-backend",
+             model_id: "model-a".to_owned(),
+@@ -1299,6 +1307,21 @@ mod tests {
+         )
+         .expect("read benchmark record");
+         assert_eq!(record.identity.hardware, hardware);
++
++        metrics.retrieval_chunks = 0;
++        let no_provenance = read_question_record(
++            BENCHMARK_TASKS[0].id,
++            &metrics,
++            None,
++            QualityPreference::Balanced,
++            InferenceWorkload::InteractiveReasoning,
++            &hardware,
++        )
++        .expect("read benchmark record without provenance");
++        assert_eq!(
++            no_provenance.metrics.completion_success,
++            TelemetryValue::Measured(false)
++        );
+     }
+ 
+     #[cfg(target_os = "windows")]
+diff --git a/crates/editor/src/ai_studio.rs b/crates/editor/src/ai_studio.rs
+index acb892c952183c230ac3df2556c8bb10dfad8f9a..2a019ccc4476544f9c9d126757e2177e40def805 100644
+--- a/crates/editor/src/ai_studio.rs
++++ b/crates/editor/src/ai_studio.rs
+@@ -5,9 +5,9 @@
+ //! workspace rules live in the GUI-free `agent_host` module.
+ 
+ use crate::agent_benchmark::{
+-    agent_run_record, benchmark_task, read_question_record, BenchmarkHardwareIdentity,
+-    BenchmarkRecord, BenchmarkStore, BenchmarkTaskKind, CatalogProfile, CuratedModelCatalog,
+-    BENCHMARK_CORPUS_VERSION, BENCHMARK_TASKS,
++    agent_run_record, benchmark_task, read_question_record, AgentRunBenchmarkIdentity,
++    BenchmarkHardwareIdentity, BenchmarkRecord, BenchmarkStore, BenchmarkTaskKind, CatalogProfile,
++    CuratedModelCatalog, BENCHMARK_CORPUS_VERSION, BENCHMARK_TASKS,
+ };
+ use crate::agent_host::{
+     project_storage_key, AgentCapability, AgentConfinementNetworkPolicy, AgentConfinementRequest,
+@@ -1838,12 +1838,14 @@ impl AiStudioPanel {
+             agent_run_record(
+                 &context.task_id,
+                 &run,
+-                &context.backend_id,
+-                &context.model_id,
+-                context.inventory.as_ref(),
+-                context.quality,
+-                context.workload,
+-                &context.hardware,
++                AgentRunBenchmarkIdentity {
++                    backend_id: &context.backend_id,
++                    model_id: &context.model_id,
++                    inventory: context.inventory.as_ref(),
++                    quality: context.quality,
++                    workload: context.workload,
++                    hardware: &context.hardware,
++                },
+             )
+         };
+         let record = match record {
+diff --git a/docs/adr/0142-gameengine-agent-benchmark-and-curated-model-catalog.md b/docs/adr/0142-gameengine-agent-benchmark-and-curated-model-catalog.md
+index 63fa8c29b7ee351d6acaafc0007a6b84fb8e8291..94e90eccb6ca6159cb8b0132337a14587205a8a2 100644
+--- a/docs/adr/0142-gameengine-agent-benchmark-and-curated-model-catalog.md
++++ b/docs/adr/0142-gameengine-agent-benchmark-and-curated-model-catalog.md
+@@ -54,7 +54,7 @@ The RTX 4070 Ti 12 GB remains the first reference profile from ADR 0135, not a m
+ 
+ ## Implementation
+ 
+-The first-release implementation keeps benchmark state in machine-local GameEngine application data and leaves canonical project/session data unchanged. `engine-editor` owns a versioned seven-class corpus contract covering read questions, project inspection, code implementation, typed authoring mutation, validation/repair, runtime interaction, and visual evaluation. Records retain the corpus/task identity, benchmark and provider harness versions, exact discoverable model representation, backend version, hardware/resource telemetry with explicit unavailable values, quality/workload policy, tool/permission/work-claim kind/count budget, completion criteria, and measured Agent Host evidence. The selected benchmark task identity and ADR 0135 workload classification are frozen when inference or a native run starts. On Windows, the first release snapshots the active Editor wgpu adapter identity, accepts dedicated GPU memory only from one matching non-software DXGI adapter, and measures total physical system memory through the operating system. Ambiguous adapter matching, API failure, zero dedicated-memory reporting, and unsupported platforms remain explicitly unavailable rather than being estimated.
++The first-release implementation keeps benchmark state in machine-local GameEngine application data and leaves canonical project/session data unchanged. `engine-editor` owns a versioned seven-class corpus contract covering read questions, project inspection, code implementation, typed authoring mutation, validation/repair, runtime interaction, and visual evaluation. Records retain the corpus/task identity, benchmark and provider harness versions, exact discoverable model representation, backend version, hardware/resource telemetry with explicit unavailable values, quality/workload policy, tool/permission/work-claim kind/count budget, completion criteria, and measured Agent Host evidence. The selected benchmark task identity and ADR 0135 workload classification are frozen when inference or a native run starts. Read-question evidence satisfies its provenance completion gate only when the read harness actually retrieved at least one evidence chunk; a plain model answer without retrieved provenance remains a recorded failure and cannot qualify a catalog recommendation. On Windows, the first release snapshots the active Editor wgpu adapter identity, accepts dedicated GPU memory only from one matching non-software DXGI adapter, and measures total physical system memory through the operating system. Ambiguous adapter matching, API failure, zero dedicated-memory reporting, and unsupported platforms remain explicitly unavailable rather than being estimated.
+ 
+ Model-only comparison is permitted only when corpus/task, both harness identities, backend runtime, hardware profile, quality/workload policy, tool/permission/work-claim kind/count budget, and completion criteria match. Changed dimensions are returned as an explicit non-equivalent comparison instead of being ranked as if only the model changed. The benchmark store intentionally omits prompts, conversation history, retrieved source text, project paths, raw work-claim target keys, and credentials. Recording local evidence is an explicit AI Studio action rather than silent collection or upload.
+ 
