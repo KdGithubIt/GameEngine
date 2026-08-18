@@ -262,6 +262,24 @@ impl BenchmarkExperimentStore {
         write_json_atomic(&path, result)?;
         Ok(path)
     }
+
+    /// Writes one named experiment-level report next to the recorded runs.
+    ///
+    /// Reports are derived data. They live beside the runs they summarize so a
+    /// comparison can always be traced back to the exact results it read.
+    pub(crate) fn write_report(
+        &self,
+        experiment_id: &str,
+        name: &str,
+        value: &impl Serialize,
+    ) -> Result<PathBuf, String> {
+        let path = self
+            .root
+            .join(safe_component(experiment_id))
+            .join(format!("{}.json", safe_component(name)));
+        write_json_atomic(&path, value)?;
+        Ok(path)
+    }
 }
 
 pub(crate) struct BenchmarkFixtureSandbox {

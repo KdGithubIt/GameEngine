@@ -148,6 +148,10 @@ impl AiStudioPanel {
         }
     }
 
+    /// Reports whether this benchmark child has written its result and may exit.
+    ///
+    /// Taking the request also clears the child state, so the shell closes the
+    /// viewport exactly once per run.
     pub fn take_benchmark_child_exit_request(&mut self) -> bool {
         if !self
             .benchmark_child

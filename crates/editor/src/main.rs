@@ -7,8 +7,10 @@ use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 #[cfg(feature = "visual-validation")]
-use std::time::{Duration, Instant};
+use std::time::Instant;
+use std::time::Duration;
 
+use engine_editor::benchmark_runner::{run_benchmark_experiment, BenchmarkExperimentOptions};
 use engine_editor::{AiStudioConnection, AiStudioPanel, AuthoringTool, AuthoringWindows};
 use engine_project_lifecycle::{acquire_editor_project, EditorLease};
 use mcp_transport::{
@@ -580,34 +582,80 @@ fn write_visual_validation_png(
     writer.finish().map_err(|error| error.to_string())
 }
 
-struct EditorArguments {
-    project: PathBuf,
-    benchmark_run: Option<PathBuf>,
+/// How the Editor binary was invoked.
+///
+/// The same executable is the human Editor, one isolated benchmark child, and
+/// the headless parent of a benchmark suite. Separating the three at argument
+/// parsing keeps the benchmark parent from acquiring a project lease or opening
+/// a window it does not need.
+enum EditorInvocation {
+    /// Normal windowed Editor, optionally acting as one benchmark child.
+    Editor {
+        project: PathBuf,
+        benchmark_run: Option<PathBuf>,
+    },
+    /// Headless parent that executes one whole benchmark experiment.
+    BenchmarkExperiment(Box<BenchmarkExperimentOptions>),
 }
 
-fn editor_arguments() -> Result<EditorArguments, String> {
+/// Reads the value that follows a flag, or reports the flag that lacks one.
+fn next_argument_value<I: Iterator<Item = std::ffi::OsString>>(
+    arguments: &mut I,
+    flag: &str,
+) -> Result<PathBuf, String> {
+    arguments
+        .next()
+        .map(PathBuf::from)
+        .ok_or_else(|| format!("{flag} requires a value"))
+}
+
+fn editor_invocation() -> Result<EditorInvocation, String> {
     let mut arguments = std::env::args_os().skip(1);
     let mut project = None;
     let mut benchmark_run = None;
+    let mut benchmark_experiment = None;
+    let mut benchmark_endpoint = None;
+    let mut benchmark_fixture = None;
+    let mut benchmark_run_timeout = None;
     while let Some(argument) = arguments.next() {
         if argument == "--project" {
             if project.is_some() {
                 return Err("--project may be specified only once".to_owned());
             }
-            project = Some(PathBuf::from(
-                arguments
-                    .next()
-                    .ok_or_else(|| "--project requires a path".to_owned())?,
-            ));
+            project = Some(next_argument_value(&mut arguments, "--project")?);
         } else if argument == "--benchmark-run" {
             if benchmark_run.is_some() {
                 return Err("--benchmark-run may be specified only once".to_owned());
             }
-            benchmark_run = Some(PathBuf::from(
-                arguments
-                    .next()
-                    .ok_or_else(|| "--benchmark-run requires a child spec path".to_owned())?,
-            ));
+            benchmark_run = Some(next_argument_value(&mut arguments, "--benchmark-run")?);
+        } else if argument == "--benchmark-experiment" {
+            if benchmark_experiment.is_some() {
+                return Err("--benchmark-experiment may be specified only once".to_owned());
+            }
+            benchmark_experiment = Some(next_argument_value(&mut arguments, "--benchmark-experiment")?);
+        } else if argument == "--benchmark-endpoint" {
+            if benchmark_endpoint.is_some() {
+                return Err("--benchmark-endpoint may be specified only once".to_owned());
+            }
+            benchmark_endpoint = Some(
+                next_argument_value(&mut arguments, "--benchmark-endpoint")?
+                    .to_string_lossy()
+                    .into_owned(),
+            );
+        } else if argument == "--benchmark-fixture" {
+            if benchmark_fixture.is_some() {
+                return Err("--benchmark-fixture may be specified only once".to_owned());
+            }
+            benchmark_fixture = Some(next_argument_value(&mut arguments, "--benchmark-fixture")?);
+        } else if argument == "--benchmark-run-timeout" {
+            if benchmark_run_timeout.is_some() {
+                return Err("--benchmark-run-timeout may be specified only once".to_owned());
+            }
+            let seconds = next_argument_value(&mut arguments, "--benchmark-run-timeout")?
+                .to_string_lossy()
+                .parse::<u64>()
+                .map_err(|error| format!("--benchmark-run-timeout requires seconds: {error}"))?;
+            benchmark_run_timeout = Some(Duration::from_secs(seconds));
         } else {
             return Err(format!(
                 "unknown Editor argument `{}`",
@@ -615,17 +663,65 @@ fn editor_arguments() -> Result<EditorArguments, String> {
             ));
         }
     }
-    Ok(EditorArguments {
+
+    if let Some(spec_path) = benchmark_experiment {
+        if project.is_some() || benchmark_run.is_some() {
+            return Err(
+                "--benchmark-experiment runs the suite parent and cannot be combined with --project or --benchmark-run"
+                    .to_owned(),
+            );
+        }
+        let mut options = BenchmarkExperimentOptions::new(spec_path);
+        if let Some(endpoint) = benchmark_endpoint {
+            options.endpoint = endpoint;
+        }
+        options.fixture_template_root = benchmark_fixture;
+        options.run_timeout = benchmark_run_timeout;
+        return Ok(EditorInvocation::BenchmarkExperiment(Box::new(options)));
+    }
+    if benchmark_endpoint.is_some() || benchmark_fixture.is_some() || benchmark_run_timeout.is_some()
+    {
+        return Err(
+            "--benchmark-endpoint, --benchmark-fixture, and --benchmark-run-timeout apply only to --benchmark-experiment"
+                .to_owned(),
+        );
+    }
+    Ok(EditorInvocation::Editor {
         project: project.ok_or_else(|| "Engine Editor requires `--project <path>`".to_owned())?,
         benchmark_run,
     })
 }
 
 fn run() -> Result<(), String> {
-    let arguments = editor_arguments()?;
-    let project_lease =
-        acquire_editor_project(&arguments.project).map_err(|error| error.to_string())?;
-    let benchmark_run = arguments.benchmark_run;
+    match editor_invocation()? {
+        EditorInvocation::BenchmarkExperiment(options) => run_benchmark_suite(*options),
+        EditorInvocation::Editor {
+            project,
+            benchmark_run,
+        } => run_editor(project, benchmark_run),
+    }
+}
+
+/// Executes one benchmark experiment and prints its comparison report.
+fn run_benchmark_suite(options: BenchmarkExperimentOptions) -> Result<(), String> {
+    let outcome = run_benchmark_experiment(options)?;
+    print!("{}", outcome.report);
+    println!(
+        "
+{} of {} planned runs recorded, {} passed; comparison written to {}",
+        outcome.completed_runs,
+        outcome.planned_runs,
+        outcome.passed_runs,
+        outcome.comparison_path.display()
+    );
+    if let Some(reason) = outcome.stopped_early {
+        return Err(format!("benchmark experiment stopped early: {reason}"));
+    }
+    Ok(())
+}
+
+fn run_editor(project: PathBuf, benchmark_run: Option<PathBuf>) -> Result<(), String> {
+    let project_lease = acquire_editor_project(&project).map_err(|error| error.to_string())?;
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_inner_size([1600.0, 1000.0])
@@ -643,9 +739,9 @@ fn run() -> Result<(), String> {
                     &creation_context.egui_ctx,
                     benchmark_run.as_deref(),
                 )
-                    .map_err(|error| -> Box<dyn std::error::Error + Send + Sync> {
-                        Box::new(std::io::Error::other(error))
-                    })?,
+                .map_err(|error| -> Box<dyn std::error::Error + Send + Sync> {
+                    Box::new(std::io::Error::other(error))
+                })?,
             ))
         }),
     )
