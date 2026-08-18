@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/mcp-host/src/headless.rs","old":"                to_value(scene_tools.component_schemas(&permissions, &registry)?)\n","new":"                to_value(scene_tools.component_schemas(&registry, &permissions)?)\n"}

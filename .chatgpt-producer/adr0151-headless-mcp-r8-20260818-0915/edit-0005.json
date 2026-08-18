@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/mcp-host/src/headless.rs","old":"        let project = inspect_project(project_path.as_ref())?.root;\n","new":"        let project = inspect_project(project_path.as_ref())?;\n"}
