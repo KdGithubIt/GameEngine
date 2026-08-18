@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "            last_captured_frame: None,\n            status: benchmark_status,",
+  "new": "            last_captured_frame: None,\n            benchmark_child: None,\n            status: benchmark_status,"
+}
