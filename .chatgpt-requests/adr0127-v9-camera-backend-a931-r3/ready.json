@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0127-v9-camera-backend-a931-r3",
+  "target_branch": "chatgpt/gameengine-adr0127-first-release-current-main-v9",
+  "expected_head_sha": "a931eaf92791dfd99b75ae3fd0da74e17a8e54b0",
+  "baseline_main_sha": "4e9865c2db754ef5a2a33e1ac42d1cd5cf318229",
+  "patch_sha256": "785b8441b1e9c736df4bce0e924bb9e94e62c2eb8436b1d0888fd12158f581f5",
+  "patch_bytes": 6630,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Render Camera2D through shared world backend",
+  "pr_title": "GameEngine: complete ADR0127 Native 2D first release",
+  "pr_body": "Routes world and explicit Camera2D views through the existing WorldRenderer, with Camera2D projection errors surfaced and 3D-only shadow work disabled for 2D views."
+}
