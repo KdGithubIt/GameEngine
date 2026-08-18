@@ -122,7 +122,8 @@ function Invoke-DesktopScreenshot {
         [Parameter(Mandatory = $true)]
         [AllowEmptyCollection()]
         [string[]]$ProgramArguments,
-        [string]$RequestedAuthoringTool = ""
+        [string]$RequestedAuthoringTool = "",
+        [string]$RequestedVisualScenario = ""
     )
 
     $outputPath = Join-Path $OutputDirectory "$Name.png"
@@ -141,6 +142,10 @@ function Invoke-DesktopScreenshot {
         "GAMEENGINE_VISUAL_AUTHORING_TOOL",
         [EnvironmentVariableTarget]::Process
     )
+    $previousVisualScenario = [Environment]::GetEnvironmentVariable(
+        "GAMEENGINE_VISUAL_SCENARIO",
+        [EnvironmentVariableTarget]::Process
+    )
     try {
         [Environment]::SetEnvironmentVariable(
             $captureVariable,
@@ -151,6 +156,13 @@ function Invoke-DesktopScreenshot {
             [Environment]::SetEnvironmentVariable(
                 "GAMEENGINE_VISUAL_AUTHORING_TOOL",
                 $RequestedAuthoringTool,
+                [EnvironmentVariableTarget]::Process
+            )
+        }
+        if ($Package -eq "engine-editor" -and $RequestedVisualScenario) {
+            [Environment]::SetEnvironmentVariable(
+                "GAMEENGINE_VISUAL_SCENARIO",
+                $RequestedVisualScenario,
                 [EnvironmentVariableTarget]::Process
             )
         }
@@ -176,6 +188,11 @@ function Invoke-DesktopScreenshot {
         [Environment]::SetEnvironmentVariable(
             "GAMEENGINE_VISUAL_AUTHORING_TOOL",
             $previousAuthoringTool,
+            [EnvironmentVariableTarget]::Process
+        )
+        [Environment]::SetEnvironmentVariable(
+            "GAMEENGINE_VISUAL_SCENARIO",
+            $previousVisualScenario,
             [EnvironmentVariableTarget]::Process
         )
     }
@@ -211,11 +228,34 @@ try {
             $projectRoot = New-StandardVisualValidationProject
             $projectSource = "generated-standard-project"
         }
-        $captures += Invoke-DesktopScreenshot `
-            -Name "editor" `
-            -Package "engine-editor" `
-            -ProgramArguments @("--project", $projectRoot) `
-            -RequestedAuthoringTool $AuthoringTool
+        if ($AuthoringTool -eq "ADR First Release") {
+            $adrScenarios = @(
+                "adr0136-preview-pending",
+                "adr0136-preview-ready",
+                "adr0136-preview-failed",
+                "adr0137-diagnostics",
+                "adr0138-transition-progress",
+                "adr0138-stale-source",
+                "adr0139-working-copy-conflict",
+                "adr0144-hosted-backend",
+                "adr0144-enterprise-backend",
+                "adr0149-live-observation",
+                "adr0153-confinement"
+            )
+            foreach ($scenario in $adrScenarios) {
+                $captures += Invoke-DesktopScreenshot `
+                    -Name $scenario `
+                    -Package "engine-editor" `
+                    -ProgramArguments @("--project", $projectRoot) `
+                    -RequestedVisualScenario $scenario
+            }
+        } else {
+            $captures += Invoke-DesktopScreenshot `
+                -Name "editor" `
+                -Package "engine-editor" `
+                -ProgramArguments @("--project", $projectRoot) `
+                -RequestedAuthoringTool $AuthoringTool
+        }
     }
 
     if ($Target -eq "launcher" -or $Target -eq "both") {
