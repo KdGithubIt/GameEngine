@@ -25,19 +25,29 @@ The input patch is **authoring input only**. It is never copied directly into
 
 The worker:
 
-1. resolves the exact remote target HEAD and current `main`;
-2. creates a disposable worktree at the exact target HEAD;
-3. applies the input patch to that worktree with `git apply --index
+1. resolves the exact remote target HEAD and captures current `main` as the
+   request baseline;
+2. requires that captured baseline to be an ancestor of the exact target;
+3. creates a disposable worktree at the exact target HEAD;
+4. applies the input patch to that worktree with `git apply --index
    --whitespace=error-all`;
-4. invokes `.github/chatgpt/request_protocol.py build`;
-5. uses only the builder-emitted schema-v2 parts and `ready.json`;
-6. publishes them to a fresh `chatgpt-dispatch-stage-<request-id>` branch with
+5. invokes `.github/chatgpt/request_protocol.py build`;
+6. uses only the builder-emitted schema-v2 parts and `ready.json`;
+7. publishes them to a fresh `chatgpt-dispatch-stage-<request-id>` branch with
    patch parts first and `ready.json` in a separate final commit;
-7. relies on the existing read-only stage signal, trusted transport publisher,
+8. if `main` advances after the request baseline was captured, requires the
+   baseline to remain an ancestor instead of discarding the request solely
+   because the ref moved; the canonical builder/publisher/Dispatcher preflight
+   decides whether that drift is actually compatible with the request scope;
+9. relies on the existing read-only stage signal, trusted transport publisher,
    and trusted Dispatcher;
-8. waits for Windows Validation;
-9. if the resulting PR requests Visual Validation, waits for that workflow too,
-   but reports that human/ChatGPT screenshot review is still required.
+10. waits for Windows Validation;
+11. if the resulting PR requests Visual Validation, waits for that workflow too,
+    but reports that human/ChatGPT screenshot review is still required.
+
+Target movement remains strict. If the target no longer equals
+`expected_head_sha`, the worker never substitutes a new SHA into old request
+bytes and requires a new build from current target state.
 
 The worker never pushes `main`, never directly advances `chatgpt-dispatch`, and
 never uses the legacy private-repository Bridge events.
@@ -55,14 +65,15 @@ python scripts/public/gameengine_chatgpt_worker.py \
   --pr-body-file <pr-body.md>
 ```
 
-The target branch must already exist and contain the current `main` baseline as
-required by the canonical Direct builder lifecycle. The request ID is immutable:
-if its stage branch already exists, choose a new request ID.
+The target branch must already exist and contain the captured current `main`
+baseline as required by the canonical Direct builder lifecycle. The request ID
+is immutable: if its stage branch already exists, choose a new request ID.
 
 The patch may be large enough to require multiple Dispatcher parts. The worker
 does not impose a legacy 50 KB patch limit. Part sizing, total size, byte hashes,
-newline-boundary splitting, path checks, and strict applicability are owned by
-`request_protocol.py` and the canonical protocol.
+newline-boundary splitting, path checks, strict applicability, and safe
+current-main drift evaluation are owned by `request_protocol.py` and the
+canonical protocol.
 
 ## Completion semantics
 
