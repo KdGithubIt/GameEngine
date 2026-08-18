@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/native_2d_editor.rs","old":"pub struct Native2dEditorState {","new":"pub(crate) struct Native2dEditorState {"}
