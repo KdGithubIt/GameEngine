@@ -713,6 +713,34 @@ mod tests {
     }
 
     #[test]
+    fn same_generation_requests_are_deduplicated_before_worker_launch() {
+        let residency = ProjectAssetResidency::default();
+        let request = SourceRequest {
+            source_id: AssetId::generate(),
+            generation: SourceGeneration {
+                source_path: PathBuf::from("missing.glb"),
+                source_stamp: None,
+                source_fingerprint: None,
+                settings_fingerprint: 0,
+            },
+            skeleton_records: Vec::new(),
+            contact_bones: Vec::new(),
+        };
+
+        assert_eq!(
+            residency.prepare_source(request.clone(), PreviewAssetPriority::FocusedVisible),
+            PreviewResidencyState::Pending
+        );
+        assert_eq!(
+            residency.prepare_source(request, PreviewAssetPriority::Visible),
+            PreviewResidencyState::Pending
+        );
+        let stats = residency.stats();
+        assert_eq!(stats.deduplicated_requests, 1);
+        assert_eq!(stats.materializations_started, 0);
+    }
+
+    #[test]
     fn priority_aging_eventually_promotes_background_work() {
         assert_eq!(PreviewAssetPriority::FocusedVisible.rank(), 0);
         assert_eq!(PreviewAssetPriority::Visible.rank(), 1);
@@ -733,7 +761,11 @@ mod tests {
         let rebound = residency.revision();
         residency.bind_gpu_device(7);
         assert_eq!(residency.revision(), rebound);
-        residency.clear_project();
+        residency.release_gpu();
         assert!(residency.revision() > rebound);
+        assert_eq!(residency.stats().gpu_reclaims, 1);
+        let reclaimed = residency.revision();
+        residency.clear_project();
+        assert!(residency.revision() > reclaimed);
     }
 }

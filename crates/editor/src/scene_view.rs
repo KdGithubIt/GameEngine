@@ -1194,7 +1194,7 @@ impl SceneView {
             if self.renderer_failure_device != Some(device_identity) {
                 context.request_repaint_after(std::time::Duration::from_millis(16));
             }
-            return false;
+            false
         }
 
         #[cfg(target_arch = "wasm32")]

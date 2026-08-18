@@ -8,6 +8,46 @@ use crate::ui::*;
 use super::instantiate::write_generated_prefab;
 use super::manifest::{normalize_manifest_path, save_asset_manifest};
 
+fn import_catalog_is_current(
+    project_path: &Path,
+    assets_root: &Path,
+    entry: &engine::ManifestEntry,
+) -> bool {
+    if entry.import_settings.source_fingerprint.is_none() {
+        return false;
+    }
+    let source_path = assets_root.join(&entry.path);
+    let dependencies = entry
+        .import_settings
+        .source_dependencies
+        .iter()
+        .map(|path| assets_root.join(path))
+        .collect::<Vec<_>>();
+    let stamp_matches = entry
+        .import_settings
+        .source_stamp
+        .as_ref()
+        .is_some_and(|expected| {
+            engine::SourceStamp::capture(&source_path, &dependencies)
+                .is_ok_and(|current| &current == expected)
+        });
+    if !stamp_matches {
+        return false;
+    }
+
+    // A motion source draws nothing, so it never generates a placement prefab.
+    let needs_prefab = !engine::asset_path_matches_kind(
+        engine::AssetKind::MotionSource,
+        Path::new(&entry.path),
+    );
+    !needs_prefab
+        || entry
+            .import_settings
+            .generated_prefab
+            .as_ref()
+            .is_some_and(|relative| project_path.join(relative).is_file())
+}
+
 impl EditorApp {
     /// Registers a model source if needed and queues it for import.
     ///
@@ -374,18 +414,7 @@ impl EditorApp {
         };
         let assets_root = project.assets_root();
         let already_imported = |entry: &engine::ManifestEntry| {
-            // A motion source draws nothing, so it never generates a
-            // placement prefab; requiring one would requeue every `.vmd` on
-            // every project open.
-            let needs_prefab =
-                !engine::asset_path_matches_kind(engine::AssetKind::MotionSource, Path::new(&entry.path));
-            entry.import_settings.source_fingerprint.is_some()
-                && (!needs_prefab
-                    || entry
-                        .import_settings
-                        .generated_prefab
-                        .as_ref()
-                        .is_some_and(|relative| project.path().join(relative).is_file()))
+            import_catalog_is_current(project.path(), &assets_root, entry)
         };
         let pending: Vec<(engine_authoring::AssetId, PathBuf)> = self
             .asset_manifest
@@ -939,5 +968,56 @@ impl EditorApp {
         for (motion_id, motion_path) in paired {
             self.queue_model_import(motion_id, motion_path);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn startup_catalog_requeues_source_changed_while_editor_was_closed() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("test clock must be after Unix epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "gameengine-adr0136-startup-{}-{unique}",
+            std::process::id()
+        ));
+        let assets_root = root.join("assets");
+        std::fs::create_dir_all(&assets_root).expect("test assets directory must be created");
+        let source_path = assets_root.join("model.glb");
+        std::fs::write(&source_path, b"generation-one")
+            .expect("test model source must be written");
+        let generated_prefab = root.join("generated/model.prefab.json");
+        std::fs::create_dir_all(
+            generated_prefab
+                .parent()
+                .expect("generated prefab must have a parent"),
+        )
+        .expect("generated prefab directory must be created");
+        std::fs::write(&generated_prefab, b"{}")
+            .expect("generated prefab must be written");
+
+        let mut import_settings = engine::ImportSettings::default();
+        import_settings.source_fingerprint = Some("accepted-generation".to_owned());
+        import_settings.source_stamp = Some(
+            engine::SourceStamp::capture(&source_path, &[])
+                .expect("initial source stamp must be captured"),
+        );
+        import_settings.generated_prefab = Some("generated/model.prefab.json".to_owned());
+        let entry = engine::ManifestEntry {
+            path: "model.glb".to_owned(),
+            name: Some("Model".to_owned()),
+            import_settings,
+        };
+
+        assert!(import_catalog_is_current(&root, &assets_root, &entry));
+        std::fs::write(&source_path, b"generation-two-is-different")
+            .expect("offline source edit must be written");
+        assert!(!import_catalog_is_current(&root, &assets_root, &entry));
+
+        let _ = std::fs::remove_dir_all(root);
     }
 }
