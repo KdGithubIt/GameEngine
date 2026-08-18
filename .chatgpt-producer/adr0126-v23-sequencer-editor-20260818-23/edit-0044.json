@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/main.rs","old":"        eframe::App::ui(&mut self.app, ui, frame);\n        self.show_authoring_tools_launcher(&context);","new":"        eframe::App::ui(&mut self.app, ui, frame);\n        self.show_exit_confirmation(&context);\n        self.show_authoring_tools_launcher(&context);"}

@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ui/mod.rs","old":"use presentation::*;\n\n/// Editor application shell","new":"use presentation::*;\nuse sequencer::*;\n\n/// Editor application shell"}

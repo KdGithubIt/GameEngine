@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ui/documents.rs","old":"enum ExternalDocumentOwner {\n    Workspace(WorkspaceTabId),\n    AnimationSet,\n    Material(PathBuf),\n}","new":"enum ExternalDocumentOwner {\n    Workspace(WorkspaceTabId),\n    AnimationSet,\n    Timeline,\n    Material(PathBuf),\n}"}
