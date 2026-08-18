@@ -1,0 +1,16 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0127-core-97c0-r2",
+  "target_branch": "chatgpt/gameengine-adr0127-first-release-current-main",
+  "expected_head_sha": "97c0c97802f81be7b332583759a2c5bf31254476",
+  "baseline_main_sha": "97c0c97802f81be7b332583759a2c5bf31254476",
+  "patch_sha256": "813f8b354333d74eb181a1e6945a808e3af5243b666e70ea7cc29d7832a7460a",
+  "patch_bytes": 93463,
+  "patch_parts": [
+    "part-0000.patch",
+    "part-0001.patch"
+  ],
+  "commit_message": "Add ADR0127 Native 2D core contracts",
+  "pr_title": "GameEngine: complete ADR0127 Native 2D first release",
+  "pr_body": "## Summary\n\nCompletes ADR 0127 against current main without reviving stale PR #242. This first producer request adds stable Sprite/Tile authoring documents, shared transactional authoring services, neutral 2D asset compilation, deterministic Sprite Animation playback, and Native 2D render extraction contracts while preserving the merged dedicated 2D physics/project-settings implementation.\n\nFurther commits on this same Draft PR integrate scene/runtime, Project Rust, Editor authoring, proving content, and validation."
+}
