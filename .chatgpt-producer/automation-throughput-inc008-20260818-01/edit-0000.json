@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "docs/CHATGPT_AUTOMATION_INCIDENTS.md",
+  "old": "## INC-008: Documentation placeholder tripped public snapshot scan\n\nStatus: Resolved\nLayer: Validation\nFirst confirmed: 2026-08-17\nLast confirmed: 2026-08-17",
+  "new": "## INC-008: Documentation placeholder tripped public snapshot scan\n\nStatus: Resolved\nLayer: Validation\nFirst confirmed: 2026-08-17\nLast confirmed: 2026-08-18"
+}
