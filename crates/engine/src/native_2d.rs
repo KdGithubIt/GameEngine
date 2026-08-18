@@ -19,10 +19,11 @@ pub use engine_authoring::{
 };
 
 use crate::transform::{GlobalTransform, Parent, Transform};
-use engine_authoring::Project2dSettings;
+use engine_authoring::{AssetId, Project2dSettings, SpriteAnimationDocument};
 use engine_ecs::{Entity, Query, Res, ResMut};
 use glam::{Quat, Vec2};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 /// One structured reason an authored Transform could not participate in 2D physics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -164,6 +165,26 @@ pub fn physics_2d_fixed_system(
         transform.rotation = Quat::from_rotation_z(resolved.pose.rotation);
         body.velocity = resolved.body.velocity;
         body.angular_velocity = resolved.body.angular_velocity;
+    }
+}
+
+/// Runtime registry of immutable Sprite Animation documents addressable by stable AssetId.
+///
+/// Project Rust clip-selection commands use this cache instead of exposing runtime handles.
+#[derive(Debug, Default)]
+pub struct SpriteAnimationClipRegistry2d {
+    clips: BTreeMap<AssetId, Arc<SpriteAnimationDocument>>,
+}
+
+impl SpriteAnimationClipRegistry2d {
+    /// Inserts or replaces one immutable clip under its stable asset identity.
+    pub fn insert(&mut self, asset: AssetId, clip: Arc<SpriteAnimationDocument>) {
+        self.clips.insert(asset, clip);
+    }
+
+    /// Resolves one loaded immutable clip by stable asset identity.
+    pub fn get(&self, asset: &AssetId) -> Option<Arc<SpriteAnimationDocument>> {
+        self.clips.get(asset).cloned()
     }
 }
 
