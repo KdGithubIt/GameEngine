@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "    last_captured_frame: Option<(egui::TextureHandle, String, u32, u32)>,\n    status: Option<String>,\n}",
+  "new": "    last_captured_frame: Option<(egui::TextureHandle, String, u32, u32)>,\n    benchmark_child: Option<benchmark_child::BenchmarkChildState>,\n    status: Option<String>,\n}"
+}
