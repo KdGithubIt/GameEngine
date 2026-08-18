@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/authoring/src/lib.rs","old":"    MotionSlotId, NodeId, PortId, ProjectId, StableId,\n};","new":"    MotionSlotId, NodeId, PortId, ProjectId, StableId, TimelineClipId, TimelineId,\n    TimelineMarkerId, TimelineTrackId,\n};"}
