@@ -7,6 +7,7 @@
 use crate::agent_host::{
     project_storage_key, AgentCapability, AgentConfinementNetworkPolicy, AgentConfinementRequest,
     AgentConfinementRequirement, AgentEventKind, AgentHost, AgentProposal, AgentRunState,
+    AgentWorkClaim,
     ApprovalScope, AuthoritativeStateSnapshot, CodeChange, CodeWorkspace, CompletionStatus,
     ConversationRole, ExternalAgentProcess, ManagedValidationAttemptStatus, PermissionCheck,
     ProcessStream, ResumeDisposition,
@@ -18,7 +19,7 @@ use crate::native_agent::{
     LocalModelConfig, ModelCapabilityProfile, NativeAnswer, NativeModelConfig, NativeQuestionTask,
     QuestionMessage, QuestionRole, DEFAULT_LOCAL_MODEL_ENDPOINT,
 };
-use crate::native_agent_runtime::{NativeAgentAction, NativeAgentRuntime, NativeMcpTask};
+use crate::native_agent_runtime::{mcp_write, NativeAgentAction, NativeAgentRuntime, NativeMcpTask};
 use crate::resource_arbitration::{
     classify_workload, resolve_resource_plan, CapabilityAvailability, InferenceWorkload,
     MemoryPressure, PresentationPosture, QualityPreference, ReclaimLevel, ResourcePlan,
@@ -1924,6 +1925,24 @@ impl AiStudioPanel {
     fn handle_native_action(&mut self, run_id: &str, action: NativeAgentAction) {
         match action {
             NativeAgentAction::McpCall { tool, arguments } => {
+                if mcp_write(&tool)
+                    && let Err(error) = self.host.acquire_work_claims(
+                        run_id,
+                        [AgentWorkClaim::shared_resource("canonical_authoring")],
+                    )
+                {
+                    let message = format!(
+                        "MCP mutation is waiting for work ownership: {error}"
+                    );
+                    let _ = self.host.record_tool_action(
+                        run_id,
+                        tool.clone(),
+                        "work ownership",
+                        Some(false),
+                    );
+                    self.record_native_result_and_continue(run_id, tool, false, message);
+                    return;
+                }
                 match NativeMcpTask::spawn(
                     self.connection.endpoint.clone(),
                     self.connection.authorization_token.clone(),
@@ -1949,6 +1968,27 @@ impl AiStudioPanel {
                 }
             }
             NativeAgentAction::CodeWrite { path, text } => {
+                if let Err(error) = self
+                    .host
+                    .acquire_work_claims(run_id, [AgentWorkClaim::code_path(path.clone())])
+                {
+                    let message = format!(
+                        "Managed code write is waiting for work ownership: {error}"
+                    );
+                    let _ = self.host.record_tool_action(
+                        run_id,
+                        "workspace.code_write",
+                        path.clone(),
+                        Some(false),
+                    );
+                    self.record_native_result_and_continue(
+                        run_id,
+                        format!("code_write:{path}"),
+                        false,
+                        message,
+                    );
+                    return;
+                }
                 let result = self
                     .code_workspace
                     .as_ref()
@@ -3220,6 +3260,21 @@ impl AiStudioPanel {
     }
 
     fn apply_code_changes(&mut self, run_id: &str) {
+        let claims = self
+            .pending_code_changes
+            .iter()
+            .map(|change| {
+                AgentWorkClaim::code_path(
+                    change.relative_path.to_string_lossy().replace('\\', "/"),
+                )
+            })
+            .collect::<Vec<_>>();
+        if let Err(error) = self.host.acquire_work_claims(run_id, claims) {
+            self.status = Some(format!(
+                "Managed code apply is waiting for work ownership: {error}"
+            ));
+            return;
+        }
         let Some(workspace) = self.code_workspace.as_mut() else {
             self.status = Some("No managed code workspace is available.".to_owned());
             return;
