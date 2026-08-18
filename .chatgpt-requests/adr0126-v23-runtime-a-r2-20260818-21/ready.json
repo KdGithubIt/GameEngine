@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0126-v23-runtime-a-r2-20260818-21",
+  "target_branch": "chatgpt/gameengine-adr0126-first-release-v23",
+  "expected_head_sha": "b32fb8c66a6f058a93ed1b2450e1644eb2cd85bb",
+  "baseline_main_sha": "96c8ffb18a74eabec2164daa61f694f131019ddc",
+  "patch_sha256": "17e9ed1e5ff7e3f9b26da797e0ab467838f80d3f7bcb167ebe3765af193dbf19",
+  "patch_bytes": 11732,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Add ADR 0126 Timeline runtime foundation",
+  "pr_title": "GameEngine: complete ADR 0126 Timeline / Sequencer first release",
+  "pr_body": "## Summary\n\nAdds ADR 0126 production runtime foundation, adapted to the current spatial-audio ownership model.\n\nFurther runtime and Sequencer integration follows before final validation.\n\n<!-- gameengine-visual-validation: editor -->\n"
+}
