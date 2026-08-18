@@ -1,0 +1,321 @@
+diff --git a/crates/editor/src/native_2d_editor.rs b/crates/editor/src/native_2d_editor.rs
+index 4a444626f86ecf10a9b1b73b45ef1a48ba866cd6..8832d25f1c57118ab016fd26db313b3c48aed1be 100644
+--- a/crates/editor/src/native_2d_editor.rs
++++ b/crates/editor/src/native_2d_editor.rs
+@@ -801,4 +801,316 @@ impl Native2dEditorState {
+     }
+ }
+ 
++impl TileTool2d {
++    fn label(self) -> &'static str {
++        match self {
++            Self::Paint => "Paint",
++            Self::Erase => "Erase",
++            Self::Rectangle => "Rectangle",
++            Self::Line => "Line",
++            Self::Fill => "Fill",
++            Self::Eyedropper => "Eyedropper",
++            Self::SelectStamp => "Select/Stamp",
++        }
++    }
++}
++
++impl Native2dEditorState {
++    fn show_tile_map(
++        &mut self,
++        ui: &mut egui::Ui,
++        project: &ProjectRoot,
++        manifest: &engine::AssetManifest,
++    ) {
++        let paths = manifest_paths(manifest, ".tilemap.json");
++        let current = self
++            .tile_map
++            .as_ref()
++            .map(|loaded| loaded.relative.as_path());
++        if let Some(path) = document_picker(ui, "native2d_tilemap_document", current, &paths) {
++            self.open_tile_map(project, manifest, &path);
++        }
++        let Some(loaded) = self.tile_map.as_mut() else {
++            ui.label("Register and select a *.tilemap.json asset to paint sparse chunks.");
++            return;
++        };
++
++        let layer_count = loaded.service.preview().layers.len();
++        if layer_count == 0 {
++            ui.colored_label(
++                egui::Color32::YELLOW,
++                "This Tile Map has no layer. Add a layer through a typed-document client first.",
++            );
++            return;
++        }
++        loaded.selected_layer = loaded.selected_layer.min(layer_count - 1);
++        ui.horizontal_wrapped(|ui| {
++            ui.label(loaded.relative.display().to_string());
++            if loaded.dirty {
++                ui.colored_label(egui::Color32::YELLOW, "Modified");
++            }
++            if ui.add_enabled(loaded.dirty, egui::Button::new("Save")).clicked() {
++                self.status = Some(match loaded.save() {
++                    Ok(()) => "Saved canonical Tile Map".to_owned(),
++                    Err(error) => format!("Tile Map save failed: {error}"),
++                });
++            }
++            if ui
++                .add_enabled(!loaded.gesture_active, egui::Button::new("Undo stroke"))
++                .clicked()
++                && loaded.service.undo()
++            {
++                loaded.dirty = true;
++                loaded.affected_chunks.clear();
++            }
++            if ui
++                .add_enabled(loaded.gesture_active, egui::Button::new("Cancel stroke"))
++                .clicked()
++            {
++                self.status = loaded.cancel_gesture().err();
++            }
++        });
++
++        ui.horizontal_wrapped(|ui| {
++            ui.strong("Layer");
++            let layers = &loaded.service.preview().layers;
++            for (index, layer) in layers.iter().enumerate() {
++                let label = if layer.locked {
++                    format!("{} 🔒", layer.name)
++                } else {
++                    layer.name.clone()
++                };
++                ui.selectable_value(&mut loaded.selected_layer, index, label);
++            }
++        });
++        ui.horizontal_wrapped(|ui| {
++            ui.strong("Palette");
++            for tile in &loaded.tiles.tiles {
++                ui.selectable_value(
++                    &mut loaded.selected_tile,
++                    Some(tile.id.clone()),
++                    &tile.name,
++                );
++            }
++        });
++        ui.horizontal_wrapped(|ui| {
++            for tool in [
++                TileTool2d::Paint,
++                TileTool2d::Erase,
++                TileTool2d::Rectangle,
++                TileTool2d::Line,
++                TileTool2d::Fill,
++                TileTool2d::Eyedropper,
++                TileTool2d::SelectStamp,
++            ] {
++                ui.selectable_value(&mut self.tile_tool, tool, tool.label());
++            }
++            ui.separator();
++            ui.checkbox(&mut self.show_grid, "Grid");
++            ui.checkbox(&mut self.show_chunks, "Chunks");
++            ui.checkbox(&mut self.show_collisions, "Collision");
++            if !loaded.stamp.cells.is_empty() && ui.button("Clear Stamp").clicked() {
++                loaded.stamp = engine_authoring::TileStamp::default();
++            }
++        });
++
++        ui.separator();
++        if let Err(error) = show_tile_map_canvas(
++            ui,
++            loaded,
++            self.tile_tool,
++            self.show_grid,
++            self.show_chunks,
++            self.show_collisions,
++        ) {
++            self.status = Some(error);
++        }
++        if !loaded.affected_chunks.is_empty() {
++            ui.small(format!(
++                "Last gesture invalidated {} chunk(s): {}",
++                loaded.affected_chunks.len(),
++                loaded
++                    .affected_chunks
++                    .iter()
++                    .map(|key| format!("{}:{},{}", key.layer.as_str(), key.chunk.x, key.chunk.y))
++                    .collect::<Vec<_>>()
++                    .join(", "),
++            ));
++        }
++        ui.small("One pointer gesture commits one semantic undo entry; Escape/Cancel restores the exact pre-stroke cells.");
++    }
++}
++
++fn show_tile_map_canvas(
++    ui: &mut egui::Ui,
++    loaded: &mut LoadedTileMap,
++    tool: TileTool2d,
++    show_grid: bool,
++    show_chunks: bool,
++    show_collisions: bool,
++) -> Result<(), String> {
++    const MIN_X: i32 = -12;
++    const MAX_X: i32 = 12;
++    const MIN_Y: i32 = -7;
++    const MAX_Y: i32 = 7;
++    const CELL_PX: f32 = 30.0;
++    const WORK_BUDGET: usize = 16_384;
++
++    let layer_id = loaded
++        .service
++        .preview()
++        .layers
++        .get(loaded.selected_layer)
++        .map(|layer| layer.id.clone())
++        .ok_or_else(|| "selected Tile Map layer disappeared".to_owned())?;
++    let desired = egui::vec2(
++        ((MAX_X - MIN_X + 1) as f32 * CELL_PX).min(ui.available_width()),
++        (MAX_Y - MIN_Y + 1) as f32 * CELL_PX,
++    );
++    let (rect, response) = ui.allocate_exact_size(desired, egui::Sense::click_and_drag());
++    let painter = ui.painter_at(rect);
++    painter.rect_filled(rect, 0.0, egui::Color32::from_rgb(28, 31, 36));
++
++    let visible_width = MAX_X - MIN_X + 1;
++    let visible_height = MAX_Y - MIN_Y + 1;
++    let cell_size = egui::vec2(
++        rect.width() / visible_width as f32,
++        rect.height() / visible_height as f32,
++    );
++    {
++        let preview = loaded.service.preview();
++        for y in MIN_Y..=MAX_Y {
++            for x in MIN_X..=MAX_X {
++                let cell = engine_authoring::TileCell { x, y };
++                let cell_rect = tile_cell_rect(rect, cell_size, cell, MIN_X, MAX_Y);
++                if let Some(tile_id) = preview.tile_at(&layer_id, cell) {
++                    painter.rect_filled(cell_rect.shrink(1.0), 1.0, tile_color(tile_id));
++                    if show_collisions
++                        && let Some(tile) = loaded.tiles.tile(tile_id)
++                        && (!tile.collision.is_empty() || tile.one_way)
++                    {
++                        let color = if tile.one_way {
++                            egui::Color32::from_rgb(245, 180, 75)
++                        } else {
++                            egui::Color32::from_rgb(80, 220, 225)
++                        };
++                        painter.rect_stroke(
++                            cell_rect.shrink(3.0),
++                            1.0,
++                            egui::Stroke::new(2.0, color),
++                            egui::StrokeKind::Inside,
++                        );
++                    }
++                }
++                if show_grid {
++                    painter.rect_stroke(
++                        cell_rect,
++                        0.0,
++                        egui::Stroke::new(0.5, egui::Color32::from_gray(64)),
++                        egui::StrokeKind::Inside,
++                    );
++                }
++            }
++        }
++    }
++    if show_chunks {
++        let chunk = i32::from(loaded.service.preview().chunk_size.max(1));
++        for x in MIN_X..=MAX_X + 1 {
++            if x.rem_euclid(chunk) == 0 {
++                let px = rect.left() + (x - MIN_X) as f32 * cell_size.x;
++                painter.line_segment(
++                    [egui::pos2(px, rect.top()), egui::pos2(px, rect.bottom())],
++                    egui::Stroke::new(1.5, egui::Color32::from_rgb(190, 125, 55)),
++                );
++            }
++        }
++        for y in MIN_Y..=MAX_Y + 1 {
++            if y.rem_euclid(chunk) == 0 {
++                let py = rect.top() + (MAX_Y - y + 1) as f32 * cell_size.y;
++                painter.line_segment(
++                    [egui::pos2(rect.left(), py), egui::pos2(rect.right(), py)],
++                    egui::Stroke::new(1.5, egui::Color32::from_rgb(190, 125, 55)),
++                );
++            }
++        }
++    }
++    let origin_x = rect.left() + (-MIN_X) as f32 * cell_size.x;
++    let origin_y = rect.top() + (MAX_Y + 1) as f32 * cell_size.y;
++    painter.line_segment(
++        [egui::pos2(origin_x, rect.top()), egui::pos2(origin_x, rect.bottom())],
++        egui::Stroke::new(1.5, egui::Color32::from_rgb(190, 80, 80)),
++    );
++    painter.line_segment(
++        [egui::pos2(rect.left(), origin_y), egui::pos2(rect.right(), origin_y)],
++        egui::Stroke::new(1.5, egui::Color32::from_rgb(80, 190, 100)),
++    );
++
++    let pointer_cell = response
++        .interact_pointer_pos()
++        .and_then(|position| tile_cell_from_pointer(rect, cell_size, position, MIN_X, MAX_Y));
++    if let Some(cell) = pointer_cell {
++        let hover = tile_cell_rect(rect, cell_size, cell, MIN_X, MAX_Y);
++        painter.rect_stroke(
++            hover.shrink(1.0),
++            1.0,
++            egui::Stroke::new(2.0, egui::Color32::WHITE),
++            egui::StrokeKind::Inside,
++        );
++    }
++
++    handle_tile_map_pointer(
++        ui,
++        &response,
++        loaded,
++        &layer_id,
++        pointer_cell,
++        tool,
++        engine_authoring::TileRect::from_corners(
++            engine_authoring::TileCell { x: MIN_X, y: MIN_Y },
++            engine_authoring::TileCell { x: MAX_X, y: MAX_Y },
++        ),
++        WORK_BUDGET,
++    )
++}
++
++fn tile_cell_rect(
++    rect: egui::Rect,
++    cell_size: egui::Vec2,
++    cell: engine_authoring::TileCell,
++    min_x: i32,
++    max_y: i32,
++) -> egui::Rect {
++    let left = rect.left() + (cell.x - min_x) as f32 * cell_size.x;
++    let top = rect.top() + (max_y - cell.y) as f32 * cell_size.y;
++    egui::Rect::from_min_size(egui::pos2(left, top), cell_size)
++}
++
++fn tile_cell_from_pointer(
++    rect: egui::Rect,
++    cell_size: egui::Vec2,
++    position: egui::Pos2,
++    min_x: i32,
++    max_y: i32,
++) -> Option<engine_authoring::TileCell> {
++    if !rect.contains(position) {
++        return None;
++    }
++    Some(engine_authoring::TileCell {
++        x: min_x + ((position.x - rect.left()) / cell_size.x).floor() as i32,
++        y: max_y - ((position.y - rect.top()) / cell_size.y).floor() as i32,
++    })
++}
++
++fn tile_color(tile: &engine_authoring::TileId) -> egui::Color32 {
++    let hash = tile
++        .as_str()
++        .bytes()
++        .fold(0_u32, |state, byte| state.wrapping_mul(33).wrapping_add(u32::from(byte)));
++    egui::Color32::from_rgb(
++        70 + (hash & 63) as u8,
++        90 + ((hash >> 6) & 63) as u8,
++        105 + ((hash >> 12) & 63) as u8,
++    )
++}
++
+ // __ADR0127_NATIVE2D_EDITOR_CONTINUE__
