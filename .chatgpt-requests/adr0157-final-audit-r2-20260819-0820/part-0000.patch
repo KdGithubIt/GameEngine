@@ -1,0 +1,544 @@
+diff --git a/crates/editor/src/runtime.rs b/crates/editor/src/runtime.rs
+index 53f57f0a7914de86d6a96fa5e9b1f3e2f4c5d626..8879170e12b9c0ac50686e0371427d2466c83c4e 100644
+--- a/crates/editor/src/runtime.rs
++++ b/crates/editor/src/runtime.rs
+@@ -123,6 +123,11 @@ pub struct RuntimePlayState {
+     single_step_requested: bool,
+     replay_recorder: Option<ReplayRecorder>,
+     replay_player: Option<ReplayPlayer>,
++    /// Monotonic count of human-origin virtual-input commands observed by this Play world.
++    ///
++    /// Deterministic AI runtime plans use this application-owned signal to reject a Play
++    /// session that a human has already influenced instead of claiming comparable evidence.
++    human_input_generation: u64,
+     /// Offscreen renderer kept across Game View resizes so panel drags do not
+     /// rebuild shaders and pipelines every frame.
+     renderer: Option<engine::PreviewRenderer>,
+@@ -350,6 +355,7 @@ impl RuntimePlayState {
+                 single_step_requested: false,
+                 replay_recorder: None,
+                 replay_player: None,
++                human_input_generation: 0,
+                 renderer: None,
+                 game_view: None,
+                 scene_view: None,
+@@ -508,6 +514,9 @@ impl RuntimePlayState {
+ 
+     /// Queues one virtual input command for the next runtime tick.
+     pub fn queue_input(&mut self, source: InputSource, command: InputCommand) {
++        if source == InputSource::Human {
++            self.human_input_generation = self.human_input_generation.saturating_add(1);
++        }
+         if source != InputSource::Replay
+             && let Some(recorder) = &mut self.replay_recorder {
+                 let tick = self
+@@ -522,6 +531,11 @@ impl RuntimePlayState {
+         }
+     }
+ 
++    /// Returns the monotonic number of human-origin commands observed in this Play world.
++    pub(crate) fn human_input_generation(&self) -> u64 {
++        self.human_input_generation
++    }
++
+     /// Starts recording virtual input from the next fixed boundary.
+     pub fn start_replay_recording(&mut self) -> Result<(), engine::ReplayError> {
+         let fixed_step = self
+@@ -566,9 +580,17 @@ impl RuntimePlayState {
+     /// Polls the desktop controller adapter into the shared virtual queue.
+     #[cfg(not(target_arch = "wasm32"))]
+     pub(crate) fn poll_gamepads(&mut self, context: &mut engine::gamepad::GilrsContext) {
+-        if let Some(queue) = self.app.world_mut().get_resource_mut::<VirtualInputQueue>() {
+-            context.poll(queue);
+-        }
++        let queued_human_commands =
++            if let Some(queue) = self.app.world_mut().get_resource_mut::<VirtualInputQueue>() {
++                let before = queue.len();
++                context.poll(queue);
++                queue.len().saturating_sub(before)
++            } else {
++                0
++            };
++        self.human_input_generation = self
++            .human_input_generation
++            .saturating_add(queued_human_commands as u64);
+     }
+ 
+     /// Queues a focus-boundary release for the next runtime tick.
+diff --git a/crates/editor/src/runtime_debug.rs b/crates/editor/src/runtime_debug.rs
+index fbb8f53e78501f61fd7ca27cf0d935d0abff9dc1..da2a66c265bdeb2b17739da04b54bcad13345ecf 100644
+--- a/crates/editor/src/runtime_debug.rs
++++ b/crates/editor/src/runtime_debug.rs
+@@ -8,12 +8,15 @@ use engine::{
+     GamepadAxis, GamepadButton, GamepadId, InputCommand, InputReplay, InputSource, KeyCode,
+     MouseButton,
+ };
++use engine_authoring::{Diagnostic, Severity};
+ use std::fmt;
+ 
+ const MAX_PLAN_INPUTS: usize = 4_096;
+ const MAX_PLAN_TICKS: u64 = 36_000;
+ const MAX_STEP_TICKS: u32 = 3_600;
+ const MAX_OBSERVED_ENTITIES: usize = 256;
++const MAX_OBSERVED_DIAGNOSTICS: usize = 32;
++const MAX_DIAGNOSTIC_CODE_CHARS: usize = 160;
+ 
+ /// One virtual-input command scheduled relative to the start of a deterministic
+ /// managed Play plan.
+@@ -187,6 +190,7 @@ impl RuntimeDebugPredicate {
+ pub struct RuntimeDebugObservation {
+     fixed_tick: u64,
+     paused: bool,
++    human_input_generation: u64,
+     entity_count: usize,
+     entities: Vec<RuntimeDebugEntityObservation>,
+     keyboard: Vec<String>,
+@@ -194,6 +198,9 @@ pub struct RuntimeDebugObservation {
+     gamepad_buttons: Vec<String>,
+     gamepad_axes: Vec<String>,
+     actions: Vec<(String, bool)>,
++    diagnostic_count: usize,
++    diagnostics_truncated: bool,
++    diagnostics: Vec<RuntimeDebugDiagnosticObservation>,
+     last_tick_ms: f64,
+     maximum_tick_ms: f64,
+     average_tick_ms: f64,
+@@ -208,6 +215,13 @@ struct RuntimeDebugEntityObservation {
+     transform: Option<([f32; 3], [f32; 3], [f32; 3])>,
+ }
+ 
++#[derive(Debug, Clone, PartialEq, Eq)]
++struct RuntimeDebugDiagnosticObservation {
++    severity: &'static str,
++    code: String,
++    blocking: bool,
++}
++
+ impl RuntimeDebugObservation {
+     /// Current fixed simulation tick.
+     pub fn fixed_tick(&self) -> u64 {
+@@ -242,16 +256,31 @@ impl RuntimeDebugObservation {
+             })
+             .collect::<Vec<_>>()
+             .join(" | ");
++        let diagnostic_rows = self
++            .diagnostics
++            .iter()
++            .map(|diagnostic| {
++                format!(
++                    "{}:{} blocking={}",
++                    diagnostic.severity, diagnostic.code, diagnostic.blocking
++                )
++            })
++            .collect::<Vec<_>>()
++            .join(" | ");
+         format!(
+-            "fixed_tick={} paused={} entities={} keyboard={:?} mouse={:?} gamepad_buttons={:?} gamepad_axes={:?} actions={:?} timing_ms(last={:.3}, max={:.3}, avg={:.3}) rows=[{}]",
++            "fixed_tick={} paused={} human_input_generation={} entities={} keyboard={:?} mouse={:?} gamepad_buttons={:?} gamepad_axes={:?} actions={:?} diagnostics(total={}, truncated={}, rows=[{}]) timing_ms(last={:.3}, max={:.3}, avg={:.3}) rows=[{}]",
+             self.fixed_tick,
+             self.paused,
++            self.human_input_generation,
+             self.entity_count,
+             self.keyboard,
+             self.mouse_buttons,
+             self.gamepad_buttons,
+             self.gamepad_axes,
+             self.actions,
++            self.diagnostic_count,
++            self.diagnostics_truncated,
++            diagnostic_rows,
+             self.last_tick_ms,
+             self.maximum_tick_ms,
+             self.average_tick_ms,
+@@ -374,6 +403,8 @@ pub enum RuntimeDebugError {
+     InvalidPredicate(String),
+     /// A bounded operation exceeded its declared host budget.
+     BudgetExceeded(String),
++    /// Human-origin input contaminated a deterministic/reproducible Play session.
++    HumanInterference(String),
+     /// An operation requiring Pause was attempted while Play was running freely.
+     NotPaused,
+     /// Replay recording/playback could not start or complete.
+@@ -392,6 +423,9 @@ impl fmt::Display for RuntimeDebugError {
+             Self::BudgetExceeded(message) => {
+                 write!(formatter, "runtime debug budget exceeded: {message}")
+             }
++            Self::HumanInterference(message) => {
++                write!(formatter, "runtime debug human interference: {message}")
++            }
+             Self::NotPaused => write!(formatter, "runtime debug step/wait requires paused Play"),
+             Self::Replay(message) => write!(formatter, "runtime replay failed: {message}"),
+             Self::Tick(message) => write!(formatter, "runtime debug tick failed: {message}"),
+@@ -406,7 +440,10 @@ pub(crate) struct RuntimeDebugPlanOutcome {
+     pub(crate) replay: Option<InputReplay>,
+ }
+ 
+-pub(crate) fn capture_observation(runtime: &RuntimePlayState) -> RuntimeDebugObservation {
++pub(crate) fn capture_observation(
++    runtime: &RuntimePlayState,
++    host_diagnostics: &[Diagnostic],
++) -> RuntimeDebugObservation {
+     let performance = runtime.performance_snapshot();
+     let input = runtime.input_debug_snapshot();
+     let entities = runtime
+@@ -424,9 +461,33 @@ pub(crate) fn capture_observation(runtime: &RuntimePlayState) -> RuntimeDebugObs
+             }
+         })
+         .collect();
++    let diagnostic_count = host_diagnostics.len();
++    let diagnostics_truncated = diagnostic_count > MAX_OBSERVED_DIAGNOSTICS
++        || host_diagnostics
++            .iter()
++            .take(MAX_OBSERVED_DIAGNOSTICS)
++            .any(|diagnostic| diagnostic.code.chars().count() > MAX_DIAGNOSTIC_CODE_CHARS);
++    let diagnostics = host_diagnostics
++        .iter()
++        .take(MAX_OBSERVED_DIAGNOSTICS)
++        .map(|diagnostic| RuntimeDebugDiagnosticObservation {
++            severity: match diagnostic.severity {
++                Severity::Info => "info",
++                Severity::Warning => "warning",
++                Severity::Error => "error",
++            },
++            code: diagnostic
++                .code
++                .chars()
++                .take(MAX_DIAGNOSTIC_CODE_CHARS)
++                .collect(),
++            blocking: diagnostic.is_blocking(),
++        })
++        .collect();
+     RuntimeDebugObservation {
+         fixed_tick: runtime.fixed_step_count(),
+         paused: runtime.is_paused(),
++        human_input_generation: runtime.human_input_generation(),
+         entity_count: performance.entity_count,
+         entities,
+         keyboard: input.keyboard,
+@@ -438,6 +499,9 @@ pub(crate) fn capture_observation(runtime: &RuntimePlayState) -> RuntimeDebugObs
+             .into_iter()
+             .map(|(name, state)| (name, state.pressed))
+             .collect(),
++        diagnostic_count,
++        diagnostics_truncated,
++        diagnostics,
+         last_tick_ms: performance.last_tick_ms,
+         maximum_tick_ms: performance.maximum_tick_ms,
+         average_tick_ms: performance.average_tick_ms,
+@@ -447,12 +511,19 @@ pub(crate) fn capture_observation(runtime: &RuntimePlayState) -> RuntimeDebugObs
+ pub(crate) fn execute_plan(
+     runtime: &mut RuntimePlayState,
+     plan: &RuntimeDebugPlan,
++    host_diagnostics: &[Diagnostic],
+ ) -> Result<RuntimeDebugPlanOutcome, RuntimeDebugError> {
+     if runtime.is_replaying() || runtime.is_replay_recording() {
+         return Err(RuntimeDebugError::InvalidPlan(
+             "managed deterministic input cannot replace an active replay/recording".to_owned(),
+         ));
+     }
++    let human_input_generation = runtime.human_input_generation();
++    if human_input_generation != 0 {
++        return Err(RuntimeDebugError::HumanInterference(format!(
++            "deterministic execution requires a fresh Play input state; observed {human_input_generation} human-origin input command(s) before the frozen plan"
++        )));
++    }
+     runtime.set_paused(true);
+     runtime
+         .start_replay_recording()
+@@ -494,7 +565,7 @@ pub(crate) fn execute_plan(
+                 scheduled_inputs: plan.inputs.len(),
+                 cleanup_inputs,
+                 replay_recorded: replay.is_some(),
+-                observation: capture_observation(runtime),
++                observation: capture_observation(runtime, host_diagnostics),
+             },
+             replay,
+         }),
+@@ -508,6 +579,7 @@ pub(crate) fn execute_plan(
+ pub(crate) fn step_paused(
+     runtime: &mut RuntimePlayState,
+     steps: u32,
++    host_diagnostics: &[Diagnostic],
+ ) -> Result<RuntimeDebugObservation, RuntimeDebugError> {
+     if !runtime.is_paused() {
+         return Err(RuntimeDebugError::NotPaused);
+@@ -520,13 +592,14 @@ pub(crate) fn step_paused(
+     for _ in 0..steps {
+         runtime.tick_fixed_debug_step().map_err(tick_error)?;
+     }
+-    Ok(capture_observation(runtime))
++    Ok(capture_observation(runtime, host_diagnostics))
+ }
+ 
+ pub(crate) fn wait_until(
+     runtime: &mut RuntimePlayState,
+     predicate: &RuntimeDebugPredicate,
+     max_ticks: u32,
++    host_diagnostics: &[Diagnostic],
+ ) -> Result<RuntimeDebugWaitResult, RuntimeDebugError> {
+     if !runtime.is_paused() {
+         return Err(RuntimeDebugError::NotPaused);
+@@ -538,7 +611,7 @@ pub(crate) fn wait_until(
+     }
+ 
+     for advanced_ticks in 0..=max_ticks {
+-        let observation = capture_observation(runtime);
++        let observation = capture_observation(runtime, host_diagnostics);
+         match evaluate_predicate(&observation, predicate) {
+             PredicateEvaluation::Matched => {
+                 return Ok(RuntimeDebugWaitResult {
+@@ -575,8 +648,9 @@ pub(crate) fn wait_until(
+ pub(crate) fn assert_predicate(
+     runtime: &RuntimePlayState,
+     predicate: &RuntimeDebugPredicate,
++    host_diagnostics: &[Diagnostic],
+ ) -> RuntimeDebugWaitResult {
+-    let observation = capture_observation(runtime);
++    let observation = capture_observation(runtime, host_diagnostics);
+     match evaluate_predicate(&observation, predicate) {
+         PredicateEvaluation::Matched => RuntimeDebugWaitResult {
+             matched: true,
+@@ -602,7 +676,14 @@ pub(crate) fn assert_predicate(
+ pub(crate) fn replay_to_completion(
+     runtime: &mut RuntimePlayState,
+     replay: InputReplay,
++    host_diagnostics: &[Diagnostic],
+ ) -> Result<RuntimeDebugExecutionReport, RuntimeDebugError> {
++    let human_input_generation = runtime.human_input_generation();
++    if human_input_generation != 0 {
++        return Err(RuntimeDebugError::HumanInterference(format!(
++            "deterministic replay requires a fresh Play input state; observed {human_input_generation} human-origin input command(s) before reproduction"
++        )));
++    }
+     runtime.set_paused(true);
+     runtime
+         .start_replay(replay)
+@@ -626,7 +707,7 @@ pub(crate) fn replay_to_completion(
+         scheduled_inputs: 0,
+         cleanup_inputs: 0,
+         replay_recorded: false,
+-        observation: capture_observation(runtime),
++        observation: capture_observation(runtime, host_diagnostics),
+     })
+ }
+ 
+@@ -914,7 +995,8 @@ mod tests {
+         )
+         .unwrap();
+ 
+-        let outcome = execute_plan(&mut runtime, &plan).expect("fixed-tick plan must execute");
++        let outcome =
++            execute_plan(&mut runtime, &plan, &[]).expect("fixed-tick plan must execute");
+ 
+         assert_eq!(outcome.report.start_fixed_tick(), 0);
+         assert_eq!(outcome.report.end_fixed_tick(), 3);
+@@ -946,7 +1028,7 @@ mod tests {
+         )
+         .unwrap();
+ 
+-        let outcome = execute_plan(&mut runtime, &plan).expect("hold plan must execute");
++        let outcome = execute_plan(&mut runtime, &plan, &[]).expect("hold plan must execute");
+         assert_eq!(outcome.report.cleanup_inputs(), 1);
+         assert!(!runtime
+             .input_debug_snapshot()
+@@ -956,7 +1038,7 @@ mod tests {
+ 
+         let replay = outcome.replay.expect("managed plan must retain ADR 0064 replay");
+         let mut reproduced = runtime_fixture();
+-        let report = replay_to_completion(&mut reproduced, replay)
++        let report = replay_to_completion(&mut reproduced, replay, &[])
+             .expect("recorded fixed-tick plan must replay");
+         assert!(reproduced.is_paused());
+         assert!(report.end_fixed_tick() >= report.start_fixed_tick());
+@@ -973,7 +1055,7 @@ mod tests {
+         runtime.set_paused(true);
+         let before = runtime.fixed_step_count();
+ 
+-        let observation = step_paused(&mut runtime, 1).expect("single step must succeed");
++        let observation = step_paused(&mut runtime, 1, &[]).expect("single step must succeed");
+         assert!(observation.paused());
+         assert_eq!(observation.fixed_tick(), before + 1);
+ 
+@@ -981,10 +1063,60 @@ mod tests {
+             &mut runtime,
+             &RuntimeDebugPredicate::fixed_tick_at_least(before + 3),
+             3,
++            &[],
+         )
+         .expect("bounded fixed-tick wait must succeed");
+         assert!(wait.matched());
+         assert!(wait.unavailable().is_none());
+         assert_eq!(wait.observation().fixed_tick(), before + 3);
+     }
++
++    #[test]
++    fn human_input_contaminates_deterministic_plan_before_execution() {
++        let mut runtime = runtime_fixture();
++        runtime.set_paused(true);
++        runtime.queue_input(
++            InputSource::Human,
++            InputCommand::MouseMove {
++                position: (320.0, 180.0),
++            },
++        );
++        let plan = RuntimeDebugPlan::new(Vec::new(), 0).expect("empty plan must be valid");
++
++        let error = match execute_plan(&mut runtime, &plan, &[]) {
++            Ok(_) => panic!("human-influenced Play must not produce deterministic evidence"),
++            Err(error) => error,
++        };
++
++        assert!(matches!(error, RuntimeDebugError::HumanInterference(_)));
++        assert_eq!(runtime.fixed_step_count(), 0);
++        assert!(!runtime.is_replay_recording());
++    }
++
++    #[test]
++    fn observation_reports_bounded_host_diagnostic_identity() {
++        let runtime = runtime_fixture();
++        let mut diagnostics = vec![Diagnostic::error(
++            "editor.runtime.test_failure",
++            "message text is intentionally not copied into provider-safe runtime evidence",
++        )];
++        diagnostics.extend((0..MAX_OBSERVED_DIAGNOSTICS).map(|index| {
++            Diagnostic::warning(
++                format!("editor.runtime.warning_{index}"),
++                "bounded warning",
++            )
++        }));
++
++        let observation = capture_observation(&runtime, &diagnostics);
++
++        assert_eq!(observation.diagnostic_count, diagnostics.len());
++        assert_eq!(observation.diagnostics.len(), MAX_OBSERVED_DIAGNOSTICS);
++        assert!(observation.diagnostics_truncated);
++        assert_eq!(observation.diagnostics[0].severity, "error");
++        assert_eq!(observation.diagnostics[0].code, "editor.runtime.test_failure");
++        assert!(observation.diagnostics[0].blocking);
++        let summary = observation.summary();
++        assert!(summary.contains("editor.runtime.test_failure"));
++        assert!(!summary.contains("message text is intentionally not copied"));
++    }
+ }
+diff --git a/crates/editor/src/ui/play.rs b/crates/editor/src/ui/play.rs
+index 11a5487b193fc7ed495af366453c0fdfa1eae2d6..6e6e05a011c3a55edcc1442e8924a9f197bb1b27 100644
+--- a/crates/editor/src/ui/play.rs
++++ b/crates/editor/src/ui/play.rs
+@@ -831,6 +831,7 @@ impl EditorApp {
+                 AiStudioRuntimeResult::RuntimeInputQueued(command)
+             }
+             AiStudioRuntimeAction::PausePlaytest => {
++                let host_diagnostics = self.session.diagnostics().to_vec();
+                 let Some(runtime) = self.runtime_state.as_mut() else {
+                     return AiStudioRuntimeResult::Failed(
+                         "Pause requires an active Editor Play session.".to_owned(),
+@@ -838,10 +839,11 @@ impl EditorApp {
+                 };
+                 runtime.set_paused(true);
+                 AiStudioRuntimeResult::RuntimePaused(
+-                    crate::runtime_debug::capture_observation(runtime),
++                    crate::runtime_debug::capture_observation(runtime, &host_diagnostics),
+                 )
+             }
+             AiStudioRuntimeAction::ResumePlaytest => {
++                let host_diagnostics = self.session.diagnostics().to_vec();
+                 let Some(runtime) = self.runtime_state.as_mut() else {
+                     return AiStudioRuntimeResult::Failed(
+                         "Resume requires an active Editor Play session.".to_owned(),
+@@ -849,23 +851,27 @@ impl EditorApp {
+                 };
+                 runtime.set_paused(false);
+                 AiStudioRuntimeResult::RuntimeResumed(
+-                    crate::runtime_debug::capture_observation(runtime),
++                    crate::runtime_debug::capture_observation(runtime, &host_diagnostics),
+                 )
+             }
+             AiStudioRuntimeAction::StepPlaytest { steps } => {
++                let host_diagnostics = self.session.diagnostics().to_vec();
+                 let Some(runtime) = self.runtime_state.as_mut() else {
+                     return AiStudioRuntimeResult::Failed(
+                         "Step requires an active Editor Play session.".to_owned(),
+                     );
+                 };
+-                match crate::runtime_debug::step_paused(runtime, steps) {
++                match crate::runtime_debug::step_paused(runtime, steps, &host_diagnostics) {
+                     Ok(observation) => AiStudioRuntimeResult::RuntimeStepped(observation),
+                     Err(error) => AiStudioRuntimeResult::Failed(error.to_string()),
+                 }
+             }
+             AiStudioRuntimeAction::RunDebugPlan(plan) => {
++                let host_diagnostics = self.session.diagnostics().to_vec();
+                 let result = match self.runtime_state.as_mut() {
+-                    Some(runtime) => crate::runtime_debug::execute_plan(runtime, &plan),
++                    Some(runtime) => {
++                        crate::runtime_debug::execute_plan(runtime, &plan, &host_diagnostics)
++                    }
+                     None => {
+                         return AiStudioRuntimeResult::Failed(
+                             "Deterministic runtime input requires an active Editor Play session."
+@@ -887,37 +893,47 @@ impl EditorApp {
+                 }
+             }
+             AiStudioRuntimeAction::ObserveRuntime => {
++                let host_diagnostics = self.session.diagnostics().to_vec();
+                 let Some(runtime) = self.runtime_state.as_ref() else {
+                     return AiStudioRuntimeResult::Failed(
+                         "Runtime observation requires an active Editor Play session.".to_owned(),
+                     );
+                 };
+                 AiStudioRuntimeResult::RuntimeObserved(
+-                    crate::runtime_debug::capture_observation(runtime),
++                    crate::runtime_debug::capture_observation(runtime, &host_diagnostics),
+                 )
+             }
+             AiStudioRuntimeAction::WaitRuntime {
+                 predicate,
+                 max_ticks,
+             } => {
++                let host_diagnostics = self.session.diagnostics().to_vec();
+                 let Some(runtime) = self.runtime_state.as_mut() else {
+                     return AiStudioRuntimeResult::Failed(
+                         "Runtime wait requires an active Editor Play session.".to_owned(),
+                     );
+                 };
+-                match crate::runtime_debug::wait_until(runtime, &predicate, max_ticks) {
++                match crate::runtime_debug::wait_until(
++                    runtime,
++                    &predicate,
++                    max_ticks,
++                    &host_diagnostics,
++                ) {
+                     Ok(wait) => AiStudioRuntimeResult::RuntimeWaited(wait),
+                     Err(error) => AiStudioRuntimeResult::Failed(error.to_string()),
+                 }
+             }
+             AiStudioRuntimeAction::AssertRuntime { predicate } => {
++                let host_diagnostics = self.session.diagnostics().to_vec();
+                 let Some(runtime) = self.runtime_state.as_ref() else {
+                     return AiStudioRuntimeResult::Failed(
+                         "Runtime assertion requires an active Editor Play session.".to_owned(),
+                     );
+                 };
+                 AiStudioRuntimeResult::RuntimeAsserted(crate::runtime_debug::assert_predicate(
+-                    runtime, &predicate,
++                    runtime,
++                    &predicate,
++                    &host_diagnostics,
+                 ))
+             }
+             AiStudioRuntimeAction::ReplayLast => {
+@@ -934,8 +950,13 @@ impl EditorApp {
+                             .to_owned(),
+                     );
+                 }
++                let host_diagnostics = self.session.diagnostics().to_vec();
+                 let result = match self.runtime_state.as_mut() {
+-                    Some(runtime) => crate::runtime_debug::replay_to_completion(runtime, replay),
++                    Some(runtime) => crate::runtime_debug::replay_to_completion(
++                        runtime,
++                        replay,
++                        &host_diagnostics,
++                    ),
+                     None => {
+                         return AiStudioRuntimeResult::Failed(
+                             "Replay reproduction lost the fresh Editor Play world.".to_owned(),
