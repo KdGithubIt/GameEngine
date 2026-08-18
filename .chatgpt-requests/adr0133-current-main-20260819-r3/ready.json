@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0133-current-main-20260819-r3",
+  "target_branch": "chatgpt/gameengine-adr0133-first-release-current-main-v11",
+  "expected_head_sha": "084012e2eabe005900c76fe22b8749f3ba27e82b",
+  "baseline_main_sha": "084012e2eabe005900c76fe22b8749f3ba27e82b",
+  "patch_sha256": "887a158e6dd47acda7b86a9fe7639a163e232d3d5e8ddbdb6b8232cb57f30e3d",
+  "patch_bytes": 31318,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Complete ADR0133 Remote AI Studio browser validation",
+  "pr_title": "ADR0133: complete Remote AI Studio first-release validation",
+  "pr_body": "## Summary\n\nRebuilds ADR0133 Remote AI Studio first-release browser validation from current main. Adds deterministic host-owned Remote state, captures the production HTTP/JavaScript companion in Microsoft Edge at desktop, narrow, and mobile widths, hardens visual-validation authoring-tool parsing so blank CI values are treated as absent, isolates the Remote helper Editor from unrelated screenshot/authoring environment variables, and keeps the full-Clippy Animation Set test ordering fix.\n\n## Validation\n\nRequires full Windows Validation because `scripts/ci/**` changes, Automation Regression, and ChatGPT visual review of the generated Remote AI Studio screenshots.\n\n<!-- gameengine-visual-validation: editor -->\n<!-- gameengine-visual-remote-ai-studio: browser -->\n"
+}
