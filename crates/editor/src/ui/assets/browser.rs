@@ -151,6 +151,58 @@ fn show_selected_gltf_sub_assets(
     }
 }
 
+/// Stable SpriteRef sub-assets exposed by one selected Native 2D Sprite Atlas.
+///
+/// The atlas file remains the registered AssetId; individual regions keep their
+/// persisted SpriteId and are never replaced by UV rectangles or filesystem paths.
+fn show_selected_sprite_atlas_regions(
+    ui: &mut egui::Ui,
+    browser: &AssetBrowser,
+    manifest: &engine::AssetManifest,
+    assets_root: &Path,
+) {
+    let mut selected = browser.selected_paths();
+    let (Some(path), None) = (selected.next().cloned(), selected.next()) else {
+        return;
+    };
+    let relative = path.to_string_lossy().replace('\\', "/");
+    let Some((atlas_id, entry)) = manifest.iter().find(|(_, entry)| entry.path == relative) else {
+        return;
+    };
+    if !entry.path.to_ascii_lowercase().ends_with(".spriteatlas.json") {
+        return;
+    }
+    let Ok(text) = std::fs::read_to_string(assets_root.join(&path)) else {
+        return;
+    };
+    let Ok(atlas) = serde_json::from_str::<engine_authoring::SpriteAtlasDocument>(&text) else {
+        return;
+    };
+    if atlas.regions.is_empty() {
+        return;
+    }
+
+    ui.separator();
+    ui.strong(format!("Sprites of {relative}"));
+    for region in &atlas.regions {
+        ui.horizontal(|ui| {
+            ui.add_space(12.0);
+            let response = ui.add(
+                egui::Label::new(format!("[sprite] {}", region.name))
+                    .sense(egui::Sense::click_and_drag()),
+            );
+            response
+                .on_hover_text("Drag this stable SpriteRef onto the Scene View or a Native 2D field")
+                .dnd_set_drag_payload(crate::native_2d_editor::SpriteRegionDragPayload {
+                    sprite: engine_authoring::SpriteRef {
+                        atlas: atlas_id.clone(),
+                        sprite: region.id.clone(),
+                    },
+                });
+        });
+    }
+}
+
 pub(in crate::ui) enum AssetBrowserAction {
     Open(usize),
     Register(usize),
@@ -1162,6 +1214,7 @@ fn show_asset_browser(
                             }
 
                             show_selected_gltf_sub_assets(ui, browser, manifest);
+                            show_selected_sprite_atlas_regions(ui, browser, manifest, root);
 
                             // A hint only: it must not sense clicks, or it would
                             // sit on top of the background and reintroduce a
@@ -1284,6 +1337,10 @@ pub(in crate::ui) fn asset_kind_icon(kind: AssetKind) -> &'static str {
         AssetKind::AnimationSet => "◎",
         AssetKind::AnimationClip => "▶",
         AssetKind::MotionSource => "↝",
+        AssetKind::SpriteAtlas => "▥",
+        AssetKind::SpriteAnimation => "▷",
+        AssetKind::TileSet => "▦",
+        AssetKind::TileMap => "▧",
         AssetKind::Texture => "▤",
         AssetKind::Mesh => "△",
         AssetKind::Audio => "♪",

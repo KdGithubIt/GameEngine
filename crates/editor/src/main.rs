@@ -68,29 +68,11 @@ impl EditorShell {
             ),
         )?;
         #[cfg(feature = "visual-validation")]
-        let visual_scenario = std::env::var("GAMEENGINE_VISUAL_AUTHORING_TOOL").ok();
-        #[cfg(feature = "visual-validation")]
         let (ai_studio, visual_ai_studio_detached_capture) = {
             let mut ai_studio = ai_studio;
-            let detached_capture = match visual_scenario.as_deref() {
-                Some("ADR 0143 Model Resources") => {
-                    ai_studio.prepare_local_model_resources_visual_validation();
-                    true
-                }
-                Some("ADR 0145 External Agent") => {
-                    ai_studio.prepare_external_agent_visual_validation();
-                    true
-                }
-                Some(_) => false,
-                None => {
-                    let touches_ai_studio = visual_validation_touches_ai_studio();
-                    if touches_ai_studio {
-                        ai_studio.prepare_hosted_backend_visual_validation();
-                    }
-                    touches_ai_studio
-                }
-            };
+            let detached_capture = visual_validation_touches_ai_studio();
             if detached_capture {
+                ai_studio.prepare_hosted_backend_visual_validation();
                 ai_studio.detach();
             }
             (ai_studio, detached_capture)
@@ -100,15 +82,9 @@ impl EditorShell {
         #[cfg(not(feature = "visual-validation"))]
         let authoring_windows = AuthoringWindows::default();
         #[cfg(feature = "visual-validation")]
-        if let Some(requested) = visual_scenario.as_deref() {
-            if matches!(
-                requested,
-                "ADR 0143 Model Resources" | "ADR 0145 External Agent"
-            ) {
-                // AI Studio scenarios are prepared above and use its detached native viewport.
-            } else if requested == "ADR 0154 Animation Set" {
-                app.prepare_animation_set_visual_validation();
-            } else if requested == "Navigation" {
+        if let Some(requested) = std::env::var_os("GAMEENGINE_VISUAL_AUTHORING_TOOL") {
+            let requested = requested.to_string_lossy();
+            if requested == "Navigation" {
                 app.prepare_navigation_visual_validation();
             } else if requested == "Spatial Audio" {
                 app.prepare_spatial_audio_visual_validation();
@@ -379,22 +355,19 @@ impl eframe::App for EditorShell {
         let context = ui.ctx().clone();
         eframe::App::ui(&mut self.app, ui, frame);
         self.show_authoring_tools_launcher(&context);
-        self.authoring_windows
-            .show(&context, frame, self.app.project_root());
+        self.authoring_windows.show(
+            &context,
+            frame,
+            self.app.project_root(),
+            self.app.asset_manifest(),
+        );
         #[cfg(not(feature = "visual-validation"))]
         self.ai_studio.show(&context);
         #[cfg(feature = "visual-validation")]
+        if !self.visual_behavior_debug_capture
+            && std::env::var_os("GAMEENGINE_VISUAL_AUTHORING_TOOL").is_none()
         {
-            let visual_scenario = std::env::var("GAMEENGINE_VISUAL_AUTHORING_TOOL").ok();
-            let ai_studio_scenario = matches!(
-                visual_scenario.as_deref(),
-                Some("ADR 0143 Model Resources") | Some("ADR 0145 External Agent")
-            );
-            if !self.visual_behavior_debug_capture
-                && (visual_scenario.is_none() || ai_studio_scenario)
-            {
-                self.ai_studio.show(&context);
-            }
+            self.ai_studio.show(&context);
         }
     }
 

@@ -27,6 +27,14 @@ pub enum AssetKind {
     /// The file scanner never creates this kind directly; the selected model
     /// or motion source exposes it as a draggable stable sub-asset row.
     AnimationClip,
+    /// `*.spriteatlas.json` Native 2D stable sprite-region document.
+    SpriteAtlas,
+    /// `*.spriteanim.json` Native 2D deterministic sprite animation.
+    SpriteAnimation,
+    /// `*.tileset.json` Native 2D tile definition document.
+    TileSet,
+    /// `*.tilemap.json` Native 2D sparse tile-map document.
+    TileMap,
     /// `*.vmd` MMD motion source (ADR 0097 §3).
     ///
     /// Its own kind rather than [`Self::Mesh`] because a `.vmd` carries no
@@ -71,6 +79,10 @@ impl AssetKind {
             Self::GraphView => "[view]",
             Self::AnimationSet => "[animset]",
             Self::AnimationClip => "[clip]",
+            Self::SpriteAtlas => "[atlas2d]",
+            Self::SpriteAnimation => "[anim2d]",
+            Self::TileSet => "[tileset]",
+            Self::TileMap => "[tilemap]",
             Self::MotionSource => "[motion]",
             Self::Texture => "[tex]",
             Self::Mesh => "[mesh]",
@@ -617,6 +629,14 @@ pub fn classify_file_name(name: &str) -> Option<(AssetKind, String)> {
         (AssetKind::GraphView, ".graph.view.json".len())
     } else if lower.ends_with(".scene.json") {
         (AssetKind::Scene, ".scene.json".len())
+    } else if lower.ends_with(".spriteatlas.json") {
+        (AssetKind::SpriteAtlas, ".spriteatlas.json".len())
+    } else if lower.ends_with(".spriteanim.json") {
+        (AssetKind::SpriteAnimation, ".spriteanim.json".len())
+    } else if lower.ends_with(".tileset.json") {
+        (AssetKind::TileSet, ".tileset.json".len())
+    } else if lower.ends_with(".tilemap.json") {
+        (AssetKind::TileMap, ".tilemap.json".len())
     } else if lower.ends_with(".animset.json") {
         (AssetKind::AnimationSet, ".animset.json".len())
     } else if lower.ends_with(".material.json") {
@@ -704,6 +724,20 @@ mod tests {
         let (kind, name) = classify_file_name("hero.animset.json").expect("supported file");
         assert_eq!(kind, AssetKind::AnimationSet);
         assert_eq!(name, "hero");
+    }
+
+    #[test]
+    fn classify_native_2d_documents() {
+        for (file, expected_kind, expected_name) in [
+            ("hero.spriteatlas.json", AssetKind::SpriteAtlas, "hero"),
+            ("idle.spriteanim.json", AssetKind::SpriteAnimation, "idle"),
+            ("ground.tileset.json", AssetKind::TileSet, "ground"),
+            ("level.tilemap.json", AssetKind::TileMap, "level"),
+        ] {
+            let (kind, name) = classify_supported_file_name(file);
+            assert_eq!(kind, expected_kind);
+            assert_eq!(name, expected_name);
+        }
     }
 
     #[test]

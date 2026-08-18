@@ -1,6 +1,6 @@
 # ADR 0145: First-Class External Agent Runtime Provider Adapters
 
-Status: Accepted
+Status: Proposed
 Date: 2026-08-17
 Builds on: ADR 0131
 Relates to: ADR 0121, ADR 0133, ADR 0153
