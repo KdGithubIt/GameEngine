@@ -25,6 +25,7 @@ use crate::external_agent_provider::{
 use crate::hosted_model_backend;
 use crate::hosted_model_backend::{HostedAuthMode, HostedModelConfig};
 use crate::live_observation::{LiveObservationError, LiveObservationManager};
+use crate::model_router::{ModelRoutingPolicy, MODEL_ROUTER_POLICY_VERSION};
 use crate::native_agent::{
     InstalledModelDiscoveryTask, InstalledModelInventory, LocalModelConfig, ModelCapabilityProfile,
     ModelResourceTask, NativeAnswer, NativeMetrics, NativeModelConfig, NativeQuestionTask,
@@ -1713,6 +1714,7 @@ impl AiStudioPanel {
                     self.resolved_workload,
                     self.resource_plan.reclaim
                 ));
+                ui.small(self.model_routing_status());
                 self.show_agent_benchmark(ui);
             });
     }
@@ -1802,6 +1804,23 @@ impl AiStudioPanel {
                 "Choose the Evidence task before starting inference or a native run; its versioned identity is frozen at execution start. Record only when that result intentionally executes the frozen corpus task. Records are machine-local and omit prompts, conversation history, retrieved source text, project paths, and credentials; this feature never uploads private projects.",
             );
         });
+    }
+
+    fn model_routing_status(&self) -> String {
+        let Ok(primary) = self.selected_native_model_config() else {
+            return format!(
+                "Measured routing: policy {MODEL_ROUTER_POLICY_VERSION} · unavailable until a primary model is selected."
+            );
+        };
+        let policy = ModelRoutingPolicy::derive(
+            primary.clone(),
+            self.native_routing_candidates(&primary),
+            &self.benchmark_records,
+        );
+        format!(
+            "Measured routing: policy {MODEL_ROUTER_POLICY_VERSION} · {} benchmark-qualified specialist workload(s) · one AgentRun with provider-independent context handoff.",
+            policy.adopted_specialist_count()
+        )
     }
 
     fn current_installed_inventory(&self) -> Option<&InstalledModelInventory> {
@@ -1966,6 +1985,27 @@ impl AiStudioPanel {
         self.benchmark_records = records;
         self.model_catalog = catalog;
         Ok(())
+    }
+
+    fn native_routing_candidates(&self, primary: &NativeModelConfig) -> Vec<NativeModelConfig> {
+        let NativeModelConfig::Local(primary) = primary else {
+            return Vec::new();
+        };
+        self.current_installed_inventory()
+            .map(|inventory| {
+                inventory
+                    .models
+                    .iter()
+                    .filter(|model| model.name.trim() != primary.model.trim())
+                    .map(|model| {
+                        NativeModelConfig::Local(LocalModelConfig {
+                            endpoint: primary.endpoint.clone(),
+                            model: model.name.clone(),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     fn selected_native_model_config(&self) -> Result<NativeModelConfig, String> {
@@ -2556,10 +2596,19 @@ impl AiStudioPanel {
         runtime
             .start_turn(&run, context.as_deref(), images)
             .map_err(|error| error.to_string())?;
+        let backend_label = runtime.backend_label();
+        let routing_summary = runtime.routing_policy_summary();
+        let routing_decisions = runtime.take_routing_decisions();
+        for decision in routing_decisions {
+            self.host
+                .record_semantic_progress(run_id, "model_routing", decision.audit_summary())
+                .map_err(|error| error.to_string())?;
+        }
         self.status = Some(format!(
-            "{} is reasoning in {:?}; managed tools remain host-owned.",
-            runtime.backend_label(),
-            run.state
+            "{} is reasoning in {:?}; {}. Managed tools remain host-owned.",
+            backend_label,
+            run.state,
+            routing_summary
         ));
         Ok(())
     }
@@ -3378,7 +3427,17 @@ impl AiStudioPanel {
         self.active_external_program = external_provider.map(|_| self.provider_program.clone());
         self.active_external_args = external_provider.map(|_| self.provider_args.clone());
         self.external_provider_diagnostics = ExternalAgentDiagnostics::default();
-        self.native_agent_runtime = native_config.map(NativeAgentRuntime::configured);
+        let routing_candidates = native_config
+            .as_ref()
+            .map(|config| self.native_routing_candidates(config))
+            .unwrap_or_default();
+        self.native_agent_runtime = native_config.map(|config| {
+            NativeAgentRuntime::configured_routed(
+                config,
+                routing_candidates,
+                &self.benchmark_records,
+            )
+        });
         self.native_run_benchmark_context = native_benchmark_identity.map(
             |(backend_id, model_id, inventory)| NativeRunBenchmarkContext {
                 run_id: run_id.clone(),

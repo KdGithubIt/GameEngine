@@ -1,6 +1,6 @@
 # ADR 0150: Multi-Model Routing and Workload Specialization
 
-Status: Proposed
+Status: Accepted
 Date: 2026-08-17
 Builds on: ADR 0131, ADR 0141, ADR 0142
 Relates to: ADR 0135, ADR 0143, ADR 0144
@@ -43,6 +43,18 @@ Every routing policy has a version and is benchmarked against the ADR 0142 singl
 ## Failure and fallback
 
 Provider/model failure may fall back to another compatible model only when the fallback preserves the same run semantics and user policy. A fallback that changes remote-processing posture, cost class, or required permission must request the appropriate user decision instead of silently switching.
+
+## Implementation
+
+The first-release `ModelRouter` is an optimization inside the existing `NativeAgentRuntime`; it never creates a second `AgentRun`, proposal authority, permission broker, or completion owner. The user's selected backend/model remains the single-model baseline. AI Studio considers only other models already discovered on the same local backend as automatic routing candidates. Hosted or enterprise processing is never introduced automatically from a local baseline, so a change of remote-processing posture, permission requirement, or cost class remains an explicit user decision.
+
+Routing policy `adr0150-measured-routing-v1` is derived from machine-local ADR 0142 benchmark records. A specialist is eligible only when its task record is comparable with the baseline through the ADR 0142 equivalence contract, the specialist completes successfully, it introduces no measured OOM regression, and it either converts a measured baseline failure into success or preserves success while improving measured elapsed time by at least five percent. Missing or non-equivalent evidence retains the selected single-model baseline rather than inventing a recommendation.
+
+Each routed turn rebuilds the provider prompt from the same immutable proposal snapshot, `AgentWorkingState`, completion state, prior managed tool results, explicit phase context, and current Agent Host evidence. Switching the inference backend therefore preserves provider-independent run state instead of depending on one model's transient KV cache or hidden conversation state. The Agent Host continues to own stale-state checks, permissions, managed side effects, validation, Play/frame evidence, repair, and completion truth.
+
+Image-bearing turns require a backend that declares image input or has successful GameEngine visual-evaluation benchmark evidence. If neither the qualified specialist nor the baseline satisfies that requirement, routing fails explicitly instead of allowing a text-only model to fabricate visual success. A specialist that fails before a turn starts may deterministically fall back only to a compatible selected baseline without changing the user's processing posture.
+
+Every decision records the routing policy version, workload class, backend/model identity, handoff/fallback state, and sanitized reason in the existing run event audit. AI Studio exposes the active measured-routing policy and count of benchmark-qualified specialist workloads next to model/resource status. No prompt, credential, private provider state, or transient model cache is persisted by the router.
 
 ## Dependencies and parallel work
 

@@ -1,0 +1,393 @@
+//! Benchmark-gated multi-model routing for the native AgentRuntime (ADR 0150).
+//!
+//! Routing remains an optimization over one provider-independent AgentRun. A
+//! specialist is eligible only when comparable ADR 0142 evidence proves that it
+//! preserves successful completion and improves the configured objective.
+
+use crate::agent_benchmark::{
+    comparison_equivalence, BenchmarkRecord, BenchmarkTaskKind, ComparisonEquivalence,
+    BENCHMARK_TASKS,
+};
+use crate::native_agent::NativeModelConfig;
+use crate::resource_arbitration::TelemetryValue;
+use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
+
+pub(crate) const MODEL_ROUTER_POLICY_VERSION: &str = "adr0150-measured-routing-v1";
+const MIN_LATENCY_IMPROVEMENT_PERCENT: u64 = 5;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum RoutingWorkload {
+    ReadQuestion,
+    ProjectInspection,
+    CodeImplementation,
+    TypedAuthoringMutation,
+    ValidationRepair,
+    RuntimeInteraction,
+    VisualEvaluation,
+}
+
+impl RoutingWorkload {
+    fn from_task_kind(kind: BenchmarkTaskKind) -> Self {
+        match kind {
+            BenchmarkTaskKind::ReadQuestion => Self::ReadQuestion,
+            BenchmarkTaskKind::ProjectInspection => Self::ProjectInspection,
+            BenchmarkTaskKind::CodeImplementation => Self::CodeImplementation,
+            BenchmarkTaskKind::TypedAuthoringMutation => Self::TypedAuthoringMutation,
+            BenchmarkTaskKind::ValidationRepair => Self::ValidationRepair,
+            BenchmarkTaskKind::RuntimeInteraction => Self::RuntimeInteraction,
+            BenchmarkTaskKind::VisualEvaluation => Self::VisualEvaluation,
+        }
+    }
+
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::ReadQuestion => "read question",
+            Self::ProjectInspection => "project inspection",
+            Self::CodeImplementation => "code implementation",
+            Self::TypedAuthoringMutation => "typed authoring mutation",
+            Self::ValidationRepair => "validation repair",
+            Self::RuntimeInteraction => "runtime interaction",
+            Self::VisualEvaluation => "visual evaluation",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct ModelKey {
+    backend_id: String,
+    model_id: String,
+}
+
+impl ModelKey {
+    fn from_config(config: &NativeModelConfig) -> Self {
+        Self {
+            backend_id: config.backend_id().to_owned(),
+            model_id: config.model_id(),
+        }
+    }
+
+    fn matches_record(&self, record: &BenchmarkRecord) -> bool {
+        record.identity.model.backend_id == self.backend_id
+            && record.identity.model.model_id == self.model_id
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct RoutingSpecialist {
+    pub(crate) config: NativeModelConfig,
+    pub(crate) task_id: String,
+    pub(crate) baseline_elapsed_ms: Option<u64>,
+    pub(crate) specialist_elapsed_ms: Option<u64>,
+    pub(crate) improves_task_success: bool,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ModelRoutingPolicy {
+    primary: NativeModelConfig,
+    specialists: BTreeMap<RoutingWorkload, RoutingSpecialist>,
+    image_verified: BTreeSet<ModelKey>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ModelRouteDecision {
+    pub(crate) workload: RoutingWorkload,
+    pub(crate) config: NativeModelConfig,
+    pub(crate) reason: String,
+    pub(crate) context_handoff: bool,
+    pub(crate) fallback: bool,
+}
+
+impl ModelRouteDecision {
+    pub(crate) fn audit_summary(&self) -> String {
+        format!(
+            "policy={} workload={} backend={} model={} context_handoff={} fallback={} reason={}",
+            MODEL_ROUTER_POLICY_VERSION,
+            self.workload.label(),
+            self.config.backend_id(),
+            self.config.model_id(),
+            self.context_handoff,
+            self.fallback,
+            self.reason
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ModelRoutingError {
+    CapabilityUnavailable { workload: RoutingWorkload, capability: &'static str },
+    UserDecisionRequired { workload: RoutingWorkload, backend_id: String, model_id: String },
+}
+
+impl fmt::Display for ModelRoutingError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::CapabilityUnavailable { workload, capability } => write!(
+                formatter,
+                "no benchmark-qualified model declares required {capability} capability for {}",
+                workload.label()
+            ),
+            Self::UserDecisionRequired { workload, backend_id, model_id } => write!(
+                formatter,
+                "routing {} to remote backend `{backend_id}` model `{model_id}` requires an explicit user decision because processing posture/cost class would change",
+                workload.label()
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ModelRoutingError {}
+
+impl ModelRoutingPolicy {
+    pub(crate) fn derive(
+        primary: NativeModelConfig,
+        candidates: Vec<NativeModelConfig>,
+        records: &[BenchmarkRecord],
+    ) -> Self {
+        let primary_key = ModelKey::from_config(&primary);
+        let mut specialists = BTreeMap::new();
+        let mut image_verified = BTreeSet::new();
+
+        for record in records {
+            if record.identity.task_id == "visual_evaluation_v1"
+                && record_success(record)
+            {
+                image_verified.insert(ModelKey {
+                    backend_id: record.identity.model.backend_id.clone(),
+                    model_id: record.identity.model.model_id.clone(),
+                });
+            }
+        }
+
+        for task in BENCHMARK_TASKS {
+            let workload = RoutingWorkload::from_task_kind(task.kind);
+            let mut best: Option<(RoutingSpecialist, ImprovementRank)> = None;
+            for candidate in &candidates {
+                let candidate_key = ModelKey::from_config(candidate);
+                if candidate_key == primary_key {
+                    continue;
+                }
+                let Some((specialist, rank)) = best_comparable_improvement(
+                    task.id,
+                    &primary_key,
+                    &candidate_key,
+                    candidate.clone(),
+                    records,
+                ) else {
+                    continue;
+                };
+                if best.as_ref().is_none_or(|(_, current)| rank > *current) {
+                    best = Some((specialist, rank));
+                }
+            }
+            if let Some((specialist, _)) = best {
+                specialists.insert(workload, specialist);
+            }
+        }
+
+        Self { primary, specialists, image_verified }
+    }
+
+    pub(crate) fn primary(&self) -> &NativeModelConfig {
+        &self.primary
+    }
+
+    pub(crate) fn adopted_specialist_count(&self) -> usize {
+        self.specialists.len()
+    }
+
+    pub(crate) fn select(
+        &self,
+        workload: RoutingWorkload,
+        requires_image: bool,
+    ) -> Result<ModelRouteDecision, ModelRoutingError> {
+        if let Some(specialist) = self.specialists.get(&workload)
+            && self.supports_requirements(&specialist.config, requires_image)
+        {
+            if !self.primary.requires_network() && specialist.config.requires_network() {
+                return Err(ModelRoutingError::UserDecisionRequired {
+                    workload,
+                    backend_id: specialist.config.backend_id().to_owned(),
+                    model_id: specialist.config.model_id(),
+                });
+            }
+            let reason = match (
+                specialist.improves_task_success,
+                specialist.baseline_elapsed_ms,
+                specialist.specialist_elapsed_ms,
+            ) {
+                (true, _, _) => format!("{} improved measured task success", specialist.task_id),
+                (false, Some(baseline), Some(selected)) => format!(
+                    "{} preserved success and improved measured latency from {baseline} ms to {selected} ms",
+                    specialist.task_id
+                ),
+                _ => format!("{} satisfied measured routing policy", specialist.task_id),
+            };
+            return Ok(ModelRouteDecision {
+                workload,
+                config: specialist.config.clone(),
+                reason,
+                context_handoff: ModelKey::from_config(&specialist.config)
+                    != ModelKey::from_config(&self.primary),
+                fallback: false,
+            });
+        }
+
+        if self.supports_requirements(&self.primary, requires_image) {
+            return Ok(ModelRouteDecision {
+                workload,
+                config: self.primary.clone(),
+                reason: "single-model baseline retained because no qualified specialist improves this workload".to_owned(),
+                context_handoff: false,
+                fallback: false,
+            });
+        }
+
+        Err(ModelRoutingError::CapabilityUnavailable {
+            workload,
+            capability: if requires_image { "image input" } else { "requested" },
+        })
+    }
+
+    pub(crate) fn fallback(
+        &self,
+        failed: &NativeModelConfig,
+        workload: RoutingWorkload,
+        requires_image: bool,
+    ) -> Option<ModelRouteDecision> {
+        if ModelKey::from_config(failed) == ModelKey::from_config(&self.primary)
+            || !self.supports_requirements(&self.primary, requires_image)
+        {
+            return None;
+        }
+        if failed.requires_network() != self.primary.requires_network()
+            && self.primary.requires_network()
+        {
+            return None;
+        }
+        Some(ModelRouteDecision {
+            workload,
+            config: self.primary.clone(),
+            reason: "compatible specialist failed before the turn started; reverted to the measured single-model baseline".to_owned(),
+            context_handoff: true,
+            fallback: true,
+        })
+    }
+
+    fn supports_requirements(&self, config: &NativeModelConfig, requires_image: bool) -> bool {
+        if !requires_image {
+            return true;
+        }
+        config.capability_profile().image_input == Some(true)
+            || self.image_verified.contains(&ModelKey::from_config(config))
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct ImprovementRank {
+    success_gain: bool,
+    latency_gain_ms: u64,
+}
+
+fn best_comparable_improvement(
+    task_id: &str,
+    primary: &ModelKey,
+    candidate: &ModelKey,
+    config: NativeModelConfig,
+    records: &[BenchmarkRecord],
+) -> Option<(RoutingSpecialist, ImprovementRank)> {
+    let mut best = None;
+    for baseline in records
+        .iter()
+        .filter(|record| record.identity.task_id == task_id && primary.matches_record(record))
+    {
+        for specialist in records
+            .iter()
+            .filter(|record| record.identity.task_id == task_id && candidate.matches_record(record))
+        {
+            if comparison_equivalence(baseline, specialist)
+                != ComparisonEquivalence::EquivalentModelComparison
+                || !record_success(specialist)
+                || has_oom_regression(baseline, specialist)
+            {
+                continue;
+            }
+            let baseline_success = record_success(baseline);
+            let baseline_elapsed = measured_u64(&baseline.metrics.elapsed_ms);
+            let specialist_elapsed = measured_u64(&specialist.metrics.elapsed_ms);
+            let success_gain = !baseline_success;
+            let latency_gain_ms = match (baseline_elapsed, specialist_elapsed) {
+                (Some(left), Some(right)) if left > right => left - right,
+                _ => 0,
+            };
+            let latency_improves = match (baseline_elapsed, specialist_elapsed) {
+                (Some(left), Some(right)) if left > 0 => right.saturating_mul(100)
+                    <= left.saturating_mul(100 - MIN_LATENCY_IMPROVEMENT_PERCENT),
+                _ => false,
+            };
+            if !success_gain && !latency_improves {
+                continue;
+            }
+            let rank = ImprovementRank { success_gain, latency_gain_ms };
+            if best.as_ref().is_none_or(|(_, current)| rank > *current) {
+                best = Some((
+                    RoutingSpecialist {
+                        config: config.clone(),
+                        task_id: task_id.to_owned(),
+                        baseline_elapsed_ms: baseline_elapsed,
+                        specialist_elapsed_ms: specialist_elapsed,
+                        improves_task_success: success_gain,
+                    },
+                    rank,
+                ));
+            }
+        }
+    }
+    best
+}
+
+fn record_success(record: &BenchmarkRecord) -> bool {
+    matches!(record.metrics.completion_success, TelemetryValue::Measured(true))
+        && !matches!(record.metrics.acceptance_success, TelemetryValue::Measured(false))
+}
+
+fn has_oom_regression(baseline: &BenchmarkRecord, candidate: &BenchmarkRecord) -> bool {
+    match (
+        measured_u64(&baseline.metrics.oom_failures),
+        measured_u64(&candidate.metrics.oom_failures),
+    ) {
+        (Some(left), Some(right)) => right > left,
+        (None, Some(right)) => right > 0,
+        (_, None) => false,
+    }
+}
+
+fn measured_u64(value: &TelemetryValue<u64>) -> Option<u64> {
+    match value {
+        TelemetryValue::Measured(value) => Some(*value),
+        TelemetryValue::ConservativeEstimate(_) | TelemetryValue::Unavailable => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn workload_labels_are_stable_audit_values() {
+        assert_eq!(RoutingWorkload::ValidationRepair.label(), "validation repair");
+        assert_eq!(RoutingWorkload::VisualEvaluation.label(), "visual evaluation");
+    }
+
+    #[test]
+    fn latency_policy_requires_at_least_five_percent_improvement() {
+        let improves = |baseline: u64, specialist: u64| {
+            specialist.saturating_mul(100)
+                <= baseline.saturating_mul(100 - MIN_LATENCY_IMPROVEMENT_PERCENT)
+        };
+        assert!(improves(1_000, 950));
+        assert!(improves(1_000, 900));
+        assert!(!improves(1_000, 960));
+        assert!(!improves(1_000, 1_000));
+    }
+}

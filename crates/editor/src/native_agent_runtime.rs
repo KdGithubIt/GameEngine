@@ -4,6 +4,10 @@
 //! services remain authoritative for every side effect and completion gate.
 
 use crate::agent_host::{AgentRun, AgentRunState, AgentWorkingStateUpdate, CompletionStatus};
+use crate::agent_benchmark::BenchmarkRecord;
+use crate::model_router::{
+    ModelRouteDecision, ModelRoutingError, ModelRoutingPolicy, RoutingWorkload,
+};
 use crate::native_agent::{
     LocalModelConfig, ModelCapabilityProfile, NativeAgentError, NativeModelConfig, NativeModelTask,
 };
@@ -122,7 +126,7 @@ pub(crate) struct NativeAgentTurn {
 #[derive(Debug)]
 pub(crate) enum NativeAgentRuntimeError {
     Backend(NativeAgentError), Busy, TurnBudget, ToolFailureBudget,
-    InvalidOutput(String), Rejected(String),
+    InvalidOutput(String), Rejected(String), Routing(ModelRoutingError),
 }
 
 impl fmt::Display for NativeAgentRuntimeError {
@@ -134,6 +138,7 @@ impl fmt::Display for NativeAgentRuntimeError {
             Self::ToolFailureBudget => write!(f, "native AgentRuntime tool-failure budget exhausted"),
             Self::InvalidOutput(e) => write!(f, "invalid native structured output: {e}"),
             Self::Rejected(e) => write!(f, "native action rejected: {e}"),
+            Self::Routing(e) => e.fmt(f),
         }
     }
 }
@@ -141,18 +146,33 @@ impl std::error::Error for NativeAgentRuntimeError {}
 impl From<NativeAgentError> for NativeAgentRuntimeError {
     fn from(value: NativeAgentError) -> Self { Self::Backend(value) }
 }
+impl From<ModelRoutingError> for NativeAgentRuntimeError {
+    fn from(value: ModelRoutingError) -> Self { Self::Routing(value) }
+}
 
 struct Exchange { tool: String, success: bool, result: String }
 
 pub(crate) struct NativeAgentRuntime {
-    backend: Box<dyn ModelBackend>, policy: HarnessPolicy, turns: u32, failures: u32,
+    backend: Box<dyn ModelBackend>, backend_config: NativeModelConfig,
+    routing: ModelRoutingPolicy, routing_decisions: Vec<ModelRouteDecision>,
+    policy: HarnessPolicy, turns: u32, failures: u32,
     exchanges: Vec<Exchange>, active: Option<Box<dyn ModelTurnTask>>,
 }
 
 impl NativeAgentRuntime {
     pub(crate) fn configured(config: NativeModelConfig) -> Self {
+        Self::configured_routed(config, Vec::new(), &[])
+    }
+    pub(crate) fn configured_routed(
+        primary: NativeModelConfig,
+        candidates: Vec<NativeModelConfig>,
+        benchmark_records: &[BenchmarkRecord],
+    ) -> Self {
+        let routing = ModelRoutingPolicy::derive(primary.clone(), candidates, benchmark_records);
         Self::new(
-            Box::new(ConfiguredModelBackend(config)),
+            Box::new(ConfiguredModelBackend(primary.clone())),
+            primary,
+            routing,
             HarnessPolicy::default(),
         )
     }
@@ -160,10 +180,34 @@ impl NativeAgentRuntime {
     pub(crate) fn local(config: LocalModelConfig) -> Self {
         Self::configured(NativeModelConfig::Local(config))
     }
-    fn new(backend: Box<dyn ModelBackend>, policy: HarnessPolicy) -> Self {
-        Self { backend, policy, turns: 0, failures: 0, exchanges: Vec::new(), active: None }
+    fn new(
+        backend: Box<dyn ModelBackend>,
+        backend_config: NativeModelConfig,
+        routing: ModelRoutingPolicy,
+        policy: HarnessPolicy,
+    ) -> Self {
+        Self {
+            backend,
+            backend_config,
+            routing,
+            routing_decisions: Vec::new(),
+            policy,
+            turns: 0,
+            failures: 0,
+            exchanges: Vec::new(),
+            active: None,
+        }
     }
     pub(crate) fn backend_label(&self) -> String { self.backend.label() }
+    pub(crate) fn routing_policy_summary(&self) -> String {
+        format!(
+            "{} adopted specialist workload(s)",
+            self.routing.adopted_specialist_count()
+        )
+    }
+    pub(crate) fn take_routing_decisions(&mut self) -> Vec<ModelRouteDecision> {
+        std::mem::take(&mut self.routing_decisions)
+    }
     pub(crate) fn is_busy(&self) -> bool { self.active.is_some() }
     pub(crate) fn interrupt(&mut self) {
         if let Some(task) = self.active.as_ref() { task.interrupt(); }
@@ -174,10 +218,44 @@ impl NativeAgentRuntime {
     {
         if self.active.is_some() { return Err(NativeAgentRuntimeError::Busy); }
         if self.turns >= self.policy.max_model_turns { return Err(NativeAgentRuntimeError::TurnBudget); }
+        let workload = routing_workload(run.state, !images.is_empty());
+        let decision = self.routing.select(workload, !images.is_empty())?;
+        self.apply_route_decision(&decision);
         let prompt = build_prompt(run, &self.backend.profile(), self.policy, &self.exchanges, context);
-        self.active = Some(self.backend.start_turn(prompt, images)?);
+        match self.backend.start_turn(prompt, images.clone()) {
+            Ok(task) => self.active = Some(task),
+            Err(error) => {
+                let Some(fallback) = self.routing.fallback(
+                    &self.backend_config,
+                    workload,
+                    !images.is_empty(),
+                ) else {
+                    return Err(error.into());
+                };
+                self.apply_route_decision(&fallback);
+                let fallback_prompt = build_prompt(
+                    run,
+                    &self.backend.profile(),
+                    self.policy,
+                    &self.exchanges,
+                    context,
+                );
+                self.active = Some(self.backend.start_turn(fallback_prompt, images)?);
+            }
+        }
         self.turns += 1;
         Ok(())
+    }
+
+    fn apply_route_decision(&mut self, decision: &ModelRouteDecision) {
+        if !same_model(&self.backend_config, &decision.config) {
+            self.backend_config = decision.config.clone();
+            self.backend = Box::new(ConfiguredModelBackend(decision.config.clone()));
+        }
+        self.routing_decisions.push(decision.clone());
+        if self.routing_decisions.len() > 128 {
+            self.routing_decisions.remove(0);
+        }
     }
     pub(crate) fn poll(&mut self) -> Option<Result<NativeAgentTurn, NativeAgentRuntimeError>> {
         let result = self.active.as_ref()?.poll()?;
@@ -220,6 +298,20 @@ impl NativeAgentRuntime {
         }
         Ok(())
     }
+}
+
+fn routing_workload(state: AgentRunState, has_images: bool) -> RoutingWorkload {
+    match state {
+        AgentRunState::Repairing => RoutingWorkload::ValidationRepair,
+        AgentRunState::Evaluating if has_images => RoutingWorkload::VisualEvaluation,
+        AgentRunState::Evaluating => RoutingWorkload::RuntimeInteraction,
+        AgentRunState::Executing => RoutingWorkload::CodeImplementation,
+        _ => RoutingWorkload::ProjectInspection,
+    }
+}
+
+fn same_model(left: &NativeModelConfig, right: &NativeModelConfig) -> bool {
+    left.backend_id() == right.backend_id() && left.model_id() == right.model_id()
 }
 
 fn reject<T>(message: &str) -> Result<T, NativeAgentRuntimeError> {
