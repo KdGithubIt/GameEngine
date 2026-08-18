@@ -1,0 +1,502 @@
+diff --git a/crates/engine/src/game_commands/animation.rs b/crates/engine/src/game_commands/animation.rs
+index 0bc87f88ec77e12d9c3d7446f5e0c5208a09949e..5c76d21f10a1aca9fda46546ad93594910ede82c 100644
+--- a/crates/engine/src/game_commands/animation.rs
++++ b/crates/engine/src/game_commands/animation.rs
+@@ -9,7 +9,8 @@ use crate::animation::{AnimationClip, Animator};
+ use crate::animation_parameters::AnimationParameterKind;
+ use crate::asset::{Assets, Handle};
+ use crate::game_io::GameEntityHandle;
+-use engine_authoring::Value;
++use crate::native_2d::{SpriteAnimationClipRegistry2d, SpriteAnimatorRuntime2d};
++use engine_authoring::{AssetId, StableId, Value};
+ use engine_ecs::{Entity, World};
+ 
+ pub(crate) enum PreparedAnimationCommand {
+@@ -26,6 +27,21 @@ pub(crate) enum PreparedAnimationCommand {
+     Stop {
+         entity: Entity,
+     },
++    SpritePlay {
++        entity: Entity,
++    },
++    SpritePause {
++        entity: Entity,
++    },
++    SpriteStop {
++        entity: Entity,
++    },
++    SpriteSelectClip {
++        entity: Entity,
++        clip_asset: AssetId,
++        clip: std::sync::Arc<engine_authoring::SpriteAnimationDocument>,
++        initial_frame: usize,
++    },
+     SetBool {
+         entity: Entity,
+         name: String,
+@@ -88,6 +104,61 @@ pub(super) fn prepare(
+             require_animator(world, index, target, entity)?;
+             Ok(PreparedAnimationCommand::Stop { entity })
+         }
++        "sprite_play" => {
++            require_sprite_animator(world, index, target, entity)?;
++            Ok(PreparedAnimationCommand::SpritePlay { entity })
++        }
++        "sprite_pause" => {
++            require_sprite_animator(world, index, target, entity)?;
++            Ok(PreparedAnimationCommand::SpritePause { entity })
++        }
++        "sprite_stop" => {
++            require_sprite_animator(world, index, target, entity)?;
++            Ok(PreparedAnimationCommand::SpriteStop { entity })
++        }
++        "sprite_select_clip" => {
++            require_sprite_animator(world, index, target, entity)?;
++            let clip_text = string_field(fields, "clip_asset", index)?;
++            let clip_asset = AssetId::from_stable_id(StableId::new(clip_text)).map_err(|_| {
++                GameCommandError::InvalidPayload {
++                    index,
++                    message: format!("field `clip_asset` must be a valid stable AssetId, found `{clip_text}`"),
++                }
++            })?;
++            let initial_frame = match fields.get("initial_frame") {
++                Some(Value::U64(value)) => usize::try_from(*value).map_err(|_| GameCommandError::InvalidPayload {
++                    index,
++                    message: "field `initial_frame` is too large for this runtime".to_owned(),
++                })?,
++                Some(Value::I64(value)) if *value >= 0 => usize::try_from(*value as u64).map_err(|_| GameCommandError::InvalidPayload {
++                    index,
++                    message: "field `initial_frame` is too large for this runtime".to_owned(),
++                })?,
++                _ => return Err(GameCommandError::InvalidPayload {
++                    index,
++                    message: "field `initial_frame` must be a non-negative integer".to_owned(),
++                }),
++            };
++            let clip = world
++                .get_resource::<SpriteAnimationClipRegistry2d>()
++                .and_then(|registry| registry.get(&clip_asset))
++                .ok_or_else(|| GameCommandError::InvalidPayload {
++                    index,
++                    message: format!("Sprite Animation asset `{}` is not loaded in the current runtime", clip_asset.as_str()),
++                })?;
++            if initial_frame >= clip.frames.len() {
++                return Err(GameCommandError::InvalidPayload {
++                    index,
++                    message: format!("initial Sprite Animation frame {initial_frame} is outside {} frames", clip.frames.len()),
++                });
++            }
++            Ok(PreparedAnimationCommand::SpriteSelectClip {
++                entity,
++                clip_asset,
++                clip,
++                initial_frame,
++            })
++        }
+         "set_bool" => {
+             let player = require_graph_player(world, index, target, entity)?;
+             prepare_bool_parameter(
+@@ -151,6 +222,39 @@ pub(super) fn apply(world: &mut World, command: PreparedAnimationCommand) {
+                 .expect("preflighted animator must remain live during exclusive apply")
+                 .stop();
+         }
++        PreparedAnimationCommand::SpritePlay { entity } => {
++            world
++                .get_component_mut::<SpriteAnimatorRuntime2d>(entity)
++                .expect("preflighted SpriteAnimator2D must remain live during exclusive apply")
++                .state
++                .play();
++        }
++        PreparedAnimationCommand::SpritePause { entity } => {
++            world
++                .get_component_mut::<SpriteAnimatorRuntime2d>(entity)
++                .expect("preflighted SpriteAnimator2D must remain live during exclusive apply")
++                .state
++                .pause();
++        }
++        PreparedAnimationCommand::SpriteStop { entity } => {
++            world
++                .get_component_mut::<SpriteAnimatorRuntime2d>(entity)
++                .expect("preflighted SpriteAnimator2D must remain live during exclusive apply")
++                .state
++                .stop();
++        }
++        PreparedAnimationCommand::SpriteSelectClip {
++            entity,
++            clip_asset,
++            clip,
++            initial_frame,
++        } => {
++            world
++                .get_component_mut::<SpriteAnimatorRuntime2d>(entity)
++                .expect("preflighted SpriteAnimator2D must remain live during exclusive apply")
++                .select_clip(clip_asset, clip, initial_frame)
++                .expect("preflighted Sprite Animation selection must remain valid");
++        }
+         PreparedAnimationCommand::SetBool {
+             entity,
+             name,
+@@ -272,6 +376,22 @@ fn require_graph_player(
+         .ok_or(GameCommandError::MissingAnimationGraph { index, target })
+ }
+ 
++fn require_sprite_animator(
++    world: &World,
++    index: usize,
++    target: GameEntityHandle,
++    entity: Entity,
++) -> Result<(), GameCommandError> {
++    if world.get_component::<SpriteAnimatorRuntime2d>(entity).is_none() {
++        Err(GameCommandError::InvalidPayload {
++            index,
++            message: format!("target {}:{} has no SpriteAnimator2D", target.id, target.generation),
++        })
++    } else {
++        Ok(())
++    }
++}
++
+ fn require_animator(
+     world: &World,
+     index: usize,
+diff --git a/crates/engine/src/game_host/core.rs b/crates/engine/src/game_host/core.rs
+index d3d0a1ff67818592327e5eab1b957c524abb0d98..d21528a6163b58c1613ea57a26abcb354acc79c3 100644
+--- a/crates/engine/src/game_host/core.rs
++++ b/crates/engine/src/game_host/core.rs
+@@ -23,6 +23,7 @@ use crate::game_timer::GameTimerEvents;
+ use crate::hitbox::AttackHitbox;
+ use crate::lock_on::TargetLock;
+ use crate::navmesh::NavMeshAgent;
++use crate::native_2d::SpriteAnimatorRuntime2d;
+ use crate::player::InputActionMap;
+ use crate::runtime_metadata::RuntimeMetadata;
+ use crate::save::{SaveData, SaveValue};
+@@ -1040,6 +1041,17 @@ fn copy_engine_view(world: &World, entity: Entity, view: EngineViewKind) -> Opti
+                 ("fading".to_owned(), Value::Bool(animator.is_fading())),
+             ]))
+         }
++        EngineViewKind::SpriteAnimationState => {
++            let animator = world.get_component::<SpriteAnimatorRuntime2d>(entity)?;
++            Value::Object(BTreeMap::from([
++                ("clip_asset".to_owned(), Value::String(animator.clip_asset.as_str().to_owned())),
++                ("playing".to_owned(), Value::Bool(animator.state.playing)),
++                ("frame_index".to_owned(), Value::U64(animator.state.frame_index as u64)),
++                ("tick_in_frame".to_owned(), Value::U64(u64::from(animator.state.tick_in_frame))),
++                ("speed".to_owned(), Value::F64(f64::from(animator.state.speed))),
++                ("looping".to_owned(), Value::Bool(animator.looping_override.unwrap_or(animator.clip.looping))),
++            ]))
++        }
+         EngineViewKind::VfxState => {
+             let player = world.get_component::<VfxPlayer>(entity)?;
+             let instance = player.instance();
+diff --git a/crates/engine/src/native_2d.rs b/crates/engine/src/native_2d.rs
+index f17e0200db41417b0fc6f9bb995b001995fedad9..e39b91384afd9655c00fdac974d9b449b14d3bf8 100644
+--- a/crates/engine/src/native_2d.rs
++++ b/crates/engine/src/native_2d.rs
+@@ -19,10 +19,11 @@ pub use engine_authoring::{
+ };
+ 
+ use crate::transform::{GlobalTransform, Parent, Transform};
+-use engine_authoring::Project2dSettings;
++use engine_authoring::{AssetId, Project2dSettings, SpriteAnimationDocument};
+ use engine_ecs::{Entity, Query, Res, ResMut};
+ use glam::{Quat, Vec2};
+-use std::collections::BTreeSet;
++use std::collections::{BTreeMap, BTreeSet};
++use std::sync::Arc;
+ 
+ /// One structured reason an authored Transform could not participate in 2D physics.
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+@@ -167,6 +168,26 @@ pub fn physics_2d_fixed_system(
+     }
+ }
+ 
++/// Runtime registry of immutable Sprite Animation documents addressable by stable AssetId.
++///
++/// Project Rust clip-selection commands use this cache instead of exposing runtime handles.
++#[derive(Debug, Default)]
++pub struct SpriteAnimationClipRegistry2d {
++    clips: BTreeMap<AssetId, Arc<SpriteAnimationDocument>>,
++}
++
++impl SpriteAnimationClipRegistry2d {
++    /// Inserts or replaces one immutable clip under its stable asset identity.
++    pub fn insert(&mut self, asset: AssetId, clip: Arc<SpriteAnimationDocument>) {
++        self.clips.insert(asset, clip);
++    }
++
++    /// Resolves one loaded immutable clip by stable asset identity.
++    pub fn get(&self, asset: &AssetId) -> Option<Arc<SpriteAnimationDocument>> {
++        self.clips.get(asset).cloned()
++    }
++}
++
+ /// One named frame event emitted by SpriteAnimator2D in the current fixed step.
+ #[derive(Debug, Clone, PartialEq, Eq)]
+ pub struct SpriteAnimationEvent2d {
+diff --git a/crates/engine/src/runtime_systems.rs b/crates/engine/src/runtime_systems.rs
+index 025ff88164802cd849a50160f09cb0c3392f3f65..fd26fe236b9c49b96dbb3315735f5a537855fbf5 100644
+--- a/crates/engine/src/runtime_systems.rs
++++ b/crates/engine/src/runtime_systems.rs
+@@ -24,7 +24,7 @@ use crate::secondary_motion::{
+ };
+ use crate::native_2d::{
+     physics_2d_fixed_system, sprite_animation_2d_fixed_system, Gravity2d, Physics2dDiagnostics,
+-    PhysicsRuntime2d, SpriteAnimationEvents2d,
++    PhysicsRuntime2d, SpriteAnimationClipRegistry2d, SpriteAnimationEvents2d,
+ };
+ use crate::navmesh::{nav_mesh_agent_system, nav_mesh_debug_draw_system};
+ use crate::physics::velocity_system;
+@@ -95,6 +95,9 @@ pub fn register_runtime_systems(app: &mut App) -> Result<(), SystemRegistrationE
+     if app.world().get_resource::<SpriteAnimationEvents2d>().is_none() {
+         app.insert_resource(SpriteAnimationEvents2d::default());
+     }
++    if app.world().get_resource::<SpriteAnimationClipRegistry2d>().is_none() {
++        app.insert_resource(SpriteAnimationClipRegistry2d::default());
++    }
+     app.try_add_system_with_descriptor(
+         engine_system(
+             "engine.combat_debug",
+diff --git a/crates/engine/src/scene_bridge.rs b/crates/engine/src/scene_bridge.rs
+index 51149b45d7c915edca4e883d15c0486da6e66e20..a1fe1b64cff9ec724b1cf2e506c1878bb29ca443 100644
+--- a/crates/engine/src/scene_bridge.rs
++++ b/crates/engine/src/scene_bridge.rs
+@@ -21,7 +21,8 @@ use crate::audio::{AudioAsset, AudioEmitter, AudioListener, AudioRolloffMode, Mu
+ use crate::behavior_tree::BehaviorTreeRunner;
+ use crate::camera::{Camera3D, FollowCamera, LockOnCamera, OrbitCamera};
+ use crate::native_2d::{
+-    Camera2d, SpriteAnimatorRuntime2d, SpriteBlendMode, SpriteRef, SpriteRenderer2d, ViewportFit2d,
++    Camera2d, SpriteAnimationClipRegistry2d, SpriteAnimatorRuntime2d, SpriteBlendMode, SpriteRef,
++    SpriteRenderer2d, ViewportFit2d,
+ };
+ use crate::character_controller::KinematicCharacterController;
+ use crate::collision::{Collider, CollisionLayers, PhysicsBody, TriggerVolume};
+diff --git a/crates/engine/src/scene_bridge/spawn.rs b/crates/engine/src/scene_bridge/spawn.rs
+index bdef06de2b87c6dd9b2378deb11bd249e7317d3d..11ee899a8b364701045694929e87d79008178616 100644
+--- a/crates/engine/src/scene_bridge/spawn.rs
++++ b/crates/engine/src/scene_bridge/spawn.rs
+@@ -2939,6 +2939,20 @@ pub(crate) fn spawn_sprite_animator_2d_component(
+     };
+     let initial_frame = usize::try_from(fields.i64("initial_frame")?).map_err(|_| fields.invalid(EXPECTED))?;
+     let clip = resolve_sprite_animation_document(&clip_asset, context)?;
++    if context
++        .world
++        .get_resource::<SpriteAnimationClipRegistry2d>()
++        .is_none()
++    {
++        context
++            .world
++            .insert_resource(SpriteAnimationClipRegistry2d::default());
++    }
++    context
++        .world
++        .get_resource_mut::<SpriteAnimationClipRegistry2d>()
++        .expect("Sprite Animation registry was just installed")
++        .insert(clip_asset.clone(), Arc::clone(&clip));
+     let animator = SpriteAnimatorRuntime2d::new(
+         clip_asset,
+         clip,
+diff --git a/crates/scripting/src/animation_commands.rs b/crates/scripting/src/animation_commands.rs
+index d8f9f1ebad32a277fa95e806e305428ae3d28c48..9399b1258a81d18b2c1a51ce9afb0f219aa48821 100644
+--- a/crates/scripting/src/animation_commands.rs
++++ b/crates/scripting/src/animation_commands.rs
+@@ -2,7 +2,7 @@
+ 
+ use std::collections::BTreeMap;
+ 
+-use engine_authoring::Value;
++use engine_authoring::{AssetId, Value};
+ 
+ use crate::game_api::Commands;
+ use crate::game_io::{GameCommand, GameCommandFamily, GameEntityHandle};
+@@ -35,6 +35,54 @@ impl GameCommand {
+     pub fn trigger_animation(target: GameEntityHandle, name: impl Into<String>) -> Self {
+         animation_parameter_command(target, "trigger", name, None)
+     }
++
++    /// Resumes deterministic Native 2D sprite-animation playback.
++    pub fn play_sprite_animation(target: GameEntityHandle) -> Self {
++        sprite_animation_command(target, "sprite_play", None, None)
++    }
++
++    /// Pauses Native 2D sprite-animation playback without changing frame/tick state.
++    pub fn pause_sprite_animation(target: GameEntityHandle) -> Self {
++        sprite_animation_command(target, "sprite_pause", None, None)
++    }
++
++    /// Stops and rewinds Native 2D sprite-animation playback.
++    pub fn stop_sprite_animation(target: GameEntityHandle) -> Self {
++        sprite_animation_command(target, "sprite_stop", None, None)
++    }
++
++    /// Selects a loaded Sprite Animation asset by stable AssetId and initial frame.
++    pub fn select_sprite_animation(
++        target: GameEntityHandle,
++        clip: AssetId,
++        initial_frame: u32,
++    ) -> Self {
++        sprite_animation_command(target, "sprite_select_clip", Some(clip), Some(initial_frame))
++    }
++}
++
++fn sprite_animation_command(
++    target: GameEntityHandle,
++    operation: &str,
++    clip: Option<AssetId>,
++    initial_frame: Option<u32>,
++) -> GameCommand {
++    let mut fields = BTreeMap::from([(
++        "operation".to_owned(),
++        Value::String(operation.to_owned()),
++    )]);
++    if let Some(clip) = clip {
++        fields.insert("clip_asset".to_owned(), Value::String(clip.as_str().to_owned()));
++    }
++    if let Some(initial_frame) = initial_frame {
++        fields.insert("initial_frame".to_owned(), Value::U64(u64::from(initial_frame)));
++    }
++    GameCommand {
++        family: GameCommandFamily::Animation,
++        request_id: None,
++        target: Some(target),
++        payload: Value::Object(fields),
++    }
+ }
+ 
+ fn animation_parameter_command(
+@@ -88,4 +136,29 @@ impl Commands {
+     pub fn trigger_animation(&mut self, target: GameEntityHandle, name: impl Into<String>) {
+         self.push(GameCommand::trigger_animation(target, name));
+     }
++
++    /// Resumes deterministic Native 2D sprite-animation playback.
++    pub fn play_sprite_animation(&mut self, target: GameEntityHandle) {
++        self.push(GameCommand::play_sprite_animation(target));
++    }
++
++    /// Pauses Native 2D sprite-animation playback without changing frame/tick state.
++    pub fn pause_sprite_animation(&mut self, target: GameEntityHandle) {
++        self.push(GameCommand::pause_sprite_animation(target));
++    }
++
++    /// Stops and rewinds Native 2D sprite-animation playback.
++    pub fn stop_sprite_animation(&mut self, target: GameEntityHandle) {
++        self.push(GameCommand::stop_sprite_animation(target));
++    }
++
++    /// Selects a Sprite Animation by stable AssetId and initial frame.
++    pub fn select_sprite_animation(
++        &mut self,
++        target: GameEntityHandle,
++        clip: AssetId,
++        initial_frame: u32,
++    ) {
++        self.push(GameCommand::select_sprite_animation(target, clip, initial_frame));
++    }
+ }
+diff --git a/crates/scripting/src/game_api.rs b/crates/scripting/src/game_api.rs
+index 7171a7a3e8213ce1ed512bbe2bd24eaf7a1c3789..62d998574ad7a3e36441ac15b759df1d1357ccce 100644
+--- a/crates/scripting/src/game_api.rs
++++ b/crates/scripting/src/game_api.rs
+@@ -13,7 +13,7 @@ use crate::game_io::{
+     GameSystemAccess,
+ };
+ use crate::game_contracts::{GameComponent, GameField, GameResource};
+-use engine_authoring::{ComponentTypeId, EntityId, StableId, Value};
++use engine_authoring::{AssetId, ComponentTypeId, EntityId, StableId, Value};
+ use glam::{Quat, Vec2, Vec3};
+ use std::cell::RefCell;
+ use std::collections::BTreeMap;
+@@ -968,6 +968,42 @@ impl EngineView for AnimationStateView {
+     }
+ }
+ 
++/// Deterministic Native 2D sprite-animation state copied for one entity.
++#[derive(Debug, Clone, PartialEq)]
++pub struct SpriteAnimationStateView {
++    /// Stable authored Sprite Animation asset identity.
++    pub clip_asset: AssetId,
++    /// Whether playback currently advances.
++    pub playing: bool,
++    /// Zero-based current frame index.
++    pub frame_index: u64,
++    /// Whole clip ticks consumed inside the current frame.
++    pub tick_in_frame: u64,
++    /// Per-entity playback speed multiplier.
++    pub speed: f32,
++    /// Effective looping policy after the per-entity override.
++    pub looping: bool,
++}
++
++impl EngineView for SpriteAnimationStateView {
++    const KIND: EngineViewKind = EngineViewKind::SpriteAnimationState;
++
++    fn decode(value: &Value) -> Result<Self, String> {
++        let fields = object(value)?;
++        let clip_text = string_field(fields, "clip_asset")?;
++        let clip_asset = AssetId::from_stable_id(StableId::new(clip_text))
++            .map_err(|error| format!("invalid Sprite Animation AssetId `{clip_text}`: {error}"))?;
++        Ok(Self {
++            clip_asset,
++            playing: bool_field(fields, "playing")?,
++            frame_index: unsigned_field(fields, "frame_index")?,
++            tick_in_frame: unsigned_field(fields, "tick_in_frame")?,
++            speed: number_field(fields, "speed")? as f32,
++            looping: bool_field(fields, "looping")?,
++        })
++    }
++}
++
+ /// Playback state reported by a copied VFX player state.
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+ pub enum VfxPlaybackView {
+diff --git a/crates/scripting/src/game_io.rs b/crates/scripting/src/game_io.rs
+index 26a9dfc5be6993e50e2edc22db55b2a44a7fc415..a8440d471ee0a895542c79994865761accfa2060 100644
+--- a/crates/scripting/src/game_io.rs
++++ b/crates/scripting/src/game_io.rs
+@@ -53,6 +53,8 @@ pub enum EngineViewKind {
+     CharacterState,
+     /// Current animator clip, playback position, and transition state.
+     AnimationState,
++    /// Current Native 2D sprite-animation clip and deterministic frame/tick state.
++    SpriteAnimationState,
+     /// Current VFX playback state, simulation time, budget counters, and backend.
+     VfxState,
+     /// Current lock-on target and selection state.
+diff --git a/docs/PROJECT_RUST_GAMEPLAY.md b/docs/PROJECT_RUST_GAMEPLAY.md
+index f50663e53716ffe169e6bfd7c727fd85cb7f4964..37c7965954fe11a8a3f12b2b5adba113ce5631bf 100644
+--- a/docs/PROJECT_RUST_GAMEPLAY.md
++++ b/docs/PROJECT_RUST_GAMEPLAY.md
+@@ -204,9 +204,12 @@ so every fixed callback observes the exact simulation step it is running.
+ ## Engine views and event streams
+ 
+ Entity queries can copy authoring identity, local/global Transform, character,
+-animation, lock-on, navigation, and UI-binding views. `UiBindings` is encoded
+-as a stable name-keyed object with string, number, and boolean values; the
+-engine resource itself never crosses the module boundary.
++skeletal animation, Native 2D sprite-animation, lock-on, navigation, and UI-binding views.
++`SpriteAnimationState` exposes the stable Sprite Animation `AssetId`, playing state,
++current frame/tick, speed, and effective looping policy without exposing engine ECS
++references or process-local asset handles. `UiBindings` is encoded as a stable
++name-keyed object with string, number, and boolean values; the engine resource
++itself never crosses the module boundary.
+ 
+ Declared event streams receive host-owned records with monotonically
+ increasing per-stream sequences. Collision records contain `enter`, `stay`, or
+@@ -281,6 +284,16 @@ leave a partially changed animator.
+ `AnimGraphPlayer`. Empty names, missing graph/animator components, stale
+ targets, and unloaded clips reject the entire callback output before mutation.
+ 
++Native 2D Sprite Animation uses the same deferred `Animation` command family but
++keeps its authored identity contract: `play_sprite_animation`,
++`pause_sprite_animation`, and `stop_sprite_animation` control the entity's independent
++`SpriteAnimator2D` state, while `select_sprite_animation` takes a stable Sprite Animation
++`AssetId` plus an initial frame. Selection resolves only clips already loaded through the
++scene/runtime asset boundary and rejects an unloaded asset or out-of-range frame during
++atomic command preflight. `SpriteAnimationStateView` reports the same stable clip ID and
++current deterministic frame/tick state. Unlike skeletal crossfade clip IDs, these stable
++Sprite Animation IDs are safe to persist in authored project data.
++
+ ## UI commands
+ 
+ Use `set_ui_text`, `set_ui_number`, `set_ui_flag`, and `remove_ui_binding` for
