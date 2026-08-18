@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "docs/CHATGPT_AUTOMATION_INCIDENTS.md",
+  "old": "- Recovery product PR: `#145`\n- Recovery product head: `bc2c697ae49232c0d75deed782ce94286d8ecc8f`",
+  "new": "- Recovery product PR: `#145`\n- Recovery product head: `bc2c697ae49232c0d75deed782ce94286d8ecc8f`\n- Repeated blocked automation PR: `#627`\n- Repeated failed regression runs: `32108227563`, `32109506884`\n- Repeated recovery hygiene PR: `#630`\n- Repeated recovery regression run: `32109663223`"
+}
