@@ -1,0 +1,44 @@
+diff --git a/crates/editor/src/agent_benchmark_campaign.rs b/crates/editor/src/agent_benchmark_campaign.rs
+index e9b6af3b36a8937b821546331d607904ddb77a53..e5cd5f2bf753247c0e0e52eec054718356888f16 100644
+--- a/crates/editor/src/agent_benchmark_campaign.rs
++++ b/crates/editor/src/agent_benchmark_campaign.rs
+@@ -289,7 +289,9 @@ impl BenchmarkCampaignPlan {
+             || self.repetitions > MAX_REPETITIONS
+             || self.sampling_profile.trim().is_empty()
+         {
+-            return Err("campaign candidates/tasks/repetitions/sampling policy are invalid".to_owned());
++            return Err(
++                "campaign candidates/tasks/repetitions/sampling policy are invalid".to_owned(),
++            );
+         }
+         if !hardware_exact(&self.hardware) {
+             return Err("campaign hardware identity must be measured before execution".to_owned());
+@@ -687,7 +689,7 @@ impl BenchmarkCampaign {
+         };
+         self.runs[index].status = CampaignRunStatus::Preparing;
+         let schedule = self.runs[index].schedule.clone();
+-        let candidate = &self.plan.candidates[schedule.candidate_index];
++        let model = self.plan.candidates[schedule.candidate_index].model.clone();
+         let fixture = self.plan.tasks[schedule.task_index].fixture.clone();
+         let contract = fixture.candidate_contract(&schedule.task_id)?;
+         let harness = campaign_task_harness(&schedule.task_id)?;
+@@ -706,7 +708,7 @@ impl BenchmarkCampaign {
+         Ok(Some(CampaignRunRequest {
+             campaign_fingerprint: self.plan_fingerprint.clone(),
+             schedule,
+-            model: candidate.model.clone(),
++            model,
+             fixture,
+             candidate_contract: contract,
+             harness,
+@@ -772,7 +774,9 @@ impl BenchmarkCampaign {
+         failure: CampaignFailureKind,
+     ) -> Result<(), String> {
+         if failure == CampaignFailureKind::InfrastructurePreMeasurement {
+-            return Err("pre-measurement infrastructure failures use the bounded retry path".to_owned());
++            return Err(
++                "pre-measurement infrastructure failures use the bounded retry path".to_owned(),
++            );
+         }
+         self.validate_request(request, CampaignRunStatus::Running)?;
+         let run = &mut self.runs[request.schedule.ordinal as usize];
