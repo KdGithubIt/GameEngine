@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0156-campaign-ui-20260819-01",
+  "target_branch": "chatgpt/gameengine-adr0156-benchmark-campaigns-v2",
+  "expected_head_sha": "66c02ad20f4454825d05181b82085b840e8f669e",
+  "baseline_main_sha": "fef3a8b6ab1065026f789aa332a6d8a56b241571",
+  "patch_sha256": "b046d993b0aafce7cd70a07e1825d36b2042590c71a7984b9cacf73f05613d43",
+  "patch_bytes": 36550,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Add ADR0156 campaign controls to AI Studio",
+  "pr_title": "GameEngine: implement ADR 0156 benchmark campaigns",
+  "pr_body": "## Summary\n\nAdds the first-release AI Studio campaign controls on top of the validated ADR 0156 core: exact installed candidate selection, seven-task plan selection, repetition/profile controls, explicit Run Benchmark consent, persisted progress, pause/stop/resume drift checks, aggregate reporting, and an exact Download & Run review boundary delegated to the ADR 0155 managed-runtime owner.\n\nThe existing manual benchmark recording path remains available. Campaign execution uses a dedicated controlled-fixture adapter in the next change on this same Draft PR; this UI change does not route benchmark work through the active private project.\n\n<!-- gameengine-chatgpt-dispatcher -->\n"
+}
