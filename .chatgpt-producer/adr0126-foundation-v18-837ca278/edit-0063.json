@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/render-runtime/src/camera.rs","old":"        assert!(standby.enabled == false);","new":"        assert!(!standby.enabled);"}
