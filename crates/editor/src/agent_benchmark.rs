@@ -16,10 +16,11 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub(crate) const BENCHMARK_SCHEMA_VERSION: u32 = 1;
+pub(crate) const BENCHMARK_SCHEMA_VERSION: u32 = 2;
+const MIN_SUPPORTED_BENCHMARK_SCHEMA_VERSION: u32 = 1;
 pub(crate) const BENCHMARK_CORPUS_VERSION: &str = "gameengine-agent-v1";
 pub(crate) const BENCHMARK_HARNESS_VERSION: &str = "gameengine-agent-benchmark-harness-v1";
-const WORKLOAD_POLICY_VERSION: &str = "adr0135-workload-policy-v1";
+pub(crate) const WORKLOAD_POLICY_VERSION: &str = "adr0135-workload-policy-v1";
 const CATALOG_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -407,6 +408,20 @@ pub(crate) struct BenchmarkToolBudget {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct BenchmarkExecutionIdentity {
+    pub(crate) campaign_harness_version: String,
+    pub(crate) schedule_policy_version: String,
+    pub(crate) comparison_class: String,
+    pub(crate) execution_profile: String,
+    pub(crate) execution_environment: String,
+    pub(crate) fixture_id: String,
+    pub(crate) fixture_version: String,
+    pub(crate) fixture_instance_id: String,
+    pub(crate) sampling_profile: String,
+    pub(crate) seed_policy: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct BenchmarkIdentity {
     pub(crate) corpus_version: String,
     pub(crate) task_id: String,
@@ -419,6 +434,8 @@ pub(crate) struct BenchmarkIdentity {
     pub(crate) observed_workload: TelemetryValue<InferenceWorkload>,
     pub(crate) tool_budget: BenchmarkToolBudget,
     pub(crate) completion_criteria: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) execution: Option<BenchmarkExecutionIdentity>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -528,6 +545,9 @@ pub(crate) fn comparison_equivalence(
     if left.identity.completion_criteria != right.identity.completion_criteria {
         differences.push("completion_criteria");
     }
+    if left.identity.execution != right.identity.execution {
+        differences.push("execution_identity");
+    }
     if differences.is_empty() {
         ComparisonEquivalence::EquivalentModelComparison
     } else {
@@ -596,8 +616,32 @@ impl BenchmarkStore {
 }
 
 fn validate_record(record: &BenchmarkRecord) -> Result<(), String> {
-    if record.schema_version != BENCHMARK_SCHEMA_VERSION {
+    if !(MIN_SUPPORTED_BENCHMARK_SCHEMA_VERSION..=BENCHMARK_SCHEMA_VERSION)
+        .contains(&record.schema_version)
+    {
         return Err(format!("unsupported benchmark schema version {}", record.schema_version));
+    }
+    if record.schema_version == 1 && record.identity.execution.is_some() {
+        return Err("benchmark schema v1 cannot carry campaign execution identity".to_owned());
+    }
+    if let Some(execution) = &record.identity.execution {
+        let complete = [
+            execution.campaign_harness_version.as_str(),
+            execution.schedule_policy_version.as_str(),
+            execution.comparison_class.as_str(),
+            execution.execution_profile.as_str(),
+            execution.execution_environment.as_str(),
+            execution.fixture_id.as_str(),
+            execution.fixture_version.as_str(),
+            execution.fixture_instance_id.as_str(),
+            execution.sampling_profile.as_str(),
+            execution.seed_policy.as_str(),
+        ]
+        .into_iter()
+        .all(|value| !value.trim().is_empty());
+        if !complete {
+            return Err("benchmark campaign execution identity must be complete".to_owned());
+        }
     }
     if record.identity.corpus_version != BENCHMARK_CORPUS_VERSION {
         return Err(format!("unsupported benchmark corpus `{}`", record.identity.corpus_version));
@@ -761,6 +805,31 @@ impl CuratedModelCatalog {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+struct BenchmarkSuiteExecutionContext {
+    campaign_harness_version: String,
+    schedule_policy_version: String,
+    comparison_class: String,
+    execution_profile: String,
+    execution_environment: String,
+    sampling_profile: String,
+    seed_policy: String,
+}
+
+impl From<&BenchmarkExecutionIdentity> for BenchmarkSuiteExecutionContext {
+    fn from(execution: &BenchmarkExecutionIdentity) -> Self {
+        Self {
+            campaign_harness_version: execution.campaign_harness_version.clone(),
+            schedule_policy_version: execution.schedule_policy_version.clone(),
+            comparison_class: execution.comparison_class.clone(),
+            execution_profile: execution.execution_profile.clone(),
+            execution_environment: execution.execution_environment.clone(),
+            sampling_profile: execution.sampling_profile.clone(),
+            seed_policy: execution.seed_policy.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct BenchmarkSuiteContext {
     corpus_version: String,
     harness_version: String,
@@ -769,6 +838,7 @@ struct BenchmarkSuiteContext {
     hardware: BenchmarkHardwareIdentity,
     quality: QualityPreference,
     workload_policy_version: String,
+    execution: Option<BenchmarkSuiteExecutionContext>,
 }
 
 impl BenchmarkSuiteContext {
@@ -781,6 +851,11 @@ impl BenchmarkSuiteContext {
             hardware: record.identity.hardware.clone(),
             quality: record.identity.quality,
             workload_policy_version: record.identity.workload_policy_version.clone(),
+            execution: record
+                .identity
+                .execution
+                .as_ref()
+                .map(BenchmarkSuiteExecutionContext::from),
         }
     }
 }
@@ -836,6 +911,7 @@ fn qualify_candidate(
         .iter()
         .filter(|record| {
             benchmark_identity_is_measured(&record.identity)
+                && catalog_evidence_is_eligible(record)
                 && candidate_matches_record(candidate, record)
         })
         .collect::<Vec<_>>();
@@ -894,6 +970,14 @@ fn qualify_candidate(
         }
     }
     qualified
+}
+
+fn catalog_evidence_is_eligible(record: &BenchmarkRecord) -> bool {
+    record
+        .identity
+        .execution
+        .as_ref()
+        .is_none_or(|execution| execution.comparison_class == "model_comparison")
 }
 
 fn candidate_matches_record(candidate: &CatalogCandidate, record: &BenchmarkRecord) -> bool {
@@ -971,6 +1055,7 @@ pub(crate) fn read_question_record(
                 work_claims: Vec::new(),
             },
             completion_criteria: task.completion_criteria.iter().map(|criterion| (*criterion).to_owned()).collect(),
+            execution: None,
         },
         metrics: BenchmarkMetrics {
             acceptance_success: TelemetryValue::Measured(provenance_reported),
@@ -1094,6 +1179,7 @@ pub(crate) fn agent_run_record(
                     .collect(),
             },
             completion_criteria: task.completion_criteria.iter().map(|criterion| (*criterion).to_owned()).collect(),
+            execution: None,
         },
         metrics: BenchmarkMetrics {
             acceptance_success: TelemetryValue::Measured(run.completion.acceptance_criteria == CompletionStatus::Passed),
@@ -1214,6 +1300,7 @@ mod tests {
                 work_claims: vec!["code_path".to_owned()],
             },
             completion_criteria: BENCHMARK_TASKS[0].completion_criteria.iter().map(|value| (*value).to_owned()).collect(),
+            execution: None,
         }
     }
 
