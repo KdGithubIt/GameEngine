@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "        self.request_next_managed_runtime_input_if_ready();\n        self.poll_managed_playtest_timeout();\n\n        if !self.presentation.open {",
+  "new": "        self.request_next_managed_runtime_input_if_ready();\n        self.poll_managed_playtest_timeout();\n        self.poll_benchmark_child();\n\n        if !self.presentation.open {"
+}
