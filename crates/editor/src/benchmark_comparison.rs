@@ -364,3 +364,317 @@ fn experiment_equivalence(
         BenchmarkComparisonEquivalence::NonEquivalent { differences }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent_benchmark::{
+        BenchmarkHardwareIdentity, BenchmarkIdentity, BenchmarkMetrics, BenchmarkModelIdentity,
+        BenchmarkToolBudget, BENCHMARK_CORPUS_VERSION, BENCHMARK_HARNESS_VERSION,
+        BENCHMARK_SCHEMA_VERSION, WORKLOAD_POLICY_VERSION,
+    };
+    use crate::benchmark_experiment::{
+        BenchmarkExperimentSpec, BenchmarkPlannedRun, BENCHMARK_FIXTURE_VERSION,
+    };
+    use crate::resource_arbitration::{InferenceWorkload, QualityPreference};
+    use std::path::PathBuf;
+
+    const HEAD: &str = "0123456789abcdef0123456789abcdef01234567";
+    const READ_TASK: &str = "read_question_v1";
+
+    fn spec(models: &[&str], tasks: &[&str], repeat: u32) -> BenchmarkExperimentSpec {
+        BenchmarkExperimentSpec::local_single_model_comparison(
+            "comparison",
+            HEAD,
+            models.iter().map(|model| (*model).to_owned()).collect(),
+            tasks.iter().map(|task| (*task).to_owned()).collect(),
+            repeat,
+            QualityPreference::Balanced,
+            PathBuf::from("results"),
+        )
+    }
+
+    fn identity(model: &str, task: &str) -> BenchmarkIdentity {
+        BenchmarkIdentity {
+            corpus_version: BENCHMARK_CORPUS_VERSION.to_owned(),
+            task_id: task.to_owned(),
+            harness_version: BENCHMARK_HARNESS_VERSION.to_owned(),
+            runtime_harness_version: "runtime-harness-v1".to_owned(),
+            model: BenchmarkModelIdentity {
+                backend_id: "ollama-compatible".to_owned(),
+                model_id: model.to_owned(),
+                model_version: TelemetryValue::Measured(format!("{model}-digest")),
+                quantization: TelemetryValue::Measured("q4_k_m".to_owned()),
+                representation_size_bytes: TelemetryValue::Measured(16_000_000_000),
+                backend_runtime_version: TelemetryValue::Measured("ollama-0.1.0".to_owned()),
+            },
+            hardware: BenchmarkHardwareIdentity {
+                platform: "windows".to_owned(),
+                gpu: TelemetryValue::Measured("RTX 4070 Ti".to_owned()),
+                total_gpu_memory_bytes: TelemetryValue::Measured(12_884_901_888),
+                total_system_memory_bytes: TelemetryValue::Measured(68_719_476_736),
+            },
+            quality: QualityPreference::Balanced,
+            workload_policy_version: WORKLOAD_POLICY_VERSION.to_owned(),
+            observed_workload: TelemetryValue::Measured(InferenceWorkload::InteractiveReasoning),
+            tool_budget: BenchmarkToolBudget {
+                max_model_turns: 24,
+                max_tool_failures: 4,
+                repair_budget: 2,
+                permission_budget: vec!["managed".to_owned()],
+                work_claims: vec!["code_path".to_owned()],
+            },
+            completion_criteria: vec![
+                "answer_returned".to_owned(),
+                "provenance_reported".to_owned(),
+            ],
+        }
+    }
+
+    fn metrics() -> BenchmarkMetrics {
+        BenchmarkMetrics {
+            acceptance_success: TelemetryValue::Measured(true),
+            completion_success: TelemetryValue::Measured(true),
+            model_turns: TelemetryValue::Measured(2),
+            tool_calls: TelemetryValue::Measured(3),
+            invalid_or_failed_tool_calls: TelemetryValue::Measured(0),
+            code_edits: TelemetryValue::Measured(0),
+            validation_attempts: TelemetryValue::Measured(0),
+            repair_loops: TelemetryValue::Measured(0),
+            play_attempts: TelemetryValue::Measured(0),
+            frame_capture_attempts: TelemetryValue::Measured(0),
+            visual_evaluation_attempts: TelemetryValue::Measured(0),
+            human_interventions: TelemetryValue::Measured(0),
+            elapsed_ms: TelemetryValue::Measured(1_000),
+            prompt_tokens: TelemetryValue::Measured(100),
+            response_tokens: TelemetryValue::Measured(50),
+            load_latency_ms: TelemetryValue::Measured(400),
+            ttft_ms: TelemetryValue::Unavailable,
+            generation_tokens_per_second_milli: TelemetryValue::Measured(25_000),
+            peak_backend_gpu_memory_bytes: TelemetryValue::ConservativeEstimate(9_000_000_000),
+            peak_editor_gpu_memory_bytes: TelemetryValue::Unavailable,
+            model_unload_reload_ms: TelemetryValue::Unavailable,
+            renderer_reclaim_resume_ms: TelemetryValue::Unavailable,
+            oom_failures: TelemetryValue::Measured(0),
+        }
+    }
+
+    fn record(model: &str, task: &str) -> BenchmarkRecord {
+        BenchmarkRecord {
+            schema_version: BENCHMARK_SCHEMA_VERSION,
+            recorded_unix_ms: 1,
+            identity: identity(model, task),
+            metrics: metrics(),
+        }
+    }
+
+    fn passed(model: &str, task: &str, repetition: u32, ordinal: u64) -> BenchmarkExperimentResult {
+        BenchmarkExperimentResult {
+            experiment_id: "comparison".to_owned(),
+            engine_commit_head: HEAD.to_owned(),
+            fixture_version: BENCHMARK_FIXTURE_VERSION.to_owned(),
+            routing_mode: BenchmarkRoutingMode::SingleModel,
+            run: BenchmarkPlannedRun {
+                ordinal,
+                model_id: model.to_owned(),
+                task_id: task.to_owned(),
+                repetition,
+            },
+            started_unix_ms: 1,
+            finished_unix_ms: 2,
+            outcome: BenchmarkRunOutcome::Passed,
+            failure_kind: None,
+            routed_to_another_model: false,
+            record: Some(record(model, task)),
+        }
+    }
+
+    fn every_run(spec: &BenchmarkExperimentSpec) -> Vec<BenchmarkExperimentResult> {
+        spec.planned_runs()
+            .expect("plan")
+            .into_iter()
+            .map(|run| passed(&run.model_id, &run.task_id, run.repetition, run.ordinal))
+            .collect()
+    }
+
+    #[test]
+    fn unmeasured_telemetry_stays_unavailable_instead_of_becoming_zero() {
+        let spec = spec(&["model-a", "model-b"], &[READ_TASK], 1);
+        let comparison = compare_experiment(&spec, &every_run(&spec)).expect("compare");
+        let model = comparison.models.first().expect("model");
+        assert!(model.ttft_ms.is_unavailable());
+        assert_eq!(model.ttft_ms.measured_mean_milli(), None);
+        assert_eq!(model.ttft_ms.measured_total, 0);
+        assert_eq!(model.ttft_ms.unavailable_runs, 1);
+    }
+
+    #[test]
+    fn conservative_estimates_are_never_counted_as_measurements() {
+        let spec = spec(&["model-a", "model-b"], &[READ_TASK], 1);
+        let comparison = compare_experiment(&spec, &every_run(&spec)).expect("compare");
+        let model = comparison.models.first().expect("model");
+        assert_eq!(model.peak_backend_gpu_memory_bytes.estimated_runs, 1);
+        assert_eq!(model.peak_backend_gpu_memory_bytes.measured_runs, 0);
+        assert!(model.peak_backend_gpu_memory_bytes.is_unavailable());
+    }
+
+    #[test]
+    fn repeated_runs_of_one_model_aggregate_into_a_single_row() {
+        let spec = spec(&["model-a", "model-b"], &[READ_TASK], 3);
+        let comparison = compare_experiment(&spec, &every_run(&spec)).expect("compare");
+        assert_eq!(comparison.models.len(), 2);
+        let model = comparison.models.first().expect("model");
+        assert_eq!(model.planned_runs, 3);
+        assert_eq!(model.recorded_runs, 3);
+        assert_eq!(model.passed_runs, 3);
+        assert_eq!(model.missing_runs, 0);
+        assert_eq!(model.elapsed_ms.measured_runs, 3);
+        assert_eq!(model.elapsed_ms.measured_mean_milli(), Some(1_000_000));
+    }
+
+    #[test]
+    fn one_model_result_never_enters_another_model_row() {
+        let spec = spec(&["model-a", "model-b"], &[READ_TASK], 1);
+        let comparison = compare_experiment(&spec, &every_run(&spec)).expect("compare");
+        for model in &comparison.models {
+            assert_eq!(model.recorded_runs, 1);
+            assert_eq!(
+                model
+                    .task_success
+                    .get(READ_TASK)
+                    .expect("task")
+                    .observations,
+                1
+            );
+        }
+    }
+
+    #[test]
+    fn equivalent_records_permit_a_model_only_comparison() {
+        let spec = spec(&["model-a", "model-b"], &[READ_TASK], 2);
+        let comparison = compare_experiment(&spec, &every_run(&spec)).expect("compare");
+        assert_eq!(
+            comparison.equivalence,
+            BenchmarkComparisonEquivalence::EquivalentModelComparison
+        );
+        assert!(comparison.supports_recommendation());
+    }
+
+    #[test]
+    fn a_changed_backend_runtime_makes_the_experiment_non_equivalent() {
+        let spec = spec(&["model-a", "model-b"], &[READ_TASK], 1);
+        let mut results = every_run(&spec);
+        if let Some(record) = results[1].record.as_mut() {
+            record.identity.model.backend_runtime_version =
+                TelemetryValue::Measured("ollama-0.2.0".to_owned());
+        }
+        let comparison = compare_experiment(&spec, &results).expect("compare");
+        assert_eq!(
+            comparison.equivalence,
+            BenchmarkComparisonEquivalence::NonEquivalent {
+                differences: vec!["backend_runtime".to_owned()],
+            }
+        );
+        assert!(!comparison.supports_recommendation());
+    }
+
+    #[test]
+    fn incomplete_evidence_blocks_a_catalog_recommendation() {
+        let spec = spec(&["model-a", "model-b"], &[READ_TASK], 2);
+        let mut results = every_run(&spec);
+        results.pop();
+        let comparison = compare_experiment(&spec, &results).expect("compare");
+        assert!(comparison.models.iter().any(|model| model.missing_runs > 0));
+        assert!(!comparison.supports_recommendation());
+    }
+
+    #[test]
+    fn a_single_model_experiment_is_never_presented_as_a_comparison() {
+        let spec = spec(&["model-a"], &[READ_TASK], 2);
+        let comparison = compare_experiment(&spec, &every_run(&spec)).expect("compare");
+        assert!(matches!(
+            comparison.equivalence,
+            BenchmarkComparisonEquivalence::InsufficientEvidence { .. }
+        ));
+        assert!(!comparison.supports_recommendation());
+    }
+
+    #[test]
+    fn backend_and_out_of_memory_failures_are_attributed_to_their_own_model() {
+        let spec = spec(&["model-a", "model-b"], &[READ_TASK], 2);
+        let mut results = every_run(&spec);
+        results[0].outcome = BenchmarkRunOutcome::Failed;
+        results[0].failure_kind = Some(BenchmarkRunFailureKind::Backend);
+        results[0].record = None;
+        results[1].outcome = BenchmarkRunOutcome::Failed;
+        results[1].failure_kind = Some(BenchmarkRunFailureKind::OutOfMemory);
+        results[1].record = None;
+        let comparison = compare_experiment(&spec, &results).expect("compare");
+        let failing = comparison
+            .models
+            .iter()
+            .find(|model| model.model_id == "model-a")
+            .expect("model-a");
+        assert_eq!(failing.backend_failures, 1);
+        assert_eq!(failing.out_of_memory_failures, 1);
+        assert_eq!(failing.failed_runs, 2);
+        assert_eq!(failing.passed_runs, 0);
+        let healthy = comparison
+            .models
+            .iter()
+            .find(|model| model.model_id == "model-b")
+            .expect("model-b");
+        assert_eq!(healthy.backend_failures, 0);
+        assert_eq!(healthy.passed_runs, 2);
+    }
+
+    #[test]
+    fn a_missing_visual_capability_is_unavailable_rather_than_a_fabricated_success() {
+        let visual = "visual_evaluation_v1";
+        let spec = spec(&["model-a", "model-b"], &[visual], 1);
+        let mut results = every_run(&spec);
+        results[0].outcome = BenchmarkRunOutcome::Unavailable;
+        results[0].failure_kind = Some(BenchmarkRunFailureKind::CapabilityUnavailable);
+        results[0].record = None;
+        let comparison = compare_experiment(&spec, &results).expect("compare");
+        let text_only = comparison
+            .models
+            .iter()
+            .find(|model| model.model_id == "model-a")
+            .expect("model-a");
+        assert_eq!(text_only.capability_unavailable_runs, 1);
+        assert_eq!(text_only.unavailable_runs, 1);
+        assert_eq!(text_only.passed_runs, 0);
+        assert_eq!(text_only.visual_evaluation_success.successes, 0);
+        assert_eq!(text_only.visual_evaluation_success.observations, 1);
+        assert_eq!(text_only.visual_evaluation_success.permille(), Some(0));
+    }
+
+    #[test]
+    fn a_completed_repair_cycle_is_visible_in_the_comparison() {
+        let repair = "validation_repair_v1";
+        let spec = spec(&["model-a", "model-b"], &[repair], 1);
+        let mut results = every_run(&spec);
+        for result in &mut results {
+            if let Some(record) = result.record.as_mut() {
+                record.metrics.validation_attempts = TelemetryValue::Measured(2);
+                record.metrics.repair_loops = TelemetryValue::Measured(1);
+                record.metrics.code_edits = TelemetryValue::Measured(1);
+            }
+        }
+        let comparison = compare_experiment(&spec, &results).expect("compare");
+        let model = comparison.models.first().expect("model");
+        assert_eq!(model.validation_attempts.measured_minimum, Some(2));
+        assert_eq!(model.repair_loops.measured_total, 1);
+        assert_eq!(model.completion_gate_success.permille(), Some(1_000));
+        assert_eq!(model.task_success.get(repair).expect("task").successes, 1);
+    }
+
+    #[test]
+    fn a_routed_result_cannot_enter_a_single_model_comparison() {
+        let spec = spec(&["model-a", "model-b"], &[READ_TASK], 1);
+        let mut results = every_run(&spec);
+        results[0].routed_to_another_model = true;
+        assert!(compare_experiment(&spec, &results).is_err());
+    }
+}
