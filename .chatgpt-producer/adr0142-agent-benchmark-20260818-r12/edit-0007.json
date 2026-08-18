@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/native_agent_runtime.rs","old":"const MCP_PROTOCOL_VERSION: &str = \"2025-11-25\";\nconst MAX_TOOL_RESULT_CHARS: usize = 12_000;\n","new":"const MCP_PROTOCOL_VERSION: &str = \"2025-11-25\";\npub(crate) const NATIVE_WRITE_HARNESS_VERSION: &str = \"native-write-v1\";\nconst MAX_TOOL_RESULT_CHARS: usize = 12_000;\n"}
