@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ai_studio.rs","old":"        self.visual_scroll_offset = 1_520.0;\n        self.visual_external_provider_evidence = true;","new":"        self.visual_scroll_offset = 1_600.0;\n        self.visual_external_provider_evidence = true;"}
