@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0155-v3-ui-ownership-20260819-r3",
+  "target_branch": "chatgpt/gameengine-adr0155-managed-local-ai-v3",
+  "expected_head_sha": "fcf5fc5e9491ebd65d08b767e7dd4d8e4c151dc8",
+  "baseline_main_sha": "084012e2eabe005900c76fe22b8749f3ba27e82b",
+  "patch_sha256": "d9142e443815a223ed2ad86a90cb87bfbbf80969336add99eb4695deb0a50df4",
+  "patch_bytes": 1228,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Fix ADR0155 setup status ownership",
+  "pr_title": "GameEngine: ADR0155 managed Local AI implementation",
+  "pr_body": "## Summary\n\nFixes the ADR0155 managed setup status ownership regression after the current-main backend/UI integration.\n\n<!-- gameengine-chatgpt-dispatcher -->\n<!-- gameengine-visual-validation: editor -->"
+}
