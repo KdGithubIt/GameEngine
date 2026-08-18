@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0126-v23-public-api-docs-20260819-42",
+  "target_branch": "chatgpt/gameengine-adr0126-first-release-v23",
+  "expected_head_sha": "94304426af7a392dbe7ac05ae16e4ac47e09fe5d",
+  "baseline_main_sha": "96c8ffb18a74eabec2164daa61f694f131019ddc",
+  "patch_sha256": "f763eac8b0e6f0aa63da12b387e1d5f7bea4943e4302c307f4e62749cb4db888",
+  "patch_bytes": 28651,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Document Timeline public API and satisfy clippy contract",
+  "pr_title": "GameEngine: complete ADR 0126 Timeline / Sequencer first release",
+  "pr_body": "## Summary\n\nDocuments the ADR0126 public Timeline authoring/runtime API and aligns the production Timeline system with the workspace clippy warning contract before final Windows and visual validation.\n\n<!-- gameengine-visual-validation: editor -->\n"
+}
