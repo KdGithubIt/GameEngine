@@ -873,6 +873,172 @@ impl AiStudioPanel {
     }
 
     #[cfg(feature = "visual-validation")]
+    /// Seeds deterministic host-owned state for Remote AI Studio browser screenshot validation.
+    pub fn prepare_remote_companion_visual_validation(&mut self) -> Result<(), String> {
+        let session_id = self.selected_session.clone();
+        self.host
+            .append_message(
+                &session_id,
+                ConversationRole::User,
+                "Build a compact playable sample and verify the result from the managed Game View.",
+            )
+            .map_err(|error| error.to_string())?;
+        self.host
+            .append_message(
+                &session_id,
+                ConversationRole::Assistant,
+                "I will keep the proposal version exact, report progress, and request permission before the next managed frame capture.",
+            )
+            .map_err(|error| error.to_string())?;
+
+        let mut proposal = self
+            .host
+            .session(&session_id)
+            .map_err(|error| error.to_string())?
+            .proposal
+            .clone();
+        proposal.goal = "Complete the Remote AI Studio visual-validation sample.".to_owned();
+        proposal.requirements = vec![
+            "Keep the authoritative project inside the Editor Agent Host.".to_owned(),
+            "Preserve reconnect-safe progress and exact proposal authorization.".to_owned(),
+        ];
+        proposal.acceptance_criteria = vec![
+            "Go and Stop remain available without exposing raw MCP or process controls.".to_owned(),
+            "Captured frame review stays readable at responsive browser widths.".to_owned(),
+        ];
+        proposal.validation_plan = vec![
+            "Validate the managed source changes.".to_owned(),
+            "Review the captured Game View frame.".to_owned(),
+        ];
+        proposal.playtest_plan =
+            vec!["Launch managed Play and capture one Game View frame.".to_owned()];
+        proposal.requested_capabilities =
+            [AgentCapability::RuntimeLaunch, AgentCapability::FrameCapture]
+                .into_iter()
+                .collect();
+        let proposal_version = self
+            .host
+            .update_proposal(&session_id, proposal)
+            .map_err(|error| error.to_string())?;
+        self.proposal_draft = self
+            .host
+            .session(&session_id)
+            .map_err(|error| error.to_string())?
+            .proposal
+            .clone();
+
+        let run_id = self
+            .host
+            .start_run_authorized(&session_id, proposal_version, "visual-validation")
+            .map_err(|error| error.to_string())?;
+        self.active_run_id = Some(run_id.clone());
+        self.host
+            .transition_run(
+                &run_id,
+                AgentRunState::Planning,
+                "Authoritative snapshot loaded; planning the managed change.",
+            )
+            .map_err(|error| error.to_string())?;
+        self.host
+            .transition_run(
+                &run_id,
+                AgentRunState::Executing,
+                "Executing through the normal Agent Host path.",
+            )
+            .map_err(|error| error.to_string())?;
+        self.host
+            .record_semantic_progress(
+                &run_id,
+                "Reconnect ready",
+                "Authoritative snapshot and ordered event cursor are synchronized.",
+            )
+            .map_err(|error| error.to_string())?;
+        self.host
+            .transition_run(
+                &run_id,
+                AgentRunState::Validating,
+                "Managed source validation is represented by deterministic visual evidence.",
+            )
+            .map_err(|error| error.to_string())?;
+        self.host
+            .transition_run(
+                &run_id,
+                AgentRunState::Playtesting,
+                "Managed Play launched for deterministic frame review.",
+            )
+            .map_err(|error| error.to_string())?;
+        self.host
+            .record_playtest_result(
+                &run_id,
+                true,
+                Some(true),
+                "Managed Play launched and the scripted interaction completed.",
+            )
+            .map_err(|error| error.to_string())?;
+
+        let width = 640_u32;
+        let height = 360_u32;
+        let mut rgba = vec![0_u8; (width * height * 4) as usize];
+        for y in 0..height {
+            for x in 0..width {
+                let offset = ((y * width + x) * 4) as usize;
+                let checker = ((x / 80) + (y / 60)) % 2;
+                rgba[offset] = if checker == 0 { 42 } else { 28 };
+                rgba[offset + 1] = if checker == 0 { 112 } else { 76 };
+                rgba[offset + 2] = if checker == 0 { 176 } else { 126 };
+                rgba[offset + 3] = 255;
+            }
+        }
+        let mut png_bytes = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut png_bytes, width, height);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            let mut writer = encoder.write_header().map_err(|error| error.to_string())?;
+            writer
+                .write_image_data(&rgba)
+                .map_err(|error| error.to_string())?;
+            writer.finish().map_err(|error| error.to_string())?;
+        }
+        self.host
+            .store_captured_frame_artifact(&run_id, width, height, &png_bytes)
+            .map_err(|error| error.to_string())?;
+        self.host
+            .record_completion_gate(
+                &run_id,
+                "acceptance_criteria",
+                CompletionStatus::Passed,
+                "Acceptance criteria are represented in the deterministic browser fixture.",
+            )
+            .map_err(|error| error.to_string())?;
+        self.host
+            .record_completion_gate(
+                &run_id,
+                "authoring_validation",
+                CompletionStatus::Passed,
+                "Authoring validation is represented in the deterministic browser fixture.",
+            )
+            .map_err(|error| error.to_string())?;
+        self.host
+            .record_completion_gate(
+                &run_id,
+                "visual_evaluation",
+                CompletionStatus::Passed,
+                "Captured Game View frame is ready for visual review.",
+            )
+            .map_err(|error| error.to_string())?;
+
+        self.pending_permission = Some(PendingPermission {
+            run_id,
+            capability: AgentCapability::FrameCapture,
+            action: PendingPermissionAction::CaptureFrame,
+        });
+        self.status =
+            Some("Remote AI Studio browser visual-validation fixture is ready.".to_owned());
+        Ok(())
+    }
+
+    #[cfg(feature = "visual-validation")]
     /// Returns whether the detached native viewport has completed two rendered frames.
     pub fn detached_visual_validation_capture_ready(&self) -> bool {
         self.detached_visual_frames >= 2
@@ -1319,6 +1485,28 @@ impl AiStudioPanel {
         }
         match RemoteAiStudioServer::start(context.clone()) {
             Ok((server, requests)) => {
+                #[cfg(feature = "visual-validation")]
+                if let Some(path) = std::env::var_os("GAMEENGINE_REMOTE_AI_STUDIO_VISUAL_URL_TO") {
+                    let path = PathBuf::from(path);
+                    match self.prepare_remote_companion_visual_validation() {
+                        Ok(()) => {
+                            if let Err(error) = fs::write(&path, server.companion_url()) {
+                                self.status = Some(format!(
+                                    "Remote AI Studio visual-validation URL could not be published: {error}"
+                                ));
+                            }
+                        }
+                        Err(error) => {
+                            self.status = Some(format!(
+                                "Remote AI Studio visual-validation fixture failed: {error}"
+                            ));
+                            let _ = fs::write(
+                                &path,
+                                format!("ERROR: Remote AI Studio visual-validation fixture failed: {error}"),
+                            );
+                        }
+                    }
+                }
                 self.remote_server = Some(server);
                 self.remote_requests = Some(requests);
             }
