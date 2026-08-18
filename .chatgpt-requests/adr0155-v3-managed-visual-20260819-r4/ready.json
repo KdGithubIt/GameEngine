@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0155-v3-managed-visual-20260819-r4",
+  "target_branch": "chatgpt/gameengine-adr0155-managed-local-ai-v3",
+  "expected_head_sha": "5fff1f2adf96da42e7699abc866b0d22448e933b",
+  "baseline_main_sha": "084012e2eabe005900c76fe22b8749f3ba27e82b",
+  "patch_sha256": "af6c02654dd8dd37e3ed84c87c5f3e9849b0c1f628fdf586b98ed68ba8549261",
+  "patch_bytes": 4461,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Integrate ADR0155 managed visual validation",
+  "pr_title": "GameEngine: ADR0155 managed Local AI implementation",
+  "pr_body": "## Summary\n\nAdds the deterministic ADR0155 Managed Local AI visual fixture while preserving the current-main ADR0143/0145/0154 visual scenarios and their shared scroll/evidence state.\n\n<!-- gameengine-chatgpt-dispatcher -->\n<!-- gameengine-visual-validation: editor -->"
+}
