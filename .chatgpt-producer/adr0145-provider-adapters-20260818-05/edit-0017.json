@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "        let external_provider = self.provider_program.trim().to_owned();\n        let (mode, provider_label, native_config) = if !external_provider.is_empty() {\n            (AgentRuntimeMode::External, external_provider, None)\n        } else {\n            let config = self.selected_native_model_config()?;\n            let label = config.label();\n            (AgentRuntimeMode::Native, label, Some(config))\n        };",
+  "new": "        let external_provider = self.selected_external_provider()?;\n        let (mode, provider_label, native_config) = if let Some(provider) = external_provider {\n            (\n                AgentRuntimeMode::External,\n                provider.run_label().to_owned(),\n                None,\n            )\n        } else {\n            let config = self.selected_native_model_config()?;\n            let label = config.label();\n            (AgentRuntimeMode::Native, label, Some(config))\n        };"
+}

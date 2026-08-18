@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "                            object.insert(\"processing_posture\".to_owned(), posture);",
+  "new": "                            object.insert(\"processing_posture\".to_owned(), posture);\n                            object.insert(\n                                \"external_agent_provider\".to_owned(),\n                                self.current_external_provider_status().remote_json(),\n                            );"
+}

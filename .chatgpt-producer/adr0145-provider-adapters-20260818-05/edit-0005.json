@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "    preferences_path: PathBuf,\n    quality_preference: QualityPreference,\n    confinement_requirement: AgentConfinementRequirement,\n    model_backend: ModelBackendPreference,",
+  "new": "    preferences_path: PathBuf,\n    quality_preference: QualityPreference,\n    confinement_requirement: AgentConfinementRequirement,\n    external_provider_kind: ExternalAgentProviderKind,\n    external_provider_status: ExternalAgentProviderStatus,\n    model_backend: ModelBackendPreference,"
+}
