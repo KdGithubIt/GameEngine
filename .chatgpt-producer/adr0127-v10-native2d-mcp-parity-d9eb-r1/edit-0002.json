@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/authoring/src/native_2d_services.rs",
+  "old": "    /// A normalized sprite pivot was outside `[0, 1]` or non-finite.\n    InvalidPivot,\n",
+  "new": "    /// A whole-document Tile Map replacement violated persisted invariants.\n    InvalidDocument(String),\n    /// A normalized sprite pivot was outside `[0, 1]` or non-finite.\n    InvalidPivot,\n"
+}
