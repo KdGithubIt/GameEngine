@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0126-v23-sequencer-shell-20260818-26",
+  "target_branch": "chatgpt/gameengine-adr0126-first-release-v23",
+  "expected_head_sha": "4ec2f7fad380690a82c60062374e263f809627b4",
+  "baseline_main_sha": "96c8ffb18a74eabec2164daa61f694f131019ddc",
+  "patch_sha256": "63011db213463a3707e801379fd4e7ef0d201d491d1754e060269dd03429250c",
+  "patch_bytes": 6282,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Add ADR 0126 Sequencer shell and preview exports",
+  "pr_title": "GameEngine: complete ADR 0126 Timeline / Sequencer first release",
+  "pr_body": "## Summary\n\nAdds the ADR 0126 Sequencer shell wiring, typed asset picker surface, and production Timeline preview exports. Remaining Scene View and authoring integration follows.\n\n<!-- gameengine-visual-validation: editor -->\n"
+}
