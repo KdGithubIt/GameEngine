@@ -595,6 +595,19 @@ pub(crate) enum BenchmarkCampaignState {
     Incompatible,
 }
 
+impl BenchmarkCampaignState {
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::Draft => "Draft",
+            Self::Running => "Running",
+            Self::Paused => "Paused",
+            Self::Stopped => "Stopped",
+            Self::Completed => "Completed",
+            Self::Incompatible => "Incompatible",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum CampaignRunStatus {
@@ -944,6 +957,38 @@ impl BenchmarkCampaign {
         Ok(())
     }
 
+    pub(crate) fn resume_identity_for_environment(
+        &self,
+        hardware: BenchmarkHardwareIdentity,
+        verified: &[BenchmarkModelIdentity],
+    ) -> CampaignResumeIdentity {
+        let mut identity = self.plan.resume_identity();
+        identity.hardware = hardware;
+        identity.candidates = self
+            .plan
+            .candidates
+            .iter()
+            .map(|candidate| {
+                verified
+                    .iter()
+                    .find(|model| {
+                        model.backend_id == candidate.model.backend_id
+                            && model.model_id == candidate.model.model_id
+                    })
+                    .map(CampaignRepresentation::from_model)
+                    .unwrap_or_else(|| CampaignRepresentation::from_model(&BenchmarkModelIdentity {
+                        backend_id: candidate.model.backend_id.clone(),
+                        model_id: candidate.model.model_id.clone(),
+                        model_version: TelemetryValue::Unavailable,
+                        quantization: TelemetryValue::Unavailable,
+                        representation_size_bytes: TelemetryValue::Unavailable,
+                        backend_runtime_version: TelemetryValue::Unavailable,
+                    }))
+            })
+            .collect();
+        identity
+    }
+
     pub(crate) fn resume(&mut self, current: CampaignResumeIdentity) -> Result<(), String> {
         if !matches!(
             self.state,
@@ -1039,6 +1084,29 @@ impl BenchmarkCampaignStore {
 
     pub(crate) fn load(&self, fingerprint: &str) -> Result<BenchmarkCampaign, String> {
         let path = self.root.join(format!("{fingerprint}.json"));
+        self.load_path(&path)
+    }
+
+    pub(crate) fn load_latest(&self) -> Result<Option<BenchmarkCampaign>, String> {
+        let mut latest: Option<BenchmarkCampaign> = None;
+        for entry in fs::read_dir(&self.root).map_err(|error| error.to_string())? {
+            let entry = entry.map_err(|error| error.to_string())?;
+            let path = entry.path();
+            if path.extension().and_then(|value| value.to_str()) != Some("json") {
+                continue;
+            }
+            let campaign = self.load_path(&path)?;
+            if latest
+                .as_ref()
+                .is_none_or(|current| campaign.updated_unix_ms > current.updated_unix_ms)
+            {
+                latest = Some(campaign);
+            }
+        }
+        Ok(latest)
+    }
+
+    fn load_path(&self, path: &Path) -> Result<BenchmarkCampaign, String> {
         let bytes = fs::read(path).map_err(|error| error.to_string())?;
         let campaign = serde_json::from_slice::<BenchmarkCampaign>(&bytes)
             .map_err(|error| error.to_string())?;
