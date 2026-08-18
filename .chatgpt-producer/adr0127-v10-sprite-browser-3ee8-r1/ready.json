@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0127-v10-sprite-browser-3ee8-r1",
+  "target_branch": "chatgpt/gameengine-adr0127-first-release-current-main-v10",
+  "expected_head_sha": "3ee88d09cc656e6b79c2f85528313cc5d540e8a5",
+  "baseline_main_sha": "96c8ffb18a74eabec2164daa61f694f131019ddc",
+  "edit_parts": [
+    "edit-0000.json",
+    "edit-0001.json",
+    "edit-0002.json",
+    "edit-0003.json",
+    "edit-0004.json",
+    "edit-0005.json",
+    "edit-0006.json",
+    "edit-0007.json",
+    "edit-0008.json"
+  ],
+  "commit_message": "Expose stable SpriteRefs in Asset Browser drag and drop",
+  "pr_title": "GameEngine: complete ADR0127 Native 2D first release",
+  "pr_body": "Classifies Native 2D authoring documents in the Project Browser and exposes stable SpriteAtlas regions as draggable SpriteRefs that instantiate SpriteRenderer2D entities in the Scene View."
+}
