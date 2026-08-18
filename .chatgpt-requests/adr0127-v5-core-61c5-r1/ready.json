@@ -1,0 +1,16 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0127-v5-core-61c5-r1",
+  "target_branch": "chatgpt/gameengine-adr0127-first-release-current-main-v5",
+  "expected_head_sha": "61c5afcd0ba773edce49c5fea711ba23c8331cc7",
+  "baseline_main_sha": "61c5afcd0ba773edce49c5fea711ba23c8331cc7",
+  "patch_sha256": "5b12f7f53f56e2b070e5c18dbc345b881336a11d86941f900d2e83b9c541a259",
+  "patch_bytes": 93463,
+  "patch_parts": [
+    "part-0000.patch",
+    "part-0001.patch"
+  ],
+  "commit_message": "Add ADR0127 Native 2D core contracts",
+  "pr_title": "GameEngine: complete ADR0127 Native 2D first release",
+  "pr_body": "Fresh current-main v5 implementation after Visual Validation workflow updates landed. Reapplies the audited ADR0127 core contracts; product paths are unchanged by the Visual workflow merge."
+}
