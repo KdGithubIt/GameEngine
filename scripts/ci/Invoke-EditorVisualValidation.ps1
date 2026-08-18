@@ -29,13 +29,19 @@ New-Item -ItemType Directory -Force -Path $OutputDirectory | Out-Null
 function Invoke-CargoChecked {
     param(
         [Parameter(Mandatory = $true)]
-        [string[]]$Arguments
+        [string[]]$Arguments,
+        [string]$LogPath = ""
     )
 
     Write-Host "==> cargo $($Arguments -join ' ')"
-    & cargo @Arguments | Out-Host
-    if ($LASTEXITCODE -ne 0) {
-        throw "cargo $($Arguments -join ' ') failed with exit code $LASTEXITCODE."
+    if ($LogPath) {
+        & cargo @Arguments 2>&1 | Tee-Object -FilePath $LogPath | Out-Host
+    } else {
+        & cargo @Arguments | Out-Host
+    }
+    $exitCode = $LASTEXITCODE
+    if ($exitCode -ne 0) {
+        throw "cargo $($Arguments -join ' ') failed with exit code $exitCode."
     }
 }
 
@@ -122,11 +128,14 @@ function Invoke-DesktopScreenshot {
         [Parameter(Mandatory = $true)]
         [AllowEmptyCollection()]
         [string[]]$ProgramArguments,
-        [string]$RequestedAuthoringTool = ""
+        [string]$RequestedAuthoringTool = "",
+        [string]$RequestedVisualScenario = ""
     )
 
     $outputPath = Join-Path $OutputDirectory "$Name.png"
+    $logPath = Join-Path $OutputDirectory "$Name.log"
     Remove-Item -LiteralPath $outputPath -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $logPath -Force -ErrorAction SilentlyContinue
 
     $captureVariable = if ($Package -eq "engine-editor") {
         "GAMEENGINE_SCREENSHOT_TO"
@@ -139,6 +148,10 @@ function Invoke-DesktopScreenshot {
     )
     $previousAuthoringTool = [Environment]::GetEnvironmentVariable(
         "GAMEENGINE_VISUAL_AUTHORING_TOOL",
+        [EnvironmentVariableTarget]::Process
+    )
+    $previousVisualScenario = [Environment]::GetEnvironmentVariable(
+        "GAMEENGINE_VISUAL_SCENARIO",
         [EnvironmentVariableTarget]::Process
     )
     try {
@@ -154,6 +167,13 @@ function Invoke-DesktopScreenshot {
                 [EnvironmentVariableTarget]::Process
             )
         }
+        if ($Package -eq "engine-editor" -and $RequestedVisualScenario) {
+            [Environment]::SetEnvironmentVariable(
+                "GAMEENGINE_VISUAL_SCENARIO",
+                $RequestedVisualScenario,
+                [EnvironmentVariableTarget]::Process
+            )
+        }
         $cargoArguments = @(
             "run",
             "--locked",
@@ -166,7 +186,7 @@ function Invoke-DesktopScreenshot {
             $cargoArguments += "--"
             $cargoArguments += $ProgramArguments
         }
-        Invoke-CargoChecked -Arguments $cargoArguments
+        Invoke-CargoChecked -Arguments $cargoArguments -LogPath $logPath
     } finally {
         [Environment]::SetEnvironmentVariable(
             $captureVariable,
@@ -176,6 +196,11 @@ function Invoke-DesktopScreenshot {
         [Environment]::SetEnvironmentVariable(
             "GAMEENGINE_VISUAL_AUTHORING_TOOL",
             $previousAuthoringTool,
+            [EnvironmentVariableTarget]::Process
+        )
+        [Environment]::SetEnvironmentVariable(
+            "GAMEENGINE_VISUAL_SCENARIO",
+            $previousVisualScenario,
             [EnvironmentVariableTarget]::Process
         )
     }
@@ -191,18 +216,25 @@ function Invoke-DesktopScreenshot {
     return [ordered]@{
         name = $Name
         package = $Package
+        scenario = if ($RequestedVisualScenario) { $RequestedVisualScenario } else { $null }
         path = $file.Name
+        log = if (Test-Path -LiteralPath $logPath -PathType Leaf) {
+            (Get-Item -LiteralPath $logPath).Name
+        } else {
+            $null
+        }
         bytes = $file.Length
         sha256 = (Get-FileHash -LiteralPath $outputPath -Algorithm SHA256).Hash.ToLowerInvariant()
     }
 }
 
 Push-Location $workspace
+$projectRoot = $null
+$projectSource = $null
+$captures = @()
+$activeCapture = $null
+$failure = $null
 try {
-    $projectRoot = $null
-    $projectSource = $null
-    $captures = @()
-
     if ($Target -eq "editor" -or $Target -eq "both") {
         if ($ProjectPath) {
             $projectRoot = Resolve-RepositoryProject -RelativePath $ProjectPath
@@ -211,31 +243,67 @@ try {
             $projectRoot = New-StandardVisualValidationProject
             $projectSource = "generated-standard-project"
         }
-        $captures += Invoke-DesktopScreenshot `
-            -Name "editor" `
-            -Package "engine-editor" `
-            -ProgramArguments @("--project", $projectRoot) `
-            -RequestedAuthoringTool $AuthoringTool
+
+        if ($AuthoringTool -eq "ADR First Release") {
+            $adrScenarios = @(
+                "adr0136-preview-pending",
+                "adr0136-preview-ready",
+                "adr0136-preview-failed",
+                "adr0137-diagnostics",
+                "adr0138-transition-progress",
+                "adr0138-stale-source",
+                "adr0139-working-copy-conflict",
+                "adr0144-hosted-backend",
+                "adr0144-enterprise-backend",
+                "adr0149-live-observation",
+                "adr0153-confinement"
+            )
+            foreach ($scenario in $adrScenarios) {
+                $activeCapture = $scenario
+                $captures += Invoke-DesktopScreenshot `
+                    -Name $scenario `
+                    -Package "engine-editor" `
+                    -ProgramArguments @("--project", $projectRoot) `
+                    -RequestedVisualScenario $scenario
+                $activeCapture = $null
+            }
+        } else {
+            $activeCapture = "editor"
+            $captures += Invoke-DesktopScreenshot `
+                -Name "editor" `
+                -Package "engine-editor" `
+                -ProgramArguments @("--project", $projectRoot) `
+                -RequestedAuthoringTool $AuthoringTool
+            $activeCapture = $null
+        }
     }
 
     if ($Target -eq "launcher" -or $Target -eq "both") {
+        $activeCapture = "launcher"
         $captures += Invoke-DesktopScreenshot `
             -Name "launcher" `
             -Package "engine-launcher" `
             -ProgramArguments @()
+        $activeCapture = $null
     }
-
+} catch {
+    $failure = [ordered]@{
+        capture = $activeCapture
+        message = $_.Exception.Message
+    }
+    throw
+} finally {
     $summary = [ordered]@{
         schema_version = 2
         target = $Target
         project_source = $projectSource
         authoring_tool = if ($AuthoringTool) { $AuthoringTool } else { $null }
         generated_utc = [DateTime]::UtcNow.ToString("o")
+        failure = $failure
         screenshots = @($captures)
     }
     $summary | ConvertTo-Json -Depth 6 | Set-Content `
         -LiteralPath (Join-Path $OutputDirectory "summary.json") `
         -Encoding utf8
-} finally {
     Pop-Location
 }

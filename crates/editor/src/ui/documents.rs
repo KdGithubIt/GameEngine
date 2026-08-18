@@ -21,7 +21,10 @@ impl EditorApp {
         }
         app.sync_workspace_preferences();
         #[cfg(feature = "visual-validation")]
-        app.prepare_behavior_tree_visual_validation();
+        {
+            app.prepare_behavior_tree_visual_validation();
+            app.prepare_adr_visual_scenario();
+        }
         app
     }
 

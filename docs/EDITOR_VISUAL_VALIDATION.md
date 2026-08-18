@@ -160,8 +160,12 @@ summary.json
 
 `summary.json` records the resolved target, project source, optional authoring
 tool scenario, screenshot byte size, SHA-256 digest, and generation timestamp.
-The PNG files are the visual evidence that ChatGPT or a human reviewer should
-inspect.
+Multi-capture suites also record the per-capture scenario and keep a combined
+Cargo/Editor log beside each attempted capture. If a capture fails after earlier
+screenshots succeeded, `summary.json` is still written from the `finally` path
+with the failed capture name and error message so the uploaded artifact preserves
+the exact stopping point and child-process diagnostics. The PNG files are the
+visual evidence that ChatGPT or a human reviewer should inspect.
 
 A screenshot being generated successfully proves that the requested desktop
 application built, started, rendered a frame, and exported that frame. It does
