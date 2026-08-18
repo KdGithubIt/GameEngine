@@ -510,6 +510,35 @@ fn show_asset_choice_picker(
     action
 }
 
+/// Draws a compact searchable typed-asset picker button for specialized authoring tools.
+///
+/// Choices come from the same manifest/sub-asset catalog as Inspector AssetRef fields, so
+/// callers never manufacture Stable IDs or bypass import-owned sub-asset semantics.
+pub(in crate::ui) fn show_typed_asset_picker_button(
+    ui: &mut egui::Ui,
+    id_salt: impl std::hash::Hash,
+    label: &str,
+    current: Option<&AssetId>,
+    kind: engine::AssetKind,
+    manifest: &engine::AssetManifest,
+    assets_root: Option<&Path>,
+) -> Option<AssetId> {
+    let choices = asset_choices_for_kind(kind, manifest, assets_root);
+    let response = ui.push_id(id_salt, |ui| ui.button(label)).inner;
+    match show_asset_choice_picker(
+        ui,
+        &response,
+        current,
+        kind,
+        &choices,
+        manifest,
+        false,
+    ) {
+        Some(ReferencePickerAction::Assign(asset)) => Some(asset),
+        Some(ReferencePickerAction::Clear) | None => None,
+    }
+}
+
 pub(in crate::ui) fn show_asset_reference_editor(
     ui: &mut egui::Ui,
     value: &mut Value,

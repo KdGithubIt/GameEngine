@@ -112,7 +112,29 @@ impl TimelineRuntime {
     }
 }
 
-pub(crate) fn timeline_prepare_system(
+/// Installs the resources required to evaluate Timeline inside an existing engine App.
+///
+/// Editor Scene View uses this on its persistent PreviewWorld. It intentionally installs no
+/// parallel simulator and does not register systems itself; the caller places the production
+/// Timeline systems in its existing pose pipeline so system ordering remains explicit.
+pub fn ensure_timeline_preview_resources(app: &mut crate::App) {
+    if app.world().get_resource::<TimelineRuntime>().is_none() {
+        app.insert_resource(TimelineRuntime::default());
+    }
+    if app.world().get_resource::<TimelineEvents>().is_none() {
+        app.insert_resource(TimelineEvents::default());
+    }
+    if app.world().get_resource::<SpatialAudioRuntime>().is_none() {
+        app.insert_resource(SpatialAudioRuntime::default());
+    }
+    if app.world().get_resource::<GameCameraSelectionOverride>().is_none() {
+        app.insert_resource(GameCameraSelectionOverride::default());
+    }
+}
+
+/// Production Timeline prepare system, exposed for installation into the Editor PreviewWorld.
+/// Runtime hosts normally receive this through `register_runtime_systems`.
+pub fn timeline_prepare_system(
     fixed: Res<FixedTime>, mut runtime: ResMut<TimelineRuntime>, mut events: ResMut<TimelineEvents>, mut camera_override: ResMut<GameCameraSelectionOverride>,
     mut animators: Query<(&RuntimeEntityIdentity, &mut AnimGraphPlayer, &mut Animator)>, mut cameras: Query<(&RuntimeEntityIdentity, &Camera3D)>,
     mut vfx_players: Query<(&RuntimeEntityIdentity, &VfxSourceIdentity, &GlobalTransform, &mut VfxPlayer)>, mut emitters: Query<(&RuntimeEntityIdentity, &AudioEmitter)>,
@@ -136,7 +158,7 @@ pub(crate) fn timeline_prepare_system(
     apply_audio(&mut runtime, &frame.active, &mut emitters, &spatial_audio, manifest.as_deref(), server.as_deref_mut(), audio_assets.as_deref_mut(), audio.as_deref_mut());
 }
 
-pub(crate) fn timeline_transform_system(mut runtime: ResMut<TimelineRuntime>, mut transforms: Query<(&RuntimeEntityIdentity, &mut Transform)>) {
+pub fn timeline_transform_system(mut runtime: ResMut<TimelineRuntime>, mut transforms: Query<(&RuntimeEntityIdentity, &mut Transform)>) {
     let desired = runtime.desired_transforms.clone(); let mut seen = BTreeSet::new();
     for (_, (identity, transform)) in transforms.iter_mut() {
         let entity_id = identity.authoring_id.clone(); seen.insert(entity_id.clone());
