@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/engine/src/timeline.rs","old":"    /// Requested deterministic playback rate is invalid.\n    InvalidRate,\n}","new":"    /// Requested deterministic playback rate is invalid.\n    InvalidRate,\n    /// Requested loop range is empty or outside the compiled Timeline duration.\n    InvalidLoop,\n}"}
