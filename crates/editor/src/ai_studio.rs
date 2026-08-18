@@ -697,7 +697,7 @@ impl AiStudioPanel {
         self.external_provider_kind = ExternalAgentProviderKind::ClaudeCode;
         self.external_provider_status =
             ExternalAgentProviderStatus::visual_fixture(ExternalAgentProviderKind::ClaudeCode);
-        self.visual_scroll_offset = 1_520.0;
+        self.visual_scroll_offset = 1_600.0;
         self.visual_external_provider_evidence = true;
     }
 
