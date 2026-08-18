@@ -1,0 +1,16 @@
+diff --git a/crates/editor/src/ai_studio.rs b/crates/editor/src/ai_studio.rs
+index f45b5d1577a084699742bbdbcbd5322fae3a628b..579fdc34405455a7f234c4bd4bdacf4950e51af9 100644
+--- a/crates/editor/src/ai_studio.rs
++++ b/crates/editor/src/ai_studio.rs
+@@ -1039,7 +1039,10 @@ impl AiStudioPanel {
+                     .id_salt("ai_studio_detached_contents")
+                     .auto_shrink([false, false]);
+                 #[cfg(feature = "visual-validation")]
+-                let scroll_area = scroll_area.vertical_scroll_offset(480.0);
++                let scroll_area = scroll_area.vertical_scroll_offset(match self.model_backend {
++                    ModelBackendPreference::ManagedLocal => 0.0,
++                    _ => 480.0,
++                });
+                 scroll_area.show(ui, |ui| self.show_contents(ui));
+             },
+         );
