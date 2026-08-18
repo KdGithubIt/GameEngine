@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0127-v9-pointer-module-7725-r3",
+  "target_branch": "chatgpt/gameengine-adr0127-first-release-current-main-v9",
+  "expected_head_sha": "77251cb27eae72c331c4c9f1fb4f4afebb9a0dc1",
+  "baseline_main_sha": "4e9865c2db754ef5a2a33e1ac42d1cd5cf318229",
+  "patch_sha256": "063a842e575687f22a23ff206d1b88704246fb1e6e1f1b45d0b6f4b370de57be",
+  "patch_bytes": 8343,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Complete ADR0127 Tile Map pointer gestures",
+  "pr_title": "GameEngine: complete ADR0127 Native 2D first release",
+  "pr_body": "Adds a dedicated Tile Map pointer interaction module for transactional Paint, Erase, Rectangle, Line, Fill, Eyedropper, and Select/Stamp gestures."
+}
