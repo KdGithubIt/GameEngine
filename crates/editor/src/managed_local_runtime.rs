@@ -12,6 +12,7 @@ use std::io::{self, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -56,6 +57,9 @@ impl ManagedExecutionEnvironment {
     }
 }
 
+// ADR 0155 defines the complete diagnostic vocabulary even when a specific
+// first-release machine never exercises every platform/resource failure layer.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ManagedDiagnosticLayer {
     OperatingSystemPrerequisite,
@@ -184,6 +188,9 @@ pub(crate) enum ManagedSetupStatus {
     OperatingSystemPrerequisiteUnavailable(String),
 }
 
+// ADR 0155 freezes exact Download & Run approval semantics for ADR 0156 campaign
+// integration; the standalone setup UI intentionally does not auto-download weights.
+#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ManagedAcquisitionCandidate {
     pub(crate) candidate_id: String,
@@ -195,12 +202,18 @@ pub(crate) struct ManagedAcquisitionCandidate {
     pub(crate) storage_bytes: u64,
 }
 
+// Retained for the ADR 0156 frozen-campaign handoff; normal Local AI setup has no
+// implicit model-acquisition path.
+#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ManagedAcquisitionPlan {
     pub(crate) plan_id: String,
     pub(crate) candidates: Vec<ManagedAcquisitionCandidate>,
 }
 
+// Produced by ADR 0156 campaign review; retained here so transfer/storage approval
+// cannot be redefined by the later campaign UI.
+#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ManagedAcquisitionReview {
     pub(crate) candidate_count: usize,
@@ -208,12 +221,17 @@ pub(crate) struct ManagedAcquisitionReview {
     pub(crate) total_storage_bytes: u64,
 }
 
+// Approval tokens are consumed by ADR 0156 campaign execution, not by ordinary
+// single-model Local AI setup.
+#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ManagedAcquisitionApproval {
     plan_id: String,
     candidate_ids: BTreeSet<String>,
 }
 
+// ADR 0156 consumes these exact frozen-campaign review/approval helpers.
+#[allow(dead_code)]
 impl ManagedAcquisitionPlan {
     pub(crate) fn review(&self) -> ManagedAcquisitionReview {
         ManagedAcquisitionReview {
@@ -241,6 +259,8 @@ impl ManagedAcquisitionPlan {
     }
 }
 
+// ADR 0156 consumes this exact-approval check when executing a frozen campaign.
+#[allow(dead_code)]
 impl ManagedAcquisitionApproval {
     pub(crate) fn authorizes(
         &self,
@@ -260,6 +280,91 @@ impl ManagedAcquisitionApproval {
 #[derive(Debug, Clone)]
 pub(crate) struct ManagedLocalRuntime {
     root: PathBuf,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum ManagedSetupOperation {
+    InstallRuntime(ManagedExecutionEnvironment),
+    ProvisionWsl,
+    RegisterModel(PathBuf),
+    PrepareModel {
+        model_id: String,
+        environment: ManagedExecutionEnvironment,
+        duplicate_storage_approved: bool,
+    },
+    RemoveEnvironment(ManagedExecutionEnvironment),
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum ManagedSetupResult {
+    RuntimeInstalled(ManagedRuntimeInstallation),
+    WslProvisioned,
+    ModelRegistered(ManagedModelRegistration),
+    ModelPrepared(PathBuf),
+    EnvironmentRemoved(ManagedExecutionEnvironment),
+}
+
+pub(crate) struct ManagedSetupTask {
+    result: Receiver<Result<ManagedSetupResult, ManagedLocalRuntimeError>>,
+}
+
+impl ManagedSetupTask {
+    pub(crate) fn spawn(
+        manager: ManagedLocalRuntime,
+        operation: ManagedSetupOperation,
+    ) -> Result<Self, ManagedLocalRuntimeError> {
+        let (sender, result) = mpsc::channel();
+        thread::Builder::new()
+            .name("managed-local-ai-setup".to_owned())
+            .spawn(move || {
+                let outcome = match operation {
+                    ManagedSetupOperation::InstallRuntime(environment) => manager
+                        .install_pinned_runtime(environment)
+                        .map(ManagedSetupResult::RuntimeInstalled),
+                    ManagedSetupOperation::ProvisionWsl => manager
+                        .provision_managed_wsl_distribution()
+                        .map(|()| ManagedSetupResult::WslProvisioned),
+                    ManagedSetupOperation::RegisterModel(path) => manager
+                        .register_existing_gguf(&path, None)
+                        .map(ManagedSetupResult::ModelRegistered),
+                    ManagedSetupOperation::PrepareModel {
+                        model_id,
+                        environment,
+                        duplicate_storage_approved,
+                    } => manager
+                        .prepare_model_for_environment(
+                            &model_id,
+                            environment,
+                            duplicate_storage_approved,
+                        )
+                        .map(ManagedSetupResult::ModelPrepared),
+                    ManagedSetupOperation::RemoveEnvironment(environment) => manager
+                        .remove_environment(environment)
+                        .map(|()| ManagedSetupResult::EnvironmentRemoved(environment)),
+                };
+                let _ = sender.send(outcome);
+            })
+            .map_err(|error| {
+                ManagedLocalRuntimeError::new(
+                    ManagedDiagnosticLayer::OperatingSystemPrerequisite,
+                    format!("could not start managed Local AI setup worker: {error}"),
+                )
+            })?;
+        Ok(Self { result })
+    }
+
+    pub(crate) fn poll(
+        &self,
+    ) -> Option<Result<ManagedSetupResult, ManagedLocalRuntimeError>> {
+        match self.result.try_recv() {
+            Ok(result) => Some(result),
+            Err(TryRecvError::Empty) => None,
+            Err(TryRecvError::Disconnected) => Some(Err(ManagedLocalRuntimeError::new(
+                ManagedDiagnosticLayer::OperatingSystemPrerequisite,
+                "managed Local AI setup worker disconnected unexpectedly",
+            ))),
+        }
+    }
 }
 
 impl ManagedLocalRuntime {
@@ -282,7 +387,18 @@ impl ManagedLocalRuntime {
         environment: ManagedExecutionEnvironment,
     ) -> ManagedSetupStatus {
         if self.restart_marker_path().is_file() {
-            return ManagedSetupStatus::RestartRequired;
+            let continuation_ready = cfg!(target_os = "windows")
+                && matches!(
+                    wsl_status(),
+                    Ok(WslStatus::Available {
+                        managed_distribution: true
+                    })
+                );
+            if continuation_ready {
+                let _ = self.clear_restart_required();
+            } else {
+                return ManagedSetupStatus::RestartRequired;
+            }
         }
         if !cfg!(target_os = "windows") {
             return ManagedSetupStatus::OperatingSystemPrerequisiteUnavailable(
@@ -395,13 +511,12 @@ impl ManagedLocalRuntime {
         &self,
         environment: ManagedExecutionEnvironment,
     ) -> Result<ManagedRuntimeInstallation, ManagedLocalRuntimeError> {
-        if let Some(existing) = self.active_installation(environment)? {
-            if existing.runtime_tag == PINNED_LLAMA_CPP_TAG
-                && existing.runtime_revision == PINNED_LLAMA_CPP_REVISION
-                && self.verify_retained_runtime_artifact(&existing).is_ok()
-            {
-                return Ok(existing);
-            }
+        if let Some(existing) = self.active_installation(environment)?
+            && existing.runtime_tag == PINNED_LLAMA_CPP_TAG
+            && existing.runtime_revision == PINNED_LLAMA_CPP_REVISION
+            && self.verify_retained_runtime_artifact(&existing).is_ok()
+        {
+            return Ok(existing);
         }
         if !cfg!(target_os = "windows") {
             return Err(ManagedLocalRuntimeError::new(
@@ -794,6 +909,57 @@ impl ManagedLocalRuntime {
         ))
     }
 
+    pub(crate) fn remove_environment(
+        &self,
+        environment: ManagedExecutionEnvironment,
+    ) -> Result<(), ManagedLocalRuntimeError> {
+        if let Some(process) = self.read_process_state()?
+            && process.environment == environment
+        {
+            self.stop_process_state(&process)?;
+        }
+        if environment == ManagedExecutionEnvironment::Wsl2Linux
+            && matches!(
+                wsl_status(),
+                Ok(WslStatus::Available {
+                    managed_distribution: true
+                })
+            )
+        {
+            let output = Command::new("wsl.exe")
+                .args(["--unregister", MANAGED_WSL_DISTRIBUTION])
+                .output()
+                .map_err(|error| {
+                    ManagedLocalRuntimeError::new(
+                        ManagedDiagnosticLayer::WslDistributionProvisioning,
+                        format!("could not remove the dedicated managed WSL distribution: {error}"),
+                    )
+                })?;
+            if !output.status.success() {
+                return Err(ManagedLocalRuntimeError::new(
+                    ManagedDiagnosticLayer::WslDistributionProvisioning,
+                    format!(
+                        "could not remove the dedicated managed WSL distribution: {}",
+                        command_output_text(&output)
+                    ),
+                ));
+            }
+        }
+        let runtime_root = self
+            .root
+            .join("runtime")
+            .join(environment.storage_key());
+        match fs::remove_dir_all(runtime_root) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(runtime_io(error)),
+        }
+        if environment == ManagedExecutionEnvironment::Wsl2Linux {
+            self.clear_restart_required()?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn stop_for_config(
         config: &ManagedLocalModelConfig,
     ) -> Result<(), ManagedLocalRuntimeError> {
@@ -1169,9 +1335,25 @@ fn powershell_output(
     script: &str,
     arguments: &[&str],
 ) -> Result<std::process::Output, ManagedLocalRuntimeError> {
+    let mut argument_prelude = String::from("$args=@(");
+    for index in 0..arguments.len() {
+        if index > 0 {
+            argument_prelude.push(',');
+        }
+        argument_prelude.push_str(&format!("$env:GAMEENGINE_MANAGED_ARG_{index}"));
+    }
+    argument_prelude.push_str("); " );
+    argument_prelude.push_str(script);
     let mut command = Command::new("powershell.exe");
-    command.args(["-NoProfile", "-NonInteractive", "-Command", script]);
-    command.args(arguments);
+    command.args([
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        &argument_prelude,
+    ]);
+    for (index, argument) in arguments.iter().enumerate() {
+        command.env(format!("GAMEENGINE_MANAGED_ARG_{index}"), argument);
+    }
     let output = command.output().map_err(|error| {
         ManagedLocalRuntimeError::new(
             ManagedDiagnosticLayer::OperatingSystemPrerequisite,
@@ -1575,7 +1757,7 @@ fn command_output_text(output: &std::process::Output) -> String {
 }
 
 fn decode_windows_command_text(bytes: &[u8]) -> String {
-    if bytes.len() >= 2 && bytes.len() % 2 == 0 {
+    if bytes.len() >= 2 && bytes.len().is_multiple_of(2) {
         let utf16 = bytes
             .chunks_exact(2)
             .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
