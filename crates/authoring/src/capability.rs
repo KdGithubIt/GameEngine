@@ -209,6 +209,8 @@ pub enum AuthoringDocumentKind {
     ProjectSettings,
     /// An Animation Set asset document.
     AnimationSet,
+    /// A Timeline sequence document.
+    Timeline,
 }
 
 /// Semantic shape of one capability.
