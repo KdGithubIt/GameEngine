@@ -26,6 +26,10 @@ pub const HUMANOID_BAKED_CLIP_SCHEMA_VERSION: u32 = 1;
 pub const HUMANOID_CACHE_DOMAIN: &str = "humanoid_anim";
 /// File extension used for serialized humanoid target bakes.
 pub const HUMANOID_BAKED_CLIP_FILE_EXTENSION: &str = "clip.json";
+/// Derived-cache domain for import-owned portable Humanoid source motion.
+pub const HUMANOID_PORTABLE_CACHE_DOMAIN: &str = "humanoid_motion";
+/// File extension used for serialized portable Humanoid source motion.
+pub const HUMANOID_PORTABLE_FILE_EXTENSION: &str = "motion.json";
 /// Diagnostic emitted when a packaged Humanoid source has no staged target bake.
 pub const HUMANOID_BAKE_MISSING_FROM_PACKAGE_DIAGNOSTIC: &str =
     "anim.humanoid_bake_missing_from_package";
@@ -45,6 +49,71 @@ pub fn humanoid_packaged_bake_file_name(
         target_skeleton.as_str(),
         HUMANOID_BAKED_CLIP_FILE_EXTENSION
     )
+}
+
+/// Computes the import-owned cache key for one portable Humanoid motion.
+///
+/// The stable motion AssetId defines user-facing identity. Source fingerprint
+/// and optional motion-only provenance define the imported content behind it,
+/// so changing source bytes or Humanoid source model never reuses stale data.
+pub fn imported_humanoid_motion_cache_key(
+    motion_asset: &AssetId,
+    source_fingerprint: &str,
+    provenance_model: Option<&AssetId>,
+) -> CacheKey {
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    hash_u64(&mut hash, u64::from(HUMANOID_RETARGET_ALGORITHM_VERSION));
+    hash_bytes(&mut hash, motion_asset.as_str().as_bytes());
+    hash_bytes(&mut hash, source_fingerprint.as_bytes());
+    if let Some(provenance_model) = provenance_model {
+        hash_bytes(&mut hash, provenance_model.as_str().as_bytes());
+    }
+    CacheKey(hash)
+}
+
+/// Stores one portable Humanoid motion produced by import/reimport.
+pub fn store_imported_humanoid_motion(
+    cache: &DerivedCache,
+    motion_asset: &AssetId,
+    source_fingerprint: &str,
+    provenance_model: Option<&AssetId>,
+    motion: &HumanoidMotion,
+) -> Result<(), HumanoidMotionError> {
+    let key = imported_humanoid_motion_cache_key(
+        motion_asset,
+        source_fingerprint,
+        provenance_model,
+    );
+    let bytes = serde_json::to_vec(motion).map_err(cache_error)?;
+    cache
+        .put(
+            HUMANOID_PORTABLE_CACHE_DOMAIN,
+            &key,
+            HUMANOID_PORTABLE_FILE_EXTENSION,
+            &bytes,
+        )
+        .map_err(|error| HumanoidMotionError::Cache(error.to_string()))
+}
+
+/// Loads a portable Humanoid motion previously published by import/reimport.
+pub fn load_imported_humanoid_motion(
+    cache: &DerivedCache,
+    motion_asset: &AssetId,
+    source_fingerprint: &str,
+    provenance_model: Option<&AssetId>,
+) -> Option<HumanoidMotion> {
+    let key = imported_humanoid_motion_cache_key(
+        motion_asset,
+        source_fingerprint,
+        provenance_model,
+    );
+    cache
+        .get(
+            HUMANOID_PORTABLE_CACHE_DOMAIN,
+            &key,
+            HUMANOID_PORTABLE_FILE_EXTENSION,
+        )
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
 }
 
 const CACHE_DOMAIN: &str = HUMANOID_CACHE_DOMAIN;

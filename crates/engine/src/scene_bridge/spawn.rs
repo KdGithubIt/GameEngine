@@ -2080,7 +2080,7 @@ fn resolve_humanoid_animation_binding_clip(
     target_skeleton: &SkeletonAsset,
     context: &mut SpawnContext<'_>,
 ) -> Result<Handle<AnimationClip>, SceneBridgeError> {
-    let (source_id, existing_profiles) = {
+    let (source_id, source_fingerprint, provenance_model) = {
         let Some((source_id, entry, sub_asset)) = context.manifest.imported_sub_asset(motion_asset)
         else {
             return Err(animation_binding_error(
@@ -2098,10 +2098,33 @@ fn resolve_humanoid_animation_binding_clip(
                 "Humanoid source must reference an imported HumanoidMotion sub-asset",
             ));
         }
-        (
-            source_id.clone(),
-            entry.import_settings.humanoid_profiles.clone(),
-        )
+        let source_fingerprint = entry
+            .import_settings
+            .source_fingerprint
+            .clone()
+            .ok_or_else(|| {
+                animation_binding_error(
+                    animation_set_asset,
+                    motion_asset,
+                    context,
+                    "Humanoid source has no import fingerprint; reimport it before resolving this Animation Set",
+                )
+            })?;
+        let provenance_model = entry
+            .import_settings
+            .motion_humanoid_source_model
+            .as_deref()
+            .map(|id| AssetId::from_stable_id(StableId::new(id)))
+            .transpose()
+            .map_err(|error| {
+                animation_binding_error(
+                    animation_set_asset,
+                    motion_asset,
+                    context,
+                    format!("Humanoid source provenance contains an invalid model AssetId: {error}"),
+                )
+            })?;
+        (source_id.clone(), source_fingerprint, provenance_model)
     };
 
     if let Some(packaged_root) = context
@@ -2144,45 +2167,45 @@ fn resolve_humanoid_animation_binding_clip(
         ));
     }
 
-    let imported = import_source_cached(&source_id, context).map_err(|error| {
-        animation_binding_error(
-            animation_set_asset,
-            motion_asset,
-            context,
-            format!(
-                "could not import the model source owning Humanoid motion `{}`: {error}",
-                motion_asset.as_str()
-            ),
-        )
-    })?;
-    let catalog =
-        crate::humanoid_import::build_humanoid_import_catalog(&imported, &existing_profiles);
-    context.asset_diagnostics.extend(
-        catalog
-            .diagnostics
-            .iter()
-            .cloned()
-            .map(|diagnostic| diagnostic.with_target(DiagnosticTarget::Asset {
-                id: source_id.clone(),
-            })),
-    );
-    let portable = catalog
-        .motions
-        .iter()
-        .find(|motion| &motion.id == motion_asset)
+    let fallback_cache = context
+        .asset_root
+        .and_then(Path::parent)
+        .map(crate::DerivedCache::new);
+    let cache = context
+        .asset_state
+        .derived_cache
+        .as_ref()
+        .or(fallback_cache.as_ref())
         .ok_or_else(|| {
             animation_binding_error(
                 animation_set_asset,
                 motion_asset,
                 context,
-                "the source no longer exposes this Humanoid motion; reimport it",
+                "project-derived cache is unavailable for imported Humanoid motion; reimport in a project context",
             )
         })?;
+    let portable = crate::humanoid_motion::load_imported_humanoid_motion(
+        cache,
+        motion_asset,
+        &source_fingerprint,
+        provenance_model.as_ref(),
+    )
+    .ok_or_else(|| {
+        animation_binding_error(
+            animation_set_asset,
+            motion_asset,
+            context,
+            "imported Humanoid motion cache entry is missing or stale; reimport the owning source",
+        )
+    })?;
     let target_profile = context
         .manifest
         .iter()
         .flat_map(|(_, entry)| entry.import_settings.humanoid_profiles.iter())
-        .find(|profile| profile.skeleton == target_skeleton.id.as_str())
+        .find(|profile| {
+            profile.skeleton == target_skeleton.id.as_str()
+                && profile.skeleton_identity == target_skeleton.identity.0
+        })
         .cloned()
         .ok_or_else(|| {
             animation_binding_error(
@@ -2199,13 +2222,13 @@ fn resolve_humanoid_animation_binding_clip(
     let mut baked = if let Some(cache) = context.asset_state.derived_cache.as_ref() {
         crate::humanoid_motion::resolve_or_bake_humanoid_motion(
             cache,
-            &portable.motion,
+            &portable,
             target_skeleton,
             &target_profile,
         )
     } else {
         crate::humanoid_motion::bake_humanoid_motion(
-            &portable.motion,
+            &portable,
             target_skeleton,
             &target_profile,
         )

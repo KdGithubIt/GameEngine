@@ -17,6 +17,152 @@ struct MotionSourceChoice {
     source: engine_authoring::MotionSourceRef,
 }
 
+#[derive(Clone)]
+struct AnimationTargetPreviewChoice {
+    label: String,
+    skeleton: AssetId,
+}
+
+fn animation_target_preview_choices(
+    manifest: &engine::AssetManifest,
+) -> Vec<AnimationTargetPreviewChoice> {
+    let mut choices = Vec::new();
+    for (_, source) in manifest.iter() {
+        let source_label = source.name.as_deref().unwrap_or(&source.path);
+        let multiple = source.import_settings.skeleton_records.len() > 1;
+        for record in &source.import_settings.skeleton_records {
+            let Ok(skeleton) =
+                AssetId::from_stable_id(engine_authoring::StableId::new(&record.id))
+            else {
+                continue;
+            };
+            choices.push(AnimationTargetPreviewChoice {
+                label: if multiple {
+                    format!("{source_label} / {}", record.id)
+                } else {
+                    source_label.to_owned()
+                },
+                skeleton,
+            });
+        }
+    }
+    choices.sort_by(|left, right| left.label.cmp(&right.label));
+    choices
+}
+
+fn preview_motion_route(
+    manifest: &engine::AssetManifest,
+    assets_root: Option<&std::path::Path>,
+    source: &engine_authoring::MotionSourceRef,
+    target_skeleton: &AssetId,
+) -> Option<engine::motion_binding::AnimationMotionRoute> {
+    let (owner_source, owner_entry, sub_asset) = manifest.imported_sub_asset(&source.asset)?;
+    let candidate_kind = match sub_asset.kind {
+        engine::ImportedSubAssetKind::Animation => {
+            engine::motion_binding::AnimationMotionCandidateKind::ModelBound
+        }
+        engine::ImportedSubAssetKind::HumanoidMotion => {
+            engine::motion_binding::AnimationMotionCandidateKind::Humanoid
+        }
+        _ => return None,
+    };
+    let source_skeleton = if candidate_kind
+        == engine::motion_binding::AnimationMotionCandidateKind::ModelBound
+    {
+        let model_entry = sub_asset
+            .target_model_source
+            .as_deref()
+            .and_then(|id| {
+                AssetId::from_stable_id(engine_authoring::StableId::new(id)).ok()
+            })
+            .and_then(|id| manifest.get(&id))
+            .unwrap_or(owner_entry);
+        (model_entry.import_settings.skeleton_records.len() == 1)
+            .then(|| &model_entry.import_settings.skeleton_records[0].id)
+            .and_then(|id| {
+                AssetId::from_stable_id(engine_authoring::StableId::new(id)).ok()
+            })
+    } else {
+        None
+    };
+    let retarget_maps = assets_root
+        .map(|root| engine::load_registered_retarget_maps(root, manifest))
+        .unwrap_or_default();
+    let retarget_map = source_skeleton.as_ref().and_then(|source_skeleton| {
+        retarget_maps
+            .iter()
+            .find(|(_, map)| {
+                &map.source_skeleton == source_skeleton
+                    && &map.target_skeleton == target_skeleton
+            })
+            .map(|(id, _)| id.clone())
+    });
+    let humanoid_fallback = (sub_asset.kind == engine::ImportedSubAssetKind::Animation)
+        .then(|| {
+            owner_entry
+                .import_settings
+                .sub_assets
+                .iter()
+                .any(|candidate| {
+                    candidate.kind == engine::ImportedSubAssetKind::HumanoidMotion
+                        && candidate.index == sub_asset.index
+                        && candidate.target_model_source.is_none()
+                })
+        })
+        .filter(|available| *available)
+        .map(|_| {
+            engine::asset::imported_logical_humanoid_motion_sub_asset_id(
+                owner_source,
+                sub_asset.index as usize,
+            )
+        });
+    let target_identity = manifest
+        .iter()
+        .flat_map(|(_, entry)| entry.import_settings.skeleton_records.iter())
+        .find(|record| record.id == target_skeleton.as_str())
+        .map(|record| record.identity);
+    let target_humanoid_usable = target_identity.is_some_and(|identity| {
+        manifest
+            .iter()
+            .flat_map(|(_, entry)| entry.import_settings.humanoid_profiles.iter())
+            .any(|profile| {
+                profile.skeleton == target_skeleton.as_str()
+                    && profile.skeleton_identity == identity
+                    && engine::asset::HumanoidBone::REQUIRED
+                        .iter()
+                        .all(|bone| profile.bones.contains_key(bone))
+            })
+    });
+    Some(engine::motion_binding::plan_animation_motion(
+        &engine::motion_binding::AnimationMotionPlanInput {
+            candidate: source.asset.clone(),
+            candidate_kind,
+            source_skeleton,
+            target_skeleton: target_skeleton.clone(),
+            retarget_map,
+            humanoid_fallback,
+            target_humanoid_usable,
+        },
+    ))
+}
+
+fn show_motion_route_preview(
+    ui: &mut egui::Ui,
+    route: Option<&engine::motion_binding::AnimationMotionRoute>,
+) {
+    let Some(route) = route else {
+        ui.small("Route: select Target Preview");
+        return;
+    };
+    let response = match route {
+        engine::motion_binding::AnimationMotionRoute::Failed { .. } => {
+            ui.colored_label(egui::Color32::RED, format!("Route: {}", route.badge()))
+        }
+        _ => ui.label(format!("Route: {}", route.badge())),
+    };
+    response.on_hover_text(route.attempted_routing());
+}
+
 fn humanoid_motion_choices(
     manifest: &engine::AssetManifest,
     assets_root: Option<&std::path::Path>,
@@ -335,6 +481,9 @@ impl EditorApp {
             humanoid_motion_choices(&self.asset_manifest, assets_root.as_deref());
         let motion_source_choices =
             animation_set_motion_source_choices(&native_clip_choices, &humanoid_clip_choices);
+        let target_preview_choices = animation_target_preview_choices(&self.asset_manifest);
+        let preview_manifest = self.asset_manifest.clone();
+        let preview_assets_root = assets_root.clone();
         let graph_model = read_only_state
             .document
             .graph
@@ -435,6 +584,37 @@ impl EditorApp {
                         action = Some(AnimationSetUiAction::BeginClear);
                     }
                 });
+
+                let target_preview_label = state
+                    .target_preview_skeleton
+                    .as_ref()
+                    .and_then(|selected| {
+                        target_preview_choices
+                            .iter()
+                            .find(|choice| &choice.skeleton == selected)
+                            .map(|choice| choice.label.as_str())
+                    })
+                    .unwrap_or("No target - routing unresolved");
+                control_row(ui, |ui| {
+                    ui.label("Target Preview");
+                    egui::ComboBox::from_id_salt("animation_set_target_preview")
+                        .selected_text(target_preview_label)
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(
+                                &mut state.target_preview_skeleton,
+                                None,
+                                "No target - routing unresolved",
+                            );
+                            for choice in &target_preview_choices {
+                                ui.selectable_value(
+                                    &mut state.target_preview_skeleton,
+                                    Some(choice.skeleton.clone()),
+                                    &choice.label,
+                                );
+                            }
+                        });
+                });
+                ui.small("Preview-only: this target is never saved into the Animation Set.");
 
                 match &graph_model {
                     Some(Err(error)) => {
@@ -539,13 +719,40 @@ impl EditorApp {
                                         });
                                     }
                                 if let Some(binding) = state.document.bindings.get(&slot.id) {
+                                    let primary_route = state
+                                        .target_preview_skeleton
+                                        .as_ref()
+                                        .and_then(|target| {
+                                            preview_motion_route(
+                                                &preview_manifest,
+                                                preview_assets_root.as_deref(),
+                                                &binding.clip,
+                                                target,
+                                            )
+                                        });
+                                    show_motion_route_preview(ui, primary_route.as_ref());
                                     ui.small("Overlays (later entries have higher priority)");
                                     for (index, overlay) in binding.overlays.iter().enumerate() {
+                                        let overlay_route = state
+                                            .target_preview_skeleton
+                                            .as_ref()
+                                            .and_then(|target| {
+                                                preview_motion_route(
+                                                    &preview_manifest,
+                                                    preview_assets_root.as_deref(),
+                                                    overlay,
+                                                    target,
+                                                )
+                                            });
                                         ui.horizontal(|ui| {
                                             ui.label(motion_source_display_label(
                                                 overlay,
                                                 &motion_source_choices,
                                             ));
+                                            show_motion_route_preview(
+                                                ui,
+                                                overlay_route.as_ref(),
+                                            );
                                             if ui.small_button("↑").clicked() && index > 0 {
                                                 action = Some(AnimationSetUiAction::MoveOverlay {
                                                     slot: slot.id.clone(),

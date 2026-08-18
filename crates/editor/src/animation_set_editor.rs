@@ -20,6 +20,12 @@ pub struct AnimationSetEditorState {
     pub absolute_path: PathBuf,
     /// Editable Animation Set document.
     pub document: AnimationSet,
+    /// Transient target skeleton used only to preview ADR 0154 routing.
+    ///
+    /// This is deliberately outside `document`, undo snapshots, save, and
+    /// canonical serialization so choosing a preview target never changes
+    /// runtime project data.
+    pub target_preview_skeleton: Option<AssetId>,
     clean_document: AnimationSet,
     undo: Vec<AnimationSet>,
     redo: Vec<AnimationSet>,
@@ -34,6 +40,7 @@ impl AnimationSetEditorState {
             absolute_path,
             clean_document: document.clone(),
             document,
+            target_preview_skeleton: None,
             undo: Vec::new(),
             redo: Vec::new(),
             authoring: TypedDocumentAuthoringState::new(),

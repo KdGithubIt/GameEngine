@@ -9,7 +9,9 @@ use super::humanoid_profile_editor::{
     HumanoidProfileEditorState,
 };
 use super::manifest::save_asset_manifest;
-use super::motion_pairing::show_motion_pairing_editor;
+use super::motion_pairing::{
+    motion_humanoid_source_is_valid, show_motion_pairing_editor,
+};
 use super::retarget_window::{pmx_model_paths, pmx_model_sources, registered_model_retarget_pairs};
 
 impl EditorApp {
@@ -63,6 +65,19 @@ impl EditorApp {
                 })
                 .unwrap_or_default(),
             candidates: pmx_model_sources(&self.asset_manifest),
+            humanoid_source: self
+                .asset_manifest
+                .get(&source_id)
+                .and_then(|entry| {
+                    entry
+                        .import_settings
+                        .motion_humanoid_source_model
+                        .as_deref()
+                })
+                .and_then(|source| {
+                    AssetId::from_stable_id(engine_authoring::StableId::new(source)).ok()
+                }),
+            humanoid_capable_models: humanoid_capable_pmx_models(&self.asset_manifest),
             candidate_paths: self
                 .project_root
                 .as_ref()
@@ -167,6 +182,16 @@ impl EditorApp {
         let Some(project) = self.project_root.clone() else {
             return;
         };
+        if let Some(pairing) = &state.motion_pairing
+            && !motion_humanoid_source_is_valid(pairing)
+        {
+            self.session
+                .push_diagnostic(engine_authoring::Diagnostic::error(
+                    "asset.motion_humanoid_source_invalid",
+                    "Humanoid source model must remain associated with this motion and have a usable Humanoid profile before Import Settings can be saved",
+                ));
+            return;
+        }
         let source_id = state.source_id.clone();
         let humanoid_profiles = persisted_humanoid_profiles(&state.humanoid_profiles);
         let contact_bones = state.contact_bones.clone();
@@ -184,6 +209,12 @@ impl EditorApp {
                 .as_ref()
                 .map(|id| id.as_str().to_owned())
         });
+        let motion_humanoid_source_model = state.motion_pairing.as_ref().and_then(|pairing| {
+            pairing
+                .humanoid_source
+                .as_ref()
+                .map(|id| id.as_str().to_owned())
+        });
         let mut manifest = self.asset_manifest.clone();
         let Some(entry) = manifest.get_mut(&source_id) else {
             return;
@@ -196,6 +227,7 @@ impl EditorApp {
         if let Some(paired) = motion_model_sources {
             entry.import_settings.motion_model_sources = paired;
             entry.import_settings.motion_original_model_source = motion_original_model_source;
+            entry.import_settings.motion_humanoid_source_model = motion_humanoid_source_model;
         }
         if let Err(error) = save_asset_manifest(&project, &manifest) {
             self.session
@@ -218,6 +250,31 @@ impl EditorApp {
             ));
     }
 
+}
+
+fn humanoid_capable_pmx_models(
+    manifest: &engine::AssetManifest,
+) -> Vec<(AssetId, String)> {
+    pmx_model_sources(manifest)
+        .into_iter()
+        .filter(|(id, _)| {
+            manifest.get(id).is_some_and(|entry| {
+                entry.import_settings.humanoid_profiles.iter().any(|profile| {
+                    engine::asset::HumanoidBone::REQUIRED
+                        .iter()
+                        .all(|bone| profile.bones.contains_key(bone))
+                        && entry
+                            .import_settings
+                            .skeleton_records
+                            .iter()
+                            .any(|record| {
+                                record.id == profile.skeleton
+                                    && record.identity == profile.skeleton_identity
+                            })
+                })
+            })
+        })
+        .collect()
 }
 
 /// Open document state for a glTF/GLB source's Import Settings window

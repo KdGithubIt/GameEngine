@@ -23,6 +23,12 @@ pub(in crate::ui) struct MotionPairingState {
     /// Absolute PMX paths parallel to `candidates`, retained because the
     /// compatibility button parses current source bytes on demand.
     pub(in crate::ui) candidate_paths: Vec<(AssetId, PathBuf)>,
+    /// Explicit stable associated model supplying semantic Humanoid conversion
+    /// provenance for the one target-independent portable motion (ADR 0154).
+    pub(in crate::ui) humanoid_source: Option<AssetId>,
+    /// Registered PMX models with a structurally usable persisted HumanoidProfile.
+    /// Association with this motion is evaluated from `original`/`selected` live.
+    pub(in crate::ui) humanoid_capable_models: Vec<(AssetId, String)>,
     /// Model-source pairs backed by a currently registered Retarget Map.
     /// Stored as source/target model IDs so the UI can report readiness
     /// without exposing internal skeleton sub-asset IDs.
@@ -147,7 +153,85 @@ pub(super) fn show_motion_pairing_editor(ui: &mut egui::Ui, pairing: &mut Motion
             ui.label("Missing maps must be created as explicit Retarget Map assets before reimport.");
         }
     }
+
+    ui.add_space(8.0);
+    ui.separator();
+    ui.strong("Humanoid source model (optional)");
+    ui.label(
+        "Publishes one portable Humanoid motion on reimport. This is conversion provenance, not another output target.",
+    );
+    let humanoid_choices = humanoid_source_choices(pairing);
+    let selected_label = pairing
+        .humanoid_source
+        .as_ref()
+        .and_then(|selected| {
+            humanoid_choices
+                .iter()
+                .find(|(id, _)| id == selected)
+                .map(|(_, label)| label.as_str())
+        })
+        .unwrap_or("Not set - Native candidates only");
+    egui::ComboBox::from_id_salt("vmd_humanoid_source_model")
+        .selected_text(selected_label)
+        .show_ui(ui, |ui| {
+            ui.selectable_value(
+                &mut pairing.humanoid_source,
+                None,
+                "Not set - Native candidates only",
+            );
+            for (id, label) in &humanoid_choices {
+                ui.selectable_value(
+                    &mut pairing.humanoid_source,
+                    Some(id.clone()),
+                    label,
+                );
+            }
+        });
+    if pairing.humanoid_source.is_none() {
+        let suggested = pairing
+            .original
+            .as_ref()
+            .filter(|original| humanoid_choices.iter().any(|(id, _)| id == *original))
+            .cloned()
+            .map(|id| (id, "Use original model"))
+            .or_else(|| {
+                (humanoid_choices.len() == 1)
+                    .then(|| (humanoid_choices[0].0.clone(), "Use sole Humanoid-capable model"))
+            });
+        if let Some((suggested, label)) = suggested
+            && ui.button(label).clicked()
+        {
+            pairing.humanoid_source = Some(suggested);
+        }
+    }
+    if !motion_humanoid_source_is_valid(pairing) {
+        ui.colored_label(
+            egui::Color32::RED,
+            "The selected Humanoid source is no longer an associated Humanoid-capable model. Choose another model or clear it before saving.",
+        );
+    } else if pairing.humanoid_source.is_some() {
+        ui.label("Changing this source regenerates the same logical Humanoid candidate on reimport.");
+    }
     show_motion_compatibility_checker(ui, pairing);
+}
+
+fn humanoid_source_choices(pairing: &MotionPairingState) -> Vec<(AssetId, String)> {
+    pairing
+        .humanoid_capable_models
+        .iter()
+        .filter(|(id, _)| {
+            pairing.original.as_ref() == Some(id) || pairing.selected.contains(id)
+        })
+        .cloned()
+        .collect()
+}
+
+pub(super) fn motion_humanoid_source_is_valid(pairing: &MotionPairingState) -> bool {
+    pairing.humanoid_source.as_ref().is_none_or(|selected| {
+        humanoid_source_choices(pairing)
+            .iter()
+            .any(|(id, _)| id == selected)
+    })
 }
 
 /// Shows the opt-in name/operation checker separately from Save and Reimport.
