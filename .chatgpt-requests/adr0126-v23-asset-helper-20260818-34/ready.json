@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0126-v23-asset-helper-20260818-34",
+  "target_branch": "chatgpt/gameengine-adr0126-first-release-v23",
+  "expected_head_sha": "5101f6b0cf15d42810f4828596fa64b1b79ff05a",
+  "baseline_main_sha": "96c8ffb18a74eabec2164daa61f694f131019ddc",
+  "patch_sha256": "262c26791d3e479985fa3a4cbb4a26c294ea2d53f50b43709143077190c2a486",
+  "patch_bytes": 2415,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Add atomic editor-authored asset registration helper",
+  "pr_title": "GameEngine: complete ADR 0126 Timeline / Sequencer first release",
+  "pr_body": "## Summary\n\nAdds the shared atomic text-asset registration helper needed by Timeline document creation, with manifest rollback ownership in asset management.\n\n<!-- gameengine-visual-validation: editor -->\n"
+}
