@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0127-v5-runtime-d78d-r1",
+  "target_branch": "chatgpt/gameengine-adr0127-first-release-current-main-v5",
+  "expected_head_sha": "d78debd9908b81b929bc42b790f18fb2cd95ceca",
+  "baseline_main_sha": "61c5afcd0ba773edce49c5fea711ba23c8331cc7",
+  "patch_sha256": "fc715277a180adb2ccf16de6bd94cb1dc57e5473ebb91297672cd05a07c1a9bf",
+  "patch_bytes": 31462,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Integrate ADR0127 Native 2D scene runtime",
+  "pr_title": "GameEngine: complete ADR0127 Native 2D first release",
+  "pr_body": "Adds current-main v5 Native 2D component schemas, generalized Camera2D/Camera3D arbitration, fixed-step sprite animation/runtime composition, Scene conversion, and matching Editor asset-reference classification without touching the new preview-streaming asset-load path."
+}
