@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "            if self.benchmark_child_active() {\n                runtime",
+  "new": "            if benchmark_single_model {\n                runtime"
+}
