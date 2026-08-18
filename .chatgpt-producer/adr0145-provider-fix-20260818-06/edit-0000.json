@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/external_agent_provider.rs",
+  "old": "            let mcp_config = format!(\n                r#\"{{\\\"mcpServers\\\":{{\\\"{GAMEENGINE_MCP_SERVER_NAME}\\\":{{\\\"type\\\":\\\"http\\\",\\\"url\\\":\\\"${{GAMEENGINE_MCP_ENDPOINT}}\\\",\\\"headers\\\":{{\\\"Authorization\\\":\\\"Bearer ${{{GAMEENGINE_MCP_TOKEN_ENV}}}\\\"}}}}}}}}\"#\n            );",
+  "new": "            let mcp_config = serde_json::json!({\n                \"mcpServers\": {\n                    (GAMEENGINE_MCP_SERVER_NAME): {\n                        \"type\": \"http\",\n                        \"url\": \"${GAMEENGINE_MCP_ENDPOINT}\",\n                        \"headers\": {\n                            \"Authorization\": format!(\n                                \"Bearer ${{{GAMEENGINE_MCP_TOKEN_ENV}}}\"\n                            )\n                        }\n                    }\n                }\n            })\n            .to_string();"
+}
