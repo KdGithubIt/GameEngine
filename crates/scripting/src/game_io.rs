@@ -53,6 +53,8 @@ pub enum EngineViewKind {
     CharacterState,
     /// Current animator clip, playback position, and transition state.
     AnimationState,
+    /// Current Native 2D sprite-animation clip and deterministic frame/tick state.
+    SpriteAnimationState,
     /// Current VFX playback state, simulation time, budget counters, and backend.
     VfxState,
     /// Current lock-on target and selection state.
