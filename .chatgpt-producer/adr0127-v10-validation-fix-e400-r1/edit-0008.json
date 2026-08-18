@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ui/assets/browser.rs",
+  "old": "        AssetKind::AnimationSet => \"◎\",\n        AssetKind::AnimationClip => \"▶\",\n        AssetKind::MotionSource => \"↝\",\n        AssetKind::Texture => \"▤\",\n",
+  "new": "        AssetKind::AnimationSet => \"◎\",\n        AssetKind::AnimationClip => \"▶\",\n        AssetKind::MotionSource => \"↝\",\n        AssetKind::SpriteAtlas => \"▥\",\n        AssetKind::SpriteAnimation => \"▷\",\n        AssetKind::TileSet => \"▦\",\n        AssetKind::TileMap => \"▧\",\n        AssetKind::Texture => \"▤\",\n"
+}
