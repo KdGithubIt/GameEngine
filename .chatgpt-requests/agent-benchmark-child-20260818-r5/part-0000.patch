@@ -1,0 +1,576 @@
+diff --git a/crates/editor/src/ai_studio.rs b/crates/editor/src/ai_studio.rs
+index 0039eda7b4339e7b827cea764d01af42e9a9fb7f..71be2c5baa3ac708dbc3b9857222406ecd806e8b 100644
+--- a/crates/editor/src/ai_studio.rs
++++ b/crates/editor/src/ai_studio.rs
+@@ -4,6 +4,8 @@
+ //! lifecycle, permissions, persistence, provider process management, and code
+ //! workspace rules live in the GUI-free `agent_host` module.
+ 
++mod benchmark_child;
++
+ use crate::agent_benchmark::{
+     agent_run_record, benchmark_task, read_question_record, AgentRunBenchmarkIdentity,
+     BenchmarkHardwareIdentity, BenchmarkRecord, BenchmarkStore, BenchmarkTaskKind, CatalogProfile,
+@@ -498,6 +500,7 @@ pub struct AiStudioPanel {
+     managed_evaluation_requested: bool,
+     managed_playtest_started_at: Option<std::time::Instant>,
+     last_captured_frame: Option<(egui::TextureHandle, String, u32, u32)>,
++    benchmark_child: Option<benchmark_child::BenchmarkChildState>,
+     status: Option<String>,
+ }
+ 
+@@ -621,6 +624,7 @@ impl AiStudioPanel {
+             managed_evaluation_requested: false,
+             managed_playtest_started_at: None,
+             last_captured_frame: None,
++            benchmark_child: None,
+             status: benchmark_status,
+         })
+     }
+@@ -929,6 +933,7 @@ impl AiStudioPanel {
+         self.request_managed_playtest_if_ready();
+         self.request_next_managed_runtime_input_if_ready();
+         self.poll_managed_playtest_timeout();
++        self.poll_benchmark_child();
+ 
+         if !self.presentation.open {
+             return;
+@@ -2598,14 +2603,21 @@ impl AiStudioPanel {
+         images: Vec<Vec<u8>>,
+     ) -> Result<(), String> {
+         let run = self.host.run(run_id).map_err(|error| error.to_string())?.clone();
++        let benchmark_single_model = self.benchmark_child_active();
+         let (backend_label, routing_summary, routing_decisions) = {
+             let runtime = self
+                 .native_agent_runtime
+                 .as_mut()
+                 .ok_or_else(|| "Native AgentRuntime is not initialized.".to_owned())?;
+-            runtime
+-                .start_turn(&run, context.as_deref(), images)
+-                .map_err(|error| error.to_string())?;
++            if benchmark_single_model {
++                runtime
++                    .start_turn_single_model(&run, context.as_deref(), images)
++                    .map_err(|error| error.to_string())?;
++            } else {
++                runtime
++                    .start_turn(&run, context.as_deref(), images)
++                    .map_err(|error| error.to_string())?;
++            }
+             (
+                 runtime.backend_label(),
+                 runtime.routing_policy_summary(),
+@@ -3446,16 +3458,21 @@ impl AiStudioPanel {
+         self.active_external_program = external_provider.map(|_| self.provider_program.clone());
+         self.active_external_args = external_provider.map(|_| self.provider_args.clone());
+         self.external_provider_diagnostics = ExternalAgentDiagnostics::default();
++        let benchmark_single_model = self.benchmark_child_active();
+         let routing_candidates = native_config
+             .as_ref()
+             .map(|config| self.native_routing_candidates(config))
+             .unwrap_or_default();
+         self.native_agent_runtime = native_config.map(|config| {
+-            NativeAgentRuntime::configured_routed(
+-                config,
+-                routing_candidates,
+-                &self.benchmark_records,
+-            )
++            if benchmark_single_model {
++                NativeAgentRuntime::configured(config)
++            } else {
++                NativeAgentRuntime::configured_routed(
++                    config,
++                    routing_candidates,
++                    &self.benchmark_records,
++                )
++            }
+         });
+         self.native_run_benchmark_context = native_benchmark_identity.map(
+             |(backend_id, model_id, inventory)| NativeRunBenchmarkContext {
+@@ -3486,6 +3503,22 @@ impl AiStudioPanel {
+         self.managed_evaluation_requested = false;
+         self.managed_playtest_started_at = None;
+         self.last_captured_frame = None;
++        if mode == AgentRuntimeMode::Native
++            && self.benchmark_child_requires_initial_validation_failure()
++        {
++            self.prepare_native_workspace(&run_id)?;
++            self.host
++                .transition_run(
++                    &run_id,
++                    AgentRunState::Executing,
++                    "Benchmark validation-repair baseline prepared; running the mandatory initial failing validation before model repair.",
++                )
++                .map_err(|error| error.to_string())?;
++            self.host
++                .begin_managed_validation(&run_id, true)
++                .map_err(|error| error.to_string())?;
++            return Ok(run_id);
++        }
+         match mode {
+             AgentRuntimeMode::External => self.request_permission(
+                 run_id.clone(),
+@@ -3519,6 +3552,13 @@ impl AiStudioPanel {
+         capability: AgentCapability,
+         action: PendingPermissionAction,
+     ) {
++        if self.benchmark_child_allows(capability) {
++            match self.host.resolve_permission(&run_id, capability, ApprovalScope::Run) {
++                Ok(()) => self.execute_permission_action(&run_id, action),
++                Err(error) => self.status = Some(error.to_string()),
++            }
++            return;
++        }
+         match self.host.check_permission(&run_id, capability) {
+             Ok(PermissionCheck::Granted) => self.execute_permission_action(&run_id, action),
+             Ok(PermissionCheck::RequiresApproval) => {
+diff --git a/crates/editor/src/ai_studio/benchmark_child.rs b/crates/editor/src/ai_studio/benchmark_child.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..3555a4d55bbdf183ffa797550ab5c6bc039bf324
+--- /dev/null
++++ b/crates/editor/src/ai_studio/benchmark_child.rs
+@@ -0,0 +1,293 @@
++use super::*;
++use crate::benchmark_experiment::{
++    BenchmarkExperimentResult, BenchmarkRunFailureKind, BenchmarkRunOutcome, BenchmarkRoutingMode,
++};
++use crate::benchmark_process::BenchmarkChildRunSpec;
++use std::path::Path;
++use std::time::{SystemTime, UNIX_EPOCH};
++
++pub(super) struct BenchmarkChildState {
++    spec: BenchmarkChildRunSpec,
++    started: bool,
++    started_unix_ms: u64,
++    result_written: bool,
++}
++
++impl AiStudioPanel {
++    /// Configures this Editor process as one isolated benchmark child.
++    pub fn configure_benchmark_child(&mut self, path: &Path) -> Result<(), String> {
++        let spec = BenchmarkChildRunSpec::read(path)?;
++        if spec.backend_id != "ollama-compatible" {
++            return Err("first-release benchmark child supports the local Ollama-compatible backend only".to_owned());
++        }
++        self.model_backend = ModelBackendPreference::Local;
++        self.local_model_endpoint = spec.endpoint.clone();
++        self.local_model_name = spec.model_id.clone();
++        self.quality_preference = spec.quality;
++        self.benchmark_task_id = spec.task_id.clone();
++        self.benchmark_child = Some(BenchmarkChildState {
++            spec,
++            started: false,
++            started_unix_ms: unix_ms(),
++            result_written: false,
++        });
++        self.presentation.close();
++        Ok(())
++    }
++
++    pub(super) fn benchmark_child_active(&self) -> bool {
++        self.benchmark_child.is_some()
++    }
++
++    pub(super) fn benchmark_child_requires_initial_validation_failure(&self) -> bool {
++        self.benchmark_child
++            .as_ref()
++            .is_some_and(|child| child.spec.task_id == "validation_repair_v1")
++    }
++
++    pub(super) fn benchmark_child_allows(&self, capability: AgentCapability) -> bool {
++        let Some(child) = self.benchmark_child.as_ref() else {
++            return false;
++        };
++        match child.spec.task_id.as_str() {
++            "runtime_interaction_v1" | "visual_evaluation_v1" => matches!(
++                capability,
++                AgentCapability::RuntimeLaunch
++                    | AgentCapability::RuntimeInputControl
++                    | AgentCapability::FrameCapture
++            ),
++            _ => false,
++        }
++    }
++
++    pub(super) fn poll_benchmark_child(&mut self) {
++        let Some(child) = self.benchmark_child.as_ref() else {
++            return;
++        };
++        if child.result_written {
++            return;
++        }
++        if !child.started {
++            if let Err(error) = self.start_benchmark_child_task() {
++                self.write_benchmark_child_failure(BenchmarkRunFailureKind::Harness, error);
++            }
++            return;
++        }
++
++        let task_id = child.spec.task_id.clone();
++        if task_id == "read_question_v1" {
++            if self.native_question.is_none() && self.pending_native_question_start.is_none() {
++                if let Some(snapshot) = self.last_native_question_benchmark.clone()
++                    && snapshot.policy.task_id == task_id
++                {
++                    match read_question_record(
++                        &task_id,
++                        &snapshot.metrics,
++                        snapshot.policy.inventory.as_ref(),
++                        snapshot.policy.quality,
++                        snapshot.policy.workload,
++                        &snapshot.policy.hardware,
++                    ) {
++                        Ok(record) => self.write_benchmark_child_record(record, false),
++                        Err(error) => self.write_benchmark_child_failure(
++                            BenchmarkRunFailureKind::CompletionGate,
++                            error,
++                        ),
++                    }
++                } else if let Some(status) = self.status.clone()
++                    && (status.contains("unavailable")
++                        || status.contains("failed")
++                        || status.contains("error"))
++                {
++                    self.write_benchmark_child_failure(BenchmarkRunFailureKind::Backend, status);
++                }
++            }
++            return;
++        }
++
++        let Some(run_id) = self.active_run_id.clone() else {
++            return;
++        };
++        let state = self.host.run(&run_id).map(|run| run.state).ok();
++        if state == Some(AgentRunState::Evaluating) {
++            match self.host.complete_run(&run_id) {
++                Ok(()) | Err(AgentHostError::CompletionPending) => {}
++                Err(error) => {
++                    self.write_benchmark_child_failure(BenchmarkRunFailureKind::Harness, error.to_string());
++                    return;
++                }
++            }
++        }
++        let Ok(run) = self.host.run(&run_id).cloned() else {
++            return;
++        };
++        if !matches!(run.state, AgentRunState::Completed | AgentRunState::Failed | AgentRunState::Cancelled) {
++            return;
++        }
++        let Some(identity) = self.native_run_benchmark_context.clone() else {
++            self.write_benchmark_child_failure(
++                BenchmarkRunFailureKind::Harness,
++                "terminal benchmark run lost its frozen model identity".to_owned(),
++            );
++            return;
++        };
++        match agent_run_record(
++            &task_id,
++            &run,
++            AgentRunBenchmarkIdentity {
++                backend_id: &identity.backend_id,
++                model_id: &identity.model_id,
++                inventory: identity.inventory.as_ref(),
++                quality: identity.quality,
++                workload: identity.workload,
++                hardware: &identity.hardware,
++            },
++        ) {
++            Ok(record) => self.write_benchmark_child_record(record, identity.routed),
++            Err(error) => self.write_benchmark_child_failure(BenchmarkRunFailureKind::CompletionGate, error),
++        }
++    }
++
++    pub fn take_benchmark_child_exit_request(&mut self) -> bool {
++        if !self
++            .benchmark_child
++            .as_ref()
++            .is_some_and(|child| child.result_written)
++        {
++            return false;
++        }
++        self.benchmark_child.take();
++        true
++    }
++
++    fn start_benchmark_child_task(&mut self) -> Result<(), String> {
++        let (task_id, model_id) = self
++            .benchmark_child
++            .as_ref()
++            .map(|child| (child.spec.task_id.clone(), child.spec.model_id.clone()))
++            .ok_or_else(|| "benchmark child is unavailable".to_owned())?;
++        if let Some(child) = self.benchmark_child.as_mut() {
++            child.started = true;
++            child.started_unix_ms = unix_ms();
++        }
++        self.status = Some(format!("Benchmark child starting {task_id} on exact model {model_id}."));
++        if task_id == "read_question_v1" {
++            self.host
++                .append_message(
++                    &self.selected_session,
++                    ConversationRole::User,
++                    "In this repository-owned benchmark fixture, which Rust function defines the fixture score? Report the defining project/repository provenance, not only the answer.",
++                )
++                .map_err(|error| error.to_string())?;
++            self.start_native_question();
++            return Ok(());
++        }
++        self.proposal_draft = benchmark_proposal(&task_id)?;
++        self.begin_run();
++        Ok(())
++    }
++
++    fn write_benchmark_child_record(&mut self, record: BenchmarkRecord, routed: bool) {
++        let outcome = if record.metrics.completion_success == TelemetryValue::Measured(true) {
++            BenchmarkRunOutcome::Passed
++        } else {
++            BenchmarkRunOutcome::Failed
++        };
++        let failure_kind = (outcome != BenchmarkRunOutcome::Passed)
++            .then_some(BenchmarkRunFailureKind::CompletionGate);
++        self.write_benchmark_child_result(outcome, failure_kind, routed, Some(record));
++    }
++
++    fn write_benchmark_child_failure(&mut self, kind: BenchmarkRunFailureKind, message: String) {
++        self.status = Some(message.clone());
++        let outcome = if matches!(kind, BenchmarkRunFailureKind::CapabilityUnavailable) {
++            BenchmarkRunOutcome::Unavailable
++        } else {
++            BenchmarkRunOutcome::Failed
++        };
++        self.write_benchmark_child_result(outcome, Some(kind), false, None);
++    }
++
++    fn write_benchmark_child_result(
++        &mut self,
++        outcome: BenchmarkRunOutcome,
++        failure_kind: Option<BenchmarkRunFailureKind>,
++        routed: bool,
++        record: Option<BenchmarkRecord>,
++    ) {
++        let Some(child) = self.benchmark_child.as_mut() else {
++            return;
++        };
++        if child.result_written {
++            return;
++        }
++        let result = BenchmarkExperimentResult {
++            experiment_id: child.spec.experiment_id.clone(),
++            engine_commit_head: child.spec.engine_commit_head.clone(),
++            fixture_version: child.spec.fixture_version.clone(),
++            routing_mode: BenchmarkRoutingMode::SingleModel,
++            run: child.spec.planned_run(),
++            started_unix_ms: child.started_unix_ms,
++            finished_unix_ms: unix_ms(),
++            outcome,
++            failure_kind,
++            routed_to_another_model: routed,
++            record,
++        };
++        let write_result = serde_json::to_vec_pretty(&result)
++            .map_err(|error| error.to_string())
++            .and_then(|bytes| {
++                if let Some(parent) = child.spec.result_path.parent() {
++                    fs::create_dir_all(parent).map_err(|error| error.to_string())?;
++                }
++                fs::write(&child.spec.result_path, bytes).map_err(|error| error.to_string())
++            });
++        match write_result {
++            Ok(()) => child.result_written = true,
++            Err(error) => self.status = Some(format!("Benchmark result write failed: {error}")),
++        }
++    }
++}
++
++fn benchmark_proposal(task_id: &str) -> Result<AgentProposal, String> {
++    let mut proposal = AgentProposal::default();
++    proposal.goal = match task_id {
++        "project_inspection_v1" => "Inspect the repository-owned benchmark project using actual project/authoring evidence and identify its main scene plus Rust fixture source.",
++        "code_implementation_v1" => "Change game/src/benchmark_target.rs so fixture_score(4) returns 8, update the test accordingly, and pass managed source validation.",
++        "typed_authoring_mutation_v1" => "Create one entity named BenchmarkAgentEntity through GameEngine typed authoring/MCP only, then validate the authoritative authoring result.",
++        "validation_repair_v1" => "Repair the host-proven failing benchmark_target test so the intended baseline fixture_score(4) == 5 passes, then revalidate.",
++        "runtime_interaction_v1" => "Use normal Editor Play and the Agent virtual-input action to send a Space key press and verify the managed runtime interaction completes.",
++        "visual_evaluation_v1" => "Launch normal Editor Play, capture the actual Game View, inspect the attached image, and resolve visual_evaluation only from that image.",
++        other => return Err(format!("unsupported benchmark child task `{other}`")),
++    }.to_owned();
++    proposal.requirements = vec![
++        "Use only governed GameEngine Agent Host paths; do not bypass typed authoring, permissions, work claims, managed validation, or normal Play.".to_owned(),
++        "Return completion gates only from evidence actually observed in this run.".to_owned(),
++    ];
++    proposal.acceptance_criteria = vec![proposal.goal.clone()];
++    match task_id {
++        "code_implementation_v1" | "validation_repair_v1" => {
++            proposal.planned_code_changes = vec!["game/src/benchmark_target.rs".to_owned()];
++            proposal.validation_plan = vec!["all".to_owned()];
++        }
++        "typed_authoring_mutation_v1" => {
++            proposal.planned_project_changes = vec!["Create BenchmarkAgentEntity in the authoritative scene through typed authoring.".to_owned()];
++        }
++        "runtime_interaction_v1" => {
++            proposal.playtest_plan = vec!["Send Space pressed through runtime_input and verify the managed interaction.".to_owned()];
++        }
++        "visual_evaluation_v1" => {
++            proposal.playtest_plan = vec!["Capture and visually evaluate the actual managed Game View frame.".to_owned()];
++        }
++        _ => {}
++    }
++    Ok(proposal)
++}
++
++fn unix_ms() -> u64 {
++    SystemTime::now()
++        .duration_since(UNIX_EPOCH)
++        .unwrap_or_default()
++        .as_millis()
++        .min(u128::from(u64::MAX)) as u64
++}
+diff --git a/crates/editor/src/benchmark_process.rs b/crates/editor/src/benchmark_process.rs
+index 54cf20f3e7a9fe32fc084f60dfe2bd97f9733330..30e50e4da30d84b63ef2f47e7b91d19104b3ba38 100644
+--- a/crates/editor/src/benchmark_process.rs
++++ b/crates/editor/src/benchmark_process.rs
+@@ -222,6 +222,9 @@ impl BenchmarkExperimentCoordinator {
+ 
+     fn spawn_run(&self, run: BenchmarkPlannedRun) -> Result<ActiveChild, String> {
+         let project_root = self.sandbox.reset_run(&self.spec.experiment_id, run.ordinal)?;
++        if run.task_id == "validation_repair_v1" {
++            inject_validation_repair_fault(&project_root)?;
++        }
+         let experiment_root = self
+             .spec
+             .output_destination
+@@ -265,6 +268,17 @@ fn read_child_result(path: &Path) -> Result<BenchmarkExperimentResult, String> {
+     serde_json::from_slice(&bytes).map_err(|error| error.to_string())
+ }
+ 
++fn inject_validation_repair_fault(project_root: &Path) -> Result<(), String> {
++    let path = project_root.join("game/src/benchmark_target.rs");
++    let source = fs::read_to_string(&path).map_err(|error| error.to_string())?;
++    let baseline = "assert_eq!(fixture_score(4), 5);";
++    if source.matches(baseline).count() != 1 {
++        return Err("validation-repair fixture baseline is not the expected version".to_owned());
++    }
++    fs::write(&path, source.replace(baseline, "assert_eq!(fixture_score(4), 999);"))
++        .map_err(|error| error.to_string())
++}
++
+ fn safe_component(value: &str) -> String {
+     let value = value
+         .chars()
+diff --git a/crates/editor/src/main.rs b/crates/editor/src/main.rs
+index 18d02c061a312c6531c7a1686d881f83e0f8991c..946d045464a9a32ee4b5e4347598a4d7ff90d011 100644
+--- a/crates/editor/src/main.rs
++++ b/crates/editor/src/main.rs
+@@ -4,9 +4,7 @@ mod mcp_transport;
+ use std::fs::File;
+ #[cfg(feature = "visual-validation")]
+ use std::io::BufWriter;
+-#[cfg(feature = "visual-validation")]
+-use std::path::Path;
+-use std::path::PathBuf;
++use std::path::{Path, PathBuf};
+ use std::sync::mpsc;
+ #[cfg(feature = "visual-validation")]
+ use std::time::{Duration, Instant};
+@@ -45,6 +43,7 @@ impl EditorShell {
+     fn new(
+         project_lease: EditorLease,
+         context: &eframe::egui::Context,
++        benchmark_run: Option<&Path>,
+     ) -> Result<Self, String> {
+         let root = project_lease.project_root().clone();
+         #[cfg(feature = "visual-validation")]
+@@ -60,13 +59,16 @@ impl EditorShell {
+                 mcp_server.authorization_token(),
+             )
+             .map_err(|error| error.to_string())?;
+-        let ai_studio = AiStudioPanel::new(
++        let mut ai_studio = AiStudioPanel::new(
+             &root,
+             AiStudioConnection::new(
+                 mcp_server.endpoint().to_string(),
+                 mcp_server.authorization_token().to_owned(),
+             ),
+         )?;
++        if let Some(benchmark_run) = benchmark_run {
++            ai_studio.configure_benchmark_child(benchmark_run)?;
++        }
+         #[cfg(feature = "visual-validation")]
+         let (ai_studio, visual_ai_studio_detached_capture) = {
+             let mut ai_studio = ai_studio;
+@@ -347,6 +349,10 @@ impl eframe::App for EditorShell {
+                 engine_editor::ai_studio::AiStudioRuntimeResult::PlayStarted,
+             );
+         }
++        if self.ai_studio.take_benchmark_child_exit_request() {
++            context.send_viewport_cmd(eframe::egui::ViewportCommand::Close);
++            return;
++        }
+         #[cfg(feature = "visual-validation")]
+         self.handle_visual_validation_capture(context);
+     }
+@@ -574,9 +580,15 @@ fn write_visual_validation_png(
+     writer.finish().map_err(|error| error.to_string())
+ }
+ 
+-fn project_argument() -> Result<PathBuf, String> {
++struct EditorArguments {
++    project: PathBuf,
++    benchmark_run: Option<PathBuf>,
++}
++
++fn editor_arguments() -> Result<EditorArguments, String> {
+     let mut arguments = std::env::args_os().skip(1);
+     let mut project = None;
++    let mut benchmark_run = None;
+     while let Some(argument) = arguments.next() {
+         if argument == "--project" {
+             if project.is_some() {
+@@ -587,6 +599,15 @@ fn project_argument() -> Result<PathBuf, String> {
+                     .next()
+                     .ok_or_else(|| "--project requires a path".to_owned())?,
+             ));
++        } else if argument == "--benchmark-run" {
++            if benchmark_run.is_some() {
++                return Err("--benchmark-run may be specified only once".to_owned());
++            }
++            benchmark_run = Some(PathBuf::from(
++                arguments
++                    .next()
++                    .ok_or_else(|| "--benchmark-run requires a child spec path".to_owned())?,
++            ));
+         } else {
+             return Err(format!(
+                 "unknown Editor argument `{}`",
+@@ -594,12 +615,17 @@ fn project_argument() -> Result<PathBuf, String> {
+             ));
+         }
+     }
+-    project.ok_or_else(|| "Engine Editor requires `--project <path>`".to_owned())
++    Ok(EditorArguments {
++        project: project.ok_or_else(|| "Engine Editor requires `--project <path>`".to_owned())?,
++        benchmark_run,
++    })
+ }
+ 
+ fn run() -> Result<(), String> {
+-    let project = project_argument()?;
+-    let project_lease = acquire_editor_project(&project).map_err(|error| error.to_string())?;
++    let arguments = editor_arguments()?;
++    let project_lease =
++        acquire_editor_project(&arguments.project).map_err(|error| error.to_string())?;
++    let benchmark_run = arguments.benchmark_run;
+     let options = eframe::NativeOptions {
+         viewport: eframe::egui::ViewportBuilder::default()
+             .with_inner_size([1600.0, 1000.0])
+@@ -612,7 +638,11 @@ fn run() -> Result<(), String> {
+         Box::new(move |creation_context| {
+             engine_editor::install_editor_fonts(&creation_context.egui_ctx);
+             Ok(Box::new(
+-                EditorShell::new(project_lease, &creation_context.egui_ctx)
++                EditorShell::new(
++                    project_lease,
++                    &creation_context.egui_ctx,
++                    benchmark_run.as_deref(),
++                )
+                     .map_err(|error| -> Box<dyn std::error::Error + Send + Sync> {
+                         Box::new(std::io::Error::other(error))
+                     })?,
