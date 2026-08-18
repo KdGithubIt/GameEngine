@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/remote_ai_studio.rs",
+  "old": "                    std::path::PathBuf::from(r\"C:\\Users\\private\\leak.png\"),",
+  "new": "                    std::path::PathBuf::from(r\"C:\\Users\\...\\private\\leak.png\"),"
+}
