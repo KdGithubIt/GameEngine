@@ -56,6 +56,20 @@ pub(crate) struct SpatialAudioRuntime {
     game_voices: Vec<GameSpatialVoice>,
 }
 
+impl SpatialAudioRuntime {
+    /// Evaluates a Timeline-owned voice through the same listener/emitter math as authored
+    /// AudioEmitter playback. The caller supplies the production emitter policy with the
+    /// Timeline clip gain already composed into `settings.volume`.
+    pub(crate) fn timeline_gains(
+        &self,
+        source: Entity,
+        settings: AudioVoiceSpatialSettings,
+    ) -> Option<StereoGains> {
+        let pose = self.poses.get(&source).copied()?;
+        Some(emitter_gains(self.listener, pose, settings))
+    }
+}
+
 /// Copies the current listener selection and entity poses into the neutral audio frame.
 pub(crate) fn spatial_audio_frame_system(
     mut transforms: Query<&GlobalTransform>,
