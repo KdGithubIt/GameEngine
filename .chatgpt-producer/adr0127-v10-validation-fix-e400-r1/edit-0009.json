@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ui/assets/document_creation.rs",
+  "old": "            AssetKind::Mesh\n            | AssetKind::AnimationClip\n            | AssetKind::MotionSource\n            | AssetKind::Audio\n",
+  "new": "            AssetKind::Mesh\n            | AssetKind::AnimationClip\n            | AssetKind::MotionSource\n            | AssetKind::SpriteAtlas\n            | AssetKind::SpriteAnimation\n            | AssetKind::TileSet\n            | AssetKind::TileMap\n            | AssetKind::Audio\n"
+}
