@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "20260818-local-ai-runtime-benchmark-adrs-r1",
+  "target_branch": "chatgpt/gameengine-local-ai-runtime-benchmark-adrs",
+  "expected_head_sha": "96c8ffb18a74eabec2164daa61f694f131019ddc",
+  "baseline_main_sha": "96c8ffb18a74eabec2164daa61f694f131019ddc",
+  "patch_sha256": "5ab611338ef8a8a210b0fb61558fc41d1c54e0db0ba3c780f141045d60412fb5",
+  "patch_bytes": 38922,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Add managed local AI and benchmark campaign ADRs",
+  "pr_title": "GameEngine: define managed local AI and benchmark campaigns",
+  "pr_body": "## Summary\n\n- add ADR 0155 for GameEngine-managed local inference with `llama.cpp`\n- define Windows-native, WSL2, and native Linux execution environments without assuming one is always faster\n- keep WSL2 setup, elevation, model acquisition, runtime provenance, and Ollama migration explicit\n- add ADR 0156 for automated multi-model benchmark campaigns\n- distinguish strict model comparison from Windows/WSL/Linux runtime characterization\n- automate the seven-task ADR 0142 campaign while preserving explicit recording, fixture reset, failure evidence, and comparison identity\n\n## Validation\n\nDocumentation-only change; expect GameEngine Windows Validation `docs` mode.\n"
+}
