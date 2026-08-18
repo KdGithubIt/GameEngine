@@ -251,6 +251,53 @@ impl fmt::Display for AssetManagementError {
     }
 }
 
+/// Atomically creates one editor-authored text asset and its manifest row.
+///
+/// The manifest is staged in memory and persisted only after the atomic file write succeeds.
+/// If manifest persistence fails, the newly-created file is removed before the caller can
+/// observe the staged manifest. Rollback ownership stays in this asset-management layer rather
+/// than being reimplemented by individual document creators.
+pub fn create_registered_text_asset(
+    project: &ProjectRoot,
+    manifest: &mut AssetManifest,
+    relative_path: &Path,
+    asset_id: AssetId,
+    display_name: String,
+    contents: &str,
+) -> Result<(), AssetManagementError> {
+    validate_relative(relative_path)?;
+    let destination = project.assets_root().join(relative_path);
+    if destination.exists() {
+        return Err(AssetManagementError::DestinationExists(destination));
+    }
+    let parent = destination
+        .parent()
+        .ok_or_else(|| AssetManagementError::InvalidRelativePath(relative_path.to_path_buf()))?;
+    std::fs::create_dir_all(parent).map_err(AssetManagementError::Io)?;
+    ensure_no_symlink_ancestors(&project.assets_root(), parent)?;
+
+    replace_file_contents(&destination, contents).map_err(AssetManagementError::Persist)?;
+    let mut staged_manifest = manifest.clone();
+    staged_manifest.insert(
+        asset_id,
+        ManifestEntry {
+            path: normalize(relative_path),
+            name: Some(display_name),
+            import_settings: ImportSettings::default(),
+        },
+    );
+    if let Err(error) = persist_manifest(project, &staged_manifest) {
+        if std::fs::remove_file(&destination).is_err() {
+            return Err(AssetManagementError::RollbackFailed {
+                paths: vec![destination],
+            });
+        }
+        return Err(error);
+    }
+    *manifest = staged_manifest;
+    Ok(())
+}
+
 /// Copies desktop-dropped files or folders into one selected asset folder.
 ///
 /// Folder inputs are traversed recursively, preserving the dropped folder's
