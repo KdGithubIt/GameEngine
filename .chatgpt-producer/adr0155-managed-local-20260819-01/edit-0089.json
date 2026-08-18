@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/managed_local_runtime.rs",
+  "old": "include!(\"managed_local_runtime/platform_wsl.rs\");\ninclude!(\"managed_local_runtime/platform_misc.rs\");\ninclude!(\"managed_local_runtime/tests.rs\");\n",
+  "new": "include!(\"managed_local_runtime/platform_wsl.rs\");\ninclude!(\"managed_local_runtime/tests.rs\");\n"
+}

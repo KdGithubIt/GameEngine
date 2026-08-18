@@ -1,0 +1,5 @@
+{
+  "operation": "delete_file",
+  "path": "crates/editor/src/managed_local_runtime/platform_misc.rs",
+  "expected_blob_sha": "d141d459d37afd2d34fc8458ce45c39f94d5af08"
+}

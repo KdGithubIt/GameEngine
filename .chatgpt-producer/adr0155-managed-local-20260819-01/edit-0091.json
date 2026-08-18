@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/managed_local_runtime/tests_runtime.rs",
+  "old": "        let after = fs::read(environment_root.join(\"active.json\")).expect(\"after active\");\n        assert_eq!(before, after);\n        let _ = fs::remove_dir_all(root);\n",
+  "new": "        let after = fs::read(environment_root.join(\"active.json\")).expect(\"after active\");\n        assert_eq!(before, after);\n        let _ = fs::remove_dir_all(root);\n    }\n"
+}
