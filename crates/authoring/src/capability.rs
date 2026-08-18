@@ -738,6 +738,10 @@ fn ui_documents() -> Vec<AuthoringDocumentKind> {
     vec![AuthoringDocumentKind::UiDocument]
 }
 
+fn timeline_documents() -> Vec<AuthoringDocumentKind> {
+    vec![AuthoringDocumentKind::Timeline]
+}
+
 fn typed_document_replace_schema(document_type: &str) -> AuthoringSchemaRef {
     AuthoringSchemaRef::typed_json(
         document_type,
