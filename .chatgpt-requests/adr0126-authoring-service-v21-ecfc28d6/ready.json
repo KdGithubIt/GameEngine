@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0126-authoring-service-v21-ecfc28d6",
+  "target_branch": "chatgpt/gameengine-adr0126-first-release-v21",
+  "expected_head_sha": "f8d80174b5ad6aa4b7dcce5308b65ff9c5695258",
+  "baseline_main_sha": "ecfc28d6d8e0e82eff38cc90f775e14c88347919",
+  "patch_sha256": "15f287cc34cf9d4932f8d5fb3528df404251663cfc17bbfaa36c95004041663f",
+  "patch_bytes": 7621,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Complete ADR0126 shared Timeline authoring service",
+  "pr_title": "GameEngine: complete ADR0126 Timeline and Sequencer",
+  "pr_body": "## Summary\n\nCompletes the shared transactional Timeline authoring mutations required by Sequencer and external authoring surfaces: duration, track/clip rename, typed clip-payload replacement, and marker-event edits. The recovery regenerates the two previously stale exact-match contexts from the rustfmt-formatted target instead of reusing compressed synthetic context.\n\nThe PR remains Draft while runtime hardening, Project Rust, Sequencer, and final validation continue.\n\n<!-- gameengine-chatgpt-dispatcher -->"
+}
