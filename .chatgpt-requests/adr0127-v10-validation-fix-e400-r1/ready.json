@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0127-v10-validation-fix-e400-r1",
+  "target_branch": "chatgpt/gameengine-adr0127-first-release-current-main-v10",
+  "expected_head_sha": "e400234b4751f3f6acb02a736bc465438e16855b",
+  "baseline_main_sha": "96c8ffb18a74eabec2164daa61f694f131019ddc",
+  "patch_sha256": "8e2d4c013b8b5150aaee6caab35c38727d77d68b1d8dad686fc682ef6840b526",
+  "patch_bytes": 6381,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Fix ADR0127 Editor validation failures",
+  "pr_title": "GameEngine: complete ADR0127 Native 2D first release",
+  "pr_body": "Fixes the exact e400234 Windows Validation diagnostics without changing Native 2D persistence contracts: validate UTF-8 project-relative document paths before ProjectRoot resolution, preserve manifest path types, make Tile Map stroke widths explicit f32 values, and complete the four Native 2D AssetKind match arms."
+}
