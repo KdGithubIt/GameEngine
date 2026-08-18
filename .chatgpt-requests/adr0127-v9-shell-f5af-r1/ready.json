@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0127-v9-shell-f5af-r1",
+  "target_branch": "chatgpt/gameengine-adr0127-first-release-current-main-v9",
+  "expected_head_sha": "f5af166520175a34f3b6c44b8060124898039216",
+  "baseline_main_sha": "4e9865c2db754ef5a2a33e1ac42d1cd5cf318229",
+  "patch_sha256": "6f7830fef9bdaf83524108e434810d8a529f8e6407877a89f3a912601427376a",
+  "patch_bytes": 7246,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Register ADR0127 Native 2D authoring in Editor shell",
+  "pr_title": "GameEngine: complete ADR0127 Native 2D first release",
+  "pr_body": "Registers Native 2D as a first-class modeless authoring tool in the main Editor shell and wires the shared project asset manifest into its service-backed workspaces."
+}
