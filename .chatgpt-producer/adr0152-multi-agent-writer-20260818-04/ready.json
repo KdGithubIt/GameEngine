@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0152-multi-agent-writer-20260818-04",
+  "target_branch": "chatgpt/gameengine-adr0152-multi-agent-writer-r1",
+  "expected_head_sha": "e4419c8dc222af170d690796d1f4996d894647f9",
+  "baseline_main_sha": "97c0c97802f81be7b332583759a2c5bf31254476",
+  "edit_parts": [
+    "edit-0000.json",
+    "edit-0001.json",
+    "edit-0002.json",
+    "edit-0003.json",
+    "edit-0004.json",
+    "edit-0005.json",
+    "edit-0006.json",
+    "edit-0007.json"
+  ],
+  "commit_message": "Complete ADR0152 mutation claim enforcement",
+  "pr_title": "Implement ADR0152 multi-agent writer coordination",
+  "pr_body": "Implements ADR0152 multi-agent writer coordination while preserving one authoritative project writer. Adds persisted per-run semantic work claims, deterministic conflict/wait evidence, terminal/restart cleanup, source common-baseline protection, independent completion evidence, and conservative mutation ownership. Native AgentRuntime live MCP mutations now acquire canonical-authoring ownership before dispatch, native managed code writes acquire path ownership before isolated workspace mutation, and read-only MCP remains claim-free. Coverage includes disjoint concurrent work, overlapping authoring/source claims, human-edit reinspection across concurrent runs, cancellation release, restart cleanup, stale proposal/source protection, and independent completion gates. ADR0152 is Accepted and the canonical authoring specification is updated.\n\nVisual Validation is not required because this patch adds no new Editor layout, dialog, spacing, color, icon, or dedicated multi-agent presentation; existing generic event/status presentation only reports the new run-control evidence."
+}
