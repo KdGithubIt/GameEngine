@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "    fn current_installed_inventory(&self) -> Option<&InstalledModelInventory> {",
+  "new": "    fn model_routing_status(&self) -> String {\n        let Ok(primary) = self.selected_native_model_config() else {\n            return format!(\n                \"Measured routing: policy {MODEL_ROUTER_POLICY_VERSION} · unavailable until a primary model is selected.\"\n            );\n        };\n        let policy = ModelRoutingPolicy::derive(\n            primary.clone(),\n            self.native_routing_candidates(&primary),\n            &self.benchmark_records,\n        );\n        format!(\n            \"Measured routing: policy {MODEL_ROUTER_POLICY_VERSION} · {} benchmark-qualified specialist workload(s) · one AgentRun with provider-independent context handoff.\",\n            policy.adopted_specialist_count()\n        )\n    }\n\n    fn current_installed_inventory(&self) -> Option<&InstalledModelInventory> {"
+}
