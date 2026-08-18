@@ -77,8 +77,10 @@ pub enum EngineViewKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GameEventStream {
-    /// Collision enter, stay, and exit records.
+    /// 3D collision enter, stay, and exit records.
     Collision,
+    /// Native 2D collision/trigger enter, stay, and exit records.
+    Collision2d,
     /// Accepted combat hit results after team and invulnerability filtering.
     Hit,
     /// Animation events emitted while sampling clips.

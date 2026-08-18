@@ -1537,6 +1537,38 @@ impl HostEvent for CollisionEvent {
     }
 }
 
+/// Typed Native 2D collision or trigger transition event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Collision2dEvent {
+    /// Transition phase emitted by the dedicated fixed-step 2D world.
+    pub phase: CollisionEventPhase,
+    /// First generation-checked runtime entity in deterministic pair order.
+    pub entity_a: GameEntityHandle,
+    /// Second generation-checked runtime entity in deterministic pair order.
+    pub entity_b: GameEntityHandle,
+    /// Whether either participating Native 2D collider is a sensor.
+    pub sensor: bool,
+}
+
+impl HostEvent for Collision2dEvent {
+    const STREAM: GameEventStream = GameEventStream::Collision2d;
+    fn decode(value: &Value) -> Result<Self, String> {
+        let fields = object(value)?;
+        let phase = match string_field(fields, "phase")? {
+            "enter" => CollisionEventPhase::Enter,
+            "stay" => CollisionEventPhase::Stay,
+            "exit" => CollisionEventPhase::Exit,
+            value => return Err(format!("unknown Native 2D collision phase `{value}`")),
+        };
+        Ok(Self {
+            phase,
+            entity_a: entity(field(fields, "entity_a")?)?,
+            entity_b: entity(field(fields, "entity_b")?)?,
+            sensor: bool_field(fields, "sensor")?,
+        })
+    }
+}
+
 /// Typed accepted-hit event.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct HitEvent {
@@ -2582,5 +2614,33 @@ mod tests {
         assert_eq!(output.commands.len(), 2);
         assert_eq!(output.commands[0].family, GameCommandFamily::Character2d);
         assert_eq!(output.commands[1].family, GameCommandFamily::Character2d);
+    }
+
+    #[test]
+    fn collision_2d_event_decodes_generation_checked_entities_and_sensor_state() {
+        let event = Collision2dEvent::decode(&Value::Object(BTreeMap::from([
+            ("phase".to_owned(), Value::String("enter".to_owned())),
+            (
+                "entity_a".to_owned(),
+                Value::Object(BTreeMap::from([
+                    ("id".to_owned(), Value::U64(3)),
+                    ("generation".to_owned(), Value::U64(4)),
+                ])),
+            ),
+            (
+                "entity_b".to_owned(),
+                Value::Object(BTreeMap::from([
+                    ("id".to_owned(), Value::U64(7)),
+                    ("generation".to_owned(), Value::U64(2)),
+                ])),
+            ),
+            ("sensor".to_owned(), Value::Bool(true)),
+        ])))
+        .unwrap();
+        assert_eq!(Collision2dEvent::STREAM, GameEventStream::Collision2d);
+        assert_eq!(event.phase, CollisionEventPhase::Enter);
+        assert_eq!(event.entity_a, GameEntityHandle { id: 3, generation: 4 });
+        assert_eq!(event.entity_b, GameEntityHandle { id: 7, generation: 2 });
+        assert!(event.sensor);
     }
 }

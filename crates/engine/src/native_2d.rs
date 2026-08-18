@@ -82,6 +82,7 @@ impl Default for CharacterControllerMotion2d {
 pub struct PhysicsRuntime2d {
     world: PhysicsWorld2d,
     events: Vec<ContactEvent2d>,
+    event_generation: u64,
 }
 
 impl PhysicsRuntime2d {
@@ -93,6 +94,11 @@ impl PhysicsRuntime2d {
     /// Returns transition events emitted by the latest fixed step.
     pub fn events(&self) -> &[ContactEvent2d] {
         &self.events
+    }
+
+    /// Returns the monotonically increasing fixed-step event generation.
+    pub fn event_generation(&self) -> u64 {
+        self.event_generation
     }
 }
 
@@ -334,6 +340,7 @@ pub fn physics_2d_fixed_system(
     }
 
     runtime.events = runtime.world.step(fixed_time.fixed_delta, gravity.0);
+    runtime.event_generation = runtime.event_generation.wrapping_add(1);
 
     for (entity, (transform, _, parent, body, _, _, _)) in query.iter_mut() {
         let Some(body) = body else {
@@ -390,12 +397,18 @@ pub struct SpriteAnimationEvent2d {
 #[derive(Debug, Default)]
 pub struct SpriteAnimationEvents2d {
     events: Vec<SpriteAnimationEvent2d>,
+    generation: u64,
 }
 
 impl SpriteAnimationEvents2d {
     /// Iterates events emitted by the most recent SpriteAnimator2D evaluation.
     pub fn iter(&self) -> impl Iterator<Item = &SpriteAnimationEvent2d> {
         self.events.iter()
+    }
+
+    /// Returns the monotonically increasing fixed-step event generation.
+    pub fn generation(&self) -> u64 {
+        self.generation
     }
 }
 
@@ -406,6 +419,7 @@ pub fn sprite_animation_2d_fixed_system(
     mut query: Query<(&mut SpriteAnimatorRuntime2d, &mut SpriteRenderer2d)>,
 ) {
     events.events.clear();
+    events.generation = events.generation.wrapping_add(1);
     let seconds = f64::from(fixed_time.fixed_delta.max(0.0));
     for (entity, (animator, renderer)) in query.iter_mut() {
         let clip = animator.clip.clone();

@@ -215,8 +215,13 @@ name-keyed object with string, number, and boolean values; the engine resource
 itself never crosses the module boundary.
 
 Declared event streams receive host-owned records with monotonically
-increasing per-stream sequences. Collision records contain `enter`, `stay`, or
-`exit`; animation records identify the firing entity and event name; UI records
+increasing per-stream sequences. The existing `Collision` stream remains the 3D
+collision contract. Native 2D collision/trigger transitions use the additive
+`Collision2d` stream and typed `Collision2dEvent`, carrying `enter`, `stay`, or
+`exit`, two generation-checked entity handles, and sensor state without exposing
+solver handles. Native 2D Sprite Animation frame events join the existing
+`Animation` stream with the same typed entity/name payload as skeletal markers.
+UI records
 contain the relayed document event name; scene records report completed or
 failed transitions; emitted project events appear on the `Game` stream. Source
 resources carry producer generations, so a project system ordered before a
