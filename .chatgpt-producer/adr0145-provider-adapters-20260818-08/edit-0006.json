@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ai_studio.rs","old":"use crate::hosted_model_backend;\n","new":"use crate::external_agent_provider::{\n    build_launch_plan, probe_provider, translate_provider_line, ExternalAgentDiagnostics,\n    ExternalAgentProviderKind, ExternalAgentProviderStatus, ExternalAgentSemanticEvent,\n};\nuse crate::hosted_model_backend;\n"}
