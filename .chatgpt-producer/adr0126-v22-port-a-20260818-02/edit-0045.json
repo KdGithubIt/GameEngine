@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/engine/src/lock_on.rs","old":"use crate::camera::{select_active_game_camera, Camera3D, LockOnCamera};","new":"use crate::camera::{\n    select_active_game_camera_with_override, Camera3D, GameCameraSelectionOverride, LockOnCamera,\n};"}
