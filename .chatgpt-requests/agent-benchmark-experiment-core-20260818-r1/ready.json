@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "agent-benchmark-experiment-core-20260818-r1",
+  "target_branch": "chatgpt/gameengine-agent-benchmark-experiment-runner",
+  "expected_head_sha": "96c8ffb18a74eabec2164daa61f694f131019ddc",
+  "baseline_main_sha": "96c8ffb18a74eabec2164daa61f694f131019ddc",
+  "patch_sha256": "8ef7e1a4a7d1b7e42679c639ea9d0d96152523bdf61172d4b8cae2d7b0eae839",
+  "patch_bytes": 26350,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Add reproducible agent benchmark experiment core",
+  "pr_title": "GameEngine: add reproducible local LLM benchmark experiments",
+  "pr_body": "## Summary\n\nAdds the GUI-free ADR0142 experiment foundation: exact experiment identity, deterministic 4x7xN planning, repository-owned fixture isolation/reset, single-model routing contamination checks, explicit unavailable/failure outcomes, machine-local result persistence, and model comparison summaries.\n\nThis is the first implementation slice; subsequent requests on the same Draft PR wire AI Studio orchestration and all seven executable scenarios before completion.\n\n<!-- gameengine-visual-validation: auto -->\n<!-- gameengine-chatgpt-dispatcher -->"
+}
