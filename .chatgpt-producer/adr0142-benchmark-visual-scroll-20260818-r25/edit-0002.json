@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "        });\n    }\n\n    fn current_installed_inventory(&self) -> Option<&InstalledModelInventory> {",
+  "new": "        });\n        #[cfg(feature = \"visual-validation\")]\n        ui.scroll_to_rect(_response.header_response.rect, Some(egui::Align::TOP));\n    }\n\n    fn current_installed_inventory(&self) -> Option<&InstalledModelInventory> {"
+}
