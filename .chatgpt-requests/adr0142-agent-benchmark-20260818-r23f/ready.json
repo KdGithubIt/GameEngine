@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0142-agent-benchmark-20260818-r23f",
+  "target_branch": "chatgpt/gameengine-adr0142-agent-benchmark-v12",
+  "expected_head_sha": "bdd5828870354d5be690c19210b87fae6234b320",
+  "baseline_main_sha": "ecfc28d6d8e0e82eff38cc90f775e14c88347919",
+  "patch_sha256": "e8ee313f61b5fc00059c9dcfcfde7cfa66deaf4882ab277baa6b8080b919380a",
+  "patch_bytes": 36397,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Complete ADR 0142 benchmark evidence hardening and visual fit",
+  "pr_title": "GameEngine: complete ADR 0142 agent benchmark catalog",
+  "pr_body": "ADR 0142 final evidence hardening, preserving ADR 0143 resource controls and fixing detached AI Studio sizing.\n\n<!-- gameengine-visual-validation: auto -->\n<!-- gameengine-visual-validation-trigger: adr0142-agent-benchmark-20260818-r23f -->\n<!-- gameengine-chatgpt-dispatcher -->\n"
+}
