@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/launcher/src/native_2d_template.rs",
+  "old": "        write_proving_content(project.path())?;\n        drop(project);\n",
+  "new": "        write_proving_content(project.path())?;\n        engine_project_lifecycle::refresh_project_game_host(project.path())\n            .map_err(|error| format!(\"could not refresh Native 2D Project Rust host: {error}\"))?;\n        drop(project);\n"
+}
