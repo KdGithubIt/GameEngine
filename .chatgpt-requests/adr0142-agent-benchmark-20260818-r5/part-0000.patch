@@ -1,0 +1,139 @@
+diff --git a/crates/editor/src/agent_benchmark.rs b/crates/editor/src/agent_benchmark.rs
+index a79e9ddbe58666d86267c9f3c5de8def71693679..736b819ab715d020b73e82301454656be337e43e 100644
+--- a/crates/editor/src/agent_benchmark.rs
++++ b/crates/editor/src/agent_benchmark.rs
+@@ -183,6 +183,26 @@ pub(crate) enum ComparisonEquivalence {
+     NonEquivalent(Vec<&'static str>),
+ }
+ 
++fn model_identity_is_measured(identity: &BenchmarkModelIdentity) -> bool {
++    matches!(&identity.model_version, TelemetryValue::Measured(value) if !value.trim().is_empty())
++        && matches!(&identity.quantization, TelemetryValue::Measured(value) if !value.trim().is_empty())
++        && matches!(identity.representation_size_bytes, TelemetryValue::Measured(value) if value > 0)
++        && matches!(&identity.backend_runtime_version, TelemetryValue::Measured(value) if !value.trim().is_empty())
++}
++
++fn hardware_identity_is_measured(identity: &BenchmarkHardwareIdentity) -> bool {
++    !identity.platform.trim().is_empty()
++        && matches!(&identity.gpu, TelemetryValue::Measured(value) if !value.trim().is_empty())
++        && matches!(identity.total_gpu_memory_bytes, TelemetryValue::Measured(value) if value > 0)
++        && matches!(identity.total_system_memory_bytes, TelemetryValue::Measured(value) if value > 0)
++}
++
++fn benchmark_identity_is_measured(identity: &BenchmarkIdentity) -> bool {
++    model_identity_is_measured(&identity.model)
++        && hardware_identity_is_measured(&identity.hardware)
++        && matches!(identity.observed_workload, TelemetryValue::Measured(_))
++}
++
+ pub(crate) fn comparison_equivalence(
+     left: &BenchmarkRecord,
+     right: &BenchmarkRecord,
+@@ -199,16 +219,26 @@ pub(crate) fn comparison_equivalence(
+     {
+         differences.push("harness_version");
+     }
++    if !model_identity_is_measured(&left.identity.model)
++        || !model_identity_is_measured(&right.identity.model)
++    {
++        differences.push("model_representation");
++    }
+     if left.identity.model.backend_id != right.identity.model.backend_id
+         || left.identity.model.backend_runtime_version != right.identity.model.backend_runtime_version
+     {
+         differences.push("backend_runtime");
+     }
+-    if left.identity.hardware != right.identity.hardware {
++    if !hardware_identity_is_measured(&left.identity.hardware)
++        || !hardware_identity_is_measured(&right.identity.hardware)
++        || left.identity.hardware != right.identity.hardware
++    {
+         differences.push("hardware");
+     }
+     if left.identity.quality != right.identity.quality
+         || left.identity.workload_policy_version != right.identity.workload_policy_version
++        || !matches!(left.identity.observed_workload, TelemetryValue::Measured(_))
++        || !matches!(right.identity.observed_workload, TelemetryValue::Measured(_))
+         || left.identity.observed_workload != right.identity.observed_workload
+     {
+         differences.push("quality_or_workload");
+@@ -525,7 +555,10 @@ fn qualify_candidate(
+     }
+     let matching = records
+         .iter()
+-        .filter(|record| candidate_matches_record(candidate, record))
++        .filter(|record| {
++            benchmark_identity_is_measured(&record.identity)
++                && candidate_matches_record(candidate, record)
++        })
+         .collect::<Vec<_>>();
+     let mut qualified = Vec::new();
+     for seed in &matching {
+@@ -923,6 +956,14 @@ mod tests {
+         let mut changed = right.clone();
+         changed.identity.hardware.platform = "different".to_owned();
+         assert!(matches!(comparison_equivalence(&left, &changed), ComparisonEquivalence::NonEquivalent(fields) if fields.contains(&"hardware")));
++
++        let mut incomplete_hardware = right.clone();
++        incomplete_hardware.identity.hardware.gpu = TelemetryValue::Unavailable;
++        assert!(matches!(comparison_equivalence(&left, &incomplete_hardware), ComparisonEquivalence::NonEquivalent(fields) if fields.contains(&"hardware")));
++
++        let mut incomplete_model = right.clone();
++        incomplete_model.identity.model.representation_size_bytes = TelemetryValue::Unavailable;
++        assert!(matches!(comparison_equivalence(&left, &incomplete_model), ComparisonEquivalence::NonEquivalent(fields) if fields.contains(&"model_representation")));
+     }
+ 
+     #[test]
+@@ -967,6 +1008,14 @@ mod tests {
+         assert!(catalog.recommendation(CatalogProfile::Balanced).is_none());
+ 
+         let complete = BENCHMARK_TASKS.iter().copied().map(|task| record("model-a", task, 10)).collect::<Vec<_>>();
++        let mut incomplete_identity = complete.clone();
++        for record in &mut incomplete_identity {
++            record.identity.hardware.gpu = TelemetryValue::Unavailable;
++        }
++        let incomplete_catalog = CuratedModelCatalog::derive(manifest.clone(), &incomplete_identity)
++            .expect("incomplete identity catalog");
++        assert!(incomplete_catalog.recommendation(CatalogProfile::Balanced).is_none());
++
+         let catalog = CuratedModelCatalog::derive(manifest, &complete).expect("complete catalog");
+         let recommendation = catalog.recommendation(CatalogProfile::Balanced).expect("balanced recommendation");
+         assert_eq!(recommendation.candidate.model_id, candidate.model_id);
+diff --git a/crates/editor/src/native_agent.rs b/crates/editor/src/native_agent.rs
+index 7fee438a67731e1acd23d2bf8cfee1e98faa04ef..fda50e0059ee2f8db01f8173a1870872727ecb1b 100644
+--- a/crates/editor/src/native_agent.rs
++++ b/crates/editor/src/native_agent.rs
+@@ -1329,9 +1329,19 @@ mod tests {
+         let worker = std::thread::spawn(move || {
+             for _ in 0..2 {
+                 let (mut stream, _) = listener.accept().expect("accept discovery request");
+-                let mut request = [0_u8; 1024];
+-                let read = stream.read(&mut request).expect("read discovery request");
+-                let request = String::from_utf8_lossy(&request[..read]);
++                let mut request = Vec::new();
++                loop {
++                    let mut chunk = [0_u8; 512];
++                    let read = stream.read(&mut chunk).expect("read discovery request");
++                    if read == 0 {
++                        panic!("discovery request closed before HTTP headers completed");
++                    }
++                    request.extend_from_slice(&chunk[..read]);
++                    if find_bytes(&request, b"\r\n\r\n").is_some() {
++                        break;
++                    }
++                }
++                let request = String::from_utf8_lossy(&request);
+                 let body = if request.starts_with("GET /api/tags " ) {
+                     r#"{"models":[{"name":"test-model:q4","digest":"sha256:test","size":42,"details":{"family":"test","parameter_size":"1B","quantization_level":"Q4_K_M"}}]}"#
+                 } else {
+@@ -1344,6 +1354,10 @@ mod tests {
+                     body,
+                 )
+                 .expect("write discovery response");
++                stream.flush().expect("flush discovery response");
++                stream
++                    .shutdown(Shutdown::Write)
++                    .expect("finish discovery response");
+             }
+         });
+         let endpoint = format!("http://127.0.0.1:{}", address.port());
