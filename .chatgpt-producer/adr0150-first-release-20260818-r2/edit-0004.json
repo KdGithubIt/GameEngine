@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "            let Some(context) = self.native_run_benchmark_context.clone() else {\n                self.status = Some(\n                    \"Run the selected native write-capable corpus task before recording evidence.\"\n                        .to_owned(),\n                );\n                return;\n            };\n            let run = match self.host.run(&context.run_id) {",
+  "new": "            let Some(context) = self.native_run_benchmark_context.clone() else {\n                self.status = Some(\n                    \"Run the selected native write-capable corpus task before recording evidence.\"\n                        .to_owned(),\n                );\n                return;\n            };\n            if context.routed {\n                self.status = Some(\n                    \"Routed native runs are not ADR 0142 single-model evidence. Run this corpus task without a specialist handoff before recording a model baseline.\"\n                        .to_owned(),\n                );\n                return;\n            }\n            let run = match self.host.run(&context.run_id) {"
+}
