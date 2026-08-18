@@ -199,8 +199,8 @@ impl EditorApp {
             .id(egui::Id::new("adr0136_preview_residency_fixture"))
             .collapsible(false)
             .resizable(false)
-            .fixed_pos(egui::pos2(1010.0, 86.0))
-            .fixed_size(egui::vec2(540.0, 410.0))
+            .fixed_pos(egui::pos2(900.0, 86.0))
+            .fixed_size(egui::vec2(680.0, 430.0))
             .show(context, |ui| {
                 ui.heading("Async preview lifecycle");
                 ui.horizontal_wrapped(|ui| {

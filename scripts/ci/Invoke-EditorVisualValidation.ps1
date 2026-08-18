@@ -264,6 +264,7 @@ try {
                     -Name $scenario `
                     -Package "engine-editor" `
                     -ProgramArguments @("--project", $projectRoot) `
+                    -RequestedAuthoringTool $AuthoringTool `
                     -RequestedVisualScenario $scenario
                 $activeCapture = $null
             }
