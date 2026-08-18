@@ -24,6 +24,10 @@ fn run() -> Result<(), String> {
         ui: options.ui,
         material: options.material,
         animation_set: options.animation_set,
+        sprite_atlas: options.sprite_atlas,
+        sprite_animation: options.sprite_animation,
+        tile_set: options.tile_set,
+        tile_map: options.tile_map,
     };
     let mut host = if options.read_only {
         HeadlessAuthoringHost::open_read_only(&options.project, selection)
@@ -78,6 +82,10 @@ struct Options {
     ui: Option<String>,
     material: Option<String>,
     animation_set: Option<String>,
+    sprite_atlas: Option<String>,
+    sprite_animation: Option<String>,
+    tile_set: Option<String>,
+    tile_map: Option<String>,
 }
 
 impl Options {
@@ -91,6 +99,10 @@ impl Options {
         let mut ui = None;
         let mut material = None;
         let mut animation_set = None;
+        let mut sprite_atlas = None;
+        let mut sprite_animation = None;
+        let mut tile_set = None;
+        let mut tile_map = None;
 
         while let Some(argument) = arguments.next() {
             match argument.as_str() {
@@ -102,13 +114,30 @@ impl Options {
                 "--ui" => ui = Some(require_value(&mut arguments, "--ui")?),
                 "--material" => material = Some(require_value(&mut arguments, "--material")?),
                 "--animation-set" => animation_set = Some(require_value(&mut arguments, "--animation-set")?),
+                "--sprite-atlas" => sprite_atlas = Some(require_value(&mut arguments, "--sprite-atlas")?),
+                "--sprite-animation" => sprite_animation = Some(require_value(&mut arguments, "--sprite-animation")?),
+                "--tile-set" => tile_set = Some(require_value(&mut arguments, "--tile-set")?),
+                "--tile-map" => tile_map = Some(require_value(&mut arguments, "--tile-map")?),
                 "--help" | "-h" => return Err(usage()),
                 other => return Err(format!("unknown argument `{other}`\n{}", usage())),
             }
         }
 
         let project = project.ok_or_else(|| format!("--project is required\n{}", usage()))?;
-        Ok(Self { project, read_only, scene, graph, graph_view, ui, material, animation_set })
+        Ok(Self {
+            project,
+            read_only,
+            scene,
+            graph,
+            graph_view,
+            ui,
+            material,
+            animation_set,
+            sprite_atlas,
+            sprite_animation,
+            tile_set,
+            tile_map,
+        })
     }
 }
 
@@ -117,7 +146,7 @@ fn require_value(arguments: &mut impl Iterator<Item = String>, flag: &str) -> Re
 }
 
 fn usage() -> String {
-    "usage: engine-mcp-host --project <path> [--read-only] [--scene <asset-relative>] [--graph <asset-relative>] [--graph-view <asset-relative>] [--ui <asset-relative>] [--material <asset-relative>] [--animation-set <asset-relative>]".into()
+    "usage: engine-mcp-host --project <path> [--read-only] [--scene <asset-relative>] [--graph <asset-relative>] [--graph-view <asset-relative>] [--ui <asset-relative>] [--material <asset-relative>] [--animation-set <asset-relative>] [--sprite-atlas <asset-relative>] [--sprite-animation <asset-relative>] [--tile-set <asset-relative>] [--tile-map <asset-relative>]".into()
 }
 
 #[cfg(test)]
