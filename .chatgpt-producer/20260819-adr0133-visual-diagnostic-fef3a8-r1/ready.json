@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "request_id": "20260819-adr0133-visual-diagnostic-fef3a8-r1",
+  "target_branch": "chatgpt/gameengine-adr0133-first-release-current-main-v10",
+  "expected_head_sha": "fef3a8b6ab1065026f789aa332a6d8a56b241571",
+  "baseline_main_sha": "fef3a8b6ab1065026f789aa332a6d8a56b241571",
+  "edit_parts": [
+    "edit-0000.json",
+    "edit-0001.json",
+    "edit-0002.json",
+    "edit-0003.json",
+    "edit-0004.json",
+    "edit-0005.json",
+    "edit-0006.json",
+    "edit-0007.json",
+    "edit-0008.json"
+  ],
+  "commit_message": "Complete ADR0133 Remote AI Studio browser validation",
+  "pr_title": "ADR0133: complete Remote AI Studio first-release validation",
+  "pr_body": "## Summary\n\nRebuilds ADR0133 Remote AI Studio first-release visual validation from current main while preserving the ADR0157 AI Studio runtime-debug changes. Adds deterministic host-owned Remote fixture state, captures the production companion in Microsoft Edge at desktop/narrow/mobile widths, preserves the full-clippy test-module ordering fix, and saves helper Editor stdout/stderr as Visual artifacts so startup failures have actionable root-cause evidence.\n\n## Validation\n\nRequires full Windows Validation because scripts/ci changes, Automation Regression, and ChatGPT visual review of the generated Remote AI Studio screenshots.\n\n<!-- gameengine-visual-validation: editor -->\n<!-- gameengine-visual-remote-ai-studio: browser -->"
+}
