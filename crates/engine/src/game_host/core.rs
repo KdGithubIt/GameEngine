@@ -23,6 +23,7 @@ use crate::game_timer::GameTimerEvents;
 use crate::hitbox::AttackHitbox;
 use crate::lock_on::TargetLock;
 use crate::navmesh::NavMeshAgent;
+use crate::native_2d::SpriteAnimatorRuntime2d;
 use crate::player::InputActionMap;
 use crate::runtime_metadata::RuntimeMetadata;
 use crate::save::{SaveData, SaveValue};
@@ -1038,6 +1039,17 @@ fn copy_engine_view(world: &World, entity: Entity, view: EngineViewKind) -> Opti
                 ("time".to_owned(), Value::F64(f64::from(animator.time))),
                 ("looping".to_owned(), Value::Bool(animator.looping)),
                 ("fading".to_owned(), Value::Bool(animator.is_fading())),
+            ]))
+        }
+        EngineViewKind::SpriteAnimationState => {
+            let animator = world.get_component::<SpriteAnimatorRuntime2d>(entity)?;
+            Value::Object(BTreeMap::from([
+                ("clip_asset".to_owned(), Value::String(animator.clip_asset.as_str().to_owned())),
+                ("playing".to_owned(), Value::Bool(animator.state.playing)),
+                ("frame_index".to_owned(), Value::U64(animator.state.frame_index as u64)),
+                ("tick_in_frame".to_owned(), Value::U64(u64::from(animator.state.tick_in_frame))),
+                ("speed".to_owned(), Value::F64(f64::from(animator.state.speed))),
+                ("looping".to_owned(), Value::Bool(animator.looping_override.unwrap_or(animator.clip.looping))),
             ]))
         }
         EngineViewKind::VfxState => {
