@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0142-benchmark-visual-scroll-20260818-r25",
+  "target_branch": "chatgpt/gameengine-adr0142-agent-benchmark-v12",
+  "expected_head_sha": "553bad81e39e60c2faeeac629b13af9c644e4187",
+  "baseline_main_sha": "ecfc28d6d8e0e82eff38cc90f775e14c88347919",
+  "patch_sha256": "5435633cbdf701c14d0cafbe9b283ba1fa85c33c4672f855d29d4375a047efea",
+  "patch_bytes": 1768,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Make detached AI Studio benchmark UI scrollable",
+  "pr_title": "GameEngine: complete ADR 0142 agent benchmark catalog",
+  "pr_body": "ADR 0142 final evidence hardening, preserving ADR 0143 resource controls and making the detached AI Studio benchmark/catalog surface fully scrollable. Visual-validation builds deterministically scroll to the benchmark section so the required catalog UI can be reviewed without changing normal startup placement.\n\n<!-- gameengine-visual-validation: auto -->\n<!-- gameengine-visual-validation-trigger: adr0142-benchmark-visual-scroll-20260818-r25 -->\n<!-- gameengine-chatgpt-dispatcher -->"
+}
