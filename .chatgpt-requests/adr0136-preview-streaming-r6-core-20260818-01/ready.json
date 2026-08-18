@@ -1,0 +1,16 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0136-preview-streaming-r6-core-20260818-01",
+  "target_branch": "chatgpt/gameengine-adr0136-preview-streaming-r6",
+  "expected_head_sha": "a70696f0caa23ec490f96270d3fcab72e000b295",
+  "baseline_main_sha": "a70696f0caa23ec490f96270d3fcab72e000b295",
+  "patch_sha256": "562cc94147b9ea08bb95c43e1b2336cc1375ec1a6e6493a3bf67b0e6ef518c15",
+  "patch_bytes": 105306,
+  "patch_parts": [
+    "part-0000.patch",
+    "part-0001.patch"
+  ],
+  "commit_message": "Implement ADR 0136 asynchronous preview residency",
+  "pr_title": "GameEngine: implement ADR 0136 preview residency and streaming",
+  "pr_body": "## Summary\n\nImplements project-scoped preview CPU/GPU residency, asynchronous preview renderer warm-up, frame-budgeted GPU uploads, atomic reimport promotion, and ADR 0135 reclaim recovery for ADR 0136.\n\nThis r6 request is rebuilt from current main after verifying the intervening ADR0152 merge does not overlap ADR0136 product files."
+}
