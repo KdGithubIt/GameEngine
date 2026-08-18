@@ -1,0 +1,55 @@
+diff --git a/crates/editor/src/scene_view.rs b/crates/editor/src/scene_view.rs
+index bc9929638397d25e08044e8c9e0e23a6c32a3230..c45fcae3e84c6292c0233d989ede91cecc6a2016 100644
+--- a/crates/editor/src/scene_view.rs
++++ b/crates/editor/src/scene_view.rs
+@@ -738,6 +738,26 @@ pub struct AnimationPreviewStatus {
+     pub runtime_issue: Option<String>,
+ }
+ 
++/// Timeline working-copy request consumed by the persistent Scene View PreviewWorld.
++#[derive(Debug, Clone, PartialEq)]
++pub(crate) struct TimelinePreviewRequest {
++    pub(crate) asset: AssetId,
++    pub(crate) document: engine_authoring::TimelineDocument,
++    pub(crate) source_revision: u64,
++    pub(crate) transport_revision: u64,
++    pub(crate) requested_tick: engine::timeline::TimelineTick,
++    pub(crate) playing: bool,
++    pub(crate) loop_preview: bool,
++}
++
++/// Copied production Timeline state shown by the Sequencer toolbar.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub(crate) struct TimelinePreviewStatus {
++    pub(crate) tick: engine::timeline::TimelineTick,
++    pub(crate) playing: bool,
++    pub(crate) runtime_issue: Option<String>,
++}
++
+ /// Offscreen Scene View panel: renders the authoring scene in Edit Mode.
+ pub struct SceneView {
+     /// Editor-only orbit camera (not serialized to the scene).
+@@ -795,6 +815,8 @@ pub struct SceneView {
+     animation_preview_elapsed: f32,
+     animation_preview_request: Option<AnimationPreviewRequest>,
+     animation_preview_status: Option<AnimationPreviewStatus>,
++    timeline_preview_request: Option<TimelinePreviewRequest>,
++    timeline_preview_status: Option<TimelinePreviewStatus>,
+     last_particle_frame: Instant,
+     preview_notice: Option<PreviewNotice>,
+     /// Start of a continuous preview failure. One-frame rebuild failures are
+@@ -846,6 +868,14 @@ struct PreviewWorld {
+     /// The flag prevents the crossfade from being restarted on every rendered
+     /// frame after the configured trigger time.
+     animation_transition_started: bool,
++    /// Working-copy revision currently installed into the production TimelineRuntime.
++    timeline_source_revision: Option<u64>,
++    /// Last discontinuous transport command consumed from the Sequencer.
++    timeline_transport_revision: Option<u64>,
++    /// Render-frame time retained until a complete production-sized fixed step is available.
++    timeline_fixed_step_remainder: f32,
++    /// Wall-clock source for Timeline playback while the persistent preview is visible.
++    timeline_last_frame: Instant,
+ }
+ 
+ /// The inputs that determine whether the persistent preview world is still
