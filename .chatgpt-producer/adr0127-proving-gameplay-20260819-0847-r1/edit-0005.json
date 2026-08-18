@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/launcher/src/native_2d_template.rs",
+  "old": "    )?;\n\n    patch_project_settings(root)?;\n    write_json(&root.join(\"asset_manifest.json\"), &manifest_json())?;\n",
+  "new": "    )?;\n\n    let audio_dir = root.join(\"assets\").join(\"audio\");\n    fs::create_dir_all(&audio_dir)\n        .map_err(|error| format!(\"could not create Native 2D audio directory: {error}\"))?;\n    fs::write(\n        audio_dir.join(\"native_2d_jump.wav\"),\n        proving_audio_wav(),\n    )\n    .map_err(|error| format!(\"could not write proving audio: {error}\"))?;\n    write_json(&native_dir.join(\"proving.ui.json\"), &hud_json())?;\n\n    let rust_system = root\n        .join(\"assets\")\n        .join(\"scripts\")\n        .join(\"rust\")\n        .join(\"systems\")\n        .join(\"native_2d_proving.rs\");\n    if let Some(parent) = rust_system.parent() {\n        fs::create_dir_all(parent)\n            .map_err(|error| format!(\"could not create proving Rust system directory: {error}\"))?;\n    }\n    fs::write(&rust_system, proving_gameplay_source())\n        .map_err(|error| format!(\"could not write proving Rust system: {error}\"))?;\n\n    patch_project_settings(root)?;\n    write_json(&root.join(\"asset_manifest.json\"), &manifest_json())?;\n"
+}
