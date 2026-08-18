@@ -1,7 +1,7 @@
 # Editor Visual Validation
 
 Status: Accepted
-Version: 1.6.0
+Version: 1.5.0
 Canonical location: `docs/EDITOR_VISUAL_VALIDATION.md`
 
 ## Purpose
@@ -245,7 +245,7 @@ claiming that artifacts are unavailable merely because capture has not finished.
 
 ## Current scope and extensions
 
-Version 1.6 captures the deterministic initial Launcher or Editor window, can
+Version 1.5 captures the deterministic initial Launcher or Editor window, can
 open one modeless authoring-tool window before an Editor screenshot, and can
 optionally capture the real Remote AI Studio browser companion at desktop,
 narrow, and mobile widths. Its normal `pull_request` trigger makes the workflow
