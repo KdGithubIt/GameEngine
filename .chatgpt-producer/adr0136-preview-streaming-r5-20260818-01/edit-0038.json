@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ui/mod.rs","old":"use crate::preferences::{EditorPreferences, PlayModeView};\nuse crate::problems::ProblemsPanel;\n","new":"use crate::preferences::{EditorPreferences, PlayModeView};\nuse crate::preview_residency::ProjectAssetResidency;\nuse crate::problems::ProblemsPanel;\n"}

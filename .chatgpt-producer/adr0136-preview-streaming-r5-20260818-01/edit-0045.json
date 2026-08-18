@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/scene_view.rs","old":"use std::collections::BTreeMap;\nuse std::sync::Arc;\nuse std::time::Instant;\n","new":"use std::collections::BTreeMap;\nuse std::sync::{mpsc, Arc};\nuse std::time::Instant;\n\nconst PREVIEW_GPU_UPLOAD_BYTES_PER_FRAME: u64 = 8 * 1024 * 1024;\nconst PREVIEW_GPU_UPLOADS_PER_FRAME: u32 = 4;\n"}
