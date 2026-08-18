@@ -1,0 +1,52 @@
+diff --git a/crates/authoring/src/native_2d_assets.rs b/crates/authoring/src/native_2d_assets.rs
+index ae549f6ddf5d8f4f96984ec375b61152561fbe28..ecc54f0d6bee335bf3453baad4b851b0b1980085 100644
+--- a/crates/authoring/src/native_2d_assets.rs
++++ b/crates/authoring/src/native_2d_assets.rs
+@@ -109,10 +109,11 @@ pub enum PixelsPerUnit {
+ }
+ 
+ /// Blend policy for one SpriteRenderer2D.
+-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
++#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+ #[serde(rename_all = "snake_case")]
+ pub enum SpriteBlendMode {
+     /// Straight-alpha source over destination.
++    #[default]
+     Alpha,
+     /// Premultiplied-alpha source over destination.
+     PremultipliedAlpha,
+@@ -120,12 +121,6 @@ pub enum SpriteBlendMode {
+     Additive,
+ }
+ 
+-impl Default for SpriteBlendMode {
+-    fn default() -> Self {
+-        Self::Alpha
+-    }
+-}
+-
+ /// One stable sprite region in a Sprite Atlas document.
+ #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+ pub struct SpriteRegion {
+diff --git a/crates/editor/src/native_2d_editor.rs b/crates/editor/src/native_2d_editor.rs
+index 9806dbcdce35254092277001dd243e80b68dbd02..77c9d43f9c3c7a90fc951903be760d62fa1161de 100644
+--- a/crates/editor/src/native_2d_editor.rs
++++ b/crates/editor/src/native_2d_editor.rs
+@@ -255,7 +255,7 @@ pub struct Native2dEditorState {
+     tile_map: Option<LoadedTileMap>,
+     atlas_region: usize,
+     animation_frame: usize,
+-    animation_preview: engine::SpriteAnimationState2d,
++    animation_preview: engine::native_2d::SpriteAnimationState2d,
+     tile_index: usize,
+     tile_tool: TileTool2d,
+     show_grid: bool,
+@@ -316,7 +316,7 @@ impl Native2dEditorState {
+             Ok(document) => {
+                 self.animation = Some(document);
+                 self.animation_frame = 0;
+-                self.animation_preview = engine::SpriteAnimationState2d::default();
++                self.animation_preview = engine::native_2d::SpriteAnimationState2d::default();
+                 self.status = None;
+             }
+             Err(error) => self.status = Some(error),
