@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ui/mod.rs","old":"        show_asset_drag_preview(ui.ctx());\n        self.show_notifications(ui.ctx());\n","new":"        show_asset_drag_preview(ui.ctx());\n        #[cfg(feature = \"visual-validation\")]\n        self.show_adr_visual_scenario(ui.ctx());\n        self.show_notifications(ui.ctx());\n"}
