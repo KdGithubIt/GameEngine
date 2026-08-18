@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/main.rs",
+  "old": "#[cfg(feature = \"visual-validation\")]\nuse std::path::Path;\nuse std::path::PathBuf;",
+  "new": "use std::path::{Path, PathBuf};"
+}
