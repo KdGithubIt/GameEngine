@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/mcp/src/generic_authoring.rs",
+  "old": "                AuthoringDomain::ProjectSettings,\n                AuthoringDomain::AnimationSet,\n            ],\n",
+  "new": "                AuthoringDomain::ProjectSettings,\n                AuthoringDomain::AnimationSet,\n                AuthoringDomain::Native2d,\n            ],\n"
+}
