@@ -1,6 +1,8 @@
 //! Player controller component and system.
 
-use crate::camera::{select_active_game_camera, Camera3D};
+use crate::camera::{
+    select_active_game_camera_with_override, Camera3D, GameCameraSelectionOverride,
+};
 use crate::character_controller::KinematicCharacterController;
 use crate::game_io::GameInputActionState;
 use crate::input::{GamepadAxis, GamepadAxisState, GamepadButton, Input, KeyCode, MouseButton};
@@ -668,6 +670,7 @@ fn resolve_named_action(
 pub fn player_character_motor_system(
     fixed_time: engine_ecs::Res<FixedTime>,
     intents: engine_ecs::Res<PlayerMovementIntents>,
+    camera_override: Option<engine_ecs::Res<GameCameraSelectionOverride>>,
     cameras: engine_ecs::Query<(&Camera3D, &GlobalTransform)>,
     mut players: engine_ecs::Query<
         (
@@ -678,10 +681,16 @@ pub fn player_character_motor_system(
         engine_ecs::With<PlayerMarker>,
     >,
 ) {
-    let camera_basis = select_active_game_camera(cameras.iter()).map(|(_, (_, global))| {
-        let (_, rotation, _) = global.matrix().to_scale_rotation_translation();
-        planar_camera_basis(rotation)
-    });
+    let override_target = camera_override
+        .as_deref()
+        .and_then(GameCameraSelectionOverride::target);
+    let camera_basis =
+        select_active_game_camera_with_override(cameras.iter(), override_target).map(
+            |(_, (_, global))| {
+                let (_, rotation, _) = global.matrix().to_scale_rotation_translation();
+                planar_camera_basis(rotation)
+            },
+        );
 
     for (entity, (config, motor, transform)) in &mut players {
         let intent = intents.get(entity).unwrap_or_default();

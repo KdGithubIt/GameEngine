@@ -4,8 +4,8 @@ use super::{CliError, CliRunResult, to_json};
 use engine_authoring::{
     AuthoringGraphDomain, AuthoringPermission, AuthoringPermissions, Diagnostic, Graph,
     GraphAuthoringService, GraphCommand, GraphDomain, GraphView, GraphViewAuthoringService,
-    GraphViewCommand, UiAuthoringService, UiAuthoringSession, UiDocument, UiDocumentCommand,
-    replace_file_contents,
+    GraphViewCommand, TimelineAuthoringCommand, TimelineAuthoringService, UiAuthoringService,
+    UiAuthoringSession, UiDocument, UiDocumentCommand, load_timeline, replace_file_contents,
 };
 use serde::de::DeserializeOwned;
 use std::fs;
@@ -93,7 +93,24 @@ pub(super) fn dispatch(args: &[String]) -> Option<Result<CliRunResult, CliError>
                 true,
             ))
         }
-        _ if args.first().is_some_and(|value| value == "graph" || value == "ui") => {
+        [domain, command, path] if domain == "timeline" && command == "inspect" => {
+            Some(timeline_inspect(Path::new(path)))
+        }
+        [domain, command, path] if domain == "timeline" && command == "validate" => {
+            Some(timeline_validate(Path::new(path)))
+        }
+        [domain, command, path, commands_path]
+            if domain == "timeline" && (command == "preview" || command == "apply") =>
+        {
+            Some(timeline_mutate(
+                Path::new(path),
+                Path::new(commands_path),
+                command == "apply",
+            ))
+        }
+        _ if args.first().is_some_and(|value| {
+            value == "graph" || value == "ui" || value == "timeline"
+        }) => {
             Some(Err(CliError::UnknownCommand {
                 args: args.join(" "),
             }))
@@ -277,6 +294,60 @@ fn ui_mutate(path: &Path, commands_path: &Path, persist: bool) -> Result<CliRunR
     if persist && output.success && !output.diff.is_empty() {
         let json = session.document().to_json_string().map_err(CliError::Json)?;
         replace_file_contents(path, &json).map_err(|source| CliError::Persist { source })?;
+    }
+    Ok(CliRunResult::diagnostics(to_json(&output)?, !output.success))
+}
+
+fn timeline_inspect(path: &Path) -> Result<CliRunResult, CliError> {
+    let session = TimelineAuthoringService::new(load_timeline(path).map_err(authoring_error)?)
+        .map_err(authoring_error)?;
+    let output = session
+        .inspect(&read_permissions())
+        .map_err(authoring_error)?;
+    Ok(CliRunResult::success(to_json(&output)?))
+}
+
+fn timeline_validate(path: &Path) -> Result<CliRunResult, CliError> {
+    let session = TimelineAuthoringService::new(load_timeline(path).map_err(authoring_error)?)
+        .map_err(authoring_error)?;
+    let output = session
+        .validate(&read_permissions())
+        .map_err(authoring_error)?;
+    Ok(CliRunResult::diagnostics(
+        to_json(&output)?,
+        !output.success,
+    ))
+}
+
+fn timeline_mutate(
+    path: &Path,
+    commands_path: &Path,
+    persist: bool,
+) -> Result<CliRunResult, CliError> {
+    let mut session = TimelineAuthoringService::new(load_timeline(path).map_err(authoring_error)?)
+        .map_err(authoring_error)?;
+    let commands: Vec<TimelineAuthoringCommand> = load_json(commands_path)?;
+    let permissions = writable_permissions();
+    let base = session.inspect(&permissions).map_err(authoring_error)?;
+    let output = if persist {
+        session.apply_commands(
+            &permissions,
+            base.revision,
+            base.generation,
+            commands,
+        )
+    } else {
+        session.preview_commands(
+            &permissions,
+            base.revision,
+            base.generation,
+            commands,
+        )
+    }
+    .map_err(authoring_error)?;
+
+    if persist && output.success && !output.diff.is_empty() {
+        session.save(path).map_err(authoring_error)?;
     }
     Ok(CliRunResult::diagnostics(to_json(&output)?, !output.success))
 }
