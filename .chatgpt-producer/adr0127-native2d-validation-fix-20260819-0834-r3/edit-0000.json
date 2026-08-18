@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/main.rs",
+  "old": "        self.authoring_windows\n            .show(&context, frame, self.app.project_root());\n",
+  "new": "        self.authoring_windows.show(\n            &context,\n            frame,\n            self.app.project_root(),\n            self.app.asset_manifest(),\n        );\n"
+}
