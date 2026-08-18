@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0157-final-audit-r2-20260819-0820",
+  "target_branch": "chatgpt/gameengine-adr0157-final-audit",
+  "expected_head_sha": "084012e2eabe005900c76fe22b8749f3ba27e82b",
+  "baseline_main_sha": "084012e2eabe005900c76fe22b8749f3ba27e82b",
+  "patch_sha256": "0b5f5dfd0a69213c8ab097a6754452636907d89fbd7a6d25a2836ccc052467e2",
+  "patch_bytes": 24345,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Complete ADR0157 deterministic runtime evidence",
+  "pr_title": "GameEngine: complete ADR0157 deterministic runtime evidence",
+  "pr_body": "## Summary\n\n- fail closed when human-origin input has already contaminated a deterministic AI runtime plan or replay reproduction\n- include bounded host diagnostic identity in runtime observations without exposing diagnostic message text\n- add regression coverage for human-interference rejection and bounded diagnostic evidence\n\n## Validation\n\nWindows Validation is dispatched by the trusted GameEngine automation."
+}
