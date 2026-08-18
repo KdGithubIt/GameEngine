@@ -1,0 +1,5 @@
+{
+  "operation": "create_text",
+  "path": "crates/editor/resources/agent_benchmark_fixture_v1/game/Cargo.toml",
+  "content": "[package]\nname = \"gameengine-agent-benchmark-fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\ncrate-type = [\"cdylib\"]\n\n[dependencies]\nengine = \"0.1.0\"\n\n[workspace]\n"
+}
