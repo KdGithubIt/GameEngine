@@ -111,6 +111,10 @@ impl EditorApp {
             AssetKind::Mesh
             | AssetKind::AnimationClip
             | AssetKind::MotionSource
+            | AssetKind::SpriteAtlas
+            | AssetKind::SpriteAnimation
+            | AssetKind::TileSet
+            | AssetKind::TileMap
             | AssetKind::Audio
             | AssetKind::Prefab
             | AssetKind::NavMesh

@@ -51,8 +51,12 @@ pub enum EngineViewKind {
     GlobalTransform,
     /// Character velocity, desired movement, facing, and grounded state.
     CharacterState,
+    /// Native 2D character motion intent and latest platformer contact classification.
+    Character2dState,
     /// Current animator clip, playback position, and transition state.
     AnimationState,
+    /// Current Native 2D sprite-animation clip and deterministic frame/tick state.
+    SpriteAnimationState,
     /// Current VFX playback state, simulation time, budget counters, and backend.
     VfxState,
     /// Current lock-on target and selection state.
@@ -73,8 +77,10 @@ pub enum EngineViewKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GameEventStream {
-    /// Collision enter, stay, and exit records.
+    /// 3D collision enter, stay, and exit records.
     Collision,
+    /// Native 2D collision/trigger enter, stay, and exit records.
+    Collision2d,
     /// Accepted combat hit results after team and invulnerability filtering.
     Hit,
     /// Animation events emitted while sampling clips.
@@ -99,6 +105,8 @@ pub enum GameCommandFamily {
     Transform,
     /// Desired character-controller velocity and facing changes.
     Character,
+    /// Native 2D character-controller motion and one-way drop-through requests.
+    Character2d,
     /// NavMeshAgent target assignment and clearing.
     Navigation,
     /// Stable Behavior Tree action and condition result registration.
@@ -719,6 +727,44 @@ impl GameCommand {
                 ),
                 ("velocity".to_owned(), vector3_value(velocity)),
                 ("facing".to_owned(), vector3_value(facing)),
+            ])),
+        }
+    }
+
+    /// Sets the persistent fixed-step velocity consumed by CharacterController2D.
+    pub fn set_character_motion_2d(target: GameEntityHandle, velocity: [f32; 2]) -> Self {
+        Self {
+            family: GameCommandFamily::Character2d,
+            request_id: None,
+            target: Some(target),
+            payload: Value::Object(BTreeMap::from([
+                (
+                    "operation".to_owned(),
+                    Value::String("set_motion".to_owned()),
+                ),
+                (
+                    "velocity".to_owned(),
+                    Value::Object(BTreeMap::from([
+                        ("x".to_owned(), Value::F64(f64::from(velocity[0]))),
+                        ("y".to_owned(), Value::F64(f64::from(velocity[1]))),
+                    ])),
+                ),
+            ])),
+        }
+    }
+
+    /// Requests a bounded interval during which CharacterController2D ignores one-way surfaces.
+    pub fn drop_through_2d(target: GameEntityHandle, seconds: f32) -> Self {
+        Self {
+            family: GameCommandFamily::Character2d,
+            request_id: None,
+            target: Some(target),
+            payload: Value::Object(BTreeMap::from([
+                (
+                    "operation".to_owned(),
+                    Value::String("drop_through".to_owned()),
+                ),
+                ("seconds".to_owned(), Value::F64(f64::from(seconds))),
             ])),
         }
     }
