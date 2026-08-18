@@ -56,7 +56,7 @@ pub fn create_native_2d_project(final_path: &Path, name: &str) -> Result<PathBuf
     let staging = parent.join(format!(
         ".gameengine-native2d-{}-{stamp}-{}.staging",
         std::process::id(),
-        name.replace('/', "_").replace('\\', "_")
+        name.replace(['/', '\\'], "_")
     ));
     if staging.exists() {
         return Err(format!("temporary project path already exists: {}", staging.display()));

@@ -379,8 +379,12 @@ impl eframe::App for EditorShell {
         let context = ui.ctx().clone();
         eframe::App::ui(&mut self.app, ui, frame);
         self.show_authoring_tools_launcher(&context);
-        self.authoring_windows
-            .show(&context, frame, self.app.project_root());
+        self.authoring_windows.show(
+            &context,
+            frame,
+            self.app.project_root(),
+            self.app.asset_manifest(),
+        );
         #[cfg(not(feature = "visual-validation"))]
         self.ai_studio.show(&context);
         #[cfg(feature = "visual-validation")]
