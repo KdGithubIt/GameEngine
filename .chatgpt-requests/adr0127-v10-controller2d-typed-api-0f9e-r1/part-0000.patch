@@ -1,0 +1,212 @@
+diff --git a/crates/engine/src/game_commands.rs b/crates/engine/src/game_commands.rs
+index 866351899bae3163b538519211b396b58cf8fc4c..223b55ebe55e4fdb1e535ceac12d7e69827fa5d1 100644
+--- a/crates/engine/src/game_commands.rs
++++ b/crates/engine/src/game_commands.rs
+@@ -213,7 +213,7 @@ pub(crate) fn prepare_game_commands(
+             GameCommandFamily::Character2d => {
+                 let (target, entity) = targeted_entity(world, command, index, &despawned)?;
+                 if world.get_component::<CharacterController2d>(entity).is_none() {
+-                    return Err(GameCommandError::MissingCharacterController { index, target });
++                    return Err(GameCommandError::MissingCharacterController2d { index, target });
+                 }
+                 if world.get_component::<Transform>(entity).is_none() {
+                     return Err(GameCommandError::MissingTransform { index, target });
+@@ -1751,6 +1751,13 @@ pub enum GameCommandError {
+         /// Rejected target.
+         target: GameEntityHandle,
+     },
++    /// A Native 2D character command targeted an entity without CharacterController2D.
++    MissingCharacterController2d {
++        /// Zero-based command index.
++        index: usize,
++        /// Rejected target.
++        target: GameEntityHandle,
++    },
+     /// A navigation command targeted an entity without a NavMeshAgent.
+     MissingNavigationAgent {
+         /// Zero-based command index.
+@@ -1984,6 +1991,11 @@ impl fmt::Display for GameCommandError {
+                 "game command {index} targets entity {} generation {} without KinematicCharacterController",
+                 target.id, target.generation
+             ),
++            Self::MissingCharacterController2d { index, target } => write!(
++                formatter,
++                "game command {index} targets entity {} generation {} without CharacterController2D",
++                target.id, target.generation
++            ),
+             Self::MissingNavigationAgent { index, target } => write!(
+                 formatter,
+                 "game command {index} targets entity {} generation {} without NavMeshAgent",
+diff --git a/crates/scripting/src/game_api.rs b/crates/scripting/src/game_api.rs
+index 62d998574ad7a3e36441ac15b759df1d1357ccce..5d735e458a515031593e491ca26c2607e525e28a 100644
+--- a/crates/scripting/src/game_api.rs
++++ b/crates/scripting/src/game_api.rs
+@@ -922,6 +922,38 @@ impl EngineView for CharacterStateView {
+     }
+ }
+ 
++/// Native 2D platformer controller state copied for one entity.
++#[derive(Debug, Clone, Copy, PartialEq)]
++pub struct Character2dStateView {
++    /// Persistent fixed-step world velocity requested by project gameplay.
++    pub velocity: Vec2,
++    /// Whether the latest controller move ended on walkable ground.
++    pub grounded: bool,
++    /// Latest resolved walkable ground normal.
++    pub ground_normal: Vec2,
++    /// Whether the latest controller move was blocked horizontally.
++    pub hit_wall: bool,
++    /// Whether the latest controller move was blocked upward.
++    pub hit_ceiling: bool,
++    /// Remaining one-way platform drop-through interval in seconds.
++    pub drop_through_seconds: f32,
++}
++
++impl EngineView for Character2dStateView {
++    const KIND: EngineViewKind = EngineViewKind::Character2dState;
++    fn decode(value: &Value) -> Result<Self, String> {
++        let fields = object(value)?;
++        Ok(Self {
++            velocity: vec2_object(field(fields, "velocity")?)?,
++            grounded: bool_field(fields, "grounded")?,
++            ground_normal: vec2_object(field(fields, "ground_normal")?)?,
++            hit_wall: bool_field(fields, "hit_wall")?,
++            hit_ceiling: bool_field(fields, "hit_ceiling")?,
++            drop_through_seconds: number_field(fields, "drop_through_seconds")? as f32,
++        })
++    }
++}
++
+ /// Playback mode of a copied animator state.
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+ pub enum AnimationPlaybackState {
+@@ -1861,6 +1893,14 @@ impl Commands {
+             facing.to_array(),
+         ));
+     }
++    /// Sets persistent fixed-step velocity for CharacterController2D.
++    pub fn set_character_motion_2d(&mut self, target: GameEntityHandle, velocity: Vec2) {
++        self.push(GameCommand::set_character_motion_2d(target, velocity.to_array()));
++    }
++    /// Requests a bounded one-way platform drop-through interval for CharacterController2D.
++    pub fn drop_through_2d(&mut self, target: GameEntityHandle, seconds: f32) {
++        self.push(GameCommand::drop_through_2d(target, seconds));
++    }
+     /// Assigns a navigation destination.
+     pub fn set_navigation_target(&mut self, target: GameEntityHandle, destination: Vec3) {
+         self.push(GameCommand::set_navigation_target(
+@@ -2126,6 +2166,7 @@ impl GameSystemParam for Commands {
+         access.command_families.extend([
+             GameCommandFamily::Transform,
+             GameCommandFamily::Character,
++            GameCommandFamily::Character2d,
+             GameCommandFamily::Navigation,
+             GameCommandFamily::BehaviorTree,
+             GameCommandFamily::PrefabSpawn,
+@@ -2252,6 +2293,13 @@ fn optional_unsigned(value: &Value) -> Result<Option<u64>, String> {
+         unsigned(value).map(Some)
+     }
+ }
++fn vec2_object(value: &Value) -> Result<Vec2, String> {
++    let fields = object(value)?;
++    Ok(Vec2::new(
++        number_field(fields, "x")? as f32,
++        number_field(fields, "y")? as f32,
++    ))
++}
+ fn vec3(value: &Value) -> Result<Vec3, String> {
+     let values = array(value)?;
+     if values.len() != 3 {
+@@ -2480,5 +2528,59 @@ mod tests {
+         assert_eq!(access.input_actions, [Jump::NAME]);
+         assert_eq!(access.event_streams, [GameEventStream::Collision]);
+         assert!(access.command_families.contains(&GameCommandFamily::Scene));
++        assert!(access
++            .command_families
++            .contains(&GameCommandFamily::Character2d));
++    }
++
++    #[test]
++    fn character_2d_view_and_commands_keep_raw_payloads_behind_typed_api() {
++        let view = Character2dStateView::decode(&Value::Object(BTreeMap::from([
++            (
++                "velocity".to_owned(),
++                Value::Object(BTreeMap::from([
++                    ("x".to_owned(), Value::F64(3.0)),
++                    ("y".to_owned(), Value::F64(-2.0)),
++                ])),
++            ),
++            ("grounded".to_owned(), Value::Bool(true)),
++            (
++                "ground_normal".to_owned(),
++                Value::Object(BTreeMap::from([
++                    ("x".to_owned(), Value::F64(0.0)),
++                    ("y".to_owned(), Value::F64(1.0)),
++                ])),
++            ),
++            ("hit_wall".to_owned(), Value::Bool(false)),
++            ("hit_ceiling".to_owned(), Value::Bool(false)),
++            ("drop_through_seconds".to_owned(), Value::F64(0.125)),
++        ])))
++        .unwrap();
++        assert_eq!(view.velocity, Vec2::new(3.0, -2.0));
++        assert!(view.grounded);
++        assert_eq!(view.ground_normal, Vec2::Y);
++        assert_eq!(view.drop_through_seconds, 0.125);
++
++        let input = GameInvocation {
++            schema_version: crate::game_io::GAME_IO_SCHEMA_VERSION,
++            system_id: "game.test".to_owned(),
++            clock: GameClock::default(),
++            input_actions: BTreeMap::new(),
++            save_values: BTreeMap::new(),
++            queries: Vec::new(),
++            resources: BTreeMap::new(),
++            host_views: BTreeMap::new(),
++            events: Vec::new(),
++        };
++        let output = TypedOutput::new();
++        let mut commands = Commands::fetch(&input, output.clone()).unwrap();
++        let target = GameEntityHandle { id: 7, generation: 2 };
++        commands.set_character_motion_2d(target, Vec2::new(4.0, 5.0));
++        commands.drop_through_2d(target, 0.2);
++        drop(commands);
++        let output = output.into_output().unwrap();
++        assert_eq!(output.commands.len(), 2);
++        assert_eq!(output.commands[0].family, GameCommandFamily::Character2d);
++        assert_eq!(output.commands[1].family, GameCommandFamily::Character2d);
+     }
+ }
+diff --git a/docs/PROJECT_RUST_GAMEPLAY.md b/docs/PROJECT_RUST_GAMEPLAY.md
+index 37c7965954fe11a8a3f12b2b5adba113ce5631bf..08c8c467566d42b99a063084afb3f75bdd31f273 100644
+--- a/docs/PROJECT_RUST_GAMEPLAY.md
++++ b/docs/PROJECT_RUST_GAMEPLAY.md
+@@ -203,8 +203,11 @@ so every fixed callback observes the exact simulation step it is running.
+ 
+ ## Engine views and event streams
+ 
+-Entity queries can copy authoring identity, local/global Transform, character,
+-skeletal animation, Native 2D sprite-animation, lock-on, navigation, and UI-binding views.
++Entity queries can copy authoring identity, local/global Transform, 3D character,
++Native 2D character, skeletal animation, Native 2D sprite-animation, lock-on, navigation,
++and UI-binding views. `Character2dStateView` exposes persistent fixed-step velocity,
++grounded/ground-normal state, wall/ceiling classification, and remaining one-way
++drop-through time without exposing the 2D solver or ECS references.
+ `SpriteAnimationState` exposes the stable Sprite Animation `AssetId`, playing state,
+ current frame/tick, speed, and effective looping policy without exposing engine ECS
+ references or process-local asset handles. `UiBindings` is encoded as a stable
+@@ -262,6 +265,14 @@ components and both finite vectors have been preflighted. Facing is a non-zero
+ world-space direction; local `-Z` is rotated toward it. This keeps movement and
+ orientation in one atomic command instead of allowing a half-applied state.
+ 
++Native 2D gameplay uses the separate `Character2d` command family so it never
++projects through the 3D controller. `Commands::set_character_motion_2d` publishes
++persistent world-XY velocity consumed by `CharacterController2D` during the next
++fixed 2D step, after scene/Tile Map collision synchronization and before solver
++integration. `Commands::drop_through_2d` queues a bounded one-way-platform ignore
++interval. `Character2dStateView` reads back the resulting grounded, normal, wall,
++ceiling, velocity, and drop-through state through copied values only.
++
+ Lock-on uses the targetless `acquire_lock_on`, `cycle_lock_on`, and
+ `release_lock_on` constructors. They queue the existing `TargetLock` service
+ request, preserving the engine rule that the last request before
