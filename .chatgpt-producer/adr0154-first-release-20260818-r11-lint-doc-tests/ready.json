@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0154-first-release-20260818-r11-lint-doc-tests",
+  "target_branch": "chatgpt/gameengine-adr0154-first-release-v2",
+  "expected_head_sha": "74fbdbb9d5fc551c4dea67113bd4e30e41f017cb",
+  "baseline_main_sha": "ecfc28d6d8e0e82eff38cc90f775e14c88347919",
+  "edit_parts": [
+    "edit-0000.json",
+    "edit-0001.json",
+    "edit-0002.json",
+    "edit-0003.json",
+    "edit-0004.json",
+    "edit-0005.json",
+    "edit-0006.json",
+    "edit-0007.json"
+  ],
+  "commit_message": "Complete ADR0154 lint contract and authoring tests",
+  "pr_title": "Implement ADR 0154 target-aware animation motion binding",
+  "pr_body": "Completes the ADR 0154 first-release contract audit on the current implementation: fixes a shared-planner Clippy warning, documents the schema-v3 candidate-only and motion-only Humanoid provenance contract in the canonical AI authoring specification, marks ADR 0154 Accepted and adds it to the decision map, and adds synthetic tests for transient Target Preview persistence/routing plus stable non-ambiguous VMD Humanoid provenance. Existing runtime, Problems, import-owned portable motion, packaging, and schema-v3 changes remain unchanged.\n\nThe PR remains Draft and must not be merged automatically."
+}
