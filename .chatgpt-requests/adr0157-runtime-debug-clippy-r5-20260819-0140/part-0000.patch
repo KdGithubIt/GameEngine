@@ -1,0 +1,12 @@
+diff --git a/crates/editor/src/runtime_debug.rs b/crates/editor/src/runtime_debug.rs
+index cb4832490be5c4f945dc8e0c11236be691a51df8..fbb8f53e78501f61fd7ca27cf0d935d0abff9dc1 100644
+--- a/crates/editor/src/runtime_debug.rs
++++ b/crates/editor/src/runtime_debug.rs
+@@ -686,7 +686,6 @@ fn update_held_inputs(held: &mut Vec<HeldInput>, command: InputCommand) {
+         | InputCommand::MouseMove { .. }
+         | InputCommand::MouseDelta { .. }
+         | InputCommand::MouseScroll { .. } => {}
+-        _ => {}
+     }
+ }
+ 
