@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/agent_benchmark.rs",
+  "old": "    if left.identity.model.backend_id != right.identity.model.backend_id\n        || left.identity.model.backend_runtime_version != right.identity.model.backend_runtime_version\n    {\n        differences.push(\"backend_runtime\");\n    }\n",
+  "new": "    if left.identity.model.backend_id != right.identity.model.backend_id\n        || left.identity.model.backend_runtime_version != right.identity.model.backend_runtime_version\n    {\n        differences.push(\"backend_runtime\");\n    }\n    if left.identity.model.execution_environment\n        != right.identity.model.execution_environment\n    {\n        differences.push(\"execution_environment\");\n    }\n    if left.identity.model.launch_policy_version != right.identity.model.launch_policy_version {\n        differences.push(\"launch_policy\");\n    }\n"
+}

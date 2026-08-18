@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/agent_benchmark.rs",
+  "old": "    #[test]\n    fn equivalent_records_compare_as_model_only() {\n",
+  "new": "    #[test]\n    fn managed_windows_and_wsl_records_are_not_model_only_equivalent() {\n        let mut windows = record(\"managed-model\", BENCHMARK_TASKS[0], 100);\n        windows.identity.model.backend_id = MANAGED_BACKEND_ID.to_owned();\n        windows.identity.model.execution_environment =\n            TelemetryValue::Measured(\"windows_native\".to_owned());\n        windows.identity.model.launch_policy_version =\n            TelemetryValue::Measured(\"adr0155-managed-launch-v1\".to_owned());\n        let mut wsl = windows.clone();\n        wsl.identity.model.execution_environment =\n            TelemetryValue::Measured(\"wsl2_linux\".to_owned());\n        assert!(matches!(\n            comparison_equivalence(&windows, &wsl),\n            ComparisonEquivalence::NonEquivalent(differences)\n                if differences.contains(&\"execution_environment\")\n        ));\n    }\n\n    #[test]\n    fn equivalent_records_compare_as_model_only() {\n"
+}

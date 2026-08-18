@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/agent_benchmark.rs",
+  "old": "use crate::native_agent::{InstalledModelInventory, NativeMetrics};\n",
+  "new": "use crate::managed_local_runtime::MANAGED_BACKEND_ID;\nuse crate::native_agent::{InstalledModelInventory, NativeMetrics};\n"
+}

@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/agent_benchmark.rs",
+  "old": "                representation_size_bytes: TelemetryValue::Measured(1_000),\n                backend_runtime_version: TelemetryValue::Measured(\"runtime-v1\".to_owned()),\n            },\n",
+  "new": "                representation_size_bytes: TelemetryValue::Measured(1_000),\n                backend_runtime_version: TelemetryValue::Measured(\"runtime-v1\".to_owned()),\n                execution_environment: TelemetryValue::Unavailable,\n                launch_policy_version: TelemetryValue::Unavailable,\n            },\n"
+}

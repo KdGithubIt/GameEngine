@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/agent_benchmark.rs",
+  "old": "        backend_runtime_version: inventory\n            .and_then(|inventory| inventory.backend_version.clone())\n            .map(TelemetryValue::Measured)\n            .unwrap_or_default(),\n    }\n}\n",
+  "new": "        backend_runtime_version: inventory\n            .and_then(|inventory| inventory.backend_version.clone())\n            .map(TelemetryValue::Measured)\n            .unwrap_or_default(),\n        execution_environment: inventory\n            .and_then(|inventory| inventory.execution_environment.clone())\n            .map(TelemetryValue::Measured)\n            .unwrap_or_default(),\n        launch_policy_version: inventory\n            .and_then(|inventory| inventory.launch_policy_version.clone())\n            .map(TelemetryValue::Measured)\n            .unwrap_or_default(),\n    }\n}\n"
+}

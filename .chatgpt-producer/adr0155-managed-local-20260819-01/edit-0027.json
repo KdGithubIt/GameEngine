@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/agent_benchmark.rs",
+  "old": "            backend_id: record.identity.model.backend_id.clone(),\n            backend_runtime_version: record.identity.model.backend_runtime_version.clone(),\n            hardware: record.identity.hardware.clone(),\n",
+  "new": "            backend_id: record.identity.model.backend_id.clone(),\n            backend_runtime_version: record.identity.model.backend_runtime_version.clone(),\n            execution_environment: record.identity.model.execution_environment.clone(),\n            launch_policy_version: record.identity.model.launch_policy_version.clone(),\n            hardware: record.identity.hardware.clone(),\n"
+}

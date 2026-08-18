@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/model_router.rs",
+  "old": "                image_verified.insert(ModelKey {\n                    backend_id: record.identity.model.backend_id.clone(),\n                    model_id: record.identity.model.model_id.clone(),\n                });\n",
+  "new": "                image_verified.insert(ModelKey {\n                    backend_id: record.identity.model.backend_id.clone(),\n                    model_id: record.identity.model.model_id.clone(),\n                    execution_environment: match &record.identity.model.execution_environment {\n                        TelemetryValue::Measured(value) => Some(value.clone()),\n                        TelemetryValue::ConservativeEstimate(_)\n                        | TelemetryValue::Unavailable => None,\n                    },\n                });\n"
+}

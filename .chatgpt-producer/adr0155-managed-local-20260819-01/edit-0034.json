@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/native_agent_runtime.rs",
+  "old": "fn same_model(left: &NativeModelConfig, right: &NativeModelConfig) -> bool {\n    left.backend_id() == right.backend_id() && left.model_id() == right.model_id()\n}\n",
+  "new": "fn same_model(left: &NativeModelConfig, right: &NativeModelConfig) -> bool {\n    left.backend_id() == right.backend_id()\n        && left.model_id() == right.model_id()\n        && left.execution_environment_id() == right.execution_environment_id()\n}\n"
+}
