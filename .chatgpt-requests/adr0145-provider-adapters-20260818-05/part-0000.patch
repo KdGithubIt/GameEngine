@@ -1,0 +1,1200 @@
+diff --git a/crates/editor/src/ai_studio.rs b/crates/editor/src/ai_studio.rs
+index 7b54dbea3989a333f357fe35dc5835f33fbfa146..53ac89e563ccbde877797b2abf81ca02fd29fe5e 100644
+--- a/crates/editor/src/ai_studio.rs
++++ b/crates/editor/src/ai_studio.rs
+@@ -11,6 +11,10 @@ use crate::agent_host::{
+     ConversationRole, ExternalAgentProcess, ManagedValidationAttemptStatus, PermissionCheck,
+     ProcessStream, ResumeDisposition,
+ };
++use crate::external_agent_provider::{
++    build_launch_plan, probe_provider, translate_provider_line, ExternalAgentDiagnostics,
++    ExternalAgentProviderKind, ExternalAgentProviderStatus, ExternalAgentSemanticEvent,
++};
+ use crate::hosted_model_backend;
+ use crate::hosted_model_backend::{HostedAuthMode, HostedModelConfig};
+ use crate::live_observation::{LiveObservationError, LiveObservationManager};
+@@ -33,7 +37,7 @@ use engine::{InputCommand, KeyCode, MouseButton};
+ use engine_authoring::ProjectRoot;
+ use serde::{Deserialize, Serialize};
+ use std::collections::VecDeque;
+-use std::ffi::{OsStr, OsString};
++use std::ffi::OsString;
+ use std::fs;
+ use std::path::PathBuf;
+ 
+@@ -59,6 +63,8 @@ struct AiStudioPreferences {
+     #[serde(default)]
+     confinement_requirement: AgentConfinementRequirement,
+     #[serde(default)]
++    external_agent_provider: ExternalAgentProviderKind,
++    #[serde(default)]
+     model_backend: ModelBackendPreference,
+     #[serde(default = "default_local_model_endpoint")]
+     local_model_endpoint: String,
+@@ -76,6 +82,7 @@ impl Default for AiStudioPreferences {
+             schema_version: AI_STUDIO_PREFERENCES_SCHEMA_VERSION,
+             quality_preference: QualityPreference::Auto,
+             confinement_requirement: AgentConfinementRequirement::default(),
++            external_agent_provider: ExternalAgentProviderKind::default(),
+             model_backend: ModelBackendPreference::Local,
+             local_model_endpoint: DEFAULT_LOCAL_MODEL_ENDPOINT.to_owned(),
+             local_model_name: String::new(),
+@@ -380,6 +387,8 @@ pub struct AiStudioPanel {
+     preferences_path: PathBuf,
+     quality_preference: QualityPreference,
+     confinement_requirement: AgentConfinementRequirement,
++    external_provider_kind: ExternalAgentProviderKind,
++    external_provider_status: ExternalAgentProviderStatus,
+     model_backend: ModelBackendPreference,
+     local_model_endpoint: String,
+     local_model_name: String,
+@@ -400,6 +409,9 @@ pub struct AiStudioPanel {
+     native_mcp_task: Option<NativeMcpTask>,
+     pending_native_mcp_tool: Option<String>,
+     active_runtime_mode: Option<AgentRuntimeMode>,
++    active_external_provider: Option<ExternalAgentProviderKind>,
++    active_external_program: Option<String>,
++    active_external_args: Option<String>,
+     provider_program: String,
+     provider_args: String,
+     presentation: AiStudioPresentationState,
+@@ -408,6 +420,7 @@ pub struct AiStudioPanel {
+     active_run_id: Option<String>,
+     process: Option<ExternalAgentProcess>,
+     process_purpose: Option<ExternalAgentPurpose>,
++    external_provider_diagnostics: ExternalAgentDiagnostics,
+     code_workspace: Option<CodeWorkspace>,
+     pending_code_changes: Vec<CodeChange>,
+     pending_permission: Option<PendingPermission>,
+@@ -465,6 +478,10 @@ impl AiStudioPanel {
+             preferences_path,
+             quality_preference: preferences.quality_preference,
+             confinement_requirement: preferences.confinement_requirement,
++            external_provider_kind: preferences.external_agent_provider,
++            external_provider_status: ExternalAgentProviderStatus::unchecked(
++                preferences.external_agent_provider,
++            ),
+             model_backend: preferences.model_backend,
+             local_model_endpoint: preferences.local_model_endpoint,
+             local_model_name: preferences.local_model_name,
+@@ -490,6 +507,9 @@ impl AiStudioPanel {
+             native_mcp_task: None,
+             pending_native_mcp_tool: None,
+             active_runtime_mode: None,
++            active_external_provider: None,
++            active_external_program: None,
++            active_external_args: None,
+             provider_program: String::new(),
+             provider_args: String::new(),
+             presentation: AiStudioPresentationState::default(),
+@@ -498,6 +518,7 @@ impl AiStudioPanel {
+             active_run_id,
+             process: None,
+             process_purpose: None,
++            external_provider_diagnostics: ExternalAgentDiagnostics::default(),
+             code_workspace: None,
+             pending_code_changes: Vec::new(),
+             pending_permission: None,
+@@ -534,6 +555,9 @@ impl AiStudioPanel {
+         self.hosted_model_endpoint = "https://provider.example/v1/chat/completions".to_owned();
+         self.hosted_model_name = "example-hosted-model".to_owned();
+         self.hosted_secret_draft.clear();
++        self.external_provider_kind = ExternalAgentProviderKind::ClaudeCode;
++        self.external_provider_status =
++            ExternalAgentProviderStatus::visual_fixture(ExternalAgentProviderKind::ClaudeCode);
+     }
+ 
+     #[cfg(feature = "visual-validation")]
+@@ -927,6 +951,10 @@ impl AiStudioPanel {
+                                 }),
+                             };
+                             object.insert("processing_posture".to_owned(), posture);
++                            object.insert(
++                                "external_agent_provider".to_owned(),
++                                self.current_external_provider_status().remote_json(),
++                            );
+                         }
+                         RemoteAiStudioResponse::json(snapshot)
+                     }
+@@ -1646,6 +1674,7 @@ impl AiStudioPanel {
+             schema_version: AI_STUDIO_PREFERENCES_SCHEMA_VERSION,
+             quality_preference: self.quality_preference,
+             confinement_requirement: self.confinement_requirement,
++            external_agent_provider: self.external_provider_kind,
+             model_backend: self.model_backend,
+             local_model_endpoint: self.local_model_endpoint.clone(),
+             local_model_name: self.local_model_name.clone(),
+@@ -2129,16 +2158,105 @@ impl AiStudioPanel {
+         }
+     }
+ 
++    fn current_external_provider_status(&self) -> ExternalAgentProviderStatus {
++        if self.external_provider_kind == ExternalAgentProviderKind::Generic {
++            ExternalAgentProviderStatus::generic(!self.provider_program.trim().is_empty())
++        } else if self.external_provider_status.kind == self.external_provider_kind {
++            self.external_provider_status.clone()
++        } else {
++            ExternalAgentProviderStatus::unchecked(self.external_provider_kind)
++        }
++    }
++
++    fn refresh_external_provider_status(&mut self) {
++        self.external_provider_status =
++            probe_provider(self.external_provider_kind, &self.provider_program);
++    }
++
++    fn external_provider_is_requested(&self) -> bool {
++        self.external_provider_kind != ExternalAgentProviderKind::Generic
++            || !self.provider_program.trim().is_empty()
++    }
++
++    fn external_provider_is_ready(&self) -> bool {
++        self.external_provider_is_requested() && self.current_external_provider_status().ready()
++    }
++
++    fn selected_external_provider(&self) -> Result<Option<ExternalAgentProviderKind>, String> {
++        if !self.external_provider_is_requested() {
++            return Ok(None);
++        }
++        let status = self.current_external_provider_status();
++        if !status.ready() {
++            return Err(format!(
++                "{} is not ready (discovery: {}, authentication: {}). Refresh provider status or choose another runtime.",
++                self.external_provider_kind.label(),
++                status.discovery.label(),
++                status.auth.label(),
++            ));
++        }
++        Ok(Some(self.external_provider_kind))
++    }
++
+     fn show_provider(&mut self, ui: &mut egui::Ui) {
+         ui.heading("Run");
++        let previous_provider = self.external_provider_kind;
++        let mut refresh_provider = false;
+         ui.horizontal(|ui| {
+-            ui.label("Compatible agent program");
+-            ui.text_edit_singleline(&mut self.provider_program);
++            ui.label("External agent provider");
++            egui::ComboBox::from_id_salt("ai_studio_external_agent_provider")
++                .selected_text(self.external_provider_kind.label())
++                .show_ui(ui, |ui| {
++                    for provider in ExternalAgentProviderKind::ALL {
++                        ui.selectable_value(
++                            &mut self.external_provider_kind,
++                            provider,
++                            provider.label(),
++                        );
++                    }
++                });
++            if ui.button("Refresh status").clicked() {
++                refresh_provider = true;
++            }
+         });
+-        ui.horizontal(|ui| {
+-            ui.label("Arguments");
+-            ui.text_edit_singleline(&mut self.provider_args);
++        if previous_provider != self.external_provider_kind {
++            self.external_provider_status =
++                ExternalAgentProviderStatus::unchecked(self.external_provider_kind);
++            self.save_preferences();
++        }
++        if refresh_provider {
++            self.refresh_external_provider_status();
++        }
++        let provider_status = self.current_external_provider_status();
++        let provider_capabilities = self.external_provider_kind.capabilities();
++        ui.group(|ui| {
++            ui.strong(format!("{} status", self.external_provider_kind.label()));
++            ui.label(format!(
++                "Discovery: {} · Authentication: {}",
++                provider_status.discovery.label(),
++                provider_status.auth.label(),
++            ));
++            ui.small(format!(
++                "Capabilities: provider auth {} · MCP injection {} · structured events {} · host cancellation {}",
++                provider_capabilities.provider_managed_auth,
++                provider_capabilities.mcp_injection,
++                provider_capabilities.structured_events,
++                provider_capabilities.host_cancellation,
++            ));
++            ui.small(
++                "Provider-managed login remains provider-owned. GameEngine stores no provider credential and reports only sanitized adapter status remotely.",
++            );
+         });
++        if self.external_provider_kind == ExternalAgentProviderKind::Generic {
++            ui.horizontal(|ui| {
++                ui.label("Compatible agent program");
++                ui.text_edit_singleline(&mut self.provider_program);
++            });
++            ui.horizontal(|ui| {
++                ui.label("Arguments");
++                ui.text_edit_singleline(&mut self.provider_args);
++            });
++        }
+         let previous_confinement_requirement = self.confinement_requirement;
+         ui.horizontal(|ui| {
+             ui.label("External process confinement");
+@@ -2183,7 +2301,7 @@ impl AiStudioPanel {
+             }
+         });
+         ui.small(
+-            "Go uses the configured external AgentRuntime when present; otherwise the selected Local, Hosted API, or Enterprise ModelBackend runs through the governed native AgentRuntime. Hosted inference requires Network access approval. All native backends share the immutable proposal, Agent Host permissions, live Editor MCP writer, managed code workspace, validation, Play/frame evidence, and completion contract.",
++            "Go uses the selected first-class external provider when it is ready, the Generic command when configured, or otherwise the selected Local, Hosted API, or Enterprise ModelBackend. External adapters remain clients of the same immutable proposal, Agent Host permissions, code workspace, validation, Play/frame evidence, and completion contract.",
+         );
+         let mut stop_requested = false;
+         let mut interrupt_requested = false;
+@@ -2193,8 +2311,9 @@ impl AiStudioPanel {
+                 && !self.native_runtime_busy()
+                 && self.pending_permission.is_none()
+                 && self.pending_question_permission.is_none()
+-                && (!self.provider_program.trim().is_empty()
+-                    || self.selected_native_model_config().is_ok());
++                && (self.external_provider_is_ready()
++                    || (!self.external_provider_is_requested()
++                        && self.selected_native_model_config().is_ok()));
+             if ui.add_enabled(can_go, egui::Button::new("Go")).clicked() {
+                 self.begin_run();
+             }
+@@ -2264,6 +2383,10 @@ impl AiStudioPanel {
+             }
+             self.native_agent_runtime = None;
+             self.active_runtime_mode = None;
++            self.active_external_provider = None;
++            self.active_external_program = None;
++            self.active_external_args = None;
++            self.external_provider_diagnostics = ExternalAgentDiagnostics::default();
+         }
+         if interrupt_requested {
+             if let Some(task) = self.native_question.as_ref() { task.interrupt(); }
+@@ -2461,9 +2584,13 @@ impl AiStudioPanel {
+     }
+ 
+     fn begin_run_authorized(&mut self, authorized_proposal_version: u64) -> Result<String, String> {
+-        let external_provider = self.provider_program.trim().to_owned();
+-        let (mode, provider_label, native_config) = if !external_provider.is_empty() {
+-            (AgentRuntimeMode::External, external_provider, None)
++        let external_provider = self.selected_external_provider()?;
++        let (mode, provider_label, native_config) = if let Some(provider) = external_provider {
++            (
++                AgentRuntimeMode::External,
++                provider.run_label().to_owned(),
++                None,
++            )
+         } else {
+             let config = self.selected_native_model_config()?;
+             let label = config.label();
+@@ -2475,6 +2602,10 @@ impl AiStudioPanel {
+         let run_id = self.host.start_run_authorized(&self.selected_session, authorized_proposal_version, provider_label).map_err(|error| error.to_string())?;
+         self.active_run_id = Some(run_id.clone());
+         self.active_runtime_mode = Some(mode);
++        self.active_external_provider = external_provider;
++        self.active_external_program = external_provider.map(|_| self.provider_program.clone());
++        self.active_external_args = external_provider.map(|_| self.provider_args.clone());
++        self.external_provider_diagnostics = ExternalAgentDiagnostics::default();
+         self.native_agent_runtime = native_config.map(NativeAgentRuntime::configured);
+         self.native_mcp_task = None;
+         self.pending_native_mcp_tool = None;
+@@ -2594,6 +2725,16 @@ impl AiStudioPanel {
+     }
+ 
+     fn launch_external_agent(&mut self, run_id: &str, purpose: ExternalAgentPurpose) {
++        let Some(provider_kind) = self.active_external_provider else {
++            self.fail_run(
++                run_id,
++                "External AgentRuntime has no provider snapshot for this run.".to_owned(),
++            );
++            return;
++        };
++        let generic_program = self.active_external_program.clone().unwrap_or_default();
++        let generic_args_text = self.active_external_args.clone().unwrap_or_default();
++        self.external_provider_diagnostics = ExternalAgentDiagnostics::default();
+         let (workspace_root, baseline_path) = match self.host.workspace_paths(run_id) {
+             Ok(paths) => paths,
+             Err(error) => {
+@@ -2706,29 +2847,57 @@ impl AiStudioPanel {
+                 ),
+             ),
+         ];
+-        if let Some(repair_context) = repair_context {
++        if let Some(repair_context) = repair_context.as_deref() {
+             environment.push((
+                 OsString::from("GAMEENGINE_AGENT_REPAIR_CONTEXT"),
+                 OsString::from(repair_context),
+             ));
+         }
+-        if let Some(observation) = runtime_observation {
++        let runtime_evaluation_context = runtime_observation.as_ref().map(|observation| {
++            format!(
++                "Evaluate host-captured managed Play frame {} ({}x{}). Inspect the image at GAMEENGINE_AGENT_CAPTURE_PATH. Do not mutate project or workspace state during this evaluation. Emit completion_gate with gate=visual_evaluation and status=passed or failed before any failing playtest_result, then emit playtest_result for the exercised interaction scenario when evidence supports it. A pass without this host-owned frame is rejected.",
++                observation.artifact_id, observation.width, observation.height
++            )
++        });
++        if let Some(observation) = runtime_observation.as_ref() {
+             environment.push((
+                 OsString::from("GAMEENGINE_AGENT_CAPTURE_PATH"),
+                 observation.path.as_os_str().to_os_string(),
+             ));
++        }
++        if let Some(context) = runtime_evaluation_context.as_deref() {
+             environment.push((
+                 OsString::from("GAMEENGINE_AGENT_RUNTIME_EVALUATION_CONTEXT"),
+-                OsString::from(format!(
+-                    "Evaluate host-captured managed Play frame {} ({}x{}). Inspect the image at GAMEENGINE_AGENT_CAPTURE_PATH. Do not mutate project or workspace state during this evaluation. Emit completion_gate with gate=visual_evaluation and status=passed or failed before any failing playtest_result, then emit playtest_result for the exercised interaction scenario when evidence supports it. A pass without this host-owned frame is rejected.",
+-                    observation.artifact_id, observation.width, observation.height
+-                )),
++                OsString::from(context),
+             ));
+         }
+-        let args = split_direct_args(&self.provider_args);
++        let provider_prompt = external_agent_provider_prompt(
++            &proposal_json,
++            repair_context.as_deref(),
++            runtime_evaluation_context.as_deref(),
++        );
++        let generic_args = split_direct_args(&generic_args_text);
++        let launch_plan = match build_launch_plan(
++            provider_kind,
++            &generic_program,
++            &generic_args,
++            &provider_prompt,
++            &self.connection.endpoint,
++        ) {
++            Ok(plan) => plan,
++            Err(error) => {
++                match purpose {
++                    ExternalAgentPurpose::BuildOrRepair => self.fail_run(run_id, error),
++                    ExternalAgentPurpose::RuntimeEvaluation => {
++                        self.record_runtime_evaluation_failure(run_id, error);
++                    }
++                }
++                return;
++            }
++        };
+         match ExternalAgentProcess::spawn(
+-            OsStr::new(self.provider_program.trim()),
+-            &args,
++            launch_plan.program.as_os_str(),
++            &launch_plan.args,
+             workspace.root(),
+             &environment,
+             &confinement_request,
+@@ -2813,20 +2982,72 @@ impl AiStudioPanel {
+             .as_ref()
+             .map(ExternalAgentProcess::drain_output)
+             .unwrap_or_default();
++        let provider_kind = self
++            .active_external_provider
++            .unwrap_or(ExternalAgentProviderKind::Generic);
+         for line in output {
+-            if line.stream == ProcessStream::Stdout
+-                && let Some(payload) = line.text.strip_prefix(PROVIDER_EVENT_PREFIX)
+-            {
+-                match serde_json::from_str::<ProviderAgentEvent>(payload) {
+-                    Ok(event) => {
+-                        if let Err(error) = self.record_provider_semantic_event(&run_id, event) {
+-                            self.status = Some(error);
++            self.external_provider_diagnostics
++                .observe(provider_kind, &line.text);
++            if line.stream == ProcessStream::Stdout {
++                if let Some(payload) = line.text.strip_prefix(PROVIDER_EVENT_PREFIX) {
++                    match serde_json::from_str::<ProviderAgentEvent>(payload) {
++                        Ok(event) => {
++                            if let Err(error) =
++                                self.record_provider_semantic_event(&run_id, event)
++                            {
++                                self.status = Some(error);
++                            }
++                            continue;
++                        }
++                        Err(error) => {
++                            self.status = Some(format!(
++                                "Provider emitted an invalid semantic AgentEvent: {error}"
++                            ));
+                         }
+-                        continue;
+                     }
+-                    Err(error) => {
+-                        self.status = Some(format!("Provider emitted an invalid semantic AgentEvent: {error}"));
++                }
++                let translated = translate_provider_line(provider_kind, &line.text);
++                if !translated.is_empty() {
++                    for event in translated {
++                        match event {
++                            ExternalAgentSemanticEvent::Progress { step, detail } => {
++                                if let Err(error) =
++                                    self.host.record_semantic_progress(&run_id, step, detail)
++                                {
++                                    self.status = Some(error.to_string());
++                                }
++                            }
++                            ExternalAgentSemanticEvent::ToolAction {
++                                tool,
++                                action,
++                                success,
++                            } => {
++                                if let Err(error) = self
++                                    .host
++                                    .record_tool_action(&run_id, tool, action, success)
++                                {
++                                    self.status = Some(error.to_string());
++                                }
++                            }
++                            ExternalAgentSemanticEvent::GameEngineProtocolPayload(payload) => {
++                                match serde_json::from_str::<ProviderAgentEvent>(&payload) {
++                                    Ok(event) => {
++                                        if let Err(error) = self
++                                            .record_provider_semantic_event(&run_id, event)
++                                        {
++                                            self.status = Some(error);
++                                        }
++                                    }
++                                    Err(error) => {
++                                        self.status = Some(format!(
++                                            "Provider emitted an invalid semantic AgentEvent: {error}"
++                                        ));
++                                    }
++                                }
++                            }
++                        }
+                     }
++                    continue;
+                 }
+             }
+             let stream = match line.stream {
+@@ -2863,10 +3084,14 @@ impl AiStudioPanel {
+                         }
+                     }
+                 } else {
+-                    let message = format!(
+-                        "External agent exited unsuccessfully with {:?}.",
+-                        status.code()
+-                    );
++                    let failure = self
++                        .external_provider_diagnostics
++                        .classify_exit(provider_kind, status.code());
++                    let message = if failure.retryable {
++                        format!("{} The provider classified this failure as retryable.", failure.message)
++                    } else {
++                        failure.message
++                    };
+                     match purpose {
+                         ExternalAgentPurpose::BuildOrRepair => self.fail_run(&run_id, message),
+                         ExternalAgentPurpose::RuntimeEvaluation => {
+@@ -3435,6 +3660,25 @@ fn managed_source_repair_context(run: &crate::agent_host::AgentRun) -> String {
+     )
+ }
+ 
++fn external_agent_provider_prompt(
++    proposal_json: &str,
++    repair_context: Option<&str>,
++    runtime_evaluation_context: Option<&str>,
++) -> String {
++    let mut prompt = format!(
++        "Act as a GameEngine external AgentRuntime for the immutable proposal below.\n\n{proposal_json}\n\nPersisted project authoring changes must use the injected gameengine_editor MCP server. Project code changes must stay inside the current isolated Agent Code Workspace. Do not commit, push, or alter Git history. Agent Host permissions, managed validation, Play/frame evidence, and completion gates remain authoritative. When reporting GameEngine semantic progress, emit a standalone line beginning GAMEENGINE_AGENT_EVENT followed by the supported JSON event payload. Never emit credentials, bearer tokens, or MCP authorization material."
++    );
++    if let Some(context) = repair_context {
++        prompt.push_str("\n\nRepair context:\n");
++        prompt.push_str(context);
++    }
++    if let Some(context) = runtime_evaluation_context {
++        prompt.push_str("\n\nRuntime evaluation context:\n");
++        prompt.push_str(context);
++    }
++    prompt
++}
++
+ fn provider_key_code(key: &str) -> Result<KeyCode, String> {
+     let normalized = key.trim().to_ascii_lowercase();
+     let key = match normalized.as_str() {
+diff --git a/crates/editor/src/external_agent_provider.rs b/crates/editor/src/external_agent_provider.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..6e791a7c3f69a112eee44faf5dc52e245c21f547
+--- /dev/null
++++ b/crates/editor/src/external_agent_provider.rs
+@@ -0,0 +1,673 @@
++//! Provider-specific adapters for external coding-agent runtimes.
++//!
++//! These adapters translate provider lifecycle and wire protocol details into the
++//! existing Agent Host boundary. They never own authoring semantics, permission
++//! decisions, code apply, validation, or completion gates.
++
++use serde::{Deserialize, Serialize};
++use serde_json::Value;
++use std::ffi::{OsStr, OsString};
++use std::io;
++use std::process::{Command, Stdio};
++
++pub(crate) const GAMEENGINE_AGENT_EVENT_PREFIX: &str = "GAMEENGINE_AGENT_EVENT ";
++const GAMEENGINE_MCP_SERVER_NAME: &str = "gameengine_editor";
++const GAMEENGINE_MCP_TOKEN_ENV: &str = "GAMEENGINE_MCP_AUTH_TOKEN";
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
++#[serde(rename_all = "snake_case")]
++pub(crate) enum ExternalAgentProviderKind {
++    ClaudeCode,
++    Codex,
++    #[default]
++    Generic,
++}
++
++impl ExternalAgentProviderKind {
++    pub(crate) const ALL: [Self; 3] = [Self::ClaudeCode, Self::Codex, Self::Generic];
++
++    pub(crate) fn label(self) -> &'static str {
++        match self {
++            Self::ClaudeCode => "Claude Code",
++            Self::Codex => "Codex",
++            Self::Generic => "Generic command",
++        }
++    }
++
++    pub(crate) fn run_label(self) -> &'static str {
++        match self {
++            Self::ClaudeCode => "claude-code",
++            Self::Codex => "codex",
++            Self::Generic => "generic-external",
++        }
++    }
++
++    fn program(self) -> Option<&'static OsStr> {
++        match self {
++            Self::ClaudeCode => Some(OsStr::new("claude")),
++            Self::Codex => Some(OsStr::new("codex")),
++            Self::Generic => None,
++        }
++    }
++
++    pub(crate) fn capabilities(self) -> ExternalAgentProviderCapabilities {
++        match self {
++            Self::ClaudeCode | Self::Codex => ExternalAgentProviderCapabilities {
++                provider_managed_auth: true,
++                mcp_injection: true,
++                structured_events: true,
++                host_cancellation: true,
++            },
++            Self::Generic => ExternalAgentProviderCapabilities {
++                provider_managed_auth: false,
++                mcp_injection: true,
++                structured_events: true,
++                host_cancellation: true,
++            },
++        }
++    }
++}
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub(crate) struct ExternalAgentProviderCapabilities {
++    pub(crate) provider_managed_auth: bool,
++    pub(crate) mcp_injection: bool,
++    pub(crate) structured_events: bool,
++    pub(crate) host_cancellation: bool,
++}
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub(crate) enum ExternalAgentDiscoveryStatus {
++    Unchecked,
++    Available,
++    Unavailable,
++}
++
++impl ExternalAgentDiscoveryStatus {
++    pub(crate) fn label(self) -> &'static str {
++        match self {
++            Self::Unchecked => "not checked",
++            Self::Available => "available",
++            Self::Unavailable => "not found",
++        }
++    }
++}
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub(crate) enum ExternalAgentAuthStatus {
++    Unchecked,
++    Authenticated,
++    SignInRequired,
++    NotApplicable,
++    Unavailable,
++}
++
++impl ExternalAgentAuthStatus {
++    pub(crate) fn label(self) -> &'static str {
++        match self {
++            Self::Unchecked => "not checked",
++            Self::Authenticated => "authenticated",
++            Self::SignInRequired => "sign-in required",
++            Self::NotApplicable => "provider-managed status unavailable",
++            Self::Unavailable => "provider unavailable",
++        }
++    }
++}
++
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub(crate) struct ExternalAgentProviderStatus {
++    pub(crate) kind: ExternalAgentProviderKind,
++    pub(crate) discovery: ExternalAgentDiscoveryStatus,
++    pub(crate) auth: ExternalAgentAuthStatus,
++}
++
++impl ExternalAgentProviderStatus {
++    pub(crate) fn unchecked(kind: ExternalAgentProviderKind) -> Self {
++        let auth = if kind == ExternalAgentProviderKind::Generic {
++            ExternalAgentAuthStatus::NotApplicable
++        } else {
++            ExternalAgentAuthStatus::Unchecked
++        };
++        Self {
++            kind,
++            discovery: ExternalAgentDiscoveryStatus::Unchecked,
++            auth,
++        }
++    }
++
++    pub(crate) fn generic(configured: bool) -> Self {
++        Self {
++            kind: ExternalAgentProviderKind::Generic,
++            discovery: if configured {
++                ExternalAgentDiscoveryStatus::Available
++            } else {
++                ExternalAgentDiscoveryStatus::Unavailable
++            },
++            auth: ExternalAgentAuthStatus::NotApplicable,
++        }
++    }
++
++    #[cfg(feature = "visual-validation")]
++    pub(crate) fn visual_fixture(kind: ExternalAgentProviderKind) -> Self {
++        Self {
++            kind,
++            discovery: ExternalAgentDiscoveryStatus::Available,
++            auth: if kind == ExternalAgentProviderKind::Generic {
++                ExternalAgentAuthStatus::NotApplicable
++            } else {
++                ExternalAgentAuthStatus::Authenticated
++            },
++        }
++    }
++
++    pub(crate) fn ready(&self) -> bool {
++        self.discovery == ExternalAgentDiscoveryStatus::Available
++            && matches!(
++                self.auth,
++                ExternalAgentAuthStatus::Authenticated | ExternalAgentAuthStatus::NotApplicable
++            )
++    }
++
++    pub(crate) fn remote_json(&self) -> Value {
++        let capabilities = self.kind.capabilities();
++        serde_json::json!({
++            "kind": self.kind.run_label(),
++            "discovery": self.discovery.label(),
++            "authentication": self.auth.label(),
++            "capabilities": {
++                "provider_managed_auth": capabilities.provider_managed_auth,
++                "mcp_injection": capabilities.mcp_injection,
++                "structured_events": capabilities.structured_events,
++                "host_cancellation": capabilities.host_cancellation
++            }
++        })
++    }
++}
++
++pub(crate) fn probe_provider(
++    kind: ExternalAgentProviderKind,
++    generic_program: &str,
++) -> ExternalAgentProviderStatus {
++    if kind == ExternalAgentProviderKind::Generic {
++        return ExternalAgentProviderStatus::generic(!generic_program.trim().is_empty());
++    }
++    let Some(program) = kind.program() else {
++        return ExternalAgentProviderStatus::unchecked(kind);
++    };
++    let available = command_success(program, ["--version"]).unwrap_or(false);
++    if !available {
++        return ExternalAgentProviderStatus {
++            kind,
++            discovery: ExternalAgentDiscoveryStatus::Unavailable,
++            auth: ExternalAgentAuthStatus::Unavailable,
++        };
++    }
++    let auth = match kind {
++        ExternalAgentProviderKind::ClaudeCode => command_success(program, ["auth", "status"]),
++        ExternalAgentProviderKind::Codex => command_success(program, ["login", "status"]),
++        ExternalAgentProviderKind::Generic => Ok(true),
++    };
++    ExternalAgentProviderStatus {
++        kind,
++        discovery: ExternalAgentDiscoveryStatus::Available,
++        auth: match auth {
++            Ok(true) => ExternalAgentAuthStatus::Authenticated,
++            Ok(false) => ExternalAgentAuthStatus::SignInRequired,
++            Err(_) => ExternalAgentAuthStatus::SignInRequired,
++        },
++    }
++}
++
++fn command_success<I, S>(program: &OsStr, args: I) -> io::Result<bool>
++where
++    I: IntoIterator<Item = S>,
++    S: AsRef<OsStr>,
++{
++    Command::new(program)
++        .args(args)
++        .stdin(Stdio::null())
++        .stdout(Stdio::null())
++        .stderr(Stdio::null())
++        .status()
++        .map(|status| status.success())
++}
++
++#[derive(Debug, Clone)]
++pub(crate) struct ExternalAgentLaunchPlan {
++    pub(crate) program: OsString,
++    pub(crate) args: Vec<OsString>,
++}
++
++pub(crate) fn build_launch_plan(
++    kind: ExternalAgentProviderKind,
++    generic_program: &str,
++    generic_args: &[String],
++    prompt: &str,
++    mcp_endpoint: &str,
++) -> Result<ExternalAgentLaunchPlan, String> {
++    match kind {
++        ExternalAgentProviderKind::ClaudeCode => {
++            let mcp_config = format!(
++                r#"{{\"mcpServers\":{{\"{GAMEENGINE_MCP_SERVER_NAME}\":{{\"type\":\"http\",\"url\":\"${{GAMEENGINE_MCP_ENDPOINT}}\",\"headers\":{{\"Authorization\":\"Bearer ${{{GAMEENGINE_MCP_TOKEN_ENV}}}\"}}}}}}}}"#
++            );
++            Ok(ExternalAgentLaunchPlan {
++                program: OsString::from("claude"),
++                args: vec![
++                    OsString::from("-p"),
++                    OsString::from(prompt),
++                    OsString::from("--output-format"),
++                    OsString::from("stream-json"),
++                    OsString::from("--verbose"),
++                    OsString::from("--mcp-config"),
++                    OsString::from(mcp_config),
++                    OsString::from("--strict-mcp-config"),
++                    OsString::from("--allowedTools"),
++                    OsString::from("mcp__gameengine_editor__*"),
++                ],
++            })
++        }
++        ExternalAgentProviderKind::Codex => {
++            let mcp_url = format!(
++                "mcp_servers.{GAMEENGINE_MCP_SERVER_NAME}.url={}",
++                toml_basic_string(mcp_endpoint)
++            );
++            let bearer_env = format!(
++                "mcp_servers.{GAMEENGINE_MCP_SERVER_NAME}.bearer_token_env_var={}",
++                toml_basic_string(GAMEENGINE_MCP_TOKEN_ENV)
++            );
++            Ok(ExternalAgentLaunchPlan {
++                program: OsString::from("codex"),
++                args: vec![
++                    OsString::from("exec"),
++                    OsString::from("--json"),
++                    OsString::from("--skip-git-repo-check"),
++                    OsString::from("-c"),
++                    OsString::from(mcp_url),
++                    OsString::from("-c"),
++                    OsString::from(bearer_env),
++                    OsString::from(prompt),
++                ],
++            })
++        }
++        ExternalAgentProviderKind::Generic => {
++            if generic_program.trim().is_empty() {
++                return Err("Configure a generic external agent command before Go.".to_owned());
++            }
++            Ok(ExternalAgentLaunchPlan {
++                program: OsString::from(generic_program.trim()),
++                args: generic_args
++                    .iter()
++                    .map(|argument| OsString::from(argument.as_str()))
++                    .collect(),
++            })
++        }
++    }
++}
++
++fn toml_basic_string(value: &str) -> String {
++    let mut quoted = String::from("\"");
++    for character in value.chars() {
++        match character {
++            '\\' => quoted.push_str("\\\\"),
++            '"' => quoted.push_str("\\\""),
++            '\n' => quoted.push_str("\\n"),
++            '\r' => quoted.push_str("\\r"),
++            '\t' => quoted.push_str("\\t"),
++            character if character.is_control() => {
++                quoted.push_str(&format!("\\u{:04x}", u32::from(character)));
++            }
++            character => quoted.push(character),
++        }
++    }
++    quoted.push('"');
++    quoted
++}
++
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub(crate) enum ExternalAgentSemanticEvent {
++    Progress {
++        step: &'static str,
++        detail: &'static str,
++    },
++    ToolAction {
++        tool: String,
++        action: &'static str,
++        success: Option<bool>,
++    },
++    GameEngineProtocolPayload(String),
++}
++
++pub(crate) fn translate_provider_line(
++    kind: ExternalAgentProviderKind,
++    line: &str,
++) -> Vec<ExternalAgentSemanticEvent> {
++    match kind {
++        ExternalAgentProviderKind::ClaudeCode => translate_claude_line(line),
++        ExternalAgentProviderKind::Codex => translate_codex_line(line),
++        ExternalAgentProviderKind::Generic => Vec::new(),
++    }
++}
++
++fn translate_claude_line(line: &str) -> Vec<ExternalAgentSemanticEvent> {
++    let Ok(value) = serde_json::from_str::<Value>(line) else {
++        return Vec::new();
++    };
++    let mut events = Vec::new();
++    match value.get("type").and_then(Value::as_str) {
++        Some("system") if value.get("subtype").and_then(Value::as_str) == Some("init") => {
++            events.push(ExternalAgentSemanticEvent::Progress {
++                step: "provider_connected",
++                detail: "Claude Code initialized its external agent session.",
++            });
++        }
++        Some("assistant") => {
++            if let Some(content) = value
++                .get("message")
++                .and_then(|message| message.get("content"))
++                .and_then(Value::as_array)
++            {
++                for item in content {
++                    match item.get("type").and_then(Value::as_str) {
++                        Some("tool_use") => {
++                            let tool = item
++                                .get("name")
++                                .and_then(Value::as_str)
++                                .unwrap_or("provider_tool")
++                                .to_owned();
++                            events.push(ExternalAgentSemanticEvent::ToolAction {
++                                tool,
++                                action: "provider tool requested",
++                                success: None,
++                            });
++                        }
++                        Some("text") => {
++                            if let Some(text) = item.get("text").and_then(Value::as_str) {
++                                collect_protocol_payloads(text, &mut events);
++                            }
++                        }
++                        _ => {}
++                    }
++                }
++            }
++        }
++        Some("result") => {
++            events.push(ExternalAgentSemanticEvent::Progress {
++                step: "provider_turn_finished",
++                detail: "Claude Code returned control to the GameEngine host.",
++            });
++        }
++        _ => {}
++    }
++    events
++}
++
++fn translate_codex_line(line: &str) -> Vec<ExternalAgentSemanticEvent> {
++    let Ok(value) = serde_json::from_str::<Value>(line) else {
++        return Vec::new();
++    };
++    let mut events = Vec::new();
++    match value.get("type").and_then(Value::as_str) {
++        Some("thread.started") => events.push(ExternalAgentSemanticEvent::Progress {
++            step: "provider_connected",
++            detail: "Codex initialized its external agent thread.",
++        }),
++        Some("turn.started") => events.push(ExternalAgentSemanticEvent::Progress {
++            step: "provider_turn_started",
++            detail: "Codex started a provider turn.",
++        }),
++        Some("turn.completed") => events.push(ExternalAgentSemanticEvent::Progress {
++            step: "provider_turn_finished",
++            detail: "Codex returned control to the GameEngine host.",
++        }),
++        Some("item.started") | Some("item.completed") => {
++            if let Some(item) = value.get("item") {
++                match item.get("type").and_then(Value::as_str) {
++                    Some("mcp_tool_call") => {
++                        let tool = item
++                            .get("tool")
++                            .or_else(|| item.get("name"))
++                            .and_then(Value::as_str)
++                            .unwrap_or("mcp_tool")
++                            .to_owned();
++                        events.push(ExternalAgentSemanticEvent::ToolAction {
++                            tool,
++                            action: "provider MCP tool activity",
++                            success: None,
++                        });
++                    }
++                    Some("command_execution") => {
++                        events.push(ExternalAgentSemanticEvent::ToolAction {
++                            tool: "provider.command".to_owned(),
++                            action: "provider command activity",
++                            success: None,
++                        });
++                    }
++                    Some("file_change") => {
++                        events.push(ExternalAgentSemanticEvent::ToolAction {
++                            tool: "workspace.file_change".to_owned(),
++                            action: "provider workspace edit",
++                            success: None,
++                        });
++                    }
++                    Some("agent_message") => {
++                        if let Some(text) = item
++                            .get("text")
++                            .or_else(|| item.get("message"))
++                            .and_then(Value::as_str)
++                        {
++                            collect_protocol_payloads(text, &mut events);
++                        }
++                    }
++                    _ => {}
++                }
++            }
++        }
++        _ => {}
++    }
++    events
++}
++
++fn collect_protocol_payloads(text: &str, events: &mut Vec<ExternalAgentSemanticEvent>) {
++    for line in text.lines() {
++        if let Some(payload) = line
++            .trim()
++            .strip_prefix(GAMEENGINE_AGENT_EVENT_PREFIX)
++        {
++            events.push(ExternalAgentSemanticEvent::GameEngineProtocolPayload(
++                payload.to_owned(),
++            ));
++        }
++    }
++}
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
++pub(crate) struct ExternalAgentDiagnostics {
++    authentication: bool,
++    rate_limited: bool,
++    mcp: bool,
++    configuration: bool,
++}
++
++impl ExternalAgentDiagnostics {
++    pub(crate) fn observe(&mut self, kind: ExternalAgentProviderKind, line: &str) {
++        if kind == ExternalAgentProviderKind::Generic {
++            return;
++        }
++        let lower = line.to_ascii_lowercase();
++        self.authentication |= lower.contains("not logged in")
++            || lower.contains("authentication failed")
++            || lower.contains("unauthorized")
++            || lower.contains("sign in required");
++        self.rate_limited |= lower.contains("rate limit")
++            || lower.contains("rate_limit")
++            || lower.contains("\"status\":429")
++            || lower.contains("status 429");
++        self.mcp |= lower.contains("mcp")
++            && (lower.contains("failed")
++                || lower.contains("error")
++                || lower.contains("unavailable"));
++        self.configuration |= lower.contains("configuration error")
++            || lower.contains("invalid config")
++            || lower.contains("invalid configuration");
++    }
++
++    pub(crate) fn classify_exit(
++        self,
++        kind: ExternalAgentProviderKind,
++        exit_code: Option<i32>,
++    ) -> ExternalAgentFailureClassification {
++        let provider = kind.label();
++        if self.authentication {
++            return ExternalAgentFailureClassification {
++                message: format!("{provider} authentication is unavailable or expired."),
++                retryable: false,
++            };
++        }
++        if self.rate_limited {
++            return ExternalAgentFailureClassification {
++                message: format!("{provider} reported provider-side rate limiting."),
++                retryable: true,
++            };
++        }
++        if self.mcp {
++            return ExternalAgentFailureClassification {
++                message: format!("{provider} could not use the injected GameEngine MCP connection."),
++                retryable: true,
++            };
++        }
++        if self.configuration {
++            return ExternalAgentFailureClassification {
++                message: format!("{provider} rejected its provider configuration."),
++                retryable: false,
++            };
++        }
++        ExternalAgentFailureClassification {
++            message: format!("{provider} exited unsuccessfully with {exit_code:?}."),
++            retryable: false,
++        }
++    }
++}
++
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub(crate) struct ExternalAgentFailureClassification {
++    pub(crate) message: String,
++    pub(crate) retryable: bool,
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn generic_launch_plan_preserves_direct_argument_semantics() {
++        let args = vec![
++            "--flag".to_owned(),
++            "value".to_owned(),
++            ";".to_owned(),
++            "echo".to_owned(),
++            "nope".to_owned(),
++        ];
++        let plan = build_launch_plan(
++            ExternalAgentProviderKind::Generic,
++            "custom-agent",
++            &args,
++            "ignored",
++            "http://127.0.0.1:1/mcp",
++        )
++        .expect("generic plan");
++        assert_eq!(plan.program, OsString::from("custom-agent"));
++        assert_eq!(
++            plan.args,
++            vec![
++                OsString::from("--flag"),
++                OsString::from("value"),
++                OsString::from(";"),
++                OsString::from("echo"),
++                OsString::from("nope"),
++            ]
++        );
++    }
++
++    #[test]
++    fn claude_mcp_config_references_ephemeral_environment() {
++        let plan = build_launch_plan(
++            ExternalAgentProviderKind::ClaudeCode,
++            "",
++            &[],
++            "task",
++            "http://127.0.0.1:1234/mcp",
++        )
++        .expect("claude plan");
++        let args = plan
++            .args
++            .iter()
++            .map(|value| value.to_string_lossy())
++            .collect::<Vec<_>>()
++            .join("\n");
++        assert!(args.contains("${GAMEENGINE_MCP_ENDPOINT}"));
++        assert!(args.contains("${GAMEENGINE_MCP_AUTH_TOKEN}"));
++    }
++
++    #[test]
++    fn codex_mcp_config_uses_bearer_token_environment_name_only() {
++        let plan = build_launch_plan(
++            ExternalAgentProviderKind::Codex,
++            "",
++            &[],
++            "task",
++            "http://127.0.0.1:4321/mcp",
++        )
++        .expect("codex plan");
++        let args = plan
++            .args
++            .iter()
++            .map(|value| value.to_string_lossy())
++            .collect::<Vec<_>>()
++            .join("\n");
++        assert!(args.contains("http://127.0.0.1:4321/mcp"));
++        assert!(args.contains("GAMEENGINE_MCP_AUTH_TOKEN"));
++    }
++
++    #[test]
++    fn claude_stream_translation_keeps_host_protocol_explicit() {
++        let line = r#"{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"GAMEENGINE_AGENT_EVENT {\\\"type\\\":\\\"progress\\\",\\\"step\\\":\\\"inspect\\\",\\\"detail\\\":\\\"scene\\\"}\"},{\"type\":\"tool_use\",\"name\":\"mcp__gameengine_editor__scene_get\"}]}}"#;
++        let events = translate_provider_line(ExternalAgentProviderKind::ClaudeCode, line);
++        assert!(events.iter().any(|event| matches!(
++            event,
++            ExternalAgentSemanticEvent::GameEngineProtocolPayload(payload)
++                if payload.contains("\"type\":\"progress\"")
++        )));
++        assert!(events.iter().any(|event| matches!(
++            event,
++            ExternalAgentSemanticEvent::ToolAction { tool, .. }
++                if tool == "mcp__gameengine_editor__scene_get"
++        )));
++    }
++
++    #[test]
++    fn provider_failure_mapping_is_sanitized_and_classified() {
++        let mut diagnostics = ExternalAgentDiagnostics::default();
++        diagnostics.observe(
++            ExternalAgentProviderKind::Codex,
++            r#"{\"type\":\"turn.failed\",\"error\":{\"message\":\"rate limit exceeded\"}}"#,
++        );
++        let failure = diagnostics.classify_exit(ExternalAgentProviderKind::Codex, Some(1));
++        assert!(failure.retryable);
++        assert!(failure.message.contains("rate limiting"));
++        assert!(!failure.message.contains("turn.failed"));
++    }
++
++    #[test]
++    fn remote_status_contains_only_sanitized_adapter_state() {
++        let status = ExternalAgentProviderStatus {
++            kind: ExternalAgentProviderKind::ClaudeCode,
++            discovery: ExternalAgentDiscoveryStatus::Available,
++            auth: ExternalAgentAuthStatus::Authenticated,
++        };
++        let json = status.remote_json().to_string();
++        assert!(json.contains("claude-code"));
++        assert!(json.contains("authenticated"));
++        assert!(!json.contains("GAMEENGINE_MCP"));
++        assert!(!json.contains("program"));
++    }
++}
+diff --git a/crates/editor/src/lib.rs b/crates/editor/src/lib.rs
+index 3da419de3aad4852a99f2afd4e4548f4d1e4dc76..e7940af1b0b80ece873ce287ea74560ed7f923ff 100644
+--- a/crates/editor/src/lib.rs
++++ b/crates/editor/src/lib.rs
+@@ -12,6 +12,7 @@
+ #[allow(dead_code)]
+ mod agent_asset_acquisition;
+ mod agent_host;
++mod external_agent_provider;
+ mod hosted_model_backend;
+ mod live_observation;
+ mod native_agent;
