@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0127-v10-native2d-mcp-parity-4ce5-r3",
+  "target_branch": "chatgpt/gameengine-adr0127-first-release-current-main-v10",
+  "expected_head_sha": "4ce58f5ad9281a31763360347a97135f2820dcee",
+  "baseline_main_sha": "96c8ffb18a74eabec2164daa61f694f131019ddc",
+  "edit_parts": [
+    "edit-0000.json",
+    "edit-0001.json",
+    "edit-0002.json",
+    "edit-0003.json",
+    "edit-0004.json",
+    "edit-0005.json",
+    "edit-0006.json",
+    "edit-0007.json",
+    "edit-0008.json",
+    "edit-0009.json",
+    "edit-0010.json",
+    "edit-0011.json",
+    "edit-0012.json",
+    "edit-0013.json",
+    "edit-0014.json",
+    "edit-0015.json",
+    "edit-0016.json",
+    "edit-0017.json",
+    "edit-0018.json"
+  ],
+  "commit_message": "Complete ADR0127 Native2D MCP parity",
+  "pr_title": "GameEngine: complete ADR0127 Native 2D first release",
+  "pr_body": "Completes ADR0127 by retaining the first-party Native 2D proving-project Launcher template already on this branch and closing the remaining MCP parity gap. The canonical registry now advertises all 16 Native 2D typed-document tools, the active Editor routes direct and generic calls into its existing modeless Native 2D workspace, and Tile Map whole-document replacements preserve gesture boundaries, one-entry undo, stale revision/generation checks, dependency resolution, and canonical persistence. No serialized schema or stable identifier changes."
+}
