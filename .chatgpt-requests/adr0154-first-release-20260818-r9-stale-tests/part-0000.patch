@@ -1,0 +1,170 @@
+diff --git a/crates/editor/src/build.rs b/crates/editor/src/build.rs
+index e573d80edd59f95932f6d232e9f908cf1b7c9ac0..041b4385460f19f1a7b52a8b57cce62113dec776 100644
+--- a/crates/editor/src/build.rs
++++ b/crates/editor/src/build.rs
+@@ -526,11 +526,13 @@ pub fn plan_package(config: &BuildConfig, manifest: &AssetManifest) -> PackagePl
+ /// registered map that matches no needed pair and does not set
+ /// `always_package` is skipped with a non-blocking
+ /// [`BuildDiagnosticKind::RetargetMapNotReached`] diagnostic rather than
+-/// baked, so the narrowing is observable in the build report. An unresolvable
+-/// skeleton or a bake failure for a map that *is* in the bake set is still a
+-/// blocking diagnostic, consistent with the [`BuildDiagnosticKind::MissingAsset`]
++/// baked, so the narrowing is observable in the build report. ADR 0154's
++/// separate shared motion-planner pass diagnoses a reachable Animation Set
++/// candidate when no Native, Retarget, or Humanoid route exists. An
++/// unresolvable skeleton or a bake failure for a map that *is* in the bake set
++/// remains blocking, consistent with the [`BuildDiagnosticKind::MissingAsset`]
+ /// policy (ADR 0045): packaging refuses to ship a hole rather than silently
+-/// drop a retarget it committed to baking.
++/// drop a route it committed to baking.
+ fn bake_registered_retarget_clips(
+     config: &BuildConfig,
+     manifest: &AssetManifest,
+@@ -1909,55 +1911,6 @@ mod tests {
+         )));
+     }
+ 
+-    #[test]
+-    fn humanoid_package_requirement_respects_motion_source_priority() {
+-        let native = AssetId::generate();
+-        let explicit_humanoid = AssetId::generate();
+-
+-        assert_eq!(
+-            required_humanoid_motion_asset(
+-                &engine_authoring::MotionSourceRef::native(native.clone()),
+-                false,
+-                false,
+-            ),
+-            None
+-        );
+-        assert_eq!(
+-            required_humanoid_motion_asset(
+-                &engine_authoring::MotionSourceRef::auto(native.clone()),
+-                true,
+-                false,
+-            ),
+-            None
+-        );
+-        assert_eq!(
+-            required_humanoid_motion_asset(
+-                &engine_authoring::MotionSourceRef::auto(native.clone()),
+-                false,
+-                true,
+-            ),
+-            None
+-        );
+-        assert_eq!(
+-            required_humanoid_motion_asset(
+-                &engine_authoring::MotionSourceRef::auto(native.clone()),
+-                false,
+-                false,
+-            ),
+-            Some(engine::asset::imported_humanoid_motion_sub_asset_id(
+-                &native,
+-            ))
+-        );
+-        assert_eq!(
+-            required_humanoid_motion_asset(
+-                &engine_authoring::MotionSourceRef::humanoid(explicit_humanoid.clone()),
+-                false,
+-                false,
+-            ),
+-            Some(explicit_humanoid)
+-        );
+-    }
+-
+     #[test]
+     fn package_plan_includes_external_gltf_sidecars_once() {
+         let directory = tempfile::tempdir().expect("temp dir");
+@@ -3209,24 +3162,21 @@ mod tests {
+         let plan = plan_package(&config, &manifest);
+ 
+         assert!(
+-            plan.success,
+-            "packaging does not itself diagnose a needed pair with no registered map: {:?}",
++            !plan.success,
++            "ADR0154 package preflight must block a reachable candidate with no Native, Retarget, or Humanoid route: {:?}",
+             plan.diagnostics
+         );
+         assert!(
+-            !plan
+-                .copies
+-                .iter()
+-                .any(|copy| copy.destination.starts_with("baked_anim")),
+-            "no map is registered, so nothing can be baked: {:?}",
++            plan.copies.is_empty(),
++            "a failed motion route must prevent a partial package: {:?}",
+             plan.copies
+         );
+         assert!(
+-            !plan.diagnostics.iter().any(|diagnostic| matches!(
++            plan.diagnostics.iter().any(|diagnostic| matches!(
+                 diagnostic.kind,
+-                BuildDiagnosticKind::RetargetMapNotReached { .. }
+-            )),
+-            "with no registered map at all, there is nothing to report as unreached: {:?}",
++                BuildDiagnosticKind::MotionBindingFailed { .. }
++            ) && diagnostic.blocking),
++            "the shared motion planner failure must be reported as a blocking build diagnostic: {:?}",
+             plan.diagnostics
+         );
+     }
+diff --git a/crates/editor/src/ui/tests.rs b/crates/editor/src/ui/tests.rs
+index 29f4cfa24b9128282fa16aea54b946fafe8b8a44..09dbc8b32a5a9c3a7ae0bc62873ef90b9824f204 100644
+--- a/crates/editor/src/ui/tests.rs
++++ b/crates/editor/src/ui/tests.rs
+@@ -1765,21 +1765,16 @@ fn animation_set_validation_enforces_motion_source_variant_sub_asset_kinds() {
+         .get_mut(&slot)
+         .expect("the test binding must exist")
+         .clip = engine_authoring::MotionSourceRef::native(humanoid_motion.clone());
+-    let native_error =
+-        super::assets::validate_animation_set_clip_references(&document, &manifest)
+-            .expect_err("Native must reject a HumanoidMotion sub-asset");
+-    assert!(native_error.contains("primary clip"));
+-    assert!(native_error.contains("Animation Clip"));
++    super::assets::validate_animation_set_clip_references(&document, &manifest)
++        .expect("schema v3 stores only the HumanoidMotion candidate; constructor labels do not persist route policy");
+ 
+     document
+         .bindings
+         .get_mut(&slot)
+         .expect("the test binding must exist")
+         .clip = engine_authoring::MotionSourceRef::humanoid(primary_clip.clone());
+-    let humanoid_error =
+-        super::assets::validate_animation_set_clip_references(&document, &manifest)
+-            .expect_err("Humanoid must reject a Native Animation sub-asset");
+-    assert!(humanoid_error.contains("HumanoidMotion"));
++    super::assets::validate_animation_set_clip_references(&document, &manifest)
++        .expect("schema v3 stores only the Animation candidate; constructor labels do not persist route policy");
+ 
+     document
+         .bindings
+@@ -1797,11 +1792,8 @@ fn animation_set_validation_enforces_motion_source_variant_sub_asset_kinds() {
+         .expect("the test binding must exist");
+     binding.clip = engine_authoring::MotionSourceRef::native(primary_clip);
+     binding.overlays = vec![engine_authoring::MotionSourceRef::humanoid(overlay_clip)];
+-    let overlay_error =
+-        super::assets::validate_animation_set_clip_references(&document, &manifest)
+-            .expect_err("a Humanoid overlay must reference HumanoidMotion");
+-    assert!(overlay_error.contains("overlay 1"));
+-    assert!(overlay_error.contains("HumanoidMotion"));
++    super::assets::validate_animation_set_clip_references(&document, &manifest)
++        .expect("schema v3 validates imported candidate kinds independently of legacy constructor labels");
+ }
+ 
+ #[test]
+diff --git a/crates/engine/src/scene_bridge/tests.rs b/crates/engine/src/scene_bridge/tests.rs
+index 912fbce2cf84e284a74c0d6d3c3e657bd378a603..51c615d245d43026e12762879e8d2d56db58df12 100644
+--- a/crates/engine/src/scene_bridge/tests.rs
++++ b/crates/engine/src/scene_bridge/tests.rs
+@@ -1781,8 +1781,8 @@ fn animator_clip_from_a_different_skeleton_without_a_retarget_map_is_not_applied
+         bridge
+             .asset_diagnostics
+             .iter()
+-            .any(|d| d.code == crate::retarget::RETARGET_MAP_MISSING_DIAGNOSTIC),
+-        "a missing map must be reported: {:?}",
++            .any(|d| d.code == ANIMATION_MOTION_BINDING_FAILED_DIAGNOSTIC),
++        "the shared ADR0154 planner must report the failed Native -> Retarget -> Humanoid route: {:?}",
+         bridge.asset_diagnostics
+     );
+     let entity = bridge
