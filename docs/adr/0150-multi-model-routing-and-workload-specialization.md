@@ -54,7 +54,7 @@ Each routed turn rebuilds the provider prompt from the same immutable proposal s
 
 Image-bearing turns require a backend that declares image input or has successful GameEngine visual-evaluation benchmark evidence. If neither the qualified specialist nor the baseline satisfies that requirement, routing fails explicitly instead of allowing a text-only model to fabricate visual success. A specialist that fails before a turn starts may deterministically fall back only to a compatible selected baseline without changing the user's processing posture.
 
-Every decision records the routing policy version, workload class, backend/model identity, handoff/fallback state, and sanitized reason in the existing run event audit. AI Studio exposes the active measured-routing policy and count of benchmark-qualified specialist workloads next to model/resource status. No prompt, credential, private provider state, or transient model cache is persisted by the router.
+Every decision records the routing policy version, workload class, backend/model identity, handoff/fallback state, and sanitized reason in the existing run event audit. A native run that actually hands work to a specialist is excluded from ADR 0142 single-model evidence so specialist work cannot be misattributed to the selected baseline model; comparable single-model records remain the source evidence used to qualify routing. AI Studio exposes the active measured-routing policy and count of benchmark-qualified specialist workloads next to model/resource status. No prompt, credential, private provider state, or transient model cache is persisted by the router.
 
 ## Dependencies and parallel work
 

@@ -229,6 +229,7 @@ struct NativeRunBenchmarkContext {
     workload: InferenceWorkload,
     hardware: BenchmarkHardwareIdentity,
     inventory: Option<InstalledModelInventory>,
+    routed: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1887,6 +1888,7 @@ impl AiStudioPanel {
             .as_ref()
             .is_some_and(|benchmark| {
                 benchmark.task_id == task.id
+                    && !benchmark.routed
                     && self.host.run(&benchmark.run_id).is_ok_and(|run| {
                         matches!(
                             run.state,
@@ -1927,6 +1929,13 @@ impl AiStudioPanel {
                 );
                 return;
             };
+            if context.routed {
+                self.status = Some(
+                    "Routed native runs are not ADR 0142 single-model evidence. Run this corpus task without a specialist handoff before recording a model baseline."
+                        .to_owned(),
+                );
+                return;
+            }
             let run = match self.host.run(&context.run_id) {
                 Ok(run) => run.clone(),
                 Err(error) => {
@@ -2589,16 +2598,26 @@ impl AiStudioPanel {
         images: Vec<Vec<u8>>,
     ) -> Result<(), String> {
         let run = self.host.run(run_id).map_err(|error| error.to_string())?.clone();
-        let runtime = self
-            .native_agent_runtime
-            .as_mut()
-            .ok_or_else(|| "Native AgentRuntime is not initialized.".to_owned())?;
-        runtime
-            .start_turn(&run, context.as_deref(), images)
-            .map_err(|error| error.to_string())?;
-        let backend_label = runtime.backend_label();
-        let routing_summary = runtime.routing_policy_summary();
-        let routing_decisions = runtime.take_routing_decisions();
+        let (backend_label, routing_summary, routing_decisions) = {
+            let runtime = self
+                .native_agent_runtime
+                .as_mut()
+                .ok_or_else(|| "Native AgentRuntime is not initialized.".to_owned())?;
+            runtime
+                .start_turn(&run, context.as_deref(), images)
+                .map_err(|error| error.to_string())?;
+            (
+                runtime.backend_label(),
+                runtime.routing_policy_summary(),
+                runtime.take_routing_decisions(),
+            )
+        };
+        if routing_decisions.iter().any(|decision| decision.context_handoff)
+            && let Some(benchmark) = self.native_run_benchmark_context.as_mut()
+            && benchmark.run_id == run_id
+        {
+            benchmark.routed = true;
+        }
         for decision in routing_decisions {
             self.host
                 .record_semantic_progress(run_id, "model_routing", decision.audit_summary())
@@ -3448,6 +3467,7 @@ impl AiStudioPanel {
                 workload: benchmark_workload,
                 hardware: self.benchmark_hardware.clone(),
                 inventory,
+                routed: false,
             },
         );
         self.native_mcp_task = None;
