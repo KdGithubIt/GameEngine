@@ -22,6 +22,7 @@ use crate::game_prefab::{
 use crate::game_timer::{query_game_timer, GameTimerEvents, GameTimers, MAX_GAME_TIMERS};
 use crate::hitbox::AttackHitbox;
 use crate::lock_on::TargetLock;
+use crate::native_2d::{CharacterController2d, CharacterControllerMotion2d};
 use crate::navmesh::NavMeshAgent;
 use crate::save::{
     GameSaveCommand, GameSaveCommandQueue, SaveData, SaveValue, MAX_GAME_SAVE_COMMANDS,
@@ -32,7 +33,7 @@ use crate::ui_document::{UiBindingValue, UiBindings, UiDocumentRef, UiDocumentVi
 use crate::vfx::VfxPlayer;
 use engine_authoring::{AssetId, ComponentTypeId, StableId, Value};
 use engine_ecs::{Entity, SystemId, World};
-use glam::{Quat, Vec3};
+use glam::{Quat, Vec2, Vec3};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::path::{Component, Path};
@@ -59,6 +60,10 @@ pub(crate) enum PreparedGameCommand {
         entity: Entity,
         velocity: Vec3,
         rotation: Quat,
+    },
+    Character2d {
+        entity: Entity,
+        operation: Character2dOperation,
     },
     SetNavigationTarget {
         entity: Entity,
@@ -135,6 +140,11 @@ pub(crate) enum SaveSlotOperation {
     Load { slot: u32 },
 }
 
+pub(crate) enum Character2dOperation {
+    SetMotion { velocity: Vec2 },
+    DropThrough { seconds: f32 },
+}
+
 pub(crate) enum TimerOperation {
     Set {
         timer_id: String,
@@ -199,6 +209,16 @@ pub(crate) fn prepare_game_commands(
                     return Err(GameCommandError::MissingTransform { index, target });
                 }
                 prepared.push(parse_character_command(index, entity, &command.payload)?);
+            }
+            GameCommandFamily::Character2d => {
+                let (target, entity) = targeted_entity(world, command, index, &despawned)?;
+                if world.get_component::<CharacterController2d>(entity).is_none() {
+                    return Err(GameCommandError::MissingCharacterController { index, target });
+                }
+                if world.get_component::<Transform>(entity).is_none() {
+                    return Err(GameCommandError::MissingTransform { index, target });
+                }
+                prepared.push(parse_character_2d_command(index, entity, &command.payload)?);
             }
             GameCommandFamily::Navigation => {
                 let (target, entity) = targeted_entity(world, command, index, &despawned)?;
@@ -426,6 +446,22 @@ pub(crate) fn apply_prepared_game_commands(world: &mut World, commands: Vec<Prep
                         "preflighted character transform must remain live during exclusive apply",
                     )
                     .rotation = rotation;
+            }
+            PreparedGameCommand::Character2d { entity, operation } => {
+                if world.get_component::<CharacterControllerMotion2d>(entity).is_none() {
+                    world
+                        .add_component(entity, CharacterControllerMotion2d::default())
+                        .expect("preflighted 2D character motion intent may be installed exclusively");
+                }
+                let motion = world
+                    .get_component_mut::<CharacterControllerMotion2d>(entity)
+                    .expect("preflighted 2D character motion intent must remain live");
+                match operation {
+                    Character2dOperation::SetMotion { velocity } => motion.velocity = velocity,
+                    Character2dOperation::DropThrough { seconds } => {
+                        motion.drop_through_request_seconds = seconds;
+                    }
+                }
             }
             PreparedGameCommand::SetNavigationTarget { entity, target } => {
                 world
@@ -711,6 +747,51 @@ fn parse_character_command(
         velocity,
         rotation: Quat::from_rotation_arc(Vec3::NEG_Z, facing.normalize()),
     })
+}
+
+fn parse_character_2d_command(
+    index: usize,
+    entity: Entity,
+    payload: &Value,
+) -> Result<PreparedGameCommand, GameCommandError> {
+    let fields = object(payload, index, "2D character payload")?;
+    let operation = match string_field(fields, "operation", index)? {
+        "set_motion" => {
+            let velocity = object(
+                fields
+                    .get("velocity")
+                    .ok_or_else(|| GameCommandError::InvalidPayload {
+                        index,
+                        message: "field `velocity` is missing".to_owned(),
+                    })?,
+                index,
+                "velocity",
+            )?;
+            Character2dOperation::SetMotion {
+                velocity: Vec2::new(
+                    number_field(velocity, "x", index)?,
+                    number_field(velocity, "y", index)?,
+                ),
+            }
+        }
+        "drop_through" => {
+            let seconds = number_field(fields, "seconds", index)?;
+            if seconds < 0.0 {
+                return Err(GameCommandError::InvalidPayload {
+                    index,
+                    message: "field `seconds` must be non-negative".to_owned(),
+                });
+            }
+            Character2dOperation::DropThrough { seconds }
+        }
+        other => {
+            return Err(GameCommandError::InvalidPayload {
+                index,
+                message: format!("unknown 2D character operation `{other}`"),
+            });
+        }
+    };
+    Ok(PreparedGameCommand::Character2d { entity, operation })
 }
 
 fn parse_lock_on_command(

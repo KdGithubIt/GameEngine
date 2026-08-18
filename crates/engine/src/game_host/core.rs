@@ -23,7 +23,7 @@ use crate::game_timer::GameTimerEvents;
 use crate::hitbox::AttackHitbox;
 use crate::lock_on::TargetLock;
 use crate::navmesh::NavMeshAgent;
-use crate::native_2d::SpriteAnimatorRuntime2d;
+use crate::native_2d::{CharacterController2d, CharacterControllerMotion2d, SpriteAnimatorRuntime2d};
 use crate::player::InputActionMap;
 use crate::runtime_metadata::RuntimeMetadata;
 use crate::save::{SaveData, SaveValue};
@@ -1020,6 +1020,36 @@ fn copy_engine_view(world: &World, entity: Entity, view: EngineViewKind) -> Opti
                 (
                     "gravity_scale".to_owned(),
                     Value::F64(f64::from(controller.gravity_scale)),
+                ),
+            ]))
+        }
+        EngineViewKind::Character2dState => {
+            let controller = world.get_component::<CharacterController2d>(entity)?;
+            let velocity = world
+                .get_component::<CharacterControllerMotion2d>(entity)
+                .map(|motion| motion.velocity)
+                .unwrap_or(glam::Vec2::ZERO);
+            Value::Object(BTreeMap::from([
+                (
+                    "velocity".to_owned(),
+                    Value::Object(BTreeMap::from([
+                        ("x".to_owned(), Value::F64(f64::from(velocity.x))),
+                        ("y".to_owned(), Value::F64(f64::from(velocity.y))),
+                    ])),
+                ),
+                ("grounded".to_owned(), Value::Bool(controller.grounded)),
+                (
+                    "ground_normal".to_owned(),
+                    Value::Object(BTreeMap::from([
+                        ("x".to_owned(), Value::F64(f64::from(controller.ground_normal.x))),
+                        ("y".to_owned(), Value::F64(f64::from(controller.ground_normal.y))),
+                    ])),
+                ),
+                ("hit_wall".to_owned(), Value::Bool(controller.hit_wall)),
+                ("hit_ceiling".to_owned(), Value::Bool(controller.hit_ceiling)),
+                (
+                    "drop_through_seconds".to_owned(),
+                    Value::F64(f64::from(controller.drop_through_seconds)),
                 ),
             ]))
         }

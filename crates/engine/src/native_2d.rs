@@ -59,6 +59,24 @@ impl Physics2dDiagnostics {
     }
 }
 
+/// Runtime-only motion intent consumed by CharacterController2D during the fixed 2D step.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CharacterControllerMotion2d {
+    /// Persistent world-XY velocity in units per second.
+    pub velocity: Vec2,
+    /// One-shot duration requested for one-way platform drop-through.
+    pub drop_through_request_seconds: f32,
+}
+
+impl Default for CharacterControllerMotion2d {
+    fn default() -> Self {
+        Self {
+            velocity: Vec2::ZERO,
+            drop_through_request_seconds: 0.0,
+        }
+    }
+}
+
 /// Dedicated 2D solver state and latest transition events.
 #[derive(Debug, Default)]
 pub struct PhysicsRuntime2d {
@@ -106,7 +124,9 @@ type Physics2dQuery<'a> = (
     &'a GlobalTransform,
     Option<&'a Parent>,
     Option<&'a mut RigidBody2d>,
-    &'a Collider2d,
+    Option<&'a Collider2d>,
+    Option<&'a mut CharacterController2d>,
+    Option<&'a mut CharacterControllerMotion2d>,
 );
 
 type TilePhysics2dQuery<'a> = (&'a TileMapPhysicsSource2d, &'a GlobalTransform);
@@ -151,8 +171,11 @@ pub fn physics_2d_fixed_system(
     diagnostics.entries.clear();
     let mut active = BTreeSet::new();
 
-    for (entity, (transform, global, parent, body, collider)) in query.iter_mut() {
+    for (entity, (transform, global, parent, body, collider, _, _)) in query.iter_mut() {
         let key = runtime_key(entity);
+        let Some(collider) = collider else {
+            continue;
+        };
         let authored_body = body
             .as_deref()
             .copied()
@@ -264,9 +287,55 @@ pub fn physics_2d_fixed_system(
 
     runtime.world.retain_entities(&active);
     runtime.world.retain_static_chunks(&active_static_chunks);
+
+    for (entity, (transform, global, parent, _, _, controller, motion)) in query.iter_mut() {
+        let (Some(controller), Some(motion)) = (controller, motion) else {
+            continue;
+        };
+        if motion.drop_through_request_seconds > 0.0 {
+            controller.request_drop_through(motion.drop_through_request_seconds);
+            motion.drop_through_request_seconds = 0.0;
+        }
+        if !motion.velocity.is_finite() {
+            motion.velocity = Vec2::ZERO;
+        }
+        let key = runtime_key(entity);
+        let start = runtime
+            .world
+            .body(key)
+            .map(|entry| entry.pose.translation)
+            .or_else(|| project_planar_transform(global.matrix()).ok().map(|pose| pose.translation));
+        let Some(start) = start else {
+            continue;
+        };
+        let next = controller.move_fixed(
+            &runtime.world,
+            start,
+            motion.velocity * fixed_time.fixed_delta.max(0.0),
+            fixed_time.fixed_delta,
+            Some(key),
+        );
+        if let Some(entry) = runtime.world.body_mut(key) {
+            entry.pose.translation = next;
+        }
+        if parent.is_some() {
+            let local_matrix = transform.to_matrix();
+            let parent_matrix = global.matrix() * local_matrix.inverse();
+            let world_z = global.matrix().w_axis.z;
+            let local = parent_matrix
+                .inverse()
+                .transform_point3(glam::Vec3::new(next.x, next.y, world_z));
+            transform.translation.x = local.x;
+            transform.translation.y = local.y;
+        } else {
+            transform.translation.x = next.x;
+            transform.translation.y = next.y;
+        }
+    }
+
     runtime.events = runtime.world.step(fixed_time.fixed_delta, gravity.0);
 
-    for (entity, (transform, _, parent, body, _)) in query.iter_mut() {
+    for (entity, (transform, _, parent, body, _, _, _)) in query.iter_mut() {
         let Some(body) = body else {
             continue;
         };
