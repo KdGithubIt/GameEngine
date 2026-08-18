@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0157-runtime-debug-tests-r6-20260819-0141",
+  "target_branch": "chatgpt/gameengine-adr0157-runtime-debug",
+  "expected_head_sha": "0bd5f701eab52a17c8cacabec441fcf5e70d73fd",
+  "baseline_main_sha": "fdb22b2a4ba20c61dd2c5275905e74275ad65463",
+  "patch_sha256": "242287bcc62e8c3e5e60a3a1b432a01463884a257b4774ec6178550c997aeff2",
+  "patch_bytes": 1090,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Update ADR 0157 runtime input tests for fixed-tick scheduling",
+  "pr_title": "GameEngine: implement deterministic AI runtime debugging",
+  "pr_body": "## Summary\n\n- add an Editor-owned fixed-tick runtime debugging controller with bounded plans, pause/step, typed waits/assertions, replay reproduction, and AI-input cleanup\n- route AI Studio managed Play interactions through frozen simulation-tick schedules with bounded structured runtime/domain observations\n- gate native visual evaluation on verified image-input capability while retaining truthful text-only runtime debugging\n- update legacy provider runtime-input tests to the new fixed-tick scheduling API\n\n## Validation\n\nWindows Validation is dispatched by the trusted GameEngine automation."
+}
