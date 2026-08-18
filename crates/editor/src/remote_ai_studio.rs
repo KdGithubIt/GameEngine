@@ -1346,7 +1346,7 @@ mod tests {
         host.record_event(
             &run,
             AgentEventKind::ProviderOutput,
-            "GAMEENGINE_MCP_AUTH_TOKEN=super-secret C:\\Users\\private\\file",
+            "GAMEENGINE_MCP_AUTH_TOKEN=super-secret C:\\Users\\...\\private\\file",
         )
         .expect("provider output");
         let events = events_json(&host, &run, 0).expect("events").to_string();
@@ -1383,7 +1383,7 @@ mod tests {
                 imported_asset_ids: vec!["asset_01TEST".into()],
                 imported_paths: vec![
                     std::path::PathBuf::from("textures/generated.png"),
-                    std::path::PathBuf::from(r"C:\Users\private\leak.png"),
+                    std::path::PathBuf::from(r"C:\Users\...\private\leak.png"),
                 ],
                 created_unix_ms: 1,
             },
@@ -1398,7 +1398,7 @@ mod tests {
         assert!(!snapshot.contains("secret-value"));
         assert!(!snapshot.contains("access_token"));
         assert!(!snapshot.contains("internal-fingerprint"));
-        assert!(!snapshot.contains(r"C:\Users\private"));
+        assert!(!snapshot.contains(r"C:\Users\...\private"));
         let _ = fs::remove_dir_all(project);
         let _ = fs::remove_dir_all(storage);
     }
