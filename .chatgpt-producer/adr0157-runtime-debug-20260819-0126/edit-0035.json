@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ai_studio.rs","old":"        let action = pending.action;\n","new":"        let action = pending.action.clone();\n"}
