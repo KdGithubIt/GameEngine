@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/native_2d_editor.rs",
+  "old": "    painter.line_segment(\n        [egui::pos2(origin_x, rect.top()), egui::pos2(origin_x, rect.bottom())],\n        egui::Stroke::new(1.5, egui::Color32::from_rgb(190, 80, 80)),\n    );\n    painter.line_segment(\n        [egui::pos2(rect.left(), origin_y), egui::pos2(rect.right(), origin_y)],\n        egui::Stroke::new(1.5, egui::Color32::from_rgb(80, 190, 100)),\n    );\n",
+  "new": "    painter.line_segment(\n        [egui::pos2(origin_x, rect.top()), egui::pos2(origin_x, rect.bottom())],\n        egui::Stroke::new(1.5_f32, egui::Color32::from_rgb(190, 80, 80)),\n    );\n    painter.line_segment(\n        [egui::pos2(rect.left(), origin_y), egui::pos2(rect.right(), origin_y)],\n        egui::Stroke::new(1.5_f32, egui::Color32::from_rgb(80, 190, 100)),\n    );\n"
+}
