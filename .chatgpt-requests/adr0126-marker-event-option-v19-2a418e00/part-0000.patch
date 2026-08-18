@@ -1,0 +1,13 @@
+diff --git a/crates/engine/src/timeline.rs b/crates/engine/src/timeline.rs
+index 82722a94b3b236bf5f29a4471aca6f6aaf0b5c2f..1c794af986379bc2fe89348fd4fe269dc36b3ba5 100644
+--- a/crates/engine/src/timeline.rs
++++ b/crates/engine/src/timeline.rs
+@@ -466,7 +466,7 @@ impl TimelineRuntime {
+             for request in &requests {
+                 for item in active.schedule.evaluate(request) {
+                     match item.entry().payload() {
+-                        CompiledTimelinePayload::Marker { event: name, .. } => {
++                        CompiledTimelinePayload::Marker { event: Some(name), .. } => {
+                             frame.events.push(PendingEvent {
+                                 player_id,
+                                 asset: active.asset.clone(),
