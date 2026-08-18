@@ -1,0 +1,12 @@
+diff --git a/crates/editor/src/ai_studio.rs b/crates/editor/src/ai_studio.rs
+index 53ac89e563ccbde877797b2abf81ca02fd29fe5e..a7e1165cb528acce2de9694871c205dcb408a671 100644
+--- a/crates/editor/src/ai_studio.rs
++++ b/crates/editor/src/ai_studio.rs
+@@ -4044,6 +4044,7 @@ mod tests {
+             schema_version: AI_STUDIO_PREFERENCES_SCHEMA_VERSION,
+             quality_preference: QualityPreference::Balanced,
+             confinement_requirement: AgentConfinementRequirement::default(),
++            external_agent_provider: ExternalAgentProviderKind::ClaudeCode,
+             model_backend: ModelBackendPreference::HostedApi,
+             local_model_endpoint: DEFAULT_LOCAL_MODEL_ENDPOINT.to_owned(),
+             local_model_name: String::new(),
