@@ -24,7 +24,10 @@ permissions:
   issues: write
 
 concurrency:
-  group: gameengine-chatgpt-trusted-producer
+  group: >-
+    gameengine-chatgpt-trusted-producer-${{
+      github.event_name == 'issues' && github.event.issue.title || github.event.inputs.producer_branch
+    }}
   cancel-in-progress: false
   queue: max
 
@@ -178,6 +181,14 @@ jobs:
             exit 1
           }
 
+          require_main_descendant() {
+            remote_main="$(git ls-remote origin refs/heads/main | awk '{print $1}')"
+            [[ "$remote_main" =~ ^[0-9a-fA-F]{40}$ ]] || fail "main did not resolve to a full SHA."
+            git fetch --no-tags origin "$BASELINE_MAIN" "$remote_main" >/dev/null 2>&1
+            git merge-base --is-ancestor "$BASELINE_MAIN" "$remote_main" ||
+              fail "main no longer descends from the request baseline. Rebuild from current main."
+          }
+
           remote_producer="$(git ls-remote origin "refs/heads/$PRODUCER_BRANCH" | awk '{print $1}')"
           [[ "$remote_producer" == "$PRODUCER_COMMIT" ]] ||
             fail "Producer branch moved after its signal. Use a new request ID."
@@ -185,9 +196,7 @@ jobs:
           remote_target="$(git ls-remote origin "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
           [[ "$remote_target" == "$EXPECTED_HEAD" ]] ||
             fail "Target branch moved after request build. Rebuild from current target state."
-          remote_main="$(git ls-remote origin refs/heads/main | awk '{print $1}')"
-          [[ "$remote_main" == "$BASELINE_MAIN" ]] ||
-            fail "main advanced after request build. Rebuild from current main."
+          require_main_descendant
 
           existing_stage="$(git ls-remote origin "refs/heads/$STAGE_BRANCH" | awk '{print $1}')"
           [[ -z "$existing_stage" ]] ||
@@ -215,9 +224,7 @@ jobs:
           remote_target="$(git ls-remote origin "refs/heads/$TARGET_BRANCH" | awk '{print $1}')"
           [[ "$remote_target" == "$EXPECTED_HEAD" ]] ||
             fail "Target branch moved before ready publication. Rebuild from current target state."
-          remote_main="$(git ls-remote origin refs/heads/main | awk '{print $1}')"
-          [[ "$remote_main" == "$BASELINE_MAIN" ]] ||
-            fail "main advanced before ready publication. Rebuild from current main."
+          require_main_descendant
 
           cp "$OUTPUT_DIR/ready.json" "$request_dir/ready.json"
           git add "$request_dir/ready.json"
