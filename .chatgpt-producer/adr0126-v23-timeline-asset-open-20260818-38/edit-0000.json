@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/asset_browser.rs","old":"    /// `*.scene.json`\n    Scene,\n    /// `*.graph.json`","new":"    /// `*.scene.json`\n    Scene,\n    /// `*.timeline.json` ADR 0126 sequence asset.\n    Timeline,\n    /// `*.graph.json`"}

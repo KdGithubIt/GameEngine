@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ui/assets/browser.rs","old":"        AssetKind::Scene => \"▣\",\n        AssetKind::Graph | AssetKind::GraphView => \"◇\",","new":"        AssetKind::Scene => \"▣\",\n        AssetKind::Timeline => \"≡\",\n        AssetKind::Graph | AssetKind::GraphView => \"◇\","}

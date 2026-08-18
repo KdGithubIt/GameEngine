@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/asset_browser.rs","old":"            Self::Scene => \"[scene]\",\n            Self::Graph => \"[graph]\",","new":"            Self::Scene => \"[scene]\",\n            Self::Timeline => \"[timeline]\",\n            Self::Graph => \"[graph]\","}
