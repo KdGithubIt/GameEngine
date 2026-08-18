@@ -1,0 +1,16 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0142-agent-benchmark-20260818-r7",
+  "target_branch": "chatgpt/gameengine-adr0142-agent-benchmark-v4",
+  "expected_head_sha": "a70696f0caa23ec490f96270d3fcab72e000b295",
+  "baseline_main_sha": "a70696f0caa23ec490f96270d3fcab72e000b295",
+  "patch_sha256": "00877978c18fca54d91b81669e1438bff1287613960ad29995cda9ab0fd3518c",
+  "patch_bytes": 88788,
+  "patch_parts": [
+    "part-0000.patch",
+    "part-0001.patch"
+  ],
+  "commit_message": "Implement ADR 0142 agent benchmark catalog",
+  "pr_title": "GameEngine: implement ADR 0142 agent benchmark catalog",
+  "pr_body": "## Summary\n\n- Add a versioned GameEngine Agent Benchmark with machine-local evidence records, explicit unavailable telemetry, and fail-closed same-harness comparison rules.\n- Add loopback installed-model discovery and an evidence-derived curated catalog that never invents or silently downloads recommendations.\n- Surface Compatible / unverified versus benchmark-qualified model status and explicit benchmark recording in AI Studio.\n- Preserve ADR0152 multi-agent writer semantics by including immutable work-claim budgets in write-capable benchmark comparison identity.\n- Accept ADR0142 and document the first-release implementation boundary.\n\n## Validation\n\n- GameEngine Windows Validation\n- Editor Visual Validation\n\n<!-- gameengine-visual-validation: auto -->\n<!-- gameengine-visual-validation-trigger: adr0142-agent-benchmark-20260818-r7 -->\n\n<!-- gameengine-chatgpt-dispatcher -->"
+}
