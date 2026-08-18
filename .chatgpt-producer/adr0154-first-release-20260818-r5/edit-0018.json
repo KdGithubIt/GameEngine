@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ui/assets/import_settings_window.rs","old":"use super::motion_pairing::show_motion_pairing_editor;","new":"use super::motion_pairing::{\n    motion_humanoid_source_is_valid, show_motion_pairing_editor,\n};"}
