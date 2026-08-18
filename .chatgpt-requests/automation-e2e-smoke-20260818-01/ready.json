@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "automation-e2e-smoke-20260818-01",
+  "target_branch": "chatgpt/gameengine-automation-e2e-smoke-20260818-01",
+  "expected_head_sha": "4e9865c2db754ef5a2a33e1ac42d1cd5cf318229",
+  "baseline_main_sha": "4e9865c2db754ef5a2a33e1ac42d1cd5cf318229",
+  "patch_sha256": "0c92a86c2ab01fe0259e1c99457a62eadbe3b1fe2fb9aad997b86e01f6948c5d",
+  "patch_bytes": 485,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Add automation production E2E smoke marker",
+  "pr_title": "GameEngine: automation production E2E smoke",
+  "pr_body": "## Summary\n\nEphemeral docs-only production-path smoke request for the repository-native ChatGPT producer, publisher, Dispatcher, and Windows Validation chain.\n\nThis PR is validation-only and is not intended to merge."
+}
