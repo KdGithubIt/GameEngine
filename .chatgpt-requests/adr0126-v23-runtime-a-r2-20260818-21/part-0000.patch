@@ -1,0 +1,268 @@
+diff --git a/crates/engine/Cargo.toml b/crates/engine/Cargo.toml
+index d35bf46c20e473e6bedeea47d4b76deffb9219fe..0efb3bf170bd946aa1fa0de5265278f696b6b50d 100644
+--- a/crates/engine/Cargo.toml
++++ b/crates/engine/Cargo.toml
+@@ -17,6 +17,7 @@ engine-render-runtime = { path = "../render-runtime" }
+ engine-rig = { path = "../rig" }
+ engine-scene = { path = "../scene" }
+ engine-scripting = { path = "../scripting" }
++engine-timeline = { path = "../timeline" }
+ engine-renderer = { path = "../renderer" }
+ engine-game-component-macros = { path = "../game-component-macros" }
+ engine-game-macros = { path = "../game-macros" }
+diff --git a/crates/engine/src/app.rs b/crates/engine/src/app.rs
+index a9cf7000a3d5a96b39cf208bd2c330b5f8c42a46..8f77b6af3455274b43204cffed8ddcbb49026e83 100644
+--- a/crates/engine/src/app.rs
++++ b/crates/engine/src/app.rs
+@@ -16,7 +16,7 @@ use crate::asset::{AssetServer, Assets};
+ use crate::audio::{
+     game_audio_effect_system, AudioAsset, GameAudioCommandQueue, SpatialAudioRuntime,
+ };
+-use crate::camera::{camera_aspect_system, ViewportSize};
++use crate::camera::{camera_aspect_system, GameCameraSelectionOverride, ViewportSize};
+ use crate::game_module::{
+     GameComponentDefaults, GameModule, GameModuleResource, GameModuleRunError, GameSystemSchedule,
+ };
+@@ -98,6 +98,7 @@ impl App {
+         let mut ecs = EcsApp::new();
+         ecs.insert_resource(Time::default());
+         ecs.insert_resource(ViewportSize::default());
++        ecs.insert_resource(GameCameraSelectionOverride::default());
+         ecs.insert_resource(Assets::<Mesh>::default());
+         ecs.insert_resource(Assets::<Material>::default());
+         ecs.insert_resource(Assets::<AudioAsset>::default());
+diff --git a/crates/engine/src/audio.rs b/crates/engine/src/audio.rs
+index 616558e09877f5199d6a97352a290a4e50874e2a..b420589a0a46f7f13f1159ce6d94eeb4cb498682 100644
+--- a/crates/engine/src/audio.rs
++++ b/crates/engine/src/audio.rs
+@@ -56,6 +56,20 @@ pub(crate) struct SpatialAudioRuntime {
+     game_voices: Vec<GameSpatialVoice>,
+ }
+ 
++impl SpatialAudioRuntime {
++    /// Evaluates a Timeline-owned voice through the same listener/emitter math as authored
++    /// AudioEmitter playback. The caller supplies the production emitter policy with the
++    /// Timeline clip gain already composed into `settings.volume`.
++    pub(crate) fn timeline_gains(
++        &self,
++        source: Entity,
++        settings: AudioVoiceSpatialSettings,
++    ) -> Option<StereoGains> {
++        let pose = self.poses.get(&source).copied()?;
++        Some(emitter_gains(self.listener, pose, settings))
++    }
++}
++
+ /// Copies the current listener selection and entity poses into the neutral audio frame.
+ pub(crate) fn spatial_audio_frame_system(
+     mut transforms: Query<&GlobalTransform>,
+diff --git a/crates/engine/src/camera.rs b/crates/engine/src/camera.rs
+index a91d5c619035753b101821653986eeb806affb72..d0ae94c02a51b7bb77ab266410a4bc9b4de2d8bc 100644
+--- a/crates/engine/src/camera.rs
++++ b/crates/engine/src/camera.rs
+@@ -9,11 +9,14 @@ use glam::{Mat4, Quat, Vec3};
+ use hashbrown::HashMap;
+ 
+ pub use engine_render_runtime::camera::{
+-    camera_aspect_system, default_camera_transform, Camera3D, ViewportSize,
++    camera_aspect_system, default_camera_transform, Camera3D, GameCameraSelectionOverride,
++    ViewportSize,
+ };
+ pub(crate) use engine_render_runtime::camera::{
+-    camera_selection_key, select_active_game_camera,
++    camera_selection_key, select_active_game_camera_with_override,
+ };
++#[cfg(test)]
++use engine_render_runtime::camera::select_active_game_camera;
+ 
+ /// A camera that orbits around a fixed world-space target point.
+ ///
+diff --git a/crates/engine/src/runtime_systems.rs b/crates/engine/src/runtime_systems.rs
+index ac3440bd42792fd978979b8a337c581f6d86805d..c32db73a63be984ecd6d66acdec24994a58735f0 100644
+--- a/crates/engine/src/runtime_systems.rs
++++ b/crates/engine/src/runtime_systems.rs
+@@ -9,7 +9,9 @@ use crate::audio::{
+     authored_audio_system, spatial_audio_frame_system, spatial_audio_system, SpatialAudioRuntime,
+ };
+ use crate::behavior_tree::{behavior_tree_tick_system, BehaviorTreeBehaviorRegistry};
+-use crate::camera::{follow_camera_system, lock_on_camera_system, orbit_camera_system};
++use crate::camera::{
++    follow_camera_system, lock_on_camera_system, orbit_camera_system, GameCameraSelectionOverride,
++};
+ use crate::character_controller::character_controller_system;
+ use crate::collision::{collision_detection_system, CollisionEvents, CollisionStats};
+ use crate::combat::{
+@@ -30,6 +32,9 @@ use crate::physics::velocity_system;
+ use crate::player::{player_character_motor_system, player_controller_system};
+ use crate::pose_graph::PoseArena;
+ use crate::rig_pose::{publish_final_rig_pose_system, rig_pose_clear_transient_system};
++use crate::timeline::{
++    timeline_prepare_system, timeline_transform_system, TimelineEvents, TimelineRuntime,
++};
+ use crate::transform::transform_propagation_system;
+ use crate::App;
+ use engine_ecs::{SystemDescriptor, SystemOrigin, SystemRegistrationError};
+@@ -82,6 +87,19 @@ pub fn register_runtime_systems(app: &mut App) -> Result<(), SystemRegistrationE
+     if app.world().get_resource::<SpatialAudioRuntime>().is_none() {
+         app.insert_resource(SpatialAudioRuntime::default());
+     }
++    if app.world().get_resource::<TimelineRuntime>().is_none() {
++        app.insert_resource(TimelineRuntime::default());
++    }
++    if app.world().get_resource::<TimelineEvents>().is_none() {
++        app.insert_resource(TimelineEvents::default());
++    }
++    if app
++        .world()
++        .get_resource::<GameCameraSelectionOverride>()
++        .is_none()
++    {
++        app.insert_resource(GameCameraSelectionOverride::default());
++    }
+     if app.world().get_resource::<Gravity2d>().is_none() {
+         app.insert_resource(Gravity2d::default());
+     }
+@@ -219,6 +237,18 @@ pub fn register_runtime_systems(app: &mut App) -> Result<(), SystemRegistrationE
+         ),
+         anim_graph_system,
+     )?;
++    app.try_add_fixed_system_with_descriptor(
++        engine_system(
++            "engine.timeline_prepare",
++            "Timeline Prepare",
++            "Advances Timeline players and resolves animation, audio, VFX, event, and camera state.",
++        )
++        .try_after("engine.animation_graph")
++        .expect("built-in system IDs are valid")
++        .try_before("engine.animation")
++        .expect("built-in system IDs are valid"),
++        timeline_prepare_system,
++    )?;
+     app.try_add_fixed_system_with_descriptor(
+         engine_system(
+             "engine.animation",
+@@ -226,9 +256,21 @@ pub fn register_runtime_systems(app: &mut App) -> Result<(), SystemRegistrationE
+             "Advances animation clips and evaluates animation pose layers.",
+         )
+         .try_after("engine.animation_graph")
++        .expect("built-in system IDs are valid")
++        .try_after("engine.timeline_prepare")
+         .expect("built-in system IDs are valid"),
+         animation_system,
+     )?;
++    app.try_add_fixed_system_with_descriptor(
++        engine_system(
++            "engine.timeline_transform",
++            "Timeline Transform Override",
++            "Applies typed Timeline Transform/Property curves after skeletal animation.",
++        )
++        .try_after("engine.animation")
++        .expect("built-in system IDs are valid"),
++        timeline_transform_system,
++    )?;
+     app.try_add_fixed_system_with_descriptor(
+         engine_system(
+             "engine.root_motion_motor",
+@@ -236,6 +278,8 @@ pub fn register_runtime_systems(app: &mut App) -> Result<(), SystemRegistrationE
+             "Converts extracted local animation motion into a collision-resolved motor request.",
+         )
+         .try_after("engine.animation")
++        .expect("built-in system IDs are valid")
++        .try_after("engine.timeline_transform")
+         .expect("built-in system IDs are valid"),
+         root_motion_motor_system,
+     )?;
+diff --git a/crates/render-runtime/src/camera.rs b/crates/render-runtime/src/camera.rs
+index 4ecee9c150549dcb0333982680e2f64a255af133..5498ab0b673ab1e1cbcc65fc8a4ba0e0a9b8fe6b 100644
+--- a/crates/render-runtime/src/camera.rs
++++ b/crates/render-runtime/src/camera.rs
+@@ -65,6 +65,34 @@ impl Default for Camera3D {
+     }
+ }
+ 
++/// Transient runtime-only override for Game View camera selection.
++///
++/// Authoring never serializes this resource. Composition layers such as Timeline
++/// may point it at one live camera without rewriting [`Camera3D::enabled`] or
++/// [`Camera3D::priority`]. A missing target falls back to normal priority
++/// selection so stale runtime identities cannot black out the Game View.
++#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
++pub struct GameCameraSelectionOverride {
++    target: Option<engine_ecs::Entity>,
++}
++
++impl GameCameraSelectionOverride {
++    /// Returns the currently requested runtime camera entity.
++    pub fn target(&self) -> Option<engine_ecs::Entity> {
++        self.target
++    }
++
++    /// Replaces the transient camera target.
++    pub fn set_target(&mut self, target: engine_ecs::Entity) {
++        self.target = Some(target);
++    }
++
++    /// Removes the transient override and restores normal camera selection.
++    pub fn clear(&mut self) {
++        self.target = None;
++    }
++}
++
+ /// Builds the total ordering used by every Game View camera consumer.
+ ///
+ /// This is public only as a cross-crate runtime adapter contract; application
+@@ -80,6 +108,37 @@ pub fn camera_selection_key(
+         .then_some((Reverse(camera.priority), entity_id, entity_generation))
+ }
+ 
++/// Selects a transient override when it is live, otherwise the normal Game View camera.
++///
++/// The override intentionally bypasses [`Camera3D::enabled`] and priority: a
++/// Timeline-owned standby camera can therefore become active without changing
++/// persisted camera fields. If the requested entity is absent from `cameras`,
++/// normal enabled-camera ordering is used.
++#[doc(hidden)]
++pub fn select_active_game_camera_with_override<'camera, T>(
++    cameras: impl Iterator<Item = (engine_ecs::Entity, (&'camera Camera3D, T))>,
++    override_target: Option<engine_ecs::Entity>,
++) -> Option<(engine_ecs::Entity, (&'camera Camera3D, T))> {
++    let mut fallback = None;
++    for candidate in cameras {
++        let entity = candidate.0;
++        if override_target == Some(entity) {
++            return Some(candidate);
++        }
++        let camera = candidate.1.0;
++        let Some(key) = camera_selection_key(entity.id(), entity.generation(), camera) else {
++            continue;
++        };
++        let replace = fallback
++            .as_ref()
++            .is_none_or(|(best_key, _)| key < *best_key);
++        if replace {
++            fallback = Some((key, candidate));
++        }
++    }
++    fallback.map(|(_, candidate)| candidate)
++}
++
+ /// Selects the enabled Game View camera with the highest priority.
+ ///
+ /// The payload is generic so rendering, movement, LOD, and lock-on can attach
+@@ -89,15 +148,7 @@ pub fn camera_selection_key(
+ pub fn select_active_game_camera<'camera, T>(
+     cameras: impl Iterator<Item = (engine_ecs::Entity, (&'camera Camera3D, T))>,
+ ) -> Option<(engine_ecs::Entity, (&'camera Camera3D, T))> {
+-    cameras
+-        .filter_map(|candidate| {
+-            let entity = candidate.0;
+-            let camera = candidate.1.0;
+-            camera_selection_key(entity.id(), entity.generation(), camera)
+-                .map(|key| (key, candidate))
+-        })
+-        .min_by_key(|(key, _)| *key)
+-        .map(|(_, candidate)| candidate)
++    select_active_game_camera_with_override(cameras, None)
+ }
+ 
+ /// Stores the current viewport dimensions.
