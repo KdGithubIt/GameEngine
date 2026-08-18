@@ -11,8 +11,8 @@ pub use engine_assets::native_2d::{
 pub use engine_physics::native_2d::*;
 pub use engine_render_runtime::native_2d::{
     cull_tile_chunks, sort_and_batch_sprites, validate_camera_transform, Camera2d,
-    Camera2dDiagnostic, Native2dRenderMetrics, SpriteBatch2d, SpriteInstance2d,
-    TileChunkBounds2d, ViewRect2d, ViewportFit2d, VisibleTileChunk2d,
+    Camera2dDiagnostic, Native2dRenderMetrics, ResolvedSpriteRegion2d, SpriteBatch2d,
+    SpriteInstance2d, TileChunkBounds2d, ViewRect2d, ViewportFit2d, VisibleTileChunk2d,
 };
 pub use engine_authoring::{
     SpriteBlendMode, SpriteRenderer2d, SpriteRef, TileLayerId, TileMapDocument, TileSetDocument,
@@ -80,6 +80,7 @@ impl PhysicsRuntime2d {
 /// Editor Play and the packaged Player call this same function after loading
 /// [`Project2dSettings`], preventing host-specific gravity interpretation.
 pub fn apply_project_2d_settings(app: &mut crate::App, settings: &Project2dSettings) {
+    app.insert_resource(settings.clone());
     app.insert_resource(Gravity2d(Vec2::new(
         settings.gravity[0] as f32,
         settings.gravity[1] as f32,
@@ -254,6 +255,10 @@ mod tests {
         assert_eq!(
             app.world().get_resource::<Gravity2d>().unwrap().0,
             Vec2::new(2.5, -7.0)
+        );
+        assert_eq!(
+            app.world().get_resource::<Project2dSettings>().unwrap(),
+            &settings
         );
     }
 }

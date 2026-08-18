@@ -2823,6 +2823,178 @@ pub(crate) fn spawn_camera_2d_component(
     Ok(())
 }
 
+fn native_2d_asset_error(
+    asset: &AssetId,
+    path: &Path,
+    message: impl Into<String>,
+) -> SceneBridgeError {
+    SceneBridgeError::AssetLoad {
+        asset: asset.clone(),
+        source: AssetLoadError::InvalidAsset {
+            path: path.to_path_buf(),
+            message: message.into(),
+        },
+    }
+}
+
+fn load_sprite_atlas_document(
+    atlas_id: &AssetId,
+    context: &mut SpawnContext<'_>,
+) -> Result<Arc<engine_authoring::SpriteAtlasDocument>, SceneBridgeError> {
+    if let Some(document) = context.asset_state.sprite_atlas_documents.get(atlas_id) {
+        return Ok(Arc::clone(document));
+    }
+    let path = manifest_asset_path(atlas_id, context)?;
+    let json = if let Some(snapshot) = context.asset_state.authoring_overlay.get(&path) {
+        snapshot
+            .contents()
+            .map(str::to_owned)
+            .map_err(|message| native_2d_asset_error(atlas_id, &path, message))?
+    } else {
+        std::fs::read_to_string(&path)
+            .map_err(|error| native_2d_asset_error(atlas_id, &path, error.to_string()))?
+    };
+    let document = engine_authoring::SpriteAtlasDocument::from_json(&json)
+        .map_err(|error| native_2d_asset_error(atlas_id, &path, error.to_string()))?;
+    let errors = document.validate();
+    if !errors.is_empty() {
+        return Err(native_2d_asset_error(atlas_id, &path, errors.join("; ")));
+    }
+    let document = Arc::new(document);
+    context
+        .asset_state
+        .sprite_atlas_documents
+        .insert(atlas_id.clone(), Arc::clone(&document));
+    Ok(document)
+}
+
+fn resolve_native_2d_texture(
+    owner_id: &AssetId,
+    texture_id: &AssetId,
+    context: &mut SpawnContext<'_>,
+) -> Result<Arc<DecodedTexture>, SceneBridgeError> {
+    let mut visited = BTreeSet::new();
+    resolve_native_2d_texture_inner(owner_id, texture_id, context, &mut visited)
+}
+
+fn resolve_native_2d_texture_inner(
+    owner_id: &AssetId,
+    texture_id: &AssetId,
+    context: &mut SpawnContext<'_>,
+    visited: &mut BTreeSet<AssetId>,
+) -> Result<Arc<DecodedTexture>, SceneBridgeError> {
+    if let Some(texture) = context.asset_state.native_2d_textures.get(texture_id) {
+        return Ok(Arc::clone(texture));
+    }
+    if !visited.insert(texture_id.clone()) {
+        return Err(native_2d_asset_error(
+            owner_id,
+            Path::new(texture_id.as_str()),
+            format!("Native 2D source texture remap cycle at `{}`", texture_id.as_str()),
+        ));
+    }
+
+    let decoded = if let Some((source_id, source_entry, sub_asset)) =
+        context.manifest.imported_sub_asset(texture_id)
+    {
+        if sub_asset.kind != ImportedSubAssetKind::Texture {
+            return Err(native_2d_asset_error(
+                owner_id,
+                Path::new(&source_entry.path),
+                format!(
+                    "Native 2D source `{}` resolves to imported kind {:?}, not Texture",
+                    texture_id.as_str(),
+                    sub_asset.kind
+                ),
+            ));
+        }
+        if let Some(remapped) = source_entry.import_settings.texture_remaps.get(&sub_asset.id) {
+            let remapped_id = AssetId::from_stable_id(StableId::new(remapped)).map_err(|error| {
+                native_2d_asset_error(
+                    owner_id,
+                    Path::new(&source_entry.path),
+                    format!("invalid Native 2D texture remap `{remapped}`: {error}"),
+                )
+            })?;
+            return resolve_native_2d_texture_inner(owner_id, &remapped_id, context, visited);
+        }
+        let source_path = context
+            .asset_root
+            .unwrap_or_else(|| Path::new("."))
+            .join(&source_entry.path);
+        let imported = import_gltf_cached(
+            source_id,
+            &source_path,
+            &source_entry.import_settings.skeleton_records,
+            &source_entry.import_settings.contact_bones,
+            context.asset_state,
+        )
+        .map_err(|error| native_2d_asset_error(owner_id, &source_path, error.to_string()))?;
+        decoded_imported_texture(
+            &Some(texture_id.clone()),
+            &imported,
+            &source_path,
+            context.asset_state,
+        )
+        .ok_or_else(|| {
+            native_2d_asset_error(
+                owner_id,
+                &source_path,
+                format!("imported Native 2D texture `{}` is missing", texture_id.as_str()),
+            )
+        })?
+    } else {
+        let Some(entry) = context.manifest.get(texture_id) else {
+            return Err(SceneBridgeError::UnknownAsset {
+                asset: texture_id.clone(),
+            });
+        };
+        let path = context
+            .asset_root
+            .unwrap_or_else(|| Path::new("."))
+            .join(&entry.path);
+        let bytes = std::fs::read(&path)
+            .map_err(|error| native_2d_asset_error(owner_id, &path, error.to_string()))?;
+        Arc::new(
+            DecodedTexture::from_bytes(&bytes, path.display().to_string())
+                .map_err(|error| native_2d_asset_error(owner_id, &path, error.to_string()))?,
+        )
+    };
+    context
+        .asset_state
+        .native_2d_textures
+        .insert(texture_id.clone(), Arc::clone(&decoded));
+    Ok(decoded)
+}
+
+fn resolve_sprite_region_2d(
+    sprite: &SpriteRef,
+    context: &mut SpawnContext<'_>,
+) -> Result<ResolvedSpriteRegion2d, SceneBridgeError> {
+    let atlas = load_sprite_atlas_document(&sprite.atlas, context)?;
+    let path = manifest_asset_path(&sprite.atlas, context)?;
+    let region = atlas.region(&sprite.sprite).cloned().ok_or_else(|| {
+        native_2d_asset_error(
+            &sprite.atlas,
+            &path,
+            format!(
+                "Sprite Atlas does not contain SpriteId `{}`",
+                sprite.sprite.as_str()
+            ),
+        )
+    })?;
+    let texture = resolve_native_2d_texture(&sprite.atlas, &region.source_texture, context)?;
+    Ok(ResolvedSpriteRegion2d {
+        source_texture: region.source_texture,
+        texture,
+        rect: [region.rect.x, region.rect.y, region.rect.width, region.rect.height],
+        pivot: region.pivot,
+        pixels_per_unit: region.pixels_per_unit,
+        filtering: region.filtering,
+        extrusion_pixels: region.extrusion_pixels,
+    })
+}
+
 pub(crate) fn spawn_sprite_renderer_2d_component(
     entity: Entity,
     value: &Value,
@@ -2861,10 +3033,12 @@ pub(crate) fn spawn_sprite_renderer_2d_component(
         _ => return Err(fields.invalid(EXPECTED).into()),
     };
     let material_override = fields.assignable_asset_ref("material_override")?.cloned();
+    let sprite = SpriteRef { atlas, sprite };
+    let resolved_region = resolve_sprite_region_2d(&sprite, context)?;
     context.world.add_component(
         entity,
         SpriteRenderer2d {
-            sprite: SpriteRef { atlas, sprite },
+            sprite,
             tint,
             flip_x: fields.bool("flip_x")?,
             flip_y: fields.bool("flip_y")?,
@@ -2875,6 +3049,7 @@ pub(crate) fn spawn_sprite_renderer_2d_component(
             material_override,
         },
     )?;
+    context.world.add_component(entity, resolved_region)?;
     Ok(())
 }
 

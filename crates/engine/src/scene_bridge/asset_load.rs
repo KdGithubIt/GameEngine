@@ -384,7 +384,7 @@ pub(super) fn load_material_asset(
     }
 }
 
-fn decoded_imported_texture(
+pub(super) fn decoded_imported_texture(
     texture_id: &Option<AssetId>,
     imported: &Arc<crate::model_import::GltfImportResult>,
     source_path: &Path,

@@ -1,8 +1,12 @@
 //! Native 2D camera, sprite ordering/batching, and tile visibility contracts (ADR 0127).
 
+use crate::material::DecodedTexture;
 use crate::transform::Transform;
-use engine_authoring::{SortingLayerId, SpriteRef, TileChunkCoord, TileLayerId};
+use engine_authoring::{
+    AssetId, PixelsPerUnit, SortingLayerId, SpriteFiltering, SpriteRef, TileChunkCoord, TileLayerId,
+};
 use glam::{Mat4, Vec2, Vec3};
+use std::sync::Arc;
 
 /// Orthographic viewport-fit policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -170,6 +174,29 @@ pub fn validate_camera_transform(transform: &Transform) -> Result<(), Camera2dDi
         return Err(Camera2dDiagnostic::NonPlanarTilt);
     }
     Ok(())
+}
+
+/// Runtime-only resolved Sprite Atlas region consumed by the GPU renderer.
+///
+/// Stable SpriteRef remains the logical identity on SpriteRenderer2D. This component
+/// carries only immutable derived source data; GPU handles and packed UV identities
+/// are deliberately excluded.
+#[derive(Debug, Clone)]
+pub struct ResolvedSpriteRegion2d {
+    /// Stable source texture asset referenced by the Sprite Atlas region.
+    pub source_texture: AssetId,
+    /// CPU-decoded immutable source texture shared until GPU upload.
+    pub texture: Arc<DecodedTexture>,
+    /// Source pixel rectangle `[x, y, width, height]`.
+    pub rect: [u32; 4],
+    /// Normalized region pivot.
+    pub pivot: [f32; 2],
+    /// Authored region PPU policy; project defaults are resolved at render time.
+    pub pixels_per_unit: PixelsPerUnit,
+    /// Optional region sampler override; `None` uses project defaults.
+    pub filtering: Option<SpriteFiltering>,
+    /// Source edge extrusion retained for derived atlas packing/bleed handling.
+    pub extrusion_pixels: u8,
 }
 
 /// Extracted SpriteRenderer2D draw instance.

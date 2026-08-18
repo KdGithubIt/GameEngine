@@ -21,8 +21,8 @@ use crate::audio::{AudioAsset, AudioEmitter, AudioListener, AudioRolloffMode, Mu
 use crate::behavior_tree::BehaviorTreeRunner;
 use crate::camera::{Camera3D, FollowCamera, LockOnCamera, OrbitCamera};
 use crate::native_2d::{
-    Camera2d, SpriteAnimationClipRegistry2d, SpriteAnimatorRuntime2d, SpriteBlendMode, SpriteRef,
-    SpriteRenderer2d, ViewportFit2d,
+    Camera2d, ResolvedSpriteRegion2d, SpriteAnimationClipRegistry2d, SpriteAnimatorRuntime2d,
+    SpriteBlendMode, SpriteRef, SpriteRenderer2d, ViewportFit2d,
 };
 use crate::character_controller::KinematicCharacterController;
 use crate::collision::{Collider, CollisionLayers, PhysicsBody, TriggerVolume};
@@ -62,7 +62,8 @@ use engine_authoring::ui::{UiDocument, UiNode, UiNodeKind, UiString};
 use engine_authoring::value::Value;
 use engine_authoring::{
     AnimationSet, AuthoringEntity, BehaviorTreeAuthoringService, Diagnostic, DiagnosticTarget,
-    Graph, SortingLayerId, SpriteAnimationDocument, SpriteId, VfxAuthoringService,
+    Graph, SortingLayerId, SpriteAnimationDocument, SpriteAtlasDocument, SpriteId,
+    VfxAuthoringService,
     VfxModuleOperation,
 };
 use engine_ecs::{Entity, World};
@@ -435,6 +436,10 @@ pub(crate) struct BridgeAssetState {
     pub(crate) animation_clip_handles: HashMap<AssetId, BTreeMap<String, Handle<AnimationClip>>>,
     /// Parsed immutable Sprite Animation documents shared by every entity referencing the asset.
     pub(crate) sprite_animation_documents: HashMap<AssetId, Arc<SpriteAnimationDocument>>,
+    /// Parsed immutable Sprite Atlas documents shared by every SpriteRef in this conversion.
+    pub(crate) sprite_atlas_documents: HashMap<AssetId, Arc<SpriteAtlasDocument>>,
+    /// CPU-decoded Native 2D source textures shared by resolved sprite regions.
+    pub(crate) native_2d_textures: HashMap<AssetId, Arc<DecodedTexture>>,
     /// Source asset ID -> the `(sub-asset ID, runtime clip key)` pairs that
     /// source contributed, recorded when its clips were first loaded.
     ///
