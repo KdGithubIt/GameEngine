@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0127-v10-tilemap-gpu-e17b-r1",
+  "target_branch": "chatgpt/gameengine-adr0127-first-release-current-main-v10",
+  "expected_head_sha": "e17b6852487e581ae34d81ac303e9a418c8b3356",
+  "baseline_main_sha": "96c8ffb18a74eabec2164daa61f694f131019ddc",
+  "patch_sha256": "448214bb41dd35b32d92cf34f06477b9d97ede6c6c93556321cf41e4c794491d",
+  "patch_bytes": 20270,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Render Native 2D Tile Maps through visible chunks",
+  "pr_title": "GameEngine: complete ADR0127 Native 2D first release",
+  "pr_body": "Renders engine.tile_map_2d through the shared Native 2D instanced GPU path while preserving sparse chunk ownership: scene conversion resolves stable TileId/SpriteRef data once, runtime culls Camera2D-visible chunks, expands only visible cells, and batches them with sprites by logical sorting/texture/material/sampler compatibility."
+}
