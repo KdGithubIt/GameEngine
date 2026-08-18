@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/native_2d_editor.rs","old":"    pub fn show(\n","new":"    pub(crate) fn show(\n"}
