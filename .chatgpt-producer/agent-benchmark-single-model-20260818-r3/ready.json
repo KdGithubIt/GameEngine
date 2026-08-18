@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "request_id": "agent-benchmark-single-model-20260818-r3",
+  "target_branch": "chatgpt/gameengine-agent-benchmark-experiment-runner",
+  "expected_head_sha": "cdb34a321bad6f995075fec2ac70d116a59820fb",
+  "baseline_main_sha": "96c8ffb18a74eabec2164daa61f694f131019ddc",
+  "edit_parts": ["edit-0000.json"],
+  "commit_message": "Add exact-model benchmark turn entry",
+  "pr_title": "GameEngine: add reproducible local LLM benchmark experiments",
+  "pr_body": "## Summary\n\nBuilds a reproducible GameEngine Agent Benchmark runner for arbitrary discovered/exact local models. Experiments freeze exact identity and reset repository-owned fixtures per run. The native runtime now exposes a benchmark-only exact-model turn entry that bypasses ADR0150 specialist selection and fallback, including for image input, so single-model attribution cannot be contaminated.\n\nFurther commits on this Draft PR wire child-Editor scenario execution and AI Studio suite controls for all seven ADR0142 tasks.\n\n<!-- gameengine-visual-validation: auto -->\n<!-- gameengine-chatgpt-dispatcher -->"
+}
