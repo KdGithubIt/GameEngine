@@ -1,0 +1,432 @@
+diff --git a/crates/authoring/src/timeline_authoring.rs b/crates/authoring/src/timeline_authoring.rs
+index bb4a81f29ef3e56602577f63a587d4ed4d41cb67..0dca62272ed014fc6420c5b49ca632cbc9a3046e 100644
+--- a/crates/authoring/src/timeline_authoring.rs
++++ b/crates/authoring/src/timeline_authoring.rs
+@@ -12,50 +12,190 @@ use std::fmt;
+ use std::path::Path;
+ use std::sync::atomic::{AtomicU64, Ordering};
+ 
++/// Optimistic revision token.
+ pub type TimelineRevision = u64;
+ 
++/// One typed Timeline mutation.
+ #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+ #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
+ pub enum TimelineAuthoringCommand {
++    /// Replaces the canonical Timeline duration.
+     SetDuration(TimelineTick),
++    /// Adds a typed track.
+     AddTrack(TimelineTrack),
+-    RenameTrack { track: TimelineTrackId, name: String },
++    /// Renames one track without changing stable identity.
++    RenameTrack {
++        /// Track.
++        track: TimelineTrackId,
++        /// New display name.
++        name: String,
++    },
++    /// Removes a track.
+     RemoveTrack(TimelineTrackId),
+-    SetBinding { track: TimelineTrackId, binding: Option<TimelineBinding> },
+-    SetTrackEnabled { track: TimelineTrackId, enabled: bool },
+-    AddClip { track: TimelineTrackId, clip: TimelineClip },
++    /// Changes a track stable binding.
++    SetBinding {
++        /// Track.
++        track: TimelineTrackId,
++        /// Binding.
++        binding: Option<TimelineBinding>,
++    },
++    /// Changes persisted enabled state.
++    SetTrackEnabled {
++        /// Track.
++        track: TimelineTrackId,
++        /// Enabled.
++        enabled: bool,
++    },
++    /// Adds a typed clip to a track.
++    AddClip {
++        /// Track.
++        track: TimelineTrackId,
++        /// Clip.
++        clip: TimelineClip,
++    },
++    /// Deletes a clip.
+     RemoveClip(TimelineClipId),
+-    RenameClip { clip: TimelineClipId, name: String },
+-    SetClipPayload { clip: TimelineClipId, payload: TimelineClipPayload },
+-    MoveClip { clip: TimelineClipId, start: TimelineTick },
+-    ResizeClip { clip: TimelineClipId, duration: TimelineTick },
++    /// Renames one clip without changing stable identity.
++    RenameClip {
++        /// Clip.
++        clip: TimelineClipId,
++        /// New display name.
++        name: String,
++    },
++    /// Replaces one clip's typed payload atomically.
++    SetClipPayload {
++        /// Clip.
++        clip: TimelineClipId,
++        /// New typed payload.
++        payload: TimelineClipPayload,
++    },
++    /// Moves a clip without changing duration.
++    MoveClip {
++        /// Clip.
++        clip: TimelineClipId,
++        /// New start.
++        start: TimelineTick,
++    },
++    /// Resizes a clip.
++    ResizeClip {
++        /// Clip.
++        clip: TimelineClipId,
++        /// New duration.
++        duration: TimelineTick,
++    },
++    /// Adds a marker lane entry.
+     AddMarker(TimelineMarker),
++    /// Removes a marker.
+     RemoveMarker(TimelineMarkerId),
+-    MoveMarker { marker: TimelineMarkerId, tick: TimelineTick },
+-    SetMarkerEvent { marker: TimelineMarkerId, event: Option<String> },
++    /// Moves a marker.
++    MoveMarker {
++        /// Marker.
++        marker: TimelineMarkerId,
++        /// Tick.
++        tick: TimelineTick,
++    },
++    /// Replaces a marker's optional bounded event name.
++    SetMarkerEvent {
++        /// Marker.
++        marker: TimelineMarkerId,
++        /// New event name, or `None` for a visual-only marker.
++        event: Option<String>,
++    },
+ }
+ 
++/// Preview result retained for the existing one-command Editor API.
+ #[derive(Debug, Clone, PartialEq, Serialize)]
+-pub struct TimelineAuthoringPreview { pub document: TimelineDocument, pub diagnostics: Vec<TimelineDiagnostic> }
++pub struct TimelineAuthoringPreview {
++    /// Resulting candidate.
++    pub document: TimelineDocument,
++    /// Pure validation diagnostics.
++    pub diagnostics: Vec<TimelineDiagnostic>,
++}
++
++/// Immutable Timeline state returned by structured authoring inspection.
+ #[derive(Debug, Clone, PartialEq, Serialize)]
+-pub struct TimelineAuthoringSnapshot { pub revision: TimelineRevision, pub generation: u64, pub document: TimelineDocument }
++pub struct TimelineAuthoringSnapshot {
++    /// Logical content revision.
++    pub revision: TimelineRevision,
++    /// Monotonic live-session generation used for stale-branch rejection.
++    pub generation: u64,
++    /// Complete committed Timeline source document.
++    pub document: TimelineDocument,
++}
++
++/// Structured Timeline validation result.
+ #[derive(Debug, Clone, PartialEq, Serialize)]
+-pub struct TimelineAuthoringValidation { pub revision: TimelineRevision, pub generation: u64, pub success: bool, pub diagnostics: Vec<TimelineDiagnostic> }
++pub struct TimelineAuthoringValidation {
++    /// Logical content revision validated by this result.
++    pub revision: TimelineRevision,
++    /// Live-session generation validated by this result.
++    pub generation: u64,
++    /// Whether validation produced no blocking diagnostics.
++    pub success: bool,
++    /// Pure Timeline diagnostics.
++    pub diagnostics: Vec<TimelineDiagnostic>,
++}
++
++/// Deterministic whole-document change produced by a Timeline command batch.
+ #[derive(Debug, Clone, PartialEq, Serialize)]
+-pub struct TimelineAuthoringChange { pub before: TimelineDocument, pub after: TimelineDocument }
++pub struct TimelineAuthoringChange {
++    /// Committed source before the batch.
++    pub before: TimelineDocument,
++    /// Candidate or committed source after the batch.
++    pub after: TimelineDocument,
++}
++
++/// Result of previewing or applying one atomic Timeline command batch.
+ #[derive(Debug, Clone, PartialEq, Serialize)]
+-pub struct TimelineAuthoringMutation { pub success: bool, pub base_revision: TimelineRevision, pub base_generation: u64, pub revision: TimelineRevision, pub generation: u64, pub diagnostics: Vec<TimelineDiagnostic>, pub diff: Vec<TimelineAuthoringChange> }
++pub struct TimelineAuthoringMutation {
++    /// Whether the complete candidate passed Timeline validation.
++    pub success: bool,
++    /// Caller-observed base revision.
++    pub base_revision: TimelineRevision,
++    /// Caller-observed base generation.
++    pub base_generation: u64,
++    /// Current revision after the operation.
++    pub revision: TimelineRevision,
++    /// Current generation after the operation.
++    pub generation: u64,
++    /// Pure Timeline diagnostics for the candidate.
++    pub diagnostics: Vec<TimelineDiagnostic>,
++    /// Empty for a no-op, otherwise one deterministic before/after change.
++    pub diff: Vec<TimelineAuthoringChange>,
++}
+ 
++/// Shared Timeline authoring failure.
+ #[derive(Debug)]
+ pub enum TimelineAuthoringError {
++    /// The host did not grant the required shared authoring permission.
+     Permission(AuthoringPermissionError),
+-    StaleRevision { expected: TimelineRevision, actual: TimelineRevision },
+-    Stale { expected_revision: TimelineRevision, expected_generation: u64, actual_revision: TimelineRevision, actual_generation: u64 },
++    /// Existing one-command caller supplied an obsolete revision.
++    StaleRevision {
++        /// Expected current revision.
++        expected: TimelineRevision,
++        /// Supplied revision.
++        actual: TimelineRevision,
++    },
++    /// Structured caller supplied a revision/generation pair that is no longer live.
++    Stale {
++        /// Caller-observed revision.
++        expected_revision: TimelineRevision,
++        /// Caller-observed generation.
++        expected_generation: u64,
++        /// Current revision.
++        actual_revision: TimelineRevision,
++        /// Current generation.
++        actual_generation: u64,
++    },
++    /// Target stable ID no longer exists.
+     MissingTarget(String),
++    /// Mutation made the document invalid.
+     Invalid(Vec<TimelineDiagnostic>),
++    /// Persistence failed.
+     Persist(String),
+ }
+ impl TimelineAuthoringError {
++    /// Returns the stable diagnostic-style code exposed to structured clients.
+     pub fn code(&self) -> &'static str { match self { Self::Permission(error) => error.code(), Self::StaleRevision { .. } | Self::Stale { .. } => "authoring.stale_revision", Self::MissingTarget(_) => "timeline.target_missing", Self::Invalid(_) => "timeline.invalid", Self::Persist(_) => "timeline.persist_failed" } }
+ }
+ impl fmt::Display for TimelineAuthoringError {
+@@ -75,34 +215,53 @@ impl std::error::Error for TimelineAuthoringError {
+ }
+ impl From<AuthoringPermissionError> for TimelineAuthoringError { fn from(error: AuthoringPermissionError) -> Self { Self::Permission(error) } }
+ 
++/// Shared stateful authoring service with stale-base rejection and session undo/redo.
+ #[derive(Debug, Clone)]
+ pub struct TimelineAuthoringService { document: TimelineDocument, revision: TimelineRevision, generation: u64, undo: Vec<TimelineDocument>, redo: Vec<TimelineDocument> }
+ impl TimelineAuthoringService {
++    /// Starts a session around a current-format document.
+     pub fn new(document: TimelineDocument) -> Result<Self, TimelineAuthoringError> {
+         let diagnostics = validate_timeline(&document);
+         if has_errors(&diagnostics) { return Err(TimelineAuthoringError::Invalid(diagnostics)); }
+         static NEXT_GENERATION: AtomicU64 = AtomicU64::new(1);
+         Ok(Self { document, revision: 0, generation: NEXT_GENERATION.fetch_add(1, Ordering::Relaxed), undo: Vec::new(), redo: Vec::new() })
+     }
++    /// Returns the current immutable document.
+     pub const fn document(&self) -> &TimelineDocument { &self.document }
++    /// Returns the current optimistic revision.
+     pub const fn revision(&self) -> TimelineRevision { self.revision }
++    /// Returns the current live-session generation.
+     pub const fn generation(&self) -> u64 { self.generation }
++    /// Inspects the committed Timeline through the shared permission boundary.
+     pub fn inspect(&self, permissions: &AuthoringPermissions) -> Result<TimelineAuthoringSnapshot, TimelineAuthoringError> { permissions.require(AuthoringPermission::Read)?; Ok(TimelineAuthoringSnapshot { revision: self.revision, generation: self.generation, document: self.document.clone() }) }
++    /// Validates the committed Timeline without mutation.
+     pub fn validate(&self, permissions: &AuthoringPermissions) -> Result<TimelineAuthoringValidation, TimelineAuthoringError> { permissions.require(AuthoringPermission::Read)?; let diagnostics = validate_timeline(&self.document); Ok(TimelineAuthoringValidation { revision: self.revision, generation: self.generation, success: !has_errors(&diagnostics), diagnostics }) }
++    /// Previews one atomic structured command batch without mutation or history changes.
+     pub fn preview_commands(&self, permissions: &AuthoringPermissions, expected_revision: TimelineRevision, expected_generation: u64, commands: Vec<TimelineAuthoringCommand>) -> Result<TimelineAuthoringMutation, TimelineAuthoringError> {
+         permissions.require(AuthoringPermission::Preview)?; self.check_base(expected_revision, expected_generation)?; let candidate = candidate_from_commands(&self.document, commands)?; let diagnostics = validate_timeline(&candidate); let success = !has_errors(&diagnostics); Ok(TimelineAuthoringMutation { success, base_revision: expected_revision, base_generation: expected_generation, revision: self.revision, generation: self.generation, diagnostics, diff: document_diff(&self.document, &candidate) })
+     }
++    /// Applies one atomic structured command batch through the shared permission boundary.
+     pub fn apply_commands(&mut self, permissions: &AuthoringPermissions, expected_revision: TimelineRevision, expected_generation: u64, commands: Vec<TimelineAuthoringCommand>) -> Result<TimelineAuthoringMutation, TimelineAuthoringError> {
+         permissions.require(AuthoringPermission::ProjectDataWrite)?; self.check_base(expected_revision, expected_generation)?; let candidate = candidate_from_commands(&self.document, commands)?; let diagnostics = validate_timeline(&candidate); let success = !has_errors(&diagnostics); let diff = document_diff(&self.document, &candidate);
+         if !success { return Ok(TimelineAuthoringMutation { success: false, base_revision: expected_revision, base_generation: expected_generation, revision: self.revision, generation: self.generation, diagnostics, diff }); }
+         if !diff.is_empty() { self.undo.push(self.document.clone()); self.document = candidate; self.redo.clear(); self.advance_live_state(); }
+         Ok(TimelineAuthoringMutation { success: true, base_revision: expected_revision, base_generation: expected_generation, revision: self.revision, generation: self.generation, diagnostics, diff })
+     }
++    /// Validates one command against a clone without mutation.
+     pub fn preview(&self, expected: TimelineRevision, command: &TimelineAuthoringCommand) -> Result<TimelineAuthoringPreview, TimelineAuthoringError> { self.check_revision(expected)?; let mut candidate = self.document.clone(); apply_command(&mut candidate, command)?; let diagnostics = validate_timeline(&candidate); Ok(TimelineAuthoringPreview { document: candidate, diagnostics }) }
++    /// Atomically applies one command after validation.
+     pub fn apply(&mut self, expected: TimelineRevision, command: TimelineAuthoringCommand) -> Result<TimelineRevision, TimelineAuthoringError> { self.apply_transaction(expected, std::iter::once(command)) }
++    /// Atomically applies a granular command transaction with one undo boundary.
++    ///
++    /// This compatibility entry point is retained for existing Editor code. New structured
++    /// adapters use `apply_commands` so permissions and the generation token are enforced
++    /// at the shared boundary.
+     pub fn apply_transaction(&mut self, expected: TimelineRevision, commands: impl IntoIterator<Item = TimelineAuthoringCommand>) -> Result<TimelineRevision, TimelineAuthoringError> { self.check_revision(expected)?; let candidate = candidate_from_commands(&self.document, commands)?; let diagnostics = validate_timeline(&candidate); if has_errors(&diagnostics) { return Err(TimelineAuthoringError::Invalid(diagnostics)); } self.undo.push(self.document.clone()); self.document = candidate; self.redo.clear(); self.advance_live_state(); Ok(self.revision) }
++    /// Undoes one committed transaction.
+     pub fn undo(&mut self) -> bool { let Some(previous) = self.undo.pop() else { return false; }; self.redo.push(std::mem::replace(&mut self.document, previous)); self.advance_live_state(); true }
++    /// Redoes one undone transaction.
+     pub fn redo(&mut self) -> bool { let Some(next) = self.redo.pop() else { return false; }; self.undo.push(std::mem::replace(&mut self.document, next)); self.advance_live_state(); true }
++    /// Persists the committed source of truth.
+     pub fn save(&self, path: &Path) -> Result<(), TimelineAuthoringError> { save_timeline(path, &self.document).map_err(|error| TimelineAuthoringError::Persist(error.to_string())) }
+     fn advance_live_state(&mut self) { self.revision = self.revision.wrapping_add(1); self.generation = self.generation.wrapping_add(1); }
+     fn check_revision(&self, actual: TimelineRevision) -> Result<(), TimelineAuthoringError> { if actual == self.revision { Ok(()) } else { Err(TimelineAuthoringError::StaleRevision { expected: self.revision, actual }) } }
+diff --git a/crates/engine/src/timeline.rs b/crates/engine/src/timeline.rs
+index 3634a0b9db1f1faf36cdc80139cb7c338029ef82..1a2adf4e2384d27875a2af23eee66b04c0756e64 100644
+--- a/crates/engine/src/timeline.rs
++++ b/crates/engine/src/timeline.rs
+@@ -17,29 +17,53 @@ use glam::{Quat, Vec3};
+ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+ use std::fmt;
+ 
++/// Maximum retained runtime Timeline event records.
+ pub const MAX_TIMELINE_EVENTS: usize = 1024;
++/// Maximum retained runtime diagnostics.
+ pub const MAX_TIMELINE_RUNTIME_DIAGNOSTICS: usize = 256;
+ 
++/// Immutable prepared Timeline source ready to become one or more runtime players.
+ #[derive(Clone)]
+ pub struct PreparedTimeline { asset: AssetId, document_id: TimelineId, schedule: CompiledTimeline<CompiledTimelinePayload> }
+ impl PreparedTimeline {
++    /// Returns the stable Timeline asset ID.
+     pub fn asset(&self) -> &AssetId { &self.asset }
++    /// Returns the stable semantic document ID.
+     pub fn document_id(&self) -> &TimelineId { &self.document_id }
++    /// Returns the canonical duration of the compiled schedule.
+     pub fn duration(&self) -> TimelineTick { self.schedule.duration() }
+ }
+ 
++/// Failure while resolving a persisted Timeline into the production runtime.
+ #[derive(Debug, Clone, PartialEq, Eq)]
+-pub enum TimelineRuntimeError { UnknownAsset(AssetId), AssetLoad(String), Parse(String), Compile(Vec<String>), UnknownPlayer(u64), InvalidRate, InvalidLoop }
++pub enum TimelineRuntimeError {
++    /// Stable asset is not registered in the active manifest.
++    UnknownAsset(AssetId),
++    /// Asset bytes could not be loaded below the configured asset root.
++    AssetLoad(String),
++    /// Persisted JSON did not deserialize as a Timeline document.
++    Parse(String),
++    /// Authoring validation or compilation rejected the document.
++    Compile(Vec<String>),
++    /// Runtime player ID is not active.
++    UnknownPlayer(u64),
++    /// Requested deterministic playback rate is invalid.
++    InvalidRate,
++    /// Requested loop range is invalid.
++    InvalidLoop,
++}
+ impl fmt::Display for TimelineRuntimeError { fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result { match self { Self::UnknownAsset(asset) => write!(formatter, "Timeline asset `{}` is not registered", asset.as_str()), Self::AssetLoad(message) => write!(formatter, "Timeline asset could not be loaded: {message}"), Self::Parse(message) => write!(formatter, "Timeline JSON could not be parsed: {message}"), Self::Compile(diagnostics) => write!(formatter, "Timeline did not compile: {}", diagnostics.join("; ")), Self::UnknownPlayer(player) => write!(formatter, "Timeline player {player} does not exist"), Self::InvalidRate => formatter.write_str("Timeline playback rate is invalid"), Self::InvalidLoop => formatter.write_str("Timeline loop range is invalid") } } }
+ impl std::error::Error for TimelineRuntimeError {}
+ impl From<PlaybackRateError> for TimelineRuntimeError { fn from(_: PlaybackRateError) -> Self { Self::InvalidRate } }
+ impl From<TimelineLoopError> for TimelineRuntimeError { fn from(_: TimelineLoopError) -> Self { Self::InvalidLoop } }
+ 
++/// Compiles an in-memory Timeline working copy through the production schedule path.
+ pub fn prepare_timeline_document(asset: AssetId, document: &TimelineDocument) -> Result<PreparedTimeline, TimelineRuntimeError> {
+     let compilation = compile_timeline(document);
+     let schedule = compilation.schedule.ok_or_else(|| TimelineRuntimeError::Compile(compilation.diagnostics.into_iter().map(|diagnostic| format!("[{}] {}", diagnostic.code, diagnostic.message)).collect()))?;
+     Ok(PreparedTimeline { asset, document_id: document.id.clone(), schedule })
+ }
++/// Loads and compiles a stable Timeline asset through the production asset boundary.
+ pub fn prepare_timeline_asset(asset: &AssetId, manifest: &AssetManifest, server: &AssetServer) -> Result<PreparedTimeline, TimelineRuntimeError> {
+     let entry = manifest.get(asset).ok_or_else(|| TimelineRuntimeError::UnknownAsset(asset.clone()))?;
+     let bytes = server.load_bytes(&entry.path).map_err(|error| TimelineRuntimeError::AssetLoad(error.to_string()))?;
+@@ -51,13 +75,54 @@ pub fn prepare_timeline_asset(asset: &AssetId, manifest: &AssetManifest, server:
+ 
+ #[derive(Clone)]
+ struct ActiveTimelinePlayer { asset: AssetId, document_id: TimelineId, schedule: CompiledTimeline<CompiledTimelinePayload>, player: TimelinePlayer, priority: i32, pending: VecDeque<EvaluationRequest> }
++/// Copied Project-Rust/Editor-safe state for one runtime Timeline player.
+ #[derive(Debug, Clone, PartialEq, Eq)]
+-pub struct TimelinePlayerSnapshot { pub player_id: u64, pub asset: AssetId, pub document_id: TimelineId, pub state: TimelinePlaybackState, pub tick: TimelineTick, pub generation: u64, pub priority: i32, pub rate_numerator: i32, pub rate_denominator: u32 }
++pub struct TimelinePlayerSnapshot {
++    /// Caller-owned logical player ID.
++    pub player_id: u64,
++    /// Stable Timeline asset being played.
++    pub asset: AssetId,
++    /// Stable Timeline document identity.
++    pub document_id: TimelineId,
++    /// Current playback state.
++    pub state: TimelinePlaybackState,
++    /// Exact current canonical tick.
++    pub tick: TimelineTick,
++    /// Monotonic discontinuity generation.
++    pub generation: u64,
++    /// Explicit cross-player composition priority.
++    pub priority: i32,
++    /// Rational rate numerator.
++    pub rate_numerator: i32,
++    /// Rational rate denominator.
++    pub rate_denominator: u32,
++}
++/// One bounded sequence-level event emitted by Timeline evaluation.
+ #[derive(Debug, Clone, PartialEq, Eq)]
+-pub struct TimelineEventRecord { pub source_sequence: u64, pub player_id: u64, pub asset: AssetId, pub document_id: TimelineId, pub tick: TimelineTick, pub name: String, pub payload: String }
++pub struct TimelineEventRecord {
++    /// Monotonic runtime source sequence.
++    pub source_sequence: u64,
++    /// Logical player that emitted the event.
++    pub player_id: u64,
++    /// Stable Timeline asset.
++    pub asset: AssetId,
++    /// Stable semantic Timeline document identity.
++    pub document_id: TimelineId,
++    /// Canonical event tick.
++    pub tick: TimelineTick,
++    /// Stable bounded event name.
++    pub name: String,
++    /// Bounded serialized payload. Marker events use an empty payload.
++    pub payload: String,
++}
++/// Bounded event history shared by Editor inspection and Project Rust subscribers.
+ #[derive(Debug, Default)]
+ pub struct TimelineEvents { events: VecDeque<TimelineEventRecord>, next_sequence: u64 }
+-impl TimelineEvents { pub fn iter(&self) -> impl Iterator<Item = &TimelineEventRecord> { self.events.iter() } pub(crate) fn push(&mut self, mut event: TimelineEventRecord) { if self.events.len() >= MAX_TIMELINE_EVENTS { self.events.pop_front(); } self.next_sequence = self.next_sequence.saturating_add(1).max(1); event.source_sequence = self.next_sequence; self.events.push_back(event); } }
++impl TimelineEvents {
++    /// Iterates retained events in source order.
++    pub fn iter(&self) -> impl Iterator<Item = &TimelineEventRecord> { self.events.iter() }
++    pub(crate) fn push(&mut self, mut event: TimelineEventRecord) { if self.events.len() >= MAX_TIMELINE_EVENTS { self.events.pop_front(); } self.next_sequence = self.next_sequence.saturating_add(1).max(1); event.source_sequence = self.next_sequence; self.events.push_back(event); }
++}
+ 
+ #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+ struct Priority { player_priority: i32, track_order: u32, item_order: u32, player_id: u64 }
+@@ -68,18 +133,32 @@ struct PendingEvent { player_id: u64, asset: AssetId, document_id: TimelineId, t
+ struct CollectedFrame { active: Vec<ActiveClip>, events: Vec<PendingEvent> }
+ #[derive(Clone)]
+ struct DesiredTransform { priority: Priority, value: TimelinePropertyValue }
++/// Multi-player transient Timeline runtime.
++///
++/// Every override snapshot and backend voice ID is runtime-only; persisted Timeline data is
++/// never rewritten when a player starts, seeks, pauses, or stops.
+ #[derive(Default)]
+ pub struct TimelineRuntime { players: BTreeMap<u64, ActiveTimelinePlayer>, clock_fraction: f64, animation_originals: HashMap<EntityId, Animator>, vfx_originals: HashMap<EntityId, VfxPlayer>, transform_originals: HashMap<(EntityId, String), TimelinePropertyValue>, desired_transforms: BTreeMap<(EntityId, String), DesiredTransform>, audio_voices: HashMap<(u64, TimelineClipId), AudioVoiceId>, audio_suppressed: HashSet<(u64, TimelineClipId)>, diagnostics: VecDeque<String> }
+ impl TimelineRuntime {
++    /// Starts or replaces a logical player at the default composition priority.
+     pub fn start(&mut self, player_id: u64, prepared: PreparedTimeline) { self.start_with_priority(player_id, prepared, 0); }
++    /// Starts or replaces a logical player with an explicit cross-player priority.
+     pub fn start_with_priority(&mut self, player_id: u64, prepared: PreparedTimeline, priority: i32) { let mut player = TimelinePlayer::new(prepared.schedule.duration()); player.play(); self.players.insert(player_id, ActiveTimelinePlayer { asset: prepared.asset, document_id: prepared.document_id, schedule: prepared.schedule, player, priority, pending: VecDeque::new() }); }
++    /// Pauses one player without changing its exact playhead.
+     pub fn pause(&mut self, player_id: u64) -> Result<(), TimelineRuntimeError> { self.player_mut(player_id)?.player.pause(); Ok(()) }
++    /// Resumes one player.
+     pub fn resume(&mut self, player_id: u64) -> Result<(), TimelineRuntimeError> { self.player_mut(player_id)?.player.play(); Ok(()) }
++    /// Stops one player and releases its transient overrides on the next fixed pass.
+     pub fn stop(&mut self, player_id: u64) -> Result<(), TimelineRuntimeError> { let active = self.player_mut(player_id)?; active.player.stop(); active.pending.clear(); Ok(()) }
++    /// Performs an exact discontinuous seek; events stay suppressed unless explicitly previewed.
+     pub fn seek(&mut self, player_id: u64, tick: TimelineTick, preview_events: bool) -> Result<(), TimelineRuntimeError> { let active = self.player_mut(player_id)?; let request = active.player.seek(tick, preview_events); active.pending.push_back(request); Ok(()) }
++    /// Sets a bounded deterministic rational playback rate.
+     pub fn set_rate(&mut self, player_id: u64, numerator: i32, denominator: u32) -> Result<(), TimelineRuntimeError> { let rate = PlaybackRate::new(numerator, denominator)?; self.player_mut(player_id)?.player.set_rate(rate); Ok(()) }
++    /// Configures the neutral player's exact loop range.
+     pub fn set_loop(&mut self, player_id: u64, range: Option<TimelineLoop>) -> Result<(), TimelineRuntimeError> { self.player_mut(player_id)?.player.set_loop(range)?; Ok(()) }
++    /// Returns copied runtime player state in deterministic logical-ID order.
+     pub fn snapshots(&self) -> Vec<TimelinePlayerSnapshot> { self.players.iter().map(|(&player_id, active)| { let rate = active.player.rate(); TimelinePlayerSnapshot { player_id, asset: active.asset.clone(), document_id: active.document_id.clone(), state: active.player.state(), tick: active.player.tick(), generation: active.player.generation(), priority: active.priority, rate_numerator: rate.numerator(), rate_denominator: rate.denominator() } }).collect() }
++    /// Iterates recent runtime binding and asset diagnostics.
+     pub fn diagnostics(&self) -> impl Iterator<Item = &str> { self.diagnostics.iter().map(String::as_str) }
+     fn player_mut(&mut self, player_id: u64) -> Result<&mut ActiveTimelinePlayer, TimelineRuntimeError> { self.players.get_mut(&player_id).ok_or(TimelineRuntimeError::UnknownPlayer(player_id)) }
+     fn warn(&mut self, message: impl Into<String>) { if self.diagnostics.len() >= MAX_TIMELINE_RUNTIME_DIAGNOSTICS { self.diagnostics.pop_front(); } let message = message.into(); log::warn!("timeline: {message}"); self.diagnostics.push_back(message); }
+@@ -134,6 +213,7 @@ pub fn ensure_timeline_preview_resources(app: &mut crate::App) {
+ 
+ /// Production Timeline prepare system, exposed for installation into the Editor PreviewWorld.
+ /// Runtime hosts normally receive this through `register_runtime_systems`.
++#[allow(clippy::too_many_arguments)]
+ pub fn timeline_prepare_system(
+     fixed: Res<FixedTime>, mut runtime: ResMut<TimelineRuntime>, mut events: ResMut<TimelineEvents>, mut camera_override: ResMut<GameCameraSelectionOverride>,
+     mut animators: Query<(&RuntimeEntityIdentity, &mut AnimGraphPlayer, &mut Animator)>, mut cameras: Query<(&RuntimeEntityIdentity, &Camera3D)>,
+@@ -158,6 +238,7 @@ pub fn timeline_prepare_system(
+     apply_audio(&mut runtime, &frame.active, &mut emitters, &spatial_audio, manifest.as_deref(), server.as_deref_mut(), audio_assets.as_deref_mut(), audio.as_deref_mut());
+ }
+ 
++/// Applies the property samples prepared by Timeline to production Transform components.
+ pub fn timeline_transform_system(mut runtime: ResMut<TimelineRuntime>, mut transforms: Query<(&RuntimeEntityIdentity, &mut Transform)>) {
+     let desired = runtime.desired_transforms.clone(); let mut seen = BTreeSet::new();
+     for (_, (identity, transform)) in transforms.iter_mut() {
