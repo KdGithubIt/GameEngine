@@ -1,0 +1,600 @@
++            "sprite_atlas.validate" => { require_empty(arguments)?; typed_validate(self.sprite_atlas.as_ref().ok_or_else(|| HeadlessMcpCallFailure::no_document("Sprite Atlas"))?, &permissions) }
++            "sprite_atlas.preview" => { let input = decode::<TypedDocumentMutationInput<SpriteAtlasDocument>>(arguments)?; typed_preview(self.sprite_atlas.as_ref().ok_or_else(|| HeadlessMcpCallFailure::no_document("Sprite Atlas"))?, &permissions, input) }
++            "sprite_atlas.apply" => { let input = decode::<TypedDocumentMutationInput<SpriteAtlasDocument>>(arguments)?; let loaded = self.sprite_atlas.as_mut().ok_or_else(|| HeadlessMcpCallFailure::no_document("Sprite Atlas"))?; typed_apply(loaded, &permissions, input, |document, path| persist_native_2d(document.to_canonical_json(), path, "Sprite Atlas")) }
++            "sprite_animation.inspect" => { require_empty(arguments)?; typed_inspect(self.sprite_animation.as_ref().ok_or_else(|| HeadlessMcpCallFailure::no_document("Sprite Animation"))?, &permissions) }
++            "sprite_animation.validate" => { require_empty(arguments)?; typed_validate(self.sprite_animation.as_ref().ok_or_else(|| HeadlessMcpCallFailure::no_document("Sprite Animation"))?, &permissions) }
++            "sprite_animation.preview" => { let input = decode::<TypedDocumentMutationInput<SpriteAnimationDocument>>(arguments)?; typed_preview(self.sprite_animation.as_ref().ok_or_else(|| HeadlessMcpCallFailure::no_document("Sprite Animation"))?, &permissions, input) }
++            "sprite_animation.apply" => { let input = decode::<TypedDocumentMutationInput<SpriteAnimationDocument>>(arguments)?; let loaded = self.sprite_animation.as_mut().ok_or_else(|| HeadlessMcpCallFailure::no_document("Sprite Animation"))?; typed_apply(loaded, &permissions, input, |document, path| persist_native_2d(document.to_canonical_json(), path, "Sprite Animation")) }
++            "tile_set.inspect" => { require_empty(arguments)?; typed_inspect(self.tile_set.as_ref().ok_or_else(|| HeadlessMcpCallFailure::no_document("Tile Set"))?, &permissions) }
++            "tile_set.validate" => { require_empty(arguments)?; typed_validate(self.tile_set.as_ref().ok_or_else(|| HeadlessMcpCallFailure::no_document("Tile Set"))?, &permissions) }
++            "tile_set.preview" => { let input = decode::<TypedDocumentMutationInput<TileSetDocument>>(arguments)?; typed_preview(self.tile_set.as_ref().ok_or_else(|| HeadlessMcpCallFailure::no_document("Tile Set"))?, &permissions, input) }
++            "tile_set.apply" => { let input = decode::<TypedDocumentMutationInput<TileSetDocument>>(arguments)?; let loaded = self.tile_set.as_mut().ok_or_else(|| HeadlessMcpCallFailure::no_document("Tile Set"))?; typed_apply(loaded, &permissions, input, |document, path| persist_native_2d(document.to_canonical_json(), path, "Tile Set")) }
++            "tile_map.inspect" => { require_empty(arguments)?; typed_inspect(self.tile_map.as_ref().ok_or_else(|| HeadlessMcpCallFailure::no_document("Tile Map"))?, &permissions) }
++            "tile_map.validate" => { require_empty(arguments)?; typed_validate(self.tile_map.as_ref().ok_or_else(|| HeadlessMcpCallFailure::no_document("Tile Map"))?, &permissions) }
++            "tile_map.preview" => { let input = decode::<TypedDocumentMutationInput<TileMapDocument>>(arguments)?; typed_preview(self.tile_map.as_ref().ok_or_else(|| HeadlessMcpCallFailure::no_document("Tile Map"))?, &permissions, input) }
++            "tile_map.apply" => { let input = decode::<TypedDocumentMutationInput<TileMapDocument>>(arguments)?; let loaded = self.tile_map.as_mut().ok_or_else(|| HeadlessMcpCallFailure::no_document("Tile Map"))?; typed_apply(loaded, &permissions, input, |document, path| persist_native_2d(document.to_canonical_json(), path, "Tile Map")) }
+             "vfx.schemas" => { require_empty(arguments)?; to_value(vfx_tools.schemas(&permissions)?) }
+             "vfx.inspect" => { let input = decode::<VfxEffectInput>(arguments)?; to_value(vfx_tools.inspect(&permissions, input)?) }
+             "vfx.validate" => { let input = decode::<VfxEffectInput>(arguments)?; to_value(vfx_tools.validate(&permissions, input)?) }
+@@ -546,6 +599,39 @@ fn load_animation_set(project: &ProjectRoot, relative: String) -> Result<LoadedT
+     Ok(LoadedTyped { path: Some(path), relative, document, state: TypedDocumentAuthoringState::new() })
+ }
+ 
++trait Native2dHeadlessDocument: TypedAuthoringDocument + DeserializeOwned {}
++impl Native2dHeadlessDocument for SpriteAtlasDocument {}
++impl Native2dHeadlessDocument for SpriteAnimationDocument {}
++impl Native2dHeadlessDocument for TileSetDocument {}
++impl Native2dHeadlessDocument for TileMapDocument {}
++
++fn load_native_2d<T: Native2dHeadlessDocument>(
++    project: &ProjectRoot,
++    relative: String,
++) -> Result<LoadedTyped<T>, HeadlessHostError> {
++    let path = asset_path(project, &relative)?;
++    let document = serde_json::from_str(&read_text(&path)?).map_err(|error| HeadlessHostError::Load {
++        path: path.clone(),
++        message: error.to_string(),
++    })?;
++    Ok(LoadedTyped {
++        path: Some(path),
++        relative,
++        document,
++        state: TypedDocumentAuthoringState::new(),
++    })
++}
++
++fn persist_native_2d(
++    json: Result<String, serde_json::Error>,
++    path: Option<&Path>,
++    label: &str,
++) -> Result<(), String> {
++    let json = json.map_err(|error| error.to_string())?;
++    let path = path.ok_or_else(|| format!("{label} path is unavailable"))?;
++    replace_file_contents(path, &json).map_err(|error| error.to_string())
++}
++
+ fn persist_scene(loaded: &LoadedScene) -> Result<(), HeadlessMcpCallFailure> {
+     let json = loaded.session.scene().to_canonical_json().map_err(|error| HeadlessMcpCallFailure::persist(&loaded.path, error))?;
+     replace_file_contents(&loaded.path, &json).map_err(|error| HeadlessMcpCallFailure::persist(&loaded.path, error))
+diff --git a/crates/mcp-host/src/main.rs b/crates/mcp-host/src/main.rs
+index 22304ab358723d174d3c8d039f8ae330a989735f..e2a735386150a72f2a84a759c3bd2a7055f0e626 100644
+--- a/crates/mcp-host/src/main.rs
++++ b/crates/mcp-host/src/main.rs
+@@ -24,6 +24,10 @@ fn run() -> Result<(), String> {
+         ui: options.ui,
+         material: options.material,
+         animation_set: options.animation_set,
++        sprite_atlas: options.sprite_atlas,
++        sprite_animation: options.sprite_animation,
++        tile_set: options.tile_set,
++        tile_map: options.tile_map,
+     };
+     let mut host = if options.read_only {
+         HeadlessAuthoringHost::open_read_only(&options.project, selection)
+@@ -78,6 +82,10 @@ struct Options {
+     ui: Option<String>,
+     material: Option<String>,
+     animation_set: Option<String>,
++    sprite_atlas: Option<String>,
++    sprite_animation: Option<String>,
++    tile_set: Option<String>,
++    tile_map: Option<String>,
+ }
+ 
+ impl Options {
+@@ -91,6 +99,10 @@ impl Options {
+         let mut ui = None;
+         let mut material = None;
+         let mut animation_set = None;
++        let mut sprite_atlas = None;
++        let mut sprite_animation = None;
++        let mut tile_set = None;
++        let mut tile_map = None;
+ 
+         while let Some(argument) = arguments.next() {
+             match argument.as_str() {
+@@ -102,13 +114,30 @@ impl Options {
+                 "--ui" => ui = Some(require_value(&mut arguments, "--ui")?),
+                 "--material" => material = Some(require_value(&mut arguments, "--material")?),
+                 "--animation-set" => animation_set = Some(require_value(&mut arguments, "--animation-set")?),
++                "--sprite-atlas" => sprite_atlas = Some(require_value(&mut arguments, "--sprite-atlas")?),
++                "--sprite-animation" => sprite_animation = Some(require_value(&mut arguments, "--sprite-animation")?),
++                "--tile-set" => tile_set = Some(require_value(&mut arguments, "--tile-set")?),
++                "--tile-map" => tile_map = Some(require_value(&mut arguments, "--tile-map")?),
+                 "--help" | "-h" => return Err(usage()),
+                 other => return Err(format!("unknown argument `{other}`\n{}", usage())),
+             }
+         }
+ 
+         let project = project.ok_or_else(|| format!("--project is required\n{}", usage()))?;
+-        Ok(Self { project, read_only, scene, graph, graph_view, ui, material, animation_set })
++        Ok(Self {
++            project,
++            read_only,
++            scene,
++            graph,
++            graph_view,
++            ui,
++            material,
++            animation_set,
++            sprite_atlas,
++            sprite_animation,
++            tile_set,
++            tile_map,
++        })
+     }
+ }
+ 
+@@ -117,7 +146,7 @@ fn require_value(arguments: &mut impl Iterator<Item = String>, flag: &str) -> Re
+ }
+ 
+ fn usage() -> String {
+-    "usage: engine-mcp-host --project <path> [--read-only] [--scene <asset-relative>] [--graph <asset-relative>] [--graph-view <asset-relative>] [--ui <asset-relative>] [--material <asset-relative>] [--animation-set <asset-relative>]".into()
++    "usage: engine-mcp-host --project <path> [--read-only] [--scene <asset-relative>] [--graph <asset-relative>] [--graph-view <asset-relative>] [--ui <asset-relative>] [--material <asset-relative>] [--animation-set <asset-relative>] [--sprite-atlas <asset-relative>] [--sprite-animation <asset-relative>] [--tile-set <asset-relative>] [--tile-map <asset-relative>]".into()
+ }
+ 
+ #[cfg(test)]
+diff --git a/crates/render-runtime/src/camera.rs b/crates/render-runtime/src/camera.rs
+index 4ecee9c150549dcb0333982680e2f64a255af133..b4612e5d65d757e9c6a24750c16d38ad5ffbfa75 100644
+--- a/crates/render-runtime/src/camera.rs
++++ b/crates/render-runtime/src/camera.rs
+@@ -65,7 +65,72 @@ impl Default for Camera3D {
+     }
+ }
+ 
+-/// Builds the total ordering used by every Game View camera consumer.
++/// Projection family participating in the shared Game View arbitration contract.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum GameCameraKind {
++    /// Existing perspective Camera3D.
++    ThreeD,
++    /// Native orthographic Camera2D.
++    TwoD,
++}
++
++/// Backend-neutral enabled/priority intent contributed by any Game View camera.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub struct GameCameraIntent {
++    /// Runtime entity identity used only as a deterministic payload key.
++    pub entity: engine_ecs::Entity,
++    /// Projection family of this candidate.
++    pub kind: GameCameraKind,
++    /// Whether the candidate may drive the Game View.
++    pub enabled: bool,
++    /// Shared authored priority; higher values win.
++    pub priority: i32,
++}
++
++/// Shared Camera2D/Camera3D arbitration result.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum GameCameraSelection {
++    /// No enabled game camera exists.
++    None,
++    /// Exactly one enabled camera owns the highest authored priority.
++    Selected(GameCameraIntent),
++    /// Multiple enabled cameras share the highest authored priority.
++    Ambiguous {
++        /// Highest tied priority.
++        priority: i32,
++        /// Number of candidates tied at that priority.
++        count: usize,
++    },
++}
++
++/// Generalizes ADR 0107 camera intent across Camera3D and Camera2D.
++///
++/// Runtime entity order is never used to hide an authored highest-priority tie;
++/// authoring surfaces can therefore report the same ambiguity the runtime sees.
++pub fn select_game_camera_intent(
++    candidates: impl IntoIterator<Item = GameCameraIntent>,
++) -> GameCameraSelection {
++    let mut enabled = candidates.into_iter().filter(|candidate| candidate.enabled);
++    let Some(mut best) = enabled.next() else {
++        return GameCameraSelection::None;
++    };
++    let mut tied = 1_usize;
++    for candidate in enabled {
++        if candidate.priority > best.priority {
++            best = candidate;
++            tied = 1;
++        } else if candidate.priority == best.priority {
++            tied += 1;
++        }
++    }
++    if tied > 1 {
++        GameCameraSelection::Ambiguous { priority: best.priority, count: tied }
++    } else {
++        GameCameraSelection::Selected(best)
++    }
++}
++
++/// Builds the total ordering used by every Camera3D-only compatibility consumer.
+ ///
+ /// This is public only as a cross-crate runtime adapter contract; application
+ /// code should normally use [`select_active_game_camera`].
+diff --git a/crates/render-runtime/src/lib.rs b/crates/render-runtime/src/lib.rs
+index e80c16f9feee48b23ecf1534ef01ccbe6c91f7b9..8292aed7e2381e14a7b833ecb79986ec6d4a0654 100644
+--- a/crates/render-runtime/src/lib.rs
++++ b/crates/render-runtime/src/lib.rs
+@@ -10,6 +10,9 @@
+ /// Camera projection, viewport, and active-camera selection contracts.
+ #[cfg(feature = "gpu")]
+ pub mod camera;
++/// Native 2D camera, sprite ordering/batching, and tile visibility contracts (ADR 0127).
++#[cfg(feature = "gpu")]
++pub mod native_2d;
+ /// Immediate-mode runtime debug line presentation.
+ #[cfg(feature = "gpu")]
+ pub mod debug_draw;
+diff --git a/crates/render-runtime/src/native_2d.rs b/crates/render-runtime/src/native_2d.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..104170eef88bac5f940ddfdff7edd729c10d981a
+--- /dev/null
++++ b/crates/render-runtime/src/native_2d.rs
+@@ -0,0 +1,366 @@
++//! Native 2D camera, sprite ordering/batching, and tile visibility contracts (ADR 0127).
++
++use crate::transform::Transform;
++use engine_authoring::{SortingLayerId, SpriteRef, TileChunkCoord, TileLayerId};
++use glam::{Mat4, Vec2, Vec3};
++
++/// Orthographic viewport-fit policy.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum ViewportFit2d {
++    /// Preserve the complete reference frame and allow unused viewport space.
++    Fit,
++    /// Fill the viewport and crop reference-frame overflow.
++    Fill,
++    /// Stretch reference dimensions to the viewport shape.
++    Stretch,
++}
++
++/// Runtime Camera2D contract. Pose remains owned by the normal Transform hierarchy.
++#[derive(Debug, Clone, Copy, PartialEq)]
++pub struct Camera2d {
++    /// Whether this camera participates in Game View arbitration.
++    pub enabled: bool,
++    /// Selection priority shared with Camera3D. Higher values win.
++    pub priority: i32,
++    /// Vertical orthographic world span before zoom.
++    pub orthographic_height: f32,
++    /// Positive projection zoom multiplier.
++    pub zoom: f32,
++    /// Near clipping plane in camera space.
++    pub near: f32,
++    /// Far clipping plane in camera space.
++    pub far: f32,
++    /// Whether projection follows deterministic reference-pixel scaling.
++    pub pixel_perfect: bool,
++    /// Reference texture pixels represented by one world unit.
++    pub reference_pixels_per_unit: f32,
++    /// Reference pixel-perfect resolution `[width, height]`.
++    pub reference_resolution: [u32; 2],
++    /// Viewport fitting policy.
++    pub fit: ViewportFit2d,
++}
++
++impl Default for Camera2d {
++    fn default() -> Self {
++        Self {
++            enabled: true,
++            priority: 0,
++            orthographic_height: 10.0,
++            zoom: 1.0,
++            near: -1000.0,
++            far: 1000.0,
++            pixel_perfect: false,
++            reference_pixels_per_unit: 100.0,
++            reference_resolution: [320, 180],
++            fit: ViewportFit2d::Fit,
++        }
++    }
++}
++
++/// Why Camera2D cannot safely produce the required XY orthographic view.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum Camera2dDiagnostic {
++    /// Transform or projection contains non-finite values.
++    NonFinitePose,
++    /// Camera rotation tilts away from the world XY plane.
++    NonPlanarTilt,
++    /// Camera scale would make projection semantics ambiguous.
++    IncompatibleScale,
++    /// Projection settings cannot form a finite orthographic matrix.
++    InvalidProjection,
++}
++
++impl Camera2d {
++    /// Builds the orthographic projection without rewriting authored transforms.
++    pub fn projection(self, viewport: [u32; 2]) -> Result<Mat4, Camera2dDiagnostic> {
++        if !self.orthographic_height.is_finite()
++            || self.orthographic_height <= 0.0
++            || !self.zoom.is_finite()
++            || self.zoom <= 0.0
++            || !self.near.is_finite()
++            || !self.far.is_finite()
++            || self.far <= self.near
++            || !self.reference_pixels_per_unit.is_finite()
++            || self.reference_pixels_per_unit <= 0.0
++        {
++            return Err(Camera2dDiagnostic::InvalidProjection);
++        }
++        let width = viewport[0].max(1) as f32;
++        let height = viewport[1].max(1) as f32;
++        let reference_width = self.reference_resolution[0].max(1) as f32;
++        let reference_height = self.reference_resolution[1].max(1) as f32;
++        let viewport_aspect = width / height;
++        let reference_aspect = reference_width / reference_height;
++
++        let mut world_height = self.orthographic_height / self.zoom;
++        let mut world_width = world_height * viewport_aspect;
++        if self.pixel_perfect {
++            let integer_scale = (width / reference_width)
++                .min(height / reference_height)
++                .floor()
++                .max(1.0);
++            let pixel_world = 1.0 / (self.reference_pixels_per_unit * integer_scale);
++            let reference_world_width = reference_width * pixel_world;
++            let reference_world_height = reference_height * pixel_world;
++            match self.fit {
++                ViewportFit2d::Fit => {
++                    if viewport_aspect >= reference_aspect {
++                        world_height = reference_world_height;
++                        world_width = world_height * viewport_aspect;
++                    } else {
++                        world_width = reference_world_width;
++                        world_height = world_width / viewport_aspect;
++                    }
++                }
++                ViewportFit2d::Fill => {
++                    if viewport_aspect >= reference_aspect {
++                        world_width = reference_world_width;
++                        world_height = world_width / viewport_aspect;
++                    } else {
++                        world_height = reference_world_height;
++                        world_width = world_height * viewport_aspect;
++                    }
++                }
++                ViewportFit2d::Stretch => {
++                    world_width = reference_world_width;
++                    world_height = reference_world_height;
++                }
++            }
++        }
++        Ok(Mat4::orthographic_rh(
++            -world_width * 0.5,
++            world_width * 0.5,
++            -world_height * 0.5,
++            world_height * 0.5,
++            self.near,
++            self.far,
++        ))
++    }
++
++    /// Builds a view-projection matrix from the normal Transform authority.
++    pub fn view_projection_matrix(
++        self,
++        transform: &Transform,
++        viewport: [u32; 2],
++    ) -> Result<Mat4, Camera2dDiagnostic> {
++        validate_camera_transform(transform)?;
++        Ok(self.projection(viewport)? * transform.to_matrix().inverse())
++    }
++}
++
++/// Validates planar Camera2D Transform usage without mutating authored values.
++pub fn validate_camera_transform(transform: &Transform) -> Result<(), Camera2dDiagnostic> {
++    if !transform.translation.is_finite()
++        || !transform.rotation.is_finite()
++        || !transform.scale.is_finite()
++    {
++        return Err(Camera2dDiagnostic::NonFinitePose);
++    }
++    if (transform.scale.x - 1.0).abs() > 1.0e-4
++        || (transform.scale.y - 1.0).abs() > 1.0e-4
++        || (transform.scale.z - 1.0).abs() > 1.0e-4
++    {
++        return Err(Camera2dDiagnostic::IncompatibleScale);
++    }
++    let forward = transform.rotation * Vec3::NEG_Z;
++    let up = transform.rotation * Vec3::Y;
++    if forward.normalize_or_zero().dot(Vec3::NEG_Z).abs() < 0.999
++        || up.normalize_or_zero().dot(Vec3::Y).abs() < 0.999
++    {
++        return Err(Camera2dDiagnostic::NonPlanarTilt);
++    }
++    Ok(())
++}
++
++/// Extracted SpriteRenderer2D draw instance.
++#[derive(Debug, Clone, PartialEq)]
++pub struct SpriteInstance2d {
++    /// Stable deterministic runtime entity tie-break key.
++    pub entity_key: u64,
++    /// Stable logical SpriteRef consumed from runtime component state.
++    pub sprite: SpriteRef,
++    /// Stable logical sorting layer.
++    pub sorting_layer: SortingLayerId,
++    /// Resolved project rank for the sorting layer.
++    pub layer_rank: u32,
++    /// Signed authored order within the layer.
++    pub order_in_layer: i32,
++    /// Runtime texture page or source texture key used for batching only.
++    pub texture_key: u64,
++    /// Runtime material key used for batching only.
++    pub material_key: u64,
++    /// Runtime sampler key used for batching only.
++    pub sampler_key: u64,
++    /// World XY sprite origin.
++    pub position: Vec2,
++    /// World XY dimensions.
++    pub size: Vec2,
++    /// Normalized pivot.
++    pub pivot: Vec2,
++    /// World Z-axis rotation in radians.
++    pub rotation_radians: f32,
++    /// Runtime normalized UV rectangle `[u0, v0, u1, v1]`.
++    pub uv_rect: [f32; 4],
++    /// Linear RGBA tint multiplier.
++    pub tint: [f32; 4],
++    /// Mirror texture coordinates horizontally.
++    pub flip_x: bool,
++    /// Mirror texture coordinates vertically.
++    pub flip_y: bool,
++    /// Whether this instance contributes a draw.
++    pub visible: bool,
++}
++
++/// One deterministic contiguous compatible sprite batch.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct SpriteBatch2d {
++    /// Runtime texture compatibility key.
++    pub texture_key: u64,
++    /// Runtime material compatibility key.
++    pub material_key: u64,
++    /// Runtime sampler compatibility key.
++    pub sampler_key: u64,
++    /// First sorted instance index in the batch.
++    pub first: usize,
++    /// Number of contiguous sorted instances.
++    pub count: usize,
++}
++
++/// Sorts by logical layer/order/entity and derives compatible contiguous batches.
++pub fn sort_and_batch_sprites(instances: &mut [SpriteInstance2d]) -> Vec<SpriteBatch2d> {
++    instances.sort_by_key(|sprite| (sprite.layer_rank, sprite.order_in_layer, sprite.entity_key));
++    let mut batches = Vec::new();
++    for (index, sprite) in instances.iter().enumerate() {
++        if !sprite.visible {
++            continue;
++        }
++        let compatible = batches.last().is_some_and(|batch: &SpriteBatch2d| {
++            batch.first + batch.count == index
++                && batch.texture_key == sprite.texture_key
++                && batch.material_key == sprite.material_key
++                && batch.sampler_key == sprite.sampler_key
++        });
++        if compatible {
++            batches.last_mut().expect("compatible batch exists").count += 1;
++        } else {
++            batches.push(SpriteBatch2d {
++                texture_key: sprite.texture_key,
++                material_key: sprite.material_key,
++                sampler_key: sprite.sampler_key,
++                first: index,
++                count: 1,
++            });
++        }
++    }
++    batches
++}
++
++/// Camera-visible world XY rectangle.
++#[derive(Debug, Clone, Copy, PartialEq)]
++pub struct ViewRect2d {
++    /// Inclusive minimum corner.
++    pub min: Vec2,
++    /// Inclusive maximum corner.
++    pub max: Vec2,
++}
++
++impl ViewRect2d {
++    /// Returns whether one XY bounds pair intersects the view.
++    pub fn intersects(self, min: Vec2, max: Vec2) -> bool {
++        self.min.x <= max.x
++            && self.max.x >= min.x
++            && self.min.y <= max.y
++            && self.max.y >= min.y
++    }
++}
++
++/// World bounds for one stable Tile Map layer/chunk.
++#[derive(Debug, Clone, Copy, PartialEq)]
++pub struct TileChunkBounds2d<'a> {
++    /// Stable Tile Map layer identity.
++    pub layer: &'a TileLayerId,
++    /// Spatial chunk coordinate.
++    pub coord: TileChunkCoord,
++    /// Inclusive minimum world XY bounds.
++    pub min: Vec2,
++    /// Inclusive maximum world XY bounds.
++    pub max: Vec2,
++}
++
++/// Stable identity of one camera-visible Tile Map chunk.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct VisibleTileChunk2d {
++    /// Stable Tile Map layer identity.
++    pub layer: TileLayerId,
++    /// Spatial chunk coordinate.
++    pub coord: TileChunkCoord,
++}
++
++/// Culls sparse Tile Map chunks without rebuilding unrelated chunks.
++pub fn cull_tile_chunks<'a>(
++    chunks: impl IntoIterator<Item = TileChunkBounds2d<'a>>,
++    view: ViewRect2d,
++) -> Vec<VisibleTileChunk2d> {
++    chunks
++        .into_iter()
++        .filter(|chunk| view.intersects(chunk.min, chunk.max))
++        .map(|chunk| VisibleTileChunk2d { layer: chunk.layer.clone(), coord: chunk.coord })
++        .collect()
++}
++
++/// Per-frame Native 2D render counters used by proving-project budgets.
++#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
++pub struct Native2dRenderMetrics {
++    /// Visible SpriteRenderer2D instance count.
++    pub sprite_count: usize,
++    /// Compatible sprite batch count after deterministic sorting.
++    pub sprite_batches: usize,
++    /// Camera-visible Tile Map chunk count.
++    pub visible_tile_chunks: usize,
++    /// Tile chunks rebuilt because source data changed this frame.
++    pub rebuilt_tile_chunks: usize,
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use engine_authoring::{AssetId, SpriteId};
++
++    #[test]
++    fn equal_sprite_order_has_stable_entity_tie_break() {
++        let layer = SortingLayerId::parse("sorting_layer_00000000000000000000000000").unwrap();
++        let atlas = AssetId::generate();
++        let sprite = SpriteId::generate();
++        let make = |entity_key| SpriteInstance2d {
++            entity_key,
++            sprite: SpriteRef { atlas: atlas.clone(), sprite: sprite.clone() },
++            sorting_layer: layer.clone(),
++            layer_rank: 0,
++            order_in_layer: 0,
++            texture_key: 1,
++            material_key: 2,
++            sampler_key: 3,
++            position: Vec2::ZERO,
++            size: Vec2::ONE,
++            pivot: Vec2::splat(0.5),
++            rotation_radians: 0.0,
++            uv_rect: [0.0, 0.0, 1.0, 1.0],
++            tint: [1.0; 4],
++            flip_x: false,
++            flip_y: false,
++            visible: true,
++        };
++        let mut sprites = vec![make(9), make(2)];
++        let batches = sort_and_batch_sprites(&mut sprites);
++        assert_eq!(sprites[0].entity_key, 2);
++        assert_eq!(batches[0].count, 2);
++    }
++
++    #[test]
++    fn camera_validation_rejects_scale_without_rewriting_transform() {
++        let mut transform = Transform::default();
++        transform.scale = Vec3::splat(2.0);
++        assert_eq!(validate_camera_transform(&transform), Err(Camera2dDiagnostic::IncompatibleScale));
++        assert_eq!(transform.scale, Vec3::splat(2.0));
++    }
++}
