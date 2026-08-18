@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/launcher/src/native_2d_template.rs",
+  "old": "                    \"engine.transform\": transform(0.0, 0.0, 0.0, 1.0, 1.0),\n                    \"engine.tile_map_2d\": { \"tile_map\": asset_ref(TILE_MAP_ASSET), \"visible\": true }\n",
+  "new": "                    \"engine.transform\": transform(-7.0, -1.5, 0.0, 1.0, 1.0),\n                    \"engine.tile_map_2d\": { \"tile_map\": asset_ref(TILE_MAP_ASSET), \"visible\": true }\n"
+}
