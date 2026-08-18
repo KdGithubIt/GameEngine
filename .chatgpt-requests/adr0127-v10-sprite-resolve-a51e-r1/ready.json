@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0127-v10-sprite-resolve-a51e-r1",
+  "target_branch": "chatgpt/gameengine-adr0127-first-release-current-main-v10",
+  "expected_head_sha": "a51ea1b478e0e4f27b11a4b3927754e3f80986fd",
+  "baseline_main_sha": "96c8ffb18a74eabec2164daa61f694f131019ddc",
+  "patch_sha256": "290b2a42f2a82163d0d94b41f65def24821486862ec24ad890e0fe3572cdb24d",
+  "patch_bytes": 14348,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Resolve stable SpriteRefs for Native 2D rendering",
+  "pr_title": "GameEngine: complete ADR0127 Native 2D first release",
+  "pr_body": "Resolves SpriteRenderer2D stable SpriteRefs through immutable SpriteAtlas regions and CPU-decoded source textures while keeping GPU handles and UV packing derived-only; also exposes Project2dSettings as the shared runtime render/physics policy resource."
+}
