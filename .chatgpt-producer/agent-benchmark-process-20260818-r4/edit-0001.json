@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/lib.rs",
+  "old": "mod agent_benchmark;\nmod benchmark_experiment;\nmod agent_host;",
+  "new": "mod agent_benchmark;\nmod benchmark_experiment;\nmod benchmark_process;\nmod agent_host;"
+}
