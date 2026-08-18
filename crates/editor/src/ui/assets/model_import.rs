@@ -689,7 +689,7 @@ impl EditorApp {
             ));
     }
 
-    pub(in crate::ui) fn handle_asset_import_result(&mut self, result: AssetImportResult) {
+    pub(in crate::ui) fn handle_asset_import_result(&mut self, mut result: AssetImportResult) {
         let Some(project) = self.project_root.clone() else {
             return;
         };
@@ -730,6 +730,30 @@ impl EditorApp {
             self.session.push_diagnostic(diagnostic);
             self.refresh_scene_problems();
             return;
+        }
+
+        if result.conversion_ready_model.is_some() {
+            let current_stamp =
+                engine::SourceStamp::capture(&result.source_path, &result.source_dependencies).ok();
+            let current_contact_bones = self
+                .asset_manifest
+                .get(&result.source_id)
+                .map(|entry| entry.import_settings.contact_bones.clone())
+                .unwrap_or_default();
+            if current_stamp != result.source_stamp
+                || current_contact_bones != result.conversion_ready_contact_bones
+            {
+                self.session
+                    .push_diagnostic(engine_authoring::Diagnostic::info(
+                        "asset.import_stale_completion",
+                        format!(
+                            "discarded stale import completion for `{}` and queued the newest generation",
+                            result.source_path.display()
+                        ),
+                    ));
+                self.queue_model_import(result.source_id.clone(), result.source_path.clone());
+                return;
+            }
         }
 
         let assets_root = project.assets_root();
@@ -779,6 +803,7 @@ impl EditorApp {
         // Captured before the overwrite so the skeleton bind report (ADR
         // 0077 §6, AP-5) can compare the previous and current bone ledgers.
         let previous_skeleton_records = entry.import_settings.skeleton_records.clone();
+        let residency_fingerprint = result.source_fingerprint.clone();
         entry.import_settings.source_fingerprint = result.source_fingerprint;
         entry.import_settings.source_stamp = result.source_stamp;
         entry.import_settings.source_dependencies = dependencies;
@@ -821,6 +846,20 @@ impl EditorApp {
             return;
         }
         self.asset_manifest = manifest;
+
+        // Promotion happens only after the manifest accepted this exact generation.
+        if let Some(imported) = result.conversion_ready_model.take() {
+            self.preview_residency.publish_import_result(
+                &result.source_id,
+                &result.source_path,
+                &result.source_dependencies,
+                residency_fingerprint,
+                &result.skeleton_records,
+                &result.conversion_ready_contact_bones,
+                imported,
+                std::mem::take(&mut result.conversion_ready_textures),
+            );
+        }
 
         // AP-5: rebuild this source's bind report and contact interval
         // summary from the fresh import result, in memory only.

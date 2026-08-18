@@ -1,6 +1,9 @@
 //! Offscreen Scene View panel with editor camera, grid, and entity picking.
 
 use crate::gizmo::{apply_rotate_delta, apply_scale_delta, transform_component_type, GizmoAxis};
+use crate::preview_residency::{
+    PreviewAssetPriority, PreviewResidencyState, ProjectAssetResidency,
+};
 use crate::view_aspect::ViewAspect;
 use crate::view_resolution::render_target_size_in_pixels;
 use eframe::{egui, egui_wgpu, wgpu};
@@ -14,8 +17,11 @@ use engine_authoring::{
     Transaction, UiDocument, Value,
 };
 use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::sync::{mpsc, Arc};
 use std::time::Instant;
+
+const PREVIEW_GPU_UPLOAD_BYTES_PER_FRAME: u64 = 8 * 1024 * 1024;
+const PREVIEW_GPU_UPLOADS_PER_FRAME: u32 = 4;
 
 // ---------------------------------------------------------------------------
 // EditorViewCamera
@@ -737,6 +743,13 @@ pub struct SceneView {
     /// Editor-only orbit camera (not serialized to the scene).
     pub camera: EditorViewCamera,
     renderer: Option<engine::PreviewRenderer>,
+    /// Device identity bound to the current renderer and project GPU residency.
+    renderer_device: Option<usize>,
+    /// Device whose asynchronous renderer warm-up most recently failed.
+    renderer_failure_device: Option<usize>,
+    /// Native background renderer initialization result polled from the UI thread.
+    #[cfg(not(target_arch = "wasm32"))]
+    renderer_warmup: Option<mpsc::Receiver<Result<engine::PreviewRenderer, String>>>,
     texture: Option<SceneTexture>,
     ui_texture_renderer: Option<SceneUiTextureRenderer>,
     entity_pick_info: Vec<EntityPickInfo>,
@@ -787,12 +800,10 @@ pub struct SceneView {
     /// Start of a continuous preview failure. One-frame rebuild failures are
     /// intentionally not painted so scene/document switches cannot flash red.
     preview_failure_since: Option<Instant>,
-    /// Cross-frame glTF parse/decode cache (ADR 0071). Consulted whenever the
-    /// preview world is rebuilt so a referenced glTF/GLB source is parsed and
-    /// its images decoded at most once per edit rather than once per frame.
-    gltf_cache: engine::scene_bridge::SharedGltfImportCache,
-    /// Device-local mesh uploads retained across preview-world rebuilds.
-    gpu_mesh_cache: engine::SharedGpuMeshCache,
+    /// Project-scoped CPU/GPU residency shared with Animation Preview and other views.
+    residency: ProjectAssetResidency,
+    /// Whether this surface is retaining its last complete preview while CPU work finishes.
+    waiting_for_residency: bool,
     /// Manifest hash recomputed only when the manifest's revision changes.
     manifest_hash_cache: Option<(u64, u64)>,
     /// Persistent preview world reused across frames (ADR 0072). Rebuilt only
@@ -845,10 +856,11 @@ struct PreviewWorld {
 /// cheap content hash (asset registration or reimport changes it). Transient
 /// gesture previews are handled outside this key: transform drags use the
 /// fast path, and non-transform component previews force a per-frame rebuild.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct PreviewKey {
     scene_revision: u64,
     manifest_hash: u64,
+    residency_revision: u64,
     game_module: Option<usize>,
     project_root: Option<std::path::PathBuf>,
     sky_enabled: bool,
@@ -898,9 +910,18 @@ impl Default for SceneView {
 impl SceneView {
     /// Creates a new scene view with default camera settings.
     pub fn new() -> Self {
+        Self::with_residency(ProjectAssetResidency::default())
+    }
+
+    /// Creates a scene view attached to one project-scoped residency service.
+    pub(crate) fn with_residency(residency: ProjectAssetResidency) -> Self {
         Self {
             camera: EditorViewCamera::default(),
             renderer: None,
+            renderer_device: None,
+            renderer_failure_device: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            renderer_warmup: None,
             texture: None,
             ui_texture_renderer: None,
             entity_pick_info: Vec::new(),
@@ -926,8 +947,8 @@ impl SceneView {
             last_particle_frame: Instant::now(),
             preview_notice: None,
             preview_failure_since: None,
-            gltf_cache: engine::scene_bridge::SharedGltfImportCache::default(),
-            gpu_mesh_cache: engine::SharedGpuMeshCache::default(),
+            residency,
+            waiting_for_residency: false,
             manifest_hash_cache: None,
             preview: None,
             authoring_overlay: engine::authoring_overlay::AuthoringDocumentOverlay::new(),
@@ -1077,6 +1098,116 @@ impl SceneView {
         self.last_particle_frame = Instant::now();
     }
 
+    fn ensure_renderer_ready(
+        &mut self,
+        render_state: &egui_wgpu::RenderState,
+        context: &egui::Context,
+    ) -> bool {
+        let device_identity = Arc::as_ptr(&render_state.device) as usize;
+        if self.renderer_device != Some(device_identity) {
+            self.renderer_device = Some(device_identity);
+            self.renderer_failure_device = None;
+            self.renderer = None;
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                self.renderer_warmup = None;
+            }
+            self.texture = None;
+            self.ui_texture_renderer = None;
+            self.preview = None;
+            self.last_view = None;
+            self.waiting_for_residency = false;
+        }
+        self.residency.bind_gpu_device(device_identity);
+        if self.renderer.is_some() {
+            return true;
+        }
+
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let completed = self.renderer_warmup.as_ref().and_then(|receiver| {
+                match receiver.try_recv() {
+                    Ok(result) => Some(result),
+                    Err(mpsc::TryRecvError::Empty) => None,
+                    Err(mpsc::TryRecvError::Disconnected) => Some(Err(
+                        "preview renderer warm-up worker disconnected".to_owned(),
+                    )),
+                }
+            });
+            if let Some(result) = completed {
+                self.renderer_warmup = None;
+                match result {
+                    Ok(renderer) => {
+                        self.renderer = Some(renderer);
+                        self.renderer_failure_device = None;
+                        context.request_repaint();
+                        return true;
+                    }
+                    Err(message) => {
+                        self.renderer_failure_device = Some(device_identity);
+                        self.preview_notice = Some(PreviewNotice::failure(
+                            "editor.scene_view.renderer_failed",
+                            format!("Scene View renderer warm-up failed: {message}"),
+                        ));
+                        return false;
+                    }
+                }
+            }
+
+            if self.renderer_failure_device != Some(device_identity)
+                && self.renderer_warmup.is_none()
+            {
+                let (sender, receiver) = mpsc::channel();
+                let device = render_state.device.clone();
+                let queue = render_state.queue.clone();
+                let texture_cache = self.residency.gpu_texture_cache();
+                match std::thread::Builder::new()
+                    .name("preview-renderer-warmup".to_owned())
+                    .spawn(move || {
+                        let result = pollster::block_on(engine::PreviewRenderer::new(
+                            &device,
+                            &queue,
+                            PREVIEW_RENDER_FORMAT,
+                        ))
+                        .map(|mut renderer| {
+                            renderer.configure_streaming(
+                                texture_cache,
+                                PREVIEW_GPU_UPLOAD_BYTES_PER_FRAME,
+                                PREVIEW_GPU_UPLOADS_PER_FRAME,
+                            );
+                            renderer
+                        })
+                        .map_err(|error| error.to_string());
+                        let _ = sender.send(result);
+                    })
+                {
+                    Ok(_worker) => self.renderer_warmup = Some(receiver),
+                    Err(error) => {
+                        self.renderer_failure_device = Some(device_identity);
+                        self.preview_notice = Some(PreviewNotice::failure(
+                            "editor.scene_view.renderer_failed",
+                            format!("could not start preview renderer warm-up: {error}"),
+                        ));
+                    }
+                }
+            }
+            if self.renderer_failure_device != Some(device_identity) {
+                context.request_repaint_after(std::time::Duration::from_millis(16));
+            }
+            return false;
+        }
+
+        #[cfg(target_arch = "wasm32")]
+        {
+            self.renderer_failure_device = Some(device_identity);
+            self.preview_notice = Some(PreviewNotice::failure(
+                "editor.scene_view.renderer_failed",
+                "asynchronous preview renderer warm-up is unavailable on wasm32".to_owned(),
+            ));
+            false
+        }
+    }
+
     /// Releases the GPU texture registered with egui.
     pub fn release(&mut self, render_state: &egui_wgpu::RenderState) {
         if let Some(texture) = self.texture.take() {
@@ -1097,28 +1228,28 @@ impl SceneView {
         self.last_view = None;
     }
 
-    /// Releases additional recreatable preview residency after transient reclaim.
+    /// Releases additional recreatable preview residency after aggressive reclaim.
     ///
-    /// This never touches canonical authoring state or low-level GPU ownership.
-    /// The shared import cache remains CPU-side and reusable; GPU mesh residency
-    /// and the preview world are reconstructed lazily on the next rendered frame.
+    /// Project CPU residency and immutable renderer pipelines remain available;
+    /// the project resource broker separately evicts shared mesh/texture uploads.
     pub(crate) fn release_recreatable_resources(
         &mut self,
         render_state: &egui_wgpu::RenderState,
     ) {
         self.release_transient_resources(render_state);
         self.preview = None;
-        self.renderer = None;
-        self.gpu_mesh_cache.clear();
+        if let Some(renderer) = &mut self.renderer {
+            renderer.release_recreatable_resources();
+        }
         self.manifest_hash_cache = None;
+        self.waiting_for_residency = false;
     }
 
-    /// Releases preview worlds and resident imports owned by the old project.
+    /// Releases preview-world state owned by the old project.
     pub fn clear_project_caches(&mut self) {
         self.preview = None;
-        self.gltf_cache = engine::scene_bridge::SharedGltfImportCache::default();
-        self.gpu_mesh_cache.clear();
         self.manifest_hash_cache = None;
+        self.waiting_for_residency = false;
     }
 
     /// Rebuilds the persistent preview world after an asset value or override
@@ -1477,21 +1608,7 @@ impl SceneView {
             self.texture = SceneTexture::new(render_state, size);
         }
 
-        if self.renderer.is_none() {
-            match pollster::block_on(engine::PreviewRenderer::new(
-                &render_state.device,
-                &render_state.queue,
-                PREVIEW_RENDER_FORMAT,
-            )) {
-                Ok(renderer) => self.renderer = Some(renderer),
-                Err(error) => {
-                    self.preview_notice = Some(PreviewNotice::failure(
-                        "editor.scene_view.renderer_failed",
-                        format!("Scene View renderer failed: {error}"),
-                    ));
-                }
-            }
-        }
+        let renderer_ready = self.ensure_renderer_ready(render_state, response.ctx());
 
         let mut picked_entity = None;
         let mut picked_ui_node = None;
@@ -1509,53 +1626,143 @@ impl SceneView {
                 hash
             }
         };
-        if let (Some(texture), Some(renderer)) = (&self.texture, &mut self.renderer) {
-            let key = PreviewKey {
-                scene_revision,
-                manifest_hash,
-                game_module: game_module.map(|module| Arc::as_ptr(module) as usize),
-                project_root: project_root.map(|root| root.assets_root()),
-                sky_enabled: self.show_sky,
-                animation_preview_enabled: self.animation_preview_enabled,
-                animation_secondary_physics_enabled: self
-                    .animation_secondary_physics_enabled,
-                particle_preview_enabled: self.particle_preview_enabled,
+        let key = PreviewKey {
+            scene_revision,
+            manifest_hash,
+            residency_revision: self.residency.revision(),
+            game_module: game_module.map(|module| Arc::as_ptr(module) as usize),
+            project_root: project_root.map(|root| root.assets_root()),
+            sky_enabled: self.show_sky,
+            animation_preview_enabled: self.animation_preview_enabled,
+            animation_secondary_physics_enabled: self.animation_secondary_physics_enabled,
+            particle_preview_enabled: self.particle_preview_enabled,
+        };
+
+        // A non-transform Inspector preview (for example a material color drag)
+        // mutates state the transform fast path cannot express.
+        let non_transform_preview = component_preview
+            .is_some_and(|preview| preview.component_type != transform_component_type());
+        let reuse = !non_transform_preview
+            && !self.waiting_for_residency
+            && self.preview.as_ref().is_some_and(|preview| preview.key == key);
+
+        if !reuse {
+            let assets_root = project_root.map(ProjectRoot::assets_root);
+            let priority = if response.has_focus() || response.hovered() {
+                PreviewAssetPriority::FocusedVisible
+            } else {
+                PreviewAssetPriority::Visible
             };
-
-            // A non-transform Inspector preview (for example a material color
-            // drag) mutates state the transform fast path cannot express, so
-            // it forces a full rebuild for the duration of the gesture.
-            let non_transform_preview = component_preview
-                .is_some_and(|preview| preview.component_type != transform_component_type());
-            let reuse =
-                !non_transform_preview && self.preview.as_ref().is_some_and(|p| p.key == key);
-
-            if !reuse {
-                let (app, spawn_notice, bridge) = build_preview_app_with_sky(
-                    render_scene,
-                    project_root,
-                    manifest,
-                    game_module,
-                    &self.gltf_cache,
-                    &self.gpu_mesh_cache,
-                    &self.authoring_overlay,
-                    size,
-                    self.show_sky,
-                );
-                self.preview_notice = spawn_notice;
-                self.preview = Some(PreviewWorld {
-                    app,
-                    key,
-                    bridge,
-                    transform_overrides: Vec::new(),
-                    animation_system_installed: false,
-                    animation_graph_system_installed: false,
-                    animation_sampled_elapsed: -1.0,
-                    animation_fixed_step_remainder: 0.0,
-                    animation_transition_started: false,
-                });
+            match self.residency.prepare_scene(
+                render_scene,
+                manifest,
+                assets_root.as_deref(),
+                priority,
+            ) {
+                PreviewResidencyState::Ready => {
+                    self.waiting_for_residency = false;
+                    let model_cache = self.residency.model_cache();
+                    let gpu_mesh_cache = self.residency.gpu_mesh_cache();
+                    let (app, spawn_notice, bridge) = build_preview_app_with_sky(
+                        render_scene,
+                        project_root,
+                        manifest,
+                        game_module,
+                        &model_cache,
+                        &gpu_mesh_cache,
+                        &self.authoring_overlay,
+                        size,
+                        self.show_sky,
+                    );
+                    if self.renderer_failure_device != self.renderer_device {
+                        self.preview_notice = spawn_notice;
+                    }
+                    self.preview = Some(PreviewWorld {
+                        app,
+                        key: key.clone(),
+                        bridge,
+                        transform_overrides: Vec::new(),
+                        animation_system_installed: false,
+                        animation_graph_system_installed: false,
+                        animation_sampled_elapsed: -1.0,
+                        animation_fixed_step_remainder: 0.0,
+                        animation_transition_started: false,
+                    });
+                }
+                PreviewResidencyState::Pending => {
+                    self.waiting_for_residency = true;
+                    response
+                        .ctx
+                        .request_repaint_after(std::time::Duration::from_millis(33));
+                    if self.preview.is_none() {
+                        let model_cache = self.residency.model_cache();
+                        let gpu_mesh_cache = self.residency.gpu_mesh_cache();
+                        let empty_scene = AuthoringScene::new();
+                        let (app, _, bridge) = build_preview_app_with_sky(
+                            &empty_scene,
+                            project_root,
+                            manifest,
+                            game_module,
+                            &model_cache,
+                            &gpu_mesh_cache,
+                            &self.authoring_overlay,
+                            size,
+                            self.show_sky,
+                        );
+                        self.preview = Some(PreviewWorld {
+                            app,
+                            key: key.clone(),
+                            bridge,
+                            transform_overrides: Vec::new(),
+                            animation_system_installed: false,
+                            animation_graph_system_installed: false,
+                            animation_sampled_elapsed: -1.0,
+                            animation_fixed_step_remainder: 0.0,
+                            animation_transition_started: false,
+                        });
+                    }
+                }
+                PreviewResidencyState::Failed(message) => {
+                    self.waiting_for_residency = false;
+                    self.preview_notice = Some(PreviewNotice::failure(
+                        "editor.scene_view.asset_materialization_failed",
+                        format!("Scene View asset preparation failed: {message}"),
+                    ));
+                    if self.preview.is_none() {
+                        let model_cache = self.residency.model_cache();
+                        let gpu_mesh_cache = self.residency.gpu_mesh_cache();
+                        let empty_scene = AuthoringScene::new();
+                        let (app, _, bridge) = build_preview_app_with_sky(
+                            &empty_scene,
+                            project_root,
+                            manifest,
+                            game_module,
+                            &model_cache,
+                            &gpu_mesh_cache,
+                            &self.authoring_overlay,
+                            size,
+                            self.show_sky,
+                        );
+                        self.preview = Some(PreviewWorld {
+                            app,
+                            key: key.clone(),
+                            bridge,
+                            transform_overrides: Vec::new(),
+                            animation_system_installed: false,
+                            animation_graph_system_installed: false,
+                            animation_sampled_elapsed: -1.0,
+                            animation_fixed_step_remainder: 0.0,
+                            animation_transition_started: false,
+                        });
+                    }
+                }
             }
+        }
 
+        let mut gpu_upload_pending = false;
+        if renderer_ready
+            && let (Some(texture), Some(renderer)) = (&self.texture, &mut self.renderer)
+        {
             let animation_preview_request = self.animation_preview_request.clone();
             let preview = self
                 .preview
@@ -1774,6 +1981,13 @@ impl SceneView {
                     format!("Scene View render failed: {error}"),
                 ));
             }
+            let upload_report = renderer.upload_report();
+            gpu_upload_pending = upload_report.has_deferred_work();
+            if gpu_upload_pending {
+                response
+                    .ctx
+                    .request_repaint_after(std::time::Duration::from_millis(16));
+            }
 
             // Game UI is rendered into the same offscreen color target as the
             // 3D scene. Only the final viewport texture enters the editor context;
@@ -1936,6 +2150,46 @@ impl SceneView {
             }
 
             let _ = aspect;
+        }
+
+        if !renderer_ready {
+            ui.painter()
+                .rect_filled(rect, 0.0, egui::Color32::from_rgb(20, 22, 26));
+            if self.renderer_failure_device != self.renderer_device {
+                ui.painter().text(
+                    rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    "Preparing preview renderer…",
+                    egui::TextStyle::Body.resolve(ui.style()),
+                    egui::Color32::LIGHT_GRAY,
+                );
+            }
+        } else if self.waiting_for_residency {
+            ui.painter().rect_filled(
+                rect,
+                0.0,
+                egui::Color32::from_black_alpha(72),
+            );
+            ui.painter().text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                "Preparing preview assets…",
+                egui::TextStyle::Body.resolve(ui.style()),
+                egui::Color32::WHITE,
+            );
+        } else if gpu_upload_pending {
+            ui.painter().rect_filled(
+                rect,
+                0.0,
+                egui::Color32::from_black_alpha(48),
+            );
+            ui.painter().text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                "Uploading preview assets…",
+                egui::TextStyle::Body.resolve(ui.style()),
+                egui::Color32::WHITE,
+            );
         }
 
         let preview_notice_is_failure = matches!(

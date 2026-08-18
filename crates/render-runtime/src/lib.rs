@@ -17,6 +17,8 @@ pub mod debug_draw;
 mod bloom;
 #[cfg(feature = "gpu")]
 mod environment;
+#[cfg(feature = "gpu")]
+mod gpu_streaming;
 /// Runtime light resources and authored light mirroring.
 #[cfg(feature = "gpu")]
 pub mod light;

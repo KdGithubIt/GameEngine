@@ -42,7 +42,15 @@ pub(super) struct AnimationPreviewWindow {
 
 impl Default for AnimationPreviewWindow {
     fn default() -> Self {
-        let mut view = SceneView::new();
+        Self::with_residency(crate::preview_residency::ProjectAssetResidency::default())
+    }
+}
+
+impl AnimationPreviewWindow {
+    pub(super) fn with_residency(
+        residency: crate::preview_residency::ProjectAssetResidency,
+    ) -> Self {
+        let mut view = SceneView::with_residency(residency);
         view.show_ui_overlay = false;
         view.show_lod_debug = false;
         view.particle_preview_enabled = false;
@@ -67,9 +75,7 @@ impl Default for AnimationPreviewWindow {
             playing: true,
         }
     }
-}
 
-impl AnimationPreviewWindow {
     pub(super) fn release_for_inference(
         &mut self,
         render_state: &egui_wgpu::RenderState,

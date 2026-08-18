@@ -163,6 +163,27 @@ impl WorldRenderer {
         Ok(())
     }
 
+    pub(crate) fn set_shared_texture_cache(
+        &mut self,
+        cache: crate::material::SharedGpuTextureCache,
+    ) {
+        self.inner.set_shared_texture_cache(cache);
+    }
+
+    pub(crate) fn set_upload_budget(&mut self, max_bytes: u64, max_uploads: u32) {
+        self.inner
+            .set_upload_budget(crate::gpu_streaming::GpuUploadBudget::new(max_bytes, max_uploads));
+    }
+
+    pub(crate) const fn upload_report(&self) -> crate::gpu_streaming::GpuUploadReport {
+        self.inner.upload_report()
+    }
+
+    pub(crate) fn release_recreatable_resources(&mut self) {
+        self.inner.release_recreatable_resources();
+        self.temporal.reset();
+    }
+
     /// Invalidates renderer-owned temporal history after a discontinuous camera change.
     ///
     /// Resizing the render target and switching to another active camera entity
