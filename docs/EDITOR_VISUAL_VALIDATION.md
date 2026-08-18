@@ -1,7 +1,7 @@
 # Editor Visual Validation
 
 Status: Accepted
-Version: 1.3.0
+Version: 1.4.0
 Canonical location: `docs/EDITOR_VISUAL_VALIDATION.md`
 
 ## Purpose
@@ -76,8 +76,8 @@ alone is not evidence for document-dependent controls that are not visible yet.
 ## Trusted workflow boundary
 
 `.github/workflows/gameengine-editor-visual-validation.yml` uses
-`pull_request_target` so the executable workflow definition comes from the
-trusted default branch. Before a Windows job is selected, the workflow requires:
+`pull_request_target` so its privileged orchestration comes from trusted
+`main`. Before a Windows job is selected, the workflow requires:
 
 - the pull request head repository to be `KdGithubIt/GameEngine`;
 - the base branch to be `main`;
@@ -88,14 +88,18 @@ trusted default branch. Before a Windows job is selected, the workflow requires:
 The optional authoring-tool scenario is also parsed inside this trusted context
 job before its value can reach the checked-out Editor process.
 
-The Windows job checks out that exact head SHA with persisted Git credentials
-disabled. It may use the same trusted self-hosted Windows runner configuration
-as normal GameEngine Windows validation; otherwise it uses `windows-latest`.
+The Windows capture job checks out that exact head SHA with persisted Git
+credentials disabled. It may use the same trusted self-hosted Windows runner
+configuration as normal GameEngine Windows validation; otherwise it uses
+`windows-latest`. The capture job itself keeps only `contents: read` and never
+receives pull-request or issue write permission.
 
-The workflow keeps pull-request write permission out of the Windows capture job.
-After capture completes, a separate trusted Ubuntu report job that does not
-check out pull-request code may receive only the permissions required to read
-the pull request and update its result comment.
+Two separate GitHub-hosted reporting jobs may write the one visual-validation
+result comment. Neither checks out or executes pull-request code. The first runs
+immediately after the trusted context job to publish the workflow run identity;
+the second runs after capture to finalize the same comment with the capture
+result and resolved target. This keeps write capability outside the Windows job
+that executes the exact pull-request head.
 
 Normal ChatGPT Patch Dispatcher requests still MUST NOT modify `.github/**` or
 `.chatgpt-requests/**`. Changes to this visual-validation infrastructure follow
@@ -170,52 +174,71 @@ only after the PNG is actually reviewed.
 `pull_request_target` is intentionally retained for the trusted workflow
 boundary, but a commit-filtered Actions listing may not expose that run through
 a pull-request-only lookup. The workflow therefore upserts one bot comment on
-the pull request after every valid visual-validation request whose trusted
-context job completed. The comment begins with:
+the pull request as soon as the trusted context job succeeds, before the Windows
+capture job completes. The comment begins with:
 
 ```text
 <!-- gameengine-visual-validation-result -->
 ```
 
-and records at least:
+and initially records at least:
 
 ```text
 ### GameEngine Visual Validation
 
-- Result: **success|failure|cancelled|skipped**
+- State: **queued**
+- Result: **pending**
 - Head: `<40-character SHA>`
 - Requested target: `<target>`
-- Resolved target: `<target or unknown>`
+- Resolved target: `pending`
 - Run: `<workflow run ID>`
 - Attempt: `<workflow run attempt>`
 - Artifact lookup key: `gameengine-editor-visual-validation-<run-id>-<attempt>`
 ```
 
-The report job re-reads the current pull-request head before writing. A stale run
-for an older head does not overwrite the current result. If runs for the same
-head race, an older workflow run ID or older attempt does not overwrite a newer
-comment.
+The early comment is discovery metadata. It deliberately exists while the
+Windows capture may still be queued or running, so ChatGPT can use the workflow
+run ID to distinguish a live Visual Validation run from a request for which no
+trusted context job ever started.
+
+After capture finishes, a separate trusted report job updates the same comment:
+
+```text
+- State: **completed**
+- Result: **success|failure|cancelled|skipped**
+- Resolved target: `<target or unknown>`
+```
+
+The report jobs re-read the current pull-request head before writing. A stale
+run for an older head does not overwrite the current result. If runs for the
+same head race, an older workflow run ID or older attempt does not overwrite a
+newer comment.
 
 ChatGPT SHOULD discover visual evidence from this comment when direct workflow
-run enumeration does not return the `pull_request_target` run. It should use the
-reported workflow run ID to list run artifacts, select the matching artifact
-lookup key when present, download the archive, and inspect the requested PNGs.
+run enumeration does not return the `pull_request_target` run. Once the early
+comment exists, it may inspect workflow jobs while capture is still in progress.
+After capture completes, it should use the reported workflow run ID to list run
+artifacts, select the matching artifact lookup key when present, download the
+archive, and inspect the requested PNGs.
+
 The result comment is discovery metadata, not visual evidence itself. A
 successful workflow or a non-empty screenshot MUST NOT be called Visual PASS
 until the relevant PNG has actually been reviewed.
 
-If a valid visual-validation request completes without this result comment after
-the bridge is present on `main`, treat result discovery as an automation failure
-and investigate the report job rather than claiming that artifacts are
-unavailable.
+If a valid visual-validation request does not receive the early result comment
+after its trusted context job should have run, treat run discovery as an
+automation failure. Do not wait for the Windows capture to finish before
+investigating the workflow. If the comment remains in `queued` / `pending`, use
+its workflow run ID to inspect the capture job state rather than reporting the
+artifact as unavailable.
 
 ## Current scope and extensions
 
-Version 1.3 captures the deterministic initial Launcher or Editor window and can
+Version 1.4 captures the deterministic initial Launcher or Editor window and can
 open one modeless authoring-tool window before an Editor screenshot. It also
-publishes trusted pull-request discovery metadata for the workflow run and
-artifact lookup key without granting write permission to the job that executes
-pull-request code.
+publishes trusted workflow-run identity before Windows capture completion and
+finalizes the same pull-request comment after capture without granting write
+permission to the job that executes pull-request code.
 
 It is intended for shell layout, toolbar, startup-visible panels,
 authoring-window startup layout, typography, colors, clipping, spacing, and
