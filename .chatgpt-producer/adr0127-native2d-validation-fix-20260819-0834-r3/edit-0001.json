@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/launcher/src/native_2d_template.rs",
+  "old": "        name.replace('/', \"_\").replace('\\\\', \"_\")\n",
+  "new": "        name.replace(['/', '\\\\'], \"_\")\n"
+}
