@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/engine/src/lock_on.rs","old":"pub fn lock_on_system(\n    mut lock: ResMut<TargetLock>,\n    cameras: Query<(&Camera3D, Option<&LockOnCamera>)>,","new":"pub fn lock_on_system(\n    mut lock: ResMut<TargetLock>,\n    camera_override: Option<Res<GameCameraSelectionOverride>>,\n    cameras: Query<(&Camera3D, Option<&LockOnCamera>)>,"}
