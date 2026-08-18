@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "docs/adr/0150-multi-model-routing-and-workload-specialization.md",
+  "old": "Status: Proposed",
+  "new": "Status: Accepted"
+}
