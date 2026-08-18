@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/runtime.rs","old":"            diagnostic.is_blocking() && diagnostic.code == \"anim.motion_binding_failed\"","new":"            diagnostic.is_blocking()\n                && diagnostic.code\n                    == engine::scene_bridge::ANIMATION_MOTION_BINDING_FAILED_DIAGNOSTIC"}
