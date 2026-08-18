@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/launcher/src/main.rs",
+  "old": "mod fonts;\nmod icon;\nmod theme;\n#[cfg(feature = \"visual-validation\")]\nmod visual_capture;\n\nuse eframe::egui;\n",
+  "new": "mod fonts;\nmod icon;\nmod native_2d_template;\nmod theme;\n#[cfg(feature = \"visual-validation\")]\nmod visual_capture;\n\nuse eframe::egui;\nuse native_2d_template::ProjectTemplate;\n"
+}
