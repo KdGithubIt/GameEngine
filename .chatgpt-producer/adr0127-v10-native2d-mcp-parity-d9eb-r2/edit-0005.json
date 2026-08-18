@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/authoring/src/native_2d_services.rs",
+  "old": "    #[test]\n    fn bounded_fill_rolls_back_transient_changes_on_budget_failure() {\n",
+  "new": "    #[test]\n    fn whole_document_replacement_is_one_undo_entry_and_never_crosses_a_gesture() {\n        let original = map();\n        let mut replacement = original.clone();\n        replacement.chunk_size = 16;\n        let mut service = TileMapAuthoringService::new(original.clone());\n\n        assert!(service.replace_document(replacement.clone()).unwrap());\n        assert_eq!(service.document(), &replacement);\n        assert!(service.undo());\n        assert_eq!(service.document(), &original);\n\n        service.begin_gesture().unwrap();\n        assert!(matches!(\n            service.replace_document(replacement),\n            Err(Native2dAuthoringError::GestureAlreadyActive)\n        ));\n        service.cancel_gesture().unwrap();\n    }\n\n    #[test]\n    fn bounded_fill_rolls_back_transient_changes_on_budget_failure() {\n"
+}
