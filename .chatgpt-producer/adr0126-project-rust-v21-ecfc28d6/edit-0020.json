@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/engine/src/game_host/core.rs","old":"    last_animation_generation: Option<u64>,\n    last_ui_generation: Option<u64>,\n    last_timer_source_sequence: u64,","new":"    last_animation_generation: Option<u64>,\n    last_ui_generation: Option<u64>,\n    last_timeline_source_sequence: u64,\n    last_timer_source_sequence: u64,"}
