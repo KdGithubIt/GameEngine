@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0154-first-release-20260818-r12-lint-docs",
+  "target_branch": "chatgpt/gameengine-adr0154-first-release-v2",
+  "expected_head_sha": "74fbdbb9d5fc551c4dea67113bd4e30e41f017cb",
+  "baseline_main_sha": "ecfc28d6d8e0e82eff38cc90f775e14c88347919",
+  "edit_parts": [
+    "edit-0000.json",
+    "edit-0001.json",
+    "edit-0002.json",
+    "edit-0003.json",
+    "edit-0004.json",
+    "edit-0005.json",
+    "edit-0006.json"
+  ],
+  "commit_message": "Complete ADR0154 lint and canonical documentation",
+  "pr_title": "Implement ADR 0154 target-aware animation motion binding",
+  "pr_body": "Completes the ADR 0154 lint/documentation audit on the current implementation: fixes the shared-planner Clippy shape, aligns persisted Humanoid profile helper formatting, documents schema-v3 candidate-only routing and motion-only Humanoid provenance in the canonical AI authoring specification, marks ADR 0154 Accepted, moves it into the current animation decision map, and removes its Proposed registry labels.\n\nThe PR remains Draft and must not be merged automatically."
+}
