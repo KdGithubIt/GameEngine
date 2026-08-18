@@ -1,0 +1,528 @@
++        let auth = classify_provider_failure(401, "invalid token", "");
++        assert_eq!(auth.category, HostedFailureCategory::Authentication);
++        assert!(!auth.retryable);
++        let rate = classify_provider_failure(429, "slow down", "");
++        assert_eq!(rate.category, HostedFailureCategory::RateLimited);
++        assert!(rate.retryable);
++        let server = classify_provider_failure(503, "unavailable", "");
++        assert_eq!(server.category, HostedFailureCategory::Server);
++        assert!(server.retryable);
++        let safety = classify_provider_failure(400, "content_filter policy", "");
++        assert_eq!(safety.category, HostedFailureCategory::SafetyRefusal);
++        assert!(!safety.retryable);
++    }
++
++    #[test]
++    fn chat_completion_refusal_is_not_success() {
++        let error = parse_chat_completion(r#"{"choices":[{"message":{"content":null,"refusal":"blocked"},"finish_reason":"content_filter"}]}"#)
++            .expect_err("safety refusal must fail");
++        assert_eq!(error.category, HostedFailureCategory::SafetyRefusal);
++    }
++
++    #[cfg(target_os = "windows")]
++    #[test]
++    fn interrupted_hosted_request_cannot_become_success() {
++        let interrupted = AtomicBool::new(true);
++        let error = generate_hosted(
++            &HostedModelConfig {
++                endpoint: "https://provider.example/v1/chat/completions".to_owned(),
++                model: "example-model".to_owned(),
++                auth_mode: HostedAuthMode::ApiKey,
++                encrypted_secret_path: PathBuf::from("unused-protected-state"),
++            },
++            "hello",
++            &interrupted,
++        )
++        .expect_err("interrupted inference must fail");
++        assert_eq!(error.category, HostedFailureCategory::Interrupted);
++        assert!(!error.retryable);
++    }
++
++    #[test]
++    fn provider_message_redacts_auth_like_content() {
++        assert_eq!(
++            sanitize_provider_message("Authorization: Bearer super-secret"),
++            "provider returned a sensitive error; details were redacted"
++        );
++    }
++}
+diff --git a/crates/editor/src/lib.rs b/crates/editor/src/lib.rs
+index cba0ed4b59cb8cd14d3947d9c90523add3e0b6d3..3da419de3aad4852a99f2afd4e4548f4d1e4dc76 100644
+--- a/crates/editor/src/lib.rs
++++ b/crates/editor/src/lib.rs
+@@ -12,6 +12,7 @@
+ #[allow(dead_code)]
+ mod agent_asset_acquisition;
+ mod agent_host;
++mod hosted_model_backend;
+ mod live_observation;
+ mod native_agent;
+ mod native_agent_runtime;
+diff --git a/crates/editor/src/main.rs b/crates/editor/src/main.rs
+index 93e47696017f0a6bafa3a7a5620689d66866bbb6..9f963d2c039328d87fb970b8e6e12fd8848a72fa 100644
+--- a/crates/editor/src/main.rs
++++ b/crates/editor/src/main.rs
+@@ -72,6 +72,7 @@ impl EditorShell {
+             let mut ai_studio = ai_studio;
+             let detached_capture = visual_validation_touches_ai_studio();
+             if detached_capture {
++                ai_studio.prepare_hosted_backend_visual_validation();
+                 ai_studio.detach();
+             }
+             (ai_studio, detached_capture)
+diff --git a/crates/editor/src/native_agent.rs b/crates/editor/src/native_agent.rs
+index e2bb588ea917414eb855ee0ac0c7e68115a717f4..557ee305b85329bb7da3236b413a0ebe90aae5c1 100644
+--- a/crates/editor/src/native_agent.rs
++++ b/crates/editor/src/native_agent.rs
+@@ -6,6 +6,7 @@
+ //! not acquire mutation permissions or participate in the write-capable
+ //! [`crate::agent_host::AgentRun`] state machine.
+ 
++use crate::hosted_model_backend::{generate_hosted, HostedBackendError, HostedModelConfig};
+ use crate::resource_arbitration::ModelResourceCapabilities;
+ use serde::{Deserialize, Serialize};
+ use std::cmp::Reverse;
+@@ -44,6 +45,8 @@ pub(crate) enum NativeAgentError {
+     EmptyResponse,
+     Interrupted,
+     WorkerDisconnected,
++    Hosted(HostedBackendError),
++    UnsupportedCapability(String),
+     Io(io::Error),
+     Json(serde_json::Error),
+ }
+@@ -74,6 +77,10 @@ impl fmt::Display for NativeAgentError {
+             Self::WorkerDisconnected => {
+                 write!(formatter, "native question worker disconnected unexpectedly")
+             }
++            Self::Hosted(error) => write!(formatter, "{error}"),
++            Self::UnsupportedCapability(capability) => {
++                write!(formatter, "model backend does not support {capability}")
++            }
+             Self::Io(error) => write!(formatter, "native agent I/O error: {error}"),
+             Self::Json(error) => write!(formatter, "native agent JSON error: {error}"),
+         }
+@@ -96,6 +103,12 @@ impl From<io::Error> for NativeAgentError {
+     }
+ }
+ 
++impl From<HostedBackendError> for NativeAgentError {
++    fn from(value: HostedBackendError) -> Self {
++        Self::Hosted(value)
++    }
++}
++
+ impl From<serde_json::Error> for NativeAgentError {
+     fn from(value: serde_json::Error) -> Self {
+         Self::Json(value)
+@@ -118,12 +131,63 @@ impl LocalModelConfig {
+             image_input: None,
+             reasoning: None,
+             context_limit: None,
++            streaming: Some(false),
++            usage: Some(true),
+             resource_capabilities: ModelResourceCapabilities::default(),
+             benchmark_verified: false,
+         }
+     }
+ }
+ 
++#[derive(Debug, Clone)]
++pub(crate) enum NativeModelConfig {
++    Local(LocalModelConfig),
++    Hosted(HostedModelConfig),
++}
++
++impl NativeModelConfig {
++    pub(crate) fn capability_profile(&self) -> ModelCapabilityProfile {
++        match self {
++            Self::Local(config) => config.capability_profile(),
++            Self::Hosted(config) => ModelCapabilityProfile {
++                backend_id: config.auth_mode.backend_id(),
++                model_id: config.model.trim().to_owned(),
++                structured_output: Some(false),
++                tool_use: Some(false),
++                image_input: Some(false),
++                reasoning: None,
++                context_limit: None,
++                streaming: Some(false),
++                usage: Some(true),
++                resource_capabilities: ModelResourceCapabilities::default(),
++                benchmark_verified: false,
++            },
++        }
++    }
++
++    pub(crate) fn requires_network(&self) -> bool {
++        matches!(self, Self::Hosted(_))
++    }
++
++    pub(crate) fn backend_id(&self) -> &'static str {
++        match self {
++            Self::Local(_) => BACKEND_ID,
++            Self::Hosted(config) => config.auth_mode.backend_id(),
++        }
++    }
++
++    pub(crate) fn model_id(&self) -> String {
++        match self {
++            Self::Local(config) => config.model.trim().to_owned(),
++            Self::Hosted(config) => config.model.trim().to_owned(),
++        }
++    }
++
++    pub(crate) fn label(&self) -> String {
++        format!("native:{}:{}", self.backend_id(), self.model_id())
++    }
++}
++
+ #[derive(Debug, Clone)]
+ pub(crate) struct ModelCapabilityProfile {
+     pub(crate) backend_id: &'static str,
+@@ -133,11 +197,12 @@ pub(crate) struct ModelCapabilityProfile {
+     pub(crate) image_input: Option<bool>,
+     pub(crate) reasoning: Option<bool>,
+     pub(crate) context_limit: Option<u64>,
++    pub(crate) streaming: Option<bool>,
++    pub(crate) usage: Option<bool>,
+     /// Resource controls verified for this backend adapter.
+     ///
+-    /// The initial generic loopback adapter deliberately reports every
+-    /// provider-specific control as unavailable until a governed implementation
+-    /// exists; AI Studio must never imply support by guessing from the server.
++    /// Backend-specific remote GPU controls are deliberately not projected into
++    /// local ADR 0135 resource capabilities. Unsupported controls stay unavailable.
+     pub(crate) resource_capabilities: ModelResourceCapabilities,
+     pub(crate) benchmark_verified: bool,
+ }
+@@ -224,16 +289,24 @@ pub(crate) struct NativeQuestionTask {
+ 
+ impl NativeQuestionTask {
+     pub(crate) fn spawn(
+-        config: LocalModelConfig,
++        config: NativeModelConfig,
+         project_root: PathBuf,
+         conversation: Vec<QuestionMessage>,
+     ) -> Result<Self, NativeAgentError> {
+-        if config.model.trim().is_empty() {
+-            return Err(NativeAgentError::EmptyModel);
++        match &config {
++            NativeModelConfig::Local(config) => {
++                if config.model.trim().is_empty() {
++                    return Err(NativeAgentError::EmptyModel);
++                }
++                // Validate before spawning so malformed loopback endpoints fail at
++                // the UI boundary instead of looking like a model timeout.
++                LocalHttpEndpoint::parse(&config.endpoint)?;
++            }
++            NativeModelConfig::Hosted(config) if config.model.trim().is_empty() => {
++                return Err(NativeAgentError::EmptyModel);
++            }
++            NativeModelConfig::Hosted(_) => {}
+         }
+-        // Validate before spawning so malformed/non-loopback endpoints fail at
+-        // the UI boundary instead of looking like a model timeout.
+-        LocalHttpEndpoint::parse(&config.endpoint)?;
+         let (sender, result) = mpsc::channel();
+         let interrupted = Arc::new(AtomicBool::new(false));
+         let active_stream = Arc::new(Mutex::new(None));
+@@ -291,14 +364,22 @@ pub(crate) struct NativeModelTask {
+ 
+ impl NativeModelTask {
+     pub(crate) fn spawn(
+-        config: LocalModelConfig,
++        config: NativeModelConfig,
+         prompt: String,
+         images: Vec<Vec<u8>>,
+     ) -> Result<Self, NativeAgentError> {
+-        if config.model.trim().is_empty() {
+-            return Err(NativeAgentError::EmptyModel);
++        match &config {
++            NativeModelConfig::Local(config) => {
++                if config.model.trim().is_empty() {
++                    return Err(NativeAgentError::EmptyModel);
++                }
++                LocalHttpEndpoint::parse(&config.endpoint)?;
++            }
++            NativeModelConfig::Hosted(config) if config.model.trim().is_empty() => {
++                return Err(NativeAgentError::EmptyModel);
++            }
++            NativeModelConfig::Hosted(_) => {}
+         }
+-        LocalHttpEndpoint::parse(&config.endpoint)?;
+         let (sender, result) = mpsc::channel();
+         let interrupted = Arc::new(AtomicBool::new(false));
+         let active_stream = Arc::new(Mutex::new(None));
+@@ -307,21 +388,42 @@ impl NativeModelTask {
+         std::thread::Builder::new()
+             .name("ai-native-model-turn".to_owned())
+             .spawn(move || {
+-                let result = generate_local(
+-                    &config,
+-                    &prompt,
+-                    &images,
+-                    &worker_interrupted,
+-                    &worker_stream,
+-                )
+-                .and_then(|response| {
+-                    let text = response.response.trim().to_owned();
+-                    if text.is_empty() {
+-                        Err(NativeAgentError::EmptyResponse)
+-                    } else {
+-                        Ok(text)
++                let result = match &config {
++                    NativeModelConfig::Local(config) => generate_local(
++                        config,
++                        &prompt,
++                        &images,
++                        &worker_interrupted,
++                        &worker_stream,
++                    )
++                    .and_then(|response| {
++                        let text = response.response.trim().to_owned();
++                        if text.is_empty() {
++                            Err(NativeAgentError::EmptyResponse)
++                        } else {
++                            Ok(text)
++                        }
++                    }),
++                    NativeModelConfig::Hosted(_) if !images.is_empty() => {
++                        Err(NativeAgentError::UnsupportedCapability(
++                            "image input for the configured hosted adapter".to_owned(),
++                        ))
+                     }
+-                });
++                    NativeModelConfig::Hosted(config) => generate_hosted(
++                        config,
++                        &prompt,
++                        &worker_interrupted,
++                    )
++                    .map_err(NativeAgentError::from)
++                    .and_then(|response| {
++                        let text = response.text.trim().to_owned();
++                        if text.is_empty() {
++                            Err(NativeAgentError::EmptyResponse)
++                        } else {
++                            Ok(text)
++                        }
++                    }),
++                };
+                 let _ = sender.send(result);
+             })?;
+         Ok(Self {
+@@ -467,7 +569,7 @@ fn is_loopback_host(host: &str) -> bool {
+ }
+ 
+ fn answer_question(
+-    config: &LocalModelConfig,
++    config: &NativeModelConfig,
+     project_root: &Path,
+     conversation: &[QuestionMessage],
+     interrupted: &AtomicBool,
+@@ -489,41 +591,76 @@ fn answer_question(
+     if interrupted.load(Ordering::Acquire) {
+         return Err(NativeAgentError::Interrupted);
+     }
+-    let backend = generate_local(config, &prompt, &[], interrupted, active_stream)?;
+-    let text = backend.response.trim().to_owned();
+-    if text.is_empty() {
++    let backend = match config {
++        NativeModelConfig::Local(config) => {
++            let response = generate_local(config, &prompt, &[], interrupted, active_stream)?;
++            BackendGeneration {
++                text: response.response.trim().to_owned(),
++                prompt_tokens: response.prompt_eval_count,
++                response_tokens: response.eval_count,
++                backend_duration_ms: response.total_duration.map(|nanos| nanos / 1_000_000),
++                load_latency_ms: response.load_duration.map(|nanos| nanos / 1_000_000),
++                prompt_eval_duration_ms: response.prompt_eval_duration.map(|nanos| nanos / 1_000_000),
++                generation_duration_ms: response.eval_duration.map(|nanos| nanos / 1_000_000),
++                generation_tokens_per_second_milli: generation_throughput_milli(
++                    response.eval_count,
++                    response.eval_duration,
++                ),
++            }
++        }
++        NativeModelConfig::Hosted(config) => {
++            let response = generate_hosted(config, &prompt, interrupted)?;
++            BackendGeneration {
++                text: response.text.trim().to_owned(),
++                prompt_tokens: response.prompt_tokens,
++                response_tokens: response.response_tokens,
++                backend_duration_ms: None,
++                load_latency_ms: None,
++                prompt_eval_duration_ms: None,
++                generation_duration_ms: None,
++                generation_tokens_per_second_milli: None,
++            }
++        }
++    };
++    if backend.text.is_empty() {
+         return Err(NativeAgentError::EmptyResponse);
+     }
+     let sources = distinct_sources(&evidence);
+     Ok(NativeAnswer {
+         metrics: NativeMetrics {
+             harness_version: BASELINE_HARNESS_VERSION,
+-            backend_id: BACKEND_ID,
+-            model_id: config.model.trim().to_owned(),
++            backend_id: config.backend_id(),
++            model_id: config.model_id(),
+             model_turns: 1,
+             retrieval_chunks: evidence.len(),
+             prompt_chars: prompt.chars().count(),
+-            response_chars: text.chars().count(),
++            response_chars: backend.text.chars().count(),
+             elapsed_ms: duration_ms(started.elapsed()),
+-            prompt_eval_tokens: backend.prompt_eval_count,
+-            response_tokens: backend.eval_count,
+-            backend_duration_ms: backend.total_duration.map(|nanos| nanos / 1_000_000),
+-            load_latency_ms: backend.load_duration.map(|nanos| nanos / 1_000_000),
+-            prompt_eval_duration_ms: backend
+-                .prompt_eval_duration
+-                .map(|nanos| nanos / 1_000_000),
+-            generation_duration_ms: backend.eval_duration.map(|nanos| nanos / 1_000_000),
+-            generation_tokens_per_second_milli: generation_throughput_milli(
+-                backend.eval_count,
+-                backend.eval_duration,
+-            ),
++            prompt_eval_tokens: backend.prompt_tokens,
++            response_tokens: backend.response_tokens,
++            backend_duration_ms: backend.backend_duration_ms,
++            load_latency_ms: backend.load_latency_ms,
++            prompt_eval_duration_ms: backend.prompt_eval_duration_ms,
++            generation_duration_ms: backend.generation_duration_ms,
++            generation_tokens_per_second_milli: backend.generation_tokens_per_second_milli,
+             ttft_ms: None,
+         },
+-        text,
++        text: backend.text,
+         sources,
+     })
+ }
+ 
++struct BackendGeneration {
++    text: String,
++    prompt_tokens: Option<u64>,
++    response_tokens: Option<u64>,
++    backend_duration_ms: Option<u64>,
++    load_latency_ms: Option<u64>,
++    prompt_eval_duration_ms: Option<u64>,
++    generation_duration_ms: Option<u64>,
++    generation_tokens_per_second_milli: Option<u64>,
++}
++
+ fn duration_ms(duration: Duration) -> u64 {
+     duration.as_millis().min(u128::from(u64::MAX)) as u64
+ }
+diff --git a/crates/editor/src/native_agent_runtime.rs b/crates/editor/src/native_agent_runtime.rs
+index c85d765a9f164c67dcf0052bca170f1fa389d66a..d354207a80cfd85e39f063503e54f74cdfd3d715 100644
+--- a/crates/editor/src/native_agent_runtime.rs
++++ b/crates/editor/src/native_agent_runtime.rs
+@@ -4,7 +4,9 @@
+ //! services remain authoritative for every side effect and completion gate.
+ 
+ use crate::agent_host::{AgentRun, AgentRunState, AgentWorkingStateUpdate, CompletionStatus};
+-use crate::native_agent::{LocalModelConfig, ModelCapabilityProfile, NativeAgentError, NativeModelTask};
++use crate::native_agent::{
++    LocalModelConfig, ModelCapabilityProfile, NativeAgentError, NativeModelConfig, NativeModelTask,
++};
+ use engine_mcp::authoring_tool_descriptors;
+ use serde::Deserialize;
+ use serde_json::{json, Value};
+@@ -52,10 +54,10 @@ pub(crate) trait ModelBackend: Send + Sync {
+ }
+ 
+ #[derive(Debug, Clone)]
+-struct LocalModelBackend(LocalModelConfig);
++struct ConfiguredModelBackend(NativeModelConfig);
+ 
+-impl ModelBackend for LocalModelBackend {
+-    fn label(&self) -> String { format!("native:{}", self.0.model.trim()) }
++impl ModelBackend for ConfiguredModelBackend {
++    fn label(&self) -> String { self.0.label() }
+     fn profile(&self) -> ModelCapabilityProfile { self.0.capability_profile() }
+     fn start_turn(&self, prompt: String, images: Vec<Vec<u8>>)
+         -> Result<Box<dyn ModelTurnTask>, NativeAgentError>
+@@ -147,8 +149,15 @@ pub(crate) struct NativeAgentRuntime {
+ }
+ 
+ impl NativeAgentRuntime {
++    pub(crate) fn configured(config: NativeModelConfig) -> Self {
++        Self::new(
++            Box::new(ConfiguredModelBackend(config)),
++            HarnessPolicy::default(),
++        )
++    }
++    #[allow(dead_code)]
+     pub(crate) fn local(config: LocalModelConfig) -> Self {
+-        Self::new(Box::new(LocalModelBackend(config)), HarnessPolicy::default())
++        Self::configured(NativeModelConfig::Local(config))
+     }
+     fn new(backend: Box<dyn ModelBackend>, policy: HarnessPolicy) -> Self {
+         Self { backend, policy, turns: 0, failures: 0, exchanges: Vec::new(), active: None }
+@@ -220,12 +229,12 @@ fn build_prompt(run: &AgentRun, profile: &ModelCapabilityProfile, policy: Harnes
+     exchanges: &[Exchange], context: Option<&str>) -> String
+ {
+     let mut prompt = format!(
+-        "GameEngine NativeAgentRuntime ADR0141. Return exactly one JSON object, no markdown. Do not claim side effects; AgentHost owns truth.\nImmutable proposal={}\nstate={:?}\nworking_state={}\ncompletion={}\nbackend={} model={} structured={:?} tools={:?} image={:?} reasoning={:?} context_limit={:?}\nHarnessPolicy turns={} failures={} repair_budget={}. Canonical authoring ONLY via mcp_call; source ONLY via code_write isolated AgentCodeWorkspace. Stale revision, permission, validation, import and runtime failures are evidence. ready_for_validation returns control to host validation. Never mark source_validation/play_launch/frame_capture/interaction_scenarios.\n",
++        "GameEngine NativeAgentRuntime ADR0141. Return exactly one JSON object, no markdown. Do not claim side effects; AgentHost owns truth.\nImmutable proposal={}\nstate={:?}\nworking_state={}\ncompletion={}\nbackend={} model={} structured={:?} tools={:?} image={:?} reasoning={:?} context_limit={:?} streaming={:?} usage={:?}\nHarnessPolicy turns={} failures={} repair_budget={}. Canonical authoring ONLY via mcp_call; source ONLY via code_write isolated AgentCodeWorkspace. Stale revision, permission, validation, import and runtime failures are evidence. ready_for_validation returns control to host validation. Never mark source_validation/play_launch/frame_capture/interaction_scenarios.\n",
+         serde_json::to_string(&run.proposal_snapshot).unwrap_or_default(), run.state,
+         serde_json::to_string(&run.working_state).unwrap_or_default(),
+         serde_json::to_string(&run.completion).unwrap_or_default(),
+         profile.backend_id, profile.model_id, profile.structured_output, profile.tool_use,
+-        profile.image_input, profile.reasoning, profile.context_limit,
++        profile.image_input, profile.reasoning, profile.context_limit, profile.streaming, profile.usage,
+         policy.max_model_turns, policy.max_tool_failures, policy.repair_budget);
+     if let Some(context) = context { prompt.push_str(&format!("phase_context={context}\n")); }
+     for exchange in exchanges { prompt.push_str(&format!("tool_result {} success={}: {}\n", exchange.tool, exchange.success, exchange.result)); }
+diff --git a/docs/AI_FRIENDLY_AUTHORING_SPEC.md b/docs/AI_FRIENDLY_AUTHORING_SPEC.md
+index ae2d6f93a58e29fa38c2dd5b34f8f32fbcaad94c..125a8a946c4f42f99f575b1b96ee2fc947d7ca93 100644
+--- a/docs/AI_FRIENDLY_AUTHORING_SPEC.md
++++ b/docs/AI_FRIENDLY_AUTHORING_SPEC.md
+@@ -1064,6 +1064,16 @@ subscription tokens, local model handles, and Editor MCP credentials MUST NOT be
+ serialized into session records or canonical project data. External runtimes
+ receive only the ephemeral MCP connection needed for the active run.
+ 
++Per ADR 0144, hosted and enterprise `ModelBackend` adapters remain inference-only
++inside the native AgentRuntime. Hosted processing requires `NetworkAccess`,
++exposes a sanitized remote-processing posture without credentials or secret paths,
++and stores GameEngine-owned API credentials only in an OS-protected machine-local
++secret store. Provider failures, rate limits, safety refusals, authentication
++failures, transport interruption, context rejection, and unsupported capabilities
++remain explicit backend evidence and cannot satisfy Agent Host completion gates.
++The same backend seam is used for read-only questions and ADR 0141 write-capable
++native runs; project mutation continues through the existing governed services.
++
+ The ADR 0035 AI Agent Bridge remains the input, frame-observation, and visual
+ interaction path. It MUST NOT be treated as a substitute for semantic authoring
+ parity when a capability changes persisted project data.
+diff --git a/docs/adr/0144-hosted-and-enterprise-model-backends-and-credential-ownership.md b/docs/adr/0144-hosted-and-enterprise-model-backends-and-credential-ownership.md
+index 2ff15b0ad59c5710126d051a2447c6abd99a7dd5..3f3755cae5dd23a42f6e3fe067d6d2e33f0a3640 100644
+--- a/docs/adr/0144-hosted-and-enterprise-model-backends-and-credential-ownership.md
++++ b/docs/adr/0144-hosted-and-enterprise-model-backends-and-credential-ownership.md
+@@ -1,6 +1,6 @@
+ # ADR 0144: Hosted and Enterprise ModelBackends and Credential Ownership
+ 
+-Status: Proposed
++Status: Accepted
+ Date: 2026-08-17
+ Builds on: ADR 0131
+ Relates to: ADR 0141, ADR 0142, ADR 0150
+@@ -53,6 +53,16 @@ Implementation must cover secret-storage boundaries, no secret serialization, ex
+ 
+ Credential/backend selection UI requires Editor Visual Validation.
+ 
++## Initial implementation
++
++The accepted first-release implementation adds API-key hosted HTTPS and enterprise HTTPS adapters behind the same provider-independent `ModelBackend` seam used by ADR 0141's write-capable `NativeAgentRuntime` and the read-only question harness. API-key material is protected with Windows DPAPI below the Editor's machine-local application data. It is never part of AI Studio preferences, Agent Host sessions, project-shared history, Remote AI Studio payloads, benchmark fixtures, or canonical project data. Enterprise mode uses the organization-managed Windows identity/session and stores no GameEngine API key.
++
++Hosted questions and native AgentRuns require the existing `AgentCapability::NetworkAccess` before request dispatch. The selected backend is frozen when a run starts so an approval wait cannot silently switch provider or model. Authentication, rate limiting, safety refusal, context-limit rejection, server failure, transport failure, invalid response, unsupported image input, and interruption remain explicit backend failures rather than completion.
++
++The generic OpenAI-compatible adapter is intentionally non-streaming in this release. It reports the request capabilities it actually implements, accepts optional usage metadata when returned, and leaves unknown reasoning/context limits unknown. Remote GPU controls remain unavailable rather than being projected into ADR 0135 local residency controls. Remote companion snapshots expose only the sanitized local/hosted/enterprise processing posture; endpoint, secret value, and secret-storage path are omitted.
++
++The provider remains inference-only. Proposal snapshots, MCP authoring, managed code mutation, validation, Play, captured evidence, and all completion gates remain owned by the existing Agent Host and managed Editor services, including when AI Studio is detached under ADR 0147.
++
+ ## Non-goals
+ 
+ This ADR does not define provider-specific external coding agents, route between multiple models, or make a hosted provider authoritative for project mutation.
