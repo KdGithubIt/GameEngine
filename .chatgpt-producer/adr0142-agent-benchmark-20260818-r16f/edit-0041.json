@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/agent_benchmark.rs","old":"    AgentEventEvidence, AgentEventKind, AgentRun, AgentRunState, AgentWorkClaim, CompletionStatus,\n","new":"    AgentEventEvidence, AgentEventKind, AgentRun, AgentRunState, AgentWorkClaim, CompletionReport,\n    CompletionStatus,\n"}
