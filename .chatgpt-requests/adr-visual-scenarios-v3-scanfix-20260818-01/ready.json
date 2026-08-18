@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr-visual-scenarios-v3-scanfix-20260818-01",
+  "target_branch": "chatgpt/gameengine-adr-visual-scenarios-v3",
+  "expected_head_sha": "4845af7f92282dc97735d33c6d3f44bee801a98c",
+  "baseline_main_sha": "ecfc28d6d8e0e82eff38cc90f775e14c88347919",
+  "patch_sha256": "4f6ccd77ae5d059079c7050d45783560c86449de0359d8790bdfe11d52465947",
+  "patch_bytes": 2765,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Avoid private path literals in sanitizer fixtures",
+  "pr_title": "GameEngine: add deterministic ADR visual scenarios",
+  "pr_body": "## Summary\n\nAdds deterministic visual-validation scenarios for ADR 0136, 0137, 0138, 0139, 0144, 0149, and 0153. The fixtures are compiled only with the visual-validation feature and route through existing Editor graph canvas, Problems panel, Animation Preview, and AI Studio presentation paths. A dedicated Windows workflow captures one artifact directory per requested scenario.\n\nAlso preserves the existing Remote AI Studio sanitizer coverage while constructing synthetic Windows private-path fixtures at runtime so the public-snapshot static security scan does not misclassify deliberate test data as a leaked user path.\n\n<!-- gameengine-visual-validation: editor -->\n<!-- gameengine-adr-visual-scenarios -->"
+}
