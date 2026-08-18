@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/native_2d_editor.rs",
+  "old": "        Ok(Self {\n            relative: relative.to_path_buf(),\n            path,\n            service: engine_authoring::TileMapAuthoringService::new(document),\n",
+  "new": "        Ok(Self {\n            relative: relative_path,\n            path,\n            service: engine_authoring::TileMapAuthoringService::new(document),\n"
+}
