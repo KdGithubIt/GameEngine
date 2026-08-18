@@ -133,6 +133,7 @@ contract unless and until their status becomes `Accepted`:
 - [0125](0125-vfx-effect-authoring-and-runtime-architecture.md) — VFX Effect Authoring and Runtime Architecture
 - [0126](0126-timeline-sequencer-authoring-and-runtime.md) — Timeline / Sequencer Authoring and Runtime
 - [0127](0127-native-2d-gameplay-and-authoring-architecture.md) — Native 2D Gameplay and Authoring Architecture
+- [0154](0154-target-aware-animation-motion-binding-resolution.md) — Animation Motion Candidates, Import-Owned Humanoid Variants, and Target-Aware Resolution
 
 The later Accepted renderer records originally reused ADR 0122 and ADR 0123.
 They are registered as ADR 0128 and ADR 0129 so the first-merged Proposed
@@ -299,3 +300,4 @@ implementation contract.
 | [0151](0151-headless-write-capable-mcp-host-and-project-writer-ownership.md) | Headless Write-Capable MCP Host and Project-Writer Ownership |
 | [0152](0152-multi-agent-writer-coordination-and-conflict-ownership.md) | Multi-Agent Writer Coordination and Conflict Ownership |
 | [0153](0153-agent-process-confinement-and-os-provider-sandbox-integration.md) | **Proposed** — Agent Process Confinement and OS/Provider Sandbox Integration |
+| [0154](0154-target-aware-animation-motion-binding-resolution.md) | **Proposed** — Animation Motion Candidates, Import-Owned Humanoid Variants, and Target-Aware Resolution |
