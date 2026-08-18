@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/runtime_debug.rs","old":"    actions: Vec<(String, String)>,\n    last_tick_ms: f64,","new":"    actions: Vec<(String, bool)>,\n    last_tick_ms: f64,"}
