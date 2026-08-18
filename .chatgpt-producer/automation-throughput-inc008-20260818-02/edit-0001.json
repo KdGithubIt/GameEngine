@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "docs/CHATGPT_AUTOMATION_INCIDENTS.md",
+  "old": "- Recovery validation run `31985901970` also passed the planner self-test and\n  completed successfully on product head\n  `bc2c697ae49232c0d75deed782ce94286d8ecc8f`, which became merged PR #145.\n\n### Root cause",
+  "new": "- Recovery validation run `31985901970` also passed the planner self-test and\n  completed successfully on product head\n  `bc2c697ae49232c0d75deed782ce94286d8ecc8f`, which became merged PR #145.\n- Automation-throughput Draft PR #627 reproduced the same scanner class on\n  2026-08-18: regression runs `32108227563` and `32109506884` reported\n  `[private-user-path]` for synthetic Remote AI Studio test fixtures that used a\n  concrete-looking Windows user-profile segment. The automation protocol tests\n  themselves passed in those runs.\n- Separate hygiene Draft PR #630 preserved the private-path redaction coverage\n  but changed only the synthetic user-profile segment to the documented `...`\n  placeholder. With that exact fix present in the stacked validation tree,\n  automation regression run `32109663223` passed both request-protocol and\n  planner/public-snapshot regression jobs.\n\n### Root cause"
+}
