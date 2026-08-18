@@ -1,0 +1,331 @@
+diff --git a/crates/editor/src/ai_studio.rs b/crates/editor/src/ai_studio.rs
+index 11511bf9f49ac73ef206a2d2763d1fb1cc21670e..0039eda7b4339e7b827cea764d01af42e9a9fb7f 100644
+--- a/crates/editor/src/ai_studio.rs
++++ b/crates/editor/src/ai_studio.rs
+@@ -229,6 +229,7 @@ struct NativeRunBenchmarkContext {
+     workload: InferenceWorkload,
+     hardware: BenchmarkHardwareIdentity,
+     inventory: Option<InstalledModelInventory>,
++    routed: bool,
+ }
+ 
+ #[derive(Debug, Deserialize)]
+@@ -1887,6 +1888,7 @@ impl AiStudioPanel {
+             .as_ref()
+             .is_some_and(|benchmark| {
+                 benchmark.task_id == task.id
++                    && !benchmark.routed
+                     && self.host.run(&benchmark.run_id).is_ok_and(|run| {
+                         matches!(
+                             run.state,
+@@ -1927,6 +1929,13 @@ impl AiStudioPanel {
+                 );
+                 return;
+             };
++            if context.routed {
++                self.status = Some(
++                    "Routed native runs are not ADR 0142 single-model evidence. Run this corpus task without a specialist handoff before recording a model baseline."
++                        .to_owned(),
++                );
++                return;
++            }
+             let run = match self.host.run(&context.run_id) {
+                 Ok(run) => run.clone(),
+                 Err(error) => {
+@@ -2589,16 +2598,26 @@ impl AiStudioPanel {
+         images: Vec<Vec<u8>>,
+     ) -> Result<(), String> {
+         let run = self.host.run(run_id).map_err(|error| error.to_string())?.clone();
+-        let runtime = self
+-            .native_agent_runtime
+-            .as_mut()
+-            .ok_or_else(|| "Native AgentRuntime is not initialized.".to_owned())?;
+-        runtime
+-            .start_turn(&run, context.as_deref(), images)
+-            .map_err(|error| error.to_string())?;
+-        let backend_label = runtime.backend_label();
+-        let routing_summary = runtime.routing_policy_summary();
+-        let routing_decisions = runtime.take_routing_decisions();
++        let (backend_label, routing_summary, routing_decisions) = {
++            let runtime = self
++                .native_agent_runtime
++                .as_mut()
++                .ok_or_else(|| "Native AgentRuntime is not initialized.".to_owned())?;
++            runtime
++                .start_turn(&run, context.as_deref(), images)
++                .map_err(|error| error.to_string())?;
++            (
++                runtime.backend_label(),
++                runtime.routing_policy_summary(),
++                runtime.take_routing_decisions(),
++            )
++        };
++        if routing_decisions.iter().any(|decision| decision.context_handoff)
++            && let Some(benchmark) = self.native_run_benchmark_context.as_mut()
++            && benchmark.run_id == run_id
++        {
++            benchmark.routed = true;
++        }
+         for decision in routing_decisions {
+             self.host
+                 .record_semantic_progress(run_id, "model_routing", decision.audit_summary())
+@@ -3448,6 +3467,7 @@ impl AiStudioPanel {
+                 workload: benchmark_workload,
+                 hardware: self.benchmark_hardware.clone(),
+                 inventory,
++                routed: false,
+             },
+         );
+         self.native_mcp_task = None;
+diff --git a/crates/editor/src/model_router.rs b/crates/editor/src/model_router.rs
+index 474bde8b0fe729931fd3b88f3398a25b6ff6fa27..61565459083e413bf52a9f3f7e952d6ebcc93aa2 100644
+--- a/crates/editor/src/model_router.rs
++++ b/crates/editor/src/model_router.rs
+@@ -188,10 +188,6 @@ impl ModelRoutingPolicy {
+         Self { primary, specialists, image_verified }
+     }
+ 
+-    pub(crate) fn primary(&self) -> &NativeModelConfig {
+-        &self.primary
+-    }
+-
+     pub(crate) fn adopted_specialist_count(&self) -> usize {
+         self.specialists.len()
+     }
+@@ -372,11 +368,106 @@ fn measured_u64(value: &TelemetryValue<u64>) -> Option<u64> {
+ #[cfg(test)]
+ mod tests {
+     use super::*;
++    use crate::agent_benchmark::{
++        BenchmarkHardwareIdentity, BenchmarkIdentity, BenchmarkMetrics, BenchmarkModelIdentity,
++        BenchmarkToolBudget, BENCHMARK_CORPUS_VERSION, BENCHMARK_HARNESS_VERSION,
++        BENCHMARK_SCHEMA_VERSION,
++    };
++    use crate::native_agent::{LocalModelConfig, DEFAULT_LOCAL_MODEL_ENDPOINT};
++    use crate::resource_arbitration::{InferenceWorkload, QualityPreference};
++
++    fn local(model: &str) -> NativeModelConfig {
++        NativeModelConfig::Local(LocalModelConfig {
++            endpoint: DEFAULT_LOCAL_MODEL_ENDPOINT.to_owned(),
++            model: model.to_owned(),
++        })
++    }
++
++    fn measured_record(
++        model: &str,
++        task_index: usize,
++        elapsed_ms: u64,
++        successful: bool,
++    ) -> BenchmarkRecord {
++        let task = BENCHMARK_TASKS[task_index];
++        BenchmarkRecord {
++            schema_version: BENCHMARK_SCHEMA_VERSION,
++            recorded_unix_ms: 1,
++            identity: BenchmarkIdentity {
++                corpus_version: BENCHMARK_CORPUS_VERSION.to_owned(),
++                task_id: task.id.to_owned(),
++                harness_version: BENCHMARK_HARNESS_VERSION.to_owned(),
++                runtime_harness_version: "runtime-harness-v1".to_owned(),
++                model: BenchmarkModelIdentity {
++                    backend_id: "ollama-compatible".to_owned(),
++                    model_id: model.to_owned(),
++                    model_version: TelemetryValue::Measured(format!("{model}-digest")),
++                    quantization: TelemetryValue::Measured("q4".to_owned()),
++                    representation_size_bytes: TelemetryValue::Measured(1_000),
++                    backend_runtime_version: TelemetryValue::Measured("runtime-v1".to_owned()),
++                },
++                hardware: BenchmarkHardwareIdentity {
++                    platform: "test".to_owned(),
++                    gpu: TelemetryValue::Measured("gpu".to_owned()),
++                    total_gpu_memory_bytes: TelemetryValue::Measured(12_000),
++                    total_system_memory_bytes: TelemetryValue::Measured(32_000),
++                },
++                quality: QualityPreference::Balanced,
++                workload_policy_version: "adr0135-workload-policy-v1".to_owned(),
++                observed_workload: TelemetryValue::Measured(
++                    InferenceWorkload::InteractiveReasoning,
++                ),
++                tool_budget: BenchmarkToolBudget {
++                    max_model_turns: 24,
++                    max_tool_failures: 4,
++                    repair_budget: 2,
++                    permission_budget: vec!["managed".to_owned()],
++                    work_claims: vec!["code_path".to_owned()],
++                },
++                completion_criteria: task
++                    .completion_criteria
++                    .iter()
++                    .map(|value| (*value).to_owned())
++                    .collect(),
++            },
++            metrics: BenchmarkMetrics {
++                acceptance_success: TelemetryValue::Measured(successful),
++                completion_success: TelemetryValue::Measured(successful),
++                model_turns: TelemetryValue::Measured(1),
++                tool_calls: TelemetryValue::Measured(1),
++                invalid_or_failed_tool_calls: TelemetryValue::Measured(0),
++                code_edits: TelemetryValue::Measured(0),
++                validation_attempts: TelemetryValue::Measured(0),
++                repair_loops: TelemetryValue::Measured(0),
++                play_attempts: TelemetryValue::Measured(0),
++                frame_capture_attempts: TelemetryValue::Measured(0),
++                visual_evaluation_attempts: TelemetryValue::Measured(0),
++                human_interventions: TelemetryValue::Measured(0),
++                elapsed_ms: TelemetryValue::Measured(elapsed_ms),
++                prompt_tokens: TelemetryValue::Measured(1),
++                response_tokens: TelemetryValue::Measured(1),
++                load_latency_ms: TelemetryValue::Measured(1),
++                ttft_ms: TelemetryValue::Unavailable,
++                generation_tokens_per_second_milli: TelemetryValue::Measured(1),
++                peak_backend_gpu_memory_bytes: TelemetryValue::Unavailable,
++                peak_editor_gpu_memory_bytes: TelemetryValue::Unavailable,
++                model_unload_reload_ms: TelemetryValue::Unavailable,
++                renderer_reclaim_resume_ms: TelemetryValue::Unavailable,
++                oom_failures: TelemetryValue::Measured(0),
++            },
++        }
++    }
+ 
+     #[test]
+     fn workload_labels_are_stable_audit_values() {
+-        assert_eq!(RoutingWorkload::ValidationRepair.label(), "validation repair");
+-        assert_eq!(RoutingWorkload::VisualEvaluation.label(), "visual evaluation");
++        assert_eq!(
++            RoutingWorkload::ValidationRepair.label(),
++            "validation repair"
++        );
++        assert_eq!(
++            RoutingWorkload::VisualEvaluation.label(),
++            "visual evaluation"
++        );
+     }
+ 
+     #[test]
+@@ -390,4 +481,114 @@ mod tests {
+         assert!(!improves(1_000, 960));
+         assert!(!improves(1_000, 1_000));
+     }
++
++    #[test]
++    fn benchmark_qualified_specialist_is_selected_with_explicit_handoff() {
++        let primary = local("primary");
++        let specialist = local("specialist");
++        let records = vec![
++            measured_record("primary", 2, 1_000, true),
++            measured_record("specialist", 2, 900, true),
++        ];
++        let policy = ModelRoutingPolicy::derive(
++            primary,
++            vec![specialist],
++            &records,
++        );
++
++        let decision = policy
++            .select(RoutingWorkload::CodeImplementation, false)
++            .expect("qualified specialist route");
++        assert_eq!(decision.config.model_id(), "specialist");
++        assert!(decision.context_handoff);
++        assert!(!decision.fallback);
++        assert!(decision.audit_summary().contains(MODEL_ROUTER_POLICY_VERSION));
++    }
++
++    #[test]
++    fn unmeasured_advantage_keeps_the_single_model_baseline() {
++        let primary = local("primary");
++        let specialist = local("specialist");
++        let records = vec![
++            measured_record("primary", 2, 1_000, true),
++            measured_record("specialist", 2, 960, true),
++        ];
++        let policy = ModelRoutingPolicy::derive(
++            primary,
++            vec![specialist],
++            &records,
++        );
++
++        let decision = policy
++            .select(RoutingWorkload::CodeImplementation, false)
++            .expect("baseline route");
++        assert_eq!(decision.config.model_id(), "primary");
++        assert!(!decision.context_handoff);
++        assert_eq!(policy.adopted_specialist_count(), 0);
++    }
++
++    #[test]
++    fn oom_regression_disqualifies_an_otherwise_faster_specialist() {
++        let primary = local("primary");
++        let specialist = local("specialist");
++        let baseline = measured_record("primary", 2, 1_000, true);
++        let mut regressed = measured_record("specialist", 2, 800, true);
++        regressed.metrics.oom_failures = TelemetryValue::Measured(1);
++        let policy = ModelRoutingPolicy::derive(
++            primary,
++            vec![specialist],
++            &[baseline, regressed],
++        );
++
++        let decision = policy
++            .select(RoutingWorkload::CodeImplementation, false)
++            .expect("baseline route");
++        assert_eq!(decision.config.model_id(), "primary");
++    }
++
++    #[test]
++    fn visual_workload_fails_closed_without_image_capability_or_evidence() {
++        let policy = ModelRoutingPolicy::derive(local("primary"), Vec::new(), &[]);
++        assert!(matches!(
++            policy.select(RoutingWorkload::VisualEvaluation, true),
++            Err(ModelRoutingError::CapabilityUnavailable {
++                workload: RoutingWorkload::VisualEvaluation,
++                capability: "image input"
++            })
++        ));
++    }
++
++    #[test]
++    fn successful_visual_benchmark_can_verify_image_capability() {
++        let records = vec![measured_record("primary", 6, 1_000, true)];
++        let policy = ModelRoutingPolicy::derive(local("primary"), Vec::new(), &records);
++        let decision = policy
++            .select(RoutingWorkload::VisualEvaluation, true)
++            .expect("benchmark-verified visual route");
++        assert_eq!(decision.config.model_id(), "primary");
++    }
++
++    #[test]
++    fn fallback_returns_only_to_the_compatible_selected_baseline() {
++        let primary = local("primary");
++        let specialist = local("specialist");
++        let records = vec![
++            measured_record("primary", 2, 1_000, true),
++            measured_record("specialist", 2, 900, true),
++        ];
++        let policy = ModelRoutingPolicy::derive(
++            primary.clone(),
++            vec![specialist.clone()],
++            &records,
++        );
++        let fallback = policy
++            .fallback(&specialist, RoutingWorkload::CodeImplementation, false)
++            .expect("specialist fallback");
++        assert_eq!(fallback.config.model_id(), "primary");
++        assert!(fallback.context_handoff);
++        assert!(fallback.fallback);
++        assert!(policy
++            .fallback(&primary, RoutingWorkload::CodeImplementation, false)
++            .is_none());
++    }
+ }
+diff --git a/docs/adr/0150-multi-model-routing-and-workload-specialization.md b/docs/adr/0150-multi-model-routing-and-workload-specialization.md
+index fe781a32e4216c7ee55a47e1a8ed1ae3afb5afb9..1f9848f1f9ff9a8c328f6f3c5cccd12803e614e5 100644
+--- a/docs/adr/0150-multi-model-routing-and-workload-specialization.md
++++ b/docs/adr/0150-multi-model-routing-and-workload-specialization.md
+@@ -54,7 +54,7 @@ Each routed turn rebuilds the provider prompt from the same immutable proposal s
+ 
+ Image-bearing turns require a backend that declares image input or has successful GameEngine visual-evaluation benchmark evidence. If neither the qualified specialist nor the baseline satisfies that requirement, routing fails explicitly instead of allowing a text-only model to fabricate visual success. A specialist that fails before a turn starts may deterministically fall back only to a compatible selected baseline without changing the user's processing posture.
+ 
+-Every decision records the routing policy version, workload class, backend/model identity, handoff/fallback state, and sanitized reason in the existing run event audit. AI Studio exposes the active measured-routing policy and count of benchmark-qualified specialist workloads next to model/resource status. No prompt, credential, private provider state, or transient model cache is persisted by the router.
++Every decision records the routing policy version, workload class, backend/model identity, handoff/fallback state, and sanitized reason in the existing run event audit. A native run that actually hands work to a specialist is excluded from ADR 0142 single-model evidence so specialist work cannot be misattributed to the selected baseline model; comparable single-model records remain the source evidence used to qualify routing. AI Studio exposes the active measured-routing policy and count of benchmark-qualified specialist workloads next to model/resource status. No prompt, credential, private provider state, or transient model cache is persisted by the router.
+ 
+ ## Dependencies and parallel work
+ 
