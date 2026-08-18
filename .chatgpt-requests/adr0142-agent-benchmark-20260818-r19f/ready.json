@@ -1,0 +1,16 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0142-agent-benchmark-20260818-r19f",
+  "target_branch": "chatgpt/gameengine-adr0142-agent-benchmark-v11",
+  "expected_head_sha": "2a418e000fa727ae81a88b423ad3c113b44f211c",
+  "baseline_main_sha": "2a418e000fa727ae81a88b423ad3c113b44f211c",
+  "patch_sha256": "049ea544aa668387e266cae0a3b7681891d230e1e62edd9e71c18ea12770ad7f",
+  "patch_bytes": 89211,
+  "patch_parts": [
+    "part-0000.patch",
+    "part-0001.patch"
+  ],
+  "commit_message": "Implement ADR 0142 agent benchmark foundation",
+  "pr_title": "GameEngine: implement ADR 0142 agent benchmark catalog",
+  "pr_body": "## Summary\n\n- Implement ADR 0142 GameEngine Agent Benchmark and curated local model catalog on current main.\n- Preserve existing Agent Host, native inference, provider, serialization, and project-authoring contracts.\n- Add benchmark evidence/storage/catalog UI and model discovery without silently downloading model weights.\n\n## Validation\n\n- GameEngine Windows Validation\n- Editor Visual Validation\n\n<!-- gameengine-visual-validation: auto -->\n<!-- gameengine-chatgpt-dispatcher -->\n"
+}
