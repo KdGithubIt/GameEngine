@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/native_agent_runtime.rs","old":"fn mcp_write(tool: &str) -> bool {","new":"pub(crate) fn mcp_write(tool: &str) -> bool {"}
