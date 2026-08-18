@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/lib.rs","old":"pub mod scene_view;\npub mod session;\n","new":"pub mod scene_view;\nmod scene_view_2d;\npub mod session;\n"}
