@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0126-runtime-core-v16-e99a6b9a",
+  "target_branch": "chatgpt/gameengine-adr0126-first-release-v16",
+  "expected_head_sha": "90e28bbd8e394638832f23c744a6e35d3aabb359",
+  "baseline_main_sha": "e99a6b9a13caba71191157cb53f316e5e9139a2f",
+  "patch_sha256": "1e8f16e7fc5d03cf5f2331c12f8ae72c5142fcc065605df5f811c5307c7911f9",
+  "patch_bytes": 52790,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Implement ADR0126 production Timeline runtime composition",
+  "pr_title": "GameEngine: complete ADR0126 Timeline and Sequencer",
+  "pr_body": "## Summary\n\nContinues ADR0126 first-release completion with the production runtime composition layer. Timeline now composes through the existing Animation, Transform, Camera, Audio, and VFX owners instead of a preview-only runtime, and the shared runtime-system registration is used by both Editor Play and packaged Player.\n\nThis request intentionally leaves the PR Draft while the follow-up runtime contract corrections, Project Rust surface, Sequencer authoring workspace, and final Windows/Visual Validation are applied.\n\n<!-- gameengine-chatgpt-dispatcher -->"
+}
