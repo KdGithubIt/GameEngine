@@ -16,6 +16,8 @@ use std::path::{Path, PathBuf};
 pub enum AssetKind {
     /// `*.scene.json`
     Scene,
+    /// `*.timeline.json` ADR 0126 sequence asset.
+    Timeline,
     /// `*.graph.json`
     Graph,
     /// `*.graph.view.json`
@@ -67,6 +69,7 @@ impl AssetKind {
     pub fn label(self) -> &'static str {
         match self {
             Self::Scene => "[scene]",
+            Self::Timeline => "[timeline]",
             Self::Graph => "[graph]",
             Self::GraphView => "[view]",
             Self::AnimationSet => "[animset]",
@@ -617,6 +620,8 @@ pub fn classify_file_name(name: &str) -> Option<(AssetKind, String)> {
         (AssetKind::GraphView, ".graph.view.json".len())
     } else if lower.ends_with(".scene.json") {
         (AssetKind::Scene, ".scene.json".len())
+    } else if lower.ends_with(".timeline.json") {
+        (AssetKind::Timeline, ".timeline.json".len())
     } else if lower.ends_with(".animset.json") {
         (AssetKind::AnimationSet, ".animset.json".len())
     } else if lower.ends_with(".material.json") {
@@ -690,6 +695,13 @@ mod tests {
         let (kind, name) = classify_supported_file_name("player.scene.json");
         assert_eq!(kind, AssetKind::Scene);
         assert_eq!(name, "player");
+    }
+
+    #[test]
+    fn classify_timeline_json() {
+        let (kind, name) = classify_supported_file_name("intro.timeline.json");
+        assert_eq!(kind, AssetKind::Timeline);
+        assert_eq!(name, "intro");
     }
 
     #[test]

@@ -629,6 +629,13 @@ fn validate_import_script_placement(
 /// Returns whether a path can be represented by the existing asset manifest
 /// registration categories.
 pub fn is_registerable_asset_path(path: &Path) -> bool {
+    if path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.to_ascii_lowercase().ends_with(".timeline.json"))
+    {
+        return true;
+    }
     [
         engine::AssetKind::Mesh,
         engine::AssetKind::Material,

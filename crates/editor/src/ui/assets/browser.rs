@@ -1280,6 +1280,7 @@ fn show_asset_browser(
 pub(in crate::ui) fn asset_kind_icon(kind: AssetKind) -> &'static str {
     match kind {
         AssetKind::Scene => "▣",
+        AssetKind::Timeline => "≡",
         AssetKind::Graph | AssetKind::GraphView => "◇",
         AssetKind::AnimationSet => "◎",
         AssetKind::AnimationClip => "▶",

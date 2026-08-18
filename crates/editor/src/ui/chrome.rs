@@ -994,7 +994,20 @@ impl EditorApp {
                 );
                 match action {
                     Some(AssetBrowserAction::Open(index)) => {
-                        self.open_from_browser(index, ui.ctx())
+                        let timeline = self
+                            .asset_browser
+                            .entries()
+                            .get(index)
+                            .filter(|entry| entry.kind == AssetKind::Timeline)
+                            .map(|entry| entry.relative_path.clone());
+                        if let Some(relative_path) = timeline {
+                            if let Some(project) = self.project_root.as_ref() {
+                                let absolute_path = project.assets_root().join(&relative_path);
+                                self.open_timeline_sequencer(relative_path, absolute_path);
+                            }
+                        } else {
+                            self.open_from_browser(index, ui.ctx());
+                        }
                     }
                     Some(AssetBrowserAction::Register(index)) => {
                         self.register_asset_from_browser(index)
