@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/agent_benchmark.rs","old":"        let metrics = NativeMetrics {\n            harness_version: \"test-read-v1\",","new":"        let mut metrics = NativeMetrics {\n            harness_version: \"test-read-v1\","}
