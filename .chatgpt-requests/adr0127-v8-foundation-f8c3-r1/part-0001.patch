@@ -1,0 +1,1337 @@
++/// Structured failure from shared Native 2D authoring operations.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub enum Native2dAuthoringError {
++    /// The requested stable SpriteId does not exist.
++    SpriteNotFound(SpriteId),
++    /// The requested stable TileLayerId does not exist.
++    LayerNotFound(TileLayerId),
++    /// The selected Tile Map layer is locked.
++    LayerLocked(TileLayerId),
++    /// A pointer gesture is already active.
++    GestureAlreadyActive,
++    /// A gesture-scoped operation was requested without an active gesture.
++    GestureNotActive,
++    /// A bounded operation exceeded its explicit work budget.
++    WorkBudgetExceeded {
++        /// Maximum number of cells the caller allowed.
++        limit: usize,
++    },
++    /// A normalized sprite pivot was outside `[0, 1]` or non-finite.
++    InvalidPivot,
++}
++
++impl fmt::Display for Native2dAuthoringError {
++    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
++        match self {
++            Self::SpriteNotFound(id) => write!(formatter, "SpriteId `{}` was not found", id.as_str()),
++            Self::LayerNotFound(id) => write!(formatter, "TileLayerId `{}` was not found", id.as_str()),
++            Self::LayerLocked(id) => write!(formatter, "TileLayerId `{}` is locked", id.as_str()),
++            Self::GestureAlreadyActive => formatter.write_str("a Tile Map gesture is already active"),
++            Self::GestureNotActive => formatter.write_str("no Tile Map gesture is active"),
++            Self::WorkBudgetExceeded { limit } => write!(formatter, "Tile Map operation exceeded its {limit}-cell work budget"),
++            Self::InvalidPivot => formatter.write_str("sprite pivot must be finite and normalized"),
++        }
++    }
++}
++
++impl std::error::Error for Native2dAuthoringError {}
++
++/// Atomic Sprite Atlas mutations independent of presentation or transport.
++#[derive(Debug, Clone)]
++pub struct SpriteAtlasAuthoringService {
++    document: SpriteAtlasDocument,
++    undo: Vec<SpriteAtlasDocument>,
++}
++
++impl SpriteAtlasAuthoringService {
++    /// Creates the service from one typed Sprite Atlas document.
++    pub fn new(document: SpriteAtlasDocument) -> Self {
++        Self { document, undo: Vec::new() }
++    }
++
++    /// Returns the current committed document.
++    pub fn document(&self) -> &SpriteAtlasDocument {
++        &self.document
++    }
++
++    /// Renames a region without changing its stable SpriteId.
++    pub fn rename(&mut self, id: &SpriteId, name: String) -> Result<(), Native2dAuthoringError> {
++        let Some(index) = self.document.regions.iter().position(|region| &region.id == id) else {
++            return Err(Native2dAuthoringError::SpriteNotFound(id.clone()));
++        };
++        let before = self.document.clone();
++        self.document.regions[index].name = name;
++        self.undo.push(before);
++        Ok(())
++    }
++
++    /// Changes one normalized pivot as a single semantic mutation.
++    pub fn set_pivot(&mut self, id: &SpriteId, pivot: [f32; 2]) -> Result<(), Native2dAuthoringError> {
++        if pivot.iter().any(|value| !value.is_finite() || !(0.0..=1.0).contains(value)) {
++            return Err(Native2dAuthoringError::InvalidPivot);
++        }
++        let Some(index) = self.document.regions.iter().position(|region| &region.id == id) else {
++            return Err(Native2dAuthoringError::SpriteNotFound(id.clone()));
++        };
++        let before = self.document.clone();
++        self.document.regions[index].pivot = pivot;
++        self.undo.push(before);
++        Ok(())
++    }
++
++    /// Reverts the latest committed semantic mutation.
++    pub fn undo(&mut self) -> bool {
++        let Some(previous) = self.undo.pop() else {
++            return false;
++        };
++        self.document = previous;
++        true
++    }
++}
++
++/// Inclusive finite Tile Map rectangle used by rectangle/fill/stamp tools.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub struct TileRect {
++    /// Inclusive minimum world cell.
++    pub min: TileCell,
++    /// Inclusive maximum world cell.
++    pub max: TileCell,
++}
++
++impl TileRect {
++    /// Creates a normalized rectangle from two arbitrary corners.
++    pub fn from_corners(a: TileCell, b: TileCell) -> Self {
++        Self {
++            min: TileCell { x: a.x.min(b.x), y: a.y.min(b.y) },
++            max: TileCell { x: a.x.max(b.x), y: a.y.max(b.y) },
++        }
++    }
++
++    fn cells(self) -> impl Iterator<Item = TileCell> {
++        (self.min.y..=self.max.y).flat_map(move |y| {
++            (self.min.x..=self.max.x).map(move |x| TileCell { x, y })
++        })
++    }
++}
++
++/// Clipboard-like sparse Tile Map stamp using offsets from its origin.
++#[derive(Debug, Clone, PartialEq, Eq, Default)]
++pub struct TileStamp {
++    /// Sparse `(offset, tile)` entries in deterministic order.
++    pub cells: Vec<(TileCell, TileId)>,
++}
++
++/// Commit result for exactly one Tile Map pointer gesture.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct TileMapGestureCommit {
++    /// Layer/chunk pairs invalidated by the gesture only.
++    pub affected_chunks: Vec<TileMapChunkKey>,
++    /// Semantic undo entries produced by the gesture; always one.
++    pub undo_entries: u32,
++}
++
++#[derive(Debug, Clone)]
++struct TileMapGesture {
++    before: TileMapDocument,
++    working: TileMapDocument,
++    affected: BTreeSet<TileMapChunkKey>,
++}
++
++impl TileMapGesture {
++    fn new(document: &TileMapDocument) -> Self {
++        Self { before: document.clone(), working: document.clone(), affected: BTreeSet::new() }
++    }
++}
++
++/// Transactional sparse Tile Map service. One pointer gesture is one undo entry.
++#[derive(Debug, Clone)]
++pub struct TileMapAuthoringService {
++    document: TileMapDocument,
++    active: Option<TileMapGesture>,
++    undo: Vec<TileMapDocument>,
++}
++
++impl TileMapAuthoringService {
++    /// Creates a service from one committed sparse Tile Map document.
++    pub fn new(document: TileMapDocument) -> Self {
++        Self { document, active: None, undo: Vec::new() }
++    }
++
++    /// Returns the current committed document.
++    pub fn document(&self) -> &TileMapDocument {
++        &self.document
++    }
++
++    /// Returns transient preview content while a gesture is active.
++    pub fn preview(&self) -> &TileMapDocument {
++        self.active.as_ref().map_or(&self.document, |gesture| &gesture.working)
++    }
++
++    /// Begins one pointer gesture. Nested gestures are rejected.
++    pub fn begin_gesture(&mut self) -> Result<(), Native2dAuthoringError> {
++        if self.active.is_some() {
++            return Err(Native2dAuthoringError::GestureAlreadyActive);
++        }
++        self.active = Some(TileMapGesture::new(&self.document));
++        Ok(())
++    }
++
++    /// Paints or erases one world cell in the transient gesture.
++    pub fn paint(
++        &mut self,
++        layer: &TileLayerId,
++        cell: TileCell,
++        tile: Option<TileId>,
++    ) -> Result<TileMapChunkKey, Native2dAuthoringError> {
++        let gesture = self.active.as_mut().ok_or(Native2dAuthoringError::GestureNotActive)?;
++        let (coord, local) = gesture.working.split_cell(cell);
++        let Some(layer_document) = gesture.working.layers.iter_mut().find(|candidate| &candidate.id == layer) else {
++            return Err(Native2dAuthoringError::LayerNotFound(layer.clone()));
++        };
++        if layer_document.locked {
++            return Err(Native2dAuthoringError::LayerLocked(layer.clone()));
++        }
++        let chunk_index = layer_document.chunks.iter().position(|chunk| chunk.coord == coord);
++        if let Some(index) = chunk_index {
++            layer_document.chunks[index].set(local, tile);
++            if layer_document.chunks[index].cells.is_empty() {
++                layer_document.chunks.remove(index);
++            }
++        } else if let Some(tile) = tile {
++            let mut chunk = TileChunk { coord, cells: Vec::new() };
++            chunk.set(local, Some(tile));
++            layer_document.chunks.push(chunk);
++            layer_document.chunks.sort_by_key(|chunk| (chunk.coord.y, chunk.coord.x));
++        }
++        let key = TileMapChunkKey { layer: layer.clone(), chunk: coord };
++        gesture.affected.insert(key.clone());
++        Ok(key)
++    }
++
++    /// Paints or erases an inclusive rectangle within one gesture.
++    pub fn rectangle(
++        &mut self,
++        layer: &TileLayerId,
++        rect: TileRect,
++        tile: Option<TileId>,
++        max_cells: usize,
++    ) -> Result<(), Native2dAuthoringError> {
++        let cells = rect.cells().collect::<Vec<_>>();
++        if cells.len() > max_cells {
++            return Err(Native2dAuthoringError::WorkBudgetExceeded { limit: max_cells });
++        }
++        for cell in cells {
++            self.paint(layer, cell, tile.clone())?;
++        }
++        Ok(())
++    }
++
++    /// Paints a Bresenham line within one gesture and explicit work budget.
++    pub fn line(
++        &mut self,
++        layer: &TileLayerId,
++        start: TileCell,
++        end: TileCell,
++        tile: Option<TileId>,
++        max_cells: usize,
++    ) -> Result<(), Native2dAuthoringError> {
++        let mut x = start.x;
++        let mut y = start.y;
++        let dx = (end.x - start.x).abs();
++        let sx = if start.x < end.x { 1 } else { -1 };
++        let dy = -(end.y - start.y).abs();
++        let sy = if start.y < end.y { 1 } else { -1 };
++        let mut error = dx + dy;
++        let mut cells = Vec::new();
++        loop {
++            cells.push(TileCell { x, y });
++            if cells.len() > max_cells {
++                return Err(Native2dAuthoringError::WorkBudgetExceeded { limit: max_cells });
++            }
++            if x == end.x && y == end.y {
++                break;
++            }
++            let twice = 2 * error;
++            if twice >= dy {
++                error += dy;
++                x += sx;
++            }
++            if twice <= dx {
++                error += dx;
++                y += sy;
++            }
++        }
++        for cell in cells {
++            self.paint(layer, cell, tile.clone())?;
++        }
++        Ok(())
++    }
++
++    /// Flood-fills a finite rectangle, never searching outside the caller's bounds.
++    pub fn fill_bounded(
++        &mut self,
++        layer: &TileLayerId,
++        start: TileCell,
++        bounds: TileRect,
++        tile: Option<TileId>,
++        max_cells: usize,
++    ) -> Result<(), Native2dAuthoringError> {
++        if start.x < bounds.min.x || start.x > bounds.max.x || start.y < bounds.min.y || start.y > bounds.max.y {
++            return Ok(());
++        }
++        let target = self.preview().tile_at(layer, start).cloned();
++        if target == tile {
++            return Ok(());
++        }
++        let before = self.active.clone();
++        let mut queue = VecDeque::from([start]);
++        let mut visited = BTreeSet::new();
++        while let Some(cell) = queue.pop_front() {
++            if cell.x < bounds.min.x || cell.x > bounds.max.x || cell.y < bounds.min.y || cell.y > bounds.max.y || !visited.insert(cell) {
++                continue;
++            }
++            if self.preview().tile_at(layer, cell).cloned() != target {
++                continue;
++            }
++            if visited.len() > max_cells {
++                self.active = before;
++                return Err(Native2dAuthoringError::WorkBudgetExceeded { limit: max_cells });
++            }
++            self.paint(layer, cell, tile.clone())?;
++            queue.push_back(TileCell { x: cell.x + 1, y: cell.y });
++            queue.push_back(TileCell { x: cell.x - 1, y: cell.y });
++            queue.push_back(TileCell { x: cell.x, y: cell.y + 1 });
++            queue.push_back(TileCell { x: cell.x, y: cell.y - 1 });
++        }
++        Ok(())
++    }
++
++    /// Eyedrops the stable TileId at one world cell from the transient preview.
++    pub fn eyedropper(&self, layer: &TileLayerId, cell: TileCell) -> Option<TileId> {
++        self.preview().tile_at(layer, cell).cloned()
++    }
++
++    /// Copies a finite rectangle into a sparse stamp whose origin is the rectangle minimum.
++    pub fn copy_stamp(&self, layer: &TileLayerId, rect: TileRect) -> TileStamp {
++        let mut cells = rect
++            .cells()
++            .filter_map(|cell| {
++                self.preview().tile_at(layer, cell).cloned().map(|tile| {
++                    (TileCell { x: cell.x - rect.min.x, y: cell.y - rect.min.y }, tile)
++                })
++            })
++            .collect::<Vec<_>>();
++        cells.sort_by_key(|(cell, tile)| (cell.y, cell.x, tile.as_str().to_owned()));
++        TileStamp { cells }
++    }
++
++    /// Pastes one sparse stamp as part of the active gesture.
++    pub fn paste_stamp(
++        &mut self,
++        layer: &TileLayerId,
++        origin: TileCell,
++        stamp: &TileStamp,
++        max_cells: usize,
++    ) -> Result<(), Native2dAuthoringError> {
++        if stamp.cells.len() > max_cells {
++            return Err(Native2dAuthoringError::WorkBudgetExceeded { limit: max_cells });
++        }
++        for (offset, tile) in &stamp.cells {
++            self.paint(
++                layer,
++                TileCell { x: origin.x + offset.x, y: origin.y + offset.y },
++                Some(tile.clone()),
++            )?;
++        }
++        Ok(())
++    }
++
++    /// Cancels a gesture and restores the exact pre-gesture snapshot.
++    pub fn cancel_gesture(&mut self) -> Result<(), Native2dAuthoringError> {
++        let gesture = self.active.take().ok_or(Native2dAuthoringError::GestureNotActive)?;
++        self.document = gesture.before;
++        Ok(())
++    }
++
++    /// Commits the complete gesture as exactly one semantic undo entry.
++    pub fn commit_gesture(&mut self) -> Result<TileMapGestureCommit, Native2dAuthoringError> {
++        let gesture = self.active.take().ok_or(Native2dAuthoringError::GestureNotActive)?;
++        self.undo.push(gesture.before);
++        self.document = gesture.working;
++        Ok(TileMapGestureCommit {
++            affected_chunks: gesture.affected.into_iter().collect(),
++            undo_entries: 1,
++        })
++    }
++
++    /// Reverts the latest completed gesture. Active gestures are never crossed.
++    pub fn undo(&mut self) -> bool {
++        if self.active.is_some() {
++            return false;
++        }
++        let Some(previous) = self.undo.pop() else {
++            return false;
++        };
++        self.document = previous;
++        true
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use crate::native_2d_assets::{TileMapLayer, TILE_MAP_SCHEMA_VERSION};
++    use crate::{AssetId, SortingLayerId};
++
++    fn map() -> TileMapDocument {
++        TileMapDocument {
++            schema_version: TILE_MAP_SCHEMA_VERSION,
++            tile_set: AssetId::generate(),
++            chunk_size: 32,
++            layers: vec![TileMapLayer {
++                id: TileLayerId::generate(),
++                name: "World".to_owned(),
++                enabled: true,
++                locked: false,
++                sorting_layer: SortingLayerId::generate(),
++                order_in_layer: 0,
++                chunks: Vec::new(),
++            }],
++        }
++    }
++
++    #[test]
++    fn one_pointer_stroke_is_one_undo_entry_and_cancel_is_exact() {
++        let original = map();
++        let layer = original.layers[0].id.clone();
++        let mut service = TileMapAuthoringService::new(original.clone());
++        service.begin_gesture().unwrap();
++        service.paint(&layer, TileCell { x: 2, y: 3 }, Some(TileId::generate())).unwrap();
++        service.cancel_gesture().unwrap();
++        assert_eq!(service.document(), &original);
++
++        service.begin_gesture().unwrap();
++        service.paint(&layer, TileCell { x: 33, y: 3 }, Some(TileId::generate())).unwrap();
++        let commit = service.commit_gesture().unwrap();
++        assert_eq!(commit.undo_entries, 1);
++        assert_eq!(commit.affected_chunks[0].chunk, TileChunkCoord { x: 1, y: 0 });
++        assert!(service.undo());
++        assert_eq!(service.document(), &original);
++    }
++
++    #[test]
++    fn bounded_fill_rolls_back_transient_changes_on_budget_failure() {
++        let original = map();
++        let layer = original.layers[0].id.clone();
++        let mut service = TileMapAuthoringService::new(original);
++        service.begin_gesture().unwrap();
++        let before = service.preview().clone();
++        assert!(matches!(
++            service.fill_bounded(
++                &layer,
++                TileCell { x: 0, y: 0 },
++                TileRect::from_corners(TileCell { x: 0, y: 0 }, TileCell { x: 4, y: 4 }),
++                Some(TileId::generate()),
++                4,
++            ),
++            Err(Native2dAuthoringError::WorkBudgetExceeded { .. })
++        ));
++        assert_eq!(service.preview(), &before);
++    }
++}
+diff --git a/crates/authoring/src/typed_document_authoring.rs b/crates/authoring/src/typed_document_authoring.rs
+index ad7aa69d6f6ca31b7a47668e0f06a73532ccd8fb..5fc63e55295406860390bc5b02a4b81536ef7ea8 100644
+--- a/crates/authoring/src/typed_document_authoring.rs
++++ b/crates/authoring/src/typed_document_authoring.rs
+@@ -8,7 +8,8 @@
+ use crate::project_settings::SYSTEM_SETTINGS_SCHEMA_VERSION;
+ use crate::{
+     AnimationSet, AuthoringPermission, AuthoringPermissionError, AuthoringPermissions, Diagnostic,
+-    MaterialAsset, ProjectSettings, ANIMATION_SET_SCHEMA_VERSION, PROJECT_SETTINGS_SCHEMA_VERSION,
++    MaterialAsset, ProjectSettings, SpriteAnimationDocument, SpriteAtlasDocument, TileMapDocument,
++    TileSetDocument, ANIMATION_SET_SCHEMA_VERSION, PROJECT_SETTINGS_SCHEMA_VERSION,
+ };
+ use serde::Serialize;
+ use std::fmt;
+@@ -71,6 +72,46 @@ impl TypedAuthoringDocument for AnimationSet {
+     }
+ }
+ 
++fn validate_native_2d(errors: Vec<String>) -> Result<(), String> {
++    if errors.is_empty() {
++        Ok(())
++    } else {
++        Err(errors.join("; "))
++    }
++}
++
++impl TypedAuthoringDocument for SpriteAtlasDocument {
++    const INVALID_CODE: &'static str = "sprite_atlas.invalid";
++
++    fn validate_authoring(&self) -> Result<(), String> {
++        validate_native_2d(self.validate())
++    }
++}
++
++impl TypedAuthoringDocument for SpriteAnimationDocument {
++    const INVALID_CODE: &'static str = "sprite_animation.invalid";
++
++    fn validate_authoring(&self) -> Result<(), String> {
++        validate_native_2d(self.validate())
++    }
++}
++
++impl TypedAuthoringDocument for TileSetDocument {
++    const INVALID_CODE: &'static str = "tile_set.invalid";
++
++    fn validate_authoring(&self) -> Result<(), String> {
++        validate_native_2d(self.validate())
++    }
++}
++
++impl TypedAuthoringDocument for TileMapDocument {
++    const INVALID_CODE: &'static str = "tile_map.invalid";
++
++    fn validate_authoring(&self) -> Result<(), String> {
++        validate_native_2d(self.validate())
++    }
++}
++
+ /// Live revision metadata owned by the adapter that owns a typed document.
+ ///
+ /// Reopening a document constructs a fresh generation. Successful semantic
+diff --git a/crates/cli/src/typed_document_cli.rs b/crates/cli/src/typed_document_cli.rs
+index efa16034040bd2fd60e504248cb85ff5bff74683..ae6e98f763718214165f2060392bb5e895424160 100644
+--- a/crates/cli/src/typed_document_cli.rs
++++ b/crates/cli/src/typed_document_cli.rs
+@@ -3,8 +3,9 @@
+ use super::{to_json, CliError, CliRunResult};
+ use engine_authoring::{
+     replace_file_contents, AnimationSet, AuthoringPermission, AuthoringPermissions, Diagnostic,
+-    MaterialAsset, ProjectRoot, ProjectSettings, TypedAuthoringDocument,
+-    TypedDocumentAuthoringError, TypedDocumentAuthoringService, TypedDocumentAuthoringState,
++    MaterialAsset, ProjectRoot, ProjectSettings, SpriteAnimationDocument, SpriteAtlasDocument,
++    TileMapDocument, TileSetDocument, TypedAuthoringDocument, TypedDocumentAuthoringError,
++    TypedDocumentAuthoringService, TypedDocumentAuthoringState,
+ };
+ use serde::de::DeserializeOwned;
+ use std::fs;
+@@ -73,8 +74,27 @@ pub(super) fn dispatch(args: &[String]) -> Option<Result<CliRunResult, CliError>
+                 command == "apply",
+             ))
+         }
++        [domain, command, project, relative]
++            if is_native_2d_domain(domain) && (command == "inspect" || command == "validate") =>
++        {
++            Some(native_2d_read(domain, command, Path::new(project), relative))
++        }
++        [domain, command, project, relative, replacement]
++            if is_native_2d_domain(domain) && (command == "preview" || command == "apply") =>
++        {
++            Some(native_2d_mutate(
++                domain,
++                Path::new(project),
++                relative,
++                Path::new(replacement),
++                command == "apply",
++            ))
++        }
+         _ if args.first().is_some_and(|value| {
+-            value == "material" || value == "project_settings" || value == "animation_set"
++            value == "material"
++                || value == "project_settings"
++                || value == "animation_set"
++                || is_native_2d_domain(value)
+         }) => Some(Err(CliError::UnknownCommand {
+             args: args.join(" "),
+         })),
+@@ -157,6 +177,128 @@ fn animation_set_mutate(
+     })
+ }
+ 
++fn is_native_2d_domain(domain: &str) -> bool {
++    matches!(
++        domain,
++        "sprite_atlas" | "sprite_animation" | "tile_set" | "tile_map"
++    )
++}
++
++trait Native2dCliDocument: TypedAuthoringDocument + DeserializeOwned {
++    fn to_native_2d_json(&self) -> Result<String, serde_json::Error>;
++}
++
++impl Native2dCliDocument for SpriteAtlasDocument {
++    fn to_native_2d_json(&self) -> Result<String, serde_json::Error> {
++        self.to_canonical_json()
++    }
++}
++
++impl Native2dCliDocument for SpriteAnimationDocument {
++    fn to_native_2d_json(&self) -> Result<String, serde_json::Error> {
++        self.to_canonical_json()
++    }
++}
++
++impl Native2dCliDocument for TileSetDocument {
++    fn to_native_2d_json(&self) -> Result<String, serde_json::Error> {
++        self.to_canonical_json()
++    }
++}
++
++impl Native2dCliDocument for TileMapDocument {
++    fn to_native_2d_json(&self) -> Result<String, serde_json::Error> {
++        self.to_canonical_json()
++    }
++}
++
++fn native_2d_read(
++    domain: &str,
++    command: &str,
++    project: &Path,
++    relative: &str,
++) -> Result<CliRunResult, CliError> {
++    match domain {
++        "sprite_atlas" => native_2d_read_typed::<SpriteAtlasDocument>(command, project, relative),
++        "sprite_animation" => {
++            native_2d_read_typed::<SpriteAnimationDocument>(command, project, relative)
++        }
++        "tile_set" => native_2d_read_typed::<TileSetDocument>(command, project, relative),
++        "tile_map" => native_2d_read_typed::<TileMapDocument>(command, project, relative),
++        _ => unreachable!("caller checked Native 2D domain"),
++    }
++}
++
++fn native_2d_mutate(
++    domain: &str,
++    project: &Path,
++    relative: &str,
++    replacement: &Path,
++    persist: bool,
++) -> Result<CliRunResult, CliError> {
++    match domain {
++        "sprite_atlas" => {
++            native_2d_mutate_typed::<SpriteAtlasDocument>(project, relative, replacement, persist)
++        }
++        "sprite_animation" => native_2d_mutate_typed::<SpriteAnimationDocument>(
++            project,
++            relative,
++            replacement,
++            persist,
++        ),
++        "tile_set" => {
++            native_2d_mutate_typed::<TileSetDocument>(project, relative, replacement, persist)
++        }
++        "tile_map" => {
++            native_2d_mutate_typed::<TileMapDocument>(project, relative, replacement, persist)
++        }
++        _ => unreachable!("caller checked Native 2D domain"),
++    }
++}
++
++fn native_2d_read_typed<T: Native2dCliDocument>(
++    command: &str,
++    project: &Path,
++    relative: &str,
++) -> Result<CliRunResult, CliError> {
++    let (_, document) = load_native_2d::<T>(project, relative)?;
++    match command {
++        "inspect" => inspect(document),
++        "validate" => validate(document),
++        _ => unreachable!("caller checked Native 2D read command"),
++    }
++}
++
++fn native_2d_mutate_typed<T: Native2dCliDocument>(
++    project: &Path,
++    relative: &str,
++    replacement_path: &Path,
++    persist: bool,
++) -> Result<CliRunResult, CliError> {
++    let (path, document) = load_native_2d::<T>(project, relative)?;
++    let replacement: T = load_json(replacement_path)?;
++    mutate(document, replacement, persist, |document| {
++        let json = document
++            .to_native_2d_json()
++            .map_err(|error| authoring_message(T::INVALID_CODE, error.to_string()))?;
++        replace_file_contents(&path, &json).map_err(|source| CliError::Persist { source })
++    })
++}
++
++fn load_native_2d<T: Native2dCliDocument>(
++    project: &Path,
++    relative: &str,
++) -> Result<(PathBuf, T), CliError> {
++    let root = open_project(project)?;
++    let path = root
++        .resolve_asset(relative)
++        .map_err(|error| authoring_message("project.invalid_asset_path", error.to_string()))?;
++    let json = read_text(&path)?;
++    let document = serde_json::from_str(&json)
++        .map_err(|error| authoring_message(T::INVALID_CODE, error.to_string()))?;
++    Ok((path, document))
++}
++
+ fn inspect<T: TypedAuthoringDocument>(document: T) -> Result<CliRunResult, CliError> {
+     let state = TypedDocumentAuthoringState::new();
+     let output = TypedDocumentAuthoringService::new()
+diff --git a/crates/editor/src/ui/inspector/asset_reference.rs b/crates/editor/src/ui/inspector/asset_reference.rs
+index 8464b6abedfbce65956f4a05c532cf1c9b5b9c25..d13793868d49091c6d2909c151809fbac5f27a0f 100644
+--- a/crates/editor/src/ui/inspector/asset_reference.rs
++++ b/crates/editor/src/ui/inspector/asset_reference.rs
+@@ -91,11 +91,14 @@ pub(in crate::ui) fn asset_reference_browser_kind(
+         | engine::AssetKind::Morph
+         | engine::AssetKind::SecondaryMotionRig => BrowserKind::Mesh,
+         engine::AssetKind::Material => BrowserKind::Material,
+-        engine::AssetKind::Texture => BrowserKind::Texture,
+-        engine::AssetKind::AnimationClip => BrowserKind::AnimationClip,
++        engine::AssetKind::Texture | engine::AssetKind::SpriteAtlas => BrowserKind::Texture,
++        engine::AssetKind::AnimationClip | engine::AssetKind::SpriteAnimation => BrowserKind::AnimationClip,
+         engine::AssetKind::MotionSource => BrowserKind::MotionSource,
+-        engine::AssetKind::AnimationGraph | engine::AssetKind::BehaviorTree => BrowserKind::Graph,
+-        engine::AssetKind::VfxEffect => BrowserKind::Graph,
++        engine::AssetKind::AnimationGraph
++        | engine::AssetKind::BehaviorTree
++        | engine::AssetKind::VfxEffect
++        | engine::AssetKind::TileSet
++        | engine::AssetKind::TileMap => BrowserKind::Graph,
+         engine::AssetKind::AnimationSet => BrowserKind::AnimationSet,
+         engine::AssetKind::Audio => BrowserKind::Audio,
+         engine::AssetKind::NavMesh => BrowserKind::NavMesh,
+diff --git a/crates/engine/src/camera.rs b/crates/engine/src/camera.rs
+index a91d5c619035753b101821653986eeb806affb72..b50eae2332aa40258dce4230d071672660971eb8 100644
+--- a/crates/engine/src/camera.rs
++++ b/crates/engine/src/camera.rs
+@@ -9,7 +9,8 @@ use glam::{Mat4, Quat, Vec3};
+ use hashbrown::HashMap;
+ 
+ pub use engine_render_runtime::camera::{
+-    camera_aspect_system, default_camera_transform, Camera3D, ViewportSize,
++    camera_aspect_system, default_camera_transform, select_game_camera_intent, Camera3D,
++    GameCameraIntent, GameCameraKind, GameCameraSelection, ViewportSize,
+ };
+ pub(crate) use engine_render_runtime::camera::{
+     camera_selection_key, select_active_game_camera,
+diff --git a/crates/engine/src/components.rs b/crates/engine/src/components.rs
+index c7e1126a9ecf8088f37c9575f5ea8ad49c672a72..cb271fb0d8fed82f2534130716abc78ba94ce980 100644
+--- a/crates/engine/src/components.rs
++++ b/crates/engine/src/components.rs
+@@ -12,7 +12,8 @@ use crate::scene_bridge::{
+     AUDIO_LISTENER_COMPONENT,
+     BUILTIN_BLUE_MATERIAL_ASSET_ID, BUILTIN_ORANGE_MATERIAL_ASSET_ID, BUILTIN_QUAD_ASSET_ID,
+     BUILTIN_TRIANGLE_ASSET_ID, BUILTIN_UI_DOCUMENT_ASSET_ID, BUILTIN_WHITE_MATERIAL_ASSET_ID,
+-    CAMERA_COMPONENT, CHARACTER_CONTROLLER_COMPONENT, FOOT_IK_COMPONENT, LOD_GROUP_COMPONENT,
++    CAMERA_2D_COMPONENT, CAMERA_COMPONENT, CHARACTER_CONTROLLER_COMPONENT, FOOT_IK_COMPONENT,
++    LOD_GROUP_COMPONENT,
+     PARTICLE_EMITTER_COMPONENT, RUNTIME_METADATA_COMPONENT, SHADOW_SETTINGS_COMPONENT,
+     SKINNED_MESH_RENDERER_COMPONENT, SKINNED_MODEL_COMPONENT, STATIC_MESH_RENDERER_COMPONENT,
+     TRANSFORM_COMPONENT,
+@@ -54,6 +55,14 @@ pub enum AssetKind {
+     Prefab,
+     /// A typed `*.vfx.json` visual-effect document (ADR 0125).
+     VfxEffect,
++    /// A versioned `*.spriteatlas.json` Native 2D sprite-atlas document.
++    SpriteAtlas,
++    /// A versioned `*.spriteanim.json` Native 2D sprite-animation document.
++    SpriteAnimation,
++    /// A versioned `*.tileset.json` Native 2D tile-set document.
++    TileSet,
++    /// A versioned `*.tilemap.json` Native 2D tile-map document.
++    TileMap,
+     /// A glTF/GLB, FBX, or PMX source document used for mesh, skin, or
+     /// animation import (ADR 0081 widened this from glTF/GLB-only, ADR 0097
+     /// widened it again to PMX; the variant name is a pre-existing misnomer
+@@ -112,6 +121,10 @@ pub fn asset_path_matches_kind(kind: AssetKind, path: &Path) -> bool {
+         AssetKind::UiDocument => file_name.ends_with(".ui.json"),
+         AssetKind::Prefab => file_name.ends_with(".prefab.json"),
+         AssetKind::VfxEffect => file_name.ends_with(".vfx.json"),
++        AssetKind::SpriteAtlas => file_name.ends_with(".spriteatlas.json"),
++        AssetKind::SpriteAnimation => file_name.ends_with(".spriteanim.json"),
++        AssetKind::TileSet => file_name.ends_with(".tileset.json"),
++        AssetKind::TileMap => file_name.ends_with(".tilemap.json"),
+         AssetKind::GltfSource => extension_matches(extension, &["gltf", "glb", "fbx", "pmx"]),
+         AssetKind::MotionSource => extension_matches(extension, &["vmd"]),
+         // Skins, skeletons, morphs, and secondary-motion rigs are only ever
+diff --git a/crates/engine/src/components/builtins.rs b/crates/engine/src/components/builtins.rs
+index ec286a518391a69623a79342f1f5ec67b049209a..204133bb14d5f30ee19c972111ef71e156ef4f98 100644
+--- a/crates/engine/src/components/builtins.rs
++++ b/crates/engine/src/components/builtins.rs
+@@ -235,6 +235,44 @@ const CAMERA_FIELDS: &[FieldDef] = &[
+     .with_control(InspectorFieldControl::Number(POSITIVE)),
+ ];
+ 
++const CAMERA_2D_FIELDS: &[FieldDef] = &[
++    boolean("enabled", "Enabled", "Whether this camera participates in shared Game View arbitration.", true),
++    integer("priority", "Priority", "Shared 2D/3D camera selection priority; higher values win.", 0, NumericRange::inclusive(i32::MIN as f64, i32::MAX as f64)),
++    number("orthographic_height", "Orthographic Height", "Vertical world-space span before zoom.", 10.0, POSITIVE),
++    number("zoom", "Zoom", "Positive orthographic zoom multiplier.", 1.0, POSITIVE),
++    float("near", "Near", "Near clipping plane in Camera2D space.", -1000.0),
++    float("far", "Far", "Far clipping plane in Camera2D space; must exceed Near.", 1000.0),
++    boolean("pixel_perfect", "Pixel Perfect", "Use deterministic reference-pixel projection without rewriting authored transforms.", false),
++    number("reference_pixels_per_unit", "Reference Pixels Per Unit", "Reference source pixels represented by one world unit.", 100.0, POSITIVE),
++    integer("reference_width", "Reference Width", "Pixel-perfect reference resolution width.", 320, U32_RANGE),
++    integer("reference_height", "Reference Height", "Pixel-perfect reference resolution height.", 180, U32_RANGE),
++    enumeration("fit", "Viewport Fit", "How the reference frame fits the actual viewport.", "fit", &["fit", "fill", "stretch"]),
++];
++
++const SPRITE_RENDERER_2D_FIELDS: &[FieldDef] = &[
++    asset_ref("atlas", "Sprite Atlas", "Sprite Atlas document containing the stable SpriteId region.", AssetKind::SpriteAtlas, FieldDefaultSpec::Unassigned),
++    text("sprite_id", "Sprite ID", "Stable SpriteId inside the selected atlas.", ""),
++    number("tint_r", "Tint R", "Linear red tint multiplier.", 1.0, NON_NEGATIVE),
++    number("tint_g", "Tint G", "Linear green tint multiplier.", 1.0, NON_NEGATIVE),
++    number("tint_b", "Tint B", "Linear blue tint multiplier.", 1.0, NON_NEGATIVE),
++    number("tint_a", "Tint A", "Linear alpha tint multiplier.", 1.0, UNIT_INTERVAL),
++    boolean("flip_x", "Flip X", "Mirror texture coordinates horizontally.", false),
++    boolean("flip_y", "Flip Y", "Mirror texture coordinates vertically.", false),
++    text("sorting_layer", "Sorting Layer ID", "Stable SortingLayerId from Project Settings.", "sorting_layer_00000000000000000000000000"),
++    integer("order_in_layer", "Order In Layer", "Signed authored order inside the logical sorting layer.", 0, NumericRange::inclusive(i32::MIN as f64, i32::MAX as f64)),
++    boolean("visible", "Visible", "Whether this sprite contributes a runtime draw.", true),
++    enumeration("blend", "Blend", "Supported unlit SpriteRenderer2D blend mode.", "alpha", &["alpha", "premultiplied_alpha", "additive"]),
++    asset_ref("material_override", "Material Override", "Optional material compatibility override used for deterministic batching.", AssetKind::Material, FieldDefaultSpec::Unassigned).optional(),
++];
++
++const SPRITE_ANIMATOR_2D_FIELDS: &[FieldDef] = &[
++    asset_ref("clip", "Sprite Animation", "Sprite Animation document evaluated independently for this entity.", AssetKind::SpriteAnimation, FieldDefaultSpec::Unassigned),
++    boolean("autoplay", "Autoplay", "Start clip playback when the runtime entity becomes active.", true),
++    number("speed", "Speed", "Non-negative deterministic playback speed multiplier.", 1.0, NON_NEGATIVE),
++    FieldDef::new("looping_override", "Looping Override", "Optional per-entity looping override; unassigned uses the clip default.", FieldKind::Bool, FieldDefaultSpec::Unassigned).optional(),
++    integer("initial_frame", "Initial Frame", "Zero-based initial frame selected when playback becomes active.", 0, U32_RANGE),
++];
++
+ const DIRECTIONAL_LIGHT_FIELDS: &[FieldDef] = &[
+     FieldDef::new(
+         "direction_x",
+@@ -1999,6 +2037,33 @@ pub(super) fn builtin_components() -> Vec<BuiltinComponent> {
+             COLLIDER_FIELDS,
+             spawn_collider_component,
+         ),
++        BuiltinComponent::new(
++            CAMERA_2D_COMPONENT,
++            "Camera 2D",
++            "Orthographic XY camera participating in the shared Game View camera contract.",
++            "Rendering",
++            1,
++            CAMERA_2D_FIELDS,
++            spawn_camera_2d_component,
++        ),
++        BuiltinComponent::new(
++            SPRITE_RENDERER_2D_COMPONENT,
++            "Sprite Renderer 2D",
++            "Renders one stable SpriteRef using logical sorting rather than Transform Z.",
++            "Rendering",
++            1,
++            SPRITE_RENDERER_2D_FIELDS,
++            spawn_sprite_renderer_2d_component,
++        ),
++        BuiltinComponent::new(
++            SPRITE_ANIMATOR_2D_COMPONENT,
++            "Sprite Animator 2D",
++            "Evaluates a Sprite Animation clip in fixed time and drives SpriteRenderer2D.",
++            "Animation",
++            1,
++            SPRITE_ANIMATOR_2D_FIELDS,
++            spawn_sprite_animator_2d_component,
++        ),
+         BuiltinComponent::new(
+             COLLIDER_2D_COMPONENT,
+             "Collider 2D",
+diff --git a/crates/engine/src/components/validation.rs b/crates/engine/src/components/validation.rs
+index 0665cf279a80f67c6ffbd1d878d1423097129a47..eb26307b0ea89c291a5617bad7b04731ae9b7f76 100644
+--- a/crates/engine/src/components/validation.rs
++++ b/crates/engine/src/components/validation.rs
+@@ -296,11 +296,53 @@ pub fn validate_builtin_component_values(scene: &AuthoringScene) -> Vec<Diagnost
+         }
+     }
+     diagnostics.extend(validate_skinned_models_without_renderers(scene));
++    diagnostics.extend(validate_game_camera_scene(scene));
+     diagnostics.extend(validate_spatial_audio_scene(scene));
+     diagnostics.extend(crate::render_limits::validate_scene_render_limits(scene));
+     diagnostics
+ }
+ 
++fn validate_game_camera_scene(scene: &AuthoringScene) -> Vec<Diagnostic> {
++    let camera_3d = ComponentTypeId::new(CAMERA_COMPONENT);
++    let camera_2d = ComponentTypeId::new(CAMERA_2D_COMPONENT);
++    let mut enabled = Vec::new();
++    for (entity_id, entity) in scene.entities() {
++        for component_type in [&camera_3d, &camera_2d] {
++            let Some(Value::Object(fields)) = entity.components.get(component_type) else {
++                continue;
++            };
++            if fields.get("enabled") != Some(&Value::Bool(true)) {
++                continue;
++            }
++            let Some(priority) = fields.get("priority").and_then(|value| match value {
++                Value::I64(value) => i32::try_from(*value).ok(),
++                Value::U64(value) => i32::try_from(*value).ok(),
++                _ => None,
++            }) else {
++                continue;
++            };
++            enabled.push((entity_id.clone(), component_type.clone(), priority));
++        }
++    }
++    let Some(highest) = enabled.iter().map(|(_, _, priority)| *priority).max() else {
++        return Vec::new();
++    };
++    if enabled.iter().filter(|(_, _, priority)| *priority == highest).count() <= 1 {
++        return Vec::new();
++    }
++    enabled
++        .into_iter()
++        .filter(|(_, _, priority)| *priority == highest)
++        .map(|(entity, component_type, _)| {
++            Diagnostic::error(
++                "scene.game_camera_priority_ambiguous",
++                "Multiple enabled Camera2D/Camera3D components share the highest priority; assign a unique highest priority instead of relying on runtime entity order.",
++            )
++            .with_target(DiagnosticTarget::Component { entity, component_type })
++        })
++        .collect()
++}
++
+ fn validate_spatial_audio_scene(scene: &AuthoringScene) -> Vec<Diagnostic> {
+     let mut diagnostics = Vec::new();
+     let listener_type = ComponentTypeId::new(AUDIO_LISTENER_COMPONENT);
+diff --git a/crates/engine/src/native_2d.rs b/crates/engine/src/native_2d.rs
+index 944e1c721f225a74369b1c691bce914ea7a67cb6..4baf25e89826f4272b76bf61ff5bfdd16671439c 100644
+--- a/crates/engine/src/native_2d.rs
++++ b/crates/engine/src/native_2d.rs
+@@ -1,6 +1,22 @@
+ //! Cross-domain Native 2D physics composition (ADR 0127).
+ 
++pub use engine_animation::sprite_2d::{
++    SpriteAnimationRuntimeError, SpriteAnimationState2d, SpriteAnimatorRuntime2d, SpriteFrameEvent2d,
++};
++pub use engine_assets::native_2d::{
++    compile_sprite_atlas, compile_tile_map, compile_tile_set, CompiledSpriteAtlas,
++    CompiledSpriteRegion, CompiledTile, CompiledTileChunk, CompiledTileLayer, CompiledTileMap,
++    CompiledTileSet, Native2dCompileError,
++};
+ pub use engine_physics::native_2d::*;
++pub use engine_render_runtime::native_2d::{
++    cull_tile_chunks, sort_and_batch_sprites, validate_camera_transform, Camera2d,
++    Camera2dDiagnostic, Native2dRenderMetrics, SpriteBatch2d, SpriteInstance2d,
++    TileChunkBounds2d, ViewRect2d, ViewportFit2d, VisibleTileChunk2d,
++};
++pub use engine_authoring::{
++    SpriteBlendMode, SpriteRenderer2d, SpriteRef, TileLayerId, TileMapDocument, TileSetDocument,
++};
+ 
+ use crate::transform::{GlobalTransform, Parent, Transform};
+ use engine_authoring::Project2dSettings;
+@@ -151,6 +167,57 @@ pub fn physics_2d_fixed_system(
+     }
+ }
+ 
++/// One named frame event emitted by SpriteAnimator2D in the current fixed step.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct SpriteAnimationEvent2d {
++    /// Runtime entity whose playback entered the frame.
++    pub entity: Entity,
++    /// Stable Sprite Animation asset used by the animator.
++    pub clip: engine_authoring::AssetId,
++    /// Frame index entered by deterministic playback.
++    pub frame_index: usize,
++    /// Authored event name.
++    pub name: String,
++}
++
++/// Fixed-step Sprite Animation event stream visible to later gameplay systems.
++#[derive(Debug, Default)]
++pub struct SpriteAnimationEvents2d {
++    events: Vec<SpriteAnimationEvent2d>,
++}
++
++impl SpriteAnimationEvents2d {
++    /// Iterates events emitted by the most recent SpriteAnimator2D evaluation.
++    pub fn iter(&self) -> impl Iterator<Item = &SpriteAnimationEvent2d> {
++        self.events.iter()
++    }
++}
++
++/// Advances per-entity Sprite Animation state and writes only the current SpriteRef to rendering.
++pub fn sprite_animation_2d_fixed_system(
++    fixed_time: Res<crate::time::FixedTime>,
++    mut events: ResMut<SpriteAnimationEvents2d>,
++    mut query: Query<(&mut SpriteAnimatorRuntime2d, &mut SpriteRenderer2d)>,
++) {
++    events.events.clear();
++    let seconds = f64::from(fixed_time.fixed_delta.max(0.0));
++    for (entity, (animator, renderer)) in query.iter_mut() {
++        let clip = animator.clip.clone();
++        let emitted = animator
++            .state
++            .advance_fixed_seconds(clip.as_ref(), seconds, animator.looping_override);
++        if let Some(sprite) = animator.state.current_sprite(clip.as_ref()) {
++            renderer.sprite = sprite.clone();
++        }
++        events.events.extend(emitted.into_iter().map(|event| SpriteAnimationEvent2d {
++            entity,
++            clip: animator.clip_asset.clone(),
++            frame_index: event.frame_index,
++            name: event.name,
++        }));
++    }
++}
++
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+diff --git a/crates/engine/src/runtime_systems.rs b/crates/engine/src/runtime_systems.rs
+index ac3440bd42792fd978979b8a337c581f6d86805d..025ff88164802cd849a50160f09cb0c3392f3f65 100644
+--- a/crates/engine/src/runtime_systems.rs
++++ b/crates/engine/src/runtime_systems.rs
+@@ -23,7 +23,8 @@ use crate::secondary_motion::{
+     secondary_motion_presentation_system, secondary_motion_system, SecondaryMotionWorlds,
+ };
+ use crate::native_2d::{
+-    physics_2d_fixed_system, Gravity2d, Physics2dDiagnostics, PhysicsRuntime2d,
++    physics_2d_fixed_system, sprite_animation_2d_fixed_system, Gravity2d, Physics2dDiagnostics,
++    PhysicsRuntime2d, SpriteAnimationEvents2d,
+ };
+ use crate::navmesh::{nav_mesh_agent_system, nav_mesh_debug_draw_system};
+ use crate::physics::velocity_system;
+@@ -91,6 +92,9 @@ pub fn register_runtime_systems(app: &mut App) -> Result<(), SystemRegistrationE
+     if app.world().get_resource::<Physics2dDiagnostics>().is_none() {
+         app.insert_resource(Physics2dDiagnostics::default());
+     }
++    if app.world().get_resource::<SpriteAnimationEvents2d>().is_none() {
++        app.insert_resource(SpriteAnimationEvents2d::default());
++    }
+     app.try_add_system_with_descriptor(
+         engine_system(
+             "engine.combat_debug",
+@@ -229,6 +233,16 @@ pub fn register_runtime_systems(app: &mut App) -> Result<(), SystemRegistrationE
+         .expect("built-in system IDs are valid"),
+         animation_system,
+     )?;
++    app.try_add_fixed_system_with_descriptor(
++        engine_system(
++            "engine.sprite_animation_2d",
++            "Sprite Animation 2D",
++            "Advances deterministic per-entity Sprite Animation state and publishes the current SpriteRef.",
++        )
++        .try_after("engine.animation_graph")
++        .expect("built-in system IDs are valid"),
++        sprite_animation_2d_fixed_system,
++    )?;
+     app.try_add_fixed_system_with_descriptor(
+         engine_system(
+             "engine.root_motion_motor",
+diff --git a/crates/engine/src/scene_bridge.rs b/crates/engine/src/scene_bridge.rs
+index ce19fb43d6e7afaf6bcd9d37572277e62efe382f..f5cf553f6c0b7fe1282631f7cbb3229ca1fc03c3 100644
+--- a/crates/engine/src/scene_bridge.rs
++++ b/crates/engine/src/scene_bridge.rs
+@@ -20,6 +20,9 @@ use crate::authoring_overlay::AuthoringDocumentOverlay;
+ use crate::audio::{AudioAsset, AudioEmitter, AudioListener, AudioRolloffMode, MusicController};
+ use crate::behavior_tree::BehaviorTreeRunner;
+ use crate::camera::{Camera3D, FollowCamera, LockOnCamera, OrbitCamera};
++use crate::native_2d::{
++    Camera2d, SpriteAnimatorRuntime2d, SpriteBlendMode, SpriteRef, SpriteRenderer2d, ViewportFit2d,
++};
+ use crate::character_controller::KinematicCharacterController;
+ use crate::collision::{Collider, CollisionLayers, PhysicsBody, TriggerVolume};
+ use crate::combat::DamageReceiver;
+@@ -58,7 +61,8 @@ use engine_authoring::ui::{UiDocument, UiNode, UiNodeKind, UiString};
+ use engine_authoring::value::Value;
+ use engine_authoring::{
+     AnimationSet, AuthoringEntity, BehaviorTreeAuthoringService, Diagnostic, DiagnosticTarget,
+-    Graph, VfxAuthoringService, VfxModuleOperation,
++    Graph, SortingLayerId, SpriteAnimationDocument, SpriteId, VfxAuthoringService,
++    VfxModuleOperation,
+ };
+ use engine_ecs::{Entity, World};
+ use glam::{EulerRot, Mat4, Quat, Vec3};
+@@ -105,6 +109,13 @@ pub const LOD_GROUP_COMPONENT: &str = "engine.lod_group";
+ /// The `"engine.camera"` component type string recognised by the bridge.
+ pub const CAMERA_COMPONENT: &str = "engine.camera";
+ 
++/// Native orthographic XY camera component (ADR 0127).
++pub const CAMERA_2D_COMPONENT: &str = "engine.camera_2d";
++/// Native SpriteRenderer2D component using stable SpriteRef identity.
++pub const SPRITE_RENDERER_2D_COMPONENT: &str = "engine.sprite_renderer_2d";
++/// Native deterministic SpriteAnimator2D component.
++pub const SPRITE_ANIMATOR_2D_COMPONENT: &str = "engine.sprite_animator_2d";
++
+ /// The `"engine.directional_light"` component type string recognised by the bridge.
+ pub const DIRECTIONAL_LIGHT_COMPONENT: &str = "engine.directional_light";
+ 
+@@ -421,6 +432,8 @@ pub(crate) struct BridgeAssetState {
+     pub(crate) mesh_handles: HashMap<AssetId, Handle<Mesh>>,
+     pub(crate) material_handles: HashMap<AssetId, Handle<Material>>,
+     pub(crate) animation_clip_handles: HashMap<AssetId, BTreeMap<String, Handle<AnimationClip>>>,
++    /// Parsed immutable Sprite Animation documents shared by every entity referencing the asset.
++    pub(crate) sprite_animation_documents: HashMap<AssetId, Arc<SpriteAnimationDocument>>,
+     /// Source asset ID -> the `(sub-asset ID, runtime clip key)` pairs that
+     /// source contributed, recorded when its clips were first loaded.
+     ///
+diff --git a/crates/engine/src/scene_bridge/spawn.rs b/crates/engine/src/scene_bridge/spawn.rs
+index 3826f9c19d47ac377377150134a71a0170d3f31a..aded84ebb9a4b6f05addd409d7788d79a4cd3d6e 100644
+--- a/crates/engine/src/scene_bridge/spawn.rs
++++ b/crates/engine/src/scene_bridge/spawn.rs
+@@ -2623,6 +2623,171 @@ pub(crate) fn spawn_camera_component(
+     Ok(())
+ }
+ 
++pub(crate) fn spawn_camera_2d_component(
++    entity: Entity,
++    value: &Value,
++    context: &mut SpawnContext<'_>,
++) -> Result<(), ComponentSpawnError> {
++    let component_type = ComponentTypeId::new(CAMERA_2D_COMPONENT);
++    const EXPECTED: &str = "a Camera2D object with valid orthographic projection and reference-resolution fields";
++    let fields = ComponentFields::new(context.authoring_entity, &component_type, value, EXPECTED)?;
++    let priority = i32::try_from(fields.i64("priority")?).map_err(|_| fields.invalid(EXPECTED))?;
++    let width = u32::try_from(fields.i64("reference_width")?).map_err(|_| fields.invalid(EXPECTED))?;
++    let height = u32::try_from(fields.i64("reference_height")?).map_err(|_| fields.invalid(EXPECTED))?;
++    let fit = match fields.string("fit")? {
++        "fit" => ViewportFit2d::Fit,
++        "fill" => ViewportFit2d::Fill,
++        "stretch" => ViewportFit2d::Stretch,
++        _ => return Err(fields.invalid(EXPECTED).into()),
++    };
++    let camera = Camera2d {
++        enabled: fields.bool("enabled")?,
++        priority,
++        orthographic_height: fields.f32("orthographic_height")?,
++        zoom: fields.f32("zoom")?,
++        near: fields.f32("near")?,
++        far: fields.f32("far")?,
++        pixel_perfect: fields.bool("pixel_perfect")?,
++        reference_pixels_per_unit: fields.f32("reference_pixels_per_unit")?,
++        reference_resolution: [width, height],
++        fit,
++    };
++    if width == 0 || height == 0 || camera.projection([width, height]).is_err() {
++        return Err(fields.invalid(EXPECTED).into());
++    }
++    context.world.add_component(entity, camera)?;
++    Ok(())
++}
++
++pub(crate) fn spawn_sprite_renderer_2d_component(
++    entity: Entity,
++    value: &Value,
++    context: &mut SpawnContext<'_>,
++) -> Result<(), ComponentSpawnError> {
++    let component_type = ComponentTypeId::new(SPRITE_RENDERER_2D_COMPONENT);
++    const EXPECTED: &str = "a SpriteRenderer2D object with stable atlas/SpriteId, tint, sorting, blend, and visibility fields";
++    let fields = ComponentFields::new(context.authoring_entity, &component_type, value, EXPECTED)?;
++    let Some(atlas) = fields.assignable_asset_ref("atlas")?.cloned() else {
++        context.asset_diagnostics.push(component_inactive_diagnostic(
++            context.authoring_entity,
++            &component_type,
++            "atlas",
++        ));
++        return Ok(());
++    };
++    let sprite = SpriteId::parse(fields.string("sprite_id")?.to_owned()).map_err(|_| fields.invalid(EXPECTED))?;
++    let sorting_layer = SortingLayerId::parse(fields.string("sorting_layer")?.to_owned()).map_err(|_| fields.invalid(EXPECTED))?;
++    let order_in_layer = i32::try_from(fields.i64("order_in_layer")?).map_err(|_| fields.invalid(EXPECTED))?;
++    let tint = [
++        fields.f32("tint_r")?,
++        fields.f32("tint_g")?,
++        fields.f32("tint_b")?,
++        fields.f32("tint_a")?,
++    ];
++    if tint.iter().any(|value| !value.is_finite())
++        || tint[..3].iter().any(|value| *value < 0.0)
++        || !(0.0..=1.0).contains(&tint[3])
++    {
++        return Err(fields.invalid(EXPECTED).into());
++    }
++    let blend = match fields.string("blend")? {
++        "alpha" => SpriteBlendMode::Alpha,
++        "premultiplied_alpha" => SpriteBlendMode::PremultipliedAlpha,
++        "additive" => SpriteBlendMode::Additive,
++        _ => return Err(fields.invalid(EXPECTED).into()),
++    };
++    let material_override = fields.assignable_asset_ref("material_override")?.cloned();
++    context.world.add_component(
++        entity,
++        SpriteRenderer2d {
++            sprite: SpriteRef { atlas, sprite },
++            tint,
++            flip_x: fields.bool("flip_x")?,
++            flip_y: fields.bool("flip_y")?,
++            sorting_layer,
++            order_in_layer,
++            visible: fields.bool("visible")?,
++            blend,
++            material_override,
++        },
++    )?;
++    Ok(())
++}
++
++fn resolve_sprite_animation_document(
++    asset: &AssetId,
++    context: &mut SpawnContext<'_>,
++) -> Result<Arc<SpriteAnimationDocument>, SceneBridgeError> {
++    if let Some(document) = context.asset_state.sprite_animation_documents.get(asset) {
++        return Ok(Arc::clone(document));
++    }
++    let path = manifest_asset_path(asset, context)?;
++    if !crate::components::asset_path_matches_kind(crate::components::AssetKind::SpriteAnimation, &path) {
++        return Err(SceneBridgeError::AssetLoad {
++            asset: asset.clone(),
++            source: AssetLoadError::InvalidAsset {
++                path,
++                message: "SpriteAnimator2D clip must reference a *.spriteanim.json asset".to_owned(),
++            },
++        });
++    }
++    let json = std::fs::read_to_string(&path).map_err(|source| SceneBridgeError::AssetLoad {
++        asset: asset.clone(),
++        source: AssetLoadError::Io { path: path.clone(), source },
++    })?;
++    let document = SpriteAnimationDocument::from_json(&json).map_err(|source| SceneBridgeError::AssetLoad {
++        asset: asset.clone(),
++        source: AssetLoadError::InvalidAsset { path: path.clone(), message: source.to_string() },
++    })?;
++    let validation = document.validate();
++    if !validation.is_empty() {
++        return Err(SceneBridgeError::AssetLoad {
++            asset: asset.clone(),
++            source: AssetLoadError::InvalidAsset { path, message: validation.join("; ") },
++        });
++    }
++    let document = Arc::new(document);
++    context.asset_state.sprite_animation_documents.insert(asset.clone(), Arc::clone(&document));
++    Ok(document)
++}
++
++pub(crate) fn spawn_sprite_animator_2d_component(
++    entity: Entity,
++    value: &Value,
++    context: &mut SpawnContext<'_>,
++) -> Result<(), ComponentSpawnError> {
++    let component_type = ComponentTypeId::new(SPRITE_ANIMATOR_2D_COMPONENT);
++    const EXPECTED: &str = "a SpriteAnimator2D object with clip, autoplay, speed, looping override, and initial frame";
++    let fields = ComponentFields::new(context.authoring_entity, &component_type, value, EXPECTED)?;
++    let Some(clip_asset) = fields.assignable_asset_ref("clip")?.cloned() else {
++        context.asset_diagnostics.push(component_inactive_diagnostic(
++            context.authoring_entity,
++            &component_type,
++            "clip",
++        ));
++        return Ok(());
++    };
++    let speed = fields.f32("speed")?;
++    let looping_override = match fields.get("looping_override") {
++        None | Some(Value::Null) => None,
++        Some(Value::Bool(value)) => Some(*value),
++        _ => return Err(fields.invalid(EXPECTED).into()),
++    };
++    let initial_frame = usize::try_from(fields.i64("initial_frame")?).map_err(|_| fields.invalid(EXPECTED))?;
++    let clip = resolve_sprite_animation_document(&clip_asset, context)?;
++    let animator = SpriteAnimatorRuntime2d::new(
++        clip_asset,
++        clip,
++        fields.bool("autoplay")?,
++        speed,
++        looping_override,
++        initial_frame,
++    )
++    .map_err(|_| fields.invalid(EXPECTED))?;
++    context.world.add_component(entity, animator)?;
++    Ok(())
++}
++
+ pub(crate) fn spawn_directional_light_component(
+     entity: Entity,
+     value: &Value,
+diff --git a/crates/mcp-host/src/headless.rs b/crates/mcp-host/src/headless.rs
+index b739a0e419717fcc00775b6a886535e6fe0bce25..c11969175d856c08b7c2739b86119785f3ab5ca3 100644
+--- a/crates/mcp-host/src/headless.rs
++++ b/crates/mcp-host/src/headless.rs
+@@ -4,9 +4,10 @@ use engine_assets::asset::AssetManifest;
+ use engine_authoring::{
+     load_scene_from_json, replace_file_contents, AnimationSet, AuthoringGraphDomain,
+     AuthoringPermission, AuthoringPermissions, AuthoringSession, ComponentSchemaRegistry, Graph,
+-    GraphDomain, GraphView, MaterialAsset, ProjectRoot, ProjectSettings,
+-    TypedAuthoringDocument, TypedDocumentAuthoringError, TypedDocumentAuthoringService,
+-    TypedDocumentAuthoringState, UiAuthoringSession, UiDocument,
++    GraphDomain, GraphView, MaterialAsset, ProjectRoot, ProjectSettings, SpriteAnimationDocument,
++    SpriteAtlasDocument, TileMapDocument, TileSetDocument, TypedAuthoringDocument,
++    TypedDocumentAuthoringError, TypedDocumentAuthoringService, TypedDocumentAuthoringState,
++    UiAuthoringSession, UiDocument,
+ };
+ use engine_mcp::{
+     AssetInspectInput, AssetMcpTools, AssetSearchInput, AuthoringCapabilityMcpTools, AuthoringVerb,
+@@ -56,6 +57,14 @@ pub struct HeadlessProjectSelection {
+     pub material: Option<String>,
+     /// Active Animation Set asset path.
+     pub animation_set: Option<String>,
++    /// Active Native 2D Sprite Atlas asset path.
++    pub sprite_atlas: Option<String>,
++    /// Active Native 2D Sprite Animation asset path.
++    pub sprite_animation: Option<String>,
++    /// Active Native 2D Tile Set asset path.
++    pub tile_set: Option<String>,
++    /// Active Native 2D Tile Map asset path.
++    pub tile_map: Option<String>,
+ }
+ 
+ /// Explicit visibility/authority description returned by the headless host.
+@@ -172,6 +181,10 @@ pub struct HeadlessAuthoringHost {
+     material: Option<LoadedTyped<MaterialAsset>>,
+     project_settings: LoadedTyped<ProjectSettings>,
+     animation_set: Option<LoadedTyped<AnimationSet>>,
++    sprite_atlas: Option<LoadedTyped<SpriteAtlasDocument>>,
++    sprite_animation: Option<LoadedTyped<SpriteAnimationDocument>>,
++    tile_set: Option<LoadedTyped<TileSetDocument>>,
++    tile_map: Option<LoadedTyped<TileMapDocument>>,
+     game_module: Option<engine::game_module::GameModule>,
+ }
+ 
+@@ -228,6 +241,22 @@ impl HeadlessAuthoringHost {
+         let ui = selection.ui.map(|relative| load_ui(&project, relative)).transpose()?;
+         let material = selection.material.map(|relative| load_material(&project, relative)).transpose()?;
+         let animation_set = selection.animation_set.map(|relative| load_animation_set(&project, relative)).transpose()?;
++        let sprite_atlas = selection
++            .sprite_atlas
++            .map(|relative| load_native_2d::<SpriteAtlasDocument>(&project, relative))
++            .transpose()?;
++        let sprite_animation = selection
++            .sprite_animation
++            .map(|relative| load_native_2d::<SpriteAnimationDocument>(&project, relative))
++            .transpose()?;
++        let tile_set = selection
++            .tile_set
++            .map(|relative| load_native_2d::<TileSetDocument>(&project, relative))
++            .transpose()?;
++        let tile_map = selection
++            .tile_map
++            .map(|relative| load_native_2d::<TileMapDocument>(&project, relative))
++            .transpose()?;
+         let game_module = latest_shadow_module(&project)
+             .and_then(|path| engine::game_module::GameModule::load(&path).ok());
+         let permissions = match mode {
+@@ -255,6 +284,10 @@ impl HeadlessAuthoringHost {
+                 state: TypedDocumentAuthoringState::new(),
+             },
+             animation_set,
++            sprite_atlas,
++            sprite_animation,
++            tile_set,
++            tile_map,
+             game_module,
+         })
+     }
+@@ -271,6 +304,10 @@ impl HeadlessAuthoringHost {
+         if let Some(value) = &self.ui { loaded.push(format!("ui:{}", value.relative)); }
+         if let Some(value) = &self.material { loaded.push(format!("material:{}", value.relative)); }
+         if let Some(value) = &self.animation_set { loaded.push(format!("animation_set:{}", value.relative)); }
++        if let Some(value) = &self.sprite_atlas { loaded.push(format!("sprite_atlas:{}", value.relative)); }
++        if let Some(value) = &self.sprite_animation { loaded.push(format!("sprite_animation:{}", value.relative)); }
++        if let Some(value) = &self.tile_set { loaded.push(format!("tile_set:{}", value.relative)); }
++        if let Some(value) = &self.tile_map { loaded.push(format!("tile_map:{}", value.relative)); }
+         HeadlessViewDescriptor {
+             source: "saved_file_snapshot",
+             writable: self.mode == HeadlessAccessMode::Writer,
+@@ -436,6 +473,22 @@ impl HeadlessAuthoringHost {
+             "animation_set.validate" => { require_empty(arguments)?; typed_validate(self.animation_set.as_ref().ok_or_else(|| HeadlessMcpCallFailure::no_document("Animation Set"))?, &permissions) }
+             "animation_set.preview" => { let input = decode::<TypedDocumentMutationInput<AnimationSet>>(arguments)?; typed_preview(self.animation_set.as_ref().ok_or_else(|| HeadlessMcpCallFailure::no_document("Animation Set"))?, &permissions, input) }
+             "animation_set.apply" => { let input = decode::<TypedDocumentMutationInput<AnimationSet>>(arguments)?; let loaded = self.animation_set.as_mut().ok_or_else(|| HeadlessMcpCallFailure::no_document("Animation Set"))?; typed_apply(loaded, &permissions, input, |document, path| { let json = document.to_canonical_json().map_err(|error| error.to_string())?; replace_file_contents(path.expect("animation set path"), &json).map_err(|error| error.to_string()) }) }
++            "sprite_atlas.inspect" => { require_empty(arguments)?; typed_inspect(self.sprite_atlas.as_ref().ok_or_else(|| HeadlessMcpCallFailure::no_document("Sprite Atlas"))?, &permissions) }
