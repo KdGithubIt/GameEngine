@@ -2,7 +2,9 @@ use bytemuck::{Pod, Zeroable};
 use std::fmt;
 use std::sync::{Arc, Weak};
 
-use crate::camera::{select_active_game_camera, Camera3D, ViewportSize};
+use crate::camera::{
+    select_active_game_camera_with_override, Camera3D, GameCameraSelectionOverride, ViewportSize,
+};
 use crate::debug_draw::{DebugLine, DebugLines};
 use crate::environment::EnvironmentGpuState;
 use crate::light::{AmbientLight, DirectionalLight, PointLight, SkySettings, SpotLight};
@@ -1874,8 +1876,11 @@ impl WorldRenderer {
         use crate::transform::Transform;
         use engine_ecs::Query;
 
+        let override_target = world
+            .get_resource::<GameCameraSelectionOverride>()
+            .and_then(GameCameraSelectionOverride::target);
         let query = Query::<(&Camera3D, &Transform)>::new(world);
-        select_active_game_camera(query.iter())
+        select_active_game_camera_with_override(query.iter(), override_target)
             .map(|(_, (camera, transform))| (camera.clone(), transform.clone()))
     }
 
