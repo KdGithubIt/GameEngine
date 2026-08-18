@@ -1,0 +1,49 @@
+diff --git a/crates/animation/src/humanoid.rs b/crates/animation/src/humanoid.rs
+index 238cce6cc9140a64be9d6f65c091bce35d47f299..a80748775618823476c34d4a40dce90eda3633b0 100644
+--- a/crates/animation/src/humanoid.rs
++++ b/crates/animation/src/humanoid.rs
+@@ -697,6 +697,9 @@ fn normalize_bone_name(name: &str) -> String {
+     let mut side = None;
+     let mut body = String::new();
+     for token in tokens {
++        if token == "c" {
++            continue;
++        }
+         let token_side = match token.as_str() {
+             "l" | "lf" | "left" => Some("left"),
+             "r" | "rt" | "right" => Some("right"),
+@@ -890,6 +893,34 @@ mod tests {
+         assert!(validate_humanoid_profile(&profile, &skeleton).is_ok());
+     }
+ 
++    #[test]
++    fn detection_accepts_vrm_j_bip_center_and_side_tokens() {
++        let skeleton = skeleton_from(&[
++            ("J_Bip_C_Hips", None),
++            ("J_Bip_C_Spine", Some(0)),
++            ("J_Bip_C_Head", Some(1)),
++            ("J_Bip_L_UpperArm", Some(1)),
++            ("J_Bip_L_LowerArm", Some(3)),
++            ("J_Bip_L_Hand", Some(4)),
++            ("J_Bip_R_UpperArm", Some(1)),
++            ("J_Bip_R_LowerArm", Some(6)),
++            ("J_Bip_R_Hand", Some(7)),
++            ("J_Bip_L_UpperLeg", Some(0)),
++            ("J_Bip_L_LowerLeg", Some(9)),
++            ("J_Bip_L_Foot", Some(10)),
++            ("J_Bip_R_UpperLeg", Some(0)),
++            ("J_Bip_R_LowerLeg", Some(12)),
++            ("J_Bip_R_Foot", Some(13)),
++        ]);
++
++        let profile = detect_humanoid_profile(&skeleton).profile.expect("profile");
++        assert_eq!(profile.bone_id(HumanoidBone::Hips), Some(0));
++        assert_eq!(profile.bone_id(HumanoidBone::Spine), Some(1));
++        assert_eq!(profile.bone_id(HumanoidBone::LeftUpperArm), Some(3));
++        assert_eq!(profile.bone_id(HumanoidBone::RightUpperLeg), Some(12));
++        assert!(validate_humanoid_profile(&profile, &skeleton).is_ok());
++    }
++
+     #[test]
+     fn detection_accepts_biped_prefix_and_side_tokens() {
+         let skeleton = skeleton_from(&[
