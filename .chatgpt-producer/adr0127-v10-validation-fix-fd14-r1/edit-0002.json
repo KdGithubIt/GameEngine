@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/native_2d_editor.rs",
+  "old": "    tile_map_pointer::handle(\n        ui,\n        &response,\n        loaded,\n        &layer_id,\n        pointer_cell,\n        tool,\n        engine_authoring::TileRect::from_corners(\n            engine_authoring::TileCell { x: MIN_X, y: MIN_Y },\n            engine_authoring::TileCell { x: MAX_X, y: MAX_Y },\n        ),\n        WORK_BUDGET,\n    )\n",
+  "new": "    tile_map_pointer::handle(\n        tile_map_pointer::PointerContext {\n            ui,\n            response: &response,\n            layer: &layer_id,\n            visible_bounds: engine_authoring::TileRect::from_corners(\n                engine_authoring::TileCell { x: MIN_X, y: MIN_Y },\n                engine_authoring::TileCell { x: MAX_X, y: MAX_Y },\n            ),\n            work_budget: WORK_BUDGET,\n        },\n        loaded,\n        pointer_cell,\n        tool,\n    )\n"
+}
