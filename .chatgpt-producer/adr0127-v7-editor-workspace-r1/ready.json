@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0127-v7-editor-workspace-r1",
+  "target_branch": "chatgpt/gameengine-adr0127-first-release-current-main-v7",
+  "expected_head_sha": "b0853982a455b49ddb45b7706d013f57284bec71",
+  "baseline_main_sha": "2a418e000fa727ae81a88b423ad3c113b44f211c",
+  "edit_parts": [
+    "edit-0000.json", "edit-0001.json", "edit-0002.json", "edit-0003.json", "edit-0004.json", "edit-0005.json",
+    "edit-0006.json", "edit-0007.json", "edit-0008.json", "edit-0009.json", "edit-0010.json", "edit-0011.json"
+  ],
+  "commit_message": "Add ADR0127 Native 2D Editor workspace",
+  "pr_title": "GameEngine: complete ADR0127 Native 2D first release",
+  "pr_body": "Adds the current-main v7 service-backed Native 2D Editor workspace foundation: stable SpriteRef scene creation, typed Sprite Atlas / Sprite Animation / Tile Set authoring, and gesture-backed sparse Tile Map editing. Persisted mutations remain in shared authoring services; Scene View projection/drop and shell registration are intentionally separate exact-head slices."
+}
