@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0127-v10-validation-fix-3086-r1",
+  "target_branch": "chatgpt/gameengine-adr0127-first-release-current-main-v10",
+  "expected_head_sha": "30866fad89bf3963e1c76607062149fcf58b7bb6",
+  "baseline_main_sha": "96c8ffb18a74eabec2164daa61f694f131019ddc",
+  "edit_parts": [
+    "edit-0000.json",
+    "edit-0001.json",
+    "edit-0002.json"
+  ],
+  "commit_message": "Fix ADR0127 validation regressions",
+  "pr_title": "GameEngine: complete ADR0127 Native 2D first release",
+  "pr_body": "Fixes the exact-head Windows Validation failures found on ADR0127: derive the default SpriteBlendMode instead of a manual Clippy-rejected implementation, and reference SpriteAnimationState2d through the existing public engine::native_2d facade without widening the root public API."
+}
