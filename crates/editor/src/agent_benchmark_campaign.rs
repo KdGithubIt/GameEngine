@@ -523,89 +523,6 @@ pub(crate) struct BenchmarkCampaign {
     pub(crate) started_unix_ms: Option<u64>,
     pub(crate) updated_unix_ms: u64,
     pub(crate) runs: Vec<CampaignRunProgress>,
-    Incompatible,
-}
-
-impl BenchmarkCampaignState {
-    pub(crate) const fn label(self) -> &'static str {
-        match self {
-            Self::Draft => "Draft",
-            Self::Running => "Running",
-            Self::Paused => "Paused",
-            Self::Stopped => "Stopped",
-            Self::Completed => "Completed",
-            Self::Incompatible => "Incompatible",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum CampaignRunStatus {
-    Pending,
-    Running,
-    Completed,
-    Failed,
-    Rejected,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum CampaignFailureKind {
-    Oom,
-    BackendCrash,
-    InvalidToolBehavior,
-    ValidationFailed,
-    RepairBudgetExhausted,
-    RuntimeInteractionFailed,
-    VisualEvaluationFailed,
-    TaskTimeout,
-    IdentityMismatch,
-    InfrastructurePreMeasurement,
-    Cancelled,
-    Other,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct CampaignScheduleEntry {
-    pub(crate) ordinal: u32,
-    pub(crate) task_index: usize,
-    pub(crate) candidate_index: usize,
-    pub(crate) task_id: String,
-    pub(crate) repetition: u32,
-    pub(crate) execution_environment: CampaignExecutionEnvironment,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct CampaignRunProgress {
-    pub(crate) schedule: CampaignScheduleEntry,
-    pub(crate) status: CampaignRunStatus,
-    pub(crate) pre_measurement_failures: u32,
-    pub(crate) record: Option<BenchmarkRecord>,
-    pub(crate) failure: Option<CampaignFailureKind>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct CampaignRunRequest {
-    pub(crate) campaign_id: String,
-    pub(crate) plan_fingerprint: String,
-    pub(crate) schedule: CampaignScheduleEntry,
-    pub(crate) candidate: CampaignCandidate,
-    pub(crate) fixture: CampaignFixtureIdentity,
-    pub(crate) execution_identity: BenchmarkExecutionIdentity,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct BenchmarkCampaign {
-    pub(crate) schema_version: u32,
-    pub(crate) campaign_id: String,
-    pub(crate) plan: BenchmarkCampaignPlan,
-    pub(crate) plan_fingerprint: String,
-    pub(crate) state: BenchmarkCampaignState,
-    pub(crate) created_unix_ms: u64,
-    pub(crate) started_unix_ms: Option<u64>,
-    pub(crate) updated_unix_ms: u64,
-    pub(crate) runs: Vec<CampaignRunProgress>,
 }
 
 impl BenchmarkCampaign {
@@ -794,7 +711,7 @@ impl BenchmarkCampaign {
                 fixture_version: fixture.fixture_version.clone(),
                 fixture_instance_id: fixture.instance_id.clone(),
                 sampling_profile: self.plan.sampling_profile.clone(),
-                seed_policy: match self.plan.seed_policy {
+                seed_policy: match &self.plan.seed_policy {
                     CampaignSeedPolicy::Fixed(_) => "fixed".to_owned(),
                     CampaignSeedPolicy::ProviderUnavailable => "provider_unavailable".to_owned(),
                 },
@@ -1054,7 +971,10 @@ fn validate_record_identity(
 fn record_failure(record: &BenchmarkRecord) -> Option<CampaignFailureKind> {
     if record.metrics.completion_success == TelemetryValue::Measured(true) {
         None
-    } else if matches!(record.metrics.oom_failures, TelemetryValue::Measured(value) if value > 0) {
+    } else if matches!(
+        &record.metrics.oom_failures,
+        TelemetryValue::Measured(value) if *value > 0
+    ) {
         Some(CampaignFailureKind::Oom)
     } else {
         Some(CampaignFailureKind::Other)

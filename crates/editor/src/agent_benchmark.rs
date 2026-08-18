@@ -805,6 +805,31 @@ impl CuratedModelCatalog {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+struct BenchmarkSuiteExecutionContext {
+    campaign_harness_version: String,
+    schedule_policy_version: String,
+    comparison_class: String,
+    execution_profile: String,
+    execution_environment: String,
+    sampling_profile: String,
+    seed_policy: String,
+}
+
+impl From<&BenchmarkExecutionIdentity> for BenchmarkSuiteExecutionContext {
+    fn from(execution: &BenchmarkExecutionIdentity) -> Self {
+        Self {
+            campaign_harness_version: execution.campaign_harness_version.clone(),
+            schedule_policy_version: execution.schedule_policy_version.clone(),
+            comparison_class: execution.comparison_class.clone(),
+            execution_profile: execution.execution_profile.clone(),
+            execution_environment: execution.execution_environment.clone(),
+            sampling_profile: execution.sampling_profile.clone(),
+            seed_policy: execution.seed_policy.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct BenchmarkSuiteContext {
     corpus_version: String,
     harness_version: String,
@@ -813,7 +838,7 @@ struct BenchmarkSuiteContext {
     hardware: BenchmarkHardwareIdentity,
     quality: QualityPreference,
     workload_policy_version: String,
-    execution: Option<BenchmarkExecutionIdentity>,
+    execution: Option<BenchmarkSuiteExecutionContext>,
 }
 
 impl BenchmarkSuiteContext {
@@ -826,7 +851,11 @@ impl BenchmarkSuiteContext {
             hardware: record.identity.hardware.clone(),
             quality: record.identity.quality,
             workload_policy_version: record.identity.workload_policy_version.clone(),
-            execution: record.identity.execution.clone(),
+            execution: record
+                .identity
+                .execution
+                .as_ref()
+                .map(BenchmarkSuiteExecutionContext::from),
         }
     }
 }
@@ -882,6 +911,7 @@ fn qualify_candidate(
         .iter()
         .filter(|record| {
             benchmark_identity_is_measured(&record.identity)
+                && catalog_evidence_is_eligible(record)
                 && candidate_matches_record(candidate, record)
         })
         .collect::<Vec<_>>();
@@ -940,6 +970,14 @@ fn qualify_candidate(
         }
     }
     qualified
+}
+
+fn catalog_evidence_is_eligible(record: &BenchmarkRecord) -> bool {
+    record
+        .identity
+        .execution
+        .as_ref()
+        .is_none_or(|execution| execution.comparison_class == "model_comparison")
 }
 
 fn candidate_matches_record(candidate: &CatalogCandidate, record: &BenchmarkRecord) -> bool {
@@ -1297,12 +1335,34 @@ mod tests {
     fn record(model: &str, task: BenchmarkTaskDescriptor, elapsed_ms: u64) -> BenchmarkRecord {
         let mut identity = measured_identity(model);
         identity.task_id = task.id.to_owned();
-        identity.completion_criteria = task.completion_criteria.iter().map(|value| (*value).to_owned()).collect();
+        identity.completion_criteria = task
+            .completion_criteria
+            .iter()
+            .map(|value| (*value).to_owned())
+            .collect();
         BenchmarkRecord {
             schema_version: BENCHMARK_SCHEMA_VERSION,
             recorded_unix_ms: 1,
             identity,
             metrics: measured_metrics(elapsed_ms),
+        }
+    }
+
+    fn campaign_execution(
+        task: BenchmarkTaskDescriptor,
+        comparison_class: &str,
+    ) -> BenchmarkExecutionIdentity {
+        BenchmarkExecutionIdentity {
+            campaign_harness_version: "campaign-v1".to_owned(),
+            schedule_policy_version: "schedule-v1".to_owned(),
+            comparison_class: comparison_class.to_owned(),
+            execution_profile: "warm".to_owned(),
+            execution_environment: "windows_native".to_owned(),
+            fixture_id: format!("fixture-{}", task.id),
+            fixture_version: "fixture-v1".to_owned(),
+            fixture_instance_id: format!("instance-{}", task.id),
+            sampling_profile: "sampling-v1".to_owned(),
+            seed_policy: "fixed".to_owned(),
         }
     }
 
@@ -1338,6 +1398,79 @@ mod tests {
         let mut different_claims = right.clone();
         different_claims.identity.tool_budget.work_claims = vec!["asset_target".to_owned()];
         assert!(matches!(comparison_equivalence(&left, &different_claims), ComparisonEquivalence::NonEquivalent(fields) if fields.contains(&"tool_or_permission_budget")));
+    }
+
+    #[test]
+    fn campaign_suite_context_excludes_task_scoped_fixture_identity() {
+        let mut first = record("model-a", BENCHMARK_TASKS[0], 10);
+        first.identity.execution = Some(campaign_execution(
+            BENCHMARK_TASKS[0],
+            "model_comparison",
+        ));
+        let mut second = record("model-a", BENCHMARK_TASKS[1], 10);
+        second.identity.execution = Some(campaign_execution(
+            BENCHMARK_TASKS[1],
+            "model_comparison",
+        ));
+
+        assert_eq!(
+            BenchmarkSuiteContext::from_record(&first),
+            BenchmarkSuiteContext::from_record(&second)
+        );
+    }
+
+    #[test]
+    fn campaign_task_comparison_still_requires_exact_fixture_identity() {
+        let mut left = record("model-a", BENCHMARK_TASKS[0], 10);
+        let mut right = record("model-b", BENCHMARK_TASKS[0], 10);
+        left.identity.execution = Some(campaign_execution(
+            BENCHMARK_TASKS[0],
+            "model_comparison",
+        ));
+        right.identity.execution = left.identity.execution.clone();
+        assert_eq!(
+            comparison_equivalence(&left, &right),
+            ComparisonEquivalence::EquivalentModelComparison
+        );
+
+        right
+            .identity
+            .execution
+            .as_mut()
+            .expect("execution identity")
+            .fixture_instance_id = "different-fixture".to_owned();
+        assert!(matches!(
+            comparison_equivalence(&left, &right),
+            ComparisonEquivalence::NonEquivalent(fields)
+                if fields.contains(&"execution_identity")
+        ));
+    }
+
+    #[test]
+    fn runtime_characterization_evidence_is_not_catalog_eligible() {
+        let mut model_comparison = record("model-a", BENCHMARK_TASKS[0], 10);
+        model_comparison.identity.execution = Some(campaign_execution(
+            BENCHMARK_TASKS[0],
+            "model_comparison",
+        ));
+        assert!(catalog_evidence_is_eligible(&model_comparison));
+
+        let mut runtime_characterization = model_comparison;
+        runtime_characterization
+            .identity
+            .execution
+            .as_mut()
+            .expect("execution identity")
+            .comparison_class = "runtime_characterization".to_owned();
+        assert!(!catalog_evidence_is_eligible(&runtime_characterization));
+    }
+
+    #[test]
+    fn schema_v1_records_without_campaign_identity_remain_readable() {
+        let mut legacy = record("model-a", BENCHMARK_TASKS[0], 10);
+        legacy.schema_version = 1;
+        legacy.identity.execution = None;
+        assert!(validate_record(&legacy).is_ok());
     }
 
     #[test]
