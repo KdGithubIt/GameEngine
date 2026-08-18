@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/engine/src/timeline.rs","old":"    pub fn start_with_priority(&mut self, player_id: u64, prepared: PreparedTimeline, priority: i32) {","new":"    /// Starts or replaces a logical player with an explicit cross-player priority.\n    pub fn start_with_priority(&mut self, player_id: u64, prepared: PreparedTimeline, priority: i32) {"}

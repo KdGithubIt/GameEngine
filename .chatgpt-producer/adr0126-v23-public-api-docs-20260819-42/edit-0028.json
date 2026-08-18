@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/engine/src/timeline.rs","old":"    pub fn stop(&mut self, player_id: u64) -> Result<(), TimelineRuntimeError> {","new":"    /// Stops one player and releases its transient overrides on the next fixed pass.\n    pub fn stop(&mut self, player_id: u64) -> Result<(), TimelineRuntimeError> {"}

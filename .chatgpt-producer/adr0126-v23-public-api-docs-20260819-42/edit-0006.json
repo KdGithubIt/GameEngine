@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/authoring/src/timeline_authoring.rs","old":"    pub const fn revision(&self) -> TimelineRevision { self.revision }","new":"    /// Returns the current optimistic revision.\n    pub const fn revision(&self) -> TimelineRevision { self.revision }"}

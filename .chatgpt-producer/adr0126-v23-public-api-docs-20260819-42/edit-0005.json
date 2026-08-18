@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/authoring/src/timeline_authoring.rs","old":"    pub const fn document(&self) -> &TimelineDocument { &self.document }","new":"    /// Returns the current immutable document.\n    pub const fn document(&self) -> &TimelineDocument { &self.document }"}

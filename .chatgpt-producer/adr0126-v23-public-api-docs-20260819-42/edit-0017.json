@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/authoring/src/timeline_authoring.rs","old":"    pub fn save(&self, path: &Path) -> Result<(), TimelineAuthoringError> {","new":"    /// Persists the committed source of truth.\n    pub fn save(&self, path: &Path) -> Result<(), TimelineAuthoringError> {"}

@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/engine/src/timeline.rs","old":"    pub fn set_loop(&mut self, player_id: u64, range: Option<TimelineLoop>) -> Result<(), TimelineRuntimeError> {","new":"    /// Configures the neutral player's exact loop range.\n    pub fn set_loop(&mut self, player_id: u64, range: Option<TimelineLoop>) -> Result<(), TimelineRuntimeError> {"}

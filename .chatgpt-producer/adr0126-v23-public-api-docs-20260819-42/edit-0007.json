@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/authoring/src/timeline_authoring.rs","old":"    pub const fn generation(&self) -> u64 { self.generation }","new":"    /// Returns the current live-session generation.\n    pub const fn generation(&self) -> u64 { self.generation }"}

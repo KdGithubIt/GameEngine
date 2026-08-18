@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/engine/src/timeline.rs","old":"    pub fn snapshots(&self) -> Vec<TimelinePlayerSnapshot> {","new":"    /// Returns copied runtime player state in deterministic logical-ID order.\n    pub fn snapshots(&self) -> Vec<TimelinePlayerSnapshot> {"}

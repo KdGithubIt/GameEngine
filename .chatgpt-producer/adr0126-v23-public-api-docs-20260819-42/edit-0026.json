@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/engine/src/timeline.rs","old":"    pub fn pause(&mut self, player_id: u64) -> Result<(), TimelineRuntimeError> {","new":"    /// Pauses one player without changing its exact playhead.\n    pub fn pause(&mut self, player_id: u64) -> Result<(), TimelineRuntimeError> {"}

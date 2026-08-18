@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/engine/src/timeline.rs","old":"    pub fn start(&mut self, player_id: u64, prepared: PreparedTimeline) {","new":"    /// Starts or replaces a logical player at the default composition priority.\n    pub fn start(&mut self, player_id: u64, prepared: PreparedTimeline) {"}

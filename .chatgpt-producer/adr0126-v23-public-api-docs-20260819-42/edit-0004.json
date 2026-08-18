@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/authoring/src/timeline_authoring.rs","old":"    pub fn new(document: TimelineDocument) -> Result<Self, TimelineAuthoringError> {","new":"    /// Starts a session around a current-format document.\n    pub fn new(document: TimelineDocument) -> Result<Self, TimelineAuthoringError> {"}

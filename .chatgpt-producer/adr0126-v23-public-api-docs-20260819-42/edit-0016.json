@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/authoring/src/timeline_authoring.rs","old":"    pub fn redo(&mut self) -> bool {","new":"    /// Redoes one undone transaction.\n    pub fn redo(&mut self) -> bool {"}
