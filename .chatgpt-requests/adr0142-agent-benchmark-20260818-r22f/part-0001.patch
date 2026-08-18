@@ -1,0 +1,617 @@
++            for catalog_profile in CatalogProfile::ALL {
++                if let Some(recommendation) = self.model_catalog.recommendation(catalog_profile) {
++                    ui.group(|ui| {
++                        ui.strong(format!(
++                            "{} · {}",
++                            catalog_profile.label(),
++                            recommendation.candidate.model_id
++                        ));
++                        ui.small(format!(
++                            "evidence={} runs · aggregate={} ms · benchmark={}",
++                            recommendation.evidence_runs,
++                            recommendation.aggregate_elapsed_ms,
++                            recommendation.benchmark_version
++                        ));
++                        ui.small(format!(
++                            "source={} · license={} · transfer={} · storage={}",
++                            recommendation.candidate.source,
++                            recommendation.candidate.license,
++                            format_model_bytes(recommendation.candidate.transfer_size_bytes),
++                            format_model_bytes(recommendation.candidate.storage_size_bytes),
++                        ));
++                        ui.small(format!(
++                            "memory={} · context={} · modalities={} · tools={}",
++                            recommendation.candidate.memory_guidance,
++                            recommendation
++                                .candidate
++                                .context_limit
++                                .map(|limit| limit.to_string())
++                                .unwrap_or_else(|| "n/a".to_owned()),
++                            list_or_none(&recommendation.candidate.modalities),
++                            list_or_none(&recommendation.candidate.tool_capabilities),
++                        ));
++                    });
++                } else {
++                    ui.small(format!(
++                        "{}: No benchmark-qualified recommendation yet.",
++                        catalog_profile.label()
++                    ));
++                }
++            }
++            ui.small(
++                "Model weights are never bundled or downloaded automatically. A future catalog acquisition flow must show source plus transfer/storage size before an explicit user action.",
++            );
++            ui.separator();
++            ui.horizontal_wrapped(|ui| {
++                ui.label("Evidence task");
++                let selected_label = benchmark_task(&self.benchmark_task_id)
++                    .map(|task| task.label)
++                    .unwrap_or("Unknown task");
++                egui::ComboBox::from_id_salt("ai_studio_benchmark_task")
++                    .selected_text(selected_label)
++                    .show_ui(ui, |ui| {
++                        for task in BENCHMARK_TASKS {
++                            ui.selectable_value(
++                                &mut self.benchmark_task_id,
++                                task.id.to_owned(),
++                                task.label,
++                            );
++                        }
++                    });
++                if ui
++                    .add_enabled(
++                        self.benchmark_task_record_available(),
++                        egui::Button::new("Record current evidence"),
++                    )
++                    .clicked()
++                {
++                    self.record_selected_benchmark();
++                }
+             });
++            ui.small(
++                "Record only when the current result intentionally executes the selected corpus task. Records are machine-local and omit prompts, conversation history, retrieved source text, project paths, and credentials; this feature never uploads private projects.",
++            );
++        });
++    }
++
++    fn current_installed_inventory(&self) -> Option<&InstalledModelInventory> {
++        let endpoint = self.local_model_endpoint.trim().trim_end_matches('/');
++        self.installed_model_inventory.as_ref().filter(|inventory| {
++            inventory.endpoint.trim().trim_end_matches('/') == endpoint
++        })
++    }
++
++    fn start_model_discovery(&mut self) {
++        match InstalledModelDiscoveryTask::spawn(self.local_model_endpoint.clone()) {
++            Ok(task) => {
++                self.model_discovery = Some(task);
++                self.status = Some(
++                    "Discovering compatible models from the configured loopback backend..."
++                        .to_owned(),
++                );
++            }
++            Err(error) => {
++                self.status = Some(format!("Installed-model discovery failed: {error}"));
++            }
++        }
++    }
++
++    fn poll_model_discovery(&mut self, context: &egui::Context) {
++        let Some(task) = self.model_discovery.as_ref() else {
++            return;
++        };
++        let Some(result) = task.poll() else {
++            context.request_repaint_after(std::time::Duration::from_millis(100));
++            return;
++        };
++        self.model_discovery = None;
++        match result {
++            Ok(inventory) => {
++                let model_count = inventory.models.len();
++                let backend = inventory
++                    .backend_version
++                    .as_deref()
++                    .unwrap_or("version unavailable")
++                    .to_owned();
++                self.installed_model_inventory = Some(inventory);
++                self.status = Some(format!(
++                    "Discovered {model_count} installed model(s); backend {backend}."
++                ));
++            }
++            Err(error) => {
++                self.status = Some(format!("Installed-model discovery failed: {error}"));
++            }
++        }
++    }
++
++    fn benchmark_task_record_available(&self) -> bool {
++        let Some(task) = benchmark_task(&self.benchmark_task_id) else {
++            return false;
++        };
++        if task.kind == BenchmarkTaskKind::ReadQuestion {
++            return self.last_native_question_benchmark.is_some();
++        }
++        self.native_run_benchmark_context
++            .as_ref()
++            .is_some_and(|benchmark| {
++                self.host.run(&benchmark.run_id).is_ok_and(|run| {
++                    matches!(
++                        run.state,
++                        AgentRunState::Completed
++                            | AgentRunState::Failed
++                            | AgentRunState::Cancelled
++                    )
++                })
++            })
++    }
++
++    fn record_selected_benchmark(&mut self) {
++        let Some(task) = benchmark_task(&self.benchmark_task_id).copied() else {
++            self.status = Some("The selected benchmark task is unavailable.".to_owned());
++            return;
++        };
++        let record = if task.kind == BenchmarkTaskKind::ReadQuestion {
++            let Some(snapshot) = self.last_native_question_benchmark.clone() else {
++                self.status = Some(
++                    "Run the selected read-question corpus task before recording evidence."
++                        .to_owned(),
++                );
++                return;
++            };
++            read_question_record(
++                task.id,
++                &snapshot.metrics,
++                snapshot.policy.inventory.as_ref(),
++                snapshot.policy.quality,
++                snapshot.policy.workload,
++            )
++        } else {
++            let Some(context) = self.native_run_benchmark_context.clone() else {
++                self.status = Some(
++                    "Run the selected native write-capable corpus task before recording evidence."
++                        .to_owned(),
++                );
++                return;
++            };
++            let run = match self.host.run(&context.run_id) {
++                Ok(run) => run.clone(),
++                Err(error) => {
++                    self.status = Some(error.to_string());
++                    return;
++                }
++            };
++            agent_run_record(
++                task.id,
++                &run,
++                &context.backend_id,
++                &context.model_id,
++                context.inventory.as_ref(),
++                context.quality,
++            )
++        };
++        let record = match record {
++            Ok(record) => record,
++            Err(error) => {
++                self.status = Some(format!("Benchmark evidence rejected: {error}"));
++                return;
++            }
++        };
++        let path = match self.benchmark_store.record(&record) {
++            Ok(path) => path,
++            Err(error) => {
++                self.status = Some(format!("Could not store benchmark evidence: {error}"));
++                return;
++            }
++        };
++        match self.refresh_benchmark_catalog() {
++            Ok(()) => {
++                let file_name = path
++                    .file_name()
++                    .and_then(|name| name.to_str())
++                    .unwrap_or("benchmark record");
++                self.status = Some(format!(
++                    "Recorded machine-local benchmark evidence as {file_name}."
++                ));
++            }
++            Err(error) => {
++                self.status = Some(format!(
++                    "Benchmark evidence was stored, but catalog refresh failed: {error}"
++                ));
++            }
++        }
++    }
++
++    fn refresh_benchmark_catalog(&mut self) -> Result<(), String> {
++        let records = self.benchmark_store.load()?;
++        let catalog = CuratedModelCatalog::from_bundled_manifest(&records)?;
++        self.benchmark_records = records;
++        self.model_catalog = catalog;
++        Ok(())
+     }
+ 
+     fn selected_native_model_config(&self) -> Result<NativeModelConfig, String> {
+@@ -1683,6 +2071,16 @@ impl AiStudioPanel {
+             MemoryPressure::Unknown,
+             profile.resource_capabilities,
+         );
++        let inventory = if matches!(&config, NativeModelConfig::Local(_)) {
++            self.current_installed_inventory().cloned()
++        } else {
++            None
++        };
++        self.native_question_benchmark_policy = Some(NativeQuestionBenchmarkPolicy {
++            quality: self.quality_preference,
++            workload: self.resolved_workload,
++            inventory,
++        });
+         if self.resource_plan.presentation == PresentationPosture::InferenceFocused {
+             self.pending_native_question_start = Some((config, conversation, session_id));
+             self.pending_runtime_action = Some(AiStudioRuntimeAction::EnterInferenceFocused {
+@@ -1711,7 +2109,10 @@ impl AiStudioPanel {
+                     self.resolved_workload, self.quality_preference
+                 ));
+             }
+-            Err(error) => self.status = Some(error.to_string()),
++            Err(error) => {
++                self.native_question_benchmark_policy = None;
++                self.status = Some(error.to_string());
++            }
+         }
+     }
+ 
+@@ -1959,8 +2360,15 @@ impl AiStudioPanel {
+             .native_question_session
+             .take()
+             .unwrap_or_else(|| self.selected_session.clone());
++        let benchmark_policy = self.native_question_benchmark_policy.take();
+         match result {
+             Ok(answer) => {
++                if let Some(policy) = benchmark_policy {
++                    self.last_native_question_benchmark = Some(NativeQuestionBenchmarkSnapshot {
++                        metrics: answer.metrics.clone(),
++                        policy,
++                    });
++                }
+                 if self.model_backend == ModelBackendPreference::Local {
+                     self.last_model_resource_telemetry = answer.resource_telemetry.clone();
+                 }
+@@ -2899,6 +3307,14 @@ impl AiStudioPanel {
+         let native_requires_network = native_config
+             .as_ref()
+             .is_some_and(NativeModelConfig::requires_network);
++        let native_benchmark_identity = native_config.as_ref().map(|config| {
++            let inventory = if matches!(config, NativeModelConfig::Local(_)) {
++                self.current_installed_inventory().cloned()
++            } else {
++                None
++            };
++            (config.backend_id().to_owned(), config.model_id(), inventory)
++        });
+         let run_id = self.host.start_run_authorized(&self.selected_session, authorized_proposal_version, provider_label).map_err(|error| error.to_string())?;
+         self.active_run_id = Some(run_id.clone());
+         self.active_runtime_mode = Some(mode);
+@@ -2907,6 +3323,15 @@ impl AiStudioPanel {
+         self.active_external_args = external_provider.map(|_| self.provider_args.clone());
+         self.external_provider_diagnostics = ExternalAgentDiagnostics::default();
+         self.native_agent_runtime = native_config.map(NativeAgentRuntime::configured);
++        self.native_run_benchmark_context = native_benchmark_identity.map(
++            |(backend_id, model_id, inventory)| NativeRunBenchmarkContext {
++                run_id: run_id.clone(),
++                backend_id,
++                model_id,
++                quality: self.quality_preference,
++                inventory,
++            },
++        );
+         self.native_mcp_task = None;
+         self.pending_native_mcp_tool = None;
+         self.code_workspace = None;
+@@ -4199,6 +4624,36 @@ fn model_resource_continuation_runtime_action(
+         .then_some(AiStudioRuntimeAction::RestoreEditorPresentation)
+ }
+ 
++fn optional_text(value: Option<&str>) -> &str {
++    value
++        .filter(|value| !value.trim().is_empty())
++        .unwrap_or("n/a")
++}
++
++fn format_model_bytes(bytes: u64) -> String {
++    const KIB: f64 = 1024.0;
++    const MIB: f64 = KIB * 1024.0;
++    const GIB: f64 = MIB * 1024.0;
++    let bytes = bytes as f64;
++    if bytes >= GIB {
++        format!("{:.2} GiB", bytes / GIB)
++    } else if bytes >= MIB {
++        format!("{:.1} MiB", bytes / MIB)
++    } else if bytes >= KIB {
++        format!("{:.1} KiB", bytes / KIB)
++    } else {
++        format!("{} B", bytes as u64)
++    }
++}
++
++fn list_or_none(values: &[String]) -> String {
++    if values.is_empty() {
++        "n/a".to_owned()
++    } else {
++        values.join(", ")
++    }
++}
++
+ fn model_capability_summary(profile: &ModelCapabilityProfile) -> String {
+     format!(
+         "Backend: {} · Model: {} · structured: {} · tools: {} · images: {} · reasoning: {} · context: {} · streaming: {} · usage: {} · benchmark: {}",
+diff --git a/crates/editor/src/lib.rs b/crates/editor/src/lib.rs
+index 2ba62a4ccc1fba704c710203281eaaefa9d45f92..fef6b83d0265cb29d21c5592fdd7a854b5d8fe83 100644
+--- a/crates/editor/src/lib.rs
++++ b/crates/editor/src/lib.rs
+@@ -11,6 +11,7 @@
+ // provider integrations are enabled by AI Studio.
+ #[allow(dead_code)]
+ mod agent_asset_acquisition;
++mod agent_benchmark;
+ mod agent_host;
+ mod external_agent_provider;
+ mod hosted_model_backend;
+diff --git a/crates/editor/src/native_agent.rs b/crates/editor/src/native_agent.rs
+index ef61ebb6ecb0f6c3d4454fcba1c09044c9f9dc9b..ab13b74dc95bff7cc77157a9123188105c5ce9da 100644
+--- a/crates/editor/src/native_agent.rs
++++ b/crates/editor/src/native_agent.rs
+@@ -304,6 +304,51 @@ pub(crate) struct NativeAnswer {
+     pub(crate) resource_telemetry: ModelResourceTelemetry,
+ }
+ 
++#[derive(Debug, Clone)]
++pub(crate) struct InstalledLocalModel {
++    pub(crate) name: String,
++    pub(crate) digest: Option<String>,
++    pub(crate) size_bytes: Option<u64>,
++    pub(crate) parameter_size: Option<String>,
++    pub(crate) quantization_level: Option<String>,
++    pub(crate) family: Option<String>,
++}
++
++#[derive(Debug, Clone)]
++pub(crate) struct InstalledModelInventory {
++    pub(crate) endpoint: String,
++    pub(crate) backend_version: Option<String>,
++    pub(crate) models: Vec<InstalledLocalModel>,
++}
++
++pub(crate) struct InstalledModelDiscoveryTask {
++    result: Receiver<Result<InstalledModelInventory, NativeAgentError>>,
++}
++
++impl InstalledModelDiscoveryTask {
++    pub(crate) fn spawn(endpoint: String) -> Result<Self, NativeAgentError> {
++        LocalHttpEndpoint::parse(&endpoint)?;
++        let (sender, result) = mpsc::channel();
++        std::thread::Builder::new()
++            .name("ai-local-model-discovery".to_owned())
++            .spawn(move || {
++                let inventory = discover_installed_models(&endpoint);
++                let _ = sender.send(inventory);
++            })?;
++        Ok(Self { result })
++    }
++
++    pub(crate) fn poll(&self) -> Option<Result<InstalledModelInventory, NativeAgentError>> {
++        match self.result.try_recv() {
++            Ok(result) => Some(result),
++            Err(TryRecvError::Empty) => None,
++            Err(TryRecvError::Disconnected) => Some(Err(NativeAgentError::BackendUnavailable(
++                "local model discovery worker disconnected unexpectedly".to_owned(),
++            ))),
++        }
++    }
++}
++
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+ enum BackendResidencyRequest {
+     CpuOnly,
+@@ -750,6 +795,79 @@ fn is_loopback_host(host: &str) -> bool {
+         .is_ok_and(|address| address.is_loopback())
+ }
+ 
++#[derive(Debug, Deserialize)]
++struct LocalTagsResponse {
++    #[serde(default)]
++    models: Vec<LocalTagModel>,
++}
++
++#[derive(Debug, Deserialize)]
++struct LocalTagModel {
++    name: String,
++    #[serde(default)]
++    digest: Option<String>,
++    #[serde(default)]
++    size: Option<u64>,
++    #[serde(default)]
++    details: LocalTagDetails,
++}
++
++#[derive(Debug, Default, Deserialize)]
++struct LocalTagDetails {
++    #[serde(default)]
++    family: Option<String>,
++    #[serde(default)]
++    parameter_size: Option<String>,
++    #[serde(default)]
++    quantization_level: Option<String>,
++}
++
++#[derive(Debug, Deserialize)]
++struct LocalVersionResponse {
++    version: String,
++}
++
++fn discover_installed_models(
++    endpoint_value: &str,
++) -> Result<InstalledModelInventory, NativeAgentError> {
++    let endpoint = LocalHttpEndpoint::parse(endpoint_value)?;
++    let tags: LocalTagsResponse = request_local_json(&endpoint, "GET", "/api/tags", None)?;
++    let backend_version = request_local_json::<LocalVersionResponse>(
++        &endpoint,
++        "GET",
++        "/api/version",
++        None,
++    )
++    .ok()
++    .map(|response| response.version)
++    .filter(|version| !version.trim().is_empty());
++    let mut models = tags
++        .models
++        .into_iter()
++        .filter(|model| !model.name.trim().is_empty())
++        .map(|model| InstalledLocalModel {
++            name: model.name,
++            digest: model.digest.filter(|digest| !digest.trim().is_empty()),
++            size_bytes: model.size,
++            parameter_size: model
++                .details
++                .parameter_size
++                .filter(|value| !value.trim().is_empty()),
++            quantization_level: model
++                .details
++                .quantization_level
++                .filter(|value| !value.trim().is_empty()),
++            family: model.details.family.filter(|value| !value.trim().is_empty()),
++        })
++        .collect::<Vec<_>>();
++    models.sort_by(|left, right| left.name.cmp(&right.name));
++    Ok(InstalledModelInventory {
++        endpoint: endpoint_value.to_owned(),
++        backend_version,
++        models,
++    })
++}
++
+ fn answer_question(
+     config: &NativeModelConfig,
+     project_root: &Path,
+@@ -1503,6 +1621,56 @@ fn discover_engine_root() -> Option<PathBuf> {
+ mod tests {
+     use super::*;
+ 
++    #[test]
++    fn installed_model_discovery_reads_loopback_tags_and_version() {
++        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("listener");
++        let address = listener.local_addr().expect("listener address");
++        let worker = std::thread::spawn(move || {
++            for _ in 0..2 {
++                let (mut stream, _) = listener.accept().expect("accept discovery request");
++                let mut request = Vec::new();
++                loop {
++                    let mut chunk = [0_u8; 512];
++                    let read = stream.read(&mut chunk).expect("read discovery request");
++                    if read == 0 {
++                        panic!("discovery request closed before HTTP headers completed");
++                    }
++                    request.extend_from_slice(&chunk[..read]);
++                    if find_bytes(&request, b"\r\n\r\n").is_some() {
++                        break;
++                    }
++                }
++                let request = String::from_utf8_lossy(&request);
++                let body = if request.starts_with("GET /api/tags " ) {
++                    r#"{"models":[{"name":"test-model:q4","digest":"sha256:test","size":42,"details":{"family":"test","parameter_size":"1B","quantization_level":"Q4_K_M"}}]}"#
++                } else {
++                    r#"{"version":"1.2.3"}"#
++                };
++                write!(
++                    stream,
++                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
++                    body.len(),
++                    body,
++                )
++                .expect("write discovery response");
++                stream.flush().expect("flush discovery response");
++                stream
++                    .shutdown(Shutdown::Write)
++                    .expect("finish discovery response");
++            }
++        });
++        let endpoint = format!("http://127.0.0.1:{}", address.port());
++        let inventory = discover_installed_models(&endpoint).expect("discover installed models");
++        worker.join().expect("discovery server");
++        assert_eq!(inventory.backend_version.as_deref(), Some("1.2.3"));
++        assert_eq!(inventory.models.len(), 1);
++        assert_eq!(inventory.models[0].name, "test-model:q4");
++        assert_eq!(
++            inventory.models[0].quantization_level.as_deref(),
++            Some("Q4_K_M")
++        );
++    }
++
+     fn temp_path(name: &str) -> PathBuf {
+         std::env::temp_dir().join(format!(
+             "gameengine-native-agent-{name}-{}",
+diff --git a/crates/editor/src/native_agent_runtime.rs b/crates/editor/src/native_agent_runtime.rs
+index 3cff6e7dfd115352e2b29a0bc9c5c0900c74e910..e368b791e824ebe42660c242bce602302807c158 100644
+--- a/crates/editor/src/native_agent_runtime.rs
++++ b/crates/editor/src/native_agent_runtime.rs
+@@ -20,6 +20,7 @@ use std::sync::{Arc, Mutex};
+ use std::time::Duration;
+ 
+ const MCP_PROTOCOL_VERSION: &str = "2025-11-25";
++pub(crate) const NATIVE_WRITE_HARNESS_VERSION: &str = "native-write-v1";
+ const MAX_TOOL_RESULT_CHARS: usize = 12_000;
+ 
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+diff --git a/docs/adr/0142-gameengine-agent-benchmark-and-curated-model-catalog.md b/docs/adr/0142-gameengine-agent-benchmark-and-curated-model-catalog.md
+index b49dae89412f3d69c2936769fe72a662724ee780..343073f9f512c8b7fcd0bb73f8377c0b328e05c8 100644
+--- a/docs/adr/0142-gameengine-agent-benchmark-and-curated-model-catalog.md
++++ b/docs/adr/0142-gameengine-agent-benchmark-and-curated-model-catalog.md
+@@ -1,9 +1,9 @@
+ # ADR 0142: GameEngine Agent Benchmark and Curated Model Catalog
+ 
+-Status: Proposed
++Status: Accepted
+ Date: 2026-08-17
+ Builds on: ADR 0131, ADR 0135, ADR 0141
+-Relates to: ADR 0143, ADR 0150
++Relates to: ADR 0143, ADR 0150, ADR 0152
+ 
+ ## Context
+ 
+@@ -25,7 +25,7 @@ Each comparable result records at least:
+ - backend/runtime version;
+ - hardware identity and total GPU/system memory;
+ - quality/workload policy;
+-- available tool/permission budget; and
++- available tool/permission/work-claim budget; and
+ - completion criteria used by the task.
+ 
+ A comparison that changes multiple dimensions must be labeled non-equivalent rather than presented as a model-only ranking.
+@@ -52,6 +52,16 @@ No hard-coded `VRAM >= N => model X` rule is architectural truth. Recommendation
+ 
+ The RTX 4070 Ti 12 GB remains the first reference profile from ADR 0135, not a minimum requirement. Additional hardware profiles may be added independently.
+ 
++## Implementation
++
++The first-release implementation keeps benchmark state in machine-local GameEngine application data and leaves canonical project/session data unchanged. `engine-editor` owns a versioned seven-class corpus contract covering read questions, project inspection, code implementation, typed authoring mutation, validation/repair, runtime interaction, and visual evaluation. Records retain the corpus/task identity, benchmark and provider harness versions, exact discoverable model representation, backend version, hardware/resource telemetry with explicit unavailable values, quality/workload policy, tool/permission/work-claim budget, completion criteria, and measured Agent Host evidence.
++
++Model-only comparison is permitted only when corpus/task, both harness identities, backend runtime, hardware profile, quality/workload policy, tool/permission/work-claim budget, and completion criteria match. Changed dimensions are returned as an explicit non-equivalent comparison instead of being ranked as if only the model changed. The benchmark store intentionally omits prompts, conversation history, retrieved source text, project paths, and credentials. Recording local evidence is an explicit AI Studio action rather than silent collection or upload.
++
++The curated catalog is bundled as versioned product data separate from model weights. A candidate records exact model/runtime representation plus source, license, transfer/storage size, memory guidance, context, modality, and tool-capability metadata. Lightweight, Balanced, and High Quality recommendation slots are derived only from complete comparable GameEngine corpus evidence; an empty or incomplete evidence set produces no recommendation rather than a guessed default. The first catalog ships without invented candidate recommendations and becomes populated only from measured evidence with explicit provenance.
++
++The initial Ollama-compatible loopback backend can discover its installed model inventory and backend version through its supported local HTTP API. AI Studio keeps exact custom model entry available, clearly distinguishes compatible/unverified selections from benchmark-qualified recommendations, and exposes unknown provider/resource capability data as unavailable. ADR 0144 hosted/enterprise backends remain on the same provider-independent `NativeModelConfig` path; representation metadata unavailable from those providers is not inferred. Discovery never reaches a non-loopback endpoint, and model acquisition remains outside this ADR so no weights are silently downloaded.
++
+ ## Dependencies and parallel work
+ 
+ Benchmark storage/UI scaffolding may begin in parallel with ADR 0141. Official write-capable implementation recommendations require ADR 0141 to be available. ADR 0143 telemetry enriches resource measurements but does not block the benchmark architecture. ADR 0150 MUST NOT become the default until this ADR demonstrates a measurable benefit over the single-model baseline.
+diff --git a/docs/adr/README.md b/docs/adr/README.md
+index 49cec5750ab457ac1e9a1d082833bfb020dda82c..c5253df9a31d7041804f5b5339be8ebc939483ba 100644
+--- a/docs/adr/README.md
++++ b/docs/adr/README.md
+@@ -288,7 +288,7 @@ implementation contract.
+ | [0139](0139-editor-authoritative-working-copy-and-saved-copy-coherency.md) | Editor Authoritative Working Copy and Saved-Copy Coherency |
+ | [0140](0140-ai-capability-roadmap-and-parallel-delivery-order.md) | **Proposed** — AI Capability Roadmap and Parallel Delivery Order |
+ | [0141](0141-native-write-capable-agent-runtime-and-governed-tool-loop.md) | **Proposed** — Native Write-Capable Agent Runtime and Governed Tool Loop |
+-| [0142](0142-gameengine-agent-benchmark-and-curated-model-catalog.md) | **Proposed** — GameEngine Agent Benchmark and Curated Model Catalog |
++| [0142](0142-gameengine-agent-benchmark-and-curated-model-catalog.md) | GameEngine Agent Benchmark and Curated Model Catalog |
+ | [0143](0143-native-model-backend-resource-controls-and-hardware-telemetry.md) | Native ModelBackend Resource Controls and Hardware Telemetry |
+ | [0144](0144-hosted-and-enterprise-model-backends-and-credential-ownership.md) | **Proposed** — Hosted and Enterprise ModelBackends and Credential Ownership |
+ | [0145](0145-first-class-external-agent-runtime-provider-adapters.md) | **Proposed** — First-Class External Agent Runtime Provider Adapters |
