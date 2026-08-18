@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/authoring/src/native_2d_services.rs",
+  "old": "            Self::WorkBudgetExceeded { limit } => write!(formatter, \"Tile Map operation exceeded its {limit}-cell work budget\"),\n            Self::InvalidPivot => formatter.write_str(\"sprite pivot must be finite and normalized\"),\n",
+  "new": "            Self::WorkBudgetExceeded { limit } => write!(formatter, \"Tile Map operation exceeded its {limit}-cell work budget\"),\n            Self::InvalidDocument(message) => write!(formatter, \"invalid Tile Map replacement: {message}\"),\n            Self::InvalidPivot => formatter.write_str(\"sprite pivot must be finite and normalized\"),\n"
+}
