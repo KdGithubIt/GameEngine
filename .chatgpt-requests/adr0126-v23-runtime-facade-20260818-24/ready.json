@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0126-v23-runtime-facade-20260818-24",
+  "target_branch": "chatgpt/gameengine-adr0126-first-release-v23",
+  "expected_head_sha": "17444715993924c5b457b806513a05370e48f9ac",
+  "baseline_main_sha": "96c8ffb18a74eabec2164daa61f694f131019ddc",
+  "patch_sha256": "904cb65817ecf5059c3dade65e933c0a07dbde6c03626918b16e7bef81d1cf77",
+  "patch_bytes": 27418,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Restore ADR 0126 production Timeline facade",
+  "pr_title": "GameEngine: complete ADR 0126 Timeline / Sequencer first release",
+  "pr_body": "## Summary\n\nRestores the production Timeline facade required by the already-integrated ADR 0126 runtime registration and Project Rust control paths. Sequencer Editor integration and final validation follow.\n\n<!-- gameengine-visual-validation: editor -->\n"
+}
