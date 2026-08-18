@@ -1068,6 +1068,16 @@ The ADR 0035 AI Agent Bridge remains the input, frame-observation, and visual
 interaction path. It MUST NOT be treated as a substitute for semantic authoring
 parity when a capability changes persisted project data.
 
+ADR 0151 adds a GUI-free MCP host without adding a second authoring model. A
+write-capable headless host MUST acquire the same per-location OS-backed project
+writer authority used by the Editor before it loads authoritative saved project
+state. Editor and headless writer ownership are mutually exclusive. A read-only
+headless host MAY coexist with an Editor only as an explicitly reported saved-file
+snapshot; it cannot observe or claim parity with the Editor's dirty in-memory
+working copy. Both modes expose the canonical `engine-mcp` inventory and route
+semantic operations directly to shared authoring services rather than through CLI
+argv/stdout or host-specific mutation logic.
+
 Example CLI:
 
 ```text
