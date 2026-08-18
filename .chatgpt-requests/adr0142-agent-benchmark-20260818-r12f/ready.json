@@ -1,0 +1,16 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0142-agent-benchmark-20260818-r12f",
+  "target_branch": "chatgpt/gameengine-adr0142-agent-benchmark-v5",
+  "expected_head_sha": "e99a6b9a13caba71191157cb53f316e5e9139a2f",
+  "baseline_main_sha": "e99a6b9a13caba71191157cb53f316e5e9139a2f",
+  "patch_sha256": "b91ab36f12494f918eb926ea5144f80ae6bfd7951a9d50603878a6af61b99851",
+  "patch_bytes": 89211,
+  "patch_parts": [
+    "part-0000.patch",
+    "part-0001.patch"
+  ],
+  "commit_message": "Rebase ADR 0142 benchmark foundation onto ADR 0145",
+  "pr_title": "GameEngine: implement ADR 0142 agent benchmark catalog",
+  "pr_body": "## Summary\n\n- Re-integrate ADR 0142 on current main after ADR 0145 provider adapters.\n- Add the versioned GameEngine Agent Benchmark, fail-closed evidence records, curated catalog scaffolding, and loopback installed-model discovery.\n- Preserve ADR 0145 external provider adapter selection and launch snapshots; benchmark context is attached only to native-model runs.\n- Preserve ADR 0152 work-claim comparison semantics without storing raw target keys.\n- Keep compatible/unverified and benchmark-qualified model status distinct; no model weights are silently downloaded.\n\n## Validation\n\n- GameEngine Windows Validation\n- Editor Visual Validation\n\n<!-- gameengine-visual-validation: auto -->\n<!-- gameengine-visual-validation-trigger: adr0142-agent-benchmark-20260818-r12f -->\n"
+}
