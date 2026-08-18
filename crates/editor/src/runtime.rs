@@ -472,6 +472,23 @@ impl RuntimePlayState {
         }
     }
 
+    /// Advances exactly one fixed interval plus the normal frame schedule for
+    /// host-owned deterministic runtime debugging.
+    ///
+    /// This composes the existing Pause/Step primitive instead of introducing a
+    /// second simulation clock. The caller remains responsible for keeping
+    /// managed Play paused while a bounded sequence is executing.
+    pub(crate) fn tick_fixed_debug_step(&mut self) -> Result<(), PlayTickError> {
+        let was_paused = self.paused;
+        self.paused = true;
+        self.single_step_requested = true;
+        let result = self.tick();
+        self.paused = was_paused;
+        self.single_step_requested = false;
+        self.last_tick = Instant::now();
+        result
+    }
+
     /// Returns the total fixed-step count owned by the runtime clock.
     pub fn fixed_step_count(&self) -> u64 {
         self.app
@@ -610,6 +627,52 @@ impl RuntimePlayState {
                     animator.time,
                     animator.playback_speed,
                     if animator.looping { " (loop)" } else { "" }
+                ),
+            ));
+        }
+        if let Some(graph) = world.get_component::<engine::AnimGraphPlayer>(entity) {
+            let state = graph
+                .current_state_info()
+                .map(|state| {
+                    state
+                        .motion_key()
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| format!("node {} (no motion)", state.node_id.as_str()))
+                })
+                .unwrap_or_else(|| "unresolved".to_owned());
+            let transition = graph
+                .last_transition()
+                .map(|transition| {
+                    format!(
+                        "{} -> {} ({})",
+                        transition.from_node.as_str(),
+                        transition.to_node.as_str(),
+                        if transition.condition.is_empty() {
+                            "unconditional"
+                        } else {
+                            transition.condition.as_str()
+                        }
+                    )
+                })
+                .unwrap_or_else(|| "none".to_owned());
+            values.push((
+                "Animation Graph".to_owned(),
+                format!("state={state}; transition={transition}"),
+            ));
+        }
+        if let Some(runner) =
+            world.get_component::<engine::behavior_tree::BehaviorTreeRunner>(entity)
+        {
+            let snapshot = runner.snapshot();
+            values.push((
+                "Behavior Tree".to_owned(),
+                format!(
+                    "status={:?}; running_node={:?}; last_terminal={:?}/{:?}; error={:?}",
+                    snapshot.status,
+                    snapshot.running_node,
+                    snapshot.last_terminal_node,
+                    snapshot.last_terminal_status,
+                    snapshot.error
                 ),
             ));
         }

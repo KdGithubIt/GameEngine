@@ -51,6 +51,7 @@ mod preview_residency;
 pub mod problems;
 pub mod project_settings_panel;
 pub mod runtime;
+pub mod runtime_debug;
 pub mod scene_view;
 pub mod session;
 pub mod skinned_model_bake;
