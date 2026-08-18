@@ -1,0 +1,155 @@
+diff --git a/crates/editor/src/ai_studio.rs b/crates/editor/src/ai_studio.rs
+index b42a72052f2d986eb7d634eb450cdf9c0d983a91..3126bd9c7e59ca5ed6bdc2853db879adfacea153 100644
+--- a/crates/editor/src/ai_studio.rs
++++ b/crates/editor/src/ai_studio.rs
+@@ -580,6 +580,36 @@ impl AiStudioPanel {
+             ExternalAgentProviderStatus::visual_fixture(ExternalAgentProviderKind::ClaudeCode);
+     }
+ 
++    #[cfg(feature = "visual-validation")]
++    pub fn prepare_adr_visual_validation(&mut self, scenario: &str) {
++        match scenario {
++            "adr0144-hosted-backend" => {
++                self.prepare_hosted_backend_visual_validation();
++                self.status = Some("Hosted API backend selected · remote processing · secret is stored outside project data.".to_owned());
++            }
++            "adr0144-enterprise-backend" => {
++                self.model_backend = ModelBackendPreference::Enterprise;
++                self.hosted_model_endpoint = "https://enterprise.example/v1/chat/completions".to_owned();
++                self.hosted_model_name = "enterprise-governed-model".to_owned();
++                self.hosted_secret_draft.clear();
++                self.status = Some("Enterprise backend selected · organization-managed remote processing.".to_owned());
++            }
++            "adr0149-live-observation" => {
++                self.model_backend = ModelBackendPreference::Local;
++                self.status = Some("Live Game View observation · PNG transport · 6 FPS cap · latest-frame-only retention.".to_owned());
++            }
++            "adr0153-confinement" => {
++                self.confinement_requirement =
++                    AgentConfinementRequirement::RequireProviderOrOsConfinement;
++                self.external_provider_kind = ExternalAgentProviderKind::ClaudeCode;
++                self.external_provider_status =
++                    ExternalAgentProviderStatus::visual_fixture(ExternalAgentProviderKind::ClaudeCode);
++                self.status = Some("Provider/OS confinement required · loopback MCP · managed network policy.".to_owned());
++            }
++            _ => self.prepare_hosted_backend_visual_validation(),
++        }
++    }
++
+     #[cfg(feature = "visual-validation")]
+     /// Returns whether the detached native viewport has completed two rendered frames.
+     pub fn detached_visual_validation_capture_ready(&self) -> bool {
+diff --git a/crates/editor/src/main.rs b/crates/editor/src/main.rs
+index 9f963d2c039328d87fb970b8e6e12fd8848a72fa..a2c50fefaa45f0fe2689524188d2df1ae6e6c1f0 100644
+--- a/crates/editor/src/main.rs
++++ b/crates/editor/src/main.rs
+@@ -72,7 +72,11 @@ impl EditorShell {
+             let mut ai_studio = ai_studio;
+             let detached_capture = visual_validation_touches_ai_studio();
+             if detached_capture {
+-                ai_studio.prepare_hosted_backend_visual_validation();
++                if let Ok(scenario) = std::env::var("GAMEENGINE_VISUAL_SCENARIO") {
++                    ai_studio.prepare_adr_visual_validation(&scenario);
++                } else {
++                    ai_studio.prepare_hosted_backend_visual_validation();
++                }
+                 ai_studio.detach();
+             }
+             (ai_studio, detached_capture)
+@@ -361,6 +365,8 @@ impl eframe::App for EditorShell {
+         #[cfg(feature = "visual-validation")]
+         if !self.visual_behavior_debug_capture
+             && std::env::var_os("GAMEENGINE_VISUAL_AUTHORING_TOOL").is_none()
++            && (self.visual_ai_studio_detached_capture
++                || std::env::var_os("GAMEENGINE_VISUAL_SCENARIO").is_none())
+         {
+             self.ai_studio.show(&context);
+         }
+@@ -391,6 +397,15 @@ fn visual_validation_touches_behavior_debug() -> bool {
+ 
+ #[cfg(feature = "visual-validation")]
+ fn visual_validation_touches_ai_studio() -> bool {
++    if let Ok(scenario) = std::env::var("GAMEENGINE_VISUAL_SCENARIO") {
++        return matches!(
++            scenario.as_str(),
++            "adr0144-hosted-backend"
++                | "adr0144-enterprise-backend"
++                | "adr0149-live-observation"
++                | "adr0153-confinement"
++        );
++    }
+     let base_ref = std::env::var("GITHUB_BASE_REF").unwrap_or_else(|_| "main".into());
+     let base = format!("origin/{base_ref}...HEAD");
+     std::process::Command::new("git")
+diff --git a/crates/editor/src/ui/animation_preview.rs b/crates/editor/src/ui/animation_preview.rs
+index 1c9dd3ad293e815ae923f87502df96eff75d659f..f4f4a469bb3a5f4228dfc1c916406acb2a17c157 100644
+--- a/crates/editor/src/ui/animation_preview.rs
++++ b/crates/editor/src/ui/animation_preview.rs
+@@ -210,6 +210,29 @@ impl AnimationPreviewWindow {
+         }
+     }
+ 
++    #[cfg(feature = "visual-validation")]
++    pub(super) fn prepare_adr_visual_validation(&mut self) {
++        self.open = true;
++        self.scene = None;
++        self.preview_scene = None;
++        self.target = None;
++        self.tab = AnimationPreviewTab::Transition;
++        self.from_clip = "Locomotion / Idle (Auto → Humanoid)".to_owned();
++        self.to_clip = "Locomotion / Sprint Forward (Native)".to_owned();
++        self.trigger_seconds = 0.65;
++        self.fade_duration = 0.24;
++        self.repeat_transition = true;
++        self.transition_cycle_seconds = 2.8;
++        self.parameters = std::collections::BTreeMap::from([
++            ("is_grounded".to_owned(), true),
++            ("is_running".to_owned(), true),
++            ("wants_jump".to_owned(), false),
++        ]);
++        self.playing = true;
++        self.view.animation_preview_speed = 1.0;
++        self.view.animation_secondary_physics_enabled = true;
++    }
++
+     fn refresh_target_defaults(
+         &mut self,
+         manifest: &engine::AssetManifest,
+diff --git a/crates/editor/src/ui/documents.rs b/crates/editor/src/ui/documents.rs
+index 0ae0904f15f3660cbd4c1d783dc1752621cadeaf..e8dd97d45265474e85bd88e40b20130067dc7286 100644
+--- a/crates/editor/src/ui/documents.rs
++++ b/crates/editor/src/ui/documents.rs
+@@ -21,7 +21,10 @@ impl EditorApp {
+         }
+         app.sync_workspace_preferences();
+         #[cfg(feature = "visual-validation")]
+-        app.prepare_behavior_tree_visual_validation();
++        {
++            app.prepare_behavior_tree_visual_validation();
++            app.prepare_adr_visual_scenario();
++        }
+         app
+     }
+ 
+diff --git a/crates/editor/src/ui/mod.rs b/crates/editor/src/ui/mod.rs
+index 8de256f2464a1440a842b1f052dd23cd0e345070..2c3b7c9ecea05db2bb8553ee3e5f3fc3fe84fb37 100644
+--- a/crates/editor/src/ui/mod.rs
++++ b/crates/editor/src/ui/mod.rs
+@@ -50,6 +50,8 @@ use std::{
+     path::{Path, PathBuf},
+ };
+ mod animation_graph_parameters;
++#[cfg(feature = "visual-validation")]
++mod adr_visual_scenarios;
+ mod audio_authoring;
+ mod behavior_debug;
+ mod animation_preview;
+@@ -956,6 +958,8 @@ impl eframe::App for EditorApp {
+         // 全パネルの描画後にTooltipレイヤーへ出すことで、
+         // Asset Browserから別パネルへ移動してもプレビューを常に最前面へ表示する。
+         show_asset_drag_preview(ui.ctx());
++        #[cfg(feature = "visual-validation")]
++        self.show_adr_visual_scenario(ui.ctx());
+         self.show_notifications(ui.ctx());
+         self.show_play_build_overlay(ui.ctx());
+         if self.inference_restore_pending && !self.inference_focused {
