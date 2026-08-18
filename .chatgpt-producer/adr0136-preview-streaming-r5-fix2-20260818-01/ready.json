@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0136-preview-streaming-r5-fix2-20260818-01",
+  "target_branch": "chatgpt/gameengine-adr0136-preview-streaming-r5",
+  "expected_head_sha": "ef15f05615e8e329aa0a5b85f684d093803c8696",
+  "baseline_main_sha": "97c0c97802f81be7b332583759a2c5bf31254476",
+  "edit_parts": [
+    "edit-0000.json",
+    "edit-0001.json",
+    "edit-0002.json",
+    "edit-0003.json",
+    "edit-0004.json"
+  ],
+  "commit_message": "Fix ADR 0136 preview compile errors",
+  "pr_title": "GameEngine: implement ADR 0136 preview residency and streaming",
+  "pr_body": "## Summary\n\nImplements project-scoped preview CPU/GPU residency, asynchronous preview renderer warm-up, frame-budgeted GPU uploads, atomic reimport promotion, and ADR 0135 reclaim recovery for ADR 0136.\n\nFixes the exact Windows validation compile failures in Scene View device identity, egui context access, and PreviewKey test construction."
+}
