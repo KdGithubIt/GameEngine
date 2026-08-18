@@ -1,0 +1,778 @@
+diff --git a/crates/editor/src/agent_benchmark_campaign.rs b/crates/editor/src/agent_benchmark_campaign.rs
+index 7b1d8a36c93e789cd66f93101efce5c8b17896ec..1b17b8fa9292f78d57a8d1348d7c725d82429581 100644
+--- a/crates/editor/src/agent_benchmark_campaign.rs
++++ b/crates/editor/src/agent_benchmark_campaign.rs
+@@ -595,6 +595,19 @@ pub(crate) enum BenchmarkCampaignState {
+     Incompatible,
+ }
+ 
++impl BenchmarkCampaignState {
++    pub(crate) const fn label(self) -> &'static str {
++        match self {
++            Self::Draft => "Draft",
++            Self::Running => "Running",
++            Self::Paused => "Paused",
++            Self::Stopped => "Stopped",
++            Self::Completed => "Completed",
++            Self::Incompatible => "Incompatible",
++        }
++    }
++}
++
+ #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+ #[serde(rename_all = "snake_case")]
+ pub(crate) enum CampaignRunStatus {
+@@ -944,6 +957,38 @@ impl BenchmarkCampaign {
+         Ok(())
+     }
+ 
++    pub(crate) fn resume_identity_for_environment(
++        &self,
++        hardware: BenchmarkHardwareIdentity,
++        verified: &[BenchmarkModelIdentity],
++    ) -> CampaignResumeIdentity {
++        let mut identity = self.plan.resume_identity();
++        identity.hardware = hardware;
++        identity.candidates = self
++            .plan
++            .candidates
++            .iter()
++            .map(|candidate| {
++                verified
++                    .iter()
++                    .find(|model| {
++                        model.backend_id == candidate.model.backend_id
++                            && model.model_id == candidate.model.model_id
++                    })
++                    .map(CampaignRepresentation::from_model)
++                    .unwrap_or_else(|| CampaignRepresentation::from_model(&BenchmarkModelIdentity {
++                        backend_id: candidate.model.backend_id.clone(),
++                        model_id: candidate.model.model_id.clone(),
++                        model_version: TelemetryValue::Unavailable,
++                        quantization: TelemetryValue::Unavailable,
++                        representation_size_bytes: TelemetryValue::Unavailable,
++                        backend_runtime_version: TelemetryValue::Unavailable,
++                    }))
++            })
++            .collect();
++        identity
++    }
++
+     pub(crate) fn resume(&mut self, current: CampaignResumeIdentity) -> Result<(), String> {
+         if !matches!(
+             self.state,
+@@ -1039,6 +1084,29 @@ impl BenchmarkCampaignStore {
+ 
+     pub(crate) fn load(&self, fingerprint: &str) -> Result<BenchmarkCampaign, String> {
+         let path = self.root.join(format!("{fingerprint}.json"));
++        self.load_path(&path)
++    }
++
++    pub(crate) fn load_latest(&self) -> Result<Option<BenchmarkCampaign>, String> {
++        let mut latest: Option<BenchmarkCampaign> = None;
++        for entry in fs::read_dir(&self.root).map_err(|error| error.to_string())? {
++            let entry = entry.map_err(|error| error.to_string())?;
++            let path = entry.path();
++            if path.extension().and_then(|value| value.to_str()) != Some("json") {
++                continue;
++            }
++            let campaign = self.load_path(&path)?;
++            if latest
++                .as_ref()
++                .is_none_or(|current| campaign.updated_unix_ms > current.updated_unix_ms)
++            {
++                latest = Some(campaign);
++            }
++        }
++        Ok(latest)
++    }
++
++    fn load_path(&self, path: &Path) -> Result<BenchmarkCampaign, String> {
+         let bytes = fs::read(path).map_err(|error| error.to_string())?;
+         let campaign = serde_json::from_slice::<BenchmarkCampaign>(&bytes)
+             .map_err(|error| error.to_string())?;
+diff --git a/crates/editor/src/ai_studio.rs b/crates/editor/src/ai_studio.rs
+index ab0f3729161cab05861d7ffe30133f25a7876faf..024cb46d47ce6fa251066c912d58661d595543cc 100644
+--- a/crates/editor/src/ai_studio.rs
++++ b/crates/editor/src/ai_studio.rs
+@@ -5,9 +5,18 @@
+ //! workspace rules live in the GUI-free `agent_host` module.
+ 
+ use crate::agent_benchmark::{
+-    agent_run_record, benchmark_task, read_question_record, AgentRunBenchmarkIdentity,
+-    BenchmarkHardwareIdentity, BenchmarkRecord, BenchmarkStore, BenchmarkTaskKind, CatalogProfile,
+-    CuratedModelCatalog, BENCHMARK_CORPUS_VERSION, BENCHMARK_TASKS,
++    agent_run_record, benchmark_task, model_identity, read_question_record,
++    AgentRunBenchmarkIdentity, BenchmarkHardwareIdentity, BenchmarkModelIdentity, BenchmarkRecord,
++    BenchmarkStore, BenchmarkTaskKind, CatalogProfile, CuratedModelCatalog,
++    BENCHMARK_CORPUS_VERSION, BENCHMARK_HARNESS_VERSION, BENCHMARK_TASKS,
++    WORKLOAD_POLICY_VERSION,
++};
++use crate::agent_benchmark_campaign::{
++    BenchmarkCampaign, BenchmarkCampaignPlan, BenchmarkCampaignState, BenchmarkCampaignStore,
++    CampaignCandidate, CampaignCandidateSource, CampaignComparisonClass,
++    CampaignExecutionEnvironment, CampaignExecutionProfile, CampaignPreflight, CampaignRunStatus,
++    CampaignSeedPolicy, CampaignTaskPlan, CAMPAIGN_HARNESS_VERSION, CAMPAIGN_SCHEDULE_VERSION,
++    CAMPAIGN_SCHEMA_VERSION, DEFAULT_CAMPAIGN_REPETITIONS,
+ };
+ use crate::agent_host::{
+     project_storage_key, AgentCapability, AgentConfinementNetworkPolicy, AgentConfinementRequest,
+@@ -31,6 +40,8 @@ use crate::native_agent::{
+     ModelResourceTask, NativeAnswer, NativeMetrics, NativeModelConfig, NativeQuestionTask,
+     QuestionMessage, QuestionRole, DEFAULT_LOCAL_MODEL_ENDPOINT,
+ };
++#[cfg(feature = "visual-validation")]
++use crate::native_agent::InstalledLocalModel;
+ use crate::native_agent_runtime::{mcp_write, NativeAgentAction, NativeAgentRuntime, NativeMcpTask};
+ use crate::resource_arbitration::{
+     classify_workload, resolve_resource_plan, resource_operation_for_residency_request,
+@@ -50,6 +61,7 @@ use eframe::egui;
+ use engine::{GamepadAxis, GamepadButton, GamepadId, InputCommand, KeyCode, MouseButton};
+ use engine_authoring::ProjectRoot;
+ use serde::{Deserialize, Serialize};
++use std::collections::BTreeSet;
+ use std::ffi::OsString;
+ use std::fs;
+ use std::path::PathBuf;
+@@ -645,6 +657,13 @@ pub struct AiStudioPanel {
+     benchmark_records: Vec<BenchmarkRecord>,
+     model_catalog: CuratedModelCatalog,
+     benchmark_task_id: String,
++    benchmark_campaign_store: BenchmarkCampaignStore,
++    benchmark_campaign: Option<BenchmarkCampaign>,
++    benchmark_campaign_preflight: Option<CampaignPreflight>,
++    benchmark_campaign_models: BTreeSet<String>,
++    benchmark_campaign_tasks: BTreeSet<String>,
++    benchmark_campaign_repetitions: u32,
++    benchmark_campaign_profile: CampaignExecutionProfile,
+     benchmark_hardware: BenchmarkHardwareIdentity,
+     benchmark_hardware_probe_attempted: bool,
+     installed_model_inventory: Option<InstalledModelInventory>,
+@@ -725,6 +744,51 @@ impl AiStudioPanel {
+                 Some(format!("Benchmark records unavailable: {error}")),
+             ),
+         };
++        let benchmark_campaign_store =
++            BenchmarkCampaignStore::open(ai_root.join("benchmark-campaigns"))?;
++        let (benchmark_campaign, benchmark_campaign_status) =
++            match benchmark_campaign_store.load_latest() {
++                Ok(campaign) => (campaign, None),
++                Err(error) => (
++                    None,
++                    Some(format!("Benchmark campaign progress unavailable: {error}")),
++                ),
++            };
++        let benchmark_campaign_models = benchmark_campaign
++            .as_ref()
++            .map(|campaign| {
++                campaign
++                    .plan
++                    .candidates
++                    .iter()
++                    .map(|candidate| candidate.model.model_id.clone())
++                    .collect()
++            })
++            .unwrap_or_default();
++        let benchmark_campaign_tasks = benchmark_campaign
++            .as_ref()
++            .map(|campaign| {
++                campaign
++                    .plan
++                    .tasks
++                    .iter()
++                    .map(|task| task.task_id.clone())
++                    .collect()
++            })
++            .unwrap_or_else(|| {
++                BENCHMARK_TASKS
++                    .iter()
++                    .map(|task| task.id.to_owned())
++                    .collect()
++            });
++        let benchmark_campaign_repetitions = benchmark_campaign
++            .as_ref()
++            .map(|campaign| campaign.plan.repetitions)
++            .unwrap_or(DEFAULT_CAMPAIGN_REPETITIONS);
++        let benchmark_campaign_profile = benchmark_campaign
++            .as_ref()
++            .map(|campaign| campaign.plan.execution_profile)
++            .unwrap_or(CampaignExecutionProfile::Warm);
+         let model_catalog = CuratedModelCatalog::from_bundled_manifest(&benchmark_records)?;
+         let mut host = AgentHost::open(project.path().to_path_buf(), data_root)
+             .map_err(|error| error.to_string())?;
+@@ -765,6 +829,13 @@ impl AiStudioPanel {
+             benchmark_records,
+             model_catalog,
+             benchmark_task_id: BENCHMARK_TASKS[0].id.to_owned(),
++            benchmark_campaign_store,
++            benchmark_campaign,
++            benchmark_campaign_preflight: None,
++            benchmark_campaign_models,
++            benchmark_campaign_tasks,
++            benchmark_campaign_repetitions,
++            benchmark_campaign_profile,
+             benchmark_hardware: BenchmarkHardwareIdentity::default(),
+             benchmark_hardware_probe_attempted: false,
+             installed_model_inventory: None,
+@@ -827,7 +898,7 @@ impl AiStudioPanel {
+             native_evaluation_had_image: false,
+             managed_playtest_started_at: None,
+             last_captured_frame: None,
+-            status: benchmark_status,
++            status: benchmark_status.or(benchmark_campaign_status),
+         })
+     }
+ 
+@@ -870,6 +941,99 @@ impl AiStudioPanel {
+         self.external_provider_kind = ExternalAgentProviderKind::ClaudeCode;
+         self.external_provider_status =
+             ExternalAgentProviderStatus::visual_fixture(ExternalAgentProviderKind::ClaudeCode);
++
++        let inventory = InstalledModelInventory {
++            endpoint: DEFAULT_LOCAL_MODEL_ENDPOINT.to_owned(),
++            backend_version: Some("0.12.4".to_owned()),
++            models: vec![
++                InstalledLocalModel {
++                    name: "gameengine-qwen-fixture:q4".to_owned(),
++                    digest: Some("sha256:0156qwenfixture".to_owned()),
++                    size_bytes: Some(8_400_000_000),
++                    parameter_size: Some("14B".to_owned()),
++                    quantization_level: Some("Q4_K_M".to_owned()),
++                    family: Some("qwen".to_owned()),
++                },
++                InstalledLocalModel {
++                    name: "gameengine-gemma-fixture:q4".to_owned(),
++                    digest: Some("sha256:0156gemmafixture".to_owned()),
++                    size_bytes: Some(7_900_000_000),
++                    parameter_size: Some("12B".to_owned()),
++                    quantization_level: Some("Q4_K_M".to_owned()),
++                    family: Some("gemma".to_owned()),
++                },
++            ],
++        };
++        let models = inventory
++            .models
++            .iter()
++            .map(|model| model_identity("ollama-compatible", &model.name, Some(&inventory)))
++            .collect::<Vec<_>>();
++        self.installed_model_inventory = Some(inventory);
++        self.benchmark_hardware = BenchmarkHardwareIdentity {
++            platform: "windows-x86_64".to_owned(),
++            gpu: TelemetryValue::Measured("Visual Validation GPU".to_owned()),
++            total_gpu_memory_bytes: TelemetryValue::Measured(12 * 1024 * 1024 * 1024),
++            total_system_memory_bytes: TelemetryValue::Measured(32 * 1024 * 1024 * 1024),
++        };
++        self.benchmark_campaign_models = models
++            .iter()
++            .map(|model| model.model_id.clone())
++            .collect();
++        self.benchmark_campaign_tasks = BENCHMARK_TASKS
++            .iter()
++            .map(|task| task.id.to_owned())
++            .collect();
++        self.benchmark_campaign_repetitions = DEFAULT_CAMPAIGN_REPETITIONS;
++        self.benchmark_campaign_profile = CampaignExecutionProfile::Warm;
++        let tasks = BENCHMARK_TASKS
++            .iter()
++            .enumerate()
++            .map(|(index, task)| CampaignTaskPlan::for_task(task.id, 0x0156_0000_u64 + index as u64))
++            .collect::<Result<Vec<_>, _>>();
++        if let Ok(tasks) = tasks
++            && let Ok(mut campaign) = BenchmarkCampaign::new(BenchmarkCampaignPlan {
++                schema_version: CAMPAIGN_SCHEMA_VERSION,
++                corpus_version: BENCHMARK_CORPUS_VERSION.to_owned(),
++                benchmark_harness_version: BENCHMARK_HARNESS_VERSION.to_owned(),
++                campaign_harness_version: CAMPAIGN_HARNESS_VERSION.to_owned(),
++                schedule_version: CAMPAIGN_SCHEDULE_VERSION.to_owned(),
++                candidates: models
++                    .iter()
++                    .cloned()
++                    .map(|model| CampaignCandidate {
++                        model,
++                        source: CampaignCandidateSource::installed(),
++                    })
++                    .collect(),
++                tasks,
++                repetitions: DEFAULT_CAMPAIGN_REPETITIONS,
++                comparison_class: CampaignComparisonClass::ModelComparison,
++                execution_profile: CampaignExecutionProfile::Warm,
++                execution_environments: vec![CampaignExecutionEnvironment::CompatibleBackend],
++                quality: QualityPreference::Balanced,
++                hardware: self.benchmark_hardware.clone(),
++                workload_policy_version: WORKLOAD_POLICY_VERSION.to_owned(),
++                sampling_profile: "provider-default-uncontrolled".to_owned(),
++                seed_policy: CampaignSeedPolicy::ProviderUnavailable,
++            })
++        {
++            let preflight = campaign.preflight(&models).ok();
++            if campaign.start(&models).is_ok() {
++                if let Some(run) = campaign.runs.get_mut(0) {
++                    run.status = CampaignRunStatus::Completed;
++                }
++                if let Some(run) = campaign.runs.get_mut(1) {
++                    run.status = CampaignRunStatus::Completed;
++                }
++                if let Some(run) = campaign.runs.get_mut(2) {
++                    run.status = CampaignRunStatus::Failed;
++                }
++                let _ = campaign.pause();
++                self.benchmark_campaign_preflight = preflight;
++                self.benchmark_campaign = Some(campaign);
++            }
++        }
+     }
+ 
+     #[cfg(feature = "visual-validation")]
+@@ -2025,6 +2189,441 @@ impl AiStudioPanel {
+             });
+     }
+ 
++    fn benchmark_campaign_verified_models(&self) -> Result<Vec<BenchmarkModelIdentity>, String> {
++        if self.model_backend != ModelBackendPreference::Local {
++            return Err("Automated benchmark campaigns currently require the local ModelBackend so exact installed representation identity can be verified.".to_owned());
++        }
++        let inventory = self
++            .current_installed_inventory()
++            .cloned()
++            .ok_or_else(|| "Discover installed local models before starting a campaign.".to_owned())?;
++        let mut models = Vec::new();
++        for installed in &inventory.models {
++            if !self.benchmark_campaign_models.contains(&installed.name) {
++                continue;
++            }
++            let config = NativeModelConfig::Local(LocalModelConfig {
++                endpoint: self.local_model_endpoint.clone(),
++                model: installed.name.clone(),
++            });
++            models.push(model_identity(
++                config.backend_id(),
++                &installed.name,
++                Some(&inventory),
++            ));
++        }
++        if models.len() != self.benchmark_campaign_models.len() {
++            return Err("One or more selected campaign models are no longer present in the current installed-model inventory.".to_owned());
++        }
++        Ok(models)
++    }
++
++    fn build_benchmark_campaign_draft(&self) -> Result<BenchmarkCampaign, String> {
++        let models = self.benchmark_campaign_verified_models()?;
++        if models.is_empty() {
++            return Err("Select at least one exact installed model for the campaign.".to_owned());
++        }
++        let tasks = BENCHMARK_TASKS
++            .iter()
++            .enumerate()
++            .filter(|(_, task)| self.benchmark_campaign_tasks.contains(task.id))
++            .map(|(index, task)| {
++                CampaignTaskPlan::for_task(task.id, 0x0156_0000_u64 + index as u64)
++            })
++            .collect::<Result<Vec<_>, _>>()?;
++        if tasks.is_empty() {
++            return Err("Select at least one versioned benchmark task.".to_owned());
++        }
++        BenchmarkCampaign::new(BenchmarkCampaignPlan {
++            schema_version: CAMPAIGN_SCHEMA_VERSION,
++            corpus_version: BENCHMARK_CORPUS_VERSION.to_owned(),
++            benchmark_harness_version: BENCHMARK_HARNESS_VERSION.to_owned(),
++            campaign_harness_version: CAMPAIGN_HARNESS_VERSION.to_owned(),
++            schedule_version: CAMPAIGN_SCHEDULE_VERSION.to_owned(),
++            candidates: models
++                .into_iter()
++                .map(|model| CampaignCandidate {
++                    model,
++                    source: CampaignCandidateSource::installed(),
++                })
++                .collect(),
++            tasks,
++            repetitions: self.benchmark_campaign_repetitions,
++            comparison_class: CampaignComparisonClass::ModelComparison,
++            execution_profile: self.benchmark_campaign_profile,
++            execution_environments: vec![CampaignExecutionEnvironment::CompatibleBackend],
++            quality: self.quality_preference,
++            hardware: self.benchmark_hardware.clone(),
++            workload_policy_version: WORKLOAD_POLICY_VERSION.to_owned(),
++            sampling_profile: "provider-default-uncontrolled".to_owned(),
++            seed_policy: CampaignSeedPolicy::ProviderUnavailable,
++        })
++    }
++
++    fn start_benchmark_campaign(&mut self) -> Result<(), String> {
++        let verified = self.benchmark_campaign_verified_models()?;
++        let mut campaign = self.build_benchmark_campaign_draft()?;
++        let preflight = campaign.preflight(&verified)?;
++        self.benchmark_campaign_preflight = Some(preflight.clone());
++        if !preflight.missing.is_empty() {
++            return Err("The frozen campaign contains missing representations. Review the exact Download & Run set before acquisition.".to_owned());
++        }
++        campaign.start(&verified)?;
++        self.benchmark_campaign_store.save(&campaign)?;
++        self.benchmark_campaign = Some(campaign);
++        Ok(())
++    }
++
++    fn persist_benchmark_campaign(&self) -> Result<(), String> {
++        if let Some(campaign) = self.benchmark_campaign.as_ref() {
++            self.benchmark_campaign_store.save(campaign)?;
++        }
++        Ok(())
++    }
++
++    fn resume_benchmark_campaign(&mut self) -> Result<(), String> {
++        let verified = self.benchmark_campaign_verified_models()?;
++        let current = self
++            .benchmark_campaign
++            .as_ref()
++            .ok_or_else(|| "No persisted campaign is selected.".to_owned())?
++            .resume_identity_for_environment(self.benchmark_hardware.clone(), &verified);
++        self.benchmark_campaign
++            .as_mut()
++            .ok_or_else(|| "No persisted campaign is selected.".to_owned())?
++            .resume(current)?;
++        self.persist_benchmark_campaign()
++    }
++
++    fn show_benchmark_campaign(&mut self, ui: &mut egui::Ui) {
++        ui.separator();
++        ui.heading("Automated benchmark campaign");
++        ui.small(
++            "Run the frozen candidate/task plan sequentially and record each sanitized ADR 0142 result automatically. Campaigns never use the active private project as an implicit fixture.",
++        );
++
++        if self.benchmark_campaign.is_some() {
++            let mut pause = false;
++            let mut stop = false;
++            let mut resume = false;
++            let mut new_campaign = false;
++            {
++                let campaign = self.benchmark_campaign.as_ref().expect("checked above");
++                let total = campaign.runs.len();
++                let finished = campaign
++                    .runs
++                    .iter()
++                    .filter(|run| {
++                        matches!(
++                            run.status,
++                            CampaignRunStatus::Completed
++                                | CampaignRunStatus::Failed
++                                | CampaignRunStatus::Rejected
++                        )
++                    })
++                    .count();
++                let completed = campaign
++                    .runs
++                    .iter()
++                    .filter(|run| run.status == CampaignRunStatus::Completed)
++                    .count();
++                let failed = campaign
++                    .runs
++                    .iter()
++                    .filter(|run| {
++                        matches!(run.status, CampaignRunStatus::Failed | CampaignRunStatus::Rejected)
++                    })
++                    .count();
++                ui.horizontal_wrapped(|ui| {
++                    ui.strong(format!("State: {}", campaign.state.label()));
++                    ui.separator();
++                    ui.label(format!("{} model(s)", campaign.plan.candidates.len()));
++                    ui.separator();
++                    ui.label(format!("{} task(s)", campaign.plan.tasks.len()));
++                    ui.separator();
++                    ui.label(format!("{} repetition(s)", campaign.plan.repetitions));
++                    ui.separator();
++                    ui.label(campaign.plan.execution_profile.label());
++                });
++                let progress = if total == 0 {
++                    0.0
++                } else {
++                    finished as f32 / total as f32
++                };
++                ui.add(
++                    egui::ProgressBar::new(progress)
++                        .show_percentage()
++                        .text(format!("{finished}/{total} finished · {completed} passed · {failed} failed")),
++                );
++                ui.small(format!(
++                    "Campaign identity: {} · corpus {} · schedule {}",
++                    campaign.plan_fingerprint,
++                    campaign.plan.corpus_version,
++                    campaign.plan.schedule_version
++                ));
++                if let Some(next) = campaign
++                    .runs
++                    .iter()
++                    .find(|run| matches!(run.status, CampaignRunStatus::Pending | CampaignRunStatus::Preparing | CampaignRunStatus::Running))
++                {
++                    let model = &campaign.plan.candidates[next.schedule.candidate_index].model.model_id;
++                    ui.label(format!(
++                        "Next/current: {} · {} · repetition {} · {}",
++                        model,
++                        next.schedule.task_id,
++                        next.schedule.repetition,
++                        next.schedule.execution_environment.label()
++                    ));
++                }
++                ui.horizontal_wrapped(|ui| {
++                    pause = ui
++                        .add_enabled(
++                            campaign.state == BenchmarkCampaignState::Running,
++                            egui::Button::new("Pause"),
++                        )
++                        .clicked();
++                    stop = ui
++                        .add_enabled(
++                            matches!(campaign.state, BenchmarkCampaignState::Running | BenchmarkCampaignState::Paused),
++                            egui::Button::new("Stop"),
++                        )
++                        .clicked();
++                    resume = ui
++                        .add_enabled(
++                            matches!(campaign.state, BenchmarkCampaignState::Paused | BenchmarkCampaignState::Stopped),
++                            egui::Button::new("Resume"),
++                        )
++                        .clicked();
++                    new_campaign = ui
++                        .add_enabled(
++                            matches!(
++                                campaign.state,
++                                BenchmarkCampaignState::Stopped
++                                    | BenchmarkCampaignState::Completed
++                                    | BenchmarkCampaignState::Incompatible
++                            ),
++                            egui::Button::new("New campaign"),
++                        )
++                        .clicked();
++                });
++
++                let report = campaign.report();
++                ui.collapsing("Aggregate report", |ui| {
++                    ui.small(
++                        "Task success is primary. Unavailable telemetry remains unavailable rather than becoming zero.",
++                    );
++                    for candidate in &report.candidates {
++                        ui.group(|ui| {
++                            ui.strong(&candidate.model_id);
++                            ui.label(format!(
++                                "Runs: {}/{} successful · {} failed · {} rejected · OOM {}",
++                                candidate.successful,
++                                candidate.attempted,
++                                candidate.failed,
++                                candidate.rejected,
++                                candidate.oom_count
++                            ));
++                            ui.small(format!(
++                                "Median successful elapsed: {} · generation: {} milli-token/s · load: {} · peak backend GPU: {}",
++                                telemetry_count_label(&candidate.median_success_elapsed_ms, "ms"),
++                                telemetry_u64_value(&candidate.median_generation_tokens_per_second_milli),
++                                telemetry_count_label(&candidate.median_load_latency_ms, "ms"),
++                                telemetry_bytes_label(&candidate.peak_backend_gpu_memory_bytes),
++                            ));
++                            ui.small(format!(
++                                "Validation attempts {} · repair loops {} · human interventions {}",
++                                candidate.validation_attempts,
++                                candidate.repair_loops,
++                                candidate.human_interventions
++                            ));
++                            for (task_id, task) in &candidate.per_task {
++                                ui.small(format!(
++                                    "{task_id}: {}/{} successful · {} failed",
++                                    task.successful, task.attempted, task.failed
++                                ));
++                            }
++                        });
++                    }
++                });
++            }
++            if pause {
++                let result = self
++                    .benchmark_campaign
++                    .as_mut()
++                    .ok_or_else(|| "Campaign disappeared.".to_owned())
++                    .and_then(BenchmarkCampaign::pause)
++                    .and_then(|()| self.persist_benchmark_campaign());
++                if let Err(error) = result {
++                    self.status = Some(error);
++                }
++            }
++            if stop {
++                let result = self
++                    .benchmark_campaign
++                    .as_mut()
++                    .ok_or_else(|| "Campaign disappeared.".to_owned())
++                    .and_then(BenchmarkCampaign::stop)
++                    .and_then(|()| self.persist_benchmark_campaign());
++                if let Err(error) = result {
++                    self.status = Some(error);
++                }
++            }
++            if resume
++                && let Err(error) = self.resume_benchmark_campaign()
++            {
++                self.status = Some(error);
++            }
++            if new_campaign {
++                self.benchmark_campaign = None;
++                self.benchmark_campaign_preflight = None;
++            }
++            return;
++        }
++
++        let inventory = self.current_installed_inventory().cloned();
++        ui.strong("Candidate models");
++        if self.model_backend != ModelBackendPreference::Local {
++            ui.small(
++                "Switch Model backend to Local for automated campaign selection. Hosted/enterprise evidence remains available through the manual benchmark path.",
++            );
++        } else if let Some(inventory) = inventory.as_ref() {
++            for model in &inventory.models {
++                let exact = model.digest.as_ref().is_some_and(|value| !value.trim().is_empty())
++                    && model.size_bytes.is_some_and(|value| value > 0)
++                    && model
++                        .quantization_level
++                        .as_ref()
++                        .is_some_and(|value| !value.trim().is_empty())
++                    && inventory
++                        .backend_version
++                        .as_ref()
++                        .is_some_and(|value| !value.trim().is_empty());
++                let mut selected = self.benchmark_campaign_models.contains(&model.name);
++                ui.horizontal_wrapped(|ui| {
++                    if ui
++                        .add_enabled(exact, egui::Checkbox::new(&mut selected, &model.name))
++                        .changed()
++                    {
++                        if selected {
++                            self.benchmark_campaign_models.insert(model.name.clone());
++                        } else {
++                            self.benchmark_campaign_models.remove(&model.name);
++                        }
++                        self.benchmark_campaign_preflight = None;
++                    }
++                    ui.small(format!(
++                        "digest={} · quantization={} · size={} · runtime={}{}",
++                        optional_text(model.digest.as_deref()),
++                        optional_text(model.quantization_level.as_deref()),
++                        model
++                            .size_bytes
++                            .map(format_model_bytes)
++                            .unwrap_or_else(|| "n/a".to_owned()),
++                        optional_text(inventory.backend_version.as_deref()),
++                        if exact { "" } else { " · identity incomplete" },
++                    ));
++                });
++            }
++        } else {
++            ui.small("Discover installed local models to freeze exact candidate identities.");
++        }
++
++        ui.strong("Task plan");
++        ui.horizontal_wrapped(|ui| {
++            for task in BENCHMARK_TASKS {
++                let mut selected = self.benchmark_campaign_tasks.contains(task.id);
++                if ui.checkbox(&mut selected, task.label).changed() {
++                    if selected {
++                        self.benchmark_campaign_tasks.insert(task.id.to_owned());
++                    } else {
++                        self.benchmark_campaign_tasks.remove(task.id);
++                    }
++                    self.benchmark_campaign_preflight = None;
++                }
++            }
++        });
++        ui.horizontal_wrapped(|ui| {
++            ui.label("Measured repetitions");
++            if ui
++                .add(
++                    egui::DragValue::new(&mut self.benchmark_campaign_repetitions)
++                        .range(1..=20),
++                )
++                .changed()
++            {
++                self.benchmark_campaign_preflight = None;
++            }
++            if self.benchmark_campaign_repetitions == 1 {
++                ui.weak("Smoke run; not a repeated comparison.");
++            } else {
++                ui.small("Default comparison uses three repetitions.");
++            }
++            ui.separator();
++            ui.label("Profile");
++            for profile in [CampaignExecutionProfile::Warm, CampaignExecutionProfile::Cold] {
++                if ui
++                    .selectable_value(
++                        &mut self.benchmark_campaign_profile,
++                        profile,
++                        profile.label(),
++                    )
++                    .changed()
++                {
++                    self.benchmark_campaign_preflight = None;
++                }
++            }
++        });
++        ui.small(
++            "Model comparison freezes one compatible backend environment. Windows-native vs WSL2 is a separate runtime-characterization campaign and is not mixed into model ranking.",
++        );
++
++        let can_start = self.model_backend == ModelBackendPreference::Local
++            && !self.benchmark_campaign_models.is_empty()
++            && !self.benchmark_campaign_tasks.is_empty()
++            && inventory.is_some();
++        if ui
++            .add_enabled(can_start, egui::Button::new("Run Benchmark"))
++            .clicked()
++        {
++            match self.start_benchmark_campaign() {
++                Ok(()) => {
++                    self.status = Some(
++                        "Started the explicit machine-local benchmark campaign; automatic evidence recording is authorized only for this frozen plan.".to_owned(),
++                    );
++                }
++                Err(error) => self.status = Some(error),
++            }
++        }
++        if let Some(preflight) = self.benchmark_campaign_preflight.as_ref() {
++            if preflight.missing.is_empty() {
++                ui.small("Preflight: all selected representations are already installed and exact.");
++            } else {
++                ui.group(|ui| {
++                    ui.strong("Download & Run review");
++                    for missing in &preflight.missing {
++                        ui.label(format!(
++                            "{} · {} · transfer {} · storage {} · {}",
++                            missing.representation.model_id,
++                            missing.representation.quantization,
++                            format_model_bytes(missing.transfer_size_bytes),
++                            format_model_bytes(missing.storage_size_bytes),
++                            missing.license,
++                        ));
++                    }
++                    ui.small(format!(
++                        "Total transfer {} · storage {}. Approval is scoped to this exact frozen set.",
++                        format_model_bytes(preflight.total_transfer_size_bytes),
++                        format_model_bytes(preflight.total_storage_size_bytes),
++                    ));
++                    ui.add_enabled(false, egui::Button::new("Download & Run"));
++                    ui.small(
++                        "Managed acquisition is owned by ADR 0155; until that runtime lands, missing representations are not downloaded by the campaign layer.",
++                    );
++                });
++            }
++        }
++    }
++
+     fn show_agent_benchmark(&mut self, ui: &mut egui::Ui) {
+         egui::CollapsingHeader::new(format!(
+             "GameEngine Agent Benchmark · {} record(s) · {}",
+@@ -2077,8 +2676,9 @@ impl AiStudioPanel {
+                 }
+             }
+             ui.small(
+-                "Model weights are never bundled or downloaded automatically. A future catalog acquisition flow must show source plus transfer/storage size before an explicit user action.",
++                "Model weights are never bundled or downloaded automatically. Campaign acquisition reviews exact source plus transfer/storage size before an explicit user action.",
+             );
++            self.show_benchmark_campaign(ui);
+             ui.separator();
+             ui.horizontal_wrapped(|ui| {
+                 ui.label("Evidence task");
