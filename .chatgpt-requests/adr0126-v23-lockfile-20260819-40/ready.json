@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0126-v23-lockfile-20260819-40",
+  "target_branch": "chatgpt/gameengine-adr0126-first-release-v23",
+  "expected_head_sha": "79e64bf99b4ebc40f8d36ecf9f149e10431876b4",
+  "baseline_main_sha": "96c8ffb18a74eabec2164daa61f694f131019ddc",
+  "patch_sha256": "5de04a9a8dfb7ace2a9e70bcc142b3a4071ac3f1cca47834c5151c08a58ebfca",
+  "patch_bytes": 703,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Regenerate Cargo.lock for engine-timeline workspace member",
+  "pr_title": "GameEngine: complete ADR 0126 Timeline / Sequencer first release",
+  "pr_body": "## Summary\n\nCompletes ADR 0126 Timeline / Sequencer and regenerates Cargo.lock for the new engine-timeline workspace member before final Windows and visual validation.\n\n<!-- gameengine-visual-validation: editor -->\n"
+}
