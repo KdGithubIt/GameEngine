@@ -1691,13 +1691,13 @@ impl AiStudioPanel {
             self.finish_model_resource_continuation(continuation);
             return;
         };
-        if config.capability_profile().resource_capabilities.unload_reload
-            != CapabilityAvailability::Available
-        {
+        let Some(operation) = resume_model_resource_operation_after_authoritative_inspection(
+            config.capability_profile().resource_capabilities,
+        ) else {
             self.finish_model_resource_continuation(continuation);
             return;
-        }
-        match ModelResourceTask::spawn(config, ModelResourceOperation::Reload) {
+        };
+        match ModelResourceTask::spawn(config, operation) {
             Ok(task) => {
                 self.model_resource_task = Some(task);
                 self.model_resource_continuation = Some(continuation);
@@ -1786,9 +1786,13 @@ impl AiStudioPanel {
     }
 
     fn finish_model_resource_continuation(&mut self, continuation: ModelResourceContinuation) {
+        if let Some(action) = model_resource_continuation_runtime_action(&continuation) {
+            self.pending_runtime_action = Some(action);
+            return;
+        }
         match continuation {
             ModelResourceContinuation::RestoreForEditing => {
-                self.pending_runtime_action = Some(AiStudioRuntimeAction::RestoreEditorPresentation);
+                unreachable!("restore continuation is handled before non-renderer continuations")
             }
             ModelResourceContinuation::LaunchManagedPlay { run_id } => {
                 if self.active_run_id.as_deref() == Some(run_id.as_str())
@@ -1923,7 +1927,7 @@ impl AiStudioPanel {
         }
         if self.restore_for_editing {
             self.begin_model_residency_request(
-                ModelResidencyRequest::ReleaseIfSupported,
+                interrupt_model_residency_request(),
                 ModelResourceContinuation::RestoreForEditing,
             );
         } else if restore_after_inference {
@@ -2542,7 +2546,7 @@ impl AiStudioPanel {
                 );
             } else {
                 self.begin_model_residency_request(
-                    ModelResidencyRequest::ReleaseIfSupported,
+                    interrupt_model_residency_request(),
                     ModelResourceContinuation::RestoreForEditing,
                 );
             }
@@ -3356,12 +3360,7 @@ impl AiStudioPanel {
             .map(|config| config.capability_profile().resource_capabilities)
             .unwrap_or_default();
         self.resolved_workload = InferenceWorkload::RuntimeObservation;
-        self.resource_plan = resolve_resource_plan(
-            InferenceWorkload::RuntimeObservation,
-            self.quality_preference,
-            MemoryPressure::Unknown,
-            capabilities,
-        );
+        self.resource_plan = managed_play_resource_plan(self.quality_preference, capabilities);
         self.begin_model_residency_request(
             self.resource_plan.model_residency,
             ModelResourceContinuation::LaunchManagedPlay { run_id },
@@ -3852,6 +3851,36 @@ fn telemetry_u64_value(value: &TelemetryValue<u64>) -> String {
     }
 }
 
+fn interrupt_model_residency_request() -> ModelResidencyRequest {
+    ModelResidencyRequest::ReleaseIfSupported
+}
+
+fn managed_play_resource_plan(
+    quality_preference: QualityPreference,
+    capabilities: crate::resource_arbitration::ModelResourceCapabilities,
+) -> ResourcePlan {
+    resolve_resource_plan(
+        InferenceWorkload::RuntimeObservation,
+        quality_preference,
+        MemoryPressure::Unknown,
+        capabilities,
+    )
+}
+
+fn resume_model_resource_operation_after_authoritative_inspection(
+    capabilities: crate::resource_arbitration::ModelResourceCapabilities,
+) -> Option<ModelResourceOperation> {
+    (capabilities.unload_reload == CapabilityAvailability::Available)
+        .then_some(ModelResourceOperation::Reload)
+}
+
+fn model_resource_continuation_runtime_action(
+    continuation: &ModelResourceContinuation,
+) -> Option<AiStudioRuntimeAction> {
+    matches!(continuation, ModelResourceContinuation::RestoreForEditing)
+        .then_some(AiStudioRuntimeAction::RestoreEditorPresentation)
+}
+
 fn model_capability_summary(profile: &ModelCapabilityProfile) -> String {
     format!(
         "Backend: {} · Model: {} · structured: {} · tools: {} · images: {} · reasoning: {} · context: {} · streaming: {} · usage: {} · benchmark: {}",
@@ -4173,5 +4202,84 @@ mod tests {
         presentation.reattach();
         assert_eq!(presentation.mode, AiStudioPresentationMode::Embedded);
         assert!(presentation.open);
+    }
+
+    fn local_resource_capabilities() -> crate::resource_arbitration::ModelResourceCapabilities {
+        LocalModelConfig {
+            endpoint: DEFAULT_LOCAL_MODEL_ENDPOINT.to_owned(),
+            model: "model:tag".to_owned(),
+        }
+        .capability_profile()
+        .resource_capabilities
+    }
+
+    #[test]
+    fn interrupt_resource_boundary_releases_supported_residency_before_editor_restore() {
+        let capabilities = local_resource_capabilities();
+        assert_eq!(
+            resource_operation_for_residency_request(
+                interrupt_model_residency_request(),
+                capabilities,
+            ),
+            Some(ModelResourceOperation::Release)
+        );
+        assert!(matches!(
+            model_resource_continuation_runtime_action(
+                &ModelResourceContinuation::RestoreForEditing
+            ),
+            Some(AiStudioRuntimeAction::RestoreEditorPresentation)
+        ));
+    }
+
+    #[test]
+    fn managed_play_resource_boundary_prioritizes_renderer_and_verified_release() {
+        let capabilities = local_resource_capabilities();
+        let plan = managed_play_resource_plan(QualityPreference::Deep, capabilities);
+        assert_eq!(
+            plan.priority,
+            crate::resource_arbitration::ResourcePriority::RuntimeRendering
+        );
+        assert_eq!(plan.presentation, PresentationPosture::Interactive);
+        assert_eq!(plan.reclaim, ReclaimLevel::None);
+        assert_eq!(
+            plan.model_residency,
+            ModelResidencyRequest::ReleaseIfSupported
+        );
+        assert_eq!(
+            resource_operation_for_residency_request(plan.model_residency, capabilities),
+            Some(ModelResourceOperation::Release)
+        );
+    }
+
+    #[test]
+    fn resume_reacquires_only_on_post_inspection_path_and_resource_planning_is_authoring_free() {
+        let authoritative_state = AiStudioAuthoritativeState {
+            document_revision: 17,
+            game_code_generation: 23,
+            document_path: Some(PathBuf::from("assets/scenes/test.scene.json")),
+            document_dirty: true,
+        };
+        let unchanged = authoritative_state.clone();
+        let capabilities = local_resource_capabilities();
+        let interrupt_request = interrupt_model_residency_request();
+        let play_plan = managed_play_resource_plan(QualityPreference::Balanced, capabilities);
+        let reload =
+            resume_model_resource_operation_after_authoritative_inspection(capabilities);
+        assert_eq!(interrupt_request, ModelResidencyRequest::ReleaseIfSupported);
+        assert_eq!(
+            play_plan.priority,
+            crate::resource_arbitration::ResourcePriority::RuntimeRendering
+        );
+        assert_eq!(reload, Some(ModelResourceOperation::Reload));
+        assert_eq!(
+            resume_model_resource_operation_after_authoritative_inspection(Default::default()),
+            None
+        );
+        let continuation = ModelResourceContinuation::ResumeAfterEditing {
+            run_id: Some("run-test".to_owned()),
+            state: authoritative_state.clone(),
+        };
+        assert!(model_resource_continuation_runtime_action(&continuation).is_none());
+        assert_eq!(authoritative_state, unchanged);
     }
 }
