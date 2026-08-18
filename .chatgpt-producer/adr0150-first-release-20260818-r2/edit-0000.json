@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/model_router.rs",
+  "old": "    pub(crate) fn primary(&self) -> &NativeModelConfig {\n        &self.primary\n    }\n\n    pub(crate) fn adopted_specialist_count(&self) -> usize {",
+  "new": "    pub(crate) fn adopted_specialist_count(&self) -> usize {"
+}
