@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ai_studio.rs","old":"Record only when the current result intentionally executes the selected corpus task.","new":"Choose the Evidence task before starting inference or a native run; its versioned identity is frozen at execution start. Record only when that result intentionally executes the frozen corpus task."}
