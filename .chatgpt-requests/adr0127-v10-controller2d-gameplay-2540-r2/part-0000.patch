@@ -1,0 +1,363 @@
+diff --git a/crates/engine/src/game_commands.rs b/crates/engine/src/game_commands.rs
+index bac0d86346855559e5c9c27ae6b320c397622404..866351899bae3163b538519211b396b58cf8fc4c 100644
+--- a/crates/engine/src/game_commands.rs
++++ b/crates/engine/src/game_commands.rs
+@@ -22,6 +22,7 @@ use crate::game_prefab::{
+ use crate::game_timer::{query_game_timer, GameTimerEvents, GameTimers, MAX_GAME_TIMERS};
+ use crate::hitbox::AttackHitbox;
+ use crate::lock_on::TargetLock;
++use crate::native_2d::{CharacterController2d, CharacterControllerMotion2d};
+ use crate::navmesh::NavMeshAgent;
+ use crate::save::{
+     GameSaveCommand, GameSaveCommandQueue, SaveData, SaveValue, MAX_GAME_SAVE_COMMANDS,
+@@ -32,7 +33,7 @@ use crate::ui_document::{UiBindingValue, UiBindings, UiDocumentRef, UiDocumentVi
+ use crate::vfx::VfxPlayer;
+ use engine_authoring::{AssetId, ComponentTypeId, StableId, Value};
+ use engine_ecs::{Entity, SystemId, World};
+-use glam::{Quat, Vec3};
++use glam::{Quat, Vec2, Vec3};
+ use std::collections::{BTreeMap, BTreeSet};
+ use std::fmt;
+ use std::path::{Component, Path};
+@@ -60,6 +61,10 @@ pub(crate) enum PreparedGameCommand {
+         velocity: Vec3,
+         rotation: Quat,
+     },
++    Character2d {
++        entity: Entity,
++        operation: Character2dOperation,
++    },
+     SetNavigationTarget {
+         entity: Entity,
+         target: Option<Vec3>,
+@@ -135,6 +140,11 @@ pub(crate) enum SaveSlotOperation {
+     Load { slot: u32 },
+ }
+ 
++pub(crate) enum Character2dOperation {
++    SetMotion { velocity: Vec2 },
++    DropThrough { seconds: f32 },
++}
++
+ pub(crate) enum TimerOperation {
+     Set {
+         timer_id: String,
+@@ -200,6 +210,16 @@ pub(crate) fn prepare_game_commands(
+                 }
+                 prepared.push(parse_character_command(index, entity, &command.payload)?);
+             }
++            GameCommandFamily::Character2d => {
++                let (target, entity) = targeted_entity(world, command, index, &despawned)?;
++                if world.get_component::<CharacterController2d>(entity).is_none() {
++                    return Err(GameCommandError::MissingCharacterController { index, target });
++                }
++                if world.get_component::<Transform>(entity).is_none() {
++                    return Err(GameCommandError::MissingTransform { index, target });
++                }
++                prepared.push(parse_character_2d_command(index, entity, &command.payload)?);
++            }
+             GameCommandFamily::Navigation => {
+                 let (target, entity) = targeted_entity(world, command, index, &despawned)?;
+                 if world.get_component::<NavMeshAgent>(entity).is_none() {
+@@ -427,6 +447,22 @@ pub(crate) fn apply_prepared_game_commands(world: &mut World, commands: Vec<Prep
+                     )
+                     .rotation = rotation;
+             }
++            PreparedGameCommand::Character2d { entity, operation } => {
++                if world.get_component::<CharacterControllerMotion2d>(entity).is_none() {
++                    world
++                        .add_component(entity, CharacterControllerMotion2d::default())
++                        .expect("preflighted 2D character motion intent may be installed exclusively");
++                }
++                let motion = world
++                    .get_component_mut::<CharacterControllerMotion2d>(entity)
++                    .expect("preflighted 2D character motion intent must remain live");
++                match operation {
++                    Character2dOperation::SetMotion { velocity } => motion.velocity = velocity,
++                    Character2dOperation::DropThrough { seconds } => {
++                        motion.drop_through_request_seconds = seconds;
++                    }
++                }
++            }
+             PreparedGameCommand::SetNavigationTarget { entity, target } => {
+                 world
+                     .get_component_mut::<NavMeshAgent>(entity)
+@@ -713,6 +749,51 @@ fn parse_character_command(
+     })
+ }
+ 
++fn parse_character_2d_command(
++    index: usize,
++    entity: Entity,
++    payload: &Value,
++) -> Result<PreparedGameCommand, GameCommandError> {
++    let fields = object(payload, index, "2D character payload")?;
++    let operation = match string_field(fields, "operation", index)? {
++        "set_motion" => {
++            let velocity = object(
++                fields
++                    .get("velocity")
++                    .ok_or_else(|| GameCommandError::InvalidPayload {
++                        index,
++                        message: "field `velocity` is missing".to_owned(),
++                    })?,
++                index,
++                "velocity",
++            )?;
++            Character2dOperation::SetMotion {
++                velocity: Vec2::new(
++                    number_field(velocity, "x", index)?,
++                    number_field(velocity, "y", index)?,
++                ),
++            }
++        }
++        "drop_through" => {
++            let seconds = number_field(fields, "seconds", index)?;
++            if seconds < 0.0 {
++                return Err(GameCommandError::InvalidPayload {
++                    index,
++                    message: "field `seconds` must be non-negative".to_owned(),
++                });
++            }
++            Character2dOperation::DropThrough { seconds }
++        }
++        other => {
++            return Err(GameCommandError::InvalidPayload {
++                index,
++                message: format!("unknown 2D character operation `{other}`"),
++            });
++        }
++    };
++    Ok(PreparedGameCommand::Character2d { entity, operation })
++}
++
+ fn parse_lock_on_command(
+     index: usize,
+     payload: &Value,
+diff --git a/crates/engine/src/game_host/core.rs b/crates/engine/src/game_host/core.rs
+index d21528a6163b58c1613ea57a26abcb354acc79c3..f963c9804e78bcb4f80e0b9f4d3264f972671e31 100644
+--- a/crates/engine/src/game_host/core.rs
++++ b/crates/engine/src/game_host/core.rs
+@@ -23,7 +23,7 @@ use crate::game_timer::GameTimerEvents;
+ use crate::hitbox::AttackHitbox;
+ use crate::lock_on::TargetLock;
+ use crate::navmesh::NavMeshAgent;
+-use crate::native_2d::SpriteAnimatorRuntime2d;
++use crate::native_2d::{CharacterController2d, CharacterControllerMotion2d, SpriteAnimatorRuntime2d};
+ use crate::player::InputActionMap;
+ use crate::runtime_metadata::RuntimeMetadata;
+ use crate::save::{SaveData, SaveValue};
+@@ -1023,6 +1023,36 @@ fn copy_engine_view(world: &World, entity: Entity, view: EngineViewKind) -> Opti
+                 ),
+             ]))
+         }
++        EngineViewKind::Character2dState => {
++            let controller = world.get_component::<CharacterController2d>(entity)?;
++            let velocity = world
++                .get_component::<CharacterControllerMotion2d>(entity)
++                .map(|motion| motion.velocity)
++                .unwrap_or(glam::Vec2::ZERO);
++            Value::Object(BTreeMap::from([
++                (
++                    "velocity".to_owned(),
++                    Value::Object(BTreeMap::from([
++                        ("x".to_owned(), Value::F64(f64::from(velocity.x))),
++                        ("y".to_owned(), Value::F64(f64::from(velocity.y))),
++                    ])),
++                ),
++                ("grounded".to_owned(), Value::Bool(controller.grounded)),
++                (
++                    "ground_normal".to_owned(),
++                    Value::Object(BTreeMap::from([
++                        ("x".to_owned(), Value::F64(f64::from(controller.ground_normal.x))),
++                        ("y".to_owned(), Value::F64(f64::from(controller.ground_normal.y))),
++                    ])),
++                ),
++                ("hit_wall".to_owned(), Value::Bool(controller.hit_wall)),
++                ("hit_ceiling".to_owned(), Value::Bool(controller.hit_ceiling)),
++                (
++                    "drop_through_seconds".to_owned(),
++                    Value::F64(f64::from(controller.drop_through_seconds)),
++                ),
++            ]))
++        }
+         EngineViewKind::AnimationState => {
+             let animator = world.get_component::<Animator>(entity)?;
+             let state = match animator.state {
+diff --git a/crates/engine/src/native_2d.rs b/crates/engine/src/native_2d.rs
+index 45b9a8dbc491856e82093eff8c7187395e525730..7d19480532c6258b1740bdfa2f43572870e3b0ed 100644
+--- a/crates/engine/src/native_2d.rs
++++ b/crates/engine/src/native_2d.rs
+@@ -59,6 +59,24 @@ impl Physics2dDiagnostics {
+     }
+ }
+ 
++/// Runtime-only motion intent consumed by CharacterController2D during the fixed 2D step.
++#[derive(Debug, Clone, Copy, PartialEq)]
++pub struct CharacterControllerMotion2d {
++    /// Persistent world-XY velocity in units per second.
++    pub velocity: Vec2,
++    /// One-shot duration requested for one-way platform drop-through.
++    pub drop_through_request_seconds: f32,
++}
++
++impl Default for CharacterControllerMotion2d {
++    fn default() -> Self {
++        Self {
++            velocity: Vec2::ZERO,
++            drop_through_request_seconds: 0.0,
++        }
++    }
++}
++
+ /// Dedicated 2D solver state and latest transition events.
+ #[derive(Debug, Default)]
+ pub struct PhysicsRuntime2d {
+@@ -106,7 +124,9 @@ type Physics2dQuery<'a> = (
+     &'a GlobalTransform,
+     Option<&'a Parent>,
+     Option<&'a mut RigidBody2d>,
+-    &'a Collider2d,
++    Option<&'a Collider2d>,
++    Option<&'a mut CharacterController2d>,
++    Option<&'a mut CharacterControllerMotion2d>,
+ );
+ 
+ type TilePhysics2dQuery<'a> = (&'a TileMapPhysicsSource2d, &'a GlobalTransform);
+@@ -151,8 +171,11 @@ pub fn physics_2d_fixed_system(
+     diagnostics.entries.clear();
+     let mut active = BTreeSet::new();
+ 
+-    for (entity, (transform, global, parent, body, collider)) in query.iter_mut() {
++    for (entity, (transform, global, parent, body, collider, _, _)) in query.iter_mut() {
+         let key = runtime_key(entity);
++        let Some(collider) = collider else {
++            continue;
++        };
+         let authored_body = body
+             .as_deref()
+             .copied()
+@@ -264,9 +287,55 @@ pub fn physics_2d_fixed_system(
+ 
+     runtime.world.retain_entities(&active);
+     runtime.world.retain_static_chunks(&active_static_chunks);
++
++    for (entity, (transform, global, parent, _, _, controller, motion)) in query.iter_mut() {
++        let (Some(controller), Some(motion)) = (controller, motion) else {
++            continue;
++        };
++        if motion.drop_through_request_seconds > 0.0 {
++            controller.request_drop_through(motion.drop_through_request_seconds);
++            motion.drop_through_request_seconds = 0.0;
++        }
++        if !motion.velocity.is_finite() {
++            motion.velocity = Vec2::ZERO;
++        }
++        let key = runtime_key(entity);
++        let start = runtime
++            .world
++            .body(key)
++            .map(|entry| entry.pose.translation)
++            .or_else(|| project_planar_transform(global.matrix()).ok().map(|pose| pose.translation));
++        let Some(start) = start else {
++            continue;
++        };
++        let next = controller.move_fixed(
++            &runtime.world,
++            start,
++            motion.velocity * fixed_time.fixed_delta.max(0.0),
++            fixed_time.fixed_delta,
++            Some(key),
++        );
++        if let Some(entry) = runtime.world.body_mut(key) {
++            entry.pose.translation = next;
++        }
++        if parent.is_some() {
++            let local_matrix = transform.to_matrix();
++            let parent_matrix = global.matrix() * local_matrix.inverse();
++            let world_z = global.matrix().w_axis.z;
++            let local = parent_matrix
++                .inverse()
++                .transform_point3(glam::Vec3::new(next.x, next.y, world_z));
++            transform.translation.x = local.x;
++            transform.translation.y = local.y;
++        } else {
++            transform.translation.x = next.x;
++            transform.translation.y = next.y;
++        }
++    }
++
+     runtime.events = runtime.world.step(fixed_time.fixed_delta, gravity.0);
+ 
+-    for (entity, (transform, _, parent, body, _)) in query.iter_mut() {
++    for (entity, (transform, _, parent, body, _, _, _)) in query.iter_mut() {
+         let Some(body) = body else {
+             continue;
+         };
+diff --git a/crates/scripting/src/game_io.rs b/crates/scripting/src/game_io.rs
+index a8440d471ee0a895542c79994865761accfa2060..00dae57af8da91e5c62ded6f5cf68ab3732a7b3a 100644
+--- a/crates/scripting/src/game_io.rs
++++ b/crates/scripting/src/game_io.rs
+@@ -51,6 +51,8 @@ pub enum EngineViewKind {
+     GlobalTransform,
+     /// Character velocity, desired movement, facing, and grounded state.
+     CharacterState,
++    /// Native 2D character motion intent and latest platformer contact classification.
++    Character2dState,
+     /// Current animator clip, playback position, and transition state.
+     AnimationState,
+     /// Current Native 2D sprite-animation clip and deterministic frame/tick state.
+@@ -101,6 +103,8 @@ pub enum GameCommandFamily {
+     Transform,
+     /// Desired character-controller velocity and facing changes.
+     Character,
++    /// Native 2D character-controller motion and one-way drop-through requests.
++    Character2d,
+     /// NavMeshAgent target assignment and clearing.
+     Navigation,
+     /// Stable Behavior Tree action and condition result registration.
+@@ -725,6 +729,44 @@ impl GameCommand {
+         }
+     }
+ 
++    /// Sets the persistent fixed-step velocity consumed by CharacterController2D.
++    pub fn set_character_motion_2d(target: GameEntityHandle, velocity: [f32; 2]) -> Self {
++        Self {
++            family: GameCommandFamily::Character2d,
++            request_id: None,
++            target: Some(target),
++            payload: Value::Object(BTreeMap::from([
++                (
++                    "operation".to_owned(),
++                    Value::String("set_motion".to_owned()),
++                ),
++                (
++                    "velocity".to_owned(),
++                    Value::Object(BTreeMap::from([
++                        ("x".to_owned(), Value::F64(f64::from(velocity[0]))),
++                        ("y".to_owned(), Value::F64(f64::from(velocity[1]))),
++                    ])),
++                ),
++            ])),
++        }
++    }
++
++    /// Requests a bounded interval during which CharacterController2D ignores one-way surfaces.
++    pub fn drop_through_2d(target: GameEntityHandle, seconds: f32) -> Self {
++        Self {
++            family: GameCommandFamily::Character2d,
++            request_id: None,
++            target: Some(target),
++            payload: Value::Object(BTreeMap::from([
++                (
++                    "operation".to_owned(),
++                    Value::String("drop_through".to_owned()),
++                ),
++                ("seconds".to_owned(), Value::F64(f64::from(seconds))),
++            ])),
++        }
++    }
++
+     /// Assigns a world-space destination to an authorable NavMeshAgent.
+     pub fn set_navigation_target(target: GameEntityHandle, destination: [f32; 3]) -> Self {
+         Self {
