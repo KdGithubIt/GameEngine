@@ -1,0 +1,16 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0154-first-release-20260818-r7-portable",
+  "target_branch": "chatgpt/gameengine-adr0154-first-release-v2",
+  "expected_head_sha": "2079e1db154e9c022f7af3fb0638a89fdc70dacd",
+  "baseline_main_sha": "ecfc28d6d8e0e82eff38cc90f775e14c88347919",
+  "patch_sha256": "ffd0309b50c7f7fc260aa250ef4043e9d0d77fb4572575e0805fbf881e325ec7",
+  "patch_bytes": 68127,
+  "patch_parts": [
+    "part-0000.patch",
+    "part-0001.patch"
+  ],
+  "commit_message": "Complete ADR0154 portable motion and target-aware authoring",
+  "pr_title": "Implement ADR 0154 target-aware animation motion binding",
+  "pr_body": "Continues ADR 0154 first-release implementation on current main: import/reimport owns portable HumanoidMotion output, VMD persists an explicit Humanoid source-model provenance without conflating concrete motion_model_sources, provenance participates in import fingerprint/cache invalidation, Scene Bridge consumes imported portable motion instead of synthesizing it lazily, Animation Set Target Preview exposes shared-planner Native/Retarget/Humanoid/Failed routes, and package reachability consumes the same planner without creating portable source motion.\n\nThe PR remains Draft and must not be merged automatically."
+}
