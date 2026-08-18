@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/engine/src/lib.rs","old":"/// Animation-side morph assets, bindings, and weights.\n","new":"/// Target-aware Animation Set motion candidate routing (ADR 0154).\npub mod motion_binding;\n/// Animation-side morph assets, bindings, and weights.\n"}
