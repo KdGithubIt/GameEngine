@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0127-v10-validation-fix-fd14-r1",
+  "target_branch": "chatgpt/gameengine-adr0127-first-release-current-main-v10",
+  "expected_head_sha": "fd14a100d82c88fd85c29f23f307a70bba4d11a1",
+  "baseline_main_sha": "96c8ffb18a74eabec2164daa61f694f131019ddc",
+  "patch_sha256": "32c62083b868063c07d5a98328673baf35cca897fea16989cbb31cffd69e7598",
+  "patch_bytes": 5267,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Fix ADR0127 remaining affected validation failures",
+  "pr_title": "GameEngine: complete ADR0127 Native 2D first release",
+  "pr_body": "Fixes the exact fd14a10 affected Windows Validation failures without suppressing lints: groups Tile Map pointer context to reduce argument count, collapses equivalent pointer conditionals, expresses manifest filtering as filter+map, and updates the registration-order contract test to the actual append-preserving Native 2D declaration order."
+}
