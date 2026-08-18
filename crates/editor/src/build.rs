@@ -920,24 +920,37 @@ fn bake_registered_humanoid_clips(
     (copies, diagnostics)
 }
 
-/// Returns the HumanoidMotion asset that must exist for one persisted motion-source
-/// selection after applying ADR 0110's explicit source priority.
+/// Returns the logical HumanoidMotion candidate required by the target-aware
+/// route after Native and explicit Retarget Map opportunities are exhausted.
 fn required_humanoid_motion_asset(
     source: &engine_authoring::MotionSourceRef,
+    manifest: &AssetManifest,
     same_skeleton_native: bool,
     explicit_retarget_map: bool,
 ) -> Option<AssetId> {
-    match source.variant {
-        engine_authoring::MotionSourceVariant::Native => None,
-        engine_authoring::MotionSourceVariant::Humanoid => Some(source.asset.clone()),
-        engine_authoring::MotionSourceVariant::Auto
+    let (owner_source, entry, sub_asset) = manifest.imported_sub_asset(&source.asset)?;
+    match sub_asset.kind {
+        engine::ImportedSubAssetKind::HumanoidMotion => Some(source.asset.clone()),
+        engine::ImportedSubAssetKind::Animation
             if !same_skeleton_native && !explicit_retarget_map =>
         {
-            Some(engine::asset::imported_humanoid_motion_sub_asset_id(
-                &source.asset,
-            ))
+            entry
+                .import_settings
+                .sub_assets
+                .iter()
+                .find(|candidate| {
+                    candidate.kind == engine::ImportedSubAssetKind::HumanoidMotion
+                        && candidate.index == sub_asset.index
+                        && candidate.target_model_source.is_none()
+                })
+                .map(|_| {
+                    engine::asset::imported_logical_humanoid_motion_sub_asset_id(
+                        owner_source,
+                        sub_asset.index as usize,
+                    )
+                })
         }
-        engine_authoring::MotionSourceVariant::Auto => None,
+        _ => None,
     }
 }
 
@@ -1009,34 +1022,37 @@ fn collect_needed_humanoid_bakes(
 
             for binding in animation_set.bindings.values() {
                 for source in std::iter::once(&binding.clip).chain(&binding.overlays) {
-                    let (same_skeleton_native, explicit_retarget_map) =
-                        if source.variant == engine_authoring::MotionSourceVariant::Auto {
-                            let source_skeletons = resolve_clip_source_skeleton_ids(
-                                &source.asset,
-                                manifest,
-                                assets_root,
-                                imports,
-                            );
-                            let same_skeleton_native = source_skeletons
-                                .iter()
-                                .any(|source_skeleton| source_skeleton == &target_skeleton);
-                            let explicit_retarget_map =
-                                !same_skeleton_native
-                                    && source_skeletons.iter().any(|source_skeleton| {
-                                        engine::find_retarget_map_for_pair(
-                                            &retarget_maps,
-                                            source_skeleton,
-                                            &target_skeleton,
-                                        )
-                                        .is_some()
-                                    });
-                            (same_skeleton_native, explicit_retarget_map)
-                        } else {
-                            (false, false)
-                        };
+                    let model_bound = manifest
+                        .imported_sub_asset(&source.asset)
+                        .is_some_and(|(_, _, sub_asset)| {
+                            sub_asset.kind == engine::ImportedSubAssetKind::Animation
+                        });
+                    let source_skeletons = if model_bound {
+                        resolve_clip_source_skeleton_ids(
+                            &source.asset,
+                            manifest,
+                            assets_root,
+                            imports,
+                        )
+                    } else {
+                        Vec::new()
+                    };
+                    let same_skeleton_native = source_skeletons
+                        .iter()
+                        .any(|source_skeleton| source_skeleton == &target_skeleton);
+                    let explicit_retarget_map = !same_skeleton_native
+                        && source_skeletons.iter().any(|source_skeleton| {
+                            engine::find_retarget_map_for_pair(
+                                &retarget_maps,
+                                source_skeleton,
+                                &target_skeleton,
+                            )
+                            .is_some()
+                        });
 
                     if let Some(motion) = required_humanoid_motion_asset(
                         source,
+                        manifest,
                         same_skeleton_native,
                         explicit_retarget_map,
                     ) {

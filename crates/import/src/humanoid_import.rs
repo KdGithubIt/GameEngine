@@ -10,7 +10,9 @@ use crate::asset::{
 };
 use crate::model_import::GltfImportResult;
 use engine_animation::humanoid::{detect_humanoid_profile, validate_humanoid_profile};
-use engine_animation::humanoid_motion::{build_humanoid_motion, HumanoidMotion};
+use engine_animation::humanoid_motion::{
+    build_humanoid_motion, HumanoidMotion, HumanoidMotionError,
+};
 use engine_assets::asset::HumanoidProfileOrigin;
 use engine_authoring::diagnostic::Diagnostic;
 use engine_authoring::id::AssetId;
@@ -41,6 +43,33 @@ pub struct HumanoidImportCatalog {
     pub motions: Vec<GltfHumanoidMotionData>,
     /// Non-blocking mapping or conversion diagnostics.
     pub diagnostics: Vec<Diagnostic>,
+}
+
+/// Builds one import-owned logical Humanoid motion variant.
+///
+/// The caller supplies the stable logical identity, allowing model-contained
+/// animation and motion-only VMD import to share conversion without making a
+/// provenance model part of the portable candidate identity (ADR 0154).
+pub fn build_humanoid_motion_variant(
+    id: AssetId,
+    source_index: usize,
+    name: &str,
+    skin_index: usize,
+    clip: &engine_animation::animation::AnimationClip,
+    skeleton: &SkeletonAsset,
+    profile: &HumanoidProfile,
+) -> Result<(GltfHumanoidMotionData, Vec<Diagnostic>), HumanoidMotionError> {
+    let mut built = build_humanoid_motion(clip, skeleton, profile)?;
+    Ok((
+        GltfHumanoidMotionData {
+            source_index,
+            id,
+            name: name.to_owned(),
+            skin_index,
+            motion: built.motion,
+        },
+        std::mem::take(&mut built.diagnostics),
+    ))
 }
 
 enum ReconciledProfile {
@@ -162,16 +191,18 @@ pub fn build_humanoid_import_catalog(
             continue;
         };
         let profile = &profiles[profile_index];
-        match build_humanoid_motion(&animation.clip, &skin.skeleton, profile) {
-            Ok(mut built) => {
-                diagnostics.append(&mut built.diagnostics);
-                motions.push(GltfHumanoidMotionData {
-                    source_index: animation.source_index,
-                    id: imported_humanoid_motion_sub_asset_id(&animation.id),
-                    name: animation.name.clone(),
-                    skin_index: animation.skin_index,
-                    motion: built.motion,
-                });
+        match build_humanoid_motion_variant(
+            imported_humanoid_motion_sub_asset_id(&animation.id),
+            animation.source_index,
+            &animation.name,
+            animation.skin_index,
+            &animation.clip,
+            &skin.skeleton,
+            profile,
+        ) {
+            Ok((motion, mut built_diagnostics)) => {
+                diagnostics.append(&mut built_diagnostics);
+                motions.push(motion);
             }
             Err(error) => diagnostics.push(Diagnostic::warning(
                 "anim.humanoid_conversion_unavailable",

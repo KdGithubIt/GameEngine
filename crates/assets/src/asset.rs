@@ -246,6 +246,10 @@ pub struct ImportSettings {
     /// Optional original model used before retargeting a motion to output models.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub motion_original_model_source: Option<String>,
+    /// Stable model source whose usable Humanoid profile generates the motion's
+    /// one target-independent portable Humanoid variant (ADR 0154).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub motion_humanoid_source_model: Option<String>,
     /// Imported material sub-asset ID to standalone material asset ID.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub material_remaps: BTreeMap<String, String>,
@@ -528,6 +532,18 @@ pub fn imported_humanoid_motion_sub_asset_id(native_clip: &AssetId) -> AssetId {
     AssetId::derive(native_clip, "humanoid")
 }
 
+/// Derives the target-independent Humanoid identity for one logical imported animation.
+///
+/// Unlike [`imported_motion_sub_asset_id`], this deliberately excludes any VMD
+/// output model or Humanoid provenance model from the derivation (ADR 0154).
+pub fn imported_logical_humanoid_motion_sub_asset_id(
+    source: &AssetId,
+    index: usize,
+) -> AssetId {
+    let logical_native = imported_sub_asset_id(source, ImportedSubAssetKind::Animation, index);
+    imported_humanoid_motion_sub_asset_id(&logical_native)
+}
+
 /// Stable metadata exposed to asset pickers after import or reimport.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ImportedSubAsset {
@@ -554,25 +570,24 @@ pub fn expected_imported_sub_asset_id(
     source_id: &AssetId,
     sub_asset: &ImportedSubAsset,
 ) -> Result<AssetId, AssetManifestError> {
-    let native = if let Some(target) = &sub_asset.target_model_source {
+    if sub_asset.kind == ImportedSubAssetKind::HumanoidMotion {
+        return Ok(imported_logical_humanoid_motion_sub_asset_id(
+            source_id,
+            sub_asset.index as usize,
+        ));
+    }
+
+    if let Some(target) = &sub_asset.target_model_source {
         let target_id = AssetId::from_stable_id(engine_authoring::StableId::new(target))
             .map_err(|source| AssetManifestError::InvalidAssetId {
                 id: target.clone(),
                 source,
             })?;
-        imported_motion_sub_asset_id(source_id, &target_id, sub_asset.index as usize)
-    } else {
-        imported_sub_asset_id(
+        Ok(imported_motion_sub_asset_id(
             source_id,
-            ImportedSubAssetKind::Animation,
+            &target_id,
             sub_asset.index as usize,
-        )
-    };
-
-    if sub_asset.kind == ImportedSubAssetKind::HumanoidMotion {
-        Ok(imported_humanoid_motion_sub_asset_id(&native))
-    } else if sub_asset.target_model_source.is_some() {
-        Ok(native)
+        ))
     } else {
         Ok(imported_sub_asset_id(
             source_id,

@@ -1545,7 +1545,7 @@ struct ResolvedAnimationSet {
 
 struct ResolvedAnimationBindingClip {
     handle: Handle<AnimationClip>,
-    resolved_variant: engine_authoring::MotionSourceVariant,
+    resolved_route: crate::motion_binding::AnimationMotionRoute,
 }
 
 fn resolve_animation_set(
@@ -1644,6 +1644,7 @@ fn resolve_animation_set(
     for (motion_slot, binding) in animation_set.bindings {
         let Some(primary) = resolve_animation_binding_clip(
             animation_set_asset,
+            &motion_slot,
             &binding.clip,
             &target_skeleton,
             context,
@@ -1658,6 +1659,7 @@ fn resolve_animation_set(
         for overlay in &binding.overlays {
             if let Some(overlay_clip) = resolve_animation_binding_clip(
                 animation_set_asset,
+                &motion_slot,
                 overlay,
                 &target_skeleton,
                 context,
@@ -1752,7 +1754,7 @@ fn resolve_animation_set(
                 motion_slot: motion_slot.clone(),
                 display_name: binding.name.clone(),
                 source: binding.clip.clone(),
-                resolved_variant: primary.resolved_variant,
+                resolved_route: primary.resolved_route,
                 resolved_clip_runtime_id: handle.id().value(),
             },
         );
@@ -1787,20 +1789,93 @@ fn resolve_animation_set(
 
 fn resolve_animation_binding_clip(
     animation_set_asset: &AssetId,
+    motion_slot: &engine_authoring::MotionSlotId,
     source: &engine_authoring::MotionSourceRef,
     target_skeleton: &SkeletonAsset,
     context: &mut SpawnContext<'_>,
 ) -> Result<Option<ResolvedAnimationBindingClip>, SceneBridgeError> {
-    if source.variant == engine_authoring::MotionSourceVariant::Humanoid {
-        return resolve_humanoid_animation_binding_clip(
+    let (owner_source, candidate_kind, source_index, has_humanoid_fallback) = {
+        let Some((owner_source, entry, sub_asset)) =
+            context.manifest.imported_sub_asset(&source.asset)
+        else {
+            return Err(animation_binding_error(
+                animation_set_asset,
+                &source.asset,
+                context,
+                "Animation Set motion candidate is not a registered imported sub-asset",
+            ));
+        };
+        let candidate_kind = match sub_asset.kind {
+            ImportedSubAssetKind::Animation => {
+                crate::motion_binding::AnimationMotionCandidateKind::ModelBound
+            }
+            ImportedSubAssetKind::HumanoidMotion => {
+                crate::motion_binding::AnimationMotionCandidateKind::Humanoid
+            }
+            _ => {
+                return Err(animation_binding_error(
+                    animation_set_asset,
+                    &source.asset,
+                    context,
+                    "Animation Set motion candidates must be Animation or HumanoidMotion sub-assets",
+                ));
+            }
+        };
+        let has_humanoid_fallback = sub_asset.kind == ImportedSubAssetKind::Animation
+            && entry.import_settings.sub_assets.iter().any(|candidate| {
+                candidate.kind == ImportedSubAssetKind::HumanoidMotion
+                    && candidate.index == sub_asset.index
+                    && candidate.target_model_source.is_none()
+            });
+        (
+            owner_source.clone(),
+            candidate_kind,
+            sub_asset.index as usize,
+            has_humanoid_fallback,
+        )
+    };
+
+    let target_humanoid_usable = context
+        .manifest
+        .iter()
+        .flat_map(|(_, entry)| entry.import_settings.humanoid_profiles.iter())
+        .any(|profile| {
+            profile.skeleton == target_skeleton.id.as_str()
+                && profile.skeleton_identity == target_skeleton.identity.0
+        });
+
+    if candidate_kind == crate::motion_binding::AnimationMotionCandidateKind::Humanoid {
+        let route = crate::motion_binding::plan_animation_motion(
+            &crate::motion_binding::AnimationMotionPlanInput {
+                candidate: source.asset.clone(),
+                candidate_kind,
+                source_skeleton: None,
+                target_skeleton: target_skeleton.id.clone(),
+                retarget_map: None,
+                humanoid_fallback: None,
+                target_humanoid_usable,
+            },
+        );
+        let crate::motion_binding::AnimationMotionRoute::Humanoid { motion } = &route else {
+            push_animation_motion_binding_failure(
+                animation_set_asset,
+                motion_slot,
+                &source.asset,
+                target_skeleton,
+                &route,
+                context,
+            );
+            return Ok(None);
+        };
+        let handle = resolve_humanoid_animation_binding_clip(
             animation_set_asset,
-            &source.asset,
+            motion,
             target_skeleton,
             context,
-        )
-        .map(|handle| Some(ResolvedAnimationBindingClip {
+        )?;
+        return Ok(Some(ResolvedAnimationBindingClip {
             handle,
-            resolved_variant: engine_authoring::MotionSourceVariant::Humanoid,
+            resolved_route: route.clone(),
         }));
     }
 
@@ -1810,7 +1885,7 @@ fn resolve_animation_binding_clip(
             animation_set_asset,
             &source.asset,
             context,
-            "Animation Set Native and Auto sources must reference imported Animation sub-assets",
+            "model-bound Animation Set candidates must reference imported Animation sub-assets",
         )
     })?;
     let native_handle = resolved
@@ -1833,57 +1908,127 @@ fn resolve_animation_binding_clip(
             animation_set_asset,
             &source.asset,
             context,
-            "Animation Set Native and Auto sources must be bound to an imported skeleton",
+            "model-bound Animation Set candidates must be bound to an imported skeleton",
         )
     })?;
 
-    if source_skeleton_id == target_skeleton.id {
-        return Ok(Some(ResolvedAnimationBindingClip {
-            handle: native_handle,
-            resolved_variant: engine_authoring::MotionSourceVariant::Native,
-        }));
-    }
-
-    if source.variant == engine_authoring::MotionSourceVariant::Auto {
-        let assets_root = context.asset_root.unwrap_or_else(|| Path::new("."));
-        let maps = crate::retarget::load_registered_retarget_maps(assets_root, context.manifest);
-        if crate::retarget::find_retarget_map_for_pair(
-            &maps,
-            &source_skeleton_id,
-            &target_skeleton.id,
+    let assets_root = context.asset_root.unwrap_or_else(|| Path::new("."));
+    let maps = crate::retarget::load_registered_retarget_maps(assets_root, context.manifest);
+    let retarget_map = maps
+        .iter()
+        .find(|(_, map)| {
+            map.source_skeleton == source_skeleton_id
+                && map.target_skeleton == target_skeleton.id
+        })
+        .map(|(id, _)| id.clone());
+    let humanoid_fallback = has_humanoid_fallback.then(|| {
+        crate::asset::imported_logical_humanoid_motion_sub_asset_id(
+            &owner_source,
+            source_index,
         )
-        .is_none()
-        {
-            let humanoid_asset =
-                crate::asset::imported_humanoid_motion_sub_asset_id(&source.asset);
-            return resolve_humanoid_animation_binding_clip(
+    });
+    let route = crate::motion_binding::plan_animation_motion(
+        &crate::motion_binding::AnimationMotionPlanInput {
+            candidate: source.asset.clone(),
+            candidate_kind,
+            source_skeleton: Some(source_skeleton_id.clone()),
+            target_skeleton: target_skeleton.id.clone(),
+            retarget_map,
+            humanoid_fallback,
+            target_humanoid_usable,
+        },
+    );
+
+    match &route {
+        crate::motion_binding::AnimationMotionRoute::Native => {
+            Ok(Some(ResolvedAnimationBindingClip {
+                handle: native_handle,
+                resolved_route: route.clone(),
+            }))
+        }
+        crate::motion_binding::AnimationMotionRoute::Retarget { .. } => {
+            resolve_retargeted_animation_binding_clip(
                 animation_set_asset,
-                &humanoid_asset,
+                &source.asset,
+                native_handle,
+                &native_clip,
+                &source_skeleton_id,
                 target_skeleton,
                 context,
             )
-            .map(|handle| Some(ResolvedAnimationBindingClip {
+            .map(|resolved| {
+                resolved.map(|handle| ResolvedAnimationBindingClip {
+                    handle,
+                    resolved_route: route.clone(),
+                })
+            })
+        }
+        crate::motion_binding::AnimationMotionRoute::Humanoid { motion } => {
+            let handle = resolve_humanoid_animation_binding_clip(
+                animation_set_asset,
+                motion,
+                target_skeleton,
+                context,
+            )?;
+            Ok(Some(ResolvedAnimationBindingClip {
                 handle,
-                resolved_variant: engine_authoring::MotionSourceVariant::Humanoid,
-            }));
+                resolved_route: route.clone(),
+            }))
+        }
+        crate::motion_binding::AnimationMotionRoute::Failed { .. } => {
+            push_animation_motion_binding_failure(
+                animation_set_asset,
+                motion_slot,
+                &source.asset,
+                target_skeleton,
+                &route,
+                context,
+            );
+            Ok(None)
         }
     }
+}
 
-    resolve_retargeted_animation_binding_clip(
-        animation_set_asset,
-        &source.asset,
-        native_handle,
-        &native_clip,
-        &source_skeleton_id,
-        target_skeleton,
-        context,
-    )
-    .map(|resolved| {
-        resolved.map(|handle| ResolvedAnimationBindingClip {
-            handle,
-            resolved_variant: engine_authoring::MotionSourceVariant::Native,
+fn push_animation_motion_binding_failure(
+    animation_set_asset: &AssetId,
+    motion_slot: &engine_authoring::MotionSlotId,
+    candidate: &AssetId,
+    target_skeleton: &SkeletonAsset,
+    route: &crate::motion_binding::AnimationMotionRoute,
+    context: &mut SpawnContext<'_>,
+) {
+    let crate::motion_binding::AnimationMotionRoute::Failed { reason } = route else {
+        return;
+    };
+    context.asset_diagnostics.push(
+        Diagnostic::error(
+            "anim.motion_binding_failed",
+            format!(
+                "Animation Set `{}` slot `{}` candidate `{}` cannot resolve for target skeleton `{}`. Attempted routing: {}. Failure: {reason}",
+                animation_set_asset.as_str(),
+                motion_slot.as_str(),
+                candidate.as_str(),
+                target_skeleton.id.as_str(),
+                route.attempted_routing(),
+            ),
+        )
+        .with_target(DiagnosticTarget::Asset {
+            id: animation_set_asset.clone(),
         })
-    })
+        .with_related_targets(vec![
+            DiagnosticTarget::Asset {
+                id: candidate.clone(),
+            },
+            DiagnosticTarget::Asset {
+                id: target_skeleton.id.clone(),
+            },
+        ])
+        .with_context_value("animation_set_asset_id", animation_set_asset.as_str())
+        .with_context_value("motion_slot_id", motion_slot.as_str())
+        .with_context_value("motion_candidate_asset_id", candidate.as_str())
+        .with_context_value("target_skeleton_asset_id", target_skeleton.id.as_str())
+        .with_context_value("attempted_routing", route.attempted_routing()),
+    );
 }
 
 #[allow(clippy::too_many_arguments)]
