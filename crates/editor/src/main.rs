@@ -72,6 +72,7 @@ impl EditorShell {
             let mut ai_studio = ai_studio;
             let detached_capture = visual_validation_touches_ai_studio();
             if detached_capture {
+                ai_studio.prepare_hosted_backend_visual_validation();
                 ai_studio.detach();
             }
             (ai_studio, detached_capture)
