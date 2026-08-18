@@ -94,6 +94,22 @@ impl EditorApp {
             || self.timeline_sequencer.as_ref().is_some_and(TimelineSequencerState::is_dirty)
     }
 
+    /// Returns whether closing the native Editor would discard any authoring working copy.
+    pub fn has_unsaved_authoring_documents(&self) -> bool {
+        self.any_authoring_dirty()
+    }
+
+    /// Persists all dirty authoring working copies for the native-window close guard.
+    ///
+    /// This deliberately preserves the normal Play-mode invariant: runtime state is never
+    /// mistaken for authoring data during shutdown.
+    pub fn save_all_authoring_documents_for_shutdown(&mut self) -> Result<(), String> {
+        if self.is_playing() {
+            return Err("stop Play mode before saving authoring documents".to_owned());
+        }
+        self.save_all_authoring_documents()
+    }
+
     /// Persists every dirty working copy through its existing validated atomic adapter.
     fn save_all_authoring_documents(&mut self) -> Result<(), String> {
         self.session.save_all().map_err(|error| error.to_string())?;

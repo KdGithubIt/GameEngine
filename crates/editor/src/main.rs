@@ -28,6 +28,9 @@ struct EditorShell {
     authoring_windows: AuthoringWindows,
     show_authoring_tools: bool,
     authoring_status: Option<String>,
+    exit_confirmation_open: bool,
+    allow_exit_once: bool,
+    exit_save_error: Option<String>,
     project_lease: EditorLease,
     _mcp_server: EditorMcpServer,
     mcp_requests: mpsc::Receiver<EditorMcpRequest>,
@@ -116,6 +119,9 @@ impl EditorShell {
             authoring_windows,
             show_authoring_tools: false,
             authoring_status: None,
+            exit_confirmation_open: false,
+            allow_exit_once: false,
+            exit_save_error: None,
             project_lease,
             _mcp_server: mcp_server,
             mcp_requests,
@@ -128,6 +134,62 @@ impl EditorShell {
             #[cfg(feature = "visual-validation")]
             visual_ai_studio_detached_capture,
         })
+    }
+
+    fn handle_native_close_request(&mut self, context: &eframe::egui::Context) {
+        if !context.input(|input| input.viewport().close_requested()) {
+            return;
+        }
+        if self.allow_exit_once {
+            self.allow_exit_once = false;
+            return;
+        }
+        if self.app.has_unsaved_authoring_documents() {
+            context.send_viewport_cmd(eframe::egui::ViewportCommand::CancelClose);
+            self.exit_confirmation_open = true;
+            self.exit_save_error = None;
+        }
+    }
+
+    fn show_exit_confirmation(&mut self, context: &eframe::egui::Context) {
+        if !self.exit_confirmation_open {
+            return;
+        }
+        let mut action = None;
+        eframe::egui::Modal::new(eframe::egui::Id::new("editor_unsaved_exit")).show(context, |ui| {
+            ui.heading("Unsaved authoring changes");
+            ui.label("Save all dirty authoring working copies before closing Engine Editor?");
+            if let Some(error) = &self.exit_save_error {
+                ui.colored_label(eframe::egui::Color32::RED, error);
+            }
+            ui.horizontal(|ui| {
+                if ui.button("Save All").clicked() { action = Some(0_u8); }
+                if ui.button("Discard").clicked() { action = Some(1); }
+                if ui.button("Cancel").clicked() { action = Some(2); }
+            });
+        });
+        match action {
+            Some(0) => match self.app.save_all_authoring_documents_for_shutdown() {
+                Ok(()) => {
+                    self.exit_confirmation_open = false;
+                    self.allow_exit_once = true;
+                    self.exit_save_error = None;
+                    context.send_viewport_cmd(eframe::egui::ViewportCommand::Close);
+                }
+                Err(error) => self.exit_save_error = Some(error),
+            },
+            Some(1) => {
+                self.exit_confirmation_open = false;
+                self.allow_exit_once = true;
+                self.exit_save_error = None;
+                context.send_viewport_cmd(eframe::egui::ViewportCommand::Close);
+            }
+            Some(2) => {
+                self.exit_confirmation_open = false;
+                self.exit_save_error = None;
+            }
+            _ => {}
+        }
     }
 
     fn handle_mcp_requests(&mut self) {
@@ -313,6 +375,7 @@ impl EditorShell {
 
 impl eframe::App for EditorShell {
     fn logic(&mut self, context: &eframe::egui::Context, frame: &mut eframe::Frame) {
+        self.handle_native_close_request(context);
         self.handle_mcp_requests();
         self.ai_studio.observe_benchmark_hardware(frame);
         if self.project_lease.take_activation_request() {
@@ -354,6 +417,7 @@ impl eframe::App for EditorShell {
     fn ui(&mut self, ui: &mut eframe::egui::Ui, frame: &mut eframe::Frame) {
         let context = ui.ctx().clone();
         eframe::App::ui(&mut self.app, ui, frame);
+        self.show_exit_confirmation(&context);
         self.show_authoring_tools_launcher(&context);
         self.authoring_windows
             .show(&context, frame, self.app.project_root());
