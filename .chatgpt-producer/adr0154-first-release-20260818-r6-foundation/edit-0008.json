@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/import/src/humanoid_import.rs","old":"use engine_animation::humanoid_motion::{build_humanoid_motion, HumanoidMotion};","new":"use engine_animation::humanoid_motion::{\n    build_humanoid_motion, HumanoidMotion, HumanoidMotionError,\n};"}
