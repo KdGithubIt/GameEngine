@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/launcher/src/native_2d_template.rs",
+  "old": "            Self::Native2d => \"Camera2D, sprites, animation, tiles, 2D bodies and one-way collision.\",\n",
+  "new": "            Self::Native2d => \"Playable 2D project with input, HUD, audio, save, animation, tiles and physics.\",\n"
+}
