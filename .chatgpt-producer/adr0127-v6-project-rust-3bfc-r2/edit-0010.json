@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/engine/src/game_commands/animation.rs","old":"use crate::game_io::GameEntityHandle;\nuse engine_authoring::Value;\n","new":"use crate::game_io::GameEntityHandle;\nuse crate::native_2d::{SpriteAnimationClipRegistry2d, SpriteAnimatorRuntime2d};\nuse engine_authoring::{AssetId, StableId, Value};\n"}
