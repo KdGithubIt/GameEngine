@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/engine/src/lib.rs","old":"pub use asset::{\n    imported_motion_sub_asset_id, imported_sub_asset_id, AssetLoadError, AssetManifest,\n","new":"pub use asset::{\n    imported_logical_humanoid_motion_sub_asset_id, imported_motion_sub_asset_id,\n    imported_sub_asset_id, AssetLoadError, AssetManifest,\n"}
