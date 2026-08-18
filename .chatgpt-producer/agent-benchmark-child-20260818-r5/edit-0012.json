@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "    fn request_permission(\n        &mut self,\n        run_id: String,\n        capability: AgentCapability,\n        action: PendingPermissionAction,\n    ) {\n        match self.host.check_permission(&run_id, capability) {",
+  "new": "    fn request_permission(\n        &mut self,\n        run_id: String,\n        capability: AgentCapability,\n        action: PendingPermissionAction,\n    ) {\n        if self.benchmark_child_allows(capability) {\n            match self.host.resolve_permission(&run_id, capability, ApprovalScope::Run) {\n                Ok(()) => self.execute_permission_action(&run_id, action),\n                Err(error) => self.status = Some(error.to_string()),\n            }\n            return;\n        }\n        match self.host.check_permission(&run_id, capability) {"
+}
