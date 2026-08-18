@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr-visual-v3-clippy-20260819-04",
+  "target_branch": "chatgpt/gameengine-adr-visual-first-release-v3",
+  "expected_head_sha": "d18d537656db00bf373e642c4f7bf35fd16d941f",
+  "baseline_main_sha": "fef3a8b6ab1065026f789aa332a6d8a56b241571",
+  "patch_sha256": "2871510ee654dff6a591df62b0b13d0638eebc9976fecec0e50af394f4329eab",
+  "patch_bytes": 5986,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Fix Animation Set clippy test structure",
+  "pr_title": "GameEngine: complete first-release ADR visual validation",
+  "pr_body": "## Summary\n\nCompletes deterministic first-release Editor Visual Validation for ADR0136, ADR0137, ADR0138, ADR0139, ADR0144, ADR0149, and ADR0153 on current main.\n\nThis follow-up preserves the Animation Set regression tests while removing the mid-file test module structure that trips `clippy::items_after_test_module` under the required full workspace lint gate. No lint suppression is added.\n\nSupersedes Draft PR #774 and the older #673 implementation branch; do not merge both.\n\n<!-- gameengine-visual-validation: editor -->\n<!-- gameengine-visual-authoring-tool: ADR First Release -->\n"
+}
