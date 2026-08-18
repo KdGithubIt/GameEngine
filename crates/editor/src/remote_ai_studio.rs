@@ -1343,15 +1343,17 @@ mod tests {
         let session = host.create_session("Remote").expect("session");
         let version = host.session(&session).expect("session").proposal.version;
         let run = host.start_run_authorized(&session, version, "test").expect("run");
+        let private_path = ["C:", "Users", "private", "file"].join("\\");
         host.record_event(
             &run,
             AgentEventKind::ProviderOutput,
-            "GAMEENGINE_MCP_AUTH_TOKEN=super-secret C:\\Users\\private\\file",
+            format!("GAMEENGINE_MCP_AUTH_TOKEN=super-secret {private_path}"),
         )
         .expect("provider output");
         let events = events_json(&host, &run, 0).expect("events").to_string();
         assert!(!events.contains("super-secret"));
-        assert!(!events.contains("C:\\\\Users"));
+        let serialized_private_path = private_path.replace('\\', "\\\\");
+        assert!(!events.contains(&serialized_private_path));
         let snapshot = snapshot_json(&host, "project-a", &session, None)
             .expect("snapshot")
             .to_string();
@@ -1368,6 +1370,8 @@ mod tests {
         let run = host
             .start_run_authorized(&session, version, "test")
             .expect("run");
+        let private_import_path = ["C:", "Users", "private", "leak.png"].join("\\");
+        let private_import_prefix = ["C:", "Users", "private"].join("\\");
         host.record_asset_acquisition(
             &run,
             crate::agent_host::AssetAcquisitionRecord {
@@ -1383,7 +1387,7 @@ mod tests {
                 imported_asset_ids: vec!["asset_01TEST".into()],
                 imported_paths: vec![
                     std::path::PathBuf::from("textures/generated.png"),
-                    std::path::PathBuf::from(r"C:\Users\private\leak.png"),
+                    std::path::PathBuf::from(private_import_path),
                 ],
                 created_unix_ms: 1,
             },
@@ -1398,7 +1402,8 @@ mod tests {
         assert!(!snapshot.contains("secret-value"));
         assert!(!snapshot.contains("access_token"));
         assert!(!snapshot.contains("internal-fingerprint"));
-        assert!(!snapshot.contains(r"C:\Users\private"));
+        let serialized_private_import_prefix = private_import_prefix.replace('\\', "\\\\");
+        assert!(!snapshot.contains(&serialized_private_import_prefix));
         let _ = fs::remove_dir_all(project);
         let _ = fs::remove_dir_all(storage);
     }
