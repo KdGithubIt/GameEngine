@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr-visual-first-release-v3-base-20260819-02",
+  "target_branch": "chatgpt/gameengine-adr-visual-first-release-v3",
+  "expected_head_sha": "fef3a8b6ab1065026f789aa332a6d8a56b241571",
+  "baseline_main_sha": "fef3a8b6ab1065026f789aa332a6d8a56b241571",
+  "patch_sha256": "59b6ced7ca3b2d091c0bc518b45ac322ada7d48a41a7597f21b815ca9d265c3c",
+  "patch_bytes": 36026,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Add first-release ADR visual validation on current main",
+  "pr_title": "GameEngine: complete first-release ADR visual validation",
+  "pr_body": "## Summary\n\nRebuilds the deterministic first-release Editor Visual Validation suite for ADR0136, ADR0137, ADR0138, ADR0139, ADR0144, ADR0149, and ADR0153 on current main after ADR0157 landed.\n\nThe suite captures each ADR scenario in an independent Editor process and preserves per-scenario logs and partial-failure summaries.\n\nThis is the base visual implementation request; follow-up fixes remain on the same Draft PR branch after exact-head application.\n\nSupersedes Draft PR #774 and the older #673 implementation branch; do not merge both.\n\n<!-- gameengine-visual-validation: editor -->\n<!-- gameengine-visual-authoring-tool: ADR First Release -->\n"
+}
