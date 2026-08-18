@@ -3,8 +3,8 @@
 use crate::material::DecodedTexture;
 use crate::transform::Transform;
 use engine_authoring::{
-    AssetId, PixelsPerUnit, SortingLayerId, SpriteFiltering, SpriteRef, TileChunkCoord, TileId,
-    TileLayerId, TileMapDocument, TileSetDocument,
+    AssetId, PixelsPerUnit, SortingLayerId, SpriteFiltering, SpriteRef, TileCell, TileChunkCoord,
+    TileId, TileLayerId, TileMapDocument, TileSetDocument,
 };
 use glam::{Mat4, Vec2, Vec3};
 use std::collections::BTreeMap;
@@ -210,6 +210,32 @@ pub struct TileMap2d {
     pub visible: bool,
 }
 
+/// One resolved sparse Tile Map cell retained inside its owning runtime chunk.
+#[derive(Debug, Clone)]
+pub struct ResolvedTileCell2d {
+    /// Chunk-local logical cell coordinate.
+    pub cell: TileCell,
+    /// Stable SpriteRef selected by the TileId.
+    pub sprite: SpriteRef,
+    /// Immutable resolved sprite source data.
+    pub region: ResolvedSpriteRegion2d,
+}
+
+/// One stable resolved Tile Map render chunk.
+#[derive(Debug, Clone)]
+pub struct ResolvedTileChunkRender2d {
+    /// Stable layer identity.
+    pub layer: TileLayerId,
+    /// Project sorting layer copied from the authored Tile Map layer.
+    pub sorting_layer: SortingLayerId,
+    /// Signed logical order copied from the authored Tile Map layer.
+    pub order_in_layer: i32,
+    /// Sparse chunk coordinate.
+    pub coord: TileChunkCoord,
+    /// Deterministically ordered non-empty cells in this chunk.
+    pub cells: Vec<ResolvedTileCell2d>,
+}
+
 /// Runtime-only immutable Tile Map data resolved during scene conversion.
 ///
 /// One ECS entity owns the whole map. Cells remain sparse/chunked; resolved sprite
@@ -222,6 +248,8 @@ pub struct ResolvedTileMap2d {
     pub tile_set: Arc<TileSetDocument>,
     /// Stable TileId to resolved Sprite Atlas region.
     pub sprites: BTreeMap<TileId, ResolvedSpriteRegion2d>,
+    /// Stable sparse render chunks prepared once during scene conversion.
+    pub chunks: Vec<ResolvedTileChunkRender2d>,
 }
 
 /// Extracted SpriteRenderer2D draw instance.

@@ -3126,6 +3126,32 @@ pub(crate) fn spawn_tile_map_2d_component(
         sprites.insert(tile_id, resolve_sprite_region_2d(&tile.sprite, context)?);
     }
 
+    let mut chunks = Vec::new();
+    for layer in &document.layers {
+        for chunk in &layer.chunks {
+            let mut cells = Vec::with_capacity(chunk.cells.len());
+            for entry in &chunk.cells {
+                let tile = tile_set.tile(&entry.tile).expect("used TileId was validated above");
+                let region = sprites
+                    .get(&entry.tile)
+                    .expect("used TileId has a resolved sprite region")
+                    .clone();
+                cells.push(ResolvedTileCell2d {
+                    cell: entry.cell,
+                    sprite: tile.sprite.clone(),
+                    region,
+                });
+            }
+            chunks.push(ResolvedTileChunkRender2d {
+                layer: layer.id.clone(),
+                sorting_layer: layer.sorting_layer.clone(),
+                order_in_layer: layer.order_in_layer,
+                coord: chunk.coord,
+                cells,
+            });
+        }
+    }
+
     context.world.add_component(
         entity,
         TileMap2d {
@@ -3139,6 +3165,7 @@ pub(crate) fn spawn_tile_map_2d_component(
             document,
             tile_set,
             sprites,
+            chunks,
         },
     )?;
     Ok(())

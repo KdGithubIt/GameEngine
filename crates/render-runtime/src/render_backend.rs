@@ -5,8 +5,9 @@ use std::sync::{Arc, Weak};
 use crate::camera::{Camera3D, ViewportSize};
 use crate::game_camera::PreparedCamera;
 use crate::native_2d::{
-    sort_and_batch_sprites, Camera2d, Camera2dDiagnostic, Native2dRenderMetrics,
-    ResolvedSpriteRegion2d, SpriteInstance2d,
+    cull_tile_chunks, sort_and_batch_sprites, Camera2d, Camera2dDiagnostic, Native2dRenderMetrics,
+    ResolvedSpriteRegion2d, ResolvedTileMap2d, SpriteInstance2d, TileChunkBounds2d, TileMap2d,
+    ViewRect2d,
 };
 use crate::debug_draw::{DebugLine, DebugLines};
 use crate::environment::EnvironmentGpuState;
@@ -1298,6 +1299,85 @@ fn create_sprite_pipeline(
     })
 }
 
+fn native_2d_default_material_key(blend: SpriteBlendMode) -> u64 {
+    (0xcbf29ce484222325_u64 << 2) ^ sprite_pipeline_index(blend) as u64
+}
+
+fn native_2d_view_rect(camera: Option<&PreparedCamera>) -> Option<ViewRect2d> {
+    let camera = camera.filter(|camera| camera.shadow_camera.is_none())?;
+    let inverse = camera.view_projection.inverse();
+    if !inverse.is_finite() {
+        return None;
+    }
+    let corners = [
+        inverse.project_point3(glam::Vec3::new(-1.0, -1.0, 0.0)),
+        inverse.project_point3(glam::Vec3::new(1.0, -1.0, 0.0)),
+        inverse.project_point3(glam::Vec3::new(1.0, 1.0, 0.0)),
+        inverse.project_point3(glam::Vec3::new(-1.0, 1.0, 0.0)),
+    ];
+    if corners.iter().any(|corner| !corner.is_finite()) {
+        return None;
+    }
+    let mut min = corners[0].truncate();
+    let mut max = min;
+    for corner in &corners[1..] {
+        min = min.min(corner.truncate());
+        max = max.max(corner.truncate());
+    }
+    Some(ViewRect2d { min, max })
+}
+
+fn transformed_tile_chunk_bounds(
+    model: glam::Mat4,
+    coord: engine_authoring::TileChunkCoord,
+    chunk_size: u16,
+) -> (glam::Vec2, glam::Vec2) {
+    let size = f32::from(chunk_size.max(1));
+    let min_local = glam::Vec2::new(coord.x as f32 * size, coord.y as f32 * size);
+    let max_local = min_local + glam::Vec2::splat(size);
+    let corners = [
+        model.transform_point3(min_local.extend(0.0)).truncate(),
+        model
+            .transform_point3(glam::Vec3::new(max_local.x, min_local.y, 0.0))
+            .truncate(),
+        model.transform_point3(max_local.extend(0.0)).truncate(),
+        model
+            .transform_point3(glam::Vec3::new(min_local.x, max_local.y, 0.0))
+            .truncate(),
+    ];
+    let mut min = corners[0];
+    let mut max = corners[0];
+    for corner in &corners[1..] {
+        min = min.min(*corner);
+        max = max.max(*corner);
+    }
+    (min, max)
+}
+
+fn tile_instance_key(
+    owner: engine_ecs::Entity,
+    layer: &engine_authoring::TileLayerId,
+    x: i32,
+    y: i32,
+    sprite: &engine_authoring::SpriteRef,
+) -> u64 {
+    let mut hash = 0xcbf29ce484222325_u64;
+    for byte in u64::from(owner.id())
+        .to_le_bytes()
+        .into_iter()
+        .chain(u64::from(owner.generation()).to_le_bytes())
+        .chain(x.to_le_bytes())
+        .chain(y.to_le_bytes())
+        .chain(layer.as_str().bytes())
+        .chain(sprite.atlas.as_str().bytes())
+        .chain(sprite.sprite.as_str().bytes())
+    {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
+}
+
 fn native_2d_material_key(renderer: &SpriteRenderer2d) -> u64 {
     let mut hash = 0xcbf29ce484222325_u64;
     for byte in renderer
@@ -1374,6 +1454,7 @@ impl WorldRenderer {
         world: &mut engine_ecs::World,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
+        camera: Option<&PreparedCamera>,
     ) -> SpriteGpuFrame {
         let settings = world
             .get_resource::<Project2dSettings>()
@@ -1501,6 +1582,182 @@ impl WorldRenderer {
                 },
             );
         }
+        let standalone_sprite_count = logical.iter().filter(|sprite| sprite.visible).count();
+
+        type TileMapQuery<'w> = engine_ecs::Query<
+            'w,
+            (&'w TileMap2d, &'w ResolvedTileMap2d, &'w GlobalTransform),
+        >;
+        let tile_maps = TileMapQuery::new(world)
+            .iter()
+            .map(|(entity, (tile_map, resolved, global))| {
+                (entity, tile_map.clone(), resolved.clone(), global.matrix())
+            })
+            .collect::<Vec<_>>();
+        let view_rect = native_2d_view_rect(camera);
+        let mut visible_tile_chunks = 0_usize;
+        for (entity, tile_map, resolved, map_model) in tile_maps {
+            if !tile_map.visible {
+                continue;
+            }
+            let enabled = |layer: &engine_authoring::TileLayerId| {
+                resolved
+                    .document
+                    .layers
+                    .iter()
+                    .find(|candidate| &candidate.id == layer)
+                    .is_some_and(|candidate| candidate.enabled)
+            };
+            let visible = if let Some(view) = view_rect {
+                cull_tile_chunks(
+                    resolved
+                        .chunks
+                        .iter()
+                        .filter(|chunk| enabled(&chunk.layer))
+                        .map(|chunk| {
+                            let (min, max) = transformed_tile_chunk_bounds(
+                                map_model,
+                                chunk.coord,
+                                resolved.document.chunk_size,
+                            );
+                            TileChunkBounds2d {
+                                layer: &chunk.layer,
+                                coord: chunk.coord,
+                                min,
+                                max,
+                            }
+                        }),
+                    view,
+                )
+                .into_iter()
+                .map(|chunk| (chunk.layer, chunk.coord))
+                .collect::<std::collections::BTreeSet<_>>()
+            } else {
+                resolved
+                    .chunks
+                    .iter()
+                    .filter(|chunk| enabled(&chunk.layer))
+                    .map(|chunk| (chunk.layer.clone(), chunk.coord))
+                    .collect::<std::collections::BTreeSet<_>>()
+            };
+            visible_tile_chunks += visible.len();
+            let chunk_size = i64::from(resolved.document.chunk_size.max(1));
+            for chunk in resolved.chunks.iter().filter(|chunk| {
+                visible.contains(&(chunk.layer.clone(), chunk.coord))
+            }) {
+                let layer_rank = settings
+                    .sorting_layers
+                    .iter()
+                    .position(|layer| layer.id == chunk.sorting_layer)
+                    .map(|index| index as u32)
+                    .unwrap_or(u32::MAX);
+                for cell in &chunk.cells {
+                    let region = &cell.region;
+                    let pixels_per_unit = match region.pixels_per_unit {
+                        PixelsPerUnit::ProjectDefault => settings.default_pixels_per_unit,
+                        PixelsPerUnit::Override(value) => value,
+                    };
+                    if !pixels_per_unit.is_finite() || pixels_per_unit <= 0.0 {
+                        continue;
+                    }
+                    let filtering = region.filtering.unwrap_or(settings.default_filtering);
+                    let [x, y, width, height] = region.rect;
+                    let Some(right) = x.checked_add(width) else {
+                        continue;
+                    };
+                    let Some(bottom) = y.checked_add(height) else {
+                        continue;
+                    };
+                    if width == 0
+                        || height == 0
+                        || right > region.texture.width
+                        || bottom > region.texture.height
+                    {
+                        continue;
+                    }
+                    let texture_width = region.texture.width as f32;
+                    let texture_height = region.texture.height as f32;
+                    let mut uv_rect = [
+                        x as f32 / texture_width,
+                        y as f32 / texture_height,
+                        right as f32 / texture_width,
+                        bottom as f32 / texture_height,
+                    ];
+                    if filtering == SpriteFiltering::Linear {
+                        let inset_u = 0.5 / texture_width;
+                        let inset_v = 0.5 / texture_height;
+                        uv_rect[0] = (uv_rect[0] + inset_u).min(uv_rect[2]);
+                        uv_rect[1] = (uv_rect[1] + inset_v).min(uv_rect[3]);
+                        uv_rect[2] = (uv_rect[2] - inset_u).max(uv_rect[0]);
+                        uv_rect[3] = (uv_rect[3] - inset_v).max(uv_rect[1]);
+                    }
+                    let world_x = i64::from(chunk.coord.x) * chunk_size + i64::from(cell.cell.x);
+                    let world_y = i64::from(chunk.coord.y) * chunk_size + i64::from(cell.cell.y);
+                    let local = glam::Mat4::from_translation(glam::Vec3::new(
+                        world_x as f32 + 0.5,
+                        world_y as f32 + 0.5,
+                        0.0,
+                    ));
+                    let model = map_model * local;
+                    let (scale, rotation, translation) = model.to_scale_rotation_translation();
+                    let (_, _, rotation_radians) = rotation.to_euler(glam::EulerRot::XYZ);
+                    let base_size = glam::Vec2::new(
+                        width as f32 / pixels_per_unit,
+                        height as f32 / pixels_per_unit,
+                    );
+                    let entity_key = tile_instance_key(
+                        entity,
+                        &chunk.layer,
+                        world_x as i32,
+                        world_y as i32,
+                        &cell.sprite,
+                    );
+                    let texture_key = Arc::as_ptr(&region.texture) as usize as u64;
+                    let filtering_key = sprite_sampler_index(filtering) as u64;
+                    logical.push(SpriteInstance2d {
+                        entity_key,
+                        sprite: cell.sprite.clone(),
+                        sorting_layer: chunk.sorting_layer.clone(),
+                        layer_rank,
+                        order_in_layer: chunk.order_in_layer,
+                        texture_key,
+                        material_key: native_2d_default_material_key(SpriteBlendMode::Alpha),
+                        sampler_key: filtering_key,
+                        position: translation.truncate(),
+                        size: glam::Vec2::new(
+                            base_size.x * scale.x.abs(),
+                            base_size.y * scale.y.abs(),
+                        ),
+                        pivot: glam::Vec2::from_array(region.pivot),
+                        rotation_radians,
+                        uv_rect,
+                        tint: [1.0; 4],
+                        flip_x: false,
+                        flip_y: false,
+                        visible: true,
+                    });
+                    prepared.insert(
+                        entity_key,
+                        PreparedSpriteGpu {
+                            instance: SpriteGpuInstance {
+                                model: model.to_cols_array_2d(),
+                                size_pivot: [
+                                    base_size.x,
+                                    base_size.y,
+                                    region.pivot[0],
+                                    region.pivot[1],
+                                ],
+                                uv_rect,
+                                tint: [1.0; 4],
+                            },
+                            texture: Arc::clone(&region.texture),
+                            blend: SpriteBlendMode::Alpha,
+                            filtering,
+                        },
+                    );
+                }
+            }
+        }
 
         let logical_batches = sort_and_batch_sprites(&mut logical);
         let gpu_instances = logical
@@ -1551,15 +1808,17 @@ impl WorldRenderer {
                 _texture: gpu_texture,
             });
         }
-        let sprite_count = logical.iter().filter(|sprite| sprite.visible).count();
         if let Some(metrics) = world.get_resource_mut::<Native2dRenderMetrics>() {
-            metrics.sprite_count = sprite_count;
+            metrics.sprite_count = standalone_sprite_count;
             metrics.sprite_batches = batches.len();
+            metrics.visible_tile_chunks = visible_tile_chunks;
+            metrics.rebuilt_tile_chunks = 0;
         } else {
             world.insert_resource(Native2dRenderMetrics {
-                sprite_count,
+                sprite_count: standalone_sprite_count,
                 sprite_batches: batches.len(),
-                ..Native2dRenderMetrics::default()
+                visible_tile_chunks,
+                rebuilt_tile_chunks: 0,
             });
         }
         SpriteGpuFrame {
@@ -1924,7 +2183,7 @@ impl WorldRenderer {
             )
             .collect::<Vec<_>>();
         sort_blend_draws_back_to_front(&mut blend_draws);
-        let sprite_frame = self.prepare_sprite_frame(world, device, queue);
+        let sprite_frame = self.prepare_sprite_frame(world, device, queue, camera.as_ref());
 
         self.ensure_main_pass_target(device, color_view, depth_view)
             .map_err(RenderFrameError::Target)?;
