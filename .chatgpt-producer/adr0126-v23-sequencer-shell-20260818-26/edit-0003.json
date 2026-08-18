@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ui/mod.rs","old":"            animation_set_editor: None,\n            pending_animation_set_graph: None,","new":"            animation_set_editor: None,\n            timeline_sequencer: None,\n            pending_animation_set_graph: None,"}
