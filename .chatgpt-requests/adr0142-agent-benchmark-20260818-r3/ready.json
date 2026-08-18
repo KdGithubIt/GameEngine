@@ -1,0 +1,16 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0142-agent-benchmark-20260818-r3",
+  "target_branch": "chatgpt/gameengine-adr0142-agent-benchmark-r3",
+  "expected_head_sha": "97c0c97802f81be7b332583759a2c5bf31254476",
+  "baseline_main_sha": "97c0c97802f81be7b332583759a2c5bf31254476",
+  "patch_sha256": "11cd9c130670ab04950cd97ccabf049a7a563f26508c93737722cfa252c2e50d",
+  "patch_bytes": 84021,
+  "patch_parts": [
+    "part-0000.patch",
+    "part-0001.patch"
+  ],
+  "commit_message": "Implement ADR 0142 agent benchmark catalog",
+  "pr_title": "GameEngine: implement ADR 0142 agent benchmark catalog",
+  "pr_body": "## Summary\n\n- Add versioned GameEngine Agent Benchmark evidence records and strict comparison invariants.\n- Add curated model catalog derivation plus loopback installed-model discovery without fabricating recommendations.\n- Surface compatible/unverified versus benchmark-qualified status in AI Studio and accept ADR 0142.\n\n## Validation\n\n- GameEngine Windows Validation\n- Editor Visual Validation\n\n<!-- gameengine-visual-validation: auto -->"
+}
