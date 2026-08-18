@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0126-v23-domain-only-20260818-15",
+  "target_branch": "chatgpt/gameengine-adr0126-first-release-v23",
+  "expected_head_sha": "a88d0c5fe6a43e314e39ab7d97ef3d30e7e91315",
+  "baseline_main_sha": "96c8ffb18a74eabec2164daa61f694f131019ddc",
+  "patch_sha256": "9041df88e137777a19372bd26aa7c5da53dedd8519d3b7b89992748599c492e2",
+  "patch_bytes": 532,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Add ADR 0126 Timeline authoring domain",
+  "pr_title": "GameEngine: complete ADR 0126 Timeline / Sequencer first release",
+  "pr_body": "## Summary\n\nContinues ADR 0126 current-main completion with the canonical Timeline authoring domain.\n\nFurther implementation requests follow before final validation.\n\n<!-- gameengine-visual-validation: editor -->\n"
+}
