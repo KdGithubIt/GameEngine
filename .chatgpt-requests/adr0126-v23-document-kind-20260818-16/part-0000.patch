@@ -1,0 +1,13 @@
+diff --git a/crates/authoring/src/capability.rs b/crates/authoring/src/capability.rs
+index e0389eed5634aa6881f3b0d77edcd1d685537bf7..5d5d87e1f07050b28033e9be91300180b58e51fc 100644
+--- a/crates/authoring/src/capability.rs
++++ b/crates/authoring/src/capability.rs
+@@ -209,6 +209,8 @@ pub enum AuthoringDocumentKind {
+     ProjectSettings,
+     /// An Animation Set asset document.
+     AnimationSet,
++    /// A Timeline sequence document.
++    Timeline,
+ }
+ 
+ /// Semantic shape of one capability.
