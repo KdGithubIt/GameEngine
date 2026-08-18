@@ -365,13 +365,8 @@ impl Native2dEditorState {
 fn manifest_paths(manifest: &engine::AssetManifest, suffix: &str) -> Vec<PathBuf> {
     let mut paths = manifest
         .iter()
-        .filter_map(|(_, entry)| {
-            entry
-                .path
-                .to_ascii_lowercase()
-                .ends_with(suffix)
-                .then(|| PathBuf::from(&entry.path))
-        })
+        .filter(|(_, entry)| entry.path.to_ascii_lowercase().ends_with(suffix))
+        .map(|(_, entry)| PathBuf::from(&entry.path))
         .collect::<Vec<_>>();
     paths.sort();
     paths.dedup();
@@ -1072,17 +1067,19 @@ fn show_tile_map_canvas(
     }
 
     tile_map_pointer::handle(
-        ui,
-        &response,
+        tile_map_pointer::PointerContext {
+            ui,
+            response: &response,
+            layer: &layer_id,
+            visible_bounds: engine_authoring::TileRect::from_corners(
+                engine_authoring::TileCell { x: MIN_X, y: MIN_Y },
+                engine_authoring::TileCell { x: MAX_X, y: MAX_Y },
+            ),
+            work_budget: WORK_BUDGET,
+        },
         loaded,
-        &layer_id,
         pointer_cell,
         tool,
-        engine_authoring::TileRect::from_corners(
-            engine_authoring::TileCell { x: MIN_X, y: MIN_Y },
-            engine_authoring::TileCell { x: MAX_X, y: MAX_Y },
-        ),
-        WORK_BUDGET,
     )
 }
 

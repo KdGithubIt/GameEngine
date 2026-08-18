@@ -1,16 +1,27 @@
 use super::{LoadedTileMap, TileTool2d};
 use eframe::egui;
 
+pub(super) struct PointerContext<'a> {
+    pub(super) ui: &'a egui::Ui,
+    pub(super) response: &'a egui::Response,
+    pub(super) layer: &'a engine_authoring::TileLayerId,
+    pub(super) visible_bounds: engine_authoring::TileRect,
+    pub(super) work_budget: usize,
+}
+
 pub(super) fn handle(
-    ui: &egui::Ui,
-    response: &egui::Response,
+    context: PointerContext<'_>,
     loaded: &mut LoadedTileMap,
-    layer: &engine_authoring::TileLayerId,
     pointer_cell: Option<engine_authoring::TileCell>,
     tool: TileTool2d,
-    visible_bounds: engine_authoring::TileRect,
-    work_budget: usize,
 ) -> Result<(), String> {
+    let PointerContext {
+        ui,
+        response,
+        layer,
+        visible_bounds,
+        work_budget,
+    } = context;
     if ui.input(|input| input.key_pressed(egui::Key::Escape)) && loaded.gesture_active {
         loaded.cancel_gesture()?;
         return Ok(());
@@ -46,10 +57,8 @@ pub(super) fn handle(
             }
         }
         TileTool2d::Eyedropper => {
-            if response.clicked_by(primary) {
-                if let Some(cell) = pointer_cell {
-                    loaded.selected_tile = loaded.service.eyedropper(layer, cell);
-                }
+            if response.clicked_by(primary) && let Some(cell) = pointer_cell {
+                loaded.selected_tile = loaded.service.eyedropper(layer, cell);
             }
         }
         TileTool2d::SelectStamp => {
@@ -185,13 +194,11 @@ fn handle_select_stamp(
                     engine_authoring::TileRect::from_corners(start, end),
                 );
             }
-        } else if response.clicked_by(primary) {
-            if let Some(cell) = pointer_cell {
-                loaded.stamp = loaded.service.copy_stamp(
-                    layer,
-                    engine_authoring::TileRect::from_corners(cell, cell),
-                );
-            }
+        } else if response.clicked_by(primary) && let Some(cell) = pointer_cell {
+            loaded.stamp = loaded.service.copy_stamp(
+                layer,
+                engine_authoring::TileRect::from_corners(cell, cell),
+            );
         }
         return Ok(());
     }
