@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0157-runtime-debug-clippy-r5-20260819-0140",
+  "target_branch": "chatgpt/gameengine-adr0157-runtime-debug",
+  "expected_head_sha": "62b829ce7b3062ad582565add089008ad19c9172",
+  "baseline_main_sha": "fdb22b2a4ba20c61dd2c5275905e74275ad65463",
+  "patch_sha256": "9d0973b5c88ae94326766dcb2bd6d86b9bd7dc7a83b617951726239b3d8f38ad",
+  "patch_bytes": 521,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Remove unreachable ADR 0157 input match arm",
+  "pr_title": "GameEngine: implement deterministic AI runtime debugging",
+  "pr_body": "## Summary\n\n- add an Editor-owned fixed-tick runtime debugging controller with bounded plans, pause/step, typed waits/assertions, replay reproduction, and AI-input cleanup\n- route AI Studio managed Play interactions through frozen simulation-tick schedules with bounded structured runtime/domain observations\n- gate native visual evaluation on verified image-input capability while retaining truthful text-only runtime debugging\n- normalize formatting and remove an unreachable exhaustive InputCommand match arm\n\n## Validation\n\nWindows Validation is dispatched by the trusted GameEngine automation."
+}
