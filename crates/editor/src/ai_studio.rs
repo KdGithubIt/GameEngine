@@ -690,6 +690,30 @@ impl AiStudioPanel {
     }
 
     #[cfg(feature = "visual-validation")]
+    /// Selects a deterministic managed-local setup state for ADR 0155 screenshot validation.
+    pub fn prepare_managed_local_visual_validation(&mut self) -> Result<(), String> {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|error| error.to_string())?
+            .as_nanos();
+        let fixture_root = std::env::temp_dir().join(format!(
+            "gameengine-managed-local-visual-{}-{unique}",
+            std::process::id()
+        ));
+        self.managed_local_runtime =
+            ManagedLocalRuntime::open(fixture_root).map_err(|error| error.to_string())?;
+        self.model_backend = ModelBackendPreference::ManagedLocal;
+        self.managed_execution_environment = ManagedExecutionEnvironment::WindowsNative;
+        self.managed_model_id.clear();
+        self.managed_setup_task = None;
+        self.last_model_resource_telemetry = ModelResourceTelemetry::default();
+        self.external_provider_kind = ExternalAgentProviderKind::Generic;
+        self.external_provider_status =
+            ExternalAgentProviderStatus::unchecked(ExternalAgentProviderKind::Generic);
+        Ok(())
+    }
+
+    #[cfg(feature = "visual-validation")]
     /// Returns whether the detached native viewport has completed two rendered frames.
     pub fn detached_visual_validation_capture_ready(&self) -> bool {
         self.detached_visual_frames >= 2
@@ -1718,9 +1742,11 @@ impl AiStudioPanel {
                                             }
                                         });
                                     }
-                                    Err(error) => ui.small(format!(
-                                        "WSL model preparation unavailable: {error}"
-                                    )),
+                                    Err(error) => {
+                                        ui.small(format!(
+                                            "WSL model preparation unavailable: {error}"
+                                        ));
+                                    }
                                 }
                             }
                         } else {
