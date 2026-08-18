@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"docs/adr/0142-gameengine-agent-benchmark-and-curated-model-catalog.md","old":"quality/workload policy, tool/permission budget, completion criteria, and measured Agent Host evidence.","new":"quality/workload policy, tool/permission/work-claim budget, completion criteria, and measured Agent Host evidence."}
