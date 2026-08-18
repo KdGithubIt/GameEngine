@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/scene_view.rs","old":"        let transform = self.camera.to_transform();","new":"        let transform = self.editor_camera_transform();"}
