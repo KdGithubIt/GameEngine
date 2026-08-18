@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/launcher/src/main.rs",
+  "old": "    recent: RecentProjectList,\n    new_project_name: String,\n    status: Option<StatusMessage>,\n",
+  "new": "    recent: RecentProjectList,\n    new_project_name: String,\n    new_project_template: ProjectTemplate,\n    status: Option<StatusMessage>,\n"
+}
