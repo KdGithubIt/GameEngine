@@ -1329,9 +1329,19 @@ mod tests {
         let worker = std::thread::spawn(move || {
             for _ in 0..2 {
                 let (mut stream, _) = listener.accept().expect("accept discovery request");
-                let mut request = [0_u8; 1024];
-                let read = stream.read(&mut request).expect("read discovery request");
-                let request = String::from_utf8_lossy(&request[..read]);
+                let mut request = Vec::new();
+                loop {
+                    let mut chunk = [0_u8; 512];
+                    let read = stream.read(&mut chunk).expect("read discovery request");
+                    if read == 0 {
+                        panic!("discovery request closed before HTTP headers completed");
+                    }
+                    request.extend_from_slice(&chunk[..read]);
+                    if find_bytes(&request, b"\r\n\r\n").is_some() {
+                        break;
+                    }
+                }
+                let request = String::from_utf8_lossy(&request);
                 let body = if request.starts_with("GET /api/tags " ) {
                     r#"{"models":[{"name":"test-model:q4","digest":"sha256:test","size":42,"details":{"family":"test","parameter_size":"1B","quantization_level":"Q4_K_M"}}]}"#
                 } else {
@@ -1344,6 +1354,10 @@ mod tests {
                     body,
                 )
                 .expect("write discovery response");
+                stream.flush().expect("flush discovery response");
+                stream
+                    .shutdown(Shutdown::Write)
+                    .expect("finish discovery response");
             }
         });
         let endpoint = format!("http://127.0.0.1:{}", address.port());
