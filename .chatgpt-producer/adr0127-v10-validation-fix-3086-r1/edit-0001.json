@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/native_2d_editor.rs",
+  "old": "    animation_frame: usize,\n    animation_preview: engine::SpriteAnimationState2d,\n    tile_index: usize,\n",
+  "new": "    animation_frame: usize,\n    animation_preview: engine::native_2d::SpriteAnimationState2d,\n    tile_index: usize,\n"
+}
