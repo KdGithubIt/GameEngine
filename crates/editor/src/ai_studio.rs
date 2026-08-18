@@ -187,6 +187,7 @@ struct ManagedRuntimeObservation {
 
 #[derive(Debug, Clone)]
 struct NativeQuestionBenchmarkPolicy {
+    task_id: String,
     quality: QualityPreference,
     workload: InferenceWorkload,
     inventory: Option<InstalledModelInventory>,
@@ -201,6 +202,7 @@ struct NativeQuestionBenchmarkSnapshot {
 #[derive(Debug, Clone)]
 struct NativeRunBenchmarkContext {
     run_id: String,
+    task_id: String,
     backend_id: String,
     model_id: String,
     quality: QualityPreference,
@@ -1615,7 +1617,7 @@ impl AiStudioPanel {
             self.benchmark_records.len(),
             self.model_catalog.catalog_version
         ))
-        .default_open(false)
+        .default_open(cfg!(feature = "visual-validation"))
         .show(ui, |ui| {
             ui.small(format!(
                 "Versioned corpus: {BENCHMARK_CORPUS_VERSION}. Recommendations require complete, comparable GameEngine task evidence; third-party scores alone never qualify a model."
@@ -1691,7 +1693,7 @@ impl AiStudioPanel {
                 }
             });
             ui.small(
-                "Record only when the current result intentionally executes the selected corpus task. Records are machine-local and omit prompts, conversation history, retrieved source text, project paths, and credentials; this feature never uploads private projects.",
+                "Choose the Evidence task before starting inference or a native run; its versioned identity is frozen at execution start. Record only when that result intentionally executes the frozen corpus task. Records are machine-local and omit prompts, conversation history, retrieved source text, project paths, and credentials; this feature never uploads private projects.",
             );
         });
     }
@@ -1751,19 +1753,23 @@ impl AiStudioPanel {
             return false;
         };
         if task.kind == BenchmarkTaskKind::ReadQuestion {
-            return self.last_native_question_benchmark.is_some();
+            return self
+                .last_native_question_benchmark
+                .as_ref()
+                .is_some_and(|snapshot| snapshot.policy.task_id == task.id);
         }
         self.native_run_benchmark_context
             .as_ref()
             .is_some_and(|benchmark| {
-                self.host.run(&benchmark.run_id).is_ok_and(|run| {
-                    matches!(
-                        run.state,
-                        AgentRunState::Completed
-                            | AgentRunState::Failed
-                            | AgentRunState::Cancelled
-                    )
-                })
+                benchmark.task_id == task.id
+                    && self.host.run(&benchmark.run_id).is_ok_and(|run| {
+                        matches!(
+                            run.state,
+                            AgentRunState::Completed
+                                | AgentRunState::Failed
+                                | AgentRunState::Cancelled
+                        )
+                    })
             })
     }
 
@@ -1781,7 +1787,7 @@ impl AiStudioPanel {
                 return;
             };
             read_question_record(
-                task.id,
+                &snapshot.policy.task_id,
                 &snapshot.metrics,
                 snapshot.policy.inventory.as_ref(),
                 snapshot.policy.quality,
@@ -1803,7 +1809,7 @@ impl AiStudioPanel {
                 }
             };
             agent_run_record(
-                task.id,
+                &context.task_id,
                 &run,
                 &context.backend_id,
                 &context.model_id,
@@ -2002,6 +2008,7 @@ impl AiStudioPanel {
             None
         };
         self.native_question_benchmark_policy = Some(NativeQuestionBenchmarkPolicy {
+            task_id: self.benchmark_task_id.clone(),
             quality: self.quality_preference,
             workload: self.resolved_workload,
             inventory,
@@ -2933,6 +2940,7 @@ impl AiStudioPanel {
         self.native_run_benchmark_context = native_benchmark_identity.map(
             |(backend_id, model_id, inventory)| NativeRunBenchmarkContext {
                 run_id: run_id.clone(),
+                task_id: self.benchmark_task_id.clone(),
                 backend_id,
                 model_id,
                 quality: self.quality_preference,

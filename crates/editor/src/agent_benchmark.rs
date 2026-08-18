@@ -4,7 +4,7 @@
 //! conversation transcript, retrieved source text, project path, credentials, or model prompt.
 
 use crate::agent_host::{
-    AgentEventEvidence, AgentEventKind, AgentRun, AgentRunState, CompletionStatus,
+    AgentEventEvidence, AgentEventKind, AgentRun, AgentRunState, AgentWorkClaim, CompletionStatus,
 };
 use crate::native_agent::{InstalledModelInventory, NativeMetrics};
 use crate::native_agent_runtime::{HarnessPolicy, NATIVE_WRITE_HARNESS_VERSION};
@@ -721,6 +721,13 @@ pub(crate) fn read_question_record(
     })
 }
 
+fn work_claim_kind_label(claim: &AgentWorkClaim) -> Option<String> {
+    serde_json::to_value(claim.kind)
+        .ok()?
+        .as_str()
+        .map(ToOwned::to_owned)
+}
+
 pub(crate) fn agent_run_record(
     task_id: &str,
     run: &AgentRun,
@@ -798,7 +805,7 @@ pub(crate) fn agent_run_record(
                     .proposal_snapshot
                     .work_claims
                     .iter()
-                    .map(ToString::to_string)
+                    .filter_map(work_claim_kind_label)
                     .collect(),
             },
             completion_criteria: task.completion_criteria.iter().map(|criterion| (*criterion).to_owned()).collect(),
@@ -900,7 +907,7 @@ mod tests {
                 max_tool_failures: 4,
                 repair_budget: 2,
                 permission_budget: vec!["managed".to_owned()],
-                work_claims: vec!["code_path:game".to_owned()],
+                work_claims: vec!["code_path".to_owned()],
             },
             completion_criteria: BENCHMARK_TASKS[0].completion_criteria.iter().map(|value| (*value).to_owned()).collect(),
         }
@@ -976,7 +983,7 @@ mod tests {
         assert!(matches!(comparison_equivalence(&left, &incomplete_model), ComparisonEquivalence::NonEquivalent(fields) if fields.contains(&"model_representation")));
 
         let mut different_claims = right.clone();
-        different_claims.identity.tool_budget.work_claims = vec!["code_path:assets".to_owned()];
+        different_claims.identity.tool_budget.work_claims = vec!["asset_target".to_owned()];
         assert!(matches!(comparison_equivalence(&left, &different_claims), ComparisonEquivalence::NonEquivalent(fields) if fields.contains(&"tool_or_permission_budget")));
     }
 
