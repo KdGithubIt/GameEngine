@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0127-v3-parity-fd5f-r1",
+  "target_branch": "chatgpt/gameengine-adr0127-first-release-current-main-v3",
+  "expected_head_sha": "fd5fab492ba698963dbb4bcf0856cf100e4b4a8f",
+  "baseline_main_sha": "e99a6b9a13caba71191157cb53f316e5e9139a2f",
+  "patch_sha256": "0f0d141e44d8655a4e5e2d51de8737fa9d66b5abb93a2e931e52f12a85c6b341",
+  "patch_bytes": 21846,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Add ADR0127 Native 2D authoring parity",
+  "pr_title": "GameEngine: complete ADR0127 Native 2D first release",
+  "pr_body": "Adds Native 2D Sprite Atlas, Sprite Animation, Tile Set, and Tile Map parity to the existing typed-document CLI and headless MCP host. Reuses the canonical TypedDocumentAuthoringService, validators, revision/generation checks, and canonical persistence on the current-main v3 task branch."
+}
