@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/launcher/src/main.rs",
+  "old": "            recent: RecentProjectList::default(),\n            new_project_name: \"NewGame\".to_owned(),\n            status: None,\n",
+  "new": "            recent: RecentProjectList::default(),\n            new_project_name: \"NewGame\".to_owned(),\n            new_project_template: ProjectTemplate::default(),\n            status: None,\n"
+}
