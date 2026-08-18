@@ -2841,6 +2841,140 @@ fn install_animation_preview_systems(
     app.add_fixed_system(engine::transform_propagation_system);
 }
 
+const TIMELINE_PREVIEW_PLAYER_ID: u64 = u64::MAX - 126;
+
+/// Evaluates one Sequencer working copy through the production TimelineRuntime already installed
+/// in this persistent PreviewWorld. Discontinuous authoring seeks always suppress event side
+/// effects; forward playback uses normal production crossing semantics.
+fn sample_timeline_preview(
+    app: &mut engine::App,
+    request: &TimelinePreviewRequest,
+    installed_source_revision: &mut Option<u64>,
+    consumed_transport_revision: &mut Option<u64>,
+    fixed_step_remainder: &mut f32,
+    last_frame: &mut Instant,
+) -> TimelinePreviewStatus {
+    let now = Instant::now();
+    let frame_delta = now.saturating_duration_since(*last_frame).as_secs_f32();
+    *last_frame = now;
+
+    let source_changed = *installed_source_revision != Some(request.source_revision);
+    let transport_changed = *consumed_transport_revision != Some(request.transport_revision);
+    let mut issue = None;
+
+    if source_changed {
+        match engine::timeline::prepare_timeline_document(request.asset.clone(), &request.document) {
+            Ok(prepared) => {
+                let runtime = app
+                    .world_mut()
+                    .get_resource_mut::<engine::timeline::TimelineRuntime>()
+                    .expect("Timeline preview resources are installed before evaluation");
+                runtime.start(TIMELINE_PREVIEW_PLAYER_ID, prepared);
+                let loop_range = if request.loop_preview
+                    && request.document.duration > engine::timeline::TimelineTick::ZERO
+                {
+                    Some(engine::timeline::TimelineLoop {
+                        start: engine::timeline::TimelineTick::ZERO,
+                        end: request.document.duration,
+                    })
+                } else {
+                    None
+                };
+                if let Err(error) = runtime.set_loop(TIMELINE_PREVIEW_PLAYER_ID, loop_range) {
+                    issue = Some(error.to_string());
+                }
+                if request.stopped {
+                    let _ = runtime.stop(TIMELINE_PREVIEW_PLAYER_ID);
+                } else {
+                    let _ = runtime.seek(
+                        TIMELINE_PREVIEW_PLAYER_ID,
+                        request.requested_tick,
+                        false,
+                    );
+                    if !request.playing {
+                        let _ = runtime.pause(TIMELINE_PREVIEW_PLAYER_ID);
+                    }
+                }
+                *installed_source_revision = Some(request.source_revision);
+                *consumed_transport_revision = Some(request.transport_revision);
+                *fixed_step_remainder = 0.0;
+                run_animation_preview_step(app, 0.0);
+            }
+            Err(error) => issue = Some(error.to_string()),
+        }
+    } else if transport_changed {
+        let runtime = app
+            .world_mut()
+            .get_resource_mut::<engine::timeline::TimelineRuntime>()
+            .expect("Timeline preview resources remain installed");
+        let loop_range = if request.loop_preview
+            && request.document.duration > engine::timeline::TimelineTick::ZERO
+        {
+            Some(engine::timeline::TimelineLoop {
+                start: engine::timeline::TimelineTick::ZERO,
+                end: request.document.duration,
+            })
+        } else {
+            None
+        };
+        if let Err(error) = runtime.set_loop(TIMELINE_PREVIEW_PLAYER_ID, loop_range) {
+            issue = Some(error.to_string());
+        }
+        if request.stopped {
+            if let Err(error) = runtime.stop(TIMELINE_PREVIEW_PLAYER_ID) {
+                issue = Some(error.to_string());
+            }
+        } else {
+            if let Err(error) = runtime.seek(
+                TIMELINE_PREVIEW_PLAYER_ID,
+                request.requested_tick,
+                false,
+            ) {
+                issue = Some(error.to_string());
+            }
+            let state_result = if request.playing {
+                runtime.resume(TIMELINE_PREVIEW_PLAYER_ID)
+            } else {
+                runtime.pause(TIMELINE_PREVIEW_PLAYER_ID)
+            };
+            if let Err(error) = state_result {
+                issue = Some(error.to_string());
+            }
+        }
+        *consumed_transport_revision = Some(request.transport_revision);
+        *fixed_step_remainder = 0.0;
+        run_animation_preview_step(app, 0.0);
+    }
+
+    if request.playing && !request.stopped && issue.is_none() {
+        run_animation_preview_interval(app, frame_delta, fixed_step_remainder);
+    }
+
+    let runtime = app
+        .world()
+        .get_resource::<engine::timeline::TimelineRuntime>()
+        .expect("Timeline preview resources remain installed");
+    let snapshot = runtime
+        .snapshots()
+        .into_iter()
+        .find(|snapshot| snapshot.player_id == TIMELINE_PREVIEW_PLAYER_ID);
+    if issue.is_none() {
+        issue = runtime.diagnostics().last().map(str::to_owned);
+    }
+    match snapshot {
+        Some(snapshot) => TimelinePreviewStatus {
+            tick: snapshot.tick,
+            playing: snapshot.state == engine::timeline::TimelinePlaybackState::Playing,
+            runtime_issue: issue,
+        },
+        None => TimelinePreviewStatus {
+            tick: request.requested_tick,
+            playing: false,
+            runtime_issue: issue.or_else(|| Some("Timeline preview player is unavailable".to_owned())),
+        },
+    }
+}
+
 /// Samples a dedicated clip, transition, or graph request for one entity.
 // The caller-owned clock, fixed-step remainder, transition latch, and graph
 // installation state are independently updated preview concerns. Bundling
