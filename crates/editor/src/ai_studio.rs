@@ -4,6 +4,11 @@
 //! lifecycle, permissions, persistence, provider process management, and code
 //! workspace rules live in the GUI-free `agent_host` module.
 
+use crate::agent_benchmark::{
+    agent_run_record, benchmark_task, read_question_record, BenchmarkRecord, BenchmarkStore,
+    BenchmarkTaskKind, CatalogProfile, CuratedModelCatalog, BENCHMARK_CORPUS_VERSION,
+    BENCHMARK_TASKS,
+};
 use crate::agent_host::{
     project_storage_key, AgentCapability, AgentConfinementNetworkPolicy, AgentConfinementRequest,
     AgentConfinementRequirement, AgentEventKind, AgentHost, AgentHostError, AgentProposal,
@@ -21,8 +26,9 @@ use crate::hosted_model_backend;
 use crate::hosted_model_backend::{HostedAuthMode, HostedModelConfig};
 use crate::live_observation::{LiveObservationError, LiveObservationManager};
 use crate::native_agent::{
-    LocalModelConfig, ModelCapabilityProfile, ModelResourceTask, NativeAnswer, NativeModelConfig,
-    NativeQuestionTask, QuestionMessage, QuestionRole, DEFAULT_LOCAL_MODEL_ENDPOINT,
+    InstalledModelDiscoveryTask, InstalledModelInventory, LocalModelConfig, ModelCapabilityProfile,
+    ModelResourceTask, NativeAnswer, NativeMetrics, NativeModelConfig, NativeQuestionTask,
+    QuestionMessage, QuestionRole, DEFAULT_LOCAL_MODEL_ENDPOINT,
 };
 use crate::native_agent_runtime::{mcp_write, NativeAgentAction, NativeAgentRuntime, NativeMcpTask};
 use crate::resource_arbitration::{
@@ -195,6 +201,28 @@ struct ManagedRuntimeObservation {
     path: PathBuf,
     width: u32,
     height: u32,
+}
+
+#[derive(Debug, Clone)]
+struct NativeQuestionBenchmarkPolicy {
+    quality: QualityPreference,
+    workload: InferenceWorkload,
+    inventory: Option<InstalledModelInventory>,
+}
+
+#[derive(Debug, Clone)]
+struct NativeQuestionBenchmarkSnapshot {
+    metrics: NativeMetrics,
+    policy: NativeQuestionBenchmarkPolicy,
+}
+
+#[derive(Debug, Clone)]
+struct NativeRunBenchmarkContext {
+    run_id: String,
+    backend_id: String,
+    model_id: String,
+    quality: QualityPreference,
+    inventory: Option<InstalledModelInventory>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -404,6 +432,15 @@ pub struct AiStudioPanel {
     model_backend: ModelBackendPreference,
     local_model_endpoint: String,
     local_model_name: String,
+    benchmark_store: BenchmarkStore,
+    benchmark_records: Vec<BenchmarkRecord>,
+    model_catalog: CuratedModelCatalog,
+    benchmark_task_id: String,
+    installed_model_inventory: Option<InstalledModelInventory>,
+    model_discovery: Option<InstalledModelDiscoveryTask>,
+    native_question_benchmark_policy: Option<NativeQuestionBenchmarkPolicy>,
+    last_native_question_benchmark: Option<NativeQuestionBenchmarkSnapshot>,
+    native_run_benchmark_context: Option<NativeRunBenchmarkContext>,
     hosted_model_endpoint: String,
     hosted_model_name: String,
     hosted_secret_path: PathBuf,
@@ -458,14 +495,24 @@ pub struct AiStudioPanel {
 impl AiStudioPanel {
     /// Opens the project-scoped AI Studio state for an Editor project.
     pub fn new(project: &ProjectRoot, connection: AiStudioConnection) -> Result<Self, String> {
-        let data_root = dirs::data_local_dir()
+        let ai_root = dirs::data_local_dir()
             .unwrap_or_else(std::env::temp_dir)
             .join("GameEngine")
-            .join("ai")
-            .join(project_storage_key(project.project_id().as_str(), project.path()));
+            .join("ai");
+        let data_root =
+            ai_root.join(project_storage_key(project.project_id().as_str(), project.path()));
         let preferences_path = data_root.join("preferences.json");
         let hosted_secret_path = data_root.join("secrets").join("hosted-api-key.dpapi");
         let preferences = load_ai_studio_preferences(&preferences_path);
+        let benchmark_store = BenchmarkStore::open(ai_root.join("benchmark"))?;
+        let (benchmark_records, benchmark_status) = match benchmark_store.load() {
+            Ok(records) => (records, None),
+            Err(error) => (
+                Vec::new(),
+                Some(format!("Benchmark records unavailable: {error}")),
+            ),
+        };
+        let model_catalog = CuratedModelCatalog::from_bundled_manifest(&benchmark_records)?;
         let mut host = AgentHost::open(project.path().to_path_buf(), data_root)
             .map_err(|error| error.to_string())?;
         let selected_session = match host.session_ids().into_iter().next_back() {
@@ -501,6 +548,15 @@ impl AiStudioPanel {
             model_backend: preferences.model_backend,
             local_model_endpoint: preferences.local_model_endpoint,
             local_model_name: preferences.local_model_name,
+            benchmark_store,
+            benchmark_records,
+            model_catalog,
+            benchmark_task_id: BENCHMARK_TASKS[0].id.to_owned(),
+            installed_model_inventory: None,
+            model_discovery: None,
+            native_question_benchmark_policy: None,
+            last_native_question_benchmark: None,
+            native_run_benchmark_context: None,
             hosted_model_endpoint: preferences.hosted_model_endpoint,
             hosted_model_name: preferences.hosted_model_name,
             hosted_secret_path,
@@ -554,7 +610,7 @@ impl AiStudioPanel {
             managed_evaluation_requested: false,
             managed_playtest_started_at: None,
             last_captured_frame: None,
-            status: None,
+            status: benchmark_status,
         })
     }
 
@@ -830,6 +886,7 @@ impl AiStudioPanel {
     pub fn show(&mut self, context: &egui::Context) {
         self.ensure_remote_gateway(context);
         self.poll_remote_requests();
+        self.poll_model_discovery(context);
         self.poll_native_question(context);
         self.poll_model_resource_task(context);
         self.poll_native_mcp(context);
@@ -1397,7 +1454,56 @@ impl AiStudioPanel {
                             }
                         });
                         ui.horizontal(|ui| {
-                            ui.label("Installed model");
+                            ui.label("Installed models");
+                            if ui
+                                .add_enabled(
+                                    self.model_discovery.is_none(),
+                                    egui::Button::new("Discover"),
+                                )
+                                .clicked()
+                            {
+                                self.start_model_discovery();
+                            }
+                            if self.model_discovery.is_some() {
+                                ui.spinner();
+                            }
+                        });
+                        let inventory = self.current_installed_inventory().cloned();
+                        if let Some(inventory) = inventory.as_ref() {
+                            ui.horizontal(|ui| {
+                                ui.label("Detected model");
+                                egui::ComboBox::from_id_salt("ai_studio_installed_model")
+                                    .selected_text(if self.local_model_name.trim().is_empty() {
+                                        "Select discovered model"
+                                    } else {
+                                        self.local_model_name.trim()
+                                    })
+                                    .width(260.0)
+                                    .show_ui(ui, |ui| {
+                                        for model in &inventory.models {
+                                            if ui
+                                                .selectable_label(
+                                                    self.local_model_name == model.name,
+                                                    &model.name,
+                                                )
+                                                .clicked()
+                                            {
+                                                self.local_model_name = model.name.clone();
+                                                self.last_model_resource_telemetry =
+                                                    ModelResourceTelemetry::default();
+                                                self.save_preferences();
+                                            }
+                                        }
+                                    });
+                                ui.small(format!("{} found", inventory.models.len()));
+                            });
+                        } else {
+                            ui.small(
+                                "No installed-model inventory is loaded. Discovery is explicit and loopback-only.",
+                            );
+                        }
+                        ui.horizontal(|ui| {
+                            ui.label("Custom / exact ID");
                             if ui
                                 .add(
                                     egui::TextEdit::singleline(&mut self.local_model_name)
@@ -1410,6 +1516,25 @@ impl AiStudioPanel {
                                 self.save_preferences();
                             }
                         });
+                        if let Some(inventory) = inventory.as_ref()
+                            && let Some(model) = inventory
+                                .models
+                                .iter()
+                                .find(|model| model.name == self.local_model_name)
+                        {
+                            ui.small(format!(
+                                "Installed evidence: digest={} · size={} · parameters={} · quantization={} · family={} · backend={}",
+                                optional_text(model.digest.as_deref()),
+                                model
+                                    .size_bytes
+                                    .map(format_model_bytes)
+                                    .unwrap_or_else(|| "n/a".to_owned()),
+                                optional_text(model.parameter_size.as_deref()),
+                                optional_text(model.quantization_level.as_deref()),
+                                optional_text(model.family.as_deref()),
+                                optional_text(inventory.backend_version.as_deref()),
+                            ));
+                        }
                     }
                     ModelBackendPreference::HostedApi | ModelBackendPreference::Enterprise => {
                         ui.horizontal(|ui| {
@@ -1480,7 +1605,7 @@ impl AiStudioPanel {
                         }
                     }
                 }
-                let profile = match self.model_backend {
+                let mut profile = match self.model_backend {
                     ModelBackendPreference::Local => NativeModelConfig::Local(LocalModelConfig {
                         endpoint: self.local_model_endpoint.clone(),
                         model: self.local_model_name.clone(),
@@ -1500,7 +1625,27 @@ impl AiStudioPanel {
                         .capability_profile()
                     }
                 };
+                let recommendation_profiles = self
+                    .model_catalog
+                    .profiles_for_model(profile.backend_id, &profile.model_id);
+                profile.benchmark_verified = !recommendation_profiles.is_empty();
                 ui.small(model_capability_summary(&profile));
+                if profile.model_id.trim().is_empty() {
+                    ui.small("GameEngine status: no model selected.");
+                } else if recommendation_profiles.is_empty() {
+                    ui.small(
+                        "GameEngine status: Compatible / unverified — this exact backend/model representation has no complete benchmark-qualified recommendation.",
+                    );
+                } else {
+                    let labels = recommendation_profiles
+                        .iter()
+                        .map(|profile| profile.label())
+                        .collect::<Vec<_>>()
+                        .join(", " );
+                    ui.small(format!(
+                        "GameEngine status: Recommended · {labels} · corpus {BENCHMARK_CORPUS_VERSION}"
+                    ));
+                }
                 if self.model_backend == ModelBackendPreference::Local {
                     ui.small(format!(
                         "Resource controls: unload/reload {} · CPU offload {} · GPU residency telemetry {} · memory telemetry {}",
@@ -1535,7 +1680,250 @@ impl AiStudioPanel {
                     self.resolved_workload,
                     self.resource_plan.reclaim
                 ));
+                self.show_agent_benchmark(ui);
             });
+    }
+
+    fn show_agent_benchmark(&mut self, ui: &mut egui::Ui) {
+        egui::CollapsingHeader::new(format!(
+            "GameEngine Agent Benchmark · {} record(s) · {}",
+            self.benchmark_records.len(),
+            self.model_catalog.catalog_version
+        ))
+        .default_open(false)
+        .show(ui, |ui| {
+            ui.small(format!(
+                "Versioned corpus: {BENCHMARK_CORPUS_VERSION}. Recommendations require complete, comparable GameEngine task evidence; third-party scores alone never qualify a model."
+            ));
+            for catalog_profile in CatalogProfile::ALL {
+                if let Some(recommendation) = self.model_catalog.recommendation(catalog_profile) {
+                    ui.group(|ui| {
+                        ui.strong(format!(
+                            "{} · {}",
+                            catalog_profile.label(),
+                            recommendation.candidate.model_id
+                        ));
+                        ui.small(format!(
+                            "evidence={} runs · aggregate={} ms · benchmark={}",
+                            recommendation.evidence_runs,
+                            recommendation.aggregate_elapsed_ms,
+                            recommendation.benchmark_version
+                        ));
+                        ui.small(format!(
+                            "source={} · license={} · transfer={} · storage={}",
+                            recommendation.candidate.source,
+                            recommendation.candidate.license,
+                            format_model_bytes(recommendation.candidate.transfer_size_bytes),
+                            format_model_bytes(recommendation.candidate.storage_size_bytes),
+                        ));
+                        ui.small(format!(
+                            "memory={} · context={} · modalities={} · tools={}",
+                            recommendation.candidate.memory_guidance,
+                            recommendation
+                                .candidate
+                                .context_limit
+                                .map(|limit| limit.to_string())
+                                .unwrap_or_else(|| "n/a".to_owned()),
+                            list_or_none(&recommendation.candidate.modalities),
+                            list_or_none(&recommendation.candidate.tool_capabilities),
+                        ));
+                    });
+                } else {
+                    ui.small(format!(
+                        "{}: No benchmark-qualified recommendation yet.",
+                        catalog_profile.label()
+                    ));
+                }
+            }
+            ui.small(
+                "Model weights are never bundled or downloaded automatically. A future catalog acquisition flow must show source plus transfer/storage size before an explicit user action.",
+            );
+            ui.separator();
+            ui.horizontal_wrapped(|ui| {
+                ui.label("Evidence task");
+                let selected_label = benchmark_task(&self.benchmark_task_id)
+                    .map(|task| task.label)
+                    .unwrap_or("Unknown task");
+                egui::ComboBox::from_id_salt("ai_studio_benchmark_task")
+                    .selected_text(selected_label)
+                    .show_ui(ui, |ui| {
+                        for task in BENCHMARK_TASKS {
+                            ui.selectable_value(
+                                &mut self.benchmark_task_id,
+                                task.id.to_owned(),
+                                task.label,
+                            );
+                        }
+                    });
+                if ui
+                    .add_enabled(
+                        self.benchmark_task_record_available(),
+                        egui::Button::new("Record current evidence"),
+                    )
+                    .clicked()
+                {
+                    self.record_selected_benchmark();
+                }
+            });
+            ui.small(
+                "Record only when the current result intentionally executes the selected corpus task. Records are machine-local and omit prompts, conversation history, retrieved source text, project paths, and credentials; this feature never uploads private projects.",
+            );
+        });
+    }
+
+    fn current_installed_inventory(&self) -> Option<&InstalledModelInventory> {
+        let endpoint = self.local_model_endpoint.trim().trim_end_matches('/');
+        self.installed_model_inventory.as_ref().filter(|inventory| {
+            inventory.endpoint.trim().trim_end_matches('/') == endpoint
+        })
+    }
+
+    fn start_model_discovery(&mut self) {
+        match InstalledModelDiscoveryTask::spawn(self.local_model_endpoint.clone()) {
+            Ok(task) => {
+                self.model_discovery = Some(task);
+                self.status = Some(
+                    "Discovering compatible models from the configured loopback backend..."
+                        .to_owned(),
+                );
+            }
+            Err(error) => {
+                self.status = Some(format!("Installed-model discovery failed: {error}"));
+            }
+        }
+    }
+
+    fn poll_model_discovery(&mut self, context: &egui::Context) {
+        let Some(task) = self.model_discovery.as_ref() else {
+            return;
+        };
+        let Some(result) = task.poll() else {
+            context.request_repaint_after(std::time::Duration::from_millis(100));
+            return;
+        };
+        self.model_discovery = None;
+        match result {
+            Ok(inventory) => {
+                let model_count = inventory.models.len();
+                let backend = inventory
+                    .backend_version
+                    .as_deref()
+                    .unwrap_or("version unavailable")
+                    .to_owned();
+                self.installed_model_inventory = Some(inventory);
+                self.status = Some(format!(
+                    "Discovered {model_count} installed model(s); backend {backend}."
+                ));
+            }
+            Err(error) => {
+                self.status = Some(format!("Installed-model discovery failed: {error}"));
+            }
+        }
+    }
+
+    fn benchmark_task_record_available(&self) -> bool {
+        let Some(task) = benchmark_task(&self.benchmark_task_id) else {
+            return false;
+        };
+        if task.kind == BenchmarkTaskKind::ReadQuestion {
+            return self.last_native_question_benchmark.is_some();
+        }
+        self.native_run_benchmark_context
+            .as_ref()
+            .is_some_and(|benchmark| {
+                self.host.run(&benchmark.run_id).is_ok_and(|run| {
+                    matches!(
+                        run.state,
+                        AgentRunState::Completed
+                            | AgentRunState::Failed
+                            | AgentRunState::Cancelled
+                    )
+                })
+            })
+    }
+
+    fn record_selected_benchmark(&mut self) {
+        let Some(task) = benchmark_task(&self.benchmark_task_id).copied() else {
+            self.status = Some("The selected benchmark task is unavailable.".to_owned());
+            return;
+        };
+        let record = if task.kind == BenchmarkTaskKind::ReadQuestion {
+            let Some(snapshot) = self.last_native_question_benchmark.clone() else {
+                self.status = Some(
+                    "Run the selected read-question corpus task before recording evidence."
+                        .to_owned(),
+                );
+                return;
+            };
+            read_question_record(
+                task.id,
+                &snapshot.metrics,
+                snapshot.policy.inventory.as_ref(),
+                snapshot.policy.quality,
+                snapshot.policy.workload,
+            )
+        } else {
+            let Some(context) = self.native_run_benchmark_context.clone() else {
+                self.status = Some(
+                    "Run the selected native write-capable corpus task before recording evidence."
+                        .to_owned(),
+                );
+                return;
+            };
+            let run = match self.host.run(&context.run_id) {
+                Ok(run) => run.clone(),
+                Err(error) => {
+                    self.status = Some(error.to_string());
+                    return;
+                }
+            };
+            agent_run_record(
+                task.id,
+                &run,
+                &context.backend_id,
+                &context.model_id,
+                context.inventory.as_ref(),
+                context.quality,
+            )
+        };
+        let record = match record {
+            Ok(record) => record,
+            Err(error) => {
+                self.status = Some(format!("Benchmark evidence rejected: {error}"));
+                return;
+            }
+        };
+        let path = match self.benchmark_store.record(&record) {
+            Ok(path) => path,
+            Err(error) => {
+                self.status = Some(format!("Could not store benchmark evidence: {error}"));
+                return;
+            }
+        };
+        match self.refresh_benchmark_catalog() {
+            Ok(()) => {
+                let file_name = path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("benchmark record");
+                self.status = Some(format!(
+                    "Recorded machine-local benchmark evidence as {file_name}."
+                ));
+            }
+            Err(error) => {
+                self.status = Some(format!(
+                    "Benchmark evidence was stored, but catalog refresh failed: {error}"
+                ));
+            }
+        }
+    }
+
+    fn refresh_benchmark_catalog(&mut self) -> Result<(), String> {
+        let records = self.benchmark_store.load()?;
+        let catalog = CuratedModelCatalog::from_bundled_manifest(&records)?;
+        self.benchmark_records = records;
+        self.model_catalog = catalog;
+        Ok(())
     }
 
     fn selected_native_model_config(&self) -> Result<NativeModelConfig, String> {
@@ -1683,6 +2071,16 @@ impl AiStudioPanel {
             MemoryPressure::Unknown,
             profile.resource_capabilities,
         );
+        let inventory = if matches!(&config, NativeModelConfig::Local(_)) {
+            self.current_installed_inventory().cloned()
+        } else {
+            None
+        };
+        self.native_question_benchmark_policy = Some(NativeQuestionBenchmarkPolicy {
+            quality: self.quality_preference,
+            workload: self.resolved_workload,
+            inventory,
+        });
         if self.resource_plan.presentation == PresentationPosture::InferenceFocused {
             self.pending_native_question_start = Some((config, conversation, session_id));
             self.pending_runtime_action = Some(AiStudioRuntimeAction::EnterInferenceFocused {
@@ -1711,7 +2109,10 @@ impl AiStudioPanel {
                     self.resolved_workload, self.quality_preference
                 ));
             }
-            Err(error) => self.status = Some(error.to_string()),
+            Err(error) => {
+                self.native_question_benchmark_policy = None;
+                self.status = Some(error.to_string());
+            }
         }
     }
 
@@ -1959,8 +2360,15 @@ impl AiStudioPanel {
             .native_question_session
             .take()
             .unwrap_or_else(|| self.selected_session.clone());
+        let benchmark_policy = self.native_question_benchmark_policy.take();
         match result {
             Ok(answer) => {
+                if let Some(policy) = benchmark_policy {
+                    self.last_native_question_benchmark = Some(NativeQuestionBenchmarkSnapshot {
+                        metrics: answer.metrics.clone(),
+                        policy,
+                    });
+                }
                 if self.model_backend == ModelBackendPreference::Local {
                     self.last_model_resource_telemetry = answer.resource_telemetry.clone();
                 }
@@ -2899,6 +3307,14 @@ impl AiStudioPanel {
         let native_requires_network = native_config
             .as_ref()
             .is_some_and(NativeModelConfig::requires_network);
+        let native_benchmark_identity = native_config.as_ref().map(|config| {
+            let inventory = if matches!(config, NativeModelConfig::Local(_)) {
+                self.current_installed_inventory().cloned()
+            } else {
+                None
+            };
+            (config.backend_id().to_owned(), config.model_id(), inventory)
+        });
         let run_id = self.host.start_run_authorized(&self.selected_session, authorized_proposal_version, provider_label).map_err(|error| error.to_string())?;
         self.active_run_id = Some(run_id.clone());
         self.active_runtime_mode = Some(mode);
@@ -2907,6 +3323,15 @@ impl AiStudioPanel {
         self.active_external_args = external_provider.map(|_| self.provider_args.clone());
         self.external_provider_diagnostics = ExternalAgentDiagnostics::default();
         self.native_agent_runtime = native_config.map(NativeAgentRuntime::configured);
+        self.native_run_benchmark_context = native_benchmark_identity.map(
+            |(backend_id, model_id, inventory)| NativeRunBenchmarkContext {
+                run_id: run_id.clone(),
+                backend_id,
+                model_id,
+                quality: self.quality_preference,
+                inventory,
+            },
+        );
         self.native_mcp_task = None;
         self.pending_native_mcp_tool = None;
         self.code_workspace = None;
@@ -4197,6 +4622,36 @@ fn model_resource_continuation_runtime_action(
 ) -> Option<AiStudioRuntimeAction> {
     matches!(continuation, ModelResourceContinuation::RestoreForEditing)
         .then_some(AiStudioRuntimeAction::RestoreEditorPresentation)
+}
+
+fn optional_text(value: Option<&str>) -> &str {
+    value
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("n/a")
+}
+
+fn format_model_bytes(bytes: u64) -> String {
+    const KIB: f64 = 1024.0;
+    const MIB: f64 = KIB * 1024.0;
+    const GIB: f64 = MIB * 1024.0;
+    let bytes = bytes as f64;
+    if bytes >= GIB {
+        format!("{:.2} GiB", bytes / GIB)
+    } else if bytes >= MIB {
+        format!("{:.1} MiB", bytes / MIB)
+    } else if bytes >= KIB {
+        format!("{:.1} KiB", bytes / KIB)
+    } else {
+        format!("{} B", bytes as u64)
+    }
+}
+
+fn list_or_none(values: &[String]) -> String {
+    if values.is_empty() {
+        "n/a".to_owned()
+    } else {
+        values.join(", ")
+    }
 }
 
 fn model_capability_summary(profile: &ModelCapabilityProfile) -> String {
