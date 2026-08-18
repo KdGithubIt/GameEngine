@@ -1,0 +1,337 @@
+diff --git a/crates/editor/src/asset_import.rs b/crates/editor/src/asset_import.rs
+index cee18e24e9e5c97b8b2f347d38d0102781a212dc..a224eee4b3f45a0fe99594720f0c3148481108d9 100644
+--- a/crates/editor/src/asset_import.rs
++++ b/crates/editor/src/asset_import.rs
+@@ -75,6 +75,10 @@ pub struct AssetImportResult {
+     pub(crate) conversion_ready_textures: Vec<(AssetId, Arc<engine::DecodedTexture>)>,
+     /// Import-setting input captured by this model worker for stale-completion rejection.
+     pub(crate) conversion_ready_contact_bones: Vec<String>,
++    /// Project skeleton ledger captured when this model worker started.
++    pub(crate) conversion_ready_existing_skeletons: Vec<SkeletonRecord>,
++    /// Model-owned Humanoid profiles captured when this model worker started.
++    pub(crate) conversion_ready_humanoid_profiles: Vec<HumanoidProfile>,
+     /// Stable catalog produced by the latest successful parse.
+     pub sub_assets: Vec<ImportedSubAsset>,
+     /// Bone-catalog ledger for every skeleton this import bound to (ADR 0077),
+@@ -381,6 +385,8 @@ impl AssetImportManager {
+                 conversion_ready_model: Some(Arc::clone(&imported)),
+                 conversion_ready_textures,
+                 conversion_ready_contact_bones: contact_bones.clone(),
++                conversion_ready_existing_skeletons: existing_skeletons.clone(),
++                conversion_ready_humanoid_profiles: existing_humanoid_profiles.clone(),
+                 sub_assets,
+                 skeleton_records,
+                 humanoid_profiles: humanoid_catalog.profiles,
+@@ -720,6 +726,8 @@ impl AssetImportManager {
+                 conversion_ready_model: None,
+                 conversion_ready_textures: Vec::new(),
+                 conversion_ready_contact_bones: Vec::new(),
++                conversion_ready_existing_skeletons: Vec::new(),
++                conversion_ready_humanoid_profiles: Vec::new(),
+                 sub_assets,
+                 skeleton_records,
+                 humanoid_profiles: Vec::new(),
+@@ -758,6 +766,8 @@ impl AssetImportManager {
+                             conversion_ready_model: None,
+                             conversion_ready_textures: Vec::new(),
+                             conversion_ready_contact_bones: Vec::new(),
++                            conversion_ready_existing_skeletons: Vec::new(),
++                            conversion_ready_humanoid_profiles: Vec::new(),
+                             sub_assets: Vec::new(),
+                             skeleton_records: Vec::new(),
+                             humanoid_profiles: Vec::new(),
+@@ -916,6 +926,8 @@ fn send_cancelled(
+         conversion_ready_model: None,
+         conversion_ready_textures: Vec::new(),
+         conversion_ready_contact_bones: Vec::new(),
++        conversion_ready_existing_skeletons: Vec::new(),
++        conversion_ready_humanoid_profiles: Vec::new(),
+         sub_assets: Vec::new(),
+         skeleton_records: Vec::new(),
+         humanoid_profiles: Vec::new(),
+@@ -944,6 +956,8 @@ fn send_failed(
+         conversion_ready_model: None,
+         conversion_ready_textures: Vec::new(),
+         conversion_ready_contact_bones: Vec::new(),
++        conversion_ready_existing_skeletons: Vec::new(),
++        conversion_ready_humanoid_profiles: Vec::new(),
+         sub_assets: Vec::new(),
+         skeleton_records: Vec::new(),
+         humanoid_profiles: Vec::new(),
+diff --git a/crates/editor/src/preview_residency.rs b/crates/editor/src/preview_residency.rs
+index 07adeb5f2eb4e97a0ec6e6cd062a14b6b58bef06..01cff06e74a80157e6c322b96e3d56f8ca38762d 100644
+--- a/crates/editor/src/preview_residency.rs
++++ b/crates/editor/src/preview_residency.rs
+@@ -712,6 +712,34 @@ mod tests {
+         assert_eq!(assets, BTreeSet::from([first, second]));
+     }
+ 
++    #[test]
++    fn same_generation_requests_are_deduplicated_before_worker_launch() {
++        let residency = ProjectAssetResidency::default();
++        let request = SourceRequest {
++            source_id: AssetId::generate(),
++            generation: SourceGeneration {
++                source_path: PathBuf::from("missing.glb"),
++                source_stamp: None,
++                source_fingerprint: None,
++                settings_fingerprint: 0,
++            },
++            skeleton_records: Vec::new(),
++            contact_bones: Vec::new(),
++        };
++
++        assert_eq!(
++            residency.prepare_source(request.clone(), PreviewAssetPriority::FocusedVisible),
++            PreviewResidencyState::Pending
++        );
++        assert_eq!(
++            residency.prepare_source(request, PreviewAssetPriority::Visible),
++            PreviewResidencyState::Pending
++        );
++        let stats = residency.stats();
++        assert_eq!(stats.deduplicated_requests, 1);
++        assert_eq!(stats.materializations_started, 0);
++    }
++
+     #[test]
+     fn priority_aging_eventually_promotes_background_work() {
+         assert_eq!(PreviewAssetPriority::FocusedVisible.rank(), 0);
+@@ -733,7 +761,11 @@ mod tests {
+         let rebound = residency.revision();
+         residency.bind_gpu_device(7);
+         assert_eq!(residency.revision(), rebound);
+-        residency.clear_project();
++        residency.release_gpu();
+         assert!(residency.revision() > rebound);
++        assert_eq!(residency.stats().gpu_reclaims, 1);
++        let reclaimed = residency.revision();
++        residency.clear_project();
++        assert!(residency.revision() > reclaimed);
+     }
+ }
+diff --git a/crates/editor/src/scene_view.rs b/crates/editor/src/scene_view.rs
+index 0b5e9ef8d1768b0acf434ef52d7b6cd8f9f3ee3c..90e52379a560c3d5c92c2651b566b69553b601c1 100644
+--- a/crates/editor/src/scene_view.rs
++++ b/crates/editor/src/scene_view.rs
+@@ -1103,7 +1103,7 @@ impl SceneView {
+         render_state: &egui_wgpu::RenderState,
+         context: &egui::Context,
+     ) -> bool {
+-        let device_identity = Arc::as_ptr(&render_state.device) as usize;
++        let device_identity = (&render_state.device as *const wgpu::Device) as usize;
+         if self.renderer_device != Some(device_identity) {
+             self.renderer_device = Some(device_identity);
+             self.renderer_failure_device = None;
+@@ -1194,7 +1194,7 @@ impl SceneView {
+             if self.renderer_failure_device != Some(device_identity) {
+                 context.request_repaint_after(std::time::Duration::from_millis(16));
+             }
+-            return false;
++            false
+         }
+ 
+         #[cfg(target_arch = "wasm32")]
+@@ -1608,7 +1608,7 @@ impl SceneView {
+             self.texture = SceneTexture::new(render_state, size);
+         }
+ 
+-        let renderer_ready = self.ensure_renderer_ready(render_state, response.ctx());
++        let renderer_ready = self.ensure_renderer_ready(render_state, &response.ctx);
+ 
+         let mut picked_entity = None;
+         let mut picked_ui_node = None;
+@@ -4562,6 +4562,7 @@ mod tests {
+         let base = PreviewKey {
+             scene_revision: 1,
+             manifest_hash: manifest_content_hash(&manifest_with("a.glb")),
++            residency_revision: 1,
+             game_module: None,
+             project_root: None,
+             sky_enabled: true,
+@@ -4584,6 +4585,13 @@ mod tests {
+                 ..base_clone(&base)
+             }
+         );
++        assert_ne!(
++            base,
++            PreviewKey {
++                residency_revision: 2,
++                ..base_clone(&base)
++            }
++        );
+         assert_ne!(
+             base,
+             PreviewKey {
+@@ -4654,6 +4662,7 @@ mod tests {
+         PreviewKey {
+             scene_revision: key.scene_revision,
+             manifest_hash: key.manifest_hash,
++            residency_revision: key.residency_revision,
+             game_module: key.game_module,
+             project_root: key.project_root.clone(),
+             sky_enabled: key.sky_enabled,
+diff --git a/crates/editor/src/ui/assets/model_import.rs b/crates/editor/src/ui/assets/model_import.rs
+index 5eb5bd2cab35f103a5577803900a70b7be1c900a..5d4ddce0268e7d662613e9b864743bc60e697e22 100644
+--- a/crates/editor/src/ui/assets/model_import.rs
++++ b/crates/editor/src/ui/assets/model_import.rs
+@@ -8,6 +8,46 @@ use crate::ui::*;
+ use super::instantiate::write_generated_prefab;
+ use super::manifest::{normalize_manifest_path, save_asset_manifest};
+ 
++fn import_catalog_is_current(
++    project_path: &Path,
++    assets_root: &Path,
++    entry: &engine::ManifestEntry,
++) -> bool {
++    if entry.import_settings.source_fingerprint.is_none() {
++        return false;
++    }
++    let source_path = assets_root.join(&entry.path);
++    let dependencies = entry
++        .import_settings
++        .source_dependencies
++        .iter()
++        .map(|path| assets_root.join(path))
++        .collect::<Vec<_>>();
++    let stamp_matches = entry
++        .import_settings
++        .source_stamp
++        .as_ref()
++        .is_some_and(|expected| {
++            engine::SourceStamp::capture(&source_path, &dependencies)
++                .is_ok_and(|current| &current == expected)
++        });
++    if !stamp_matches {
++        return false;
++    }
++
++    // A motion source draws nothing, so it never generates a placement prefab.
++    let needs_prefab = !engine::asset_path_matches_kind(
++        engine::AssetKind::MotionSource,
++        Path::new(&entry.path),
++    );
++    !needs_prefab
++        || entry
++            .import_settings
++            .generated_prefab
++            .as_ref()
++            .is_some_and(|relative| project_path.join(relative).is_file())
++}
++
+ impl EditorApp {
+     /// Registers a model source if needed and queues it for import.
+     ///
+@@ -374,18 +414,7 @@ impl EditorApp {
+         };
+         let assets_root = project.assets_root();
+         let already_imported = |entry: &engine::ManifestEntry| {
+-            // A motion source draws nothing, so it never generates a
+-            // placement prefab; requiring one would requeue every `.vmd` on
+-            // every project open.
+-            let needs_prefab =
+-                !engine::asset_path_matches_kind(engine::AssetKind::MotionSource, Path::new(&entry.path));
+-            entry.import_settings.source_fingerprint.is_some()
+-                && (!needs_prefab
+-                    || entry
+-                        .import_settings
+-                        .generated_prefab
+-                        .as_ref()
+-                        .is_some_and(|relative| project.path().join(relative).is_file()))
++            import_catalog_is_current(project.path(), &assets_root, entry)
+         };
+         let pending: Vec<(engine_authoring::AssetId, PathBuf)> = self
+             .asset_manifest
+@@ -740,8 +769,20 @@ impl EditorApp {
+                 .get(&result.source_id)
+                 .map(|entry| entry.import_settings.contact_bones.clone())
+                 .unwrap_or_default();
++            let current_humanoid_profiles = self
++                .asset_manifest
++                .get(&result.source_id)
++                .map(|entry| entry.import_settings.humanoid_profiles.clone())
++                .unwrap_or_default();
++            let current_existing_skeletons = self
++                .asset_manifest
++                .iter()
++                .flat_map(|(_, entry)| entry.import_settings.skeleton_records.iter().cloned())
++                .collect::<Vec<_>>();
+             if current_stamp != result.source_stamp
+                 || current_contact_bones != result.conversion_ready_contact_bones
++                || current_humanoid_profiles != result.conversion_ready_humanoid_profiles
++                || current_existing_skeletons != result.conversion_ready_existing_skeletons
+             {
+                 self.session
+                     .push_diagnostic(engine_authoring::Diagnostic::info(
+@@ -941,3 +982,54 @@ impl EditorApp {
+         }
+     }
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn startup_catalog_requeues_source_changed_while_editor_was_closed() {
++        let unique = std::time::SystemTime::now()
++            .duration_since(std::time::UNIX_EPOCH)
++            .expect("test clock must be after Unix epoch")
++            .as_nanos();
++        let root = std::env::temp_dir().join(format!(
++            "gameengine-adr0136-startup-{}-{unique}",
++            std::process::id()
++        ));
++        let assets_root = root.join("assets");
++        std::fs::create_dir_all(&assets_root).expect("test assets directory must be created");
++        let source_path = assets_root.join("model.glb");
++        std::fs::write(&source_path, b"generation-one")
++            .expect("test model source must be written");
++        let generated_prefab = root.join("generated/model.prefab.json");
++        std::fs::create_dir_all(
++            generated_prefab
++                .parent()
++                .expect("generated prefab must have a parent"),
++        )
++        .expect("generated prefab directory must be created");
++        std::fs::write(&generated_prefab, b"{}")
++            .expect("generated prefab must be written");
++
++        let mut import_settings = engine::ImportSettings::default();
++        import_settings.source_fingerprint = Some("accepted-generation".to_owned());
++        import_settings.source_stamp = Some(
++            engine::SourceStamp::capture(&source_path, &[])
++                .expect("initial source stamp must be captured"),
++        );
++        import_settings.generated_prefab = Some("generated/model.prefab.json".to_owned());
++        let entry = engine::ManifestEntry {
++            path: "model.glb".to_owned(),
++            name: Some("Model".to_owned()),
++            import_settings,
++        };
++
++        assert!(import_catalog_is_current(&root, &assets_root, &entry));
++        std::fs::write(&source_path, b"generation-two-is-different")
++            .expect("offline source edit must be written");
++        assert!(!import_catalog_is_current(&root, &assets_root, &entry));
++
++        let _ = std::fs::remove_dir_all(root);
++    }
++}
+diff --git a/crates/render-runtime/src/gpu_streaming.rs b/crates/render-runtime/src/gpu_streaming.rs
+index e88247a11285f31aac2e47cfb30b7751e7ed3ce1..5352a1446a8e3012280f8ce74cbaa1b582cbd323 100644
+--- a/crates/render-runtime/src/gpu_streaming.rs
++++ b/crates/render-runtime/src/gpu_streaming.rs
+@@ -35,12 +35,6 @@ pub(crate) struct GpuUploadReport {
+     pub(crate) cache_hits: u32,
+ }
+ 
+-impl GpuUploadReport {
+-    pub(crate) const fn has_deferred_work(self) -> bool {
+-        self.deferred_uploads != 0
+-    }
+-}
+-
+ #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+ enum UploadKind {
+     Mesh,
