@@ -8,7 +8,8 @@
 
 use crate::benchmark_experiment::{
     BenchmarkExperimentResult, BenchmarkExperimentSpec, BenchmarkExperimentStore,
-    BenchmarkFixtureSandbox, BenchmarkPlannedRun, BenchmarkRoutingMode,
+    BenchmarkFixtureSandbox, BenchmarkPlannedRun, BenchmarkRoutingMode, BenchmarkRunFailureKind,
+    BenchmarkRunOutcome,
 };
 use crate::resource_arbitration::QualityPreference;
 use serde::{Deserialize, Serialize};
@@ -178,6 +179,7 @@ struct ActiveChild {
     process: Box<dyn BenchmarkChildProcess>,
     run: BenchmarkPlannedRun,
     result_path: PathBuf,
+    started_unix_ms: u64,
 }
 
 pub(crate) struct BenchmarkExperimentCoordinator {
@@ -277,12 +279,17 @@ impl BenchmarkExperimentCoordinator {
                 return Ok(());
             };
             let active = self.active.take().expect("active child exists");
-            let result = read_child_result(&active.result_path).map_err(|error| {
-                format!(
-                    "benchmark child {} for {} exited as {status} without a valid result: {error}",
-                    active.run.ordinal, active.run.model_id
-                )
-            })?;
+            // A child that dies without writing a result is evidence about that
+            // model, not a reason to abandon the remaining runs. An 84-run suite
+            // that aborts on the first crashing model measures nothing, so the
+            // dead run is recorded as a harness failure and the queue continues.
+            let result = match read_child_result(&active.result_path) {
+                Ok(result) => result,
+                Err(error) => self.harness_failure_result(
+                    &active,
+                    format!("child exited as {status} without a valid result: {error}"),
+                ),
+            };
             result.validate_against(&self.spec)?;
             self.store.write_result(&self.spec, &result)?;
             let failed = !matches!(
@@ -313,6 +320,31 @@ impl BenchmarkExperimentCoordinator {
         }
         self.active = None;
         Ok(())
+    }
+
+    /// Records a run whose child never reported, without inventing metrics.
+    ///
+    /// The outcome is a failure with no record at all, so a crashed run can
+    /// never contribute measured evidence or qualify a recommendation.
+    fn harness_failure_result(
+        &self,
+        active: &ActiveChild,
+        message: String,
+    ) -> BenchmarkExperimentResult {
+        BenchmarkExperimentResult {
+            experiment_id: self.spec.experiment_id.clone(),
+            engine_commit_head: self.spec.engine_commit_head.clone(),
+            fixture_version: self.spec.fixture_version.clone(),
+            routing_mode: self.spec.routing_mode,
+            run: active.run.clone(),
+            started_unix_ms: active.started_unix_ms,
+            finished_unix_ms: unix_ms().max(active.started_unix_ms),
+            outcome: BenchmarkRunOutcome::Failed,
+            failure_kind: Some(BenchmarkRunFailureKind::Harness),
+            routed_to_another_model: false,
+            harness_message: Some(message),
+            record: None,
+        }
     }
 
     fn spawn_run(&self, run: BenchmarkPlannedRun) -> Result<ActiveChild, String> {
@@ -351,8 +383,17 @@ impl BenchmarkExperimentCoordinator {
             process,
             run,
             result_path,
+            started_unix_ms: unix_ms(),
         })
     }
+}
+
+fn unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .min(u128::from(u64::MAX)) as u64
 }
 
 fn read_child_result(path: &Path) -> Result<BenchmarkExperimentResult, String> {
@@ -504,6 +545,7 @@ mod coordinator_tests {
                     failure_kind: (outcome != BenchmarkRunOutcome::Passed)
                         .then_some(BenchmarkRunFailureKind::CompletionGate),
                     routed_to_another_model: false,
+                    harness_message: None,
                     record: None,
                 };
                 let bytes =
@@ -686,14 +728,48 @@ mod coordinator_tests {
     }
 
     #[test]
-    fn a_child_that_writes_no_result_fails_the_experiment_loudly() {
+    fn a_child_that_writes_no_result_is_recorded_as_a_harness_failure() {
         let root = tempfile::tempdir().expect("root");
         let spec = experiment(root.path(), &["model-a"], &["read_question_v1"], 1);
-        let (outcome, launches, results, _) = drive(spec, root.path(), vec![None]);
-        let error = outcome.expect_err("a silent child must not be treated as a pass");
-        assert!(error.contains("without a valid result"), "{error}");
+        let (outcome, launches, results, state) = drive(spec, root.path(), vec![None]);
+        outcome.expect("a dead child is evidence, not an abort");
         assert_eq!(launches.len(), 1);
-        assert!(results.is_empty());
+        let result = results.first().expect("the dead run was still recorded");
+        assert_eq!(result.outcome, BenchmarkRunOutcome::Failed);
+        assert_eq!(result.failure_kind, Some(BenchmarkRunFailureKind::Harness));
+        assert!(result.record.is_none(), "a dead run carries no measurements");
+        assert!(result
+            .harness_message
+            .as_ref()
+            .is_some_and(|message| message.contains("without a valid result")));
+        assert!(matches!(state, BenchmarkCoordinatorState::Complete { .. }));
+    }
+
+    #[test]
+    fn one_crashing_model_does_not_abandon_the_remaining_runs() {
+        let root = tempfile::tempdir().expect("root");
+        let spec = experiment(root.path(), &["model-a"], &["read_question_v1"], 4);
+        let (outcome, launches, results, state) = drive(
+            spec,
+            root.path(),
+            vec![
+                Some(BenchmarkRunOutcome::Passed),
+                None,
+                Some(BenchmarkRunOutcome::Passed),
+                Some(BenchmarkRunOutcome::Passed),
+            ],
+        );
+        outcome.expect("suite ran");
+        assert_eq!(launches.len(), 4);
+        assert_eq!(results.len(), 4);
+        assert_eq!(
+            results
+                .iter()
+                .filter(|result| result.outcome == BenchmarkRunOutcome::Passed)
+                .count(),
+            3
+        );
+        assert!(matches!(state, BenchmarkCoordinatorState::Complete { .. }));
     }
 
     #[test]

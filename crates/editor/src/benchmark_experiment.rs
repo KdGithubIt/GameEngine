@@ -200,6 +200,12 @@ pub(crate) struct BenchmarkExperimentResult {
     pub(crate) outcome: BenchmarkRunOutcome,
     pub(crate) failure_kind: Option<BenchmarkRunFailureKind>,
     pub(crate) routed_to_another_model: bool,
+    /// Why the harness itself could not obtain a result, when that happened.
+    ///
+    /// This never carries model output. It exists so a run that died before it
+    /// could report is diagnosable without turning it into measured evidence.
+    #[serde(default)]
+    pub(crate) harness_message: Option<String>,
     pub(crate) record: Option<BenchmarkRecord>,
 }
 
@@ -536,6 +542,7 @@ mod tests {
             outcome: BenchmarkRunOutcome::Failed,
             failure_kind: Some(BenchmarkRunFailureKind::Harness),
             routed_to_another_model: true,
+            harness_message: None,
             record: None,
         };
         assert!(result.validate_against(&spec).is_err());
@@ -562,6 +569,7 @@ mod tests {
             outcome: BenchmarkRunOutcome::Unavailable,
             failure_kind: Some(BenchmarkRunFailureKind::CapabilityUnavailable),
             routed_to_another_model: false,
+            harness_message: None,
             record: None,
         };
         result.validate_against(&spec).expect("valid unavailable result");

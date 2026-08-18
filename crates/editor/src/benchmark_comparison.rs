@@ -510,6 +510,7 @@ mod tests {
             outcome: BenchmarkRunOutcome::Passed,
             failure_kind: None,
             routed_to_another_model: false,
+            harness_message: None,
             record: Some(record(model, task)),
         }
     }

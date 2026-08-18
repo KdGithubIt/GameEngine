@@ -210,7 +210,7 @@ impl AiStudioPanel {
         };
         let failure_kind = (outcome != BenchmarkRunOutcome::Passed)
             .then_some(BenchmarkRunFailureKind::CompletionGate);
-        self.write_benchmark_child_result(outcome, failure_kind, routed, Some(record));
+        self.write_benchmark_child_result(outcome, failure_kind, routed, None, Some(record));
     }
 
     fn write_benchmark_child_failure(&mut self, kind: BenchmarkRunFailureKind, message: String) {
@@ -220,7 +220,10 @@ impl AiStudioPanel {
         } else {
             BenchmarkRunOutcome::Failed
         };
-        self.write_benchmark_child_result(outcome, Some(kind), false, None);
+        // A failed run is only useful if the next person can tell a refused
+        // capability from an exhausted backend, so the reason travels with the
+        // result. It describes the harness, never the model's output.
+        self.write_benchmark_child_result(outcome, Some(kind), false, Some(message), None);
     }
 
     fn write_benchmark_child_result(
@@ -228,6 +231,7 @@ impl AiStudioPanel {
         outcome: BenchmarkRunOutcome,
         failure_kind: Option<BenchmarkRunFailureKind>,
         routed: bool,
+        harness_message: Option<String>,
         record: Option<BenchmarkRecord>,
     ) {
         let Some(child) = self.benchmark_child.as_mut() else {
@@ -247,6 +251,7 @@ impl AiStudioPanel {
             outcome,
             failure_kind,
             routed_to_another_model: routed,
+            harness_message,
             record,
         };
         let write_result = serde_json::to_vec_pretty(&result)
