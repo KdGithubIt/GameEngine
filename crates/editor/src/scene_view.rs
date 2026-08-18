@@ -20,6 +20,8 @@ use std::collections::BTreeMap;
 use std::sync::{mpsc, Arc};
 use std::time::Instant;
 
+pub(crate) mod native_2d_mode;
+
 const PREVIEW_GPU_UPLOAD_BYTES_PER_FRAME: u64 = 8 * 1024 * 1024;
 const PREVIEW_GPU_UPLOADS_PER_FRAME: u32 = 4;
 
@@ -740,8 +742,10 @@ pub struct AnimationPreviewStatus {
 
 /// Offscreen Scene View panel: renders the authoring scene in Edit Mode.
 pub struct SceneView {
-    /// Editor-only orbit camera (not serialized to the scene).
+    /// Editor-only orbit/orthographic camera state (not serialized to the scene).
     pub camera: EditorViewCamera,
+    /// Transient 2D/3D presentation mode; never serialized to scene data.
+    pub(crate) mode: native_2d_mode::SceneViewMode,
     renderer: Option<engine::PreviewRenderer>,
     /// Device identity bound to the current renderer and project GPU residency.
     renderer_device: Option<usize>,
@@ -917,6 +921,7 @@ impl SceneView {
     pub(crate) fn with_residency(residency: ProjectAssetResidency) -> Self {
         Self {
             camera: EditorViewCamera::default(),
+            mode: native_2d_mode::SceneViewMode::default(),
             renderer: None,
             renderer_device: None,
             renderer_failure_device: None,
@@ -1349,7 +1354,12 @@ impl SceneView {
         let (rect, response) = ui.allocate_exact_size(available, egui::Sense::click_and_drag());
         self.last_view = Some((rect, size));
 
-        self.camera.handle_input(&response);
+        let planar_2d = self.mode == native_2d_mode::SceneViewMode::TwoD;
+        if planar_2d {
+            native_2d_mode::handle_input(&mut self.camera, &response);
+        } else {
+            self.camera.handle_input(&response);
+        }
         let now = Instant::now();
         let particle_delta = now
             .saturating_duration_since(self.last_particle_frame)
@@ -1379,7 +1389,11 @@ impl SceneView {
         self.entity_pick_info = collect_entity_positions(interaction_scene);
 
         let aspect = size[0] as f32 / size[1] as f32;
-        let vp = self.camera.view_projection(aspect);
+        let vp = if planar_2d {
+            native_2d_mode::view_projection(&self.camera, rect)
+        } else {
+            self.camera.view_projection(aspect)
+        };
         let mut placement_position = response
             .clicked_by(egui::PointerButton::Primary)
             .then(|| response.interact_pointer_pos())
@@ -1448,6 +1462,9 @@ impl SceneView {
                         let len = gizmo_axis_length(center, vp, rect);
                         self.gizmo_drag =
                             hit_test_gizmo_axis(pos, center, vp, rect, gizmo_mode, len, &axis_dirs)
+                                .filter(|axis| {
+                                    !planar_2d || native_2d_mode::axis_allowed(gizmo_mode, *axis)
+                                })
                                 .map(|axis| GizmoDragState {
                                     axis,
                                     axis_dir: axis_direction_of(&axis_dirs, axis),
@@ -1797,7 +1814,12 @@ impl SceneView {
             // one at the orbit position.
             despawn_camera_entities(app.world_mut());
             let cam_transform = self.camera.to_transform();
-            update_editor_camera(app.world_mut(), cam_transform, aspect);
+            let camera_2d = planar_2d.then(|| native_2d_mode::camera(&self.camera));
+            let camera_2d_transform =
+                planar_2d.then(|| native_2d_mode::transform(&self.camera));
+            if !planar_2d {
+                update_editor_camera(app.world_mut(), cam_transform, aspect);
+            }
 
             // On a reused world, move any entity being dragged now (and restore
             // any moved last frame) directly, so a gizmo or Inspector transform
@@ -1891,7 +1913,11 @@ impl SceneView {
                 // The world persists across frames, so last frame's overlay
                 // segments must be discarded before redrawing.
                 dl.lines.clear();
-                draw_grid(dl);
+                if planar_2d {
+                    native_2d_mode::draw_grid(dl, &self.camera);
+                } else {
+                    draw_grid(dl);
+                }
                 for info in &self.entity_pick_info {
                     if let Some(icon) = info.icon {
                         draw_entity_icon(dl, info, icon);
@@ -1920,6 +1946,9 @@ impl SceneView {
                                         len,
                                         &axis_dirs,
                                     )
+                                    .filter(|axis| {
+                                        !planar_2d || native_2d_mode::axis_allowed(gizmo_mode, *axis)
+                                    })
                                 })
                             });
                         draw_gizmo(dl, info.center, gizmo_mode, len, hovered, &axis_dirs);
@@ -1987,13 +2016,29 @@ impl SceneView {
                 ));
             }
 
-            if let Err(error) = renderer.render_to_view(
-                app.world_mut(),
-                &render_state.device,
-                &render_state.queue,
-                &texture.render_view,
-                &texture.depth_view,
-            ) {
+            let render_result = if let (Some(camera), Some(transform)) =
+                (camera_2d.as_ref(), camera_2d_transform.as_ref())
+            {
+                renderer.render_to_view_with_camera_2d(
+                    app.world_mut(),
+                    camera,
+                    transform,
+                    size,
+                    &render_state.device,
+                    &render_state.queue,
+                    &texture.render_view,
+                    &texture.depth_view,
+                )
+            } else {
+                renderer.render_to_view(
+                    app.world_mut(),
+                    &render_state.device,
+                    &render_state.queue,
+                    &texture.render_view,
+                    &texture.depth_view,
+                )
+            };
+            if let Err(error) = render_result {
                 self.preview_notice = Some(PreviewNotice::failure(
                     "editor.scene_view.render_failed",
                     format!("Scene View render failed: {error}"),
@@ -3277,10 +3322,16 @@ fn selected_particle_debug(
 }
 
 fn despawn_camera_entities(world: &mut engine::ecs::World) {
-    let camera_entities: Vec<engine::ecs::Entity> = {
+    let mut camera_entities: Vec<engine::ecs::Entity> = {
         let q = engine::Query::<&Camera3D>::new(world);
         q.iter().map(|(e, _)| e).collect()
     };
+    {
+        let q = engine::Query::<&engine::native_2d::Camera2d>::new(world);
+        camera_entities.extend(q.iter().map(|(e, _)| e));
+    }
+    camera_entities.sort_unstable_by_key(|entity| (entity.id(), entity.generation()));
+    camera_entities.dedup();
     for e in camera_entities {
         let _ = world.despawn(e);
     }

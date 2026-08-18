@@ -234,6 +234,26 @@ pub struct BodyEntry2d {
     pub collider: Collider2d,
 }
 
+/// One fixed collider retained inside a chunk-owned static collision source.
+#[derive(Debug, Clone)]
+pub struct StaticColliderPart2d {
+    /// World-space planar pose derived by the higher composition layer.
+    pub pose: PlanarPose2d,
+    /// Collider material/filter/one-way policy shared with normal ECS colliders.
+    pub collider: Collider2d,
+}
+
+/// Chunk-owned fixed collision data, used by Tile Maps without one ECS entity per tile.
+#[derive(Debug, Clone)]
+pub struct StaticColliderChunk2d {
+    /// Stable runtime key for replacing/removing this chunk incrementally.
+    pub key: u64,
+    /// Stable runtime entity key reported by contacts and queries.
+    pub owner: u64,
+    /// Fixed collision parts contained by this chunk.
+    pub colliders: Vec<StaticColliderPart2d>,
+}
+
 /// Contact/trigger transition phase.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ContactPhase2d {
@@ -281,6 +301,7 @@ struct JointConstraint2d {
 #[derive(Debug, Default)]
 pub struct PhysicsWorld2d {
     bodies: BTreeMap<u64, BodyEntry2d>,
+    static_chunks: BTreeMap<u64, StaticColliderChunk2d>,
     joints: BTreeMap<u64, Vec<JointConstraint2d>>,
     previous: BTreeMap<(u64, u64), bool>,
 }
@@ -289,6 +310,16 @@ impl PhysicsWorld2d {
     /// Inserts a new body or replaces the body with the same stable runtime key.
     pub fn upsert(&mut self, entry: BodyEntry2d) {
         self.bodies.insert(entry.entity, entry);
+    }
+
+    /// Inserts or replaces one fixed chunk-owned collision source.
+    pub fn upsert_static_chunk(&mut self, chunk: StaticColliderChunk2d) {
+        self.static_chunks.insert(chunk.key, chunk);
+    }
+
+    /// Removes every fixed chunk whose stable runtime key is absent from `active`.
+    pub fn retain_static_chunks(&mut self, active: &BTreeSet<u64>) {
+        self.static_chunks.retain(|key, _| active.contains(key));
     }
 
     /// Removes a body and retained state involving it.
@@ -468,11 +499,51 @@ impl PhysicsWorld2d {
                 };
                 let pair = (a_id.min(b_id), a_id.max(b_id));
                 let sensor = a.collider.sensor || b.collider.sensor;
-                contacts.insert(pair, sensor);
+                contacts
+                    .entry(pair)
+                    .and_modify(|existing| *existing = *existing && sensor)
+                    .or_insert(sensor);
                 if sensor || !should_resolve_contact(&a, &b, dt) {
                     continue;
                 }
                 resolve_solid_contact(&mut self.bodies, a_id, b_id, normal, penetration);
+            }
+        }
+
+        let static_chunks = self.static_chunks.values().cloned().collect::<Vec<_>>();
+        for &body_id in &ids {
+            for chunk in &static_chunks {
+                if chunk.owner == body_id {
+                    continue;
+                }
+                for part in &chunk.colliders {
+                    let Some(body) = self.bodies.get(&body_id).cloned() else {
+                        continue;
+                    };
+                    let fixed = static_body(chunk.owner, part);
+                    if !body.collider.filter.permits(fixed.collider.filter) {
+                        continue;
+                    }
+                    let Some((normal, penetration)) = contact_manifold(&body, &fixed) else {
+                        continue;
+                    };
+                    let pair = (body_id.min(chunk.owner), body_id.max(chunk.owner));
+                    let sensor = body.collider.sensor || fixed.collider.sensor;
+                    contacts
+                        .entry(pair)
+                        .and_modify(|existing| *existing = *existing && sensor)
+                        .or_insert(sensor);
+                    if sensor || !should_resolve_contact(&body, &fixed, dt) {
+                        continue;
+                    }
+                    resolve_solid_contact_with_static(
+                        &mut self.bodies,
+                        body_id,
+                        &fixed,
+                        normal,
+                        penetration,
+                    );
+                }
             }
         }
     }
@@ -533,30 +604,39 @@ impl PhysicsWorld2d {
             return None;
         }
         let mut hits = Vec::new();
-        for entry in self.bodies.values() {
+        let mut test_entry = |entry: &BodyEntry2d, reported_entity: u64| {
             if entry.collider.filter.memberships & mask == 0 {
-                continue;
+                return;
             }
             let (min, max) = bounds(entry);
             let expanded_min = min - half_extents.abs();
             let expanded_max = max + half_extents.abs();
-            if let Some(distance) =
+            let Some(distance) =
                 ray_aabb(origin, direction, expanded_min, expanded_max, max_distance)
-            {
-                let point = origin + direction * distance;
-                let center = (expanded_min + expanded_max) * 0.5;
-                let local = point - center;
-                let normal = if local.x.abs() > local.y.abs() {
-                    Vec2::new(local.x.signum(), 0.0)
-                } else {
-                    Vec2::new(0.0, local.y.signum())
-                };
-                hits.push(QueryHit2d {
-                    entity: entry.entity,
-                    point,
-                    normal,
-                    distance,
-                });
+            else {
+                return;
+            };
+            let point = origin + direction * distance;
+            let center = (expanded_min + expanded_max) * 0.5;
+            let local = point - center;
+            let normal = if local.x.abs() > local.y.abs() {
+                Vec2::new(local.x.signum(), 0.0)
+            } else {
+                Vec2::new(0.0, local.y.signum())
+            };
+            hits.push(QueryHit2d {
+                entity: reported_entity,
+                point,
+                normal,
+                distance,
+            });
+        };
+        for entry in self.bodies.values() {
+            test_entry(entry, entry.entity);
+        }
+        for chunk in self.static_chunks.values() {
+            for part in &chunk.colliders {
+                test_entry(&static_body(chunk.owner, part), chunk.owner);
             }
         }
         hits.sort_by(|left, right| {
@@ -567,18 +647,33 @@ impl PhysicsWorld2d {
         hits.into_iter().next()
     }
 
-    /// Returns every collider overlapping an axis-aligned query box.
+    /// Returns every collider owner overlapping an axis-aligned query box.
     pub fn overlap_box(&self, center: Vec2, half_extents: Vec2, mask: u32) -> Vec<u64> {
         let query_min = center - half_extents.abs();
         let query_max = center + half_extents.abs();
-        self.bodies
-            .values()
-            .filter(|entry| entry.collider.filter.memberships & mask != 0)
-            .filter_map(|entry| {
-                let (min, max) = bounds(entry);
-                aabb_overlap(query_min, query_max, min, max).then_some(entry.entity)
-            })
-            .collect()
+        let mut owners = BTreeSet::new();
+        for entry in self.bodies.values() {
+            if entry.collider.filter.memberships & mask == 0 {
+                continue;
+            }
+            let (min, max) = bounds(entry);
+            if aabb_overlap(query_min, query_max, min, max) {
+                owners.insert(entry.entity);
+            }
+        }
+        for chunk in self.static_chunks.values() {
+            if chunk.colliders.iter().any(|part| {
+                let entry = static_body(chunk.owner, part);
+                if entry.collider.filter.memberships & mask == 0 {
+                    return false;
+                }
+                let (min, max) = bounds(&entry);
+                aabb_overlap(query_min, query_max, min, max)
+            }) {
+                owners.insert(chunk.owner);
+            }
+        }
+        owners.into_iter().collect()
     }
 }
 
@@ -594,6 +689,18 @@ fn joint_other(joint: &Joint2d) -> u64 {
 fn rotate(value: Vec2, angle: f32) -> Vec2 {
     let (sin, cos) = angle.sin_cos();
     Vec2::new(value.x * cos - value.y * sin, value.x * sin + value.y * cos)
+}
+
+fn static_body(owner: u64, part: &StaticColliderPart2d) -> BodyEntry2d {
+    BodyEntry2d {
+        entity: owner,
+        pose: part.pose,
+        body: RigidBody2d {
+            mode: RigidBodyMode2d::Fixed,
+            ..RigidBody2d::default()
+        },
+        collider: part.collider.clone(),
+    }
 }
 
 fn collider_half_extents(entry: &BodyEntry2d) -> Vec2 {
@@ -755,6 +862,47 @@ fn resolve_solid_contact(
     }
     if b_inverse > 0.0 && let Some(entry) = bodies.get_mut(&b_id) {
         entry.body.velocity = b_result.to_array();
+    }
+}
+
+fn resolve_solid_contact_with_static(
+    bodies: &mut BTreeMap<u64, BodyEntry2d>,
+    body_id: u64,
+    fixed: &BodyEntry2d,
+    normal: Vec2,
+    penetration: f32,
+) {
+    let Some(body) = bodies.get(&body_id).cloned() else {
+        return;
+    };
+    if body.body.mode != RigidBodyMode2d::Dynamic {
+        return;
+    }
+
+    if let Some(entry) = bodies.get_mut(&body_id) {
+        entry.pose.translation -= normal * penetration.max(0.0);
+    }
+
+    let velocity = Vec2::from(body.body.velocity);
+    let normal_speed = (-velocity).dot(normal);
+    if normal_speed >= 0.0 {
+        return;
+    }
+    let restitution = body
+        .collider
+        .restitution
+        .min(fixed.collider.restitution)
+        .clamp(0.0, 1.0);
+    let normal_impulse = -(1.0 + restitution) * normal_speed;
+    let mut result = velocity - normal * normal_impulse;
+    let tangent = Vec2::new(-normal.y, normal.x);
+    let tangent_speed = (-result).dot(tangent);
+    let friction = (body.collider.friction.max(0.0) * fixed.collider.friction.max(0.0)).sqrt();
+    let tangent_impulse = (-tangent_speed).clamp(-normal_impulse * friction, normal_impulse * friction);
+    result -= tangent * tangent_impulse;
+
+    if let Some(entry) = bodies.get_mut(&body_id) {
+        entry.body.velocity = result.to_array();
     }
 }
 
@@ -948,28 +1096,42 @@ fn controller_blockers(world: &PhysicsWorld2d, query: ControllerBlockerQuery) ->
     } = query;
     let query_min = center - half_extents;
     let query_max = center + half_extents;
-    world
-        .bodies
-        .values()
-        .filter(|entry| Some(entry.entity) != ignore_entity)
-        .filter(|entry| !entry.collider.sensor)
-        .filter(|entry| entry.collider.filter.memberships & mask != 0)
-        .filter(|entry| {
-            let (min, max) = bounds(entry);
-            aabb_overlap(query_min, query_max, min, max)
-        })
-        .filter(|entry| {
-            if !entry.collider.one_way {
-                return true;
-            }
-            if drop_through_seconds > 0.0 || delta.y > 0.0 {
-                return false;
-            }
-            let (_, platform_max) = bounds(entry);
-            start.y - half_extents.y >= platform_max.y - 1.0e-3
-        })
-        .map(|entry| entry.entity)
-        .collect()
+    let blocks = |entry: &BodyEntry2d| {
+        if Some(entry.entity) == ignore_entity
+            || entry.collider.sensor
+            || entry.collider.filter.memberships & mask == 0
+        {
+            return false;
+        }
+        let (min, max) = bounds(entry);
+        if !aabb_overlap(query_min, query_max, min, max) {
+            return false;
+        }
+        if !entry.collider.one_way {
+            return true;
+        }
+        if drop_through_seconds > 0.0 || delta.y > 0.0 {
+            return false;
+        }
+        start.y - half_extents.y >= max.y - 1.0e-3
+    };
+
+    let mut owners = BTreeSet::new();
+    for entry in world.bodies.values() {
+        if blocks(entry) {
+            owners.insert(entry.entity);
+        }
+    }
+    for chunk in world.static_chunks.values() {
+        if chunk
+            .colliders
+            .iter()
+            .any(|part| blocks(&static_body(chunk.owner, part)))
+        {
+            owners.insert(chunk.owner);
+        }
+    }
+    owners.into_iter().collect()
 }
 
 #[cfg(test)]
@@ -1064,5 +1226,36 @@ mod tests {
             None,
         );
         assert!(position.y < 1.0);
+    }
+
+    #[test]
+    fn static_chunk_colliders_block_and_report_the_chunk_owner() {
+        let mut world = PhysicsWorld2d::default();
+        world.upsert_static_chunk(StaticColliderChunk2d {
+            key: 77,
+            owner: 9,
+            colliders: vec![StaticColliderPart2d {
+                pose: PlanarPose2d {
+                    translation: Vec2::ZERO,
+                    rotation: 0.0,
+                    scale: Vec2::ONE,
+                },
+                collider: Collider2d::default(),
+            }],
+        });
+        let hit = world
+            .ray_cast(Vec2::new(-2.0, 0.0), Vec2::X, 5.0, u32::MAX)
+            .expect("static chunk must be queryable");
+        assert_eq!(hit.entity, 9);
+        assert_eq!(world.overlap_box(Vec2::ZERO, Vec2::splat(0.25), u32::MAX), vec![9]);
+
+        let mut falling = box_body(2, RigidBodyMode2d::Dynamic, Vec2::new(0.0, 0.75));
+        falling.body.velocity = [0.0, -1.0];
+        world.upsert(falling);
+        let events = world.step(1.0 / 60.0, Vec2::ZERO);
+        assert!(events.iter().any(|event| {
+            event.a == 2 && event.b == 9 && event.phase == ContactPhase2d::Enter
+        }));
+        assert!(world.body(2).unwrap().pose.translation.y >= 0.99);
     }
 }

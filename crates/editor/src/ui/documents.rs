@@ -32,6 +32,11 @@ impl EditorApp {
             .expect("project-scoped Editor workspace must have a ProjectRoot")
     }
 
+    /// Returns the project asset manifest shared by Editor preview and authoring surfaces.
+    pub fn asset_manifest(&self) -> &engine::AssetManifest {
+        &self.asset_manifest
+    }
+
     pub(super) fn window_title(&self) -> String {
         let file_name = self
             .session
