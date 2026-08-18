@@ -1,0 +1,13 @@
+diff --git a/crates/editor/src/agent_host.rs b/crates/editor/src/agent_host.rs
+index 92acf746527b86df00589a53183bf289fb8c4b66..ca31ad423737f15580f69c005b5ef7a03fb29e01 100644
+--- a/crates/editor/src/agent_host.rs
++++ b/crates/editor/src/agent_host.rs
+@@ -2699,7 +2699,7 @@ fn managed_validation_plan(
+ 
+ fn recover_persisted_runs(
+     sessions: &mut BTreeMap<String, AgentSession>,
+-) -> Result<(Option<String>, BTreeSet<String>), AgentHostError> {
++) -> Result<(BTreeSet<String>, BTreeSet<String>), AgentHostError> {
+     let mut active_runs = BTreeSet::new();
+     let mut recovered_sessions = BTreeSet::new();
+     for session in sessions.values_mut() {
