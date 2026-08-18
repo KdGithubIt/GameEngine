@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0154-first-release-20260818-r4",
+  "target_branch": "chatgpt/gameengine-adr0154-first-release",
+  "expected_head_sha": "5301e3768a9ab3c3f3c008dab4f3a97e6b6b2d4e",
+  "baseline_main_sha": "2a418e000fa727ae81a88b423ad3c113b44f211c",
+  "patch_sha256": "f7160af8003e38516f20764eb11de0b1d9f32f1c9368c7599f0017672df9bd7b",
+  "patch_bytes": 34390,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Use target-aware Animation Set routing",
+  "pr_title": "Implement ADR 0154 target-aware animation motion binding",
+  "pr_body": "Continues ADR 0154 implementation: Animation Set schema v3 candidate-only persistence, shared target-aware routing in Scene Bridge, blocking Play preflight for failed bindings, route-aware debug evidence, candidate-only Editor picker, and package reachability migration.\n\nThe PR remains Draft and must not be merged automatically."
+}
