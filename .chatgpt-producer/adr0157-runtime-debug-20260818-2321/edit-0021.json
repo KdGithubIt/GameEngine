@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ai_studio.rs","old":"        self.request_next_managed_runtime_input_if_ready();","new":"        self.request_managed_runtime_debug_plan_if_ready();"}
