@@ -8,7 +8,8 @@
 use crate::project_settings::SYSTEM_SETTINGS_SCHEMA_VERSION;
 use crate::{
     AnimationSet, AuthoringPermission, AuthoringPermissionError, AuthoringPermissions, Diagnostic,
-    MaterialAsset, ProjectSettings, ANIMATION_SET_SCHEMA_VERSION, PROJECT_SETTINGS_SCHEMA_VERSION,
+    MaterialAsset, ProjectSettings, SpriteAnimationDocument, SpriteAtlasDocument, TileMapDocument,
+    TileSetDocument, ANIMATION_SET_SCHEMA_VERSION, PROJECT_SETTINGS_SCHEMA_VERSION,
 };
 use serde::Serialize;
 use std::fmt;
@@ -68,6 +69,46 @@ impl TypedAuthoringDocument for AnimationSet {
             ));
         }
         self.validate().map_err(|error| error.to_string())
+    }
+}
+
+fn validate_native_2d(errors: Vec<String>) -> Result<(), String> {
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("; "))
+    }
+}
+
+impl TypedAuthoringDocument for SpriteAtlasDocument {
+    const INVALID_CODE: &'static str = "sprite_atlas.invalid";
+
+    fn validate_authoring(&self) -> Result<(), String> {
+        validate_native_2d(self.validate())
+    }
+}
+
+impl TypedAuthoringDocument for SpriteAnimationDocument {
+    const INVALID_CODE: &'static str = "sprite_animation.invalid";
+
+    fn validate_authoring(&self) -> Result<(), String> {
+        validate_native_2d(self.validate())
+    }
+}
+
+impl TypedAuthoringDocument for TileSetDocument {
+    const INVALID_CODE: &'static str = "tile_set.invalid";
+
+    fn validate_authoring(&self) -> Result<(), String> {
+        validate_native_2d(self.validate())
+    }
+}
+
+impl TypedAuthoringDocument for TileMapDocument {
+    const INVALID_CODE: &'static str = "tile_map.invalid";
+
+    fn validate_authoring(&self) -> Result<(), String> {
+        validate_native_2d(self.validate())
     }
 }
 
