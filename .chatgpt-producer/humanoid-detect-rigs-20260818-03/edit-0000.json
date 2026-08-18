@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/animation/src/humanoid.rs",
+  "old": "    for token in tokens {\n        let token_side = match token.as_str() {\n",
+  "new": "    for token in tokens {\n        if token == \"c\" {\n            continue;\n        }\n        let token_side = match token.as_str() {\n"
+}
