@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/main.rs",
+  "old": "                EditorShell::new(project_lease, &creation_context.egui_ctx)\n                    .map_err",
+  "new": "                EditorShell::new(\n                    project_lease,\n                    &creation_context.egui_ctx,\n                    benchmark_run.as_deref(),\n                )\n                    .map_err"
+}
