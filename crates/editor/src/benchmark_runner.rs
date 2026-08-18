@@ -13,6 +13,7 @@
 use crate::benchmark_comparison::{compare_experiment, BenchmarkExperimentComparison};
 use crate::benchmark_experiment::{
     BenchmarkExperimentSpec, BenchmarkExperimentStore, BENCHMARK_FIXTURE_REPOSITORY_PATH,
+    ENGINE_COMMIT_HEAD,
 };
 use crate::benchmark_process::{BenchmarkCoordinatorState, BenchmarkExperimentCoordinator};
 use std::fs;
@@ -91,6 +92,16 @@ pub fn run_benchmark_experiment(
     options: BenchmarkExperimentOptions,
 ) -> Result<BenchmarkExperimentOutcome, String> {
     let spec = read_spec(&options.spec_path)?;
+    // A spec file states which engine it is measuring, and nothing stopped it
+    // from naming a commit this binary was not built from. Every recorded run
+    // would then carry a false engine identity, which is precisely the
+    // provenance ADR 0142 exists to guarantee.
+    if !ENGINE_COMMIT_HEAD.is_empty() && spec.engine_commit_head != ENGINE_COMMIT_HEAD {
+        return Err(format!(
+            "experiment declares GameEngine {} but this Editor was built from {ENGINE_COMMIT_HEAD}",
+            spec.engine_commit_head
+        ));
+    }
     let planned_runs = spec.planned_runs()?.len();
     let fixture_template_root = resolve_fixture_template(options.fixture_template_root.as_deref())?;
     let editor_executable = match options.editor_executable {
