@@ -1,6 +1,8 @@
 //! Versioned Timeline document, validation, persistence, and deterministic compilation.
 
-use crate::id::{AssetId, EntityId, TimelineClipId, TimelineId, TimelineMarkerId, TimelineTrackId};
+use crate::id::{
+    AssetId, EntityId, MotionSlotId, TimelineClipId, TimelineId, TimelineMarkerId, TimelineTrackId,
+};
 use engine_timeline::{CompiledEntry, CompiledTimeline, SeekCapability, TimelineTick};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -11,6 +13,10 @@ use std::path::Path;
 pub const TIMELINE_SCHEMA_VERSION: u32 = 1;
 /// Timeline asset suffix.
 pub const TIMELINE_FILE_SUFFIX: &str = ".timeline.json";
+/// Maximum UTF-8 byte length of one Timeline Event or marker event name.
+pub const MAX_TIMELINE_EVENT_NAME_BYTES: usize = 256;
+/// Maximum UTF-8 byte length of one Timeline Event clip payload.
+pub const MAX_TIMELINE_EVENT_PAYLOAD_BYTES: usize = 16 * 1024;
 
 /// Display-only frame rate. Canonical storage remains 48 kHz ticks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -34,6 +40,19 @@ pub enum TimelineBinding {
         asset: AssetId },
 }
 
+/// Value category accepted by one explicitly registered Timeline property.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TimelinePropertyValueKind {
+    /// Boolean value.
+    Bool,
+    /// Scalar number.
+    Number,
+    /// Three-component vector.
+    Vec3,
+    /// Quaternion xyzw.
+    Quat,
+}
+
 /// Property value supported by first-release Transform/Property clips.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
@@ -48,13 +67,163 @@ pub enum TimelinePropertyValue {
     Quat([f64; 4]),
 }
 
+impl TimelinePropertyValue {
+    /// Returns the stable value category used by the property registry.
+    pub const fn kind(&self) -> TimelinePropertyValueKind {
+        match self {
+            Self::Bool(_) => TimelinePropertyValueKind::Bool,
+            Self::Number(_) => TimelinePropertyValueKind::Number,
+            Self::Vec3(_) => TimelinePropertyValueKind::Vec3,
+            Self::Quat(_) => TimelinePropertyValueKind::Quat,
+        }
+    }
+
+    fn is_valid_numeric_value(&self) -> bool {
+        match self {
+            Self::Bool(_) => true,
+            Self::Number(value) => value.is_finite(),
+            Self::Vec3(value) => value.iter().all(|component| component.is_finite()),
+            Self::Quat(value) => {
+                value.iter().all(|component| component.is_finite())
+                    && value.iter().map(|component| component * component).sum::<f64>()
+                        > f64::EPSILON
+            }
+        }
+    }
+}
+
+/// One explicitly supported Transform/Property target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TimelinePropertyDescriptor {
+    /// Stable property identifier persisted in Timeline clips.
+    pub type_id: &'static str,
+    /// Editor-facing label.
+    pub label: &'static str,
+    /// Required value category for both clip endpoints.
+    pub value_kind: TimelinePropertyValueKind,
+}
+
+/// Canonical first-release property registry. Arbitrary ECS reflection is not supported.
+pub const TIMELINE_PROPERTY_REGISTRY: [TimelinePropertyDescriptor; 3] = [
+    TimelinePropertyDescriptor {
+        type_id: "engine.transform.translation",
+        label: "Transform / Translation",
+        value_kind: TimelinePropertyValueKind::Vec3,
+    },
+    TimelinePropertyDescriptor {
+        type_id: "engine.transform.rotation",
+        label: "Transform / Rotation",
+        value_kind: TimelinePropertyValueKind::Quat,
+    },
+    TimelinePropertyDescriptor {
+        type_id: "engine.transform.scale",
+        label: "Transform / Scale",
+        value_kind: TimelinePropertyValueKind::Vec3,
+    },
+];
+
+/// Returns the explicit first-release Timeline property registry.
+pub const fn timeline_property_registry() -> &'static [TimelinePropertyDescriptor] {
+    &TIMELINE_PROPERTY_REGISTRY
+}
+
+fn timeline_property_descriptor(type_id: &str) -> Option<&'static TimelinePropertyDescriptor> {
+    TIMELINE_PROPERTY_REGISTRY
+        .iter()
+        .find(|descriptor| descriptor.type_id == type_id)
+}
+
+/// One clip-local key in an explicitly registered Timeline property curve.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TimelinePropertyKey {
+    /// Tick relative to the containing clip start.
+    pub tick: TimelineTick,
+    /// Typed key value.
+    pub value: TimelinePropertyValue,
+}
+
+/// Samples a validated Timeline property curve at a clip-local tick.
+///
+/// Values before the first key and after the last key are clamped to the nearest
+/// authored key. Numeric/vector values interpolate linearly and quaternions use
+/// normalized shortest-path linear interpolation. Boolean values step.
+pub fn sample_timeline_property(
+    keys: &[TimelinePropertyKey],
+    tick: TimelineTick,
+) -> Option<TimelinePropertyValue> {
+    let first = keys.first()?;
+    if tick <= first.tick {
+        return Some(first.value.clone());
+    }
+    for pair in keys.windows(2) {
+        let left = &pair[0];
+        let right = &pair[1];
+        if tick > right.tick {
+            continue;
+        }
+        let span = right.tick.get().saturating_sub(left.tick.get());
+        if span <= 0 {
+            return None;
+        }
+        let offset = tick.get().saturating_sub(left.tick.get());
+        let alpha = offset as f64 / span as f64;
+        return interpolate_timeline_property(&left.value, &right.value, alpha);
+    }
+    keys.last().map(|key| key.value.clone())
+}
+
+fn interpolate_timeline_property(
+    left: &TimelinePropertyValue,
+    right: &TimelinePropertyValue,
+    alpha: f64,
+) -> Option<TimelinePropertyValue> {
+    let alpha = alpha.clamp(0.0, 1.0);
+    match (left, right) {
+        (TimelinePropertyValue::Bool(a), TimelinePropertyValue::Bool(b)) => {
+            Some(TimelinePropertyValue::Bool(if alpha < 1.0 { *a } else { *b }))
+        }
+        (TimelinePropertyValue::Number(a), TimelinePropertyValue::Number(b)) => {
+            Some(TimelinePropertyValue::Number(a + (b - a) * alpha))
+        }
+        (TimelinePropertyValue::Vec3(a), TimelinePropertyValue::Vec3(b)) => {
+            Some(TimelinePropertyValue::Vec3(std::array::from_fn(|index| {
+                a[index] + (b[index] - a[index]) * alpha
+            })))
+        }
+        (TimelinePropertyValue::Quat(a), TimelinePropertyValue::Quat(b)) => {
+            let dot = a
+                .iter()
+                .zip(b.iter())
+                .map(|(a, b)| a * b)
+                .sum::<f64>();
+            let rhs = if dot < 0.0 {
+                b.map(|component| -component)
+            } else {
+                *b
+            };
+            let mixed = std::array::from_fn(|index| {
+                a[index] + (rhs[index] - a[index]) * alpha
+            });
+            let norm_squared = mixed.iter().map(|component| component * component).sum::<f64>();
+            if !norm_squared.is_finite() || norm_squared <= f64::EPSILON {
+                return None;
+            }
+            let inverse_norm = norm_squared.sqrt().recip();
+            Some(TimelinePropertyValue::Quat(
+                mixed.map(|component| component * inverse_norm),
+            ))
+        }
+        _ => None,
+    }
+}
+
 /// First-release typed track family.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TimelineTrackKind {
-    /// Animation motion sampling.
+    /// Animation Set motion-slot sampling.
     Animation,
-    /// Entity transform or typed property interpolation.
+    /// Entity transform or explicitly registered typed property interpolation.
     TransformProperty,
     /// Runtime-only camera selection override.
     CameraCut,
@@ -64,18 +233,15 @@ pub enum TimelineTrackKind {
     Audio,
     /// Production VFX playback request.
     Vfx,
-    /// Production prefab spawn request.
-    Prefab,
 }
 impl TimelineTrackKind {
     /// Explicit discontinuous-time contract.
     pub const fn seek_capability(self) -> SeekCapability {
         match self {
             Self::Animation => SeekCapability::Seekable,
-            Self::TransformProperty | Self::CameraCut => SeekCapability::Stateless,
-            Self::Event => SeekCapability::Stateless,
+            Self::TransformProperty | Self::CameraCut | Self::Event => SeekCapability::Stateless,
             Self::Audio => SeekCapability::NonSeekable,
-            Self::Vfx | Self::Prefab => SeekCapability::ReplayRequired,
+            Self::Vfx => SeekCapability::ReplayRequired,
         }
     }
 }
@@ -99,14 +265,13 @@ pub struct TimelineTrackDescriptor {
 ///
 /// Editor menus and external authoring adapters consume this table instead of
 /// maintaining independent hard-coded track-family lists.
-pub const TIMELINE_TRACK_REGISTRY: [TimelineTrackDescriptor; 7] = [
+pub const TIMELINE_TRACK_REGISTRY: [TimelineTrackDescriptor; 6] = [
     TimelineTrackDescriptor { type_id: "engine.timeline.animation", kind: TimelineTrackKind::Animation, label: "Animation", seek_capability: SeekCapability::Seekable, supports_curves: false },
     TimelineTrackDescriptor { type_id: "engine.timeline.transform_property", kind: TimelineTrackKind::TransformProperty, label: "Transform / Property", seek_capability: SeekCapability::Stateless, supports_curves: true },
     TimelineTrackDescriptor { type_id: "engine.timeline.camera_cut", kind: TimelineTrackKind::CameraCut, label: "Camera Cut", seek_capability: SeekCapability::Stateless, supports_curves: false },
     TimelineTrackDescriptor { type_id: "engine.timeline.event", kind: TimelineTrackKind::Event, label: "Event", seek_capability: SeekCapability::Stateless, supports_curves: false },
     TimelineTrackDescriptor { type_id: "engine.timeline.audio", kind: TimelineTrackKind::Audio, label: "Audio", seek_capability: SeekCapability::NonSeekable, supports_curves: false },
     TimelineTrackDescriptor { type_id: "engine.timeline.vfx", kind: TimelineTrackKind::Vfx, label: "VFX", seek_capability: SeekCapability::ReplayRequired, supports_curves: false },
-    TimelineTrackDescriptor { type_id: "engine.timeline.prefab", kind: TimelineTrackKind::Prefab, label: "Prefab", seek_capability: SeekCapability::ReplayRequired, supports_curves: false },
 ];
 
 /// Returns the canonical Timeline track registry.
@@ -118,19 +283,19 @@ pub const fn timeline_track_registry() -> &'static [TimelineTrackDescriptor] {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TimelineClipPayload {
-    /// Animation asset sampled at local clip time.
+    /// Animation Set motion slot sampled at local clip time.
     Animation {
-        /// Stable motion asset identifier.
-        motion: AssetId,
+        /// Stable Animation Set asset owning the selected motion slot.
+        animation_set: AssetId,
+        /// Stable motion-slot identifier resolved inside `animation_set`.
+        motion_slot: MotionSlotId,
     },
-    /// Entity property interpolation.
+    /// Entity property curve.
     TransformProperty {
-        /// Stable property path interpreted by the production adapter.
+        /// Stable property ID from [`TIMELINE_PROPERTY_REGISTRY`].
         property: String,
-        /// Property value at the start of the clip.
-        from: TimelinePropertyValue,
-        /// Property value at the end of the clip.
-        to: TimelinePropertyValue,
+        /// Ordered clip-local curve keys.
+        keys: Vec<TimelinePropertyKey>,
     },
     /// Runtime-only active-camera override.
     CameraCut,
@@ -157,16 +322,18 @@ pub enum TimelineClipPayload {
         /// Whether the effect loops while the clip is active.
         looping: bool,
     },
-    /// Production prefab spawn request.
-    Prefab {
-        /// Stable prefab asset identifier.
-        prefab: AssetId,
-    },
 }
 impl TimelineClipPayload {
     /// Family of this payload.
     pub const fn kind(&self) -> TimelineTrackKind {
-        match self { Self::Animation { .. } => TimelineTrackKind::Animation, Self::TransformProperty { .. } => TimelineTrackKind::TransformProperty, Self::CameraCut => TimelineTrackKind::CameraCut, Self::Event { .. } => TimelineTrackKind::Event, Self::Audio { .. } => TimelineTrackKind::Audio, Self::Vfx { .. } => TimelineTrackKind::Vfx, Self::Prefab { .. } => TimelineTrackKind::Prefab }
+        match self {
+            Self::Animation { .. } => TimelineTrackKind::Animation,
+            Self::TransformProperty { .. } => TimelineTrackKind::TransformProperty,
+            Self::CameraCut => TimelineTrackKind::CameraCut,
+            Self::Event { .. } => TimelineTrackKind::Event,
+            Self::Audio { .. } => TimelineTrackKind::Audio,
+            Self::Vfx { .. } => TimelineTrackKind::Vfx,
+        }
     }
 }
 
@@ -310,7 +477,25 @@ pub fn compile_timeline(document: &TimelineDocument) -> TimelineCompilation {
         clips.sort_by(|a,b| (a.start, a.id.as_str()).cmp(&(b.start, b.id.as_str())));
         for (item_index, clip) in clips.into_iter().enumerate() {
             let payload = CompiledTimelinePayload::Clip { clip_id: clip.id.clone(), track_id: track.id.clone(), binding: track.binding.clone(), duration: clip.duration, source_offset: clip.source_offset, payload: clip.payload.clone() };
-            entries.push(CompiledEntry::interval(track_index as u32, item_index as u32, clip.start, clip.end(), track.kind.seek_capability(), payload));
+            if track.kind == TimelineTrackKind::Event {
+                entries.push(CompiledEntry::point(
+                    track_index as u32,
+                    item_index as u32,
+                    clip.start,
+                    SeekCapability::Stateless,
+                    true,
+                    payload,
+                ));
+            } else {
+                entries.push(CompiledEntry::interval(
+                    track_index as u32,
+                    item_index as u32,
+                    clip.start,
+                    clip.end(),
+                    track.kind.seek_capability(),
+                    payload,
+                ));
+            }
         }
     }
     let mut markers = document.markers.iter().filter(|m| m.event.is_some()).collect::<Vec<_>>();
@@ -324,22 +509,189 @@ pub fn compile_timeline(document: &TimelineDocument) -> TimelineCompilation {
 /// Pure document validation.
 pub fn validate_timeline(document: &TimelineDocument) -> Vec<TimelineDiagnostic> {
     let mut out = Vec::new();
-    if document.schema_version != TIMELINE_SCHEMA_VERSION { out.push(error_diag("timeline.schema_version", document.id.as_str(), format!("expected schema {}, got {}", TIMELINE_SCHEMA_VERSION, document.schema_version))); }
-    if document.duration < TimelineTick::ZERO { out.push(error_diag("timeline.duration", document.id.as_str(), "duration must be nonnegative")); }
-    if document.display_rate.numerator == 0 || document.display_rate.denominator == 0 { out.push(error_diag("timeline.display_rate", document.id.as_str(), "display rate must be nonzero")); }
+    if document.schema_version != TIMELINE_SCHEMA_VERSION {
+        out.push(error_diag(
+            "timeline.schema_version",
+            document.id.as_str(),
+            format!(
+                "expected schema {}, got {}",
+                TIMELINE_SCHEMA_VERSION, document.schema_version
+            ),
+        ));
+    }
+    if document.duration < TimelineTick::ZERO {
+        out.push(error_diag(
+            "timeline.duration",
+            document.id.as_str(),
+            "duration must be nonnegative",
+        ));
+    }
+    if document.display_rate.numerator == 0 || document.display_rate.denominator == 0 {
+        out.push(error_diag(
+            "timeline.display_rate",
+            document.id.as_str(),
+            "display rate must be nonzero",
+        ));
+    }
+
     let mut ids = BTreeSet::new();
     for track in &document.tracks {
-        if !ids.insert(track.id.as_str().to_owned()) { out.push(error_diag("timeline.duplicate_id", track.id.as_str(), "duplicate stable ID")); }
-        let needs_entity = matches!(track.kind, TimelineTrackKind::Animation | TimelineTrackKind::TransformProperty | TimelineTrackKind::CameraCut | TimelineTrackKind::Audio | TimelineTrackKind::Vfx);
-        if needs_entity && !matches!(track.binding, Some(TimelineBinding::Entity { .. })) { out.push(error_diag("timeline.binding.required_entity", track.id.as_str(), "track requires a stable entity binding")); }
+        if !ids.insert(track.id.as_str().to_owned()) {
+            out.push(error_diag(
+                "timeline.duplicate_id",
+                track.id.as_str(),
+                "duplicate stable ID",
+            ));
+        }
+        match track.kind {
+            TimelineTrackKind::Animation
+            | TimelineTrackKind::TransformProperty
+            | TimelineTrackKind::CameraCut
+            | TimelineTrackKind::Vfx => {
+                if !matches!(track.binding, Some(TimelineBinding::Entity { .. })) {
+                    out.push(error_diag(
+                        "timeline.binding.required_entity",
+                        track.id.as_str(),
+                        "track requires a stable entity binding",
+                    ));
+                }
+            }
+            TimelineTrackKind::Audio => {
+                if track.binding.is_some()
+                    && !matches!(track.binding, Some(TimelineBinding::Entity { .. }))
+                {
+                    out.push(error_diag(
+                        "timeline.binding.audio_entity_only",
+                        track.id.as_str(),
+                        "audio binding must be absent for non-spatial playback or a stable entity for spatial playback",
+                    ));
+                }
+            }
+            TimelineTrackKind::Event => {
+                if track.binding.is_some() {
+                    out.push(error_diag(
+                        "timeline.binding.event_targetless",
+                        track.id.as_str(),
+                        "first-release Timeline Event tracks are sequence-level and must not declare a target binding",
+                    ));
+                }
+            }
+        }
+
         for clip in &track.clips {
-            if !ids.insert(clip.id.as_str().to_owned()) { out.push(error_diag("timeline.duplicate_id", clip.id.as_str(), "duplicate stable ID")); }
-            if clip.payload.kind() != track.kind { out.push(error_diag("timeline.clip.kind_mismatch", clip.id.as_str(), "clip payload does not match track family")); }
-            if clip.start < TimelineTick::ZERO || clip.duration <= TimelineTick::ZERO || clip.end() > document.duration { out.push(error_diag("timeline.clip.range", clip.id.as_str(), "clip range must be positive and inside the Timeline")); }
-            if clip.source_offset < TimelineTick::ZERO { out.push(error_diag("timeline.clip.source_offset", clip.id.as_str(), "source offset must be nonnegative")); }
-            if let TimelineClipPayload::Audio { volume, .. } = &clip.payload && (!volume.is_finite() || !(0.0..=1.0).contains(volume)) { out.push(error_diag("timeline.audio.volume", clip.id.as_str(), "audio volume must be finite in [0,1]")); }
+            if !ids.insert(clip.id.as_str().to_owned()) {
+                out.push(error_diag(
+                    "timeline.duplicate_id",
+                    clip.id.as_str(),
+                    "duplicate stable ID",
+                ));
+            }
+            if clip.payload.kind() != track.kind {
+                out.push(error_diag(
+                    "timeline.clip.kind_mismatch",
+                    clip.id.as_str(),
+                    "clip payload does not match track family",
+                ));
+            }
+            if clip.start < TimelineTick::ZERO
+                || clip.duration <= TimelineTick::ZERO
+                || clip.end() > document.duration
+            {
+                out.push(error_diag(
+                    "timeline.clip.range",
+                    clip.id.as_str(),
+                    "clip range must be positive and inside the Timeline",
+                ));
+            }
+            if clip.source_offset < TimelineTick::ZERO {
+                out.push(error_diag(
+                    "timeline.clip.source_offset",
+                    clip.id.as_str(),
+                    "source offset must be nonnegative",
+                ));
+            }
+
+            match &clip.payload {
+                TimelineClipPayload::TransformProperty { property, keys } => {
+                    let Some(descriptor) = timeline_property_descriptor(property) else {
+                        out.push(error_diag(
+                            "timeline.property.unsupported",
+                            clip.id.as_str(),
+                            format!("unsupported Timeline property `{property}`"),
+                        ));
+                        continue;
+                    };
+                    if keys.is_empty() {
+                        out.push(error_diag(
+                            "timeline.property.keys_empty",
+                            clip.id.as_str(),
+                            "property curves require at least one key",
+                        ));
+                    }
+                    let mut previous_tick = None;
+                    for key in keys {
+                        if key.tick < TimelineTick::ZERO || key.tick > clip.duration {
+                            out.push(error_diag(
+                                "timeline.property.key_range",
+                                clip.id.as_str(),
+                                "property key ticks must be clip-local and inside the clip duration",
+                            ));
+                        }
+                        if previous_tick.is_some_and(|previous| key.tick <= previous) {
+                            out.push(error_diag(
+                                "timeline.property.key_order",
+                                clip.id.as_str(),
+                                "property key ticks must be strictly increasing",
+                            ));
+                        }
+                        previous_tick = Some(key.tick);
+                        if key.value.kind() != descriptor.value_kind {
+                            out.push(error_diag(
+                                "timeline.property.type_mismatch",
+                                clip.id.as_str(),
+                                format!(
+                                    "property `{}` requires {:?} keys",
+                                    descriptor.type_id, descriptor.value_kind
+                                ),
+                            ));
+                        }
+                        if !key.value.is_valid_numeric_value() {
+                            out.push(error_diag(
+                                "timeline.property.non_finite",
+                                clip.id.as_str(),
+                                "property keys must be finite and quaternions must be non-zero",
+                            ));
+                        }
+                    }
+                }
+                TimelineClipPayload::Event { name, payload } => {
+                    validate_event_name(name, clip.id.as_str(), &mut out);
+                    if payload.len() > MAX_TIMELINE_EVENT_PAYLOAD_BYTES {
+                        out.push(error_diag(
+                            "timeline.event.payload_too_large",
+                            clip.id.as_str(),
+                            format!(
+                                "event payload exceeds {MAX_TIMELINE_EVENT_PAYLOAD_BYTES} UTF-8 bytes"
+                            ),
+                        ));
+                    }
+                }
+                TimelineClipPayload::Audio { volume, .. } => {
+                    if !volume.is_finite() || !(0.0..=1.0).contains(volume) {
+                        out.push(error_diag(
+                            "timeline.audio.volume",
+                            clip.id.as_str(),
+                            "audio volume must be finite in [0,1]",
+                        ));
+                    }
+                }
+                TimelineClipPayload::Animation { .. }
+                | TimelineClipPayload::CameraCut
+                | TimelineClipPayload::Vfx { .. } => {}
+            }
         }
     }
+
     for marker in &document.markers {
         if !ids.insert(marker.id.as_str().to_owned()) {
             out.push(error_diag(
@@ -355,8 +707,26 @@ pub fn validate_timeline(document: &TimelineDocument) -> Vec<TimelineDiagnostic>
                 "marker must lie inside the Timeline",
             ));
         }
+        if let Some(event) = marker.event.as_deref() {
+            validate_event_name(event, marker.id.as_str(), &mut out);
+        }
     }
     out
+}
+
+fn validate_event_name(name: &str, target: &str, out: &mut Vec<TimelineDiagnostic>) {
+    if name.trim().is_empty()
+        || name.len() > MAX_TIMELINE_EVENT_NAME_BYTES
+        || name.chars().any(char::is_control)
+    {
+        out.push(error_diag(
+            "timeline.event.invalid_name",
+            target,
+            format!(
+                "event name must be non-blank, contain no control characters, and fit within {MAX_TIMELINE_EVENT_NAME_BYTES} UTF-8 bytes"
+            ),
+        ));
+    }
 }
 fn error_diag(code: &'static str, target: &str, message: impl Into<String>) -> TimelineDiagnostic { TimelineDiagnostic { severity: TimelineDiagnosticSeverity::Error, code, target: target.to_owned(), message: message.into() } }
 
@@ -379,4 +749,254 @@ pub fn save_timeline(path:&Path, document:&TimelineDocument)->Result<(),Timeline
 /// Loads current-format-only Timeline JSON and validates it.
 pub fn load_timeline(path:&Path)->Result<TimelineDocument,TimelineDocumentError>{ if !path.to_string_lossy().ends_with(TIMELINE_FILE_SUFFIX){return Err(TimelineDocumentError::WrongSuffix)} let text=std::fs::read_to_string(path).map_err(TimelineDocumentError::Io)?; let document:TimelineDocument=serde_json::from_str(&text).map_err(TimelineDocumentError::Json)?; let diagnostics=validate_timeline(&document); if diagnostics.iter().any(|d|d.severity==TimelineDiagnosticSeverity::Error){Err(TimelineDocumentError::Invalid(diagnostics))}else{Ok(document)} }
 
-#[cfg(test)] mod tests { use super::*; #[test] fn stable_ids_survive_json_roundtrip(){ let doc=TimelineDocument::new("shot",TimelineTick::new(48_000)); let json=serde_json::to_string(&doc).unwrap(); let loaded:TimelineDocument=serde_json::from_str(&json).unwrap(); assert_eq!(doc.id,loaded.id); assert_eq!(doc.duration,loaded.duration); } #[test] fn mismatched_typed_clip_is_diagnostic(){ let mut doc=TimelineDocument::new("x",TimelineTick::new(100)); doc.tracks.push(TimelineTrack{id:TimelineTrackId::generate(),name:"x".into(),kind:TimelineTrackKind::Audio,enabled:true,binding:Some(TimelineBinding::Entity{entity:EntityId::generate()}),clips:vec![TimelineClip{id:TimelineClipId::generate(),name:"bad".into(),start:TimelineTick::ZERO,duration:TimelineTick::new(10),source_offset:TimelineTick::ZERO,payload:TimelineClipPayload::CameraCut}]}); assert!(doc.compile().schedule.is_none()); } }
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn clip(payload: TimelineClipPayload) -> TimelineClip {
+        TimelineClip {
+            id: TimelineClipId::generate(),
+            name: "clip".into(),
+            start: TimelineTick::ZERO,
+            duration: TimelineTick::new(10),
+            source_offset: TimelineTick::ZERO,
+            payload,
+        }
+    }
+
+    #[test]
+    fn stable_ids_survive_json_roundtrip() {
+        let doc = TimelineDocument::new("shot", TimelineTick::new(48_000));
+        let json = serde_json::to_string(&doc).unwrap();
+        let loaded: TimelineDocument = serde_json::from_str(&json).unwrap();
+        assert_eq!(doc.id, loaded.id);
+        assert_eq!(doc.duration, loaded.duration);
+    }
+
+    #[test]
+    fn first_release_track_registry_contains_exactly_the_six_adr_families() {
+        let type_ids = timeline_track_registry()
+            .iter()
+            .map(|descriptor| descriptor.type_id)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            type_ids,
+            vec![
+                "engine.timeline.animation",
+                "engine.timeline.transform_property",
+                "engine.timeline.camera_cut",
+                "engine.timeline.event",
+                "engine.timeline.audio",
+                "engine.timeline.vfx",
+            ]
+        );
+    }
+
+    #[test]
+    fn animation_payload_persists_animation_set_and_motion_slot_identity() {
+        let animation_set = AssetId::generate();
+        let motion_slot = MotionSlotId::generate();
+        let payload = TimelineClipPayload::Animation {
+            animation_set: animation_set.clone(),
+            motion_slot: motion_slot.clone(),
+        };
+        let json = serde_json::to_string(&payload).unwrap();
+        let loaded: TimelineClipPayload = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            loaded,
+            TimelineClipPayload::Animation {
+                animation_set,
+                motion_slot
+            }
+        );
+        assert!(json.contains("animation_set"));
+        assert!(json.contains("motion_slot"));
+    }
+
+    #[test]
+    fn unbound_audio_track_is_valid_for_non_spatial_playback() {
+        let mut doc = TimelineDocument::new("audio", TimelineTick::new(100));
+        doc.tracks.push(TimelineTrack {
+            id: TimelineTrackId::generate(),
+            name: "music".into(),
+            kind: TimelineTrackKind::Audio,
+            enabled: true,
+            binding: None,
+            clips: vec![clip(TimelineClipPayload::Audio {
+                clip: AssetId::generate(),
+                volume: 1.0,
+                looping: false,
+            })],
+        });
+        assert!(validate_timeline(&doc).is_empty());
+    }
+
+    #[test]
+    fn unsupported_property_is_rejected_instead_of_using_reflection() {
+        let mut doc = TimelineDocument::new("property", TimelineTick::new(100));
+        doc.tracks.push(TimelineTrack {
+            id: TimelineTrackId::generate(),
+            name: "property".into(),
+            kind: TimelineTrackKind::TransformProperty,
+            enabled: true,
+            binding: Some(TimelineBinding::Entity {
+                entity: EntityId::generate(),
+            }),
+            clips: vec![clip(TimelineClipPayload::TransformProperty {
+                property: "engine.private.arbitrary_field".into(),
+                keys: vec![TimelinePropertyKey {
+                    tick: TimelineTick::ZERO,
+                    value: TimelinePropertyValue::Number(0.0),
+                }],
+            })],
+        });
+        let diagnostics = validate_timeline(&doc);
+        assert!(diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "timeline.property.unsupported"));
+    }
+
+    #[test]
+    fn property_curve_samples_multiple_clip_local_keys() {
+        let keys = vec![
+            TimelinePropertyKey {
+                tick: TimelineTick::ZERO,
+                value: TimelinePropertyValue::Vec3([0.0, 2.0, 4.0]),
+            },
+            TimelinePropertyKey {
+                tick: TimelineTick::new(10),
+                value: TimelinePropertyValue::Vec3([10.0, 4.0, 8.0]),
+            },
+        ];
+        assert_eq!(
+            sample_timeline_property(&keys, TimelineTick::new(5)),
+            Some(TimelinePropertyValue::Vec3([5.0, 3.0, 6.0]))
+        );
+        assert_eq!(
+            sample_timeline_property(&keys, TimelineTick::new(20)),
+            Some(TimelinePropertyValue::Vec3([10.0, 4.0, 8.0]))
+        );
+    }
+
+    #[test]
+    fn property_curve_rejects_non_increasing_keys() {
+        let mut doc = TimelineDocument::new("property", TimelineTick::new(100));
+        doc.tracks.push(TimelineTrack {
+            id: TimelineTrackId::generate(),
+            name: "property".into(),
+            kind: TimelineTrackKind::TransformProperty,
+            enabled: true,
+            binding: Some(TimelineBinding::Entity {
+                entity: EntityId::generate(),
+            }),
+            clips: vec![clip(TimelineClipPayload::TransformProperty {
+                property: "engine.transform.translation".into(),
+                keys: vec![
+                    TimelinePropertyKey {
+                        tick: TimelineTick::new(5),
+                        value: TimelinePropertyValue::Vec3([0.0, 0.0, 0.0]),
+                    },
+                    TimelinePropertyKey {
+                        tick: TimelineTick::new(5),
+                        value: TimelinePropertyValue::Vec3([1.0, 1.0, 1.0]),
+                    },
+                ],
+            })],
+        });
+        assert!(validate_timeline(&doc)
+            .iter()
+            .any(|diagnostic| diagnostic.code == "timeline.property.key_order"));
+    }
+
+    #[test]
+    fn event_payloads_are_bounded() {
+        let mut doc = TimelineDocument::new("event", TimelineTick::new(100));
+        doc.tracks.push(TimelineTrack {
+            id: TimelineTrackId::generate(),
+            name: "events".into(),
+            kind: TimelineTrackKind::Event,
+            enabled: true,
+            binding: None,
+            clips: vec![clip(TimelineClipPayload::Event {
+                name: "sequence.started".into(),
+                payload: "x".repeat(MAX_TIMELINE_EVENT_PAYLOAD_BYTES + 1),
+            })],
+        });
+        let diagnostics = validate_timeline(&doc);
+        assert!(diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "timeline.event.payload_too_large"));
+    }
+
+    #[test]
+    fn event_clips_use_exact_crossing_and_scrub_preview_semantics() {
+        let mut doc = TimelineDocument::new("events", TimelineTick::new(100));
+        doc.tracks.push(TimelineTrack {
+            id: TimelineTrackId::generate(),
+            name: "events".into(),
+            kind: TimelineTrackKind::Event,
+            enabled: true,
+            binding: None,
+            clips: vec![TimelineClip {
+                id: TimelineClipId::generate(),
+                name: "trigger".into(),
+                start: TimelineTick::new(10),
+                duration: TimelineTick::new(20),
+                source_offset: TimelineTick::ZERO,
+                payload: TimelineClipPayload::Event {
+                    name: "sequence.trigger".into(),
+                    payload: String::new(),
+                },
+            }],
+        });
+        let schedule = compile_timeline(&doc).schedule.expect("valid event Timeline");
+
+        let crossed = schedule.evaluate(&engine_timeline::EvaluationRequest {
+            previous_tick: TimelineTick::new(9),
+            current_tick: TimelineTick::new(10),
+            mode: engine_timeline::EvaluationMode::Playback,
+            generation: 1,
+        });
+        assert_eq!(crossed.len(), 1);
+
+        let held_inside_old_interval = schedule.evaluate(&engine_timeline::EvaluationRequest {
+            previous_tick: TimelineTick::new(10),
+            current_tick: TimelineTick::new(11),
+            mode: engine_timeline::EvaluationMode::Playback,
+            generation: 1,
+        });
+        assert!(held_inside_old_interval.is_empty());
+
+        let scrubbed = schedule.evaluate(&engine_timeline::EvaluationRequest {
+            previous_tick: TimelineTick::ZERO,
+            current_tick: TimelineTick::new(10),
+            mode: engine_timeline::EvaluationMode::Seek { preview_events: false },
+            generation: 2,
+        });
+        assert!(scrubbed.is_empty());
+
+        let previewed = schedule.evaluate(&engine_timeline::EvaluationRequest {
+            previous_tick: TimelineTick::ZERO,
+            current_tick: TimelineTick::new(10),
+            mode: engine_timeline::EvaluationMode::Seek { preview_events: true },
+            generation: 3,
+        });
+        assert_eq!(previewed.len(), 1);
+    }
+
+    #[test]
+    fn mismatched_typed_clip_is_diagnostic() {
+        let mut doc = TimelineDocument::new("x", TimelineTick::new(100));
+        doc.tracks.push(TimelineTrack {
+            id: TimelineTrackId::generate(),
+            name: "x".into(),
+            kind: TimelineTrackKind::Audio,
+            enabled: true,
+            binding: Some(TimelineBinding::Entity {
+                entity: EntityId::generate(),
+            }),
+            clips: vec![clip(TimelineClipPayload::CameraCut)],
+        });
+        assert!(doc.compile().schedule.is_none());
+    }
+}
