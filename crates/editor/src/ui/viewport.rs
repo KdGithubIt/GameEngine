@@ -146,6 +146,19 @@ impl EditorApp {
                 }
                 ui.separator();
             }
+            for mode in [
+                crate::scene_view::native_2d_mode::SceneViewMode::ThreeD,
+                crate::scene_view::native_2d_mode::SceneViewMode::TwoD,
+            ] {
+                ui.selectable_value(&mut self.scene_view.mode, mode, mode.label())
+                    .on_hover_text(match mode {
+                        crate::scene_view::native_2d_mode::SceneViewMode::ThreeD =>
+                            "Perspective 3D Scene View",
+                        crate::scene_view::native_2d_mode::SceneViewMode::TwoD =>
+                            "Orthographic XY Native 2D Scene View",
+                    });
+            }
+            ui.separator();
             self.show_gizmo_selectors(ui);
             ui.separator();
             self.show_camera_menu(ui);
