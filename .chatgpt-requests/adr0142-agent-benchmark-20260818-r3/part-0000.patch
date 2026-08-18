@@ -1,0 +1,1341 @@
+diff --git a/crates/editor/resources/local_model_catalog_v1.json b/crates/editor/resources/local_model_catalog_v1.json
+new file mode 100644
+index 0000000000000000000000000000000000000000..c94ebe7543f1ee1e18b159e0d7ab30b02ac0229f
+--- /dev/null
++++ b/crates/editor/resources/local_model_catalog_v1.json
+@@ -0,0 +1,5 @@
++{
++  "schema_version": 1,
++  "catalog_version": "local-model-catalog-v1",
++  "entries": []
++}
+diff --git a/crates/editor/src/agent_benchmark.rs b/crates/editor/src/agent_benchmark.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..871b8b52e5b755ee82184b1f14af2c4b647d7c31
+--- /dev/null
++++ b/crates/editor/src/agent_benchmark.rs
+@@ -0,0 +1,974 @@
++//! Versioned GameEngine Agent Benchmark records and evidence-derived local model catalog.
++//!
++//! Benchmark data is machine-local application data. Records intentionally contain no
++//! conversation transcript, retrieved source text, project path, credentials, or model prompt.
++
++use crate::agent_host::{
++    AgentEventEvidence, AgentEventKind, AgentRun, AgentRunState, CompletionStatus,
++};
++use crate::native_agent::{InstalledModelInventory, NativeMetrics};
++use crate::native_agent_runtime::{HarnessPolicy, NATIVE_WRITE_HARNESS_VERSION};
++use crate::resource_arbitration::{InferenceWorkload, QualityPreference, TelemetryValue};
++use serde::{Deserialize, Serialize};
++use std::fs::{self, OpenOptions};
++use std::io::Write;
++use std::path::PathBuf;
++use std::time::{SystemTime, UNIX_EPOCH};
++
++pub(crate) const BENCHMARK_SCHEMA_VERSION: u32 = 1;
++pub(crate) const BENCHMARK_CORPUS_VERSION: &str = "gameengine-agent-v1";
++pub(crate) const BENCHMARK_HARNESS_VERSION: &str = "gameengine-agent-benchmark-harness-v1";
++const WORKLOAD_POLICY_VERSION: &str = "adr0135-workload-policy-v1";
++const CATALOG_SCHEMA_VERSION: u32 = 1;
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(rename_all = "snake_case")]
++pub(crate) enum BenchmarkTaskKind {
++    ReadQuestion,
++    ProjectInspection,
++    CodeImplementation,
++    TypedAuthoringMutation,
++    ValidationRepair,
++    RuntimeInteraction,
++    VisualEvaluation,
++}
++
++#[derive(Debug, Clone, Copy)]
++pub(crate) struct BenchmarkTaskDescriptor {
++    pub(crate) id: &'static str,
++    pub(crate) label: &'static str,
++    pub(crate) kind: BenchmarkTaskKind,
++    pub(crate) completion_criteria: &'static [&'static str],
++}
++
++pub(crate) const BENCHMARK_TASKS: [BenchmarkTaskDescriptor; 7] = [
++    BenchmarkTaskDescriptor {
++        id: "read_question_v1",
++        label: "Read question",
++        kind: BenchmarkTaskKind::ReadQuestion,
++        completion_criteria: &["answer_returned", "provenance_reported"],
++    },
++    BenchmarkTaskDescriptor {
++        id: "project_inspection_v1",
++        label: "Project inspection",
++        kind: BenchmarkTaskKind::ProjectInspection,
++        completion_criteria: &["acceptance_criteria", "authoring_validation"],
++    },
++    BenchmarkTaskDescriptor {
++        id: "code_implementation_v1",
++        label: "Code implementation",
++        kind: BenchmarkTaskKind::CodeImplementation,
++        completion_criteria: &["acceptance_criteria", "source_validation"],
++    },
++    BenchmarkTaskDescriptor {
++        id: "typed_authoring_mutation_v1",
++        label: "Typed authoring mutation",
++        kind: BenchmarkTaskKind::TypedAuthoringMutation,
++        completion_criteria: &["acceptance_criteria", "authoring_validation"],
++    },
++    BenchmarkTaskDescriptor {
++        id: "validation_repair_v1",
++        label: "Validation and repair",
++        kind: BenchmarkTaskKind::ValidationRepair,
++        completion_criteria: &["acceptance_criteria", "source_validation"],
++    },
++    BenchmarkTaskDescriptor {
++        id: "runtime_interaction_v1",
++        label: "Runtime interaction",
++        kind: BenchmarkTaskKind::RuntimeInteraction,
++        completion_criteria: &["play_launch", "interaction_scenarios"],
++    },
++    BenchmarkTaskDescriptor {
++        id: "visual_evaluation_v1",
++        label: "Visual evaluation",
++        kind: BenchmarkTaskKind::VisualEvaluation,
++        completion_criteria: &["frame_capture", "visual_evaluation"],
++    },
++];
++
++pub(crate) fn benchmark_task(id: &str) -> Option<&'static BenchmarkTaskDescriptor> {
++    BENCHMARK_TASKS.iter().find(|task| task.id == id)
++}
++
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++pub(crate) struct BenchmarkModelIdentity {
++    pub(crate) backend_id: String,
++    pub(crate) model_id: String,
++    pub(crate) model_version: TelemetryValue<String>,
++    pub(crate) quantization: TelemetryValue<String>,
++    pub(crate) representation_size_bytes: TelemetryValue<u64>,
++    pub(crate) backend_runtime_version: TelemetryValue<String>,
++}
++
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++pub(crate) struct BenchmarkHardwareIdentity {
++    pub(crate) platform: String,
++    pub(crate) gpu: TelemetryValue<String>,
++    pub(crate) total_gpu_memory_bytes: TelemetryValue<u64>,
++    pub(crate) total_system_memory_bytes: TelemetryValue<u64>,
++}
++
++impl Default for BenchmarkHardwareIdentity {
++    fn default() -> Self {
++        Self {
++            platform: format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH),
++            gpu: TelemetryValue::Unavailable,
++            total_gpu_memory_bytes: TelemetryValue::Unavailable,
++            total_system_memory_bytes: TelemetryValue::Unavailable,
++        }
++    }
++}
++
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++pub(crate) struct BenchmarkToolBudget {
++    pub(crate) max_model_turns: u32,
++    pub(crate) max_tool_failures: u32,
++    pub(crate) repair_budget: u32,
++    pub(crate) permission_budget: Vec<String>,
++}
++
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++pub(crate) struct BenchmarkIdentity {
++    pub(crate) corpus_version: String,
++    pub(crate) task_id: String,
++    pub(crate) harness_version: String,
++    pub(crate) runtime_harness_version: String,
++    pub(crate) model: BenchmarkModelIdentity,
++    pub(crate) hardware: BenchmarkHardwareIdentity,
++    pub(crate) quality: QualityPreference,
++    pub(crate) workload_policy_version: String,
++    pub(crate) observed_workload: TelemetryValue<InferenceWorkload>,
++    pub(crate) tool_budget: BenchmarkToolBudget,
++    pub(crate) completion_criteria: Vec<String>,
++}
++
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++pub(crate) struct BenchmarkMetrics {
++    pub(crate) acceptance_success: TelemetryValue<bool>,
++    pub(crate) completion_success: TelemetryValue<bool>,
++    pub(crate) model_turns: TelemetryValue<u64>,
++    pub(crate) tool_calls: TelemetryValue<u64>,
++    pub(crate) invalid_or_failed_tool_calls: TelemetryValue<u64>,
++    pub(crate) code_edits: TelemetryValue<u64>,
++    pub(crate) validation_attempts: TelemetryValue<u64>,
++    pub(crate) repair_loops: TelemetryValue<u64>,
++    pub(crate) play_attempts: TelemetryValue<u64>,
++    pub(crate) frame_capture_attempts: TelemetryValue<u64>,
++    pub(crate) visual_evaluation_attempts: TelemetryValue<u64>,
++    pub(crate) human_interventions: TelemetryValue<u64>,
++    pub(crate) elapsed_ms: TelemetryValue<u64>,
++    pub(crate) prompt_tokens: TelemetryValue<u64>,
++    pub(crate) response_tokens: TelemetryValue<u64>,
++    pub(crate) load_latency_ms: TelemetryValue<u64>,
++    pub(crate) ttft_ms: TelemetryValue<u64>,
++    pub(crate) generation_tokens_per_second_milli: TelemetryValue<u64>,
++    pub(crate) peak_backend_gpu_memory_bytes: TelemetryValue<u64>,
++    pub(crate) peak_editor_gpu_memory_bytes: TelemetryValue<u64>,
++    pub(crate) model_unload_reload_ms: TelemetryValue<u64>,
++    pub(crate) renderer_reclaim_resume_ms: TelemetryValue<u64>,
++    pub(crate) oom_failures: TelemetryValue<u64>,
++}
++
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++pub(crate) struct BenchmarkRecord {
++    pub(crate) schema_version: u32,
++    pub(crate) recorded_unix_ms: u64,
++    pub(crate) identity: BenchmarkIdentity,
++    pub(crate) metrics: BenchmarkMetrics,
++}
++
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub(crate) enum ComparisonEquivalence {
++    EquivalentModelComparison,
++    NonEquivalent(Vec<&'static str>),
++}
++
++pub(crate) fn comparison_equivalence(
++    left: &BenchmarkRecord,
++    right: &BenchmarkRecord,
++) -> ComparisonEquivalence {
++    let mut differences = Vec::new();
++    if left.identity.corpus_version != right.identity.corpus_version {
++        differences.push("corpus_version");
++    }
++    if left.identity.task_id != right.identity.task_id {
++        differences.push("task_id");
++    }
++    if left.identity.harness_version != right.identity.harness_version
++        || left.identity.runtime_harness_version != right.identity.runtime_harness_version
++    {
++        differences.push("harness_version");
++    }
++    if left.identity.model.backend_id != right.identity.model.backend_id
++        || left.identity.model.backend_runtime_version != right.identity.model.backend_runtime_version
++    {
++        differences.push("backend_runtime");
++    }
++    if left.identity.hardware != right.identity.hardware {
++        differences.push("hardware");
++    }
++    if left.identity.quality != right.identity.quality
++        || left.identity.workload_policy_version != right.identity.workload_policy_version
++        || left.identity.observed_workload != right.identity.observed_workload
++    {
++        differences.push("quality_or_workload");
++    }
++    if left.identity.tool_budget != right.identity.tool_budget {
++        differences.push("tool_or_permission_budget");
++    }
++    if left.identity.completion_criteria != right.identity.completion_criteria {
++        differences.push("completion_criteria");
++    }
++    if differences.is_empty() {
++        ComparisonEquivalence::EquivalentModelComparison
++    } else {
++        ComparisonEquivalence::NonEquivalent(differences)
++    }
++}
++
++pub(crate) struct BenchmarkStore {
++    root: PathBuf,
++}
++
++impl BenchmarkStore {
++    pub(crate) fn open(root: PathBuf) -> Result<Self, String> {
++        fs::create_dir_all(&root).map_err(|error| error.to_string())?;
++        Ok(Self { root })
++    }
++
++    pub(crate) fn load(&self) -> Result<Vec<BenchmarkRecord>, String> {
++        let mut paths = fs::read_dir(&self.root)
++            .map_err(|error| error.to_string())?
++            .collect::<Result<Vec<_>, _>>()
++            .map_err(|error| error.to_string())?
++            .into_iter()
++            .map(|entry| entry.path())
++            .filter(|path| path.extension().is_some_and(|extension| extension == std::ffi::OsStr::new("json")))
++            .collect::<Vec<_>>();
++        paths.sort();
++        let mut records = Vec::new();
++        for path in paths {
++            let bytes = fs::read(&path).map_err(|error| error.to_string())?;
++            let record = serde_json::from_slice::<BenchmarkRecord>(&bytes)
++                .map_err(|error| format!("{}: {error}", path.display()))?;
++            validate_record(&record)?;
++            records.push(record);
++        }
++        Ok(records)
++    }
++
++    pub(crate) fn record(&self, record: &BenchmarkRecord) -> Result<PathBuf, String> {
++        validate_record(record)?;
++        let bytes = serde_json::to_vec_pretty(record).map_err(|error| error.to_string())?;
++        let stem = format!(
++            "{}-{}-{}",
++            record.recorded_unix_ms,
++            safe_file_component(&record.identity.task_id),
++            safe_file_component(&record.identity.model.model_id),
++        );
++        for suffix in 0..1_000_u32 {
++            let file_name = if suffix == 0 {
++                format!("{stem}.json")
++            } else {
++                format!("{stem}-{suffix}.json")
++            };
++            let path = self.root.join(file_name);
++            match OpenOptions::new().write(true).create_new(true).open(&path) {
++                Ok(mut file) => {
++                    file.write_all(&bytes).map_err(|error| error.to_string())?;
++                    return Ok(path);
++                }
++                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
++                Err(error) => return Err(error.to_string()),
++            }
++        }
++        Err("could not allocate a unique benchmark record file".to_owned())
++    }
++}
++
++fn validate_record(record: &BenchmarkRecord) -> Result<(), String> {
++    if record.schema_version != BENCHMARK_SCHEMA_VERSION {
++        return Err(format!("unsupported benchmark schema version {}", record.schema_version));
++    }
++    if record.identity.corpus_version != BENCHMARK_CORPUS_VERSION {
++        return Err(format!("unsupported benchmark corpus `{}`", record.identity.corpus_version));
++    }
++    let Some(task) = benchmark_task(&record.identity.task_id) else {
++        return Err(format!("unknown benchmark task `{}`", record.identity.task_id));
++    };
++    let expected = task.completion_criteria.iter().map(|criterion| (*criterion).to_owned()).collect::<Vec<_>>();
++    if record.identity.completion_criteria != expected {
++        return Err("benchmark completion criteria do not match the versioned corpus task".to_owned());
++    }
++    if record.identity.model.backend_id.trim().is_empty() || record.identity.model.model_id.trim().is_empty() {
++        return Err("benchmark backend and model identity must be non-empty".to_owned());
++    }
++    Ok(())
++}
++
++#[derive(Debug, Clone, Deserialize)]
++struct CatalogManifest {
++    schema_version: u32,
++    catalog_version: String,
++    #[serde(default)]
++    entries: Vec<CatalogCandidate>,
++}
++
++#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
++pub(crate) struct CatalogCandidate {
++    pub(crate) backend_id: String,
++    pub(crate) model_id: String,
++    pub(crate) model_version: String,
++    pub(crate) quantization: String,
++    pub(crate) source: String,
++    pub(crate) license: String,
++    pub(crate) transfer_size_bytes: u64,
++    pub(crate) storage_size_bytes: u64,
++    pub(crate) memory_guidance: String,
++    pub(crate) context_limit: Option<u64>,
++    #[serde(default)]
++    pub(crate) modalities: Vec<String>,
++    #[serde(default)]
++    pub(crate) tool_capabilities: Vec<String>,
++}
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub(crate) enum CatalogProfile {
++    Lightweight,
++    Balanced,
++    HighQuality,
++}
++
++impl CatalogProfile {
++    pub(crate) const ALL: [Self; 3] = [Self::Lightweight, Self::Balanced, Self::HighQuality];
++
++    pub(crate) const fn label(self) -> &'static str {
++        match self {
++            Self::Lightweight => "Lightweight",
++            Self::Balanced => "Balanced",
++            Self::HighQuality => "High Quality",
++        }
++    }
++}
++
++#[derive(Debug, Clone)]
++pub(crate) struct CatalogRecommendation {
++    pub(crate) profile: CatalogProfile,
++    pub(crate) candidate: CatalogCandidate,
++    pub(crate) benchmark_version: String,
++    pub(crate) evidence_runs: usize,
++    pub(crate) aggregate_elapsed_ms: u64,
++}
++
++#[derive(Debug, Clone)]
++pub(crate) struct CuratedModelCatalog {
++    pub(crate) catalog_version: String,
++    recommendations: Vec<CatalogRecommendation>,
++}
++
++impl CuratedModelCatalog {
++    pub(crate) fn from_bundled_manifest(records: &[BenchmarkRecord]) -> Result<Self, String> {
++        let manifest = serde_json::from_str::<CatalogManifest>(include_str!(
++            "../resources/local_model_catalog_v1.json"
++        ))
++        .map_err(|error| error.to_string())?;
++        Self::derive(manifest, records)
++    }
++
++    fn derive(manifest: CatalogManifest, records: &[BenchmarkRecord]) -> Result<Self, String> {
++        if manifest.schema_version != CATALOG_SCHEMA_VERSION {
++            return Err(format!(
++                "unsupported local model catalog schema {}",
++                manifest.schema_version
++            ));
++        }
++        let mut qualified = Vec::new();
++        for candidate in &manifest.entries {
++            qualified.extend(qualify_candidate(candidate, records));
++        }
++        let Some(reference) = qualified.first().cloned() else {
++            return Ok(Self {
++                catalog_version: manifest.catalog_version,
++                recommendations: Vec::new(),
++            });
++        };
++        let comparable = qualified
++            .into_iter()
++            .filter(|candidate| candidate.context == reference.context)
++            .filter(|candidate| candidate.is_equivalent_to(&reference))
++            .collect::<Vec<_>>();
++        let mut recommendations = Vec::new();
++        if let Some(fastest) = comparable
++            .iter()
++            .min_by_key(|evidence| evidence.aggregate_elapsed_ms)
++            .cloned()
++        {
++            recommendations.push(fastest.recommendation(CatalogProfile::Lightweight));
++        }
++        if let Some(balanced) = comparable
++            .iter()
++            .min_by_key(|evidence| {
++                evidence
++                    .aggregate_elapsed_ms
++                    .saturating_add(evidence.repair_penalty_ms)
++            })
++            .cloned()
++        {
++            recommendations.push(balanced.recommendation(CatalogProfile::Balanced));
++        }
++        if let Some(high_quality) = comparable
++            .iter()
++            .min_by_key(|evidence| (evidence.repair_penalty_ms, evidence.aggregate_elapsed_ms))
++            .cloned()
++        {
++            recommendations.push(high_quality.recommendation(CatalogProfile::HighQuality));
++        }
++        Ok(Self {
++            catalog_version: manifest.catalog_version,
++            recommendations,
++        })
++    }
++
++    pub(crate) fn recommendation(&self, profile: CatalogProfile) -> Option<&CatalogRecommendation> {
++        self.recommendations
++            .iter()
++            .find(|recommendation| recommendation.profile == profile)
++    }
++
++    pub(crate) fn profiles_for_model(
++        &self,
++        backend_id: &str,
++        model_id: &str,
++    ) -> Vec<CatalogProfile> {
++        self.recommendations
++            .iter()
++            .filter(|recommendation| {
++                recommendation.candidate.backend_id == backend_id
++                    && recommendation.candidate.model_id == model_id
++            })
++            .map(|recommendation| recommendation.profile)
++            .collect()
++    }
++}
++
++#[derive(Debug, Clone, PartialEq, Eq)]
++struct BenchmarkSuiteContext {
++    corpus_version: String,
++    harness_version: String,
++    backend_id: String,
++    backend_runtime_version: TelemetryValue<String>,
++    hardware: BenchmarkHardwareIdentity,
++    quality: QualityPreference,
++    workload_policy_version: String,
++}
++
++impl BenchmarkSuiteContext {
++    fn from_record(record: &BenchmarkRecord) -> Self {
++        Self {
++            corpus_version: record.identity.corpus_version.clone(),
++            harness_version: record.identity.harness_version.clone(),
++            backend_id: record.identity.model.backend_id.clone(),
++            backend_runtime_version: record.identity.model.backend_runtime_version.clone(),
++            hardware: record.identity.hardware.clone(),
++            quality: record.identity.quality,
++            workload_policy_version: record.identity.workload_policy_version.clone(),
++        }
++    }
++}
++
++#[derive(Debug, Clone)]
++struct QualifiedCandidate {
++    candidate: CatalogCandidate,
++    context: BenchmarkSuiteContext,
++    task_records: Vec<BenchmarkRecord>,
++    aggregate_elapsed_ms: u64,
++    repair_penalty_ms: u64,
++}
++
++impl QualifiedCandidate {
++    fn recommendation(self, profile: CatalogProfile) -> CatalogRecommendation {
++        CatalogRecommendation {
++            profile,
++            candidate: self.candidate,
++            benchmark_version: BENCHMARK_CORPUS_VERSION.to_owned(),
++            evidence_runs: self.task_records.len(),
++            aggregate_elapsed_ms: self.aggregate_elapsed_ms,
++        }
++    }
++
++    fn is_equivalent_to(&self, other: &Self) -> bool {
++        BENCHMARK_TASKS.iter().all(|task| {
++            let left = self
++                .task_records
++                .iter()
++                .find(|record| record.identity.task_id == task.id);
++            let right = other
++                .task_records
++                .iter()
++                .find(|record| record.identity.task_id == task.id);
++            matches!(
++                (left, right),
++                (Some(left), Some(right))
++                    if comparison_equivalence(left, right)
++                        == ComparisonEquivalence::EquivalentModelComparison
++            )
++        })
++    }
++}
++
++fn qualify_candidate(
++    candidate: &CatalogCandidate,
++    records: &[BenchmarkRecord],
++) -> Vec<QualifiedCandidate> {
++    if candidate.source.trim().is_empty() || candidate.license.trim().is_empty() {
++        return Vec::new();
++    }
++    let matching = records
++        .iter()
++        .filter(|record| candidate_matches_record(candidate, record))
++        .collect::<Vec<_>>();
++    let mut qualified = Vec::new();
++    for seed in &matching {
++        let context = BenchmarkSuiteContext::from_record(seed);
++        if qualified
++            .iter()
++            .any(|candidate: &QualifiedCandidate| candidate.context == context)
++        {
++            continue;
++        }
++        let cohort = matching
++            .iter()
++            .copied()
++            .filter(|record| BenchmarkSuiteContext::from_record(record) == context)
++            .collect::<Vec<_>>();
++        let mut task_records = Vec::new();
++        let mut elapsed = 0_u64;
++        let mut repair_penalty = 0_u64;
++        let mut complete = true;
++        for task in BENCHMARK_TASKS {
++            let record = cohort.iter().find(|record| {
++                record.identity.task_id == task.id
++                    && matches!(
++                        record.metrics.completion_success,
++                        TelemetryValue::Measured(true)
++                    )
++            });
++            let Some(record) = record.copied() else {
++                complete = false;
++                break;
++            };
++            let TelemetryValue::Measured(task_elapsed) = record.metrics.elapsed_ms else {
++                complete = false;
++                break;
++            };
++            elapsed = elapsed.saturating_add(task_elapsed);
++            if let TelemetryValue::Measured(repairs) = record.metrics.repair_loops {
++                repair_penalty = repair_penalty.saturating_add(repairs.saturating_mul(30_000));
++            }
++            if let TelemetryValue::Measured(interventions) = record.metrics.human_interventions {
++                repair_penalty =
++                    repair_penalty.saturating_add(interventions.saturating_mul(60_000));
++            }
++            task_records.push((*record).clone());
++        }
++        if complete {
++            qualified.push(QualifiedCandidate {
++                candidate: candidate.clone(),
++                context,
++                task_records,
++                aggregate_elapsed_ms: elapsed,
++                repair_penalty_ms: repair_penalty,
++            });
++        }
++    }
++    qualified
++}
++
++fn candidate_matches_record(candidate: &CatalogCandidate, record: &BenchmarkRecord) -> bool {
++    record.identity.model.backend_id == candidate.backend_id
++        && record.identity.model.model_id == candidate.model_id
++        && matches!(
++            &record.identity.model.model_version,
++            TelemetryValue::Measured(version) if version == &candidate.model_version
++        )
++        && matches!(
++            &record.identity.model.quantization,
++            TelemetryValue::Measured(quantization) if quantization == &candidate.quantization
++        )
++}
++
++pub(crate) fn model_identity(
++    backend_id: &str,
++    model_id: &str,
++    inventory: Option<&InstalledModelInventory>,
++) -> BenchmarkModelIdentity {
++    let installed = inventory.and_then(|inventory| inventory.models.iter().find(|model| model.name == model_id));
++    BenchmarkModelIdentity {
++        backend_id: backend_id.to_owned(),
++        model_id: model_id.to_owned(),
++        model_version: installed
++            .and_then(|model| model.digest.clone())
++            .map(TelemetryValue::Measured)
++            .unwrap_or_default(),
++        quantization: installed
++            .and_then(|model| model.quantization_level.clone())
++            .map(TelemetryValue::Measured)
++            .unwrap_or_default(),
++        representation_size_bytes: installed
++            .and_then(|model| model.size_bytes)
++            .map(TelemetryValue::Measured)
++            .unwrap_or_default(),
++        backend_runtime_version: inventory
++            .and_then(|inventory| inventory.backend_version.clone())
++            .map(TelemetryValue::Measured)
++            .unwrap_or_default(),
++    }
++}
++
++pub(crate) fn read_question_record(
++    task_id: &str,
++    metrics: &NativeMetrics,
++    inventory: Option<&InstalledModelInventory>,
++    quality: QualityPreference,
++    workload: InferenceWorkload,
++) -> Result<BenchmarkRecord, String> {
++    let task = benchmark_task(task_id).ok_or_else(|| format!("unknown benchmark task `{task_id}`"))?;
++    if task.kind != BenchmarkTaskKind::ReadQuestion {
++        return Err("the last read-oriented result can only record a read-question benchmark task".to_owned());
++    }
++    Ok(BenchmarkRecord {
++        schema_version: BENCHMARK_SCHEMA_VERSION,
++        recorded_unix_ms: unix_ms(),
++        identity: BenchmarkIdentity {
++            corpus_version: BENCHMARK_CORPUS_VERSION.to_owned(),
++            task_id: task.id.to_owned(),
++            harness_version: BENCHMARK_HARNESS_VERSION.to_owned(),
++            runtime_harness_version: metrics.harness_version.to_owned(),
++            model: model_identity(metrics.backend_id, &metrics.model_id, inventory),
++            hardware: BenchmarkHardwareIdentity::default(),
++            quality,
++            workload_policy_version: WORKLOAD_POLICY_VERSION.to_owned(),
++            observed_workload: TelemetryValue::Measured(workload),
++            tool_budget: BenchmarkToolBudget {
++                max_model_turns: 1,
++                max_tool_failures: 0,
++                repair_budget: 0,
++                permission_budget: vec!["read_only".to_owned()],
++            },
++            completion_criteria: task.completion_criteria.iter().map(|criterion| (*criterion).to_owned()).collect(),
++        },
++        metrics: BenchmarkMetrics {
++            acceptance_success: TelemetryValue::Measured(true),
++            completion_success: TelemetryValue::Measured(true),
++            model_turns: TelemetryValue::Measured(u64::from(metrics.model_turns)),
++            tool_calls: TelemetryValue::Measured(0),
++            invalid_or_failed_tool_calls: TelemetryValue::Measured(0),
++            code_edits: TelemetryValue::Measured(0),
++            validation_attempts: TelemetryValue::Measured(0),
++            repair_loops: TelemetryValue::Measured(0),
++            play_attempts: TelemetryValue::Measured(0),
++            frame_capture_attempts: TelemetryValue::Measured(0),
++            visual_evaluation_attempts: TelemetryValue::Measured(0),
++            human_interventions: TelemetryValue::Measured(0),
++            elapsed_ms: TelemetryValue::Measured(metrics.elapsed_ms),
++            prompt_tokens: optional_measured(metrics.prompt_eval_tokens),
++            response_tokens: optional_measured(metrics.response_tokens),
++            load_latency_ms: optional_measured(metrics.load_latency_ms),
++            ttft_ms: optional_measured(metrics.ttft_ms),
++            generation_tokens_per_second_milli: optional_measured(metrics.generation_tokens_per_second_milli),
++            peak_backend_gpu_memory_bytes: TelemetryValue::Unavailable,
++            peak_editor_gpu_memory_bytes: TelemetryValue::Unavailable,
++            model_unload_reload_ms: TelemetryValue::Unavailable,
++            renderer_reclaim_resume_ms: TelemetryValue::Unavailable,
++            oom_failures: TelemetryValue::Unavailable,
++        },
++    })
++}
++
++pub(crate) fn agent_run_record(
++    task_id: &str,
++    run: &AgentRun,
++    backend_id: &str,
++    model_id: &str,
++    inventory: Option<&InstalledModelInventory>,
++    quality: QualityPreference,
++) -> Result<BenchmarkRecord, String> {
++    let task = benchmark_task(task_id).ok_or_else(|| format!("unknown benchmark task `{task_id}`"))?;
++    if task.kind == BenchmarkTaskKind::ReadQuestion {
++        return Err("write-capable AgentRun evidence cannot be recorded as a read-question task".to_owned());
++    }
++    if !matches!(run.state, AgentRunState::Completed | AgentRunState::Failed | AgentRunState::Cancelled) {
++        return Err("benchmark evidence requires a terminal AgentRun".to_owned());
++    }
++    let policy = HarnessPolicy::default();
++    let permission_budget = run
++        .proposal_snapshot
++        .requested_capabilities
++        .iter()
++        .filter_map(|capability| serde_json::to_value(capability).ok())
++        .filter_map(|value| value.as_str().map(ToOwned::to_owned))
++        .collect::<Vec<_>>();
++    let tool_calls = run
++        .events
++        .iter()
++        .filter(|event| matches!(&event.evidence, Some(AgentEventEvidence::ToolAction { .. })))
++        .count() as u64;
++    let failed_tool_calls = run
++        .events
++        .iter()
++        .filter(|event| matches!(&event.evidence, Some(AgentEventEvidence::ToolAction { success: Some(false), .. })))
++        .count() as u64;
++    let play_attempts = run
++        .events
++        .iter()
++        .filter(|event| matches!(&event.evidence, Some(AgentEventEvidence::Playtest { .. })))
++        .count() as u64;
++    let frame_attempts = run
++        .events
++        .iter()
++        .filter(|event| matches!(&event.evidence, Some(AgentEventEvidence::CapturedFrame { .. })))
++        .count() as u64;
++    let visual_attempts = run
++        .events
++        .iter()
++        .filter(|event| matches!(&event.evidence, Some(AgentEventEvidence::CompletionGate { gate, .. }) if gate == "visual_evaluation"))
++        .count() as u64;
++    let human_interventions = run
++        .events
++        .iter()
++        .filter(|event| event.kind == AgentEventKind::UserMessage)
++        .count() as u64;
++    let elapsed_ms = run.finished_unix_ms.map(|finished| finished.saturating_sub(run.started_unix_ms));
++    let completion_success = completion_success(run);
++    Ok(BenchmarkRecord {
++        schema_version: BENCHMARK_SCHEMA_VERSION,
++        recorded_unix_ms: unix_ms(),
++        identity: BenchmarkIdentity {
++            corpus_version: BENCHMARK_CORPUS_VERSION.to_owned(),
++            task_id: task.id.to_owned(),
++            harness_version: BENCHMARK_HARNESS_VERSION.to_owned(),
++            runtime_harness_version: NATIVE_WRITE_HARNESS_VERSION.to_owned(),
++            model: model_identity(backend_id, model_id, inventory),
++            hardware: BenchmarkHardwareIdentity::default(),
++            quality,
++            workload_policy_version: WORKLOAD_POLICY_VERSION.to_owned(),
++            observed_workload: TelemetryValue::Unavailable,
++            tool_budget: BenchmarkToolBudget {
++                max_model_turns: policy.max_model_turns,
++                max_tool_failures: policy.max_tool_failures,
++                repair_budget: policy.repair_budget,
++                permission_budget,
++            },
++            completion_criteria: task.completion_criteria.iter().map(|criterion| (*criterion).to_owned()).collect(),
++        },
++        metrics: BenchmarkMetrics {
++            acceptance_success: TelemetryValue::Measured(run.completion.acceptance_criteria == CompletionStatus::Passed),
++            completion_success: TelemetryValue::Measured(completion_success),
++            model_turns: TelemetryValue::Unavailable,
++            tool_calls: TelemetryValue::Measured(tool_calls),
++            invalid_or_failed_tool_calls: TelemetryValue::Measured(failed_tool_calls),
++            code_edits: TelemetryValue::Measured(run.audit.code_changes),
++            validation_attempts: TelemetryValue::Measured(run.validation_attempts.len() as u64),
++            repair_loops: TelemetryValue::Unavailable,
++            play_attempts: TelemetryValue::Measured(play_attempts),
++            frame_capture_attempts: TelemetryValue::Measured(frame_attempts),
++            visual_evaluation_attempts: TelemetryValue::Measured(visual_attempts),
++            human_interventions: TelemetryValue::Measured(human_interventions),
++            elapsed_ms: elapsed_ms.map(TelemetryValue::Measured).unwrap_or_default(),
++            prompt_tokens: TelemetryValue::Unavailable,
++            response_tokens: TelemetryValue::Unavailable,
++            load_latency_ms: TelemetryValue::Unavailable,
++            ttft_ms: TelemetryValue::Unavailable,
++            generation_tokens_per_second_milli: TelemetryValue::Unavailable,
++            peak_backend_gpu_memory_bytes: TelemetryValue::Unavailable,
++            peak_editor_gpu_memory_bytes: TelemetryValue::Unavailable,
++            model_unload_reload_ms: TelemetryValue::Unavailable,
++            renderer_reclaim_resume_ms: TelemetryValue::Unavailable,
++            oom_failures: TelemetryValue::Unavailable,
++        },
++    })
++}
++
++fn completion_success(run: &AgentRun) -> bool {
++    [
++        run.completion.acceptance_criteria,
++        run.completion.authoring_validation,
++        run.completion.source_validation,
++        run.completion.play_launch,
++        run.completion.frame_capture,
++        run.completion.visual_evaluation,
++        run.completion.interaction_scenarios,
++    ]
++    .into_iter()
++    .all(|status| matches!(status, CompletionStatus::Passed | CompletionStatus::NotApplicable))
++}
++
++fn optional_measured(value: Option<u64>) -> TelemetryValue<u64> {
++    value.map(TelemetryValue::Measured).unwrap_or_default()
++}
++
++fn unix_ms() -> u64 {
++    SystemTime::now()
++        .duration_since(UNIX_EPOCH)
++        .unwrap_or_default()
++        .as_millis()
++        .min(u128::from(u64::MAX)) as u64
++}
++
++fn safe_file_component(value: &str) -> String {
++    let mut output = value
++        .chars()
++        .map(|character| if character.is_ascii_alphanumeric() || matches!(character, '-' | '_') { character } else { '-' })
++        .collect::<String>();
++    if output.len() > 80 {
++        output.truncate(80);
++    }
++    if output.is_empty() { "unknown".to_owned() } else { output }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    fn measured_identity(model: &str) -> BenchmarkIdentity {
++        BenchmarkIdentity {
++            corpus_version: BENCHMARK_CORPUS_VERSION.to_owned(),
++            task_id: BENCHMARK_TASKS[0].id.to_owned(),
++            harness_version: BENCHMARK_HARNESS_VERSION.to_owned(),
++            runtime_harness_version: "runtime-harness-v1".to_owned(),
++            model: BenchmarkModelIdentity {
++                backend_id: "test-backend".to_owned(),
++                model_id: model.to_owned(),
++                model_version: TelemetryValue::Measured(format!("{model}-digest")),
++                quantization: TelemetryValue::Measured("q4".to_owned()),
++                representation_size_bytes: TelemetryValue::Measured(1_000),
++                backend_runtime_version: TelemetryValue::Measured("runtime-v1".to_owned()),
++            },
++            hardware: BenchmarkHardwareIdentity {
++                platform: "test".to_owned(),
++                gpu: TelemetryValue::Measured("gpu".to_owned()),
++                total_gpu_memory_bytes: TelemetryValue::Measured(12_000),
++                total_system_memory_bytes: TelemetryValue::Measured(32_000),
++            },
++            quality: QualityPreference::Balanced,
++            workload_policy_version: WORKLOAD_POLICY_VERSION.to_owned(),
++            observed_workload: TelemetryValue::Measured(InferenceWorkload::InteractiveReasoning),
++            tool_budget: BenchmarkToolBudget {
++                max_model_turns: 24,
++                max_tool_failures: 4,
++                repair_budget: 2,
++                permission_budget: vec!["managed".to_owned()],
++            },
++            completion_criteria: BENCHMARK_TASKS[0].completion_criteria.iter().map(|value| (*value).to_owned()).collect(),
++        }
++    }
++
++    fn measured_metrics(elapsed_ms: u64) -> BenchmarkMetrics {
++        BenchmarkMetrics {
++            acceptance_success: TelemetryValue::Measured(true),
++            completion_success: TelemetryValue::Measured(true),
++            model_turns: TelemetryValue::Measured(1),
++            tool_calls: TelemetryValue::Measured(1),
++            invalid_or_failed_tool_calls: TelemetryValue::Measured(0),
++            code_edits: TelemetryValue::Measured(0),
++            validation_attempts: TelemetryValue::Measured(0),
++            repair_loops: TelemetryValue::Measured(0),
++            play_attempts: TelemetryValue::Measured(0),
++            frame_capture_attempts: TelemetryValue::Measured(0),
++            visual_evaluation_attempts: TelemetryValue::Measured(0),
++            human_interventions: TelemetryValue::Measured(0),
++            elapsed_ms: TelemetryValue::Measured(elapsed_ms),
++            prompt_tokens: TelemetryValue::Measured(1),
++            response_tokens: TelemetryValue::Measured(1),
++            load_latency_ms: TelemetryValue::Measured(1),
++            ttft_ms: TelemetryValue::Unavailable,
++            generation_tokens_per_second_milli: TelemetryValue::Measured(1),
++            peak_backend_gpu_memory_bytes: TelemetryValue::Unavailable,
++            peak_editor_gpu_memory_bytes: TelemetryValue::Unavailable,
++            model_unload_reload_ms: TelemetryValue::Unavailable,
++            renderer_reclaim_resume_ms: TelemetryValue::Unavailable,
++            oom_failures: TelemetryValue::Measured(0),
++        }
++    }
++
++    fn record(model: &str, task: BenchmarkTaskDescriptor, elapsed_ms: u64) -> BenchmarkRecord {
++        let mut identity = measured_identity(model);
++        identity.task_id = task.id.to_owned();
++        identity.completion_criteria = task.completion_criteria.iter().map(|value| (*value).to_owned()).collect();
++        BenchmarkRecord {
++            schema_version: BENCHMARK_SCHEMA_VERSION,
++            recorded_unix_ms: 1,
++            identity,
++            metrics: measured_metrics(elapsed_ms),
++        }
++    }
++
++    #[test]
++    fn corpus_covers_required_first_release_workloads() {
++        assert_eq!(BENCHMARK_TASKS.len(), 7);
++        assert!(BENCHMARK_TASKS.iter().any(|task| task.kind == BenchmarkTaskKind::ReadQuestion));
++        assert!(BENCHMARK_TASKS.iter().any(|task| task.kind == BenchmarkTaskKind::ProjectInspection));
++        assert!(BENCHMARK_TASKS.iter().any(|task| task.kind == BenchmarkTaskKind::CodeImplementation));
++        assert!(BENCHMARK_TASKS.iter().any(|task| task.kind == BenchmarkTaskKind::TypedAuthoringMutation));
++        assert!(BENCHMARK_TASKS.iter().any(|task| task.kind == BenchmarkTaskKind::ValidationRepair));
++        assert!(BENCHMARK_TASKS.iter().any(|task| task.kind == BenchmarkTaskKind::RuntimeInteraction));
++        assert!(BENCHMARK_TASKS.iter().any(|task| task.kind == BenchmarkTaskKind::VisualEvaluation));
++    }
++
++    #[test]
++    fn comparison_is_model_only_when_every_harness_dimension_matches() {
++        let left = record("model-a", BENCHMARK_TASKS[0], 10);
++        let right = record("model-b", BENCHMARK_TASKS[0], 10);
++        assert_eq!(comparison_equivalence(&left, &right), ComparisonEquivalence::EquivalentModelComparison);
++        let mut changed = right.clone();
++        changed.identity.hardware.platform = "different".to_owned();
++        assert!(matches!(comparison_equivalence(&left, &changed), ComparisonEquivalence::NonEquivalent(fields) if fields.contains(&"hardware")));
++    }
++
++    #[test]
++    fn unavailable_telemetry_serializes_explicitly() {
++        let value = serde_json::to_string(&TelemetryValue::<u64>::Unavailable).expect("telemetry JSON");
++        assert!(value.contains("unavailable"));
++    }
++
++    #[test]
++    fn persisted_record_contains_no_prompt_project_path_or_credentials() {
++        let root = tempfile::tempdir().expect("benchmark tempdir");
++        let store = BenchmarkStore::open(root.path().to_path_buf()).expect("benchmark store");
++        let benchmark = record("safe-model", BENCHMARK_TASKS[0], 10);
++        let path = store.record(&benchmark).expect("record benchmark");
++        let text = fs::read_to_string(path).expect("record text");
++        assert!(!text.contains("secret-token"));
++        assert!(!text.contains("C:\\private\\project"));
++        assert!(!text.contains("conversation"));
++        assert!(!text.contains("prompt"));
++    }
++
++    #[test]
++    fn catalog_requires_complete_same_context_success_and_provenance() {
++        let candidate = CatalogCandidate {
++            backend_id: "test-backend".to_owned(),
++            model_id: "model-a".to_owned(),
++            model_version: "model-a-digest".to_owned(),
++            quantization: "q4".to_owned(),
++            source: "https://example.invalid/model".to_owned(),
++            license: "test-license".to_owned(),
++            transfer_size_bytes: 1,
++            storage_size_bytes: 1,
++            memory_guidance: "test".to_owned(),
++            context_limit: Some(1),
++            modalities: vec!["text".to_owned()],
++            tool_capabilities: vec!["structured".to_owned()],
++        };
++        let partial = vec![record("model-a", BENCHMARK_TASKS[0], 10)];
++        let manifest = CatalogManifest { schema_version: CATALOG_SCHEMA_VERSION, catalog_version: "test".to_owned(), entries: vec![candidate.clone()] };
++        let catalog = CuratedModelCatalog::derive(manifest.clone(), &partial).expect("partial catalog");
++        assert!(catalog.recommendation(CatalogProfile::Balanced).is_none());
++
++        let complete = BENCHMARK_TASKS.iter().copied().map(|task| record("model-a", task, 10)).collect::<Vec<_>>();
++        let catalog = CuratedModelCatalog::derive(manifest, &complete).expect("complete catalog");
++        let recommendation = catalog.recommendation(CatalogProfile::Balanced).expect("balanced recommendation");
++        assert_eq!(recommendation.candidate.model_id, candidate.model_id);
++        assert_eq!(recommendation.evidence_runs, BENCHMARK_TASKS.len());
++    }
++}
+diff --git a/crates/editor/src/ai_studio.rs b/crates/editor/src/ai_studio.rs
+index 7b54dbea3989a333f357fe35dc5835f33fbfa146..97af0849a0b846ee3ce3e5d647db5da8517c5f7c 100644
+--- a/crates/editor/src/ai_studio.rs
++++ b/crates/editor/src/ai_studio.rs
+@@ -4,6 +4,11 @@
+ //! lifecycle, permissions, persistence, provider process management, and code
+ //! workspace rules live in the GUI-free `agent_host` module.
+ 
++use crate::agent_benchmark::{
++    agent_run_record, benchmark_task, read_question_record, BenchmarkRecord, BenchmarkStore,
++    BenchmarkTaskKind, CatalogProfile, CuratedModelCatalog, BENCHMARK_CORPUS_VERSION,
++    BENCHMARK_TASKS,
++};
+ use crate::agent_host::{
+     project_storage_key, AgentCapability, AgentConfinementNetworkPolicy, AgentConfinementRequest,
+     AgentConfinementRequirement, AgentEventKind, AgentHost, AgentProposal, AgentRunState,
+@@ -15,8 +20,9 @@ use crate::hosted_model_backend;
+ use crate::hosted_model_backend::{HostedAuthMode, HostedModelConfig};
+ use crate::live_observation::{LiveObservationError, LiveObservationManager};
+ use crate::native_agent::{
+-    LocalModelConfig, ModelCapabilityProfile, NativeAnswer, NativeModelConfig, NativeQuestionTask,
+-    QuestionMessage, QuestionRole, DEFAULT_LOCAL_MODEL_ENDPOINT,
++    InstalledModelDiscoveryTask, InstalledModelInventory, LocalModelConfig, ModelCapabilityProfile,
++    NativeAnswer, NativeMetrics, NativeModelConfig, NativeQuestionTask, QuestionMessage,
++    QuestionRole, DEFAULT_LOCAL_MODEL_ENDPOINT,
+ };
+ use crate::native_agent_runtime::{NativeAgentAction, NativeAgentRuntime, NativeMcpTask};
+ use crate::resource_arbitration::{
+@@ -178,6 +184,28 @@ struct ManagedRuntimeObservation {
+     height: u32,
+ }
+ 
++#[derive(Debug, Clone)]
++struct NativeQuestionBenchmarkPolicy {
++    quality: QualityPreference,
++    workload: InferenceWorkload,
++    inventory: Option<InstalledModelInventory>,
++}
++
++#[derive(Debug, Clone)]
++struct NativeQuestionBenchmarkSnapshot {
++    metrics: NativeMetrics,
++    policy: NativeQuestionBenchmarkPolicy,
++}
++
++#[derive(Debug, Clone)]
++struct NativeRunBenchmarkContext {
++    run_id: String,
++    backend_id: String,
++    model_id: String,
++    quality: QualityPreference,
++    inventory: Option<InstalledModelInventory>,
++}
++
+ #[derive(Debug, Deserialize)]
+ #[serde(tag = "type", rename_all = "snake_case")]
+ enum ProviderAgentEvent {
+@@ -383,6 +411,15 @@ pub struct AiStudioPanel {
+     model_backend: ModelBackendPreference,
+     local_model_endpoint: String,
+     local_model_name: String,
++    benchmark_store: BenchmarkStore,
++    benchmark_records: Vec<BenchmarkRecord>,
++    model_catalog: CuratedModelCatalog,
++    benchmark_task_id: String,
++    installed_model_inventory: Option<InstalledModelInventory>,
++    model_discovery: Option<InstalledModelDiscoveryTask>,
++    native_question_benchmark_policy: Option<NativeQuestionBenchmarkPolicy>,
++    last_native_question_benchmark: Option<NativeQuestionBenchmarkSnapshot>,
++    native_run_benchmark_context: Option<NativeRunBenchmarkContext>,
+     hosted_model_endpoint: String,
+     hosted_model_name: String,
+     hosted_secret_path: PathBuf,
+@@ -429,14 +466,24 @@ pub struct AiStudioPanel {
+ impl AiStudioPanel {
+     /// Opens the project-scoped AI Studio state for an Editor project.
+     pub fn new(project: &ProjectRoot, connection: AiStudioConnection) -> Result<Self, String> {
+-        let data_root = dirs::data_local_dir()
++        let ai_root = dirs::data_local_dir()
+             .unwrap_or_else(std::env::temp_dir)
+             .join("GameEngine")
+-            .join("ai")
+-            .join(project_storage_key(project.project_id().as_str(), project.path()));
++            .join("ai");
++        let data_root =
++            ai_root.join(project_storage_key(project.project_id().as_str(), project.path()));
+         let preferences_path = data_root.join("preferences.json");
+         let hosted_secret_path = data_root.join("secrets").join("hosted-api-key.dpapi");
+         let preferences = load_ai_studio_preferences(&preferences_path);
++        let benchmark_store = BenchmarkStore::open(ai_root.join("benchmark"))?;
++        let (benchmark_records, benchmark_status) = match benchmark_store.load() {
++            Ok(records) => (records, None),
++            Err(error) => (
++                Vec::new(),
++                Some(format!("Benchmark records unavailable: {error}")),
++            ),
++        };
++        let model_catalog = CuratedModelCatalog::from_bundled_manifest(&benchmark_records)?;
+         let mut host = AgentHost::open(project.path().to_path_buf(), data_root)
+             .map_err(|error| error.to_string())?;
+         let selected_session = match host.session_ids().into_iter().next_back() {
+@@ -468,6 +515,15 @@ impl AiStudioPanel {
+             model_backend: preferences.model_backend,
+             local_model_endpoint: preferences.local_model_endpoint,
+             local_model_name: preferences.local_model_name,
++            benchmark_store,
++            benchmark_records,
++            model_catalog,
++            benchmark_task_id: BENCHMARK_TASKS[0].id.to_owned(),
++            installed_model_inventory: None,
++            model_discovery: None,
++            native_question_benchmark_policy: None,
++            last_native_question_benchmark: None,
++            native_run_benchmark_context: None,
+             hosted_model_endpoint: preferences.hosted_model_endpoint,
+             hosted_model_name: preferences.hosted_model_name,
+             hosted_secret_path,
+@@ -513,7 +569,7 @@ impl AiStudioPanel {
+             managed_evaluation_requested: false,
+             managed_playtest_started_at: None,
+             last_captured_frame: None,
+-            status: None,
++            status: benchmark_status,
+         })
+     }
+ 
+@@ -787,6 +843,7 @@ impl AiStudioPanel {
+     pub fn show(&mut self, context: &egui::Context) {
+         self.ensure_remote_gateway(context);
+         self.poll_remote_requests();
++        self.poll_model_discovery(context);
+         self.poll_native_question(context);
+         self.poll_native_mcp(context);
+         self.poll_native_agent_runtime(context);
+@@ -1346,7 +1403,54 @@ impl AiStudioPanel {
+                             }
+                         });
+                         ui.horizontal(|ui| {
+-                            ui.label("Installed model");
++                            ui.label("Installed models");
++                            if ui
++                                .add_enabled(
++                                    self.model_discovery.is_none(),
++                                    egui::Button::new("Discover"),
++                                )
++                                .clicked()
++                            {
++                                self.start_model_discovery();
++                            }
++                            if self.model_discovery.is_some() {
++                                ui.spinner();
++                            }
++                        });
++                        let inventory = self.current_installed_inventory().cloned();
++                        if let Some(inventory) = inventory.as_ref() {
++                            ui.horizontal(|ui| {
++                                ui.label("Detected model");
++                                egui::ComboBox::from_id_salt("ai_studio_installed_model")
++                                    .selected_text(if self.local_model_name.trim().is_empty() {
++                                        "Select discovered model"
++                                    } else {
++                                        self.local_model_name.trim()
++                                    })
++                                    .width(260.0)
++                                    .show_ui(ui, |ui| {
++                                        for model in &inventory.models {
++                                            if ui
++                                                .selectable_label(
++                                                    self.local_model_name == model.name,
++                                                    &model.name,
++                                                )
++                                                .clicked()
++                                            {
++                                                self.local_model_name = model.name.clone();
++                                                self.save_preferences();
++                                            }
++                                        }
++                                    });
++                                ui.small(format!("{} found", inventory.models.len()));
++                            });
++                        } else {
++                            ui.small(
++                                "No installed-model inventory is loaded. Discovery is explicit and loopback-only.",
++                            );
++                        }
++                        ui.horizontal(|ui| {
++                            ui.label("Custom / exact ID");
+                             if ui
+                                 .add(
+                                     egui::TextEdit::singleline(&mut self.local_model_name)
+@@ -1358,6 +1462,25 @@ impl AiStudioPanel {
+                                 self.save_preferences();
+                             }
+                         });
++                        if let Some(inventory) = inventory.as_ref()
++                            && let Some(model) = inventory
++                                .models
++                                .iter()
++                                .find(|model| model.name == self.local_model_name)
++                        {
++                            ui.small(format!(
++                                "Installed evidence: digest={} · size={} · parameters={} · quantization={} · family={} · backend={}",
++                                optional_text(model.digest.as_deref()),
++                                model
++                                    .size_bytes
++                                    .map(format_model_bytes)
++                                    .unwrap_or_else(|| "n/a".to_owned()),
++                                optional_text(model.parameter_size.as_deref()),
++                                optional_text(model.quantization_level.as_deref()),
++                                optional_text(model.family.as_deref()),
++                                optional_text(inventory.backend_version.as_deref()),
++                            ));
++                        }
+                     }
+                     ModelBackendPreference::HostedApi | ModelBackendPreference::Enterprise => {
+                         ui.horizontal(|ui| {
+@@ -1428,7 +1551,7 @@ impl AiStudioPanel {
+                         }
+                     }
+                 }
+-                let profile = match self.model_backend {
++                let mut profile = match self.model_backend {
+                     ModelBackendPreference::Local => NativeModelConfig::Local(LocalModelConfig {
+                         endpoint: self.local_model_endpoint.clone(),
+                         model: self.local_model_name.clone(),
+@@ -1448,7 +1571,27 @@ impl AiStudioPanel {
+                         .capability_profile()
+                     }
+                 };
++                let recommendation_profiles = self
++                    .model_catalog
++                    .profiles_for_model(profile.backend_id, &profile.model_id);
++                profile.benchmark_verified = !recommendation_profiles.is_empty();
+                 ui.small(model_capability_summary(&profile));
++                if profile.model_id.trim().is_empty() {
++                    ui.small("GameEngine status: no model selected.");
++                } else if recommendation_profiles.is_empty() {
++                    ui.small(
++                        "GameEngine status: Compatible / unverified — this exact backend/model representation has no complete benchmark-qualified recommendation.",
++                    );
++                } else {
++                    let labels = recommendation_profiles
++                        .iter()
++                        .map(|profile| profile.label())
++                        .collect::<Vec<_>>()
++                        .join(", " );
++                    ui.small(format!(
++                        "GameEngine status: Recommended · {labels} · corpus {BENCHMARK_CORPUS_VERSION}"
++                    ));
++                }
+                 ui.small(format!(
+                     "Resource controls: unload/reload {} · GPU residency {} · memory telemetry {}",
+                     capability_label(profile.resource_capabilities.unload_reload),
+@@ -1461,9 +1604,252 @@ impl AiStudioPanel {
+                     self.resolved_workload,
+                     self.resource_plan.reclaim
+                 ));
++                self.show_agent_benchmark(ui);
+             });
+     }
+ 
++    fn show_agent_benchmark(&mut self, ui: &mut egui::Ui) {
++        egui::CollapsingHeader::new(format!(
++            "GameEngine Agent Benchmark · {} record(s) · {}",
++            self.benchmark_records.len(),
++            self.model_catalog.catalog_version
++        ))
++        .default_open(false)
++        .show(ui, |ui| {
++            ui.small(format!(
++                "Versioned corpus: {BENCHMARK_CORPUS_VERSION}. Recommendations require complete, comparable GameEngine task evidence; third-party scores alone never qualify a model."
++            ));
++            for catalog_profile in CatalogProfile::ALL {
++                if let Some(recommendation) = self.model_catalog.recommendation(catalog_profile) {
++                    ui.group(|ui| {
++                        ui.strong(format!(
++                            "{} · {}",
++                            catalog_profile.label(),
++                            recommendation.candidate.model_id
++                        ));
++                        ui.small(format!(
++                            "evidence={} runs · aggregate={} ms · benchmark={}",
++                            recommendation.evidence_runs,
++                            recommendation.aggregate_elapsed_ms,
++                            recommendation.benchmark_version
++                        ));
++                        ui.small(format!(
++                            "source={} · license={} · transfer={} · storage={}",
++                            recommendation.candidate.source,
++                            recommendation.candidate.license,
++                            format_model_bytes(recommendation.candidate.transfer_size_bytes),
++                            format_model_bytes(recommendation.candidate.storage_size_bytes),
++                        ));
++                        ui.small(format!(
++                            "memory={} · context={} · modalities={} · tools={}",
++                            recommendation.candidate.memory_guidance,
++                            recommendation
++                                .candidate
++                                .context_limit
++                                .map(|limit| limit.to_string())
++                                .unwrap_or_else(|| "n/a".to_owned()),
++                            list_or_none(&recommendation.candidate.modalities),
++                            list_or_none(&recommendation.candidate.tool_capabilities),
++                        ));
++                    });
++                } else {
++                    ui.small(format!(
++                        "{}: No benchmark-qualified recommendation yet.",
++                        catalog_profile.label()
++                    ));
++                }
++            }
++            ui.small(
++                "Model weights are never bundled or downloaded automatically. A future catalog acquisition flow must show source plus transfer/storage size before an explicit user action.",
++            );
++            ui.separator();
++            ui.horizontal_wrapped(|ui| {
++                ui.label("Evidence task");
++                let selected_label = benchmark_task(&self.benchmark_task_id)
++                    .map(|task| task.label)
++                    .unwrap_or("Unknown task");
++                egui::ComboBox::from_id_salt("ai_studio_benchmark_task")
++                    .selected_text(selected_label)
++                    .show_ui(ui, |ui| {
++                        for task in BENCHMARK_TASKS {
++                            ui.selectable_value(
++                                &mut self.benchmark_task_id,
++                                task.id.to_owned(),
++                                task.label,
++                            );
++                        }
++                    });
++                if ui
++                    .add_enabled(
++                        self.benchmark_task_record_available(),
++                        egui::Button::new("Record current evidence"),
++                    )
++                    .clicked()
++                {
++                    self.record_selected_benchmark();
++                }
++            });
++            ui.small(
++                "Record only when the current result intentionally executes the selected corpus task. Records are machine-local and omit prompts, conversation history, retrieved source text, project paths, and credentials; this feature never uploads private projects.",
++            );
++        });
++    }
++
++    fn current_installed_inventory(&self) -> Option<&InstalledModelInventory> {
++        let endpoint = self.local_model_endpoint.trim().trim_end_matches('/');
