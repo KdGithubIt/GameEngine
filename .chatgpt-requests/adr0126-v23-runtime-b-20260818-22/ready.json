@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0126-v23-runtime-b-20260818-22",
+  "target_branch": "chatgpt/gameengine-adr0126-first-release-v23",
+  "expected_head_sha": "c86766ed8db39e8e6a71b397e7a1420e189186a1",
+  "baseline_main_sha": "96c8ffb18a74eabec2164daa61f694f131019ddc",
+  "patch_sha256": "a562596defb81f500247c6d2481955440f96e1a37ce7fab4870c42afdff4dd4d",
+  "patch_bytes": 33029,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Complete ADR 0126 Timeline production runtime integration",
+  "pr_title": "GameEngine: complete ADR 0126 Timeline / Sequencer first release",
+  "pr_body": "## Summary\n\nCompletes the remaining ADR 0126 production runtime composition, typed Timeline outputs, event crossing, lifecycle control, and runtime integration tests.\n\nSequencer Editor integration and final validation follow.\n\n<!-- gameengine-visual-validation: editor -->\n"
+}
