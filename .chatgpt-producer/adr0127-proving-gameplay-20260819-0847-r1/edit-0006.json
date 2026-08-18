@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/launcher/src/native_2d_template.rs",
+  "old": "    assets.insert(\n        TILE_MAP_ASSET.to_owned(),\n        json!({ \"path\": \"native_2d/proving.tilemap.json\", \"name\": \"Proving Tile Map\" }),\n    );\n    json!({ \"schema_version\": 2, \"assets\": assets })\n",
+  "new": "    assets.insert(\n        TILE_MAP_ASSET.to_owned(),\n        json!({ \"path\": \"native_2d/proving.tilemap.json\", \"name\": \"Proving Tile Map\" }),\n    );\n    assets.insert(\n        HUD_ASSET.to_owned(),\n        json!({ \"path\": \"native_2d/proving.ui.json\", \"name\": \"Native 2D HUD\" }),\n    );\n    assets.insert(\n        AUDIO_ASSET.to_owned(),\n        json!({ \"path\": \"audio/native_2d_jump.wav\", \"name\": \"Native 2D Jump\" }),\n    );\n    json!({ \"schema_version\": 2, \"assets\": assets })\n"
+}
