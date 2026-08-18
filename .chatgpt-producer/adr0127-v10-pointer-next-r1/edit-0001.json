@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/native_2d_editor.rs","old":"use serde::de::DeserializeOwned;\nuse std::path::{Path, PathBuf};","new":"use serde::de::DeserializeOwned;\nuse std::path::{Path, PathBuf};\n\nmod tile_map_pointer;"}
