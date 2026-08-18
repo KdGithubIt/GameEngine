@@ -2,7 +2,8 @@ use bytemuck::{Pod, Zeroable};
 use std::fmt;
 use std::sync::{Arc, Weak};
 
-use crate::camera::{select_active_game_camera, Camera3D, ViewportSize};
+use crate::camera::{Camera3D, ViewportSize};
+use crate::native_2d::Camera2d;
 use crate::debug_draw::{DebugLine, DebugLines};
 use crate::environment::EnvironmentGpuState;
 use crate::light::{AmbientLight, DirectionalLight, PointLight, SkySettings, SpotLight};
@@ -1047,6 +1048,45 @@ impl MainPassColorTarget {
     }
 }
 
+#[derive(Debug, Clone)]
+enum GameRenderCamera {
+    ThreeD(Camera3D, crate::transform::Transform),
+    TwoD(Camera2d, crate::transform::Transform),
+}
+
+impl GameRenderCamera {
+    fn view_data(&self, viewport: [u32; 2]) -> (glam::Mat4, glam::Mat4, glam::Vec3, f32) {
+        let aspect = if viewport[1] == 0 {
+            1.0
+        } else {
+            viewport[0] as f32 / viewport[1] as f32
+        };
+        match self {
+            Self::ThreeD(camera, transform) => (
+                camera.view_projection_matrix(transform),
+                Camera3D::view_matrix(transform),
+                transform.translation,
+                valid_viewport_aspect(camera.aspect),
+            ),
+            Self::TwoD(camera, transform) => (
+                camera
+                    .view_projection_matrix(transform, viewport)
+                    .expect("selected Camera2D was validated before render preparation"),
+                transform.to_matrix().inverse(),
+                transform.translation,
+                valid_viewport_aspect(aspect),
+            ),
+        }
+    }
+
+    fn shadow_camera(&self) -> Option<(&Camera3D, &crate::transform::Transform)> {
+        match self {
+            Self::ThreeD(camera, transform) => Some((camera, transform)),
+            Self::TwoD(_, _) => None,
+        }
+    }
+}
+
 pub(crate) struct WorldRenderer {
     render: RenderState,
     debug: DebugRenderState,
@@ -1176,24 +1216,19 @@ impl WorldRenderer {
         depth_view: &wgpu::TextureView,
     ) -> Result<(), RenderFrameError> {
         let camera = Self::get_camera(world);
-        match camera {
-            Some((camera, transform)) => self.render_to_view_with_camera(
-                world,
-                &camera,
-                &transform,
-                device,
-                queue,
-                color_view,
-                depth_view,
-            ),
-            None => self.render_to_view_without_camera(
-                world, device, queue, color_view, depth_view,
-            ),
-        }
+        self.render_to_view_with_optional_camera(
+            world,
+            camera.as_ref(),
+            device,
+            queue,
+            color_view,
+            depth_view,
+        )
     }
 
     // This mirrors the existing render entry point plus the explicit camera
     // pair; grouping the caller-owned wgpu views would obscure that contract.
+    // ADR 0103 Scene View callers remain explicitly Camera3D-owned.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn render_to_view_with_camera(
         &mut self,
@@ -1205,9 +1240,10 @@ impl WorldRenderer {
         color_view: &wgpu::TextureView,
         depth_view: &wgpu::TextureView,
     ) -> Result<(), RenderFrameError> {
+        let camera = GameRenderCamera::ThreeD(camera.clone(), camera_transform.clone());
         self.render_to_view_with_optional_camera(
             world,
-            Some((camera, camera_transform)),
+            Some(&camera),
             device,
             queue,
             color_view,
@@ -1232,7 +1268,7 @@ impl WorldRenderer {
     fn render_to_view_with_optional_camera(
         &mut self,
         world: &mut engine_ecs::World,
-        shadow_camera: Option<(&Camera3D, &crate::transform::Transform)>,
+        game_camera: Option<&GameRenderCamera>,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         color_view: &wgpu::TextureView,
@@ -1241,15 +1277,10 @@ impl WorldRenderer {
         upload_pending_meshes(world, device).map_err(RenderFrameError::Preparation)?;
         upload_morphed_vertices(world, queue);
 
-        let (vp, view, camera_position, viewport_aspect) = shadow_camera
-            .map(|(camera, transform)| {
-                (
-                    camera.view_projection_matrix(transform),
-                    Camera3D::view_matrix(transform),
-                    transform.translation,
-                    valid_viewport_aspect(camera.aspect),
-                )
-            })
+        let extent = color_view.texture().size();
+        let viewport = [extent.width.max(1), extent.height.max(1)];
+        let (vp, view, camera_position, viewport_aspect) = game_camera
+            .map(|camera| camera.view_data(viewport))
             .unwrap_or((
                 glam::Mat4::IDENTITY,
                 glam::Mat4::IDENTITY,
@@ -1258,6 +1289,7 @@ impl WorldRenderer {
             ));
         self.render
             .update_camera(queue, vp, view, camera_position, viewport_aspect);
+        let shadow_camera = game_camera.and_then(GameRenderCamera::shadow_camera);
 
         let sky = world
             .get_resource::<SkySettings>()
@@ -1867,16 +1899,54 @@ impl WorldRenderer {
         assets.get(&handle).cloned()
     }
 
-    /// Returns a clone of the selected Game View camera and its transform.
-    fn get_camera(
-        world: &mut engine_ecs::World,
-    ) -> Option<(Camera3D, crate::transform::Transform)> {
+    /// Returns a clone of the selected Camera3D/Camera2D Game View camera.
+    ///
+    /// Authoring reports highest-priority ties through the shared camera intent
+    /// contract. Runtime presentation retains ADR 0107's deterministic entity
+    /// tie-break so a malformed scene still produces a stable frame.
+    fn get_camera(world: &mut engine_ecs::World) -> Option<GameRenderCamera> {
         use crate::transform::Transform;
         use engine_ecs::Query;
 
-        let query = Query::<(&Camera3D, &Transform)>::new(world);
-        select_active_game_camera(query.iter())
-            .map(|(_, (camera, transform))| (camera.clone(), transform.clone()))
+        let mut candidates = Vec::new();
+        {
+            let query = Query::<(&Camera3D, &Transform)>::new(world);
+            candidates.extend(query.iter().filter_map(|(entity, (camera, transform))| {
+                camera.enabled.then(|| {
+                    (
+                        (
+                            std::cmp::Reverse(camera.priority),
+                            entity.id(),
+                            entity.generation(),
+                            0_u8,
+                        ),
+                        GameRenderCamera::ThreeD(camera.clone(), transform.clone()),
+                    )
+                })
+            }));
+        }
+        {
+            let query = Query::<(&Camera2d, &Transform)>::new(world);
+            candidates.extend(query.iter().filter_map(|(entity, (camera, transform))| {
+                (camera.enabled
+                    && crate::native_2d::validate_camera_transform(transform).is_ok())
+                .then(|| {
+                    (
+                        (
+                            std::cmp::Reverse(camera.priority),
+                            entity.id(),
+                            entity.generation(),
+                            1_u8,
+                        ),
+                        GameRenderCamera::TwoD(*camera, transform.clone()),
+                    )
+                })
+            }));
+        }
+        candidates
+            .into_iter()
+            .min_by_key(|(key, _)| *key)
+            .map(|(_, camera)| camera)
     }
 
     /// Returns the stable-per-frame outline group for one render entity.
