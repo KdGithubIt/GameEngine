@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr-final-current-main-20260818-05",
+  "target_branch": "chatgpt/gameengine-adr0142-0143-0145-0154-final-audit-v2",
+  "expected_head_sha": "96c8ffb18a74eabec2164daa61f694f131019ddc",
+  "baseline_main_sha": "96c8ffb18a74eabec2164daa61f694f131019ddc",
+  "patch_sha256": "95c998f2bad53dc55dba8d462d420acab54668272fc2343a055ed79565861308",
+  "patch_bytes": 14046,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Revalidate ADR final evidence on current main",
+  "pr_title": "GameEngine: revalidate ADR 0142/0143/0145/0154 on current main",
+  "pr_body": "## Summary\n\nReapplies the deterministic visual-validation-only evidence scenarios for ADR 0142, ADR 0143, ADR 0145, and ADR 0154 on the current main that includes ADR 0150 model routing. Normal release behavior is unchanged. Marks ADR 0145 Accepted after implementation re-audit.\n\n<!-- gameengine-visual-validation: editor -->\n<!-- gameengine-visual-authoring-tool: ADR 0143 Model Resources -->"
+}
