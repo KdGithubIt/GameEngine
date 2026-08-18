@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/render-runtime/src/preview.rs","old":"use crate::camera::Camera3D;\n","new":"use crate::camera::Camera3D;\nuse crate::native_2d::Camera2d;\n"}
