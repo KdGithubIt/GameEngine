@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/native_2d_editor.rs",
+  "old": "}\n\nfn writable_permissions() -> AuthoringPermissions {\n",
+  "new": "}\n\nfn handle_loaded_typed_mcp<T: Native2dDocument>(\n    loaded: Option<&mut LoadedTyped<T>>,\n    operation: &str,\n    arguments: Value,\n    permissions: &AuthoringPermissions,\n    label: &str,\n) -> Result<Value, Native2dMcpCallFailure> {\n    let loaded = loaded.ok_or_else(|| Native2dMcpCallFailure::no_document(label))?;\n    match operation {\n        \"inspect\" => {\n            require_empty_arguments(arguments)?;\n            loaded.mcp_inspect(permissions)\n        }\n        \"validate\" => {\n            require_empty_arguments(arguments)?;\n            loaded.mcp_validate(permissions)\n        }\n        \"preview\" => loaded.mcp_preview(permissions, decode_mcp(arguments)?),\n        \"apply\" => loaded.mcp_apply(permissions, decode_mcp(arguments)?),\n        _ => Err(Native2dMcpCallFailure::new(\n            \"mcp.unknown_tool\",\n            format!(\"unknown Native 2D typed-document operation `{operation}`\"),\n        )),\n    }\n}\n\nfn writable_permissions() -> AuthoringPermissions {\n"
+}
