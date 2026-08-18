@@ -1,0 +1,5 @@
+{
+  "operation": "create_text",
+  "path": "crates/editor/resources/agent_benchmark_fixture_v1/game/src/benchmark_target.rs",
+  "content": "/// Returns the deterministic baseline score used by Agent Benchmark code tasks.\npub fn fixture_score(value: i32) -> i32 {\n    value + 1\n}\n\n#[cfg(test)]\nmod tests {\n    use super::*;\n\n    #[test]\n    fn fixture_score_baseline_is_valid() {\n        assert_eq!(fixture_score(4), 5);\n    }\n}\n"
+}
