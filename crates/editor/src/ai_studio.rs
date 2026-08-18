@@ -15,7 +15,8 @@ use crate::agent_host::{
     AgentRunState,
     AgentWorkClaim,
     ApprovalScope, AuthoritativeStateSnapshot, CodeChange, CodeWorkspace, CompletionStatus,
-    ConversationRole, ExternalAgentProcess, ManagedValidationAttemptStatus, PermissionCheck,
+    ConversationMessage, ConversationRole, ExternalAgentProcess, ManagedValidationAttemptStatus,
+    PermissionCheck,
     ProcessStream, ResumeDisposition,
 };
 use crate::external_agent_provider::{
@@ -42,6 +43,7 @@ use crate::remote_ai_studio::{
     events_json, frame_bytes, sessions_json, snapshot_json, RemoteAiStudioRequest,
     RemoteAiStudioResponse, RemoteAiStudioServer, RemoteOperation, RemotePermissionScope,
 };
+use crate::ai_studio_theme as theme;
 use eframe::egui;
 use engine::{InputCommand, KeyCode, MouseButton};
 use engine_authoring::ProjectRoot;
@@ -65,6 +67,41 @@ enum ModelBackendPreference {
     Enterprise,
 }
 
+/// Persisted placement of the detached AI Studio window.
+///
+/// Placement is presentation state only. It is stored so reopening the window
+/// returns it to the monitor and size the user left it on, and it never
+/// participates in Agent Host or project state.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+struct DetachedWindowPlacement {
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+}
+
+impl DetachedWindowPlacement {
+    /// Returns the placement of a live viewport, when the backend reports one.
+    ///
+    /// Backends that cannot report an outer rectangle yield `None` rather than
+    /// a guessed position, so a missing value never moves the window.
+    fn from_viewport(info: &egui::ViewportInfo) -> Option<Self> {
+        // Position is where the window frame starts, but the stored size is
+        // replayed through `with_inner_size`. Recording the outer size instead
+        // would add the decorations again on every reopen and grow the window.
+        let outer = info.outer_rect?;
+        let inner = info.inner_rect?;
+        (inner.width() >= MIN_DETACHED_SIZE[0] && inner.height() >= MIN_DETACHED_SIZE[1]).then(
+            || Self {
+                x: outer.min.x,
+                y: outer.min.y,
+                width: inner.width(),
+                height: inner.height(),
+            },
+        )
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct AiStudioPreferences {
     schema_version: u32,
@@ -84,6 +121,13 @@ struct AiStudioPreferences {
     hosted_model_endpoint: String,
     #[serde(default)]
     hosted_model_name: String,
+    /// Whether AI Studio last presented itself in its own OS window.
+    #[serde(default)]
+    detached_presentation: bool,
+    #[serde(default)]
+    detached_window: Option<DetachedWindowPlacement>,
+    #[serde(default)]
+    section: AiStudioSection,
 }
 
 impl Default for AiStudioPreferences {
@@ -98,6 +142,9 @@ impl Default for AiStudioPreferences {
             local_model_name: String::new(),
             hosted_model_endpoint: String::new(),
             hosted_model_name: String::new(),
+            detached_presentation: false,
+            detached_window: None,
+            section: AiStudioSection::default(),
         }
     }
 }
@@ -380,10 +427,93 @@ enum AiStudioPresentationMode {
     Detached,
 }
 
+/// Named area of the AI Studio surface.
+///
+/// Sections replace one continuous scroll so the embedded panel and the
+/// detached window present the same Agent Host state at a readable density.
+/// Which section is selected is local presentation state and is never sent to
+/// the Agent Host.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum AiStudioSection {
+    /// Conversation history and the message composer.
+    #[default]
+    Conversation,
+    /// The structured proposal that a run is authorized against.
+    Plan,
+    /// Model backend, provider, benchmark, and companion configuration.
+    Runtime,
+    /// Managed code changes waiting for review.
+    Review,
+    /// Run events and the completion contract.
+    Timeline,
+}
+
+impl AiStudioSection {
+    const ALL: [Self; 5] = [
+        Self::Conversation,
+        Self::Plan,
+        Self::Runtime,
+        Self::Review,
+        Self::Timeline,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Conversation => "Conversation",
+            Self::Plan => "Plan",
+            Self::Runtime => "Runtime",
+            Self::Review => "Review",
+            Self::Timeline => "Timeline",
+        }
+    }
+}
+
+/// A presentation change requested by the header while the surface was drawn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PresentationRequest {
+    /// Move AI Studio into its own OS window.
+    Detach,
+    /// Return AI Studio to a window inside the Editor.
+    Reattach,
+}
+
+/// How much horizontal room the current presentation has.
+///
+/// The embedded panel is a modeless Editor window and stays a single column;
+/// the detached OS window is wide enough for a persistent section list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AiStudioLayout {
+    /// Single column with a section tab strip.
+    Compact,
+    /// Section list beside the section body.
+    Wide,
+}
+
+/// Title of the detached AI Studio operating-system window.
+///
+/// Visual validation locates the native window by this exact title, so the
+/// value is shared with the capture path instead of being restated there.
+pub const DETACHED_WINDOW_TITLE: &str = "GameEngine AI Studio";
+
+/// Vertical room reserved for the conversation composer.
+///
+/// The composer is three text rows plus its state line. Reserving the space
+/// keeps the input anchored while the transcript above it grows and shrinks.
+const COMPOSER_HEIGHT: f32 = 132.0;
+
+/// Width of the section list in the wide layout.
+const SECTION_NAV_WIDTH: f32 = 172.0;
+/// Smallest usable detached window size, in points.
+const MIN_DETACHED_SIZE: [f32; 2] = [520.0, 480.0];
+/// Detached window size used before the user has resized it once.
+const DEFAULT_DETACHED_SIZE: [f32; 2] = [780.0, 760.0];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct AiStudioPresentationState {
     mode: AiStudioPresentationMode,
     open: bool,
+    section: AiStudioSection,
 }
 
 impl Default for AiStudioPresentationState {
@@ -391,6 +521,7 @@ impl Default for AiStudioPresentationState {
         Self {
             mode: AiStudioPresentationMode::Embedded,
             open: true,
+            section: AiStudioSection::default(),
         }
     }
 }
@@ -476,6 +607,17 @@ pub struct AiStudioPanel {
     provider_program: String,
     provider_args: String,
     presentation: AiStudioPresentationState,
+    /// Placement the detached window is created with.
+    ///
+    /// This is deliberately not updated while the window is open: the viewport
+    /// builder is rebuilt every frame, so feeding a freshly observed size back
+    /// into it would make the window chase its own decorations and grow.
+    detached_placement: Option<DetachedWindowPlacement>,
+    /// Placement observed while the detached window is open.
+    ///
+    /// It becomes the next creation placement when the window closes or docks
+    /// back into the Editor, which is also when preferences are written.
+    observed_detached_placement: Option<DetachedWindowPlacement>,
     #[cfg(feature = "visual-validation")]
     detached_visual_frames: u8,
     active_run_id: Option<String>,
@@ -598,7 +740,17 @@ impl AiStudioPanel {
             active_external_args: None,
             provider_program: String::new(),
             provider_args: String::new(),
-            presentation: AiStudioPresentationState::default(),
+            presentation: AiStudioPresentationState {
+                mode: if preferences.detached_presentation {
+                    AiStudioPresentationMode::Detached
+                } else {
+                    AiStudioPresentationMode::Embedded
+                },
+                open: true,
+                section: preferences.section,
+            },
+            detached_placement: preferences.detached_window,
+            observed_detached_placement: None,
             #[cfg(feature = "visual-validation")]
             detached_visual_frames: 0,
             active_run_id,
@@ -664,6 +816,9 @@ impl AiStudioPanel {
         self.external_provider_kind = ExternalAgentProviderKind::ClaudeCode;
         self.external_provider_status =
             ExternalAgentProviderStatus::visual_fixture(ExternalAgentProviderKind::ClaudeCode);
+        // The capture documents the hosted backend controls, which now live in
+        // the Runtime section rather than in one continuous scroll.
+        self.presentation.section = AiStudioSection::Runtime;
     }
 
     #[cfg(feature = "visual-validation")]
@@ -941,58 +1096,59 @@ impl AiStudioPanel {
 
     fn show_embedded(&mut self, context: &egui::Context) {
         let mut open = self.presentation.open;
-        let mut detach_requested = false;
+        let mut request = None;
+        // The studio paints its own header band edge to edge, so the window
+        // frame contributes only the border and none of the padding.
+        let frame = egui::Frame::window(&context.global_style())
+            .fill(theme::BACKGROUND)
+            .stroke(egui::Stroke::new(1.0_f32, theme::BORDER))
+            .inner_margin(egui::Margin::ZERO);
         egui::Window::new("AI Studio")
             .id(egui::Id::new("gameengine_ai_studio"))
             .open(&mut open)
             .default_pos(egui::pos2(940.0, 84.0))
-            .default_size(egui::vec2(600.0, 760.0))
-            .min_width(460.0)
-            .min_height(520.0)
+            .default_size(egui::vec2(620.0, 780.0))
+            .min_width(420.0)
+            .min_height(440.0)
             .resizable(true)
+            .frame(frame)
             .show(context, |ui| {
-                ui.horizontal(|ui| {
-                    if ui.button("Detach").clicked() {
-                        detach_requested = true;
-                    }
-                    ui.small("Open AI Studio in its own OS window.");
-                });
-                ui.separator();
-                self.show_contents(ui);
+                request = self.show_studio(ui, AiStudioLayout::Compact);
             });
         self.presentation.open = open;
-        if detach_requested {
-            self.presentation.detach();
-        }
+        self.apply_presentation_request(request);
     }
 
     fn show_detached(&mut self, context: &egui::Context) {
-        let mut reattach_requested = false;
+        let mut request = None;
         let mut close_requested = false;
+        let mut observed_placement = None;
+        let size = self
+            .detached_placement
+            .map_or(DEFAULT_DETACHED_SIZE, |placement| {
+                [placement.width, placement.height]
+            });
+        let mut builder = egui::ViewportBuilder::default()
+            .with_title(DETACHED_WINDOW_TITLE)
+            .with_inner_size(size)
+            .with_min_inner_size(MIN_DETACHED_SIZE)
+            .with_resizable(true);
+        if let Some(placement) = self.detached_placement {
+            builder = builder.with_position([placement.x, placement.y]);
+        }
         context.show_viewport_immediate(
             egui::ViewportId::from_hash_of("gameengine_ai_studio_detached"),
-            egui::ViewportBuilder::default()
-                .with_title("AI Studio")
-                .with_inner_size([600.0, 680.0])
-                .with_min_inner_size([460.0, 520.0])
-                .with_resizable(true),
+            builder,
             |ui, _class| {
-                close_requested = ui.input(|input| input.viewport().close_requested());
+                ui.input(|input| {
+                    close_requested = input.viewport().close_requested();
+                    observed_placement = DetachedWindowPlacement::from_viewport(input.viewport());
+                });
                 #[cfg(feature = "visual-validation")]
                 ui.ctx().send_viewport_cmd(egui::ViewportCommand::Focus);
-                ui.horizontal(|ui| {
-                    if ui.button("Reattach").clicked() {
-                        reattach_requested = true;
-                    }
-                    ui.small("Same project Agent Host · detached presentation");
-                });
-                ui.separator();
-                let scroll_area = egui::ScrollArea::vertical()
-                    .id_salt("ai_studio_detached_contents")
-                    .auto_shrink([false, false]);
-                #[cfg(feature = "visual-validation")]
-                let scroll_area = scroll_area.vertical_scroll_offset(480.0);
-                scroll_area.show(ui, |ui| self.show_contents(ui));
+                ui.painter()
+                    .rect_filled(ui.max_rect(), 0.0_f32, theme::BACKGROUND);
+                request = self.show_studio(ui, AiStudioLayout::Wide);
             },
         );
 
@@ -1001,11 +1157,440 @@ impl AiStudioPanel {
             self.detached_visual_frames = self.detached_visual_frames.saturating_add(1);
         }
 
-        if reattach_requested {
-            self.presentation.reattach();
-        } else if close_requested {
-            self.presentation.close();
+        if let Some(placement) = observed_placement {
+            self.observed_detached_placement = Some(placement);
         }
+        if request.is_some() {
+            self.apply_presentation_request(request);
+        } else if close_requested {
+            // Closing a local presentation never cancels an active run.
+            self.adopt_observed_detached_placement();
+            self.presentation.close();
+            self.save_preferences();
+        }
+    }
+
+    /// Promotes the placement seen while detached to the creation placement.
+    fn adopt_observed_detached_placement(&mut self) {
+        if let Some(placement) = self.observed_detached_placement.take() {
+            self.detached_placement = Some(placement);
+        }
+    }
+
+    /// Applies a presentation change requested while the surface was drawing.
+    ///
+    /// The change is deferred to the end of the frame so the mode never
+    /// switches underneath widgets that are still being laid out.
+    fn apply_presentation_request(&mut self, request: Option<PresentationRequest>) {
+        let Some(request) = request else {
+            return;
+        };
+        match request {
+            PresentationRequest::Detach => self.presentation.detach(),
+            PresentationRequest::Reattach => {
+                self.adopt_observed_detached_placement();
+                self.presentation.reattach();
+            }
+        }
+        self.save_preferences();
+    }
+
+    /// Draws the whole AI Studio surface into `ui`.
+    ///
+    /// Returns the presentation change requested by the header, if any, so the
+    /// caller can apply it after the frame is drawn.
+    #[must_use]
+    fn show_studio(
+        &mut self,
+        ui: &mut egui::Ui,
+        layout: AiStudioLayout,
+    ) -> Option<PresentationRequest> {
+        theme::apply_studio_style(ui);
+        let request = self.show_studio_header(ui);
+        egui::Frame::NONE
+            .inner_margin(egui::Margin {
+                left: 13,
+                right: 13,
+                top: 10,
+                bottom: 0,
+            })
+            .show(ui, |ui| self.show_run_controls(ui));
+        match layout {
+            AiStudioLayout::Compact => {
+                egui::Frame::NONE
+                    .inner_margin(egui::Margin::symmetric(13, 11))
+                    .show(ui, |ui| {
+                        self.show_attention(ui);
+                        self.show_section_tabs(ui);
+                        ui.add_space(7.0);
+                        egui::ScrollArea::vertical()
+                            .id_salt("ai_studio_section_body")
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| self.show_section_body(ui));
+                    });
+            }
+            AiStudioLayout::Wide => {
+                let body_height = ui.available_height();
+                // Each column allocates its own top-down Ui: a child of the
+                // row would otherwise inherit the horizontal layout and stack
+                // the section entries side by side.
+                ui.horizontal_top(|ui| {
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(SECTION_NAV_WIDTH, body_height),
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| {
+                            egui::Frame::NONE
+                                .inner_margin(egui::Margin::symmetric(10, 12))
+                                .show(ui, |ui| {
+                                    ui.set_width(SECTION_NAV_WIDTH - 20.0);
+                                    self.show_section_nav(ui);
+                                });
+                        },
+                    );
+                    ui.add(egui::Separator::default().vertical().spacing(0.0));
+                    let content_width = ui.available_width();
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(content_width, body_height),
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| {
+                            egui::Frame::NONE
+                                .inner_margin(egui::Margin::symmetric(14, 12))
+                                .show(ui, |ui| {
+                                    ui.set_width(content_width - 28.0);
+                                    ui.set_min_height(body_height - 24.0);
+                                    self.show_attention(ui);
+                                    egui::ScrollArea::vertical()
+                                        .id_salt("ai_studio_section_body")
+                                        .auto_shrink([false, false])
+                                        .show(ui, |ui| self.show_section_body(ui));
+                                });
+                        },
+                    );
+                });
+            }
+        }
+        request
+    }
+
+    /// Draws the branded header band: identity, run state, session, status.
+    fn show_studio_header(&mut self, ui: &mut egui::Ui) -> Option<PresentationRequest> {
+        let mut request = None;
+        let background = ui.painter().add(egui::Shape::Noop);
+        let content = egui::Frame::NONE
+            .inner_margin(egui::Margin::symmetric(14, 11))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new("AI STUDIO")
+                            .strong()
+                            .color(theme::ACCENT_TEXT),
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        request = self.show_presentation_toggle(ui);
+                        self.show_run_badge(ui);
+                    });
+                });
+                ui.add_space(7.0);
+                self.show_session_header(ui);
+                if let Some(status) = self.status.clone() {
+                    ui.add_space(5.0);
+                    ui.horizontal_wrapped(|ui| {
+                        theme::status_dot(ui, theme::ACCENT_TEXT);
+                        ui.label(egui::RichText::new(status).small().color(theme::TEXT_MUTED));
+                    });
+                }
+            })
+            .response
+            .rect;
+        let band = egui::Rect::from_min_max(
+            egui::pos2(ui.max_rect().left(), content.top()),
+            egui::pos2(ui.max_rect().right(), content.bottom()),
+        );
+        ui.painter()
+            .set(background, theme::header_background_mesh(band));
+        theme::paint_header_rules(ui.painter(), band);
+        request
+    }
+
+    fn show_presentation_toggle(&mut self, ui: &mut egui::Ui) -> Option<PresentationRequest> {
+        match self.presentation.mode {
+            AiStudioPresentationMode::Embedded => ui
+                .button("Detach window")
+                .on_hover_text(
+                    "Move AI Studio into its own OS window. The same project Agent Host keeps every session, run, and permission.",
+                )
+                .clicked()
+                .then_some(PresentationRequest::Detach),
+            AiStudioPresentationMode::Detached => ui
+                .button("Dock into Editor")
+                .on_hover_text("Return AI Studio to a window inside the Editor.")
+                .clicked()
+                .then_some(PresentationRequest::Reattach),
+        }
+    }
+
+    /// Draws the badge naming the active run state, or idle when none is live.
+    fn show_run_badge(&mut self, ui: &mut egui::Ui) {
+        let state = self
+            .active_run_id
+            .as_ref()
+            .and_then(|run_id| self.host.run(run_id).ok())
+            .map(|run| run.state);
+        match state {
+            Some(state) => theme::badge(ui, run_state_label(state), run_state_color(state)),
+            None => theme::badge(ui, "Idle", theme::TEXT_MUTED),
+        }
+    }
+
+    /// Returns the trailing marker shown beside one section entry.
+    fn section_badge(&self, section: AiStudioSection) -> Option<(String, egui::Color32)> {
+        match section {
+            AiStudioSection::Review => {
+                let pending = self.pending_code_changes.len();
+                (pending > 0).then(|| (pending.to_string(), theme::WARNING))
+            }
+            AiStudioSection::Timeline => self
+                .active_run_id
+                .as_ref()
+                .and_then(|run_id| self.host.run(run_id).ok())
+                .map(|run| {
+                    (
+                        run_state_label(run.state).to_owned(),
+                        run_state_color(run.state),
+                    )
+                }),
+            AiStudioSection::Conversation
+                if self.native_question.is_some() || self.pending_question_permission.is_some() =>
+            {
+                Some(("Busy".to_owned(), theme::ACCENT_TEXT))
+            }
+            _ => None,
+        }
+    }
+
+    fn select_section(&mut self, section: AiStudioSection) {
+        if self.presentation.section == section {
+            return;
+        }
+        self.presentation.section = section;
+        self.save_preferences();
+    }
+
+    /// Draws the persistent section list used by the detached window.
+    fn show_section_nav(&mut self, ui: &mut egui::Ui) {
+        theme::caption(ui, "Sections");
+        ui.add_space(5.0);
+        for section in AiStudioSection::ALL {
+            let selected = self.presentation.section == section;
+            let badge = self.section_badge(section);
+            if theme::nav_entry(ui, selected, section.label(), badge).clicked() {
+                self.select_section(section);
+            }
+        }
+    }
+
+    /// Draws the section tab strip used by the embedded panel.
+    fn show_section_tabs(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal_wrapped(|ui| {
+            for section in AiStudioSection::ALL {
+                let selected = self.presentation.section == section;
+                let label = match self.section_badge(section) {
+                    Some((badge, _)) => format!("{} · {badge}", section.label()),
+                    None => section.label().to_owned(),
+                };
+                if ui.selectable_label(selected, label).clicked() {
+                    self.select_section(section);
+                }
+            }
+        });
+    }
+
+    /// Draws the always-visible run controls.
+    ///
+    /// Go, Stop, Interrupt, and Resume act on the whole session, so they stay
+    /// above the section body instead of living inside the Runtime section,
+    /// which only configures how a run is executed.
+    fn show_run_controls(&mut self, ui: &mut egui::Ui) {
+        let mut stop_requested = false;
+        let mut interrupt_requested = false;
+        let mut resume_requested = false;
+        ui.horizontal_wrapped(|ui| {
+            let can_go = self.process.is_none()
+                && !self.native_runtime_busy()
+                && self.pending_permission.is_none()
+                && self.pending_question_permission.is_none()
+                && (self.external_provider_is_ready()
+                    || (!self.external_provider_is_requested()
+                        && self.selected_native_model_config().is_ok()));
+            // The routing rule is long and unchanging, so it reads as a
+            // tooltip rather than a paragraph under every section.
+            if ui
+                .add_enabled(can_go, egui::Button::new("Go"))
+                .on_hover_text(
+                    "Go uses the selected first-class external provider when it is ready, the Generic command when configured, or otherwise the selected Local, Hosted API, or Enterprise ModelBackend. External adapters remain clients of the same immutable proposal, Agent Host permissions and work claims, code workspace, validation, Play/frame evidence, and completion contract.",
+                )
+                .clicked()
+            {
+                self.begin_run();
+            }
+            let can_stop = self.active_run_id.as_ref().is_some_and(|run_id| {
+                self.host.run(run_id).is_ok_and(|run| {
+                    !matches!(
+                        run.state,
+                        AgentRunState::Completed | AgentRunState::Failed | AgentRunState::Cancelled
+                    )
+                })
+            });
+            if ui.add_enabled(can_stop, egui::Button::new("Stop")).clicked() {
+                stop_requested = true;
+            }
+            let can_interrupt = !self.editing_interrupted
+                && self.pending_runtime_action.is_none()
+                && self.model_resource_task.is_none()
+                && (self.native_question.is_some()
+                    || self.resource_plan.presentation == PresentationPosture::InferenceFocused
+                    || self.active_run_id.as_ref().is_some_and(|run_id| {
+                        self.host.run(run_id).is_ok_and(|run| {
+                            !matches!(
+                                run.state,
+                                AgentRunState::Completed
+                                    | AgentRunState::Failed
+                                    | AgentRunState::Cancelled
+                                    | AgentRunState::InterruptedForEditing
+                            )
+                        })
+                    }));
+            if ui
+                .add_enabled(can_interrupt, egui::Button::new("Interrupt for Editing"))
+                .clicked()
+            {
+                interrupt_requested = true;
+            }
+            if ui
+                .add_enabled(
+                    self.editing_interrupted && self.pending_runtime_action.is_none(),
+                    egui::Button::new("Resume"),
+                )
+                .clicked()
+            {
+                resume_requested = true;
+            }
+        });
+        if stop_requested {
+            let run_id = self.active_run_id.clone();
+            if let Some(task) = self.native_question.as_ref() {
+                task.interrupt();
+            }
+            self.pending_native_question_start = None;
+            self.model_resource_continuation = None;
+            self.restore_for_editing = false;
+            if let Some(runtime) = self.native_agent_runtime.as_mut() { runtime.interrupt(); }
+            if let Some(task) = self.native_mcp_task.as_ref() { task.interrupt(); }
+            self.native_mcp_task = None;
+            self.pending_native_mcp_tool = None;
+            if let Some(process) = self.process.as_mut()
+                && let Err(error) = process.cancel()
+            {
+                self.status = Some(format!("Could not stop agent process: {error}"));
+            }
+            self.process = None;
+            self.process_purpose = None;
+            if let Some(run_id) = run_id
+                && let Err(error) = self.host.cancel_run(&run_id)
+            {
+                self.status = Some(error.to_string());
+            }
+            self.native_agent_runtime = None;
+            self.active_runtime_mode = None;
+            self.active_external_provider = None;
+            self.active_external_program = None;
+            self.active_external_args = None;
+            self.external_provider_diagnostics = ExternalAgentDiagnostics::default();
+            self.pending_external_work_owner = None;
+        }
+        if interrupt_requested {
+            if let Some(task) = self.native_question.as_ref() { task.interrupt(); }
+            if let Some(runtime) = self.native_agent_runtime.as_mut() { runtime.interrupt(); }
+            if let Some(task) = self.native_mcp_task.as_ref() { task.interrupt(); }
+            self.native_mcp_task = None;
+            self.pending_native_mcp_tool = None;
+            self.pending_native_question_start = None;
+            self.restore_for_editing = true;
+            if self.native_question.is_some() {
+                self.status = Some(
+                    "Stopping inference at a safe backend boundary before releasing local model residency..."
+                        .to_owned(),
+                );
+            } else {
+                self.begin_model_residency_request(
+                    interrupt_model_residency_request(),
+                    ModelResourceContinuation::RestoreForEditing,
+                );
+            }
+        }
+        if resume_requested {
+            self.pending_runtime_action = Some(AiStudioRuntimeAction::InspectAuthoritativeState);
+            self.status = Some(
+                "Re-inspecting authoritative Editor state before Resume...".to_owned(),
+            );
+        }
+    }
+
+    /// Draws decisions that block progress, regardless of the open section.
+    fn show_attention(&mut self, ui: &mut egui::Ui) {
+        let mut drawn = self.show_permission_prompt(ui);
+        drawn |= self.show_awaiting_user_prompt(ui);
+        if drawn {
+            ui.add_space(10.0);
+        }
+    }
+
+    /// Draws the notice shown while a run waits for a product answer.
+    fn show_awaiting_user_prompt(&mut self, ui: &mut egui::Ui) -> bool {
+        let awaiting = self
+            .active_run_id
+            .as_ref()
+            .and_then(|run_id| self.host.run(run_id).ok())
+            .is_some_and(|run| run.state == AgentRunState::AwaitingUser);
+        if !awaiting {
+            return false;
+        }
+        theme::attention_card(ui, theme::WARNING, |ui| {
+            ui.horizontal(|ui| {
+                theme::status_dot(ui, theme::WARNING);
+                ui.label(egui::RichText::new("The agent is waiting for you").strong());
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("Open conversation").clicked() {
+                        self.select_section(AiStudioSection::Conversation);
+                    }
+                });
+            });
+            theme::hint(
+                ui,
+                "Answer in the conversation composer. Answering does not expand the immutable proposal a run was authorized against.",
+            );
+        });
+        true
+    }
+
+    fn show_section_body(&mut self, ui: &mut egui::Ui) {
+        match self.presentation.section {
+            AiStudioSection::Conversation => self.show_conversation(ui),
+            AiStudioSection::Plan => self.show_proposal(ui),
+            AiStudioSection::Runtime => self.show_runtime_section(ui),
+            AiStudioSection::Review => self.show_code_changes(ui),
+            AiStudioSection::Timeline => self.show_run_timeline(ui),
+        }
+    }
+
+    /// Draws the configuration section: model backend, provider, companion.
+    fn show_runtime_section(&mut self, ui: &mut egui::Ui) {
+        self.show_local_model_settings(ui);
+        ui.add_space(9.0);
+        self.show_provider(ui);
+        ui.add_space(9.0);
+        self.show_remote_companion(ui);
     }
 
     fn ensure_remote_gateway(&mut self, context: &egui::Context) {
@@ -1254,42 +1839,26 @@ impl AiStudioPanel {
         let Some(server) = self.remote_server.as_ref() else {
             return;
         };
-        egui::CollapsingHeader::new("Remote companion")
-            .default_open(false)
-            .show(ui, |ui| {
-                ui.small("Loopback-only companion gateway. Expose it only through a trusted private overlay or local reverse proxy. Remote authentication is separate from Agent Host permissions; MCP is never exposed remotely.");
-                ui.label(format!("Gateway: {}", server.endpoint()));
-                ui.monospace(server.companion_url());
+        let endpoint = server.endpoint().to_owned();
+        let companion_url = server.companion_url();
+        theme::card(ui, |ui| {
+            theme::card_header(ui, "Remote companion");
+            ui.horizontal(|ui| {
+                theme::status_dot(ui, theme::SUCCESS);
+                ui.label(egui::RichText::new(endpoint).monospace());
             });
-    }
-
-    fn show_contents(&mut self, ui: &mut egui::Ui) {
-        self.show_remote_companion(ui);
-        ui.separator();
-        ui.horizontal_wrapped(|ui| {
-            ui.strong("Conversation-first project agent");
-            ui.separator();
-            ui.label("Structured authoring stays on the Editor MCP host.");
+            theme::hint(
+                ui,
+                "Loopback-only companion gateway. Expose it only through a trusted private overlay or local reverse proxy. Remote authentication is separate from Agent Host permissions; MCP is never exposed remotely.",
+            );
+            ui.add_space(4.0);
+            theme::caption(ui, "One-time companion link");
+            ui.add(
+                egui::TextEdit::singleline(&mut companion_url.as_str())
+                    .font(egui::TextStyle::Monospace)
+                    .desired_width(f32::INFINITY),
+            );
         });
-        ui.small(
-            "External agent processes are application-level integrations, not an OS sandbox. Code is prepared in an isolated managed workspace and must be reviewed before apply.",
-        );
-        ui.separator();
-
-        self.show_session_header(ui);
-        self.show_conversation(ui);
-        ui.separator();
-        self.show_proposal(ui);
-        ui.separator();
-        self.show_provider(ui);
-        self.show_permission_prompt(ui);
-        self.show_code_changes(ui);
-        self.show_run_timeline(ui);
-
-        if let Some(status) = &self.status {
-            ui.separator();
-            ui.label(status);
-        }
     }
 
     fn show_session_header(&mut self, ui: &mut egui::Ui) {
@@ -1299,10 +1868,10 @@ impl AiStudioPanel {
             .session(&self.selected_session)
             .map(|session| session.title.clone())
             .unwrap_or_else(|_| "Unavailable session".to_owned());
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             egui::ComboBox::from_id_salt("ai_studio_session")
                 .selected_text(current_title)
-                .width(260.0)
+                .width(240.0)
                 .show_ui(ui, |ui| {
                     for id in session_ids {
                         let title = self
@@ -1347,38 +1916,73 @@ impl AiStudioPanel {
     }
 
     fn show_conversation(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Conversation");
         let messages = self
             .host
             .session(&self.selected_session)
             .map(|session| session.messages.clone())
             .unwrap_or_default();
+        // The transcript claims everything the composer does not need, so the
+        // input keeps a stable position at the bottom of the section instead
+        // of sliding up whenever the history is short.
+        let transcript_height = (ui.available_height() - COMPOSER_HEIGHT).max(140.0);
+        ui.allocate_ui(
+            egui::vec2(ui.available_width(), transcript_height),
+            |ui| self.show_conversation_transcript(ui, messages),
+        );
+        ui.add_space(9.0);
+        self.show_conversation_composer(ui);
+    }
+
+    /// Draws the message history for the selected session.
+    fn show_conversation_transcript(
+        &mut self,
+        ui: &mut egui::Ui,
+        messages: Vec<ConversationMessage>,
+    ) {
         egui::ScrollArea::vertical()
             .id_salt("ai_studio_conversation")
-            .max_height(180.0)
+            .auto_shrink([false, false])
             .stick_to_bottom(true)
             .show(ui, |ui| {
                 if messages.is_empty() {
-                    ui.weak("Describe what you want to build, change, inspect, or validate.");
-                }
-                for message in messages {
-                    ui.group(|ui| {
-                        ui.strong(match message.role {
-                            ConversationRole::User => "You",
-                            ConversationRole::Assistant => "Agent",
-                            ConversationRole::System => "System",
-                        });
-                        ui.label(message.text);
+                    theme::card(ui, |ui| {
+                        ui.label(
+                            egui::RichText::new("Start with what you want to happen").strong(),
+                        );
+                        theme::hint(
+                            ui,
+                            "Describe what you want to build, change, inspect, or validate. Questions are answered read-only; writes still require an explicit Go.",
+                        );
                     });
                 }
+                for message in messages {
+                    let (label, accent) = match message.role {
+                        ConversationRole::User => ("You", theme::ACCENT_TEXT),
+                        ConversationRole::Assistant => ("Agent", theme::SUCCESS),
+                        ConversationRole::System => ("System", theme::TEXT_MUTED),
+                    };
+                    theme::card(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            theme::status_dot(ui, accent);
+                            ui.label(egui::RichText::new(label).small().strong().color(accent));
+                        });
+                        ui.add_space(2.0);
+                        ui.label(message.text);
+                    });
+                    ui.add_space(2.0);
+                }
             });
-        self.show_local_model_settings(ui);
+    }
+
+    /// Draws the message composer and the state line under it.
+    fn show_conversation_composer(&mut self, ui: &mut egui::Ui) {
         ui.add(
             egui::TextEdit::multiline(&mut self.message_draft)
-                .desired_rows(2)
+                .desired_rows(3)
+                .desired_width(f32::INFINITY)
                 .hint_text("Ask a question, add a constraint, or continue the same conversation…"),
         );
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             let can_send = !self.message_draft.trim().is_empty()
                 && self.native_question.is_none()
                 && self.pending_question_permission.is_none();
@@ -1415,19 +2019,28 @@ impl AiStudioPanel {
             }
             if self.native_question.is_some() {
                 ui.spinner();
-                ui.small("Reading current GameEngine/project evidence…");
+                theme::hint(ui, "Reading current GameEngine/project evidence…");
             } else if self.selected_native_model_config().is_err() {
-                ui.small("Configure the selected model backend to receive read-only answers.");
+                if ui.button("Configure model backend").clicked() {
+                    self.select_section(AiStudioSection::Runtime);
+                }
+                theme::hint(
+                    ui,
+                    "Configure the selected model backend to receive read-only answers.",
+                );
             } else {
-                ui.small("Questions use the read-only native harness; Go remains explicit for writes.");
+                theme::hint(
+                    ui,
+                    "Questions use the read-only native harness; Go remains explicit for writes.",
+                );
             }
         });
     }
 
     fn show_local_model_settings(&mut self, ui: &mut egui::Ui) {
-        egui::CollapsingHeader::new("Model backend · questions and native runs")
-            .default_open(true)
-            .show(ui, |ui| {
+        theme::card(ui, |ui| {
+            theme::card_header(ui, "Model backend · questions and native runs");
+            {
                 ui.horizontal_wrapped(|ui| {
                     ui.label("Backend");
                     let previous = self.model_backend;
@@ -1717,7 +2330,8 @@ impl AiStudioPanel {
                 ));
                 ui.small(self.model_routing_status());
                 self.show_agent_benchmark(ui);
-            });
+            }
+        });
     }
 
     fn show_agent_benchmark(&mut self, ui: &mut egui::Ui) {
@@ -2416,6 +3030,10 @@ impl AiStudioPanel {
             local_model_name: self.local_model_name.clone(),
             hosted_model_endpoint: self.hosted_model_endpoint.clone(),
             hosted_model_name: self.hosted_model_name.clone(),
+            detached_presentation: self.presentation.mode
+                == AiStudioPresentationMode::Detached,
+            detached_window: self.observed_detached_placement.or(self.detached_placement),
+            section: self.presentation.section,
         };
         match serde_json::to_vec_pretty(&preferences) {
             Ok(bytes) => {
@@ -2498,11 +3116,19 @@ impl AiStudioPanel {
             .session(&self.selected_session)
             .map(|session| session.proposal.version)
             .unwrap_or(self.proposal_draft.version);
-        egui::CollapsingHeader::new(format!("Structured proposal · v{current_version}"))
-            .default_open(true)
-            .show(ui, |ui| {
-                ui.label("Goal");
-                ui.text_edit_singleline(&mut self.proposal_draft.goal);
+        theme::card(ui, |ui| {
+                theme::card_header(ui, &format!("Structured proposal · v{current_version}"));
+                theme::hint(
+                    ui,
+                    "A run is authorized against one immutable proposal version. Saving here creates the next version rather than editing a running one.",
+                );
+                ui.add_space(6.0);
+                theme::caption(ui, "Goal");
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.proposal_draft.goal)
+                        .desired_width(f32::INFINITY)
+                        .hint_text("One sentence describing the outcome"),
+                );
                 edit_lines(ui, "Requirements", &mut self.proposal_draft.requirements);
                 edit_lines(ui, "Assumptions", &mut self.proposal_draft.assumptions);
                 edit_lines(
@@ -2523,6 +3149,7 @@ impl AiStudioPanel {
                 edit_lines(ui, "Planned assets", &mut self.proposal_draft.planned_assets);
                 edit_lines(ui, "Validation plan", &mut self.proposal_draft.validation_plan);
                 edit_lines(ui, "Playtest plan", &mut self.proposal_draft.playtest_plan);
+                ui.add_space(4.0);
                 if ui.button("Save proposal version").clicked() {
                     match self
                         .host
@@ -3009,7 +3636,8 @@ impl AiStudioPanel {
     }
 
     fn show_provider(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Run");
+        theme::card(ui, |ui| {
+            theme::card_header(ui, "Agent runtime");
         let previous_provider = self.external_provider_kind;
         let mut refresh_provider = false;
         ui.horizontal(|ui| {
@@ -3110,134 +3738,26 @@ impl AiStudioPanel {
                 );
             }
         });
-        ui.small(
-            "Go uses the selected first-class external provider when it is ready, the Generic command when configured, or otherwise the selected Local, Hosted API, or Enterprise ModelBackend. External adapters remain clients of the same immutable proposal, Agent Host permissions and work claims, code workspace, validation, Play/frame evidence, and completion contract.",
-        );
-        let mut stop_requested = false;
-        let mut interrupt_requested = false;
-        let mut resume_requested = false;
-        ui.horizontal_wrapped(|ui| {
-            let can_go = self.process.is_none()
-                && !self.native_runtime_busy()
-                && self.pending_permission.is_none()
-                && self.pending_question_permission.is_none()
-                && (self.external_provider_is_ready()
-                    || (!self.external_provider_is_requested()
-                        && self.selected_native_model_config().is_ok()));
-            if ui.add_enabled(can_go, egui::Button::new("Go")).clicked() {
-                self.begin_run();
-            }
-            let can_stop = self.active_run_id.as_ref().is_some_and(|run_id| {
-                self.host.run(run_id).is_ok_and(|run| {
-                    !matches!(
-                        run.state,
-                        AgentRunState::Completed | AgentRunState::Failed | AgentRunState::Cancelled
-                    )
-                })
-            });
-            if ui.add_enabled(can_stop, egui::Button::new("Stop")).clicked() {
-                stop_requested = true;
-            }
-            let can_interrupt = !self.editing_interrupted
-                && self.pending_runtime_action.is_none()
-                && self.model_resource_task.is_none()
-                && (self.native_question.is_some()
-                    || self.resource_plan.presentation == PresentationPosture::InferenceFocused
-                    || self.active_run_id.as_ref().is_some_and(|run_id| {
-                        self.host.run(run_id).is_ok_and(|run| {
-                            !matches!(
-                                run.state,
-                                AgentRunState::Completed
-                                    | AgentRunState::Failed
-                                    | AgentRunState::Cancelled
-                                    | AgentRunState::InterruptedForEditing
-                            )
-                        })
-                    }));
-            if ui
-                .add_enabled(can_interrupt, egui::Button::new("Interrupt for Editing"))
-                .clicked()
-            {
-                interrupt_requested = true;
-            }
-            if ui
-                .add_enabled(
-                    self.editing_interrupted && self.pending_runtime_action.is_none(),
-                    egui::Button::new("Resume"),
-                )
-                .clicked()
-            {
-                resume_requested = true;
-            }
         });
-        if stop_requested {
-            let run_id = self.active_run_id.clone();
-            if let Some(task) = self.native_question.as_ref() {
-                task.interrupt();
-            }
-            self.pending_native_question_start = None;
-            self.model_resource_continuation = None;
-            self.restore_for_editing = false;
-            if let Some(runtime) = self.native_agent_runtime.as_mut() { runtime.interrupt(); }
-            if let Some(task) = self.native_mcp_task.as_ref() { task.interrupt(); }
-            self.native_mcp_task = None;
-            self.pending_native_mcp_tool = None;
-            if let Some(process) = self.process.as_mut()
-                && let Err(error) = process.cancel()
-            {
-                self.status = Some(format!("Could not stop agent process: {error}"));
-            }
-            self.process = None;
-            self.process_purpose = None;
-            if let Some(run_id) = run_id
-                && let Err(error) = self.host.cancel_run(&run_id)
-            {
-                self.status = Some(error.to_string());
-            }
-            self.native_agent_runtime = None;
-            self.active_runtime_mode = None;
-            self.active_external_provider = None;
-            self.active_external_program = None;
-            self.active_external_args = None;
-            self.external_provider_diagnostics = ExternalAgentDiagnostics::default();
-            self.pending_external_work_owner = None;
-        }
-        if interrupt_requested {
-            if let Some(task) = self.native_question.as_ref() { task.interrupt(); }
-            if let Some(runtime) = self.native_agent_runtime.as_mut() { runtime.interrupt(); }
-            if let Some(task) = self.native_mcp_task.as_ref() { task.interrupt(); }
-            self.native_mcp_task = None;
-            self.pending_native_mcp_tool = None;
-            self.pending_native_question_start = None;
-            self.restore_for_editing = true;
-            if self.native_question.is_some() {
-                self.status = Some(
-                    "Stopping inference at a safe backend boundary before releasing local model residency..."
-                        .to_owned(),
-                );
-            } else {
-                self.begin_model_residency_request(
-                    interrupt_model_residency_request(),
-                    ModelResourceContinuation::RestoreForEditing,
-                );
-            }
-        }
-        if resume_requested {
-            self.pending_runtime_action = Some(AiStudioRuntimeAction::InspectAuthoritativeState);
-            self.status = Some(
-                "Re-inspecting authoritative Editor state before Resume...".to_owned(),
-            );
-        }
     }
-
-    fn show_permission_prompt(&mut self, ui: &mut egui::Ui) {
+    /// Draws the pending approval, and reports whether one was drawn.
+    ///
+    /// The prompt is rendered above the section body rather than inside a
+    /// section, because a pending decision blocks every other surface and must
+    /// never be hidden behind an unselected tab.
+    fn show_permission_prompt(&mut self, ui: &mut egui::Ui) -> bool {
         if self.pending_question_permission.is_some() {
-            ui.separator();
-            ui.group(|ui| {
-                ui.strong("Approval required");
-                ui.label(AgentCapability::NetworkAccess.label());
-                ui.small("Hosted question context leaves this machine only after approval. Credentials never enter the permission record.");
+            theme::attention_card(ui, theme::WARNING, |ui| {
                 ui.horizontal(|ui| {
+                    theme::status_dot(ui, theme::WARNING);
+                    ui.label(egui::RichText::new("Approval required").strong());
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        theme::badge(ui, AgentCapability::NetworkAccess.label(), theme::WARNING);
+                    });
+                });
+                theme::hint(ui, "Hosted question context leaves this machine only after approval. Credentials never enter the permission record.");
+                ui.add_space(5.0);
+                ui.horizontal_wrapped(|ui| {
                     for (label, scope) in [
                         ("Allow once", ApprovalScope::Once),
                         ("This session", ApprovalScope::Run),
@@ -3250,20 +3770,25 @@ impl AiStudioPanel {
                     }
                 });
             });
-            return;
+            return true;
         }
         let Some(pending) = self.pending_permission.as_ref() else {
-            return;
+            return false;
         };
         let run_id = pending.run_id.clone();
         let capability = pending.capability;
         let action = pending.action;
-        ui.separator();
-        ui.group(|ui| {
-            ui.strong("Approval required");
-            ui.label(capability.label());
-            ui.small("Project-level approval persists as user application state; credentials never do.");
+        theme::attention_card(ui, theme::WARNING, |ui| {
             ui.horizontal(|ui| {
+                theme::status_dot(ui, theme::WARNING);
+                ui.label(egui::RichText::new("Approval required").strong());
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    theme::badge(ui, capability.label(), theme::WARNING);
+                });
+            });
+            theme::hint(ui, "Project-level approval persists as user application state; credentials never do.");
+            ui.add_space(5.0);
+            ui.horizontal_wrapped(|ui| {
                 for (label, scope) in [
                     ("Allow once", ApprovalScope::Once),
                     ("This run", ApprovalScope::Run),
@@ -3276,69 +3801,118 @@ impl AiStudioPanel {
                 }
             });
         });
+        true
     }
 
     fn show_code_changes(&mut self, ui: &mut egui::Ui) {
         if self.pending_code_changes.is_empty() {
+            theme::card(ui, |ui| {
+                theme::card_header(ui, "Managed code review");
+                ui.label("No code changes are waiting for review.");
+                theme::hint(
+                    ui,
+                    "Code an agent writes is prepared in an isolated managed workspace and appears here before it can touch the project.",
+                );
+            });
             return;
         }
-        ui.separator();
-        egui::CollapsingHeader::new(format!(
-            "Managed code diff · {} file(s)",
-            self.pending_code_changes.len()
-        ))
-        .default_open(true)
-        .show(ui, |ui| {
+        theme::card(ui, |ui| {
+            theme::card_header(
+                ui,
+                &format!(
+                    "Managed code diff · {} file(s)",
+                    self.pending_code_changes.len()
+                ),
+            );
             for change in &self.pending_code_changes {
                 ui.horizontal(|ui| {
-                    ui.monospace(change.relative_path.display().to_string());
-                    ui.weak(change_summary(change));
+                    theme::badge(ui, change_summary(change), theme::ACCENT_TEXT);
+                    ui.label(
+                        egui::RichText::new(change.relative_path.display().to_string())
+                            .monospace(),
+                    );
                 });
             }
+            ui.add_space(6.0);
             let can_apply = self.pending_permission.is_none()
                 && self.code_workspace.is_some()
                 && self.active_run_id.is_some();
             if ui
-                .add_enabled(can_apply, egui::Button::new("Review complete — apply code changes"))
+                .add_enabled(
+                    can_apply,
+                    egui::Button::new("Review complete — apply code changes"),
+                )
                 .clicked()
             {
                 self.request_code_apply();
             }
-            ui.small(
+            theme::hint(
+                ui,
                 "Only game/** and assets/scripts/{rust,rhai}/** are eligible. Deletions and stale live files are rejected rather than forced.",
             );
         });
     }
 
     fn show_run_timeline(&mut self, ui: &mut egui::Ui) {
-        let Some(run_id) = self.active_run_id.clone() else {
+        let run = self
+            .active_run_id
+            .clone()
+            .and_then(|run_id| self.host.run(&run_id).cloned().ok());
+        let Some(run) = run else {
+            theme::card(ui, |ui| {
+                theme::card_header(ui, "Run timeline");
+                ui.label("No run is active.");
+                theme::hint(
+                    ui,
+                    "Save a proposal version in Plan, then press Go. Events, evidence, and the completion contract appear here while the run is live.",
+                );
+            });
             return;
         };
-        let Ok(run) = self.host.run(&run_id).cloned() else {
-            return;
-        };
-        ui.separator();
-        egui::CollapsingHeader::new(format!("Run timeline · {:?}", run.state))
-            .default_open(true)
-            .show(ui, |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    ui.strong(format!("Proposal v{}", run.proposal_snapshot.version));
-                    ui.label(format!("Provider: {}", run.provider_label));
-                });
+        let run_id = run.id.clone();
+        theme::card(ui, |ui| {
+            theme::card_header(ui, "Run timeline");
+            ui.horizontal_wrapped(|ui| {
+                theme::badge(ui, run_state_label(run.state), run_state_color(run.state));
+                theme::badge(
+                    ui,
+                    &format!("Proposal v{}", run.proposal_snapshot.version),
+                    theme::TEXT_MUTED,
+                );
+                theme::hint(ui, format!("Provider: {}", run.provider_label));
+            });
+            ui.add_space(6.0);
+            // The timeline is the tallest read-only surface in the section, so
+            // it takes what the completion contract below does not need.
+            let events_height = (ui.available_height() - 190.0).max(150.0);
+            theme::well_frame().show(ui, |ui| {
+                ui.set_width(ui.available_width());
                 egui::ScrollArea::vertical()
                     .id_salt("ai_studio_timeline")
-                    .max_height(180.0)
+                    .max_height(events_height)
+                    .stick_to_bottom(true)
                     .show(ui, |ui| {
                         for event in run.events.iter().rev().take(120).rev() {
                             ui.horizontal_wrapped(|ui| {
-                                ui.monospace(format!("#{:03}", event.sequence));
-                                ui.strong(format!("{:?}", event.kind));
+                                ui.label(
+                                    egui::RichText::new(format!("#{:03}", event.sequence))
+                                        .monospace()
+                                        .color(theme::TEXT_MUTED),
+                                );
+                                ui.label(
+                                    egui::RichText::new(format!("{:?}", event.kind))
+                                        .small()
+                                        .strong()
+                                        .color(theme::ACCENT_TEXT),
+                                );
                                 ui.label(&event.message);
                             });
                         }
                     });
-                self.show_completion_contract(ui, &run_id, run.completion);
             });
+            ui.add_space(8.0);
+            self.show_completion_contract(ui, &run_id, run.completion);
+        });
     }
 
     fn show_completion_contract(
@@ -4691,6 +5265,37 @@ fn load_ai_studio_preferences(path: &std::path::Path) -> AiStudioPreferences {
     }
 }
 
+/// Returns the short name shown on a run-state badge.
+fn run_state_label(state: AgentRunState) -> &'static str {
+    match state {
+        AgentRunState::Inspecting => "Inspecting",
+        AgentRunState::Planning => "Planning",
+        AgentRunState::Executing => "Executing",
+        AgentRunState::AwaitingUser => "Waiting",
+        AgentRunState::InterruptedForEditing => "Interrupted",
+        AgentRunState::Validating => "Validating",
+        AgentRunState::Playtesting => "Playtesting",
+        AgentRunState::Evaluating => "Evaluating",
+        AgentRunState::Repairing => "Repairing",
+        AgentRunState::Completed => "Completed",
+        AgentRunState::Failed => "Failed",
+        AgentRunState::Cancelled => "Cancelled",
+    }
+}
+
+/// Returns the color a run state is shown in.
+///
+/// Only states that need the user, or that ended badly, leave the neutral
+/// accent, so a glance at the badge distinguishes progress from a stop.
+fn run_state_color(state: AgentRunState) -> egui::Color32 {
+    match state {
+        AgentRunState::AwaitingUser | AgentRunState::InterruptedForEditing => theme::WARNING,
+        AgentRunState::Completed => theme::SUCCESS,
+        AgentRunState::Failed | AgentRunState::Cancelled => theme::DANGER,
+        _ => theme::ACCENT_TEXT,
+    }
+}
+
 fn capability_label(value: CapabilityAvailability) -> &'static str {
     match value {
         CapabilityAvailability::Available => "available",
@@ -4877,11 +5482,12 @@ fn optional_metric(value: Option<u64>) -> String {
 
 fn edit_lines(ui: &mut egui::Ui, label: &str, values: &mut Vec<String>) {
     let mut text = values.join("\n");
-    ui.label(label);
+    theme::caption(ui, label);
     if ui
         .add(
             egui::TextEdit::multiline(&mut text)
                 .desired_rows(2)
+                .desired_width(f32::INFINITY)
                 .hint_text("One item per line"),
         )
         .changed()
@@ -5080,6 +5686,14 @@ mod tests {
             local_model_name: String::new(),
             hosted_model_endpoint: "https://provider.example/v1/chat/completions".to_owned(),
             hosted_model_name: "example-model".to_owned(),
+            detached_presentation: true,
+            detached_window: Some(DetachedWindowPlacement {
+                x: 120.0,
+                y: 80.0,
+                width: 820.0,
+                height: 760.0,
+            }),
+            section: AiStudioSection::Runtime,
         };
         let json = serde_json::to_string(&preferences).expect("serialize preferences");
         assert!(!json.contains("authorization"));
@@ -5114,6 +5728,93 @@ mod tests {
         presentation.reattach();
         assert_eq!(presentation.mode, AiStudioPresentationMode::Embedded);
         assert!(presentation.open);
+    }
+
+    #[test]
+    fn detached_presentation_and_section_survive_a_preferences_round_trip() {
+        let placement = DetachedWindowPlacement {
+            x: 240.0,
+            y: 96.0,
+            width: 900.0,
+            height: 720.0,
+        };
+        let saved = AiStudioPreferences {
+            detached_presentation: true,
+            detached_window: Some(placement),
+            section: AiStudioSection::Timeline,
+            ..AiStudioPreferences::default()
+        };
+        let json = serde_json::to_vec(&saved).expect("serialize preferences");
+        let loaded =
+            serde_json::from_slice::<AiStudioPreferences>(&json).expect("deserialize preferences");
+
+        assert!(loaded.detached_presentation);
+        assert_eq!(loaded.detached_window, Some(placement));
+        assert_eq!(loaded.section, AiStudioSection::Timeline);
+    }
+
+    #[test]
+    fn preferences_written_before_detaching_still_load_with_an_embedded_default() {
+        // Preference files written by an earlier Editor have no presentation
+        // fields; they must load rather than reset every unrelated setting.
+        let json = serde_json::json!({
+            "schema_version": AI_STUDIO_PREFERENCES_SCHEMA_VERSION,
+            "quality_preference": "balanced",
+            "model_backend": "local",
+            "local_model_endpoint": DEFAULT_LOCAL_MODEL_ENDPOINT,
+            "local_model_name": "model:tag",
+        });
+        let loaded = serde_json::from_value::<AiStudioPreferences>(json)
+            .expect("legacy preferences must load");
+
+        assert!(!loaded.detached_presentation);
+        assert_eq!(loaded.detached_window, None);
+        assert_eq!(loaded.section, AiStudioSection::Conversation);
+        assert_eq!(loaded.local_model_name, "model:tag");
+    }
+
+    #[test]
+    fn every_section_is_reachable_from_the_section_list() {
+        // A section that is not in ALL would be unreachable in both layouts
+        // while still being selectable through a persisted preference.
+        for section in AiStudioSection::ALL {
+            assert!(!section.label().is_empty());
+        }
+        assert_eq!(
+            AiStudioSection::ALL.len(),
+            5,
+            "every section must appear in the navigation list"
+        );
+        assert_eq!(AiStudioSection::default(), AiStudioSection::Conversation);
+    }
+
+    #[test]
+    fn run_states_that_need_the_user_or_ended_badly_are_colored_apart() {
+        assert_eq!(
+            run_state_color(AgentRunState::AwaitingUser),
+            crate::ai_studio_theme::WARNING
+        );
+        assert_eq!(
+            run_state_color(AgentRunState::InterruptedForEditing),
+            crate::ai_studio_theme::WARNING
+        );
+        assert_eq!(
+            run_state_color(AgentRunState::Failed),
+            crate::ai_studio_theme::DANGER
+        );
+        assert_eq!(
+            run_state_color(AgentRunState::Cancelled),
+            crate::ai_studio_theme::DANGER
+        );
+        assert_eq!(
+            run_state_color(AgentRunState::Completed),
+            crate::ai_studio_theme::SUCCESS
+        );
+        assert_eq!(
+            run_state_color(AgentRunState::Executing),
+            crate::ai_studio_theme::ACCENT_TEXT
+        );
+        assert_eq!(run_state_label(AgentRunState::AwaitingUser), "Waiting");
     }
 
     fn local_resource_capabilities() -> crate::resource_arbitration::ModelResourceCapabilities {

@@ -19,6 +19,7 @@ mod live_observation;
 mod model_router;
 mod native_agent;
 mod native_agent_runtime;
+mod ai_studio_theme;
 mod remote_ai_studio;
 mod resource_arbitration;
 pub mod ai_studio;
@@ -63,7 +64,7 @@ mod view_resolution;
 mod working_copy;
 mod workspace;
 
-pub use ai_studio::{AiStudioConnection, AiStudioPanel};
+pub use ai_studio::{AiStudioConnection, AiStudioPanel, DETACHED_WINDOW_TITLE};
 pub use anim_ux::{
     build_retarget_map_inspector_model, build_skeleton_bind_report, find_skeleton_display_name,
     find_skeleton_record, merge_bone_pairs, rerun_name_matching, resolve_bone_name,

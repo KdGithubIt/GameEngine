@@ -527,7 +527,10 @@ finally {
             SCRIPT,
         ])
         .env("GAMEENGINE_VISUAL_CAPTURE_PID", std::process::id().to_string())
-        .env("GAMEENGINE_VISUAL_CAPTURE_TITLE", "AI Studio")
+        .env(
+            "GAMEENGINE_VISUAL_CAPTURE_TITLE",
+            engine_editor::DETACHED_WINDOW_TITLE,
+        )
         .env("GAMEENGINE_VISUAL_CAPTURE_PATH", path.as_os_str())
         .output()
         .map_err(|error| format!("failed to start native-window capture: {error}"))?;
