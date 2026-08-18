@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/native_2d_editor.rs",
+  "old": "            if ui\n                .add_enabled(!loaded.gesture_active, egui::Button::new(\"Undo stroke\"))\n                .clicked()\n                && loaded.service.undo()\n            {\n                loaded.dirty = true;\n                loaded.affected_chunks.clear();\n            }\n",
+  "new": "            if ui\n                .add_enabled(!loaded.gesture_active, egui::Button::new(\"Undo stroke\"))\n                .clicked()\n            {\n                match loaded.undo(project, manifest) {\n                    Ok(true) | Ok(false) => {}\n                    Err(error) => self.status = Some(format!(\"Tile Map undo failed: {error}\")),\n                }\n            }\n"
+}
