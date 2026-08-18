@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0154-first-release-20260818-r2",
+  "target_branch": "chatgpt/gameengine-adr0154-first-release",
+  "expected_head_sha": "837ca2784312c78c30c6b260d8bac0b32ee0e2f4",
+  "baseline_main_sha": "837ca2784312c78c30c6b260d8bac0b32ee0e2f4",
+  "edit_parts": [
+    "edit-0000.json",
+    "edit-0001.json",
+    "edit-0002.json",
+    "edit-0003.json",
+    "edit-0004.json",
+    "edit-0005.json",
+    "edit-0006.json",
+    "edit-0007.json",
+    "edit-0008.json",
+    "edit-0009.json",
+    "edit-0010.json",
+    "edit-0011.json",
+    "edit-0012.json",
+    "edit-0013.json",
+    "edit-0014.json"
+  ],
+  "commit_message": "Add ADR0154 motion binding foundation",
+  "pr_title": "Implement ADR 0154 target-aware animation motion binding",
+  "pr_body": "Implements the first-release ADR 0154 motion-binding architecture on current main. This first dispatcher request establishes the shared GUI-free planner, target-independent Humanoid identity, and persisted VMD Humanoid provenance contract. Follow-up dispatcher requests on the same Draft PR complete schema v3, runtime/Editor/build integration, tests, and visual validation.\n\nThe PR remains Draft and must not be merged automatically."
+}
