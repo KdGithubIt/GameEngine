@@ -1,0 +1,367 @@
+diff --git a/crates/engine/src/native_2d.rs b/crates/engine/src/native_2d.rs
+index 8bdf8efb1ec731b557b308333e8702650170adb1..518c677fb6adf42464ba1da496f0e8ed878d0e44 100644
+--- a/crates/engine/src/native_2d.rs
++++ b/crates/engine/src/native_2d.rs
+@@ -11,8 +11,9 @@ pub use engine_assets::native_2d::{
+ pub use engine_physics::native_2d::*;
+ pub use engine_render_runtime::native_2d::{
+     cull_tile_chunks, sort_and_batch_sprites, validate_camera_transform, Camera2d,
+-    Camera2dDiagnostic, Native2dRenderMetrics, SpriteBatch2d, SpriteInstance2d,
+-    TileChunkBounds2d, ViewRect2d, ViewportFit2d, VisibleTileChunk2d,
++    Camera2dDiagnostic, Native2dRenderMetrics, ResolvedSpriteRegion2d, SpriteBatch2d,
++    SpriteInstance2d, SpriteRenderBindings2d, TileChunkBounds2d, ViewRect2d, ViewportFit2d,
++    VisibleTileChunk2d,
+ };
+ pub use engine_authoring::{
+     SpriteBlendMode, SpriteRenderer2d, SpriteRef, TileLayerId, TileMapDocument, TileSetDocument,
+@@ -80,6 +81,7 @@ impl PhysicsRuntime2d {
+ /// Editor Play and the packaged Player call this same function after loading
+ /// [`Project2dSettings`], preventing host-specific gravity interpretation.
+ pub fn apply_project_2d_settings(app: &mut crate::App, settings: &Project2dSettings) {
++    app.insert_resource(settings.clone());
+     app.insert_resource(Gravity2d(Vec2::new(
+         settings.gravity[0] as f32,
+         settings.gravity[1] as f32,
+diff --git a/crates/engine/src/scene_bridge.rs b/crates/engine/src/scene_bridge.rs
+index 2b5f66a5923d0891f7ee6f2a396bd58d53b7d86f..af39db4dcee06ab71684d45c6364c5852b8773fd 100644
+--- a/crates/engine/src/scene_bridge.rs
++++ b/crates/engine/src/scene_bridge.rs
+@@ -21,8 +21,8 @@ use crate::audio::{AudioAsset, AudioEmitter, AudioListener, AudioRolloffMode, Mu
+ use crate::behavior_tree::BehaviorTreeRunner;
+ use crate::camera::{Camera3D, FollowCamera, LockOnCamera, OrbitCamera};
+ use crate::native_2d::{
+-    Camera2d, SpriteAnimationClipRegistry2d, SpriteAnimatorRuntime2d, SpriteBlendMode, SpriteRef,
+-    SpriteRenderer2d, ViewportFit2d,
++    Camera2d, ResolvedSpriteRegion2d, SpriteAnimationClipRegistry2d, SpriteAnimatorRuntime2d,
++    SpriteBlendMode, SpriteRef, SpriteRenderBindings2d, SpriteRenderer2d, ViewportFit2d,
+ };
+ use crate::character_controller::KinematicCharacterController;
+ use crate::collision::{Collider, CollisionLayers, PhysicsBody, TriggerVolume};
+@@ -62,8 +62,8 @@ use engine_authoring::ui::{UiDocument, UiNode, UiNodeKind, UiString};
+ use engine_authoring::value::Value;
+ use engine_authoring::{
+     AnimationSet, AuthoringEntity, BehaviorTreeAuthoringService, Diagnostic, DiagnosticTarget,
+-    Graph, SortingLayerId, SpriteAnimationDocument, SpriteId, VfxAuthoringService,
+-    VfxModuleOperation,
++    Graph, PixelsPerUnit, Project2dSettings, SortingLayerId, SpriteAnimationDocument,
++    SpriteAtlasDocument, SpriteFiltering, SpriteId, VfxAuthoringService, VfxModuleOperation,
+ };
+ use engine_ecs::{Entity, World};
+ use glam::{EulerRot, Mat4, Quat, Vec3};
+@@ -435,6 +435,10 @@ pub(crate) struct BridgeAssetState {
+     pub(crate) animation_clip_handles: HashMap<AssetId, BTreeMap<String, Handle<AnimationClip>>>,
+     /// Parsed immutable Sprite Animation documents shared by every entity referencing the asset.
+     pub(crate) sprite_animation_documents: HashMap<AssetId, Arc<SpriteAnimationDocument>>,
++    /// Parsed immutable Sprite Atlas documents shared by every entity referencing the asset.
++    pub(crate) sprite_atlas_documents: HashMap<AssetId, Arc<SpriteAtlasDocument>>,
++    /// CPU-decoded Native 2D source textures shared during one atomic conversion.
++    pub(crate) native_2d_textures: HashMap<AssetId, Arc<DecodedTexture>>,
+     /// Source asset ID -> the `(sub-asset ID, runtime clip key)` pairs that
+     /// source contributed, recorded when its clips were first loaded.
+     ///
+diff --git a/crates/engine/src/scene_bridge/asset_load.rs b/crates/engine/src/scene_bridge/asset_load.rs
+index 8bd023638c4f25abb664010d918edbab0ba71e6c..3ce76d6fed817d645a929c258f62656a8ed6fca2 100644
+--- a/crates/engine/src/scene_bridge/asset_load.rs
++++ b/crates/engine/src/scene_bridge/asset_load.rs
+@@ -517,7 +517,7 @@ fn imported_asset_load_diagnostic(
+     .with_target(DiagnosticTarget::Asset { id: asset.clone() })
+ }
+ 
+-fn decode_material_texture(
++pub(super) fn decode_material_texture(
+     material_id: &AssetId,
+     texture_id: &AssetId,
+     slot: &'static str,
+diff --git a/crates/engine/src/scene_bridge/spawn.rs b/crates/engine/src/scene_bridge/spawn.rs
+index 845be4f6f8012e1698071bcacf5c8bc5aaa5cd19..362b35b6734267fa31c3ed609b11c25f36d53c22 100644
+--- a/crates/engine/src/scene_bridge/spawn.rs
++++ b/crates/engine/src/scene_bridge/spawn.rs
+@@ -2659,6 +2659,166 @@ pub(crate) fn spawn_camera_2d_component(
+     Ok(())
+ }
+ 
++fn resolve_sprite_atlas_document(
++    asset: &AssetId,
++    context: &mut SpawnContext<'_>,
++) -> Result<Arc<SpriteAtlasDocument>, SceneBridgeError> {
++    if let Some(document) = context.asset_state.sprite_atlas_documents.get(asset) {
++        return Ok(Arc::clone(document));
++    }
++    let path = manifest_asset_path(asset, context)?;
++    if !crate::components::asset_path_matches_kind(crate::components::AssetKind::SpriteAtlas, &path) {
++        return Err(SceneBridgeError::AssetLoad {
++            asset: asset.clone(),
++            source: AssetLoadError::InvalidAsset {
++                path,
++                message: "SpriteRenderer2D atlas must reference a *.spriteatlas.json asset".to_owned(),
++            },
++        });
++    }
++    let json = std::fs::read_to_string(&path).map_err(|source| SceneBridgeError::AssetLoad {
++        asset: asset.clone(),
++        source: AssetLoadError::Io {
++            path: path.clone(),
++            source,
++        },
++    })?;
++    let document = SpriteAtlasDocument::from_json(&json).map_err(|source| SceneBridgeError::AssetLoad {
++        asset: asset.clone(),
++        source: AssetLoadError::InvalidAsset {
++            path: path.clone(),
++            message: source.to_string(),
++        },
++    })?;
++    let validation = document.validate();
++    if !validation.is_empty() {
++        return Err(SceneBridgeError::AssetLoad {
++            asset: asset.clone(),
++            source: AssetLoadError::InvalidAsset {
++                path,
++                message: validation.join("; "),
++            },
++        });
++    }
++    let document = Arc::new(document);
++    context
++        .asset_state
++        .sprite_atlas_documents
++        .insert(asset.clone(), Arc::clone(&document));
++    Ok(document)
++}
++
++fn resolve_sprite_region_2d(
++    sprite: &SpriteRef,
++    context: &mut SpawnContext<'_>,
++) -> Result<ResolvedSpriteRegion2d, SceneBridgeError> {
++    let atlas = resolve_sprite_atlas_document(&sprite.atlas, context)?;
++    let Some(region) = atlas.region(&sprite.sprite) else {
++        return Err(SceneBridgeError::AssetLoad {
++            asset: sprite.atlas.clone(),
++            source: AssetLoadError::InvalidAsset {
++                path: manifest_asset_path(&sprite.atlas, context)?,
++                message: format!(
++                    "Sprite Atlas does not contain stable SpriteId `{}`",
++                    sprite.sprite.as_str()
++                ),
++            },
++        });
++    };
++    let source_texture = region.source_texture.clone();
++    let rect = region.rect;
++    let pivot = region.pivot;
++    let authored_pixels_per_unit = region.pixels_per_unit;
++    let authored_filtering = region.filtering;
++
++    let texture = if let Some(texture) = context.asset_state.native_2d_textures.get(&source_texture) {
++        Arc::clone(texture)
++    } else {
++        let decoded = super::asset_load::decode_material_texture(
++            &sprite.atlas,
++            &source_texture,
++            "Sprite Atlas source",
++            context.asset_root,
++            context.manifest,
++            context.asset_state,
++        )
++        .map_err(|diagnostic| {
++            context.asset_diagnostics.push(*diagnostic);
++            SceneBridgeError::UnknownAsset {
++                asset: source_texture.clone(),
++            }
++        })?;
++        context
++            .asset_state
++            .native_2d_textures
++            .insert(source_texture.clone(), Arc::clone(&decoded));
++        decoded
++    };
++
++    if rect.x.saturating_add(rect.width) > texture.width
++        || rect.y.saturating_add(rect.height) > texture.height
++    {
++        return Err(SceneBridgeError::AssetLoad {
++            asset: sprite.atlas.clone(),
++            source: AssetLoadError::InvalidAsset {
++                path: manifest_asset_path(&sprite.atlas, context)?,
++                message: format!(
++                    "SpriteId `{}` pixel rect exceeds source texture `{}` dimensions {}x{}",
++                    sprite.sprite.as_str(),
++                    source_texture.as_str(),
++                    texture.width,
++                    texture.height
++                ),
++            },
++        });
++    }
++
++    let project = context
++        .world
++        .get_resource::<Project2dSettings>()
++        .cloned()
++        .unwrap_or_default();
++    let pixels_per_unit = match authored_pixels_per_unit {
++        PixelsPerUnit::ProjectDefault => project.default_pixels_per_unit as f32,
++        PixelsPerUnit::Override(value) => value,
++    };
++    let filtering = authored_filtering.unwrap_or(project.default_filtering);
++    let width = texture.width.max(1) as f32;
++    let height = texture.height.max(1) as f32;
++    Ok(ResolvedSpriteRegion2d {
++        sprite: sprite.clone(),
++        texture,
++        uv_rect: [
++            rect.x as f32 / width,
++            rect.y as f32 / height,
++            rect.x.saturating_add(rect.width) as f32 / width,
++            rect.y.saturating_add(rect.height) as f32 / height,
++        ],
++        pivot,
++        pixel_size: [rect.width, rect.height],
++        pixels_per_unit,
++        filtering,
++    })
++}
++
++fn install_sprite_region_2d(
++    entity: Entity,
++    region: ResolvedSpriteRegion2d,
++    context: &mut SpawnContext<'_>,
++) -> Result<(), ComponentSpawnError> {
++    if let Some(bindings) = context
++        .world
++        .get_component_mut::<SpriteRenderBindings2d>(entity)
++    {
++        bindings.insert(region);
++        return Ok(());
++    }
++    let mut bindings = SpriteRenderBindings2d::default();
++    bindings.insert(region);
++    context.world.add_component(entity, bindings)?;
++    Ok(())
++}
++
+ pub(crate) fn spawn_sprite_renderer_2d_component(
+     entity: Entity,
+     value: &Value,
+@@ -2697,10 +2857,13 @@ pub(crate) fn spawn_sprite_renderer_2d_component(
+         _ => return Err(fields.invalid(EXPECTED).into()),
+     };
+     let material_override = fields.assignable_asset_ref("material_override")?.cloned();
++    let sprite_ref = SpriteRef { atlas, sprite };
++    let resolved = resolve_sprite_region_2d(&sprite_ref, context)?;
++    install_sprite_region_2d(entity, resolved, context)?;
+     context.world.add_component(
+         entity,
+         SpriteRenderer2d {
+-            sprite: SpriteRef { atlas, sprite },
++            sprite: sprite_ref,
+             tint,
+             flip_x: fields.bool("flip_x")?,
+             flip_y: fields.bool("flip_y")?,
+@@ -2773,8 +2936,13 @@ pub(crate) fn spawn_sprite_animator_2d_component(
+         Some(Value::Bool(value)) => Some(*value),
+         _ => return Err(fields.invalid(EXPECTED).into()),
+     };
+-    let initial_frame = usize::try_from(fields.i64("initial_frame")?).map_err(|_| fields.invalid(EXPECTED))?;
++    let initial_frame = usize::try_from(fields.i64("initial_frame")?)
++        .map_err(|_| fields.invalid(EXPECTED))?;
+     let clip = resolve_sprite_animation_document(&clip_asset, context)?;
++    for frame in &clip.frames {
++        let resolved = resolve_sprite_region_2d(&frame.sprite, context)?;
++        install_sprite_region_2d(entity, resolved, context)?;
++    }
+     if context
+         .world
+         .get_resource::<SpriteAnimationClipRegistry2d>()
+diff --git a/crates/render-runtime/src/native_2d.rs b/crates/render-runtime/src/native_2d.rs
+index 104170eef88bac5f940ddfdff7edd729c10d981a..1c396f4641b844432c85585485b4f90ca458781b 100644
+--- a/crates/render-runtime/src/native_2d.rs
++++ b/crates/render-runtime/src/native_2d.rs
+@@ -1,8 +1,12 @@
+ //! Native 2D camera, sprite ordering/batching, and tile visibility contracts (ADR 0127).
+ 
++use crate::material::DecodedTexture;
+ use crate::transform::Transform;
+-use engine_authoring::{SortingLayerId, SpriteRef, TileChunkCoord, TileLayerId};
++use engine_authoring::{
++    SortingLayerId, SpriteFiltering, SpriteRef, TileChunkCoord, TileLayerId,
++};
+ use glam::{Mat4, Vec2, Vec3};
++use std::sync::Arc;
+ 
+ /// Orthographic viewport-fit policy.
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+@@ -308,6 +312,73 @@ pub fn cull_tile_chunks<'a>(
+         .collect()
+ }
+ 
++/// Runtime-resolved Sprite Atlas region. Stable authored identity remains the source of truth.
++#[derive(Debug, Clone)]
++pub struct ResolvedSpriteRegion2d {
++    /// Stable logical SpriteRef used by SpriteRenderer2D and Sprite Animation.
++    pub sprite: SpriteRef,
++    /// CPU-decoded source texture shared with the existing sRGB GPU upload cache.
++    pub texture: Arc<DecodedTexture>,
++    /// Normalized source UV rectangle `[u0, v0, u1, v1]`.
++    pub uv_rect: [f32; 4],
++    /// Normalized authored pivot.
++    pub pivot: [f32; 2],
++    /// Source region size in pixels.
++    pub pixel_size: [u32; 2],
++    /// Positive resolved pixels-per-world-unit value.
++    pub pixels_per_unit: f32,
++    /// Resolved sampler policy.
++    pub filtering: SpriteFiltering,
++}
++
++impl ResolvedSpriteRegion2d {
++    /// Returns the unscaled world dimensions represented by this sprite region.
++    pub fn world_size(&self) -> Vec2 {
++        Vec2::new(
++            self.pixel_size[0] as f32 / self.pixels_per_unit,
++            self.pixel_size[1] as f32 / self.pixels_per_unit,
++        )
++    }
++}
++
++/// Per-entity resolved SpriteRef set populated atomically during scene conversion.
++///
++/// Animation changes only the stable SpriteRef on SpriteRenderer2D. The render
++/// path resolves that current reference through this immutable source set, so
++/// mutable playback state is never shared between entities and rendering never
++/// performs project I/O.
++#[derive(Debug, Clone, Default)]
++pub struct SpriteRenderBindings2d {
++    regions: Vec<ResolvedSpriteRegion2d>,
++}
++
++impl SpriteRenderBindings2d {
++    /// Inserts or refreshes one resolved stable SpriteRef.
++    pub fn insert(&mut self, region: ResolvedSpriteRegion2d) {
++        if let Some(existing) = self
++            .regions
++            .iter_mut()
++            .find(|candidate| candidate.sprite == region.sprite)
++        {
++            *existing = region;
++        } else {
++            self.regions.push(region);
++        }
++    }
++
++    /// Resolves the currently selected stable SpriteRef without any project I/O.
++    pub fn resolve(&self, sprite: &SpriteRef) -> Option<&ResolvedSpriteRegion2d> {
++        self.regions
++            .iter()
++            .find(|candidate| &candidate.sprite == sprite)
++    }
++
++    /// Returns all resolved regions retained by this entity.
++    pub fn iter(&self) -> impl Iterator<Item = &ResolvedSpriteRegion2d> {
++        self.regions.iter()
++    }
++}
++
+ /// Per-frame Native 2D render counters used by proving-project budgets.
+ #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+ pub struct Native2dRenderMetrics {
