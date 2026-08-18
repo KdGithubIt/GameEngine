@@ -12,6 +12,10 @@
 #[allow(dead_code)]
 mod agent_asset_acquisition;
 mod agent_benchmark;
+// ADR 0156 campaign orchestration includes host-only execution hooks that are consumed by
+// AI Studio and production runtime/model adapters incrementally.
+#[allow(dead_code)]
+mod agent_benchmark_campaign;
 mod agent_host;
 mod external_agent_provider;
 mod hosted_model_backend;
