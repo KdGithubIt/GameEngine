@@ -91,6 +91,7 @@ impl EditorApp {
         self.session.any_dirty()
             || self.material_editor.any_dirty()
             || self.animation_set_editor.as_ref().is_some_and(AnimationSetEditorState::is_dirty)
+            || self.timeline_sequencer.as_ref().is_some_and(TimelineSequencerState::is_dirty)
     }
 
     /// Persists every dirty working copy through its existing validated atomic adapter.
@@ -98,6 +99,12 @@ impl EditorApp {
         self.session.save_all().map_err(|error| error.to_string())?;
         if self.animation_set_editor.as_ref().is_some_and(AnimationSetEditorState::is_dirty) {
             self.save_animation_set_document()?;
+        }
+        if self.timeline_sequencer.as_ref().is_some_and(TimelineSequencerState::is_dirty) {
+            self.timeline_sequencer
+                .as_mut()
+                .expect("dirty Timeline Sequencer is open")
+                .save()?;
         }
         self.save_all_material_documents()?;
         Ok(())
@@ -595,6 +602,10 @@ impl EditorApp {
                     .animation_set_editor
                     .as_ref()
                     .is_some_and(|state| state.absolute_path == absolute);
+                let timeline_open = self
+                    .timeline_sequencer
+                    .as_ref()
+                    .is_some_and(|state| state.absolute_path() == absolute.as_path());
                 let material_open = material_relative.as_ref().is_some_and(|path| {
                     self.material_editor.materials.contains_key(path)
                 });
@@ -603,12 +614,16 @@ impl EditorApp {
                     .is_some_and(|tab_id| self.session.tab_is_dirty(tab_id))
                     || (animation_set_open
                         && self.animation_set_editor.as_ref().is_some_and(AnimationSetEditorState::is_dirty))
+                    || (timeline_open
+                        && self.timeline_sequencer.as_ref().is_some_and(TimelineSequencerState::is_dirty))
                     || material_relative
                         .as_ref()
                         .is_some_and(|path| material_open && self.material_editor.is_dirty(path));
 
                 let owner = if animation_set_open {
                     Some(ExternalDocumentOwner::AnimationSet)
+                } else if timeline_open {
+                    Some(ExternalDocumentOwner::Timeline)
                 } else if material_open {
                     material_relative.clone().map(ExternalDocumentOwner::Material)
                 } else {
@@ -924,6 +939,24 @@ impl EditorApp {
                         }
                     }
                 }),
+            ExternalDocumentOwner::Timeline => engine_authoring::load_timeline(path)
+                .map_err(|error| error.to_string())
+                .and_then(|document| {
+                    let state = self
+                        .timeline_sequencer
+                        .as_mut()
+                        .ok_or_else(|| "Timeline Sequencer is closed".to_owned())?;
+                    match policy {
+                        ExternalReloadPolicy::CleanOnly => state
+                            .reload_clean(document)?
+                            .then_some(())
+                            .ok_or_else(|| "Timeline became dirty before external reload".to_owned()),
+                        ExternalReloadPolicy::DiscardChanges => {
+                            state.reload_discarding_changes(document)?;
+                            Ok(())
+                        }
+                    }
+                }),
             ExternalDocumentOwner::Material(relative) => fs::read_to_string(path)
                 .map_err(|error| error.to_string())
                 .and_then(|json| engine_authoring::MaterialAsset::from_json(&json).map_err(|error| error.to_string()))
@@ -1083,6 +1116,7 @@ enum ExternalReloadPolicy {
 enum ExternalDocumentOwner {
     Workspace(WorkspaceTabId),
     AnimationSet,
+    Timeline,
     Material(PathBuf),
 }
 

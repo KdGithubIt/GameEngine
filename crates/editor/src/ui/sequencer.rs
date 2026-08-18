@@ -53,8 +53,9 @@ impl TimelineSequencerState {
     fn undo(&mut self) { if self.service.undo() { self.source_revision = self.source_revision.wrapping_add(1); } }
     fn redo(&mut self) { if self.service.redo() { self.source_revision = self.source_revision.wrapping_add(1); } }
     pub(in crate::ui) fn save(&mut self) -> Result<(), String> { self.service.save(&self.absolute_path).map_err(|error| error.to_string())?; self.saved_document = self.document().clone(); Ok(()) }
-    fn reload_clean(&mut self, document: TimelineDocument) -> Result<bool, String> { if self.is_dirty() { return Ok(false); } self.reload_discarding_changes(document)?; Ok(true) }
-    fn reload_discarding_changes(&mut self, document: TimelineDocument) -> Result<(), String> { self.service = TimelineAuthoringService::new(document.clone()).map_err(|error| error.to_string())?; self.saved_document = document; self.source_revision = self.source_revision.wrapping_add(1); self.transport_revision = self.transport_revision.wrapping_add(1); Ok(()) }
+    pub(in crate::ui) fn absolute_path(&self) -> &Path { &self.absolute_path }
+    pub(in crate::ui) fn reload_clean(&mut self, document: TimelineDocument) -> Result<bool, String> { if self.is_dirty() { return Ok(false); } self.reload_discarding_changes(document)?; Ok(true) }
+    pub(in crate::ui) fn reload_discarding_changes(&mut self, document: TimelineDocument) -> Result<(), String> { self.service = TimelineAuthoringService::new(document.clone()).map_err(|error| error.to_string())?; self.saved_document = document; self.source_revision = self.source_revision.wrapping_add(1); self.transport_revision = self.transport_revision.wrapping_add(1); Ok(()) }
     fn frame_ticks(&self) -> i64 { let rate = self.document().display_rate; if rate.numerator == 0 { return 1; } ((TIMELINE_TICKS_PER_SECOND as i128 * i128::from(rate.denominator)) / i128::from(rate.numerator)).max(1) as i64 }
     fn snap(&mut self, proposed: TimelineTick) -> TimelineTick {
         let document = self.document().clone(); let threshold = ((TIMELINE_TICKS_PER_SECOND as f32 * 7.0) / self.pixels_per_second.max(1.0)).round().max(1.0) as u64; let frame = self.frame_ticks(); let nearest_frame = TimelineTick::new((proposed.get() as f64 / frame as f64).round() as i64 * frame); let mut candidates = vec![(nearest_frame, "frame".to_owned()), (self.playhead, "playhead".to_owned())];
