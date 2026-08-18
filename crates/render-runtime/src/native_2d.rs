@@ -1,8 +1,12 @@
 //! Native 2D camera, sprite ordering/batching, and tile visibility contracts (ADR 0127).
 
+use crate::material::DecodedTexture;
 use crate::transform::Transform;
-use engine_authoring::{SortingLayerId, SpriteRef, TileChunkCoord, TileLayerId};
+use engine_authoring::{
+    SortingLayerId, SpriteFiltering, SpriteRef, TileChunkCoord, TileLayerId,
+};
 use glam::{Mat4, Vec2, Vec3};
+use std::sync::Arc;
 
 /// Orthographic viewport-fit policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -306,6 +310,73 @@ pub fn cull_tile_chunks<'a>(
         .filter(|chunk| view.intersects(chunk.min, chunk.max))
         .map(|chunk| VisibleTileChunk2d { layer: chunk.layer.clone(), coord: chunk.coord })
         .collect()
+}
+
+/// Runtime-resolved Sprite Atlas region. Stable authored identity remains the source of truth.
+#[derive(Debug, Clone)]
+pub struct ResolvedSpriteRegion2d {
+    /// Stable logical SpriteRef used by SpriteRenderer2D and Sprite Animation.
+    pub sprite: SpriteRef,
+    /// CPU-decoded source texture shared with the existing sRGB GPU upload cache.
+    pub texture: Arc<DecodedTexture>,
+    /// Normalized source UV rectangle `[u0, v0, u1, v1]`.
+    pub uv_rect: [f32; 4],
+    /// Normalized authored pivot.
+    pub pivot: [f32; 2],
+    /// Source region size in pixels.
+    pub pixel_size: [u32; 2],
+    /// Positive resolved pixels-per-world-unit value.
+    pub pixels_per_unit: f32,
+    /// Resolved sampler policy.
+    pub filtering: SpriteFiltering,
+}
+
+impl ResolvedSpriteRegion2d {
+    /// Returns the unscaled world dimensions represented by this sprite region.
+    pub fn world_size(&self) -> Vec2 {
+        Vec2::new(
+            self.pixel_size[0] as f32 / self.pixels_per_unit,
+            self.pixel_size[1] as f32 / self.pixels_per_unit,
+        )
+    }
+}
+
+/// Per-entity resolved SpriteRef set populated atomically during scene conversion.
+///
+/// Animation changes only the stable SpriteRef on SpriteRenderer2D. The render
+/// path resolves that current reference through this immutable source set, so
+/// mutable playback state is never shared between entities and rendering never
+/// performs project I/O.
+#[derive(Debug, Clone, Default)]
+pub struct SpriteRenderBindings2d {
+    regions: Vec<ResolvedSpriteRegion2d>,
+}
+
+impl SpriteRenderBindings2d {
+    /// Inserts or refreshes one resolved stable SpriteRef.
+    pub fn insert(&mut self, region: ResolvedSpriteRegion2d) {
+        if let Some(existing) = self
+            .regions
+            .iter_mut()
+            .find(|candidate| candidate.sprite == region.sprite)
+        {
+            *existing = region;
+        } else {
+            self.regions.push(region);
+        }
+    }
+
+    /// Resolves the currently selected stable SpriteRef without any project I/O.
+    pub fn resolve(&self, sprite: &SpriteRef) -> Option<&ResolvedSpriteRegion2d> {
+        self.regions
+            .iter()
+            .find(|candidate| &candidate.sprite == sprite)
+    }
+
+    /// Returns all resolved regions retained by this entity.
+    pub fn iter(&self) -> impl Iterator<Item = &ResolvedSpriteRegion2d> {
+        self.regions.iter()
+    }
 }
 
 /// Per-frame Native 2D render counters used by proving-project budgets.

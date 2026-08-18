@@ -517,7 +517,7 @@ fn imported_asset_load_diagnostic(
     .with_target(DiagnosticTarget::Asset { id: asset.clone() })
 }
 
-fn decode_material_texture(
+pub(super) fn decode_material_texture(
     material_id: &AssetId,
     texture_id: &AssetId,
     slot: &'static str,

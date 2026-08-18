@@ -2659,6 +2659,166 @@ pub(crate) fn spawn_camera_2d_component(
     Ok(())
 }
 
+fn resolve_sprite_atlas_document(
+    asset: &AssetId,
+    context: &mut SpawnContext<'_>,
+) -> Result<Arc<SpriteAtlasDocument>, SceneBridgeError> {
+    if let Some(document) = context.asset_state.sprite_atlas_documents.get(asset) {
+        return Ok(Arc::clone(document));
+    }
+    let path = manifest_asset_path(asset, context)?;
+    if !crate::components::asset_path_matches_kind(crate::components::AssetKind::SpriteAtlas, &path) {
+        return Err(SceneBridgeError::AssetLoad {
+            asset: asset.clone(),
+            source: AssetLoadError::InvalidAsset {
+                path,
+                message: "SpriteRenderer2D atlas must reference a *.spriteatlas.json asset".to_owned(),
+            },
+        });
+    }
+    let json = std::fs::read_to_string(&path).map_err(|source| SceneBridgeError::AssetLoad {
+        asset: asset.clone(),
+        source: AssetLoadError::Io {
+            path: path.clone(),
+            source,
+        },
+    })?;
+    let document = SpriteAtlasDocument::from_json(&json).map_err(|source| SceneBridgeError::AssetLoad {
+        asset: asset.clone(),
+        source: AssetLoadError::InvalidAsset {
+            path: path.clone(),
+            message: source.to_string(),
+        },
+    })?;
+    let validation = document.validate();
+    if !validation.is_empty() {
+        return Err(SceneBridgeError::AssetLoad {
+            asset: asset.clone(),
+            source: AssetLoadError::InvalidAsset {
+                path,
+                message: validation.join("; "),
+            },
+        });
+    }
+    let document = Arc::new(document);
+    context
+        .asset_state
+        .sprite_atlas_documents
+        .insert(asset.clone(), Arc::clone(&document));
+    Ok(document)
+}
+
+fn resolve_sprite_region_2d(
+    sprite: &SpriteRef,
+    context: &mut SpawnContext<'_>,
+) -> Result<ResolvedSpriteRegion2d, SceneBridgeError> {
+    let atlas = resolve_sprite_atlas_document(&sprite.atlas, context)?;
+    let Some(region) = atlas.region(&sprite.sprite) else {
+        return Err(SceneBridgeError::AssetLoad {
+            asset: sprite.atlas.clone(),
+            source: AssetLoadError::InvalidAsset {
+                path: manifest_asset_path(&sprite.atlas, context)?,
+                message: format!(
+                    "Sprite Atlas does not contain stable SpriteId `{}`",
+                    sprite.sprite.as_str()
+                ),
+            },
+        });
+    };
+    let source_texture = region.source_texture.clone();
+    let rect = region.rect;
+    let pivot = region.pivot;
+    let authored_pixels_per_unit = region.pixels_per_unit;
+    let authored_filtering = region.filtering;
+
+    let texture = if let Some(texture) = context.asset_state.native_2d_textures.get(&source_texture) {
+        Arc::clone(texture)
+    } else {
+        let decoded = super::asset_load::decode_material_texture(
+            &sprite.atlas,
+            &source_texture,
+            "Sprite Atlas source",
+            context.asset_root,
+            context.manifest,
+            context.asset_state,
+        )
+        .map_err(|diagnostic| {
+            context.asset_diagnostics.push(*diagnostic);
+            SceneBridgeError::UnknownAsset {
+                asset: source_texture.clone(),
+            }
+        })?;
+        context
+            .asset_state
+            .native_2d_textures
+            .insert(source_texture.clone(), Arc::clone(&decoded));
+        decoded
+    };
+
+    if rect.x.saturating_add(rect.width) > texture.width
+        || rect.y.saturating_add(rect.height) > texture.height
+    {
+        return Err(SceneBridgeError::AssetLoad {
+            asset: sprite.atlas.clone(),
+            source: AssetLoadError::InvalidAsset {
+                path: manifest_asset_path(&sprite.atlas, context)?,
+                message: format!(
+                    "SpriteId `{}` pixel rect exceeds source texture `{}` dimensions {}x{}",
+                    sprite.sprite.as_str(),
+                    source_texture.as_str(),
+                    texture.width,
+                    texture.height
+                ),
+            },
+        });
+    }
+
+    let project = context
+        .world
+        .get_resource::<Project2dSettings>()
+        .cloned()
+        .unwrap_or_default();
+    let pixels_per_unit = match authored_pixels_per_unit {
+        PixelsPerUnit::ProjectDefault => project.default_pixels_per_unit as f32,
+        PixelsPerUnit::Override(value) => value,
+    };
+    let filtering = authored_filtering.unwrap_or(project.default_filtering);
+    let width = texture.width.max(1) as f32;
+    let height = texture.height.max(1) as f32;
+    Ok(ResolvedSpriteRegion2d {
+        sprite: sprite.clone(),
+        texture,
+        uv_rect: [
+            rect.x as f32 / width,
+            rect.y as f32 / height,
+            rect.x.saturating_add(rect.width) as f32 / width,
+            rect.y.saturating_add(rect.height) as f32 / height,
+        ],
+        pivot,
+        pixel_size: [rect.width, rect.height],
+        pixels_per_unit,
+        filtering,
+    })
+}
+
+fn install_sprite_region_2d(
+    entity: Entity,
+    region: ResolvedSpriteRegion2d,
+    context: &mut SpawnContext<'_>,
+) -> Result<(), ComponentSpawnError> {
+    if let Some(bindings) = context
+        .world
+        .get_component_mut::<SpriteRenderBindings2d>(entity)
+    {
+        bindings.insert(region);
+        return Ok(());
+    }
+    let mut bindings = SpriteRenderBindings2d::default();
+    bindings.insert(region);
+    context.world.add_component(entity, bindings)?;
+    Ok(())
+}
+
 pub(crate) fn spawn_sprite_renderer_2d_component(
     entity: Entity,
     value: &Value,
@@ -2697,10 +2857,13 @@ pub(crate) fn spawn_sprite_renderer_2d_component(
         _ => return Err(fields.invalid(EXPECTED).into()),
     };
     let material_override = fields.assignable_asset_ref("material_override")?.cloned();
+    let sprite_ref = SpriteRef { atlas, sprite };
+    let resolved = resolve_sprite_region_2d(&sprite_ref, context)?;
+    install_sprite_region_2d(entity, resolved, context)?;
     context.world.add_component(
         entity,
         SpriteRenderer2d {
-            sprite: SpriteRef { atlas, sprite },
+            sprite: sprite_ref,
             tint,
             flip_x: fields.bool("flip_x")?,
             flip_y: fields.bool("flip_y")?,
@@ -2773,8 +2936,13 @@ pub(crate) fn spawn_sprite_animator_2d_component(
         Some(Value::Bool(value)) => Some(*value),
         _ => return Err(fields.invalid(EXPECTED).into()),
     };
-    let initial_frame = usize::try_from(fields.i64("initial_frame")?).map_err(|_| fields.invalid(EXPECTED))?;
+    let initial_frame = usize::try_from(fields.i64("initial_frame")?)
+        .map_err(|_| fields.invalid(EXPECTED))?;
     let clip = resolve_sprite_animation_document(&clip_asset, context)?;
+    for frame in &clip.frames {
+        let resolved = resolve_sprite_region_2d(&frame.sprite, context)?;
+        install_sprite_region_2d(entity, resolved, context)?;
+    }
     if context
         .world
         .get_resource::<SpriteAnimationClipRegistry2d>()
