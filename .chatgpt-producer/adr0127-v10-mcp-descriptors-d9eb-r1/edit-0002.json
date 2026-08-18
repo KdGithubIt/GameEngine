@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/mcp-host/src/headless.rs",
+  "old": "        assert!(names.contains(&\"scene.apply\".into()));\n        assert!(names.contains(&\"material.apply\".into()));\n        assert!(names.contains(&\"behavior_tree.apply\".into()));\n        assert!(names.contains(&\"vfx.apply\".into()));\n",
+  "new": "        assert!(names.contains(&\"scene.apply\".into()));\n        assert!(names.contains(&\"material.apply\".into()));\n        assert!(names.contains(&\"behavior_tree.apply\".into()));\n        assert!(names.contains(&\"vfx.apply\".into()));\n        assert!(names.contains(&\"sprite_atlas.apply\".into()));\n        assert!(names.contains(&\"sprite_animation.apply\".into()));\n        assert!(names.contains(&\"tile_set.apply\".into()));\n        assert!(names.contains(&\"tile_map.apply\".into()));\n"
+}
