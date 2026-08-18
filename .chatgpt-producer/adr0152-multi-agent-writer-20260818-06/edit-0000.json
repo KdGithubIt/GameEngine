@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/agent_asset_acquisition.rs","old":"use crate::agent_host::{\n    AgentCapability, AgentHost, AgentHostError, AssetAcquisitionRecord, PermissionCheck,\n};","new":"use crate::agent_host::{\n    AgentCapability, AgentHost, AgentHostError, AgentWorkClaim, AssetAcquisitionRecord,\n    PermissionCheck,\n};"}
