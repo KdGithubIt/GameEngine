@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/engine/src/scene_bridge/spawn.rs","old":"        .find(|profile| {\n            profile.skeleton == target_skeleton.id.as_str()\n                && profile.skeleton_identity == target_skeleton.identity.0\n        })\n","new":"        .find(|profile| crate::humanoid::validate_humanoid_profile(profile, target_skeleton).is_ok())\n"}
