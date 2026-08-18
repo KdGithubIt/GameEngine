@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0152-multi-agent-writer-20260818-03",
+  "target_branch": "chatgpt/gameengine-adr0152-multi-agent-writer-r1",
+  "expected_head_sha": "1fb50d233a487794b16d2d07945c2f4c09434a53",
+  "baseline_main_sha": "ed923d42c7651b74d2400eb38a8959013d8e0bb8",
+  "patch_sha256": "0f94d32c25e6913bf8730b2d612f919a09efb3a2726683250a1d5e3e0baef1be",
+  "patch_bytes": 658,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Fix ADR0152 active-run recovery type",
+  "pr_title": "Implement ADR0152 multi-agent writer coordination",
+  "pr_body": "Implements ADR0152 on current main. Adds semantic per-run work claims and conflict/wait audit events without creating a second project writer authority; preserves authoring stale-revision and managed-code stale-baseline guards; releases claims on terminal runs and recovers persisted ownership across restart; gates managed source apply on code-path ownership; adds concurrency/conflict/cancellation/restart/independent-completion coverage; and accepts/registers ADR0152 in the canonical authoring specification.\n\nRecovery fix: align recover_persisted_runs' return type with the new BTreeSet of concurrent active run IDs.\n\nVisual Validation is not required by the product patch because no new Editor layout, dialog, color, spacing, or other visible presentation surface is introduced; existing generic event presentation only displays the new event kinds."
+}
