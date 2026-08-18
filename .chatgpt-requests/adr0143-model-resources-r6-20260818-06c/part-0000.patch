@@ -1,0 +1,233 @@
+diff --git a/crates/editor/src/ai_studio.rs b/crates/editor/src/ai_studio.rs
+index c4d5903e78ad56dbfd86275f52c5153a0d01ec92..23e0492a7a966a9eab9cdf982945870e4e03df73 100644
+--- a/crates/editor/src/ai_studio.rs
++++ b/crates/editor/src/ai_studio.rs
+@@ -1691,13 +1691,13 @@ impl AiStudioPanel {
+             self.finish_model_resource_continuation(continuation);
+             return;
+         };
+-        if config.capability_profile().resource_capabilities.unload_reload
+-            != CapabilityAvailability::Available
+-        {
++        let Some(operation) = resume_model_resource_operation_after_authoritative_inspection(
++            config.capability_profile().resource_capabilities,
++        ) else {
+             self.finish_model_resource_continuation(continuation);
+             return;
+-        }
+-        match ModelResourceTask::spawn(config, ModelResourceOperation::Reload) {
++        };
++        match ModelResourceTask::spawn(config, operation) {
+             Ok(task) => {
+                 self.model_resource_task = Some(task);
+                 self.model_resource_continuation = Some(continuation);
+@@ -1786,9 +1786,13 @@ impl AiStudioPanel {
+     }
+ 
+     fn finish_model_resource_continuation(&mut self, continuation: ModelResourceContinuation) {
++        if let Some(action) = model_resource_continuation_runtime_action(&continuation) {
++            self.pending_runtime_action = Some(action);
++            return;
++        }
+         match continuation {
+             ModelResourceContinuation::RestoreForEditing => {
+-                self.pending_runtime_action = Some(AiStudioRuntimeAction::RestoreEditorPresentation);
++                unreachable!("restore continuation is handled before non-renderer continuations")
+             }
+             ModelResourceContinuation::LaunchManagedPlay { run_id } => {
+                 if self.active_run_id.as_deref() == Some(run_id.as_str())
+@@ -1923,7 +1927,7 @@ impl AiStudioPanel {
+         }
+         if self.restore_for_editing {
+             self.begin_model_residency_request(
+-                ModelResidencyRequest::ReleaseIfSupported,
++                interrupt_model_residency_request(),
+                 ModelResourceContinuation::RestoreForEditing,
+             );
+         } else if restore_after_inference {
+@@ -2542,7 +2546,7 @@ impl AiStudioPanel {
+                 );
+             } else {
+                 self.begin_model_residency_request(
+-                    ModelResidencyRequest::ReleaseIfSupported,
++                    interrupt_model_residency_request(),
+                     ModelResourceContinuation::RestoreForEditing,
+                 );
+             }
+@@ -3356,12 +3360,7 @@ impl AiStudioPanel {
+             .map(|config| config.capability_profile().resource_capabilities)
+             .unwrap_or_default();
+         self.resolved_workload = InferenceWorkload::RuntimeObservation;
+-        self.resource_plan = resolve_resource_plan(
+-            InferenceWorkload::RuntimeObservation,
+-            self.quality_preference,
+-            MemoryPressure::Unknown,
+-            capabilities,
+-        );
++        self.resource_plan = managed_play_resource_plan(self.quality_preference, capabilities);
+         self.begin_model_residency_request(
+             self.resource_plan.model_residency,
+             ModelResourceContinuation::LaunchManagedPlay { run_id },
+@@ -3852,6 +3851,36 @@ fn telemetry_u64_value(value: &TelemetryValue<u64>) -> String {
+     }
+ }
+ 
++fn interrupt_model_residency_request() -> ModelResidencyRequest {
++    ModelResidencyRequest::ReleaseIfSupported
++}
++
++fn managed_play_resource_plan(
++    quality_preference: QualityPreference,
++    capabilities: crate::resource_arbitration::ModelResourceCapabilities,
++) -> ResourcePlan {
++    resolve_resource_plan(
++        InferenceWorkload::RuntimeObservation,
++        quality_preference,
++        MemoryPressure::Unknown,
++        capabilities,
++    )
++}
++
++fn resume_model_resource_operation_after_authoritative_inspection(
++    capabilities: crate::resource_arbitration::ModelResourceCapabilities,
++) -> Option<ModelResourceOperation> {
++    (capabilities.unload_reload == CapabilityAvailability::Available)
++        .then_some(ModelResourceOperation::Reload)
++}
++
++fn model_resource_continuation_runtime_action(
++    continuation: &ModelResourceContinuation,
++) -> Option<AiStudioRuntimeAction> {
++    matches!(continuation, ModelResourceContinuation::RestoreForEditing)
++        .then_some(AiStudioRuntimeAction::RestoreEditorPresentation)
++}
++
+ fn model_capability_summary(profile: &ModelCapabilityProfile) -> String {
+     format!(
+         "Backend: {} · Model: {} · structured: {} · tools: {} · images: {} · reasoning: {} · context: {} · streaming: {} · usage: {} · benchmark: {}",
+@@ -4174,4 +4203,83 @@ mod tests {
+         assert_eq!(presentation.mode, AiStudioPresentationMode::Embedded);
+         assert!(presentation.open);
+     }
++
++    fn local_resource_capabilities() -> crate::resource_arbitration::ModelResourceCapabilities {
++        LocalModelConfig {
++            endpoint: DEFAULT_LOCAL_MODEL_ENDPOINT.to_owned(),
++            model: "model:tag".to_owned(),
++        }
++        .capability_profile()
++        .resource_capabilities
++    }
++
++    #[test]
++    fn interrupt_resource_boundary_releases_supported_residency_before_editor_restore() {
++        let capabilities = local_resource_capabilities();
++        assert_eq!(
++            resource_operation_for_residency_request(
++                interrupt_model_residency_request(),
++                capabilities,
++            ),
++            Some(ModelResourceOperation::Release)
++        );
++        assert!(matches!(
++            model_resource_continuation_runtime_action(
++                &ModelResourceContinuation::RestoreForEditing
++            ),
++            Some(AiStudioRuntimeAction::RestoreEditorPresentation)
++        ));
++    }
++
++    #[test]
++    fn managed_play_resource_boundary_prioritizes_renderer_and_verified_release() {
++        let capabilities = local_resource_capabilities();
++        let plan = managed_play_resource_plan(QualityPreference::Deep, capabilities);
++        assert_eq!(
++            plan.priority,
++            crate::resource_arbitration::ResourcePriority::RuntimeRendering
++        );
++        assert_eq!(plan.presentation, PresentationPosture::Interactive);
++        assert_eq!(plan.reclaim, ReclaimLevel::None);
++        assert_eq!(
++            plan.model_residency,
++            ModelResidencyRequest::ReleaseIfSupported
++        );
++        assert_eq!(
++            resource_operation_for_residency_request(plan.model_residency, capabilities),
++            Some(ModelResourceOperation::Release)
++        );
++    }
++
++    #[test]
++    fn resume_reacquires_only_on_post_inspection_path_and_resource_planning_is_authoring_free() {
++        let authoritative_state = AiStudioAuthoritativeState {
++            document_revision: 17,
++            game_code_generation: 23,
++            document_path: Some(PathBuf::from("assets/scenes/test.scene.json")),
++            document_dirty: true,
++        };
++        let unchanged = authoritative_state.clone();
++        let capabilities = local_resource_capabilities();
++        let interrupt_request = interrupt_model_residency_request();
++        let play_plan = managed_play_resource_plan(QualityPreference::Balanced, capabilities);
++        let reload =
++            resume_model_resource_operation_after_authoritative_inspection(capabilities);
++        assert_eq!(interrupt_request, ModelResidencyRequest::ReleaseIfSupported);
++        assert_eq!(
++            play_plan.priority,
++            crate::resource_arbitration::ResourcePriority::RuntimeRendering
++        );
++        assert_eq!(reload, Some(ModelResourceOperation::Reload));
++        assert_eq!(
++            resume_model_resource_operation_after_authoritative_inspection(Default::default()),
++            None
++        );
++        let continuation = ModelResourceContinuation::ResumeAfterEditing {
++            run_id: Some("run-test".to_owned()),
++            state: authoritative_state.clone(),
++        };
++        assert!(model_resource_continuation_runtime_action(&continuation).is_none());
++        assert_eq!(authoritative_state, unchanged);
++    }
+ }
+diff --git a/docs/adr/0143-native-model-backend-resource-controls-and-hardware-telemetry.md b/docs/adr/0143-native-model-backend-resource-controls-and-hardware-telemetry.md
+index 5f57f1c0f7c907dbe9a947af7a22e801b7db1a9e..76f25c09c2a4fdba46d2ad3bf251229b042912a0 100644
+--- a/docs/adr/0143-native-model-backend-resource-controls-and-hardware-telemetry.md
++++ b/docs/adr/0143-native-model-backend-resource-controls-and-hardware-telemetry.md
+@@ -1,6 +1,6 @@
+ # ADR 0143: Native ModelBackend Resource Controls and Hardware Telemetry
+ 
+-Status: Proposed
++Status: Accepted
+ Date: 2026-08-17
+ Builds on: ADR 0131, ADR 0135
+ Relates to: ADR 0003, ADR 0072, ADR 0104, ADR 0136, ADR 0142
+@@ -53,6 +53,16 @@ Tests must cover unavailable capability honesty, successful and failed unload/of
+ 
+ Editor-visible resource posture controls require Visual Validation.
+ 
++The first-release deterministic suite exercises:
++
++- truthful local/remote capability profiles and verified unload/offload/reload adapter transitions;
++- Interrupt-for-Editing selecting verified release before the explicit Editor-presentation restore continuation;
++- managed Play selecting RuntimeRendering priority and verified release/offload before RuntimeLaunch;
++- Resume selecting reload only on the authoritative-state-inspection path; and
++- resource-boundary planning as authoring-state-free logic.
++
++Reference-machine GPU measurements remain separate and may not synthesize unavailable hardware values.
++
+ ## Non-goals
+ 
+ This ADR does not implement OS-wide GPU scheduling, control external Claude/Codex processes that do not expose a safe resource API, or define model selection/routing policy.
+diff --git a/docs/adr/README.md b/docs/adr/README.md
+index cc4321f5d325019b01e1c8b81d4e8de3866b24db..99035e8951dd2f07646e3b9c2645e6bd32edf77c 100644
+--- a/docs/adr/README.md
++++ b/docs/adr/README.md
+@@ -288,7 +288,7 @@ implementation contract.
+ | [0140](0140-ai-capability-roadmap-and-parallel-delivery-order.md) | **Proposed** — AI Capability Roadmap and Parallel Delivery Order |
+ | [0141](0141-native-write-capable-agent-runtime-and-governed-tool-loop.md) | **Proposed** — Native Write-Capable Agent Runtime and Governed Tool Loop |
+ | [0142](0142-gameengine-agent-benchmark-and-curated-model-catalog.md) | **Proposed** — GameEngine Agent Benchmark and Curated Model Catalog |
+-| [0143](0143-native-model-backend-resource-controls-and-hardware-telemetry.md) | **Proposed** — Native ModelBackend Resource Controls and Hardware Telemetry |
++| [0143](0143-native-model-backend-resource-controls-and-hardware-telemetry.md) | Native ModelBackend Resource Controls and Hardware Telemetry |
+ | [0144](0144-hosted-and-enterprise-model-backends-and-credential-ownership.md) | **Proposed** — Hosted and Enterprise ModelBackends and Credential Ownership |
+ | [0145](0145-first-class-external-agent-runtime-provider-adapters.md) | **Proposed** — First-Class External Agent Runtime Provider Adapters |
+ | [0146](0146-governed-ai-asset-acquisition-and-generative-content-providers.md) | **Proposed** — Governed AI Asset Acquisition and Generative Content Providers |
