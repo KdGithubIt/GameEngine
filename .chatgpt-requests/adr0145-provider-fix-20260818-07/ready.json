@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0145-provider-fix-20260818-07",
+  "target_branch": "chatgpt/gameengine-adr0145-provider-adapters-v5",
+  "expected_head_sha": "ad94d55e664b9e26b8ab6282e921984cc15ac842",
+  "baseline_main_sha": "97c0c97802f81be7b332583759a2c5bf31254476",
+  "patch_sha256": "80ec36eddb8c4ed87c18b18660f188429ba941144aa9826dd13b918ed08bfd19",
+  "patch_bytes": 750,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Fix ADR0145 provider preference regression test",
+  "pr_title": "Implement ADR0145 first-class external agent provider adapters",
+  "pr_body": "Implements ADR 0145 on current main with first-class Claude Code and Codex AgentRuntime adapters plus the generic fallback. Provider-managed authentication remains provider-owned, MCP authorization remains ephemeral, structured provider output is mapped into existing AgentHost semantics, and generic fallback remains available. This repair updates the existing AI Studio preference serialization regression fixture for the new non-secret provider selector so the editor test target compiles.\n\n<!-- gameengine-visual-validation: editor -->"
+}
