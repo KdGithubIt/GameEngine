@@ -28,7 +28,12 @@ static ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 pub(crate) enum AgentHostError {
     SessionNotFound(String),
     RunNotFound(String),
-    ActiveWriterRun(String),
+    InvalidWorkClaim(String),
+    WorkClaimConflict {
+        requested: AgentWorkClaim,
+        owner_run_id: String,
+        owner_claim: AgentWorkClaim,
+    },
     StaleProposalVersion {
         expected: u64,
         current: u64,
@@ -42,7 +47,6 @@ pub(crate) enum AgentHostError {
     UnsupportedCodeDeletion(PathBuf),
     StaleCodeFile(PathBuf),
     NonUtf8CodeFile(PathBuf),
-    MultipleActiveWriterRuns(Vec<String>),
     Serialization(serde_json::Error),
     Io(io::Error),
 }
@@ -52,9 +56,10 @@ impl fmt::Display for AgentHostError {
         match self {
             Self::SessionNotFound(id) => write!(formatter, "agent session `{id}` was not found"),
             Self::RunNotFound(id) => write!(formatter, "agent run `{id}` was not found"),
-            Self::ActiveWriterRun(id) => write!(
+            Self::InvalidWorkClaim(message) => write!(formatter, "invalid agent work claim: {message}"),
+            Self::WorkClaimConflict { requested, owner_run_id, owner_claim } => write!(
                 formatter,
-                "agent run `{id}` already owns the project writer slot"
+                "work claim `{requested}` conflicts with `{owner_claim}` owned by agent run `{owner_run_id}`"
             ),
             Self::StaleProposalVersion { expected, current } => write!(
                 formatter,
@@ -83,11 +88,6 @@ impl fmt::Display for AgentHostError {
             Self::NonUtf8CodeFile(path) => {
                 write!(formatter, "managed code file `{}` is not UTF-8 text", path.display())
             }
-            Self::MultipleActiveWriterRuns(run_ids) => write!(
-                formatter,
-                "agent state contains multiple non-terminal writer runs: {}",
-                run_ids.join(", ")
-            ),
             Self::Serialization(error) => write!(formatter, "agent state JSON error: {error}"),
             Self::Io(error) => write!(formatter, "agent state I/O error: {error}"),
         }
@@ -459,6 +459,95 @@ pub(crate) struct ConversationMessage {
     pub(crate) created_unix_ms: u64,
 }
 
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum AgentWorkClaimKind {
+    AuthoringDocument,
+    CodePath,
+    AssetTarget,
+    SharedResource,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub(crate) struct AgentWorkClaim {
+    pub(crate) kind: AgentWorkClaimKind,
+    pub(crate) key: String,
+}
+
+impl AgentWorkClaim {
+    #[allow(dead_code)]
+    pub(crate) fn authoring_document(key: impl Into<String>) -> Self {
+        Self { kind: AgentWorkClaimKind::AuthoringDocument, key: key.into() }
+    }
+
+    pub(crate) fn code_path(key: impl Into<String>) -> Self {
+        Self { kind: AgentWorkClaimKind::CodePath, key: key.into() }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn asset_target(key: impl Into<String>) -> Self {
+        Self { kind: AgentWorkClaimKind::AssetTarget, key: key.into() }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn shared_resource(key: impl Into<String>) -> Self {
+        Self { kind: AgentWorkClaimKind::SharedResource, key: key.into() }
+    }
+
+    fn normalized(&self) -> Result<Self, AgentHostError> {
+        let key = self.key.trim();
+        if key.is_empty() || key.contains('\0') {
+            return Err(AgentHostError::InvalidWorkClaim("claim key must be non-empty text".to_owned()));
+        }
+        let key = if matches!(self.kind, AgentWorkClaimKind::CodePath | AgentWorkClaimKind::AssetTarget) {
+            if key.starts_with('/') || key.contains('\\') || key.contains(':') {
+                return Err(AgentHostError::InvalidWorkClaim(format!("path claim `{key}` must be project-relative and use `/` separators")));
+            }
+            let segments = key.split('/').collect::<Vec<_>>();
+            if segments.iter().any(|segment| segment.is_empty() || matches!(*segment, "." | "..")) {
+                return Err(AgentHostError::InvalidWorkClaim(format!("path claim `{key}` contains an invalid segment")));
+            }
+            segments.join("/")
+        } else {
+            key.to_owned()
+        };
+        Ok(Self { kind: self.kind, key })
+    }
+
+    fn conflicts_with(&self, other: &Self) -> bool {
+        if self.kind != other.kind {
+            return false;
+        }
+        match self.kind {
+            AgentWorkClaimKind::CodePath | AgentWorkClaimKind::AssetTarget => {
+                hierarchical_claim_keys_overlap(&self.key, &other.key)
+            }
+            AgentWorkClaimKind::AuthoringDocument | AgentWorkClaimKind::SharedResource => {
+                self.key == other.key
+            }
+        }
+    }
+}
+
+impl fmt::Display for AgentWorkClaim {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let kind = match self.kind {
+            AgentWorkClaimKind::AuthoringDocument => "authoring_document",
+            AgentWorkClaimKind::CodePath => "code_path",
+            AgentWorkClaimKind::AssetTarget => "asset_target",
+            AgentWorkClaimKind::SharedResource => "shared_resource",
+        };
+        write!(formatter, "{kind}:{}", self.key)
+    }
+}
+
+fn hierarchical_claim_keys_overlap(left: &str, right: &str) -> bool {
+    left == right
+        || left.strip_prefix(right).is_some_and(|suffix| suffix.starts_with('/'))
+        || right.strip_prefix(left).is_some_and(|suffix| suffix.starts_with('/'))
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct AgentProposal {
     pub(crate) version: u64,
@@ -469,6 +558,8 @@ pub(crate) struct AgentProposal {
     pub(crate) planned_project_changes: Vec<String>,
     pub(crate) planned_code_changes: Vec<String>,
     pub(crate) planned_assets: Vec<String>,
+    #[serde(default)]
+    pub(crate) work_claims: BTreeSet<AgentWorkClaim>,
     pub(crate) validation_plan: Vec<String>,
     pub(crate) playtest_plan: Vec<String>,
     pub(crate) requested_capabilities: BTreeSet<AgentCapability>,
@@ -485,6 +576,7 @@ impl Default for AgentProposal {
             planned_project_changes: Vec::new(),
             planned_code_changes: Vec::new(),
             planned_assets: Vec::new(),
+            work_claims: BTreeSet::new(),
             validation_plan: Vec::new(),
             playtest_plan: Vec::new(),
             requested_capabilities: BTreeSet::new(),
@@ -612,6 +704,12 @@ pub(crate) enum AgentEventKind {
     UserMessage,
     AssistantMessage,
     Proposal,
+    WorkClaimAcquired,
+    WorkClaimReleased,
+    WorkConflict,
+    WorkWait,
+    CrossRunDependency,
+    Reconciliation,
     SemanticProgress,
     ToolAction,
     PermissionRequested,
@@ -877,6 +975,8 @@ pub(crate) struct AgentRun {
     pub(crate) proposal_snapshot: AgentProposal,
     pub(crate) provider_label: String,
     pub(crate) state: AgentRunState,
+    #[serde(default)]
+    pub(crate) work_claims: BTreeSet<AgentWorkClaim>,
     pub(crate) events: Vec<AgentEvent>,
     pub(crate) completion: CompletionReport,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -927,7 +1027,7 @@ pub(crate) struct AgentHost {
     project_root: PathBuf,
     storage_root: PathBuf,
     sessions: BTreeMap<String, AgentSession>,
-    active_writer_run: Option<String>,
+    active_writer_runs: BTreeSet<String>,
     permissions: PermissionBroker,
     active_validation: Option<ManagedValidationProcess>,
 }
@@ -956,12 +1056,12 @@ impl AgentHost {
                 sessions.insert(session.id.clone(), session);
             }
         }
-        let (active_writer_run, recovered_sessions) = recover_persisted_runs(&mut sessions)?;
+        let (active_writer_runs, recovered_sessions) = recover_persisted_runs(&mut sessions)?;
         let host = Self {
             project_root,
             storage_root,
             sessions,
-            active_writer_run,
+            active_writer_runs,
             permissions,
             active_validation: None,
         };
@@ -976,7 +1076,12 @@ impl AgentHost {
     }
 
     pub(crate) fn active_writer_run_id(&self) -> Option<&str> {
-        self.active_writer_run.as_deref()
+        self.active_writer_runs.iter().next().map(String::as_str)
+    }
+
+    #[cfg(test)]
+    fn active_writer_run_ids(&self) -> Vec<String> {
+        self.active_writer_runs.iter().cloned().collect()
     }
 
     pub(crate) fn session(&self, id: &str) -> Result<&AgentSession, AgentHostError> {
@@ -1073,27 +1178,36 @@ impl AgentHost {
         authorized_proposal_version: u64,
         provider_label: impl Into<String>,
     ) -> Result<String, AgentHostError> {
-        if let Some(active) = &self.active_writer_run {
-            return Err(AgentHostError::ActiveWriterRun(active.clone()));
-        }
-        let run_id = next_id("run");
-        let provider_label = provider_label.into();
-        let session = self.session_mut(session_id)?;
-        if session.proposal.version != authorized_proposal_version {
+        let proposal = self.session(session_id)?.proposal.clone();
+        if proposal.version != authorized_proposal_version {
             return Err(AgentHostError::StaleProposalVersion {
                 expected: authorized_proposal_version,
-                current: session.proposal.version,
+                current: proposal.version,
             });
         }
+        let work_claims = self.normalize_work_claims(proposal.work_claims.iter().cloned())?;
+        if let Some((requested, owner_run_id, owner_claim)) =
+            self.find_work_claim_conflict(None, &work_claims)
+        {
+            return Err(AgentHostError::WorkClaimConflict {
+                requested,
+                owner_run_id,
+                owner_claim,
+            });
+        }
+
+        let run_id = next_id("run");
+        let provider_label = provider_label.into();
         let mut run = AgentRun {
             id: run_id.clone(),
-            proposal_snapshot: session.proposal.clone(),
+            proposal_snapshot: proposal.clone(),
             provider_label,
             state: AgentRunState::Inspecting,
+            work_claims: work_claims.clone(),
             events: Vec::new(),
             completion: CompletionReport::default(),
             confinement_profile: None,
-            working_state: AgentWorkingState::from_proposal(&session.proposal),
+            working_state: AgentWorkingState::from_proposal(&proposal),
             validation_attempts: Vec::new(),
             code_checkpoints: Vec::new(),
             audit: AgentRunAudit::default(),
@@ -1106,10 +1220,155 @@ impl AgentHost {
             AgentEventKind::RunStarted,
             format!("Run started from immutable proposal version {snapshot_version}."),
         );
-        session.runs.push(run);
-        self.active_writer_run = Some(run_id.clone());
+        for claim in &work_claims {
+            push_event(
+                &mut run,
+                AgentEventKind::WorkClaimAcquired,
+                format!("Acquired work claim `{claim}` from the authorized proposal snapshot."),
+            );
+        }
+        self.session_mut(session_id)?.runs.push(run);
+        self.active_writer_runs.insert(run_id.clone());
         self.persist_session(session_id)?;
         Ok(run_id)
+    }
+
+    pub(crate) fn acquire_work_claims<I>(
+        &mut self,
+        run_id: &str,
+        claims: I,
+    ) -> Result<(), AgentHostError>
+    where
+        I: IntoIterator<Item = AgentWorkClaim>,
+    {
+        let (session_id, state) = self.run_location(run_id)?;
+        if state.is_terminal() {
+            return Err(AgentHostError::InvalidWorkClaim(format!(
+                "terminal agent run `{run_id}` cannot acquire work claims"
+            )));
+        }
+        let claims = self.normalize_work_claims(claims)?;
+        if let Some((requested, owner_run_id, owner_claim)) =
+            self.find_work_claim_conflict(Some(run_id), &claims)
+        {
+            {
+                let run = self.run_mut_in_session(&session_id, run_id)?;
+                push_event(
+                    run,
+                    AgentEventKind::WorkConflict,
+                    format!(
+                        "Requested `{requested}` conflicts with `{owner_claim}` owned by run `{owner_run_id}`."
+                    ),
+                );
+                push_event(
+                    run,
+                    AgentEventKind::WorkWait,
+                    format!(
+                        "Run must wait, re-plan, or explicitly reconcile ownership with `{owner_run_id}` before expanding scope."
+                    ),
+                );
+            }
+            self.persist_session(&session_id)?;
+            return Err(AgentHostError::WorkClaimConflict {
+                requested,
+                owner_run_id,
+                owner_claim,
+            });
+        }
+        {
+            let run = self.run_mut_in_session(&session_id, run_id)?;
+            for claim in claims {
+                if run.work_claims.insert(claim.clone()) {
+                    push_event(
+                        run,
+                        AgentEventKind::WorkClaimAcquired,
+                        format!("Acquired work claim `{claim}`."),
+                    );
+                }
+            }
+        }
+        self.persist_session(&session_id)
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn release_work_claims<I>(
+        &mut self,
+        run_id: &str,
+        claims: I,
+    ) -> Result<(), AgentHostError>
+    where
+        I: IntoIterator<Item = AgentWorkClaim>,
+    {
+        let (session_id, _) = self.run_location(run_id)?;
+        let claims = self.normalize_work_claims(claims)?;
+        {
+            let run = self.run_mut_in_session(&session_id, run_id)?;
+            for claim in claims {
+                if run.work_claims.remove(&claim) {
+                    push_event(
+                        run,
+                        AgentEventKind::WorkClaimReleased,
+                        format!("Released work claim `{claim}`."),
+                    );
+                }
+            }
+        }
+        self.persist_session(&session_id)
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn record_cross_run_dependency(
+        &mut self,
+        run_id: &str,
+        dependency_run_id: &str,
+        detail: impl Into<String>,
+    ) -> Result<(), AgentHostError> {
+        self.run(dependency_run_id)?;
+        self.record_event(
+            run_id,
+            AgentEventKind::CrossRunDependency,
+            format!("Depends on run `{dependency_run_id}`: {}", detail.into()),
+        )
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn record_reconciliation(
+        &mut self,
+        run_id: &str,
+        detail: impl Into<String>,
+    ) -> Result<(), AgentHostError> {
+        self.record_event(run_id, AgentEventKind::Reconciliation, detail)
+    }
+
+    fn normalize_work_claims<I>(&self, claims: I) -> Result<BTreeSet<AgentWorkClaim>, AgentHostError>
+    where
+        I: IntoIterator<Item = AgentWorkClaim>,
+    {
+        claims.into_iter().map(|claim| claim.normalized()).collect()
+    }
+
+    fn find_work_claim_conflict(
+        &self,
+        requesting_run_id: Option<&str>,
+        requested_claims: &BTreeSet<AgentWorkClaim>,
+    ) -> Option<(AgentWorkClaim, String, AgentWorkClaim)> {
+        for session in self.sessions.values() {
+            for run in &session.runs {
+                if run.state.is_terminal() || requesting_run_id == Some(run.id.as_str()) {
+                    continue;
+                }
+                for requested in requested_claims {
+                    if let Some(owner_claim) = run
+                        .work_claims
+                        .iter()
+                        .find(|owner_claim| requested.conflicts_with(owner_claim))
+                    {
+                        return Some((requested.clone(), run.id.clone(), owner_claim.clone()));
+                    }
+                }
+            }
+        }
+        None
     }
 
     pub(crate) fn run(&self, run_id: &str) -> Result<&AgentRun, AgentHostError> {
@@ -1147,7 +1406,7 @@ impl AgentHost {
             }
         }
         if state.is_terminal() {
-            self.release_writer(run_id);
+            self.release_run_resources(run_id)?;
         }
         self.persist_session(&session_id)
     }
@@ -2246,11 +2505,22 @@ impl AgentHost {
         Err(AgentHostError::RunNotFound(run_id.to_owned()))
     }
 
-    fn release_writer(&mut self, run_id: &str) {
-        if self.active_writer_run.as_deref() == Some(run_id) {
-            self.active_writer_run = None;
+    fn release_run_resources(&mut self, run_id: &str) -> Result<(), AgentHostError> {
+        let (session_id, _) = self.run_location(run_id)?;
+        {
+            let run = self.run_mut_in_session(&session_id, run_id)?;
+            let released = std::mem::take(&mut run.work_claims);
+            for claim in released {
+                push_event(
+                    run,
+                    AgentEventKind::WorkClaimReleased,
+                    format!("Released work claim `{claim}` because the run became terminal."),
+                );
+            }
         }
+        self.active_writer_runs.remove(run_id);
         self.permissions.clear_run(run_id);
+        Ok(())
     }
 
     fn persist_session(&self, id: &str) -> Result<(), AgentHostError> {
@@ -2430,15 +2700,26 @@ fn managed_validation_plan(
 fn recover_persisted_runs(
     sessions: &mut BTreeMap<String, AgentSession>,
 ) -> Result<(Option<String>, BTreeSet<String>), AgentHostError> {
-    let mut active_runs = Vec::new();
+    let mut active_runs = BTreeSet::new();
     let mut recovered_sessions = BTreeSet::new();
     for session in sessions.values_mut() {
         let session_id = session.id.clone();
         for run in &mut session.runs {
             if run.state.is_terminal() {
+                if !run.work_claims.is_empty() {
+                    let released = std::mem::take(&mut run.work_claims);
+                    for claim in released {
+                        push_event(
+                            run,
+                            AgentEventKind::WorkClaimReleased,
+                            format!("Recovered stale terminal work claim `{claim}` after Editor restart."),
+                        );
+                    }
+                    recovered_sessions.insert(session_id.clone());
+                }
                 continue;
             }
-            active_runs.push(run.id.clone());
+            active_runs.insert(run.id.clone());
             let Some(attempt) = run
                 .validation_attempts
                 .last_mut()
@@ -2481,14 +2762,7 @@ fn recover_persisted_runs(
             }
         }
     }
-    active_runs.sort();
-    active_runs.dedup();
-    let active_writer_run = match active_runs.as_slice() {
-        [] => None,
-        [run_id] => Some(run_id.clone()),
-        _ => return Err(AgentHostError::MultipleActiveWriterRuns(active_runs)),
-    };
-    Ok((active_writer_run, recovered_sessions))
+    Ok((active_runs, recovered_sessions))
 }
 
 struct ManagedValidationProcess {
@@ -3375,20 +3649,142 @@ mod tests {
     }
 
     #[test]
-    fn only_one_writer_run_is_active() {
+    fn disjoint_work_claims_allow_concurrent_writer_runs() {
         let project = temp_path("writer-project");
         let storage = temp_path("writer-storage");
         fs::create_dir_all(&project).expect("test project directory");
         let mut host = AgentHost::open(project.clone(), storage.clone()).expect("host");
         let first = host.create_session("First").expect("first session");
         let second = host.create_session("Second").expect("second session");
-        let run = host.start_run(&first, "test").expect("first run");
+
+        let mut first_proposal = host.session(&first).expect("first").proposal.clone();
+        first_proposal
+            .work_claims
+            .insert(AgentWorkClaim::authoring_document("scene:main"));
+        host.update_proposal(&first, first_proposal).expect("first proposal");
+        let mut second_proposal = host.session(&second).expect("second").proposal.clone();
+        second_proposal
+            .work_claims
+            .insert(AgentWorkClaim::authoring_document("scene:menu"));
+        host.update_proposal(&second, second_proposal).expect("second proposal");
+
+        let first_run = host.start_run(&first, "test").expect("first run");
+        let second_run = host.start_run(&second, "test").expect("second run");
+        let active = host.active_writer_run_ids();
+        assert_eq!(active.len(), 2);
+        assert!(active.contains(&first_run));
+        assert!(active.contains(&second_run));
+        let _ = fs::remove_dir_all(project);
+        let _ = fs::remove_dir_all(storage);
+    }
+
+    #[test]
+    fn conflicting_source_claim_waits_until_owner_cancels() {
+        let project = temp_path("claim-conflict-project");
+        let storage = temp_path("claim-conflict-storage");
+        fs::create_dir_all(&project).expect("test project directory");
+        let mut host = AgentHost::open(project.clone(), storage.clone()).expect("host");
+        let first = host.create_session("First").expect("first session");
+        let second = host.create_session("Second").expect("second session");
+        let first_run = host.start_run(&first, "test").expect("first run");
+        let second_run = host.start_run(&second, "test").expect("second run");
+
+        host.acquire_work_claims(
+            &first_run,
+            [AgentWorkClaim::code_path("game/src")],
+        )
+        .expect("first claim");
+        let conflict = host.acquire_work_claims(
+            &second_run,
+            [AgentWorkClaim::code_path("game/src/lib.rs")],
+        );
         assert!(matches!(
-            host.start_run(&second, "test"),
-            Err(AgentHostError::ActiveWriterRun(_))
+            conflict,
+            Err(AgentHostError::WorkClaimConflict { owner_run_id, .. })
+                if owner_run_id == first_run
         ));
-        host.cancel_run(&run).expect("cancel run");
-        host.start_run(&second, "test").expect("second run");
+        let waiting = host.run(&second_run).expect("second run");
+        assert!(waiting.events.iter().any(|event| event.kind == AgentEventKind::WorkConflict));
+        assert!(waiting.events.iter().any(|event| event.kind == AgentEventKind::WorkWait));
+
+        host.cancel_run(&first_run).expect("cancel first");
+        host.acquire_work_claims(
+            &second_run,
+            [AgentWorkClaim::code_path("game/src/lib.rs")],
+        )
+        .expect("claim after cancellation");
+        let _ = fs::remove_dir_all(project);
+        let _ = fs::remove_dir_all(storage);
+    }
+
+    #[test]
+    fn restart_restores_active_claims_and_cleans_terminal_claims() {
+        let project = temp_path("claim-restart-project");
+        let storage = temp_path("claim-restart-storage");
+        fs::create_dir_all(&project).expect("test project directory");
+        let first_run;
+        let second_run;
+        {
+            let mut host = AgentHost::open(project.clone(), storage.clone()).expect("host");
+            let first = host.create_session("First").expect("first session");
+            let second = host.create_session("Second").expect("second session");
+            first_run = host.start_run(&first, "test").expect("first run");
+            second_run = host.start_run(&second, "test").expect("second run");
+            host.acquire_work_claims(
+                &first_run,
+                [AgentWorkClaim::authoring_document("scene:main")],
+            )
+            .expect("first claim");
+            host.acquire_work_claims(
+                &second_run,
+                [AgentWorkClaim::authoring_document("scene:menu")],
+            )
+            .expect("second claim");
+            host.cancel_run(&first_run).expect("cancel first");
+
+            let (session_id, _) = host.run_location(&first_run).expect("first location");
+            host.run_mut_in_session(&session_id, &first_run)
+                .expect("first run")
+                .work_claims
+                .insert(AgentWorkClaim::authoring_document("scene:stale"));
+            host.persist_session(&session_id).expect("persist stale fixture");
+        }
+
+        let host = AgentHost::open(project.clone(), storage.clone()).expect("reopened host");
+        assert_eq!(host.active_writer_run_ids(), vec![second_run.clone()]);
+        assert!(host.run(&first_run).expect("first run").work_claims.is_empty());
+        assert!(host
+            .run(&second_run)
+            .expect("second run")
+            .work_claims
+            .contains(&AgentWorkClaim::authoring_document("scene:menu")));
+        let _ = fs::remove_dir_all(project);
+        let _ = fs::remove_dir_all(storage);
+    }
+
+    #[test]
+    fn concurrent_run_completion_evidence_is_independent() {
+        let project = temp_path("claim-completion-project");
+        let storage = temp_path("claim-completion-storage");
+        fs::create_dir_all(&project).expect("test project directory");
+        let mut host = AgentHost::open(project.clone(), storage.clone()).expect("host");
+        let first = host.create_session("First").expect("first session");
+        let second = host.create_session("Second").expect("second session");
+        let first_run = host.start_run(&first, "test").expect("first run");
+        let second_run = host.start_run(&second, "test").expect("second run");
+        let (first_session, _) = host.run_location(&first_run).expect("first location");
+        host.run_mut_in_session(&first_session, &first_run)
+            .expect("first run")
+            .completion
+            .acceptance_criteria = CompletionStatus::Passed;
+        assert_eq!(
+            host.run(&first_run).expect("first run").completion.acceptance_criteria,
+            CompletionStatus::Passed
+        );
+        assert_eq!(
+            host.run(&second_run).expect("second run").completion.acceptance_criteria,
+            CompletionStatus::Pending
+        );
         let _ = fs::remove_dir_all(project);
         let _ = fs::remove_dir_all(storage);
     }

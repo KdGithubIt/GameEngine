@@ -7,6 +7,7 @@
 use crate::agent_host::{
     project_storage_key, AgentCapability, AgentConfinementNetworkPolicy, AgentConfinementRequest,
     AgentConfinementRequirement, AgentEventKind, AgentHost, AgentProposal, AgentRunState,
+    AgentWorkClaim,
     ApprovalScope, AuthoritativeStateSnapshot, CodeChange, CodeWorkspace, CompletionStatus,
     ConversationRole, ExternalAgentProcess, ManagedValidationAttemptStatus, PermissionCheck,
     ProcessStream, ResumeDisposition,
@@ -3220,6 +3221,21 @@ impl AiStudioPanel {
     }
 
     fn apply_code_changes(&mut self, run_id: &str) {
+        let claims = self
+            .pending_code_changes
+            .iter()
+            .map(|change| {
+                AgentWorkClaim::code_path(
+                    change.relative_path.to_string_lossy().replace('\\', "/"),
+                )
+            })
+            .collect::<Vec<_>>();
+        if let Err(error) = self.host.acquire_work_claims(run_id, claims) {
+            self.status = Some(format!(
+                "Managed code apply is waiting for work ownership: {error}"
+            ));
+            return;
+        }
         let Some(workspace) = self.code_workspace.as_mut() else {
             self.status = Some("No managed code workspace is available.".to_owned());
             return;
