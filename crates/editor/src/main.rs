@@ -314,6 +314,7 @@ impl EditorShell {
 impl eframe::App for EditorShell {
     fn logic(&mut self, context: &eframe::egui::Context, frame: &mut eframe::Frame) {
         self.handle_mcp_requests();
+        self.ai_studio.observe_benchmark_hardware(frame);
         if self.project_lease.take_activation_request() {
             context.send_viewport_cmd(eframe::egui::ViewportCommand::Focus);
         }
