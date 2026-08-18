@@ -1,0 +1,190 @@
+diff --git a/crates/editor/src/ui/sequencer.rs b/crates/editor/src/ui/sequencer.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..d1a56da5a6cfd8a0223fbb5c8c847c5100fa2302
+--- /dev/null
++++ b/crates/editor/src/ui/sequencer.rs
+@@ -0,0 +1,184 @@
++//! ADR 0126 Timeline / Sequencer editor surface.
++//!
++//! Persisted edits use TimelineAuthoringService. Preview transport is transient and drives the
++//! existing Scene View PreviewWorld through the production TimelineRuntime.
++
++use super::*;
++use crate::scene_view::{TimelinePreviewRequest, TimelinePreviewStatus};
++use engine::timeline::{SeekCapability, TimelineTick, TIMELINE_TICKS_PER_SECOND};
++use engine_authoring::{
++    MotionSlotId, TimelineAuthoringCommand, TimelineAuthoringService, TimelineBinding,
++    TimelineClip, TimelineClipId, TimelineClipPayload, TimelineDocument, TimelineMarker,
++    TimelineMarkerId, TimelinePropertyKey, TimelinePropertyValue, TimelineTrack, TimelineTrackId,
++    TimelineTrackKind,
++};
++use std::collections::BTreeSet;
++
++#[derive(Debug, Clone, PartialEq, Eq)]
++enum SequencerSelection { Track(TimelineTrackId), Clip(TimelineClipId), Marker(TimelineMarkerId) }
++
++pub(in crate::ui) struct TimelineSequencerState {
++    relative_path: PathBuf,
++    absolute_path: PathBuf,
++    asset_id: AssetId,
++    service: TimelineAuthoringService,
++    saved_document: TimelineDocument,
++    selection: Option<SequencerSelection>,
++    add_track_search: String,
++    playhead: TimelineTick,
++    playing: bool,
++    stopped: bool,
++    loop_preview: bool,
++    pixels_per_second: f32,
++    muted: BTreeSet<TimelineTrackId>,
++    soloed: BTreeSet<TimelineTrackId>,
++    locked: BTreeSet<TimelineTrackId>,
++    source_revision: u64,
++    transport_revision: u64,
++    runtime_issue: Option<String>,
++    pending_animation_track: Option<TimelineTrackId>,
++    pending_animation_set: Option<AssetId>,
++    animation_slot_search: String,
++    close_requested: bool,
++}
++
++impl TimelineSequencerState {
++    fn new(relative_path: PathBuf, absolute_path: PathBuf, asset_id: AssetId, document: TimelineDocument) -> Result<Self, String> {
++        let service = TimelineAuthoringService::new(document.clone()).map_err(|error| error.to_string())?;
++        Ok(Self { relative_path, absolute_path, asset_id, service, saved_document: document, selection: None, add_track_search: String::new(), playhead: TimelineTick::ZERO, playing: false, stopped: false, loop_preview: false, pixels_per_second: 110.0, muted: BTreeSet::new(), soloed: BTreeSet::new(), locked: BTreeSet::new(), source_revision: 1, transport_revision: 1, runtime_issue: None, pending_animation_track: None, pending_animation_set: None, animation_slot_search: String::new(), close_requested: false })
++    }
++    fn document(&self) -> &TimelineDocument { self.service.document() }
++    pub(in crate::ui) fn is_dirty(&self) -> bool { self.document() != &self.saved_document }
++    fn apply(&mut self, command: TimelineAuthoringCommand) -> Result<(), String> { let revision = self.service.revision(); self.service.apply(revision, command).map_err(|error| error.to_string())?; self.source_revision = self.source_revision.wrapping_add(1); Ok(()) }
++    fn undo(&mut self) { if self.service.undo() { self.source_revision = self.source_revision.wrapping_add(1); } }
++    fn redo(&mut self) { if self.service.redo() { self.source_revision = self.source_revision.wrapping_add(1); } }
++    pub(in crate::ui) fn save(&mut self) -> Result<(), String> { self.service.save(&self.absolute_path).map_err(|error| error.to_string())?; self.saved_document = self.document().clone(); Ok(()) }
++    fn reload_clean(&mut self, document: TimelineDocument) -> Result<bool, String> { if self.is_dirty() { return Ok(false); } self.reload_discarding_changes(document)?; Ok(true) }
++    fn reload_discarding_changes(&mut self, document: TimelineDocument) -> Result<(), String> { self.service = TimelineAuthoringService::new(document.clone()).map_err(|error| error.to_string())?; self.saved_document = document; self.source_revision = self.source_revision.wrapping_add(1); self.transport_revision = self.transport_revision.wrapping_add(1); Ok(()) }
++    fn frame_ticks(&self) -> i64 { let rate = self.document().display_rate; if rate.numerator == 0 { return 1; } ((TIMELINE_TICKS_PER_SECOND as i128 * i128::from(rate.denominator)) / i128::from(rate.numerator)).max(1) as i64 }
++    fn snap(&mut self, proposed: TimelineTick) -> TimelineTick {
++        let document = self.document().clone(); let threshold = ((TIMELINE_TICKS_PER_SECOND as f32 * 7.0) / self.pixels_per_second.max(1.0)).round().max(1.0) as u64; let frame = self.frame_ticks(); let nearest_frame = TimelineTick::new((proposed.get() as f64 / frame as f64).round() as i64 * frame); let mut candidates = vec![(nearest_frame, "frame".to_owned()), (self.playhead, "playhead".to_owned())];
++        for marker in &document.markers { candidates.push((marker.tick, format!("marker {}", marker.name))); }
++        for track in &document.tracks { for clip in &track.clips { candidates.push((clip.start, format!("{} start", clip.name))); candidates.push((clip.end(), format!("{} end", clip.name))); } }
++        let proposed = proposed.clamp(TimelineTick::ZERO, document.duration);
++        if let Some((_, tick, label)) = candidates.into_iter().map(|(tick, label)| ((tick.get() - proposed.get()).unsigned_abs(), tick, label)).filter(|(distance, _, _)| *distance <= threshold).min_by_key(|(distance, _, _)| *distance) { self.runtime_issue = Some(format!("Snapped to {label}")); tick.clamp(TimelineTick::ZERO, document.duration) } else { proposed }
++    }
++    fn preview_document(&self) -> TimelineDocument {
++        let mut document = self.document().clone();
++        let solo_active = !self.soloed.is_empty();
++        for track in &mut document.tracks {
++            track.enabled = track.enabled && !self.muted.contains(&track.id) && (!solo_active || self.soloed.contains(&track.id));
++        }
++        document
++    }
++    fn preview_request(&self) -> TimelinePreviewRequest { TimelinePreviewRequest { asset: self.asset_id.clone(), document: self.preview_document(), source_revision: self.source_revision, transport_revision: self.transport_revision, requested_tick: self.playhead, playing: self.playing, stopped: self.stopped, loop_preview: self.loop_preview } }
++    fn consume_status(&mut self, status: Option<TimelinePreviewStatus>) { if let Some(status) = status { self.playhead = status.tick.clamp(TimelineTick::ZERO, self.document().duration); self.playing = status.playing; if status.runtime_issue.is_some() { self.runtime_issue = status.runtime_issue; } } }
++    fn transport_changed(&mut self) { self.transport_revision = self.transport_revision.wrapping_add(1); }
++    fn preview_filter_changed(&mut self) { self.source_revision = self.source_revision.wrapping_add(1); }
++}
++
++fn track_label(kind: TimelineTrackKind) -> &'static str { engine_authoring::timeline_track_registry().iter().find(|descriptor| descriptor.kind == kind).map(|descriptor| descriptor.label).unwrap_or("Track") }
++fn seek_badge(kind: TimelineTrackKind) -> Option<&'static str> { match kind.seek_capability() { SeekCapability::ReplayRequired => Some("ReplayRequired"), SeekCapability::NonSeekable => Some("NonSeekable"), SeekCapability::Stateless | SeekCapability::Seekable => None } }
++fn seconds(tick: TimelineTick) -> f64 { tick.to_seconds_f64() }
++fn tick(value: f64) -> TimelineTick { TimelineTick::new((value.max(0.0) * TIMELINE_TICKS_PER_SECOND as f64).round() as i64) }
++fn new_track(kind: TimelineTrackKind, selected: Option<EntityId>) -> Option<TimelineTrack> {
++    let binding = match kind { TimelineTrackKind::Animation | TimelineTrackKind::TransformProperty | TimelineTrackKind::CameraCut | TimelineTrackKind::Vfx => Some(TimelineBinding::Entity { entity: selected? }), TimelineTrackKind::Audio | TimelineTrackKind::Event => None };
++    Some(TimelineTrack { id: TimelineTrackId::generate(), name: track_label(kind).to_owned(), kind, enabled: true, binding, clips: Vec::new() })
++}
++fn direct_clip(kind: TimelineTrackKind, start: TimelineTick) -> Option<TimelineClip> {
++    let duration = TimelineTick::new(TIMELINE_TICKS_PER_SECOND);
++    let payload = match kind {
++        TimelineTrackKind::TransformProperty => TimelineClipPayload::TransformProperty { property: "engine.transform.translation".to_owned(), keys: vec![TimelinePropertyKey { tick: TimelineTick::ZERO, value: TimelinePropertyValue::Vec3([0.0; 3]) }, TimelinePropertyKey { tick: duration, value: TimelinePropertyValue::Vec3([0.0; 3]) }] },
++        TimelineTrackKind::CameraCut => TimelineClipPayload::CameraCut,
++        TimelineTrackKind::Event => TimelineClipPayload::Event { name: "timeline.event".to_owned(), payload: "{}".to_owned() },
++        TimelineTrackKind::Animation | TimelineTrackKind::Audio | TimelineTrackKind::Vfx => return None,
++    };
++    Some(TimelineClip { id: TimelineClipId::generate(), name: track_label(kind).to_owned(), start, duration, source_offset: TimelineTick::ZERO, payload })
++}
++fn asset_clip(kind: TimelineTrackKind, start: TimelineTick, asset: AssetId, motion_slot: Option<MotionSlotId>) -> Option<TimelineClip> {
++    let payload = match kind { TimelineTrackKind::Animation => TimelineClipPayload::Animation { animation_set: asset, motion_slot: motion_slot? }, TimelineTrackKind::Audio => TimelineClipPayload::Audio { clip: asset, volume: 1.0, looping: false }, TimelineTrackKind::Vfx => TimelineClipPayload::Vfx { effect: asset, looping: false }, _ => return None };
++    Some(TimelineClip { id: TimelineClipId::generate(), name: track_label(kind).to_owned(), start, duration: TimelineTick::new(TIMELINE_TICKS_PER_SECOND), source_offset: TimelineTick::ZERO, payload })
++}
++fn curve_value_ui(ui: &mut egui::Ui, value: &mut TimelinePropertyValue) -> bool { match value { TimelinePropertyValue::Bool(value) => ui.checkbox(value, "value").changed(), TimelinePropertyValue::Number(value) => ui.add(egui::DragValue::new(value).speed(0.01)).changed(), TimelinePropertyValue::Vec3(value) => { let mut changed = false; ui.horizontal(|ui| for component in value { changed |= ui.add(egui::DragValue::new(component).speed(0.01)).changed(); }); changed }, TimelinePropertyValue::Quat(value) => { let mut changed = false; ui.horizontal(|ui| for component in value { changed |= ui.add(egui::DragValue::new(component).speed(0.01)).changed(); }); changed } } }
++fn timeline_asset_id(manifest: &engine::AssetManifest, relative: &Path) -> Option<AssetId> { manifest.iter().find(|(_, entry)| Path::new(&entry.path) == relative).map(|(id, _)| id.clone()) }
++fn animation_slots(asset: &AssetId, manifest: &engine::AssetManifest, assets_root: Option<&Path>) -> Result<Vec<(MotionSlotId, String)>, String> {
++    let root = assets_root.ok_or_else(|| "open a project to resolve Animation Set slots".to_owned())?; let entry = manifest.get(asset).ok_or_else(|| format!("Animation Set `{}` is not registered", asset.as_str()))?; let json = fs::read_to_string(root.join(&entry.path)).map_err(|error| error.to_string())?; let set = engine_authoring::AnimationSet::from_json(&json).map_err(|error| error.to_string())?; Ok(set.bindings.into_iter().map(|(slot, binding)| (slot, binding.name)).collect())
++}
++
++impl EditorApp {
++    pub(in crate::ui) fn open_timeline_sequencer(&mut self, relative_path: PathBuf, absolute_path: PathBuf) {
++        let Some(asset_id) = timeline_asset_id(&self.asset_manifest, &relative_path) else { self.report_error("editor.timeline_open_failed", format!("Timeline {} is not registered in the asset manifest", relative_path.display())); return; };
++        match engine_authoring::load_timeline(&absolute_path).map_err(|error| error.to_string()).and_then(|document| TimelineSequencerState::new(relative_path, absolute_path.clone(), asset_id, document)) { Ok(state) => self.timeline_sequencer = Some(state), Err(error) => self.report_error("editor.timeline_open_failed", format!("failed to open {}: {error}", absolute_path.display())) }
++    }
++
++    pub(in crate::ui) fn show_timeline_sequencer_window(&mut self, context: &egui::Context) {
++        let preview_status = self.scene_view.timeline_preview_status().cloned();
++        let Some(read_only) = self.timeline_sequencer.as_ref() else { return; };
++        let title = format!("Sequencer: {}{}", read_only.relative_path.display(), if read_only.is_dirty() { " *" } else { "" });
++        let scene = self.session.scene().cloned(); let selected_scene_entity = self.selected_entity.clone(); let manifest = self.asset_manifest.clone(); let assets_root = self.project_root.as_ref().map(ProjectRoot::assets_root);
++        let mut open = true; let mut focus = None; let mut reported_error = None;
++        {
++            let state = self.timeline_sequencer.as_mut().expect("checked above"); state.consume_status(preview_status); if state.playing { context.request_repaint(); }
++            egui::Window::new(title).id(egui::Id::new("timeline_sequencer_window")).open(&mut open).default_width(1120.0).default_height(700.0).resizable(true).show(context, |ui| {
++                let mut command = None;
++                ui.horizontal_wrapped(|ui| {
++                    if ui.button("Undo").clicked() { state.undo(); } if ui.button("Redo").clicked() { state.redo(); } if ui.add_enabled(state.is_dirty(), egui::Button::new("Save")).clicked() { if let Err(error) = state.save() { reported_error = Some(error); } }
++                    ui.separator();
++                    if ui.button("Play").clicked() { state.playing = true; state.stopped = false; state.transport_changed(); }
++                    if ui.button("Pause").clicked() { state.playing = false; state.stopped = false; state.transport_changed(); }
++                    if ui.button("Stop").clicked() { state.playing = false; state.stopped = true; state.playhead = TimelineTick::ZERO; state.transport_changed(); }
++                    if ui.button("Step").clicked() { state.playing = false; state.stopped = false; state.playhead = state.playhead.saturating_add(state.frame_ticks()).clamp(TimelineTick::ZERO, state.document().duration); state.transport_changed(); }
++                    if ui.checkbox(&mut state.loop_preview, "Loop").changed() { state.transport_changed(); }
++                    let mut current = seconds(state.playhead); if ui.add(egui::DragValue::new(&mut current).range(0.0..=seconds(state.document().duration)).speed(0.01).suffix(" s")).changed() { state.playing = false; state.stopped = false; state.playhead = state.snap(tick(current)); state.transport_changed(); }
++                    ui.monospace(format!("tick {}", state.playhead.get())); ui.add(egui::Slider::new(&mut state.pixels_per_second, 40.0..=360.0).text("Zoom"));
++                });
++                if let Some(issue) = &state.runtime_issue { ui.small(issue); } ui.separator();
++                ui.horizontal_wrapped(|ui| {
++                    ui.strong("Add Track"); ui.add(egui::TextEdit::singleline(&mut state.add_track_search).hint_text("Search track types...").desired_width(180.0)); let search = state.add_track_search.to_ascii_lowercase();
++                    for descriptor in engine_authoring::timeline_track_registry() { if search.is_empty() || descriptor.label.to_ascii_lowercase().contains(&search) { let needs_entity = matches!(descriptor.kind, TimelineTrackKind::Animation | TimelineTrackKind::TransformProperty | TimelineTrackKind::CameraCut | TimelineTrackKind::Vfx); let enabled = !needs_entity || selected_scene_entity.is_some(); if ui.add_enabled(enabled, egui::Button::new(descriptor.label).small()).on_disabled_hover_text("Select a Scene entity to create this bound track").clicked() { if let Some(track) = new_track(descriptor.kind, selected_scene_entity.clone()) { command = Some(TimelineAuthoringCommand::AddTrack(track)); } } } }
++                }); ui.separator();
++                let document = state.document().clone();
++                egui::ScrollArea::both().id_salt("timeline_lanes").max_height(330.0).auto_shrink([false, false]).show(ui, |ui| {
++                    ui.group(|ui| { ui.horizontal(|ui| { ui.strong("Markers / Events"); if ui.small_button("+ Marker").clicked() { command = Some(TimelineAuthoringCommand::AddMarker(TimelineMarker { id: TimelineMarkerId::generate(), name: "Marker".to_owned(), tick: state.playhead, event: None })); } }); ui.horizontal_wrapped(|ui| for marker in &document.markers { let selected = state.selection.as_ref() == Some(&SequencerSelection::Marker(marker.id.clone())); if ui.selectable_label(selected, format!("◆ {} {:.3}s", marker.name, seconds(marker.tick))).clicked() { state.selection = Some(SequencerSelection::Marker(marker.id.clone())); } }); });
++                    for track in &document.tracks {
++                        ui.group(|ui| {
++                            ui.horizontal(|ui| { let selected = state.selection.as_ref() == Some(&SequencerSelection::Track(track.id.clone())); if ui.selectable_label(selected, format!("{} [{}]", track.name, track_label(track.kind))).clicked() { state.selection = Some(SequencerSelection::Track(track.id.clone())); } let mut enabled = track.enabled; if ui.checkbox(&mut enabled, "Enabled").changed() { command = Some(TimelineAuthoringCommand::SetTrackEnabled { track: track.id.clone(), enabled }); }
++                                let before_mute = state.muted.contains(&track.id); if ui.selectable_label(before_mute, "M").on_hover_text("Preview mute").clicked() { if !state.muted.remove(&track.id) { state.muted.insert(track.id.clone()); } state.preview_filter_changed(); }
++                                let before_solo = state.soloed.contains(&track.id); if ui.selectable_label(before_solo, "S").on_hover_text("Preview solo").clicked() { if !state.soloed.remove(&track.id) { state.soloed.insert(track.id.clone()); } state.preview_filter_changed(); }
++                                if ui.selectable_label(state.locked.contains(&track.id), "L").on_hover_text("Edit lock").clicked() { if !state.locked.remove(&track.id) { state.locked.insert(track.id.clone()); } } if let Some(badge) = seek_badge(track.kind) { ui.colored_label(egui::Color32::YELLOW, badge); } });
++                            match &track.binding { Some(TimelineBinding::Entity { entity }) => { let exists = scene.as_ref().is_some_and(|scene| scene.entity(entity).is_some()); ui.horizontal(|ui| { ui.small(format!("Binding: entity {}", entity.as_str())); if exists && ui.small_button("Focus").clicked() { focus = Some(entity.clone()); } if !exists { ui.colored_label(egui::Color32::from_rgb(230, 92, 92), "Missing binding"); } }); }, Some(TimelineBinding::Asset { asset }) => { ui.small(format!("Binding: asset {}", asset.as_str())); }, None => { if !matches!(track.kind, TimelineTrackKind::Audio | TimelineTrackKind::Event) { ui.colored_label(egui::Color32::YELLOW, "Binding: Unassigned"); } } }
++                            ui.horizontal_wrapped(|ui| { for clip in &track.clips { let selected = state.selection.as_ref() == Some(&SequencerSelection::Clip(clip.id.clone())); if ui.selectable_label(selected, format!("{} {:.2}–{:.2}s", clip.name, seconds(clip.start), seconds(clip.end()))).clicked() { state.selection = Some(SequencerSelection::Clip(clip.id.clone())); } }
++                                let unlocked = !state.locked.contains(&track.id); if let Some(clip) = direct_clip(track.kind, state.playhead) { if ui.add_enabled(unlocked, egui::Button::new("+ Clip")).clicked() { command = Some(TimelineAuthoringCommand::AddClip { track: track.id.clone(), clip }); } } else if track.kind == TimelineTrackKind::Audio { if unlocked && let Some(asset) = show_typed_asset_picker_button(ui, (track.id.as_str(), "audio"), "+ Audio Clip…", None, engine::AssetKind::Audio, &manifest, assets_root.as_deref()) && let Some(clip) = asset_clip(track.kind, state.playhead, asset, None) { command = Some(TimelineAuthoringCommand::AddClip { track: track.id.clone(), clip }); } } else if track.kind == TimelineTrackKind::Vfx { if unlocked && let Some(asset) = show_typed_asset_picker_button(ui, (track.id.as_str(), "vfx"), "+ VFX Clip…", None, engine::AssetKind::VfxEffect, &manifest, assets_root.as_deref()) && let Some(clip) = asset_clip(track.kind, state.playhead, asset, None) { command = Some(TimelineAuthoringCommand::AddClip { track: track.id.clone(), clip }); } } else if track.kind == TimelineTrackKind::Animation && unlocked && let Some(asset) = show_typed_asset_picker_button(ui, (track.id.as_str(), "animation_set"), "+ Animation Clip…", state.pending_animation_set.as_ref(), engine::AssetKind::AnimationSet, &manifest, assets_root.as_deref()) { state.pending_animation_track = Some(track.id.clone()); state.pending_animation_set = Some(asset); state.animation_slot_search.clear(); }
++                            });
++                        });
++                    }
++                });
++                if let (Some(track_id), Some(animation_set)) = (state.pending_animation_track.clone(), state.pending_animation_set.clone()) { ui.separator(); ui.group(|ui| { ui.strong("Animation Clip Source"); ui.small(format!("Animation Set: {}", animation_set.as_str())); ui.add(egui::TextEdit::singleline(&mut state.animation_slot_search).hint_text("Search motion slots...")); match animation_slots(&animation_set, &manifest, assets_root.as_deref()) { Ok(slots) => { let search = state.animation_slot_search.trim().to_ascii_lowercase(); egui::ScrollArea::vertical().max_height(140.0).show(ui, |ui| { for (slot, name) in slots { if search.is_empty() || name.to_ascii_lowercase().contains(&search) || slot.as_str().to_ascii_lowercase().contains(&search) { if ui.selectable_label(false, format!("{} — {}", name, slot.as_str())).clicked() { if let Some(clip) = asset_clip(TimelineTrackKind::Animation, state.playhead, animation_set.clone(), Some(slot)) { command = Some(TimelineAuthoringCommand::AddClip { track: track_id.clone(), clip }); } state.pending_animation_track = None; state.pending_animation_set = None; } } } }); }, Err(error) => { ui.colored_label(egui::Color32::RED, error); } } if ui.small_button("Cancel").clicked() { state.pending_animation_track = None; state.pending_animation_set = None; } }); }
++                ui.separator(); ui.strong("Inspector");
++                match state.selection.clone() {
++                    Some(SequencerSelection::Track(track_id)) => if let Some(track) = document.tracks.iter().find(|track| track.id == track_id) { ui.label(format!("{} / {}", track.name, track_label(track.kind))); ui.horizontal(|ui| { if let Some(entity) = selected_scene_entity.clone() { if ui.button("Bind Selected Entity").clicked() { command = Some(TimelineAuthoringCommand::SetBinding { track: track.id.clone(), binding: Some(TimelineBinding::Entity { entity }) }); } } if ui.button("Clear Binding").clicked() { command = Some(TimelineAuthoringCommand::SetBinding { track: track.id.clone(), binding: None }); } if ui.button("Delete Track").clicked() { command = Some(TimelineAuthoringCommand::RemoveTrack(track.id.clone())); state.selection = None; } }); },
++                    Some(SequencerSelection::Clip(clip_id)) => if let Some((track, clip)) = document.tracks.iter().find_map(|track| track.clips.iter().find(|clip| clip.id == clip_id).map(|clip| (track, clip))) { ui.label(format!("{} / {}", track.name, clip.name)); let mut start = seconds(clip.start); if ui.add(egui::DragValue::new(&mut start).range(0.0..=seconds(document.duration)).speed(0.01).prefix("Start " )).changed() { let start = state.snap(tick(start)); command = Some(TimelineAuthoringCommand::MoveClip { clip: clip.id.clone(), start }); } let mut duration = seconds(clip.duration); if ui.add(egui::DragValue::new(&mut duration).range(1.0 / TIMELINE_TICKS_PER_SECOND as f64..=seconds(document.duration)).speed(0.01).prefix("Duration " )).changed() { command = Some(TimelineAuthoringCommand::ResizeClip { clip: clip.id.clone(), duration: tick(duration) }); } ui.horizontal(|ui| { if ui.button("Duplicate").clicked() { let mut copy = clip.clone(); copy.id = TimelineClipId::generate(); copy.name = format!("{} Copy", clip.name); copy.start = state.snap(clip.end()); command = Some(TimelineAuthoringCommand::AddClip { track: track.id.clone(), clip: copy }); } if ui.button("Delete Clip").clicked() { command = Some(TimelineAuthoringCommand::RemoveClip(clip.id.clone())); state.selection = None; } });
++                        match &clip.payload { TimelineClipPayload::TransformProperty { property, keys } => { ui.separator(); ui.strong(format!("Curve: {property}")); let mut edited = keys.clone(); let mut changed = false; for key in &mut edited { ui.horizontal(|ui| { let mut local = seconds(key.tick); if ui.add(egui::DragValue::new(&mut local).range(0.0..=seconds(clip.duration)).speed(0.01).suffix(" s")).changed() { key.tick = tick(local).clamp(TimelineTick::ZERO, clip.duration); changed = true; } changed |= curve_value_ui(ui, &mut key.value); }); } if changed { edited.sort_by_key(|key| key.tick); command = Some(TimelineAuthoringCommand::SetClipPayload { clip: clip.id.clone(), payload: TimelineClipPayload::TransformProperty { property: property.clone(), keys: edited } }); } }, TimelineClipPayload::Event { name, payload } => { let mut next_name = name.clone(); let mut next_payload = payload.clone(); if ui.text_edit_singleline(&mut next_name).changed() || ui.text_edit_multiline(&mut next_payload).changed() { command = Some(TimelineAuthoringCommand::SetClipPayload { clip: clip.id.clone(), payload: TimelineClipPayload::Event { name: next_name, payload: next_payload } }); } }, _ => {} }
++                    },
++                    Some(SequencerSelection::Marker(marker_id)) => if let Some(marker) = document.markers.iter().find(|marker| marker.id == marker_id) { ui.label(&marker.name); let mut at = seconds(marker.tick); if ui.add(egui::DragValue::new(&mut at).range(0.0..=seconds(document.duration)).speed(0.01).prefix("Time " )).changed() { let at = state.snap(tick(at)); command = Some(TimelineAuthoringCommand::MoveMarker { marker: marker.id.clone(), tick: at }); } ui.horizontal(|ui| { if marker.event.is_none() && ui.button("Add Event").clicked() { command = Some(TimelineAuthoringCommand::SetMarkerEvent { marker: marker.id.clone(), event: Some("timeline.marker".to_owned()) }); } if marker.event.is_some() && ui.button("Clear Event").clicked() { command = Some(TimelineAuthoringCommand::SetMarkerEvent { marker: marker.id.clone(), event: None }); } if ui.button("Delete Marker").clicked() { command = Some(TimelineAuthoringCommand::RemoveMarker(marker.id.clone())); state.selection = None; } }); if let Some(event) = &marker.event { ui.small(format!("Event: {event}")); } },
++                    None => { ui.small("Select a track, clip, or marker. Persisted edits use TimelineAuthoringCommand."); }
++                }
++                if let Some(command) = command { if let Err(error) = state.apply(command) { reported_error = Some(error); } }
++            });
++            if !open { if state.is_dirty() { state.close_requested = true; } else { state.close_requested = true; } }
++        }
++        if let Some(message) = reported_error { self.report_error("editor.timeline_edit_failed", message); }
++        if let Some(entity) = focus { if let Some(scene) = self.session.scene() { self.selected_entity = Some(entity.clone()); self.selected_entities.clear(); self.selected_entities.insert(entity.clone()); let _ = self.scene_view.focus_entity(scene, &entity); } }
++        let request = self.timeline_sequencer.as_ref().map(TimelineSequencerState::preview_request); self.scene_view.set_timeline_preview_request(request);
++        self.show_timeline_close_confirmation(context);
++    }
++
++    fn show_timeline_close_confirmation(&mut self, context: &egui::Context) {
++        let Some(state) = self.timeline_sequencer.as_ref() else { return; }; if !state.close_requested { return; } if !state.is_dirty() { self.scene_view.set_timeline_preview_request(None); self.timeline_sequencer = None; return; }
++        let mut choice = None; egui::Modal::new(egui::Id::new("timeline_unsaved_changes")).show(context, |ui| { ui.heading("Unsaved Timeline changes"); ui.label("Save this Timeline working copy before closing the Sequencer?"); ui.horizontal(|ui| { if ui.button("Save").clicked() { choice = Some(0_u8); } if ui.button("Discard").clicked() { choice = Some(1); } if ui.button("Cancel").clicked() { choice = Some(2); } }); });
++        match choice { Some(0) => { let result = self.timeline_sequencer.as_mut().expect("open").save(); match result { Ok(()) => { self.scene_view.set_timeline_preview_request(None); self.timeline_sequencer = None; }, Err(error) => self.report_error("editor.timeline_save_failed", error) } }, Some(1) => { self.scene_view.set_timeline_preview_request(None); self.timeline_sequencer = None; }, Some(2) => self.timeline_sequencer.as_mut().expect("open").close_requested = false, _ => {} }
++    }
++}
++
++#[cfg(test)]
++mod tests { use super::*; #[test] fn property_clip_is_directly_authorable() { let clip = direct_clip(TimelineTrackKind::TransformProperty, TimelineTick::ZERO).expect("property clip"); assert!(matches!(clip.payload, TimelineClipPayload::TransformProperty { .. })); } #[test] fn asset_backed_clips_keep_stable_references() { let audio = AssetId::generate(); let clip = asset_clip(TimelineTrackKind::Audio, TimelineTick::ZERO, audio.clone(), None).unwrap(); assert!(matches!(clip.payload, TimelineClipPayload::Audio { clip, .. } if clip == audio)); } }
