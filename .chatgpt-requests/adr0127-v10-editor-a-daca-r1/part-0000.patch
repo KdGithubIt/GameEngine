@@ -1,0 +1,113 @@
+diff --git a/crates/editor/src/native_2d_editor.rs b/crates/editor/src/native_2d_editor.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..82e731a03ed4adf764d2fee42916ebe6513a4380
+--- /dev/null
++++ b/crates/editor/src/native_2d_editor.rs
+@@ -0,0 +1,38 @@
++//! Native 2D document and Tile Map authoring workspace (ADR 0127).
++//! Persisted mutation semantics stay in GUI-free engine-authoring services.
++
++use eframe::egui;
++use engine_authoring::{
++    replace_file_contents, AuthoringPermission, AuthoringPermissions, ProjectRoot, SpriteRef,
++    TypedAuthoringDocument, TypedDocumentAuthoringService, TypedDocumentAuthoringState,
++};
++use serde::de::DeserializeOwned;
++use std::path::{Path, PathBuf};
++
++#[derive(Debug, Clone)]
++pub struct SpriteRegionDragPayload {
++    pub sprite: SpriteRef,
++}
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
++pub enum Native2dWorkspace {
++    #[default]
++    SpriteAtlas,
++    SpriteAnimation,
++    TileSet,
++    TileMap,
++}
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
++pub enum TileTool2d {
++    #[default]
++    Paint,
++    Erase,
++    Rectangle,
++    Line,
++    Fill,
++    Eyedropper,
++    SelectStamp,
++}
++
++// __ADR0127_NATIVE2D_EDITOR_CONTINUE__
+diff --git a/crates/editor/src/session/scene_entities.rs b/crates/editor/src/session/scene_entities.rs
+index 087c7d72eacae393f1f1a1a87d691a2dd122826b..1655637f358f062f913c464f53e247134cb52d22 100644
+--- a/crates/editor/src/session/scene_entities.rs
++++ b/crates/editor/src/session/scene_entities.rs
+@@ -273,6 +273,64 @@ impl EditorSession {
+         ])?;
+         Ok(id)
+     }
++
++    /// Creates one Native 2D sprite entity from a stable logical SpriteRef.
++    ///
++    /// The operation uses the same Scene authoring transaction as every other
++    /// entity template: no UV, runtime handle, packed page, or filesystem path
++    /// becomes persisted sprite identity.
++    pub fn create_entity_from_sprite_ref(
++        &mut self,
++        sprite: engine_authoring::SpriteRef,
++        sorting_layer: engine_authoring::SortingLayerId,
++        parent: Option<EntityId>,
++    ) -> Result<EntityId, EditorSessionError> {
++        use std::collections::BTreeMap;
++
++        let id = EntityId::generate();
++        let transform_value = Value::Object(BTreeMap::from([
++            ("x".into(), Value::F64(0.0)),
++            ("y".into(), Value::F64(0.0)),
++            ("z".into(), Value::F64(0.0)),
++        ]));
++        let renderer_value = Value::Object(BTreeMap::from([
++            ("atlas".into(), Value::AssetRef(sprite.atlas)),
++            ("sprite_id".into(), Value::String(sprite.sprite.as_str().to_owned())),
++            ("tint_r".into(), Value::F64(1.0)),
++            ("tint_g".into(), Value::F64(1.0)),
++            ("tint_b".into(), Value::F64(1.0)),
++            ("tint_a".into(), Value::F64(1.0)),
++            ("flip_x".into(), Value::Bool(false)),
++            ("flip_y".into(), Value::Bool(false)),
++            (
++                "sorting_layer".into(),
++                Value::String(sorting_layer.as_str().to_owned()),
++            ),
++            ("order_in_layer".into(), Value::I64(0)),
++            ("visible".into(), Value::Bool(true)),
++            ("blend".into(), Value::String("alpha".into())),
++        ]));
++        self.apply_scene_commands([
++            AuthoringCommand::CreateEntity {
++                id: id.clone(),
++                name: "sprite_entity".into(),
++                parent,
++            },
++            AuthoringCommand::AddComponent {
++                entity: id.clone(),
++                component_type: ComponentTypeId::new("engine.transform"),
++                value: transform_value,
++            },
++            AuthoringCommand::AddComponent {
++                entity: id.clone(),
++                component_type: ComponentTypeId::new(
++                    engine::scene_bridge::SPRITE_RENDERER_2D_COMPONENT,
++                ),
++                value: renderer_value,
++            },
++        ])?;
++        Ok(id)
++    }
+ }
+ 
+ #[cfg(test)]
