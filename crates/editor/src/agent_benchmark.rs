@@ -941,7 +941,8 @@ mod tests {
         assert!(!text.contains("secret-token"));
         assert!(!text.contains("C:\\private\\project"));
         assert!(!text.contains("conversation"));
-        assert!(!text.contains("prompt"));
+        assert!(!text.contains("\"prompt_text\""));
+        assert!(text.contains("\"prompt_tokens\""));
     }
 
     #[test]
