@@ -1,0 +1,176 @@
+diff --git a/crates/editor/src/authoring_tools.rs b/crates/editor/src/authoring_tools.rs
+index d7a34dcaf08de3c0c69a6cd630a0d0160413634a..a129b330b9e81fae68f633cd4fa2b816859a8055 100644
+--- a/crates/editor/src/authoring_tools.rs
++++ b/crates/editor/src/authoring_tools.rs
+@@ -11,17 +11,20 @@ pub enum AuthoringTool {
+     UiContractDesigner,
+     /// Layered NavMesh, links, static meshes, and spatial-query authoring.
+     AdvancedGeometryDesigner,
++    /// Sprite Atlas, Sprite Animation, Tile Set, and Tile Map authoring.
++    Native2d,
+     /// Typed multi-emitter VFX asset authoring.
+     VfxBuilder,
+ }
+ 
+ impl AuthoringTool {
+     /// Stable display order used by editor menus.
+-    pub const ALL: [Self; 5] = [
++    pub const ALL: [Self; 6] = [
+         Self::AbilityDesigner,
+         Self::RuntimeEventTimeline,
+         Self::UiContractDesigner,
+         Self::AdvancedGeometryDesigner,
++        Self::Native2d,
+         Self::VfxBuilder,
+     ];
+ 
+@@ -32,6 +35,7 @@ impl AuthoringTool {
+             Self::RuntimeEventTimeline => "Runtime Event Timeline",
+             Self::UiContractDesigner => "UI Contract Designer",
+             Self::AdvancedGeometryDesigner => "Advanced Geometry Designer",
++            Self::Native2d => "Native 2D",
+             Self::VfxBuilder => "VFX Builder",
+         }
+     }
+@@ -51,6 +55,9 @@ impl AuthoringTool {
+             Self::AdvancedGeometryDesigner => {
+                 "Author layered NavMeshes, floor links, static triangles, paths, and raycasts."
+             }
++            Self::Native2d => {
++                "Author Sprite Atlases, Sprite Animations, Tile Sets, and sparse Tile Maps."
++            }
+             Self::VfxBuilder => {
+                 "Author typed emitters and ordered spawn, update, and render modules."
+             }
+@@ -64,12 +71,13 @@ mod tests {
+ 
+     #[test]
+     fn catalog_order_and_labels_are_stable() {
+-        assert_eq!(AuthoringTool::ALL.len(), 5);
++        assert_eq!(AuthoringTool::ALL.len(), 6);
+         assert_eq!(AuthoringTool::ALL[0].label(), "Ability Designer");
+         assert_eq!(
+             AuthoringTool::ALL[3].label(),
+             "Advanced Geometry Designer"
+         );
+-        assert_eq!(AuthoringTool::ALL[4].label(), "VFX Builder");
++        assert_eq!(AuthoringTool::ALL[4].label(), "Native 2D");
++        assert_eq!(AuthoringTool::ALL[5].label(), "VFX Builder");
+     }
+ }
+diff --git a/crates/editor/src/authoring_windows.rs b/crates/editor/src/authoring_windows.rs
+index 5152991aec289894190494f8ae6e9d5a0c310140..b8775d34510f0d3bdc79b465e1082974582e5357 100644
+--- a/crates/editor/src/authoring_windows.rs
++++ b/crates/editor/src/authoring_windows.rs
+@@ -1,6 +1,7 @@
+ //! Modeless authoring windows embedded in the main Engine Editor process.
+ 
+ use crate::authoring_tools::AuthoringTool;
++use crate::native_2d_editor::Native2dEditorState;
+ use crate::vfx_builder::VfxBuilderState;
+ use engine_authoring::ProjectRoot;
+ use eframe::{egui, Frame};
+@@ -15,11 +16,13 @@ pub struct AuthoringWindows {
+     runtime_event_open: bool,
+     ui_contract_open: bool,
+     advanced_geometry_open: bool,
++    native_2d_open: bool,
+     vfx_open: bool,
+     ability: ability::EmbeddedWindow,
+     runtime_event: runtime_event::EmbeddedWindow,
+     ui_contract: ui_contract::EmbeddedWindow,
+     advanced_geometry: advanced_geometry::EmbeddedWindow,
++    native_2d: Native2dEditorState,
+     vfx: VfxBuilderState,
+ }
+ 
+@@ -32,6 +35,7 @@ impl AuthoringWindows {
+             AuthoringTool::RuntimeEventTimeline => self.runtime_event_open = true,
+             AuthoringTool::UiContractDesigner => self.ui_contract_open = true,
+             AuthoringTool::AdvancedGeometryDesigner => self.advanced_geometry_open = true,
++            AuthoringTool::Native2d => self.native_2d_open = true,
+             AuthoringTool::VfxBuilder => {
+                 self.vfx_open = true;
+                 #[cfg(feature = "visual-validation")]
+@@ -41,7 +45,13 @@ impl AuthoringWindows {
+     }
+ 
+     /// Draws every visible authoring window into the current editor frame.
+-    pub fn show(&mut self, context: &egui::Context, frame: &mut Frame, project: &ProjectRoot) {
++    pub fn show(
++        &mut self,
++        context: &egui::Context,
++        frame: &mut Frame,
++        project: &ProjectRoot,
++        manifest: &engine::AssetManifest,
++    ) {
+         self.ability
+             .show(context, frame, &mut self.ability_open);
+         self.runtime_event
+@@ -50,6 +60,19 @@ impl AuthoringWindows {
+             .show(context, frame, &mut self.ui_contract_open);
+         self.advanced_geometry
+             .show(context, frame, &mut self.advanced_geometry_open);
++        if self.native_2d_open {
++            egui::Window::new("Native 2D")
++                .id(egui::Id::new("embedded_native_2d"))
++                .open(&mut self.native_2d_open)
++                .default_width(1_180.0)
++                .default_height(800.0)
++                .resizable(true)
++                .show(context, |ui| {
++                    egui::ScrollArea::both().show(ui, |ui| {
++                        self.native_2d.show(ui, project, manifest);
++                    });
++                });
++        }
+         if self.vfx_open {
+             let vfx_open = &mut self.vfx_open;
+             let vfx = &mut self.vfx;
+diff --git a/crates/editor/src/lib.rs b/crates/editor/src/lib.rs
+index fef6b83d0265cb29d21c5592fdd7a854b5d8fe83..3c538b5e5c179aedcac0afb6fea00d011f570e31 100644
+--- a/crates/editor/src/lib.rs
++++ b/crates/editor/src/lib.rs
+@@ -18,6 +18,7 @@ mod hosted_model_backend;
+ mod live_observation;
+ mod native_agent;
+ mod native_agent_runtime;
++mod native_2d_editor;
+ mod remote_ai_studio;
+ mod resource_arbitration;
+ pub mod ai_studio;
+diff --git a/crates/editor/src/main.rs b/crates/editor/src/main.rs
+index 18d02c061a312c6531c7a1686d881f83e0f8991c..68aedf7ed567887caa754b78e2a089831a9add1e 100644
+--- a/crates/editor/src/main.rs
++++ b/crates/editor/src/main.rs
+@@ -355,8 +355,12 @@ impl eframe::App for EditorShell {
+         let context = ui.ctx().clone();
+         eframe::App::ui(&mut self.app, ui, frame);
+         self.show_authoring_tools_launcher(&context);
+-        self.authoring_windows
+-            .show(&context, frame, self.app.project_root());
++        self.authoring_windows.show(
++            &context,
++            frame,
++            self.app.project_root(),
++            self.app.asset_manifest(),
++        );
+         #[cfg(not(feature = "visual-validation"))]
+         self.ai_studio.show(&context);
+         #[cfg(feature = "visual-validation")]
+diff --git a/crates/editor/src/ui/documents.rs b/crates/editor/src/ui/documents.rs
+index 0ae0904f15f3660cbd4c1d783dc1752621cadeaf..a02e6296ca4605e96d47a842a190c1ce3af6c56d 100644
+--- a/crates/editor/src/ui/documents.rs
++++ b/crates/editor/src/ui/documents.rs
+@@ -32,6 +32,11 @@ impl EditorApp {
+             .expect("project-scoped Editor workspace must have a ProjectRoot")
+     }
+ 
++    /// Returns the project asset manifest shared by Editor preview and authoring surfaces.
++    pub fn asset_manifest(&self) -> &engine::AssetManifest {
++        &self.asset_manifest
++    }
++
+     pub(super) fn window_title(&self) -> String {
+         let file_name = self
+             .session
