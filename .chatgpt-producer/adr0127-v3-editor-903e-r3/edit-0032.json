@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/scene_view.rs","old":"        self.camera.handle_input(&response);\n        let now = Instant::now();","new":"        self.handle_editor_camera_input(&response);\n        let now = Instant::now();"}

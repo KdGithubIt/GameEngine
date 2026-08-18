@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/scene_view.rs","old":"        self.camera.focus_on(center);\n        true","new":"        match self.dimension {\n            SceneViewDimension::ThreeD => self.camera.focus_on(center),\n            SceneViewDimension::TwoD => self.camera_2d.focus_on(center),\n        }\n        true"}
