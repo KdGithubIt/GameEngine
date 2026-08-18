@@ -801,4 +801,144 @@ impl Native2dEditorState {
     }
 }
 
+impl TileTool2d {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Paint => "Paint",
+            Self::Erase => "Erase",
+            Self::Rectangle => "Rectangle",
+            Self::Line => "Line",
+            Self::Fill => "Fill",
+            Self::Eyedropper => "Eyedropper",
+            Self::SelectStamp => "Select/Stamp",
+        }
+    }
+}
+
+impl Native2dEditorState {
+    fn show_tile_map(
+        &mut self,
+        ui: &mut egui::Ui,
+        project: &ProjectRoot,
+        manifest: &engine::AssetManifest,
+    ) {
+        let paths = manifest_paths(manifest, ".tilemap.json");
+        let current = self
+            .tile_map
+            .as_ref()
+            .map(|loaded| loaded.relative.as_path());
+        if let Some(path) = document_picker(ui, "native2d_tilemap_document", current, &paths) {
+            self.open_tile_map(project, manifest, &path);
+        }
+        let Some(loaded) = self.tile_map.as_mut() else {
+            ui.label("Register and select a *.tilemap.json asset to paint sparse chunks.");
+            return;
+        };
+
+        let layer_count = loaded.service.preview().layers.len();
+        if layer_count == 0 {
+            ui.colored_label(
+                egui::Color32::YELLOW,
+                "This Tile Map has no layer. Add a layer through a typed-document client first.",
+            );
+            return;
+        }
+        loaded.selected_layer = loaded.selected_layer.min(layer_count - 1);
+        ui.horizontal_wrapped(|ui| {
+            ui.label(loaded.relative.display().to_string());
+            if loaded.dirty {
+                ui.colored_label(egui::Color32::YELLOW, "Modified");
+            }
+            if ui.add_enabled(loaded.dirty, egui::Button::new("Save")).clicked() {
+                self.status = Some(match loaded.save() {
+                    Ok(()) => "Saved canonical Tile Map".to_owned(),
+                    Err(error) => format!("Tile Map save failed: {error}"),
+                });
+            }
+            if ui
+                .add_enabled(!loaded.gesture_active, egui::Button::new("Undo stroke"))
+                .clicked()
+                && loaded.service.undo()
+            {
+                loaded.dirty = true;
+                loaded.affected_chunks.clear();
+            }
+            if ui
+                .add_enabled(loaded.gesture_active, egui::Button::new("Cancel stroke"))
+                .clicked()
+            {
+                self.status = loaded.cancel_gesture().err();
+            }
+        });
+
+        ui.horizontal_wrapped(|ui| {
+            ui.strong("Layer");
+            let layers = &loaded.service.preview().layers;
+            for (index, layer) in layers.iter().enumerate() {
+                let label = if layer.locked {
+                    format!("{} 🔒", layer.name)
+                } else {
+                    layer.name.clone()
+                };
+                ui.selectable_value(&mut loaded.selected_layer, index, label);
+            }
+        });
+        ui.horizontal_wrapped(|ui| {
+            ui.strong("Palette");
+            for tile in &loaded.tiles.tiles {
+                ui.selectable_value(
+                    &mut loaded.selected_tile,
+                    Some(tile.id.clone()),
+                    &tile.name,
+                );
+            }
+        });
+        ui.horizontal_wrapped(|ui| {
+            for tool in [
+                TileTool2d::Paint,
+                TileTool2d::Erase,
+                TileTool2d::Rectangle,
+                TileTool2d::Line,
+                TileTool2d::Fill,
+                TileTool2d::Eyedropper,
+                TileTool2d::SelectStamp,
+            ] {
+                ui.selectable_value(&mut self.tile_tool, tool, tool.label());
+            }
+            ui.separator();
+            ui.checkbox(&mut self.show_grid, "Grid");
+            ui.checkbox(&mut self.show_chunks, "Chunks");
+            ui.checkbox(&mut self.show_collisions, "Collision");
+            if !loaded.stamp.cells.is_empty() && ui.button("Clear Stamp").clicked() {
+                loaded.stamp = engine_authoring::TileStamp::default();
+            }
+        });
+
+        ui.separator();
+        if let Err(error) = show_tile_map_canvas(
+            ui,
+            loaded,
+            self.tile_tool,
+            self.show_grid,
+            self.show_chunks,
+            self.show_collisions,
+        ) {
+            self.status = Some(error);
+        }
+        if !loaded.affected_chunks.is_empty() {
+            ui.small(format!(
+                "Last gesture invalidated {} chunk(s): {}",
+                loaded.affected_chunks.len(),
+                loaded
+                    .affected_chunks
+                    .iter()
+                    .map(|key| format!("{}:{},{}", key.layer.as_str(), key.chunk.x, key.chunk.y))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            ));
+        }
+        ui.small("One pointer gesture commits one semantic undo entry; Escape/Cancel restores the exact pre-stroke cells.");
+    }
+}
+
 // __ADR0127_NATIVE2D_EDITOR_CONTINUE__
