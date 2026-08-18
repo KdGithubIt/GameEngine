@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "request_id": "adr-visual-first-release-20260818-r1",
+  "target_branch": "chatgpt/gameengine-adr-visual-first-release-20260818",
+  "expected_head_sha": "4e9865c2db754ef5a2a33e1ac42d1cd5cf318229",
+  "baseline_main_sha": "4e9865c2db754ef5a2a33e1ac42d1cd5cf318229",
+  "edit_parts": [
+    "edit-0000.json",
+    "edit-0001.json",
+    "edit-0002.json",
+    "edit-0003.json",
+    "edit-0004.json",
+    "edit-0005.json",
+    "edit-0006.json",
+    "edit-0007.json",
+    "edit-0008.json",
+    "edit-0009.json",
+    "edit-0010.json",
+    "edit-0011.json",
+    "edit-0012.json",
+    "edit-0013.json"
+  ],
+  "commit_message": "Add deterministic first-release ADR visual validation",
+  "pr_title": "GameEngine: add first-release ADR visual validation",
+  "pr_body": "## Summary\n\nAdds feature-gated deterministic Visual Validation scenarios for ADR0136, ADR0137, ADR0138, ADR0139, ADR0144, ADR0149, and ADR0153 on the current Visual Validation pipeline. Each scenario is launched in an independent Editor process so evidence does not depend on cross-scenario process state. The suite captures explicit preview lifecycle states, diagnostic navigation, live/stale graph debug provenance, working-copy conflict handling, hosted/enterprise backend posture, live observation status, and confinement posture without persisting fixture state or exposing secrets.\n\nThis also extends `scripts/ci/Invoke-EditorVisualValidation.ps1` with the `ADR First Release` suite while leaving trusted `.github/**` workflow definitions unchanged.\n\n<!-- gameengine-visual-validation: editor -->\n<!-- gameengine-visual-authoring-tool: ADR First Release -->"
+}
