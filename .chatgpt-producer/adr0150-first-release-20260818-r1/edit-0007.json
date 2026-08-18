@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/native_agent_runtime.rs",
+  "old": "fn reject<T>(message: &str) -> Result<T, NativeAgentRuntimeError> {\n    Err(NativeAgentRuntimeError::Rejected(message.to_owned()))\n}",
+  "new": "fn routing_workload(state: AgentRunState, has_images: bool) -> RoutingWorkload {\n    match state {\n        AgentRunState::Repairing => RoutingWorkload::ValidationRepair,\n        AgentRunState::Evaluating if has_images => RoutingWorkload::VisualEvaluation,\n        AgentRunState::Evaluating => RoutingWorkload::RuntimeInteraction,\n        AgentRunState::Executing => RoutingWorkload::CodeImplementation,\n        _ => RoutingWorkload::ProjectInspection,\n    }\n}\n\nfn same_model(left: &NativeModelConfig, right: &NativeModelConfig) -> bool {\n    left.backend_id() == right.backend_id() && left.model_id() == right.model_id()\n}\n\nfn reject<T>(message: &str) -> Result<T, NativeAgentRuntimeError> {\n    Err(NativeAgentRuntimeError::Rejected(message.to_owned()))\n}"
+}
