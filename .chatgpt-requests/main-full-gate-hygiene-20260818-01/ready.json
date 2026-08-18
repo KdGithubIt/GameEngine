@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "main-full-gate-hygiene-20260818-01",
+  "target_branch": "chatgpt/gameengine-main-full-gate-hygiene",
+  "expected_head_sha": "ecfc28d6d8e0e82eff38cc90f775e14c88347919",
+  "baseline_main_sha": "ecfc28d6d8e0e82eff38cc90f775e14c88347919",
+  "patch_sha256": "7e7331c84810157d605a92063988d91afd9a532f7c324fe26a913f0313ee13cf",
+  "patch_bytes": 2337,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Restore current main full-gate hygiene",
+  "pr_title": "GameEngine: restore current main full-gate hygiene",
+  "pr_body": "## Summary\n\nRestores two current-main validation hygiene regressions discovered by the automation throughput PR.\n\n- initializes the native 2D test settings without Clippy's field-reassign-with-default warning\n- keeps Remote AI Studio private-path sanitization coverage while using the scanner-approved explicit `...` Windows user placeholder\n\nThese are test-only hygiene changes; runtime behavior, serialization, stable IDs, public APIs, and trust-boundary scanner rules are unchanged."
+}
