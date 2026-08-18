@@ -2623,6 +2623,171 @@ pub(crate) fn spawn_camera_component(
     Ok(())
 }
 
+pub(crate) fn spawn_camera_2d_component(
+    entity: Entity,
+    value: &Value,
+    context: &mut SpawnContext<'_>,
+) -> Result<(), ComponentSpawnError> {
+    let component_type = ComponentTypeId::new(CAMERA_2D_COMPONENT);
+    const EXPECTED: &str = "a Camera2D object with valid orthographic projection and reference-resolution fields";
+    let fields = ComponentFields::new(context.authoring_entity, &component_type, value, EXPECTED)?;
+    let priority = i32::try_from(fields.i64("priority")?).map_err(|_| fields.invalid(EXPECTED))?;
+    let width = u32::try_from(fields.i64("reference_width")?).map_err(|_| fields.invalid(EXPECTED))?;
+    let height = u32::try_from(fields.i64("reference_height")?).map_err(|_| fields.invalid(EXPECTED))?;
+    let fit = match fields.string("fit")? {
+        "fit" => ViewportFit2d::Fit,
+        "fill" => ViewportFit2d::Fill,
+        "stretch" => ViewportFit2d::Stretch,
+        _ => return Err(fields.invalid(EXPECTED).into()),
+    };
+    let camera = Camera2d {
+        enabled: fields.bool("enabled")?,
+        priority,
+        orthographic_height: fields.f32("orthographic_height")?,
+        zoom: fields.f32("zoom")?,
+        near: fields.f32("near")?,
+        far: fields.f32("far")?,
+        pixel_perfect: fields.bool("pixel_perfect")?,
+        reference_pixels_per_unit: fields.f32("reference_pixels_per_unit")?,
+        reference_resolution: [width, height],
+        fit,
+    };
+    if width == 0 || height == 0 || camera.projection([width, height]).is_err() {
+        return Err(fields.invalid(EXPECTED).into());
+    }
+    context.world.add_component(entity, camera)?;
+    Ok(())
+}
+
+pub(crate) fn spawn_sprite_renderer_2d_component(
+    entity: Entity,
+    value: &Value,
+    context: &mut SpawnContext<'_>,
+) -> Result<(), ComponentSpawnError> {
+    let component_type = ComponentTypeId::new(SPRITE_RENDERER_2D_COMPONENT);
+    const EXPECTED: &str = "a SpriteRenderer2D object with stable atlas/SpriteId, tint, sorting, blend, and visibility fields";
+    let fields = ComponentFields::new(context.authoring_entity, &component_type, value, EXPECTED)?;
+    let Some(atlas) = fields.assignable_asset_ref("atlas")?.cloned() else {
+        context.asset_diagnostics.push(component_inactive_diagnostic(
+            context.authoring_entity,
+            &component_type,
+            "atlas",
+        ));
+        return Ok(());
+    };
+    let sprite = SpriteId::parse(fields.string("sprite_id")?.to_owned()).map_err(|_| fields.invalid(EXPECTED))?;
+    let sorting_layer = SortingLayerId::parse(fields.string("sorting_layer")?.to_owned()).map_err(|_| fields.invalid(EXPECTED))?;
+    let order_in_layer = i32::try_from(fields.i64("order_in_layer")?).map_err(|_| fields.invalid(EXPECTED))?;
+    let tint = [
+        fields.f32("tint_r")?,
+        fields.f32("tint_g")?,
+        fields.f32("tint_b")?,
+        fields.f32("tint_a")?,
+    ];
+    if tint.iter().any(|value| !value.is_finite())
+        || tint[..3].iter().any(|value| *value < 0.0)
+        || !(0.0..=1.0).contains(&tint[3])
+    {
+        return Err(fields.invalid(EXPECTED).into());
+    }
+    let blend = match fields.string("blend")? {
+        "alpha" => SpriteBlendMode::Alpha,
+        "premultiplied_alpha" => SpriteBlendMode::PremultipliedAlpha,
+        "additive" => SpriteBlendMode::Additive,
+        _ => return Err(fields.invalid(EXPECTED).into()),
+    };
+    let material_override = fields.assignable_asset_ref("material_override")?.cloned();
+    context.world.add_component(
+        entity,
+        SpriteRenderer2d {
+            sprite: SpriteRef { atlas, sprite },
+            tint,
+            flip_x: fields.bool("flip_x")?,
+            flip_y: fields.bool("flip_y")?,
+            sorting_layer,
+            order_in_layer,
+            visible: fields.bool("visible")?,
+            blend,
+            material_override,
+        },
+    )?;
+    Ok(())
+}
+
+fn resolve_sprite_animation_document(
+    asset: &AssetId,
+    context: &mut SpawnContext<'_>,
+) -> Result<Arc<SpriteAnimationDocument>, SceneBridgeError> {
+    if let Some(document) = context.asset_state.sprite_animation_documents.get(asset) {
+        return Ok(Arc::clone(document));
+    }
+    let path = manifest_asset_path(asset, context)?;
+    if !crate::components::asset_path_matches_kind(crate::components::AssetKind::SpriteAnimation, &path) {
+        return Err(SceneBridgeError::AssetLoad {
+            asset: asset.clone(),
+            source: AssetLoadError::InvalidAsset {
+                path,
+                message: "SpriteAnimator2D clip must reference a *.spriteanim.json asset".to_owned(),
+            },
+        });
+    }
+    let json = std::fs::read_to_string(&path).map_err(|source| SceneBridgeError::AssetLoad {
+        asset: asset.clone(),
+        source: AssetLoadError::Io { path: path.clone(), source },
+    })?;
+    let document = SpriteAnimationDocument::from_json(&json).map_err(|source| SceneBridgeError::AssetLoad {
+        asset: asset.clone(),
+        source: AssetLoadError::InvalidAsset { path: path.clone(), message: source.to_string() },
+    })?;
+    let validation = document.validate();
+    if !validation.is_empty() {
+        return Err(SceneBridgeError::AssetLoad {
+            asset: asset.clone(),
+            source: AssetLoadError::InvalidAsset { path, message: validation.join("; ") },
+        });
+    }
+    let document = Arc::new(document);
+    context.asset_state.sprite_animation_documents.insert(asset.clone(), Arc::clone(&document));
+    Ok(document)
+}
+
+pub(crate) fn spawn_sprite_animator_2d_component(
+    entity: Entity,
+    value: &Value,
+    context: &mut SpawnContext<'_>,
+) -> Result<(), ComponentSpawnError> {
+    let component_type = ComponentTypeId::new(SPRITE_ANIMATOR_2D_COMPONENT);
+    const EXPECTED: &str = "a SpriteAnimator2D object with clip, autoplay, speed, looping override, and initial frame";
+    let fields = ComponentFields::new(context.authoring_entity, &component_type, value, EXPECTED)?;
+    let Some(clip_asset) = fields.assignable_asset_ref("clip")?.cloned() else {
+        context.asset_diagnostics.push(component_inactive_diagnostic(
+            context.authoring_entity,
+            &component_type,
+            "clip",
+        ));
+        return Ok(());
+    };
+    let speed = fields.f32("speed")?;
+    let looping_override = match fields.get("looping_override") {
+        None | Some(Value::Null) => None,
+        Some(Value::Bool(value)) => Some(*value),
+        _ => return Err(fields.invalid(EXPECTED).into()),
+    };
+    let initial_frame = usize::try_from(fields.i64("initial_frame")?).map_err(|_| fields.invalid(EXPECTED))?;
+    let clip = resolve_sprite_animation_document(&clip_asset, context)?;
+    let animator = SpriteAnimatorRuntime2d::new(
+        clip_asset,
+        clip,
+        fields.bool("autoplay")?,
+        speed,
+        looping_override,
+        initial_frame,
+    )
+    .map_err(|_| fields.invalid(EXPECTED))?;
+    context.world.add_component(entity, animator)?;
+    Ok(())
+}
+
 pub(crate) fn spawn_directional_light_component(
     entity: Entity,
     value: &Value,

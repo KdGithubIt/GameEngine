@@ -4,9 +4,10 @@ use engine_assets::asset::AssetManifest;
 use engine_authoring::{
     load_scene_from_json, replace_file_contents, AnimationSet, AuthoringGraphDomain,
     AuthoringPermission, AuthoringPermissions, AuthoringSession, ComponentSchemaRegistry, Graph,
-    GraphDomain, GraphView, MaterialAsset, ProjectRoot, ProjectSettings,
-    TypedAuthoringDocument, TypedDocumentAuthoringError, TypedDocumentAuthoringService,
-    TypedDocumentAuthoringState, UiAuthoringSession, UiDocument,
+    GraphDomain, GraphView, MaterialAsset, ProjectRoot, ProjectSettings, SpriteAnimationDocument,
+    SpriteAtlasDocument, TileMapDocument, TileSetDocument, TypedAuthoringDocument,
+    TypedDocumentAuthoringError, TypedDocumentAuthoringService, TypedDocumentAuthoringState,
+    UiAuthoringSession, UiDocument,
 };
 use engine_mcp::{
     AssetInspectInput, AssetMcpTools, AssetSearchInput, AuthoringCapabilityMcpTools, AuthoringVerb,
@@ -56,6 +57,14 @@ pub struct HeadlessProjectSelection {
     pub material: Option<String>,
     /// Active Animation Set asset path.
     pub animation_set: Option<String>,
+    /// Active Native 2D Sprite Atlas asset path.
+    pub sprite_atlas: Option<String>,
+    /// Active Native 2D Sprite Animation asset path.
+    pub sprite_animation: Option<String>,
+    /// Active Native 2D Tile Set asset path.
+    pub tile_set: Option<String>,
+    /// Active Native 2D Tile Map asset path.
+    pub tile_map: Option<String>,
 }
 
 /// Explicit visibility/authority description returned by the headless host.
@@ -172,6 +181,10 @@ pub struct HeadlessAuthoringHost {
     material: Option<LoadedTyped<MaterialAsset>>,
     project_settings: LoadedTyped<ProjectSettings>,
     animation_set: Option<LoadedTyped<AnimationSet>>,
+    sprite_atlas: Option<LoadedTyped<SpriteAtlasDocument>>,
+    sprite_animation: Option<LoadedTyped<SpriteAnimationDocument>>,
+    tile_set: Option<LoadedTyped<TileSetDocument>>,
+    tile_map: Option<LoadedTyped<TileMapDocument>>,
     game_module: Option<engine::game_module::GameModule>,
 }
 
@@ -228,6 +241,22 @@ impl HeadlessAuthoringHost {
         let ui = selection.ui.map(|relative| load_ui(&project, relative)).transpose()?;
         let material = selection.material.map(|relative| load_material(&project, relative)).transpose()?;
         let animation_set = selection.animation_set.map(|relative| load_animation_set(&project, relative)).transpose()?;
+        let sprite_atlas = selection
+            .sprite_atlas
+            .map(|relative| load_native_2d::<SpriteAtlasDocument>(&project, relative))
+            .transpose()?;
+        let sprite_animation = selection
+            .sprite_animation
+            .map(|relative| load_native_2d::<SpriteAnimationDocument>(&project, relative))
+            .transpose()?;
+        let tile_set = selection
+            .tile_set
+            .map(|relative| load_native_2d::<TileSetDocument>(&project, relative))
+            .transpose()?;
+        let tile_map = selection
+            .tile_map
+            .map(|relative| load_native_2d::<TileMapDocument>(&project, relative))
+            .transpose()?;
         let game_module = latest_shadow_module(&project)
             .and_then(|path| engine::game_module::GameModule::load(&path).ok());
         let permissions = match mode {
@@ -255,6 +284,10 @@ impl HeadlessAuthoringHost {
                 state: TypedDocumentAuthoringState::new(),
             },
             animation_set,
+            sprite_atlas,
+            sprite_animation,
+            tile_set,
+            tile_map,
             game_module,
         })
     }
@@ -271,6 +304,10 @@ impl HeadlessAuthoringHost {
         if let Some(value) = &self.ui { loaded.push(format!("ui:{}", value.relative)); }
         if let Some(value) = &self.material { loaded.push(format!("material:{}", value.relative)); }
         if let Some(value) = &self.animation_set { loaded.push(format!("animation_set:{}", value.relative)); }
+        if let Some(value) = &self.sprite_atlas { loaded.push(format!("sprite_atlas:{}", value.relative)); }
+        if let Some(value) = &self.sprite_animation { loaded.push(format!("sprite_animation:{}", value.relative)); }
+        if let Some(value) = &self.tile_set { loaded.push(format!("tile_set:{}", value.relative)); }
+        if let Some(value) = &self.tile_map { loaded.push(format!("tile_map:{}", value.relative)); }
         HeadlessViewDescriptor {
             source: "saved_file_snapshot",
             writable: self.mode == HeadlessAccessMode::Writer,
@@ -436,6 +473,22 @@ impl HeadlessAuthoringHost {
             "animation_set.validate" => { require_empty(arguments)?; typed_validate(self.animation_set.as_ref().ok_or_else(|| HeadlessMcpCallFailure::no_document("Animation Set"))?, &permissions) }
             "animation_set.preview" => { let input = decode::<TypedDocumentMutationInput<AnimationSet>>(arguments)?; typed_preview(self.animation_set.as_ref().ok_or_else(|| HeadlessMcpCallFailure::no_document("Animation Set"))?, &permissions, input) }
             "animation_set.apply" => { let input = decode::<TypedDocumentMutationInput<AnimationSet>>(arguments)?; let loaded = self.animation_set.as_mut().ok_or_else(|| HeadlessMcpCallFailure::no_document("Animation Set"))?; typed_apply(loaded, &permissions, input, |document, path| { let json = document.to_canonical_json().map_err(|error| error.to_string())?; replace_file_contents(path.expect("animation set path"), &json).map_err(|error| error.to_string()) }) }
+            "sprite_atlas.inspect" => { require_empty(arguments)?; typed_inspect(self.sprite_atlas.as_ref().ok_or_else(|| HeadlessMcpCallFailure::no_document("Sprite Atlas"))?, &permissions) }
+            "sprite_atlas.validate" => { require_empty(arguments)?; typed_validate(self.sprite_atlas.as_ref().ok_or_else(|| HeadlessMcpCallFailure::no_document("Sprite Atlas"))?, &permissions) }
+            "sprite_atlas.preview" => { let input = decode::<TypedDocumentMutationInput<SpriteAtlasDocument>>(arguments)?; typed_preview(self.sprite_atlas.as_ref().ok_or_else(|| HeadlessMcpCallFailure::no_document("Sprite Atlas"))?, &permissions, input) }
+            "sprite_atlas.apply" => { let input = decode::<TypedDocumentMutationInput<SpriteAtlasDocument>>(arguments)?; let loaded = self.sprite_atlas.as_mut().ok_or_else(|| HeadlessMcpCallFailure::no_document("Sprite Atlas"))?; typed_apply(loaded, &permissions, input, |document, path| persist_native_2d(document.to_canonical_json(), path, "Sprite Atlas")) }
+            "sprite_animation.inspect" => { require_empty(arguments)?; typed_inspect(self.sprite_animation.as_ref().ok_or_else(|| HeadlessMcpCallFailure::no_document("Sprite Animation"))?, &permissions) }
+            "sprite_animation.validate" => { require_empty(arguments)?; typed_validate(self.sprite_animation.as_ref().ok_or_else(|| HeadlessMcpCallFailure::no_document("Sprite Animation"))?, &permissions) }
+            "sprite_animation.preview" => { let input = decode::<TypedDocumentMutationInput<SpriteAnimationDocument>>(arguments)?; typed_preview(self.sprite_animation.as_ref().ok_or_else(|| HeadlessMcpCallFailure::no_document("Sprite Animation"))?, &permissions, input) }
+            "sprite_animation.apply" => { let input = decode::<TypedDocumentMutationInput<SpriteAnimationDocument>>(arguments)?; let loaded = self.sprite_animation.as_mut().ok_or_else(|| HeadlessMcpCallFailure::no_document("Sprite Animation"))?; typed_apply(loaded, &permissions, input, |document, path| persist_native_2d(document.to_canonical_json(), path, "Sprite Animation")) }
+            "tile_set.inspect" => { require_empty(arguments)?; typed_inspect(self.tile_set.as_ref().ok_or_else(|| HeadlessMcpCallFailure::no_document("Tile Set"))?, &permissions) }
+            "tile_set.validate" => { require_empty(arguments)?; typed_validate(self.tile_set.as_ref().ok_or_else(|| HeadlessMcpCallFailure::no_document("Tile Set"))?, &permissions) }
+            "tile_set.preview" => { let input = decode::<TypedDocumentMutationInput<TileSetDocument>>(arguments)?; typed_preview(self.tile_set.as_ref().ok_or_else(|| HeadlessMcpCallFailure::no_document("Tile Set"))?, &permissions, input) }
+            "tile_set.apply" => { let input = decode::<TypedDocumentMutationInput<TileSetDocument>>(arguments)?; let loaded = self.tile_set.as_mut().ok_or_else(|| HeadlessMcpCallFailure::no_document("Tile Set"))?; typed_apply(loaded, &permissions, input, |document, path| persist_native_2d(document.to_canonical_json(), path, "Tile Set")) }
+            "tile_map.inspect" => { require_empty(arguments)?; typed_inspect(self.tile_map.as_ref().ok_or_else(|| HeadlessMcpCallFailure::no_document("Tile Map"))?, &permissions) }
+            "tile_map.validate" => { require_empty(arguments)?; typed_validate(self.tile_map.as_ref().ok_or_else(|| HeadlessMcpCallFailure::no_document("Tile Map"))?, &permissions) }
+            "tile_map.preview" => { let input = decode::<TypedDocumentMutationInput<TileMapDocument>>(arguments)?; typed_preview(self.tile_map.as_ref().ok_or_else(|| HeadlessMcpCallFailure::no_document("Tile Map"))?, &permissions, input) }
+            "tile_map.apply" => { let input = decode::<TypedDocumentMutationInput<TileMapDocument>>(arguments)?; let loaded = self.tile_map.as_mut().ok_or_else(|| HeadlessMcpCallFailure::no_document("Tile Map"))?; typed_apply(loaded, &permissions, input, |document, path| persist_native_2d(document.to_canonical_json(), path, "Tile Map")) }
             "vfx.schemas" => { require_empty(arguments)?; to_value(vfx_tools.schemas(&permissions)?) }
             "vfx.inspect" => { let input = decode::<VfxEffectInput>(arguments)?; to_value(vfx_tools.inspect(&permissions, input)?) }
             "vfx.validate" => { let input = decode::<VfxEffectInput>(arguments)?; to_value(vfx_tools.validate(&permissions, input)?) }
@@ -544,6 +597,39 @@ fn load_animation_set(project: &ProjectRoot, relative: String) -> Result<LoadedT
     let path = asset_path(project, &relative)?;
     let document = AnimationSet::from_json(&read_text(&path)?).map_err(|error| HeadlessHostError::Load { path: path.clone(), message: error.to_string() })?;
     Ok(LoadedTyped { path: Some(path), relative, document, state: TypedDocumentAuthoringState::new() })
+}
+
+trait Native2dHeadlessDocument: TypedAuthoringDocument + DeserializeOwned {}
+impl Native2dHeadlessDocument for SpriteAtlasDocument {}
+impl Native2dHeadlessDocument for SpriteAnimationDocument {}
+impl Native2dHeadlessDocument for TileSetDocument {}
+impl Native2dHeadlessDocument for TileMapDocument {}
+
+fn load_native_2d<T: Native2dHeadlessDocument>(
+    project: &ProjectRoot,
+    relative: String,
+) -> Result<LoadedTyped<T>, HeadlessHostError> {
+    let path = asset_path(project, &relative)?;
+    let document = serde_json::from_str(&read_text(&path)?).map_err(|error| HeadlessHostError::Load {
+        path: path.clone(),
+        message: error.to_string(),
+    })?;
+    Ok(LoadedTyped {
+        path: Some(path),
+        relative,
+        document,
+        state: TypedDocumentAuthoringState::new(),
+    })
+}
+
+fn persist_native_2d(
+    json: Result<String, serde_json::Error>,
+    path: Option<&Path>,
+    label: &str,
+) -> Result<(), String> {
+    let json = json.map_err(|error| error.to_string())?;
+    let path = path.ok_or_else(|| format!("{label} path is unavailable"))?;
+    replace_file_contents(path, &json).map_err(|error| error.to_string())
 }
 
 fn persist_scene(loaded: &LoadedScene) -> Result<(), HeadlessMcpCallFailure> {
