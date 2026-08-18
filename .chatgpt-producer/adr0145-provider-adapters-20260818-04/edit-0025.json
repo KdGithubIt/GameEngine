@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "            self.native_agent_runtime = None;\n            self.active_runtime_mode = None;",
+  "new": "            self.native_agent_runtime = None;\n            self.active_runtime_mode = None;\n            self.active_external_provider = None;\n            self.active_external_program = None;\n            self.active_external_args = None;\n            self.external_provider_diagnostics = ExternalAgentDiagnostics::default();"
+}
