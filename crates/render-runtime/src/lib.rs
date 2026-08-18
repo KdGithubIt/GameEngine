@@ -22,6 +22,8 @@ mod bloom;
 mod environment;
 #[cfg(feature = "gpu")]
 mod gpu_streaming;
+#[cfg(feature = "gpu")]
+mod game_camera;
 /// Runtime light resources and authored light mirroring.
 #[cfg(feature = "gpu")]
 pub mod light;
