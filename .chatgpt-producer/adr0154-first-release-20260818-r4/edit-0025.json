@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/engine/src/scene_bridge/spawn.rs","old":"        return Ok(Some(ResolvedAnimationBindingClip {\n            handle,\n            resolved_route: route,\n        }));","new":"        return Ok(Some(ResolvedAnimationBindingClip {\n            handle,\n            resolved_route: route.clone(),\n        }));"}
