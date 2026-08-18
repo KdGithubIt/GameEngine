@@ -1,0 +1,27 @@
+diff --git a/crates/editor/src/ui/adr_visual_scenarios.rs b/crates/editor/src/ui/adr_visual_scenarios.rs
+index d330bab704f677c493ef54044dd253f554c3b446..edea564058336e2565d68373cb37a80da9b46777 100644
+--- a/crates/editor/src/ui/adr_visual_scenarios.rs
++++ b/crates/editor/src/ui/adr_visual_scenarios.rs
+@@ -199,8 +199,8 @@ impl EditorApp {
+             .id(egui::Id::new("adr0136_preview_residency_fixture"))
+             .collapsible(false)
+             .resizable(false)
+-            .fixed_pos(egui::pos2(1010.0, 86.0))
+-            .fixed_size(egui::vec2(540.0, 410.0))
++            .fixed_pos(egui::pos2(900.0, 86.0))
++            .fixed_size(egui::vec2(680.0, 430.0))
+             .show(context, |ui| {
+                 ui.heading("Async preview lifecycle");
+                 ui.horizontal_wrapped(|ui| {
+diff --git a/scripts/ci/Invoke-EditorVisualValidation.ps1 b/scripts/ci/Invoke-EditorVisualValidation.ps1
+index c3800c060c67ff1d2506270483b7e287d266db0e..a647eabf9ca92ef82f4f87317779cc0f08bee34d 100644
+--- a/scripts/ci/Invoke-EditorVisualValidation.ps1
++++ b/scripts/ci/Invoke-EditorVisualValidation.ps1
+@@ -264,6 +264,7 @@ try {
+                     -Name $scenario `
+                     -Package "engine-editor" `
+                     -ProgramArguments @("--project", $projectRoot) `
++                    -RequestedAuthoringTool $AuthoringTool `
+                     -RequestedVisualScenario $scenario
+                 $activeCapture = $null
+             }
