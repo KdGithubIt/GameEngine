@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/external_agent_provider.rs",
+  "old": "                    OsString::from(\"mcp__gameengine_editor__*\"),",
+  "new": "                    OsString::from(\"mcp__gameengine_editor\"),"
+}
