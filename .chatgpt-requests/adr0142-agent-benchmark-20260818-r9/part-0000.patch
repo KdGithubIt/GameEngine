@@ -1,0 +1,184 @@
+diff --git a/crates/editor/src/agent_benchmark.rs b/crates/editor/src/agent_benchmark.rs
+index 32739fc92f71fad94bc3544c7fe360e5f8d76fef..8fa433c72e64b7a2b3a0a1ed2a5057af567db162 100644
+--- a/crates/editor/src/agent_benchmark.rs
++++ b/crates/editor/src/agent_benchmark.rs
+@@ -4,7 +4,7 @@
+ //! conversation transcript, retrieved source text, project path, credentials, or model prompt.
+ 
+ use crate::agent_host::{
+-    AgentEventEvidence, AgentEventKind, AgentRun, AgentRunState, CompletionStatus,
++    AgentEventEvidence, AgentEventKind, AgentRun, AgentRunState, AgentWorkClaim, CompletionStatus,
+ };
+ use crate::native_agent::{InstalledModelInventory, NativeMetrics};
+ use crate::native_agent_runtime::{HarnessPolicy, NATIVE_WRITE_HARNESS_VERSION};
+@@ -721,6 +721,13 @@ pub(crate) fn read_question_record(
+     })
+ }
+ 
++fn work_claim_kind_label(claim: &AgentWorkClaim) -> Option<String> {
++    serde_json::to_value(claim.kind)
++        .ok()?
++        .as_str()
++        .map(ToOwned::to_owned)
++}
++
+ pub(crate) fn agent_run_record(
+     task_id: &str,
+     run: &AgentRun,
+@@ -798,7 +805,7 @@ pub(crate) fn agent_run_record(
+                     .proposal_snapshot
+                     .work_claims
+                     .iter()
+-                    .map(ToString::to_string)
++                    .filter_map(work_claim_kind_label)
+                     .collect(),
+             },
+             completion_criteria: task.completion_criteria.iter().map(|criterion| (*criterion).to_owned()).collect(),
+@@ -900,7 +907,7 @@ mod tests {
+                 max_tool_failures: 4,
+                 repair_budget: 2,
+                 permission_budget: vec!["managed".to_owned()],
+-                work_claims: vec!["code_path:game".to_owned()],
++                work_claims: vec!["code_path".to_owned()],
+             },
+             completion_criteria: BENCHMARK_TASKS[0].completion_criteria.iter().map(|value| (*value).to_owned()).collect(),
+         }
+@@ -976,7 +983,7 @@ mod tests {
+         assert!(matches!(comparison_equivalence(&left, &incomplete_model), ComparisonEquivalence::NonEquivalent(fields) if fields.contains(&"model_representation")));
+ 
+         let mut different_claims = right.clone();
+-        different_claims.identity.tool_budget.work_claims = vec!["code_path:assets".to_owned()];
++        different_claims.identity.tool_budget.work_claims = vec!["asset_target".to_owned()];
+         assert!(matches!(comparison_equivalence(&left, &different_claims), ComparisonEquivalence::NonEquivalent(fields) if fields.contains(&"tool_or_permission_budget")));
+     }
+ 
+diff --git a/crates/editor/src/ai_studio.rs b/crates/editor/src/ai_studio.rs
+index 1e4f153f86d65e748375fea836ef0710b48bc09b..ed860f6f1e63a91683a256a323b09d3cdf8c58fa 100644
+--- a/crates/editor/src/ai_studio.rs
++++ b/crates/editor/src/ai_studio.rs
+@@ -187,6 +187,7 @@ struct ManagedRuntimeObservation {
+ 
+ #[derive(Debug, Clone)]
+ struct NativeQuestionBenchmarkPolicy {
++    task_id: String,
+     quality: QualityPreference,
+     workload: InferenceWorkload,
+     inventory: Option<InstalledModelInventory>,
+@@ -201,6 +202,7 @@ struct NativeQuestionBenchmarkSnapshot {
+ #[derive(Debug, Clone)]
+ struct NativeRunBenchmarkContext {
+     run_id: String,
++    task_id: String,
+     backend_id: String,
+     model_id: String,
+     quality: QualityPreference,
+@@ -1615,7 +1617,7 @@ impl AiStudioPanel {
+             self.benchmark_records.len(),
+             self.model_catalog.catalog_version
+         ))
+-        .default_open(false)
++        .default_open(cfg!(feature = "visual-validation"))
+         .show(ui, |ui| {
+             ui.small(format!(
+                 "Versioned corpus: {BENCHMARK_CORPUS_VERSION}. Recommendations require complete, comparable GameEngine task evidence; third-party scores alone never qualify a model."
+@@ -1691,7 +1693,7 @@ impl AiStudioPanel {
+                 }
+             });
+             ui.small(
+-                "Record only when the current result intentionally executes the selected corpus task. Records are machine-local and omit prompts, conversation history, retrieved source text, project paths, and credentials; this feature never uploads private projects.",
++                "Choose the Evidence task before starting inference or a native run; its versioned identity is frozen at execution start. Record only when that result intentionally executes the frozen corpus task. Records are machine-local and omit prompts, conversation history, retrieved source text, project paths, and credentials; this feature never uploads private projects.",
+             );
+         });
+     }
+@@ -1751,19 +1753,23 @@ impl AiStudioPanel {
+             return false;
+         };
+         if task.kind == BenchmarkTaskKind::ReadQuestion {
+-            return self.last_native_question_benchmark.is_some();
++            return self
++                .last_native_question_benchmark
++                .as_ref()
++                .is_some_and(|snapshot| snapshot.policy.task_id == task.id);
+         }
+         self.native_run_benchmark_context
+             .as_ref()
+             .is_some_and(|benchmark| {
+-                self.host.run(&benchmark.run_id).is_ok_and(|run| {
+-                    matches!(
+-                        run.state,
+-                        AgentRunState::Completed
+-                            | AgentRunState::Failed
+-                            | AgentRunState::Cancelled
+-                    )
+-                })
++                benchmark.task_id == task.id
++                    && self.host.run(&benchmark.run_id).is_ok_and(|run| {
++                        matches!(
++                            run.state,
++                            AgentRunState::Completed
++                                | AgentRunState::Failed
++                                | AgentRunState::Cancelled
++                        )
++                    })
+             })
+     }
+ 
+@@ -1781,7 +1787,7 @@ impl AiStudioPanel {
+                 return;
+             };
+             read_question_record(
+-                task.id,
++                &snapshot.policy.task_id,
+                 &snapshot.metrics,
+                 snapshot.policy.inventory.as_ref(),
+                 snapshot.policy.quality,
+@@ -1803,7 +1809,7 @@ impl AiStudioPanel {
+                 }
+             };
+             agent_run_record(
+-                task.id,
++                &context.task_id,
+                 &run,
+                 &context.backend_id,
+                 &context.model_id,
+@@ -2002,6 +2008,7 @@ impl AiStudioPanel {
+             None
+         };
+         self.native_question_benchmark_policy = Some(NativeQuestionBenchmarkPolicy {
++            task_id: self.benchmark_task_id.clone(),
+             quality: self.quality_preference,
+             workload: self.resolved_workload,
+             inventory,
+@@ -2933,6 +2940,7 @@ impl AiStudioPanel {
+         self.native_run_benchmark_context = native_benchmark_identity.map(
+             |(backend_id, model_id, inventory)| NativeRunBenchmarkContext {
+                 run_id: run_id.clone(),
++                task_id: self.benchmark_task_id.clone(),
+                 backend_id,
+                 model_id,
+                 quality: self.quality_preference,
+diff --git a/docs/adr/0142-gameengine-agent-benchmark-and-curated-model-catalog.md b/docs/adr/0142-gameengine-agent-benchmark-and-curated-model-catalog.md
+index 343073f9f512c8b7fcd0bb73f8377c0b328e05c8..684025810abee8db2dbca0a641f3ee4da28ff36d 100644
+--- a/docs/adr/0142-gameengine-agent-benchmark-and-curated-model-catalog.md
++++ b/docs/adr/0142-gameengine-agent-benchmark-and-curated-model-catalog.md
+@@ -25,7 +25,7 @@ Each comparable result records at least:
+ - backend/runtime version;
+ - hardware identity and total GPU/system memory;
+ - quality/workload policy;
+-- available tool/permission/work-claim budget; and
++- available tool/permission/work-claim kind/count budget without raw project target keys; and
+ - completion criteria used by the task.
+ 
+ A comparison that changes multiple dimensions must be labeled non-equivalent rather than presented as a model-only ranking.
+@@ -54,9 +54,9 @@ The RTX 4070 Ti 12 GB remains the first reference profile from ADR 0135, not a m
+ 
+ ## Implementation
+ 
+-The first-release implementation keeps benchmark state in machine-local GameEngine application data and leaves canonical project/session data unchanged. `engine-editor` owns a versioned seven-class corpus contract covering read questions, project inspection, code implementation, typed authoring mutation, validation/repair, runtime interaction, and visual evaluation. Records retain the corpus/task identity, benchmark and provider harness versions, exact discoverable model representation, backend version, hardware/resource telemetry with explicit unavailable values, quality/workload policy, tool/permission/work-claim budget, completion criteria, and measured Agent Host evidence.
++The first-release implementation keeps benchmark state in machine-local GameEngine application data and leaves canonical project/session data unchanged. `engine-editor` owns a versioned seven-class corpus contract covering read questions, project inspection, code implementation, typed authoring mutation, validation/repair, runtime interaction, and visual evaluation. Records retain the corpus/task identity, benchmark and provider harness versions, exact discoverable model representation, backend version, hardware/resource telemetry with explicit unavailable values, quality/workload policy, tool/permission/work-claim kind/count budget, completion criteria, and measured Agent Host evidence. The selected benchmark task identity is frozen when inference or a native run starts.
+ 
+-Model-only comparison is permitted only when corpus/task, both harness identities, backend runtime, hardware profile, quality/workload policy, tool/permission/work-claim budget, and completion criteria match. Changed dimensions are returned as an explicit non-equivalent comparison instead of being ranked as if only the model changed. The benchmark store intentionally omits prompts, conversation history, retrieved source text, project paths, and credentials. Recording local evidence is an explicit AI Studio action rather than silent collection or upload.
++Model-only comparison is permitted only when corpus/task, both harness identities, backend runtime, hardware profile, quality/workload policy, tool/permission/work-claim kind/count budget, and completion criteria match. Changed dimensions are returned as an explicit non-equivalent comparison instead of being ranked as if only the model changed. The benchmark store intentionally omits prompts, conversation history, retrieved source text, project paths, raw work-claim target keys, and credentials. Recording local evidence is an explicit AI Studio action rather than silent collection or upload.
+ 
+ The curated catalog is bundled as versioned product data separate from model weights. A candidate records exact model/runtime representation plus source, license, transfer/storage size, memory guidance, context, modality, and tool-capability metadata. Lightweight, Balanced, and High Quality recommendation slots are derived only from complete comparable GameEngine corpus evidence; an empty or incomplete evidence set produces no recommendation rather than a guessed default. The first catalog ships without invented candidate recommendations and becomes populated only from measured evidence with explicit provenance.
+ 
