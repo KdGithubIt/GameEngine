@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0156-campaign-core-20260818-01",
+  "target_branch": "chatgpt/gameengine-adr0156-benchmark-campaigns",
+  "expected_head_sha": "fdb22b2a4ba20c61dd2c5275905e74275ad65463",
+  "baseline_main_sha": "fdb22b2a4ba20c61dd2c5275905e74275ad65463",
+  "edit_parts": [
+    "edit-0000.json",
+    "edit-0001.json",
+    "edit-0002.json",
+    "edit-0003.json",
+    "edit-0004.json",
+    "edit-0005.json",
+    "edit-0006.json",
+    "edit-0007.json",
+    "edit-0008.json",
+    "edit-0009.json",
+    "edit-0010.json",
+    "edit-0011.json",
+    "edit-0012.json",
+    "edit-0013.json",
+    "edit-0014.json",
+    "edit-0015.json",
+    "edit-0016.json"
+  ],
+  "commit_message": "Implement ADR 0156 benchmark campaign core",
+  "pr_title": "GameEngine: implement ADR 0156 benchmark campaigns",
+  "pr_body": "## Summary\n\nImplements the ADR 0156 benchmark campaign core: immutable plans, deterministic interleaving, exact preflight approval, persisted pause/resume identity, failure-preserving evidence, reproducible reporting, campaign execution identity in benchmark records, and host-only evaluator separation.\n\n## Validation\n\nWindows Validation is requested by the trusted dispatcher; AI Studio visual wiring follows as a separate request on the same Draft PR."
+}
