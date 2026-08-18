@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0126-v23-stable-ids-r2-20260818-13",
+  "target_branch": "chatgpt/gameengine-adr0126-first-release-v23",
+  "expected_head_sha": "991134c6c40961ac282d1d52c00c8a73fbd3f1ec",
+  "baseline_main_sha": "96c8ffb18a74eabec2164daa61f694f131019ddc",
+  "patch_sha256": "5cc5c45da037a8264e6b33e66078f778c1b4ad0eedccdac26ab8ae0587444194",
+  "patch_bytes": 880,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Add ADR 0126 Timeline stable IDs",
+  "pr_title": "GameEngine: complete ADR 0126 Timeline / Sequencer first release",
+  "pr_body": "## Summary\n\nContinues ADR 0126 current-main completion with corrected persistent Timeline IDs.\n\nFurther implementation requests follow before final validation.\n\n<!-- gameengine-visual-validation: editor -->\n"
+}
