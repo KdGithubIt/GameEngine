@@ -2,7 +2,9 @@ use bytemuck::{Pod, Zeroable};
 use std::fmt;
 use std::sync::{Arc, Weak};
 
-use crate::camera::{select_active_game_camera, Camera3D, ViewportSize};
+use crate::camera::{Camera3D, ViewportSize};
+use crate::game_camera::PreparedCamera;
+use crate::native_2d::{Camera2d, Camera2dDiagnostic};
 use crate::debug_draw::{DebugLine, DebugLines};
 use crate::environment::EnvironmentGpuState;
 use crate::light::{AmbientLight, DirectionalLight, PointLight, SkySettings, SpotLight};
@@ -281,6 +283,7 @@ impl From<engine_ecs::WorldError> for RenderPreparationError {
 pub(crate) enum RenderFrameError {
     Preparation(RenderPreparationError),
     Target(MainPassTargetError),
+    Camera2d(Camera2dDiagnostic),
 }
 
 impl fmt::Display for RenderFrameError {
@@ -288,6 +291,7 @@ impl fmt::Display for RenderFrameError {
         match self {
             Self::Preparation(error) => error.fmt(formatter),
             Self::Target(error) => error.fmt(formatter),
+            Self::Camera2d(error) => write!(formatter, "invalid Camera2D for rendering: {error:?}"),
         }
     }
 }
@@ -297,6 +301,7 @@ impl std::error::Error for RenderFrameError {
         match self {
             Self::Preparation(error) => Some(error),
             Self::Target(error) => Some(error),
+            Self::Camera2d(_) => None,
         }
     }
 }
@@ -1181,25 +1186,12 @@ impl WorldRenderer {
         color_view: &wgpu::TextureView,
         depth_view: &wgpu::TextureView,
     ) -> Result<(), RenderFrameError> {
-        let camera = Self::get_camera(world);
-        match camera {
-            Some((camera, transform)) => self.render_to_view_with_camera(
-                world,
-                &camera,
-                &transform,
-                device,
-                queue,
-                color_view,
-                depth_view,
-            ),
-            None => self.render_to_view_without_camera(
-                world, device, queue, color_view, depth_view,
-            ),
-        }
+        let camera = crate::game_camera::active_camera(world).map_err(RenderFrameError::Camera2d)?;
+        self.render_to_view_with_prepared_camera(
+            world, camera, device, queue, color_view, depth_view,
+        )
     }
 
-    // This mirrors the existing render entry point plus the explicit camera
-    // pair; grouping the caller-owned wgpu views would obscure that contract.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn render_to_view_with_camera(
         &mut self,
@@ -1211,9 +1203,9 @@ impl WorldRenderer {
         color_view: &wgpu::TextureView,
         depth_view: &wgpu::TextureView,
     ) -> Result<(), RenderFrameError> {
-        self.render_to_view_with_optional_camera(
+        self.render_to_view_with_prepared_camera(
             world,
-            Some((camera, camera_transform)),
+            Some(PreparedCamera::three_d(camera.clone(), camera_transform.clone())),
             device,
             queue,
             color_view,
@@ -1221,24 +1213,30 @@ impl WorldRenderer {
         )
     }
 
-    fn render_to_view_without_camera(
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn render_to_view_with_camera_2d(
         &mut self,
         world: &mut engine_ecs::World,
+        camera: &Camera2d,
+        camera_transform: &crate::transform::Transform,
+        viewport: [u32; 2],
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         color_view: &wgpu::TextureView,
         depth_view: &wgpu::TextureView,
     ) -> Result<(), RenderFrameError> {
-        self.render_to_view_with_optional_camera(
-            world, None, device, queue, color_view, depth_view,
+        let camera = PreparedCamera::two_d(*camera, camera_transform.clone(), viewport)
+            .map_err(RenderFrameError::Camera2d)?;
+        self.render_to_view_with_prepared_camera(
+            world, Some(camera), device, queue, color_view, depth_view,
         )
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn render_to_view_with_optional_camera(
+    fn render_to_view_with_prepared_camera(
         &mut self,
         world: &mut engine_ecs::World,
-        shadow_camera: Option<(&Camera3D, &crate::transform::Transform)>,
+        camera: Option<PreparedCamera>,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         color_view: &wgpu::TextureView,
@@ -1249,21 +1247,23 @@ impl WorldRenderer {
             .map_err(RenderFrameError::Preparation)?;
         upload_morphed_vertices(world, queue);
 
-        let (vp, view, camera_position, viewport_aspect) = shadow_camera
-            .map(|(camera, transform)| {
-                (
-                    camera.view_projection_matrix(transform),
-                    Camera3D::view_matrix(transform),
-                    transform.translation,
-                    valid_viewport_aspect(camera.aspect),
-                )
-            })
+        let (vp, view, camera_position, viewport_aspect) = camera
+            .as_ref()
+            .map(|camera| (
+                camera.view_projection,
+                camera.view,
+                camera.position,
+                camera.viewport_aspect,
+            ))
             .unwrap_or((
                 glam::Mat4::IDENTITY,
                 glam::Mat4::IDENTITY,
                 glam::Vec3::ZERO,
                 1.0,
             ));
+        let shadow_camera = camera
+            .as_ref()
+            .and_then(|camera| camera.shadow_camera.as_ref());
         self.render
             .update_camera(queue, vp, view, camera_position, viewport_aspect);
 
@@ -1873,18 +1873,6 @@ impl WorldRenderer {
         let assets = world.get_resource::<crate::asset::Assets<Arc<Texture>>>()?;
         let handle = assets.handle(runtime_id)?;
         assets.get(&handle).cloned()
-    }
-
-    /// Returns a clone of the selected Game View camera and its transform.
-    fn get_camera(
-        world: &mut engine_ecs::World,
-    ) -> Option<(Camera3D, crate::transform::Transform)> {
-        use crate::transform::Transform;
-        use engine_ecs::Query;
-
-        let query = Query::<(&Camera3D, &Transform)>::new(world);
-        select_active_game_camera(query.iter())
-            .map(|(_, (camera, transform))| (camera.clone(), transform.clone()))
     }
 
     /// Returns the stable-per-frame outline group for one render entity.
