@@ -1,0 +1,966 @@
+diff --git a/docs/adr/0155-gameengine-managed-local-inference-runtime-and-platform-selection.md b/docs/adr/0155-gameengine-managed-local-inference-runtime-and-platform-selection.md
+index 19dd5b8fbb7df066a7350fc0486e65d9ff15b9b2..aafda4e23d935e2c712be0e82a74c547167ad9de 100644
+--- a/docs/adr/0155-gameengine-managed-local-inference-runtime-and-platform-selection.md
++++ b/docs/adr/0155-gameengine-managed-local-inference-runtime-and-platform-selection.md
+@@ -3,7 +3,7 @@
+ Status: Accepted
+ Date: 2026-08-18
+ Builds on: ADR 0131, ADR 0135, ADR 0143
+-Relates to: ADR 0142, ADR 0144, ADR 0150, ADR 0153
++Relates to: ADR 0142, ADR 0144, ADR 0150, ADR 0153, ADR 0156, ADR 0157
+ 
+ ## Context
+ 
+@@ -30,10 +30,13 @@ benchmark identity contracts.
+ 
+ Windows creates an additional deployment choice. Native Windows inference has
+ the lowest setup cost. WSL2 can run the Linux runtime while the Editor remains a
+-Windows application and may have different performance or memory behavior.
+-Native Linux remains relevant for Linux hosts and as a reference environment.
+-The product must not assume that one environment is always faster. Selection
+-must be based on measured behavior and user policy rather than folklore.
++Windows application and may have different performance or memory behavior. The
++first release therefore needs evidence for Windows-native versus WSL2 execution,
++not a requirement that Windows users install or boot native Linux. A true
++`NativeLinux` product path is deferred until GameEngine itself has an explicitly
++validated Linux-hosted Editor/runtime support surface. The product must not
++assume that WSL2 or Windows native is always faster; the first-release default
++must be chosen from measured behavior rather than folklore.
+ 
+ A GameEngine-managed WSL2 path is feasible, but the first machine setup can
+ cross an operating-system privilege boundary. Enabling required Windows
+@@ -55,7 +58,7 @@ The preferred local-native AI product path is a GameEngine-managed inference
+ service rather than a requirement that the user separately install and operate
+ a local-model application.
+ 
+-Conceptually:
++Conceptually for the Windows first release:
+ 
+ ```text
+ AI Studio / Native Agent Runtime
+@@ -63,12 +66,16 @@ AI Studio / Native Agent Runtime
+         ModelBackend
+               |
+    ManagedLocalRuntime
+-      /      |       \
+- Windows   WSL2    native Linux
+-      \      |       /
+-         llama.cpp
++        /           \
++WindowsNative    Wsl2Linux
++        \           /
++           llama.cpp
+ ```
+ 
++A future Linux-hosted GameEngine may add `NativeLinux -> managed llama.cpp`
++through the same provider-independent boundary. Native Linux is not required to
++ship or validate the Windows first release.
++
+ The managed service owns the application-level lifecycle required to make a
+ local model usable:
+ 
+@@ -104,37 +111,41 @@ A future local runtime MAY coexist with or replace `llama.cpp` only through the
+ same provider-independent boundary and with equivalent lifecycle, provenance,
+ security, and observability guarantees.
+ 
+-### 3. Managed local execution supports explicit platform modes
++### 3. The Windows first release characterizes two execution environments
+ 
+-The managed local-runtime layer recognizes at least these execution
+-environments when supported by the host:
++The first-release managed local-runtime layer defines two Windows-hosted
++execution environments:
+ 
+ ```text
+ WindowsNative
+ Wsl2Linux
+-NativeLinux
+ ```
+ 
+ These are execution-environment identities, not model identities.
+ 
+-On Windows, AI Studio SHOULD expose a simple runtime preference:
+-
+-```text
+-Auto
+-Windows native
+-WSL2
+-```
+-
+-`Auto` selects only among environments that have passed local capability and
+-health checks. It MUST NOT assume that WSL2 or Windows is universally faster.
+-
+-When both Windows native and WSL2 are eligible, GameEngine MAY perform a short
+-local calibration or consume equivalent ADR 0156 runtime-characterization
+-evidence. The selected environment and the evidence behind the decision are
+-machine-local product state. A user may override Auto.
+-
+-A Linux-hosted Editor uses `NativeLinux`; this ADR does not require dual boot or
+-native Linux installation on a Windows machine.
++Before one environment is treated as the normal product default, GameEngine
++engineering evidence MUST compare the two on representative local workloads. At
++minimum the characterization SHOULD cover one model that is predominantly GPU
++resident and, when the target hardware permits it, one model that exercises
++meaningful CPU/GPU hybrid execution. The comparison records throughput, model
++load latency, memory/resource behavior, OOM or stability failures, and a small
++production Agent workload rather than tokens per second alone.
++
++This characterization is a product-selection activity, not a recurring setup
++step that ordinary users must perform. If the measured difference is not
++material, the lower-complexity Windows-native path SHOULD be preferred. If WSL2
++provides a material product benefit, WSL2 MAY become the preferred Windows
++runtime. The non-preferred implementation may remain as a compatibility or
++diagnostic fallback only when maintaining it is justified.
++
++AI Studio MUST NOT require ordinary users to install both environments merely to
++use Local AI. An advanced runtime override MAY be exposed when both implementations
++are shipped, but the normal setup path uses the product-selected default.
++
++`NativeLinux` is reserved as a future execution-environment identity for a
++Linux-hosted GameEngine. It is not a first-release requirement and Windows users
++are never required to dual boot, install native Linux, or collect native-Linux
++benchmark evidence for Local AI setup.
+ 
+ ### 4. WSL2 is engine-managed when selected
+ 
+@@ -234,6 +245,23 @@ action that shows, when known:
+ 
+ Downloads SHOULD be resumable and content-verified.
+ 
++A benchmark campaign from ADR 0156 may request several missing model
++representations at once. One explicit **Download & Run** approval MAY authorize
++exactly the candidate files frozen into that campaign after the UI shows, for
++each candidate and in aggregate, the source, representation/quantization,
++license/provenance when known, transfer size, and resulting storage requirement.
++That approval does not authorize unrelated or future model downloads. After the
++approved files are acquired and verified, GameEngine may register them in the
++managed model store and continue directly into the campaign without a manual
++provider import step.
++
++A new candidate may be introduced from a source repository or exact model-file
++URL. GameEngine SHOULD discover available GGUF representations and metadata from
++the source when the provider exposes them. When several quantizations or files
++are plausible, the exact representation remains an explicit campaign choice;
++GameEngine MUST NOT silently substitute a different quantization merely to make
++a model fit.
++
+ Advanced users may register an existing compatible GGUF file without an Ollama
+ `Modelfile` or provider-specific import step. Registration MUST NOT alter the
+ model bytes. A content digest or equivalent immutable representation identity
+@@ -309,7 +337,7 @@ distinguish at least:
+ 
+ - managed backend family;
+ - exact runtime version/revision;
+-- execution environment (`WindowsNative`, `Wsl2Linux`, or `NativeLinux`);
++- execution environment (`WindowsNative` or `Wsl2Linux` for the Windows first release, with `NativeLinux` reserved for a future Linux-hosted product path);
+ - model representation identity and quantization;
+ - GameEngine benchmark/harness versions; and
+ - hardware identity required by ADR 0142.
+@@ -346,13 +374,22 @@ The first managed Local AI experience SHOULD make the normal path:
+ ```text
+ Open AI Studio
+   -> Set up Local AI
+-  -> choose Auto / Windows / WSL2
+-  -> satisfy any one-time OS prerequisite
++  -> use the product-selected Windows runtime
++  -> satisfy any one-time prerequisite for that runtime
+   -> choose or register a model
+   -> explicit download/import
+   -> Ready
+ ```
+ 
++The normal setup flow does not ask the user to benchmark Windows native against
++WSL2. That comparison belongs to product/runtime characterization before the
++default is chosen. If both runtimes are shipped, an advanced override may expose
++the alternative without making it part of ordinary setup.
++
++Benchmark setup SHOULD integrate with ADR 0156 so a selected set of missing
++candidates can be reviewed once and acquired through **Download & Run**, then
++continue directly into the frozen campaign.
++
+ Ordinary use MUST NOT require the user to:
+ 
+ - install Ollama;
+@@ -393,20 +430,25 @@ preferred UI path becomes managed Local AI after its setup, lifecycle,
+ resource-control, benchmark-identity, and recovery behavior are validated.
+ 
+ Windows native and WSL2 use the same provider-independent ModelBackend contract.
+-Platform-specific launchers remain application-layer adapters. Linux-hosted
+-GameEngine reuses the Linux managed runtime without introducing a separate Agent
+-Runtime.
++Platform-specific launchers remain application-layer adapters. Both may exist
++during first-release engineering characterization, but the normal product path
++SHOULD converge on the measured default rather than permanently requiring users
++to maintain both. Native-Linux GameEngine support is deferred and is not needed
++to complete this ADR's Windows first release.
+ 
+-Machine-local runtime state may include installed runtime versions, environment
+-selection, managed WSL identity, model-cache locations, calibration results,
+-health state, and update metadata. None of this state is canonical project data.
++Machine-local runtime state may include installed runtime versions, the selected
++Windows environment, managed WSL identity when applicable, model-cache
++locations, runtime-characterization evidence, health state, and update metadata.
++None of this state is canonical project data.
+ 
+ ## Verification
+ 
+ Deterministic tests and platform validation must cover:
+ 
+ - managed runtime installation metadata and digest rejection;
+-- no silent model acquisition;
++- no silent model acquisition, including campaign acquisition limited to the exact
++  models approved by **Download & Run**;
++- aggregate transfer/storage review for multi-model campaign acquisition;
+ - existing-GGUF registration without byte mutation;
+ - Windows-native launch and health lifecycle;
+ - WSL2 capability detection and fail-closed setup behavior;
+@@ -416,8 +458,9 @@ Deterministic tests and platform validation must cover:
+ - process crash/restart behavior without false successful turns;
+ - model load/unload integration with ADR 0135/0143;
+ - preserved Agent Host permission and completion boundaries;
+-- distinct benchmark identity for Windows-native, WSL2, native Linux, and
+-  Ollama-compatible evidence;
++- distinct benchmark identity for Windows-native, WSL2, and Ollama-compatible
++  evidence, with future `NativeLinux` evidence remaining a separate environment
++  if Linux-hosted GameEngine support is later adopted;
+ - settings migration preserving old external endpoint meaning; and
+ - runtime update failure preserving a usable prior installation when rollback is
+   supported.
+@@ -433,6 +476,10 @@ or diagnostics UI requires Editor Visual Validation.
+ This ADR does not:
+ 
+ - require native Linux installation on Windows;
++- make a Linux-hosted GameEngine or `NativeLinux` runtime a Windows first-release
++  requirement;
++- require ordinary users to benchmark Windows native against WSL2 during Local
++  AI setup;
+ - declare WSL2 universally faster than Windows native;
+ - select one permanent model family or quantization;
+ - bundle model weights without explicit acquisition consent;
+diff --git a/docs/adr/0156-automated-multi-model-benchmark-campaigns-and-reproducible-runtime-characterization.md b/docs/adr/0156-automated-multi-model-benchmark-campaigns-and-reproducible-runtime-characterization.md
+index 3c1d1f14127af379b8cf45e51c85054409c46b96..5244226d344189c0218ae07c367da70c94d2e3f4 100644
+--- a/docs/adr/0156-automated-multi-model-benchmark-campaigns-and-reproducible-runtime-characterization.md
++++ b/docs/adr/0156-automated-multi-model-benchmark-campaigns-and-reproducible-runtime-characterization.md
+@@ -3,7 +3,7 @@
+ Status: Accepted
+ Date: 2026-08-18
+ Builds on: ADR 0142, ADR 0155
+-Relates to: ADR 0135, ADR 0141, ADR 0143, ADR 0150
++Relates to: ADR 0135, ADR 0141, ADR 0143, ADR 0150, ADR 0157
+ 
+ ## Context
+ 
+@@ -34,12 +34,16 @@ second. Code implementation, authoring mutation, repair, Play/runtime
+ interaction, and visual evaluation must continue to exercise the real Agent
+ Host, governed tools, validation, and completion gates.
+ 
+-A second use case is runtime characterization. The same GGUF may be executed
+-through Windows-native `llama.cpp`, WSL2 Linux, or native Linux. That comparison
+-is useful for choosing the managed runtime environment, but ADR 0142 correctly
+-forbids presenting it as a model-only ranking. The campaign system therefore
+-needs an explicit distinction between model comparison and runtime/platform
+-characterization.
++A second use case is runtime characterization. For the Windows first release,
++the same GGUF may be executed through Windows-native `llama.cpp` or WSL2 Linux.
++That comparison is useful for choosing the managed Windows runtime environment,
++but ADR 0142 correctly forbids presenting it as a model-only ranking. Native
++Linux is not required for this decision because a true native-Linux comparison
++would also require a validated Linux-hosted GameEngine product path. The
++campaign system therefore needs an explicit distinction between model comparison
++and Windows runtime/platform characterization, while reserving future
++`NativeLinux` evidence as a separate environment if Linux-hosted GameEngine is
++later supported.
+ 
+ A project-wide decision is required for campaign identity, user consent,
+ fixtures, repetitions, execution ordering, lifecycle automation, automatic
+@@ -127,8 +131,16 @@ Each task runner maps one frozen task descriptor to the real production harness:
+ - write-capable tasks use the native Agent Runtime and Agent Host;
+ - code tasks use the governed code workspace and managed validation;
+ - authoring tasks use the authoritative Editor/MCP boundary;
+-- runtime tasks use normal Play and managed input;
+-- visual tasks use host-owned frame capture and visual completion evidence.
++- runtime tasks use the production AI Runtime Debugging / Automated Playtest
++  surface defined by ADR 0157, including normal Play, deterministic managed
++  input, pause/step, observation, and host-owned assertions;
++- visual tasks use the same ADR 0157 observation path plus host-owned frame
++  capture and visual completion evidence when the selected ModelBackend supports
++  image input.
++
++The benchmark MUST NOT introduce a benchmark-only privileged runtime-control
++path. A model qualifies by using the same governed debugging surface available
++to normal AI Studio work.
+ 
+ A campaign may run a subset for diagnostics, but a full catalog-qualification
+ campaign requires every task required by the current ADR 0142 recommendation
+@@ -162,25 +174,92 @@ Private projects may be benchmarked only through an explicit separate user
+ action and remain ineligible for silent upload or public catalog evidence unless
+ the user deliberately contributes sanitized results through a future policy.
+ 
+-### 5. Campaign execution automates model and runtime lifecycle
+-
+-For a managed local campaign the orchestrator may automatically:
+-
+-1. verify all selected model representations;
+-2. acquire only models whose downloads the user explicitly approved;
+-3. verify runtime/backend identity;
+-4. start the selected managed runtime;
+-5. load the required model;
+-6. confirm backend health and applicable telemetry;
+-7. run the frozen benchmark task;
+-8. record sanitized evidence;
+-9. reset the benchmark fixture;
+-10. unload or switch the model at the defined boundary; and
+-11. continue to the next scheduled run.
+-
+-The user does not manually select `Evidence task`, press Go, press
+-`Record current evidence`, switch models, or relaunch the managed server for
+-every campaign item.
++### 4a. Candidate-visible task contracts are separated from host-only evaluation
++
++A benchmark is invalid if the candidate model can retrieve the answer key or the
++mechanics used to award success. The benchmark therefore separates what the
++Agent is legitimately asked to solve from what only the host may know.
++
++The candidate-visible side MAY contain:
++
++- the task prompt;
++- user-visible acceptance criteria that a real user would reasonably provide;
++- the project/source/assets required to perform the task;
++- the normal production tool descriptions and permission boundaries; and
++- runtime observations that ADR 0157 would expose during ordinary debugging.
++
++The host-only evaluation side contains, as applicable:
++
++- pristine fixture/reset metadata not needed by the candidate;
++- hidden validation cases and expected state;
++- golden outputs or reference invariants;
++- scoring/qualification thresholds;
++- hidden visual or runtime assertions; and
++- variant-generation state that would reveal the specific held-out answer.
++
++Host-only evaluator data MUST NOT be placed inside the candidate's code
++workspace, project tree, retrieval corpus, MCP-visible files, tool results,
++conversation context, or other model-readable surface. If a benchmark task must
++let the Agent inspect GameEngine source, that access MUST expose only the
++candidate-visible source needed for the task or otherwise keep the evaluator in
++a separate host-owned boundary. Merely naming a file `hidden` inside a readable
++repository is not isolation.
++
++The host, not the model, decides hidden completion. A model may report progress
++or visible acceptance criteria, but it cannot self-award a hidden benchmark
++gate.
++
++### 4b. Parameterized variants and holdouts reduce benchmark contamination
++
++A permanently fixed public problem can eventually become part of model training
++data or be solved through benchmark-specific memorization. The corpus SHOULD
++therefore define task families with multiple equivalent fixtures or
++parameterized instances in addition to stable public smoke cases.
++
++For a measured campaign, the host freezes the exact instantiated task identity
++and any reproducibility seed before execution. The candidate receives the
++instantiated user-facing task, not hidden generator state or the evaluation
++oracle. Results record enough instance identity to reproduce or explicitly reject
++a comparison without requiring the answer key to become model-visible.
++
++Open-source generator logic alone is not treated as secret. Holdout value comes
++from candidate-inaccessible instantiated data, hidden assertions, and variation
++that prevents a model from succeeding merely by recalling one published fixture.
++
++### 5. Campaign execution automates acquisition, model switching, and runtime lifecycle
++
++Before measured execution, the campaign preflight resolves every selected
++candidate to an exact representation. A candidate may already be installed, may
++refer to an existing compatible GGUF, or may be introduced from a supported
++source repository / exact model-file URL. GameEngine SHOULD discover available
++metadata and GGUF representations from the source where possible, but the exact
++file and quantization used for comparison remain explicit campaign identity.
++
++If selected candidates are missing, the preflight presents one review containing
++per-candidate and aggregate transfer/storage requirements plus known
++license/provenance. One explicit **Download & Run** approval authorizes acquisition
++of exactly those frozen missing candidates. The campaign MUST NOT use that
++approval to download unrelated candidates later. Interrupted downloads may use
++the bounded pre-measurement retry policy from this ADR.
++
++For a managed local campaign the orchestrator may then automatically:
++
++1. acquire and content-verify the approved missing model representations;
++2. verify all selected model identities and the frozen runtime/backend identity;
++3. start the selected managed runtime;
++4. load the required model;
++5. confirm backend health and applicable telemetry;
++6. restore the selected candidate-visible fixture instance;
++7. run the frozen benchmark task through the production Agent/ADR 0157 surfaces;
++8. evaluate host-only gates without exposing their oracle to the candidate;
++9. record sanitized evidence;
++10. reset the benchmark fixture;
++11. unload or switch the model at the defined boundary; and
++12. continue to the next scheduled run.
++
++The user does not manually download each GGUF in a browser, create an Ollama
++`Modelfile`, select `Evidence task`, press Go, press `Record current evidence`,
++switch models, or relaunch the managed server for every campaign item.
+ 
+ External compatible runtimes MAY participate when their identity and lifecycle
+ can be measured truthfully, but the orchestrator MUST NOT fake controls that the
+@@ -256,20 +335,24 @@ and frozen for the campaign.
+ 
+ #### Runtime/platform characterization
+ 
+-A runtime-characterization campaign intentionally holds the model
+-representation constant while changing runtime or execution environment, for
+-example:
++A first-release Windows runtime-characterization campaign intentionally holds
++the model representation constant while changing only the Windows execution
++environment:
+ 
+ ```text
+ same GGUF
+   WindowsNative
+   Wsl2Linux
+-  NativeLinux
+ ```
+ 
+-These results are useful for ADR 0155 platform selection, but they are labelled
+-runtime/platform evidence and are never inserted into a model-only ranking as if
+-the environment matched.
++This is an engineering/product-selection campaign for ADR 0155, not a normal
++step every user must run before benchmarking models. It SHOULD be short and use
++representative GPU-resident and, when relevant, CPU/GPU-hybrid workloads.
++
++These results are labelled runtime/platform evidence and are never inserted into
++a model-only ranking as if the environment matched. `NativeLinux` may be added
++later only when a Linux-hosted GameEngine exists as a validated product path; it
++is not required to choose the Windows first-release runtime.
+ 
+ #### End-to-end product profile
+ 
+@@ -389,14 +472,19 @@ a Lightweight, Balanced, or High Quality winner from an incomplete corpus.
+ AI Studio SHOULD provide a benchmark surface that allows the user to:
+ 
+ - select multiple discovered or managed models;
++- add a new candidate from a supported source repository / exact model-file URL;
++- inspect discovered GGUF files and explicitly choose the representation /
++  quantization used by the campaign;
+ - inspect exact model/quantization/runtime identity;
+ - select full corpus or a task subset;
+ - choose repetition count;
+ - choose cold/warm execution profile where supported;
+-- choose model-comparison or runtime-characterization mode;
+-- review missing model transfer/storage and license/provenance;
+-- explicitly approve required downloads;
+-- start the campaign;
++- choose model-comparison or runtime-characterization mode where that mode is
++  relevant to the current product state;
++- review missing model transfer/storage and license/provenance per candidate and
++  in aggregate;
++- explicitly approve the exact missing set through **Download & Run**;
++- start the campaign automatically after approved acquisition succeeds;
+ - observe current model/task/repetition and aggregate progress;
+ - pause/stop and later resume; and
+ - inspect the final per-task comparison report.
+@@ -405,11 +493,20 @@ The normal full-model-comparison path should therefore approach:
+ 
+ ```text
+ select models
+-  -> Run Benchmark
++  -> Download & Run   # only when selected models are missing
+   -> review results
+ ```
+ 
+-rather than a manual sequence for every task and model.
++rather than a manual download/import/task/record sequence for every model.
++
++Months later, a newly released model SHOULD be addable without rebuilding the
++benchmark system or re-running every historical candidate. If prior evidence
++for the current baseline model is still strictly comparable, the new candidate
++may be measured against that existing baseline. If benchmark corpus, harness,
++runtime, execution environment, hardware, or another equivalence dimension
++changed incompatibly, the UI SHOULD offer to re-run the current baseline plus
++the new candidate. It MUST NOT imply strict comparability to stale evidence or
++require all historical models to be downloaded and measured again.
+ 
+ ### 16. Benchmark campaigns remain machine-local product data
+ 
+@@ -425,18 +522,31 @@ ADR 0142 redaction and provenance rules.
+ 
+ The campaign orchestrator belongs above the benchmark record primitives and
+ Agent Host, in application-layer code. It coordinates existing services rather
+-than duplicating task semantics in the UI.
++than duplicating task semantics in the UI. Runtime-interaction and visual task
++execution MUST call the production ADR 0157 debugging/observation API rather
++than a benchmark-only control seam.
+ 
+ The first release can reuse the current seven task descriptors and benchmark
+-record schema while adding campaign-plan/progress storage and any additional
+-execution-profile identity required to preserve strict equivalence. If a schema
+-extension is needed, it must be versioned and must not reinterpret existing
+-records.
++record schema while adding campaign-plan/progress storage, instantiated fixture
++identity, and any additional execution-profile identity required to preserve
++strict equivalence. If a schema extension is needed, it must be versioned and
++must not reinterpret existing records.
++
++Candidate-visible fixture material and host-only evaluator material MUST be
++separate application-layer resources with separate access policy. The Agent's
++retrieval roots, project/code workspace, MCP surface, tool results, and prompt
++context must be constructed so they cannot traverse into the host-only oracle.
++Parameterized or holdout instance generation occurs before measured execution,
++and the frozen instance identity is recorded without exposing hidden scoring
++state to the model.
+ 
+ ADR 0155 managed-runtime lifecycle is the preferred local execution path, but
+ campaign orchestration remains backend-independent enough to use the existing
+ Ollama-compatible adapter or future hosted/enterprise backends when their
+-comparison identity is valid.
++comparison identity is valid. Managed acquisition and campaign orchestration are
++separate responsibilities: ADR 0155 owns verified model/runtime bytes, while
++this ADR owns the exact candidate set and the explicit **Download & Run**
++authorization for a campaign.
+ 
+ ## Verification
+ 
+@@ -445,20 +555,33 @@ Tests and benchmark fixtures must prove:
+ - campaign plans freeze before the first measured run;
+ - changing model/runtime/task/repetition policy creates new campaign identity;
+ - every one of the seven task descriptors maps to the intended production
+-  harness;
++  harness, with runtime/visual tasks using ADR 0157 rather than a privileged
++  benchmark-only control path;
+ - fixture reset prevents cross-model source/authoring/session contamination;
++- candidate retrieval, code workspace, project files, MCP tools, prompts, and
++  tool results cannot expose the host-only evaluator/oracle;
++- visible acceptance criteria remain usable while hidden tests, golden state,
++  scoring thresholds, and hidden assertions remain host-owned;
++- parameterized/holdout instances freeze reproducible identity without exposing
++  their hidden answer state to the candidate;
++- **Download & Run** authorizes only the exact missing candidate set shown in
++  campaign preflight and content verification precedes measured execution;
+ - measured local runs are sequential by default;
+ - deterministic schedule order is stable for the same campaign plan;
+ - repetition records are preserved individually;
+ - cold and warm profiles do not silently mix startup cost;
+ - model-comparison campaigns freeze one execution environment;
+-- Windows/WSL/Linux comparisons are labelled runtime characterization;
++- Windows-native/WSL2 comparisons are labelled runtime characterization and do
++  not require native Linux for the Windows first release;
+ - campaign start is the explicit recording action;
+ - identity mismatch rejects automatic evidence recording;
+ - measured failures are retained rather than retried until success;
+ - only classified pre-measurement infrastructure failures receive bounded retry;
+ - pause/resume preserves prior evidence and rejects incompatible environment
+   drift;
++- a newly added model can reuse strictly comparable baseline evidence or prompts
++  a baseline re-run when equivalence dimensions changed, without forcing every
++  historical model to run again;
+ - aggregate reports treat unavailable telemetry truthfully;
+ - incomplete evidence produces no false curated-catalog recommendation; and
+ - ADR 0150 consumes only records that still satisfy its comparison policy.
+@@ -472,10 +595,19 @@ This ADR does not:
+ 
+ - replace the ADR 0142 benchmark corpus with synthetic tokens-per-second tests;
+ - silently benchmark private user projects;
++- expose hidden tests, golden state, scoring thresholds, or evaluation-oracle
++  internals to the candidate model;
++- rely on one permanently fixed public fixture as the only evidence of a model's
++  capability;
+ - run competing local models concurrently by default;
+ - hide failed runs through unlimited retries;
+ - declare three repetitions statistically sufficient for every future decision;
+ - make runtime/platform comparisons equivalent to model-only comparisons;
++- require native-Linux GameEngine support for the Windows first-release runtime
++  decision;
++- require every historical model to be re-downloaded and re-run whenever one new
++  model is added;
+ - automatically publish benchmark data;
+-- silently download model weights; or
++- silently download model weights outside the exact explicitly approved campaign
++  candidate set; or
+ - define one permanent model winner or one permanent local runtime platform.
+diff --git a/docs/adr/0157-ai-runtime-debugging-deterministic-playtest-control-and-host-owned-observation.md b/docs/adr/0157-ai-runtime-debugging-deterministic-playtest-control-and-host-owned-observation.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..e7a3a7a2245fb343ce341a9627be5ceb5e6589ab
+--- /dev/null
++++ b/docs/adr/0157-ai-runtime-debugging-deterministic-playtest-control-and-host-owned-observation.md
+@@ -0,0 +1,355 @@
++# ADR 0157: AI Runtime Debugging, Deterministic Playtest Control, and Host-Owned Observation
++
++Status: Accepted
++Date: 2026-08-18
++Builds on: ADR 0026, ADR 0064, ADR 0103, ADR 0131, ADR 0141
++Relates to: ADR 0138, ADR 0142, ADR 0149, ADR 0156
++
++## Context
++
++GameEngine already has most of the low-level pieces required for an AI agent to
++debug a running game. ADR 0026 defines engine-level virtual input and explicitly
++forbids OS-level input synthesis. ADR 0064 defines deterministic fixed-tick input
++replay. Play mode can already pause, resume, advance one fixed/frame step, record
++and replay input, capture the Game View, and expose runtime debugger snapshots.
++ADR 0141's Native Agent Runtime can request `runtime_input`, and AI Studio can
++start Play, queue an `InputCommand`, capture a frame, and stop Play through
++Editor-owned operations.
++
++Those pieces are not yet a complete AI debugging contract. A model can request a
++key-down action and later request key-up, but the time between those two model
++turns is LLM inference wall-clock time, not simulation time. A slow model could
++therefore hold a gameplay input for several seconds when it intended a short
++press. The model also does not have one governed application surface for pause,
++resume, deterministic multi-tick input sequences, single-step inspection,
++condition waits, assertions, replay-driven reproduction, and typed runtime
++observation.
++
++That gap matters beyond benchmarking. The useful product behavior is an AI that
++can reproduce a gameplay bug, pause at the interesting state, inspect runtime
++values, step the simulation, form a diagnosis, modify code or authoring data
++through the existing governed paths, and then replay the same interaction to
++check the repair. ADR 0156 also needs Runtime Interaction and Visual Evaluation
++tasks to measure this real production capability rather than a benchmark-only
++shortcut.
++
++A project-wide decision is therefore required for deterministic AI playtest
++control, host-owned timing, pause/step semantics, input-sequence ownership,
++observation and assertion surfaces, replay integration, visual capability,
++permissions, interference handling, and benchmark reuse.
++
++## Decision
++
++### 1. AI runtime debugging is a first-class application capability
++
++GameEngine introduces a governed AI runtime-debugging / automated-playtest
++surface above `RuntimePlayState` and the engine virtual-input layer.
++
++Conceptually:
++
++```text
++AI Studio / Native Agent Runtime
++              |
++       Agent Host permissions
++              |
++      RuntimeDebugController
++       /       |        \
++   control   observe   assertions
++       \       |        /
++        RuntimePlayState
++              |
++       VirtualInputQueue
++```
++
++The model chooses semantic debugging actions. The host owns simulation timing,
++Play lifecycle, input scheduling, observation truth, assertion evaluation,
++timeouts, and cleanup. The model never gains direct mutable access to the
++runtime ECS or the operating system.
++
++This surface is product functionality. ADR 0156 benchmark tasks reuse it; the
++benchmark does not receive a more privileged runtime-control API.
++
++### 2. Simulation time, not LLM wall-clock time, controls gameplay input
++
++A model turn is not a clock. Input duration MUST NOT be defined by waiting for a
++future model response.
++
++The authoritative scheduling unit for deterministic playtest actions is the
++runtime fixed tick from ADR 0064. The controller accepts a bounded plan that can
++conceptually contain actions such as:
++
++```text
++tick 0   -> KeyW down
++tick 48  -> KeyW up
++tick 54  -> Space down
++tick 57  -> Space up
++tick 90  -> pause and observe
++```
++
++The host freezes the resolved schedule before execution and injects commands at
++the defined runtime boundaries. Model inference may take milliseconds or
++seconds without changing the intended hold duration.
++
++A convenience duration such as `hold W for 0.8 seconds` MAY be accepted by an
++outer application API, but it MUST be resolved to the session's fixed-tick
++schedule before execution. The resolved tick plan, not wall-clock delay, is the
++reproducibility identity. Non-finite, negative, unbounded, or overflowing
++durations/ticks are rejected.
++
++### 3. Input plans use the existing virtual-input and replay vocabulary
++
++AI debugging does not invent OS automation or a second gameplay input model.
++Scheduled commands use the `InputCommand` vocabulary from ADR 0026 and enter the
++runtime through `InputSource::AiAgent` and the normal `VirtualInputQueue` drain
++boundary.
++
++A first-release debug plan SHOULD support at least:
++
++- key down/up;
++- mouse button down/up;
++- mouse move/delta/scroll;
++- gamepad commands when the underlying runtime command is supported;
++- bounded hold as host-expanded down/up commands;
++- ordered multi-command sequences; and
++- explicit release/cleanup of input state owned by the debug session.
++
++The controller tracks the pressed/active state it injected so abort, stop,
++timeout, permission revocation, or failed Play cannot leave AI-owned controls
++stuck. Cleanup MUST NOT synthesize desktop input.
++
++When an interaction must be persisted or reproduced, the controller SHOULD reuse
++ADR 0064 `InputReplay` rather than define another serialized input format. A new
++persisted debug-plan schema, if later required, needs its own versioned contract
++and cannot silently change `*.replay.json` semantics.
++
++### 4. Pause, resume, and deterministic step are host-owned debug operations
++
++The governed surface exposes Play-state controls equivalent to:
++
++```text
++pause
++resume
++step 1
++step N
++```
++
++Pause and resume delegate to the existing runtime pause state. While paused, one
++step uses the existing single-step contract: exactly one fixed and frame schedule
++pass at the runtime fixed delta. `step N` is a bounded host loop over that same
++primitive; it is not implemented by repeatedly asking the model to continue.
++
++The model may request these operations only inside an authorized playtest/debug
++plan. Host-reported Play/paused/tick state is authoritative; a model message that
++claims a pause or step occurred does not make it true.
++
++### 5. Runtime observation is typed, read-only, bounded, and truthful
++
++The controller exposes bounded read-only observations from the running world. It
++reuses existing runtime-debug evidence where available instead of requiring the
++model to infer all state from pixels.
++
++First-release observation SHOULD include, where supported:
++
++- Play/running/paused state and fixed tick count;
++- runtime entity identity mapped to stable authoring identity when available;
++- selected readable component values such as transform and velocity;
++- input state and resolved input actions;
++- runtime diagnostics and relevant failure state;
++- performance/tick counters;
++- animation / Animation Graph debug state;
++- Behavior Tree or other registered domain-debug snapshots; and
++- host-owned Game View frame capture.
++
++Unavailable values remain explicitly unavailable. Observation MUST NOT grant
++arbitrary ECS mutation, arbitrary memory reads, hidden engine internals, project
++credentials, or an unbounded dump of the runtime world. Domain-specific debug
++providers may extend the typed observation surface under their existing
++architecture contracts.
++
++### 6. Waiting and assertions are evaluated by the host
++
++Useful automated debugging needs more than `sleep`. The controller MAY expose
++bounded conditions such as:
++
++```text
++wait_ticks(60)
++wait_until(entity state predicate, timeout_ticks)
++assert(component predicate)
++assert(no blocking runtime diagnostic)
++```
++
++Conditions and assertions use a typed, allow-listed predicate vocabulary over
++host-owned observations. They MUST NOT evaluate arbitrary model-provided Rust,
++Rhai, shell, SQL, debugger expressions, or raw memory addresses.
++
++Every wait has an explicit tick/action/time budget. The host reports whether the
++condition passed, failed, timed out, or became unavailable. A model cannot mark
++a host assertion successful merely by stating that the expected outcome
++occurred.
++
++Real wall-clock waiting may still exist for infrastructure operations such as a
++game-code build or model startup, but it is separate from simulation-time input
++and MUST NOT be used as the reproducibility clock for gameplay actions.
++
++### 7. Replay is the normal reproduction primitive for before/after debugging
++
++When an AI finds a reproducible gameplay issue, GameEngine SHOULD be able to
++retain the deterministic input interaction as machine-local debug evidence or an
++explicitly saved ADR 0064 replay.
++
++A normal repair loop becomes:
++
++```text
++start Play from known state
++  -> execute/replay deterministic input
++  -> pause / inspect / capture
++  -> diagnose
++  -> stop Play
++  -> repair through governed code/authoring paths
++  -> rebuild/restart from the same known state
++  -> replay the same input
++  -> re-run host assertions / observations
++```
++
++The first release does not require arbitrary runtime rewind or full world
++snapshots. Reproduction may restart Play from the known fixture/project state and
++replay input from the beginning. Named replay checkpoints from ADR 0064 may be
++used as evidence markers without implying snapshot restore.
++
++### 8. Visual debugging is capability-gated and complements structured state
++
++Frame capture remains host-owned. A captured frame may be attached to a model
++turn only when the selected `ModelBackend` truthfully reports image-input
++capability and the provider adapter implements the required image transport.
++
++A text-only model can still perform Runtime Interaction debugging through typed
++state, diagnostics, replay, and assertions. It MUST NOT be told that it visually
++inspected a frame it could not receive. Visual completion remains a separate
++capability/evidence dimension for ADR 0142/0156.
++
++Image bytes, resize/encoding policy, and provider-specific multimodal transport
++belong outside the engine ECS. The engine/runtime remains responsible only for
++the authoritative captured pixels and observation identity.
++
++### 9. Permissions, budgets, and human interference remain explicit
++
++AI runtime debugging remains governed by Agent Host and the immutable playtest
++plan. Starting Play, sending input, capturing frames, observing protected state,
++and any later mutation capability require the same permission model as normal AI
++Studio work.
++
++A debug plan records bounded limits such as maximum model turns, maximum runtime
++ticks or interaction actions, maximum captures/observations, and condition
++timeouts. Exceeding a budget fails or pauses the plan rather than silently
++continuing indefinitely.
++
++For ordinary interactive debugging, human and AI input may coexist according to
++the runtime's input policy. For deterministic replay, benchmark, or a run marked
++reproducible, unplanned human input that can affect the same runtime MUST be
++blocked for that session or mark the evidence contaminated/non-comparable. The
++product must never pretend a human-modified run is deterministic.
++
++### 10. The controller owns safe failure and cleanup boundaries
++
++Runtime crashes, Play stop, build failure, invalid input, unavailable
++observation, model interruption, permission denial, and assertion failure are
++observable debug outcomes. They are not converted into success by retrying until
++the model happens to pass.
++
++On termination the controller cancels pending scheduled actions, releases
++AI-owned input state, preserves already collected evidence, and returns control
++to normal Editor operation. A restart is allowed only when the caller's plan
++explicitly permits a new attempt and the evidence identity makes that attempt
++distinct.
++
++### 11. ADR 0156 benchmarks the same production debugging capability
++
++ADR 0156 Runtime Interaction tasks use this controller to launch Play, execute a
++frozen input/replay plan, observe state, pause/step when required, and evaluate
++host-owned task assertions. Visual Evaluation adds frame input only for a
++capable backend.
++
++Benchmark hidden tests, golden state, scoring thresholds, and evaluation oracle
++remain host-only under ADR 0156. This controller returns production observations
++and assertion outcomes; it does not expose benchmark answer keys to the model.
++
++A benchmark result that bypasses this governed path is not equivalent evidence
++for production AI debugging capability.
++
++### 12. Debug evidence is application/session data, not canonical authoring data
++
++Transient debug plans, observation history, captures, and benchmark-owned replay
++artifacts are machine-local application/session data by default. They MUST NOT be
++written into canonical project authoring files merely because an AI generated
++them.
++
++A user may explicitly save or export a replay/capture through the existing
++product workflow. Persisted formats retain their own versioning/provenance
++contracts. Debug evidence MUST NOT contain credentials or silently serialize the
++model conversation.
++
++## Implementation
++
++The first-release implementation should add an application-layer controller over
++existing `RuntimePlayState` capabilities rather than moving AI policy into the
++engine crate. Existing primitives such as `queue_input`, `set_paused`,
++`request_single_step`, replay recording/playback, frame capture, input debug
++snapshots, entity/component debug snapshots, animation/domain snapshots, and
++AI Studio runtime actions remain the implementation foundation.
++
++The Native Agent structured-action vocabulary may gain typed runtime-debug
++actions, but Agent Host remains authoritative for validation and execution. The
++model produces a bounded semantic plan; AI Studio/application code translates it
++into exact runtime actions and records their host-observed outcomes.
++
++New cross-crate public API, serialization, stable identifiers, or replay-format
++changes are not implied by this ADR. If implementation cannot stay additive
++behind the existing boundaries, the affected contract must be reviewed before
++changing it.
++
++## Verification
++
++Implementation must prove at least:
++
++- the same fixed-tick input plan produces the same injected command/tick order
++  regardless of model-turn wall-clock latency;
++- bounded hold expands to deterministic down/up commands and abort cleanup does
++  not leave AI-owned input pressed;
++- AI input remains engine-level and never synthesizes OS keyboard/mouse input;
++- pause/resume reflect host state and `step 1` executes one fixed/frame pass
++  while paused;
++- multi-step execution uses the same primitive and respects explicit budgets;
++- typed waits/assertions are host-evaluated and reject arbitrary code/expression
++  execution;
++- runtime entity/component/input/diagnostic/domain observations are read-only,
++  bounded, and truthful about unavailable values;
++- replay-driven reproduction uses the ADR 0064 fixed-step/input path;
++- unplanned human input is blocked or marks deterministic evidence contaminated;
++- frame capture reaches only backends with implemented image-input capability;
++- a text-only backend can still complete non-visual runtime debugging without a
++  false visual claim;
++- failure/abort/permission revocation cancels pending actions and returns the
++  Editor to a usable state; and
++- ADR 0156 Runtime Interaction/Visual Evaluation use this production surface and
++  cannot retrieve the benchmark's host-only evaluator.
++
++Any new AI Studio runtime-debug timeline, control, observation, replay, capture,
++or assertion UI requires Editor Visual Validation.
++
++## Non-goals
++
++This ADR does not:
++
++- synthesize desktop/OS input or control applications outside the GameEngine Play
++  world;
++- let LLM response latency define gameplay input duration;
++- grant arbitrary mutable ECS access, raw memory debugging, or unrestricted code
++  evaluation to the model;
++- require arbitrary runtime rewind or full world-state snapshots in the first
++  release;
++- replace the existing human Runtime Debugger, Game View controls, or ADR 0064
++  replay format;
++- make image input mandatory for text-only debugging tasks;
++- let a model self-award host-owned completion or benchmark gates; or
++- create a benchmark-only runtime control path that is more capable than normal
++  AI Studio debugging.
+diff --git a/docs/adr/README.md b/docs/adr/README.md
+index 2f217cc7ef90349835db201140418349db39347a..29df6c9edf38e23499abe3f358c144e1c6506774 100644
+--- a/docs/adr/README.md
++++ b/docs/adr/README.md
+@@ -119,8 +119,11 @@ the beginning:
+   [0131](0131-conversational-ai-studio-agent-runtime-and-governed-workspace.md),
+   [0132](0132-declarative-authoring-capability-registry-and-automatic-adapter-exposure.md),
+   [0133](0133-remote-ai-studio-companion-access-and-private-network-boundary.md),
+-  [0151](0151-headless-write-capable-mcp-host-and-project-writer-ownership.md), and
+-  [0152](0152-multi-agent-writer-coordination-and-conflict-ownership.md).
++  [0151](0151-headless-write-capable-mcp-host-and-project-writer-ownership.md),
++  [0152](0152-multi-agent-writer-coordination-and-conflict-ownership.md),
++  [0155](0155-gameengine-managed-local-inference-runtime-and-platform-selection.md),
++  [0156](0156-automated-multi-model-benchmark-campaigns-and-reproducible-runtime-characterization.md),
++  and [0157](0157-ai-runtime-debugging-deterministic-playtest-control-and-host-owned-observation.md).
+ 
+ ## Proposed Decisions
+ 
+@@ -300,3 +303,6 @@ implementation contract.
+ | [0152](0152-multi-agent-writer-coordination-and-conflict-ownership.md) | Multi-Agent Writer Coordination and Conflict Ownership |
+ | [0153](0153-agent-process-confinement-and-os-provider-sandbox-integration.md) | **Proposed** — Agent Process Confinement and OS/Provider Sandbox Integration |
+ | [0154](0154-target-aware-animation-motion-binding-resolution.md) | Animation Motion Candidates, Import-Owned Humanoid Variants, and Target-Aware Resolution |
++| [0155](0155-gameengine-managed-local-inference-runtime-and-platform-selection.md) | GameEngine-Managed Local Inference Runtime and Platform Selection |
++| [0156](0156-automated-multi-model-benchmark-campaigns-and-reproducible-runtime-characterization.md) | Automated Multi-Model Benchmark Campaigns and Reproducible Runtime Characterization |
++| [0157](0157-ai-runtime-debugging-deterministic-playtest-control-and-host-owned-observation.md) | AI Runtime Debugging, Deterministic Playtest Control, and Host-Owned Observation |
