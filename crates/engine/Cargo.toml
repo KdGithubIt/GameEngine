@@ -17,6 +17,7 @@ engine-render-runtime = { path = "../render-runtime" }
 engine-rig = { path = "../rig" }
 engine-scene = { path = "../scene" }
 engine-scripting = { path = "../scripting" }
+engine-timeline = { path = "../timeline" }
 engine-renderer = { path = "../renderer" }
 engine-game-component-macros = { path = "../game-component-macros" }
 engine-game-macros = { path = "../game-macros" }

@@ -51,7 +51,9 @@ use crate::skinning::{
 };
 use crate::transform::{Children, GlobalTransform, Parent, Transform};
 use crate::ui_document::{load_ui_document, UiDocumentRef};
-use crate::vfx::{VfxPlayer, VfxRenderBinding, VfxRenderBindings, VfxRestartPolicy};
+use crate::vfx::{
+    VfxPlayer, VfxRenderBinding, VfxRenderBindings, VfxRestartPolicy, VfxSourceIdentity,
+};
 use engine_authoring::id::{AssetId, ComponentTypeId, EntityId, StableId};
 use engine_authoring::scene::AuthoringScene;
 use engine_authoring::ui::{UiDocument, UiNode, UiNodeKind, UiString};

@@ -9,7 +9,9 @@ use crate::audio::{
     authored_audio_system, spatial_audio_frame_system, spatial_audio_system, SpatialAudioRuntime,
 };
 use crate::behavior_tree::{behavior_tree_tick_system, BehaviorTreeBehaviorRegistry};
-use crate::camera::{follow_camera_system, lock_on_camera_system, orbit_camera_system};
+use crate::camera::{
+    follow_camera_system, lock_on_camera_system, orbit_camera_system, GameCameraSelectionOverride,
+};
 use crate::character_controller::character_controller_system;
 use crate::collision::{collision_detection_system, CollisionEvents, CollisionStats};
 use crate::combat::{
@@ -30,6 +32,9 @@ use crate::physics::velocity_system;
 use crate::player::{player_character_motor_system, player_controller_system};
 use crate::pose_graph::PoseArena;
 use crate::rig_pose::{publish_final_rig_pose_system, rig_pose_clear_transient_system};
+use crate::timeline::{
+    timeline_prepare_system, timeline_transform_system, TimelineEvents, TimelineRuntime,
+};
 use crate::transform::transform_propagation_system;
 use crate::App;
 use engine_ecs::{SystemDescriptor, SystemOrigin, SystemRegistrationError};
@@ -81,6 +86,19 @@ pub fn register_runtime_systems(app: &mut App) -> Result<(), SystemRegistrationE
     }
     if app.world().get_resource::<SpatialAudioRuntime>().is_none() {
         app.insert_resource(SpatialAudioRuntime::default());
+    }
+    if app.world().get_resource::<TimelineRuntime>().is_none() {
+        app.insert_resource(TimelineRuntime::default());
+    }
+    if app.world().get_resource::<TimelineEvents>().is_none() {
+        app.insert_resource(TimelineEvents::default());
+    }
+    if app
+        .world()
+        .get_resource::<GameCameraSelectionOverride>()
+        .is_none()
+    {
+        app.insert_resource(GameCameraSelectionOverride::default());
     }
     if app.world().get_resource::<Gravity2d>().is_none() {
         app.insert_resource(Gravity2d::default());
@@ -221,13 +239,37 @@ pub fn register_runtime_systems(app: &mut App) -> Result<(), SystemRegistrationE
     )?;
     app.try_add_fixed_system_with_descriptor(
         engine_system(
+            "engine.timeline_prepare",
+            "Timeline Prepare",
+            "Advances Timeline players and resolves animation, audio, VFX, event, and camera state.",
+        )
+        .try_after("engine.animation_graph")
+        .expect("built-in system IDs are valid")
+        .try_before("engine.animation")
+        .expect("built-in system IDs are valid"),
+        timeline_prepare_system,
+    )?;
+    app.try_add_fixed_system_with_descriptor(
+        engine_system(
             "engine.animation",
             "Animation",
             "Advances animation clips and evaluates animation pose layers.",
         )
         .try_after("engine.animation_graph")
+        .expect("built-in system IDs are valid")
+        .try_after("engine.timeline_prepare")
         .expect("built-in system IDs are valid"),
         animation_system,
+    )?;
+    app.try_add_fixed_system_with_descriptor(
+        engine_system(
+            "engine.timeline_transform",
+            "Timeline Transform Override",
+            "Applies typed Timeline Transform/Property curves after skeletal animation.",
+        )
+        .try_after("engine.animation")
+        .expect("built-in system IDs are valid"),
+        timeline_transform_system,
     )?;
     app.try_add_fixed_system_with_descriptor(
         engine_system(
@@ -236,6 +278,8 @@ pub fn register_runtime_systems(app: &mut App) -> Result<(), SystemRegistrationE
             "Converts extracted local animation motion into a collision-resolved motor request.",
         )
         .try_after("engine.animation")
+        .expect("built-in system IDs are valid")
+        .try_after("engine.timeline_transform")
         .expect("built-in system IDs are valid"),
         root_motion_motor_system,
     )?;
