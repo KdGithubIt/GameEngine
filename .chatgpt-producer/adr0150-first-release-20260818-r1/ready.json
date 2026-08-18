@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0150-first-release-20260818-r1",
+  "target_branch": "chatgpt/gameengine-adr0150-first-release",
+  "expected_head_sha": "4e9865c2db754ef5a2a33e1ac42d1cd5cf318229",
+  "baseline_main_sha": "4e9865c2db754ef5a2a33e1ac42d1cd5cf318229",
+  "edit_parts": [
+    "edit-0000.json",
+    "edit-0001.json",
+    "edit-0002.json",
+    "edit-0003.json",
+    "edit-0004.json",
+    "edit-0005.json",
+    "edit-0006.json",
+    "edit-0007.json",
+    "edit-0008.json",
+    "edit-0009.json",
+    "edit-0010.json",
+    "edit-0011.json",
+    "edit-0012.json",
+    "edit-0013.json",
+    "edit-0014.json",
+    "edit-0015.json"
+  ],
+  "commit_message": "Implement ADR 0150 multi-model routing",
+  "pr_title": "GameEngine: implement ADR 0150 multi-model routing",
+  "pr_body": "## Summary\n\nImplements ADR 0150 first-release multi-model routing inside the existing provider-independent NativeAgentRuntime. Routing is benchmark-gated against the ADR 0142 single-model baseline, preserves one AgentRun and provider-independent working state, enforces image/capability safety, refuses silent local-to-remote posture changes, records sanitized routing audit events, and exposes measured routing status in AI Studio.\n\n## Validation\n\nRequires Windows Validation and Editor Visual Validation because AI Studio routing/model-status presentation changes.\n\n<!-- gameengine-visual-validation: editor -->\n\n<!-- gameengine-chatgpt-dispatcher -->"
+}
