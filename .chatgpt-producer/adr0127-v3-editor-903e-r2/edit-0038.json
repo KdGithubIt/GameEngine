@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/scene_view.rs","old":"    if has(engine::scene_bridge::CAMERA_COMPONENT) {\n        Some(EntityIcon::Camera)","new":"    if has(engine::scene_bridge::CAMERA_COMPONENT)\n        || has(engine::scene_bridge::CAMERA_2D_COMPONENT)\n    {\n        Some(EntityIcon::Camera)"}

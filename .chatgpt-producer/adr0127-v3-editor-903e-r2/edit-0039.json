@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/scene_view.rs","old":"                draw_grid(dl);","new":"                draw_grid(dl, self.dimension);"}

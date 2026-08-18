@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/scene_view.rs","old":"        Self {\n            camera: EditorViewCamera::default(),\n            renderer: None,","new":"        Self {\n            camera: EditorViewCamera::default(),\n            dimension: SceneViewDimension::ThreeD,\n            camera_2d: EditorViewCamera2d::default(),\n            renderer: None,"}

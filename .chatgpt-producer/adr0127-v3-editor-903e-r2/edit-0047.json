@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/scene_view.rs","old":"                                        &axis_dirs,\n                                    )","new":"                                        &axis_dirs,\n                                        self.dimension,\n                                    )"}
