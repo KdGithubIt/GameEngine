@@ -1,0 +1,1159 @@
++                &result.source_path,
++                &result.source_dependencies,
++                residency_fingerprint,
++                &result.skeleton_records,
++                &result.conversion_ready_contact_bones,
++                imported,
++                std::mem::take(&mut result.conversion_ready_textures),
++            );
++        }
++
+         // AP-5: rebuild this source's bind report and contact interval
+         // summary from the fresh import result, in memory only.
+         let source_key = result.source_id.as_str().to_owned();
+diff --git a/crates/editor/src/ui/mod.rs b/crates/editor/src/ui/mod.rs
+index d77c58f540b6a5e516c3f9bdd47ac6f4f9e7c260..8de256f2464a1440a842b1f052dd23cd0e345070 100644
+--- a/crates/editor/src/ui/mod.rs
++++ b/crates/editor/src/ui/mod.rs
+@@ -18,6 +18,7 @@ use crate::game_build::{
+ };
+ use crate::material_editor::{show_material_editor_panel, MaterialEditorPanel};
+ use crate::preferences::{EditorPreferences, PlayModeView};
++use crate::preview_residency::ProjectAssetResidency;
+ use crate::problems::ProblemsPanel;
+ use crate::project_settings_panel::{show_project_settings_panel, ProjectSettingsPanel};
+ use crate::runtime::{
+@@ -247,6 +248,8 @@ pub struct EditorApp {
+     inference_restore_pending: bool,
+     /// One-shot completion signal emitted only after the restored Editor drew a frame.
+     inference_restore_completed: bool,
++    /// Project-scoped CPU/GPU residency shared by every Editor preview surface.
++    preview_residency: ProjectAssetResidency,
+     /// Scene view offscreen renderer and editor orbit camera.
+     scene_view: SceneView,
+     /// Current Scene View conversion or rendering problem.
+@@ -397,6 +400,7 @@ pub struct EditorApp {
+ impl EditorApp {
+     /// Creates an editor app around an existing session.
+     pub fn new(session: EditorSession) -> Self {
++        let preview_residency = ProjectAssetResidency::default();
+         Self {
+             session: DocumentWorkspace::new(session),
+             canvas: GraphCanvasState::default(),
+@@ -466,9 +470,10 @@ impl EditorApp {
+             inference_focused: false,
+             inference_restore_pending: false,
+             inference_restore_completed: false,
+-            scene_view: SceneView::new(),
++            preview_residency: preview_residency.clone(),
++            scene_view: SceneView::with_residency(preview_residency.clone()),
+             scene_view_problem: None,
+-            animation_preview: AnimationPreviewWindow::default(),
++            animation_preview: AnimationPreviewWindow::with_residency(preview_residency),
+             gizmo_mode: GizmoMode::Translate,
+             gizmo_space: GizmoSpace::Global,
+             entity_clipboard: None,
+@@ -537,6 +542,7 @@ impl EditorApp {
+     /// process from one project to another after workspace construction.
+     fn initialize_project_root(&mut self, root: ProjectRoot) {
+         self.audio_audition.reset_project();
++        self.preview_residency.clear_project();
+         self.scene_view.clear_project_caches();
+         self.material_scene_preview_deadline = None;
+         self.material_texture_choices_cache = None;
+diff --git a/crates/editor/src/ui/play.rs b/crates/editor/src/ui/play.rs
+index 5f6a247fc7d0d33907c6686a52b0f139fb414a89..42a0bcc917621dd7f74a9daf23eae1884beabb36 100644
+--- a/crates/editor/src/ui/play.rs
++++ b/crates/editor/src/ui/play.rs
+@@ -783,6 +783,7 @@ impl EditorApp {
+                             .release_for_inference(render_state, false);
+                     }
+                     AiStudioReclaimLevel::Aggressive => {
++                        self.preview_residency.release_gpu();
+                         self.scene_view.release_recreatable_resources(render_state);
+                         self.animation_preview
+                             .release_for_inference(render_state, true);
+diff --git a/crates/engine/src/scene_bridge/asset_load.rs b/crates/engine/src/scene_bridge/asset_load.rs
+index 8bd023638c4f25abb664010d918edbab0ba71e6c..7189c0784e0623ec76aca77ef44c8ea07b07ea8c 100644
+--- a/crates/engine/src/scene_bridge/asset_load.rs
++++ b/crates/engine/src/scene_bridge/asset_load.rs
+@@ -453,12 +453,18 @@ pub(super) fn import_gltf_cached(
+         return Ok(Arc::clone(imported));
+     }
+     if let Some(shared) = &asset_state.shared_gltf_cache
+-        && let Some(imported) = shared.lookup_source(source_id, source_path) {
+-            asset_state
+-                .gltf_imports
+-                .insert(source_id.clone(), Arc::clone(&imported));
+-            return Ok(imported);
+-        }
++        && let Some(imported) = shared.lookup_source(
++            source_id,
++            source_path,
++            existing_skeletons,
++            contact_bone_names,
++        )
++    {
++        asset_state
++            .gltf_imports
++            .insert(source_id.clone(), Arc::clone(&imported));
++        return Ok(imported);
++    }
+     let imported = Arc::new(crate::model_import::import_model_path_with_contact_bones(
+         source_id,
+         source_path,
+@@ -466,7 +472,13 @@ pub(super) fn import_gltf_cached(
+         contact_bone_names,
+     )?);
+     if let Some(shared) = &asset_state.shared_gltf_cache {
+-        shared.store_source(source_id, source_path, &imported);
++        shared.store_source(
++            source_id,
++            source_path,
++            existing_skeletons,
++            contact_bone_names,
++            &imported,
++        );
+     }
+     asset_state
+         .gltf_imports
+diff --git a/crates/engine/src/scene_bridge/gltf_cache.rs b/crates/engine/src/scene_bridge/gltf_cache.rs
+index a5fa425d387756f0adc8cdfcbf47ef44fae6e74e..b62e13e1955529514bca5e79de5d041bb0346a05 100644
+--- a/crates/engine/src/scene_bridge/gltf_cache.rs
++++ b/crates/engine/src/scene_bridge/gltf_cache.rs
+@@ -2,6 +2,7 @@
+ //! (ADR 0071).
+ 
+ use super::*;
++use std::hash::Hasher;
+ use std::path::PathBuf;
+ use std::sync::Mutex;
+ use std::time::SystemTime;
+@@ -28,11 +29,39 @@ struct CachedGltfSource {
+     /// Path the cached parse was produced from; a manifest entry that moved
+     /// to a different file must not reuse the old parse.
+     path: PathBuf,
++    /// Import inputs that affect model construction without changing source bytes.
++    settings_fingerprint: u64,
+     /// Stamp of the source file plus every external sidecar at parse time.
+     stamps: Vec<(PathBuf, Option<FileStamp>)>,
+     imported: Arc<crate::model_import::GltfImportResult>,
+ }
+ 
++fn import_settings_fingerprint(
++    existing_skeletons: &[crate::asset::SkeletonRecord],
++    contact_bone_names: &[String],
++) -> u64 {
++    let mut hasher = std::collections::hash_map::DefaultHasher::new();
++    hasher.write_u64(existing_skeletons.len() as u64);
++    for record in existing_skeletons {
++        hasher.write_u64(record.id.len() as u64);
++        hasher.write(record.id.as_bytes());
++        hasher.write_u64(record.identity);
++        hasher.write_u32(record.next_bone_id);
++        hasher.write_u64(record.bones.len() as u64);
++        for bone in &record.bones {
++            hasher.write_u32(bone.bone_id);
++            hasher.write_u64(bone.name.len() as u64);
++            hasher.write(bone.name.as_bytes());
++        }
++    }
++    hasher.write_u64(contact_bone_names.len() as u64);
++    for name in contact_bone_names {
++        hasher.write_u64(name.len() as u64);
++        hasher.write(name.as_bytes());
++    }
++    hasher.finish()
++}
++
+ struct CachedGltfTexture {
+     /// Pointer identity of the parsed document the texture was decoded from.
+     ///
+@@ -99,27 +128,24 @@ impl SharedGltfImportCache {
+     /// A stale entry (path changed, file edited, or sidecar edited) is
+     /// removed together with every texture decoded from it, so a later
+     /// lookup cannot serve pixels from an outdated document.
+-    pub(super) fn lookup_source(
++    #[doc(hidden)]
++    pub fn lookup_source(
+         &self,
+         source_id: &AssetId,
+         source_path: &Path,
++        existing_skeletons: &[crate::asset::SkeletonRecord],
++        contact_bone_names: &[String],
+     ) -> Option<Arc<crate::model_import::GltfImportResult>> {
+-        let mut inner = self.lock();
++        let inner = self.lock();
+         let cached = inner.sources.get(source_id)?;
+         let valid = cached.path == source_path
++            && cached.settings_fingerprint
++                == import_settings_fingerprint(existing_skeletons, contact_bone_names)
+             && cached
+                 .stamps
+                 .iter()
+                 .all(|(path, stamp)| file_stamp(path) == *stamp);
+-        if valid {
+-            return Some(Arc::clone(&cached.imported));
+-        }
+-        let document = Arc::as_ptr(&cached.imported) as usize;
+-        inner.sources.remove(source_id);
+-        inner
+-            .textures
+-            .retain(|_, texture| texture.document != document);
+-        None
++        valid.then(|| Arc::clone(&cached.imported))
+     }
+ 
+     /// Records a fresh parse of `source_path` for reuse by later conversions.
+@@ -127,14 +153,40 @@ impl SharedGltfImportCache {
+         &self,
+         source_id: &AssetId,
+         source_path: &Path,
++        existing_skeletons: &[crate::asset::SkeletonRecord],
++        contact_bone_names: &[String],
+         imported: &Arc<crate::model_import::GltfImportResult>,
+     ) {
+-        let mut stamped_paths = vec![source_path.to_path_buf()];
+-        // Sidecar discovery re-reads the document once at store time; later
+-        // validations only `stat` the recorded paths.
+-        stamped_paths.extend(
+-            crate::model_import::model_source_dependencies(source_path).unwrap_or_default(),
++        let dependencies =
++            crate::model_import::model_source_dependencies(source_path).unwrap_or_default();
++        self.publish_prepared_source(
++            source_id,
++            source_path,
++            &dependencies,
++            existing_skeletons,
++            contact_bone_names,
++            Arc::clone(imported),
++            Vec::new(),
+         );
++    }
++
++    /// Atomically publishes one completed model generation and decoded textures.
++    ///
++    /// A stale generation remains available until this complete replacement is ready.
++    #[doc(hidden)]
++    #[allow(clippy::too_many_arguments)]
++    pub fn publish_prepared_source(
++        &self,
++        source_id: &AssetId,
++        source_path: &Path,
++        dependencies: &[PathBuf],
++        existing_skeletons: &[crate::asset::SkeletonRecord],
++        contact_bone_names: &[String],
++        imported: Arc<crate::model_import::GltfImportResult>,
++        textures: Vec<(AssetId, Arc<DecodedTexture>)>,
++    ) {
++        let mut stamped_paths = vec![source_path.to_path_buf()];
++        stamped_paths.extend(dependencies.iter().cloned());
+         let stamps = stamped_paths
+             .into_iter()
+             .map(|path| {
+@@ -142,14 +194,43 @@ impl SharedGltfImportCache {
+                 (path, stamp)
+             })
+             .collect();
+-        self.lock().sources.insert(
++        let document = Arc::as_ptr(&imported) as usize;
++        let mut inner = self.lock();
++        if let Some(previous) = inner.sources.remove(source_id) {
++            let previous_document = Arc::as_ptr(&previous.imported) as usize;
++            inner
++                .textures
++                .retain(|_, texture| texture.document != previous_document);
++        }
++        inner.sources.insert(
+             source_id.clone(),
+             CachedGltfSource {
+                 path: source_path.to_path_buf(),
++                settings_fingerprint: import_settings_fingerprint(
++                    existing_skeletons,
++                    contact_bone_names,
++                ),
+                 stamps,
+-                imported: Arc::clone(imported),
++                imported,
+             },
+         );
++        for (texture_id, texture) in textures {
++            inner.textures.insert(
++                texture_id,
++                CachedGltfTexture {
++                    document,
++                    texture,
++                },
++            );
++        }
++    }
++
++    /// Drops every reusable parse/decode generation owned by this cache.
++    #[doc(hidden)]
++    pub fn clear(&self) {
++        let mut inner = self.lock();
++        inner.sources.clear();
++        inner.textures.clear();
+     }
+ 
+     /// Returns the cached decode for `texture_id` when it was produced from
+diff --git a/crates/render-runtime/src/gpu_streaming.rs b/crates/render-runtime/src/gpu_streaming.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..e88247a11285f31aac2e47cfb30b7751e7ed3ce1
+--- /dev/null
++++ b/crates/render-runtime/src/gpu_streaming.rs
+@@ -0,0 +1,151 @@
++use std::collections::HashSet;
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub(crate) struct GpuUploadBudget {
++    pub(crate) max_bytes: u64,
++    pub(crate) max_uploads: u32,
++}
++
++impl GpuUploadBudget {
++    pub(crate) const fn new(max_bytes: u64, max_uploads: u32) -> Self {
++        Self {
++            max_bytes,
++            max_uploads,
++        }
++    }
++
++    pub(crate) const fn unlimited() -> Self {
++        Self::new(u64::MAX, u32::MAX)
++    }
++}
++
++impl Default for GpuUploadBudget {
++    fn default() -> Self {
++        Self::unlimited()
++    }
++}
++
++#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
++pub(crate) struct GpuUploadReport {
++    pub(crate) queued_bytes: u64,
++    pub(crate) uploaded_bytes: u64,
++    pub(crate) queued_uploads: u32,
++    pub(crate) uploaded_uploads: u32,
++    pub(crate) deferred_uploads: u32,
++    pub(crate) cache_hits: u32,
++}
++
++impl GpuUploadReport {
++    pub(crate) const fn has_deferred_work(self) -> bool {
++        self.deferred_uploads != 0
++    }
++}
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
++enum UploadKind {
++    Mesh,
++    TextureSrgb,
++    TextureLinear,
++}
++
++pub(crate) struct GpuUploadFrame {
++    budget: GpuUploadBudget,
++    report: GpuUploadReport,
++    seen: HashSet<(UploadKind, usize)>,
++}
++
++impl GpuUploadFrame {
++    pub(crate) fn new(budget: GpuUploadBudget) -> Self {
++        Self {
++            budget,
++            report: GpuUploadReport::default(),
++            seen: HashSet::new(),
++        }
++    }
++
++    pub(crate) fn reset(&mut self, budget: GpuUploadBudget) {
++        self.budget = budget;
++        self.report = GpuUploadReport::default();
++        self.seen.clear();
++    }
++
++    pub(crate) fn request_mesh(&mut self, identity: usize, bytes: u64) -> bool {
++        self.request(UploadKind::Mesh, identity, bytes)
++    }
++
++    pub(crate) fn request_texture(&mut self, identity: usize, linear: bool, bytes: u64) -> bool {
++        self.request(
++            if linear {
++                UploadKind::TextureLinear
++            } else {
++                UploadKind::TextureSrgb
++            },
++            identity,
++            bytes,
++        )
++    }
++
++    pub(crate) fn note_cache_hit(&mut self) {
++        self.report.cache_hits = self.report.cache_hits.saturating_add(1);
++    }
++
++    pub(crate) const fn report(&self) -> GpuUploadReport {
++        self.report
++    }
++
++    fn request(&mut self, kind: UploadKind, identity: usize, bytes: u64) -> bool {
++        if !self.seen.insert((kind, identity)) {
++            return false;
++        }
++        self.report.queued_uploads = self.report.queued_uploads.saturating_add(1);
++        self.report.queued_bytes = self.report.queued_bytes.saturating_add(bytes);
++        let count_available = self.report.uploaded_uploads < self.budget.max_uploads;
++        let bytes_available = self
++            .report
++            .uploaded_bytes
++            .saturating_add(bytes)
++            <= self.budget.max_bytes;
++        let first_oversized_upload = self.report.uploaded_uploads == 0 && self.budget.max_uploads > 0;
++        if count_available && (bytes_available || first_oversized_upload) {
++            self.report.uploaded_uploads = self.report.uploaded_uploads.saturating_add(1);
++            self.report.uploaded_bytes = self.report.uploaded_bytes.saturating_add(bytes);
++            true
++        } else {
++            self.report.deferred_uploads = self.report.deferred_uploads.saturating_add(1);
++            false
++        }
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn upload_budget_defers_excess_work_and_tracks_bytes() {
++        let mut frame = GpuUploadFrame::new(GpuUploadBudget::new(128, 2));
++        assert!(frame.request_mesh(1, 64));
++        assert!(frame.request_texture(2, false, 64));
++        assert!(!frame.request_texture(3, true, 32));
++        assert_eq!(
++            frame.report(),
++            GpuUploadReport {
++                queued_bytes: 160,
++                uploaded_bytes: 128,
++                queued_uploads: 3,
++                uploaded_uploads: 2,
++                deferred_uploads: 1,
++                cache_hits: 0,
++            }
++        );
++    }
++
++    #[test]
++    fn one_oversized_upload_can_make_forward_progress() {
++        let mut frame = GpuUploadFrame::new(GpuUploadBudget::new(16, 1));
++        assert!(frame.request_mesh(7, 128));
++        assert!(!frame.request_mesh(8, 1));
++        assert_eq!(frame.report().uploaded_uploads, 1);
++        assert_eq!(frame.report().deferred_uploads, 1);
++    }
++}
+diff --git a/crates/render-runtime/src/lib.rs b/crates/render-runtime/src/lib.rs
+index 87dc3cdc6de7483d23a00f6e5485910bf5e981f1..e80c16f9feee48b23ecf1534ef01ccbe6c91f7b9 100644
+--- a/crates/render-runtime/src/lib.rs
++++ b/crates/render-runtime/src/lib.rs
+@@ -17,6 +17,8 @@ pub mod debug_draw;
+ mod bloom;
+ #[cfg(feature = "gpu")]
+ mod environment;
++#[cfg(feature = "gpu")]
++mod gpu_streaming;
+ /// Runtime light resources and authored light mirroring.
+ #[cfg(feature = "gpu")]
+ pub mod light;
+diff --git a/crates/render-runtime/src/material.rs b/crates/render-runtime/src/material.rs
+index cb96a54c4afbc8fa20aec8c2dbd344f850de0b07..6beab8b0f9e7f1219b16c9a30ccf2ff8abc93454 100644
+--- a/crates/render-runtime/src/material.rs
++++ b/crates/render-runtime/src/material.rs
+@@ -1,5 +1,5 @@
+ use std::fmt;
+-use std::sync::Arc;
++use std::sync::{Arc, Mutex, Weak};
+ 
+ /// Reports texture data that cannot be decoded or uploaded safely.
+ #[derive(Debug)]
+@@ -96,6 +96,127 @@ impl DecodedTexture {
+             rgba8: rgba.into_raw(),
+         })
+     }
++
++    /// Returns the number of RGBA8 bytes uploaded by the complete mip chain.
++    #[doc(hidden)]
++    pub fn estimated_gpu_upload_bytes(&self) -> u64 {
++        let mut width = self.width.max(1);
++        let mut height = self.height.max(1);
++        let mut bytes = 0_u64;
++        loop {
++            bytes = bytes.saturating_add(u64::from(width) * u64::from(height) * 4);
++            if width == 1 && height == 1 {
++                return bytes;
++            }
++            width = (width / 2).max(1);
++            height = (height / 2).max(1);
++        }
++    }
++}
++
++/// Color-space identity used by the shared decoded-texture GPU residency.
++#[doc(hidden)]
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
++pub enum GpuTextureEncoding {
++    /// Color data sampled through the sRGB transfer function.
++    SrgbColor,
++    /// Numeric/vector data sampled without sRGB conversion.
++    LinearData,
++}
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
++struct SharedGpuTextureKey {
++    device: usize,
++    source: usize,
++    encoding: GpuTextureEncoding,
++}
++
++struct SharedGpuTextureEntry {
++    source: Weak<DecodedTexture>,
++    texture: Arc<Texture>,
++}
++
++/// Project/device-scoped GPU uploads for immutable decoded preview textures.
++///
++/// The cache keeps only a weak CPU identity guard, so an address cannot be
++/// reused for different decoded pixels while a stale entry is still accepted.
++#[doc(hidden)]
++#[derive(Clone, Default)]
++pub struct SharedGpuTextureCache {
++    entries: Arc<Mutex<std::collections::HashMap<SharedGpuTextureKey, SharedGpuTextureEntry>>>,
++}
++
++impl SharedGpuTextureCache {
++    fn lock(
++        &self,
++    ) -> std::sync::MutexGuard<
++        '_,
++        std::collections::HashMap<SharedGpuTextureKey, SharedGpuTextureEntry>,
++    > {
++        self.entries
++            .lock()
++            .unwrap_or_else(std::sync::PoisonError::into_inner)
++    }
++
++    pub(crate) fn get(
++        &self,
++        device: &wgpu::Device,
++        source: &Arc<DecodedTexture>,
++        encoding: GpuTextureEncoding,
++    ) -> Option<Arc<Texture>> {
++        let key = SharedGpuTextureKey {
++            device: device as *const wgpu::Device as usize,
++            source: Arc::as_ptr(source) as usize,
++            encoding,
++        };
++        let mut entries = self.lock();
++        if let Some(cached) = entries.get(&key) {
++            let valid = cached
++                .source
++                .upgrade()
++                .is_some_and(|resident| Arc::ptr_eq(&resident, source));
++            if valid {
++                return Some(Arc::clone(&cached.texture));
++            }
++        }
++        entries.remove(&key);
++        None
++    }
++
++    pub(crate) fn insert(
++        &self,
++        device: &wgpu::Device,
++        source: &Arc<DecodedTexture>,
++        encoding: GpuTextureEncoding,
++        texture: Arc<Texture>,
++    ) {
++        self.lock().insert(
++            SharedGpuTextureKey {
++                device: device as *const wgpu::Device as usize,
++                source: Arc::as_ptr(source) as usize,
++                encoding,
++            },
++            SharedGpuTextureEntry {
++                source: Arc::downgrade(source),
++                texture,
++            },
++        );
++    }
++
++    pub(crate) fn prune(&self) {
++        self.lock()
++            .retain(|_, cached| cached.source.strong_count() > 0);
++    }
++
++    /// Releases every recreatable uploaded preview texture.
++    pub fn clear(&self) {
++        self.lock().clear();
++    }
++
++    #[cfg(test)]
++    pub(crate) fn len(&self) -> usize {
++        self.lock().len()
++    }
+ }
+ 
+ /// CPU-decoded material texture slots transferred from asset resolution into the renderer.
+diff --git a/crates/render-runtime/src/mesh.rs b/crates/render-runtime/src/mesh.rs
+index 5d42d5ede670983922258c2caedf518edbca570d..e3e32a9ba67b8eed234bd3eba66f79c36e1d1a05 100644
+--- a/crates/render-runtime/src/mesh.rs
++++ b/crates/render-runtime/src/mesh.rs
+@@ -1085,14 +1085,14 @@ struct MeshContentKey {
+ /// GPU uploads shared by preview worlds that use the same wgpu device.
+ #[derive(Clone, Default)]
+ pub struct SharedGpuMeshCache {
+-    entries: Arc<Mutex<HashMap<MeshContentKey, GpuMesh>>>,
++    entries: Arc<Mutex<HashMap<(usize, MeshContentKey), GpuMesh>>>,
+ }
+ 
+ impl SharedGpuMeshCache {
+-    /// Returns an upload already shared for identical mesh contents.
++    /// Returns an upload already shared for identical mesh contents on `device`.
+     #[doc(hidden)]
+-    pub fn get(&self, mesh: &Mesh) -> Option<GpuMesh> {
+-        let key = mesh_content_key(mesh);
++    pub fn get(&self, device: &wgpu::Device, mesh: &Mesh) -> Option<GpuMesh> {
++        let key = (device as *const wgpu::Device as usize, mesh_content_key(mesh));
+         self.entries
+             .lock()
+             .unwrap_or_else(std::sync::PoisonError::into_inner)
+@@ -1100,10 +1100,10 @@ impl SharedGpuMeshCache {
+             .cloned()
+     }
+ 
+-    /// Shares a GPU upload under the mesh's stable content key.
++    /// Shares a GPU upload under the device and mesh's stable content key.
+     #[doc(hidden)]
+-    pub fn insert(&self, mesh: &Mesh, gpu_mesh: GpuMesh) {
+-        let key = mesh_content_key(mesh);
++    pub fn insert(&self, device: &wgpu::Device, mesh: &Mesh, gpu_mesh: GpuMesh) {
++        let key = (device as *const wgpu::Device as usize, mesh_content_key(mesh));
+         self.entries
+             .lock()
+             .unwrap_or_else(std::sync::PoisonError::into_inner)
+@@ -1117,7 +1117,6 @@ impl SharedGpuMeshCache {
+             .unwrap_or_else(std::sync::PoisonError::into_inner)
+             .clear();
+     }
+-
+ }
+ 
+ /// Per-world aliases into an optional shared GPU mesh upload cache.
+diff --git a/crates/render-runtime/src/preview.rs b/crates/render-runtime/src/preview.rs
+index c8dd684e0d55dc184563bd9d86035bf0388bd75e..797f502a118a2005a9b472f5cc62034a40566bec 100644
+--- a/crates/render-runtime/src/preview.rs
++++ b/crates/render-runtime/src/preview.rs
+@@ -39,6 +39,30 @@ pub struct PreviewRenderer {
+     renderer: WorldRenderer,
+ }
+ 
++/// Per-frame preview GPU streaming telemetry.
++#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
++pub struct PreviewUploadReport {
++    /// Bytes represented by unique GPU work discovered this frame.
++    pub queued_bytes: u64,
++    /// Bytes admitted by the frame upload budget.
++    pub uploaded_bytes: u64,
++    /// Unique upload work items discovered this frame.
++    pub queued_uploads: u32,
++    /// Upload work items admitted this frame.
++    pub uploaded_uploads: u32,
++    /// Upload work items deferred to a later frame.
++    pub deferred_uploads: u32,
++    /// Mesh or texture residency hits that required no new upload.
++    pub cache_hits: u32,
++}
++
++impl PreviewUploadReport {
++    /// Returns whether another frame is needed to drain deferred GPU work.
++    pub const fn has_deferred_work(self) -> bool {
++        self.deferred_uploads != 0
++    }
++}
++
+ impl PreviewRenderer {
+     /// Creates an offscreen preview renderer for the requested color format.
+     pub async fn new(
+@@ -54,6 +78,37 @@ impl PreviewRenderer {
+         Ok(Self { renderer })
+     }
+ 
++    /// Configures project-shared decoded-texture residency and the per-frame upload budget.
++    #[doc(hidden)]
++    pub fn configure_streaming(
++        &mut self,
++        texture_cache: crate::material::SharedGpuTextureCache,
++        max_bytes: u64,
++        max_uploads: u32,
++    ) {
++        self.renderer.set_shared_texture_cache(texture_cache);
++        self.renderer.set_upload_budget(max_bytes, max_uploads);
++    }
++
++    /// Returns deterministic upload telemetry from the most recent preview frame.
++    pub fn upload_report(&self) -> PreviewUploadReport {
++        let report = self.renderer.upload_report();
++        PreviewUploadReport {
++            queued_bytes: report.queued_bytes,
++            uploaded_bytes: report.uploaded_bytes,
++            queued_uploads: report.queued_uploads,
++            uploaded_uploads: report.uploaded_uploads,
++            deferred_uploads: report.deferred_uploads,
++            cache_hits: report.cache_hits,
++        }
++    }
++
++    /// Drops recreatable view-local bind groups/targets while retaining immutable pipelines.
++    #[doc(hidden)]
++    pub fn release_recreatable_resources(&mut self) {
++        self.renderer.release_recreatable_resources();
++    }
++
+     /// Renders `world` into a multisampled scene target, resolving into the
+     /// provided single-sample color view. `depth_view` must use
+     /// [`PREVIEW_MSAA_SAMPLE_COUNT`] samples and match the color dimensions.
+diff --git a/crates/render-runtime/src/render_backend.rs b/crates/render-runtime/src/render_backend.rs
+index f6f31c216771ce98cf5b64fb4e4be64385107b84..9f8743a153703dfbc9488dd35c024d71793efe54 100644
+--- a/crates/render-runtime/src/render_backend.rs
++++ b/crates/render-runtime/src/render_backend.rs
+@@ -11,7 +11,8 @@ use crate::material::{
+     AlphaMode, CullMode, Material, MaterialSlots, ShadingModel, SphereBlendMode,
+     SphereCoordinateSource,
+ };
+-use crate::material::{DecodedTexture, Texture};
++use crate::gpu_streaming::{GpuUploadBudget, GpuUploadFrame, GpuUploadReport};
++use crate::material::{DecodedTexture, GpuTextureEncoding, SharedGpuTextureCache, Texture};
+ use crate::mesh::{
+     GpuMesh, GpuMeshCache, InstanceData, Mesh, MeshValidationError, TangentVertexData, Vertex,
+ };
+@@ -862,22 +863,6 @@ fn create_material_pipeline(
+     })
+ }
+ 
+-/// Declares how one material texture slot interprets stored RGBA8 values.
+-///
+-/// Color textures are stored with the sRGB transfer function and decode to
+-/// scene-linear RGB when sampled. Numeric/vector data textures must bypass
+-/// that transfer function.
+-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+-enum TextureSampleEncoding {
+-    SrgbColor,
+-    LinearData,
+-}
+-
+-struct CachedDecodedTexture {
+-    source: Weak<DecodedTexture>,
+-    texture: Arc<Texture>,
+-}
+-
+ struct CachedMaterialBindGroup {
+     base: Weak<Texture>,
+     normal: Weak<Texture>,
+@@ -1053,8 +1038,9 @@ pub(crate) struct WorldRenderer {
+     color_format: wgpu::TextureFormat,
+     main_color_target: Option<MainPassColorTarget>,
+     outline_targets: Option<OutlineTargets>,
+-    decoded_srgb_cache: std::collections::HashMap<usize, CachedDecodedTexture>,
+-    decoded_linear_cache: std::collections::HashMap<usize, CachedDecodedTexture>,
++    shared_texture_cache: SharedGpuTextureCache,
++    upload_budget: GpuUploadBudget,
++    upload_frame: GpuUploadFrame,
+     material_bind_group_cache:
+         std::collections::HashMap<MaterialBindGroupKey, CachedMaterialBindGroup>,
+ }
+@@ -1073,12 +1059,32 @@ impl WorldRenderer {
+             color_format: format,
+             main_color_target: None,
+             outline_targets: None,
+-            decoded_srgb_cache: Default::default(),
+-            decoded_linear_cache: Default::default(),
++            shared_texture_cache: SharedGpuTextureCache::default(),
++            upload_budget: GpuUploadBudget::unlimited(),
++            upload_frame: GpuUploadFrame::new(GpuUploadBudget::unlimited()),
+             material_bind_group_cache: Default::default(),
+         })
+     }
+ 
++    pub(crate) fn set_shared_texture_cache(&mut self, cache: SharedGpuTextureCache) {
++        self.material_bind_group_cache.clear();
++        self.shared_texture_cache = cache;
++    }
++
++    pub(crate) fn set_upload_budget(&mut self, budget: GpuUploadBudget) {
++        self.upload_budget = budget;
++    }
++
++    pub(crate) const fn upload_report(&self) -> GpuUploadReport {
++        self.upload_frame.report()
++    }
++
++    pub(crate) fn release_recreatable_resources(&mut self) {
++        self.main_color_target = None;
++        self.outline_targets = None;
++        self.material_bind_group_cache.clear();
++    }
++
+     fn collect_point_lights(world: &mut engine_ecs::World) -> Vec<PointLightUniform> {
+         let query = engine_ecs::Query::<(&PointLight, &GlobalTransform)>::new(world);
+         let mut lights = query
+@@ -1238,7 +1244,9 @@ impl WorldRenderer {
+         color_view: &wgpu::TextureView,
+         depth_view: &wgpu::TextureView,
+     ) -> Result<(), RenderFrameError> {
+-        upload_pending_meshes(world, device).map_err(RenderFrameError::Preparation)?;
++        self.upload_frame.reset(self.upload_budget);
++        upload_pending_meshes(world, device, &mut self.upload_frame)
++            .map_err(RenderFrameError::Preparation)?;
+         upload_morphed_vertices(world, queue);
+ 
+         let (vp, view, camera_position, viewport_aspect) = shadow_camera
+@@ -2021,10 +2029,7 @@ impl WorldRenderer {
+         use engine_ecs::{Query, Without};
+         use hashbrown::HashMap;
+ 
+-        self.decoded_srgb_cache
+-            .retain(|_, cached| cached.source.strong_count() > 0);
+-        self.decoded_linear_cache
+-            .retain(|_, cached| cached.source.strong_count() > 0);
++        self.shared_texture_cache.prune();
+         self.material_bind_group_cache.retain(|_, cached| {
+             cached.base.strong_count() > 0
+                 && cached.normal.strong_count() > 0
+@@ -2327,7 +2332,7 @@ impl WorldRenderer {
+             material.texture.as_ref(),
+             material.pending_texture.as_ref(),
+             base_fallback,
+-            TextureSampleEncoding::SrgbColor,
++            GpuTextureEncoding::SrgbColor,
+         );
+         let normal = self.resolve_texture_slot(
+             device,
+@@ -2335,7 +2340,7 @@ impl WorldRenderer {
+             material.normal_texture.as_ref(),
+             material.pending_normal_texture.as_ref(),
+             normal_fallback,
+-            TextureSampleEncoding::LinearData,
++            GpuTextureEncoding::LinearData,
+         );
+         let metallic_roughness = self.resolve_texture_slot(
+             device,
+@@ -2343,7 +2348,7 @@ impl WorldRenderer {
+             material.metallic_roughness_texture.as_ref(),
+             material.pending_metallic_roughness_texture.as_ref(),
+             Arc::clone(&self.render.white_texture),
+-            TextureSampleEncoding::LinearData,
++            GpuTextureEncoding::LinearData,
+         );
+         let occlusion = self.resolve_texture_slot(
+             device,
+@@ -2351,7 +2356,7 @@ impl WorldRenderer {
+             material.occlusion_texture.as_ref(),
+             material.pending_occlusion_texture.as_ref(),
+             Arc::clone(&self.render.white_texture),
+-            TextureSampleEncoding::LinearData,
++            GpuTextureEncoding::LinearData,
+         );
+         let emissive = self.resolve_texture_slot(
+             device,
+@@ -2359,7 +2364,7 @@ impl WorldRenderer {
+             material.emissive_texture.as_ref(),
+             material.pending_emissive_texture.as_ref(),
+             emissive_fallback,
+-            TextureSampleEncoding::SrgbColor,
++            GpuTextureEncoding::SrgbColor,
+         );
+         let ramp = self.resolve_texture_slot(
+             device,
+@@ -2367,7 +2372,7 @@ impl WorldRenderer {
+             material.toon.ramp_texture.as_ref(),
+             material.toon.pending_ramp_texture.as_ref(),
+             Arc::clone(&self.render.white_texture),
+-            TextureSampleEncoding::SrgbColor,
++            GpuTextureEncoding::SrgbColor,
+         );
+         let sphere = self.resolve_texture_slot(
+             device,
+@@ -2375,7 +2380,7 @@ impl WorldRenderer {
+             material.toon.sphere_texture.as_ref(),
+             material.toon.pending_sphere_texture.as_ref(),
+             Arc::clone(&self.render.white_texture),
+-            TextureSampleEncoding::SrgbColor,
++            GpuTextureEncoding::SrgbColor,
+         );
+         let uniform = MaterialUniformData::from_material(material);
+         let key = MaterialBindGroupKey {
+@@ -2432,7 +2437,7 @@ impl WorldRenderer {
+         texture: Option<&Arc<Texture>>,
+         pending: Option<&Arc<DecodedTexture>>,
+         fallback: Arc<Texture>,
+-        encoding: TextureSampleEncoding,
++        encoding: GpuTextureEncoding,
+     ) -> Arc<Texture> {
+         if let Some(texture) = texture {
+             return Arc::clone(texture);
+@@ -2440,27 +2445,30 @@ impl WorldRenderer {
+         let Some(pending) = pending else {
+             return fallback;
+         };
+-        let cache = match encoding {
+-            TextureSampleEncoding::SrgbColor => &mut self.decoded_srgb_cache,
+-            TextureSampleEncoding::LinearData => &mut self.decoded_linear_cache,
+-        };
+-        let key = Arc::as_ptr(pending) as usize;
+-        if let std::collections::hash_map::Entry::Vacant(entry) = cache.entry(key) {
+-            let uploaded = match encoding {
+-                TextureSampleEncoding::SrgbColor => Texture::from_decoded(device, queue, pending),
+-                TextureSampleEncoding::LinearData => {
+-                    Texture::from_decoded_linear(device, queue, pending)
+-                }
+-            };
+-            let Ok(texture) = uploaded else {
+-                return fallback;
+-            };
+-            entry.insert(CachedDecodedTexture {
+-                source: Arc::downgrade(pending),
+-                texture: Arc::new(texture),
+-            });
++        if let Some(texture) = self.shared_texture_cache.get(device, pending, encoding) {
++            self.upload_frame.note_cache_hit();
++            return texture;
+         }
+-        Arc::clone(&cache[&key].texture)
++        let identity = Arc::as_ptr(pending) as usize;
++        let linear = encoding == GpuTextureEncoding::LinearData;
++        if !self.upload_frame.request_texture(
++            identity,
++            linear,
++            pending.estimated_gpu_upload_bytes(),
++        ) {
++            return fallback;
++        }
++        let uploaded = match encoding {
++            GpuTextureEncoding::SrgbColor => Texture::from_decoded(device, queue, pending),
++            GpuTextureEncoding::LinearData => Texture::from_decoded_linear(device, queue, pending),
++        };
++        let Ok(texture) = uploaded else {
++            return fallback;
++        };
++        let texture = Arc::new(texture);
++        self.shared_texture_cache
++            .insert(device, pending, encoding, Arc::clone(&texture));
++        texture
+     }
+ 
+     /// Collects one draw per skinned entity (identified by [`JointPalette`]).
+@@ -3755,18 +3763,38 @@ pub(crate) fn upload_morphed_vertices(world: &mut engine_ecs::World, queue: &wgp
+ pub(crate) fn upload_pending_meshes(
+     world: &mut engine_ecs::World,
+     device: &wgpu::Device,
++    upload_frame: &mut GpuUploadFrame,
+ ) -> Result<(), RenderPreparationError> {
+     use crate::asset::{Assets, Handle, RuntimeAssetId};
+     use engine_ecs::Query;
+     use hashbrown::HashMap;
+ 
+-    // Direct Mesh components → GpuMesh per entity (used by Without<Handle<Mesh>> batch path).
++    let estimated_mesh_bytes = |mesh: &Mesh| {
++        let vertices = mesh.vertices.len() as u64 * std::mem::size_of::<Vertex>() as u64;
++        let indices = mesh.indices.as_ref().map_or(0, |indices| {
++            indices.len() as u64 * std::mem::size_of::<u32>() as u64
++        });
++        let skinning = mesh.skinning.as_ref().map_or(0, |skinning| {
++            skinning.len() as u64 * std::mem::size_of::<crate::mesh::SkinningVertexData>() as u64
++        });
++        let tangents = mesh.vertices.len() as u64 * std::mem::size_of::<TangentVertexData>() as u64;
++        vertices
++            .saturating_add(indices)
++            .saturating_add(skinning)
++            .saturating_add(tangents)
++    };
++
+     {
+         let mut to_upload = HashMap::<engine_ecs::Entity, GpuMesh>::new();
+         {
+             let query = Query::<(&Mesh, Option<&GpuMesh>)>::new(world);
+             for (entity, (mesh, gpu_mesh)) in &query {
+-                if gpu_mesh.is_none() {
++                if gpu_mesh.is_none()
++                    && upload_frame.request_mesh(
++                        mesh as *const Mesh as usize,
++                        estimated_mesh_bytes(mesh),
++                    )
++                {
+                     let gm = GpuMesh::upload(device, mesh)
+                         .map_err(|source| RenderPreparationError::Mesh { entity, source })?;
+                     to_upload.insert(entity, gm);
+@@ -3778,9 +3806,7 @@ pub(crate) fn upload_pending_meshes(
+         }
+     }
+ 
+-    // Handle<Mesh> → GpuMeshCache (shared across all entities referencing the same asset).
+     {
+-        // Collect (representative_entity, handle_id) pairs not yet in cache.
+         let pending: Vec<(engine_ecs::Entity, RuntimeAssetId)> = {
+             let cached_ids: Vec<RuntimeAssetId> = world
+                 .get_resource::<GpuMeshCache>()
+@@ -3798,8 +3824,6 @@ pub(crate) fn upload_pending_meshes(
+                 }
+             }
+             {
+-                // Particle emitters reference their mesh as a field, not a
+-                // component (ADR 0044), so they need their own sweep.
+                 let query = Query::<&crate::particles::ParticleEmitter>::new(world);
+                 for (entity, emitter) in query.iter() {
+                     let id = emitter.mesh.id();
+@@ -3811,10 +3835,8 @@ pub(crate) fn upload_pending_meshes(
+             pending
+         };
+ 
+-        // Upload while holding Assets borrow, collect results, then insert into cache.
+         let mut uploaded: Vec<(RuntimeAssetId, GpuMesh)> = Vec::new();
+         let mut upload_error: Option<RenderPreparationError> = None;
+-
+         let shared = world
+             .get_resource::<GpuMeshCache>()
+             .map(GpuMeshCache::shared)
+@@ -3822,25 +3844,33 @@ pub(crate) fn upload_pending_meshes(
+         if let Some(assets) = world.get_resource::<Assets<Mesh>>() {
+             for (entity, id) in &pending {
+                 if let Some(handle) = assets.handle(*id)
+-                    && let Some(mesh) = assets.get(&handle) {
+-                        if let Some(gpu_mesh) = shared.get(mesh) {
+-                            uploaded.push((*id, gpu_mesh));
+-                            continue;
++                    && let Some(mesh) = assets.get(&handle)
++                {
++                    if let Some(gpu_mesh) = shared.get(device, mesh) {
++                        upload_frame.note_cache_hit();
++                        uploaded.push((*id, gpu_mesh));
++                        continue;
++                    }
++                    if !upload_frame.request_mesh(
++                        mesh as *const Mesh as usize,
++                        estimated_mesh_bytes(mesh),
++                    ) {
++                        continue;
++                    }
++                    match GpuMesh::upload(device, mesh) {
++                        Ok(gm) => {
++                            shared.insert(device, mesh, gm.clone());
++                            uploaded.push((*id, gm));
+                         }
+-                        match GpuMesh::upload(device, mesh) {
+-                            Ok(gm) => {
+-                                shared.insert(mesh, gm.clone());
+-                                uploaded.push((*id, gm));
+-                            }
+-                            Err(source) => {
+-                                upload_error = Some(RenderPreparationError::Mesh {
+-                                    entity: *entity,
+-                                    source,
+-                                });
+-                                break;
+-                            }
++                        Err(source) => {
++                            upload_error = Some(RenderPreparationError::Mesh {
++                                entity: *entity,
++                                source,
++                            });
++                            break;
+                         }
+                     }
++                }
+             }
+         }
+ 
+@@ -4162,8 +4192,8 @@ mod tests {
+     #[test]
+     fn material_texture_slots_distinguish_color_from_numeric_data() {
+         assert_ne!(
+-            TextureSampleEncoding::SrgbColor,
+-            TextureSampleEncoding::LinearData
++            GpuTextureEncoding::SrgbColor,
++            GpuTextureEncoding::LinearData
+         );
+     }
+ 
+@@ -4372,12 +4402,14 @@ mod tests {
+             Err(error) => panic!("GPU device creation failed: {error}"),
+         };
+ 
++        let shared_texture_cache = SharedGpuTextureCache::default();
+         let mut renderer = pollster::block_on(WorldRenderer::new(
+             context.device(),
+             context.queue(),
+             wgpu::TextureFormat::Rgba8UnormSrgb,
+         ))
+         .expect("every static/skinned alpha and culling pipeline must validate");
++        renderer.set_shared_texture_cache(shared_texture_cache.clone());
+         let pixels = || {
+             Arc::new(DecodedTexture {
+                 label: "material_slot_test".into(),
+@@ -4395,9 +4427,21 @@ mod tests {
+ 
+         let _bind_group =
+             renderer.resolve_material_bind_group(context.device(), context.queue(), &material);
+-        assert_eq!(renderer.decoded_srgb_cache.len(), 2);
+-        assert_eq!(renderer.decoded_linear_cache.len(), 1);
++        assert_eq!(shared_texture_cache.len(), 3);
+         assert_eq!(renderer.material_bind_group_cache.len(), 1);
++
++        let mut second = pollster::block_on(WorldRenderer::new(
++            context.device(),
++            context.queue(),
++            wgpu::TextureFormat::Rgba8UnormSrgb,
++        ))
++        .expect("second preview renderer must validate");
++        second.set_shared_texture_cache(shared_texture_cache.clone());
++        let _bind_group =
++            second.resolve_material_bind_group(context.device(), context.queue(), &material);
++        assert_eq!(shared_texture_cache.len(), 3);
++        assert_eq!(second.upload_report().uploaded_bytes, 0);
++        assert!(second.upload_report().cache_hits >= 3);
+     }
+ 
+     fn reference_quad() -> Mesh {
+diff --git a/crates/render-runtime/src/renderer.rs b/crates/render-runtime/src/renderer.rs
+index fb95daea1cdf38b552aa9991941b73788cd9a953..18a88dfffeddda28d3de1871aa725cf4475d88e9 100644
+--- a/crates/render-runtime/src/renderer.rs
++++ b/crates/render-runtime/src/renderer.rs
+@@ -163,6 +163,27 @@ impl WorldRenderer {
+         Ok(())
+     }
+ 
++    pub(crate) fn set_shared_texture_cache(
++        &mut self,
++        cache: crate::material::SharedGpuTextureCache,
++    ) {
++        self.inner.set_shared_texture_cache(cache);
++    }
++
++    pub(crate) fn set_upload_budget(&mut self, max_bytes: u64, max_uploads: u32) {
++        self.inner
++            .set_upload_budget(crate::gpu_streaming::GpuUploadBudget::new(max_bytes, max_uploads));
++    }
++
++    pub(crate) const fn upload_report(&self) -> crate::gpu_streaming::GpuUploadReport {
++        self.inner.upload_report()
++    }
++
++    pub(crate) fn release_recreatable_resources(&mut self) {
++        self.inner.release_recreatable_resources();
++        self.temporal.reset();
++    }
++
+     /// Invalidates renderer-owned temporal history after a discontinuous camera change.
+     ///
+     /// Resizing the render target and switching to another active camera entity

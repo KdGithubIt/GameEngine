@@ -1,0 +1,1491 @@
+diff --git a/crates/editor/src/asset_import.rs b/crates/editor/src/asset_import.rs
+index 0d39a1dc29e93265d4c987ea769e85a23bd6b24a..cee18e24e9e5c97b8b2f347d38d0102781a212dc 100644
+--- a/crates/editor/src/asset_import.rs
++++ b/crates/editor/src/asset_import.rs
+@@ -56,7 +56,6 @@ pub struct ClipContactSummary {
+ }
+ 
+ /// Completed background model source (glTF/GLB or FBX) catalog operation.
+-#[derive(Debug)]
+ pub struct AssetImportResult {
+     /// Project root captured when the job started.
+     pub project_path: PathBuf,
+@@ -70,6 +69,12 @@ pub struct AssetImportResult {
+     pub source_stamp: Option<engine::SourceStamp>,
+     /// Absolute external buffer/image dependency paths.
+     pub source_dependencies: Vec<PathBuf>,
++    /// Immutable conversion-ready model retained from this exact successful generation.
++    pub(crate) conversion_ready_model: Option<Arc<engine::GltfImportResult>>,
++    /// CPU-decoded texture payloads retained from the same successful generation.
++    pub(crate) conversion_ready_textures: Vec<(AssetId, Arc<engine::DecodedTexture>)>,
++    /// Import-setting input captured by this model worker for stale-completion rejection.
++    pub(crate) conversion_ready_contact_bones: Vec<String>,
+     /// Stable catalog produced by the latest successful parse.
+     pub sub_assets: Vec<ImportedSubAsset>,
+     /// Bone-catalog ledger for every skeleton this import bound to (ADR 0077),
+@@ -277,7 +282,7 @@ impl AssetImportManager {
+                 &existing_skeletons,
+                 &contact_bones,
+             ) {
+-                Ok(imported) => imported,
++                Ok(imported) => Arc::new(imported),
+                 Err(error) => {
+                     send_failed(
+                         &sender,
+@@ -351,6 +356,21 @@ impl AssetImportManager {
+             sub_assets.extend(humanoid_imported_sub_assets(&humanoid_catalog));
+             let skeleton_records = imported.skeleton_records.clone();
+             let animation_contacts = resolve_animation_contacts(&imported);
++            let conversion_ready_textures = imported
++                .textures
++                .iter()
++                .map(|texture| {
++                    (
++                        texture.id.clone(),
++                        Arc::new(engine::DecodedTexture {
++                            label: format!("{} / {}", source_path.display(), texture.name),
++                            width: texture.width,
++                            height: texture.height,
++                            rgba8: texture.rgba8.clone(),
++                        }),
++                    )
++                })
++                .collect();
+             let _ = sender.send(WorkerMessage::Complete(Box::new(AssetImportResult {
+                 project_path,
+                 source_id,
+@@ -358,13 +378,16 @@ impl AssetImportManager {
+                 source_fingerprint: Some(fingerprint),
+                 source_stamp: Some(source_stamp),
+                 source_dependencies: dependencies,
++                conversion_ready_model: Some(Arc::clone(&imported)),
++                conversion_ready_textures,
++                conversion_ready_contact_bones: contact_bones.clone(),
+                 sub_assets,
+                 skeleton_records,
+                 humanoid_profiles: humanoid_catalog.profiles,
+                 animation_contacts,
+                 prefab,
+                 diagnostics: {
+-                    let mut diagnostics = imported.diagnostics;
++                    let mut diagnostics = imported.diagnostics.clone();
+                     diagnostics.append(&mut humanoid_catalog.diagnostics);
+                     diagnostics
+                 },
+@@ -694,6 +717,9 @@ impl AssetImportManager {
+                 source_fingerprint: Some(fingerprint),
+                 source_stamp: Some(source_stamp),
+                 source_dependencies,
++                conversion_ready_model: None,
++                conversion_ready_textures: Vec::new(),
++                conversion_ready_contact_bones: Vec::new(),
+                 sub_assets,
+                 skeleton_records,
+                 humanoid_profiles: Vec::new(),
+@@ -729,6 +755,9 @@ impl AssetImportManager {
+                             source_fingerprint: None,
+                             source_stamp: None,
+                             source_dependencies: Vec::new(),
++                            conversion_ready_model: None,
++                            conversion_ready_textures: Vec::new(),
++                            conversion_ready_contact_bones: Vec::new(),
+                             sub_assets: Vec::new(),
+                             skeleton_records: Vec::new(),
+                             humanoid_profiles: Vec::new(),
+@@ -884,6 +913,9 @@ fn send_cancelled(
+         source_fingerprint: None,
+         source_stamp: None,
+         source_dependencies: Vec::new(),
++        conversion_ready_model: None,
++        conversion_ready_textures: Vec::new(),
++        conversion_ready_contact_bones: Vec::new(),
+         sub_assets: Vec::new(),
+         skeleton_records: Vec::new(),
+         humanoid_profiles: Vec::new(),
+@@ -909,6 +941,9 @@ fn send_failed(
+         source_fingerprint: None,
+         source_stamp: None,
+         source_dependencies: Vec::new(),
++        conversion_ready_model: None,
++        conversion_ready_textures: Vec::new(),
++        conversion_ready_contact_bones: Vec::new(),
+         sub_assets: Vec::new(),
+         skeleton_records: Vec::new(),
+         humanoid_profiles: Vec::new(),
+diff --git a/crates/editor/src/lib.rs b/crates/editor/src/lib.rs
+index 3da419de3aad4852a99f2afd4e4548f4d1e4dc76..c6a73dfe7d3be195caac8cc16869e6eb7c243220 100644
+--- a/crates/editor/src/lib.rs
++++ b/crates/editor/src/lib.rs
+@@ -44,6 +44,7 @@ pub mod material_editor;
+ pub mod navmesh_bake;
+ pub mod prefab_workflow;
+ pub mod preferences;
++mod preview_residency;
+ pub mod problems;
+ pub mod project_settings_panel;
+ pub mod runtime;
+diff --git a/crates/editor/src/preview_residency.rs b/crates/editor/src/preview_residency.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..07adeb5f2eb4e97a0ec6e6cd062a14b6b58bef06
+--- /dev/null
++++ b/crates/editor/src/preview_residency.rs
+@@ -0,0 +1,739 @@
++//! Project-scoped immutable asset residency for Editor preview surfaces.
++
++use engine::{AssetManifest, SharedGpuMeshCache, SourceStamp};
++use engine_authoring::{AssetId, AuthoringScene, Value};
++use std::collections::{BTreeMap, BTreeSet};
++use std::hash::Hasher;
++use std::path::{Path, PathBuf};
++use std::sync::{Arc, Mutex};
++
++const MAX_MATERIALIZATION_WORKERS: usize = 2;
++const AGING_DISPATCH_INTERVAL: u64 = 4;
++
++/// Scheduling class for preview CPU materialization.
++#[allow(dead_code)]
++#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
++pub(crate) enum PreviewAssetPriority {
++    FocusedVisible,
++    Visible,
++    Prefetch,
++    Background,
++}
++
++impl PreviewAssetPriority {
++    const fn rank(self) -> u8 {
++        match self {
++            Self::FocusedVisible => 0,
++            Self::Visible => 1,
++            Self::Prefetch => 2,
++            Self::Background => 3,
++        }
++    }
++}
++
++/// Readiness of all model sources required by one preview scene.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub(crate) enum PreviewResidencyState {
++    Ready,
++    Pending,
++    Failed(String),
++}
++
++/// Deterministic counters for preview residency diagnostics and regression tests.
++#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
++pub(crate) struct PreviewResidencyStats {
++    pub(crate) cache_hits: u64,
++    pub(crate) materializations_started: u64,
++    pub(crate) deduplicated_requests: u64,
++    pub(crate) generations_published: u64,
++    pub(crate) decoded_textures_published: u64,
++    pub(crate) materialization_failures: u64,
++    pub(crate) gpu_reclaims: u64,
++    pub(crate) device_rebinds: u64,
++}
++
++#[derive(Debug, Clone, PartialEq, Eq)]
++struct SourceGeneration {
++    source_path: PathBuf,
++    source_stamp: Option<SourceStamp>,
++    source_fingerprint: Option<String>,
++    settings_fingerprint: u64,
++}
++
++#[derive(Debug, Clone)]
++struct SourceRequest {
++    source_id: AssetId,
++    generation: SourceGeneration,
++    skeleton_records: Vec<engine::SkeletonRecord>,
++    contact_bones: Vec<String>,
++}
++
++#[derive(Debug)]
++enum SourceState {
++    Queued {
++        request: SourceRequest,
++        priority: PreviewAssetPriority,
++        sequence: u64,
++        queued_dispatch: u64,
++    },
++    Loading {
++        generation: SourceGeneration,
++        ticket: u64,
++    },
++    Ready {
++        generation: SourceGeneration,
++    },
++    Failed {
++        generation: SourceGeneration,
++        message: String,
++    },
++}
++
++#[derive(Debug)]
++struct ResidencyInner {
++    epoch: u64,
++    revision: u64,
++    next_ticket: u64,
++    next_sequence: u64,
++    dispatch_count: u64,
++    active_workers: usize,
++    gpu_device: Option<usize>,
++    sources: BTreeMap<AssetId, SourceState>,
++    stats: PreviewResidencyStats,
++}
++
++impl Default for ResidencyInner {
++    fn default() -> Self {
++        Self {
++            epoch: 1,
++            revision: 1,
++            next_ticket: 1,
++            next_sequence: 1,
++            dispatch_count: 0,
++            active_workers: 0,
++            gpu_device: None,
++            sources: BTreeMap::new(),
++            stats: PreviewResidencyStats::default(),
++        }
++    }
++}
++
++/// CPU and device-local GPU residency shared by every preview surface in one project.
++#[derive(Clone, Default)]
++pub(crate) struct ProjectAssetResidency {
++    model_cache: engine::scene_bridge::SharedGltfImportCache,
++    gpu_mesh_cache: SharedGpuMeshCache,
++    gpu_texture_cache: engine::material::SharedGpuTextureCache,
++    inner: Arc<Mutex<ResidencyInner>>,
++}
++
++impl ProjectAssetResidency {
++    fn lock(&self) -> std::sync::MutexGuard<'_, ResidencyInner> {
++        self.inner
++            .lock()
++            .unwrap_or_else(std::sync::PoisonError::into_inner)
++    }
++
++    pub(crate) fn model_cache(&self) -> engine::scene_bridge::SharedGltfImportCache {
++        self.model_cache.clone()
++    }
++
++    pub(crate) fn gpu_mesh_cache(&self) -> SharedGpuMeshCache {
++        self.gpu_mesh_cache.clone()
++    }
++
++    pub(crate) fn gpu_texture_cache(&self) -> engine::material::SharedGpuTextureCache {
++        self.gpu_texture_cache.clone()
++    }
++
++    pub(crate) fn revision(&self) -> u64 {
++        self.lock().revision
++    }
++
++    #[cfg_attr(not(test), allow(dead_code))]
++    pub(crate) fn stats(&self) -> PreviewResidencyStats {
++        self.lock().stats
++    }
++
++    /// Associates GPU residency with one exact device identity.
++    pub(crate) fn bind_gpu_device(&self, device_identity: usize) {
++        let changed = {
++            let mut inner = self.lock();
++            if inner.gpu_device == Some(device_identity) {
++                false
++            } else {
++                inner.gpu_device = Some(device_identity);
++                inner.revision = inner.revision.saturating_add(1);
++                inner.stats.device_rebinds = inner.stats.device_rebinds.saturating_add(1);
++                true
++            }
++        };
++        if changed {
++            self.gpu_mesh_cache.clear();
++            self.gpu_texture_cache.clear();
++        }
++    }
++
++    /// Drops all residency owned by the project being closed/replaced.
++    pub(crate) fn clear_project(&self) {
++        {
++            let mut inner = self.lock();
++            inner.epoch = inner.epoch.saturating_add(1);
++            inner.revision = inner.revision.saturating_add(1);
++            inner.active_workers = 0;
++            inner.gpu_device = None;
++            inner.sources.clear();
++        }
++        self.model_cache.clear();
++        self.gpu_mesh_cache.clear();
++        self.gpu_texture_cache.clear();
++    }
++
++    /// Releases recreatable GPU residency while keeping CPU materialization resident.
++    pub(crate) fn release_gpu(&self) {
++        self.gpu_mesh_cache.clear();
++        self.gpu_texture_cache.clear();
++        let mut inner = self.lock();
++        inner.revision = inner.revision.saturating_add(1);
++        inner.stats.gpu_reclaims = inner.stats.gpu_reclaims.saturating_add(1);
++    }
++
++    /// Ensures every model generation referenced by `scene` is resident or in flight.
++    pub(crate) fn prepare_scene(
++        &self,
++        scene: &AuthoringScene,
++        manifest: &AssetManifest,
++        assets_root: Option<&Path>,
++        priority: PreviewAssetPriority,
++    ) -> PreviewResidencyState {
++        let Some(assets_root) = assets_root else {
++            return PreviewResidencyState::Ready;
++        };
++        let (requests, awaiting_import) = source_requests(scene, manifest, assets_root);
++        let mut pending = awaiting_import;
++        for request in requests {
++            match self.prepare_source(request, priority) {
++                PreviewResidencyState::Ready => {}
++                PreviewResidencyState::Pending => pending = true,
++                PreviewResidencyState::Failed(message) => {
++                    return PreviewResidencyState::Failed(message);
++                }
++            }
++        }
++        self.launch_available();
++        if pending {
++            PreviewResidencyState::Pending
++        } else {
++            PreviewResidencyState::Ready
++        }
++    }
++
++    fn prepare_source(
++        &self,
++        request: SourceRequest,
++        priority: PreviewAssetPriority,
++    ) -> PreviewResidencyState {
++        {
++            let mut inner = self.lock();
++            match inner.sources.get_mut(&request.source_id) {
++                Some(SourceState::Queued {
++                    request: queued,
++                    priority: queued_priority,
++                    ..
++                }) if queued.generation == request.generation => {
++                    if priority < *queued_priority {
++                        *queued_priority = priority;
++                    }
++                    inner.stats.deduplicated_requests =
++                        inner.stats.deduplicated_requests.saturating_add(1);
++                    return PreviewResidencyState::Pending;
++                }
++                Some(SourceState::Loading { generation, .. })
++                    if generation == &request.generation =>
++                {
++                    inner.stats.deduplicated_requests =
++                        inner.stats.deduplicated_requests.saturating_add(1);
++                    return PreviewResidencyState::Pending;
++                }
++                Some(SourceState::Failed {
++                    generation, message, ..
++                }) if generation == &request.generation => {
++                    return PreviewResidencyState::Failed(message.clone());
++                }
++                _ => {}
++            }
++        }
++
++        if self
++            .model_cache
++            .lookup_source(
++                &request.source_id,
++                &request.generation.source_path,
++                &request.skeleton_records,
++                &request.contact_bones,
++            )
++            .is_some()
++        {
++            let mut inner = self.lock();
++            inner.stats.cache_hits = inner.stats.cache_hits.saturating_add(1);
++            inner.sources.insert(
++                request.source_id,
++                SourceState::Ready {
++                    generation: request.generation,
++                },
++            );
++            return PreviewResidencyState::Ready;
++        }
++
++        let mut inner = self.lock();
++        if matches!(
++            inner.sources.get(&request.source_id),
++            Some(SourceState::Ready { generation }) if generation == &request.generation
++        ) {
++            return PreviewResidencyState::Ready;
++        }
++        let sequence = inner.next_sequence;
++        inner.next_sequence = inner.next_sequence.saturating_add(1);
++        let queued_dispatch = inner.dispatch_count;
++        inner.sources.insert(
++            request.source_id.clone(),
++            SourceState::Queued {
++                request,
++                priority,
++                sequence,
++                queued_dispatch,
++            },
++        );
++        PreviewResidencyState::Pending
++    }
++
++    fn launch_available(&self) {
++        loop {
++            let launch = {
++                let mut inner = self.lock();
++                if inner.active_workers >= MAX_MATERIALIZATION_WORKERS {
++                    return;
++                }
++                let dispatch_count = inner.dispatch_count;
++                let next_id = inner
++                    .sources
++                    .iter()
++                    .filter_map(|(id, state)| match state {
++                        SourceState::Queued {
++                            priority,
++                            sequence,
++                            queued_dispatch,
++                            ..
++                        } => {
++                            let waited = dispatch_count.saturating_sub(*queued_dispatch);
++                            let promotions =
++                                (waited / AGING_DISPATCH_INTERVAL).min(3) as u8;
++                            Some((
++                                priority.rank().saturating_sub(promotions),
++                                *sequence,
++                                id.clone(),
++                            ))
++                        }
++                        _ => None,
++                    })
++                    .min_by_key(|(effective, sequence, _)| (*effective, *sequence))
++                    .map(|(_, _, id)| id);
++                let Some(source_id) = next_id else {
++                    return;
++                };
++                let state = inner.sources.remove(&source_id);
++                let Some(SourceState::Queued { request, .. }) = state else {
++                    continue;
++                };
++                let ticket = inner.next_ticket;
++                inner.next_ticket = inner.next_ticket.saturating_add(1);
++                inner.dispatch_count = inner.dispatch_count.saturating_add(1);
++                inner.active_workers += 1;
++                inner.stats.materializations_started =
++                    inner.stats.materializations_started.saturating_add(1);
++                let epoch = inner.epoch;
++                inner.sources.insert(
++                    source_id,
++                    SourceState::Loading {
++                        generation: request.generation.clone(),
++                        ticket,
++                    },
++                );
++                Some((epoch, ticket, request))
++            };
++            let Some((epoch, ticket, request)) = launch else {
++                return;
++            };
++            let residency = self.clone();
++            std::thread::Builder::new()
++                .name("preview-asset-materialize".to_owned())
++                .spawn(move || {
++                    let result = materialize_source(&request);
++                    residency.finish_materialization(epoch, ticket, request, result);
++                    residency.launch_available();
++                })
++                .expect("preview materialization worker must be spawnable");
++        }
++    }
++
++    fn finish_materialization(
++        &self,
++        epoch: u64,
++        ticket: u64,
++        request: SourceRequest,
++        result: MaterializationResult,
++    ) {
++        let mut inner = self.lock();
++        if inner.epoch != epoch {
++            return;
++        }
++        inner.active_workers = inner.active_workers.saturating_sub(1);
++        let still_current = matches!(
++            inner.sources.get(&request.source_id),
++            Some(SourceState::Loading { generation, ticket: current })
++                if generation == &request.generation && *current == ticket
++        );
++        if !still_current {
++            return;
++        }
++        match result {
++            Ok((imported, textures, dependencies)) => {
++                let texture_count = textures.len() as u64;
++                self.model_cache.publish_prepared_source(
++                    &request.source_id,
++                    &request.generation.source_path,
++                    &dependencies,
++                    &request.skeleton_records,
++                    &request.contact_bones,
++                    imported,
++                    textures,
++                );
++                inner.sources.insert(
++                    request.source_id,
++                    SourceState::Ready {
++                        generation: request.generation,
++                    },
++                );
++                inner.revision = inner.revision.saturating_add(1);
++                inner.stats.generations_published =
++                    inner.stats.generations_published.saturating_add(1);
++                inner.stats.decoded_textures_published = inner
++                    .stats
++                    .decoded_textures_published
++                    .saturating_add(texture_count);
++            }
++            Err(message) => {
++                inner.sources.insert(
++                    request.source_id,
++                    SourceState::Failed {
++                        generation: request.generation,
++                        message,
++                    },
++                );
++                inner.revision = inner.revision.saturating_add(1);
++                inner.stats.materialization_failures =
++                    inner.stats.materialization_failures.saturating_add(1);
++            }
++        }
++    }
++
++    /// Atomically promotes one successful background import into preview residency.
++    #[allow(clippy::too_many_arguments)]
++    pub(crate) fn publish_import_result(
++        &self,
++        source_id: &AssetId,
++        source_path: &Path,
++        dependencies: &[PathBuf],
++        source_fingerprint: Option<String>,
++        skeleton_records: &[engine::SkeletonRecord],
++        contact_bones: &[String],
++        imported: Arc<engine::GltfImportResult>,
++        textures: Vec<(AssetId, Arc<engine::DecodedTexture>)>,
++    ) {
++        let texture_count = textures.len() as u64;
++        let generation = SourceGeneration {
++            source_path: source_path.to_path_buf(),
++            source_stamp: SourceStamp::capture(source_path, dependencies).ok(),
++            source_fingerprint,
++            settings_fingerprint: settings_fingerprint(skeleton_records, contact_bones),
++        };
++        let mut inner = self.lock();
++        self.model_cache.publish_prepared_source(
++            source_id,
++            source_path,
++            dependencies,
++            skeleton_records,
++            contact_bones,
++            imported,
++            textures,
++        );
++        inner
++            .sources
++            .insert(source_id.clone(), SourceState::Ready { generation });
++        inner.revision = inner.revision.saturating_add(1);
++        inner.stats.generations_published =
++            inner.stats.generations_published.saturating_add(1);
++        inner.stats.decoded_textures_published = inner
++            .stats
++            .decoded_textures_published
++            .saturating_add(texture_count);
++    }
++}
++
++fn settings_fingerprint(
++    skeleton_records: &[engine::SkeletonRecord],
++    contact_bones: &[String],
++) -> u64 {
++    let mut hasher = std::collections::hash_map::DefaultHasher::new();
++    hasher.write_u64(skeleton_records.len() as u64);
++    for record in skeleton_records {
++        hasher.write_u64(record.id.len() as u64);
++        hasher.write(record.id.as_bytes());
++        hasher.write_u64(record.identity);
++        hasher.write_u32(record.next_bone_id);
++        hasher.write_u64(record.bones.len() as u64);
++        for bone in &record.bones {
++            hasher.write_u32(bone.bone_id);
++            hasher.write_u64(bone.name.len() as u64);
++            hasher.write(bone.name.as_bytes());
++        }
++    }
++    hasher.write_u64(contact_bones.len() as u64);
++    for name in contact_bones {
++        hasher.write_u64(name.len() as u64);
++        hasher.write(name.as_bytes());
++    }
++    hasher.finish()
++}
++
++fn source_requests(
++    scene: &AuthoringScene,
++    manifest: &AssetManifest,
++    assets_root: &Path,
++) -> (Vec<SourceRequest>, bool) {
++    let mut referenced = BTreeSet::new();
++    for (_, entity) in scene.entities() {
++        for value in entity.components.values() {
++            collect_asset_refs(value, &mut referenced);
++        }
++    }
++
++    let mut sources = BTreeMap::<AssetId, engine::ManifestEntry>::new();
++    for asset in referenced {
++        if let Some((source_id, entry, _)) = manifest.imported_sub_asset(&asset) {
++            if engine::asset_path_matches_kind(
++                engine::AssetKind::GltfSource,
++                Path::new(&entry.path),
++            ) {
++                sources
++                    .entry(source_id.clone())
++                    .or_insert_with(|| entry.clone());
++            }
++            continue;
++        }
++        if let Some(entry) = manifest.get(&asset)
++            && engine::asset_path_matches_kind(
++                engine::AssetKind::GltfSource,
++                Path::new(&entry.path),
++            )
++        {
++            sources.entry(asset).or_insert_with(|| entry.clone());
++        }
++    }
++
++    let mut awaiting_import = false;
++    let mut requests = Vec::new();
++    for (source_id, entry) in sources {
++        let source_path = assets_root.join(&entry.path);
++        let dependencies = entry
++            .import_settings
++            .source_dependencies
++            .iter()
++            .map(|path| assets_root.join(path))
++            .collect::<Vec<_>>();
++        let current_stamp = SourceStamp::capture(&source_path, &dependencies).ok();
++        if entry.import_settings.source_fingerprint.is_none()
++            || entry
++                .import_settings
++                .source_stamp
++                .as_ref()
++                .is_some_and(|expected| current_stamp.as_ref() != Some(expected))
++        {
++            awaiting_import = true;
++            continue;
++        }
++        let skeleton_records = entry.import_settings.skeleton_records;
++        let contact_bones = entry.import_settings.contact_bones;
++        requests.push(SourceRequest {
++            source_id,
++            generation: SourceGeneration {
++                source_path,
++                source_stamp: current_stamp,
++                source_fingerprint: entry.import_settings.source_fingerprint,
++                settings_fingerprint: settings_fingerprint(&skeleton_records, &contact_bones),
++            },
++            skeleton_records,
++            contact_bones,
++        });
++    }
++    (requests, awaiting_import)
++}
++
++fn collect_asset_refs(value: &Value, assets: &mut BTreeSet<AssetId>) {
++    match value {
++        Value::AssetRef(asset) => {
++            assets.insert(asset.clone());
++        }
++        Value::Array(values) => {
++            for value in values {
++                collect_asset_refs(value, assets);
++            }
++        }
++        Value::Object(fields) => {
++            for value in fields.values() {
++                collect_asset_refs(value, assets);
++            }
++        }
++        Value::Null
++        | Value::Bool(_)
++        | Value::I64(_)
++        | Value::U64(_)
++        | Value::F64(_)
++        | Value::String(_)
++        | Value::EntityRef(_) => {}
++    }
++}
++
++type MaterializationResult = Result<
++    (
++        Arc<engine::GltfImportResult>,
++        Vec<(AssetId, Arc<engine::DecodedTexture>)>,
++        Vec<PathBuf>,
++    ),
++    String,
++>;
++
++fn materialize_source(request: &SourceRequest) -> MaterializationResult {
++    let dependencies_before = engine::model_source_dependencies(&request.generation.source_path)
++        .map_err(|error| error.to_string())?;
++    let stamp_before = SourceStamp::capture(
++        &request.generation.source_path,
++        &dependencies_before,
++    )
++    .map_err(|error| error.to_string())?;
++    if request
++        .generation
++        .source_stamp
++        .as_ref()
++        .is_some_and(|expected| expected != &stamp_before)
++    {
++        return Err("model source changed after its last successful import".into());
++    }
++    let fingerprint_before = engine::fingerprint_model_source(
++        &request.generation.source_path,
++        &dependencies_before,
++    )
++    .map_err(|error| error.to_string())?;
++    if request
++        .generation
++        .source_fingerprint
++        .as_ref()
++        .is_some_and(|expected| expected != &fingerprint_before)
++    {
++        return Err("model source content no longer matches its imported generation".into());
++    }
++
++    let imported = engine::import_model_path_with_contact_bones(
++        &request.source_id,
++        &request.generation.source_path,
++        &request.skeleton_records,
++        &request.contact_bones,
++    )
++    .map_err(|error| error.to_string())?;
++    let dependencies_after = engine::model_source_dependencies(&request.generation.source_path)
++        .map_err(|error| error.to_string())?;
++    let stamp_after = SourceStamp::capture(
++        &request.generation.source_path,
++        &dependencies_after,
++    )
++    .map_err(|error| error.to_string())?;
++    let fingerprint_after = engine::fingerprint_model_source(
++        &request.generation.source_path,
++        &dependencies_after,
++    )
++    .map_err(|error| error.to_string())?;
++    if dependencies_before != dependencies_after
++        || stamp_before != stamp_after
++        || fingerprint_before != fingerprint_after
++    {
++        return Err("model source changed while preview materialization was running".into());
++    }
++
++    let imported = Arc::new(imported);
++    let textures = imported
++        .textures
++        .iter()
++        .map(|texture| {
++            (
++                texture.id.clone(),
++                Arc::new(engine::DecodedTexture {
++                    label: format!(
++                        "{} / {}",
++                        request.generation.source_path.display(),
++                        texture.name
++                    ),
++                    width: texture.width,
++                    height: texture.height,
++                    rgba8: texture.rgba8.clone(),
++                }),
++            )
++        })
++        .collect();
++    Ok((imported, textures, dependencies_after))
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn nested_asset_references_are_collected_once() {
++        let first = AssetId::generate();
++        let second = AssetId::generate();
++        let value = Value::Array(vec![
++            Value::AssetRef(first.clone()),
++            Value::Object(std::collections::BTreeMap::from([
++                ("first".into(), Value::AssetRef(first.clone())),
++                ("second".into(), Value::AssetRef(second.clone())),
++            ])),
++        ]);
++        let mut assets = BTreeSet::new();
++        collect_asset_refs(&value, &mut assets);
++        assert_eq!(assets, BTreeSet::from([first, second]));
++    }
++
++    #[test]
++    fn priority_aging_eventually_promotes_background_work() {
++        assert_eq!(PreviewAssetPriority::FocusedVisible.rank(), 0);
++        assert_eq!(PreviewAssetPriority::Visible.rank(), 1);
++        assert_eq!(
++            PreviewAssetPriority::Background
++                .rank()
++                .saturating_sub((12 / AGING_DISPATCH_INTERVAL) as u8),
++            0
++        );
++    }
++
++    #[test]
++    fn project_clear_and_device_rebind_advance_revision() {
++        let residency = ProjectAssetResidency::default();
++        let initial = residency.revision();
++        residency.bind_gpu_device(7);
++        assert!(residency.revision() > initial);
++        let rebound = residency.revision();
++        residency.bind_gpu_device(7);
++        assert_eq!(residency.revision(), rebound);
++        residency.clear_project();
++        assert!(residency.revision() > rebound);
++    }
++}
+diff --git a/crates/editor/src/scene_view.rs b/crates/editor/src/scene_view.rs
+index 9f3d77d88bc3d16a11230f13f5c519e4bd931575..0b5e9ef8d1768b0acf434ef52d7b6cd8f9f3ee3c 100644
+--- a/crates/editor/src/scene_view.rs
++++ b/crates/editor/src/scene_view.rs
+@@ -1,6 +1,9 @@
+ //! Offscreen Scene View panel with editor camera, grid, and entity picking.
+ 
+ use crate::gizmo::{apply_rotate_delta, apply_scale_delta, transform_component_type, GizmoAxis};
++use crate::preview_residency::{
++    PreviewAssetPriority, PreviewResidencyState, ProjectAssetResidency,
++};
+ use crate::view_aspect::ViewAspect;
+ use crate::view_resolution::render_target_size_in_pixels;
+ use eframe::{egui, egui_wgpu, wgpu};
+@@ -14,9 +17,12 @@ use engine_authoring::{
+     Transaction, UiDocument, Value,
+ };
+ use std::collections::BTreeMap;
+-use std::sync::Arc;
++use std::sync::{mpsc, Arc};
+ use std::time::Instant;
+ 
++const PREVIEW_GPU_UPLOAD_BYTES_PER_FRAME: u64 = 8 * 1024 * 1024;
++const PREVIEW_GPU_UPLOADS_PER_FRAME: u32 = 4;
++
+ // ---------------------------------------------------------------------------
+ // EditorViewCamera
+ // ---------------------------------------------------------------------------
+@@ -737,6 +743,13 @@ pub struct SceneView {
+     /// Editor-only orbit camera (not serialized to the scene).
+     pub camera: EditorViewCamera,
+     renderer: Option<engine::PreviewRenderer>,
++    /// Device identity bound to the current renderer and project GPU residency.
++    renderer_device: Option<usize>,
++    /// Device whose asynchronous renderer warm-up most recently failed.
++    renderer_failure_device: Option<usize>,
++    /// Native background renderer initialization result polled from the UI thread.
++    #[cfg(not(target_arch = "wasm32"))]
++    renderer_warmup: Option<mpsc::Receiver<Result<engine::PreviewRenderer, String>>>,
+     texture: Option<SceneTexture>,
+     ui_texture_renderer: Option<SceneUiTextureRenderer>,
+     entity_pick_info: Vec<EntityPickInfo>,
+@@ -787,12 +800,10 @@ pub struct SceneView {
+     /// Start of a continuous preview failure. One-frame rebuild failures are
+     /// intentionally not painted so scene/document switches cannot flash red.
+     preview_failure_since: Option<Instant>,
+-    /// Cross-frame glTF parse/decode cache (ADR 0071). Consulted whenever the
+-    /// preview world is rebuilt so a referenced glTF/GLB source is parsed and
+-    /// its images decoded at most once per edit rather than once per frame.
+-    gltf_cache: engine::scene_bridge::SharedGltfImportCache,
+-    /// Device-local mesh uploads retained across preview-world rebuilds.
+-    gpu_mesh_cache: engine::SharedGpuMeshCache,
++    /// Project-scoped CPU/GPU residency shared with Animation Preview and other views.
++    residency: ProjectAssetResidency,
++    /// Whether this surface is retaining its last complete preview while CPU work finishes.
++    waiting_for_residency: bool,
+     /// Manifest hash recomputed only when the manifest's revision changes.
+     manifest_hash_cache: Option<(u64, u64)>,
+     /// Persistent preview world reused across frames (ADR 0072). Rebuilt only
+@@ -845,10 +856,11 @@ struct PreviewWorld {
+ /// cheap content hash (asset registration or reimport changes it). Transient
+ /// gesture previews are handled outside this key: transform drags use the
+ /// fast path, and non-transform component previews force a per-frame rebuild.
+-#[derive(Debug, PartialEq, Eq)]
++#[derive(Debug, Clone, PartialEq, Eq)]
+ struct PreviewKey {
+     scene_revision: u64,
+     manifest_hash: u64,
++    residency_revision: u64,
+     game_module: Option<usize>,
+     project_root: Option<std::path::PathBuf>,
+     sky_enabled: bool,
+@@ -898,9 +910,18 @@ impl Default for SceneView {
+ impl SceneView {
+     /// Creates a new scene view with default camera settings.
+     pub fn new() -> Self {
++        Self::with_residency(ProjectAssetResidency::default())
++    }
++
++    /// Creates a scene view attached to one project-scoped residency service.
++    pub(crate) fn with_residency(residency: ProjectAssetResidency) -> Self {
+         Self {
+             camera: EditorViewCamera::default(),
+             renderer: None,
++            renderer_device: None,
++            renderer_failure_device: None,
++            #[cfg(not(target_arch = "wasm32"))]
++            renderer_warmup: None,
+             texture: None,
+             ui_texture_renderer: None,
+             entity_pick_info: Vec::new(),
+@@ -926,8 +947,8 @@ impl SceneView {
+             last_particle_frame: Instant::now(),
+             preview_notice: None,
+             preview_failure_since: None,
+-            gltf_cache: engine::scene_bridge::SharedGltfImportCache::default(),
+-            gpu_mesh_cache: engine::SharedGpuMeshCache::default(),
++            residency,
++            waiting_for_residency: false,
+             manifest_hash_cache: None,
+             preview: None,
+             authoring_overlay: engine::authoring_overlay::AuthoringDocumentOverlay::new(),
+@@ -1077,6 +1098,116 @@ impl SceneView {
+         self.last_particle_frame = Instant::now();
+     }
+ 
++    fn ensure_renderer_ready(
++        &mut self,
++        render_state: &egui_wgpu::RenderState,
++        context: &egui::Context,
++    ) -> bool {
++        let device_identity = Arc::as_ptr(&render_state.device) as usize;
++        if self.renderer_device != Some(device_identity) {
++            self.renderer_device = Some(device_identity);
++            self.renderer_failure_device = None;
++            self.renderer = None;
++            #[cfg(not(target_arch = "wasm32"))]
++            {
++                self.renderer_warmup = None;
++            }
++            self.texture = None;
++            self.ui_texture_renderer = None;
++            self.preview = None;
++            self.last_view = None;
++            self.waiting_for_residency = false;
++        }
++        self.residency.bind_gpu_device(device_identity);
++        if self.renderer.is_some() {
++            return true;
++        }
++
++        #[cfg(not(target_arch = "wasm32"))]
++        {
++            let completed = self.renderer_warmup.as_ref().and_then(|receiver| {
++                match receiver.try_recv() {
++                    Ok(result) => Some(result),
++                    Err(mpsc::TryRecvError::Empty) => None,
++                    Err(mpsc::TryRecvError::Disconnected) => Some(Err(
++                        "preview renderer warm-up worker disconnected".to_owned(),
++                    )),
++                }
++            });
++            if let Some(result) = completed {
++                self.renderer_warmup = None;
++                match result {
++                    Ok(renderer) => {
++                        self.renderer = Some(renderer);
++                        self.renderer_failure_device = None;
++                        context.request_repaint();
++                        return true;
++                    }
++                    Err(message) => {
++                        self.renderer_failure_device = Some(device_identity);
++                        self.preview_notice = Some(PreviewNotice::failure(
++                            "editor.scene_view.renderer_failed",
++                            format!("Scene View renderer warm-up failed: {message}"),
++                        ));
++                        return false;
++                    }
++                }
++            }
++
++            if self.renderer_failure_device != Some(device_identity)
++                && self.renderer_warmup.is_none()
++            {
++                let (sender, receiver) = mpsc::channel();
++                let device = render_state.device.clone();
++                let queue = render_state.queue.clone();
++                let texture_cache = self.residency.gpu_texture_cache();
++                match std::thread::Builder::new()
++                    .name("preview-renderer-warmup".to_owned())
++                    .spawn(move || {
++                        let result = pollster::block_on(engine::PreviewRenderer::new(
++                            &device,
++                            &queue,
++                            PREVIEW_RENDER_FORMAT,
++                        ))
++                        .map(|mut renderer| {
++                            renderer.configure_streaming(
++                                texture_cache,
++                                PREVIEW_GPU_UPLOAD_BYTES_PER_FRAME,
++                                PREVIEW_GPU_UPLOADS_PER_FRAME,
++                            );
++                            renderer
++                        })
++                        .map_err(|error| error.to_string());
++                        let _ = sender.send(result);
++                    })
++                {
++                    Ok(_worker) => self.renderer_warmup = Some(receiver),
++                    Err(error) => {
++                        self.renderer_failure_device = Some(device_identity);
++                        self.preview_notice = Some(PreviewNotice::failure(
++                            "editor.scene_view.renderer_failed",
++                            format!("could not start preview renderer warm-up: {error}"),
++                        ));
++                    }
++                }
++            }
++            if self.renderer_failure_device != Some(device_identity) {
++                context.request_repaint_after(std::time::Duration::from_millis(16));
++            }
++            return false;
++        }
++
++        #[cfg(target_arch = "wasm32")]
++        {
++            self.renderer_failure_device = Some(device_identity);
++            self.preview_notice = Some(PreviewNotice::failure(
++                "editor.scene_view.renderer_failed",
++                "asynchronous preview renderer warm-up is unavailable on wasm32".to_owned(),
++            ));
++            false
++        }
++    }
++
+     /// Releases the GPU texture registered with egui.
+     pub fn release(&mut self, render_state: &egui_wgpu::RenderState) {
+         if let Some(texture) = self.texture.take() {
+@@ -1097,28 +1228,28 @@ impl SceneView {
+         self.last_view = None;
+     }
+ 
+-    /// Releases additional recreatable preview residency after transient reclaim.
++    /// Releases additional recreatable preview residency after aggressive reclaim.
+     ///
+-    /// This never touches canonical authoring state or low-level GPU ownership.
+-    /// The shared import cache remains CPU-side and reusable; GPU mesh residency
+-    /// and the preview world are reconstructed lazily on the next rendered frame.
++    /// Project CPU residency and immutable renderer pipelines remain available;
++    /// the project resource broker separately evicts shared mesh/texture uploads.
+     pub(crate) fn release_recreatable_resources(
+         &mut self,
+         render_state: &egui_wgpu::RenderState,
+     ) {
+         self.release_transient_resources(render_state);
+         self.preview = None;
+-        self.renderer = None;
+-        self.gpu_mesh_cache.clear();
++        if let Some(renderer) = &mut self.renderer {
++            renderer.release_recreatable_resources();
++        }
+         self.manifest_hash_cache = None;
++        self.waiting_for_residency = false;
+     }
+ 
+-    /// Releases preview worlds and resident imports owned by the old project.
++    /// Releases preview-world state owned by the old project.
+     pub fn clear_project_caches(&mut self) {
+         self.preview = None;
+-        self.gltf_cache = engine::scene_bridge::SharedGltfImportCache::default();
+-        self.gpu_mesh_cache.clear();
+         self.manifest_hash_cache = None;
++        self.waiting_for_residency = false;
+     }
+ 
+     /// Rebuilds the persistent preview world after an asset value or override
+@@ -1477,21 +1608,7 @@ impl SceneView {
+             self.texture = SceneTexture::new(render_state, size);
+         }
+ 
+-        if self.renderer.is_none() {
+-            match pollster::block_on(engine::PreviewRenderer::new(
+-                &render_state.device,
+-                &render_state.queue,
+-                PREVIEW_RENDER_FORMAT,
+-            )) {
+-                Ok(renderer) => self.renderer = Some(renderer),
+-                Err(error) => {
+-                    self.preview_notice = Some(PreviewNotice::failure(
+-                        "editor.scene_view.renderer_failed",
+-                        format!("Scene View renderer failed: {error}"),
+-                    ));
+-                }
+-            }
+-        }
++        let renderer_ready = self.ensure_renderer_ready(render_state, response.ctx());
+ 
+         let mut picked_entity = None;
+         let mut picked_ui_node = None;
+@@ -1509,53 +1626,143 @@ impl SceneView {
+                 hash
+             }
+         };
+-        if let (Some(texture), Some(renderer)) = (&self.texture, &mut self.renderer) {
+-            let key = PreviewKey {
+-                scene_revision,
+-                manifest_hash,
+-                game_module: game_module.map(|module| Arc::as_ptr(module) as usize),
+-                project_root: project_root.map(|root| root.assets_root()),
+-                sky_enabled: self.show_sky,
+-                animation_preview_enabled: self.animation_preview_enabled,
+-                animation_secondary_physics_enabled: self
+-                    .animation_secondary_physics_enabled,
+-                particle_preview_enabled: self.particle_preview_enabled,
+-            };
+-
+-            // A non-transform Inspector preview (for example a material color
+-            // drag) mutates state the transform fast path cannot express, so
+-            // it forces a full rebuild for the duration of the gesture.
+-            let non_transform_preview = component_preview
+-                .is_some_and(|preview| preview.component_type != transform_component_type());
+-            let reuse =
+-                !non_transform_preview && self.preview.as_ref().is_some_and(|p| p.key == key);
++        let key = PreviewKey {
++            scene_revision,
++            manifest_hash,
++            residency_revision: self.residency.revision(),
++            game_module: game_module.map(|module| Arc::as_ptr(module) as usize),
++            project_root: project_root.map(|root| root.assets_root()),
++            sky_enabled: self.show_sky,
++            animation_preview_enabled: self.animation_preview_enabled,
++            animation_secondary_physics_enabled: self.animation_secondary_physics_enabled,
++            particle_preview_enabled: self.particle_preview_enabled,
++        };
+ 
+-            if !reuse {
+-                let (app, spawn_notice, bridge) = build_preview_app_with_sky(
+-                    render_scene,
+-                    project_root,
+-                    manifest,
+-                    game_module,
+-                    &self.gltf_cache,
+-                    &self.gpu_mesh_cache,
+-                    &self.authoring_overlay,
+-                    size,
+-                    self.show_sky,
+-                );
+-                self.preview_notice = spawn_notice;
+-                self.preview = Some(PreviewWorld {
+-                    app,
+-                    key,
+-                    bridge,
+-                    transform_overrides: Vec::new(),
+-                    animation_system_installed: false,
+-                    animation_graph_system_installed: false,
+-                    animation_sampled_elapsed: -1.0,
+-                    animation_fixed_step_remainder: 0.0,
+-                    animation_transition_started: false,
+-                });
++        // A non-transform Inspector preview (for example a material color drag)
++        // mutates state the transform fast path cannot express.
++        let non_transform_preview = component_preview
++            .is_some_and(|preview| preview.component_type != transform_component_type());
++        let reuse = !non_transform_preview
++            && !self.waiting_for_residency
++            && self.preview.as_ref().is_some_and(|preview| preview.key == key);
++
++        if !reuse {
++            let assets_root = project_root.map(ProjectRoot::assets_root);
++            let priority = if response.has_focus() || response.hovered() {
++                PreviewAssetPriority::FocusedVisible
++            } else {
++                PreviewAssetPriority::Visible
++            };
++            match self.residency.prepare_scene(
++                render_scene,
++                manifest,
++                assets_root.as_deref(),
++                priority,
++            ) {
++                PreviewResidencyState::Ready => {
++                    self.waiting_for_residency = false;
++                    let model_cache = self.residency.model_cache();
++                    let gpu_mesh_cache = self.residency.gpu_mesh_cache();
++                    let (app, spawn_notice, bridge) = build_preview_app_with_sky(
++                        render_scene,
++                        project_root,
++                        manifest,
++                        game_module,
++                        &model_cache,
++                        &gpu_mesh_cache,
++                        &self.authoring_overlay,
++                        size,
++                        self.show_sky,
++                    );
++                    if self.renderer_failure_device != self.renderer_device {
++                        self.preview_notice = spawn_notice;
++                    }
++                    self.preview = Some(PreviewWorld {
++                        app,
++                        key: key.clone(),
++                        bridge,
++                        transform_overrides: Vec::new(),
++                        animation_system_installed: false,
++                        animation_graph_system_installed: false,
++                        animation_sampled_elapsed: -1.0,
++                        animation_fixed_step_remainder: 0.0,
++                        animation_transition_started: false,
++                    });
++                }
++                PreviewResidencyState::Pending => {
++                    self.waiting_for_residency = true;
++                    response
++                        .ctx
++                        .request_repaint_after(std::time::Duration::from_millis(33));
++                    if self.preview.is_none() {
++                        let model_cache = self.residency.model_cache();
++                        let gpu_mesh_cache = self.residency.gpu_mesh_cache();
++                        let empty_scene = AuthoringScene::new();
++                        let (app, _, bridge) = build_preview_app_with_sky(
++                            &empty_scene,
++                            project_root,
++                            manifest,
++                            game_module,
++                            &model_cache,
++                            &gpu_mesh_cache,
++                            &self.authoring_overlay,
++                            size,
++                            self.show_sky,
++                        );
++                        self.preview = Some(PreviewWorld {
++                            app,
++                            key: key.clone(),
++                            bridge,
++                            transform_overrides: Vec::new(),
++                            animation_system_installed: false,
++                            animation_graph_system_installed: false,
++                            animation_sampled_elapsed: -1.0,
++                            animation_fixed_step_remainder: 0.0,
++                            animation_transition_started: false,
++                        });
++                    }
++                }
++                PreviewResidencyState::Failed(message) => {
++                    self.waiting_for_residency = false;
++                    self.preview_notice = Some(PreviewNotice::failure(
++                        "editor.scene_view.asset_materialization_failed",
++                        format!("Scene View asset preparation failed: {message}"),
++                    ));
++                    if self.preview.is_none() {
++                        let model_cache = self.residency.model_cache();
++                        let gpu_mesh_cache = self.residency.gpu_mesh_cache();
++                        let empty_scene = AuthoringScene::new();
++                        let (app, _, bridge) = build_preview_app_with_sky(
++                            &empty_scene,
++                            project_root,
++                            manifest,
++                            game_module,
++                            &model_cache,
++                            &gpu_mesh_cache,
++                            &self.authoring_overlay,
++                            size,
++                            self.show_sky,
++                        );
++                        self.preview = Some(PreviewWorld {
++                            app,
++                            key: key.clone(),
++                            bridge,
++                            transform_overrides: Vec::new(),
++                            animation_system_installed: false,
++                            animation_graph_system_installed: false,
++                            animation_sampled_elapsed: -1.0,
++                            animation_fixed_step_remainder: 0.0,
++                            animation_transition_started: false,
++                        });
++                    }
++                }
+             }
++        }
+ 
++        let mut gpu_upload_pending = false;
++        if renderer_ready
++            && let (Some(texture), Some(renderer)) = (&self.texture, &mut self.renderer)
++        {
+             let animation_preview_request = self.animation_preview_request.clone();
+             let preview = self
+                 .preview
+@@ -1774,6 +1981,13 @@ impl SceneView {
+                     format!("Scene View render failed: {error}"),
+                 ));
+             }
++            let upload_report = renderer.upload_report();
++            gpu_upload_pending = upload_report.has_deferred_work();
++            if gpu_upload_pending {
++                response
++                    .ctx
++                    .request_repaint_after(std::time::Duration::from_millis(16));
++            }
+ 
+             // Game UI is rendered into the same offscreen color target as the
+             // 3D scene. Only the final viewport texture enters the editor context;
+@@ -1938,6 +2152,46 @@ impl SceneView {
+             let _ = aspect;
+         }
+ 
++        if !renderer_ready {
++            ui.painter()
++                .rect_filled(rect, 0.0, egui::Color32::from_rgb(20, 22, 26));
++            if self.renderer_failure_device != self.renderer_device {
++                ui.painter().text(
++                    rect.center(),
++                    egui::Align2::CENTER_CENTER,
++                    "Preparing preview renderer…",
++                    egui::TextStyle::Body.resolve(ui.style()),
++                    egui::Color32::LIGHT_GRAY,
++                );
++            }
++        } else if self.waiting_for_residency {
++            ui.painter().rect_filled(
++                rect,
++                0.0,
++                egui::Color32::from_black_alpha(72),
++            );
++            ui.painter().text(
++                rect.center(),
++                egui::Align2::CENTER_CENTER,
++                "Preparing preview assets…",
++                egui::TextStyle::Body.resolve(ui.style()),
++                egui::Color32::WHITE,
++            );
++        } else if gpu_upload_pending {
++            ui.painter().rect_filled(
++                rect,
++                0.0,
++                egui::Color32::from_black_alpha(48),
++            );
++            ui.painter().text(
++                rect.center(),
++                egui::Align2::CENTER_CENTER,
++                "Uploading preview assets…",
++                egui::TextStyle::Body.resolve(ui.style()),
++                egui::Color32::WHITE,
++            );
++        }
++
+         let preview_notice_is_failure = matches!(
+             self.preview_notice.as_ref(),
+             Some(PreviewNotice::Failure(_))
+diff --git a/crates/editor/src/ui/animation_preview.rs b/crates/editor/src/ui/animation_preview.rs
+index 740e6cfd536afdf244f4fb15666823414fc82013..21612810c6952af50c85409d7afaffcea81cc1cd 100644
+--- a/crates/editor/src/ui/animation_preview.rs
++++ b/crates/editor/src/ui/animation_preview.rs
+@@ -42,7 +42,15 @@ pub(super) struct AnimationPreviewWindow {
+ 
+ impl Default for AnimationPreviewWindow {
+     fn default() -> Self {
+-        let mut view = SceneView::new();
++        Self::with_residency(crate::preview_residency::ProjectAssetResidency::default())
++    }
++}
++
++impl AnimationPreviewWindow {
++    pub(super) fn with_residency(
++        residency: crate::preview_residency::ProjectAssetResidency,
++    ) -> Self {
++        let mut view = SceneView::with_residency(residency);
+         view.show_ui_overlay = false;
+         view.show_lod_debug = false;
+         view.particle_preview_enabled = false;
+@@ -67,9 +75,7 @@ impl Default for AnimationPreviewWindow {
+             playing: true,
+         }
+     }
+-}
+ 
+-impl AnimationPreviewWindow {
+     pub(super) fn release_for_inference(
+         &mut self,
+         render_state: &egui_wgpu::RenderState,
+diff --git a/crates/editor/src/ui/assets/model_import.rs b/crates/editor/src/ui/assets/model_import.rs
+index 0c17c886c993182c7e6683d8653143d164d54f19..5eb5bd2cab35f103a5577803900a70b7be1c900a 100644
+--- a/crates/editor/src/ui/assets/model_import.rs
++++ b/crates/editor/src/ui/assets/model_import.rs
+@@ -689,7 +689,7 @@ impl EditorApp {
+             ));
+     }
+ 
+-    pub(in crate::ui) fn handle_asset_import_result(&mut self, result: AssetImportResult) {
++    pub(in crate::ui) fn handle_asset_import_result(&mut self, mut result: AssetImportResult) {
+         let Some(project) = self.project_root.clone() else {
+             return;
+         };
+@@ -732,6 +732,30 @@ impl EditorApp {
+             return;
+         }
+ 
++        if result.conversion_ready_model.is_some() {
++            let current_stamp =
++                engine::SourceStamp::capture(&result.source_path, &result.source_dependencies).ok();
++            let current_contact_bones = self
++                .asset_manifest
++                .get(&result.source_id)
++                .map(|entry| entry.import_settings.contact_bones.clone())
++                .unwrap_or_default();
++            if current_stamp != result.source_stamp
++                || current_contact_bones != result.conversion_ready_contact_bones
++            {
++                self.session
++                    .push_diagnostic(engine_authoring::Diagnostic::info(
++                        "asset.import_stale_completion",
++                        format!(
++                            "discarded stale import completion for `{}` and queued the newest generation",
++                            result.source_path.display()
++                        ),
++                    ));
++                self.queue_model_import(result.source_id.clone(), result.source_path.clone());
++                return;
++            }
++        }
++
+         let assets_root = project.assets_root();
+         let dependencies = result
+             .source_dependencies
+@@ -779,6 +803,7 @@ impl EditorApp {
+         // Captured before the overwrite so the skeleton bind report (ADR
+         // 0077 §6, AP-5) can compare the previous and current bone ledgers.
+         let previous_skeleton_records = entry.import_settings.skeleton_records.clone();
++        let residency_fingerprint = result.source_fingerprint.clone();
+         entry.import_settings.source_fingerprint = result.source_fingerprint;
+         entry.import_settings.source_stamp = result.source_stamp;
+         entry.import_settings.source_dependencies = dependencies;
+@@ -822,6 +847,20 @@ impl EditorApp {
+         }
+         self.asset_manifest = manifest;
+ 
++        // Promotion happens only after the manifest accepted this exact generation.
++        if let Some(imported) = result.conversion_ready_model.take() {
++            self.preview_residency.publish_import_result(
++                &result.source_id,
