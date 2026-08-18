@@ -68,6 +68,8 @@ pub mod scene;
 pub mod scene_authoring;
 pub mod schema;
 pub mod test_fixtures;
+pub mod timeline;
+pub mod timeline_authoring;
 pub mod transaction;
 pub mod typed_document_authoring;
 pub mod ui;
@@ -142,7 +144,8 @@ pub use graph_view::{
 };
 pub use id::{
     AssetId, ComponentTypeId, ComponentTypeIdError, EdgeId, EntityId, GraphId, GroupId, IdError,
-    MotionSlotId, NodeId, PortId, ProjectId, StableId,
+    MotionSlotId, NodeId, PortId, ProjectId, StableId, TimelineClipId, TimelineId,
+    TimelineMarkerId, TimelineTrackId,
 };
 pub use load::{load_scene_from_json, SceneLoadError};
 pub use material_asset::{
@@ -170,6 +173,21 @@ pub use scene::{AuthoringScene, SceneSaveError};
 pub use scene_authoring::{
     SceneAuthoringError, SceneAuthoringMutation, SceneAuthoringService, SceneAuthoringSnapshot,
     SceneAuthoringValidation,
+};
+pub use timeline::{
+    compile_timeline, load_timeline, sample_timeline_property, save_timeline,
+    timeline_property_registry, timeline_track_registry, validate_timeline, CompiledTimelinePayload,
+    TimelineBinding, TimelineClip, TimelineClipPayload, TimelineCompilation, TimelineDiagnostic,
+    TimelineDiagnosticSeverity, TimelineDisplayRate, TimelineDocument, TimelineDocumentError,
+    TimelineMarker, TimelinePropertyDescriptor, TimelinePropertyKey, TimelinePropertyValue,
+    TimelinePropertyValueKind, TimelineTrack, TimelineTrackDescriptor, TimelineTrackKind,
+    TIMELINE_FILE_SUFFIX, TIMELINE_PROPERTY_REGISTRY, TIMELINE_SCHEMA_VERSION,
+    TIMELINE_TRACK_REGISTRY,
+};
+pub use timeline_authoring::{
+    TimelineAuthoringChange, TimelineAuthoringCommand, TimelineAuthoringError,
+    TimelineAuthoringMutation, TimelineAuthoringPreview, TimelineAuthoringService,
+    TimelineAuthoringSnapshot, TimelineAuthoringValidation, TimelineRevision,
 };
 pub use schema::{ComponentSchema, ComponentSchemaRegistry, FieldSchema, FieldType};
 pub use transaction::{AuthoringSession, Transaction, TransactionError};
