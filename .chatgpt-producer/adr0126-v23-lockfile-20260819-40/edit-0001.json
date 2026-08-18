@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"Cargo.lock","old":"name = \"engine-authoring\"\nversion = \"0.1.0\"\ndependencies = [\n \"serde\",","new":"name = \"engine-authoring\"\nversion = \"0.1.0\"\ndependencies = [\n \"engine-timeline\",\n \"serde\","}
