@@ -1,6 +1,6 @@
 # ADR 0143: Native ModelBackend Resource Controls and Hardware Telemetry
 
-Status: Proposed
+Status: Accepted
 Date: 2026-08-17
 Builds on: ADR 0131, ADR 0135
 Relates to: ADR 0003, ADR 0072, ADR 0104, ADR 0136, ADR 0142
@@ -52,6 +52,16 @@ This ADR can be implemented in parallel with ADR 0141, ADR 0144-0149, ADR 0151, 
 Tests must cover unavailable capability honesty, successful and failed unload/offload requests, interruption releasing supported residency, Play priority reclaim, reload timing/telemetry, no canonical authoring changes during resource transitions, and safe renderer restoration after any approved reclaim path. Hardware-dependent tests must distinguish deterministic adapter contract tests from reference-machine measurement runs.
 
 Editor-visible resource posture controls require Visual Validation.
+
+The first-release deterministic suite exercises:
+
+- truthful local/remote capability profiles and verified unload/offload/reload adapter transitions;
+- Interrupt-for-Editing selecting verified release before the explicit Editor-presentation restore continuation;
+- managed Play selecting RuntimeRendering priority and verified release/offload before RuntimeLaunch;
+- Resume selecting reload only on the authoritative-state-inspection path; and
+- resource-boundary planning as authoring-state-free logic.
+
+Reference-machine GPU measurements remain separate and may not synthesize unavailable hardware values.
 
 ## Non-goals
 
