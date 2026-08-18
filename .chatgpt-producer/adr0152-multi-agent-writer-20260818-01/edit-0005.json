@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/agent_host.rs","old":"    pub(crate) planned_assets: Vec<String>,\n    pub(crate) validation_plan: Vec<String>,\n","new":"    pub(crate) planned_assets: Vec<String>,\n    #[serde(default)]\n    pub(crate) work_claims: BTreeSet<AgentWorkClaim>,\n    pub(crate) validation_plan: Vec<String>,\n"}
