@@ -413,18 +413,26 @@ impl Animator {
     /// local time fixed while the Playing state still allows the production sampler to write
     /// the pose during this fixed step. Crossfade state is intentionally cleared because a
     /// Timeline clip is an explicit higher-level sample, not a graph transition.
-    pub fn sample_timeline_pose(&mut self, clip: Handle<AnimationClip>, seconds: f32) {
+    pub fn sample_timeline_pose(
+        &mut self,
+        clip: Handle<AnimationClip>,
+        seconds: f32,
+        discontinuous_seek: bool,
+    ) {
         if !seconds.is_finite() {
             return;
         }
+        let clip_changed = self.clip != clip;
         self.clip = clip;
         self.time = seconds.max(0.0);
         self.state = AnimatorState::Playing;
         self.playback_speed = 0.0;
         self.fade = None;
         self.root_motion_delta = Vec3::ZERO;
-        if self.discontinuity != Some(AnimatorDiscontinuity::Reposition) {
+        if discontinuous_seek {
             self.discontinuity = Some(AnimatorDiscontinuity::Seek);
+        } else if clip_changed {
+            self.discontinuity = Some(AnimatorDiscontinuity::Reposition);
         }
     }
 

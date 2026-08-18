@@ -22,10 +22,12 @@ use engine_authoring::{
     TimelinePropertyValue,
 };
 use engine_ecs::{Entity, Query, Res, ResMut};
+pub use engine_timeline::{
+    TimelineLoop, TimelinePlaybackState, TimelineTick, TIMELINE_TICKS_PER_SECOND,
+};
 use engine_timeline::{
     CompiledTimeline, EvaluationDecision, EvaluationMode, EvaluationRequest, PlaybackRate,
-    PlaybackRateError, TimelinePlaybackState, TimelinePlayer, TimelineTick,
-    TIMELINE_TICKS_PER_SECOND,
+    PlaybackRateError, TimelineLoopError, TimelinePlayer,
 };
 use glam::{Quat, Vec3};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
@@ -76,6 +78,8 @@ pub enum TimelineRuntimeError {
     UnknownPlayer(u64),
     /// Requested deterministic playback rate is invalid.
     InvalidRate,
+    /// Requested loop range is empty or outside the compiled Timeline duration.
+    InvalidLoop,
 }
 
 impl fmt::Display for TimelineRuntimeError {
@@ -87,6 +91,7 @@ impl fmt::Display for TimelineRuntimeError {
             Self::Compile(diagnostics) => write!(formatter, "Timeline did not compile: {}", diagnostics.join("; ")),
             Self::UnknownPlayer(player) => write!(formatter, "Timeline player {player} does not exist"),
             Self::InvalidRate => formatter.write_str("Timeline playback rate is invalid"),
+            Self::InvalidLoop => formatter.write_str("Timeline loop range is invalid"),
         }
     }
 }
@@ -97,6 +102,38 @@ impl From<PlaybackRateError> for TimelineRuntimeError {
     fn from(_: PlaybackRateError) -> Self {
         Self::InvalidRate
     }
+}
+
+impl From<TimelineLoopError> for TimelineRuntimeError {
+    fn from(_: TimelineLoopError) -> Self {
+        Self::InvalidLoop
+    }
+}
+
+/// Compiles an in-memory Timeline working copy through the same production schedule path.
+///
+/// Editor Sequencer preview uses this for unsaved source changes. Only the source read is
+/// bypassed; validation, compilation, runtime composition, seek semantics, and domain
+/// adapters remain identical to packaged Player playback.
+pub fn prepare_timeline_document(
+    asset: AssetId,
+    document: &TimelineDocument,
+) -> Result<PreparedTimeline, TimelineRuntimeError> {
+    let compilation = compile_timeline(document);
+    let schedule = compilation.schedule.ok_or_else(|| {
+        TimelineRuntimeError::Compile(
+            compilation
+                .diagnostics
+                .into_iter()
+                .map(|diagnostic| format!("[{}] {}", diagnostic.code, diagnostic.message))
+                .collect(),
+        )
+    })?;
+    Ok(PreparedTimeline {
+        asset,
+        document_id: document.id.clone(),
+        schedule,
+    })
 }
 
 /// Loads and compiles a stable Timeline asset through the production asset boundary.
@@ -139,6 +176,7 @@ struct ActiveTimelinePlayer {
     document_id: TimelineId,
     schedule: CompiledTimeline<CompiledTimelinePayload>,
     player: TimelinePlayer,
+    priority: i32,
     pending: VecDeque<EvaluationRequest>,
 }
 
@@ -157,6 +195,8 @@ pub struct TimelinePlayerSnapshot {
     pub tick: TimelineTick,
     /// Monotonic discontinuity generation.
     pub generation: u64,
+    /// Explicit cross-player composition priority. Higher values win.
+    pub priority: i32,
     /// Rational rate numerator.
     pub rate_numerator: i32,
     /// Rational rate denominator.
@@ -172,6 +212,8 @@ pub struct TimelineEventRecord {
     pub player_id: u64,
     /// Stable Timeline asset.
     pub asset: AssetId,
+    /// Stable semantic Timeline document identity.
+    pub document_id: TimelineId,
     /// Canonical event tick.
     pub tick: TimelineTick,
     /// Stable bounded event name.
@@ -205,9 +247,10 @@ impl TimelineEvents {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct Priority {
-    player_id: u64,
+    player_priority: i32,
     track_order: u32,
     item_order: u32,
+    player_id: u64,
 }
 
 #[derive(Clone)]
@@ -215,6 +258,7 @@ struct ActiveClip {
     priority: Priority,
     player_id: u64,
     playback_state: TimelinePlaybackState,
+    discontinuous_seek: bool,
     clip_id: TimelineClipId,
     binding: Option<TimelineBinding>,
     source_offset: TimelineTick,
@@ -225,6 +269,7 @@ struct ActiveClip {
 struct PendingEvent {
     player_id: u64,
     asset: AssetId,
+    document_id: TimelineId,
     tick: TimelineTick,
     name: String,
     payload: String,
@@ -260,8 +305,23 @@ pub struct TimelineRuntime {
 }
 
 impl TimelineRuntime {
-    /// Starts or replaces a logical player with a prepared immutable schedule.
+    /// Starts or replaces a logical player at the default composition priority.
     pub fn start(&mut self, player_id: u64, prepared: PreparedTimeline) {
+        self.start_with_priority(player_id, prepared, 0);
+    }
+
+    /// Starts or replaces a logical player with an explicit cross-player priority.
+    ///
+    /// Higher priorities win when independent Timeline players target the same runtime
+    /// domain. Equal priorities remain deterministic through track/item order and logical
+    /// player ID, and the runtime records a conflict diagnostic instead of silently
+    /// pretending the authoring intent was unambiguous.
+    pub fn start_with_priority(
+        &mut self,
+        player_id: u64,
+        prepared: PreparedTimeline,
+        priority: i32,
+    ) {
         let mut player = TimelinePlayer::new(prepared.schedule.duration());
         player.play();
         self.players.insert(
@@ -271,6 +331,7 @@ impl TimelineRuntime {
                 document_id: prepared.document_id,
                 schedule: prepared.schedule,
                 player,
+                priority,
                 pending: VecDeque::new(),
             },
         );
@@ -322,6 +383,20 @@ impl TimelineRuntime {
         Ok(())
     }
 
+    /// Configures the neutral player's exact half-open loop range.
+    ///
+    /// Loop crossings remain owned by `engine-timeline`, which splits the end/start
+    /// transition so point events keep the same exact crossing semantics in Editor
+    /// preview and packaged Player playback.
+    pub fn set_loop(
+        &mut self,
+        player_id: u64,
+        range: Option<TimelineLoop>,
+    ) -> Result<(), TimelineRuntimeError> {
+        self.player_mut(player_id)?.player.set_loop(range)?;
+        Ok(())
+    }
+
     /// Returns copied runtime player state in deterministic logical-ID order.
     pub fn snapshots(&self) -> Vec<TimelinePlayerSnapshot> {
         self.players
@@ -335,6 +410,7 @@ impl TimelineRuntime {
                     state: active.player.state(),
                     tick: active.player.tick(),
                     generation: active.player.generation(),
+                    priority: active.priority,
                     rate_numerator: rate.numerator(),
                     rate_denominator: rate.denominator(),
                 }
@@ -383,6 +459,9 @@ impl TimelineRuntime {
             if active.player.state() == TimelinePlaybackState::Playing {
                 requests.extend(active.player.advance_ticks(host_ticks));
             }
+            let discontinuous_seek = requests
+                .iter()
+                .any(|request| matches!(request.mode, EvaluationMode::Seek { .. }));
 
             for request in &requests {
                 for item in active.schedule.evaluate(request) {
@@ -391,6 +470,7 @@ impl TimelineRuntime {
                             frame.events.push(PendingEvent {
                                 player_id,
                                 asset: active.asset.clone(),
+                                document_id: active.document_id.clone(),
                                 tick: request.current_tick,
                                 name: name.clone(),
                                 payload: String::new(),
@@ -403,6 +483,7 @@ impl TimelineRuntime {
                             frame.events.push(PendingEvent {
                                 player_id,
                                 asset: active.asset.clone(),
+                                document_id: active.document_id.clone(),
                                 tick: request.current_tick,
                                 name: name.clone(),
                                 payload: payload.clone(),
@@ -443,12 +524,14 @@ impl TimelineRuntime {
                 };
                 frame.active.push(ActiveClip {
                     priority: Priority {
-                        player_id,
+                        player_priority: active.priority,
                         track_order: item.entry().track_order(),
                         item_order: item.entry().item_order(),
+                        player_id,
                     },
                     player_id,
                     playback_state: active.player.state(),
+                    discontinuous_seek,
                     clip_id: clip_id.clone(),
                     binding: binding.clone(),
                     source_offset: *source_offset,
@@ -466,7 +549,7 @@ impl TimelineRuntime {
 /// Advances every Timeline player, applies domain-owned runtime state, and emits exact events.
 ///
 /// Register this after Animation Graph state selection and before skeletal animation sampling.
-pub fn timeline_prepare_system(
+pub(crate) fn timeline_prepare_system(
     fixed: Res<FixedTime>,
     mut runtime: ResMut<TimelineRuntime>,
     mut events: ResMut<TimelineEvents>,
@@ -492,6 +575,7 @@ pub fn timeline_prepare_system(
             source_sequence: 0,
             player_id: event.player_id,
             asset: event.asset,
+            document_id: event.document_id,
             tick: event.tick,
             name: event.name,
             payload: event.payload,
@@ -502,6 +586,7 @@ pub fn timeline_prepare_system(
     let mut desired_vfx = BTreeMap::<EntityId, &ActiveClip>::new();
     let mut desired_camera: Option<(EntityId, &ActiveClip)> = None;
     runtime.desired_transforms.clear();
+    let mut conflicts = BTreeSet::new();
 
     for active in &frame.active {
         let entity = match &active.binding {
@@ -511,6 +596,18 @@ pub fn timeline_prepare_system(
         match &active.payload {
             TimelineClipPayload::Animation { .. } => {
                 if let Some(entity) = entity {
+                    if let Some(current) = desired_animation.get(&entity)
+                        && current.priority.player_priority == active.priority.player_priority
+                        && current.player_id != active.player_id
+                    {
+                        conflicts.insert(format!(
+                            "Animation target `{}` has equal Timeline player priority {} between players {} and {}",
+                            entity.as_str(),
+                            active.priority.player_priority,
+                            current.player_id,
+                            active.player_id
+                        ));
+                    }
                     choose_clip(&mut desired_animation, entity, active);
                 }
             }
@@ -521,6 +618,19 @@ pub fn timeline_prepare_system(
                     .saturating_add(active.local_tick.get());
                 if let Some(value) = sample_timeline_property(keys, sample_tick) {
                     let key = (entity, property.clone());
+                    if let Some(current) = runtime.desired_transforms.get(&key)
+                        && current.priority.player_priority == active.priority.player_priority
+                        && current.priority.player_id != active.player_id
+                    {
+                        conflicts.insert(format!(
+                            "property `{}` on entity `{}` has equal Timeline player priority {} between players {} and {}",
+                            property,
+                            key.0.as_str(),
+                            active.priority.player_priority,
+                            current.priority.player_id,
+                            active.player_id
+                        ));
+                    }
                     let replace = runtime
                         .desired_transforms
                         .get(&key)
@@ -538,6 +648,19 @@ pub fn timeline_prepare_system(
             }
             TimelineClipPayload::CameraCut => {
                 if let Some(entity) = entity {
+                    if let Some((current_entity, current)) = desired_camera.as_ref()
+                        && current.priority.player_priority == active.priority.player_priority
+                        && current.player_id != active.player_id
+                    {
+                        conflicts.insert(format!(
+                            "Camera Cut has equal Timeline player priority {} between player {} target `{}` and player {} target `{}`",
+                            active.priority.player_priority,
+                            current.player_id,
+                            current_entity.as_str(),
+                            active.player_id,
+                            entity.as_str()
+                        ));
+                    }
                     let replace = desired_camera
                         .as_ref()
                         .is_none_or(|(_, current)| active.priority > current.priority);
@@ -548,11 +671,27 @@ pub fn timeline_prepare_system(
             }
             TimelineClipPayload::Vfx { .. } => {
                 if let Some(entity) = entity {
+                    if let Some(current) = desired_vfx.get(&entity)
+                        && current.priority.player_priority == active.priority.player_priority
+                        && current.player_id != active.player_id
+                    {
+                        conflicts.insert(format!(
+                            "VFX target `{}` has equal Timeline player priority {} between players {} and {}",
+                            entity.as_str(),
+                            active.priority.player_priority,
+                            current.player_id,
+                            active.player_id
+                        ));
+                    }
                     choose_clip(&mut desired_vfx, entity, active);
                 }
             }
             TimelineClipPayload::Audio { .. } | TimelineClipPayload::Event { .. } => {}
         }
+    }
+
+    for conflict in conflicts {
+        runtime.warn(conflict);
     }
 
     apply_animation_overrides(&mut runtime, &desired_animation, &mut animators);
@@ -572,7 +711,7 @@ pub fn timeline_prepare_system(
 
 /// Applies Transform/Property clips after skeletal animation so Timeline property tracks have
 /// an explicit deterministic priority over animation channels targeting the same Transform.
-pub fn timeline_transform_system(
+pub(crate) fn timeline_transform_system(
     mut runtime: ResMut<TimelineRuntime>,
     mut transforms: Query<(&RuntimeEntityIdentity, &mut Transform)>,
 ) {
@@ -668,7 +807,11 @@ fn apply_animation_overrides(
         let sample_tick = active
             .source_offset
             .saturating_add(active.local_tick.get());
-        animator.sample_timeline_pose(handle, sample_tick.to_seconds_f64() as f32);
+        animator.sample_timeline_pose(
+            handle,
+            sample_tick.to_seconds_f64() as f32,
+            active.discontinuous_seek,
+        );
     }
     runtime.animation_originals.retain(|entity, _| seen.contains(entity));
 }
@@ -952,16 +1095,66 @@ mod tests {
     }
 
     #[test]
+    fn timeline_event_records_keep_stable_asset_and_document_identity() {
+        let asset = AssetId::generate();
+        let document_id = TimelineId::generate();
+        let mut events = TimelineEvents::default();
+        events.push(TimelineEventRecord {
+            source_sequence: 0,
+            player_id: u64::MAX,
+            asset: asset.clone(),
+            document_id: document_id.clone(),
+            tick: TimelineTick::new(48_000),
+            name: "sequence.event".to_owned(),
+            payload: "payload".to_owned(),
+        });
+        let event = events.iter().next().unwrap();
+        assert_eq!(event.asset, asset);
+        assert_eq!(event.document_id, document_id);
+        assert_eq!(event.player_id, u64::MAX);
+        assert_eq!(event.source_sequence, 1);
+    }
+
+    #[test]
+    fn explicit_player_priority_wins_before_logical_id_tiebreaker() {
+        let entity = EntityId::generate();
+        let clip = |player_id, player_priority| ActiveClip {
+            priority: Priority {
+                player_priority,
+                track_order: 0,
+                item_order: 0,
+                player_id,
+            },
+            player_id,
+            playback_state: TimelinePlaybackState::Playing,
+            discontinuous_seek: false,
+            clip_id: TimelineClipId::generate(),
+            binding: Some(TimelineBinding::Entity { entity: entity.clone() }),
+            source_offset: TimelineTick::ZERO,
+            local_tick: TimelineTick::ZERO,
+            payload: TimelineClipPayload::CameraCut,
+        };
+        let high_id_low_priority = clip(99, 1);
+        let low_id_high_priority = clip(2, 10);
+        let mut selected = BTreeMap::new();
+        choose_clip(&mut selected, entity.clone(), &high_id_low_priority);
+        choose_clip(&mut selected, entity.clone(), &low_id_high_priority);
+        assert_eq!(selected[&entity].player_id, 2);
+    }
+
+    #[test]
     fn higher_logical_player_id_is_the_deterministic_override_tiebreaker() {
         let entity = EntityId::generate();
         let clip = |player_id| ActiveClip {
             priority: Priority {
-                player_id,
+                player_priority: 0,
                 track_order: 0,
                 item_order: 0,
+                player_id,
             },
             player_id,
             playback_state: TimelinePlaybackState::Playing,
+            discontinuous_seek: false,
             clip_id: TimelineClipId::generate(),
             binding: Some(TimelineBinding::Entity { entity: entity.clone() }),
             source_offset: TimelineTick::ZERO,
