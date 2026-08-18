@@ -24,7 +24,7 @@ use crate::secondary_motion::{
 };
 use crate::native_2d::{
     physics_2d_fixed_system, sprite_animation_2d_fixed_system, Gravity2d, Physics2dDiagnostics,
-    PhysicsRuntime2d, SpriteAnimationEvents2d,
+    PhysicsRuntime2d, SpriteAnimationClipRegistry2d, SpriteAnimationEvents2d,
 };
 use crate::navmesh::{nav_mesh_agent_system, nav_mesh_debug_draw_system};
 use crate::physics::velocity_system;
@@ -94,6 +94,9 @@ pub fn register_runtime_systems(app: &mut App) -> Result<(), SystemRegistrationE
     }
     if app.world().get_resource::<SpriteAnimationEvents2d>().is_none() {
         app.insert_resource(SpriteAnimationEvents2d::default());
+    }
+    if app.world().get_resource::<SpriteAnimationClipRegistry2d>().is_none() {
+        app.insert_resource(SpriteAnimationClipRegistry2d::default());
     }
     app.try_add_system_with_descriptor(
         engine_system(

@@ -21,7 +21,8 @@ use crate::audio::{AudioAsset, AudioEmitter, AudioListener, AudioRolloffMode, Mu
 use crate::behavior_tree::BehaviorTreeRunner;
 use crate::camera::{Camera3D, FollowCamera, LockOnCamera, OrbitCamera};
 use crate::native_2d::{
-    Camera2d, SpriteAnimatorRuntime2d, SpriteBlendMode, SpriteRef, SpriteRenderer2d, ViewportFit2d,
+    Camera2d, SpriteAnimationClipRegistry2d, SpriteAnimatorRuntime2d, SpriteBlendMode, SpriteRef,
+    SpriteRenderer2d, ViewportFit2d,
 };
 use crate::character_controller::KinematicCharacterController;
 use crate::collision::{Collider, CollisionLayers, PhysicsBody, TriggerVolume};
