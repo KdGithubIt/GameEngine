@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0154-animation-binding-20260818-04",
+  "target_branch": "chatgpt/gameengine-adr0154-animation-binding-resolution-v4",
+  "expected_head_sha": "61c5afcd0ba773edce49c5fea711ba23c8331cc7",
+  "baseline_main_sha": "61c5afcd0ba773edce49c5fea711ba23c8331cc7",
+  "patch_sha256": "96b910782d9231a0b1c6938782e0b2471db898f9402c2cf4965fd03f575c0279",
+  "patch_bytes": 26650,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Rewrite ADR 0154 motion candidate design",
+  "pr_title": "GameEngine: rewrite animation motion candidate resolution",
+  "pr_body": "## Summary\n\n- defines Animation Set candidates as model-bound clips such as `a / x`, `a / y`, plus one explicit `a / Humanoid` portable candidate\n- resolves every model-bound candidate automatically as Native -> Retarget -> Humanoid -> Failed and exposes the computed route for the selected target\n- makes the logical clip's Humanoid variant import/reimport-owned, never lazily created by Animation Set or Scene resolution\n- adds stable Humanoid source-model provenance for VMD and other motion-only sources so one target-independent Humanoid candidate can be generated deterministically\n- proposes Animation Set schema v3 to remove the obsolete Auto/Native policy distinction\n\n## Scope\n\nDesign and documentation only. No runtime, Editor, importer, or serialization implementation is included.\n\n<!-- gameengine-chatgpt-dispatcher -->\n"
+}
