@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/engine/src/game_host/core.rs","old":"use crate::native_2d::{CharacterController2d, CharacterControllerMotion2d, SpriteAnimatorRuntime2d};\n","new":"use crate::native_2d::{\n    CharacterController2d, CharacterControllerMotion2d, ContactPhase2d, PhysicsRuntime2d,\n    SpriteAnimationEvents2d, SpriteAnimatorRuntime2d,\n};\n"}

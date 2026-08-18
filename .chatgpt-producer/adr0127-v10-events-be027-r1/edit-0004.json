@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/engine/src/native_2d.rs","old":"    events.events.clear();\n    let seconds = f64::from(fixed_time.fixed_delta.max(0.0));\n","new":"    events.events.clear();\n    events.generation = events.generation.wrapping_add(1);\n    let seconds = f64::from(fixed_time.fixed_delta.max(0.0));\n"}
