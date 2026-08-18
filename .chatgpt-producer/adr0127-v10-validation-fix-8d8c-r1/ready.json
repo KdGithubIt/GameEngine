@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0127-v10-validation-fix-8d8c-r1",
+  "target_branch": "chatgpt/gameengine-adr0127-first-release-current-main-v10",
+  "expected_head_sha": "8d8cc75846438ac0b0b72d01d8872bab324b0399",
+  "baseline_main_sha": "96c8ffb18a74eabec2164daa61f694f131019ddc",
+  "edit_parts": [
+    "edit-0000.json",
+    "edit-0001.json",
+    "edit-0002.json"
+  ],
+  "commit_message": "Fix ADR0127 Native2D path retention",
+  "pr_title": "GameEngine: complete ADR0127 Native 2D first release",
+  "pr_body": "Fixes the exact 8d8cc75 Windows Validation errors by keeping the authored PathBuf before validating its UTF-8 project-relative string for ProjectRoot resolution. No persisted schema or public API changes."
+}
