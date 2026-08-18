@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/build.rs","old":"    let mut diagnostics = Vec::new();\n    let required_bakes = collect_needed_humanoid_bakes(manifest, &assets_root, &mut imports);","new":"    let (required_bakes, mut diagnostics) =\n        collect_needed_humanoid_bakes(manifest, &assets_root, &mut imports);"}
