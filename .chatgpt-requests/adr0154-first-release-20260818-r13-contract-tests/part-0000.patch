@@ -1,0 +1,183 @@
+diff --git a/crates/editor/src/animation_set_editor.rs b/crates/editor/src/animation_set_editor.rs
+index c7dfcbe433175e3c97277c4cbd97c621cc78c058..6ad6d77d1cc795ad47fd4c7891003f3e5d16ef8d 100644
+--- a/crates/editor/src/animation_set_editor.rs
++++ b/crates/editor/src/animation_set_editor.rs
+@@ -494,6 +494,35 @@ mod tests {
+         )
+     }
+ 
++    #[test]
++    fn target_preview_selection_is_transient_and_does_not_dirty_the_animation_set() {
++        let document = AnimationSet::new(AssetId::generate());
++        let canonical = document
++            .to_canonical_json()
++            .expect("fixture must serialize");
++        let mut state = editor(document);
++
++        state.target_preview_skeleton = Some(AssetId::generate());
++        assert!(!state.is_dirty());
++        assert_eq!(
++            state
++                .document
++                .to_canonical_json()
++                .expect("working copy must serialize"),
++            canonical
++        );
++
++        state.target_preview_skeleton = Some(AssetId::generate());
++        assert!(!state.is_dirty());
++        assert_eq!(
++            state
++                .document
++                .to_canonical_json()
++                .expect("working copy must serialize"),
++            canonical
++        );
++    }
++
+     #[test]
+     fn graph_change_preserves_matching_bindings_and_removes_confirmed_stale_bindings() {
+         let old_graph = AssetId::generate();
+diff --git a/crates/editor/src/ui/assets/animation_set_window.rs b/crates/editor/src/ui/assets/animation_set_window.rs
+index 8989aca018599eecded0822e8ebcea6a77e4f90c..db1c5ba17853ec8a7757259100dee738ce510692 100644
+--- a/crates/editor/src/ui/assets/animation_set_window.rs
++++ b/crates/editor/src/ui/assets/animation_set_window.rs
+@@ -169,6 +169,56 @@ fn show_motion_route_preview(
+     response.on_hover_text(route.attempted_routing());
+ }
+ 
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    fn skeleton_record(id: &AssetId, identity: u64) -> engine::asset::SkeletonRecord {
++        engine::asset::SkeletonRecord {
++            id: id.as_str().to_owned(),
++            identity,
++            next_bone_id: 0,
++            bones: Vec::new(),
++        }
++    }
++
++    #[test]
++    fn target_preview_recomputes_native_and_failed_routes_from_the_same_candidate() {
++        let source_id = AssetId::generate();
++        let candidate_id = AssetId::generate();
++        let source_skeleton = AssetId::generate();
++        let other_skeleton = AssetId::generate();
++        let mut manifest = engine::AssetManifest::default();
++        manifest.insert(
++            source_id,
++            engine::ManifestEntry {
++                path: "models/source.glb".to_owned(),
++                name: Some("source".to_owned()),
++                import_settings: engine::ImportSettings {
++                    sub_assets: vec![engine::ImportedSubAsset {
++                        id: candidate_id.as_str().to_owned(),
++                        kind: engine::ImportedSubAssetKind::Animation,
++                        name: "Walk".to_owned(),
++                        index: 0,
++                        target_model_source: None,
++                    }],
++                    skeleton_records: vec![skeleton_record(&source_skeleton, 7)],
++                    ..engine::ImportSettings::default()
++                },
++            },
++        );
++        let candidate = engine_authoring::MotionSourceRef::new(candidate_id);
++
++        let native = preview_motion_route(&manifest, None, &candidate, &source_skeleton)
++            .expect("registered Animation candidate must produce a route");
++        let failed = preview_motion_route(&manifest, None, &candidate, &other_skeleton)
++            .expect("registered Animation candidate must produce a route");
++
++        assert_eq!(native.badge(), "Native");
++        assert_eq!(failed.badge(), "Failed");
++    }
++}
++
+ fn humanoid_motion_choices(
+     manifest: &engine::AssetManifest,
+     assets_root: Option<&std::path::Path>,
+diff --git a/crates/editor/src/ui/assets/motion_pairing.rs b/crates/editor/src/ui/assets/motion_pairing.rs
+index 48ee7c9014cab19dfa8b9259d8c42da97e6bf8eb..bbafbca9a0cfba3bdde8109be67143ea15a610c4 100644
+--- a/crates/editor/src/ui/assets/motion_pairing.rs
++++ b/crates/editor/src/ui/assets/motion_pairing.rs
+@@ -391,3 +391,77 @@ fn compatibility_issue_label(kind: engine::VmdPmxCompatibilityIssueKind) -> &'st
+         Kind::AmbiguousMorph => "Ambiguous morph name",
+     }
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    fn pairing(
++        selected: Vec<AssetId>,
++        humanoid_source: Option<AssetId>,
++        capable: Vec<(AssetId, String)>,
++    ) -> MotionPairingState {
++        MotionPairingState {
++            motion_path: None,
++            original: None,
++            selected,
++            candidates: capable.clone(),
++            candidate_paths: Vec::new(),
++            humanoid_source,
++            humanoid_capable_models: capable,
++            retarget_pairs: Vec::new(),
++            recorded_model_name: None,
++            compatibility_reports: Vec::new(),
++        }
++    }
++
++    #[test]
++    fn persisted_humanoid_source_survives_output_reordering() {
++        let source = AssetId::generate();
++        let other = AssetId::generate();
++        let mut state = pairing(
++            vec![source.clone(), other.clone()],
++            Some(source.clone()),
++            vec![
++                (source.clone(), "source".to_owned()),
++                (other.clone(), "other".to_owned()),
++            ],
++        );
++        assert!(motion_humanoid_source_is_valid(&state));
++
++        state.selected.reverse();
++
++        assert_eq!(state.humanoid_source, Some(source));
++        assert!(motion_humanoid_source_is_valid(&state));
++    }
++
++    #[test]
++    fn ambiguous_capable_models_never_auto_choose_humanoid_provenance() {
++        let first = AssetId::generate();
++        let second = AssetId::generate();
++        let state = pairing(
++            vec![first.clone(), second.clone()],
++            None,
++            vec![
++                (first, "first".to_owned()),
++                (second, "second".to_owned()),
++            ],
++        );
++
++        assert_eq!(humanoid_source_choices(&state).len(), 2);
++        assert!(state.humanoid_source.is_none());
++    }
++
++    #[test]
++    fn sole_capable_model_is_only_an_offer_until_the_author_selects_it() {
++        let only = AssetId::generate();
++        let state = pairing(
++            vec![only.clone()],
++            None,
++            vec![(only, "only".to_owned())],
++        );
++
++        assert_eq!(humanoid_source_choices(&state).len(), 1);
++        assert!(state.humanoid_source.is_none());
++    }
++}
