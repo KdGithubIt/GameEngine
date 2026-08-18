@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ai_studio.rs","old":"                .with_inner_size([600.0, 760.0])\n                .with_min_inner_size([460.0, 520.0])\n","new":"                .with_inner_size([600.0, 680.0])\n                .with_min_inner_size([460.0, 520.0])\n"}
