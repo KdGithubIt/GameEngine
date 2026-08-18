@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/managed_local_runtime.rs","old":"impl ManagedAcquisitionPlan {\n","new":"// ADR 0156 consumes these exact frozen-campaign review/approval helpers.\n#[allow(dead_code)]\nimpl ManagedAcquisitionPlan {\n"}
