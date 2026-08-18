@@ -295,86 +295,84 @@ fn show_motion_route_preview(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn skeleton_record(id: &AssetId, identity: u64) -> engine::asset::SkeletonRecord {
-        engine::asset::SkeletonRecord {
-            id: id.as_str().to_owned(),
-            identity,
-            next_bone_id: 0,
-            bones: Vec::new(),
-        }
+fn test_skeleton_record(id: &AssetId, identity: u64) -> engine::asset::SkeletonRecord {
+    engine::asset::SkeletonRecord {
+        id: id.as_str().to_owned(),
+        identity,
+        next_bone_id: 0,
+        bones: Vec::new(),
     }
+}
 
-    #[test]
-    fn target_preview_recomputes_native_and_failed_routes_from_the_same_candidate() {
-        let source_id = AssetId::generate();
-        let candidate_id = AssetId::generate();
-        let source_skeleton = AssetId::generate();
-        let other_skeleton = AssetId::generate();
-        let mut manifest = engine::AssetManifest::default();
-        manifest.insert(
-            source_id,
-            engine::ManifestEntry {
-                path: "models/source.glb".to_owned(),
-                name: Some("source".to_owned()),
-                import_settings: engine::ImportSettings {
-                    sub_assets: vec![engine::ImportedSubAsset {
-                        id: candidate_id.as_str().to_owned(),
-                        kind: engine::ImportedSubAssetKind::Animation,
-                        name: "Walk".to_owned(),
-                        index: 0,
-                        target_model_source: None,
-                    }],
-                    skeleton_records: vec![skeleton_record(&source_skeleton, 7)],
-                    ..engine::ImportSettings::default()
-                },
+#[cfg(test)]
+#[test]
+fn target_preview_recomputes_native_and_failed_routes_from_the_same_candidate() {
+    let source_id = AssetId::generate();
+    let candidate_id = AssetId::generate();
+    let source_skeleton = AssetId::generate();
+    let other_skeleton = AssetId::generate();
+    let mut manifest = engine::AssetManifest::default();
+    manifest.insert(
+        source_id,
+        engine::ManifestEntry {
+            path: "models/source.glb".to_owned(),
+            name: Some("source".to_owned()),
+            import_settings: engine::ImportSettings {
+                sub_assets: vec![engine::ImportedSubAsset {
+                    id: candidate_id.as_str().to_owned(),
+                    kind: engine::ImportedSubAssetKind::Animation,
+                    name: "Walk".to_owned(),
+                    index: 0,
+                    target_model_source: None,
+                }],
+                skeleton_records: vec![test_skeleton_record(&source_skeleton, 7)],
+                ..engine::ImportSettings::default()
             },
-        );
-        let candidate = engine_authoring::MotionSourceRef::new(candidate_id);
+        },
+    );
+    let candidate = engine_authoring::MotionSourceRef::new(candidate_id);
 
-        let native = preview_motion_route(
-            &manifest,
-            None,
-            None,
-            &candidate,
-            &source_skeleton,
-        )
-        .expect("registered Animation candidate must produce a route");
-        let failed = preview_motion_route(
-            &manifest,
-            None,
-            None,
-            &candidate,
-            &other_skeleton,
-        )
-        .expect("registered Animation candidate must produce a route");
+    let native = preview_motion_route(
+        &manifest,
+        None,
+        None,
+        &candidate,
+        &source_skeleton,
+    )
+    .expect("registered Animation candidate must produce a route");
+    let failed = preview_motion_route(
+        &manifest,
+        None,
+        None,
+        &candidate,
+        &other_skeleton,
+    )
+    .expect("registered Animation candidate must produce a route");
 
-        assert_eq!(native.badge(), "Native");
-        assert_eq!(failed.badge(), "Failed");
-    }
+    assert_eq!(native.badge(), "Native");
+    assert_eq!(failed.badge(), "Failed");
+}
 
-    #[test]
-    fn multi_skeleton_import_uses_the_animation_skin_instead_of_manifest_order() {
-        let first_animation = AssetId::generate();
-        let second_animation = AssetId::generate();
-        let first_skeleton = AssetId::generate();
-        let second_skeleton = AssetId::generate();
-        let animations = [
-            (first_animation.as_str(), 1_usize),
-            (second_animation.as_str(), 0_usize),
-        ];
-        let skeletons = [first_skeleton.clone(), second_skeleton.clone()];
+#[cfg(test)]
+#[test]
+fn multi_skeleton_import_uses_the_animation_skin_instead_of_manifest_order() {
+    let first_animation = AssetId::generate();
+    let second_animation = AssetId::generate();
+    let first_skeleton = AssetId::generate();
+    let second_skeleton = AssetId::generate();
+    let animations = [
+        (first_animation.as_str(), 1_usize),
+        (second_animation.as_str(), 0_usize),
+    ];
+    let skeletons = [first_skeleton.clone(), second_skeleton.clone()];
 
-        let resolved = animation_source_skeleton_from_parts(
-            first_animation.as_str(),
-            animations,
-            |skin_index| skeletons.get(skin_index).cloned(),
-        );
+    let resolved = animation_source_skeleton_from_parts(
+        first_animation.as_str(),
+        animations,
+        |skin_index| skeletons.get(skin_index).cloned(),
+    );
 
-        assert_eq!(resolved, Some(second_skeleton));
-    }
+    assert_eq!(resolved, Some(second_skeleton));
 }
 
 fn humanoid_motion_choices(
