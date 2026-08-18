@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "automation-throughput-inc008-20260818-02",
+  "target_branch": "chatgpt/gameengine-automation-throughput",
+  "expected_head_sha": "bf721560e05301c46ce9cd42bc786e2af9c730bb",
+  "baseline_main_sha": "ecfc28d6d8e0e82eff38cc90f775e14c88347919",
+  "patch_sha256": "c0f72160caab1529082ca839cf05db19ebe966bc70b5fc554930d46946adb8a0",
+  "patch_bytes": 3699,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Record repeated validation incident",
+  "pr_title": "GameEngine: parallelize trusted ChatGPT automation transport",
+  "pr_body": "## Summary\n\nUpdates the existing automation incident record with the confirmed recurrence and validated recovery evidence."
+}
