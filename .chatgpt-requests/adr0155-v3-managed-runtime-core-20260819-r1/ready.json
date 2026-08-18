@@ -1,0 +1,16 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0155-v3-managed-runtime-core-20260819-r1",
+  "target_branch": "chatgpt/gameengine-adr0155-managed-local-ai-v3",
+  "expected_head_sha": "084012e2eabe005900c76fe22b8749f3ba27e82b",
+  "baseline_main_sha": "084012e2eabe005900c76fe22b8749f3ba27e82b",
+  "patch_sha256": "f12fc5735a6f9d26335767d70e2e304c78c5179bf27eedfcca6dc57891351ea7",
+  "patch_bytes": 70794,
+  "patch_parts": [
+    "part-0000.patch",
+    "part-0001.patch"
+  ],
+  "commit_message": "Add ADR0155 managed local runtime core",
+  "pr_title": "GameEngine: ADR0155 managed Local AI implementation",
+  "pr_body": "## Summary\n\nRebuilds ADR0155 from current main, beginning with the application-layer managed llama.cpp runtime, pinned provenance, GGUF registration, Windows/WSL execution identities, loopback lifecycle, and deterministic verification. Follow-up requests integrate the managed backend, current AI Studio visual fixtures, and verification hardening.\n\n<!-- gameengine-chatgpt-dispatcher -->"
+}
