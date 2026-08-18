@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/agent_benchmark_campaign.rs","old":"            return Err(\"campaign candidates/tasks/repetitions/sampling policy are invalid\".to_owned());\n","new":"            return Err(\n                \"campaign candidates/tasks/repetitions/sampling policy are invalid\".to_owned(),\n            );\n"}
