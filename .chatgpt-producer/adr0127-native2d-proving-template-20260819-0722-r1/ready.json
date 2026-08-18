@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0127-native2d-proving-template-20260819-0722-r1",
+  "target_branch": "chatgpt/gameengine-adr0127-first-release-current-main-v10",
+  "expected_head_sha": "d9eb5b927a4db0fa7720ae30b5fab7c83b342b43",
+  "baseline_main_sha": "96c8ffb18a74eabec2164daa61f694f131019ddc",
+  "edit_parts": [
+    "edit-0000.json",
+    "edit-0001.json",
+    "edit-0002.json",
+    "edit-0003.json",
+    "edit-0004.json",
+    "edit-0005.json",
+    "edit-0006.json",
+    "edit-0007.json",
+    "edit-0008.json",
+    "edit-0009.json",
+    "edit-0010.json"
+  ],
+  "commit_message": "Add ADR0127 Native 2D proving template",
+  "pr_title": "GameEngine: complete ADR0127 Native 2D first release",
+  "pr_body": "## Summary\n\nCompletes the ADR0127 continuation by adding the first-party Native 2D proving-project option to the standard Launcher flow. The template is authored through a sibling staging project and publishes only after its Camera2D, Sprite Atlas/Animation, sparse TileMap, CharacterController2D, Collider2D and one-way-platform content has been written successfully.\n\nExisting Empty project creation remains the default."
+}
