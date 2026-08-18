@@ -1,0 +1,48 @@
+diff --git a/crates/editor/src/remote_ai_studio.rs b/crates/editor/src/remote_ai_studio.rs
+index 4fdbfea07b494fcd1c1bc6d0a22395eab616545b..6d6e403070f711f9a62aae832466798585af95a5 100644
+--- a/crates/editor/src/remote_ai_studio.rs
++++ b/crates/editor/src/remote_ai_studio.rs
+@@ -1346,7 +1346,7 @@ mod tests {
+         host.record_event(
+             &run,
+             AgentEventKind::ProviderOutput,
+-            "GAMEENGINE_MCP_AUTH_TOKEN=super-secret C:\\Users\\private\\file",
++            "GAMEENGINE_MCP_AUTH_TOKEN=super-secret C:\\Users\\...\\private\\file",
+         )
+         .expect("provider output");
+         let events = events_json(&host, &run, 0).expect("events").to_string();
+@@ -1383,7 +1383,7 @@ mod tests {
+                 imported_asset_ids: vec!["asset_01TEST".into()],
+                 imported_paths: vec![
+                     std::path::PathBuf::from("textures/generated.png"),
+-                    std::path::PathBuf::from(r"C:\Users\private\leak.png"),
++                    std::path::PathBuf::from(r"C:\Users\...\private\leak.png"),
+                 ],
+                 created_unix_ms: 1,
+             },
+@@ -1398,7 +1398,7 @@ mod tests {
+         assert!(!snapshot.contains("secret-value"));
+         assert!(!snapshot.contains("access_token"));
+         assert!(!snapshot.contains("internal-fingerprint"));
+-        assert!(!snapshot.contains(r"C:\Users\private"));
++        assert!(!snapshot.contains(r"C:\Users\...\private"));
+         let _ = fs::remove_dir_all(project);
+         let _ = fs::remove_dir_all(storage);
+     }
+diff --git a/crates/engine/src/native_2d.rs b/crates/engine/src/native_2d.rs
+index 944e1c721f225a74369b1c691bce914ea7a67cb6..b8689f4c7c7be9754734c80e9dd7cc71f8e8f1e4 100644
+--- a/crates/engine/src/native_2d.rs
++++ b/crates/engine/src/native_2d.rs
+@@ -158,8 +158,10 @@ mod tests {
+     #[test]
+     fn project_settings_apply_same_typed_gravity_resource() {
+         let mut app = crate::App::new();
+-        let mut settings = Project2dSettings::default();
+-        settings.gravity = [2.5, -7.0];
++        let settings = Project2dSettings {
++            gravity: [2.5, -7.0],
++            ..Project2dSettings::default()
++        };
+         apply_project_2d_settings(&mut app, &settings);
+         assert_eq!(
+             app.world().get_resource::<Gravity2d>().unwrap().0,
