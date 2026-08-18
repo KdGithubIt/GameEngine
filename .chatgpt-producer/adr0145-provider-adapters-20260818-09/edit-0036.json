@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/external_agent_provider.rs","old":"    fn remote_status_contains_only_sanitized_adapter_state() {\n","new":"    fn remote_status_contains_only_sanitized_adapter_state() {\n"}
