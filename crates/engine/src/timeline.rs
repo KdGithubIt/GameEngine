@@ -17,29 +17,53 @@ use glam::{Quat, Vec3};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::fmt;
 
+/// Maximum retained runtime Timeline event records.
 pub const MAX_TIMELINE_EVENTS: usize = 1024;
+/// Maximum retained runtime diagnostics.
 pub const MAX_TIMELINE_RUNTIME_DIAGNOSTICS: usize = 256;
 
+/// Immutable prepared Timeline source ready to become one or more runtime players.
 #[derive(Clone)]
 pub struct PreparedTimeline { asset: AssetId, document_id: TimelineId, schedule: CompiledTimeline<CompiledTimelinePayload> }
 impl PreparedTimeline {
+    /// Returns the stable Timeline asset ID.
     pub fn asset(&self) -> &AssetId { &self.asset }
+    /// Returns the stable semantic document ID.
     pub fn document_id(&self) -> &TimelineId { &self.document_id }
+    /// Returns the canonical duration of the compiled schedule.
     pub fn duration(&self) -> TimelineTick { self.schedule.duration() }
 }
 
+/// Failure while resolving a persisted Timeline into the production runtime.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TimelineRuntimeError { UnknownAsset(AssetId), AssetLoad(String), Parse(String), Compile(Vec<String>), UnknownPlayer(u64), InvalidRate, InvalidLoop }
+pub enum TimelineRuntimeError {
+    /// Stable asset is not registered in the active manifest.
+    UnknownAsset(AssetId),
+    /// Asset bytes could not be loaded below the configured asset root.
+    AssetLoad(String),
+    /// Persisted JSON did not deserialize as a Timeline document.
+    Parse(String),
+    /// Authoring validation or compilation rejected the document.
+    Compile(Vec<String>),
+    /// Runtime player ID is not active.
+    UnknownPlayer(u64),
+    /// Requested deterministic playback rate is invalid.
+    InvalidRate,
+    /// Requested loop range is invalid.
+    InvalidLoop,
+}
 impl fmt::Display for TimelineRuntimeError { fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result { match self { Self::UnknownAsset(asset) => write!(formatter, "Timeline asset `{}` is not registered", asset.as_str()), Self::AssetLoad(message) => write!(formatter, "Timeline asset could not be loaded: {message}"), Self::Parse(message) => write!(formatter, "Timeline JSON could not be parsed: {message}"), Self::Compile(diagnostics) => write!(formatter, "Timeline did not compile: {}", diagnostics.join("; ")), Self::UnknownPlayer(player) => write!(formatter, "Timeline player {player} does not exist"), Self::InvalidRate => formatter.write_str("Timeline playback rate is invalid"), Self::InvalidLoop => formatter.write_str("Timeline loop range is invalid") } } }
 impl std::error::Error for TimelineRuntimeError {}
 impl From<PlaybackRateError> for TimelineRuntimeError { fn from(_: PlaybackRateError) -> Self { Self::InvalidRate } }
 impl From<TimelineLoopError> for TimelineRuntimeError { fn from(_: TimelineLoopError) -> Self { Self::InvalidLoop } }
 
+/// Compiles an in-memory Timeline working copy through the production schedule path.
 pub fn prepare_timeline_document(asset: AssetId, document: &TimelineDocument) -> Result<PreparedTimeline, TimelineRuntimeError> {
     let compilation = compile_timeline(document);
     let schedule = compilation.schedule.ok_or_else(|| TimelineRuntimeError::Compile(compilation.diagnostics.into_iter().map(|diagnostic| format!("[{}] {}", diagnostic.code, diagnostic.message)).collect()))?;
     Ok(PreparedTimeline { asset, document_id: document.id.clone(), schedule })
 }
+/// Loads and compiles a stable Timeline asset through the production asset boundary.
 pub fn prepare_timeline_asset(asset: &AssetId, manifest: &AssetManifest, server: &AssetServer) -> Result<PreparedTimeline, TimelineRuntimeError> {
     let entry = manifest.get(asset).ok_or_else(|| TimelineRuntimeError::UnknownAsset(asset.clone()))?;
     let bytes = server.load_bytes(&entry.path).map_err(|error| TimelineRuntimeError::AssetLoad(error.to_string()))?;
@@ -51,13 +75,54 @@ pub fn prepare_timeline_asset(asset: &AssetId, manifest: &AssetManifest, server:
 
 #[derive(Clone)]
 struct ActiveTimelinePlayer { asset: AssetId, document_id: TimelineId, schedule: CompiledTimeline<CompiledTimelinePayload>, player: TimelinePlayer, priority: i32, pending: VecDeque<EvaluationRequest> }
+/// Copied Project-Rust/Editor-safe state for one runtime Timeline player.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TimelinePlayerSnapshot { pub player_id: u64, pub asset: AssetId, pub document_id: TimelineId, pub state: TimelinePlaybackState, pub tick: TimelineTick, pub generation: u64, pub priority: i32, pub rate_numerator: i32, pub rate_denominator: u32 }
+pub struct TimelinePlayerSnapshot {
+    /// Caller-owned logical player ID.
+    pub player_id: u64,
+    /// Stable Timeline asset being played.
+    pub asset: AssetId,
+    /// Stable Timeline document identity.
+    pub document_id: TimelineId,
+    /// Current playback state.
+    pub state: TimelinePlaybackState,
+    /// Exact current canonical tick.
+    pub tick: TimelineTick,
+    /// Monotonic discontinuity generation.
+    pub generation: u64,
+    /// Explicit cross-player composition priority.
+    pub priority: i32,
+    /// Rational rate numerator.
+    pub rate_numerator: i32,
+    /// Rational rate denominator.
+    pub rate_denominator: u32,
+}
+/// One bounded sequence-level event emitted by Timeline evaluation.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TimelineEventRecord { pub source_sequence: u64, pub player_id: u64, pub asset: AssetId, pub document_id: TimelineId, pub tick: TimelineTick, pub name: String, pub payload: String }
+pub struct TimelineEventRecord {
+    /// Monotonic runtime source sequence.
+    pub source_sequence: u64,
+    /// Logical player that emitted the event.
+    pub player_id: u64,
+    /// Stable Timeline asset.
+    pub asset: AssetId,
+    /// Stable semantic Timeline document identity.
+    pub document_id: TimelineId,
+    /// Canonical event tick.
+    pub tick: TimelineTick,
+    /// Stable bounded event name.
+    pub name: String,
+    /// Bounded serialized payload. Marker events use an empty payload.
+    pub payload: String,
+}
+/// Bounded event history shared by Editor inspection and Project Rust subscribers.
 #[derive(Debug, Default)]
 pub struct TimelineEvents { events: VecDeque<TimelineEventRecord>, next_sequence: u64 }
-impl TimelineEvents { pub fn iter(&self) -> impl Iterator<Item = &TimelineEventRecord> { self.events.iter() } pub(crate) fn push(&mut self, mut event: TimelineEventRecord) { if self.events.len() >= MAX_TIMELINE_EVENTS { self.events.pop_front(); } self.next_sequence = self.next_sequence.saturating_add(1).max(1); event.source_sequence = self.next_sequence; self.events.push_back(event); } }
+impl TimelineEvents {
+    /// Iterates retained events in source order.
+    pub fn iter(&self) -> impl Iterator<Item = &TimelineEventRecord> { self.events.iter() }
+    pub(crate) fn push(&mut self, mut event: TimelineEventRecord) { if self.events.len() >= MAX_TIMELINE_EVENTS { self.events.pop_front(); } self.next_sequence = self.next_sequence.saturating_add(1).max(1); event.source_sequence = self.next_sequence; self.events.push_back(event); }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct Priority { player_priority: i32, track_order: u32, item_order: u32, player_id: u64 }
@@ -68,18 +133,32 @@ struct PendingEvent { player_id: u64, asset: AssetId, document_id: TimelineId, t
 struct CollectedFrame { active: Vec<ActiveClip>, events: Vec<PendingEvent> }
 #[derive(Clone)]
 struct DesiredTransform { priority: Priority, value: TimelinePropertyValue }
+/// Multi-player transient Timeline runtime.
+///
+/// Every override snapshot and backend voice ID is runtime-only; persisted Timeline data is
+/// never rewritten when a player starts, seeks, pauses, or stops.
 #[derive(Default)]
 pub struct TimelineRuntime { players: BTreeMap<u64, ActiveTimelinePlayer>, clock_fraction: f64, animation_originals: HashMap<EntityId, Animator>, vfx_originals: HashMap<EntityId, VfxPlayer>, transform_originals: HashMap<(EntityId, String), TimelinePropertyValue>, desired_transforms: BTreeMap<(EntityId, String), DesiredTransform>, audio_voices: HashMap<(u64, TimelineClipId), AudioVoiceId>, audio_suppressed: HashSet<(u64, TimelineClipId)>, diagnostics: VecDeque<String> }
 impl TimelineRuntime {
+    /// Starts or replaces a logical player at the default composition priority.
     pub fn start(&mut self, player_id: u64, prepared: PreparedTimeline) { self.start_with_priority(player_id, prepared, 0); }
+    /// Starts or replaces a logical player with an explicit cross-player priority.
     pub fn start_with_priority(&mut self, player_id: u64, prepared: PreparedTimeline, priority: i32) { let mut player = TimelinePlayer::new(prepared.schedule.duration()); player.play(); self.players.insert(player_id, ActiveTimelinePlayer { asset: prepared.asset, document_id: prepared.document_id, schedule: prepared.schedule, player, priority, pending: VecDeque::new() }); }
+    /// Pauses one player without changing its exact playhead.
     pub fn pause(&mut self, player_id: u64) -> Result<(), TimelineRuntimeError> { self.player_mut(player_id)?.player.pause(); Ok(()) }
+    /// Resumes one player.
     pub fn resume(&mut self, player_id: u64) -> Result<(), TimelineRuntimeError> { self.player_mut(player_id)?.player.play(); Ok(()) }
+    /// Stops one player and releases its transient overrides on the next fixed pass.
     pub fn stop(&mut self, player_id: u64) -> Result<(), TimelineRuntimeError> { let active = self.player_mut(player_id)?; active.player.stop(); active.pending.clear(); Ok(()) }
+    /// Performs an exact discontinuous seek; events stay suppressed unless explicitly previewed.
     pub fn seek(&mut self, player_id: u64, tick: TimelineTick, preview_events: bool) -> Result<(), TimelineRuntimeError> { let active = self.player_mut(player_id)?; let request = active.player.seek(tick, preview_events); active.pending.push_back(request); Ok(()) }
+    /// Sets a bounded deterministic rational playback rate.
     pub fn set_rate(&mut self, player_id: u64, numerator: i32, denominator: u32) -> Result<(), TimelineRuntimeError> { let rate = PlaybackRate::new(numerator, denominator)?; self.player_mut(player_id)?.player.set_rate(rate); Ok(()) }
+    /// Configures the neutral player's exact loop range.
     pub fn set_loop(&mut self, player_id: u64, range: Option<TimelineLoop>) -> Result<(), TimelineRuntimeError> { self.player_mut(player_id)?.player.set_loop(range)?; Ok(()) }
+    /// Returns copied runtime player state in deterministic logical-ID order.
     pub fn snapshots(&self) -> Vec<TimelinePlayerSnapshot> { self.players.iter().map(|(&player_id, active)| { let rate = active.player.rate(); TimelinePlayerSnapshot { player_id, asset: active.asset.clone(), document_id: active.document_id.clone(), state: active.player.state(), tick: active.player.tick(), generation: active.player.generation(), priority: active.priority, rate_numerator: rate.numerator(), rate_denominator: rate.denominator() } }).collect() }
+    /// Iterates recent runtime binding and asset diagnostics.
     pub fn diagnostics(&self) -> impl Iterator<Item = &str> { self.diagnostics.iter().map(String::as_str) }
     fn player_mut(&mut self, player_id: u64) -> Result<&mut ActiveTimelinePlayer, TimelineRuntimeError> { self.players.get_mut(&player_id).ok_or(TimelineRuntimeError::UnknownPlayer(player_id)) }
     fn warn(&mut self, message: impl Into<String>) { if self.diagnostics.len() >= MAX_TIMELINE_RUNTIME_DIAGNOSTICS { self.diagnostics.pop_front(); } let message = message.into(); log::warn!("timeline: {message}"); self.diagnostics.push_back(message); }
@@ -134,6 +213,7 @@ pub fn ensure_timeline_preview_resources(app: &mut crate::App) {
 
 /// Production Timeline prepare system, exposed for installation into the Editor PreviewWorld.
 /// Runtime hosts normally receive this through `register_runtime_systems`.
+#[allow(clippy::too_many_arguments)]
 pub fn timeline_prepare_system(
     fixed: Res<FixedTime>, mut runtime: ResMut<TimelineRuntime>, mut events: ResMut<TimelineEvents>, mut camera_override: ResMut<GameCameraSelectionOverride>,
     mut animators: Query<(&RuntimeEntityIdentity, &mut AnimGraphPlayer, &mut Animator)>, mut cameras: Query<(&RuntimeEntityIdentity, &Camera3D)>,
@@ -158,6 +238,7 @@ pub fn timeline_prepare_system(
     apply_audio(&mut runtime, &frame.active, &mut emitters, &spatial_audio, manifest.as_deref(), server.as_deref_mut(), audio_assets.as_deref_mut(), audio.as_deref_mut());
 }
 
+/// Applies the property samples prepared by Timeline to production Transform components.
 pub fn timeline_transform_system(mut runtime: ResMut<TimelineRuntime>, mut transforms: Query<(&RuntimeEntityIdentity, &mut Transform)>) {
     let desired = runtime.desired_transforms.clone(); let mut seen = BTreeSet::new();
     for (_, (identity, transform)) in transforms.iter_mut() {

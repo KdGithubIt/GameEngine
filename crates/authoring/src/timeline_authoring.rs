@@ -12,50 +12,190 @@ use std::fmt;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+/// Optimistic revision token.
 pub type TimelineRevision = u64;
 
+/// One typed Timeline mutation.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum TimelineAuthoringCommand {
+    /// Replaces the canonical Timeline duration.
     SetDuration(TimelineTick),
+    /// Adds a typed track.
     AddTrack(TimelineTrack),
-    RenameTrack { track: TimelineTrackId, name: String },
+    /// Renames one track without changing stable identity.
+    RenameTrack {
+        /// Track.
+        track: TimelineTrackId,
+        /// New display name.
+        name: String,
+    },
+    /// Removes a track.
     RemoveTrack(TimelineTrackId),
-    SetBinding { track: TimelineTrackId, binding: Option<TimelineBinding> },
-    SetTrackEnabled { track: TimelineTrackId, enabled: bool },
-    AddClip { track: TimelineTrackId, clip: TimelineClip },
+    /// Changes a track stable binding.
+    SetBinding {
+        /// Track.
+        track: TimelineTrackId,
+        /// Binding.
+        binding: Option<TimelineBinding>,
+    },
+    /// Changes persisted enabled state.
+    SetTrackEnabled {
+        /// Track.
+        track: TimelineTrackId,
+        /// Enabled.
+        enabled: bool,
+    },
+    /// Adds a typed clip to a track.
+    AddClip {
+        /// Track.
+        track: TimelineTrackId,
+        /// Clip.
+        clip: TimelineClip,
+    },
+    /// Deletes a clip.
     RemoveClip(TimelineClipId),
-    RenameClip { clip: TimelineClipId, name: String },
-    SetClipPayload { clip: TimelineClipId, payload: TimelineClipPayload },
-    MoveClip { clip: TimelineClipId, start: TimelineTick },
-    ResizeClip { clip: TimelineClipId, duration: TimelineTick },
+    /// Renames one clip without changing stable identity.
+    RenameClip {
+        /// Clip.
+        clip: TimelineClipId,
+        /// New display name.
+        name: String,
+    },
+    /// Replaces one clip's typed payload atomically.
+    SetClipPayload {
+        /// Clip.
+        clip: TimelineClipId,
+        /// New typed payload.
+        payload: TimelineClipPayload,
+    },
+    /// Moves a clip without changing duration.
+    MoveClip {
+        /// Clip.
+        clip: TimelineClipId,
+        /// New start.
+        start: TimelineTick,
+    },
+    /// Resizes a clip.
+    ResizeClip {
+        /// Clip.
+        clip: TimelineClipId,
+        /// New duration.
+        duration: TimelineTick,
+    },
+    /// Adds a marker lane entry.
     AddMarker(TimelineMarker),
+    /// Removes a marker.
     RemoveMarker(TimelineMarkerId),
-    MoveMarker { marker: TimelineMarkerId, tick: TimelineTick },
-    SetMarkerEvent { marker: TimelineMarkerId, event: Option<String> },
+    /// Moves a marker.
+    MoveMarker {
+        /// Marker.
+        marker: TimelineMarkerId,
+        /// Tick.
+        tick: TimelineTick,
+    },
+    /// Replaces a marker's optional bounded event name.
+    SetMarkerEvent {
+        /// Marker.
+        marker: TimelineMarkerId,
+        /// New event name, or `None` for a visual-only marker.
+        event: Option<String>,
+    },
 }
 
+/// Preview result retained for the existing one-command Editor API.
 #[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct TimelineAuthoringPreview { pub document: TimelineDocument, pub diagnostics: Vec<TimelineDiagnostic> }
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct TimelineAuthoringSnapshot { pub revision: TimelineRevision, pub generation: u64, pub document: TimelineDocument }
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct TimelineAuthoringValidation { pub revision: TimelineRevision, pub generation: u64, pub success: bool, pub diagnostics: Vec<TimelineDiagnostic> }
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct TimelineAuthoringChange { pub before: TimelineDocument, pub after: TimelineDocument }
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct TimelineAuthoringMutation { pub success: bool, pub base_revision: TimelineRevision, pub base_generation: u64, pub revision: TimelineRevision, pub generation: u64, pub diagnostics: Vec<TimelineDiagnostic>, pub diff: Vec<TimelineAuthoringChange> }
+pub struct TimelineAuthoringPreview {
+    /// Resulting candidate.
+    pub document: TimelineDocument,
+    /// Pure validation diagnostics.
+    pub diagnostics: Vec<TimelineDiagnostic>,
+}
 
+/// Immutable Timeline state returned by structured authoring inspection.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct TimelineAuthoringSnapshot {
+    /// Logical content revision.
+    pub revision: TimelineRevision,
+    /// Monotonic live-session generation used for stale-branch rejection.
+    pub generation: u64,
+    /// Complete committed Timeline source document.
+    pub document: TimelineDocument,
+}
+
+/// Structured Timeline validation result.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct TimelineAuthoringValidation {
+    /// Logical content revision validated by this result.
+    pub revision: TimelineRevision,
+    /// Live-session generation validated by this result.
+    pub generation: u64,
+    /// Whether validation produced no blocking diagnostics.
+    pub success: bool,
+    /// Pure Timeline diagnostics.
+    pub diagnostics: Vec<TimelineDiagnostic>,
+}
+
+/// Deterministic whole-document change produced by a Timeline command batch.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct TimelineAuthoringChange {
+    /// Committed source before the batch.
+    pub before: TimelineDocument,
+    /// Candidate or committed source after the batch.
+    pub after: TimelineDocument,
+}
+
+/// Result of previewing or applying one atomic Timeline command batch.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct TimelineAuthoringMutation {
+    /// Whether the complete candidate passed Timeline validation.
+    pub success: bool,
+    /// Caller-observed base revision.
+    pub base_revision: TimelineRevision,
+    /// Caller-observed base generation.
+    pub base_generation: u64,
+    /// Current revision after the operation.
+    pub revision: TimelineRevision,
+    /// Current generation after the operation.
+    pub generation: u64,
+    /// Pure Timeline diagnostics for the candidate.
+    pub diagnostics: Vec<TimelineDiagnostic>,
+    /// Empty for a no-op, otherwise one deterministic before/after change.
+    pub diff: Vec<TimelineAuthoringChange>,
+}
+
+/// Shared Timeline authoring failure.
 #[derive(Debug)]
 pub enum TimelineAuthoringError {
+    /// The host did not grant the required shared authoring permission.
     Permission(AuthoringPermissionError),
-    StaleRevision { expected: TimelineRevision, actual: TimelineRevision },
-    Stale { expected_revision: TimelineRevision, expected_generation: u64, actual_revision: TimelineRevision, actual_generation: u64 },
+    /// Existing one-command caller supplied an obsolete revision.
+    StaleRevision {
+        /// Expected current revision.
+        expected: TimelineRevision,
+        /// Supplied revision.
+        actual: TimelineRevision,
+    },
+    /// Structured caller supplied a revision/generation pair that is no longer live.
+    Stale {
+        /// Caller-observed revision.
+        expected_revision: TimelineRevision,
+        /// Caller-observed generation.
+        expected_generation: u64,
+        /// Current revision.
+        actual_revision: TimelineRevision,
+        /// Current generation.
+        actual_generation: u64,
+    },
+    /// Target stable ID no longer exists.
     MissingTarget(String),
+    /// Mutation made the document invalid.
     Invalid(Vec<TimelineDiagnostic>),
+    /// Persistence failed.
     Persist(String),
 }
 impl TimelineAuthoringError {
+    /// Returns the stable diagnostic-style code exposed to structured clients.
     pub fn code(&self) -> &'static str { match self { Self::Permission(error) => error.code(), Self::StaleRevision { .. } | Self::Stale { .. } => "authoring.stale_revision", Self::MissingTarget(_) => "timeline.target_missing", Self::Invalid(_) => "timeline.invalid", Self::Persist(_) => "timeline.persist_failed" } }
 }
 impl fmt::Display for TimelineAuthoringError {
@@ -75,34 +215,53 @@ impl std::error::Error for TimelineAuthoringError {
 }
 impl From<AuthoringPermissionError> for TimelineAuthoringError { fn from(error: AuthoringPermissionError) -> Self { Self::Permission(error) } }
 
+/// Shared stateful authoring service with stale-base rejection and session undo/redo.
 #[derive(Debug, Clone)]
 pub struct TimelineAuthoringService { document: TimelineDocument, revision: TimelineRevision, generation: u64, undo: Vec<TimelineDocument>, redo: Vec<TimelineDocument> }
 impl TimelineAuthoringService {
+    /// Starts a session around a current-format document.
     pub fn new(document: TimelineDocument) -> Result<Self, TimelineAuthoringError> {
         let diagnostics = validate_timeline(&document);
         if has_errors(&diagnostics) { return Err(TimelineAuthoringError::Invalid(diagnostics)); }
         static NEXT_GENERATION: AtomicU64 = AtomicU64::new(1);
         Ok(Self { document, revision: 0, generation: NEXT_GENERATION.fetch_add(1, Ordering::Relaxed), undo: Vec::new(), redo: Vec::new() })
     }
+    /// Returns the current immutable document.
     pub const fn document(&self) -> &TimelineDocument { &self.document }
+    /// Returns the current optimistic revision.
     pub const fn revision(&self) -> TimelineRevision { self.revision }
+    /// Returns the current live-session generation.
     pub const fn generation(&self) -> u64 { self.generation }
+    /// Inspects the committed Timeline through the shared permission boundary.
     pub fn inspect(&self, permissions: &AuthoringPermissions) -> Result<TimelineAuthoringSnapshot, TimelineAuthoringError> { permissions.require(AuthoringPermission::Read)?; Ok(TimelineAuthoringSnapshot { revision: self.revision, generation: self.generation, document: self.document.clone() }) }
+    /// Validates the committed Timeline without mutation.
     pub fn validate(&self, permissions: &AuthoringPermissions) -> Result<TimelineAuthoringValidation, TimelineAuthoringError> { permissions.require(AuthoringPermission::Read)?; let diagnostics = validate_timeline(&self.document); Ok(TimelineAuthoringValidation { revision: self.revision, generation: self.generation, success: !has_errors(&diagnostics), diagnostics }) }
+    /// Previews one atomic structured command batch without mutation or history changes.
     pub fn preview_commands(&self, permissions: &AuthoringPermissions, expected_revision: TimelineRevision, expected_generation: u64, commands: Vec<TimelineAuthoringCommand>) -> Result<TimelineAuthoringMutation, TimelineAuthoringError> {
         permissions.require(AuthoringPermission::Preview)?; self.check_base(expected_revision, expected_generation)?; let candidate = candidate_from_commands(&self.document, commands)?; let diagnostics = validate_timeline(&candidate); let success = !has_errors(&diagnostics); Ok(TimelineAuthoringMutation { success, base_revision: expected_revision, base_generation: expected_generation, revision: self.revision, generation: self.generation, diagnostics, diff: document_diff(&self.document, &candidate) })
     }
+    /// Applies one atomic structured command batch through the shared permission boundary.
     pub fn apply_commands(&mut self, permissions: &AuthoringPermissions, expected_revision: TimelineRevision, expected_generation: u64, commands: Vec<TimelineAuthoringCommand>) -> Result<TimelineAuthoringMutation, TimelineAuthoringError> {
         permissions.require(AuthoringPermission::ProjectDataWrite)?; self.check_base(expected_revision, expected_generation)?; let candidate = candidate_from_commands(&self.document, commands)?; let diagnostics = validate_timeline(&candidate); let success = !has_errors(&diagnostics); let diff = document_diff(&self.document, &candidate);
         if !success { return Ok(TimelineAuthoringMutation { success: false, base_revision: expected_revision, base_generation: expected_generation, revision: self.revision, generation: self.generation, diagnostics, diff }); }
         if !diff.is_empty() { self.undo.push(self.document.clone()); self.document = candidate; self.redo.clear(); self.advance_live_state(); }
         Ok(TimelineAuthoringMutation { success: true, base_revision: expected_revision, base_generation: expected_generation, revision: self.revision, generation: self.generation, diagnostics, diff })
     }
+    /// Validates one command against a clone without mutation.
     pub fn preview(&self, expected: TimelineRevision, command: &TimelineAuthoringCommand) -> Result<TimelineAuthoringPreview, TimelineAuthoringError> { self.check_revision(expected)?; let mut candidate = self.document.clone(); apply_command(&mut candidate, command)?; let diagnostics = validate_timeline(&candidate); Ok(TimelineAuthoringPreview { document: candidate, diagnostics }) }
+    /// Atomically applies one command after validation.
     pub fn apply(&mut self, expected: TimelineRevision, command: TimelineAuthoringCommand) -> Result<TimelineRevision, TimelineAuthoringError> { self.apply_transaction(expected, std::iter::once(command)) }
+    /// Atomically applies a granular command transaction with one undo boundary.
+    ///
+    /// This compatibility entry point is retained for existing Editor code. New structured
+    /// adapters use `apply_commands` so permissions and the generation token are enforced
+    /// at the shared boundary.
     pub fn apply_transaction(&mut self, expected: TimelineRevision, commands: impl IntoIterator<Item = TimelineAuthoringCommand>) -> Result<TimelineRevision, TimelineAuthoringError> { self.check_revision(expected)?; let candidate = candidate_from_commands(&self.document, commands)?; let diagnostics = validate_timeline(&candidate); if has_errors(&diagnostics) { return Err(TimelineAuthoringError::Invalid(diagnostics)); } self.undo.push(self.document.clone()); self.document = candidate; self.redo.clear(); self.advance_live_state(); Ok(self.revision) }
+    /// Undoes one committed transaction.
     pub fn undo(&mut self) -> bool { let Some(previous) = self.undo.pop() else { return false; }; self.redo.push(std::mem::replace(&mut self.document, previous)); self.advance_live_state(); true }
+    /// Redoes one undone transaction.
     pub fn redo(&mut self) -> bool { let Some(next) = self.redo.pop() else { return false; }; self.undo.push(std::mem::replace(&mut self.document, next)); self.advance_live_state(); true }
+    /// Persists the committed source of truth.
     pub fn save(&self, path: &Path) -> Result<(), TimelineAuthoringError> { save_timeline(path, &self.document).map_err(|error| TimelineAuthoringError::Persist(error.to_string())) }
     fn advance_live_state(&mut self) { self.revision = self.revision.wrapping_add(1); self.generation = self.generation.wrapping_add(1); }
     fn check_revision(&self, actual: TimelineRevision) -> Result<(), TimelineAuthoringError> { if actual == self.revision { Ok(()) } else { Err(TimelineAuthoringError::StaleRevision { expected: self.revision, actual }) } }
