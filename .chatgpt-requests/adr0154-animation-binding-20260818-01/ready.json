@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0154-animation-binding-20260818-01",
+  "target_branch": "chatgpt/gameengine-adr0154-animation-binding-resolution",
+  "expected_head_sha": "a70696f0caa23ec490f96270d3fcab72e000b295",
+  "baseline_main_sha": "a70696f0caa23ec490f96270d3fcab72e000b295",
+  "patch_sha256": "bf54a3d6167c6fa1884d8c62f67e6786b0a896d894e5f426f972a8cef7d3c1cb",
+  "patch_bytes": 23066,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Propose target-aware animation binding resolution",
+  "pr_title": "GameEngine: propose target-aware animation binding resolution",
+  "pr_body": "## Summary\n\n- proposes ADR 0154 for shared target-aware Animation Set motion resolution\n- moves Auto/Humanoid incompatibility feedback into pre-Play scene validation without blocking asset saves\n- groups Humanoid with its canonical Native logical motion while preserving `motion_model_sources` semantics\n- requires synthetic animation/rig fixtures for future implementation tests\n\n## Scope\n\nDesign and documentation only. No runtime/editor implementation changes are included."
+}
