@@ -4,9 +4,7 @@ mod mcp_transport;
 use std::fs::File;
 #[cfg(feature = "visual-validation")]
 use std::io::BufWriter;
-#[cfg(feature = "visual-validation")]
-use std::path::Path;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 #[cfg(feature = "visual-validation")]
 use std::time::{Duration, Instant};
@@ -45,6 +43,7 @@ impl EditorShell {
     fn new(
         project_lease: EditorLease,
         context: &eframe::egui::Context,
+        benchmark_run: Option<&Path>,
     ) -> Result<Self, String> {
         let root = project_lease.project_root().clone();
         #[cfg(feature = "visual-validation")]
@@ -60,13 +59,16 @@ impl EditorShell {
                 mcp_server.authorization_token(),
             )
             .map_err(|error| error.to_string())?;
-        let ai_studio = AiStudioPanel::new(
+        let mut ai_studio = AiStudioPanel::new(
             &root,
             AiStudioConnection::new(
                 mcp_server.endpoint().to_string(),
                 mcp_server.authorization_token().to_owned(),
             ),
         )?;
+        if let Some(benchmark_run) = benchmark_run {
+            ai_studio.configure_benchmark_child(benchmark_run)?;
+        }
         #[cfg(feature = "visual-validation")]
         let (ai_studio, visual_ai_studio_detached_capture) = {
             let mut ai_studio = ai_studio;
@@ -347,6 +349,10 @@ impl eframe::App for EditorShell {
                 engine_editor::ai_studio::AiStudioRuntimeResult::PlayStarted,
             );
         }
+        if self.ai_studio.take_benchmark_child_exit_request() {
+            context.send_viewport_cmd(eframe::egui::ViewportCommand::Close);
+            return;
+        }
         #[cfg(feature = "visual-validation")]
         self.handle_visual_validation_capture(context);
     }
@@ -574,9 +580,15 @@ fn write_visual_validation_png(
     writer.finish().map_err(|error| error.to_string())
 }
 
-fn project_argument() -> Result<PathBuf, String> {
+struct EditorArguments {
+    project: PathBuf,
+    benchmark_run: Option<PathBuf>,
+}
+
+fn editor_arguments() -> Result<EditorArguments, String> {
     let mut arguments = std::env::args_os().skip(1);
     let mut project = None;
+    let mut benchmark_run = None;
     while let Some(argument) = arguments.next() {
         if argument == "--project" {
             if project.is_some() {
@@ -587,6 +599,15 @@ fn project_argument() -> Result<PathBuf, String> {
                     .next()
                     .ok_or_else(|| "--project requires a path".to_owned())?,
             ));
+        } else if argument == "--benchmark-run" {
+            if benchmark_run.is_some() {
+                return Err("--benchmark-run may be specified only once".to_owned());
+            }
+            benchmark_run = Some(PathBuf::from(
+                arguments
+                    .next()
+                    .ok_or_else(|| "--benchmark-run requires a child spec path".to_owned())?,
+            ));
         } else {
             return Err(format!(
                 "unknown Editor argument `{}`",
@@ -594,12 +615,17 @@ fn project_argument() -> Result<PathBuf, String> {
             ));
         }
     }
-    project.ok_or_else(|| "Engine Editor requires `--project <path>`".to_owned())
+    Ok(EditorArguments {
+        project: project.ok_or_else(|| "Engine Editor requires `--project <path>`".to_owned())?,
+        benchmark_run,
+    })
 }
 
 fn run() -> Result<(), String> {
-    let project = project_argument()?;
-    let project_lease = acquire_editor_project(&project).map_err(|error| error.to_string())?;
+    let arguments = editor_arguments()?;
+    let project_lease =
+        acquire_editor_project(&arguments.project).map_err(|error| error.to_string())?;
+    let benchmark_run = arguments.benchmark_run;
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_inner_size([1600.0, 1000.0])
@@ -612,7 +638,11 @@ fn run() -> Result<(), String> {
         Box::new(move |creation_context| {
             engine_editor::install_editor_fonts(&creation_context.egui_ctx);
             Ok(Box::new(
-                EditorShell::new(project_lease, &creation_context.egui_ctx)
+                EditorShell::new(
+                    project_lease,
+                    &creation_context.egui_ctx,
+                    benchmark_run.as_deref(),
+                )
                     .map_err(|error| -> Box<dyn std::error::Error + Send + Sync> {
                         Box::new(std::io::Error::other(error))
                     })?,

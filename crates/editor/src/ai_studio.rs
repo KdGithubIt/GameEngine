@@ -4,6 +4,8 @@
 //! lifecycle, permissions, persistence, provider process management, and code
 //! workspace rules live in the GUI-free `agent_host` module.
 
+mod benchmark_child;
+
 use crate::agent_benchmark::{
     agent_run_record, benchmark_task, read_question_record, AgentRunBenchmarkIdentity,
     BenchmarkHardwareIdentity, BenchmarkRecord, BenchmarkStore, BenchmarkTaskKind, CatalogProfile,
@@ -498,6 +500,7 @@ pub struct AiStudioPanel {
     managed_evaluation_requested: bool,
     managed_playtest_started_at: Option<std::time::Instant>,
     last_captured_frame: Option<(egui::TextureHandle, String, u32, u32)>,
+    benchmark_child: Option<benchmark_child::BenchmarkChildState>,
     status: Option<String>,
 }
 
@@ -621,6 +624,7 @@ impl AiStudioPanel {
             managed_evaluation_requested: false,
             managed_playtest_started_at: None,
             last_captured_frame: None,
+            benchmark_child: None,
             status: benchmark_status,
         })
     }
@@ -929,6 +933,7 @@ impl AiStudioPanel {
         self.request_managed_playtest_if_ready();
         self.request_next_managed_runtime_input_if_ready();
         self.poll_managed_playtest_timeout();
+        self.poll_benchmark_child();
 
         if !self.presentation.open {
             return;
@@ -2598,14 +2603,21 @@ impl AiStudioPanel {
         images: Vec<Vec<u8>>,
     ) -> Result<(), String> {
         let run = self.host.run(run_id).map_err(|error| error.to_string())?.clone();
+        let benchmark_single_model = self.benchmark_child_active();
         let (backend_label, routing_summary, routing_decisions) = {
             let runtime = self
                 .native_agent_runtime
                 .as_mut()
                 .ok_or_else(|| "Native AgentRuntime is not initialized.".to_owned())?;
-            runtime
-                .start_turn(&run, context.as_deref(), images)
-                .map_err(|error| error.to_string())?;
+            if benchmark_single_model {
+                runtime
+                    .start_turn_single_model(&run, context.as_deref(), images)
+                    .map_err(|error| error.to_string())?;
+            } else {
+                runtime
+                    .start_turn(&run, context.as_deref(), images)
+                    .map_err(|error| error.to_string())?;
+            }
             (
                 runtime.backend_label(),
                 runtime.routing_policy_summary(),
@@ -3446,16 +3458,21 @@ impl AiStudioPanel {
         self.active_external_program = external_provider.map(|_| self.provider_program.clone());
         self.active_external_args = external_provider.map(|_| self.provider_args.clone());
         self.external_provider_diagnostics = ExternalAgentDiagnostics::default();
+        let benchmark_single_model = self.benchmark_child_active();
         let routing_candidates = native_config
             .as_ref()
             .map(|config| self.native_routing_candidates(config))
             .unwrap_or_default();
         self.native_agent_runtime = native_config.map(|config| {
-            NativeAgentRuntime::configured_routed(
-                config,
-                routing_candidates,
-                &self.benchmark_records,
-            )
+            if benchmark_single_model {
+                NativeAgentRuntime::configured(config)
+            } else {
+                NativeAgentRuntime::configured_routed(
+                    config,
+                    routing_candidates,
+                    &self.benchmark_records,
+                )
+            }
         });
         self.native_run_benchmark_context = native_benchmark_identity.map(
             |(backend_id, model_id, inventory)| NativeRunBenchmarkContext {
@@ -3486,6 +3503,22 @@ impl AiStudioPanel {
         self.managed_evaluation_requested = false;
         self.managed_playtest_started_at = None;
         self.last_captured_frame = None;
+        if mode == AgentRuntimeMode::Native
+            && self.benchmark_child_requires_initial_validation_failure()
+        {
+            self.prepare_native_workspace(&run_id)?;
+            self.host
+                .transition_run(
+                    &run_id,
+                    AgentRunState::Executing,
+                    "Benchmark validation-repair baseline prepared; running the mandatory initial failing validation before model repair.",
+                )
+                .map_err(|error| error.to_string())?;
+            self.host
+                .begin_managed_validation(&run_id, true)
+                .map_err(|error| error.to_string())?;
+            return Ok(run_id);
+        }
         match mode {
             AgentRuntimeMode::External => self.request_permission(
                 run_id.clone(),
@@ -3519,6 +3552,13 @@ impl AiStudioPanel {
         capability: AgentCapability,
         action: PendingPermissionAction,
     ) {
+        if self.benchmark_child_allows(capability) {
+            match self.host.resolve_permission(&run_id, capability, ApprovalScope::Run) {
+                Ok(()) => self.execute_permission_action(&run_id, action),
+                Err(error) => self.status = Some(error.to_string()),
+            }
+            return;
+        }
         match self.host.check_permission(&run_id, capability) {
             Ok(PermissionCheck::Granted) => self.execute_permission_action(&run_id, action),
             Ok(PermissionCheck::RequiresApproval) => {

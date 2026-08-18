@@ -222,6 +222,9 @@ impl BenchmarkExperimentCoordinator {
 
     fn spawn_run(&self, run: BenchmarkPlannedRun) -> Result<ActiveChild, String> {
         let project_root = self.sandbox.reset_run(&self.spec.experiment_id, run.ordinal)?;
+        if run.task_id == "validation_repair_v1" {
+            inject_validation_repair_fault(&project_root)?;
+        }
         let experiment_root = self
             .spec
             .output_destination
@@ -263,6 +266,17 @@ impl BenchmarkExperimentCoordinator {
 fn read_child_result(path: &Path) -> Result<BenchmarkExperimentResult, String> {
     let bytes = fs::read(path).map_err(|error| error.to_string())?;
     serde_json::from_slice(&bytes).map_err(|error| error.to_string())
+}
+
+fn inject_validation_repair_fault(project_root: &Path) -> Result<(), String> {
+    let path = project_root.join("game/src/benchmark_target.rs");
+    let source = fs::read_to_string(&path).map_err(|error| error.to_string())?;
+    let baseline = "assert_eq!(fixture_score(4), 5);";
+    if source.matches(baseline).count() != 1 {
+        return Err("validation-repair fixture baseline is not the expected version".to_owned());
+    }
+    fs::write(&path, source.replace(baseline, "assert_eq!(fixture_score(4), 999);"))
+        .map_err(|error| error.to_string())
 }
 
 fn safe_component(value: &str) -> String {
