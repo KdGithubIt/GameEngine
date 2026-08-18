@@ -1,0 +1,16 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0156-current-main-core-20260819-01",
+  "target_branch": "chatgpt/gameengine-adr0156-benchmark-campaigns-v3",
+  "expected_head_sha": "084012e2eabe005900c76fe22b8749f3ba27e82b",
+  "baseline_main_sha": "084012e2eabe005900c76fe22b8749f3ba27e82b",
+  "patch_sha256": "aa345408bc06ec12e73b32f8a19069cca40676fbb53c2eafca0c8edc56ab7aed",
+  "patch_bytes": 76020,
+  "patch_parts": [
+    "part-0000.patch",
+    "part-0001.patch"
+  ],
+  "commit_message": "Reapply ADR0156 campaign core on current main",
+  "pr_title": "GameEngine: implement ADR 0156 benchmark campaigns",
+  "pr_body": "## Summary\n\nReapplies the previously validated ADR 0156 campaign core onto current main after overlapping AI Studio Visual Validation changes landed. Preserves schema-v2 campaign evidence identity, deterministic sequential scheduling, exact preflight/resume identity, failure-preserving retry policy, Windows-safe campaign persistence, and production ADR 0157 harness mapping.\n\nAI Studio campaign controls and the controlled-fixture executor follow on this current-main Draft PR.\n\n<!-- gameengine-chatgpt-dispatcher -->\n"
+}
