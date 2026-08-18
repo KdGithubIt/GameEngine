@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "            runtime\n                .start_turn(&run, context.as_deref(), images)\n                .map_err(|error| error.to_string())?;",
+  "new": "            if self.benchmark_child_active() {\n                runtime\n                    .start_turn_single_model(&run, context.as_deref(), images)\n                    .map_err(|error| error.to_string())?;\n            } else {\n                runtime\n                    .start_turn(&run, context.as_deref(), images)\n                    .map_err(|error| error.to_string())?;\n            }"
+}
