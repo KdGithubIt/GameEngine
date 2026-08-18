@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0156-core-borrow-fix-20260819-01",
+  "target_branch": "chatgpt/gameengine-adr0156-benchmark-campaigns",
+  "expected_head_sha": "b261c1bf0614ceb34e45ea9a371672273690c291",
+  "baseline_main_sha": "fdb22b2a4ba20c61dd2c5275905e74275ad65463",
+  "patch_sha256": "43a919e974ec42f8cf016e70e18d2a254d7f9ce7bb61a48bb9df784efabfdcc9",
+  "patch_bytes": 2337,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Fix ADR0156 campaign borrow state",
+  "pr_title": "GameEngine: implement ADR 0156 benchmark campaigns",
+  "pr_body": "## Summary\n\nFixes ADR 0156 campaign execution so the scheduled model representation is cloned before mutating campaign progress, avoiding an immutable candidate borrow across `self.touch()`. Also normalizes two long error-return expressions before re-running Windows Validation.\n\n## Validation\n\nWindows Validation is requested by the trusted dispatcher. AI Studio campaign controls and required Editor Visual Validation follow after the core gate is green.\n\n<!-- gameengine-chatgpt-dispatcher -->\n"
+}
