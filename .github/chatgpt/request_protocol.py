@@ -41,6 +41,23 @@ ALLOWED_TOP_LEVEL_FILES = {
 ALLOWED_PREFIXES = ("crates/", "examples/", "docs/", "scripts/")
 FORBIDDEN_PREFIXES = (".github/", ".chatgpt-requests/")
 
+DRIFT_DOC_FILES = {"README.md"}
+DRIFT_DOC_PREFIXES = ("docs/",)
+DRIFT_FULL_FILES = {
+    "Cargo.toml",
+    "Cargo.lock",
+    "rust-toolchain.toml",
+    ".gitattributes",
+    "AGENTS.md",
+    "CLAUDE.md",
+    "docs/AI_FRIENDLY_AUTHORING_SPEC.md",
+    "docs/RUST_CODE_STYLE.md",
+    "docs/DEVELOPMENT_WORKFLOW.md",
+    "docs/CHATGPT_AUTOMATION.md",
+    "docs/CHATGPT_WORKER.md",
+}
+DRIFT_FULL_PREFIXES = (".github/", ".cargo/", "scripts/ci/", "GameEngine-ChatGPT-Apply/")
+
 
 class ProtocolError(RuntimeError):
     pass
@@ -182,7 +199,7 @@ def split_patch(patch: bytes, limit: int = MAX_PART_BYTES) -> list[bytes]:
     return parts
 
 
-def _check_changed_paths(repo: Path) -> None:
+def _check_changed_paths(repo: Path) -> list[str]:
     raw = _git(repo, "diff", "--cached", "--name-only", "--no-renames", "-z")
     paths = [item.decode("utf-8") for item in raw.split(b"\0") if item]
     if not paths:
@@ -200,9 +217,10 @@ def _check_changed_paths(repo: Path) -> None:
             raise ProtocolError("symlink changes are forbidden")
         if "160000" in (old_mode, new_mode):
             raise ProtocolError("submodule changes are forbidden")
+    return paths
 
 
-def preflight_patch(repo: Path, expected_head_sha: str, patch: bytes) -> None:
+def preflight_patch(repo: Path, expected_head_sha: str, patch: bytes) -> list[str]:
     expected = _require_sha40("expected_head_sha", expected_head_sha)
     if not patch.startswith(b"diff --git ") and b"\ndiff --git " not in patch:
         raise ProtocolError("request is not a unified Git patch")
@@ -230,7 +248,7 @@ def preflight_patch(repo: Path, expected_head_sha: str, patch: bytes) -> None:
             if diff_check.returncode != 0:
                 detail = diff_check.stdout.decode("utf-8", errors="replace").strip()
                 raise ProtocolError(f"git diff --cached --check rejected patch: {detail}")
-            _check_changed_paths(worktree)
+            return _check_changed_paths(worktree)
         finally:
             _git(repo, "worktree", "remove", "--force", str(worktree), check=False)
 
@@ -240,6 +258,162 @@ def _ls_remote(repo: Path, remote: str, ref: str) -> str:
     if not output:
         raise ProtocolError(f"remote ref does not exist: {ref}")
     return output.split()[0].lower()
+
+
+def _is_drift_doc_path(path: str) -> bool:
+    return path in DRIFT_DOC_FILES or path.startswith(DRIFT_DOC_PREFIXES)
+
+
+def _drift_full_reason(path: str) -> str | None:
+    if path in DRIFT_FULL_FILES or path.startswith(DRIFT_FULL_PREFIXES):
+        return path
+    return None
+
+
+def _request_drift_full_reason(path: str) -> str | None:
+    full_reason = _drift_full_reason(path)
+    if full_reason is not None:
+        return full_reason
+    if path.endswith("/Cargo.toml"):
+        return path
+    return None
+
+
+def _metadata_package_graph(metadata: dict[str, Any], workspace_root: Path) -> tuple[dict[str, tuple[str, str]], dict[str, set[str]]]:
+    workspace_ids = {str(item) for item in metadata.get("workspace_members", [])}
+    packages: dict[str, tuple[str, str]] = {}
+    for package in metadata.get("packages", []):
+        package_id = str(package.get("id", ""))
+        if package_id not in workspace_ids:
+            continue
+        manifest_value = package.get("manifest_path")
+        name_value = package.get("name")
+        if not isinstance(manifest_value, str) or not isinstance(name_value, str):
+            raise ProtocolError("cargo metadata returned an invalid workspace package record")
+        manifest = Path(manifest_value).resolve()
+        try:
+            relative_root = manifest.parent.relative_to(workspace_root.resolve()).as_posix()
+        except ValueError as exc:
+            raise ProtocolError("cargo metadata returned a workspace package outside the repository") from exc
+        packages[package_id] = (name_value, relative_root)
+
+    reverse_dependents = {package_id: set() for package_id in packages}
+    resolve = metadata.get("resolve")
+    if not isinstance(resolve, dict) or not isinstance(resolve.get("nodes"), list):
+        raise ProtocolError("cargo metadata did not include the workspace dependency graph")
+    for node in resolve["nodes"]:
+        if not isinstance(node, dict):
+            continue
+        dependent_id = str(node.get("id", ""))
+        if dependent_id not in packages:
+            continue
+        for dependency in node.get("dependencies", []):
+            dependency_id = str(dependency)
+            if dependency_id in packages:
+                reverse_dependents[dependency_id].add(dependent_id)
+    return packages, reverse_dependents
+
+
+def _affected_workspace_packages(paths: Iterable[str], metadata: dict[str, Any], workspace_root: Path) -> set[str]:
+    packages, reverse_dependents = _metadata_package_graph(metadata, workspace_root)
+    roots = sorted(((root, package_id) for package_id, (_, root) in packages.items()), key=lambda item: len(item[0]), reverse=True)
+    changed_ids: set[str] = set()
+
+    for path in paths:
+        if _is_drift_doc_path(path):
+            continue
+        full_reason = _drift_full_reason(path)
+        if full_reason is not None:
+            raise ProtocolError(f"main drift includes workspace-wide or automation infrastructure path: {full_reason}")
+        owner: str | None = None
+        for root, package_id in roots:
+            if path == f"{root}/Cargo.toml" or path.startswith(f"{root}/"):
+                owner = package_id
+                break
+        if owner is None:
+            raise ProtocolError(f"main drift impact cannot classify repository path safely: {path}")
+        changed_ids.add(owner)
+
+    affected_ids = set(changed_ids)
+    pending = list(changed_ids)
+    while pending:
+        dependency_id = pending.pop()
+        for dependent_id in reverse_dependents[dependency_id]:
+            if dependent_id not in affected_ids:
+                affected_ids.add(dependent_id)
+                pending.append(dependent_id)
+    return {packages[package_id][0] for package_id in affected_ids}
+
+
+def _load_cargo_metadata_at_revision(repo: Path, revision: str) -> tuple[dict[str, Any], Path, tempfile.TemporaryDirectory[str]]:
+    temp_dir = tempfile.TemporaryDirectory(prefix="gameengine-chatgpt-main-drift-")
+    worktree = Path(temp_dir.name) / "main"
+    try:
+        _git(repo, "worktree", "add", "--detach", "--force", str(worktree), revision)
+        proc = _run(worktree, "cargo", "metadata", "--format-version", "1", "--locked", check=False)
+        if proc.returncode != 0:
+            detail = proc.stderr.decode("utf-8", errors="replace").strip()
+            raise ProtocolError(f"main drift impact could not run cargo metadata safely: {detail}")
+        try:
+            metadata = json.loads(proc.stdout.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ProtocolError(f"cargo metadata returned invalid JSON while checking main drift: {exc}") from exc
+        if not isinstance(metadata, dict):
+            raise ProtocolError("cargo metadata returned a non-object while checking main drift")
+        return metadata, worktree, temp_dir
+    except Exception:
+        _git(repo, "worktree", "remove", "--force", str(worktree), check=False)
+        temp_dir.cleanup()
+        raise
+
+
+def _validate_main_drift(
+    repo: Path,
+    remote: str,
+    baseline_main_sha: str,
+    current_main_sha: str,
+    request_paths: Iterable[str],
+) -> None:
+    baseline = _require_sha40("baseline_main_sha", baseline_main_sha)
+    current_main = _require_sha40("current_main_sha", current_main_sha)
+    if current_main == baseline:
+        return
+
+    _git(repo, "fetch", "--no-tags", remote, baseline, current_main)
+    ancestry = _run(repo, "git", "merge-base", "--is-ancestor", baseline, current_main, check=False)
+    if ancestry.returncode != 0:
+        raise ProtocolError("current main no longer descends from the request baseline")
+
+    raw = _git(repo, "diff", "--name-only", "--no-renames", "-z", baseline, current_main, "--")
+    drift_paths = [item.decode("utf-8") for item in raw.split(b"\0") if item]
+    for path in drift_paths:
+        full_reason = _drift_full_reason(path)
+        if full_reason is not None:
+            raise ProtocolError(f"main advanced across workspace-wide, automation, or authoring-contract path: {full_reason}")
+    if not drift_paths or all(_is_drift_doc_path(path) for path in drift_paths):
+        return
+
+    request_path_list = list(request_paths)
+    for path in request_path_list:
+        full_reason = _request_drift_full_reason(path)
+        if full_reason is not None:
+            raise ProtocolError(f"request changes dependency graph or workspace-wide path and must be rebuilt after main advances: {full_reason}")
+
+    if all(_is_drift_doc_path(path) for path in request_path_list):
+        return
+
+    metadata, worktree, temp_dir = _load_cargo_metadata_at_revision(repo, current_main)
+    try:
+        request_affected = _affected_workspace_packages(request_path_list, metadata, worktree)
+        drift_affected = _affected_workspace_packages(drift_paths, metadata, worktree)
+    finally:
+        _git(repo, "worktree", "remove", "--force", str(worktree), check=False)
+        temp_dir.cleanup()
+
+    overlap = sorted(request_affected & drift_affected)
+    if overlap:
+        joined = ", ".join(overlap)
+        raise ProtocolError(f"main advanced across request affected scope; rebuild required for packages: {joined}")
 
 
 def _load_stage_request(request_repo: Path, request_commit: str, request_id: str) -> tuple[dict[str, Any], bytes]:
@@ -288,28 +462,33 @@ def preflight_stage(request_repo: Path, request_commit: str, request_id: str, re
 
     _git(request_repo, "fetch", "--no-tags", remote, expected)
 
+    observed_main = ""
     if manifest["schema_version"] == 2:
         if len(patch) != manifest["patch_bytes"]:
             raise ProtocolError("schema v2 patch_bytes does not match reconstructed patch")
         if _sha256(patch) != manifest["patch_sha256"].lower():
             raise ProtocolError("schema v2 patch_sha256 does not match reconstructed patch")
-        main_head = _ls_remote(request_repo, remote, "refs/heads/main")
         baseline = manifest["baseline_main_sha"].lower()
-        if main_head != baseline:
-            raise ProtocolError(f"main advanced: observed {main_head}, request baseline is {baseline}")
         _git(request_repo, "fetch", "--no-tags", remote, baseline)
         ancestry = _run(request_repo, "git", "merge-base", "--is-ancestor", baseline, expected, check=False)
         if ancestry.returncode != 0:
-            raise ProtocolError("target branch does not contain the declared current-main baseline")
+            raise ProtocolError("target branch does not contain the declared main baseline")
 
-    preflight_patch(request_repo, expected, patch)
+    request_paths = preflight_patch(request_repo, expected, patch)
+    if manifest["schema_version"] == 2:
+        observed_main = _ls_remote(request_repo, remote, "refs/heads/main")
+        _validate_main_drift(request_repo, remote, manifest["baseline_main_sha"], observed_main, request_paths)
+
     return {
         "schema_version": manifest["schema_version"],
         "request_id": request_id,
         "target_branch": target_branch,
         "expected_head_sha": expected,
+        "baseline_main_sha": manifest.get("baseline_main_sha", ""),
+        "observed_main_sha": observed_main,
         "patch_sha256": _sha256(patch),
         "patch_bytes": len(patch),
+        "request_paths": request_paths,
     }
 
 
@@ -346,15 +525,14 @@ def build_request(args: argparse.Namespace) -> dict[str, Any]:
 
     _require_staged_only(workspace)
     patch = _git(workspace, "diff", "--cached", "--binary", "--full-index", "--no-ext-diff", "HEAD", "--")
-    preflight_patch(workspace, expected, patch)
+    request_paths = preflight_patch(workspace, expected, patch)
 
     if not args.skip_remote_recheck:
         remote_target = _ls_remote(workspace, args.remote, f"refs/heads/{args.target_branch}")
         if remote_target != expected:
             raise ProtocolError(f"remote target moved: observed {remote_target}, expected {expected}")
         remote_main = _ls_remote(workspace, args.remote, "refs/heads/main")
-        if remote_main != baseline:
-            raise ProtocolError(f"remote main moved: observed {remote_main}, expected baseline {baseline}")
+        _validate_main_drift(workspace, args.remote, baseline, remote_main, request_paths)
 
     parts = split_patch(patch)
     if output_dir.exists():

@@ -26,14 +26,9 @@ permissions:
   actions: write
   contents: write
 
-concurrency:
-  group: gameengine-chatgpt-transport-publisher
-  cancel-in-progress: false
-  queue: max
-
 jobs:
   publish:
-    name: Serialize staged request onto chatgpt-dispatch
+    name: Validate in parallel and lease-publish onto chatgpt-dispatch
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -111,7 +106,6 @@ jobs:
             fail "The stage branch moved after the ready signal. Publish a new immutable stage branch."
 
           main_head="$(git rev-parse refs/remotes/origin/main)"
-          transport_head="$(git rev-parse refs/remotes/origin/chatgpt-dispatch)"
           stage_base="$(git merge-base "$REQUEST_COMMIT" "$main_head")"
           [[ -n "$stage_base" && "$stage_base" != "$REQUEST_COMMIT" ]] ||
             fail "The stage branch must contain request commits on top of main history."
@@ -200,44 +194,83 @@ jobs:
             fail "The reconstructed patch may not exceed 4 MiB."
 
           preflight_output="$RUNNER_TEMP/chatgpt-prepublish-preflight.json"
-          if ! python3 "$GITHUB_WORKSPACE/trusted-control/.github/chatgpt/request_protocol.py" \
-            preflight-stage \
-            --request-repo "$GITHUB_WORKSPACE" \
-            --request-commit "$REQUEST_COMMIT" \
-            --request-id "$request_id" > "$preflight_output"; then
-            fail "Trusted pre-publish request preflight failed."
-          fi
-          cat "$preflight_output"
+          run_preflight() {
+            if ! python3 "$GITHUB_WORKSPACE/trusted-control/.github/chatgpt/request_protocol.py" \
+              preflight-stage \
+              --request-repo "$GITHUB_WORKSPACE" \
+              --request-commit "$REQUEST_COMMIT" \
+              --request-id "$request_id" > "$preflight_output"; then
+              fail "Trusted pre-publish request preflight failed."
+            fi
+            cat "$preflight_output"
+          }
 
+          run_preflight
           stage_tree="$(git rev-parse "$REQUEST_COMMIT:$request_dir")"
-          existing_tree="$(git rev-parse --verify "$transport_head:$request_dir" 2>/dev/null || true)"
+          git config user.name "ChatGPT GameEngine Transport Publisher"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          if [[ -n "$existing_tree" ]]; then
-            [[ "$existing_tree" == "$stage_tree" ]] ||
-              fail "The request ID already exists on chatgpt-dispatch with different content."
-            published_head="$(git log -1 --format=%H "$transport_head" -- "$ready_path")"
-            [[ "$published_head" =~ ^[0-9a-fA-F]{40}$ ]] ||
-              fail "The already-published request ready commit could not be resolved."
-            already_published=true
-          else
+          published_head=""
+          already_published=false
+          for attempt in 1 2 3 4 5 6 7 8; do
+            remote_stage="$(git ls-remote origin "refs/heads/$STAGE_BRANCH" | awk '{print $1}')"
+            [[ "$remote_stage" == "$REQUEST_COMMIT" ]] ||
+              fail "Stage branch moved during transport publication. Publish a new immutable stage branch."
+
+            preflight_target="$(jq -r '.expected_head_sha // empty' "$preflight_output")"
+            target_branch="$(jq -r '.target_branch // empty' "$preflight_output")"
+            remote_target="$(git ls-remote origin "refs/heads/$target_branch" | awk '{print $1}')"
+            [[ "$remote_target" == "$preflight_target" ]] ||
+              fail "Target branch moved after trusted preflight. Rebuild from current target state."
+
+            if [[ "$schema_version" == "2" ]]; then
+              preflight_main="$(jq -r '.observed_main_sha // empty' "$preflight_output")"
+              remote_main="$(git ls-remote origin refs/heads/main | awk '{print $1}')"
+              if [[ "$remote_main" != "$preflight_main" ]]; then
+                run_preflight
+                continue
+              fi
+            fi
+
+            git fetch --no-tags origin \
+              "refs/heads/chatgpt-dispatch:refs/remotes/origin/chatgpt-dispatch"
+            transport_head="$(git rev-parse refs/remotes/origin/chatgpt-dispatch)"
+            existing_tree="$(git rev-parse --verify "$transport_head:$request_dir" 2>/dev/null || true)"
+
+            if [[ -n "$existing_tree" ]]; then
+              [[ "$existing_tree" == "$stage_tree" ]] ||
+                fail "The request ID already exists on chatgpt-dispatch with different content."
+              published_head="$(git log -1 --format=%H "$transport_head" -- "$ready_path")"
+              [[ "$published_head" =~ ^[0-9a-fA-F]{40}$ ]] ||
+                fail "The already-published request ready commit could not be resolved."
+              already_published=true
+              break
+            fi
+
             git reset --hard "$transport_head"
-            git config user.name "ChatGPT GameEngine Transport Publisher"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
             for commit_sha in "${request_commits[@]}"; do
               git cherry-pick "$commit_sha"
             done
-            published_head="$(git rev-parse HEAD)"
-            already_published=false
+            candidate_head="$(git rev-parse HEAD)"
 
             remote_transport_head="$(git ls-remote origin refs/heads/chatgpt-dispatch | awk '{print $1}')"
-            [[ "$remote_transport_head" == "$transport_head" ]] ||
-              fail "chatgpt-dispatch moved outside the serialized publisher. Refusing a stale publish."
+            if [[ "$remote_transport_head" != "$transport_head" ]]; then
+              sleep 1
+              continue
+            fi
 
-            git push \
+            if git push \
               --force-with-lease="refs/heads/chatgpt-dispatch:$transport_head" \
-              origin HEAD:refs/heads/chatgpt-dispatch
-          fi
+              origin HEAD:refs/heads/chatgpt-dispatch; then
+              published_head="$candidate_head"
+              already_published=false
+              break
+            fi
+            sleep 1
+          done
+
+          [[ "$published_head" =~ ^[0-9a-fA-F]{40}$ ]] ||
+            fail "Transport publication did not acquire the exact chatgpt-dispatch lease after bounded retries."
 
           {
             echo "published_head=$published_head"
@@ -267,12 +300,13 @@ jobs:
           ALREADY_PUBLISHED: ${{ steps.publish.outputs.already_published }}
         run: |
           {
-            echo "### ChatGPT request serialized onto transport"
+            echo "### ChatGPT request lease-published onto transport"
             echo
             echo "- Request: \`$REQUEST_ID\`"
             echo "- Stage branch: \`$STAGE_BRANCH\`"
             echo "- Transport ready commit: \`$PUBLISHED_HEAD\`"
             echo "- Already present: \`$ALREADY_PUBLISHED\`"
             echo "- Trusted pre-publish preflight: passed"
+            echo "- Shared-ref mutation: exact lease with bounded retry"
             echo "- Direct producer writes to chatgpt-dispatch: not used"
           } >> "$GITHUB_STEP_SUMMARY"
