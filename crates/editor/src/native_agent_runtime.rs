@@ -213,6 +213,25 @@ impl NativeAgentRuntime {
         if let Some(task) = self.active.as_ref() { task.interrupt(); }
         self.active = None;
     }
+    /// Starts one benchmark-attributed turn on the runtime's exact configured model.
+    ///
+    /// Unlike `start_turn`, this entry point deliberately performs no ADR 0150
+    /// specialist selection and no fallback. Backend or image-capability failure
+    /// therefore remains attributable to this exact model representation.
+    pub(crate) fn start_turn_single_model(
+        &mut self,
+        run: &AgentRun,
+        context: Option<&str>,
+        images: Vec<Vec<u8>>,
+    ) -> Result<(), NativeAgentRuntimeError> {
+        if self.active.is_some() { return Err(NativeAgentRuntimeError::Busy); }
+        if self.turns >= self.policy.max_model_turns { return Err(NativeAgentRuntimeError::TurnBudget); }
+        let prompt = build_prompt(run, &self.backend.profile(), self.policy, &self.exchanges, context);
+        self.active = Some(self.backend.start_turn(prompt, images)?);
+        self.turns += 1;
+        Ok(())
+    }
+
     pub(crate) fn start_turn(&mut self, run: &AgentRun, context: Option<&str>, images: Vec<Vec<u8>>)
         -> Result<(), NativeAgentRuntimeError>
     {
