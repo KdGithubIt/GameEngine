@@ -1,0 +1,580 @@
+diff --git a/crates/engine/src/native_2d.rs b/crates/engine/src/native_2d.rs
+index f2d9d0d01ff82897f5ff67ac7a1f197ace3053b6..45b9a8dbc491856e82093eff8c7187395e525730 100644
+--- a/crates/engine/src/native_2d.rs
++++ b/crates/engine/src/native_2d.rs
+@@ -20,7 +20,9 @@ pub use engine_authoring::{
+ };
+ 
+ use crate::transform::{GlobalTransform, Parent, Transform};
+-use engine_authoring::{AssetId, Project2dSettings, SpriteAnimationDocument};
++use engine_authoring::{
++    AssetId, Project2dSettings, SpriteAnimationDocument, TileChunkCoord, TileCollisionShape,
++};
+ use engine_ecs::{Entity, Query, Res, ResMut};
+ use glam::{Quat, Vec2};
+ use std::collections::{BTreeMap, BTreeSet};
+@@ -76,6 +78,13 @@ impl PhysicsRuntime2d {
+     }
+ }
+ 
++/// Compiled backend-neutral Tile Map collision source attached during scene conversion.
++#[derive(Debug, Clone)]
++pub struct TileMapPhysicsSource2d {
++    pub(crate) map: Arc<CompiledTileMap>,
++    pub(crate) tile_set: Arc<CompiledTileSet>,
++}
++
+ /// Applies persisted project 2D settings to one runtime host.
+ ///
+ /// Editor Play and the packaged Player call this same function after loading
+@@ -100,6 +109,35 @@ type Physics2dQuery<'a> = (
+     &'a Collider2d,
+ );
+ 
++type TilePhysics2dQuery<'a> = (&'a TileMapPhysicsSource2d, &'a GlobalTransform);
++
++fn tile_static_chunk_key(owner: u64, layer: &TileLayerId, coord: TileChunkCoord) -> u64 {
++    let mut hash = 0xcbf29ce484222325_u64;
++    for byte in owner
++        .to_le_bytes()
++        .into_iter()
++        .chain(layer.as_str().bytes())
++        .chain(coord.x.to_le_bytes())
++        .chain(coord.y.to_le_bytes())
++    {
++        hash ^= u64::from(byte);
++        hash = hash.wrapping_mul(0x100000001b3);
++    }
++    hash
++}
++
++fn tile_collider_shape_2d(shape: &TileCollisionShape) -> ColliderShape2d {
++    match shape {
++        TileCollisionShape::Box { half_extents } => ColliderShape2d::Box {
++            half_extents: *half_extents,
++        },
++        TileCollisionShape::Circle { radius } => ColliderShape2d::Circle { radius: *radius },
++        TileCollisionShape::Polygon { points } => ColliderShape2d::Polygon {
++            points: points.clone(),
++        },
++    }
++}
++
+ /// Synchronizes ECS components into the dedicated 2D world, steps it, and
+ /// writes root dynamic poses back through the existing Transform authority.
+ pub fn physics_2d_fixed_system(
+@@ -108,6 +146,7 @@ pub fn physics_2d_fixed_system(
+     mut runtime: ResMut<PhysicsRuntime2d>,
+     mut diagnostics: ResMut<Physics2dDiagnostics>,
+     mut query: Query<Physics2dQuery<'_>>,
++    tile_maps: Query<TilePhysics2dQuery<'_>>,
+ ) {
+     diagnostics.entries.clear();
+     let mut active = BTreeSet::new();
+@@ -149,7 +188,82 @@ pub fn physics_2d_fixed_system(
+         active.insert(key);
+     }
+ 
++    let mut active_static_chunks = BTreeSet::new();
++    for (entity, (source, global)) in tile_maps.iter() {
++        let owner = runtime_key(entity);
++        let map_matrix = global.matrix();
++        if let Err(error) = project_planar_transform(map_matrix) {
++            diagnostics.entries.push(Physics2dDiagnostic {
++                entity,
++                kind: Physics2dDiagnosticKind::InvalidPlanarPose(error),
++            });
++            continue;
++        }
++        let chunk_size = i64::from(source.map.chunk_size.max(1));
++        for chunk in &source.map.chunks {
++            let enabled = source
++                .map
++                .layers
++                .iter()
++                .find(|layer| layer.id == chunk.layer)
++                .is_some_and(|layer| layer.enabled);
++            if !enabled {
++                continue;
++            }
++            let key = tile_static_chunk_key(owner, &chunk.layer, chunk.coord);
++            let mut colliders = Vec::new();
++            for (local_x, local_y, tile_id) in &chunk.cells {
++                let Some(tile) = source.tile_set.tile(tile_id) else {
++                    continue;
++                };
++                if tile.collision.is_empty() {
++                    continue;
++                }
++                let cell_x = i64::from(chunk.coord.x) * chunk_size + i64::from(*local_x);
++                let cell_y = i64::from(chunk.coord.y) * chunk_size + i64::from(*local_y);
++                let cell_model = map_matrix
++                    * glam::Mat4::from_translation(glam::Vec3::new(
++                        cell_x as f32 + 0.5,
++                        cell_y as f32 + 0.5,
++                        0.0,
++                    ));
++                let pose = match project_planar_transform(cell_model) {
++                    Ok(pose) => pose,
++                    Err(error) => {
++                        diagnostics.entries.push(Physics2dDiagnostic {
++                            entity,
++                            kind: Physics2dDiagnosticKind::InvalidPlanarPose(error),
++                        });
++                        continue;
++                    }
++                };
++                for shape in &tile.collision {
++                    let mut collider = Collider2d {
++                        shape: tile_collider_shape_2d(shape),
++                        one_way: tile.one_way,
++                        ..Collider2d::default()
++                    };
++                    if let Some(material) = tile.collision_material {
++                        collider.friction = material.friction;
++                        collider.restitution = material.restitution;
++                    }
++                    colliders.push(StaticColliderPart2d { pose, collider });
++                }
++            }
++            if colliders.is_empty() {
++                continue;
++            }
++            active_static_chunks.insert(key);
++            runtime.world.upsert_static_chunk(StaticColliderChunk2d {
++                key,
++                owner,
++                colliders,
++            });
++        }
++    }
++
+     runtime.world.retain_entities(&active);
++    runtime.world.retain_static_chunks(&active_static_chunks);
+     runtime.events = runtime.world.step(fixed_time.fixed_delta, gravity.0);
+ 
+     for (entity, (transform, _, parent, body, _)) in query.iter_mut() {
+diff --git a/crates/engine/src/scene_bridge.rs b/crates/engine/src/scene_bridge.rs
+index bf9a6a0ff42740ec917a8b6372bcb101757c5946..e990c03652bf0cd8c58e7b21cb6638ccf6ae0951 100644
+--- a/crates/engine/src/scene_bridge.rs
++++ b/crates/engine/src/scene_bridge.rs
+@@ -21,9 +21,10 @@ use crate::audio::{AudioAsset, AudioEmitter, AudioListener, AudioRolloffMode, Mu
+ use crate::behavior_tree::BehaviorTreeRunner;
+ use crate::camera::{Camera3D, FollowCamera, LockOnCamera, OrbitCamera};
+ use crate::native_2d::{
+-    Camera2d, ResolvedSpriteRegion2d, ResolvedTileCell2d, ResolvedTileChunkRender2d,
+-    ResolvedTileMap2d, SpriteAnimationClipRegistry2d, SpriteAnimatorRuntime2d, SpriteBlendMode,
+-    SpriteRef, SpriteRenderer2d, TileMap2d, ViewportFit2d,
++    compile_tile_map, compile_tile_set, Camera2d, ResolvedSpriteRegion2d, ResolvedTileCell2d,
++    ResolvedTileChunkRender2d, ResolvedTileMap2d, SpriteAnimationClipRegistry2d,
++    SpriteAnimatorRuntime2d, SpriteBlendMode, SpriteRef, SpriteRenderer2d, TileMap2d,
++    TileMapPhysicsSource2d, ViewportFit2d,
+ };
+ use crate::character_controller::KinematicCharacterController;
+ use crate::collision::{Collider, CollisionLayers, PhysicsBody, TriggerVolume};
+diff --git a/crates/engine/src/scene_bridge/spawn.rs b/crates/engine/src/scene_bridge/spawn.rs
+index 59228d4bc771ccd94ad6e254505ecb699f893890..a535e6635738c29f8277d3e769794ad55a30da85 100644
+--- a/crates/engine/src/scene_bridge/spawn.rs
++++ b/crates/engine/src/scene_bridge/spawn.rs
+@@ -3159,6 +3159,21 @@ pub(crate) fn spawn_tile_map_2d_component(
+             visible: fields.bool("visible")?,
+         },
+     )?;
++    let compiled_tile_set = match compile_tile_set(&tile_set) {
++        Ok(compiled) => Arc::new(compiled),
++        Err(_) => return Err(fields.invalid(EXPECTED).into()),
++    };
++    let compiled_tile_map = match compile_tile_map(&document, compiled_tile_set.as_ref()) {
++        Ok(compiled) => Arc::new(compiled),
++        Err(_) => return Err(fields.invalid(EXPECTED).into()),
++    };
++    context.world.add_component(
++        entity,
++        TileMapPhysicsSource2d {
++            map: compiled_tile_map,
++            tile_set: compiled_tile_set,
++        },
++    )?;
+     context.world.add_component(
+         entity,
+         ResolvedTileMap2d {
+diff --git a/crates/physics/src/native_2d.rs b/crates/physics/src/native_2d.rs
+index 1558649beaece1c0d82cef9c43c74b744579abd9..8390f646aa4a59e03f2d79cae5609e39a42b6af0 100644
+--- a/crates/physics/src/native_2d.rs
++++ b/crates/physics/src/native_2d.rs
+@@ -234,6 +234,26 @@ pub struct BodyEntry2d {
+     pub collider: Collider2d,
+ }
+ 
++/// One fixed collider retained inside a chunk-owned static collision source.
++#[derive(Debug, Clone)]
++pub struct StaticColliderPart2d {
++    /// World-space planar pose derived by the higher composition layer.
++    pub pose: PlanarPose2d,
++    /// Collider material/filter/one-way policy shared with normal ECS colliders.
++    pub collider: Collider2d,
++}
++
++/// Chunk-owned fixed collision data, used by Tile Maps without one ECS entity per tile.
++#[derive(Debug, Clone)]
++pub struct StaticColliderChunk2d {
++    /// Stable runtime key for replacing/removing this chunk incrementally.
++    pub key: u64,
++    /// Stable runtime entity key reported by contacts and queries.
++    pub owner: u64,
++    /// Fixed collision parts contained by this chunk.
++    pub colliders: Vec<StaticColliderPart2d>,
++}
++
+ /// Contact/trigger transition phase.
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+ pub enum ContactPhase2d {
+@@ -281,6 +301,7 @@ struct JointConstraint2d {
+ #[derive(Debug, Default)]
+ pub struct PhysicsWorld2d {
+     bodies: BTreeMap<u64, BodyEntry2d>,
++    static_chunks: BTreeMap<u64, StaticColliderChunk2d>,
+     joints: BTreeMap<u64, Vec<JointConstraint2d>>,
+     previous: BTreeMap<(u64, u64), bool>,
+ }
+@@ -291,6 +312,16 @@ impl PhysicsWorld2d {
+         self.bodies.insert(entry.entity, entry);
+     }
+ 
++    /// Inserts or replaces one fixed chunk-owned collision source.
++    pub fn upsert_static_chunk(&mut self, chunk: StaticColliderChunk2d) {
++        self.static_chunks.insert(chunk.key, chunk);
++    }
++
++    /// Removes every fixed chunk whose stable runtime key is absent from `active`.
++    pub fn retain_static_chunks(&mut self, active: &BTreeSet<u64>) {
++        self.static_chunks.retain(|key, _| active.contains(key));
++    }
++
+     /// Removes a body and retained state involving it.
+     pub fn remove(&mut self, entity: u64) {
+         self.bodies.remove(&entity);
+@@ -468,13 +499,53 @@ impl PhysicsWorld2d {
+                 };
+                 let pair = (a_id.min(b_id), a_id.max(b_id));
+                 let sensor = a.collider.sensor || b.collider.sensor;
+-                contacts.insert(pair, sensor);
++                contacts
++                    .entry(pair)
++                    .and_modify(|existing| *existing = *existing && sensor)
++                    .or_insert(sensor);
+                 if sensor || !should_resolve_contact(&a, &b, dt) {
+                     continue;
+                 }
+                 resolve_solid_contact(&mut self.bodies, a_id, b_id, normal, penetration);
+             }
+         }
++
++        let static_chunks = self.static_chunks.values().cloned().collect::<Vec<_>>();
++        for &body_id in &ids {
++            for chunk in &static_chunks {
++                if chunk.owner == body_id {
++                    continue;
++                }
++                for part in &chunk.colliders {
++                    let Some(body) = self.bodies.get(&body_id).cloned() else {
++                        continue;
++                    };
++                    let fixed = static_body(chunk.owner, part);
++                    if !body.collider.filter.permits(fixed.collider.filter) {
++                        continue;
++                    }
++                    let Some((normal, penetration)) = contact_manifold(&body, &fixed) else {
++                        continue;
++                    };
++                    let pair = (body_id.min(chunk.owner), body_id.max(chunk.owner));
++                    let sensor = body.collider.sensor || fixed.collider.sensor;
++                    contacts
++                        .entry(pair)
++                        .and_modify(|existing| *existing = *existing && sensor)
++                        .or_insert(sensor);
++                    if sensor || !should_resolve_contact(&body, &fixed, dt) {
++                        continue;
++                    }
++                    resolve_solid_contact_with_static(
++                        &mut self.bodies,
++                        body_id,
++                        &fixed,
++                        normal,
++                        penetration,
++                    );
++                }
++            }
++        }
+     }
+ 
+     fn transition_events(
+@@ -533,30 +604,39 @@ impl PhysicsWorld2d {
+             return None;
+         }
+         let mut hits = Vec::new();
+-        for entry in self.bodies.values() {
++        let mut test_entry = |entry: &BodyEntry2d, reported_entity: u64| {
+             if entry.collider.filter.memberships & mask == 0 {
+-                continue;
++                return;
+             }
+             let (min, max) = bounds(entry);
+             let expanded_min = min - half_extents.abs();
+             let expanded_max = max + half_extents.abs();
+-            if let Some(distance) =
++            let Some(distance) =
+                 ray_aabb(origin, direction, expanded_min, expanded_max, max_distance)
+-            {
+-                let point = origin + direction * distance;
+-                let center = (expanded_min + expanded_max) * 0.5;
+-                let local = point - center;
+-                let normal = if local.x.abs() > local.y.abs() {
+-                    Vec2::new(local.x.signum(), 0.0)
+-                } else {
+-                    Vec2::new(0.0, local.y.signum())
+-                };
+-                hits.push(QueryHit2d {
+-                    entity: entry.entity,
+-                    point,
+-                    normal,
+-                    distance,
+-                });
++            else {
++                return;
++            };
++            let point = origin + direction * distance;
++            let center = (expanded_min + expanded_max) * 0.5;
++            let local = point - center;
++            let normal = if local.x.abs() > local.y.abs() {
++                Vec2::new(local.x.signum(), 0.0)
++            } else {
++                Vec2::new(0.0, local.y.signum())
++            };
++            hits.push(QueryHit2d {
++                entity: reported_entity,
++                point,
++                normal,
++                distance,
++            });
++        };
++        for entry in self.bodies.values() {
++            test_entry(entry, entry.entity);
++        }
++        for chunk in self.static_chunks.values() {
++            for part in &chunk.colliders {
++                test_entry(&static_body(chunk.owner, part), chunk.owner);
+             }
+         }
+         hits.sort_by(|left, right| {
+@@ -567,18 +647,33 @@ impl PhysicsWorld2d {
+         hits.into_iter().next()
+     }
+ 
+-    /// Returns every collider overlapping an axis-aligned query box.
++    /// Returns every collider owner overlapping an axis-aligned query box.
+     pub fn overlap_box(&self, center: Vec2, half_extents: Vec2, mask: u32) -> Vec<u64> {
+         let query_min = center - half_extents.abs();
+         let query_max = center + half_extents.abs();
+-        self.bodies
+-            .values()
+-            .filter(|entry| entry.collider.filter.memberships & mask != 0)
+-            .filter_map(|entry| {
+-                let (min, max) = bounds(entry);
+-                aabb_overlap(query_min, query_max, min, max).then_some(entry.entity)
+-            })
+-            .collect()
++        let mut owners = BTreeSet::new();
++        for entry in self.bodies.values() {
++            if entry.collider.filter.memberships & mask == 0 {
++                continue;
++            }
++            let (min, max) = bounds(entry);
++            if aabb_overlap(query_min, query_max, min, max) {
++                owners.insert(entry.entity);
++            }
++        }
++        for chunk in self.static_chunks.values() {
++            if chunk.colliders.iter().any(|part| {
++                let entry = static_body(chunk.owner, part);
++                if entry.collider.filter.memberships & mask == 0 {
++                    return false;
++                }
++                let (min, max) = bounds(&entry);
++                aabb_overlap(query_min, query_max, min, max)
++            }) {
++                owners.insert(chunk.owner);
++            }
++        }
++        owners.into_iter().collect()
+     }
+ }
+ 
+@@ -596,6 +691,18 @@ fn rotate(value: Vec2, angle: f32) -> Vec2 {
+     Vec2::new(value.x * cos - value.y * sin, value.x * sin + value.y * cos)
+ }
+ 
++fn static_body(owner: u64, part: &StaticColliderPart2d) -> BodyEntry2d {
++    BodyEntry2d {
++        entity: owner,
++        pose: part.pose,
++        body: RigidBody2d {
++            mode: RigidBodyMode2d::Fixed,
++            ..RigidBody2d::default()
++        },
++        collider: part.collider.clone(),
++    }
++}
++
+ fn collider_half_extents(entry: &BodyEntry2d) -> Vec2 {
+     let local = match &entry.collider.shape {
+         ColliderShape2d::Box { half_extents } => Vec2::from(*half_extents),
+@@ -758,6 +865,47 @@ fn resolve_solid_contact(
+     }
+ }
+ 
++fn resolve_solid_contact_with_static(
++    bodies: &mut BTreeMap<u64, BodyEntry2d>,
++    body_id: u64,
++    fixed: &BodyEntry2d,
++    normal: Vec2,
++    penetration: f32,
++) {
++    let Some(body) = bodies.get(&body_id).cloned() else {
++        return;
++    };
++    if body.body.mode != RigidBodyMode2d::Dynamic {
++        return;
++    }
++
++    if let Some(entry) = bodies.get_mut(&body_id) {
++        entry.pose.translation -= normal * penetration.max(0.0);
++    }
++
++    let velocity = Vec2::from(body.body.velocity);
++    let normal_speed = (-velocity).dot(normal);
++    if normal_speed >= 0.0 {
++        return;
++    }
++    let restitution = body
++        .collider
++        .restitution
++        .min(fixed.collider.restitution)
++        .clamp(0.0, 1.0);
++    let normal_impulse = -(1.0 + restitution) * normal_speed;
++    let mut result = velocity - normal * normal_impulse;
++    let tangent = Vec2::new(-normal.y, normal.x);
++    let tangent_speed = (-result).dot(tangent);
++    let friction = (body.collider.friction.max(0.0) * fixed.collider.friction.max(0.0)).sqrt();
++    let tangent_impulse = (-tangent_speed).clamp(-normal_impulse * friction, normal_impulse * friction);
++    result -= tangent * tangent_impulse;
++
++    if let Some(entry) = bodies.get_mut(&body_id) {
++        entry.body.velocity = result.to_array();
++    }
++}
++
+ fn ray_aabb(
+     origin: Vec2,
+     direction: Vec2,
+@@ -948,28 +1096,42 @@ fn controller_blockers(world: &PhysicsWorld2d, query: ControllerBlockerQuery) ->
+     } = query;
+     let query_min = center - half_extents;
+     let query_max = center + half_extents;
+-    world
+-        .bodies
+-        .values()
+-        .filter(|entry| Some(entry.entity) != ignore_entity)
+-        .filter(|entry| !entry.collider.sensor)
+-        .filter(|entry| entry.collider.filter.memberships & mask != 0)
+-        .filter(|entry| {
+-            let (min, max) = bounds(entry);
+-            aabb_overlap(query_min, query_max, min, max)
+-        })
+-        .filter(|entry| {
+-            if !entry.collider.one_way {
+-                return true;
+-            }
+-            if drop_through_seconds > 0.0 || delta.y > 0.0 {
+-                return false;
+-            }
+-            let (_, platform_max) = bounds(entry);
+-            start.y - half_extents.y >= platform_max.y - 1.0e-3
+-        })
+-        .map(|entry| entry.entity)
+-        .collect()
++    let blocks = |entry: &BodyEntry2d| {
++        if Some(entry.entity) == ignore_entity
++            || entry.collider.sensor
++            || entry.collider.filter.memberships & mask == 0
++        {
++            return false;
++        }
++        let (min, max) = bounds(entry);
++        if !aabb_overlap(query_min, query_max, min, max) {
++            return false;
++        }
++        if !entry.collider.one_way {
++            return true;
++        }
++        if drop_through_seconds > 0.0 || delta.y > 0.0 {
++            return false;
++        }
++        start.y - half_extents.y >= max.y - 1.0e-3
++    };
++
++    let mut owners = BTreeSet::new();
++    for entry in world.bodies.values() {
++        if blocks(entry) {
++            owners.insert(entry.entity);
++        }
++    }
++    for chunk in world.static_chunks.values() {
++        if chunk
++            .colliders
++            .iter()
++            .any(|part| blocks(&static_body(chunk.owner, part)))
++        {
++            owners.insert(chunk.owner);
++        }
++    }
++    owners.into_iter().collect()
+ }
+ 
+ #[cfg(test)]
+@@ -1065,4 +1227,35 @@ mod tests {
+         );
+         assert!(position.y < 1.0);
+     }
++
++    #[test]
++    fn static_chunk_colliders_block_and_report_the_chunk_owner() {
++        let mut world = PhysicsWorld2d::default();
++        world.upsert_static_chunk(StaticColliderChunk2d {
++            key: 77,
++            owner: 9,
++            colliders: vec![StaticColliderPart2d {
++                pose: PlanarPose2d {
++                    translation: Vec2::ZERO,
++                    rotation: 0.0,
++                    scale: Vec2::ONE,
++                },
++                collider: Collider2d::default(),
++            }],
++        });
++        let hit = world
++            .ray_cast(Vec2::new(-2.0, 0.0), Vec2::X, 5.0, u32::MAX)
++            .expect("static chunk must be queryable");
++        assert_eq!(hit.entity, 9);
++        assert_eq!(world.overlap_box(Vec2::ZERO, Vec2::splat(0.25), u32::MAX), vec![9]);
++
++        let mut falling = box_body(2, RigidBodyMode2d::Dynamic, Vec2::new(0.0, 0.75));
++        falling.body.velocity = [0.0, -1.0];
++        world.upsert(falling);
++        let events = world.step(1.0 / 60.0, Vec2::ZERO);
++        assert!(events.iter().any(|event| {
++            event.a == 2 && event.b == 9 && event.phase == ContactPhase2d::Enter
++        }));
++        assert!(world.body(2).unwrap().pose.translation.y >= 0.99);
++    }
+ }
