@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0133-current-main-20260819-r1",
+  "target_branch": "chatgpt/gameengine-adr0133-first-release-current-main-v9",
+  "expected_head_sha": "fdb22b2a4ba20c61dd2c5275905e74275ad65463",
+  "baseline_main_sha": "fdb22b2a4ba20c61dd2c5275905e74275ad65463",
+  "patch_sha256": "a54465bb9a1917bfb8067433b07cf5678fa7cb7624445c94caf4c7672ab71243",
+  "patch_bytes": 27282,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Complete ADR0133 Remote AI Studio browser validation",
+  "pr_title": "ADR0133: complete Remote AI Studio first-release validation",
+  "pr_body": "## Summary\n\nCompletes the remaining ADR0133 first-release evidence on current main by capturing the production Remote AI Studio companion in real Microsoft Edge at desktop, narrow, and mobile widths. The deterministic visual fixture is initialized after the loopback gateway is running so fallible fixture setup cannot terminate Editor construction; fixture failures are surfaced through the visual-validation marker.\n\nThis supersedes the stale validation candidate in #668 and the old exact-head carrier #677. PR #291 remains the older superseded draft.\n\n## Validation\n\nRequires full Windows Validation because scripts/ci changes, Automation Regression, and ChatGPT visual review of the generated Remote AI Studio screenshots.\n\n<!-- gameengine-visual-validation: editor -->\n<!-- gameengine-visual-remote-ai-studio: browser -->"
+}
