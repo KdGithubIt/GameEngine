@@ -433,11 +433,23 @@ pub enum VfxPlaybackState {
     Paused,
 }
 
+/// Stable authoring source attached to one resolved runtime VFX player.
+///
+/// This provenance is runtime-only and lets higher-level composition verify that a
+/// Timeline clip is controlling the production effect it names without persisting any
+/// process-local renderer handle.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VfxSourceIdentity {
+    /// Stable VFX effect asset selected during scene conversion.
+    pub effect: AssetId,
+}
+
 /// Transient scene runtime component that plays one compiled VFX effect.
 #[derive(Debug, Clone)]
 pub struct VfxPlayer {
     instance: VfxInstance,
     playback_state: VfxPlaybackState,
+    external_clock: bool,
     /// Starts playback when the runtime component is created.
     pub autoplay: bool,
     /// Restarts immediately after a finite effect completes.
@@ -468,6 +480,7 @@ impl VfxPlayer {
             } else {
                 VfxPlaybackState::Stopped
             },
+            external_clock: false,
             autoplay,
             looping,
             restart_policy,
@@ -549,6 +562,25 @@ impl VfxPlayer {
         self.playback_state = VfxPlaybackState::Playing;
     }
 
+    /// Selects whether the normal frame-clock system or an owning composition layer
+    /// advances this player. Timeline uses external clocking so absolute scrub/replay
+    /// samples cannot also be advanced by the frame loop.
+    pub fn set_external_clock(&mut self, external: bool) {
+        self.external_clock = external;
+    }
+
+    /// Returns whether a composition layer currently owns this player's clock.
+    pub fn is_external_clocked(&self) -> bool {
+        self.external_clock
+    }
+
+    /// Reconstructs this production VFX instance at an exact elapsed time.
+    pub fn sample_external_time(&mut self, elapsed_seconds: f32, origin: Vec3) {
+        self.external_clock = true;
+        self.playback_state = VfxPlaybackState::Playing;
+        self.instance.seek_preview(elapsed_seconds.max(0.0), origin);
+    }
+
     /// Advances playback and applies the configured completion policy.
     pub fn step(&mut self, dt: f32, origin: Vec3) {
         if !self.is_playing() {
@@ -572,6 +604,9 @@ pub fn vfx_update_system(time: Res<'_, Time>, mut query: Query<'_, (&mut VfxPlay
         return;
     }
     for (_, (player, transform)) in query.iter_mut() {
+        if player.is_external_clocked() {
+            continue;
+        }
         let origin = transform.matrix().col(3).truncate();
         player.step(dt, origin);
     }
