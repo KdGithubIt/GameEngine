@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/agent_benchmark_campaign.rs",
+  "old": "        let fixture = self\n            .plan\n            .tasks\n            .get(schedule.task_index)\n            .map(|task| task.fixture.clone())\n            .ok_or_else(|| \"campaign schedule references an unknown fixture\".to_owned())?;\n        if let Some(run) = self.runs.get_mut(index) {",
+  "new": "        let fixture = self\n            .plan\n            .tasks\n            .get(schedule.task_index)\n            .map(|task| task.fixture.clone())\n            .ok_or_else(|| \"campaign schedule references an unknown fixture\".to_owned())?;\n        let harness_route = CampaignHarnessRoute::for_task(&schedule.task_id)?;\n        if let Some(run) = self.runs.get_mut(index) {"
+}
