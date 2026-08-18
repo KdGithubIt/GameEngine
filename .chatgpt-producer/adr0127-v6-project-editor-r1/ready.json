@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0127-v6-project-editor-r1",
+  "target_branch": "chatgpt/gameengine-adr0127-first-release-current-main-v6",
+  "expected_head_sha": "3bfc6ec0deb245b662c765888b0ed1fb2808f85a",
+  "baseline_main_sha": "837ca2784312c78c30c6b260d8bac0b32ee0e2f4",
+  "edit_parts": [
+    "edit-0000.json", "edit-0001.json", "edit-0002.json", "edit-0003.json", "edit-0004.json", "edit-0005.json", "edit-0006.json", "edit-0007.json", "edit-0008.json", "edit-0009.json",
+    "edit-0010.json", "edit-0011.json", "edit-0012.json", "edit-0013.json", "edit-0014.json", "edit-0015.json", "edit-0016.json", "edit-0017.json", "edit-0018.json", "edit-0019.json",
+    "edit-0020.json", "edit-0021.json", "edit-0022.json", "edit-0023.json", "edit-0024.json", "edit-0025.json", "edit-0026.json", "edit-0027.json", "edit-0028.json", "edit-0029.json",
+    "edit-0030.json", "edit-0031.json", "edit-0032.json"
+  ],
+  "commit_message": "Add ADR0127 Project Rust and Native 2D Editor workspace",
+  "pr_title": "GameEngine: complete ADR0127 Native 2D first release",
+  "pr_body": "Continues the current-main v6 ADR0127 first-release branch after the protocol-compliant foundation request. Adds the existing ABI v3 Project Rust SpriteAnimator2D command/state integration and the service-backed Native 2D Editor workspace with stable SpriteRef scene creation, typed Atlas/Animation/Tile Set authoring, and gesture-backed sparse Tile Map editing. Scene View projection/drop and proving-template work remain separate exact-head slices."
+}
