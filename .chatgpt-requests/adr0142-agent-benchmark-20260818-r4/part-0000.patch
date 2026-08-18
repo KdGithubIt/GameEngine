@@ -1,0 +1,14 @@
+diff --git a/crates/editor/src/agent_benchmark.rs b/crates/editor/src/agent_benchmark.rs
+index 871b8b52e5b755ee82184b1f14af2c4b647d7c31..a79e9ddbe58666d86267c9f3c5de8def71693679 100644
+--- a/crates/editor/src/agent_benchmark.rs
++++ b/crates/editor/src/agent_benchmark.rs
+@@ -941,7 +941,8 @@ mod tests {
+         assert!(!text.contains("secret-token"));
+         assert!(!text.contains("C:\\private\\project"));
+         assert!(!text.contains("conversation"));
+-        assert!(!text.contains("prompt"));
++        assert!(!text.contains("\"prompt_text\""));
++        assert!(text.contains("\"prompt_tokens\""));
+     }
+ 
+     #[test]
