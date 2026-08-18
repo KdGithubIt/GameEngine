@@ -23,7 +23,8 @@ use crate::secondary_motion::{
     secondary_motion_presentation_system, secondary_motion_system, SecondaryMotionWorlds,
 };
 use crate::native_2d::{
-    physics_2d_fixed_system, Gravity2d, Physics2dDiagnostics, PhysicsRuntime2d,
+    physics_2d_fixed_system, sprite_animation_2d_fixed_system, Gravity2d, Physics2dDiagnostics,
+    PhysicsRuntime2d, SpriteAnimationEvents2d,
 };
 use crate::navmesh::{nav_mesh_agent_system, nav_mesh_debug_draw_system};
 use crate::physics::velocity_system;
@@ -90,6 +91,9 @@ pub fn register_runtime_systems(app: &mut App) -> Result<(), SystemRegistrationE
     }
     if app.world().get_resource::<Physics2dDiagnostics>().is_none() {
         app.insert_resource(Physics2dDiagnostics::default());
+    }
+    if app.world().get_resource::<SpriteAnimationEvents2d>().is_none() {
+        app.insert_resource(SpriteAnimationEvents2d::default());
     }
     app.try_add_system_with_descriptor(
         engine_system(
@@ -228,6 +232,16 @@ pub fn register_runtime_systems(app: &mut App) -> Result<(), SystemRegistrationE
         .try_after("engine.animation_graph")
         .expect("built-in system IDs are valid"),
         animation_system,
+    )?;
+    app.try_add_fixed_system_with_descriptor(
+        engine_system(
+            "engine.sprite_animation_2d",
+            "Sprite Animation 2D",
+            "Advances deterministic per-entity Sprite Animation state and publishes the current SpriteRef.",
+        )
+        .try_after("engine.animation_graph")
+        .expect("built-in system IDs are valid"),
+        sprite_animation_2d_fixed_system,
     )?;
     app.try_add_fixed_system_with_descriptor(
         engine_system(
