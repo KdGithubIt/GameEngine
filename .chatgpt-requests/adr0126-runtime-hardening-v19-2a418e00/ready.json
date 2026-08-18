@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0126-runtime-hardening-v19-2a418e00",
+  "target_branch": "chatgpt/gameengine-adr0126-first-release-v19",
+  "expected_head_sha": "c93e1dd426d8da0e0d43cc49decc733b2810b316",
+  "baseline_main_sha": "2a418e000fa727ae81a88b423ad3c113b44f211c",
+  "patch_sha256": "1ebda5cd3a7ee115ad26bfc5a474bceb857099bb35b32307e8e8553c94da3643",
+  "patch_bytes": 21002,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Harden ADR0126 Timeline runtime contracts",
+  "pr_title": "GameEngine: complete ADR0126 Timeline and Sequencer",
+  "pr_body": "## Summary\n\nHardens the production Timeline runtime contract. Multi-player composition uses explicit priority with deterministic tie-breaks and diagnostics; Timeline events retain stable asset + semantic document identity; continuous Animation sampling no longer fabricates seek discontinuities; production VFX can be driven by the Timeline external clock; neutral loop semantics are exposed through the runtime; and unsaved Editor working copies can compile through the same runtime path.\n\nThe PR remains Draft while Project Rust, Sequencer, and final validation continue.\n\n<!-- gameengine-chatgpt-dispatcher -->"
+}
