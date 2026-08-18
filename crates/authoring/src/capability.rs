@@ -174,6 +174,8 @@ pub enum AuthoringDomain {
     ProjectSettings,
     /// Animation Set asset documents.
     AnimationSet,
+    /// Timeline sequence documents and live Sequencer sessions.
+    Timeline,
 }
 
 /// Authoring document a capability reads or mutates.
