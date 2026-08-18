@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "request_id": "humanoid-detect-rigs-20260818-05",
+  "target_branch": "chatgpt/gameengine-humanoid-detection-rig-coverage",
+  "expected_head_sha": "fb4b603efa4bea7a73ba7e7f68efc835050a01bf",
+  "baseline_main_sha": "2a418e000fa727ae81a88b423ad3c113b44f211c",
+  "edit_parts": [
+    "edit-0000.json",
+    "edit-0001.json"
+  ],
+  "commit_message": "Support VRM humanoid center tokens",
+  "pr_title": "GameEngine: broaden humanoid rig auto-detection",
+  "pr_body": "## Summary\n\n- broaden Humanoid detection across MMD, Mixamo/FBX, Unreal-style, Biped, Blender/DCC, and VRM/VRoid naming conventions\n- use hierarchy to disambiguate candidates and infer a conservative shared Hips parent for branching rigs\n- keep ADR 0110 required semantics and authored-profile reconciliation unchanged\n- cover all behavior with synthetic SkeletonAsset/BoneDef fixtures only\n\n<!-- gameengine-chatgpt-dispatcher -->\n"
+}
