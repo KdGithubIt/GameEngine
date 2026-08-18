@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/engine/src/components/tests.rs",
+  "old": "            NAVIGATION_MODIFIER_COMPONENT,\n            VFX_PLAYER_COMPONENT,\n        ]\n",
+  "new": "            NAVIGATION_MODIFIER_COMPONENT,\n            VFX_PLAYER_COMPONENT,\n            TILE_MAP_2D_COMPONENT,\n        ]\n"
+}
