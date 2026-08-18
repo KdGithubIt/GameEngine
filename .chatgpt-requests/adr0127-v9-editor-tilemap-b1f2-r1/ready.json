@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0127-v9-editor-tilemap-b1f2-r1",
+  "target_branch": "chatgpt/gameengine-adr0127-first-release-current-main-v9",
+  "expected_head_sha": "b1f2d90162e44d4f36299ac67c81f1c5757e6dcb",
+  "baseline_main_sha": "4e9865c2db754ef5a2a33e1ac42d1cd5cf318229",
+  "patch_sha256": "5ae6d64e3696460132a78f16ffe445306d9cc655aaed9ed0499481a357dac82c",
+  "patch_bytes": 11798,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Add ADR0127 Tile Map Editor UI and canvas",
+  "pr_title": "GameEngine: complete ADR0127 Native 2D first release",
+  "pr_body": "Continues ADR0127 Native 2D first-release completion with the Tile Map authoring UI and sparse chunk canvas."
+}
