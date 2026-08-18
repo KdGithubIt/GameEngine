@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/scene_view.rs","old":"                draw_grid(dl);\n","new":"                if planar_2d {\n                    native_2d_mode::draw_grid(dl, &self.camera);\n                } else {\n                    draw_grid(dl);\n                }\n"}
