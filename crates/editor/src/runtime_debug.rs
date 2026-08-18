@@ -233,11 +233,15 @@ impl RuntimeDebugObservation {
             .map(|entity| {
                 format!(
                     "{} authoring={:?} components={:?} values={:?} transform={:?}",
-                    entity.name, entity.authoring_id, entity.components, entity.values, entity.transform
+                    entity.name,
+                    entity.authoring_id,
+                    entity.components,
+                    entity.values,
+                    entity.transform
                 )
             })
             .collect::<Vec<_>>()
-            .join(" | " );
+            .join(" | ");
         format!(
             "fixed_tick={} paused={} entities={} keyboard={:?} mouse={:?} gamepad_buttons={:?} gamepad_axes={:?} actions={:?} timing_ms(last={:.3}, max={:.3}, avg={:.3}) rows=[{}]",
             self.fixed_tick,
@@ -860,7 +864,7 @@ mod tests {
                     button: MouseButton::Left,
                     pressed: false,
                 },
-            ]
+            ],
         );
     }
 
