@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/agent_benchmark.rs",
+  "old": "fn candidate_matches_record(candidate: &CatalogCandidate, record: &BenchmarkRecord) -> bool {",
+  "new": "fn catalog_evidence_is_eligible(record: &BenchmarkRecord) -> bool {\n    record\n        .identity\n        .execution\n        .as_ref()\n        .is_none_or(|execution| execution.comparison_class == \"model_comparison\")\n}\n\nfn candidate_matches_record(candidate: &CatalogCandidate, record: &BenchmarkRecord) -> bool {"
+}
