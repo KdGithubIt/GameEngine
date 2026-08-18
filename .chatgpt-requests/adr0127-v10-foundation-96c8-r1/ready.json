@@ -1,0 +1,17 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0127-v10-foundation-96c8-r1",
+  "target_branch": "chatgpt/gameengine-adr0127-first-release-current-main-v10",
+  "expected_head_sha": "96c8ffb18a74eabec2164daa61f694f131019ddc",
+  "baseline_main_sha": "96c8ffb18a74eabec2164daa61f694f131019ddc",
+  "patch_sha256": "9dd6ccf80ec05edeff2094815e9f4a7f18e09af79f53989c0c21ec421bdbe3f9",
+  "patch_bytes": 146770,
+  "patch_parts": [
+    "part-0000.patch",
+    "part-0001.patch",
+    "part-0002.patch"
+  ],
+  "commit_message": "Complete ADR0127 Native 2D current-main foundation",
+  "pr_title": "GameEngine: complete ADR0127 Native 2D first release",
+  "pr_body": "Rebuilds ADR0127 Native 2D completion on current main while preserving ADR0150. Restores the audited authoring, runtime, rendering, CLI/MCP, and scene-bridge foundation before the remaining Editor and rendering completion slices.\n\n<!-- gameengine-chatgpt-dispatcher -->"
+}
