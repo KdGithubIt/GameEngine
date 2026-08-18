@@ -1,0 +1,144 @@
+name: GameEngine ADR Visual Scenarios
+
+run-name: >-
+  ADR visual scenarios PR #${{ github.event.pull_request.number }}
+  ${{ github.event.pull_request.head.sha }}
+
+on:
+  pull_request:
+    types: [opened, synchronize, edited, reopened]
+
+permissions: {}
+
+concurrency:
+  group: gameengine-editor-adr-visual-scenarios-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+  SCCACHE_GHA_ENABLED: "true"
+  RUSTC_WRAPPER: sccache
+
+jobs:
+  context:
+    name: Resolve ADR visual scenario request
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.base.ref == 'main' &&
+      startsWith(github.event.pull_request.head.ref, 'chatgpt/gameengine-') &&
+      github.event.pull_request.body != null &&
+      contains(github.event.pull_request.body, '<!-- gameengine-adr-visual-scenarios -->')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      head_sha: ${{ steps.resolve.outputs.head_sha }}
+      runner_labels: ${{ steps.resolve.outputs.runner_labels }}
+    steps:
+      - name: Resolve exact PR context
+        id: resolve
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        env:
+          CONFIGURED_RUNNER_LABELS: ${{ vars.GAMEENGINE_WINDOWS_RUNNER_LABELS || '' }}
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            const body = pr.body || "";
+            if ([...body.matchAll(/<!--\s*gameengine-adr-visual-scenarios\s*-->/gi)].length !== 1) {
+              core.setFailed("PR body must contain exactly one ADR visual-scenarios marker.");
+              return;
+            }
+            const headSha = pr.head.sha.toLowerCase();
+            if (!/^[0-9a-f]{40}$/.test(headSha)) {
+              core.setFailed("ADR visual scenarios require an exact 40-character PR head SHA.");
+              return;
+            }
+            let runnerLabels = ["windows-latest"];
+            const configured = (process.env.CONFIGURED_RUNNER_LABELS || "").trim();
+            if (configured) {
+              const parsed = JSON.parse(configured);
+              if (!Array.isArray(parsed) || parsed.length === 0 || parsed.some(x => typeof x !== "string" || !x.trim())) {
+                core.setFailed("GAMEENGINE_WINDOWS_RUNNER_LABELS must be a non-empty JSON string array.");
+                return;
+              }
+              runnerLabels = parsed;
+            }
+            core.setOutput("head_sha", headSha);
+            core.setOutput("runner_labels", JSON.stringify(runnerLabels));
+
+  capture:
+    name: Capture ADR visual scenarios
+    needs: context
+    runs-on: ${{ fromJSON(needs.context.outputs.runner_labels) }}
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    steps:
+      - name: Check out exact scenario head
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.context.outputs.head_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify checked-out head
+        shell: pwsh
+        env:
+          EXPECTED_HEAD_SHA: ${{ needs.context.outputs.head_sha }}
+        run: |
+          $actual = (& git rev-parse HEAD).Trim().ToLowerInvariant()
+          if ($LASTEXITCODE -ne 0 -or $actual -ne $env:EXPECTED_HEAD_SHA) {
+              throw "Checked-out ADR visual head '$actual' does not match '$env:EXPECTED_HEAD_SHA'."
+          }
+      - name: Initialize pinned Rust and persistent cache paths
+        shell: pwsh
+        env:
+          RUNNER_ENVIRONMENT: ${{ runner.environment }}
+          GAMEENGINE_CI_CACHE_ROOT: ${{ vars.GAMEENGINE_CI_CACHE_ROOT || '' }}
+        run: |
+          $persistent = $env:RUNNER_ENVIRONMENT -eq "self-hosted"
+          ./scripts/ci/Initialize-CiEnvironment.ps1 -PersistentRunner:$persistent
+      - name: Set up sccache
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+      - name: Build, launch, and capture deterministic ADR states
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP "gameengine-adr-visual-scenarios"
+          $scenarios = @(
+            "adr0136-animation-preview",
+            "adr0137-diagnostics",
+            "adr0138-zero-targets",
+            "adr0138-animation-only",
+            "adr0138-behavior-only",
+            "adr0138-mixed-targets",
+            "adr0138-transition-progress",
+            "adr0138-stale-source",
+            "adr0138-long-names",
+            "adr0138-entry-state-palette",
+            "adr0139-working-copy-conflict",
+            "adr0144-hosted-backend",
+            "adr0144-enterprise-backend",
+            "adr0149-live-observation",
+            "adr0153-confinement"
+          )
+          foreach ($scenario in $scenarios) {
+              Write-Host "==> ADR visual scenario $scenario"
+              $env:GAMEENGINE_VISUAL_SCENARIO = $scenario
+              ./scripts/ci/Invoke-EditorVisualValidation.ps1 `
+                  -Target editor `
+                  -WorkspaceRoot (Get-Location).Path `
+                  -OutputDirectory (Join-Path $root $scenario)
+          }
+          Remove-Item Env:GAMEENGINE_VISUAL_SCENARIO -ErrorAction SilentlyContinue
+      - name: Upload ADR visual evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: gameengine-adr-visual-scenarios-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/gameengine-adr-visual-scenarios
+          if-no-files-found: error
+          retention-days: 30
