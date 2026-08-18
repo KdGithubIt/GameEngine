@@ -13,6 +13,7 @@
 mod agent_asset_acquisition;
 mod agent_benchmark;
 mod benchmark_experiment;
+mod benchmark_process;
 mod agent_host;
 mod external_agent_provider;
 mod hosted_model_backend;
