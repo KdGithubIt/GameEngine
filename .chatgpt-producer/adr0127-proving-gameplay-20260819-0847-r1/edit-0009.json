@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/launcher/src/native_2d_template.rs",
+  "old": "        \"# Native 2D proving project\\n\\nThis Launcher template intentionally puts ADR 0127 systems in one small scene: Camera2D pixel framing, stable SpriteRef rendering, deterministic Sprite Animation events, sparse TileMap rendering/collision, a CharacterController2D body, and a one-way platform. Open the Native 2D workspace to edit the atlas, animation, Tile Set, and Tile Map, then package the project through the normal Build workflow.\\n\",\n",
+  "new": "        \"# Native 2D proving project\\n\\nThis Launcher template intentionally puts ADR 0127 systems in one small playable scene: Camera2D pixel framing, stable SpriteRef rendering, deterministic Sprite Animation events, sparse TileMap rendering/collision, a CharacterController2D body, and a one-way platform.\\n\\n## Controls\\n\\n- A / D: move left / right\\n- W: jump, play the proving sound, and persist the proving flag to save slot 0\\n- S: drop through the one-way platform\\n\\nThe HUD is a normal declarative UI document driven by the generated Project Rust system. Open the Native 2D workspace to edit the atlas, animation, Tile Set, and Tile Map. Use the normal Build workflow for the same project; no Native 2D-specific packager or runtime data path is required.\\n\",\n"
+}
