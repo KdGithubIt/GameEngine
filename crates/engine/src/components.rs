@@ -12,7 +12,8 @@ use crate::scene_bridge::{
     AUDIO_LISTENER_COMPONENT,
     BUILTIN_BLUE_MATERIAL_ASSET_ID, BUILTIN_ORANGE_MATERIAL_ASSET_ID, BUILTIN_QUAD_ASSET_ID,
     BUILTIN_TRIANGLE_ASSET_ID, BUILTIN_UI_DOCUMENT_ASSET_ID, BUILTIN_WHITE_MATERIAL_ASSET_ID,
-    CAMERA_COMPONENT, CHARACTER_CONTROLLER_COMPONENT, FOOT_IK_COMPONENT, LOD_GROUP_COMPONENT,
+    CAMERA_2D_COMPONENT, CAMERA_COMPONENT, CHARACTER_CONTROLLER_COMPONENT, FOOT_IK_COMPONENT,
+    LOD_GROUP_COMPONENT,
     PARTICLE_EMITTER_COMPONENT, RUNTIME_METADATA_COMPONENT, SHADOW_SETTINGS_COMPONENT,
     SKINNED_MESH_RENDERER_COMPONENT, SKINNED_MODEL_COMPONENT, STATIC_MESH_RENDERER_COMPONENT,
     TRANSFORM_COMPONENT,
@@ -54,6 +55,14 @@ pub enum AssetKind {
     Prefab,
     /// A typed `*.vfx.json` visual-effect document (ADR 0125).
     VfxEffect,
+    /// A versioned `*.spriteatlas.json` Native 2D sprite-atlas document.
+    SpriteAtlas,
+    /// A versioned `*.spriteanim.json` Native 2D sprite-animation document.
+    SpriteAnimation,
+    /// A versioned `*.tileset.json` Native 2D tile-set document.
+    TileSet,
+    /// A versioned `*.tilemap.json` Native 2D tile-map document.
+    TileMap,
     /// A glTF/GLB, FBX, or PMX source document used for mesh, skin, or
     /// animation import (ADR 0081 widened this from glTF/GLB-only, ADR 0097
     /// widened it again to PMX; the variant name is a pre-existing misnomer
@@ -112,6 +121,10 @@ pub fn asset_path_matches_kind(kind: AssetKind, path: &Path) -> bool {
         AssetKind::UiDocument => file_name.ends_with(".ui.json"),
         AssetKind::Prefab => file_name.ends_with(".prefab.json"),
         AssetKind::VfxEffect => file_name.ends_with(".vfx.json"),
+        AssetKind::SpriteAtlas => file_name.ends_with(".spriteatlas.json"),
+        AssetKind::SpriteAnimation => file_name.ends_with(".spriteanim.json"),
+        AssetKind::TileSet => file_name.ends_with(".tileset.json"),
+        AssetKind::TileMap => file_name.ends_with(".tilemap.json"),
         AssetKind::GltfSource => extension_matches(extension, &["gltf", "glb", "fbx", "pmx"]),
         AssetKind::MotionSource => extension_matches(extension, &["vmd"]),
         // Skins, skeletons, morphs, and secondary-motion rigs are only ever
