@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0126-sequencer-20260818-01",
+  "target_branch": "chatgpt/gameengine-adr0126-first-release-v21",
+  "expected_head_sha": "4b3ebf0d4e077a3d493714eef3468ce9549c158a",
+  "baseline_main_sha": "ecfc28d6d8e0e82eff38cc90f775e14c88347919",
+  "patch_sha256": "7c24ab0e931f79b54c5d8d85a98d021e2711a0345b41a4f816396268dfd68944",
+  "patch_bytes": 34339,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Add ADR0126 Sequencer editor surface",
+  "pr_title": "GameEngine: complete ADR0126 Timeline and Sequencer",
+  "pr_body": "## Summary\n\nContinues ADR0126 first-release completion on the existing Timeline runtime and Project Rust boundary. Adds an Editor-native `*.timeline.json` asset kind with create/open routing and a typed Sequencer surface backed exclusively by `TimelineAuthoringService` commands.\n\nThe Sequencer includes searchable track creation, track/lane and marker/event presentation, clip move/resize/duplicate/delete, numeric property curve editing, frame/marker/clip-edge/playhead snapping feedback, binding diagnostics with Scene focus, transient mute/solo/lock, Play/Pause/Stop/Step/Loop controls, and inline ReplayRequired/NonSeekable badges. Asset-backed Animation/Audio/VFX clip creation remains typed rather than fabricating placeholder stable references.\n\nThe PR remains Draft while persistent Scene View Timeline sampling, final Windows Validation, and Visual Validation are completed.\n\n<!-- gameengine-visual-validation: auto -->\n\n<!-- gameengine-chatgpt-dispatcher -->"
+}
