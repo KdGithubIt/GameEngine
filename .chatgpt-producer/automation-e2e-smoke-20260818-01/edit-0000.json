@@ -1,0 +1,1 @@
+{"operation":"create_text","path":"docs/CHATGPT_AUTOMATION_E2E_SMOKE.md","content":"# ChatGPT Automation E2E Smoke\n\nEphemeral production-path smoke test for the repository-native ChatGPT producer, publisher, Dispatcher, and Windows Validation chain. This pull request is not intended to merge.\n"}
