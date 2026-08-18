@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "docs/adr/0150-multi-model-routing-and-workload-specialization.md",
+  "old": "Every decision records the routing policy version, workload class, backend/model identity, handoff/fallback state, and sanitized reason in the existing run event audit. AI Studio exposes the active measured-routing policy and count of benchmark-qualified specialist workloads next to model/resource status. No prompt, credential, private provider state, or transient model cache is persisted by the router.",
+  "new": "Every decision records the routing policy version, workload class, backend/model identity, handoff/fallback state, and sanitized reason in the existing run event audit. A native run that actually hands work to a specialist is excluded from ADR 0142 single-model evidence so specialist work cannot be misattributed to the selected baseline model; comparable single-model records remain the source evidence used to qualify routing. AI Studio exposes the active measured-routing policy and count of benchmark-qualified specialist workloads next to model/resource status. No prompt, credential, private provider state, or transient model cache is persisted by the router."
+}
