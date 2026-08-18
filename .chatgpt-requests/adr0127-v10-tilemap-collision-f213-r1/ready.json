@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0127-v10-tilemap-collision-f213-r1",
+  "target_branch": "chatgpt/gameengine-adr0127-first-release-current-main-v10",
+  "expected_head_sha": "f21318f17a7933d98ed6df729e6935f75c14c5bf",
+  "baseline_main_sha": "96c8ffb18a74eabec2164daa61f694f131019ddc",
+  "patch_sha256": "053b2d5da11c67d590cf0c587bee43385a5fdc781878e91bec2dfcb40e10fa67",
+  "patch_bytes": 22386,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Extract Tile Map collision by sparse chunk",
+  "pr_title": "GameEngine: complete ADR0127 Native 2D first release",
+  "pr_body": "Connects compiled Tile Set/Tile Map collision data to the dedicated Native 2D physics world as chunk-owned fixed collision sources. Tile cells do not become ECS entities; contacts, ray/box casts, overlaps, CharacterController2D, materials, and one-way policy reuse the existing 2D solver and report the owning TileMap entity."
+}
