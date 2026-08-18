@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "    fn selected_native_model_config(&self) -> Result<NativeModelConfig, String> {",
+  "new": "    fn native_routing_candidates(&self, primary: &NativeModelConfig) -> Vec<NativeModelConfig> {\n        let NativeModelConfig::Local(primary) = primary else {\n            return Vec::new();\n        };\n        self.current_installed_inventory()\n            .map(|inventory| {\n                inventory\n                    .models\n                    .iter()\n                    .filter(|model| model.name.trim() != primary.model.trim())\n                    .map(|model| {\n                        NativeModelConfig::Local(LocalModelConfig {\n                            endpoint: primary.endpoint.clone(),\n                            model: model.name.clone(),\n                        })\n                    })\n                    .collect()\n            })\n            .unwrap_or_default()\n    }\n\n    fn selected_native_model_config(&self) -> Result<NativeModelConfig, String> {"
+}
