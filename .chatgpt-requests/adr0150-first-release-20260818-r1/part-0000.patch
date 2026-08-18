@@ -1,0 +1,729 @@
+diff --git a/crates/editor/src/ai_studio.rs b/crates/editor/src/ai_studio.rs
+index aeb7013579430983ab6ec2d55e256fc16e5872fa..11511bf9f49ac73ef206a2d2763d1fb1cc21670e 100644
+--- a/crates/editor/src/ai_studio.rs
++++ b/crates/editor/src/ai_studio.rs
+@@ -25,6 +25,7 @@ use crate::external_agent_provider::{
+ use crate::hosted_model_backend;
+ use crate::hosted_model_backend::{HostedAuthMode, HostedModelConfig};
+ use crate::live_observation::{LiveObservationError, LiveObservationManager};
++use crate::model_router::{ModelRoutingPolicy, MODEL_ROUTER_POLICY_VERSION};
+ use crate::native_agent::{
+     InstalledModelDiscoveryTask, InstalledModelInventory, LocalModelConfig, ModelCapabilityProfile,
+     ModelResourceTask, NativeAnswer, NativeMetrics, NativeModelConfig, NativeQuestionTask,
+@@ -1713,6 +1714,7 @@ impl AiStudioPanel {
+                     self.resolved_workload,
+                     self.resource_plan.reclaim
+                 ));
++                ui.small(self.model_routing_status());
+                 self.show_agent_benchmark(ui);
+             });
+     }
+@@ -1804,6 +1806,23 @@ impl AiStudioPanel {
+         });
+     }
+ 
++    fn model_routing_status(&self) -> String {
++        let Ok(primary) = self.selected_native_model_config() else {
++            return format!(
++                "Measured routing: policy {MODEL_ROUTER_POLICY_VERSION} · unavailable until a primary model is selected."
++            );
++        };
++        let policy = ModelRoutingPolicy::derive(
++            primary.clone(),
++            self.native_routing_candidates(&primary),
++            &self.benchmark_records,
++        );
++        format!(
++            "Measured routing: policy {MODEL_ROUTER_POLICY_VERSION} · {} benchmark-qualified specialist workload(s) · one AgentRun with provider-independent context handoff.",
++            policy.adopted_specialist_count()
++        )
++    }
++
+     fn current_installed_inventory(&self) -> Option<&InstalledModelInventory> {
+         let endpoint = self.local_model_endpoint.trim().trim_end_matches('/');
+         self.installed_model_inventory.as_ref().filter(|inventory| {
+@@ -1968,6 +1987,27 @@ impl AiStudioPanel {
+         Ok(())
+     }
+ 
++    fn native_routing_candidates(&self, primary: &NativeModelConfig) -> Vec<NativeModelConfig> {
++        let NativeModelConfig::Local(primary) = primary else {
++            return Vec::new();
++        };
++        self.current_installed_inventory()
++            .map(|inventory| {
++                inventory
++                    .models
++                    .iter()
++                    .filter(|model| model.name.trim() != primary.model.trim())
++                    .map(|model| {
++                        NativeModelConfig::Local(LocalModelConfig {
++                            endpoint: primary.endpoint.clone(),
++                            model: model.name.clone(),
++                        })
++                    })
++                    .collect()
++            })
++            .unwrap_or_default()
++    }
++
+     fn selected_native_model_config(&self) -> Result<NativeModelConfig, String> {
+         match self.model_backend {
+             ModelBackendPreference::Local => {
+@@ -2556,10 +2596,19 @@ impl AiStudioPanel {
+         runtime
+             .start_turn(&run, context.as_deref(), images)
+             .map_err(|error| error.to_string())?;
++        let backend_label = runtime.backend_label();
++        let routing_summary = runtime.routing_policy_summary();
++        let routing_decisions = runtime.take_routing_decisions();
++        for decision in routing_decisions {
++            self.host
++                .record_semantic_progress(run_id, "model_routing", decision.audit_summary())
++                .map_err(|error| error.to_string())?;
++        }
+         self.status = Some(format!(
+-            "{} is reasoning in {:?}; managed tools remain host-owned.",
+-            runtime.backend_label(),
+-            run.state
++            "{} is reasoning in {:?}; {}. Managed tools remain host-owned.",
++            backend_label,
++            run.state,
++            routing_summary
+         ));
+         Ok(())
+     }
+@@ -3378,7 +3427,17 @@ impl AiStudioPanel {
+         self.active_external_program = external_provider.map(|_| self.provider_program.clone());
+         self.active_external_args = external_provider.map(|_| self.provider_args.clone());
+         self.external_provider_diagnostics = ExternalAgentDiagnostics::default();
+-        self.native_agent_runtime = native_config.map(NativeAgentRuntime::configured);
++        let routing_candidates = native_config
++            .as_ref()
++            .map(|config| self.native_routing_candidates(config))
++            .unwrap_or_default();
++        self.native_agent_runtime = native_config.map(|config| {
++            NativeAgentRuntime::configured_routed(
++                config,
++                routing_candidates,
++                &self.benchmark_records,
++            )
++        });
+         self.native_run_benchmark_context = native_benchmark_identity.map(
+             |(backend_id, model_id, inventory)| NativeRunBenchmarkContext {
+                 run_id: run_id.clone(),
+diff --git a/crates/editor/src/lib.rs b/crates/editor/src/lib.rs
+index fef6b83d0265cb29d21c5592fdd7a854b5d8fe83..11db348839a8d50eb02dd859e6f092d3df725f84 100644
+--- a/crates/editor/src/lib.rs
++++ b/crates/editor/src/lib.rs
+@@ -16,6 +16,7 @@ mod agent_host;
+ mod external_agent_provider;
+ mod hosted_model_backend;
+ mod live_observation;
++mod model_router;
+ mod native_agent;
+ mod native_agent_runtime;
+ mod remote_ai_studio;
+diff --git a/crates/editor/src/model_router.rs b/crates/editor/src/model_router.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..474bde8b0fe729931fd3b88f3398a25b6ff6fa27
+--- /dev/null
++++ b/crates/editor/src/model_router.rs
+@@ -0,0 +1,393 @@
++//! Benchmark-gated multi-model routing for the native AgentRuntime (ADR 0150).
++//!
++//! Routing remains an optimization over one provider-independent AgentRun. A
++//! specialist is eligible only when comparable ADR 0142 evidence proves that it
++//! preserves successful completion and improves the configured objective.
++
++use crate::agent_benchmark::{
++    comparison_equivalence, BenchmarkRecord, BenchmarkTaskKind, ComparisonEquivalence,
++    BENCHMARK_TASKS,
++};
++use crate::native_agent::NativeModelConfig;
++use crate::resource_arbitration::TelemetryValue;
++use std::collections::{BTreeMap, BTreeSet};
++use std::fmt;
++
++pub(crate) const MODEL_ROUTER_POLICY_VERSION: &str = "adr0150-measured-routing-v1";
++const MIN_LATENCY_IMPROVEMENT_PERCENT: u64 = 5;
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
++pub(crate) enum RoutingWorkload {
++    ReadQuestion,
++    ProjectInspection,
++    CodeImplementation,
++    TypedAuthoringMutation,
++    ValidationRepair,
++    RuntimeInteraction,
++    VisualEvaluation,
++}
++
++impl RoutingWorkload {
++    fn from_task_kind(kind: BenchmarkTaskKind) -> Self {
++        match kind {
++            BenchmarkTaskKind::ReadQuestion => Self::ReadQuestion,
++            BenchmarkTaskKind::ProjectInspection => Self::ProjectInspection,
++            BenchmarkTaskKind::CodeImplementation => Self::CodeImplementation,
++            BenchmarkTaskKind::TypedAuthoringMutation => Self::TypedAuthoringMutation,
++            BenchmarkTaskKind::ValidationRepair => Self::ValidationRepair,
++            BenchmarkTaskKind::RuntimeInteraction => Self::RuntimeInteraction,
++            BenchmarkTaskKind::VisualEvaluation => Self::VisualEvaluation,
++        }
++    }
++
++    pub(crate) const fn label(self) -> &'static str {
++        match self {
++            Self::ReadQuestion => "read question",
++            Self::ProjectInspection => "project inspection",
++            Self::CodeImplementation => "code implementation",
++            Self::TypedAuthoringMutation => "typed authoring mutation",
++            Self::ValidationRepair => "validation repair",
++            Self::RuntimeInteraction => "runtime interaction",
++            Self::VisualEvaluation => "visual evaluation",
++        }
++    }
++}
++
++#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
++struct ModelKey {
++    backend_id: String,
++    model_id: String,
++}
++
++impl ModelKey {
++    fn from_config(config: &NativeModelConfig) -> Self {
++        Self {
++            backend_id: config.backend_id().to_owned(),
++            model_id: config.model_id(),
++        }
++    }
++
++    fn matches_record(&self, record: &BenchmarkRecord) -> bool {
++        record.identity.model.backend_id == self.backend_id
++            && record.identity.model.model_id == self.model_id
++    }
++}
++
++#[derive(Debug, Clone)]
++pub(crate) struct RoutingSpecialist {
++    pub(crate) config: NativeModelConfig,
++    pub(crate) task_id: String,
++    pub(crate) baseline_elapsed_ms: Option<u64>,
++    pub(crate) specialist_elapsed_ms: Option<u64>,
++    pub(crate) improves_task_success: bool,
++}
++
++#[derive(Debug, Clone)]
++pub(crate) struct ModelRoutingPolicy {
++    primary: NativeModelConfig,
++    specialists: BTreeMap<RoutingWorkload, RoutingSpecialist>,
++    image_verified: BTreeSet<ModelKey>,
++}
++
++#[derive(Debug, Clone)]
++pub(crate) struct ModelRouteDecision {
++    pub(crate) workload: RoutingWorkload,
++    pub(crate) config: NativeModelConfig,
++    pub(crate) reason: String,
++    pub(crate) context_handoff: bool,
++    pub(crate) fallback: bool,
++}
++
++impl ModelRouteDecision {
++    pub(crate) fn audit_summary(&self) -> String {
++        format!(
++            "policy={} workload={} backend={} model={} context_handoff={} fallback={} reason={}",
++            MODEL_ROUTER_POLICY_VERSION,
++            self.workload.label(),
++            self.config.backend_id(),
++            self.config.model_id(),
++            self.context_handoff,
++            self.fallback,
++            self.reason
++        )
++    }
++}
++
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub(crate) enum ModelRoutingError {
++    CapabilityUnavailable { workload: RoutingWorkload, capability: &'static str },
++    UserDecisionRequired { workload: RoutingWorkload, backend_id: String, model_id: String },
++}
++
++impl fmt::Display for ModelRoutingError {
++    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
++        match self {
++            Self::CapabilityUnavailable { workload, capability } => write!(
++                formatter,
++                "no benchmark-qualified model declares required {capability} capability for {}",
++                workload.label()
++            ),
++            Self::UserDecisionRequired { workload, backend_id, model_id } => write!(
++                formatter,
++                "routing {} to remote backend `{backend_id}` model `{model_id}` requires an explicit user decision because processing posture/cost class would change",
++                workload.label()
++            ),
++        }
++    }
++}
++
++impl std::error::Error for ModelRoutingError {}
++
++impl ModelRoutingPolicy {
++    pub(crate) fn derive(
++        primary: NativeModelConfig,
++        candidates: Vec<NativeModelConfig>,
++        records: &[BenchmarkRecord],
++    ) -> Self {
++        let primary_key = ModelKey::from_config(&primary);
++        let mut specialists = BTreeMap::new();
++        let mut image_verified = BTreeSet::new();
++
++        for record in records {
++            if record.identity.task_id == "visual_evaluation_v1"
++                && record_success(record)
++            {
++                image_verified.insert(ModelKey {
++                    backend_id: record.identity.model.backend_id.clone(),
++                    model_id: record.identity.model.model_id.clone(),
++                });
++            }
++        }
++
++        for task in BENCHMARK_TASKS {
++            let workload = RoutingWorkload::from_task_kind(task.kind);
++            let mut best: Option<(RoutingSpecialist, ImprovementRank)> = None;
++            for candidate in &candidates {
++                let candidate_key = ModelKey::from_config(candidate);
++                if candidate_key == primary_key {
++                    continue;
++                }
++                let Some((specialist, rank)) = best_comparable_improvement(
++                    task.id,
++                    &primary_key,
++                    &candidate_key,
++                    candidate.clone(),
++                    records,
++                ) else {
++                    continue;
++                };
++                if best.as_ref().is_none_or(|(_, current)| rank > *current) {
++                    best = Some((specialist, rank));
++                }
++            }
++            if let Some((specialist, _)) = best {
++                specialists.insert(workload, specialist);
++            }
++        }
++
++        Self { primary, specialists, image_verified }
++    }
++
++    pub(crate) fn primary(&self) -> &NativeModelConfig {
++        &self.primary
++    }
++
++    pub(crate) fn adopted_specialist_count(&self) -> usize {
++        self.specialists.len()
++    }
++
++    pub(crate) fn select(
++        &self,
++        workload: RoutingWorkload,
++        requires_image: bool,
++    ) -> Result<ModelRouteDecision, ModelRoutingError> {
++        if let Some(specialist) = self.specialists.get(&workload)
++            && self.supports_requirements(&specialist.config, requires_image)
++        {
++            if !self.primary.requires_network() && specialist.config.requires_network() {
++                return Err(ModelRoutingError::UserDecisionRequired {
++                    workload,
++                    backend_id: specialist.config.backend_id().to_owned(),
++                    model_id: specialist.config.model_id(),
++                });
++            }
++            let reason = match (
++                specialist.improves_task_success,
++                specialist.baseline_elapsed_ms,
++                specialist.specialist_elapsed_ms,
++            ) {
++                (true, _, _) => format!("{} improved measured task success", specialist.task_id),
++                (false, Some(baseline), Some(selected)) => format!(
++                    "{} preserved success and improved measured latency from {baseline} ms to {selected} ms",
++                    specialist.task_id
++                ),
++                _ => format!("{} satisfied measured routing policy", specialist.task_id),
++            };
++            return Ok(ModelRouteDecision {
++                workload,
++                config: specialist.config.clone(),
++                reason,
++                context_handoff: ModelKey::from_config(&specialist.config)
++                    != ModelKey::from_config(&self.primary),
++                fallback: false,
++            });
++        }
++
++        if self.supports_requirements(&self.primary, requires_image) {
++            return Ok(ModelRouteDecision {
++                workload,
++                config: self.primary.clone(),
++                reason: "single-model baseline retained because no qualified specialist improves this workload".to_owned(),
++                context_handoff: false,
++                fallback: false,
++            });
++        }
++
++        Err(ModelRoutingError::CapabilityUnavailable {
++            workload,
++            capability: if requires_image { "image input" } else { "requested" },
++        })
++    }
++
++    pub(crate) fn fallback(
++        &self,
++        failed: &NativeModelConfig,
++        workload: RoutingWorkload,
++        requires_image: bool,
++    ) -> Option<ModelRouteDecision> {
++        if ModelKey::from_config(failed) == ModelKey::from_config(&self.primary)
++            || !self.supports_requirements(&self.primary, requires_image)
++        {
++            return None;
++        }
++        if failed.requires_network() != self.primary.requires_network()
++            && self.primary.requires_network()
++        {
++            return None;
++        }
++        Some(ModelRouteDecision {
++            workload,
++            config: self.primary.clone(),
++            reason: "compatible specialist failed before the turn started; reverted to the measured single-model baseline".to_owned(),
++            context_handoff: true,
++            fallback: true,
++        })
++    }
++
++    fn supports_requirements(&self, config: &NativeModelConfig, requires_image: bool) -> bool {
++        if !requires_image {
++            return true;
++        }
++        config.capability_profile().image_input == Some(true)
++            || self.image_verified.contains(&ModelKey::from_config(config))
++    }
++}
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
++struct ImprovementRank {
++    success_gain: bool,
++    latency_gain_ms: u64,
++}
++
++fn best_comparable_improvement(
++    task_id: &str,
++    primary: &ModelKey,
++    candidate: &ModelKey,
++    config: NativeModelConfig,
++    records: &[BenchmarkRecord],
++) -> Option<(RoutingSpecialist, ImprovementRank)> {
++    let mut best = None;
++    for baseline in records
++        .iter()
++        .filter(|record| record.identity.task_id == task_id && primary.matches_record(record))
++    {
++        for specialist in records
++            .iter()
++            .filter(|record| record.identity.task_id == task_id && candidate.matches_record(record))
++        {
++            if comparison_equivalence(baseline, specialist)
++                != ComparisonEquivalence::EquivalentModelComparison
++                || !record_success(specialist)
++                || has_oom_regression(baseline, specialist)
++            {
++                continue;
++            }
++            let baseline_success = record_success(baseline);
++            let baseline_elapsed = measured_u64(&baseline.metrics.elapsed_ms);
++            let specialist_elapsed = measured_u64(&specialist.metrics.elapsed_ms);
++            let success_gain = !baseline_success;
++            let latency_gain_ms = match (baseline_elapsed, specialist_elapsed) {
++                (Some(left), Some(right)) if left > right => left - right,
++                _ => 0,
++            };
++            let latency_improves = match (baseline_elapsed, specialist_elapsed) {
++                (Some(left), Some(right)) if left > 0 => right.saturating_mul(100)
++                    <= left.saturating_mul(100 - MIN_LATENCY_IMPROVEMENT_PERCENT),
++                _ => false,
++            };
++            if !success_gain && !latency_improves {
++                continue;
++            }
++            let rank = ImprovementRank { success_gain, latency_gain_ms };
++            if best.as_ref().is_none_or(|(_, current)| rank > *current) {
++                best = Some((
++                    RoutingSpecialist {
++                        config: config.clone(),
++                        task_id: task_id.to_owned(),
++                        baseline_elapsed_ms: baseline_elapsed,
++                        specialist_elapsed_ms: specialist_elapsed,
++                        improves_task_success: success_gain,
++                    },
++                    rank,
++                ));
++            }
++        }
++    }
++    best
++}
++
++fn record_success(record: &BenchmarkRecord) -> bool {
++    matches!(record.metrics.completion_success, TelemetryValue::Measured(true))
++        && !matches!(record.metrics.acceptance_success, TelemetryValue::Measured(false))
++}
++
++fn has_oom_regression(baseline: &BenchmarkRecord, candidate: &BenchmarkRecord) -> bool {
++    match (
++        measured_u64(&baseline.metrics.oom_failures),
++        measured_u64(&candidate.metrics.oom_failures),
++    ) {
++        (Some(left), Some(right)) => right > left,
++        (None, Some(right)) => right > 0,
++        (_, None) => false,
++    }
++}
++
++fn measured_u64(value: &TelemetryValue<u64>) -> Option<u64> {
++    match value {
++        TelemetryValue::Measured(value) => Some(*value),
++        TelemetryValue::ConservativeEstimate(_) | TelemetryValue::Unavailable => None,
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn workload_labels_are_stable_audit_values() {
++        assert_eq!(RoutingWorkload::ValidationRepair.label(), "validation repair");
++        assert_eq!(RoutingWorkload::VisualEvaluation.label(), "visual evaluation");
++    }
++
++    #[test]
++    fn latency_policy_requires_at_least_five_percent_improvement() {
++        let improves = |baseline: u64, specialist: u64| {
++            specialist.saturating_mul(100)
++                <= baseline.saturating_mul(100 - MIN_LATENCY_IMPROVEMENT_PERCENT)
++        };
++        assert!(improves(1_000, 950));
++        assert!(improves(1_000, 900));
++        assert!(!improves(1_000, 960));
++        assert!(!improves(1_000, 1_000));
++    }
++}
+diff --git a/crates/editor/src/native_agent_runtime.rs b/crates/editor/src/native_agent_runtime.rs
+index e368b791e824ebe42660c242bce602302807c158..7fb44620cd4b95d336b76d149c7f040d619a7326 100644
+--- a/crates/editor/src/native_agent_runtime.rs
++++ b/crates/editor/src/native_agent_runtime.rs
+@@ -4,6 +4,10 @@
+ //! services remain authoritative for every side effect and completion gate.
+ 
+ use crate::agent_host::{AgentRun, AgentRunState, AgentWorkingStateUpdate, CompletionStatus};
++use crate::agent_benchmark::BenchmarkRecord;
++use crate::model_router::{
++    ModelRouteDecision, ModelRoutingError, ModelRoutingPolicy, RoutingWorkload,
++};
+ use crate::native_agent::{
+     LocalModelConfig, ModelCapabilityProfile, NativeAgentError, NativeModelConfig, NativeModelTask,
+ };
+@@ -122,7 +126,7 @@ pub(crate) struct NativeAgentTurn {
+ #[derive(Debug)]
+ pub(crate) enum NativeAgentRuntimeError {
+     Backend(NativeAgentError), Busy, TurnBudget, ToolFailureBudget,
+-    InvalidOutput(String), Rejected(String),
++    InvalidOutput(String), Rejected(String), Routing(ModelRoutingError),
+ }
+ 
+ impl fmt::Display for NativeAgentRuntimeError {
+@@ -134,6 +138,7 @@ impl fmt::Display for NativeAgentRuntimeError {
+             Self::ToolFailureBudget => write!(f, "native AgentRuntime tool-failure budget exhausted"),
+             Self::InvalidOutput(e) => write!(f, "invalid native structured output: {e}"),
+             Self::Rejected(e) => write!(f, "native action rejected: {e}"),
++            Self::Routing(e) => e.fmt(f),
+         }
+     }
+ }
+@@ -141,18 +146,33 @@ impl std::error::Error for NativeAgentRuntimeError {}
+ impl From<NativeAgentError> for NativeAgentRuntimeError {
+     fn from(value: NativeAgentError) -> Self { Self::Backend(value) }
+ }
++impl From<ModelRoutingError> for NativeAgentRuntimeError {
++    fn from(value: ModelRoutingError) -> Self { Self::Routing(value) }
++}
+ 
+ struct Exchange { tool: String, success: bool, result: String }
+ 
+ pub(crate) struct NativeAgentRuntime {
+-    backend: Box<dyn ModelBackend>, policy: HarnessPolicy, turns: u32, failures: u32,
++    backend: Box<dyn ModelBackend>, backend_config: NativeModelConfig,
++    routing: ModelRoutingPolicy, routing_decisions: Vec<ModelRouteDecision>,
++    policy: HarnessPolicy, turns: u32, failures: u32,
+     exchanges: Vec<Exchange>, active: Option<Box<dyn ModelTurnTask>>,
+ }
+ 
+ impl NativeAgentRuntime {
+     pub(crate) fn configured(config: NativeModelConfig) -> Self {
++        Self::configured_routed(config, Vec::new(), &[])
++    }
++    pub(crate) fn configured_routed(
++        primary: NativeModelConfig,
++        candidates: Vec<NativeModelConfig>,
++        benchmark_records: &[BenchmarkRecord],
++    ) -> Self {
++        let routing = ModelRoutingPolicy::derive(primary.clone(), candidates, benchmark_records);
+         Self::new(
+-            Box::new(ConfiguredModelBackend(config)),
++            Box::new(ConfiguredModelBackend(primary.clone())),
++            primary,
++            routing,
+             HarnessPolicy::default(),
+         )
+     }
+@@ -160,10 +180,34 @@ impl NativeAgentRuntime {
+     pub(crate) fn local(config: LocalModelConfig) -> Self {
+         Self::configured(NativeModelConfig::Local(config))
+     }
+-    fn new(backend: Box<dyn ModelBackend>, policy: HarnessPolicy) -> Self {
+-        Self { backend, policy, turns: 0, failures: 0, exchanges: Vec::new(), active: None }
++    fn new(
++        backend: Box<dyn ModelBackend>,
++        backend_config: NativeModelConfig,
++        routing: ModelRoutingPolicy,
++        policy: HarnessPolicy,
++    ) -> Self {
++        Self {
++            backend,
++            backend_config,
++            routing,
++            routing_decisions: Vec::new(),
++            policy,
++            turns: 0,
++            failures: 0,
++            exchanges: Vec::new(),
++            active: None,
++        }
+     }
+     pub(crate) fn backend_label(&self) -> String { self.backend.label() }
++    pub(crate) fn routing_policy_summary(&self) -> String {
++        format!(
++            "{} adopted specialist workload(s)",
++            self.routing.adopted_specialist_count()
++        )
++    }
++    pub(crate) fn take_routing_decisions(&mut self) -> Vec<ModelRouteDecision> {
++        std::mem::take(&mut self.routing_decisions)
++    }
+     pub(crate) fn is_busy(&self) -> bool { self.active.is_some() }
+     pub(crate) fn interrupt(&mut self) {
+         if let Some(task) = self.active.as_ref() { task.interrupt(); }
+@@ -174,11 +218,45 @@ impl NativeAgentRuntime {
+     {
+         if self.active.is_some() { return Err(NativeAgentRuntimeError::Busy); }
+         if self.turns >= self.policy.max_model_turns { return Err(NativeAgentRuntimeError::TurnBudget); }
++        let workload = routing_workload(run.state, !images.is_empty());
++        let decision = self.routing.select(workload, !images.is_empty())?;
++        self.apply_route_decision(&decision);
+         let prompt = build_prompt(run, &self.backend.profile(), self.policy, &self.exchanges, context);
+-        self.active = Some(self.backend.start_turn(prompt, images)?);
++        match self.backend.start_turn(prompt, images.clone()) {
++            Ok(task) => self.active = Some(task),
++            Err(error) => {
++                let Some(fallback) = self.routing.fallback(
++                    &self.backend_config,
++                    workload,
++                    !images.is_empty(),
++                ) else {
++                    return Err(error.into());
++                };
++                self.apply_route_decision(&fallback);
++                let fallback_prompt = build_prompt(
++                    run,
++                    &self.backend.profile(),
++                    self.policy,
++                    &self.exchanges,
++                    context,
++                );
++                self.active = Some(self.backend.start_turn(fallback_prompt, images)?);
++            }
++        }
+         self.turns += 1;
+         Ok(())
+     }
++
++    fn apply_route_decision(&mut self, decision: &ModelRouteDecision) {
++        if !same_model(&self.backend_config, &decision.config) {
++            self.backend_config = decision.config.clone();
++            self.backend = Box::new(ConfiguredModelBackend(decision.config.clone()));
++        }
++        self.routing_decisions.push(decision.clone());
++        if self.routing_decisions.len() > 128 {
++            self.routing_decisions.remove(0);
++        }
++    }
+     pub(crate) fn poll(&mut self) -> Option<Result<NativeAgentTurn, NativeAgentRuntimeError>> {
+         let result = self.active.as_ref()?.poll()?;
+         self.active = None;
+@@ -222,6 +300,20 @@ impl NativeAgentRuntime {
+     }
+ }
+ 
++fn routing_workload(state: AgentRunState, has_images: bool) -> RoutingWorkload {
++    match state {
++        AgentRunState::Repairing => RoutingWorkload::ValidationRepair,
++        AgentRunState::Evaluating if has_images => RoutingWorkload::VisualEvaluation,
++        AgentRunState::Evaluating => RoutingWorkload::RuntimeInteraction,
++        AgentRunState::Executing => RoutingWorkload::CodeImplementation,
++        _ => RoutingWorkload::ProjectInspection,
++    }
++}
++
++fn same_model(left: &NativeModelConfig, right: &NativeModelConfig) -> bool {
++    left.backend_id() == right.backend_id() && left.model_id() == right.model_id()
++}
++
+ fn reject<T>(message: &str) -> Result<T, NativeAgentRuntimeError> {
+     Err(NativeAgentRuntimeError::Rejected(message.to_owned()))
+ }
+diff --git a/docs/adr/0150-multi-model-routing-and-workload-specialization.md b/docs/adr/0150-multi-model-routing-and-workload-specialization.md
+index c8d37eab63d7aca07fd23e5fd6032c833b663488..fe781a32e4216c7ee55a47e1a8ed1ae3afb5afb9 100644
+--- a/docs/adr/0150-multi-model-routing-and-workload-specialization.md
++++ b/docs/adr/0150-multi-model-routing-and-workload-specialization.md
+@@ -1,6 +1,6 @@
+ # ADR 0150: Multi-Model Routing and Workload Specialization
+ 
+-Status: Proposed
++Status: Accepted
+ Date: 2026-08-17
+ Builds on: ADR 0131, ADR 0141, ADR 0142
+ Relates to: ADR 0135, ADR 0143, ADR 0144
+@@ -44,6 +44,18 @@ Every routing policy has a version and is benchmarked against the ADR 0142 singl
+ 
+ Provider/model failure may fall back to another compatible model only when the fallback preserves the same run semantics and user policy. A fallback that changes remote-processing posture, cost class, or required permission must request the appropriate user decision instead of silently switching.
+ 
++## Implementation
++
++The first-release `ModelRouter` is an optimization inside the existing `NativeAgentRuntime`; it never creates a second `AgentRun`, proposal authority, permission broker, or completion owner. The user's selected backend/model remains the single-model baseline. AI Studio considers only other models already discovered on the same local backend as automatic routing candidates. Hosted or enterprise processing is never introduced automatically from a local baseline, so a change of remote-processing posture, permission requirement, or cost class remains an explicit user decision.
++
++Routing policy `adr0150-measured-routing-v1` is derived from machine-local ADR 0142 benchmark records. A specialist is eligible only when its task record is comparable with the baseline through the ADR 0142 equivalence contract, the specialist completes successfully, it introduces no measured OOM regression, and it either converts a measured baseline failure into success or preserves success while improving measured elapsed time by at least five percent. Missing or non-equivalent evidence retains the selected single-model baseline rather than inventing a recommendation.
++
++Each routed turn rebuilds the provider prompt from the same immutable proposal snapshot, `AgentWorkingState`, completion state, prior managed tool results, explicit phase context, and current Agent Host evidence. Switching the inference backend therefore preserves provider-independent run state instead of depending on one model's transient KV cache or hidden conversation state. The Agent Host continues to own stale-state checks, permissions, managed side effects, validation, Play/frame evidence, repair, and completion truth.
++
++Image-bearing turns require a backend that declares image input or has successful GameEngine visual-evaluation benchmark evidence. If neither the qualified specialist nor the baseline satisfies that requirement, routing fails explicitly instead of allowing a text-only model to fabricate visual success. A specialist that fails before a turn starts may deterministically fall back only to a compatible selected baseline without changing the user's processing posture.
++
++Every decision records the routing policy version, workload class, backend/model identity, handoff/fallback state, and sanitized reason in the existing run event audit. AI Studio exposes the active measured-routing policy and count of benchmark-qualified specialist workloads next to model/resource status. No prompt, credential, private provider state, or transient model cache is persisted by the router.
++
+ ## Dependencies and parallel work
+ 
+ Implementation is sequenced after ADR 0141 and ADR 0142. ADR 0143 and ADR 0144 are optional inputs; if they are not yet on `main`, the router uses only available resource/provider signals.
