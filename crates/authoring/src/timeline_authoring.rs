@@ -2,8 +2,8 @@
 
 use crate::id::{TimelineClipId, TimelineMarkerId, TimelineTrackId};
 use crate::timeline::{
-    save_timeline, validate_timeline, TimelineBinding, TimelineClip, TimelineDiagnostic,
-    TimelineDiagnosticSeverity, TimelineDocument, TimelineMarker, TimelineTrack,
+    save_timeline, validate_timeline, TimelineBinding, TimelineClip, TimelineClipPayload,
+    TimelineDiagnostic, TimelineDiagnosticSeverity, TimelineDocument, TimelineMarker, TimelineTrack,
 };
 use crate::{AuthoringPermission, AuthoringPermissionError, AuthoringPermissions};
 use engine_timeline::TimelineTick;
@@ -19,8 +19,17 @@ pub type TimelineRevision = u64;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum TimelineAuthoringCommand {
+    /// Replaces the canonical Timeline duration.
+    SetDuration(TimelineTick),
     /// Add a typed track.
     AddTrack(TimelineTrack),
+    /// Renames one track without changing stable identity.
+    RenameTrack {
+        /// Track.
+        track: TimelineTrackId,
+        /// New display name.
+        name: String,
+    },
     /// Remove a track.
     RemoveTrack(TimelineTrackId),
     /// Change a track stable binding.
@@ -46,6 +55,20 @@ pub enum TimelineAuthoringCommand {
     },
     /// Delete a clip.
     RemoveClip(TimelineClipId),
+    /// Renames one clip without changing stable identity.
+    RenameClip {
+        /// Clip.
+        clip: TimelineClipId,
+        /// New display name.
+        name: String,
+    },
+    /// Replaces one clip's typed payload atomically.
+    SetClipPayload {
+        /// Clip.
+        clip: TimelineClipId,
+        /// New typed payload.
+        payload: TimelineClipPayload,
+    },
     /// Move a clip without changing duration.
     MoveClip {
         /// Clip.
@@ -70,6 +93,13 @@ pub enum TimelineAuthoringCommand {
         marker: TimelineMarkerId,
         /// Tick.
         tick: TimelineTick,
+    },
+    /// Replaces a marker's optional bounded event name.
+    SetMarkerEvent {
+        /// Marker.
+        marker: TimelineMarkerId,
+        /// New event name, or `None` for a visual-only marker.
+        event: Option<String>,
     },
 }
 
@@ -505,7 +535,11 @@ fn apply_command(
     command: &TimelineAuthoringCommand,
 ) -> Result<(), TimelineAuthoringError> {
     match command {
+        TimelineAuthoringCommand::SetDuration(duration) => doc.duration = *duration,
         TimelineAuthoringCommand::AddTrack(track) => doc.tracks.push(track.clone()),
+        TimelineAuthoringCommand::RenameTrack { track, name } => {
+            find_track_mut(doc, track)?.name = name.clone();
+        }
         TimelineAuthoringCommand::RemoveTrack(id) => {
             let before = doc.tracks.len();
             doc.tracks.retain(|value| &value.id != id);
@@ -533,6 +567,12 @@ fn apply_command(
                 return Err(TimelineAuthoringError::MissingTarget(id.to_string()));
             }
         }
+        TimelineAuthoringCommand::RenameClip { clip, name } => {
+            find_clip_mut(doc, clip)?.name = name.clone();
+        }
+        TimelineAuthoringCommand::SetClipPayload { clip, payload } => {
+            find_clip_mut(doc, clip)?.payload = payload.clone();
+        }
         TimelineAuthoringCommand::MoveClip { clip, start } => {
             find_clip_mut(doc, clip)?.start = *start;
         }
@@ -554,6 +594,14 @@ fn apply_command(
                 .find(|item| &item.id == marker)
                 .ok_or_else(|| TimelineAuthoringError::MissingTarget(marker.to_string()))?;
             item.tick = *tick;
+        }
+        TimelineAuthoringCommand::SetMarkerEvent { marker, event } => {
+            let item = doc
+                .markers
+                .iter_mut()
+                .find(|item| &item.id == marker)
+                .ok_or_else(|| TimelineAuthoringError::MissingTarget(marker.to_string()))?;
+            item.event = event.clone();
         }
     }
     Ok(())
@@ -659,6 +707,79 @@ mod tests {
         assert_eq!(applied.revision, base.revision + 1);
         assert_ne!(applied.generation, base.generation);
         assert_eq!(service.document().tracks.len(), 1);
+    }
+
+    #[test]
+    fn sequencer_property_edits_are_transactional_and_undoable() {
+        let mut track = event_track();
+        let track_id = track.id.clone();
+        let clip_id = TimelineClipId::generate();
+        track.clips.push(TimelineClip {
+            id: clip_id.clone(),
+            name: "old clip".into(),
+            start: TimelineTick::new(10),
+            duration: TimelineTick::new(1),
+            source_offset: TimelineTick::ZERO,
+            payload: TimelineClipPayload::Event {
+                name: "old.event".into(),
+                payload: String::new(),
+            },
+        });
+        let marker_id = TimelineMarkerId::generate();
+        let mut doc = TimelineDocument::new("x", TimelineTick::new(100));
+        doc.tracks.push(track);
+        doc.markers.push(TimelineMarker {
+            id: marker_id.clone(),
+            name: "m".into(),
+            tick: TimelineTick::new(20),
+            event: None,
+        });
+        let mut service = TimelineAuthoringService::new(doc).unwrap();
+
+        service
+            .apply_transaction(
+                0,
+                vec![
+                    TimelineAuthoringCommand::SetDuration(TimelineTick::new(200)),
+                    TimelineAuthoringCommand::RenameTrack {
+                        track: track_id.clone(),
+                        name: "renamed".into(),
+                    },
+                    TimelineAuthoringCommand::RenameClip {
+                        clip: clip_id.clone(),
+                        name: "renamed clip".into(),
+                    },
+                    TimelineAuthoringCommand::SetClipPayload {
+                        clip: clip_id.clone(),
+                        payload: TimelineClipPayload::Event {
+                            name: "new.event".into(),
+                            payload: "payload".into(),
+                        },
+                    },
+                    TimelineAuthoringCommand::SetMarkerEvent {
+                        marker: marker_id.clone(),
+                        event: Some("marker.event".into()),
+                    },
+                ],
+            )
+            .unwrap();
+
+        let document = service.document();
+        assert_eq!(document.duration, TimelineTick::new(200));
+        assert_eq!(document.tracks[0].name, "renamed");
+        assert_eq!(document.tracks[0].clips[0].name, "renamed clip");
+        assert!(matches!(
+            &document.tracks[0].clips[0].payload,
+            TimelineClipPayload::Event { name, payload }
+                if name == "new.event" && payload == "payload"
+        ));
+        assert_eq!(document.markers[0].event.as_deref(), Some("marker.event"));
+
+        assert!(service.undo());
+        assert_eq!(service.document().duration, TimelineTick::new(100));
+        assert_eq!(service.document().tracks[0].name, "event");
+        assert_eq!(service.document().tracks[0].clips[0].name, "old clip");
+        assert_eq!(service.document().markers[0].event, None);
     }
 
     #[test]
