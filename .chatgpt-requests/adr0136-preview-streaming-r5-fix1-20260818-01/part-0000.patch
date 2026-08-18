@@ -1,0 +1,17 @@
+diff --git a/crates/render-runtime/src/gpu_streaming.rs b/crates/render-runtime/src/gpu_streaming.rs
+index e88247a11285f31aac2e47cfb30b7751e7ed3ce1..5352a1446a8e3012280f8ce74cbaa1b582cbd323 100644
+--- a/crates/render-runtime/src/gpu_streaming.rs
++++ b/crates/render-runtime/src/gpu_streaming.rs
+@@ -35,12 +35,6 @@ pub(crate) struct GpuUploadReport {
+     pub(crate) cache_hits: u32,
+ }
+ 
+-impl GpuUploadReport {
+-    pub(crate) const fn has_deferred_work(self) -> bool {
+-        self.deferred_uploads != 0
+-    }
+-}
+-
+ #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+ enum UploadKind {
+     Mesh,
