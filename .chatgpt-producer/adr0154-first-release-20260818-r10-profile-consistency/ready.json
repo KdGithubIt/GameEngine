@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0154-first-release-20260818-r10-profile-consistency",
+  "target_branch": "chatgpt/gameengine-adr0154-first-release-v2",
+  "expected_head_sha": "2d4b42eec3e0cb59cf56ba4e6653b3c6b365b199",
+  "baseline_main_sha": "ecfc28d6d8e0e82eff38cc90f775e14c88347919",
+  "edit_parts": [
+    "edit-0000.json",
+    "edit-0001.json",
+    "edit-0002.json",
+    "edit-0003.json",
+    "edit-0004.json",
+    "edit-0005.json",
+    "edit-0006.json",
+    "edit-0007.json",
+    "edit-0008.json"
+  ],
+  "commit_message": "Fix ADR0154 schema test and Humanoid profile consistency",
+  "pr_title": "Implement ADR 0154 target-aware animation motion binding",
+  "pr_body": "Continues ADR 0154 first-release completion after Windows Validation exposed a stale schema-v2 success fixture. The request updates that fixture to schema v3 and centralizes GUI-free persisted Humanoid profile usability against SkeletonRecord metadata for Import Settings, VMD provenance, and Animation Set Target Preview. Runtime route planning and Humanoid bake selection now require full HumanoidProfile validation against the concrete target SkeletonAsset, keeping runtime, Editor preview, and package route facts aligned.\n\nThe PR remains Draft and must not be merged automatically."
+}
