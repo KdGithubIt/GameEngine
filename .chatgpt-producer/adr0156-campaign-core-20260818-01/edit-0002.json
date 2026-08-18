@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/agent_benchmark.rs",
+  "old": "    if left.identity.completion_criteria != right.identity.completion_criteria {\n        differences.push(\"completion_criteria\");\n    }\n    if differences.is_empty() {",
+  "new": "    if left.identity.completion_criteria != right.identity.completion_criteria {\n        differences.push(\"completion_criteria\");\n    }\n    if left.identity.execution != right.identity.execution {\n        differences.push(\"execution_identity\");\n    }\n    if differences.is_empty() {"
+}
