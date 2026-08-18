@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0127-v10-cli-native2d-help-6232-r1",
+  "target_branch": "chatgpt/gameengine-adr0127-first-release-current-main-v10",
+  "expected_head_sha": "6232c52ffdc9b8a887a1d8f8e66ffb22272bf8a3",
+  "baseline_main_sha": "96c8ffb18a74eabec2164daa61f694f131019ddc",
+  "edit_parts": ["edit-0000.json"],
+  "commit_message": "Complete ADR0127 Native2D CLI command parity",
+  "pr_title": "GameEngine: complete ADR0127 Native 2D first release",
+  "pr_body": "Documents every already-implemented Native 2D typed-document CLI command path for Sprite Atlas, Sprite Animation, Tile Set, and Tile Map so the canonical generic capability registry and headless CLI surface remain in parity. No second authoring implementation or schema change is introduced."
+}
