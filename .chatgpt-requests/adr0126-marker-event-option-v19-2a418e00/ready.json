@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0126-marker-event-option-v19-2a418e00",
+  "target_branch": "chatgpt/gameengine-adr0126-first-release-v19",
+  "expected_head_sha": "2cc708b230589ad1a8fc39dad77bf0f6e2ee4c54",
+  "baseline_main_sha": "2a418e000fa727ae81a88b423ad3c113b44f211c",
+  "patch_sha256": "83960fabe6d5e5b27e420d7a5bf9e7b6b4727c26fed86946dfd4ba7872fa709d",
+  "patch_bytes": 781,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Fix ADR0126 Timeline marker event filtering",
+  "pr_title": "GameEngine: complete ADR0126 Timeline and Sequencer",
+  "pr_body": "## Summary\n\nFixes the Timeline runtime marker-event contract after the runtime hardening pass. Markers without an authored event remain silent, while markers with an event preserve stable asset + semantic document identity in TimelineEvents.\n\nThe PR remains Draft while Project Rust, Sequencer, and final validation continue.\n\n<!-- gameengine-chatgpt-dispatcher -->"
+}
