@@ -1,0 +1,16 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0142-agent-benchmark-20260818-r17f",
+  "target_branch": "chatgpt/gameengine-adr0142-agent-benchmark-v10",
+  "expected_head_sha": "837ca2784312c78c30c6b260d8bac0b32ee0e2f4",
+  "baseline_main_sha": "837ca2784312c78c30c6b260d8bac0b32ee0e2f4",
+  "patch_sha256": "049ea544aa668387e266cae0a3b7681891d230e1e62edd9e71c18ea12770ad7f",
+  "patch_bytes": 89211,
+  "patch_parts": [
+    "part-0000.patch",
+    "part-0001.patch"
+  ],
+  "commit_message": "Reintegrate ADR 0142 benchmark foundation",
+  "pr_title": "GameEngine: implement ADR 0142 agent benchmark catalog",
+  "pr_body": "## Summary\n\n- Re-integrate ADR 0142 benchmark/catalog foundation on current main after ADR 0154 documentation integration.\n- Preserve current ADR 0145 provider-adapter paths, current Editor/render infrastructure, and the new animation-binding ADR documentation.\n- Add the versioned seven-task benchmark, fail-closed evidence/catalog scaffolding, loopback installed-model discovery, and compatible/unverified vs benchmark-qualified UI.\n\n## Validation\n\n- GameEngine Windows Validation\n- Editor Visual Validation\n\n<!-- gameengine-visual-validation: auto -->\n<!-- gameengine-visual-validation-trigger: adr0142-agent-benchmark-20260818-r17f -->\n"
+}
