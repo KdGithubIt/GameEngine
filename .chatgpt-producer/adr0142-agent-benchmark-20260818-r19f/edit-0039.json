@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ai_studio.rs","old":"                let profile = match self.model_backend {\n","new":"                let mut profile = match self.model_backend {\n"}
