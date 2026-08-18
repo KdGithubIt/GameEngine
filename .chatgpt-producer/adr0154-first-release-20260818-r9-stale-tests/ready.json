@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0154-first-release-20260818-r9-stale-tests",
+  "target_branch": "chatgpt/gameengine-adr0154-first-release-v2",
+  "expected_head_sha": "f942dc3a0c94a41fba13c6422eb16be9f2838237",
+  "baseline_main_sha": "ecfc28d6d8e0e82eff38cc90f775e14c88347919",
+  "edit_parts": [
+    "edit-0000.json",
+    "edit-0001.json",
+    "edit-0002.json",
+    "edit-0003.json",
+    "edit-0004.json",
+    "edit-0005.json",
+    "edit-0006.json"
+  ],
+  "commit_message": "Align ADR0154 tests with schema v3 routing",
+  "pr_title": "Implement ADR 0154 target-aware animation motion binding",
+  "pr_body": "Continues ADR 0154 first-release completion after the validation fix: removes the deleted pre-ADR0154 packaging-policy test, updates Editor and Scene Bridge tests to schema-v3 candidate-only/shared-planner semantics, makes package preflight tests require MotionBindingFailed when no Native/Retarget/Humanoid route exists, and aligns package documentation with that blocking contract. Existing pre-Play Problems projection and portable provenance fixes remain unchanged.\n\nThe PR remains Draft and must not be merged automatically."
+}
