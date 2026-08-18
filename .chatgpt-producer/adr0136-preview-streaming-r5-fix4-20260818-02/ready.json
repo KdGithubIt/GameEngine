@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0136-preview-streaming-r5-fix4-20260818-02",
+  "target_branch": "chatgpt/gameengine-adr0136-preview-streaming-r5",
+  "expected_head_sha": "c4334518a4130d4dd3c8b95b636f165a15379cb8",
+  "baseline_main_sha": "97c0c97802f81be7b332583759a2c5bf31254476",
+  "edit_parts": [
+    "edit-0000.json",
+    "edit-0001.json",
+    "edit-0002.json",
+    "edit-0003.json",
+    "edit-0004.json",
+    "edit-0005.json",
+    "edit-0006.json",
+    "edit-0007.json"
+  ],
+  "commit_message": "Cache ADR 0136 animation preview choices",
+  "pr_title": "GameEngine: implement ADR 0136 preview residency and streaming",
+  "pr_body": "## Summary\n\nImplements project-scoped preview CPU/GPU residency, asynchronous preview renderer warm-up, frame-budgeted GPU uploads, atomic reimport promotion, startup stale-catalog recovery, ADR 0135 reclaim recovery, and revision-stamped Animation Set choice caching for ADR 0136.\n\nAnimation Preview now performs only cheap file-stamp checks in its immediate UI path and reuses parsed clip choices until the Animation Set changes."
+}
