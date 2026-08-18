@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/native_2d_editor.rs",
+  "old": "use engine_authoring::{\n    replace_file_contents, AuthoringPermission, AuthoringPermissions, ProjectRoot, SpriteRef,\n    TypedAuthoringDocument, TypedDocumentAuthoringService, TypedDocumentAuthoringState,\n};\nuse serde::de::DeserializeOwned;\nuse std::path::{Path, PathBuf};\n",
+  "new": "use engine_authoring::{\n    replace_file_contents, AuthoringPermission, AuthoringPermissions, ProjectRoot, SpriteRef,\n    TypedAuthoringDocument, TypedDocumentAuthoringError, TypedDocumentAuthoringService,\n    TypedDocumentAuthoringState,\n};\nuse engine_mcp::TypedDocumentMutationInput;\nuse serde::{de::DeserializeOwned, Serialize};\nuse serde_json::Value;\nuse std::path::{Path, PathBuf};\n"
+}
