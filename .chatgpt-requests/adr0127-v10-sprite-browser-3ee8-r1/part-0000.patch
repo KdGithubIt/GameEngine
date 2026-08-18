@@ -1,0 +1,226 @@
+diff --git a/crates/editor/src/asset_browser.rs b/crates/editor/src/asset_browser.rs
+index 330ef673acdc2a261c1a6bb0d5cce5778567b925..d1b095b3e5d4de00455b3ee2d73339685d9e3b4e 100644
+--- a/crates/editor/src/asset_browser.rs
++++ b/crates/editor/src/asset_browser.rs
+@@ -27,6 +27,14 @@ pub enum AssetKind {
+     /// The file scanner never creates this kind directly; the selected model
+     /// or motion source exposes it as a draggable stable sub-asset row.
+     AnimationClip,
++    /// `*.spriteatlas.json` Native 2D stable sprite-region document.
++    SpriteAtlas,
++    /// `*.spriteanim.json` Native 2D deterministic sprite animation.
++    SpriteAnimation,
++    /// `*.tileset.json` Native 2D tile definition document.
++    TileSet,
++    /// `*.tilemap.json` Native 2D sparse tile-map document.
++    TileMap,
+     /// `*.vmd` MMD motion source (ADR 0097 §3).
+     ///
+     /// Its own kind rather than [`Self::Mesh`] because a `.vmd` carries no
+@@ -71,6 +79,10 @@ impl AssetKind {
+             Self::GraphView => "[view]",
+             Self::AnimationSet => "[animset]",
+             Self::AnimationClip => "[clip]",
++            Self::SpriteAtlas => "[atlas2d]",
++            Self::SpriteAnimation => "[anim2d]",
++            Self::TileSet => "[tileset]",
++            Self::TileMap => "[tilemap]",
+             Self::MotionSource => "[motion]",
+             Self::Texture => "[tex]",
+             Self::Mesh => "[mesh]",
+@@ -617,6 +629,14 @@ pub fn classify_file_name(name: &str) -> Option<(AssetKind, String)> {
+         (AssetKind::GraphView, ".graph.view.json".len())
+     } else if lower.ends_with(".scene.json") {
+         (AssetKind::Scene, ".scene.json".len())
++    } else if lower.ends_with(".spriteatlas.json") {
++        (AssetKind::SpriteAtlas, ".spriteatlas.json".len())
++    } else if lower.ends_with(".spriteanim.json") {
++        (AssetKind::SpriteAnimation, ".spriteanim.json".len())
++    } else if lower.ends_with(".tileset.json") {
++        (AssetKind::TileSet, ".tileset.json".len())
++    } else if lower.ends_with(".tilemap.json") {
++        (AssetKind::TileMap, ".tilemap.json".len())
+     } else if lower.ends_with(".animset.json") {
+         (AssetKind::AnimationSet, ".animset.json".len())
+     } else if lower.ends_with(".material.json") {
+@@ -706,6 +726,20 @@ mod tests {
+         assert_eq!(name, "hero");
+     }
+ 
++    #[test]
++    fn classify_native_2d_documents() {
++        for (file, expected_kind, expected_name) in [
++            ("hero.spriteatlas.json", AssetKind::SpriteAtlas, "hero"),
++            ("idle.spriteanim.json", AssetKind::SpriteAnimation, "idle"),
++            ("ground.tileset.json", AssetKind::TileSet, "ground"),
++            ("level.tilemap.json", AssetKind::TileMap, "level"),
++        ] {
++            let (kind, name) = classify_supported_file_name(file);
++            assert_eq!(kind, expected_kind);
++            assert_eq!(name, expected_name);
++        }
++    }
++
+     #[test]
+     fn classify_graph_view_json_takes_priority_over_graph_json() {
+         let (kind, name) = classify_supported_file_name("ui.graph.view.json");
+diff --git a/crates/editor/src/asset_management.rs b/crates/editor/src/asset_management.rs
+index 5bb7843a6cb24d3494b37744c1780c69ed181b75..6d4e511deee387f1907ccd692a6b73d2e31f11cd 100644
+--- a/crates/editor/src/asset_management.rs
++++ b/crates/editor/src/asset_management.rs
+@@ -594,6 +594,10 @@ pub fn is_registerable_asset_path(path: &Path) -> bool {
+         engine::AssetKind::NavMesh,
+         engine::AssetKind::UiDocument,
+         engine::AssetKind::Prefab,
++        engine::AssetKind::SpriteAtlas,
++        engine::AssetKind::SpriteAnimation,
++        engine::AssetKind::TileSet,
++        engine::AssetKind::TileMap,
+     ]
+     .into_iter()
+     .any(|kind| engine::asset_path_matches_kind(kind, path))
+@@ -621,9 +625,13 @@ fn collision_free_file_name(
+ fn split_asset_file_name(file_name: &str) -> (&str, &str) {
+     let lower = file_name.to_ascii_lowercase();
+     for suffix in [
++        ".spriteatlas.json",
++        ".spriteanim.json",
+         ".material.json",
+         ".prefab.json",
+         ".navmesh.json",
++        ".tileset.json",
++        ".tilemap.json",
+         ".graph.json",
+         ".ui.json",
+     ] {
+diff --git a/crates/editor/src/ui/assets/browser.rs b/crates/editor/src/ui/assets/browser.rs
+index d7f349c57fa0a0f531b4a51f4359b7fe8b91afc2..a20c765bbabc35d29e96bc45822ae6fb42149640 100644
+--- a/crates/editor/src/ui/assets/browser.rs
++++ b/crates/editor/src/ui/assets/browser.rs
+@@ -151,6 +151,58 @@ fn show_selected_gltf_sub_assets(
+     }
+ }
+ 
++/// Stable SpriteRef sub-assets exposed by one selected Native 2D Sprite Atlas.
++///
++/// The atlas file remains the registered AssetId; individual regions keep their
++/// persisted SpriteId and are never replaced by UV rectangles or filesystem paths.
++fn show_selected_sprite_atlas_regions(
++    ui: &mut egui::Ui,
++    browser: &AssetBrowser,
++    manifest: &engine::AssetManifest,
++    assets_root: &Path,
++) {
++    let mut selected = browser.selected_paths();
++    let (Some(path), None) = (selected.next().cloned(), selected.next()) else {
++        return;
++    };
++    let relative = path.to_string_lossy().replace('\\', "/");
++    let Some((atlas_id, entry)) = manifest.iter().find(|(_, entry)| entry.path == relative) else {
++        return;
++    };
++    if !entry.path.to_ascii_lowercase().ends_with(".spriteatlas.json") {
++        return;
++    }
++    let Ok(text) = std::fs::read_to_string(assets_root.join(&path)) else {
++        return;
++    };
++    let Ok(atlas) = serde_json::from_str::<engine_authoring::SpriteAtlasDocument>(&text) else {
++        return;
++    };
++    if atlas.regions.is_empty() {
++        return;
++    }
++
++    ui.separator();
++    ui.strong(format!("Sprites of {relative}"));
++    for region in &atlas.regions {
++        ui.horizontal(|ui| {
++            ui.add_space(12.0);
++            let response = ui.add(
++                egui::Label::new(format!("[sprite] {}", region.name))
++                    .sense(egui::Sense::click_and_drag()),
++            );
++            response
++                .on_hover_text("Drag this stable SpriteRef onto the Scene View or a Native 2D field")
++                .dnd_set_drag_payload(crate::native_2d_editor::SpriteRegionDragPayload {
++                    sprite: engine_authoring::SpriteRef {
++                        atlas: atlas_id.clone(),
++                        sprite: region.id.clone(),
++                    },
++                });
++        });
++    }
++}
++
+ pub(in crate::ui) enum AssetBrowserAction {
+     Open(usize),
+     Register(usize),
+@@ -1162,6 +1214,7 @@ fn show_asset_browser(
+                             }
+ 
+                             show_selected_gltf_sub_assets(ui, browser, manifest);
++                            show_selected_sprite_atlas_regions(ui, browser, manifest, root);
+ 
+                             // A hint only: it must not sense clicks, or it would
+                             // sit on top of the background and reintroduce a
+diff --git a/crates/editor/src/ui/viewport.rs b/crates/editor/src/ui/viewport.rs
+index e5ec81e143a279a3a1c5d20e1cf3c2cf164068e8..06c5e11f409dbdf186dd590fadbb00e6d9482c66 100644
+--- a/crates/editor/src/ui/viewport.rs
++++ b/crates/editor/src/ui/viewport.rs
+@@ -267,7 +267,12 @@ impl EditorApp {
+                     )),
+             }
+         }
+-        if output.response.dnd_hover_payload::<DragPayload>().is_some() {
++        let asset_hover = output.response.dnd_hover_payload::<DragPayload>().is_some();
++        let sprite_hover = output
++            .response
++            .dnd_hover_payload::<crate::native_2d_editor::SpriteRegionDragPayload>()
++            .is_some();
++        if asset_hover || sprite_hover {
+             ui.painter().rect_stroke(
+                 output.response.rect,
+                 0.0,
+@@ -282,6 +287,41 @@ impl EditorApp {
+                 self.assign_dropped_material(ui, payload.asset_id.clone());
+             }
+         }
++        if let Some(payload) = output
++            .response
++            .dnd_release_payload::<crate::native_2d_editor::SpriteRegionDragPayload>()
++        {
++            let sorting_layer = self
++                .project_root
++                .as_ref()
++                .and_then(|project| ProjectSettings::load(project.path()).ok())
++                .and_then(|settings| settings.native_2d.sorting_layers.first().cloned())
++                .map(|layer| layer.id)
++                .unwrap_or_else(|| {
++                    engine_authoring::Project2dSettings::default().sorting_layers[0]
++                        .id
++                        .clone()
++                });
++            match self
++                .session
++                .create_entity_from_sprite_ref(payload.sprite.clone(), sorting_layer, None)
++            {
++                Ok(entity) => {
++                    let target = self.scene_view.camera.target;
++                    let _ = self.session.set_scene_entity_positions(
++                        [entity.clone()],
++                        [
++                            Some(f64::from(target.x)),
++                            Some(f64::from(target.y)),
++                            Some(0.0),
++                        ],
++                    );
++                    self.select_single_entity(Some(entity));
++                    self.refresh_scene_problems();
++                }
++                Err(error) => self.apply_ui_result::<(), _>(Err(error)),
++            }
++        }
+     }
+ 
+     /// Creates scene content for a mesh asset dropped on the Scene View or
