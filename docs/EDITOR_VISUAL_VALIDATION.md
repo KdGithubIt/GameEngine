@@ -1,7 +1,7 @@
 # Editor Visual Validation
 
 Status: Accepted
-Version: 1.5.0
+Version: 1.6.0
 Canonical location: `docs/EDITOR_VISUAL_VALIDATION.md`
 
 ## Purpose
@@ -73,6 +73,37 @@ state that additionally requires a specific asset or document to be loaded
 still requires a separate explicit document scenario; opening an authoring tool
 alone is not evidence for document-dependent controls that are not visible yet.
 
+### Remote AI Studio browser scenario
+
+A PR that needs responsive Remote AI Studio browser evidence MAY add this
+secondary marker alongside an explicit `editor` or `both` target:
+
+```text
+<!-- gameengine-visual-validation: editor -->
+<!-- gameengine-visual-remote-ai-studio: browser -->
+```
+
+The secondary marker does not broaden the workflow trust boundary. The normal
+same-repository `chatgpt/gameengine-*` pull-request checks must select the
+Windows Editor capture job first. The checked-out validation script then starts
+the exact-head Editor with its non-default `visual-validation` feature, seeds a
+deterministic project-scoped Agent Host fixture, and receives the real
+loopback-only companion URL from the production Remote AI Studio gateway.
+
+Microsoft Edge on the Windows runner opens that production HTTP/JavaScript
+companion directly. The script captures responsive viewport evidence at
+desktop (`1440x1000`), narrow (`720x1000`), and mobile (`390x844`) sizes. It
+also captures a taller image at each width so controls, progress, permission
+state, and captured-frame review below the initial fold can be inspected
+without treating a cropped viewport as complete UI evidence. The tall captures
+preserve the same responsive width and are evidence companions, not a claim of
+device emulation.
+
+The deterministic fixture exists only under the `visual-validation` Cargo
+feature. It exercises the same Agent Host, gateway, sanitized DTOs, HTTP/SSE
+routes, companion HTML, and browser JavaScript used by the product; the script
+does not maintain a copied HTML page or a synthetic browser-only API.
+
 ## Workflow and execution boundary
 
 `.github/workflows/gameengine-editor-visual-validation.yml` uses the ordinary
@@ -132,7 +163,10 @@ indefinitely.
 
 `scripts/ci/Invoke-EditorVisualValidation.ps1` builds and launches only the
 requested desktop executable with the feature enabled and stores the resulting
-PNG in the validation artifact directory.
+PNG in the validation artifact directory. When the Remote AI Studio browser
+marker is present, the same script keeps a validation-only Editor instance
+alive long enough to serve the real loopback companion and uses installed
+Microsoft Edge headless mode to capture the responsive browser evidence.
 
 Editor capture needs a valid current-format project because ADR 0117 requires
 `engine-editor --project <path>`. By default the script creates a temporary
@@ -155,8 +189,18 @@ It contains whichever screenshots were requested:
 ```text
 editor.png
 launcher.png
+remote-ai-studio-desktop.png
+remote-ai-studio-desktop-full.png
+remote-ai-studio-narrow.png
+remote-ai-studio-narrow-full.png
+remote-ai-studio-mobile.png
+remote-ai-studio-mobile-full.png
 summary.json
 ```
+
+The Remote AI Studio files are present only when the browser scenario marker is
+requested. `summary.json` records the viewport width and height for each browser
+capture in addition to the normal screenshot digest and byte size.
 
 `summary.json` records the resolved target, project source, optional authoring
 tool scenario, screenshot byte size, SHA-256 digest, and generation timestamp.
@@ -201,10 +245,12 @@ claiming that artifacts are unavailable merely because capture has not finished.
 
 ## Current scope and extensions
 
-Version 1.5 captures the deterministic initial Launcher or Editor window and can
-open one modeless authoring-tool window before an Editor screenshot. Its normal
-`pull_request` trigger makes the workflow run directly discoverable from the PR
-head SHA without an auxiliary run-ID comment or write-capable reporting job.
+Version 1.6 captures the deterministic initial Launcher or Editor window, can
+open one modeless authoring-tool window before an Editor screenshot, and can
+optionally capture the real Remote AI Studio browser companion at desktop,
+narrow, and mobile widths. Its normal `pull_request` trigger makes the workflow
+run directly discoverable from the PR head SHA without an auxiliary run-ID
+comment or write-capable reporting job.
 
 It is intended for shell layout, toolbar, startup-visible panels,
 authoring-window startup layout, typography, colors, clipping, spacing, and

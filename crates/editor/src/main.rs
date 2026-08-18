@@ -70,6 +70,9 @@ impl EditorShell {
         #[cfg(feature = "visual-validation")]
         let (ai_studio, visual_ai_studio_detached_capture) = {
             let mut ai_studio = ai_studio;
+            if std::env::var_os("GAMEENGINE_REMOTE_AI_STUDIO_VISUAL_URL_TO").is_some() {
+                ai_studio.prepare_remote_companion_visual_validation()?;
+            }
             let detached_capture = visual_validation_touches_ai_studio();
             if detached_capture {
                 ai_studio.prepare_hosted_backend_visual_validation();
