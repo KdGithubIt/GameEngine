@@ -526,11 +526,13 @@ pub fn plan_package(config: &BuildConfig, manifest: &AssetManifest) -> PackagePl
 /// registered map that matches no needed pair and does not set
 /// `always_package` is skipped with a non-blocking
 /// [`BuildDiagnosticKind::RetargetMapNotReached`] diagnostic rather than
-/// baked, so the narrowing is observable in the build report. An unresolvable
-/// skeleton or a bake failure for a map that *is* in the bake set is still a
-/// blocking diagnostic, consistent with the [`BuildDiagnosticKind::MissingAsset`]
+/// baked, so the narrowing is observable in the build report. ADR 0154's
+/// separate shared motion-planner pass diagnoses a reachable Animation Set
+/// candidate when no Native, Retarget, or Humanoid route exists. An
+/// unresolvable skeleton or a bake failure for a map that *is* in the bake set
+/// remains blocking, consistent with the [`BuildDiagnosticKind::MissingAsset`]
 /// policy (ADR 0045): packaging refuses to ship a hole rather than silently
-/// drop a retarget it committed to baking.
+/// drop a route it committed to baking.
 fn bake_registered_retarget_clips(
     config: &BuildConfig,
     manifest: &AssetManifest,
@@ -1910,55 +1912,6 @@ mod tests {
     }
 
     #[test]
-    fn humanoid_package_requirement_respects_motion_source_priority() {
-        let native = AssetId::generate();
-        let explicit_humanoid = AssetId::generate();
-
-        assert_eq!(
-            required_humanoid_motion_asset(
-                &engine_authoring::MotionSourceRef::native(native.clone()),
-                false,
-                false,
-            ),
-            None
-        );
-        assert_eq!(
-            required_humanoid_motion_asset(
-                &engine_authoring::MotionSourceRef::auto(native.clone()),
-                true,
-                false,
-            ),
-            None
-        );
-        assert_eq!(
-            required_humanoid_motion_asset(
-                &engine_authoring::MotionSourceRef::auto(native.clone()),
-                false,
-                true,
-            ),
-            None
-        );
-        assert_eq!(
-            required_humanoid_motion_asset(
-                &engine_authoring::MotionSourceRef::auto(native.clone()),
-                false,
-                false,
-            ),
-            Some(engine::asset::imported_humanoid_motion_sub_asset_id(
-                &native,
-            ))
-        );
-        assert_eq!(
-            required_humanoid_motion_asset(
-                &engine_authoring::MotionSourceRef::humanoid(explicit_humanoid.clone()),
-                false,
-                false,
-            ),
-            Some(explicit_humanoid)
-        );
-    }
-
-    #[test]
     fn package_plan_includes_external_gltf_sidecars_once() {
         let directory = tempfile::tempdir().expect("temp dir");
         let project_root = directory.path().join("project");
@@ -3209,24 +3162,21 @@ mod tests {
         let plan = plan_package(&config, &manifest);
 
         assert!(
-            plan.success,
-            "packaging does not itself diagnose a needed pair with no registered map: {:?}",
+            !plan.success,
+            "ADR0154 package preflight must block a reachable candidate with no Native, Retarget, or Humanoid route: {:?}",
             plan.diagnostics
         );
         assert!(
-            !plan
-                .copies
-                .iter()
-                .any(|copy| copy.destination.starts_with("baked_anim")),
-            "no map is registered, so nothing can be baked: {:?}",
+            plan.copies.is_empty(),
+            "a failed motion route must prevent a partial package: {:?}",
             plan.copies
         );
         assert!(
-            !plan.diagnostics.iter().any(|diagnostic| matches!(
+            plan.diagnostics.iter().any(|diagnostic| matches!(
                 diagnostic.kind,
-                BuildDiagnosticKind::RetargetMapNotReached { .. }
-            )),
-            "with no registered map at all, there is nothing to report as unreached: {:?}",
+                BuildDiagnosticKind::MotionBindingFailed { .. }
+            ) && diagnostic.blocking),
+            "the shared motion planner failure must be reported as a blocking build diagnostic: {:?}",
             plan.diagnostics
         );
     }

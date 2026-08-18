@@ -1765,21 +1765,16 @@ fn animation_set_validation_enforces_motion_source_variant_sub_asset_kinds() {
         .get_mut(&slot)
         .expect("the test binding must exist")
         .clip = engine_authoring::MotionSourceRef::native(humanoid_motion.clone());
-    let native_error =
-        super::assets::validate_animation_set_clip_references(&document, &manifest)
-            .expect_err("Native must reject a HumanoidMotion sub-asset");
-    assert!(native_error.contains("primary clip"));
-    assert!(native_error.contains("Animation Clip"));
+    super::assets::validate_animation_set_clip_references(&document, &manifest)
+        .expect("schema v3 stores only the HumanoidMotion candidate; constructor labels do not persist route policy");
 
     document
         .bindings
         .get_mut(&slot)
         .expect("the test binding must exist")
         .clip = engine_authoring::MotionSourceRef::humanoid(primary_clip.clone());
-    let humanoid_error =
-        super::assets::validate_animation_set_clip_references(&document, &manifest)
-            .expect_err("Humanoid must reject a Native Animation sub-asset");
-    assert!(humanoid_error.contains("HumanoidMotion"));
+    super::assets::validate_animation_set_clip_references(&document, &manifest)
+        .expect("schema v3 stores only the Animation candidate; constructor labels do not persist route policy");
 
     document
         .bindings
@@ -1797,11 +1792,8 @@ fn animation_set_validation_enforces_motion_source_variant_sub_asset_kinds() {
         .expect("the test binding must exist");
     binding.clip = engine_authoring::MotionSourceRef::native(primary_clip);
     binding.overlays = vec![engine_authoring::MotionSourceRef::humanoid(overlay_clip)];
-    let overlay_error =
-        super::assets::validate_animation_set_clip_references(&document, &manifest)
-            .expect_err("a Humanoid overlay must reference HumanoidMotion");
-    assert!(overlay_error.contains("overlay 1"));
-    assert!(overlay_error.contains("HumanoidMotion"));
+    super::assets::validate_animation_set_clip_references(&document, &manifest)
+        .expect("schema v3 validates imported candidate kinds independently of legacy constructor labels");
 }
 
 #[test]
