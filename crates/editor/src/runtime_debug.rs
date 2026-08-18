@@ -8,12 +8,15 @@ use engine::{
     GamepadAxis, GamepadButton, GamepadId, InputCommand, InputReplay, InputSource, KeyCode,
     MouseButton,
 };
+use engine_authoring::{Diagnostic, Severity};
 use std::fmt;
 
 const MAX_PLAN_INPUTS: usize = 4_096;
 const MAX_PLAN_TICKS: u64 = 36_000;
 const MAX_STEP_TICKS: u32 = 3_600;
 const MAX_OBSERVED_ENTITIES: usize = 256;
+const MAX_OBSERVED_DIAGNOSTICS: usize = 32;
+const MAX_DIAGNOSTIC_CODE_CHARS: usize = 160;
 
 /// One virtual-input command scheduled relative to the start of a deterministic
 /// managed Play plan.
@@ -187,6 +190,7 @@ impl RuntimeDebugPredicate {
 pub struct RuntimeDebugObservation {
     fixed_tick: u64,
     paused: bool,
+    human_input_generation: u64,
     entity_count: usize,
     entities: Vec<RuntimeDebugEntityObservation>,
     keyboard: Vec<String>,
@@ -194,6 +198,9 @@ pub struct RuntimeDebugObservation {
     gamepad_buttons: Vec<String>,
     gamepad_axes: Vec<String>,
     actions: Vec<(String, bool)>,
+    diagnostic_count: usize,
+    diagnostics_truncated: bool,
+    diagnostics: Vec<RuntimeDebugDiagnosticObservation>,
     last_tick_ms: f64,
     maximum_tick_ms: f64,
     average_tick_ms: f64,
@@ -206,6 +213,13 @@ struct RuntimeDebugEntityObservation {
     components: Vec<String>,
     values: Vec<(String, String)>,
     transform: Option<([f32; 3], [f32; 3], [f32; 3])>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RuntimeDebugDiagnosticObservation {
+    severity: &'static str,
+    code: String,
+    blocking: bool,
 }
 
 impl RuntimeDebugObservation {
@@ -242,16 +256,31 @@ impl RuntimeDebugObservation {
             })
             .collect::<Vec<_>>()
             .join(" | ");
+        let diagnostic_rows = self
+            .diagnostics
+            .iter()
+            .map(|diagnostic| {
+                format!(
+                    "{}:{} blocking={}",
+                    diagnostic.severity, diagnostic.code, diagnostic.blocking
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" | ");
         format!(
-            "fixed_tick={} paused={} entities={} keyboard={:?} mouse={:?} gamepad_buttons={:?} gamepad_axes={:?} actions={:?} timing_ms(last={:.3}, max={:.3}, avg={:.3}) rows=[{}]",
+            "fixed_tick={} paused={} human_input_generation={} entities={} keyboard={:?} mouse={:?} gamepad_buttons={:?} gamepad_axes={:?} actions={:?} diagnostics(total={}, truncated={}, rows=[{}]) timing_ms(last={:.3}, max={:.3}, avg={:.3}) rows=[{}]",
             self.fixed_tick,
             self.paused,
+            self.human_input_generation,
             self.entity_count,
             self.keyboard,
             self.mouse_buttons,
             self.gamepad_buttons,
             self.gamepad_axes,
             self.actions,
+            self.diagnostic_count,
+            self.diagnostics_truncated,
+            diagnostic_rows,
             self.last_tick_ms,
             self.maximum_tick_ms,
             self.average_tick_ms,
@@ -374,6 +403,8 @@ pub enum RuntimeDebugError {
     InvalidPredicate(String),
     /// A bounded operation exceeded its declared host budget.
     BudgetExceeded(String),
+    /// Human-origin input contaminated a deterministic/reproducible Play session.
+    HumanInterference(String),
     /// An operation requiring Pause was attempted while Play was running freely.
     NotPaused,
     /// Replay recording/playback could not start or complete.
@@ -392,6 +423,9 @@ impl fmt::Display for RuntimeDebugError {
             Self::BudgetExceeded(message) => {
                 write!(formatter, "runtime debug budget exceeded: {message}")
             }
+            Self::HumanInterference(message) => {
+                write!(formatter, "runtime debug human interference: {message}")
+            }
             Self::NotPaused => write!(formatter, "runtime debug step/wait requires paused Play"),
             Self::Replay(message) => write!(formatter, "runtime replay failed: {message}"),
             Self::Tick(message) => write!(formatter, "runtime debug tick failed: {message}"),
@@ -406,7 +440,10 @@ pub(crate) struct RuntimeDebugPlanOutcome {
     pub(crate) replay: Option<InputReplay>,
 }
 
-pub(crate) fn capture_observation(runtime: &RuntimePlayState) -> RuntimeDebugObservation {
+pub(crate) fn capture_observation(
+    runtime: &RuntimePlayState,
+    host_diagnostics: &[Diagnostic],
+) -> RuntimeDebugObservation {
     let performance = runtime.performance_snapshot();
     let input = runtime.input_debug_snapshot();
     let entities = runtime
@@ -424,9 +461,33 @@ pub(crate) fn capture_observation(runtime: &RuntimePlayState) -> RuntimeDebugObs
             }
         })
         .collect();
+    let diagnostic_count = host_diagnostics.len();
+    let diagnostics_truncated = diagnostic_count > MAX_OBSERVED_DIAGNOSTICS
+        || host_diagnostics
+            .iter()
+            .take(MAX_OBSERVED_DIAGNOSTICS)
+            .any(|diagnostic| diagnostic.code.chars().count() > MAX_DIAGNOSTIC_CODE_CHARS);
+    let diagnostics = host_diagnostics
+        .iter()
+        .take(MAX_OBSERVED_DIAGNOSTICS)
+        .map(|diagnostic| RuntimeDebugDiagnosticObservation {
+            severity: match diagnostic.severity {
+                Severity::Info => "info",
+                Severity::Warning => "warning",
+                Severity::Error => "error",
+            },
+            code: diagnostic
+                .code
+                .chars()
+                .take(MAX_DIAGNOSTIC_CODE_CHARS)
+                .collect(),
+            blocking: diagnostic.is_blocking(),
+        })
+        .collect();
     RuntimeDebugObservation {
         fixed_tick: runtime.fixed_step_count(),
         paused: runtime.is_paused(),
+        human_input_generation: runtime.human_input_generation(),
         entity_count: performance.entity_count,
         entities,
         keyboard: input.keyboard,
@@ -438,6 +499,9 @@ pub(crate) fn capture_observation(runtime: &RuntimePlayState) -> RuntimeDebugObs
             .into_iter()
             .map(|(name, state)| (name, state.pressed))
             .collect(),
+        diagnostic_count,
+        diagnostics_truncated,
+        diagnostics,
         last_tick_ms: performance.last_tick_ms,
         maximum_tick_ms: performance.maximum_tick_ms,
         average_tick_ms: performance.average_tick_ms,
@@ -447,11 +511,18 @@ pub(crate) fn capture_observation(runtime: &RuntimePlayState) -> RuntimeDebugObs
 pub(crate) fn execute_plan(
     runtime: &mut RuntimePlayState,
     plan: &RuntimeDebugPlan,
+    host_diagnostics: &[Diagnostic],
 ) -> Result<RuntimeDebugPlanOutcome, RuntimeDebugError> {
     if runtime.is_replaying() || runtime.is_replay_recording() {
         return Err(RuntimeDebugError::InvalidPlan(
             "managed deterministic input cannot replace an active replay/recording".to_owned(),
         ));
+    }
+    let human_input_generation = runtime.human_input_generation();
+    if human_input_generation != 0 {
+        return Err(RuntimeDebugError::HumanInterference(format!(
+            "deterministic execution requires a fresh Play input state; observed {human_input_generation} human-origin input command(s) before the frozen plan"
+        )));
     }
     runtime.set_paused(true);
     runtime
@@ -494,7 +565,7 @@ pub(crate) fn execute_plan(
                 scheduled_inputs: plan.inputs.len(),
                 cleanup_inputs,
                 replay_recorded: replay.is_some(),
-                observation: capture_observation(runtime),
+                observation: capture_observation(runtime, host_diagnostics),
             },
             replay,
         }),
@@ -508,6 +579,7 @@ pub(crate) fn execute_plan(
 pub(crate) fn step_paused(
     runtime: &mut RuntimePlayState,
     steps: u32,
+    host_diagnostics: &[Diagnostic],
 ) -> Result<RuntimeDebugObservation, RuntimeDebugError> {
     if !runtime.is_paused() {
         return Err(RuntimeDebugError::NotPaused);
@@ -520,13 +592,14 @@ pub(crate) fn step_paused(
     for _ in 0..steps {
         runtime.tick_fixed_debug_step().map_err(tick_error)?;
     }
-    Ok(capture_observation(runtime))
+    Ok(capture_observation(runtime, host_diagnostics))
 }
 
 pub(crate) fn wait_until(
     runtime: &mut RuntimePlayState,
     predicate: &RuntimeDebugPredicate,
     max_ticks: u32,
+    host_diagnostics: &[Diagnostic],
 ) -> Result<RuntimeDebugWaitResult, RuntimeDebugError> {
     if !runtime.is_paused() {
         return Err(RuntimeDebugError::NotPaused);
@@ -538,7 +611,7 @@ pub(crate) fn wait_until(
     }
 
     for advanced_ticks in 0..=max_ticks {
-        let observation = capture_observation(runtime);
+        let observation = capture_observation(runtime, host_diagnostics);
         match evaluate_predicate(&observation, predicate) {
             PredicateEvaluation::Matched => {
                 return Ok(RuntimeDebugWaitResult {
@@ -575,8 +648,9 @@ pub(crate) fn wait_until(
 pub(crate) fn assert_predicate(
     runtime: &RuntimePlayState,
     predicate: &RuntimeDebugPredicate,
+    host_diagnostics: &[Diagnostic],
 ) -> RuntimeDebugWaitResult {
-    let observation = capture_observation(runtime);
+    let observation = capture_observation(runtime, host_diagnostics);
     match evaluate_predicate(&observation, predicate) {
         PredicateEvaluation::Matched => RuntimeDebugWaitResult {
             matched: true,
@@ -602,7 +676,14 @@ pub(crate) fn assert_predicate(
 pub(crate) fn replay_to_completion(
     runtime: &mut RuntimePlayState,
     replay: InputReplay,
+    host_diagnostics: &[Diagnostic],
 ) -> Result<RuntimeDebugExecutionReport, RuntimeDebugError> {
+    let human_input_generation = runtime.human_input_generation();
+    if human_input_generation != 0 {
+        return Err(RuntimeDebugError::HumanInterference(format!(
+            "deterministic replay requires a fresh Play input state; observed {human_input_generation} human-origin input command(s) before reproduction"
+        )));
+    }
     runtime.set_paused(true);
     runtime
         .start_replay(replay)
@@ -626,7 +707,7 @@ pub(crate) fn replay_to_completion(
         scheduled_inputs: 0,
         cleanup_inputs: 0,
         replay_recorded: false,
-        observation: capture_observation(runtime),
+        observation: capture_observation(runtime, host_diagnostics),
     })
 }
 
@@ -914,7 +995,8 @@ mod tests {
         )
         .unwrap();
 
-        let outcome = execute_plan(&mut runtime, &plan).expect("fixed-tick plan must execute");
+        let outcome =
+            execute_plan(&mut runtime, &plan, &[]).expect("fixed-tick plan must execute");
 
         assert_eq!(outcome.report.start_fixed_tick(), 0);
         assert_eq!(outcome.report.end_fixed_tick(), 3);
@@ -946,7 +1028,7 @@ mod tests {
         )
         .unwrap();
 
-        let outcome = execute_plan(&mut runtime, &plan).expect("hold plan must execute");
+        let outcome = execute_plan(&mut runtime, &plan, &[]).expect("hold plan must execute");
         assert_eq!(outcome.report.cleanup_inputs(), 1);
         assert!(!runtime
             .input_debug_snapshot()
@@ -956,7 +1038,7 @@ mod tests {
 
         let replay = outcome.replay.expect("managed plan must retain ADR 0064 replay");
         let mut reproduced = runtime_fixture();
-        let report = replay_to_completion(&mut reproduced, replay)
+        let report = replay_to_completion(&mut reproduced, replay, &[])
             .expect("recorded fixed-tick plan must replay");
         assert!(reproduced.is_paused());
         assert!(report.end_fixed_tick() >= report.start_fixed_tick());
@@ -973,7 +1055,7 @@ mod tests {
         runtime.set_paused(true);
         let before = runtime.fixed_step_count();
 
-        let observation = step_paused(&mut runtime, 1).expect("single step must succeed");
+        let observation = step_paused(&mut runtime, 1, &[]).expect("single step must succeed");
         assert!(observation.paused());
         assert_eq!(observation.fixed_tick(), before + 1);
 
@@ -981,10 +1063,60 @@ mod tests {
             &mut runtime,
             &RuntimeDebugPredicate::fixed_tick_at_least(before + 3),
             3,
+            &[],
         )
         .expect("bounded fixed-tick wait must succeed");
         assert!(wait.matched());
         assert!(wait.unavailable().is_none());
         assert_eq!(wait.observation().fixed_tick(), before + 3);
+    }
+
+    #[test]
+    fn human_input_contaminates_deterministic_plan_before_execution() {
+        let mut runtime = runtime_fixture();
+        runtime.set_paused(true);
+        runtime.queue_input(
+            InputSource::Human,
+            InputCommand::MouseMove {
+                position: (320.0, 180.0),
+            },
+        );
+        let plan = RuntimeDebugPlan::new(Vec::new(), 0).expect("empty plan must be valid");
+
+        let error = match execute_plan(&mut runtime, &plan, &[]) {
+            Ok(_) => panic!("human-influenced Play must not produce deterministic evidence"),
+            Err(error) => error,
+        };
+
+        assert!(matches!(error, RuntimeDebugError::HumanInterference(_)));
+        assert_eq!(runtime.fixed_step_count(), 0);
+        assert!(!runtime.is_replay_recording());
+    }
+
+    #[test]
+    fn observation_reports_bounded_host_diagnostic_identity() {
+        let runtime = runtime_fixture();
+        let mut diagnostics = vec![Diagnostic::error(
+            "editor.runtime.test_failure",
+            "message text is intentionally not copied into provider-safe runtime evidence",
+        )];
+        diagnostics.extend((0..MAX_OBSERVED_DIAGNOSTICS).map(|index| {
+            Diagnostic::warning(
+                format!("editor.runtime.warning_{index}"),
+                "bounded warning",
+            )
+        }));
+
+        let observation = capture_observation(&runtime, &diagnostics);
+
+        assert_eq!(observation.diagnostic_count, diagnostics.len());
+        assert_eq!(observation.diagnostics.len(), MAX_OBSERVED_DIAGNOSTICS);
+        assert!(observation.diagnostics_truncated);
+        assert_eq!(observation.diagnostics[0].severity, "error");
+        assert_eq!(observation.diagnostics[0].code, "editor.runtime.test_failure");
+        assert!(observation.diagnostics[0].blocking);
+        let summary = observation.summary();
+        assert!(summary.contains("editor.runtime.test_failure"));
+        assert!(!summary.contains("message text is intentionally not copied"));
     }
 }
