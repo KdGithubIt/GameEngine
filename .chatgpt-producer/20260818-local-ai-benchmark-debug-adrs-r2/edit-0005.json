@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"docs/adr/0155-gameengine-managed-local-inference-runtime-and-platform-selection.md","old":"- execution environment (`WindowsNative`, `Wsl2Linux`, or `NativeLinux`);","new":"- execution environment (`WindowsNative` or `Wsl2Linux` for the Windows first release, with `NativeLinux` reserved for a future Linux-hosted product path);"}
