@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0133-browser-visual-20260818-01",
+  "target_branch": "chatgpt/gameengine-adr0133-first-release-current-main",
+  "expected_head_sha": "4e9865c2db754ef5a2a33e1ac42d1cd5cf318229",
+  "baseline_main_sha": "4e9865c2db754ef5a2a33e1ac42d1cd5cf318229",
+  "patch_sha256": "d7d26df25639e62983e771404a928e2c087c01cfb8b80ccc22d46a1d74b6372b",
+  "patch_bytes": 23576,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Complete ADR0133 browser visual validation",
+  "pr_title": "GameEngine: complete ADR0133 Remote AI Studio first release",
+  "pr_body": "## Summary\n\n- add exact-head Remote AI Studio browser visual validation using the real loopback gateway and production companion HTML/JS\n- seed deterministic Agent Host state only under the `visual-validation` feature so proposal, Go/Stop, permission, progress, reconnect evidence, completion state, and captured-frame review are visible\n- capture desktop, narrow, and mobile browser viewports plus tall companion evidence for below-the-fold review\n- document the opt-in browser visual scenario without changing the trusted workflow boundary\n\n## ADR0133 audit context\n\nCurrent main already contains the Remote AI Studio lifecycle, HTTP/SSE, reconnect cursor, idempotency, exact-version Go, stale Stop/permission protection, captured frame retrieval, sanitized DTOs, and responsive companion from the merged #289 implementation and later integration work. The stale #291 branch is not reused as an implementation base.\n\n## Validation\n\n- Windows Validation on the exact final head\n- Remote browser visual review at desktop, narrow, and mobile widths\n\n<!-- gameengine-visual-validation: editor -->\n<!-- gameengine-visual-remote-ai-studio: browser -->"
+}
