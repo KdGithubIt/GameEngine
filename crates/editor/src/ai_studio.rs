@@ -5432,8 +5432,11 @@ mod tests {
         let ProviderAgentEvent::RuntimeInput { input } = event else {
             panic!("runtime input event");
         };
+        let scheduled = input.scheduled_commands(0).expect("scheduled command");
+        assert_eq!(scheduled.len(), 1);
+        assert_eq!(scheduled[0].tick_offset(), 0);
         assert_eq!(
-            input.command().expect("command"),
+            scheduled[0].command(),
             InputCommand::Key {
                 key: KeyCode::KeyW,
                 pressed: true,
@@ -5446,8 +5449,9 @@ mod tests {
         let input = ProviderRuntimeInput::MouseMove {
             x: f32::NAN,
             y: 1.0,
+            at_tick: None,
         };
-        assert!(input.command().is_err());
+        assert!(input.scheduled_commands(0).is_err());
     }
 
     #[test]
