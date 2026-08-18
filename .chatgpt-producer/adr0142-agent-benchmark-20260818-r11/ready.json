@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0142-agent-benchmark-20260818-r11",
+  "target_branch": "chatgpt/gameengine-adr0142-agent-benchmark-v4",
+  "expected_head_sha": "01d35f89b6842fc28172a649fcd3d3b94fde6810",
+  "baseline_main_sha": "a70696f0caa23ec490f96270d3fcab72e000b295",
+  "edit_parts": [
+    "edit-0000.json",
+    "edit-0001.json",
+    "edit-0002.json",
+    "edit-0003.json",
+    "edit-0004.json",
+    "edit-0005.json",
+    "edit-0006.json",
+    "edit-0007.json",
+    "edit-0008.json",
+    "edit-0009.json"
+  ],
+  "commit_message": "Harden ADR 0142 benchmark completion and lint",
+  "pr_title": "GameEngine: implement ADR 0142 agent benchmark catalog",
+  "pr_body": "## Summary\n\n- Add the versioned GameEngine Agent Benchmark, machine-local evidence records, strict fail-closed comparison identity, loopback installed-model discovery, and evidence-derived curated model profiles.\n- Freeze benchmark task, ADR0135 workload classification, and active Editor hardware identity at execution start; Windows records uniquely matched DXGI dedicated VRAM and OS-reported physical RAM without guessing unavailable values.\n- Group write-run benchmark identity into an explicit context so the affected Clippy gate stays warning-free instead of suppressing lint.\n- Require actual retrieved provenance for the read-question completion gate; a plain answer without evidence remains a recorded benchmark failure and cannot qualify a catalog recommendation.\n- Preserve ADR0152 work-claim privacy by comparing kind/count budgets without raw project target keys, and never silently download recommended model weights.\n\n## Validation\n\n- GameEngine Windows Validation\n- Editor Visual Validation\n\n<!-- gameengine-visual-validation: auto -->\n<!-- gameengine-visual-validation-trigger: adr0142-agent-benchmark-20260818-r11 -->\n"
+}
