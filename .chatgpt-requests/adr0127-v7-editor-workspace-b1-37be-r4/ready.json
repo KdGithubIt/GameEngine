@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0127-v7-editor-workspace-b1-37be-r4",
+  "target_branch": "chatgpt/gameengine-adr0127-first-release-current-main-v7",
+  "expected_head_sha": "37beed8e098b0ff187ae3cf4e4158d041a06de00",
+  "baseline_main_sha": "2a418e000fa727ae81a88b423ad3c113b44f211c",
+  "patch_sha256": "c0dff1f64633256cd6812c51218cb89c3c95691201812cd4086a537ecd1df2fe",
+  "patch_bytes": 19315,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Extend ADR0127 Native 2D Editor workspace services",
+  "pr_title": "GameEngine: complete ADR0127 Native 2D first release",
+  "pr_body": "Isolates the first half of the remaining unregistered Native 2D Editor workspace source after the workspace base succeeded, covering typed-document replacement/persistence, Tile Map service state, document opening, and workspace dispatch/toolbar helpers."
+}
