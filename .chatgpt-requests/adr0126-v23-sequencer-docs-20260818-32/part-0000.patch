@@ -1,0 +1,102 @@
+diff --git a/crates/editor/src/ui/documents.rs b/crates/editor/src/ui/documents.rs
+index 0ae0904f15f3660cbd4c1d783dc1752621cadeaf..3a9041b0f777c6a2d9594808ff88d77e0071b7b6 100644
+--- a/crates/editor/src/ui/documents.rs
++++ b/crates/editor/src/ui/documents.rs
+@@ -91,6 +91,7 @@ impl EditorApp {
+         self.session.any_dirty()
+             || self.material_editor.any_dirty()
+             || self.animation_set_editor.as_ref().is_some_and(AnimationSetEditorState::is_dirty)
++            || self.timeline_sequencer.as_ref().is_some_and(TimelineSequencerState::is_dirty)
+     }
+ 
+     /// Persists every dirty working copy through its existing validated atomic adapter.
+@@ -99,6 +100,12 @@ impl EditorApp {
+         if self.animation_set_editor.as_ref().is_some_and(AnimationSetEditorState::is_dirty) {
+             self.save_animation_set_document()?;
+         }
++        if self.timeline_sequencer.as_ref().is_some_and(TimelineSequencerState::is_dirty) {
++            self.timeline_sequencer
++                .as_mut()
++                .expect("dirty Timeline Sequencer is open")
++                .save()?;
++        }
+         self.save_all_material_documents()?;
+         Ok(())
+     }
+@@ -595,6 +602,10 @@ impl EditorApp {
+                     .animation_set_editor
+                     .as_ref()
+                     .is_some_and(|state| state.absolute_path == absolute);
++                let timeline_open = self
++                    .timeline_sequencer
++                    .as_ref()
++                    .is_some_and(|state| state.absolute_path() == absolute.as_path());
+                 let material_open = material_relative.as_ref().is_some_and(|path| {
+                     self.material_editor.materials.contains_key(path)
+                 });
+@@ -603,12 +614,16 @@ impl EditorApp {
+                     .is_some_and(|tab_id| self.session.tab_is_dirty(tab_id))
+                     || (animation_set_open
+                         && self.animation_set_editor.as_ref().is_some_and(AnimationSetEditorState::is_dirty))
++                    || (timeline_open
++                        && self.timeline_sequencer.as_ref().is_some_and(TimelineSequencerState::is_dirty))
+                     || material_relative
+                         .as_ref()
+                         .is_some_and(|path| material_open && self.material_editor.is_dirty(path));
+ 
+                 let owner = if animation_set_open {
+                     Some(ExternalDocumentOwner::AnimationSet)
++                } else if timeline_open {
++                    Some(ExternalDocumentOwner::Timeline)
+                 } else if material_open {
+                     material_relative.clone().map(ExternalDocumentOwner::Material)
+                 } else {
+@@ -924,6 +939,24 @@ impl EditorApp {
+                         }
+                     }
+                 }),
++            ExternalDocumentOwner::Timeline => engine_authoring::load_timeline(path)
++                .map_err(|error| error.to_string())
++                .and_then(|document| {
++                    let state = self
++                        .timeline_sequencer
++                        .as_mut()
++                        .ok_or_else(|| "Timeline Sequencer is closed".to_owned())?;
++                    match policy {
++                        ExternalReloadPolicy::CleanOnly => state
++                            .reload_clean(document)?
++                            .then_some(())
++                            .ok_or_else(|| "Timeline became dirty before external reload".to_owned()),
++                        ExternalReloadPolicy::DiscardChanges => {
++                            state.reload_discarding_changes(document)?;
++                            Ok(())
++                        }
++                    }
++                }),
+             ExternalDocumentOwner::Material(relative) => fs::read_to_string(path)
+                 .map_err(|error| error.to_string())
+                 .and_then(|json| engine_authoring::MaterialAsset::from_json(&json).map_err(|error| error.to_string()))
+@@ -1083,6 +1116,7 @@ enum ExternalReloadPolicy {
+ enum ExternalDocumentOwner {
+     Workspace(WorkspaceTabId),
+     AnimationSet,
++    Timeline,
+     Material(PathBuf),
+ }
+ 
+diff --git a/crates/editor/src/ui/sequencer.rs b/crates/editor/src/ui/sequencer.rs
+index d1a56da5a6cfd8a0223fbb5c8c847c5100fa2302..5f33a46292bfb629c9dcbd1d34b379e5c6091337 100644
+--- a/crates/editor/src/ui/sequencer.rs
++++ b/crates/editor/src/ui/sequencer.rs
+@@ -53,8 +53,9 @@ impl TimelineSequencerState {
+     fn undo(&mut self) { if self.service.undo() { self.source_revision = self.source_revision.wrapping_add(1); } }
+     fn redo(&mut self) { if self.service.redo() { self.source_revision = self.source_revision.wrapping_add(1); } }
+     pub(in crate::ui) fn save(&mut self) -> Result<(), String> { self.service.save(&self.absolute_path).map_err(|error| error.to_string())?; self.saved_document = self.document().clone(); Ok(()) }
+-    fn reload_clean(&mut self, document: TimelineDocument) -> Result<bool, String> { if self.is_dirty() { return Ok(false); } self.reload_discarding_changes(document)?; Ok(true) }
+-    fn reload_discarding_changes(&mut self, document: TimelineDocument) -> Result<(), String> { self.service = TimelineAuthoringService::new(document.clone()).map_err(|error| error.to_string())?; self.saved_document = document; self.source_revision = self.source_revision.wrapping_add(1); self.transport_revision = self.transport_revision.wrapping_add(1); Ok(()) }
++    pub(in crate::ui) fn absolute_path(&self) -> &Path { &self.absolute_path }
++    pub(in crate::ui) fn reload_clean(&mut self, document: TimelineDocument) -> Result<bool, String> { if self.is_dirty() { return Ok(false); } self.reload_discarding_changes(document)?; Ok(true) }
++    pub(in crate::ui) fn reload_discarding_changes(&mut self, document: TimelineDocument) -> Result<(), String> { self.service = TimelineAuthoringService::new(document.clone()).map_err(|error| error.to_string())?; self.saved_document = document; self.source_revision = self.source_revision.wrapping_add(1); self.transport_revision = self.transport_revision.wrapping_add(1); Ok(()) }
+     fn frame_ticks(&self) -> i64 { let rate = self.document().display_rate; if rate.numerator == 0 { return 1; } ((TIMELINE_TICKS_PER_SECOND as i128 * i128::from(rate.denominator)) / i128::from(rate.numerator)).max(1) as i64 }
+     fn snap(&mut self, proposed: TimelineTick) -> TimelineTick {
+         let document = self.document().clone(); let threshold = ((TIMELINE_TICKS_PER_SECOND as f32 * 7.0) / self.pixels_per_second.max(1.0)).round().max(1.0) as u64; let frame = self.frame_ticks(); let nearest_frame = TimelineTick::new((proposed.get() as f64 / frame as f64).round() as i64 * frame); let mut candidates = vec![(nearest_frame, "frame".to_owned()), (self.playhead, "playhead".to_owned())];
