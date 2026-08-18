@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0155-fix-pref-test-20260819-02",
+  "target_branch": "chatgpt/gameengine-adr0155-managed-local-ai",
+  "expected_head_sha": "321bf296bb58104b34129bfb5c43109042969cd1",
+  "baseline_main_sha": "fdb22b2a4ba20c61dd2c5275905e74275ad65463",
+  "edit_parts": ["edit-0000.json"],
+  "commit_message": "Fix ADR0155 AI Studio preference test initialization",
+  "pr_title": "GameEngine: implement ADR0155 managed Local AI",
+  "pr_body": "## Summary\n\nImplements ADR 0155 managed Local AI, fixes the WSL setup UI and preference-test compile regressions, and validates the actual Managed Local AI setup surface.\n\n<!-- gameengine-visual-validation: editor -->"
+}
