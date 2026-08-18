@@ -80,6 +80,15 @@ class ProducerFixture:
         self.run("git", "push", "origin", branch)
         return branch, commit
 
+    def advance_main_docs(self) -> str:
+        self.run("git", "checkout", "main")
+        (self.repo / "docs" / "other.md").write_text("unrelated\n", encoding="utf-8")
+        self.run("git", "add", "docs/other.md")
+        self.run("git", "commit", "-m", "Advance main docs")
+        head = self.text("git", "rev-parse", "HEAD")
+        self.run("git", "push", "origin", "main")
+        return head
+
 
 class ProducerProtocolTests(unittest.TestCase):
     def build(self, fixture: ProducerFixture, request_id: str, branch: str, commit: str, output: Path):
@@ -112,6 +121,17 @@ class ProducerProtocolTests(unittest.TestCase):
             self.assertEqual(manifest["patch_sha256"], producer.request_protocol._sha256(patch))
             self.assertIn(b"docs/sample.md", patch)
             self.assertIn(b"+connector edit", patch)
+
+    def test_connector_edit_plan_survives_unrelated_documentation_main_drift(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            fixture = ProducerFixture(Path(temp))
+            branch, commit = fixture.create_producer(
+                "connector-doc-drift",
+                [{"operation": "replace_text", "path": "docs/sample.md", "old": "base\n", "new": "connector edit\n"}],
+            )
+            fixture.advance_main_docs()
+            result = self.build(fixture, "connector-doc-drift", branch, commit, Path(temp) / "request")
+            self.assertEqual(result["request"]["baseline_main_sha"], fixture.base)
 
     def test_connector_edit_plan_supports_create_and_delete(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -184,6 +204,8 @@ class ProducerProtocolTests(unittest.TestCase):
         self.assertIn("ISSUE_ASSOCIATION", trusted)
         self.assertIn("OWNER|MEMBER|COLLABORATOR", trusted)
         self.assertIn("gameengine-chatgpt-producer-v1", trusted)
+        self.assertIn("gameengine-chatgpt-trusted-producer-${{", trusted)
+        self.assertNotIn("group: gameengine-chatgpt-trusted-producer\n", trusted)
         self.assertIn("gh workflow run gameengine-chatgpt-transport-publisher.yml", trusted)
         self.assertNotIn("HEAD:refs/heads/chatgpt-dispatch\n", trusted)
 

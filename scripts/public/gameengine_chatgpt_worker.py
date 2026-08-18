@@ -86,6 +86,15 @@ def ls_remote(repo: Path, remote: str, ref: str, *, required: bool = True) -> st
     return sha
 
 
+def require_main_descendant(repo: Path, remote: str, baseline_main: str) -> str:
+    current_main = ls_remote(repo, remote, "refs/heads/main")
+    git(repo, "fetch", "--no-tags", remote, baseline_main, current_main)
+    ancestry = run(repo, "git", "merge-base", "--is-ancestor", baseline_main, current_main, check=False)
+    if ancestry.returncode != 0:
+        raise WorkerError("current main no longer descends from the request baseline")
+    return current_main
+
+
 def gh_json(repo: Path, *args: str) -> Any:
     raw = gh(repo, *args)
     try:
@@ -269,8 +278,7 @@ def publish_stage(
 
     if ls_remote(repo, remote, f"refs/heads/{target_branch}") != expected_head:
         raise WorkerError("target branch moved after build; rebuild from current state")
-    if ls_remote(repo, remote, "refs/heads/main") != baseline_main:
-        raise WorkerError("main moved after build; rebuild from current state")
+    require_main_descendant(repo, remote, baseline_main)
 
     stage = temp_root / "stage"
     git(repo, "worktree", "add", "--detach", "--force", str(stage), baseline_main)
@@ -285,8 +293,7 @@ def publish_stage(
 
         if ls_remote(repo, remote, f"refs/heads/{target_branch}") != expected_head:
             raise WorkerError("target branch moved before ready publication")
-        if ls_remote(repo, remote, "refs/heads/main") != baseline_main:
-            raise WorkerError("main moved before ready publication")
+        require_main_descendant(repo, remote, baseline_main)
 
         ready = request_dir / "ready.json"
         shutil.copyfile(output_dir / "ready.json", ready)
