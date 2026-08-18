@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "agent-benchmark-child-20260818-r5",
+  "target_branch": "chatgpt/gameengine-agent-benchmark-experiment-runner",
+  "expected_head_sha": "29a7ad23ef0a046f8ed678ca247d658edd8ff646",
+  "baseline_main_sha": "96c8ffb18a74eabec2164daa61f694f131019ddc",
+  "patch_sha256": "c943337d89b47c73526292e3553a7818aed45645d1e5a698a668176cd9c6f32c",
+  "patch_bytes": 25223,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Run benchmark tasks in isolated Editor children",
+  "pr_title": "GameEngine: add reproducible local LLM benchmark experiments",
+  "pr_body": "## Summary\n\nWires reproducible ADR0142 experiments into isolated real Editor child processes. Each child loads an exact model/task spec, uses the native read harness or governed AgentRun, bypasses multi-model routing for attribution, grants only fixed run-scoped runtime permissions, writes one machine-local result, and exits. ValidationRepair is structurally forced to observe an injected managed-validation failure before model repair and revalidation.\n\nNext, the parent AI Studio controls/comparison view and task-specific runtime-interaction completion are finalized before validation.\n\n<!-- gameengine-visual-validation: auto -->\n<!-- gameengine-chatgpt-dispatcher -->"
+}
