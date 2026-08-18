@@ -1,0 +1,105 @@
+diff --git a/crates/render-runtime/src/preview.rs b/crates/render-runtime/src/preview.rs
+index 797f502a118a2005a9b472f5cc62034a40566bec..161f561463bc1a477b57eb14de3b3f0ed1a9ae44 100644
+--- a/crates/render-runtime/src/preview.rs
++++ b/crates/render-runtime/src/preview.rs
+@@ -3,6 +3,7 @@
+ use std::fmt;
+ 
+ use crate::camera::Camera3D;
++use crate::native_2d::Camera2d;
+ use crate::renderer::WorldRenderer;
+ use crate::transform::Transform;
+ 
+@@ -159,6 +160,35 @@ impl PreviewRenderer {
+                 message: source.to_string(),
+             })
+     }
++
++    /// Renders `world` through an explicit Native 2D camera.
++    #[allow(clippy::too_many_arguments)]
++    pub fn render_to_view_with_camera_2d(
++        &mut self,
++        world: &mut engine_ecs::World,
++        camera: &Camera2d,
++        camera_transform: &Transform,
++        viewport: [u32; 2],
++        device: &wgpu::Device,
++        queue: &wgpu::Queue,
++        color_view: &wgpu::TextureView,
++        depth_view: &wgpu::TextureView,
++    ) -> Result<(), PreviewRendererError> {
++        self.renderer
++            .render_to_view_with_camera_2d(
++                world,
++                camera,
++                camera_transform,
++                viewport,
++                device,
++                queue,
++                color_view,
++                depth_view,
++            )
++            .map_err(|source| PreviewRendererError::RenderFrame {
++                message: source.to_string(),
++            })
++    }
+ }
+ 
+ /// Error returned while creating or rendering an offscreen preview.
+diff --git a/crates/render-runtime/src/renderer.rs b/crates/render-runtime/src/renderer.rs
+index 18a88dfffeddda28d3de1871aa725cf4475d88e9..a081bf731f0182f74f6533b1d4a45d20f4401f03 100644
+--- a/crates/render-runtime/src/renderer.rs
++++ b/crates/render-runtime/src/renderer.rs
+@@ -4,6 +4,7 @@ use std::fmt;
+ 
+ use crate::bloom::BloomPass;
+ use crate::camera::{select_active_game_camera, Camera3D};
++use crate::native_2d::Camera2d;
+ use crate::temporal::{TemporalCameraSample, TemporalCameraSource, TemporalHistory};
+ use crate::transform::Transform;
+ 
+@@ -163,6 +164,44 @@ impl WorldRenderer {
+         Ok(())
+     }
+ 
++    /// Renders through an explicit Native 2D camera without mutating camera entities.
++    #[allow(clippy::too_many_arguments)]
++    pub fn render_to_view_with_camera_2d(
++        &mut self,
++        world: &mut engine_ecs::World,
++        camera: &Camera2d,
++        camera_transform: &Transform,
++        viewport: [u32; 2],
++        device: &wgpu::Device,
++        queue: &wgpu::Queue,
++        color_view: &wgpu::TextureView,
++        depth_view: &wgpu::TextureView,
++    ) -> Result<(), RenderFrameError> {
++        if color_view.texture().sample_count() != 1 {
++            return self
++                .inner
++                .render_to_view_with_camera_2d(
++                    world, camera, camera_transform, viewport, device, queue, color_view, depth_view,
++                )
++                .map_err(RenderFrameError);
++        }
++        let camera_sample = camera
++            .view_projection_matrix(camera_transform, viewport)
++            .ok()
++            .map(|view_projection| {
++                TemporalCameraSample::new(TemporalCameraSource::Explicit, view_projection)
++            });
++        let temporal_view = self.temporal.prepare(device, queue, color_view, camera_sample);
++        self.inner
++            .render_to_view_with_camera_2d(
++                world, camera, camera_transform, viewport, device, queue, temporal_view, depth_view,
++            )
++            .map_err(RenderFrameError)?;
++        self.temporal.copy_current_to(device, queue, color_view);
++        self.temporal.commit();
++        Ok(())
++    }
++
+     pub(crate) fn set_shared_texture_cache(
+         &mut self,
+         cache: crate::material::SharedGpuTextureCache,
