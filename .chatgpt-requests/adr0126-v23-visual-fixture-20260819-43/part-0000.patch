@@ -1,0 +1,220 @@
+diff --git a/crates/editor/src/main.rs b/crates/editor/src/main.rs
+index 68e8ee2fa109b0a87a73cd06ae695f0723da9802..032637ac74a137ce68b17840ad63d6562aa6993b 100644
+--- a/crates/editor/src/main.rs
++++ b/crates/editor/src/main.rs
+@@ -95,6 +95,8 @@ impl EditorShell {
+                 app.prepare_spatial_audio_details_visual_validation();
+             } else if requested == "Spatial Audio Listener" {
+                 app.prepare_spatial_audio_listener_visual_validation();
++            } else if requested == "Timeline Sequencer" {
++                app.prepare_timeline_sequencer_visual_validation()?;
+             } else {
+                 if requested == "VFX Builder" {
+                     app.prepare_vfx_visual_validation();
+diff --git a/crates/editor/src/ui/sequencer.rs b/crates/editor/src/ui/sequencer.rs
+index c2b12d7a8486ef938442a83a192759fc5e13af36..4673ec6b9ed818973bef1ec33de0a6359afb8ab7 100644
+--- a/crates/editor/src/ui/sequencer.rs
++++ b/crates/editor/src/ui/sequencer.rs
+@@ -179,6 +179,202 @@ impl EditorApp {
+         let mut choice = None; egui::Modal::new(egui::Id::new("timeline_unsaved_changes")).show(context, |ui| { ui.heading("Unsaved Timeline changes"); ui.label("Save this Timeline working copy before closing the Sequencer?"); ui.horizontal(|ui| { if ui.button("Save").clicked() { choice = Some(0_u8); } if ui.button("Discard").clicked() { choice = Some(1); } if ui.button("Cancel").clicked() { choice = Some(2); } }); });
+         match choice { Some(0) => { let result = self.timeline_sequencer.as_mut().expect("open").save(); match result { Ok(()) => { self.scene_view.set_timeline_preview_request(None); self.timeline_sequencer = None; }, Err(error) => self.report_error("editor.timeline_save_failed", error) } }, Some(1) => { self.scene_view.set_timeline_preview_request(None); self.timeline_sequencer = None; }, Some(2) => self.timeline_sequencer.as_mut().expect("open").close_requested = false, _ => {} }
+     }
++
++}
++
++#[cfg(feature = "visual-validation")]
++impl EditorApp {
++    /// Builds a deterministic ADR0126 Sequencer scene using only production authoring/runtime paths.
++    pub fn prepare_timeline_sequencer_visual_validation(&mut self) -> Result<(), String> {
++        let project = self
++            .project_root
++            .clone()
++            .ok_or_else(|| "Timeline visual validation requires a project".to_owned())?;
++
++        let preview_entity = self
++            .session
++            .create_scene_entity("timeline_visual_target")
++            .map_err(|error| error.to_string())?;
++        let deleted_binding = self
++            .session
++            .create_scene_entity("timeline_deleted_binding")
++            .map_err(|error| error.to_string())?;
++        self.session
++            .delete_scene_entity(deleted_binding.clone())
++            .map_err(|error| error.to_string())?;
++        self.session.save().map_err(|error| error.to_string())?;
++        self.selected_entity = Some(preview_entity.clone());
++        self.selected_entities.clear();
++        self.selected_entities.insert(preview_entity.clone());
++
++        let animation_set_asset = AssetId::generate();
++        let animation_set_json = engine_authoring::AnimationSet::empty()
++            .to_canonical_json()
++            .map_err(|error| error.to_string())?;
++        let animation_set_path = PathBuf::from("timeline_visual_validation.animset.json");
++        crate::asset_management::create_registered_text_asset(
++            &project,
++            &mut self.asset_manifest,
++            &animation_set_path,
++            animation_set_asset.clone(),
++            "Timeline Visual Animation Set".to_owned(),
++            &animation_set_json,
++        )
++        .map_err(|error| error.to_string())?;
++
++        let animation_track_id = TimelineTrackId::generate();
++        let transform_track_id = TimelineTrackId::generate();
++        let audio_track_id = TimelineTrackId::generate();
++        let vfx_track_id = TimelineTrackId::generate();
++        let event_track_id = TimelineTrackId::generate();
++        let camera_track_id = TimelineTrackId::generate();
++        let transform_clip_id = TimelineClipId::generate();
++        let event_clip_id = TimelineClipId::generate();
++        let second = TIMELINE_TICKS_PER_SECOND;
++        let duration = TimelineTick::new(second * 8);
++        let transform_duration = TimelineTick::new(second * 4);
++
++        let mut document = TimelineDocument::new("Timeline Visual Validation", duration);
++        document.tracks = vec![
++            TimelineTrack {
++                id: transform_track_id,
++                name: "Hero Transform".to_owned(),
++                kind: TimelineTrackKind::TransformProperty,
++                enabled: true,
++                binding: Some(TimelineBinding::Entity {
++                    entity: preview_entity.clone(),
++                }),
++                clips: vec![TimelineClip {
++                    id: transform_clip_id.clone(),
++                    name: "Dolly Across Stage".to_owned(),
++                    start: TimelineTick::ZERO,
++                    duration: transform_duration,
++                    source_offset: TimelineTick::ZERO,
++                    payload: TimelineClipPayload::TransformProperty {
++                        property: "engine.transform.translation".to_owned(),
++                        keys: vec![
++                            TimelinePropertyKey {
++                                tick: TimelineTick::ZERO,
++                                value: TimelinePropertyValue::Vec3([0.0, 0.0, 0.0]),
++                            },
++                            TimelinePropertyKey {
++                                tick: TimelineTick::new(second * 2),
++                                value: TimelinePropertyValue::Vec3([2.5, 1.0, 0.0]),
++                            },
++                            TimelinePropertyKey {
++                                tick: transform_duration,
++                                value: TimelinePropertyValue::Vec3([0.0, 0.0, 0.0]),
++                            },
++                        ],
++                    },
++                }],
++            },
++            TimelineTrack {
++                id: audio_track_id.clone(),
++                name: "Dialogue / Music".to_owned(),
++                kind: TimelineTrackKind::Audio,
++                enabled: true,
++                binding: None,
++                clips: Vec::new(),
++            },
++            TimelineTrack {
++                id: vfx_track_id.clone(),
++                name: "Impact VFX".to_owned(),
++                kind: TimelineTrackKind::Vfx,
++                enabled: true,
++                binding: Some(TimelineBinding::Entity {
++                    entity: deleted_binding,
++                }),
++                clips: Vec::new(),
++            },
++            TimelineTrack {
++                id: animation_track_id.clone(),
++                name: "Hero Animation".to_owned(),
++                kind: TimelineTrackKind::Animation,
++                enabled: true,
++                binding: Some(TimelineBinding::Entity {
++                    entity: preview_entity.clone(),
++                }),
++                clips: Vec::new(),
++            },
++            TimelineTrack {
++                id: event_track_id,
++                name: "Sequence Events".to_owned(),
++                kind: TimelineTrackKind::Event,
++                enabled: true,
++                binding: None,
++                clips: vec![TimelineClip {
++                    id: event_clip_id,
++                    name: "Gameplay Beat".to_owned(),
++                    start: TimelineTick::new(second * 5),
++                    duration: TimelineTick::new(second),
++                    source_offset: TimelineTick::ZERO,
++                    payload: TimelineClipPayload::Event {
++                        name: "sequence.beat".to_owned(),
++                        payload: r#"{"shot":"hero"}"#.to_owned(),
++                    },
++                }],
++            },
++            TimelineTrack {
++                id: camera_track_id,
++                name: "Camera Cut".to_owned(),
++                kind: TimelineTrackKind::CameraCut,
++                enabled: true,
++                binding: Some(TimelineBinding::Entity {
++                    entity: preview_entity,
++                }),
++                clips: Vec::new(),
++            },
++        ];
++        document.markers = vec![TimelineMarker {
++            id: TimelineMarkerId::generate(),
++            name: "Hero Reveal".to_owned(),
++            tick: TimelineTick::new(second * 3),
++            event: Some("sequence.hero_reveal".to_owned()),
++        }];
++        let compilation = document.compile();
++        if compilation.schedule.is_none() {
++            return Err(format!(
++                "Timeline visual validation fixture did not compile: {:?}",
++                compilation.diagnostics
++            ));
++        }
++
++        let timeline_asset = AssetId::generate();
++        let timeline_json = serde_json::to_string_pretty(&document)
++            .map_err(|error| error.to_string())?;
++        let timeline_path = PathBuf::from("timeline_visual_validation.timeline.json");
++        crate::asset_management::create_registered_text_asset(
++            &project,
++            &mut self.asset_manifest,
++            &timeline_path,
++            timeline_asset,
++            "Timeline Visual Validation".to_owned(),
++            &timeline_json,
++        )
++        .map_err(|error| error.to_string())?;
++        self.asset_browser.refresh(&project.assets_root());
++
++        let timeline_absolute = project.assets_root().join(&timeline_path);
++        self.open_timeline_sequencer(timeline_path, timeline_absolute);
++        let state = self
++            .timeline_sequencer
++            .as_mut()
++            .ok_or_else(|| "Timeline visual validation could not open the Sequencer".to_owned())?;
++        state.selection = Some(SequencerSelection::Clip(transform_clip_id));
++        state.playhead = TimelineTick::new(second * 2 + second / 4);
++        state.playing = false;
++        state.stopped = false;
++        state.loop_preview = true;
++        state.pending_animation_track = Some(animation_track_id);
++        state.pending_animation_set = Some(animation_set_asset);
++        state.animation_slot_search = "motion".to_owned();
++        state.muted.insert(audio_track_id);
++        state.locked.insert(vfx_track_id);
++        state.transport_changed();
++        self.bottom_panel_open = false;
++        Ok(())
++    }
+ }
+ 
+ #[cfg(test)]
