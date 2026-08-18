@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/external_agent_provider.rs","old":"        assert_eq!(server[\"url\"], \"${GAMEENGINE_MCP_ENDPOINT}\");\n","new":"        assert_eq!(server[\"url\"], \"http://127.0.0.1:1234/mcp\");\n"}
