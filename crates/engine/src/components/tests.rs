@@ -188,6 +188,9 @@ fn registry_iterates_in_registration_order() {
             PARTICLE_EMITTER_COMPONENT,
             UI_DOCUMENT_COMPONENT,
             COLLIDER_COMPONENT,
+            CAMERA_2D_COMPONENT,
+            SPRITE_RENDERER_2D_COMPONENT,
+            SPRITE_ANIMATOR_2D_COMPONENT,
             COLLIDER_2D_COMPONENT,
             RIGID_BODY_2D_COMPONENT,
             CHARACTER_CONTROLLER_2D_COMPONENT,
@@ -211,6 +214,7 @@ fn registry_iterates_in_registration_order() {
             NAVIGATION_LINK_COMPONENT,
             NAVIGATION_MODIFIER_COMPONENT,
             VFX_PLAYER_COMPONENT,
+            TILE_MAP_2D_COMPONENT,
         ]
     );
 }

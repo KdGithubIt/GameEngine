@@ -19,6 +19,7 @@ mod live_observation;
 mod model_router;
 mod native_agent;
 mod native_agent_runtime;
+mod native_2d_editor;
 mod remote_ai_studio;
 mod resource_arbitration;
 pub mod ai_studio;

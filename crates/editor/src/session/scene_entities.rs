@@ -273,6 +273,64 @@ impl EditorSession {
         ])?;
         Ok(id)
     }
+
+    /// Creates one Native 2D sprite entity from a stable logical SpriteRef.
+    ///
+    /// The operation uses the same Scene authoring transaction as every other
+    /// entity template: no UV, runtime handle, packed page, or filesystem path
+    /// becomes persisted sprite identity.
+    pub fn create_entity_from_sprite_ref(
+        &mut self,
+        sprite: engine_authoring::SpriteRef,
+        sorting_layer: engine_authoring::SortingLayerId,
+        parent: Option<EntityId>,
+    ) -> Result<EntityId, EditorSessionError> {
+        use std::collections::BTreeMap;
+
+        let id = EntityId::generate();
+        let transform_value = Value::Object(BTreeMap::from([
+            ("x".into(), Value::F64(0.0)),
+            ("y".into(), Value::F64(0.0)),
+            ("z".into(), Value::F64(0.0)),
+        ]));
+        let renderer_value = Value::Object(BTreeMap::from([
+            ("atlas".into(), Value::AssetRef(sprite.atlas)),
+            ("sprite_id".into(), Value::String(sprite.sprite.as_str().to_owned())),
+            ("tint_r".into(), Value::F64(1.0)),
+            ("tint_g".into(), Value::F64(1.0)),
+            ("tint_b".into(), Value::F64(1.0)),
+            ("tint_a".into(), Value::F64(1.0)),
+            ("flip_x".into(), Value::Bool(false)),
+            ("flip_y".into(), Value::Bool(false)),
+            (
+                "sorting_layer".into(),
+                Value::String(sorting_layer.as_str().to_owned()),
+            ),
+            ("order_in_layer".into(), Value::I64(0)),
+            ("visible".into(), Value::Bool(true)),
+            ("blend".into(), Value::String("alpha".into())),
+        ]));
+        self.apply_scene_commands([
+            AuthoringCommand::CreateEntity {
+                id: id.clone(),
+                name: "sprite_entity".into(),
+                parent,
+            },
+            AuthoringCommand::AddComponent {
+                entity: id.clone(),
+                component_type: ComponentTypeId::new("engine.transform"),
+                value: transform_value,
+            },
+            AuthoringCommand::AddComponent {
+                entity: id.clone(),
+                component_type: ComponentTypeId::new(
+                    engine::scene_bridge::SPRITE_RENDERER_2D_COMPONENT,
+                ),
+                value: renderer_value,
+            },
+        ])?;
+        Ok(id)
+    }
 }
 
 #[cfg(test)]
