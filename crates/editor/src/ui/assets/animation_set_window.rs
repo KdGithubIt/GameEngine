@@ -4,6 +4,9 @@
 //! Clip sub-assets, together with the clip reference validation that keeps an
 //! invalid binding from being written back to disk.
 
+use crate::preview_residency::{
+    PreviewAssetPriority, PreviewResidencyState, ProjectAssetResidency,
+};
 use crate::ui::*;
 
 struct AnimationSetGraphModel {
@@ -59,6 +62,7 @@ fn animation_target_preview_choices(
 fn preview_motion_route(
     manifest: &engine::AssetManifest,
     assets_root: Option<&std::path::Path>,
+    preview_residency: Option<&ProjectAssetResidency>,
     source: &engine_authoring::MotionSourceRef,
     target_skeleton: &AssetId,
 ) -> Option<engine::motion_binding::AnimationMotionRoute> {
@@ -75,19 +79,17 @@ fn preview_motion_route(
     let source_skeleton = if candidate_kind
         == engine::motion_binding::AnimationMotionCandidateKind::ModelBound
     {
-        let model_entry = sub_asset
-            .target_model_source
-            .as_deref()
-            .and_then(|id| {
-                AssetId::from_stable_id(engine_authoring::StableId::new(id)).ok()
-            })
-            .and_then(|id| manifest.get(&id))
-            .unwrap_or(owner_entry);
-        (model_entry.import_settings.skeleton_records.len() == 1)
-            .then(|| &model_entry.import_settings.skeleton_records[0].id)
-            .and_then(|id| {
-                AssetId::from_stable_id(engine_authoring::StableId::new(id)).ok()
-            })
+        match preview_model_bound_source_skeleton(
+            manifest,
+            assets_root,
+            preview_residency,
+            owner_source,
+            owner_entry,
+            sub_asset,
+        ) {
+            PreviewSourceSkeletonState::Ready(source_skeleton) => source_skeleton,
+            PreviewSourceSkeletonState::Pending => return None,
+        }
     } else {
         None
     };
@@ -152,21 +154,144 @@ fn preview_motion_route(
     ))
 }
 
+enum PreviewSourceSkeletonState {
+    Ready(Option<AssetId>),
+    Pending,
+}
+
+fn preview_model_bound_source_skeleton(
+    manifest: &engine::AssetManifest,
+    assets_root: Option<&std::path::Path>,
+    preview_residency: Option<&ProjectAssetResidency>,
+    owner_source: &AssetId,
+    owner_entry: &engine::ManifestEntry,
+    sub_asset: &engine::ImportedSubAsset,
+) -> PreviewSourceSkeletonState {
+    if let Some(target_model_source) = sub_asset.target_model_source.as_deref() {
+        let Some(target_model_source) =
+            AssetId::from_stable_id(engine_authoring::StableId::new(target_model_source)).ok()
+        else {
+            return PreviewSourceSkeletonState::Ready(None);
+        };
+        let Some(target_entry) = manifest.get(&target_model_source) else {
+            return PreviewSourceSkeletonState::Ready(None);
+        };
+
+        let mut shared = target_entry
+            .import_settings
+            .skeleton_records
+            .iter()
+            .filter(|target_record| {
+                owner_entry
+                    .import_settings
+                    .skeleton_records
+                    .iter()
+                    .any(|record| record.id == target_record.id)
+            });
+        if let Some(record) = shared.next()
+            && shared.next().is_none()
+        {
+            return PreviewSourceSkeletonState::Ready(
+                AssetId::from_stable_id(engine_authoring::StableId::new(&record.id)).ok(),
+            );
+        }
+
+        return PreviewSourceSkeletonState::Ready(
+            (target_entry.import_settings.skeleton_records.len() == 1)
+                .then(|| &target_entry.import_settings.skeleton_records[0].id)
+                .and_then(|id| {
+                    AssetId::from_stable_id(engine_authoring::StableId::new(id)).ok()
+                }),
+        );
+    }
+
+    if owner_entry.import_settings.skeleton_records.len() == 1 {
+        return PreviewSourceSkeletonState::Ready(
+            AssetId::from_stable_id(engine_authoring::StableId::new(
+                &owner_entry.import_settings.skeleton_records[0].id,
+            ))
+            .ok(),
+        );
+    }
+
+    let Some(residency) = preview_residency else {
+        return PreviewSourceSkeletonState::Ready(None);
+    };
+    match residency.prepare_model_source(
+        owner_source,
+        manifest,
+        assets_root,
+        PreviewAssetPriority::Visible,
+    ) {
+        PreviewResidencyState::Pending => return PreviewSourceSkeletonState::Pending,
+        PreviewResidencyState::Failed(_) => {
+            return PreviewSourceSkeletonState::Ready(None);
+        }
+        PreviewResidencyState::Ready => {}
+    }
+    let Some(imported) = residency.cached_model_source(owner_source, manifest, assets_root) else {
+        return PreviewSourceSkeletonState::Pending;
+    };
+    PreviewSourceSkeletonState::Ready(animation_source_skeleton_from_parts(
+        &sub_asset.id,
+        imported
+            .animations
+            .iter()
+            .map(|animation| (animation.id.as_str(), animation.skin_index)),
+        |skin_index| {
+            imported
+                .skins
+                .get(skin_index)
+                .map(|skin| skin.skeleton.id.clone())
+        },
+    ))
+}
+
+fn animation_source_skeleton_from_parts<'a>(
+    candidate_id: &str,
+    animations: impl IntoIterator<Item = (&'a str, usize)>,
+    skin_skeleton: impl Fn(usize) -> Option<AssetId>,
+) -> Option<AssetId> {
+    let skin_index = animations
+        .into_iter()
+        .find_map(|(id, skin_index)| (id == candidate_id).then_some(skin_index))?;
+    skin_skeleton(skin_index)
+}
+
 fn show_motion_route_preview(
     ui: &mut egui::Ui,
     route: Option<&engine::motion_binding::AnimationMotionRoute>,
+    has_target: bool,
 ) {
     let Some(route) = route else {
-        ui.small("Route: select Target Preview");
+        ui.small(if has_target {
+            "Route: resolving imported source"
+        } else {
+            "Route: select Target Preview"
+        });
         return;
     };
-    let response = match route {
-        engine::motion_binding::AnimationMotionRoute::Failed { .. } => {
-            ui.colored_label(egui::Color32::RED, format!("Route: {}", route.badge()))
+    ui.horizontal_wrapped(|ui| {
+        let response = match route {
+            engine::motion_binding::AnimationMotionRoute::Failed { .. } => {
+                ui.colored_label(egui::Color32::RED, format!("Route: {}", route.badge()))
+            }
+            _ => ui.label(format!("Route: {}", route.badge())),
+        };
+        match route {
+            engine::motion_binding::AnimationMotionRoute::Retarget { map } => {
+                ui.small(format!("Map: {}", map.as_str()));
+            }
+            engine::motion_binding::AnimationMotionRoute::Humanoid { motion } => {
+                ui.small(format!("Motion: {}", motion.as_str()));
+            }
+            engine::motion_binding::AnimationMotionRoute::Failed { reason } => {
+                ui.small(format!("Reason: {reason}"));
+            }
+            engine::motion_binding::AnimationMotionRoute::Native => {}
         }
-        _ => ui.label(format!("Route: {}", route.badge())),
-    };
-    response.on_hover_text(route.attempted_routing());
+        response.on_hover_text(route.attempted_routing());
+    });
 }
 
 #[cfg(test)]
@@ -209,13 +334,46 @@ mod tests {
         );
         let candidate = engine_authoring::MotionSourceRef::new(candidate_id);
 
-        let native = preview_motion_route(&manifest, None, &candidate, &source_skeleton)
-            .expect("registered Animation candidate must produce a route");
-        let failed = preview_motion_route(&manifest, None, &candidate, &other_skeleton)
-            .expect("registered Animation candidate must produce a route");
+        let native = preview_motion_route(
+            &manifest,
+            None,
+            None,
+            &candidate,
+            &source_skeleton,
+        )
+        .expect("registered Animation candidate must produce a route");
+        let failed = preview_motion_route(
+            &manifest,
+            None,
+            None,
+            &candidate,
+            &other_skeleton,
+        )
+        .expect("registered Animation candidate must produce a route");
 
         assert_eq!(native.badge(), "Native");
         assert_eq!(failed.badge(), "Failed");
+    }
+
+    #[test]
+    fn multi_skeleton_import_uses_the_animation_skin_instead_of_manifest_order() {
+        let first_animation = AssetId::generate();
+        let second_animation = AssetId::generate();
+        let first_skeleton = AssetId::generate();
+        let second_skeleton = AssetId::generate();
+        let animations = [
+            (first_animation.as_str(), 1_usize),
+            (second_animation.as_str(), 0_usize),
+        ];
+        let skeletons = [first_skeleton.clone(), second_skeleton.clone()];
+
+        let resolved = animation_source_skeleton_from_parts(
+            first_animation.as_str(),
+            animations,
+            |skin_index| skeletons.get(skin_index).cloned(),
+        );
+
+        assert_eq!(resolved, Some(second_skeleton));
     }
 }
 
@@ -540,6 +698,7 @@ impl EditorApp {
         let target_preview_choices = animation_target_preview_choices(&self.asset_manifest);
         let preview_manifest = self.asset_manifest.clone();
         let preview_assets_root = assets_root.clone();
+        let preview_residency = self.preview_residency.clone();
         let graph_model = read_only_state
             .document
             .graph
@@ -782,11 +941,16 @@ impl EditorApp {
                                             preview_motion_route(
                                                 &preview_manifest,
                                                 preview_assets_root.as_deref(),
+                                                Some(&preview_residency),
                                                 &binding.clip,
                                                 target,
                                             )
                                         });
-                                    show_motion_route_preview(ui, primary_route.as_ref());
+                                    show_motion_route_preview(
+                                        ui,
+                                        primary_route.as_ref(),
+                                        state.target_preview_skeleton.is_some(),
+                                    );
                                     ui.small("Overlays (later entries have higher priority)");
                                     for (index, overlay) in binding.overlays.iter().enumerate() {
                                         let overlay_route = state
@@ -796,6 +960,7 @@ impl EditorApp {
                                                 preview_motion_route(
                                                     &preview_manifest,
                                                     preview_assets_root.as_deref(),
+                                                    Some(&preview_residency),
                                                     overlay,
                                                     target,
                                                 )
@@ -808,6 +973,7 @@ impl EditorApp {
                                             show_motion_route_preview(
                                                 ui,
                                                 overlay_route.as_ref(),
+                                                state.target_preview_skeleton.is_some(),
                                             );
                                             if ui.small_button("↑").clicked() && index > 0 {
                                                 action = Some(AnimationSetUiAction::MoveOverlay {

@@ -1083,13 +1083,15 @@ mod tests {
         std::fs::write(&generated_prefab, b"{}")
             .expect("generated prefab must be written");
 
-        let mut import_settings = engine::ImportSettings::default();
-        import_settings.source_fingerprint = Some("accepted-generation".to_owned());
-        import_settings.source_stamp = Some(
-            engine::SourceStamp::capture(&source_path, &[])
-                .expect("initial source stamp must be captured"),
-        );
-        import_settings.generated_prefab = Some("generated/model.prefab.json".to_owned());
+        let import_settings = engine::ImportSettings {
+            source_fingerprint: Some("accepted-generation".to_owned()),
+            source_stamp: Some(
+                engine::SourceStamp::capture(&source_path, &[])
+                    .expect("initial source stamp must be captured"),
+            ),
+            generated_prefab: Some("generated/model.prefab.json".to_owned()),
+            ..engine::ImportSettings::default()
+        };
         let entry = engine::ManifestEntry {
             path: "model.glb".to_owned(),
             name: Some("Model".to_owned()),

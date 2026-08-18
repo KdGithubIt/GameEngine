@@ -138,6 +138,97 @@ impl ProjectAssetResidency {
         self.model_cache.clone()
     }
 
+    /// Schedules one exact model source for non-blocking Editor preview materialization.
+    ///
+    /// Animation Set Target Preview uses this narrow entry point to resolve an imported
+    /// animation's real skin on multi-skeleton sources without parsing the model on the
+    /// UI thread. A source whose persisted import generation is stale stays pending
+    /// until the ordinary import worker refreshes it.
+    pub(crate) fn prepare_model_source(
+        &self,
+        source_id: &AssetId,
+        manifest: &AssetManifest,
+        assets_root: Option<&Path>,
+        priority: PreviewAssetPriority,
+    ) -> PreviewResidencyState {
+        let Some(assets_root) = assets_root else {
+            return PreviewResidencyState::Ready;
+        };
+        let Some(entry) = manifest.get(source_id) else {
+            return PreviewResidencyState::Failed(format!(
+                "model source `{}` is not registered",
+                source_id.as_str()
+            ));
+        };
+        if !engine::asset_path_matches_kind(
+            engine::AssetKind::GltfSource,
+            Path::new(&entry.path),
+        ) {
+            return PreviewResidencyState::Failed(format!(
+                "asset `{}` is not a model source",
+                source_id.as_str()
+            ));
+        }
+
+        let source_path = assets_root.join(&entry.path);
+        let dependencies = entry
+            .import_settings
+            .source_dependencies
+            .iter()
+            .map(|path| assets_root.join(path))
+            .collect::<Vec<_>>();
+        let current_stamp = SourceStamp::capture(&source_path, &dependencies).ok();
+        if entry.import_settings.source_fingerprint.is_none()
+            || entry
+                .import_settings
+                .source_stamp
+                .as_ref()
+                .is_some_and(|expected| current_stamp.as_ref() != Some(expected))
+        {
+            return PreviewResidencyState::Pending;
+        }
+
+        let skeleton_records = entry.import_settings.skeleton_records.clone();
+        let contact_bones = entry.import_settings.contact_bones.clone();
+        let state = self.prepare_source(
+            SourceRequest {
+                source_id: source_id.clone(),
+                generation: SourceGeneration {
+                    source_path,
+                    source_stamp: current_stamp,
+                    source_fingerprint: entry.import_settings.source_fingerprint.clone(),
+                    settings_fingerprint: settings_fingerprint(
+                        &skeleton_records,
+                        &contact_bones,
+                    ),
+                },
+                skeleton_records,
+                contact_bones,
+            },
+            priority,
+        );
+        self.launch_available();
+        state
+    }
+
+    /// Returns the current resident parse for one exact imported model generation.
+    pub(crate) fn cached_model_source(
+        &self,
+        source_id: &AssetId,
+        manifest: &AssetManifest,
+        assets_root: Option<&Path>,
+    ) -> Option<Arc<engine::GltfImportResult>> {
+        let assets_root = assets_root?;
+        let entry = manifest.get(source_id)?;
+        let source_path = assets_root.join(&entry.path);
+        self.model_cache.lookup_source(
+            source_id,
+            &source_path,
+            &entry.import_settings.skeleton_records,
+            &entry.import_settings.contact_bones,
+        )
+    }
+
     pub(crate) fn gpu_mesh_cache(&self) -> SharedGpuMeshCache {
         self.gpu_mesh_cache.clone()
     }
