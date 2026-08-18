@@ -1,0 +1,100 @@
+diff --git a/crates/editor/src/asset_browser.rs b/crates/editor/src/asset_browser.rs
+index 330ef673acdc2a261c1a6bb0d5cce5778567b925..b288a3a04215a5452d656687f038bf6c5a298df7 100644
+--- a/crates/editor/src/asset_browser.rs
++++ b/crates/editor/src/asset_browser.rs
+@@ -16,6 +16,8 @@ use std::path::{Path, PathBuf};
+ pub enum AssetKind {
+     /// `*.scene.json`
+     Scene,
++    /// `*.timeline.json` ADR 0126 sequence asset.
++    Timeline,
+     /// `*.graph.json`
+     Graph,
+     /// `*.graph.view.json`
+@@ -67,6 +69,7 @@ impl AssetKind {
+     pub fn label(self) -> &'static str {
+         match self {
+             Self::Scene => "[scene]",
++            Self::Timeline => "[timeline]",
+             Self::Graph => "[graph]",
+             Self::GraphView => "[view]",
+             Self::AnimationSet => "[animset]",
+@@ -617,6 +620,8 @@ pub fn classify_file_name(name: &str) -> Option<(AssetKind, String)> {
+         (AssetKind::GraphView, ".graph.view.json".len())
+     } else if lower.ends_with(".scene.json") {
+         (AssetKind::Scene, ".scene.json".len())
++    } else if lower.ends_with(".timeline.json") {
++        (AssetKind::Timeline, ".timeline.json".len())
+     } else if lower.ends_with(".animset.json") {
+         (AssetKind::AnimationSet, ".animset.json".len())
+     } else if lower.ends_with(".material.json") {
+@@ -692,6 +697,13 @@ mod tests {
+         assert_eq!(name, "player");
+     }
+ 
++    #[test]
++    fn classify_timeline_json() {
++        let (kind, name) = classify_supported_file_name("intro.timeline.json");
++        assert_eq!(kind, AssetKind::Timeline);
++        assert_eq!(name, "intro");
++    }
++
+     #[test]
+     fn classify_graph_json() {
+         let (kind, name) = classify_supported_file_name("ai.graph.json");
+diff --git a/crates/editor/src/asset_management.rs b/crates/editor/src/asset_management.rs
+index 56dfcc563d69a386de7f92031641368fdc090e3c..a9feeb1a71708d014bc9a448f4ff2ffce21e3c2a 100644
+--- a/crates/editor/src/asset_management.rs
++++ b/crates/editor/src/asset_management.rs
+@@ -629,6 +629,13 @@ fn validate_import_script_placement(
+ /// Returns whether a path can be represented by the existing asset manifest
+ /// registration categories.
+ pub fn is_registerable_asset_path(path: &Path) -> bool {
++    if path
++        .file_name()
++        .and_then(|name| name.to_str())
++        .is_some_and(|name| name.to_ascii_lowercase().ends_with(".timeline.json"))
++    {
++        return true;
++    }
+     [
+         engine::AssetKind::Mesh,
+         engine::AssetKind::Material,
+diff --git a/crates/editor/src/ui/assets/browser.rs b/crates/editor/src/ui/assets/browser.rs
+index d7f349c57fa0a0f531b4a51f4359b7fe8b91afc2..276ac0d39d52dbf5d21cd587d2bbb346de6dceef 100644
+--- a/crates/editor/src/ui/assets/browser.rs
++++ b/crates/editor/src/ui/assets/browser.rs
+@@ -1280,6 +1280,7 @@ fn show_asset_browser(
+ pub(in crate::ui) fn asset_kind_icon(kind: AssetKind) -> &'static str {
+     match kind {
+         AssetKind::Scene => "▣",
++        AssetKind::Timeline => "≡",
+         AssetKind::Graph | AssetKind::GraphView => "◇",
+         AssetKind::AnimationSet => "◎",
+         AssetKind::AnimationClip => "▶",
+diff --git a/crates/editor/src/ui/chrome.rs b/crates/editor/src/ui/chrome.rs
+index 0b5d13a785e9f532cafaccdba02a9627c909f585..25c7656f3d25152f6a8ea5d1c0c11197e64d9776 100644
+--- a/crates/editor/src/ui/chrome.rs
++++ b/crates/editor/src/ui/chrome.rs
+@@ -994,7 +994,20 @@ impl EditorApp {
+                 );
+                 match action {
+                     Some(AssetBrowserAction::Open(index)) => {
+-                        self.open_from_browser(index, ui.ctx())
++                        let timeline = self
++                            .asset_browser
++                            .entries()
++                            .get(index)
++                            .filter(|entry| entry.kind == AssetKind::Timeline)
++                            .map(|entry| entry.relative_path.clone());
++                        if let Some(relative_path) = timeline {
++                            if let Some(project) = self.project_root.as_ref() {
++                                let absolute_path = project.assets_root().join(&relative_path);
++                                self.open_timeline_sequencer(relative_path, absolute_path);
++                            }
++                        } else {
++                            self.open_from_browser(index, ui.ctx());
++                        }
+                     }
+                     Some(AssetBrowserAction::Register(index)) => {
+                         self.register_asset_from_browser(index)
