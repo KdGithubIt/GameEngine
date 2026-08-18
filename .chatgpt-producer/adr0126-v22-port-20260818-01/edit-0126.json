@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/main.rs","old":"            authoring_status: None,\n            project_lease,","new":"            authoring_status: None,\n            exit_confirmation_open: false,\n            allow_exit_once: false,\n            exit_save_error: None,\n            project_lease,"}
