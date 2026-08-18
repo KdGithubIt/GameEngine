@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0154-first-release-20260818-r8-fix-validation",
+  "target_branch": "chatgpt/gameengine-adr0154-first-release-v2",
+  "expected_head_sha": "24b8dc7babb7b3268cf02d5b2ace5bb9c41e4e01",
+  "baseline_main_sha": "ecfc28d6d8e0e82eff38cc90f775e14c88347919",
+  "patch_sha256": "5ea2ecc764f1ca43c1525526ad934317ef7965eca356a064c45d8a5916ba732d",
+  "patch_bytes": 9554,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Fix ADR0154 validation and pre-Play Problems projection",
+  "pr_title": "Implement ADR 0154 target-aware animation motion binding",
+  "pr_body": "Fixes the current ADR 0154 validation failure and closes the pre-Play diagnostic gap: packaging compares exact target IDs correctly, Scene Bridge exposes a stable motion-binding diagnostic code, Scene View projects current Failed routes into Problems without conflating the preview banner, Target Preview lists actual model sources rather than motion-source skeleton ledgers, and portable Humanoid cache provenance has a regression test.\n\nThe PR remains Draft and must not be merged automatically."
+}
