@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/render-runtime/src/material.rs","old":"use std::fmt;\nuse std::sync::Arc;\n","new":"use std::fmt;\nuse std::sync::{Arc, Mutex, Weak};\n"}
