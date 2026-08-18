@@ -39,6 +39,30 @@ pub struct PreviewRenderer {
     renderer: WorldRenderer,
 }
 
+/// Per-frame preview GPU streaming telemetry.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PreviewUploadReport {
+    /// Bytes represented by unique GPU work discovered this frame.
+    pub queued_bytes: u64,
+    /// Bytes admitted by the frame upload budget.
+    pub uploaded_bytes: u64,
+    /// Unique upload work items discovered this frame.
+    pub queued_uploads: u32,
+    /// Upload work items admitted this frame.
+    pub uploaded_uploads: u32,
+    /// Upload work items deferred to a later frame.
+    pub deferred_uploads: u32,
+    /// Mesh or texture residency hits that required no new upload.
+    pub cache_hits: u32,
+}
+
+impl PreviewUploadReport {
+    /// Returns whether another frame is needed to drain deferred GPU work.
+    pub const fn has_deferred_work(self) -> bool {
+        self.deferred_uploads != 0
+    }
+}
+
 impl PreviewRenderer {
     /// Creates an offscreen preview renderer for the requested color format.
     pub async fn new(
@@ -52,6 +76,37 @@ impl PreviewRenderer {
                 message: source.to_string(),
             })?;
         Ok(Self { renderer })
+    }
+
+    /// Configures project-shared decoded-texture residency and the per-frame upload budget.
+    #[doc(hidden)]
+    pub fn configure_streaming(
+        &mut self,
+        texture_cache: crate::material::SharedGpuTextureCache,
+        max_bytes: u64,
+        max_uploads: u32,
+    ) {
+        self.renderer.set_shared_texture_cache(texture_cache);
+        self.renderer.set_upload_budget(max_bytes, max_uploads);
+    }
+
+    /// Returns deterministic upload telemetry from the most recent preview frame.
+    pub fn upload_report(&self) -> PreviewUploadReport {
+        let report = self.renderer.upload_report();
+        PreviewUploadReport {
+            queued_bytes: report.queued_bytes,
+            uploaded_bytes: report.uploaded_bytes,
+            queued_uploads: report.queued_uploads,
+            uploaded_uploads: report.uploaded_uploads,
+            deferred_uploads: report.deferred_uploads,
+            cache_hits: report.cache_hits,
+        }
+    }
+
+    /// Drops recreatable view-local bind groups/targets while retaining immutable pipelines.
+    #[doc(hidden)]
+    pub fn release_recreatable_resources(&mut self) {
+        self.renderer.release_recreatable_resources();
     }
 
     /// Renders `world` into a multisampled scene target, resolving into the
