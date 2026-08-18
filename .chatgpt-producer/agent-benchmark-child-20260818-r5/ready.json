@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "request_id": "agent-benchmark-child-20260818-r5",
+  "target_branch": "chatgpt/gameengine-agent-benchmark-experiment-runner",
+  "expected_head_sha": "29a7ad23ef0a046f8ed678ca247d658edd8ff646",
+  "baseline_main_sha": "96c8ffb18a74eabec2164daa61f694f131019ddc",
+  "edit_parts": ["edit-0000.json","edit-0001.json","edit-0002.json","edit-0003.json","edit-0004.json","edit-0005.json","edit-0006.json","edit-0007.json","edit-0008.json","edit-0009.json","edit-0010.json","edit-0011.json","edit-0012.json","edit-0013.json","edit-0014.json","edit-0015.json","edit-0016.json","edit-0017.json","edit-0018.json","edit-0019.json"],
+  "commit_message": "Run benchmark tasks in isolated Editor children",
+  "pr_title": "GameEngine: add reproducible local LLM benchmark experiments",
+  "pr_body": "## Summary\n\nWires reproducible ADR0142 experiments into isolated real Editor child processes. Each child loads an exact model/task spec, uses the native read harness or governed AgentRun, bypasses multi-model routing for attribution, grants only fixed run-scoped runtime permissions, writes one machine-local result, and exits. ValidationRepair is structurally forced to observe an injected managed-validation failure before model repair and revalidation.\n\nNext, the parent AI Studio controls/comparison view and task-specific runtime-interaction completion are finalized before validation.\n\n<!-- gameengine-visual-validation: auto -->\n<!-- gameengine-chatgpt-dispatcher -->"
+}
