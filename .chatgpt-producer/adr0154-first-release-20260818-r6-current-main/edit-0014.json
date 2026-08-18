@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/authoring/src/animation_set.rs","old":"            AnimationSet::from_json(r#\"{\"schema_version\":2,\"bindings\":{}}\"#),","new":"            AnimationSet::from_json(r#\"{\"schema_version\":3,\"bindings\":{}}\"#),"}
