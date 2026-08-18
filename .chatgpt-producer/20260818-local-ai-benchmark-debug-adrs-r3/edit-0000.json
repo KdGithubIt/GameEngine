@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"docs/adr/0155-gameengine-managed-local-inference-runtime-and-platform-selection.md","old":"Relates to: ADR 0142, ADR 0144, ADR 0150, ADR 0153","new":"Relates to: ADR 0142, ADR 0144, ADR 0150, ADR 0153, ADR 0156, ADR 0157"}
