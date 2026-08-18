@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/native_agent_runtime.rs",
+  "old": "use crate::agent_host::{AgentRun, AgentRunState, AgentWorkingStateUpdate, CompletionStatus};\nuse crate::native_agent::{\n    LocalModelConfig, ModelCapabilityProfile, NativeAgentError, NativeModelConfig, NativeModelTask,\n};",
+  "new": "use crate::agent_host::{AgentRun, AgentRunState, AgentWorkingStateUpdate, CompletionStatus};\nuse crate::agent_benchmark::BenchmarkRecord;\nuse crate::model_router::{\n    ModelRouteDecision, ModelRoutingError, ModelRoutingPolicy, RoutingWorkload,\n};\nuse crate::native_agent::{\n    LocalModelConfig, ModelCapabilityProfile, NativeAgentError, NativeModelConfig, NativeModelTask,\n};"
+}
