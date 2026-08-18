@@ -1,0 +1,28 @@
+diff --git a/crates/editor/src/ai_studio.rs b/crates/editor/src/ai_studio.rs
+index 5f60bb07b31e6f06c24c4d8949995874472ee618..ab0f3729161cab05861d7ffe30133f25a7876faf 100644
+--- a/crates/editor/src/ai_studio.rs
++++ b/crates/editor/src/ai_studio.rs
+@@ -5432,8 +5432,11 @@ mod tests {
+         let ProviderAgentEvent::RuntimeInput { input } = event else {
+             panic!("runtime input event");
+         };
++        let scheduled = input.scheduled_commands(0).expect("scheduled command");
++        assert_eq!(scheduled.len(), 1);
++        assert_eq!(scheduled[0].tick_offset(), 0);
+         assert_eq!(
+-            input.command().expect("command"),
++            scheduled[0].command(),
+             InputCommand::Key {
+                 key: KeyCode::KeyW,
+                 pressed: true,
+@@ -5446,8 +5449,9 @@ mod tests {
+         let input = ProviderRuntimeInput::MouseMove {
+             x: f32::NAN,
+             y: 1.0,
++            at_tick: None,
+         };
+-        assert!(input.command().is_err());
++        assert!(input.scheduled_commands(0).is_err());
+     }
+ 
+     #[test]
