@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/mcp-host/src/headless.rs","old":"            },\n            animation_set,\n            game_module,\n","new":"            },\n            animation_set,\n            sprite_atlas,\n            sprite_animation,\n            tile_set,\n            tile_map,\n            game_module,\n"}

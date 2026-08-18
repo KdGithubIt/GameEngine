@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/mcp-host/src/main.rs","old":"    material: Option<String>,\n    animation_set: Option<String>,\n}\n","new":"    material: Option<String>,\n    animation_set: Option<String>,\n    sprite_atlas: Option<String>,\n    sprite_animation: Option<String>,\n    tile_set: Option<String>,\n    tile_map: Option<String>,\n}\n"}
