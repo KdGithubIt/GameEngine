@@ -1039,7 +1039,10 @@ impl AiStudioPanel {
                     .id_salt("ai_studio_detached_contents")
                     .auto_shrink([false, false]);
                 #[cfg(feature = "visual-validation")]
-                let scroll_area = scroll_area.vertical_scroll_offset(480.0);
+                let scroll_area = scroll_area.vertical_scroll_offset(match self.model_backend {
+                    ModelBackendPreference::ManagedLocal => 0.0,
+                    _ => 480.0,
+                });
                 scroll_area.show(ui, |ui| self.show_contents(ui));
             },
         );
