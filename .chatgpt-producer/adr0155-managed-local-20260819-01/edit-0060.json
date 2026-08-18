@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "        let native_benchmark_identity = native_config.as_ref().map(|config| {\n            let inventory = if matches!(config, NativeModelConfig::Local(_)) {\n                self.current_installed_inventory().cloned()\n            } else {\n                None\n            };\n            (config.backend_id().to_owned(), config.model_id(), inventory)\n        });\n",
+  "new": "        let native_benchmark_identity = native_config.as_ref().map(|config| {\n            let inventory = if matches!(\n                config,\n                NativeModelConfig::Local(_) | NativeModelConfig::Managed(_)\n            ) {\n                self.current_installed_inventory()\n            } else {\n                None\n            };\n            (config.backend_id().to_owned(), config.model_id(), inventory)\n        });\n"
+}

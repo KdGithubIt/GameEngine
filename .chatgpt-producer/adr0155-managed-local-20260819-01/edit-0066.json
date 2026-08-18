@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/main.rs",
+  "old": "#[cfg(all(feature = \"visual-validation\", target_os = \"windows\"))]\nfn capture_ai_studio_native_window(path: &Path) -> Result<(), String> {\n",
+  "new": "#[cfg(feature = \"visual-validation\")]\nfn visual_validation_touches_managed_local_ai() -> bool {\n    let base_ref = std::env::var(\"GITHUB_BASE_REF\").unwrap_or_else(|_| \"main\".into());\n    let base = format!(\"origin/{base_ref}...HEAD\");\n    std::process::Command::new(\"git\")\n        .args([\n            \"diff\",\n            \"--name-only\",\n            &base,\n            \"--\",\n            \"crates/editor/src/managed_local_runtime.rs\",\n            \"crates/editor/src/managed_local_ai_studio.rs\",\n        ])\n        .output()\n        .ok()\n        .filter(|output| output.status.success())\n        .is_some_and(|output| !output.stdout.is_empty())\n}\n\n#[cfg(all(feature = \"visual-validation\", target_os = \"windows\"))]\nfn capture_ai_studio_native_window(path: &Path) -> Result<(), String> {\n"
+}

@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/main.rs",
+  "old": "            if detached_capture {\n                ai_studio.prepare_hosted_backend_visual_validation();\n                ai_studio.detach();\n            }\n",
+  "new": "            if detached_capture {\n                if visual_validation_touches_managed_local_ai() {\n                    ai_studio.prepare_managed_local_visual_validation();\n                } else {\n                    ai_studio.prepare_hosted_backend_visual_validation();\n                }\n                ai_studio.detach();\n            }\n"
+}

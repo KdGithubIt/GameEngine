@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "            external_agent_provider: self.external_provider_kind,\n            model_backend: self.model_backend,\n            local_model_endpoint: self.local_model_endpoint.clone(),\n",
+  "new": "            external_agent_provider: self.external_provider_kind,\n            model_backend: self.model_backend,\n            managed_environment: self.managed_local.environment(),\n            managed_model_id: self.managed_local.model_id().to_owned(),\n            local_model_endpoint: self.local_model_endpoint.clone(),\n"
+}

@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/ai_studio.rs",
+  "old": "    fn selected_local_resource_config(&self) -> Option<LocalModelConfig> {\n        if self.model_backend != ModelBackendPreference::Local\n            || self.local_model_name.trim().is_empty()\n        {\n            return None;\n        }\n        Some(LocalModelConfig {\n            endpoint: self.local_model_endpoint.clone(),\n            model: self.local_model_name.clone(),\n        })\n    }\n",
+  "new": "    fn selected_local_resource_config(&self) -> Option<NativeModelConfig> {\n        match self.model_backend {\n            ModelBackendPreference::ManagedLocal => self.managed_local.selected_config().ok(),\n            ModelBackendPreference::OllamaCompatible\n                if !self.local_model_name.trim().is_empty() =>\n            {\n                Some(NativeModelConfig::Local(LocalModelConfig {\n                    endpoint: self.local_model_endpoint.clone(),\n                    model: self.local_model_name.clone(),\n                }))\n            }\n            ModelBackendPreference::OllamaCompatible\n            | ModelBackendPreference::HostedApi\n            | ModelBackendPreference::Enterprise => None,\n        }\n    }\n"
+}
