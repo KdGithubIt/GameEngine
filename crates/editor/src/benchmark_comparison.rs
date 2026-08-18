@@ -27,7 +27,7 @@ use crate::benchmark_experiment::{
 };
 use crate::resource_arbitration::TelemetryValue;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 const RUNTIME_INTERACTION_TASK: &str = "runtime_interaction_v1";
 const VISUAL_EVALUATION_TASK: &str = "visual_evaluation_v1";
@@ -126,6 +126,7 @@ pub(crate) struct BenchmarkModelComparison {
     pub(crate) model_id: String,
     pub(crate) planned_runs: usize,
     pub(crate) recorded_runs: usize,
+    pub(crate) runs_with_record: usize,
     pub(crate) missing_runs: usize,
     pub(crate) passed_runs: usize,
     pub(crate) failed_runs: usize,
@@ -158,10 +159,16 @@ pub(crate) struct BenchmarkModelComparison {
 }
 
 impl BenchmarkModelComparison {
-    /// Whether this model reported every planned run without an interruption.
+    /// Whether every planned run produced usable measured evidence.
+    ///
+    /// A run that reported only a backend failure is a recorded outcome but not
+    /// evidence: it carries no measured metrics and no representation identity.
+    /// Counting it as complete would let a model that never answered qualify a
+    /// catalog recommendation, so a missing record fails this check.
     pub(crate) fn evidence_is_complete(&self) -> bool {
         self.planned_runs > 0
             && self.recorded_runs == self.planned_runs
+            && self.runs_with_record == self.planned_runs
             && self.interrupted_runs == 0
     }
 
@@ -194,6 +201,7 @@ impl BenchmarkModelComparison {
     }
 
     fn observe_record(&mut self, record: &BenchmarkRecord) {
+        self.runs_with_record += 1;
         let metrics = &record.metrics;
         if let TelemetryValue::Measured(success) = metrics.acceptance_success {
             self.acceptance_success.observe(success);
@@ -337,6 +345,23 @@ fn experiment_equivalence(
     if spec.model_ids.len() < 2 {
         return BenchmarkComparisonEquivalence::InsufficientEvidence {
             reason: "a model-only comparison needs at least two model representations".to_owned(),
+        };
+    }
+    // Two planned models are not two compared models. When only one of them
+    // produced a record there is nothing to compare it against, and reporting
+    // that as an equivalent model comparison would dress a single measured
+    // model up as a ranking.
+    let recorded_models = results
+        .iter()
+        .filter(|result| result.record.is_some())
+        .map(|result| result.run.model_id.as_str())
+        .collect::<BTreeSet<_>>();
+    if recorded_models.len() < 2 {
+        return BenchmarkComparisonEquivalence::InsufficientEvidence {
+            reason: format!(
+                "only {} model representation(s) produced a record; the others reported no measured evidence",
+                recorded_models.len()
+            ),
         };
     }
     let mut differences: Vec<String> = Vec::new();
@@ -676,5 +701,74 @@ mod tests {
         let mut results = every_run(&spec);
         results[0].routed_to_another_model = true;
         assert!(compare_experiment(&spec, &results).is_err());
+    }
+
+    /// Regression: a real two-model run where one model never answered.
+    ///
+    /// The failing model still wrote a result file, so both models looked
+    /// "fully recorded" and the surviving model had nothing to be compared
+    /// against. The experiment was reported as an equivalent model comparison
+    /// that supported a recommendation, on the evidence of one model.
+    #[test]
+    fn one_model_answering_is_not_an_equivalent_two_model_comparison() {
+        let spec = spec(&["model-a", "model-b"], &[READ_TASK], 1);
+        let mut results = every_run(&spec);
+        let failing = results
+            .iter_mut()
+            .find(|result| result.run.model_id == "model-b")
+            .expect("model-b run");
+        failing.outcome = BenchmarkRunOutcome::Failed;
+        failing.failure_kind = Some(BenchmarkRunFailureKind::Backend);
+        failing.record = None;
+
+        let comparison = compare_experiment(&spec, &results).expect("compare");
+        assert!(
+            matches!(
+                comparison.equivalence,
+                BenchmarkComparisonEquivalence::InsufficientEvidence { .. }
+            ),
+            "one recorded model cannot be an equivalent comparison, got {:?}",
+            comparison.equivalence
+        );
+        assert!(!comparison.supports_recommendation());
+    }
+
+    #[test]
+    fn a_run_that_produced_no_record_is_not_complete_evidence() {
+        let spec = spec(&["model-a", "model-b"], &[READ_TASK], 2);
+        let mut results = every_run(&spec);
+        let failing = results
+            .iter_mut()
+            .find(|result| result.run.model_id == "model-b")
+            .expect("model-b run");
+        failing.outcome = BenchmarkRunOutcome::Failed;
+        failing.failure_kind = Some(BenchmarkRunFailureKind::Backend);
+        failing.record = None;
+
+        let comparison = compare_experiment(&spec, &results).expect("compare");
+        let failed = comparison
+            .models
+            .iter()
+            .find(|model| model.model_id == "model-b")
+            .expect("model-b");
+        assert_eq!(failed.recorded_runs, 2);
+        assert_eq!(failed.runs_with_record, 1);
+        assert_eq!(failed.missing_runs, 0);
+        assert!(
+            !failed.evidence_is_complete(),
+            "a backend failure carries no measured evidence"
+        );
+        assert!(!comparison.supports_recommendation());
+    }
+
+    #[test]
+    fn complete_evidence_still_qualifies_when_every_run_recorded_metrics() {
+        let spec = spec(&["model-a", "model-b"], &[READ_TASK], 2);
+        let comparison = compare_experiment(&spec, &every_run(&spec)).expect("compare");
+        for model in &comparison.models {
+            assert_eq!(model.runs_with_record, model.planned_runs);
+            assert!(model.evidence_is_complete());
+        }
+        assert!(comparison.supports_recommendation());
     }
 }

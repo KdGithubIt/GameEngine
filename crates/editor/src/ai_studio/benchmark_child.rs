@@ -32,6 +32,12 @@ impl AiStudioPanel {
             result_written: false,
         });
         self.presentation.close();
+        // A comparable result must name the exact representation it ran, so the
+        // child discovers the backend inventory before it starts the task. ADR
+        // 0142 equivalence rejects a record whose model version, quantization,
+        // representation size, or backend runtime version is unavailable, and
+        // an undiscovered child would silently produce exactly that record.
+        self.start_model_discovery();
         Ok(())
     }
 
@@ -65,6 +71,11 @@ impl AiStudioPanel {
             return;
         };
         if child.result_written {
+            return;
+        }
+        if self.model_discovery.is_some() {
+            // Representation discovery is still in flight; starting now would
+            // freeze an unmeasured model identity for the whole run.
             return;
         }
         if !child.started {
