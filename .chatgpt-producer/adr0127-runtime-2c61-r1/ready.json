@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "request_id": "adr0127-runtime-2c61-r1",
+  "target_branch": "chatgpt/gameengine-adr0127-first-release-current-main",
+  "expected_head_sha": "07c3b61fe8140db0cba51ec136b21e4750d96902",
+  "baseline_main_sha": "97c0c97802f81be7b332583759a2c5bf31254476",
+  "edit_parts": [
+    "edit-0000.json",
+    "edit-0001.json",
+    "edit-0002.json",
+    "edit-0003.json",
+    "edit-0004.json",
+    "edit-0005.json",
+    "edit-0006.json",
+    "edit-0007.json",
+    "edit-0008.json",
+    "edit-0009.json",
+    "edit-0010.json",
+    "edit-0011.json",
+    "edit-0012.json",
+    "edit-0013.json",
+    "edit-0014.json",
+    "edit-0015.json",
+    "edit-0016.json",
+    "edit-0017.json",
+    "edit-0018.json",
+    "edit-0019.json",
+    "edit-0020.json"
+  ],
+  "commit_message": "Integrate ADR0127 Native 2D scene runtime",
+  "pr_title": "GameEngine: complete ADR0127 Native 2D first release",
+  "pr_body": "## Summary\n\nContinues ADR0127 first-release completion on the existing Draft PR. Integrates Native 2D asset kinds, Camera2D/SpriteRenderer2D/SpriteAnimator2D built-in components and scene conversion, deterministic fixed-step sprite animation runtime, and shared Camera2D/Camera3D priority ambiguity diagnostics while preserving the current dedicated 2D physics implementation.\n\nThis request intentionally does not revive stale PR #242 or replace merged 2D physics/project-settings contracts."
+}
