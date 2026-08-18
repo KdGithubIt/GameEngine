@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "request_id": "adr0126-v23-event-shutdown-20260819-39",
+  "target_branch": "chatgpt/gameengine-adr0126-first-release-v23",
+  "expected_head_sha": "b652b8648a258fd9c8e8f5d104c4d45ad1c447be",
+  "baseline_main_sha": "96c8ffb18a74eabec2164daa61f694f131019ddc",
+  "patch_sha256": "b3fd711127da622e9a75112404f9c69096453c890f71522d11d9380421b6abdd",
+  "patch_bytes": 11767,
+  "patch_parts": [
+    "part-0000.patch"
+  ],
+  "commit_message": "Complete Timeline event editing and native shutdown guard",
+  "pr_title": "GameEngine: complete ADR 0126 Timeline / Sequencer first release",
+  "pr_body": "## Summary\n\nCompletes ADR 0126 Timeline event payload editing and protects all dirty authoring working copies, including Timeline Sequencer state, when the native Editor window closes.\n\n<!-- gameengine-visual-validation: editor -->\n"
+}
