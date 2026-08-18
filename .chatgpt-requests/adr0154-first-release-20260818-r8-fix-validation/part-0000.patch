@@ -1,0 +1,184 @@
+diff --git a/crates/animation/src/humanoid_motion.rs b/crates/animation/src/humanoid_motion.rs
+index ab2714c32f2dcb8750fc24aec71dc84e6a727264..c183dd2bc5424cfec07ea5959f7298f5830d9d3f 100644
+--- a/crates/animation/src/humanoid_motion.rs
++++ b/crates/animation/src/humanoid_motion.rs
+@@ -748,6 +748,23 @@ mod tests {
+         }
+     }
+ 
++    #[test]
++    fn portable_cache_key_changes_with_humanoid_source_provenance() {
++        let motion = AssetId::generate();
++        let source_a = AssetId::generate();
++        let source_b = AssetId::generate();
++        let without_provenance = imported_humanoid_motion_cache_key(&motion, "fingerprint", None);
++        let with_a = imported_humanoid_motion_cache_key(&motion, "fingerprint", Some(&source_a));
++        let with_b = imported_humanoid_motion_cache_key(&motion, "fingerprint", Some(&source_b));
++
++        assert_ne!(without_provenance, with_a);
++        assert_ne!(with_a, with_b);
++        assert_ne!(
++            with_a,
++            imported_humanoid_motion_cache_key(&motion, "changed", Some(&source_a))
++        );
++    }
++
+     #[test]
+     fn model_space_rotation_delta_bakes_to_target() {
+         let source = skeleton(AssetId::generate());
+diff --git a/crates/editor/src/build.rs b/crates/editor/src/build.rs
+index a62ed7d374409a48932f40f34769c647827c6835..e573d80edd59f95932f6d232e9f908cf1b7c9ac0 100644
+--- a/crates/editor/src/build.rs
++++ b/crates/editor/src/build.rs
+@@ -1103,7 +1103,7 @@ fn collect_needed_humanoid_bakes(
+                             .iter()
+                             .find(|(_, map)| {
+                                 map.source_skeleton == *source_skeleton
+-                                    && map.target_skeleton == target_skeleton
++                                    && map.target_skeleton == *target_skeleton
+                             })
+                             .map(|(id, _)| id.clone())
+                     });
+diff --git a/crates/editor/src/runtime.rs b/crates/editor/src/runtime.rs
+index 432177954108b0dd810fb39fa648536e6879b83b..eac9b09c636b395ca76c629a715186262c0325c9 100644
+--- a/crates/editor/src/runtime.rs
++++ b/crates/editor/src/runtime.rs
+@@ -320,7 +320,9 @@ impl RuntimePlayState {
+ 
+         diagnostics.extend(entity_map.asset_diagnostics.iter().cloned());
+         if diagnostics.iter().any(|diagnostic| {
+-            diagnostic.is_blocking() && diagnostic.code == "anim.motion_binding_failed"
++            diagnostic.is_blocking()
++                && diagnostic.code
++                    == engine::scene_bridge::ANIMATION_MOTION_BINDING_FAILED_DIAGNOSTIC
+         }) {
+             return Err(PlayError::InvalidScene { diagnostics });
+         }
+diff --git a/crates/editor/src/scene_view.rs b/crates/editor/src/scene_view.rs
+index 90e52379a560c3d5c92c2651b566b69553b601c1..bc9929638397d25e08044e8c9e0e23a6c32a3230 100644
+--- a/crates/editor/src/scene_view.rs
++++ b/crates/editor/src/scene_view.rs
+@@ -1252,6 +1252,24 @@ impl SceneView {
+         self.waiting_for_residency = false;
+     }
+ 
++    pub(crate) fn current_motion_binding_diagnostics(&self) -> Vec<Diagnostic> {
++        self.preview
++            .as_ref()
++            .and_then(|preview| preview.bridge.as_ref())
++            .map(|bridge| {
++                bridge
++                    .asset_diagnostics
++                    .iter()
++                    .filter(|diagnostic| {
++                        diagnostic.code
++                            == engine::scene_bridge::ANIMATION_MOTION_BINDING_FAILED_DIAGNOSTIC
++                    })
++                    .cloned()
++                    .collect()
++            })
++            .unwrap_or_default()
++    }
++
+     /// Rebuilds the persistent preview world after an asset value or override
+     /// changes without discarding reusable model and GPU caches.
+     pub fn invalidate_asset_preview(&mut self) {
+diff --git a/crates/editor/src/ui/assets/animation_set_window.rs b/crates/editor/src/ui/assets/animation_set_window.rs
+index 0302671c2279754524ca7ec70372b9f5fd351b60..8a17c53ff1603583755b037706173754c3bf9f29 100644
+--- a/crates/editor/src/ui/assets/animation_set_window.rs
++++ b/crates/editor/src/ui/assets/animation_set_window.rs
+@@ -28,6 +28,12 @@ fn animation_target_preview_choices(
+ ) -> Vec<AnimationTargetPreviewChoice> {
+     let mut choices = Vec::new();
+     for (_, source) in manifest.iter() {
++        if !engine::asset_path_matches_kind(
++            engine::AssetKind::GltfSource,
++            std::path::Path::new(&source.path),
++        ) {
++            continue;
++        }
+         let source_label = source.name.as_deref().unwrap_or(&source.path);
+         let multiple = source.import_settings.skeleton_records.len() > 1;
+         for record in &source.import_settings.skeleton_records {
+diff --git a/crates/editor/src/ui/mod.rs b/crates/editor/src/ui/mod.rs
+index 8de256f2464a1440a842b1f052dd23cd0e345070..b5254ad53782bc81e80be965ddae4021529a15be 100644
+--- a/crates/editor/src/ui/mod.rs
++++ b/crates/editor/src/ui/mod.rs
+@@ -257,6 +257,7 @@ pub struct EditorApp {
+     /// This is retained separately from Console history because Problems
+     /// represents current state and removes the entry when the preview heals.
+     scene_view_problem: Option<engine_authoring::Diagnostic>,
++    scene_view_motion_binding_diagnostics: Vec<engine_authoring::Diagnostic>,
+     /// Dedicated clip, transition, and graph inspection surface.
+     animation_preview: AnimationPreviewWindow,
+     /// Active transform gizmo mode (Translate / Rotate / Scale).
+@@ -473,6 +474,7 @@ impl EditorApp {
+             preview_residency: preview_residency.clone(),
+             scene_view: SceneView::with_residency(preview_residency.clone()),
+             scene_view_problem: None,
++            scene_view_motion_binding_diagnostics: Vec::new(),
+             animation_preview: AnimationPreviewWindow::with_residency(preview_residency),
+             gizmo_mode: GizmoMode::Translate,
+             gizmo_space: GizmoSpace::Global,
+@@ -551,6 +553,7 @@ impl EditorApp {
+         self.asset_import_problems.clear();
+         self.game_build_problems.clear();
+         self.scene_view_problem = None;
++        self.scene_view_motion_binding_diagnostics.clear();
+         if let Err(error) = self.asset_inspector.open_project(&root) {
+             self.session
+                 .push_diagnostic(engine_authoring::Diagnostic::warning(
+@@ -1007,6 +1010,7 @@ impl EditorApp {
+         problems.extend(self.game_build_problems.iter().cloned());
+         problems.extend(self.component_source_index.diagnostics().iter().cloned());
+         problems.extend(self.scene_view_problem.iter().cloned());
++        problems.extend(self.scene_view_motion_binding_diagnostics.iter().cloned());
+         self.mirror_new_problems_to_console(&problems);
+         self.problems_panel.set_problems(problems);
+     }
+diff --git a/crates/editor/src/ui/viewport.rs b/crates/editor/src/ui/viewport.rs
+index 38ff0adc793cfde526bbef55927d5460e0d2f4c4..0f328c75dd5f4921101fa2c9f2d8fa2607310003 100644
+--- a/crates/editor/src/ui/viewport.rs
++++ b/crates/editor/src/ui/viewport.rs
+@@ -190,8 +190,12 @@ impl EditorApp {
+         // Refresh Problems only when the visible Scene View diagnostic changes.
+         // The existing Problems-to-Console mirror then records a new appearance
+         // once without flooding Console on every rendered frame.
+-        if self.scene_view_problem != output.preview_diagnostic {
++        let motion_binding_diagnostics = self.scene_view.current_motion_binding_diagnostics();
++        if self.scene_view_problem != output.preview_diagnostic
++            || self.scene_view_motion_binding_diagnostics != motion_binding_diagnostics
++        {
+             self.scene_view_problem = output.preview_diagnostic.clone();
++            self.scene_view_motion_binding_diagnostics = motion_binding_diagnostics;
+             self.refresh_scene_problems();
+         }
+         if let Some(entity) = output.picked_entity {
+diff --git a/crates/engine/src/scene_bridge.rs b/crates/engine/src/scene_bridge.rs
+index ce19fb43d6e7afaf6bcd9d37572277e62efe382f..70684bb2215ea815a3fc1982881d3dbfc4c33253 100644
+--- a/crates/engine/src/scene_bridge.rs
++++ b/crates/engine/src/scene_bridge.rs
+@@ -524,6 +524,10 @@ pub fn spawn_from_authoring_scene(
+ /// [`spawn_from_authoring_scene_best_effort`].
+ pub const COMPONENT_SKIPPED_DIAGNOSTIC: &str = "scene_bridge.component_skipped";
+ 
++/// Diagnostic code reported when a target-aware Animation Set motion binding
++/// has no Native, Retarget, or Humanoid route for the entity's target rig.
++pub const ANIMATION_MOTION_BINDING_FAILED_DIAGNOSTIC: &str = "anim.motion_binding_failed";
++
+ /// Diagnostic code reported when a component converts to nothing because a
+ /// schema-required asset reference has not been assigned yet (ADR 0069).
+ ///
+diff --git a/crates/engine/src/scene_bridge/spawn.rs b/crates/engine/src/scene_bridge/spawn.rs
+index 72ba5984d06016c96e9f2250a5f23e64b05c6bb0..9bdd71b41ffa12905291c3ea54e9973189b8f6cd 100644
+--- a/crates/engine/src/scene_bridge/spawn.rs
++++ b/crates/engine/src/scene_bridge/spawn.rs
+@@ -2002,7 +2002,7 @@ fn push_animation_motion_binding_failure(
+     };
+     context.asset_diagnostics.push(
+         Diagnostic::error(
+-            "anim.motion_binding_failed",
++            ANIMATION_MOTION_BINDING_FAILED_DIAGNOSTIC,
+             format!(
+                 "Animation Set `{}` slot `{}` candidate `{}` cannot resolve for target skeleton `{}`. Attempted routing: {}. Failure: {reason}",
+                 animation_set_asset.as_str(),
