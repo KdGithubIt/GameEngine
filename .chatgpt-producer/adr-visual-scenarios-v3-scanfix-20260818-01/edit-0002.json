@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/remote_ai_studio.rs",
+  "old": "        assert!(!snapshot.contains(\"internal-fingerprint\"));\n        assert!(!snapshot.contains(r\"C:\\Users\\private\"));",
+  "new": "        assert!(!snapshot.contains(\"internal-fingerprint\"));\n        let serialized_private_import_prefix = private_import_prefix.replace('\\\\', \"\\\\\\\\\");\n        assert!(!snapshot.contains(&serialized_private_import_prefix));"
+}
