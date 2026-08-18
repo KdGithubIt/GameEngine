@@ -93,7 +93,7 @@ impl TimelineRuntime {
             for request in &requests {
                 for item in active.schedule.evaluate(request) {
                     match item.entry().payload() {
-                        CompiledTimelinePayload::Marker { event: Some(name), .. } => frame.events.push(PendingEvent { player_id, asset: active.asset.clone(), document_id: active.document_id.clone(), tick: request.current_tick, name: name.clone(), payload: String::new() }),
+                        CompiledTimelinePayload::Marker { event: name, .. } => frame.events.push(PendingEvent { player_id, asset: active.asset.clone(), document_id: active.document_id.clone(), tick: request.current_tick, name: name.clone(), payload: String::new() }),
                         CompiledTimelinePayload::Clip { payload: TimelineClipPayload::Event { name, payload }, .. } => frame.events.push(PendingEvent { player_id, asset: active.asset.clone(), document_id: active.document_id.clone(), tick: request.current_tick, name: name.clone(), payload: payload.clone() }),
                         CompiledTimelinePayload::Clip { clip_id, payload: TimelineClipPayload::Audio { .. }, .. } if item.decision() == EvaluationDecision::NonSeekable => suppress_audio.push((player_id, clip_id.clone())),
                         _ => {}
