@@ -1,0 +1,1 @@
+{"operation":"replace_text","path":"crates/editor/src/ui/mod.rs","old":"mod presentation;\nmod viewport;\n","new":"mod presentation;\nmod sequencer;\nmod viewport;\n"}
