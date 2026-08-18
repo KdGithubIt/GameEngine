@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/agent_benchmark_campaign.rs",
+  "old": "            schedule,\n            candidate,\n            fixture,\n        }))",
+  "new": "            schedule,\n            candidate,\n            fixture,\n            harness_route,\n        }))"
+}
