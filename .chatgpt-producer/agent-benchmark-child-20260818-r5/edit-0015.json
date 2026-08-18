@@ -1,0 +1,6 @@
+{
+  "operation": "replace_text",
+  "path": "crates/editor/src/main.rs",
+  "old": "        let ai_studio = AiStudioPanel::new(\n            &root,\n            AiStudioConnection::new(\n                mcp_server.endpoint().to_string(),\n                mcp_server.authorization_token().to_owned(),\n            ),\n        )?;",
+  "new": "        let mut ai_studio = AiStudioPanel::new(\n            &root,\n            AiStudioConnection::new(\n                mcp_server.endpoint().to_string(),\n                mcp_server.authorization_token().to_owned(),\n            ),\n        )?;\n        if let Some(benchmark_run) = benchmark_run {\n            ai_studio.configure_benchmark_child(benchmark_run)?;\n        }"
+}
