@@ -29,6 +29,7 @@ use crate::save::{SaveData, SaveValue};
 use crate::scene_manager::{SceneManager, SceneSwitchState};
 use crate::script_api::RuntimeEntityIdentity;
 use crate::time::{FixedTime, Time};
+use crate::timeline::{TimelineEvents, TimelinePlaybackState, TimelineRuntime};
 use crate::transform::{GlobalTransform, Transform};
 use crate::ui_document::{UiBindingValue, UiBindings, UiEventFrame};
 use crate::vfx::{VfxPlaybackState, VfxPlayer, VfxRuntimeBackend};
@@ -209,10 +210,39 @@ fn compile_host_views(
         .map(|view| {
             let value = match view {
                 GameHostViewKind::SceneState => scene_state_value(world),
+                GameHostViewKind::TimelineState => timeline_state_value(world),
             };
             (*view, value)
         })
         .collect()
+}
+
+fn timeline_state_value(world: &World) -> Value {
+    let players = world
+        .get_resource::<TimelineRuntime>()
+        .map(|runtime| runtime.snapshots())
+        .unwrap_or_default()
+        .into_iter()
+        .map(|snapshot| {
+            let state = match snapshot.state {
+                TimelinePlaybackState::Playing => "playing",
+                TimelinePlaybackState::Paused => "paused",
+                TimelinePlaybackState::Stopped => "stopped",
+            };
+            Value::Object(BTreeMap::from([
+                ("player_id".to_owned(), Value::String(snapshot.player_id.to_string())),
+                ("asset_id".to_owned(), Value::String(snapshot.asset.as_str().to_owned())),
+                ("document_id".to_owned(), Value::String(snapshot.document_id.as_str().to_owned())),
+                ("state".to_owned(), Value::String(state.to_owned())),
+                ("tick".to_owned(), Value::I64(snapshot.tick.get())),
+                ("generation".to_owned(), Value::String(snapshot.generation.to_string())),
+                ("priority".to_owned(), Value::I64(i64::from(snapshot.priority))),
+                ("rate_numerator".to_owned(), Value::I64(i64::from(snapshot.rate_numerator))),
+                ("rate_denominator".to_owned(), Value::I64(i64::from(snapshot.rate_denominator))),
+            ]))
+        })
+        .collect();
+    Value::Object(BTreeMap::from([("players".to_owned(), Value::Array(players))]))
 }
 
 fn scene_state_value(world: &World) -> Value {
@@ -292,6 +322,7 @@ pub struct GameHostRuntime {
     last_hit_generation: Option<u64>,
     last_animation_generation: Option<u64>,
     last_ui_generation: Option<u64>,
+    last_timeline_source_sequence: u64,
     last_timer_source_sequence: u64,
     last_spawn_source_sequence: u64,
     last_scene_observation: Option<SceneObservation>,
@@ -441,6 +472,9 @@ impl GameHostRuntime {
         if access.event_streams.contains(&GameEventStream::Animation) {
             self.capture_animation_events(world);
         }
+        if access.event_streams.contains(&GameEventStream::Timeline) {
+            self.capture_timeline_events(world);
+        }
         if access.event_streams.contains(&GameEventStream::Ui) {
             self.capture_ui_events(world);
         }
@@ -534,6 +568,32 @@ impl GameHostRuntime {
             .collect::<Vec<_>>();
         for payload in records {
             self.push_event(GameEventStream::Animation, payload);
+        }
+    }
+
+    fn capture_timeline_events(&mut self, world: &World) {
+        let Some(events) = world.get_resource::<TimelineEvents>() else {
+            return;
+        };
+        let records = events
+            .iter()
+            .filter(|event| event.source_sequence > self.last_timeline_source_sequence)
+            .cloned()
+            .collect::<Vec<_>>();
+        for event in records {
+            self.last_timeline_source_sequence =
+                self.last_timeline_source_sequence.max(event.source_sequence);
+            self.push_event(
+                GameEventStream::Timeline,
+                Value::Object(BTreeMap::from([
+                    ("player_id".to_owned(), Value::String(event.player_id.to_string())),
+                    ("asset_id".to_owned(), Value::String(event.asset.as_str().to_owned())),
+                    ("document_id".to_owned(), Value::String(event.document_id.as_str().to_owned())),
+                    ("tick".to_owned(), Value::I64(event.tick.get())),
+                    ("name".to_owned(), Value::String(event.name)),
+                    ("payload".to_owned(), Value::String(event.payload)),
+                ])),
+            );
         }
     }
 
